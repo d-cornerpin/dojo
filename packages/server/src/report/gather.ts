@@ -1,33 +1,7 @@
-// ════════════════════════════════════════════════════════════════════════════
-// THE GATHER — TWO OUTPUTS, AND THE SPLIT IS THE PRIVACY MODEL (DOJO-REPORT T3)
-//
-// `collect.ts` next door runs the six queries. This file shapes what they
-// returned, and the shaping is where owner ruling D1 is actually enforced:
-//
-//  1. `sources` IS WHAT T1'S BUILDER MAY SEE — closed-domain platform facts, and
-//     it is a SUBSET OF `TelemetrySources` BY TYPE, so a column with nowhere to
-//     go cannot be smuggled in. `bundle` is the raw material, including the
-//     columns that carry user content, and it is written under `~/.dojo` and
-//     never leaves the box. `audit_log.target` and `.detail` appear in exactly
-//     one of the two, and the test asserts which.
-//
-//  2. A CALL IS PAIRED WITH ITS OUTCOME BY `call_id`, NEVER BY POSITION. The
-//     tool NAME and argument SHAPE live in the assistant message's `tool_use`
-//     blocks (`audit_log` stores neither — it normalises `action_type` to a
-//     six-value CHECK set); the VERDICT lives in `audit_log`. Both carry the
-//     provider's call id, so the join is exact. Zipping the two lists by index
-//     would attribute one tool's refusal to a different tool the first time the
-//     two counts differ, which is the first time anything interesting happened.
-//
-//  3. EVERY STRING THE AGENT READS IS SCRUBBED, by the SAME mechanism
-//     `writeBundle` applies on the way to disk — deliberately the same one and
-//     not a second one, so there is a single scrub to reason about and it was
-//     already mutation-proven in T2.
-//
-//  4. NOTHING HERE CAN POST, AND NOTHING HERE KNOWS A REPORT ID. `gatherEvidence`
-//     is a pure read plus a scrub; the report row, the bundle file and the
-//     telemetry are all the handler's doing, one layer up.
-// ════════════════════════════════════════════════════════════════════════════
+// Shapes what `collect.ts` returned into two outputs, and the split is the privacy model: `sources` is a
+// subset of `TelemetrySources` by type (closed-domain facts); `bundle` is raw and never leaves the box;
+// `audit_log.target` and `.detail` appear in exactly one of them. Calls pair by `call_id`,
+// never by position. Every string the agent reads is scrubbed as `writeBundle` does. Nothing here posts.
 
 import { redactHandedCredentials } from '../credentials/secret-values.js';
 import { recentTail } from '../memory/message-store.js';
@@ -48,19 +22,14 @@ export interface Evidence {
   window: GatherWindow;
   sources: Omit<TelemetrySources, 'reportId' | 'createdAt' | 'signature' | 'lane'>;
   dominant: DominantFailure;
-  /** The raw, credential-scrubbed material the agent reads. Never leaves the box. */
   bundle: Record<string, unknown>;
 }
 
-/** `process.platform` narrowed to the four members `platform.os` declares. */
 function osOf(p: string): string {
   return p === 'darwin' || p === 'linux' || p === 'win32' ? p : 'other';
 }
 
-/**
- * Tool name → its non-success tally IN THIS WINDOW: the total count and the dominant verdict.
- * Ties on the verdict break lexicographically.
- */
+/** Tool name to its in-window non-success tally: total count and dominant verdict (ties break by name). */
 function failuresByTool(calls: readonly ToolCallFacts[]): { tool: string; result: string; count: number }[] {
   const tally = new Map<string, Map<string, number>>();
   for (const c of calls) {
@@ -76,13 +45,8 @@ function failuresByTool(calls: readonly ToolCallFacts[]): { tool: string; result
   }));
 }
 
-/**
- * THE FAILURE SHAPE THE SIGNATURE HASHES: IN-WINDOW EVIDENCE ONLY. Tool failures outrank turn
- * exits (`signature.ts` argues why: an exit reason is downstream of whatever went wrong). Tool
- * failures are ranked by how often each tool failed inside this window, ties by tool name. The
- * cumulative per-agent streak counter is deliberately not read here: it counts failures from
- * outside the window, so it made two different problems share one signature (v3.4 E3).
- */
+/** The failure shape the signature hashes, from in-window evidence only: the cumulative per-agent streak
+ *  counter reads failures from outside the window, so it is not used. Tool failures outrank turn exits. */
 function dominantOf(calls: readonly ToolCallFacts[], turns: readonly TurnFacts[]): DominantFailure {
   const toolFailures = failuresByTool(calls)
     .sort((a, b) => b.count - a.count || a.tool.localeCompare(b.tool));
@@ -97,14 +61,13 @@ function dominantOf(calls: readonly ToolCallFacts[], turns: readonly TurnFacts[]
   return { toolFailures, turnExits };
 }
 
-/** THE SCRUB. One pass over the whole serialized document, exactly as `writeBundle` does. */
+/** One pass over the whole serialized document, as `writeBundle` does. */
 function scrub(agentId: string, bundle: Record<string, unknown>): Record<string, unknown> {
   try {
     const text = redactHandedCredentials(agentId, JSON.stringify(bundle) ?? '{}');
     return JSON.parse(text) as Record<string, unknown>;
   } catch {
-    // A bundle that will not serialize is a bundle nobody may read: fail to NOTHING
-    // rather than to the unscrubbed object. A missing bundle is the designed mistake.
+    // A bundle that will not serialize fails to nothing, never to the unscrubbed object.
     return { unavailable: true, reason: 'evidence could not be serialized for scrubbing' };
   }
 }
@@ -114,8 +77,7 @@ export function gatherEvidence(agentId: string, req: WindowRequest, now: Date = 
   const since = sqlStamp(window.sinceIso);
   const sinceMs = now.getTime() - window.minutes * 60_000;
 
-  // The RESOLVED window, not the standing cap: `window.turns` is what the attachment publishes
-  // and what the agent is told, so it is what the reader must apply (FR-3).
+  // The resolved window, not the standing cap: it is what the attachment publishes and the agent is told.
   const turnRows = readTurns(agentId, since, window.turns);
   const callRows = readCalls(agentId, since);
   const auditRows = readAudit(agentId, since);
@@ -128,8 +90,7 @@ export function gatherEvidence(agentId: string, req: WindowRequest, now: Date = 
     effectfulCalls: num(r.effectful_calls), durationMs: numOrNull(r.duration_ms),
   }));
 
-  // `modelOrdinal` correlates ("these six calls were the same model") without
-  // carrying an identifier. The id itself dies with this Map.
+  // `modelOrdinal` correlates calls by model without carrying the id, which dies with this Map.
   const ordinals = new Map<string, number>();
   const calls: CallFacts[] = callRows.map((r) => {
     const model = str(r.model_id) ?? '';
@@ -143,19 +104,14 @@ export function gatherEvidence(agentId: string, req: WindowRequest, now: Date = 
     };
   });
 
-  // Newest row wins per call id: the audit query is newest-first, so the first
-  // sighting is the outcome that stands if a call id were ever written twice.
+  // Audit rows are newest-first, so the first sighting of a call id is the outcome that stands.
   const outcomes = new Map<string, Row>();
   for (const r of auditRows) { const id = str(r.call_id); if (id && !outcomes.has(id)) outcomes.set(id, r); }
   const hits = new Map<string, number>();
   for (const f of failureRows) hits.set(str(f.tool_name) ?? '', num(f.hit_count));
 
-  // WINDOW-BOUNDED, and the filter is here because `recentTail` has no time argument to
-  // pass one to. Without it a tool call from last Tuesday rode into the attachment with
-  // `result: null`, wearing the same shape as an in-window call whose audit row was
-  // missing — two different facts rendering identically, on a public page. `createdAt` is
-  // the row's own stamp in the same text shape `sqlStamp` produces, so one comparison form
-  // governs every collector.
+  // `recentTail` takes no time argument, so filter here: an out-of-window call would render like an
+  // in-window call whose audit row is missing (`result: null`).
   const tail = toolCallsFromTail(
     recentTail(agentId, { limit: COLLECTOR_CAPS.toolCalls }).filter(m => m.createdAt >= since),
   );
@@ -173,33 +129,22 @@ export function gatherEvidence(agentId: string, req: WindowRequest, now: Date = 
     ageMinutes: Math.max(0, Math.round((now.getTime() - num(r.opened_at)) / 60_000)),
   }));
 
-  // The seventh collector, next door: this agent's log lines in the window, newest first, with
-  // no earlier report's payload read back in (`log-slice.ts` argues why that rule exists).
+  // The seventh collector: this agent's log lines in the window, newest first (`log-slice.ts`).
   const logSlice = agentLogSlice(agentId, window.sinceIso, COLLECTOR_CAPS.toolCalls);
   const logs = logSlice.rows;
 
-  // ── THE BUNDLE IS BOUNDED IN CHARACTERS, SECTION BY SECTION, AND SAYS WHAT IT DROPPED ──
-  // Why, and the arithmetic, are with the budgets in `bounds.ts`. Here: `bounds` goes FIRST in
-  // the document, so the agent reads what is missing before what is there. ⚠ SIDE EFFECT,
-  // STATED: `writeBundle` writes this same object, so the local copy under `~/.dojo/reports` is
-  // the bounded one — what the brief was written from is what is on disk. `sources` is untouched,
-  // so the published attachment still carries every row the collectors returned.
+  // `bounds` goes FIRST in the document so the agent reads what is missing before what is there.
+  // `writeBundle` writes this same bounded object; `sources` stays unbounded.
   const bounded = boundBundleSections({
     turns: turnRows, calls: callRows, auditLog: auditRows,
     toolFailures: failureRows, work: workRows, logs,
-    // The one list that arrives oldest-first (`toolCallsFromTail`), reversed so every section
-    // in the bundle is newest-first and "showing newest K of N" means the same thing in all.
+    // Arrives oldest-first (`toolCallsFromTail`); reversed so every section is newest-first.
     toolCalls: [...toolCalls].reverse()
       .map(t => ({ name: t.name, result: t.result, argShape: t.argShape })),
   });
 
-  // ── THE SEVENTH COLLECTOR'S OWN LIMIT, SAID OUT LOUD (round-1 review F5 corollary) ──
-  // The six SQL sections get their note from `boundBundleSections`, which compares what it kept
-  // against what the collector returned. That comparison cannot see this one: the log read is
-  // GLOBAL and is narrowed afterwards, so when it comes back full there may be in-window lines
-  // for this agent that nothing ever looked at — and the kept and collected counts still agree.
-  // The note is added here rather than in `bounds.ts` because it is a fact about the READ, not
-  // about the budget, and `bounds.ts` reads nothing by design.
+  // The log read is global and narrowed afterwards, so a full read can hide in-window lines while kept and
+  // collected counts agree; the note is added here because `bounds.ts` reads nothing.
   if (logSlice.globalReadSaturated) {
     bounded.notes.push(
       `logs: the engine log was read to its ${COLLECTOR_CAPS.toolCalls}-line global limit before `

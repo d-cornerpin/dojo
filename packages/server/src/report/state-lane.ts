@@ -1,76 +1,13 @@
-// ════════════════════════════════════════════════════════════════════════════════
-// THE REPORT-STATE LANE — what the user can actually SEE of this agent's bug reports.
-//
-// ── THE DEFECT IT CLOSES, AND WHY THREE ROUNDS OF SUPPRESSION DID NOT ────────────────────
-// Rounds 2-3 chased the engine's re-answer RECORD: the blocks that list or quote a settled ask
-// under *"do NOT re-execute this work"*. Round 4 proved those blocks were a CARRIER and not the
-// cause — with every one of them provably absent, on three fresh agents, after a real cancel, the
-// model still answered *"it's sitting on your dashboard as a preview card under ID 0f6f237c-…"*.
-// The claim arrives as the agent's OWN EARLIER REPLY in the ordinary fresh tail: correctly framed,
-// honestly labelled history, TRUE WHEN WRITTEN — and nothing in the engine ever told the turn what
-// became of the card. Measured at that HEAD: `listOpenReports` had exactly ONE consumer, the
-// dashboard's own HTTP route, and no context lane, prompt assembly or memory lane read live report
-// state at all. No suppression can fix that, because there is nothing false to suppress: the agent
-// is reasoning correctly from everything it was shown. What was missing was a FRESHER RECORD.
-//
-// ── THE PATTERN IS THE TREE'S OWN, AND IT IS FOLLOWED STRUCTURALLY ───────────────────────
-// `engine.open-commitments` (`memory/recall-lane.ts`) exists for exactly this class: the model
-// reciting owed work that had since closed. Its answer is not suppression but a COMPLETE SNAPSHOT
-// that says, in words, that it supersedes earlier mentions — *"If an earlier line still reads as
-// parked, pending, outstanding or waiting on someone, that line is history and no longer applies"*
-// — with (i) a completeness claim, (ii) the superseding sentence, (iii) a negative instruction
-// naming the failure mode's own vocabulary. This lane is that shape, one noun over, and the
-// vocabulary it names is the vocabulary the four red rounds actually produced: *"sitting on your
-// dashboard"*, *"preview card"*, *"waiting for you to press Post"*.
-//
-// ── WHAT IT SAYS PER STATUS, AND WHY EACH SENTENCE IS THE LOAD-BEARING ONE ───────────────
-// The consent gate (owner ruling D4) is that a report reaches the Dojo ONLY by the user pressing
-// Post on a card they can see. So the only facts worth bytes here are the ones that decide whether
-// something is IN FRONT OF THEM:
-//   * `cancelled`         — WITHDRAWN. Nothing is on the dashboard, nothing reached the builders,
-//                           and the honest next move is to file again if they ask. This is the
-//                           sentence the four reds needed and never had;
-//   * `awaiting_approval` — the preview card IS up and the decision is theirs. The engine must not
-//                           imply it has been sent (no-false-delivery), so the line says what the
-//                           card is waiting for;
-//   * `drafting`          — opened and never submitted: no card exists yet, so there is nothing for
-//                           them to see. Round 1's false-filed shape in one line;
-//   * `posted`            — delivered, and it names the issue URL when the row has one (the export
-//                           door writes `posted` with a path instead, so the URL is optional).
-// An unrecognised status is rendered as unknown-and-not-on-the-dashboard: `store.ts`'s rule 4 safe
-// direction, said out loud rather than hidden.
-//
-// ── BOUNDS, MEASURED ON THE LIVE BODY RATHER THAN CHOSEN ─────────────────────────────────
-// Two laws, because the two halves of the read are not alike (see the render's F1 note). SETTLED
-// rows: 7 days, 5 rows, newest change first. LIVE rows: every one, at any age, bounded only by a
-// safety cap whose being hit is REPORTED. Measured by rendering this module against a copy of the
-// owner's own database (22 report rows, 16 agents holding any, and 0 non-terminal rows on the whole
-// box today):
-//
-//   widest REAL agent (the harness bot, the ritual's own, 5 settled)           5 rows / 1,452 bytes
-//   every one-row agent                                                        1,014-1,136 bytes
-//   126 of the box's 138 agents                                                NOTHING AT ALL
-//   widest REALISTIC shape — 5 rows, all five states, every legend line         2,262 bytes
-//   PATHOLOGICAL bound — the live cap hit, plus 5 settled                       4,033 bytes
-//
-// The last line is the honest answer to "what if an agent holds many non-terminal rows": it renders
-// 20 of them, states that the list is incomplete, and WITHHOLDS the negative completeness claim. It
-// cannot grow past that, and it cannot lie about what it left out.
-//
-// ── EMPTY IS ABSENT ──────────────────────────────────────────────────────────────────────
-// No rows in the window → this returns `null` and the injection site pushes nothing: no header, no
-// slot, no bytes. Unlike the commitments snapshot, an empty set here has nothing to correct — an
-// agent that never filed a report cannot be reciting a dead card — and every byte in the tail is
-// one the provider re-bills on the turns that follow.
-//
-// ── THE CACHE-PREFIX LAW ─────────────────────────────────────────────────────────────────
-// This is per-turn volatile state. It is pushed by the loop PAST `volatileFrom`, beside
-// `engine.open-commitments`, and nothing ahead of `msg.turn-context` moves. No tool, no system
-// text, no registry prefix entry: `agent/tools/definitions.ts` is not touched, so the cache-prefix
-// golden cannot move. Its time terms are RECORDED INSTANTS (`recordedInstant`), never a clock
-// reading, so an unchanged set of rows is byte-identical on every turn — the property
-// `the-tail-holds-still` pins for every other block in the tail.
-// ════════════════════════════════════════════════════════════════════════════════
+// The report-state lane: what the user can actually SEE of this agent's bug reports, read from the rows.
+// An earlier reply ("it's sitting on your dashboard as a preview card") was true when written and nothing
+// tells the turn what became of the card, so this is a fresher record, shaped like `engine.open-commitments`
+// (`memory/recall-lane.ts`): a complete snapshot, a superseding sentence, and a negative instruction.
+// The consent gate: a report reaches the Dojo only when the user presses Post on a card they can see, so
+// each status line says whether a card is in front of them. An unrecognised status is not on the dashboard.
+// No rows in the window returns `null` and nothing is pushed (every tail byte is re-billed on later turns).
+// Per-turn volatile state: pushed by the loop past `volatileFrom` beside `engine.open-commitments`;
+// nothing ahead of `msg.turn-context` moves. Time terms are recorded instants (`recordedInstant`), never
+// a clock, so unchanged rows are byte-identical on every turn.
 
 import { getDb } from '../db/connection.js';
 import { recordedInstant } from '../memory/message-stamp.js';
@@ -80,26 +17,13 @@ import type { ReportStatus } from './store.js';
 export const REPORT_STATE_WINDOW_DAYS = 7;
 /** How many SETTLED rows the block may print. Newest-updated first. */
 export const REPORT_STATE_MAX_ROWS = 5;
-/**
- * The safety cap on LIVE (non-terminal) rows — which never age out and are never elided, so this is
- * the only thing standing between a pathological agent and an unbounded tail block. 20 is chosen
- * against the schema rather than against today's data: `awaiting_approval` is one card per filing
- * and the dashboard lists at most 50, `drafting` rows are unfinished calls, `approved` lasts
- * seconds — and 0 non-terminal rows exist on the owner's box today. Hitting it is REPORTED, not
- * hidden: the block withholds its negative completeness claim (see the render's F1 note).
- */
+/** Safety cap on LIVE (non-terminal) rows, which never age out or get elided; hitting it is REPORTED. */
 export const REPORT_STATE_LIVE_CAP = 20;
 
 export const REPORT_STATE_HEAD = '═══ YOUR DOJO BUG REPORTS — CURRENT STATE, READ FROM THE ROWS ═══';
 export const REPORT_STATE_TAIL = '═══ END DOJO BUG REPORTS ═══';
 
-/**
- * The superseding sentence, and it is the whole point of the lane.
- *
- * Modelled on `SNAPSHOT_SUPERSEDES` and deliberately naming the words the model actually used in
- * the four red rounds, because a negative instruction that does not name the failure's own
- * vocabulary is one the model does not recognise itself in (HL5's finding, carried).
- */
+/** The superseding sentence (as `SNAPSHOT_SUPERSEDES`); it names the words the model used. */
 const SUPERSEDES =
   'This supersedes every earlier mention of a report in this conversation, including your own '
   + 'replies: those were true when written and this is true NOW. A report reaches the Dojo ONLY '
@@ -110,46 +34,28 @@ const SUPERSEDES =
 
 /** What one read of this agent's report state holds: the live rows and the settled window. */
 export interface ReportStateRead {
-  /** Non-terminal rows — every one of them, at any age. The user may still be looking at these. */
   live: ReportStateRow[];
-  /** Terminal rows inside the horizon, capped. */
   settled: ReportStateRow[];
-  /** How many terminal rows the horizon holds in total, so an elision can state itself. */
   settledInWindow: number;
-  /** True when the live safety cap was hit — the block then WITHHOLDS its negative claim. */
+  /** True when the live safety cap was hit: the block then withholds its negative claim. */
   liveTruncated: boolean;
 }
 
 export interface ReportStateRow {
   id: string;
   status: ReportStatus | string;
-  /** SQLite datetime TEXT, as `dojo_reports` writes it. */
   updatedAt: string;
   issueUrl: string | null;
   exportPath: string | null;
 }
 
-/**
- * THE LANE'S STATE FOR A ROW, which is NOT always its `status` column (round-4 F9).
- *
- * `markExported` writes `status = 'posted'` with an `export_path` and no `issue_url` — the
- * "unconnected box still gets its report out" door. The column is right (the report left the
- * drafting machinery) and the lane's WORD for it was wrong: `renderRow` fell back to the export
- * path, so a file on the owner's own disk rendered as `FILED` under a legend that defines FILED
- * as *"it reached the builders, at the link shown"*. It did not reach them, and the link is a
- * path only that box can open.
- *
- * That is precisely the fault §5b of this module's clauses exists to prevent — one word meaning
- * two things across the surfaces an agent reads on the same turn — so the fix is a SEPARATE
- * word, not a hedge on FILED. Hedging FILED would weaken the definition for the genuine tracker
- * case, which is the one the whole ritual round was spent making unambiguous.
- */
+/** The lane's word for a row: `markExported` writes `posted` with an `export_path` and no `issue_url`, which
+ *  read `exported`, not FILED, so FILED keeps one meaning (a link that reached the builders). */
 function laneState(r: ReportStateRow): string {
   if (r.status === 'posted' && r.issueUrl === null && r.exportPath !== null) return 'exported';
   return String(r.status);
 }
 
-/** The word this release uses for each state, in the user's terms rather than the column's. */
 function stateWord(status: string): string {
   switch (status) {
     case 'cancelled': return 'WITHDRAWN';
@@ -158,19 +64,11 @@ function stateWord(status: string): string {
     case 'approved': return 'APPROVED, SENDING';
     case 'posted': return 'FILED';
     case 'exported': return 'EXPORTED TO THIS BOX';
-    // `store.ts` rule 4's direction, said rather than hidden: a value this release does not
-    // recognise is not a card the user can see.
     default: return 'UNRECOGNISED STATE — treat as NOT on their dashboard';
   }
 }
 
-/**
- * ⚠ THE CONSEQUENCES ARE A LEGEND, NOT A SENTENCE PER ROW, AND THAT IS A MEASUREMENT.
- * Written once per row, the five withdrawn rows of the owner's busiest agent rendered 2,598 bytes
- * with the same 260-character sentence five times over — in a tail the provider re-bills on every
- * following turn. As a legend covering only the states PRESENT, the same agent renders 1,185 and
- * one row costs ~60 bytes. The load-bearing truths are unchanged; only the repetition is gone.
- */
+/** A legend over only the states PRESENT, not a sentence per row: repeated text is re-billed each turn. */
 function legendFor(statuses: readonly string[]): string {
   const has = (s: string) => statuses.includes(s);
   const parts: string[] = [];
@@ -207,44 +105,17 @@ function legendFor(statuses: readonly string[]): string {
   return `What these states mean: ${parts.join(' ')}`;
 }
 
-/** One row: the id, the state word, the recorded instant, and a link only when there is one. */
 function renderRow(r: ReportStateRow): string {
   const state = laneState(r);
-  // The export's path is LABELLED rather than rendered bare, so the row cannot read as an
-  // address someone else could open.
+  // The export path is LABELLED so the row cannot read as an address someone else could open.
   const link = state === 'exported' ? ` — written to ${r.exportPath ?? ''}`
     : r.status === 'posted' ? ` — ${r.issueUrl ?? r.exportPath ?? '(no link recorded)'}` : '';
   return `${r.id} — ${stateWord(state)} ${recordedInstant(r.updatedAt)}${link}`;
 }
 
-/**
- * ⚠ F1, THE REVIEW'S MEDIUM, AND IT IS THE MIRROR IMAGE OF THE DEFECT THIS LANE CLOSES.
- *
- * The first cut made an UNCONDITIONAL negative completeness claim — *"anything not listed is not on
- * their dashboard"* — over a read that was bounded by a horizon AND a row cap. Two reachable shapes
- * made that claim FALSE, and only in the direction that kills a real report:
- *   SHAPE A  five cancels today plus one `awaiting_approval` from three days ago: the standing card
- *            is squeezed out by the 5-row cap while `listOpenReports()` still returns it;
- *   SHAPE B  an `awaiting_approval` row from nine days ago plus one fresh cancel: aged out.
- * In both, the superseding sentence then tells the model that a TRUE *"your card is waiting"* line
- * "is history and no longer applies" — so the agent says nothing is pending, the user never presses
- * Post, and a real report dies at the consent gate. That is D4's gate failing the other way round.
- *
- * THE RULE, and it makes the sentence true BY CONSTRUCTION instead of by luck: a NON-TERMINAL row
- * (`drafting` / `awaiting_approval` / `approved`) never ages out and is never elided by the cap.
- * Terminal rows (`cancelled` / `posted`) keep the 7-day horizon and the cap, because their
- * `updated_at` is refreshed at the moment that matters — `cancelReport` stamps `datetime('now')`, so
- * a withdrawn row is always FRESH at the instant of withdrawal (the reviewer measured this, and it
- * is why the horizon is safe for terminal rows and only for terminal rows).
- *
- * IT IS CHEAP BY CONSTRUCTION, AND THE PATHOLOGICAL CASE IS STILL BOUNDED. Non-terminal rows are
- * few: `awaiting_approval` is one card per filing and the dashboard lists at most 50, `drafting` is
- * an unfinished call, `approved` is in flight for seconds — 0 exist on the owner's box today. But
- * "few by construction" is not "bounded by the schema", and nothing in the tree expires a row
- * (`bundle.ts`'s sweep removes report DIRECTORIES, never rows). So the read takes a SAFETY CAP
- * (`REPORT_STATE_LIVE_CAP`), and when it is hit the block WITHHOLDS the negative claim and says so:
- * an incomplete list that admits it is incomplete cannot tell the model a live card is history.
- */
+/** A non-terminal row never ages out and is never elided by the cap, and the negative claim ("anything not
+ *  listed is not on their dashboard") is made only when every live row was read: otherwise a live card could
+ *  be called history and die at the gate. Terminal rows age out: `cancelReport` stamps `updated_at`. */
 export function renderReportStateBlock(read: ReportStateRead): string | null;
 export function renderReportStateBlock(
   rows: readonly ReportStateRow[], totalInWindow?: number,
@@ -252,8 +123,6 @@ export function renderReportStateBlock(
 export function renderReportStateBlock(
   arg: ReportStateRead | readonly ReportStateRow[], totalInWindow?: number,
 ): string | null {
-  // The array form is kept for the clauses that render a hand-built row set; it means "all of these
-  // are settled", which is what a caller passing bare rows can honestly claim.
   const read: ReportStateRead = Array.isArray(arg)
     ? { live: [], settled: arg as ReportStateRow[], settledInWindow: totalInWindow ?? arg.length, liveTruncated: false }
     : arg as ReportStateRead;
@@ -265,7 +134,6 @@ export function renderReportStateBlock(
     ? ` Older WITHDRAWN/FILED reports are not listed: these are the ${read.settled.length} most `
       + `recently changed of ${read.settledInWindow} from the last ${REPORT_STATE_WINDOW_DAYS} days.`
     : '';
-  // THE NEGATIVE CLAIM IS CONDITIONAL ON HAVING READ EVERY LIVE ROW. That is the whole of F1.
   const bound = read.liveTruncated
     ? `⚠ INCOMPLETE: you hold more live reports than this block lists (${read.live.length} shown). `
       + 'Do NOT tell the user that nothing of theirs is pending — some of their cards are not on '
@@ -276,22 +144,10 @@ export function renderReportStateBlock(
   return `${REPORT_STATE_HEAD}\n${SUPERSEDES}\n${legend}\n${lines.join('\n')}\n${bound}\n${REPORT_STATE_TAIL}`;
 }
 
-/** A row nobody has settled: the user may still be looking at it, or still owed a card. */
 const NON_TERMINAL: readonly string[] = ['drafting', 'awaiting_approval', 'approved'];
 
-/**
- * The read, in TWO statements because the two halves have different laws (see the render's F1 note).
- *
- * LIVE: every non-terminal row, no horizon, ordered newest-change-first, bounded only by the safety
- * cap that exists so a pathological agent cannot blow the tail — and hitting that cap is reported
- * rather than hidden. SETTLED: terminal rows inside the horizon, capped, with the in-window total so
- * the elision can state itself.
- *
- * `updated_at` is the ordering and the horizon because the fact the lane carries is the row's
- * CURRENT state: a report filed eight days ago and cancelled this morning is exactly the row a
- * re-ask is about. Both statements are `SCAN dojo_reports` — 22 rows on the owner's box; the
- * condition for indexing `agent_id` is recorded in `withdrawn-claim.ts` beside the same measurement.
- */
+/** Two statements, as live and settled rows follow different laws. `updated_at` orders and bounds them
+ *  because the lane carries the row's CURRENT state: a report cancelled this morning is fresh at any age. */
 export function recentReportRows(
   agentId: string, limit = REPORT_STATE_MAX_ROWS,
 ): ReportStateRead {
@@ -323,11 +179,7 @@ export function recentReportRows(
   };
 }
 
-/**
- * What the injection site calls: the read and the render, or `null` when this agent has nothing live
- * and nothing settled in the window. One function so the site stays one line, exactly as
- * `buildOpenWorkInjection` does for `engine.open-work`.
- */
+/** The read and the render, or `null` when this agent has nothing live and nothing settled in the window. */
 export function buildReportStateInjection(agentId: string): string | null {
   return renderReportStateBlock(recentReportRows(agentId));
 }
