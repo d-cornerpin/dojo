@@ -1,10 +1,6 @@
-// ════════════════════════════════════════
-// API Request/Response Type Contracts
-// ════════════════════════════════════════
 
 import type { Agent, AgentDetail, AgentMessage, Briefing, CompletionAnnouncement, DagResponse, HealthData, LogEntry, Message, Model, PermissionManifest, Project, ProjectDetail, Provider, SearchResult, SetupStatus, Summary, SummaryDetail, Task } from './types.js';
 
-// Standard API response wrapper
 export interface ApiSuccess<T> {
   ok: true;
   data: T;
@@ -19,7 +15,6 @@ export interface ApiError {
 
 export type ApiResponse<T> = ApiSuccess<T> | ApiError;
 
-// ── Auth ──
 export interface LoginResponse {
   token: string;
 }
@@ -28,10 +23,8 @@ export interface AuthMeResponse {
   authenticated: boolean;
 }
 
-// ── Setup ──
 export type SetupStatusResponse = SetupStatus;
 
-// ── Providers ──
 export interface CreateProviderRequest {
   id: string;
   name: string;
@@ -39,23 +32,19 @@ export interface CreateProviderRequest {
   baseUrl?: string;
   authType: string;
   credential?: string;
-  // T63 — one of `BEHAVES_LIKE_PROFILES` (`agent/model-contract.ts`), sent only by the
-  // manual OpenAI-compatible choice. Omitted means "sniff the URL as always".
+  // One of `BEHAVES_LIKE_PROFILES` (`agent/model-contract.ts`), sent only by the manual
+  // OpenAI-compatible choice. Omitted means sniff the URL.
   behavesLike?: string;
-  // T64b — the advanced patience pair, in milliseconds. Omitted (the normal case) means the
-  // provider declares nothing and the standard bounds apply.
+  // The advanced patience pair, in milliseconds. Omitted means the standard bounds apply.
   firstChunkTimeoutMs?: number | null;
   streamIdleTimeoutMs?: number | null;
-  // T81b — how many tokens per second this box's owner says it chews through a prompt at.
-  // Omitted (the normal case) means throughput is undeclared and the pre-dial doomed-request
-  // gate stays off for this provider.
+  // Tokens per second this box processes a prompt at. Omitted means undeclared, which keeps the
+  // pre-dial doomed-request gate off for this provider.
   prefillTokensPerSec?: number | null;
 }
 
-// T66b — the edit. Every field optional, and only the ones present are written: the create
-// door over an existing id is a full replace, so this is a different request shape and not a
-// partial `CreateProviderRequest`. `credential` blank or absent means keep the stored key —
-// the stored key is never sent to the client, so a form can never round-trip it.
+// The edit sends only the fields present (creating over an existing id is a full replace). A blank or
+// absent `credential` keeps the stored key, which is never sent to the client.
 export interface EditProviderRequest {
   name?: string;
   baseUrl?: string | null;
@@ -63,20 +52,16 @@ export interface EditProviderRequest {
   credential?: string;
 }
 
-// The edit route answers the standard envelope PLUS one flag: true when the base URL or the
-// credential moved, i.e. when the stored "validated" badge no longer describes anything that
-// has been tried. The caller then runs `POST /providers/:id/validate` — the existing route,
-// which is also what the add form runs straight after a create.
+// True when the base URL or credential moved, so the stored "validated" badge is stale and the caller
+// re-runs `POST /providers/:id/validate`.
 export type EditProviderResponse = ApiResponse<Provider> & { revalidationRequired?: boolean };
 
 export type ProvidersListResponse = Provider[];
 export type ProviderResponse = Provider;
 export type ProviderModelsResponse = Model[];
 
-// ── Models ──
 export type ModelsListResponse = Model[];
 
-// ── Identity ──
 export interface IdentityFileResponse {
   content: string;
   /** USER.md only: the owner's mailboxes (connected Google/Microsoft accounts of kind 'user'). */
@@ -102,18 +87,15 @@ export interface GenerateIdentityResponse {
   tools: string;
 }
 
-// ── Chat ──
 export interface SendMessageResponse {
   messageId: string;
 }
 
 export type ChatHistoryResponse = Message[];
 
-// ── Agents ──
 export type AgentsListResponse = AgentDetail[];
 export type AgentDetailResponse = AgentDetail;
 
-// ── Memory ──
 export type DagApiResponse = DagResponse;
 export type SummaryDetailResponse = SummaryDetail;
 export type SearchResultsResponse = SearchResult[];
@@ -124,7 +106,6 @@ export interface CompactionResponse {
   condensedCreated: number;
 }
 
-// ── Tracker ──
 export type ProjectsListResponse = Project[];
 export type ProjectDetailResponse = ProjectDetail;
 export type TasksListResponse = Task[];
@@ -157,16 +138,12 @@ export interface CreateTaskRequest {
   repeat_unit?: string;
   repeat_end_type?: string;
   repeat_end_value?: string;
-  /** v2.5.2 — CSV of day-of-week ints (0=Sun..6=Sat) for repeat_unit='specific_days'. */
+  /** CSV of day-of-week ints (0=Sun..6=Sat) for repeat_unit='specific_days'. */
   repeat_days_of_week?: string | null;
 }
 export interface UpdateTaskRequest {
   status?: string;
-  /** M7 (PHASE-4 T5) / P706: `null` CLEARS the assignee — absent leaves it alone. The
-   *  dashboard used `undefined` as the clear sentinel and `JSON.stringify` drops it, so
-   *  "Unassigned" sent an empty body and unassigning a task was impossible from the UI.
-   *  The server has always read `null` as clear (`routes/tracker.ts` -> `updateTask`); only
-   *  the sentinel was unsendable. */
+  /** `null` clears the assignee, absent leaves it alone (`JSON.stringify` drops `undefined`). */
   assignedTo?: string | null;
   priority?: string;
   notes?: string;
@@ -179,7 +156,6 @@ export interface UpdateTaskRequest {
 }
 export type CreateProjectResponse = { projectId: string; taskIds: string[] };
 
-// ── Agents (expanded) ──
 export type AgentMessagesResponse = AgentMessage[];
 export interface CreateAgentRequest {
   name: string;
@@ -193,6 +169,5 @@ export interface CreateAgentRequest {
   classification?: 'ronin' | 'apprentice';
 }
 
-// ── System ──
 export type HealthResponse = HealthData;
 export type LogsResponse = LogEntry[];

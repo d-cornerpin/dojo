@@ -1,13 +1,5 @@
-// ════════════════════════════════════════
-// A2A Protocol — Structured Inter-Agent Messaging
-//
-// Every agent-to-agent message goes through a structured envelope with
-// explicit intent and response requirements. This eliminates
-// acknowledgement loops at the protocol level: terminal intents
-// (DELIVERABLE, FYI, COMPLETE, FAIL, ANSWER) force requires_response
-// to false, which means the receiver is NOT woken — the message is
-// read-only context on their next natural turn.
-// ════════════════════════════════════════
+// Structured inter-agent envelope. Terminal intents close a thread; whether the receiver is woken is
+// separate (agent/a2a-transport.ts forces requires_response to false only for its no-wake intents).
 
 export type A2AIntent =
   | 'QUESTION'      // Needs an answer
@@ -28,36 +20,20 @@ export interface A2AEnvelope {
   toAgent: string;
   fromAgent: string;
   attachPaths?: string[];
-  /**
-   * Explicit provenance signal. `'engine'` marks a message that ORIGINATES from
-   * the platform itself (Healer alerts, PM escalations, the destructive-action
-   * gate, distillation batches) rather than from a peer agent. The transport
-   * stamps such a row origin_kind='engine' so deriveOrigin classifies it as an
-   * engine event, NOT a peer agent literally named "system", and the receiver is
-   * framed to act on it (via the tool the payload names) instead of being told to
-   * "reply via send_to_agent" to a non-existent agent. Omitted (peer A2A) leaves
-   * the row a normal agent message. All existing engine senders use the reserved
-   * fromAgent='system' sentinel, which the transport treats as engine-origin too;
-   * this flag is the explicit alternative for a future engine sender that does not
-   * use that sentinel. NEVER set this for a genuine peer agent-to-agent message.
-   */
+  /** The platform itself originates this (not a peer): stamped origin_kind='engine'. Never for a peer. */
   origin?: 'engine';
 }
 
-// Terminal intents CLOSE the thread (no further acknowledgements allowed).
-// After a terminal intent, only QUESTION, BLOCK, or ASSIGN can reopen.
+// Terminal intents close the thread; only QUESTION, BLOCK or ASSIGN reopen it.
 export const TERMINAL_INTENTS: ReadonlySet<A2AIntent> = new Set([
   'DELIVERABLE', 'FYI', 'COMPLETE', 'FAIL', 'ANSWER',
 ]);
 
-// No-wake intents: terminal AND the receiver doesn't need to see it now.
-// ANSWER and DELIVERABLE are terminal but DO wake — the receiver is
-// waiting for the content to continue their work.
+// Not read by the wake rule: agent/a2a-transport.ts keeps its own set (FYI, STATUS); COMPLETE and FAIL wake.
 export const NO_WAKE_INTENTS: ReadonlySet<A2AIntent> = new Set([
   'FYI', 'STATUS', 'COMPLETE', 'FAIL',
 ]);
 
-// Only these intents can reopen a terminated thread.
 export const REOPENING_INTENTS: ReadonlySet<A2AIntent> = new Set([
   'QUESTION', 'BLOCK', 'ASSIGN',
 ]);
@@ -65,7 +41,6 @@ export const REOPENING_INTENTS: ReadonlySet<A2AIntent> = new Set([
 // Max delivered messages per thread before silent halt.
 export const MAX_HOPS_PER_THREAD = 8;
 
-// Semantic dedup: cosine similarity threshold and lookback window.
 export const DEDUP_SIMILARITY_THRESHOLD = 0.85;
 export const DEDUP_LOOKBACK = 3;
 
@@ -77,14 +52,11 @@ export function isReopeningIntent(intent: A2AIntent): boolean {
   return REOPENING_INTENTS.has(intent);
 }
 
-// Delivery result codes for logging
 export type A2ADropReason =
   | 'TERMINAL_THREAD_CLOSED'
   | 'SEMANTIC_DUPLICATE'
   | 'HOP_LIMIT_EXCEEDED'
   | 'MALFORMED_ENVELOPE'
   | 'AGENT_NOT_FOUND'
-  // FA-C4: the receiver's message row is the SOLE delivery vehicle; if the
-  // INSERT persisted nothing (0 changes) there is no message to deliver, so
-  // the transport reports a drop instead of a false delivered:true.
+  // The receiver's row is the only delivery vehicle, so an INSERT that wrote nothing is a drop.
   | 'PERSIST_SKIPPED';

@@ -1,19 +1,11 @@
-// ════════════════════════════════════════════════════════════════════════════
-// THE FENCE'S SECOND LINE OF DEFENCE (v3.5 K33): marker-SHAPED text in a body loses its bracket.
-//
-// The fence's own code (external-content.ts) is what makes its end unforgeable; this turns the
-// opening bracket of anything that LOOKS like a fence line (a forged opening, a look-alike end, in
-// any width, case, look-alike letters or invisible padding) into "(", so a reader is not misled by
-// it either. It runs on every outside text the door admits, synchronously, so it reads each body
-// once (fix round 4, ruling 1: one hostile line had held the event loop for seconds per 10 KB).
-// ════════════════════════════════════════════════════════════════════════════
+// The fence's second line of defence: the opening bracket of anything marker-SHAPED in a body (forged
+// opening, look-alike end, any width, case, look-alike letters or invisible padding) becomes "(".
+// It runs synchronously on every outside text, in one bounded pass, so a hostile line cannot hold the event loop.
 
 /** Any opening bracket a reader could take for a marker's: ASCII, full-width, and the CJK/math kin. */
 export const OPENERS = /[[［【〔〖〘〚⟦⟨⦃⦅⦇⦉⦋⦍⦏⦑⦓⦕⦗]/g;
 export const CLOSERS = /[\]］】〕〗〙〛⟧⟩⦄⦆⦈⦊⦌⦎⦐⦒⦔⦖⦘]/g;
-/** Characters a reader does not see: soft hyphen, joiners and marks, bidi embeddings, overrides and
- *  ISOLATES, the Mongolian and Khmer invisibles, Hangul fillers, variation selectors (both planes)
- *  and the TAG characters (the known "ASCII smuggling" carrier). */
+/** Invisible characters: soft hyphen, joiners, bidi controls, variation selectors, TAG characters. */
 export const INVISIBLE = /[\u00AD\u034F\u115F\u1160\u17B4\u17B5\u180B-\u180F\u200B-\u200F\u202A-\u202E\u2060-\u206F\u3164\uFE00-\uFE0F\uFEFF\uFFA0\u{E0000}-\u{E007F}\u{E0100}-\u{E01EF}]/gu;
 /** Cyrillic and Greek letters that look like the Latin letters of a marker, folded to them. */
 const CONFUSABLE: Readonly<Record<string, string>> = {
@@ -22,14 +14,12 @@ const CONFUSABLE: Readonly<Record<string, string>> = {
   '\u0391': 'A', '\u0392': 'B', '\u0395': 'E', '\u0396': 'Z', '\u0397': 'H', '\u0399': 'I', '\u039A': 'K', '\u039C': 'M', '\u039D': 'N', '\u039F': 'O', '\u03A1': 'P', '\u03A4': 'T', '\u03A5': 'Y', '\u03A7': 'X',
   '\u03B1': 'a', '\u03B5': 'e', '\u03B9': 'i', '\u03BA': 'k', '\u03BD': 'v', '\u03BF': 'o', '\u03C1': 'p', '\u03C4': 't', '\u03C5': 'u', '\u03C7': 'x',
 };
-/** Small capitals (U+1D00 block and kin) as the capitals they imitate (fix round 3, N7). */
 const SMALL_CAPS: Readonly<Record<string, string>> = {
   '\u1D00': 'A', '\u0299': 'B', '\u1D04': 'C', '\u1D05': 'D', '\u1D07': 'E', '\uA730': 'F', '\u0262': 'G', '\u029C': 'H', '\u026A': 'I',
   '\u1D0A': 'J', '\u1D0B': 'K', '\u029F': 'L', '\u1D0D': 'M', '\u0274': 'N', '\u1D0F': 'O', '\u1D18': 'P', '\u0280': 'R', '\uA731': 'S',
   '\u1D1B': 'T', '\u1D1C': 'U', '\u1D20': 'V', '\u1D21': 'W', '\u028F': 'Y', '\u1D22': 'Z', '\u13AC': 'E', '\u13AA': 'A', '\u13DF': 'C',
 };
-/** One character folded on its own: invisible → nothing; marks stripped (decompose, drop every
- *  mark); width and compatibility forms folded; look-alike letters mapped to Latin; lower case. */
+/** Fold one character: invisible vanishes, marks and width forms fold, look-alikes become Latin, lower case. */
 const ONE_INVISIBLE = new RegExp(INVISIBLE.source, 'u');
 function foldChar(c: string): string {
   if (ONE_INVISIBLE.test(c)) return '';
@@ -37,31 +27,21 @@ function foldChar(c: string): string {
     .replace(/./gu, (x) => CONFUSABLE[x] ?? SMALL_CAPS[x] ?? x).toLowerCase();
 }
 const OPENER_CHARS = new Set('[［【〔〖〘〚⟦⟨⦃⦅⦇⦉⦋⦍⦏⦑⦓⦕⦗');
-/** In the folded stream a run of separators is ONE symbol: SEP when it holds only spaces, `_` and
- *  `-` (allowed between the words), PUNCT when it also holds `/ \ | * : .` (allowed only right
- *  after the bracket). A literal SEP/PUNCT character in the body is read as an ordinary symbol. */
+/** A run of separators is ONE symbol: SEP for spaces, `_` and `-`; PUNCT if it also holds `/ \ | * : .`. */
 const SEP = '\u0001';
 const PUNCT = '\u0002';
 const OTHER = '\u0003';
 const SEP_CHAR = /[\s_-]/;
 const PUNCT_CHAR = /[/\\|*:.]/;
-/** What follows the bracket in anything marker-shaped, in the folded stream: `/`, `END OF THE`, …
- *  EXTERNAL, not followed by a letter. Its longest match is one lead run + `closing` + run + `of` +
- *  run + `the` + run + `external` = 1+7+1+2+1+3+1+8 = 24 symbols, plus one symbol of look-ahead:
- *  that bounded stretch is all a bracket's test reads (an arithmetic consequence of the marker
- *  format, not a limit), so the defang costs one pass over the body. */
+// What follows the bracket in a marker-shaped line, in the folded stream. Its longest match plus one
+// look-ahead symbol is DEFANG_LOOKAHEAD, the only stretch a bracket's test reads.
 const MARKER_AT = new RegExp(`[${SEP}${PUNCT}]?(?:(?:end|close|closing|stop)${SEP}?(?:of${SEP}?)?(?:the${SEP}?)?)?external(?![a-z])`, 'y');
 
-/** The most symbols of the folded stream a bracket's test can read: the 24 of the longest marker
- *  (1 lead + 7 `closing` + 1 + 2 `of` + 1 + 3 `the` + 1 + 8 `external`) plus the one symbol the
- *  `(?![a-z])` look-ahead reads. The test is handed exactly this stretch, so it cannot read more. */
+/** The longest marker (24 symbols) plus one symbol for the `(?![a-z])` look-ahead. */
 const DEFANG_LOOKAHEAD = 1 + 7 + 1 + 2 + 1 + 3 + 1 + 8 + 1;
 
-/** Turn the opening bracket of anything marker-shaped in `body` into "(". Nothing else changes.
- *  Fix round 4 (ruling 1): ONE pass. Each character is folded once into a stream in which invisible
- *  characters and marks vanish and every run of separators is one symbol, so no padding or
- *  invisible run, of any length, can push the word out of view — and each bracket is decided by
- *  reading only the bounded stretch after it. A marker never spans a line end. */
+// One pass: each character is folded once, so padding of any length cannot hide a marker, and each bracket
+// reads only a bounded stretch after it. A marker never spans a line end.
 export function defangExternalMarkers(body: string): string {
   const parts: string[] = [];
   let len = 0;

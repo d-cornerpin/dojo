@@ -1,6 +1,3 @@
-// ════════════════════════════════════════
-// Core Domain Types
-// ════════════════════════════════════════
 
 import type { MessageOrigin } from './origin.js';
 import type { DisplayKind } from './visibility.js';
@@ -13,51 +10,22 @@ export interface Provider {
   type: 'anthropic' | 'openai' | 'openai-compatible' | 'ollama';
   baseUrl: string | null;
   authType: 'api_key' | 'oauth' | 'agent-sdk' | 'none';
-  // T63 — the capability-contract profile the owner declared this endpoint behaves like, or
-  // null when it declared nothing (every preset, and every provider created before T63). Only
-  // the manual OpenAI-compatible choice sets it: a local server's URL cannot say whether the
-  // thing behind it wants DeepSeek's reasoning passback. The legal values are the contract
-  // ids in `agent/model-contract.ts` — `BEHAVES_LIKE_PROFILES` — which is what the create
-  // door validates against.
+  // Capability profile declared for this endpoint (a `BEHAVES_LIKE_PROFILES` id, agent/model-contract.ts), or null.
   behavesLike: string | null;
-  // T64b — how long this endpoint's streaming calls may wait, in milliseconds, as its owner
-  // declared it. Null on every provider that has declared nothing, which means the standard
-  // bounds (90 s to the first token, 60 s between chunks). Only a local inference server
-  // normally needs more: it reads the whole prompt before it can emit token 1, and on a long
-  // prompt that read alone can outlast the standard first-token bound. The two are separate
-  // because patience for prompt processing is not patience for a stalled stream. Legal range
-  // 10 s – 30 min, enforced at the write door and again by the reader.
+  // Streaming patience in ms; null means the standard bounds (90 s first token, 60 s between chunks).
+  // Legal range 10 s to 30 min.
   firstChunkTimeoutMs: number | null;
   streamIdleTimeoutMs: number | null;
-  // T81b (NO-DOOMED-DIALS) — how many tokens per second this box's owner says it chews through
-  // a prompt at, as declared on the SERVING MACHINE (same argument as the patience pair above:
-  // every model on a provider waits behind the same processor). Null means "declared nothing",
-  // which turns the pre-dial doomed-request gate OFF entirely for this provider — every
-  // request dials exactly as it does today. Paired with `firstChunkTimeoutMs` above,
-  // `agent/stream-patience.ts`'s `resolveDoomCeiling` turns the two into the largest prompt
-  // this box can possibly finish before its own declared patience runs out, and
-  // `agent/model.ts` refuses to dial anything bigger. Legal range 1 – 100,000 tokens/sec,
-  // enforced at the write door and again by the reader.
+  // Declared prompt tokens/sec of the serving machine; null falls back to the measured reading, and with neither
+  // the pre-dial doomed-request gate is off (`resolveDoomCeiling`, agent/stream-patience.ts). Range 1 to 100,000.
   prefillTokensPerSec: number | null;
-  // PREFILL SELF-CALIBRATION (owner design ruling 2026-09-22: "never ask the user for a number
-  // the platform can observe"; migration 167) — the same reading, DERIVED from this engine's own
-  // cost ledger instead of typed by a person. Read-only everywhere: there is no write door, and
-  // the dashboard shows it as information beside the rare-override field above it. Null until a
-  // provider has served a call big enough to measure from. `prefillTokensPerSec` ALWAYS wins
-  // when set — this is consulted only where nobody declared anything, which is exactly the set
-  // of providers for which the doomed-dial gate was previously off.
+  // Same reading derived from the cost ledger (migration 167): read-only, and `prefillTokensPerSec` wins when set.
   measuredPrefillTokensPerSec: number | null;
-  // When that reading was last established, in SQLite's own `YYYY-MM-DD HH:MM:SS`. Null with the
-  // reading. Not decoration: the estimator keeps a rolling 30-day window and a maximum over a
-  // window has to be able to fall, which needs a stamp to know when to look again.
+  // When that reading was set, SQLite `YYYY-MM-DD HH:MM:SS` not ISO (null with it); the 30-day max needs it.
   measuredPrefillAt: string | null;
   isValidated: boolean;
   validatedAt: string | null;
-  // User-entered host machine RAM in GB. Only relevant for remote Ollama
-  // providers (Ollama has no API to report total system RAM). The num_ctx
-  // auto-sizer uses `hostRamGb * 1024^3` as the total RAM when computing
-  // recommendations for models on this provider. Null on localhost (we
-  // use os.totalmem() instead) or when the user hasn't filled it in yet.
+  // Host RAM in GB for remote Ollama (no API reports it), used by the num_ctx auto-sizer; null on localhost.
   hostRamGb: number | null;
   createdAt: string;
   updatedAt: string;
@@ -78,122 +46,55 @@ export interface Model {
   maxOutputTokens: number | null;
   inputCostPerM: number | null;
   outputCostPerM: number | null;
-  // The pricing unit this model bills in. Token uses input/output
-  // $/M-tokens columns. Every other unit reads costPerUnit and the
-  // unit string disambiguates what that number means:
-  //   megapixel  — $ per output megapixel (image gen)
-  //   second     — $ per second of generated media (video / audio gen)
-  //   character  — $ per character of input text (TTS)
-  //   minute     — $ per minute of input audio (transcription)
-  //   item       — $ per generated item (a song, an image, a clip)
+  // token: the input/output $/M columns. Else costPerUnit: $ per output megapixel, per second of generated
+  // media, per input character (TTS), per minute of input audio (transcription), or per generated item.
   pricingUnit: 'token' | 'megapixel' | 'second' | 'character' | 'minute' | 'item';
   costPerUnit: number | null;
-  // @deprecated since v2.11.0 — use costPerUnit instead. Kept for one
-  // release as a fallback read path so older clients don't break.
+  // @deprecated: use costPerUnit. Kept as a fallback read path so older clients don't break.
   costPerMegapixel: number | null;
-  // True when the rate that applies to this model is NULL in the DB (not an
-  // explicit 0): a token row missing input or output $/M, or a non-token row
-  // missing costPerUnit. Derived at read time, no column. Per owner decision
-  // D-H the biller treats an unknown rate as $0 (phantom cost must not count
-  // toward the budget wall), so this flag keeps a genuinely-paid model with a
-  // failed price lookup visible instead of silently hidden at $0. The Settings
-  // model card renders a "price unknown, set a rate" hint off it.
+  // True when the applicable rate is NULL (not 0): the biller counts it as $0 so phantom cost never hits the budget
+  // wall, and this flag keeps a paid model with a failed price lookup visible. Derived at read time.
   priceUnknown: boolean;
   isEnabled: boolean;
-  // Per-model thinking/reasoning toggle. Defaults to true. Only meaningful
-  // when the capabilities array includes 'thinking'; for non-thinking
-  // models the field is stored but has no runtime effect.
   thinkingEnabled: boolean;
-  // How hard the model thinks, for models whose contract offers levels. Stored per
-  // model, default 'high' (the provider's own default). Only SENT to a model whose
-  // `thinkingLevels` lists it; for every other model it is stored and never sent.
+  // Only SENT to a model whose `thinkingLevels` lists it.
   thinkingLevel?: ThinkingLevel;
-  // The levels this model's contract supports on the wire, derived server-side from
-  // the one model contract. Empty means the model has no level control and the
-  // Settings row shows no selector. Absent on payloads that do not carry the model row's
-  // settings (the agent card), which render no selector either.
   thinkingLevels?: ThinkingLevel[];
-  // Per-model override for Ollama's `num_ctx` parameter. null means "use
-  // the auto-computed recommendation (numCtxRecommended); if that's also
-  // null, fall back to the model's Modelfile default". Only meaningful
-  // for provider type 'ollama'.
   numCtxOverride: number | null;
-  // Auto-computed num_ctx default sized to the host machine's RAM, the
-  // model's on-disk weights, and its KV cache footprint per token. The
-  // runtime uses this when there's no explicit override, and the UI
-  // displays it as the pre-filled "default" value in the Context input
-  // on every Ollama model card. null means "computation failed" or
-  // "not yet computed" — the runtime then skips num_ctx entirely.
+  // Auto-sized num_ctx default; null means not computed, and the runtime then skips num_ctx.
   numCtxRecommended: number | null;
-  // Per-model generation parameter spec. Drives the canonical→wire param
-  // mapping for media-generation tools (video first). null = no spec yet
-  // (the boot backfill seeds it from the family registry). See
-  // GenerationParamSpec. Only meaningful for generation-capable models.
   generationParams: GenerationParamSpec | null;
-  // Per-model TTS voice catalog. The valid voice set for the tts_create
-  // tool is model-specific and not discoverable at runtime, so it's seeded
-  // from a code family registry on add, stored here, and editable on the
-  // Settings model card. null = no catalog yet (boot backfill seeds it for
-  // audio_generation models). See VoiceOption.
   voiceCatalog: VoiceOption[] | null;
   createdAt: string;
   updatedAt: string;
 }
 
-// ── TTS voice catalog ──
-//
-// One entry per voice the tts_create tool may pick for a given model. The
-// id sets the base timbre; character/accent/emotion is steered by writing
-// the delivery into the spoken text, not by the voice id.
 
 export interface VoiceOption {
   id: string;
-  // The provider's documented voice character (e.g. "deep and authoritative").
   description: string;
-  // Perceived gender, advisory only — helps the agent match requests like
-  // "a male voice". Providers don't officially label voices by gender.
   gender: 'male' | 'female' | 'neutral';
 }
 
-// ── Generation parameter spec ──
-//
-// Generation tools require the agent to fill a fixed set of *canonical*
-// params (video: duration / aspect_ratio / resolution), regardless of model.
-// The engine enforces presence + validates the value, then this spec says
-// how to put each canonical param on the specific model's wire request.
-//
-// The spec is seeded from a code-side family registry on add, stored per
-// model in the DB, and editable by the user on the Settings model card.
 
 export type GenerationParamWireType = 'string' | 'number';
 
 export interface GenerationParamField {
-  // Does this model accept this canonical param on the wire? When false the
-  // agent must still supply a value (uniform tool contract) but it is NOT
-  // forwarded to the provider.
+  // Whether the wire accepts this param; when false the agent still supplies it but it is not forwarded.
   accepted: boolean;
-  // Allowed values the agent may pick. Non-empty = strict enum (e.g. Sora's
-  // [4,8,12]). Empty = fall back to the numeric min/max range below (lets a
-  // flexible model accept e.g. 2 seconds).
+  // Allowed values: non-empty is a strict enum, empty falls back to the inclusive min/max range below.
   values: Array<string | number>;
-  // Numeric range used only when `values` is empty. Inclusive.
   min?: number;
   max?: number;
-  // What the card pre-fills and the agent should default to.
   default: string | number;
-  // The provider's request-body field name. Multiple canonical params may
-  // share a wireField (aspect_ratio + resolution both feed `size`), in which
-  // case the submit composes them.
   wireField: string;
   wireType: GenerationParamWireType;
 }
 
 export type GenerationParamSpec = Record<string, GenerationParamField>;
 
-/** Every status an agent row may hold, as data so a test can assert it against
- *  the `CHECK(status IN (...))` on `agents.status` (widened for 'rate_limited'
- *  by migration 126). A member added here without a migration throws on write —
- *  which is how the rate_limited alert stayed dead until PHASE-0 T12. */
+/** Every agent status as data, so a test can assert it against `CHECK(status IN (...))` on `agents.status`;
+ *  a member added here without a migration throws on write. */
 export const AGENT_STATUSES = ['idle', 'working', 'paused', 'error', 'terminated', 'rate_limited'] as const;
 export type AgentStatus = (typeof AGENT_STATUSES)[number];
 
@@ -203,7 +104,7 @@ export interface Agent {
   modelId: string | null;
   systemPromptPath: string | null;
   status: AgentStatus;
-  parkedCause?: string | null; // t148: why the platform parked this agent (plain words), else null
+  parkedCause?: string | null; // why the platform parked this agent (plain words), else null
   config: Record<string, unknown>;
   createdBy: string;
   parentAgent: string | null;
@@ -225,23 +126,15 @@ export interface AgentDetail extends Agent {
   messageCount: number;
   uptime: number; // seconds since last start
   model: Model | null;
-  /**
-   * THE ACCESS GRANTS AS THE DOORS SEE THEM (UX-ACCESS A2/A3).
-   *
-   * Present on `GET /agents/:id` only — the list route does not compute it — and
-   * it is the EFFECTIVE object, so an agent whose row predates the A1
-   * materializer answers with its measured access rather than with a hole. The
-   * Access panel binds to this and never to `permissions`, which is the stored
-   * blob and is `'{}'` for a third of the agents on a worn-in box.
-   */
+  /** Effective access grants (GET /agents/:id only); the Access panel reads this, not the stored `permissions`. */
   effectiveGrants?: AccessGrants;
   /** When true, the agent's conversations are skipped by the vault archive layer entirely (Dreamer
    * never sees them). Toggleable on the agent detail page; falls through from the group's flag. */
   dreamerIgnore?: boolean;
-  /** t143: minutes of no movement at all before the owner is told this agent went silent; null = 2 h. */
+  /** Minutes of no movement at all before the owner is told this agent went silent; null = 2 h. */
   silentWindowMinutes?: number | null;
-  /** A-5b: calls a stop would cut NOW, live off the abort registry. `background` outlives its
-   *  turn, so an `idle` row can be stoppable; absent = no claim, not zero. See `stop-affordance.ts`. */
+  /** Calls a stop would cut NOW, live off the abort registry. `background` outlives its turn, so an `idle` row
+   *  can be stoppable; absent = no claim, not zero. See `stop-affordance.ts`. */
   inFlight?: { turn: number; background: number };
 }
 
@@ -257,55 +150,16 @@ export interface Message {
   cost: number | null;
   latencyMs: number | null;
   createdAt: string;
-  /**
-   * SQLite rowid of the message row. Optional because most `SELECT *` queries
-   * don't project it (rowid is excluded from `*`); only the paths that need a
-   * unique, monotonic, tie-free ordering key select it explicitly. Used as the
-   * archival high-water (vault/archive.ts) so an equal-second boundary row is
-   * never skipped by the Dreamer while still being compacted (silent loss).
-   */
+  /** SQLite rowid, selected only where a tie-free ordering key is needed (archival high-water, vault/archive.ts). */
   rowid?: number;
-  /**
-   * The row's stored display classification (`messages.display_kind`, migration 132's
-   * CHECKed vocabulary). SWEEP CORE-2 item 7 is the first RELOAD-path reader of it, and the
-   * reason it has to be served rather than re-derived is the point of the whole item: at
-   * turn end the engine re-classifies the bubbles the ledger did NOT name as the answer into
-   * the working-note lane, and it does that WITHOUT touching a byte of `content` (the cache
-   * law — an assistant row's bytes are replayed into the model prefix on every later turn).
-   * A re-derivation from content therefore CANNOT see the re-classification, which is exactly
-   * how the live view and a reload would come apart. Optional because a locally-constructed
-   * optimistic/streaming bubble has no row yet.
-   */
+  /** Stored display classification (`messages.display_kind`), served not re-derived: the engine reclassifies bubbles
+   *  at turn end WITHOUT touching `content` (the model prefix replays it), so content cannot show it. */
   displayKind?: DisplayKind | null;
-  /**
-   * Per-agent monotonic outer-turn counter. Increments once per outer turn
-   * (one user message → agent's complete response, possibly with many tool
-   * calls). Stored on every message v2 persists. NULL for v1-era messages
-   * and for user messages persisted by the chat route — for stub-and-store
-   * (Part XVIII §E), NULL is treated as "very old, stub it."
-   *
-   * Phase 4 (2026-05-04). The schema column was added in migration 037; the
-   * DB row mapper started exposing it on the Message type as part of the
-   * stub-and-store implementation.
-   */
   turnNumber?: number | null;
-  /**
-   * Captured chain of thought from thinking-mode providers (DeepSeek
-   * v4-pro/flash, OpenRouter unified reasoning, etc.). Stored alongside
-   * `content` because some providers (DeepSeek explicitly) require it
-   * to be echoed back on subsequent tool-call follow-up turns or the
-   * request fails with a 400. The dashboard renders this as a
-   * collapsible "Thinking…" section above the assistant bubble.
-   * Anthropic's thinking blocks live inside `content` (as
-   * type:"thinking" content blocks) and DON'T populate this field.
-   */
+  /** Chain of thought from thinking-mode providers; some (DeepSeek) require it echoed back on follow-up tool
+   *  turns or the request 400s. Anthropic's thinking blocks live inside `content`, not here. */
   reasoningContent?: string | null;
-  /**
-   * T56 leg (b). True once a compaction boundary RETIRED this row's reasoning from the
-   * wire: the text above is kept (the dashboard still renders it) but the assembler stops
-   * replaying it, and it stops costing the context budget. One-way and durable, which is
-   * what makes a row's rendered form stable between compactions — see migration 161.
-   */
+  /** One-way: compaction retired this reasoning from the wire (still rendered, never replayed or budgeted). */
   reasoningAgedOut?: boolean;
   attachments?: Array<{
     fileId: string;
@@ -315,48 +169,17 @@ export interface Message {
     path: string;
     category: 'image' | 'pdf' | 'text' | 'office' | 'audio' | 'video' | 'unknown';
   }>;
-  /**
-   * Where this message came from. Set for user messages dictated via voice
-   * mode (`'voice'`, so the dashboard can render a small mic icon), and for
-   * assistant/tool messages produced on a dedicated A2A turn (`'a2a'`, so the
-   * dashboard hides the whole inter-agent turn — text and tool badges — in
-   * regular mode; wordy mode still shows it). Typed messages and legacy
-   * messages leave this null.
-   */
+  /** 'voice' for dictated user messages, 'a2a' for assistant/tool messages of a dedicated A2A turn; null otherwise. */
   source?: 'voice' | 'a2a' | null;
-  /**
-   * Structured attribution columns (migrations 027 source_agent_id, 034 a2a_*,
-   * 073 inbound_meta). Previously read from the DB and discarded by the row
-   * mapper; now surfaced so the origin projection (and any consumer) can use
-   * structured data instead of re-parsing prose markers in `content`.
-   */
   sourceAgentId?: string | null;
   a2aThreadId?: string | null;
   a2aIntent?: string | null;
   a2aRequiresResponse?: number | null;
   inboundMeta?: string | null;
-  /**
-   * Conversation this message belongs to — `conversations.id`, a real FK.
-   *
-   * Resolved at ingest by the producer (`memory/conversations.ts`, OR4/P5) on inbound rows,
-   * and stamped at END OF TURN on the agent's OWN rows (assistant/tool), so the live-tail
-   * scoper keeps a self-message only for the conversation it was produced in — one
-   * counterparty's work cannot bleed into another counterparty's turn.
-   *
-   * The three-valued reading is load-bearing and predates the column (PHASE-2 T10I replaced
-   * `convKey` here, keeping it exactly): a MATCHING id is this conversation, a DIFFERENT id
-   * is another conversation's settled work and is dropped, and **NULL means "not stamped
-   * yet" — this turn's own in-flight work — and is KEPT.** Dropping the NULL case is the
-   * re-answer ghost (owner transcripts 2026-07-07 / 2026-07-09), so the late stamp is
-   * deliberate, not an oversight.
-   */
+  /** `conversations.id` (a real FK), stamped on inbound rows at ingest and on the agent's own rows at end of turn.
+   *  The live-tail scoper KEEPS NULL (this turn's in-flight work); dropping it is the re-answer ghost. */
   conversationId?: string | null;
-  /**
-   * Canonical "who is this message from", consolidated from role + the
-   * structured columns above + (for legacy rows) the `[SOURCE: …]`/`[A2A: …]`
-   * markers in content. Computed in the row mapper via deriveOrigin(). This is
-   * the single attribution signal the engine and dashboard should read.
-   */
+  /** Who this message is from, derived by deriveOrigin() in the row mapper; the one attribution signal. */
   origin?: MessageOrigin;
 }
 
@@ -377,19 +200,8 @@ export interface HealthData {
     used: number;
     total: number;
   };
-  /**
-   * INSTALLED-BOX AUDIT — WHETHER THIS BOX'S TOOL MANUALS ARE ITS OWN.
-   *
-   * Boot writes one `~/.dojo/tools/<tool>.md` per registered tool. Every write failure was a
-   * per-tool `warn` and nothing compared the written total against the registry, so an
-   * unwritable docs directory served the PREVIOUS version's manuals for ever while boot logged
-   * `count: 0` at INFO. It is drawn by the Vitals card, because
-   * it is a real degradation on a shipped box rather than a debug instrument, and because the
-   * failure is invisible otherwise (a stale manual reads exactly like a current one).
-   *
-   * Absent until boot has measured; `@dojo/shared`'s `toolDocsShortfall` is the one rule that
-   * decides whether this deserves a word, and both the boot log and the card read it.
-   */
+  /** Whether this box's tool manuals match its registry; absent until boot has measured. `toolDocsShortfall` is the
+   *  one rule deciding whether it deserves a word (boot log and Vitals card). */
   toolDocs?: ToolDocsHealth;
 }
 
@@ -402,7 +214,6 @@ export interface SetupStatus {
   };
 }
 
-// Tool call types used in agent runtime
 export interface ToolCall {
   id: string;
   name: string;
@@ -417,14 +228,10 @@ export interface ToolResult {
   content: string;
   isError: boolean;
   errorCode?: ToolErrorCode;
-  // Structured content blocks for rich tool results (images, documents).
-  // When present, the runtime uses these instead of `content` for the
-  // tool_result sent to the model. `content` is still the text fallback
-  // for persistence and display.
+  // Rich blocks (file_read images, PDFs) that replace `content` in the model's tool_result; `content` keeps the text.
   contentBlocks?: Array<{ type: string; [key: string]: unknown }>;
 }
 
-// ── Memory ──
 
 export interface Summary {
   id: string;
@@ -468,31 +275,16 @@ export interface DagResponse {
   links: { summaryId: string; parentIds: string[] }[];
 }
 
-// ── Multi-Agent ──
 
 export interface PermissionManifest {
   file_read: string[] | '*' | 'none';
   file_write: string[] | '*' | 'none';
   file_delete: string[] | 'none';
-  /** Programs the agent may run through `exec({argv})` — argv, no shell. */
+  /** Programs the agent may run through `exec({argv})` (argv, no shell). */
   exec_allow: string[];
   exec_deny: string[];
-  /**
-   * The SHELL class (PHASE-5 T3): what the agent may run through
-   * `shell({script})`, which hands the script to `/bin/zsh -c`.
-   *
-   * OPTIONAL, and its absence is the migration. Before T3 there was ONE exec
-   * door and it was a shell, so an agent's `exec_allow` has always been its
-   * shell reach. A manifest that does not mention `shell_allow` therefore
-   * inherits `exec_allow` verbatim — which is why splitting exec into two doors
-   * takes nothing away from any agent alive today, and why nobody has to edit a
-   * manifest for that to be true (owner ruling 2026-07-28: *"why wouldn't we
-   * allow an agent to do commands if they have shell access?"*).
-   *
-   * Setting it EXPLICITLY is how the shell class is withheld — `shell_allow: []`
-   * is an agent that may run programs but may not run a script. T5 owns whether
-   * new sub-agent defaults take that option; T3 only makes it expressible.
-   */
+  /** What the agent may run through `shell({script})` (`/bin/zsh -c`). Absent inherits `exec_allow`; setting it
+   *  explicitly withholds the shell class (`shell_allow: []` may run programs, not scripts). */
   shell_allow?: string[];
   shell_deny?: string[];
   network_domains: string[] | '*' | 'none';
@@ -513,7 +305,6 @@ export interface AgentMessage {
   createdAt: string;
 }
 
-// ── Project Tracker ──
 
 export interface Project {
   id: string;
@@ -546,7 +337,6 @@ export interface Task {
   projectId: string | null;
   title: string;
   description: string | null;
-  /** Wire keys; the words the owner reads are in `dashboard/src/lib/task-status.ts`. */
   status: 'on_deck' | 'in_progress' | 'handed_in' | 'sent_back' | 'complete' | 'fallen' | 'cancelled';
   /** Working (or Open) work on standby, with its reason. A hold is not a status: the task still
    *  finishes by being handed in and decided. */
@@ -554,7 +344,6 @@ export interface Task {
   holdReason: string | null;
   assignedTo: string | null;
   assignedToName: string | null;
-  /** The assignee id names no agent, or a terminated one. */
   assigneeGone: boolean;
   createdBy: string;
   priority: 'high' | 'normal' | 'low';
@@ -569,13 +358,7 @@ export interface Task {
   repeatEndType: string;
   repeatEndValue: string | null;
   repeatDaysOfWeek: string | null;
-  /**
-   * v2.5.45 — full ISO timestamp anchoring this recurring task's wall-
-   * clock time. After each run, next_run_at is computed from the anchor
-   * (not from completion time) so a task that takes 5 minutes doesn't
-   * drift the schedule by 5 minutes every cycle. Editable via UI/tools;
-   * default = scheduled_start at creation. Null for non-recurring tasks.
-   */
+  /** Wall-clock anchor of a recurring task: next_run_at counts from it, so run length never drifts the schedule. */
   anchorTime: string | null;
   nextRunAt: string | null;
   runCount: number;
@@ -583,20 +366,13 @@ export interface Task {
   pausedUntil: string | null;
   scheduleStatus: string;
   assignedToGroup: string | null;
-  /**
-   * Discriminator for task variants. NULL for ordinary tasks.
-   * 'reminder' = created via work_open(kind="reminder"); the scheduler fires it with a
-   * lighter "deliver this to the user as a single chat message" prompt
-   * instead of the generic scheduled-task boilerplate.
-   */
+  /** Variant, NULL for ordinary tasks; 'reminder' (work_open kind="reminder") fires a lighter delivery prompt. */
   kind: string | null;
   createdAt: string;
   updatedAt: string;
   lastMovedAt: string;   // `taskMovedAtSql`, the task's own last movement
   completedAt: string | null;
-  // Phase B.1 reasoning surface. Goal = what success looks like (set at
-  // task creation), result = what the agent says it did, evidence = the
-  // claims/files/tool-call refs the agent offered to back it up.
+  // Goal: what success looks like. Result: what the agent says it did. Evidence: what it offered as backing.
   goal: string | null;
   result: string | null;
   evidence: Array<{ kind: string; [k: string]: unknown }>;

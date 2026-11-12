@@ -1,68 +1,22 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// THE MARKER TAXONOMY — one owner for every engine-emitted marker SHAPE.
-// PHASE-3 T5. Research 06 requirement E17 ("one shared module with anchored + unanchored
-// exports for inbound-A2A, platform-noise, engine-scaffolding, new-session and fresh-read
-// sentinels; zero local re-declarations") and E18 (the named live drifts).
-//
-// ── WHAT THIS MODULE OWNS, AND WHAT IT DELIBERATELY DOES NOT ────────────────────────────
-// It owns SHAPES: the literal a marker is written as, and the anchored and unanchored
-// matchers derived FROM that literal. It does NOT own MEMBERSHIP — "which of these shapes
-// may enter a summary", "which are hidden in regular display mode", "which count as
-// inter-agent traffic" are three different policy questions with three different answers,
-// and PHASE-1 T8 proved they genuinely disagree: a `── New Session ──` divider is
-// USER-VISIBLE to the display taxonomy and EXCLUDED by the summary filter. Collapsing the
-// policy lists would make a summariser change a display change. So the consumers keep
-// their lists — they just stop re-spelling the shapes.
-//
-// ── WHY ANCHORED **AND** UNANCHORED ARE BOTH EXPORTED ───────────────────────────────────
-// Research 06 §5 found the same marker set written seven ways across the tree, and the two
-// worst were an anchored/unanchored pair: `summary-rebuild.ts` scanned message bodies for
-// `PM AGENT POKE` (unanchored, no ` FROM`) while `platform-noise.ts` required
-// `^\s*\[SOURCE: PM AGENT POKE`. One list was a superset of the other by accident, not by
-// decision. Here both forms are BUILT FROM THE SAME PREFIX ARRAY by `anchored()` and
-// `anywhere()`, so a marker added to a family reaches both matchers or neither — the
-// superset relationship is now a property of the code rather than a coincidence.
-//
-// ── THE FOUR LIVE DRIFTS THIS MODULE CLOSES (each measured at PHASE-3 T5's HEAD) ────────
-//   1. `[a2a:` vs `[A2A:` — the assembler's copy had no `/i` and compaction's did, so a
-//      lowercase envelope was stripped from summaries and kept in the live tail. Measured
-//      on the live body before unifying: 12,604 rows, 211 match either way, **0 rows
-//      differ**. One flag now, and it is `/i` (see A2A_INBOUND_RE).
-//   2. `GROUP BROADCAST` was in the assembler's and compaction's copies and in NEITHER
-//      shared module, so `visibility.ts` did not hide it and `origin.ts` classified it
-//      `kind:'user' relation:'owner'` — an inter-agent broadcast wearing the owner's face,
-//      which is the exact thing ruling OR4 forbids.
-//   3. `'[System note:'` matched neither `'[System:'` (colon required) nor `'[SYSTEM'`
-//      (case-sensitive), so it classified as owner chat too. The anchored matchers here
-//      are case-insensitive and the prefix list carries the note form explicitly.
-//   4. `thread:([0-9a-f]{8})` never matched a NAMED thread id. Measured on the live body:
-//      of 250 parseable `thread:` tokens, **70 (28%) are not hex**, so the already-replied
-//      dedupe silently failed on more than a quarter of them.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// One owner for the SHAPE of every engine-emitted marker: the literals and the anchored and unanchored
+// matchers built from them. It does not own MEMBERSHIP (which shapes enter a summary, are hidden, or count as
+// inter-agent traffic): those are separate policies and each consumer keeps its own list.
 
-/** Escape a literal so it can be embedded in a RegExp. */
 function esc(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-/** `^\s*(a|b|c)`, case-insensitive. The form for "this ROW is a marker row". */
 function anchored(prefixes: readonly string[]): RegExp {
   return new RegExp(`^\\s*(${prefixes.map(esc).join('|')})`, 'i');
 }
 
-/** `(a|b|c)` anywhere, case-insensitive. The form for "this BODY contains a marker". */
 function anywhere(prefixes: readonly string[]): RegExp {
   return new RegExp(`(${prefixes.map(esc).join('|')})`, 'i');
 }
 
-// ════════════════════════════════════════════════════════════════════════════════════════
-// FAMILY 1 — INBOUND A2A
-// ════════════════════════════════════════════════════════════════════════════════════════
 
-/** The modern envelope `a2a-transport.ts` writes. */
 export const A2A_ENVELOPE_PREFIX = '[A2A:';
 
-/** The legacy `[SOURCE: …]` forms that are ALSO inbound peer traffic. */
 export const A2A_LEGACY_SOURCE_PREFIXES: readonly string[] = [
   '[SOURCE: AGENT MESSAGE FROM',
   '[SOURCE: GROUP BROADCAST FROM',
@@ -74,150 +28,54 @@ export const A2A_INBOUND_PREFIXES: readonly string[] = [
   ...A2A_LEGACY_SOURCE_PREFIXES,
 ];
 
-/**
- * THE one inbound-A2A row matcher. Case-insensitive, by decision and by measurement.
- *
- * The two pre-existing copies (`memory/assembler.ts` without `/i`, `memory/compaction.ts`
- * with it) were byte-identical apart from the flag. `/i` won for three reasons, in order:
- * it is what the LIVE compaction path has always used, so nothing regresses; it is the
- * convention every other matcher in this layer already follows (`platform-noise.ts`,
- * `summary-rebuild.ts`, `origin.ts` are all `/i`); and it is the superset, so the failure
- * mode of a future writer emitting a different case is a marker still recognised rather
- * than peer traffic leaking into the owner's chat.
- *
- * The residual risk is stated rather than hidden: a HUMAN message that literally opens
- * with `[a2a:` would now be read as peer traffic. That is bounded by the anchor and, in
- * `origin.ts`, subordinated to structured `inbound_meta` — a real channel message carrying
- * A2A-looking text is still classified by its channel.
- */
+// The one inbound-A2A row matcher, case-insensitive (a human message opening `[a2a:` reads as peer traffic).
 export const A2A_INBOUND_RE = anchored(A2A_INBOUND_PREFIXES);
 export const A2A_INBOUND_ANYWHERE_RE = anywhere(A2A_INBOUND_PREFIXES);
 
-/**
- * The full modern envelope, with its three captures: intent, thread short-id, sender.
- * Case-SENSITIVE on the intent (`[A-Z]+`) because that is what the writer emits and the
- * capture is used as a value, not as a test.
- */
 export const A2A_ENVELOPE_RE = /^\[A2A:([A-Z]+)\s+thread:([^\s\]]+)\s+from:([^\]]+)\]/;
 
-/**
- * The legacy `[SOURCE: … FROM <sender>]` envelope, capturing the sender. ALL THREE forms,
- * which is drift 2: `origin.ts` recognised only `AGENT MESSAGE`, so a group broadcast and a
- * PM poke fell through to the engine branch and, before that, could reach the owner-chat
- * fallthrough. Measured on the live body at T5: 0 rows carry any of the three (all 211 A2A
- * rows use the modern envelope), so this closes a LATENT leak for legacy and upgrading
- * bodies rather than a live one — stated that way rather than claimed as a live fix.
- */
 export const A2A_LEGACY_SOURCE_RE =
   /^\[SOURCE: (?:AGENT MESSAGE|GROUP BROADCAST|PM AGENT POKE) FROM ([^\]]+)\]/i;
 
-/**
- * The thread id INSIDE a marker. `[^\s\]]+`, never `[0-9a-f]{8}` — thread ids are often
- * named (`pm-review-2026-06-25`, `thread-jlpvqj-poke-14a`) and the marker carries a
- * `slice(0, 8)` of whatever they are. `origin.ts` was fixed to this shape long ago; the
- * three A2A readers and the assembler's dedupe were not, which is drift 4 above.
- */
+/** Thread id inside a marker: never hex-only, because named thread ids exist. */
 export const A2A_THREAD_RE = /thread:([^\s\]]+)/;
 
-/** How many characters of a thread id the marker carries. `a2a_replies.thread_id` USUALLY holds
- *  the full id — `recordA2AReply`'s send path writes it verbatim — which is why its readers once
- *  compared `substr(thread_id, 1, 8)`; but not always: `agent/runtime.ts`'s abandoned-reply path
- *  records a marker-derived TOKEN. Readers must therefore handle both eras, which is what
- *  `a2aThreadTokenMatches` below is for (review Minor 5: the earlier wording overstated). */
+/** Thread-id characters a marker carries; a stored id may be full or a marker token. */
 export const A2A_THREAD_SHORT_LENGTH = 8;
 
-/**
- * ⚠ t109 item B — THE MARKER'S EIGHT CHARACTERS COME FROM THE VARYING REGION.
- *
- * They used to come off the FRONT, which is fine for a UUID id and useless for the ids
- * `makeThreadId` mints: `thread-<base36 hash>-<seed>`, so the front eight are `thread-` plus
- * ONE hash character — about 36 buckets across every named thread on the box. Stripping the
- * shared `thread-` prefix puts the hash first. Same length, same wire grammar, byte-identical
- * for an id without the prefix; only named ids move.
- *
- * ⚠ THIS IS THE PRODUCER, SO BOTH SIDES MUST APPLY IT. The stored side (`a2a_replies.thread_id`,
- * `messages.a2a_thread_id`) holds FULL ids, so a reader comparing a marker's token to a stored
- * id runs the stored id through here — never `substr(id, 1, 8)`, the old front slice, which is
- * what collided. `a2aThreadShortLegacy` keeps that slice, named, because markers already in the
- * history carry it. What the collision COST, and the clauses, are in
- * `memory/__tests__/two-named-threads-are-two-threads.test.ts`'s header.
- */
+// The token comes from the id without its `thread-` prefix (the varying region). Every reader compares stored
+// FULL ids through this, never `substr(id, 1, 8)`.
 export function a2aThreadShort(threadId: string): string {
   return threadId.replace(/^thread-/, '').slice(0, A2A_THREAD_SHORT_LENGTH);
 }
 
-/** The PRE-t109 marker token: the front slice. A stored id's legacy form, for markers already
- *  in the history. Never used to WRITE a marker. */
+/** The legacy front slice: only resolves markers already in history, never used to write one. */
 export function a2aThreadShortLegacy(threadId: string): string {
   return threadId.slice(0, A2A_THREAD_SHORT_LENGTH);
 }
 
-/** Does `markerToken` identify `fullThreadId`? True for the CURRENT form and for the legacy
- *  front slice, so a marker written before t109 keeps resolving against the same thread. The
- *  two forms are equal for every id without the `thread-` prefix, so this is one comparison on
- *  the overwhelming majority of rows and two on the named ones. */
 export function a2aThreadTokenMatches(markerToken: string, fullThreadId: string): boolean {
   if (!markerToken || !fullThreadId) return false;
   return markerToken === a2aThreadShort(fullThreadId)
     || markerToken === a2aThreadShortLegacy(fullThreadId);
 }
 
-/**
- * ⚠ t113 A2 — THE SAME QUESTION, ASKED IN SQL, FROM THE SAME PLACE.
- *
- * Two readers ask "did this agent already send on the thread this marker names?" against a
- * column of FULL thread ids with only a marker TOKEN in hand, and no full id to match exactly:
- * `agent/a2a-replies.ts`'s `hasPriorReplyOnThread` legacy-caller path and
- * `agent/v2/outbound-ledger.ts`'s `hasVerifiedA2ASendOnThread` legacy-caller path. Both asked
- * it as `substr(thread_id, 1, 8) = ?` — the LEGACY front slice alone, which for a
- * `makeThreadId` id is `thread-` plus one hash character. So a current-era marker, whose token
- * comes off the varying region, matched NOTHING there: a false negative that silences a note
- * the agent is owed, while the ids it did match were ~36 buckets wide.
- *
- * It must stay one answer, so the SQL form lives HERE beside the JS one rather than being
- * written out twice at the two call sites. `markers.test.ts`'s equivalence clause runs the two
- * forms over the same ids in a real sqlite and asserts they agree row for row, in both
- * directions, so a change to one that is not made to the other reds.
- *
- * Both arms are needed and neither is redundant: for an id WITHOUT the `thread-` prefix the two
- * expressions are identical (the JS doc above says the same thing), so on the overwhelming
- * majority of rows this is one comparison; for a named id the first arm keeps resolving markers
- * already in the history and the second resolves the ones written since.
- *
- * @param column the SQL expression holding the FULL thread id, e.g. `thread_id`
- * @returns a parenthesised predicate taking the marker token as ONE bound parameter, repeated
- *          — bind the same token twice, in order.
- */
+// SQL twin of a2aThreadTokenMatches; bind the marker token twice (legacy slice, then current form).
 export function a2aThreadTokenMatchesSql(column: string): string {
   const stripped = `CASE WHEN ${column} LIKE 'thread-%' THEN substr(${column}, 8) ELSE ${column} END`;
   return `(substr(${column}, 1, ${A2A_THREAD_SHORT_LENGTH}) = ?`
     + ` OR substr(${stripped}, 1, ${A2A_THREAD_SHORT_LENGTH}) = ?)`;
 }
 
-/** The thread short-id in a marker, or null. Never hex-only. Reads whatever the marker
- *  carries — current form or legacy — which is why it is unchanged by t109 B. */
 export function parseA2AThreadShort(content: string | null | undefined): string | null {
   if (!content) return null;
   const m = A2A_THREAD_RE.exec(content);
   return m ? m[1].slice(0, A2A_THREAD_SHORT_LENGTH) : null;
 }
 
-// ════════════════════════════════════════════════════════════════════════════════════════
-// FAMILY 2 — `[SOURCE: …]` PLATFORM ENVELOPES
-// ════════════════════════════════════════════════════════════════════════════════════════
 
-/**
- * The `[SOURCE: …]` envelopes that are PLATFORM plumbing and NOT peer traffic.
- *
- * THE SPLIT IS LOAD-BEARING and it is a preserved decision, not a tidy-up:
- * `memory/platform-noise.ts` decides what may enter a summary AND what the vault
- * archiver keeps as MEMORY, and its own header records the ruling — "inbound A2A is
- * intentionally NOT in this base list; an A2A deliverable ('Maddy delivered the Verve
- * deck') can be genuine memory, so the vault keeps it." Folding the three A2A forms into
- * that list would delete real memories. Compaction layers its own A2A check on top,
- * because for the PRIMARY's context summary a peer message IS plumbing — two questions,
- * two answers, and this split is what lets one vocabulary serve both.
- */
+// Platform plumbing, not peer traffic. The A2A forms are absent on purpose: platform-noise.ts keeps an A2A
+// deliverable as vault memory, and compaction layers its own A2A check on top.
 export const PLATFORM_SOURCE_ENVELOPE_PREFIXES: readonly string[] = [
   '[SOURCE: TRACKER TASK',
   '[SOURCE: SCHEDULER',
@@ -229,10 +87,6 @@ export const PLATFORM_SOURCE_ENVELOPE_PREFIXES: readonly string[] = [
   '[SOURCE: AGENT NOTICE',
 ];
 
-/**
- * EVERY `[SOURCE: …]` envelope the platform writes — peer traffic included. The vocabulary;
- * membership in any particular policy list is the consumer's business.
- */
 export const SOURCE_ENVELOPE_PREFIXES: readonly string[] = [
   ...A2A_LEGACY_SOURCE_PREFIXES,
   ...PLATFORM_SOURCE_ENVELOPE_PREFIXES,
@@ -240,18 +94,9 @@ export const SOURCE_ENVELOPE_PREFIXES: readonly string[] = [
 
 export const SOURCE_ENVELOPE_ANYWHERE_RE = anywhere(SOURCE_ENVELOPE_PREFIXES);
 
-/** The generic opener, for readers that only need "is this ANY source envelope". */
 export const SOURCE_ENVELOPE_OPENER = '[SOURCE:';
 
-// ════════════════════════════════════════════════════════════════════════════════════════
-// FAMILY 3 — ENGINE SCAFFOLDING
-// ════════════════════════════════════════════════════════════════════════════════════════
 
-/**
- * Engine-authored framing that wears `role:'user'`. `'[System note:'` is listed EXPLICITLY
- * rather than left to `'[System:'` — that is drift 3, and it classified engine scaffolding
- * as the owner's own words for as long as the colon requirement stood.
- */
 export const ENGINE_SCAFFOLD_PREFIXES: readonly string[] = [
   '[System:',
   '[System note',
@@ -265,77 +110,34 @@ export const ENGINE_SCAFFOLD_PREFIXES: readonly string[] = [
 
 export const ENGINE_SCAFFOLD_RE = anchored(ENGINE_SCAFFOLD_PREFIXES);
 
-/** The two engine notes injected AHEAD of a user turn. Both open `[Context note:`; only
- *  the stop one was ever filtered out of summaries, which is research 06 §5's
- *  "'[Context note:' gap". They share a prefix so they share a fate. */
+// Engine notes memory/assembler.ts puts ahead of a turn open with this, so platform-noise.ts filters them.
 export const CONTEXT_NOTE_PREFIX = '[Context note:';
 
-/** Engine injections the display layer hides but that are not `[SOURCE: …]` envelopes. */
 export const ENGINE_INJECTION_PREFIXES: readonly string[] = [
   '[Engine hint:',
   '[Engine note:',
   '[System note:',
 ];
 
-// ════════════════════════════════════════════════════════════════════════════════════════
-// FAMILY 4 — NEW SESSION
-// ════════════════════════════════════════════════════════════════════════════════════════
 
-/**
- * The bracket form. TWO spellings are live and both must match: `[New Session]` (written
- * by the assembler's archive notice) and `[New Session: <date> — …]` (the dated form).
- * `platform-noise.ts` required `\[New Session\]` and therefore missed the dated form
- * entirely, while `receipt.ts` tested `'[New Session'` with no closer at all and would
- * have tagged `[New Sessions are great]`. One matcher, both spellings, nothing else.
- *
- * The DIVIDER form (`── New Session ──`) is a different shape with a different owner:
- * `visibility.ts`'s `formatDivider` / `NEW_SESSION_DIVIDER`. It is display furniture, not
- * an engine marker, and PHASE-1 T8's non-fold list is the record of why.
- */
+// Both `[New Session]` and the dated `[New Session: ...]` are live; `formatDivider` builds another shape.
 export const NEW_SESSION_BRACKET_RE = /^\s*\[New Session[\]:]/i;
 export const NEW_SESSION_BRACKET_ANYWHERE_RE = /\[New Session[\]:]/i;
 
-// ════════════════════════════════════════════════════════════════════════════════════════
-// FAMILY 5 — FRESH-READ SENTINELS
-// ════════════════════════════════════════════════════════════════════════════════════════
 
-/**
- * The header `techniques/tools.ts` writes on a freshly re-read technique so the assembler
- * and compaction can tell a fresh read from a stale one. It was EXPORTED and imported by
- * nobody: two modules re-declared it and two more inlined the literal, and the extractor
- * regex existed twice. Five spellings of one sentinel.
- */
 export const TECHNIQUE_FRESH_SENTINEL = '══ TECHNIQUE FRESH READ ══';
 
-/** The sentinel's header line, capturing the technique name:
- *  `══ TECHNIQUE FRESH READ ══ <name> (<iso timestamp>)`. */
 export const TECHNIQUE_FRESH_HEADER_RE = /^══ TECHNIQUE FRESH READ ══ (.+?) \(/;
 
-/** The technique name from a fresh-read block, or null. The ONE extractor. */
 export function parseTechniqueFreshRead(content: string | null | undefined): string | null {
   if (!content) return null;
   const m = TECHNIQUE_FRESH_HEADER_RE.exec(content);
   return m ? m[1] : null;
 }
 
-// ════════════════════════════════════════════════════════════════════════════════════════
-// THE SQL DIALECT — the same taxonomy, for the two readers that cannot import a RegExp
-// ════════════════════════════════════════════════════════════════════════════════════════
 
-/**
- * `prompt/assembler.ts` filters marker rows in SQL and carried the same three-marker
- * `NOT LIKE` triplet TWICE, byte-identical (`isIMessageTurn` and `resolveInboundContext`).
- *
- * THIS LIST IS THE OWNER AND THE SQL IS ASSERTED AGAINST IT — the statements are NOT
- * generated from it, and that is a decision with a cost either way. Generating them would
- * make both `db.prepare()` calls take a `${}` template, and `check-sql-prepares.mjs`
- * COUNTS a runtime-assembled statement as not-preparable rather than preparing it: two
- * statements that are schema-verified on every gate run today would stop being verified.
- * Trading a real verification for a cosmetic single-source is the wrong trade, so the
- * duplication is killed by a conformance test instead — exactly the remedy
- * `marker-ownership.test.ts` already uses for `DISPLAY_KINDS` vs migration 132's CHECK,
- * for exactly the same reason (SQL has no import).
- */
+// Twin of the literal NOT LIKE triplet in prompt/assembler.ts (isIMessageTurn, resolveInboundContext), kept
+// literal so check-sql-prepares.mjs can prepare it. Nothing reads or checks this list: change all three.
 export const PROMPT_HISTORY_EXCLUDED_PREFIXES: readonly string[] = [
   '[SOURCE: SYSTEM',
   '[A2A:',

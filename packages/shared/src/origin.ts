@@ -1,41 +1,10 @@
-// ════════════════════════════════════════
-// Message Origin — the single source of truth for "who is this message from".
-//
-// Every message an agent stores or sees resolves to exactly one MessageOrigin:
-// a human (the owner, a known contact, or an unknown third party) on some
-// channel, another agent over A2A, the engine itself, or this agent's own
-// output. Today that attribution is scattered across structured columns
-// (source, source_agent_id, a2a_*, inbound_meta) AND ~30 ad-hoc text markers
-// ([SOURCE: ...], [A2A: ...], [System: ...]). deriveOrigin() consolidates all
-// of it into one structured descriptor.
-//
-// Two callers, by design:
-//   • Writers (the future): persist structured fields, origin falls out for free.
-//   • Readers (now): store.ts maps every row through deriveOrigin so the engine
-//     and dashboard finally SEE the attribution instead of re-parsing prose.
-//
-// The legacy-marker parsing here is the read-shim for rows written before the
-// structured columns existed; once a historical backfill runs it can be deleted
-// (Phase 7). Nothing about behavior changes when this lands (Phase 1) — it only
-// stops throwing the attribution away at the read seam.
-// ════════════════════════════════════════
+// Message origin: deriveOrigin() resolves every message to exactly one MessageOrigin (a human on a channel,
+// another agent over A2A, the engine, or this agent's own output). Structured columns always win; the
+// legacy text-marker parsing is a read shim for rows that predate them.
 import type { ChannelKind, InboundMeta } from './visibility.js';
 import { parseInboundChannel } from './visibility.js';
-// PHASE-3 T5: three shapes this file used to re-declare now have ONE owner.
-//
-// The A2A envelope's thread capture was already correct HERE and wrong in four other
-// files — thread ids are often named ("pm-review-2026-06-25") and the [0-9a-f]{8} form
-// those files used silently failed every one. Importing means that fix cannot be made in
-// one place and missed in four again.
-//
-// The legacy source regex recognised only `AGENT MESSAGE`, so a `GROUP BROADCAST` or
-// `PM AGENT POKE` envelope fell past the agent branch (research 06 §5's "recognizes only
-// 2 of 4 markers"). `A2A_LEGACY_SOURCE_RE` is all three.
-//
-// ENGINE_PREFIXES was ['[SOURCE:', '[System:', '[SYSTEM', '[Engine', '[CONTINUITY BRIEF',
-// '[Context note'] matched with startsWith, so '[System note:' matched NEITHER '[System:'
-// (colon required) NOR '[SYSTEM' (case-sensitive) and fell through to the owner-chat
-// default. The shared matcher is case-insensitive and names the note form explicitly.
+// Marker shapes have one owner, ./markers.js: the A2A envelope takes named thread ids, the legacy source
+// matcher takes all three forms, and the engine-scaffold matcher is case-insensitive.
 import {
   A2A_ENVELOPE_RE,
   A2A_LEGACY_SOURCE_RE,
@@ -43,17 +12,14 @@ import {
   SOURCE_ENVELOPE_OPENER,
 } from './markers.js';
 
-/** Every channel a message can physically arrive on, plus the two non-channel origins. */
 export type Channel = ChannelKind | 'dashboard' | 'voice' | 'a2a' | 'engine';
 
-/** What KIND of entity produced this message. */
 export type OriginKind =
   | 'user'   // a human on some channel (owner / contact / stranger)
   | 'agent'  // another agent, over A2A
   | 'engine' // the platform itself (tracker / scheduler / healer / system notices)
   | 'self';  // THIS agent's own prior output (assistant text, tool calls/results)
 
-/** The sender's relationship to the owner — drives trust + how the model frames them. */
 export type Relation =
   | 'owner'         // the primary user themselves
   | 'known_contact' // a safe-sender (friend/colleague on an allowlist)
@@ -72,7 +38,6 @@ export interface MessageOrigin {
   authorized: boolean;       // may the agent act/reply on this sender's behalf
 }
 
-/** The raw fields deriveOrigin needs — a subset of a messages-table row. */
 export interface OriginFields {
   role: 'user' | 'assistant' | 'system' | 'tool';
   content: string | null;
@@ -86,20 +51,8 @@ export interface OriginFields {
   originIntent?: string | null;    // engine event type ('tracker' | 'scheduler' | …)
 }
 
-/**
- * PHASE-1 T6 — project the two LEGACY attribution inputs above from the STAMPED spine
- * facts (`lane`, `channel`).
- *
- * `origin_kind` was only ever `lane='events'` spelled differently, and `source` was
- * `lane='a2a'` plus `channel='voice'` folded into one nullable free-text column
- * (PHASE-1.md T3-0b §1/§3). Every reader that used to SELECT those two columns now reads
- * `lane`/`channel` and calls this — ONE place, so no reader re-derives the mapping by hand
- * and the two spellings can never drift while `OriginFields` still carries the old names.
- *
- * This is a projection of a stored fact, not a prose re-derivation, so OR4 holds. Deleting
- * `source`/`originKind` from `OriginFields` (and this helper with them) is SWEEP-E's, once
- * the dashboard reads `lane`/`channel` off the wire directly.
- */
+// Projects the legacy `source` and `originKind` inputs from the stamped `lane` and `channel`, in one place so
+// no reader re-derives the mapping.
 export function legacyOriginInputs(
   lane: string | null | undefined,
   channel: string | null | undefined,
@@ -119,10 +72,7 @@ function safeParseMeta(raw: string): InboundMeta | null {
   }
 }
 
-/** Relation from structured inbound_meta. Producers stamp `relation` directly
- *  when they know it (e.g. the iMessage bridge knows is_primary → owner vs a
- *  friend → known_contact). The heuristic is the fallback for producers that
- *  haven't stamped it yet. */
+// Producers stamp `relation` when they know it (the iMessage bridge knows is_primary); else a heuristic.
 function relationFromMeta(meta: InboundMeta): Relation {
   if (meta.relation) return meta.relation;
   if (meta.channel === 'dashboard' || meta.channel === 'voice') return 'owner';
@@ -144,21 +94,13 @@ function engineOrigin(trimmed: string): MessageOrigin {
   };
 }
 
-/**
- * Resolve a message's origin from its (structured columns first, text markers
- * as a shim) fields. Pure — no DB, no side effects. Structured signals always
- * win over prose; prose is only consulted for rows that predate the columns.
- */
+// Structured columns first, text markers only for rows that predate them. Pure: no DB, no side effects.
 export function deriveOrigin(f: OriginFields): MessageOrigin {
   const content = f.content ?? '';
   const trimmed = content.replace(/^\s+/, '');
 
-  // ── Structured engine origin (write side, mig 075) ──
-  // When a writer stamped origin_kind='engine', the attribution is known
-  // structurally and we DON'T parse the prose. This is what lets a new engine
-  // event type be recognized without adding its marker to the read-shim — the
-  // robustness the redesign is for. The [SOURCE: …] text may still be in
-  // content (the agent reads it); it is no longer how we classify.
+  // Structured engine origin: when a writer stamped origin_kind='engine' the prose is not parsed, so a new
+  // engine event type needs no marker here.
   if (f.originKind === 'engine') {
     return {
       kind: 'engine', relation: 'engine', channel: 'engine',
@@ -182,13 +124,9 @@ export function deriveOrigin(f: OriginFields): MessageOrigin {
 
   // ── role === 'user' (the interesting case: could be a human, an agent, or engine) ──
 
-  // 1. Another agent (structured A2A columns, or legacy A2A / agent-message marker).
-  // I-2 (comms-audit): the STRUCTURED columns (sourceAgentId / a2aThreadId) are always
-  // authoritative, but the PROSE markers (a2a / legacyAgent regex) are subordinate to
-  // structured inbound_meta — a real inbound-channel message that merely CONTAINS an
-  // A2A-looking string (e.g. the owner pasting an agent transcript into the dashboard)
-  // must be classified by its channel (inbound_meta), not reclassified as an agent
-  // message and hidden. A genuine legacy A2A row has no inbound_meta, so it still matches.
+  // 1. Another agent. The structured columns are authoritative, but prose markers yield to structured
+  // inbound_meta: a channel message that merely contains A2A-looking text (a pasted transcript) is
+  // classified by its channel.
   const a2a = A2A_ENVELOPE_RE.exec(trimmed);
   const legacyAgent = A2A_LEGACY_SOURCE_RE.exec(trimmed);
   if (f.sourceAgentId || f.a2aThreadId || ((a2a || legacyAgent) && !f.inboundMeta)) {
@@ -210,7 +148,7 @@ export function deriveOrigin(f: OriginFields): MessageOrigin {
     };
   }
 
-  // 3. Structured inbound_meta — the reliable channel path.
+  // 3. Structured inbound_meta, the reliable channel path.
   if (f.inboundMeta) {
     const meta = safeParseMeta(f.inboundMeta);
     if (meta) {
