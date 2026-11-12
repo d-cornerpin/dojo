@@ -1,27 +1,5 @@
-// ════════════════════════════════════════
-// v3.5 D1 — WHERE A MEASURED JOB STANDS AT THE END OF A PASS: one reading, shared by everything
-// that asks. Three readers ask in one pass, and they must agree:
-//   · terminal-text.ts — may a held line be promoted to the owner as an answer? (not while the job is going);
-//   · closeout-floors.ts — is this pass's closing text progress (a working note) or a result? (R4);
-//   · job-continues.ts — park and continue, record a stall, or leave it to the detector? (D1).
-// Before this module the demotion read the PREVIOUS turn's reading while the continuation rule
-// re-counted, so the turn that finished a job had its one result kept as a note (fix round 1, I2).
-//
-// THE JOB'S TASK (one pick, `jobTaskOf`): on the run the park's own wake started, the job's own
-// carried task; otherwise the claimed, unpaused task the turn is working (`workingTaskOrder`, the
-// effort meter's pick: most recently updated, a filed close last, the earlier step on a tie). A task that really left `claimed`, or was paused, is no longer the job; a status
-// call that was refused or failed, or a move on another task, changes nothing here (fix round 1, I1).
-//
-// MOMENTUM (owner 2026-10-19, refined by the orchestrator in fix round 1): this turn touched an item
-// the task had never touched (`ledgerNewItemsSince`; a re-touch is a loop, not progress), OR made a
-// call the task had never made AND IT SUCCEEDED (`novelCallsInTurn`; a new failing call is not
-// progress), OR opened the task (the job's start: an owner turn that only says "on it" has begun it).
-//
-// THE RE-COUNT runs once per pass, only on a terminal pass (no tool calls: the turn is ending), and
-// only when the turn had momentum: a measure is a mailbox paging (hundreds of ids per page), and a
-// turn that moved nothing cannot have changed what it lists by its own work, so the stored reading
-// stands for it. A count that cannot be read keeps the stored one (and says so on the record).
-// ════════════════════════════════════════
+// Where a measured job stands at the end of a pass: one reading, shared by terminal-text.ts,
+// closeout-floors.ts and job-continues.ts, which must agree within a pass.
 
 import type { Database } from 'better-sqlite3';
 import { taskScope, workingTaskOrder } from '../../../../work/tracker-view.js';
@@ -50,7 +28,7 @@ export interface JobAtPassEnd {
 
 type TaskRow = { id: string; measureJson: string | null; stored: number | null };
 
-/** The job's task (see the header). */
+/** The job's task: the park's carried task on its own wake run, else the claimed unpaused task being worked. */
 export function jobTaskOf(agentId: string, db: Database): TaskRow | null {
   const carried = runCarriesJob(agentId) ? jobCarriedIds(agentId) : null;
   if (carried && carried.length === 0) return null;
@@ -67,7 +45,7 @@ function measureOf(json: string | null): Measure | null {
   try { const p = parseMeasure(JSON.parse(json)); return p.ok ? p.measure : null; } catch { return null; }
 }
 
-/** What the records say now, without a count. */
+/** The records now, no count. Momentum: a new item touched, a new call that succeeded, or the task opened. */
 function storedFacts(state: AgentTurnState, agentId: string, db: Database): JobAtPassEnd | null {
   const task = jobTaskOf(agentId, db);
   if (!task) return null;
@@ -90,8 +68,8 @@ export async function readJobAtPassEnd(state: AgentTurnState, ctx: Pick<PostCall
   if (hit?.key === passKey(state)) return hit.facts;
   const facts = storedFacts(state, ctx.agentId, ctx.db);
   if (facts?.measure && facts.momentum && ctx.result.toolCalls.length === 0) {
-    // Re-review 2 (S10): the same gates as at set and at close. Loaded here, not at import, so this step
-    // takes no module edge onto the tool layer.
+    // Re-counted only on a terminal pass with momentum, through the same gates as at set and close.
+    // Loaded here, not at import, so this step takes no module edge onto the tool layer.
     const { gatedMeasureCount } = await import('../../../tools/cat/measure-door.js');
     const count = await gatedMeasureCount(facts.measure, ctx.agentId);
     recordMeasured(facts.taskId, count, Date.now(), { keepStoredOnFailure: true });
@@ -112,12 +90,8 @@ const isDoorCall = (tc: Pick<ToolCall, 'name' | 'arguments'>): boolean =>
   toolOpKey(tc.name, tc.arguments) === 'work_update:status'
   && ['paused', 'blocked'].includes(normalizeTaskStatus((tc.arguments as { status?: unknown } | undefined)?.status) ?? '');
 
-/** The calls this TURN made, every pass of it, from the turn's own record: the assistant rows the post-call
- *  step persists for each pass (`persist-assistant.ts`, one `tool_use` block per call, stamped with the
- *  turn's number; the same rows `execute/tracker-floors.ts` tallies). Never `state.toolCalls`: each pass's
- *  model call REPLACES that with the pass's own calls (`call-llm/index.ts`), so a door an earlier pass took
- *  is gone from it by the pass that speaks (fix round 4). The results ride `state.toolResults`, which
- *  execute APPENDS for the whole turn, and are joined by call id. */
+/** The calls this whole turn made, read from its persisted assistant rows: `state.toolCalls` holds only
+ *  the current pass's calls, so an earlier pass's door would be missing. Results join by call id. */
 function callsThisTurn(agentId: string, turnNumber: number, db: Database): ToolCall[] {
   const rows = db.prepare(`SELECT content FROM messages WHERE agent_id = ? AND turn_number = ? AND role = 'assistant' AND content LIKE '[{%'`)
     .all(agentId, turnNumber) as Array<{ content: string }>;
@@ -132,9 +106,8 @@ function callsThisTurn(agentId: string, turnNumber: number, db: Database): ToolC
   return calls;
 }
 
-/** Does this turn speak to the owner whatever the job is doing? (fix round 2, ruling 1): an answer to a
- *  person who is waiting; a door call riding THIS pass (judged before it runs, so an attempt resolves
- *  toward answering); or a door call an EARLIER pass of this turn made that succeeded, on any task. */
+/** Does this turn speak to the owner whatever the job does: a waiting person, a door call on this pass
+ *  (judged before it runs), or a door call an earlier pass of this turn made that succeeded? */
 function speaksThisTurn(state: AgentTurnState, ctx: Pick<PostCallClassifyContext, 'agentId' | 'db' | 'turnNumber' | 'hasUnansweredUser' | 'triggerRow' | 'result'>): boolean {
   if (ctx.hasUnansweredUser || ctx.triggerRow) return true;
   if ((ctx.result?.toolCalls ?? []).some(isDoorCall)) return true;
@@ -142,13 +115,8 @@ function speaksThisTurn(state: AgentTurnState, ctx: Pick<PostCallClassifyContext
   return callsThisTurn(ctx.agentId, ctx.turnNumber, ctx.db).some((tc) => isDoorCall(tc) && ok(tc));
 }
 
-/** Is this pass the engine's continuation of a measured job that still has items left, with nothing
- *  the owner must hear? (R4) While it is, the pass's text is plain progress and stays on the record.
- *  The owner hears from the job when it is finished (the reading is 0), when it stalls (the `stalled`
- *  path to the PM), when the agent asks him or reports a blocker through the tracker's doors on any
- *  task ("paused" waiting on him, "blocked"), or when the turn answers him: those speak under the
- *  existing rules for an engine turn. The stop rule (`job-continues.ts`) is a different question: the
- *  job itself keeps continuing unless its own task really leaves `claimed`. */
+/** Is this pass the engine's continuation of a measured job with items left and nothing the owner must
+ *  hear? While it is, the pass's text is plain progress and stays on the record. */
 export function continuedJobStillGoing(state: AgentTurnState, ctx: Pick<PostCallClassifyContext, 'agentId' | 'db' | 'turnNumber' | 'hasUnansweredUser' | 'triggerRow' | 'result'>): boolean {
   if (!runCarriesJob(ctx.agentId)) return false;   // only the run the park's own wake started
   if (speaksThisTurn(state, ctx)) return false;

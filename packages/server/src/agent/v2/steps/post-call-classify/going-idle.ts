@@ -1,18 +1,6 @@
-// ════════════════════════════════════════
-// PHASE-6 T6 (CUT 8) — THE TWO FALL-ASLEEP DETECTORS AND THEIR RECONCILIATION, moved
-// byte-faithfully out of `loop.ts`'s `postCallClassify` span:
-//   • ADD-NOTES-STOP (v2.7.17) — the agent wrote a `work_note` on an in_progress task
-//     and then went quiet without saying what comes next;
-//   • GOING-IDLE-WITH-IN-PROGRESS — its broader sibling, which catches every case of a
-//     turn ending while the tracker still says work is in flight;
-//   • the GOING-IDLE RECONCILIATION (demolition Phase 1.3) — the branch that fires when
-//     the nudge already went out this turn and the model still ended user-facing.
-//
-// `turnCtx.goingIdleDetectorRanThisTurn` IS CUT 8's THIRD CARRIER AND IT IS READ HERE.
-// PHASE-4 T3 split it out of a local that carried two jobs; the branch that reads it is
-// the one that deliberately does NOT steer, so a latch reset each iteration would
-// produce an EXTRA engine nudge on a turn that had already been nudged.
-// ════════════════════════════════════════
+// The fall-asleep detectors: add-notes-stop (a `work_note`, then silence, on a task still in progress),
+// its broader sibling going-idle-with-in-progress, and the reconciliation after the latter already ran.
+// `turnCtx.goingIdleDetectorRanThisTurn` must outlive the iteration, or a nudged turn would be nudged again.
 
 import { v4 as uuidv4 } from 'uuid';
 import { classifyTool } from '@dojo/shared';
@@ -43,25 +31,15 @@ export async function runGoingIdle(
     agentId, db, isA2ATurn, lastUserMessageContent, mostRecentInbound, turnCtx, turnNumber,
   } = ctx;
   const { persistedContent } = sc;
-  // Common failure: agent is mid-project, calls work_note as
-  // a status checkpoint, then ends the turn silently because the
-  // model treats the note as a stopping point. The user is left
-  // wondering why the agent went idle. Detect that pattern and
-  // fire a one-shot nudge before the turn ends.
-  //
-  // Conditions:
-  //   - had any tool calls this turn
-  //   - LAST tool call was work_note
-  //   - the target task is still in_progress
-  //   - not already nudged this turn (one-shot, no loop)
+  // Add-notes-stop: the turn's last tool call was a `work_note` on a task still in progress and nothing
+  // says what comes next. One steer per turn, so it cannot loop.
   if (
     !steerFired(state.steerQueue, 'add-notes-stop') &&
     state.toolResults.length > 0
   ) {
     const lastTool = state.toolResults[state.toolResults.length - 1];
     if (lastTool && lastTool.name === 'work_note') {
-      // Pull the task_id from the original tool call args. The args
-      // live on the matching toolCall record by id; search both lists.
+      // The task id lives on the matching tool call's arguments.
       let nudgedTaskId: string | null = null;
       for (let i = state.toolCalls.length - 1; i >= 0; i--) {
         const tc = state.toolCalls[i];
@@ -82,10 +60,7 @@ export async function runGoingIdle(
             `update the task status to "blocked" or "paused" with a clear reason, OR write one sentence in your reply telling ${userWords(turnCtx.address)} what you are waiting for. ` +
             `Silently going idle after a work_note leaves ${userWords(turnCtx.address)} with no idea what is happening.]`
           );
-          // RC-19: via persistEngineSteer so the nudge reaches the model
-          // (the steer queue) AND keeps its dashboard row. The prior bare
-          // role='system' row was stripped by the assembler, so the re-entered
-          // model never saw "keep going / say what you are waiting for".
+          // Through the steer queue so the model sees it; a bare system row is stripped by the assembler.
           state = persistEngineSteer(
             state,
             { agentId, content: nudgeText, turnNumber, floor: 'add-notes-stop', atLoop: state.loopCount },
@@ -98,28 +73,17 @@ export async function runGoingIdle(
     }
   }
 
-  // v3.5 D1: a turn ending mid-job is parked and continued while it makes progress, whatever it said or tried (`job-continues.ts`).
+  // A turn ending mid-job is parked and continued while it makes progress (`job-continues.ts`).
   const job = await continueTheJob(state, ctx, sc);
   if (job) return requestExit(state, `job-${job}`);
 
-  // ── v2.7.17: "going idle with in_progress task" detector ──
-  // Broader sibling of the add-notes-stop nudge. Catches every case
-  // where the agent ends a turn while a task assigned to them is
-  // still in_progress AND they did not transition it this turn.
-  // Lists the end-of-turn choices (keep going, hold it, or hand it in).
-  // One-shot so a model that insists on
-  // stopping doesn't trigger a loop.
-  //
-  // Skip if the add-notes-stop nudge just fired (we just told them).
+  // Going idle with a task in progress and untransitioned this turn: list the end-of-turn choices once.
+  // Skipped when add-notes-stop already steered this turn.
   if (
     !turnCtx.goingIdleDetectorRanThisTurn &&
     !steerFired(state.steerQueue, 'add-notes-stop')
   ) {
-    // Find in_progress tasks assigned to this agent. Use the same
-    // criterion the close-out gate uses but at end-of-turn instead
-    // of start: any in_progress task at all (even one touched this
-    // turn) qualifies, because the issue isn't staleness - it's
-    // that the agent went idle without resolving its state.
+    // Any in-progress task qualifies, even one touched this turn: the issue is idling unresolved, not staleness.
     const openTasks = db.prepare(`
       SELECT w.id AS id, w.title AS title FROM work w
       WHERE ${taskScope('w')} AND w.agent_id = ?
@@ -129,38 +93,12 @@ export async function runGoingIdle(
       LIMIT 5
     `).all(agentId) as Array<{ id: string; title: string }>;
 
-    // Skip if no in_progress tasks - then the agent is fine to idle.
-    // Also skip if the agent ALREADY transitioned a task this turn (any
-    // status flip / step completion / project close), since that signals
-    // they DID make a deliberate state choice and just happened to leave
-    // another task in_progress for legitimate reasons.
+    // A turn that already transitioned a task made a deliberate state choice; another left open is fine.
     const transitionedThisTurn = state.toolResults.some(tr => CLOSING_WORK_OPS.has(toolOpKey(tr.name, argsForResult(state.toolCalls, tr))));
 
-    // ── Channel-awareness: enforce task bookkeeping only on a TASK-EXECUTION
-    // turn, never on a CONVERSATION turn (attribution redesign §4.5). ──
-    // The closeout/auto-pause/PM-escalation machinery exists to catch "the
-    // agent WORKED a task and forgot to record it." A pure conversational
-    // reply, answering "what's on my plate?", searching the vault and telling
-    // the user "I couldn't find the key", greeting a contact, is NOT task
-    // execution; the standing backlog is not this turn's responsibility.
-    // Firing on it is exactly what turned a simple question into a closeout-miss
-    // + PM sweep storm. A turn "worked a task" only if it was task-triggered
-    // (scheduler / A2A task coordination) OR it produced a real side effect
-    // (sent a message, ran exec, created a doc/file). Reading the tracker or
-    // just talking does not count. Decide by what the turn actually did.
-    //
-    // MEMBERSHIP IS DERIVED, NOT HAND-LISTED. The original hand list here
-    // froze a snapshot of google-flavored canonical names, so every _ms
-    // variant, every user_ twin, and every office/onedrive tool read as
-    // "just conversation": a 31-event calendar_create_ms turn skipped this
-    // whole machinery, its task sat open for 100 minutes, and an unrelated
-    // email wake re-announced the finished work to the owner (observed on
-    // the production box 2026-07-08). classifyTool is the canonical,
-    // test-covered classifier (every tool in categories.ts must classify,
-    // per the shared V5 test), so new tools can never silently fall out.
-    // work_note / work_open:task classify as bookkeeping but counted in the
-    // old list on purpose (tending the tracker IS task work); keep them
-    // explicitly.
+    // Bookkeeping is enforced only on a turn that worked a task (task-triggered, or a real side effect),
+    // never on a conversation turn. Membership comes from `classifyTool`, so new tools cannot fall out;
+    // `work_note` and `work_open:task` count too, since tending the tracker is task work.
     const countsAsTaskWork = (name: string, args?: Record<string, unknown>): boolean => {
       const key = toolOpKey(name, args);
       return classifyTool(name, args) === 'effectful-action' ||
@@ -171,19 +109,8 @@ export async function runGoingIdle(
       state.toolResults.some(tr => !tr.isError && !!tr.name && countsAsTaskWork(tr.name, argsForResult(state.toolCalls, tr)));
 
     if (openTasks.length > 0 && !transitionedThisTurn && workedATaskThisTurn) {
-      // Scan this turn's tool_results for side-effecting calls that returned
-      // success, and list them as a FACT (do not repeat them). v3.5 Part C2: the
-      // list no longer carries a close command, and the scheduler hint that
-      // steered a scheduled turn to "DONE" is gone: no text pre-fills a close.
-      //
-      // Signal source is `state.toolResults` (in-memory, this
-      // turn) rather than task_log, most tools don't write
-      // per-task log entries when called, so a task_log scan
-      // would almost always come up empty.
-      // Same derived membership as countsAsTaskWork above (minus the
-      // tracker tools: this hint warns about re-running EXTERNAL side
-      // effects, and re-adding a tracker note is harmless). The old hand
-      // list had the same google-only drift as SIDE_EFFECTING did.
+      // Successful side effects this turn are listed as a fact so they are not repeated (read from
+      // `state.toolResults`: most tools write no per-task log). No text pre-fills a close.
       const recentSideEffects: Array<{ name: string; preview: string }> = [];
       for (let i = state.toolResults.length - 1; i >= 0 && recentSideEffects.length < 4; i--) {
         const tr = state.toolResults[i];
@@ -207,27 +134,15 @@ export async function runGoingIdle(
         `If the task is genuinely finished: work_update(action="hand_in", task_id, outcome="finished", proof=[...], note); a measured task is finished when its measure reads 0, and items that genuinely cannot or should not be done are handed in as can't be done with a remainder item naming them and why.\n` +
         `A task left in progress is not a problem: a one-off task stays open and you are brought back to it; a scheduled run left in progress is recorded as not done, and its schedule goes on.]`
       );
-      // v3.1.10: if the agent ALREADY produced a user-facing reply this
-      // turn, do NOT re-prompt it. The weaker model treats the re-prompt
-      // as "answer again" and emits a second, slightly-reworded reply, 
-      // the double-response the user reported (e.g. the Anthropic-OAuth
-      // recall question answered twice), and on a setup turn the same
-      // re-prompt makes it redo the work (the duplicate project). Set the
-      // flag and fall through to the close-out hardcap below, which
-      // reconciles the dangling task deterministically (pause one-shot /
-      // reset recurring) while the one reply already shown stands. Only
-      // re-prompt when there is NO reply yet (a silent stop), where it can
-      // safely get the agent to continue or formally close the task. Build
-      // to the weak-model floor: never rely on a re-prompt doing the right
-      // thing.
+      // Re-prompt only on a silent stop: an agent that already replied would answer again (a duplicate
+      // reply, or redone work). With a reply the flag is set and only the reconciliation below runs.
       turnCtx.goingIdleDetectorRanThisTurn = true;
       const alreadyRepliedThisTurn = !!(persistedContent && persistedContent.trim().length > 0);
       if (alreadyRepliedThisTurn) {
         logger.info('v2 going-idle-with-in_progress: agent already replied this turn, skipping re-prompt, engine reconciles the dangling task', {
           agentId, openTaskCount: openTasks.length, taskIds: openTasks.map(t => t.id),
         }, agentId);
-        // No nudge message, no continue: fall through to the hardcap below,
-        // which pauses/resets the dangling task and keeps the single reply.
+        // No nudge: fall through so the one reply already shown stands.
       } else {
         const nudgeId = uuidv4();
         insertMessageIfAbsent({ id: nudgeId, agentId, role: 'system', content: nudgeText, turnNumber });
@@ -241,12 +156,7 @@ export async function runGoingIdle(
             createdAt: new Date().toISOString(),
           },
         });
-        // F2.6: the persisted row above is a role='system' message, which the
-        // assembler strips, so the re-entered round would carry NO new info and
-        // burn a model call for nothing. Deliver the menu via the steer queue (a
-        // synthetic user message injected next iteration) so the extra round
-        // actually shows the model the end-of-turn choices. Row kept for the
-        // dashboard. Gating is unchanged.
+        // Also queued as a steer: the system row above is for the dashboard, and the assembler strips it.
         state = advance(state, { steerQueue: enqueueSteer(state.steerQueue, { floor: 'going-idle-in-progress', content: nudgeText, atLoop: state.loopCount }) });
         logger.info('v2 going-idle-with-in_progress nudge fired', {
           agentId, openTaskCount: openTasks.length, taskIds: openTasks.map(t => t.id),
@@ -256,23 +166,9 @@ export async function runGoingIdle(
     }
   }
 
-  // Going-idle reconciliation (demolition Phase 1.3): the going-idle nudge
-  // already fired this turn and the model STILL ended with a user-facing
-  // closeout ("Done" / "All set") without calling a tracker close verb.
-  // P2 drive boundary (owner status-truth invariant, 2026-07-21): the
-  // going-idle deliverable_shown stamp that lived here was DELETED. It
-  // guessed "the reply the user saw IS the delivery" from the mere fact
-  // that a non-empty reply and open tasks coexisted, then marked EVERY
-  // in_progress task delivered, and that hidden flag stood the poke
-  // ladder down (the yacht-research silent hour). Statuses are promises:
-  // an in_progress task stays visibly in_progress and the ladder DRIVES
-  // it (check-in poke: continue, or close with evidence, or self-mark
-  // paused/blocked). Real delivery evidence files Key-1 through the
-  // sanctioned paths; prose never silences the drive.
-  //
-  // RECURRING CARVE-OUT (kept, janitorial not forgery): a recurring
-  // schedule is never terminally completed by a missed close-out; fail
-  // THIS run and keep the schedule alive.
+  // Reconciliation once the detector ran and the turn ended with a reply (nudged or not): a recurring
+  // task's run is failed and its schedule kept. A one-shot task stays visibly in progress for the check-in
+  // ladder; a reply is never taken as delivery evidence.
   if (
     turnCtx.goingIdleDetectorRanThisTurn &&
     persistedContent && persistedContent.trim().length > 0

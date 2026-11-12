@@ -1,22 +1,13 @@
-// ════════════════════════════════════════
-// PHASE-6 T6 (CUT 8) — THE TWO DELEGATION-AND-DELIVERY FLOORS, moved byte-faithfully
-// out of `loop.ts`'s `postCallClassify` span:
-//   • the A2A-HANDOFF floor (owner law 2026-07-09: a turn the USER triggered may never
-//     end in silence because the work was delegated to a peer);
-//   • the REMINDER-DELIVERY SILENCE floor (P3 wave, converted PHASE-4 T4: a turn
-//     serving a `kind='reminder'` occurrence exists to SAY one thing to the owner).
-//
-// Both are one-more-round floors and both are ghost-recorded, so a floor that steers
-// and is ignored is counted rather than repeated forever — `MAX_FLOOR_STEER_ATTEMPTS`
-// is the cap and it is carried verbatim.
-// ════════════════════════════════════════
+// Delegation-and-delivery floors: a user-triggered turn may not end silent because work went to a peer,
+// and a reminder turn must say its reminder. Each steers the agent up to `MAX_FLOOR_STEER_ATTEMPTS` times,
+// then records a platform-voice ghost if the delivery ledger shows nothing reached the person.
 
 import { broadcast } from '../../../../gateway/ws.js';
 import { createLogger } from '../../../../logger.js';
 import { askIdForMessage } from '../../../../work/store.js';
 import { type AgentTurnState } from '../../state.js';
 import { persistEngineSteer } from '../../engine-steer.js';
-// T53: both floors steer through the RC-19 door, which owns the enqueue, the row, the advance.
+// Both floors steer through `persistEngineSteer`, which owns the enqueue, the row and the advance.
 import { steerFireCount } from '../../steer-queue.js';
 import { replyChannelWords } from '../../turn-address.js';
 import { liveAddress } from '../../turn-address-live.js';
@@ -40,33 +31,12 @@ export async function runHandoffFloors(
   const MAX_TOOL_LOOPS = maxToolLoops;
   const chosenConversationId = turnCtx.conversationId ?? null;
   const { persistedContent } = sc;
-  // A2A-handoff floor (owner law 2026-07-09: a turn the user triggered may
-  // never end in silence because work was delegated). The async handoff
-  // contract tells the model to end its turn after send_to_agent; on a weak
-  // model that instruction wins over "tell the user first," so a user-facing
-  // turn can end with results in hand and nothing delivered (production
-  // transcript 2026-07-09: live device list fetched, then a handoff, then
-  // silence). Mutually exclusive with the promise floor above, which
-  // requires a non-empty final reply; this one requires an EMPTY one.
-  // PHASE-4 T4 (OR2): the engine used to deliver a handoff notice ITSELF here,
-  // picked from `A2A_HANDOFF_ACK_POOL` and persisted on the owner's lane as an
-  // assistant bubble — the engine wearing the agent's face, which is exactly what
-  // OR2 removes. The ladder is now: steer, re-enter, steer ONCE MORE, re-enter, and
-  // if the agent still says nothing, VERIFY against the delivery ledger and record a
-  // SYSTEM fault in the platform's own voice (`recordFloorGhost`). Silence still stops
-  // being a silent outcome; it stops being a sentence the engine puts in the agent's
-  // mouth.
-  // A successful explicit channel send this turn (explicitSendThisTurn)
-  // means the user already heard something delivered on purpose; stand down.
+  // A2A-handoff floor: on a weak model the handoff contract's "end your turn" wins over telling the user,
+  // so a user turn can end silent with results in hand. An explicit channel send this turn stands it down.
   if (
     counterparty.kind === 'user' &&
     !isEngineTurn &&
-    // 2026-07-23 (owner production transcript, duplicate status reply):
-    // the floor's own law is "a turn the USER TRIGGERED may never end
-    // in silence because work was delegated". A wake/bookkeeping turn
-    // that happens to send an A2A serves nobody who is waiting; firing
-    // there steered the model into re-announcing settled work. The
-    // trigger row is the receipt that a human is actually waiting.
+    // Only a waiting human (the trigger row) is owed; a wake turn that sends an A2A serves nobody waiting.
     !!triggerRow &&
     (!persistedContent || persistedContent.trim().length === 0) &&
     chosenConvKey &&
@@ -77,7 +47,7 @@ export async function runHandoffFloors(
     const handoffAttempts = steerFireCount(state.steerQueue, 'a2a-handoff-floor');
     if (handoffAttempts < MAX_FLOOR_STEER_ATTEMPTS && state.loopCount < MAX_TOOL_LOOPS) {
       const again = handoffAttempts === 1;
-      // 3.5: name who is waiting and where the written reply lands, from the turn's address.
+      // Name who is waiting and where the written reply lands, from the turn's address.
       const addr = liveAddress(turnCtx.address);
       const who = addr?.kind === 'person' ? addr.name : null;
       const waiter = who ?? 'the user';
@@ -97,11 +67,7 @@ export async function runHandoffFloors(
           `report any results you already have, and say you have asked another agent for ` +
           `the rest and will report back when they answer. Do not message the other agent again.`
         );
-      // ── T53 (ruling 5) — ONE MODEL-FACING CHANNEL, AND IT IS THE QUEUE ──
-      // This floor's product is the EXTRA ROUND `continueLoop` buys, and the events-lane row
-      // this site also wrote could not appear in it (the tail query drops `role='user'` rows
-      // created after the turn boundary): it landed a turn later, after the ladder had spent
-      // both attempts and its ghost. Same KEYED entry ('' then 'retry'), durable system row.
+      // One model-facing channel, the steer queue: an events-lane row would reach the model a turn later.
       state = persistEngineSteer(
         state,
         { agentId, content: steer, turnNumber, floor: 'a2a-handoff-floor', key: again ? 'retry' : '', atLoop: state.loopCount },
@@ -112,13 +78,8 @@ export async function runHandoffFloors(
       }, agentId);
       return continueLoop(state); // one more round to report to the user
     }
-    // OR2's honest end of the ladder. Both steers are spent. VERIFY against the
-    // delivery ledger before calling it a ghost — the model may have answered on a
-    // channel this loop-local check cannot see, and accusing it of silence on an
-    // absence is the reasoning non-negotiable #15 forbids.
-    // RC-4.2's carve-out is preserved and re-stated as its own condition: a peer box
-    // handles a silent handoff on its own lane, so an agent-flagged counterparty was
-    // never owed the old notice and is not owed a ghost record either.
+    // Both steers spent: verify against the delivery ledger before recording a ghost, since the model may
+    // have answered on a channel this check cannot see. A peer box handles its own silent handoffs.
     if (handoffAttempts >= MAX_FLOOR_STEER_ATTEMPTS && !counterpartyIsAgentSender
         && !turnDeliveredToPerson(agentId, turnNumber, chosenConversationId ?? null)) {
       const root = turnCtx.root;
@@ -135,23 +96,8 @@ export async function runHandoffFloors(
     }
   }
 
-  // ── Reminder-delivery silence floor (P3 wave, 2026-07-21; CONVERTED PHASE-4 T4) ──
-  // A turn serving a kind='reminder' occurrence exists to SAY one thing to the owner.
-  // Observed silent-close: the model closed the run (correct bookkeeping) and ended
-  // without replying, so the reminder never reached the owner at all.
-  //
-  // ⚠ WHAT CHANGED, AND WHY IT MATTERS MORE HERE THAN ANYWHERE ELSE. The old floor read
-  // the work row's own `description` and delivered `Reminder: <it>` as an ASSISTANT
-  // message on the owner's lane. It was described as "deterministic and model-free",
-  // and that is true and is the problem: the owner saw their agent remind them, in
-  // their agent's voice, about a thing their agent had said nothing about. The kit's
-  // own reminder clause used to pick its delivery with a regex over the row text, which
-  // that fallback satisfies perfectly — so the engine speaking as the agent scored
-  // GREEN (T4S1 §4.2b measured it). OR2: the AGENT is told, the agent speaks.
-  //
-  // The reminder text is handed to the MODEL as a steer, twice, and the delivery is
-  // verified on the answered edge. If it still says nothing, that is a system fault and
-  // it is recorded as one, in the platform's own voice, against the occurrence row.
+  // Reminder-delivery floor: a reminder turn exists to say one thing to the owner. The agent is steered to
+  // say it in its own words; the engine never delivers the reminder as the agent.
   {
     const servedRem = turnCtx.servedWork;
     if (
@@ -167,8 +113,7 @@ export async function runHandoffFloors(
         const remText = (remRow?.description || remRow?.title || '').replace(/^Reminder:?\s*/i, '').trim();
         const remAttempts = steerFireCount(state.steerQueue, 'reminder-silence');
         if (remText && remAttempts < MAX_FLOOR_STEER_ATTEMPTS && state.loopCount < MAX_TOOL_LOOPS) {
-          // 3.5: the written reply on a reminder turn reaches the owner by the channel the turn's
-          // address says (their phone when away, else the dashboard), not always "this conversation".
+          // The reply reaches the owner by the channel the turn's address says, not always this conversation.
           const liveAddr = liveAddress(turnCtx.address);
           const remRoute = liveAddr
             ? `as your reply (it goes to the owner by ${replyChannelWords(liveAddr)}; do NOT call imessage_send or any send tool)`
@@ -184,12 +129,7 @@ export async function runHandoffFloors(
               `to the owner. WRITE it to them now, in your own words, ` +
               `${remRoute}. The reminder is: ${remText}`
             );
-          // ── T53 (ruling 5) — the worst of the seven second channels, and why it is gone.
-          // This steer ends with the REMINDER'S OWN WORDS and the events lane renders a
-          // ≤400-char gist, so past a 251-char prefix the copy reaching the model a turn
-          // later was a reminder with the reminder cut off (both arms driven in
-          // `the-second-channel-stops-double-writing.test.ts`). OR2's point here is that the
-          // AGENT says it in its own words. Same KEYED entry, durable `role='system'` row.
+          // Steer queue only: an events-lane copy reached the model a turn later, cut to a short gist.
           state = persistEngineSteer(
             state,
             { agentId, content: steer, turnNumber, floor: 'reminder-silence', key: remAttempts === 1 ? 'retry' : '', atLoop: state.loopCount },

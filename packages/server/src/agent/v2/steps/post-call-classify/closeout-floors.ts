@@ -1,16 +1,5 @@
-// ════════════════════════════════════════
-// PHASE-6 T6 (CUT 8) — THE "RESPOND ONCE" FLOORS, moved byte-faithfully out of
-// `loop.ts`'s `postCallClassify` span: the REDUNDANT-CLOSEOUT floor (whose authority
-// is a delivery RECEIPT since PHASE-2 T6, never the model's prose), the
-// proactive-send backoff that demotes unanswered background chatter, and the arm that
-// records the first user-facing reply of the turn.
-//
-// `REDUNDANT_CLOSEOUT_MAX_CHARS` MOVES WITH THE CODE THAT BINDS IT — measured `out=0`
-// before the move, so one declaration travelled rather than a second being born. It is
-// a LENGTH and not a reading of the text, carried verbatim from the deleted
-// `isGenericCloseout`: anything longer is substantive and is never dropped, whatever
-// the ledger says.
-// ════════════════════════════════════════
+// The "respond once" floors: a short closeout after a delivered answer, a second answer to a mid-turn
+// arrival, a still-going job's progress, and the proactive-send backoff; then the surfaced-reply arm.
 
 import { v4 as uuidv4 } from 'uuid';
 import { WORKING_NOTE_PREFIX } from '@dojo/shared';
@@ -30,29 +19,17 @@ import type { PostCallClassifyContext, PostCallScratch } from './index.js';
 
 const logger = createLogger('v2-loop');
 
-/** The redundant-closeout floor's only narrowing, carried VERBATIM from the deleted
- *  `isGenericCloseout` (PHASE-2 T6, C1). A LENGTH, not a reading of the text: anything
- *  longer is substantive and is never dropped, whatever the delivery ledger says. */
+/** A length, never a reading of the text: anything longer is substantive and is never held. */
 const REDUNDANT_CLOSEOUT_MAX_CHARS = 30;
 
-/**
- * DEMOTE, DON'T DISCARD (owner request 2026-07-10) — the one copy of it in this file.
- *
- * Persist the model's words as a `[working-note]` system row (role='system' never enters model
- * context, so a demoted line can never feed the re-answer class) and tell the dashboard to
- * convert the already-streamed bubble in place into a dimmed note. Live view and reload agree.
- *
- * Extracted by UX-REPAIR ROUND 7.5 T31, which needed the same demotion for a second reason.
- * A second inline copy is how two demotions drift into disagreeing about what a demotion is;
- * the RC-5.3 proactive-budget arm below calls this and its behaviour is byte-identical.
- * Cosmetic by contract: a failure here never blocks the turn.
- */
+/** Demote, don't discard: persist the words as a `[working-note]` system row (outside model context) and
+ *  convert the streamed bubble in place. Cosmetic: a failure never blocks the turn. */
 function demoteToWorkingNote(
   p: { agentId: string; messageId: string; turnNumber: number; text: string },
-  /** C8: why the Dojo held this line, recorded on every task the turn works that still owes a delivery. */
+  /** Why the Dojo held this line, recorded on every task the turn works that still owes a delivery. */
   held?: { why: string; owed: () => string[] },
 ): void {
-  if (isRowLabelOnly(p.text)) return; // t172: only the turn's label text — nothing to note
+  if (isRowLabelOnly(p.text)) return; // only the turn's label text, nothing to note
   if (held) {
     try { noteDeliveryHeld(held.owed(), { turnNumber: p.turnNumber, why: held.why, text: p.text }); } catch { /* the record never blocks the turn */ }
   }
@@ -66,13 +43,9 @@ function demoteToWorkingNote(
   } catch { /* cosmetic; never block the turn */ }
 }
 
-/**
- * FIELD FIX 3 AUDIT ROUND (#11, V11): STEER, DO NOT SUPPRESS. Owner law: the engine detects, the agent
- * speaks. A floor that found something about the agent's final reply holds it ONCE: the streamed bubble
- * becomes a working note (the words are kept, never discarded), the fact goes to the agent as a steer,
- * and the loop runs again so the agent decides (the one re-entry for all three floors that use it).
- * When the floor has already steered this turn, `null`: the reply goes out as written.
- */
+/** Steer, don't suppress: hold the agent's final reply once (its bubble becomes a working note), steer the
+ *  agent with the finding, and run the loop again so the agent decides. Returns null when this floor has
+ *  already steered this turn, and the reply goes out as written. */
 export function holdAndSteer(
   state: AgentTurnState,
   at: { agentId: string; messageId: string; turnNumber: number; sc: PostCallScratch; db?: PostCallClassifyContext['db'] },
@@ -104,34 +77,17 @@ export function runCloseoutFloors(
   const { agentId, messageId, result, settledContextWakeTurn, turnCtx, turnNumber, db } = ctx;
   const { deliberateSurfaceTurn, interAgentTurn } = sc;
   let { persistedContent } = sc;
-  // C8: the tasks this turn is working that still owe their owner a delivery, read once and only when asked.
+  // Tasks this turn works that still owe their owner a delivery, read once and only when asked.
   let owedMemo: string[] | null = null;
   const owed = (): string[] => (owedMemo ??= tasksOwingADelivery(agentId, state.turnStartMs, jobTaskOf(agentId, db)?.id ?? null));
-  // ── Redundant-closeout floor (engine-enforced "respond once") ──
-  //
-  // PHASE-2 T6 (C1, requirement 1a): the AUTHORITY here is now a RECEIPT.
-  //
-  // It used to be two guesses stacked: a turn-local boolean for "a reply already
-  // surfaced", and a twenty-phrase regex for "this line is only a closeout". Both are
-  // gone. The question the floor actually needs answered is "has this turn already put
-  // the result in front of this person", and since PHASE-2 T5 that is a row —
-  // `deliveries`, written by the transport door that performed the send, for every
-  // channel including the dashboard bubble that recorded nothing at all before T5.
-  //
-  // The ≤30-character bound is carried over VERBATIM from the deleted
-  // `isGenericCloseout` (it had the same cap) and is the only narrowing left: it is a
-  // length, not a reading of the text, and it is what keeps this from ever dropping a
-  // substantive second answer. Nothing was tuned and no threshold was invented (#14).
-  //
-  // requirement preserved: the person gets ONE answer per turn, and the engine drops a
-  // duplicate only when it can point at the answer they already have.
+  // Redundant closeout: a short line is held only when the delivery receipt shows this turn already gave
+  // this person its answer; the length cap keeps a substantive second answer from ever being held.
   if (
     persistedContent &&
     persistedContent.trim().length <= REDUNDANT_CLOSEOUT_MAX_CHARS &&
     result.toolCalls.length === 0 &&
     turnDeliveredToPerson(agentId, turnNumber, turnCtx.root?.conversationId ?? null)
   ) {
-    // Field fix 3 audit round (#11): was a null + `chat:retract`. Now the agent is told and decides.
     const held = holdAndSteer(state, { agentId, messageId, turnNumber, sc, db }, {
       floor: 'redundant-closeout', text: persistedContent,
       steer: `[Engine record: this turn already delivered its answer to the person. Your line "${quoteOf(persistedContent)}" has not been sent; `
@@ -145,42 +101,9 @@ export function runCloseoutFloors(
     }
   }
 
-  // P4b (owner status-truth family): the owed-interrupt near-duplicate
-  // swallow that lived here was DELETED. It nulled the granted round's
-  // reply on a wording-similarity verdict, prose-as-authority in the
-  // suppression direction, and its known worst case silently ate a
-  // genuinely different short answer. The round's contract is now audited
-  // by identity instead: the owed rows carry served_by_turn +
-  // answer_message_id stamps (migration 113), and the worst case of the
-  // swallow's absence is a visible duplicate paragraph, never a silent
-  // drop. The re-prompt itself (below) is unchanged.
-  //
-  // ── UX-REPAIR ROUND 7.5 T31 — AND THAT WORST CASE HAPPENED. ──
-  //
-  // W11's driven replay and my own control at `e0b5804` both produced TWO answers to one
-  // mid-turn arrival — in mine, "Darknet Diaries…" and then, 48 seconds later, "Hardcore
-  // History…". Contradictory picks, both user-visible, one question. The class is protected;
-  // the tombstone above is the record of the last attempt to close it and of exactly why that
-  // attempt was wrong.
-  //
-  // So this is the same suppression the swallow attempted, with the discriminator the swallow
-  // lacked: the seam's OWN RECORD of the round it granted and what for (`owedInterruptGrant`,
-  // written at `owed-interrupt.ts`). Not one character of the reply is read. What it says:
-  //
-  //   a round bought AFTER a reply had already landed is bought to ASK ABOUT THE ARRIVAL, and
-  //   the arrival is not this turn's to answer — its own turn serves it (T31 ruling 2). So the
-  //   text that round produces is not a second bubble; it is a working note.
-  //
-  // THE ARRIVAL IS NOT LOST, AND THAT IS WHAT MAKES THE HOLD SAFE: the ask stays open (T25's
-  // narrowing keeps this turn's earlier delivery off it, and nothing here touches its state),
-  // it re-serves, and the follow-up turn answers it — exactly once. The hold can only ever
-  // cost the person a SECOND copy; it can never cost them the answer.
-  //
-  // `afterReply` is the whole guard against the mirror failure. A round granted BEFORE
-  // anything reached the person (T30 leg B's in-flight shape) carries the turn's ONE reply,
-  // and holding that is silence — the thing this tree refuses harder than duplication.
-  // Demote-don't-discard (owner 2026-07-10) rather than the swallow's `null`: the words are
-  // written and the streamed bubble converts in place, so nothing the model wrote disappears.
+  // A round the owed-interrupt step granted after a reply had landed was bought to ask about the arrival,
+  // which its own turn answers (the ask stays open and re-serves), so that round's text becomes a note.
+  // `afterReply` guards the mirror case: a round granted before any reply carries the turn's one answer.
   const grant = state.owedInterruptGrant;
   if (
     grant &&
@@ -198,25 +121,13 @@ export function runCloseoutFloors(
     persistedContent = null;
   }
 
-  // v3.5 D1 (pre-review ruling 2): a continued job's text while it is still going is progress — kept, not sent.
+  // A continued job's text while it is still going is progress: kept as a note, not sent.
   if (persistedContent?.trim() && continuedJobStillGoing(state, ctx)) {
     demoteToWorkingNote({ agentId, messageId, turnNumber, text: persistedContent }); persistedContent = null;
   }
-  // ── RC-5.3: proactive-send budget (backoff on unanswered background chatter) ──
-  // A settled-context wake (no human waiting, not a deliberate surface) that produces
-  // a terminal user-facing reply is an UNPROMPTED ping. Production fired ~10 of these
-  // at a silent owner in 24h with no backoff (F-10). Track consecutive such pings in a
-  // persistent per-agent streak (reset on any authorized owner inbound); once the
-  // agent has already sent PROACTIVE_SEND_DEMOTE_THRESHOLD in a row, DEMOTE the next
-  // one to a quiet dashboard working-note row instead of sending, still visible, no
-  // ping. Deliberate surfaces (scheduler digests, reminders, completion reports) are
-  // exempt (deliberateSurfaceTurn) and never counted. This is lane-attribution, not
-  // suppression: the commentary lands in the notices lane, just not as a ping.
-  //
-  // C8 (owner ruling (a), evidence round): a turn WORKING a task that still owes its owner a delivery is
-  // not on this budget. The owner asked for that line, so it is not unsolicited; the live check lost a
-  // helper's whole deliverable here, three turns running. Once a line has reached the person the task
-  // owes nothing more and its later turns are budgeted like any other (`tracker/owed-delivery.ts`).
+  // Proactive-send backoff: past the threshold of consecutive unprompted settled-wake replies, the next is
+  // demoted to a note. Deliberate surfaces are exempt, and so is a turn working a task that owes its owner
+  // a delivery (`tracker/owed-delivery.ts`): the owner asked for that line.
   if (
     settledContextWakeTurn &&
     !deliberateSurfaceTurn &&
@@ -237,22 +148,17 @@ export function runCloseoutFloors(
         agentId, turnNumber, streak, threshold: PROACTIVE_SEND_DEMOTE_THRESHOLD,
         preview: persistedContent.slice(0, 80),
       }, agentId);
-      // Convert the already-streamed dashboard bubble in place into the dimmed note
-      // (same demote mechanism as the RC-9 text-with-tools path).
       demoteToWorkingNote({ agentId, messageId, turnNumber, text: persistedContent }, {
         why: 'the proactive-send limit: the owner had not answered the agent\'s recent unprompted messages', owed,
       });
       persistedContent = null;
     } else {
-      // Allowed proactive delivery: count it toward the streak. It flows through to
-      // the persist + routing below and pings as normal.
+      // An allowed proactive delivery counts toward the streak and pings as normal.
       bumpProactiveSendStreak(agentId);
     }
   }
 
-  // Arm the floor: once any user-facing reply surfaces this turn, later
-  // generic closeouts get suppressed (above). Set AFTER the suppression
-  // checks so a just-swallowed closeout (now null) doesn't arm it.
+  // Marks a reply surfaced this turn; after the holds above, so a held line (now null) does not count.
   if (persistedContent && persistedContent.trim().length > 0 && !state.surfacedReplyThisTurn) {
     state = advance(state, { surfacedReplyThisTurn: true });
   }

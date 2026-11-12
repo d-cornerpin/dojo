@@ -1,20 +1,6 @@
-// ════════════════════════════════════════
-// PHASE-6 T6 (CUT 8) — THE `[no-reply]` SENTINEL AND ITS LADDER, moved byte-faithfully
-// out of `loop.ts`'s `postCallClassify` span.
-//
-// The agent says `[no-reply]` when an incoming message closes the conversation and
-// there is nothing to answer. Three things had to be true for that to be safe, and all
-// three are here: the BARE sentinel is recognised, the DECLINE-AS-PROSE variant ("no
-// reply needed here…") is recognised as the same intent, and REG-3's override refuses
-// the silence on a turn a human is genuinely waiting on.
-//
-// THE GHOSTED-WORK-ASK LADDER IS THE HEART OF IT: a WORK ask answered with silence gets
-// one hint, and if the agent ghosts again it gets its OWN RECORDED ANSWER handed back —
-// which is the second rung, and the reason `turnCtx.inboundClassifiedAsWork` (CUT 6's
-// carrier) exists at all.
-//
-// TWO of the seventeen `continue` conversions are here, both rungs of that ladder.
-// ════════════════════════════════════════
+// The `[no-reply]` sentinel: a trailing one is stripped, a bare one ends the turn silently with a closed
+// marker, and a prose decline is held once and steered. Silence is refused where a person is owed: a captured
+// answer is promoted, a live call gets a spoken ack, and a ghosted work ask is steered.
 
 import { v4 as uuidv4 } from 'uuid';
 import { NO_REPLY_CLOSED_MARKER, NO_REPLY_TAIL_RE, isBareNoReplySentinel } from '@dojo/shared';
@@ -47,28 +33,8 @@ export async function runNoReply(
   } = ctx;
   const chosenConversationId = turnCtx.conversationId ?? null;
   let { persistedContent } = sc;
-  // No-reply sentinel: the agent emits `[no-reply]` (case-insensitive,
-  // possibly with surrounding whitespace) when the incoming message
-  // closes the conversation (goodnight, that's all, etc.) and there's
-  // nothing actionable to respond to. We swallow the literal sentinel
-  // (so it doesn't get echoed via iMessage or rendered in chat) and
-  // persist a system marker instead, so the agent's next turn sees
-  // that the prior turn ended silently. Skipping persistedContent here
-  // means lastAssistantTextForIM stays unset, which suppresses the
-  // iMessage routing at end-of-turn. Critical for preventing endless
-  // back-and-forth chatter on iMessage.
-  //
-  // Two forms: (a) the entire message IS the sentinel, swallow the
-  // bubble entirely, persist a [conversation closed] system marker.
-  // (b) the message ENDS with the sentinel (optionally wrapped in
-  // backticks/asterisks), strip just the sentinel so the user sees
-  // the actual reply text. This handles the common model mistake of
-  // appending the sentinel after a real reply (2026-06-02 bug fix:
-  // the primary agent was tail-appending `[no-reply]` to user-facing
-  // messages and the literal text was rendering in chat).
-  // PHASE-1 T8: both shapes come from @dojo/shared now. They were spelled out here and
-  // again in the dashboard's marker lib, which is the same drift that made the closed
-  // marker unreadable to its own matcher.
+  // A bare sentinel is swallowed (never echoed to iMessage or chat) and a system marker persisted, so the
+  // next turn sees the silence and nothing routes. A sentinel appended after a real reply is just stripped.
   if (
     persistedContent &&
     result.toolCalls.length === 0 &&
@@ -88,32 +54,18 @@ export async function runNoReply(
     result.toolCalls.length === 0 &&
     isBareNoReplySentinel(persistedContent);
 
-  // Decline-as-prose: the weak model sometimes states "I'm not going to reply to
-  // this" in prose ("No reply needed here, I can't address X…") instead of the
-  // [no-reply] sentinel. Treated as a normal reply, that deliberation gets ROUTED
-  // to the counterparty, it was literally sent to Ben as the Globex renewal email
-  // reply (thread "Renewal") AND shown in the owner's chat. Honor the agent's
-  // stated intent: a message that OPENS with an unambiguous self-decline is a
-  // no-reply, not a message to anyone, suppress + don't route, same as the
-  // sentinel. Conservative: leading phrase only, no tool calls, so it never
-  // swallows a substantive reply that merely mentions "no reply" mid-sentence.
+  // Decline-as-prose: a reply that opens with an unambiguous self-decline reads as a no-reply, not a
+  // message to route. Leading phrase only, so a reply mentioning "no reply" mid-sentence is untouched.
   const declineRead =
     persistedContent !== null &&
     result.toolCalls.length === 0 &&
     !isBareNoReply &&
-    // N-2 (comms-audit): NEVER treat a prose "decline" as no-reply on a turn a
-    // human is WAITING on. The DECLINE_OPENER_RE false-positives on a genuine
-    // answer that merely opens with such a phrase ("No response needed on the
-    // receipt, your June total is $432."), which was nulled and dropped on every
-    // channel. The governing rule: suppression never fires when serving a waiting
-    // ask. A bare [no-reply] (the agent's explicit, whole-message choice) is still
-    // honored for chatter-prevention; only the FUZZY prose-decline is guarded.
+    // Never on a turn a human is waiting on: a genuine answer can open with such a phrase.
     !triggerRow &&
     DECLINE_OPENER_RE.test(persistedContent);
 
-  // Field fix 3 audit round (#11): a prose decline was nulled as a no-reply on the rule's word list.
-  // Now the agent is told how its line reads and decides: [no-reply] is its choice to make, and the
-  // same line written again goes out as written.
+  // The agent is told how its line reads and decides: the same line written again goes out as written,
+  // and only its own [no-reply] sends nothing.
   if (declineRead && persistedContent) {
     const t = persistedContent.replace(/\s+/g, ' ').trim();
     const held = holdAndSteer(state, { agentId, messageId: ctx.messageId, turnNumber, sc, db: ctx.db }, {
@@ -123,19 +75,12 @@ export async function runNoReply(
     });
     if (held) return held;
   }
-  // A prose decline is never a no-reply on the engine's reading any more: once told, the agent's
-  // repeat is its reply. Only the agent's own [no-reply] is a no-reply.
+  // A prose decline is never a no-reply on the engine's reading: once told, the agent's repeat is its
+  // reply. Only the agent's own [no-reply] is a no-reply.
   const isDeclineNonReply = false;
 
-  // REG-3 refinement (2026-07-16, the trivial-save sequence): intentional
-  // silence stands on turns nobody is waiting on (the narration-resurrection
-  // case REG-3 protects). But a bare [no-reply] on a turn SERVING A HUMAN
-  // TRIGGER, with NO surfaced reply and a captured text-with-tools answer,
-  // means "I already answered" while the answer only exists as a demoted
-  // note. Contract #1 (every authorized human message gets exactly one
-  // substantive answer) outranks the sentinel: promote the model's own
-  // captured words as the terminal reply. isDeclineNonReply already
-  // requires !triggerRow (N-2), so only the bare sentinel can reach here.
+  // A bare [no-reply] on a turn serving a human, with nothing surfaced and a captured text-with-tools
+  // answer, promotes those words: every authorized human message gets exactly one substantive answer.
   let noReplyOverridden = false;
   if (
     isBareNoReply &&
@@ -153,15 +98,8 @@ export async function runNoReply(
     }, agentId);
   }
   if (!noReplyOverridden && (isBareNoReply || isDeclineNonReply) && (latestUserSource === 'voice' || state.inboundChannel === 'phone')) {
-    // Voice AND phone are LIVE conversations, so going silent reads as a dropped
-    // call. (comms-audit B-1/phone: phone utterances persist with NO `source`, so
-    // they read as 'text' and were EXCLUDED from this guard, a bare [no-reply] on
-    // a live call left the caller in dead air. Phone is distinguished by
-    // inboundChannel==='phone'.) The voice-conduct prompt block tells the agent not
-    // to use [no-reply] here, but the weakest model (the correctness floor) still
-    // emits it sometimes, so the engine enforces the floor: swap the bare sentinel
-    // for a short spoken acknowledgment and let it flow through the normal persist +
-    // TTS path instead of swallowing into dead air.
+    // Voice and phone are live calls, where silence reads as a dropped call: swap the sentinel for a short
+    // spoken ack. Phone utterances carry no `source`, so phone is told apart by `inboundChannel`.
     const voiceAcks = [
       'Okay, just say the word.',
       "Sounds good, I'm here when you need me.",
@@ -172,64 +110,19 @@ export async function runNoReply(
       agentId, loopCount: state.loopCount,
     }, agentId);
   } else if (!noReplyOverridden && (isBareNoReply || isDeclineNonReply)) {
-    // ── Ghosted-work-ask floor (2026-07-22, battery catch) ── Contract #1
-    // (every authorized human message gets exactly one substantive answer)
-    // reaches its last unguarded gap here: a bare [no-reply] on a turn
-    // serving a human ask the classifier read as WORK, with nothing
-    // surfaced and nothing captured to promote. Observed: a repeat of an
-    // already-delivered job made the model go silent in one model call
-    // (the settled-work record taught it not to re-answer; it over-read
-    // that as "don't reply at all"). Silence on chatter stays honored
-    // (REG-3); a work ask gets a steer first: reply with a pointer to the
-    // settled delivery, or do the work. If the model ghosts the steer too
-    // and this conversation HAS an engine-recorded settled answer, a second
-    // steer hands the model its own recorded words to restate (the engine
-    // never speaks as the agent, owner ruling 2026-07-22); double-ghosted
-    // silence stands, loudly logged, and the ladder owns the follow-up.
-    // ── ANSWER-ANYWAY — AND THE FLOOR WAS BLIND TO THE TURN THAT HAD ALREADY SPOKEN ──
-    //
-    // A `!turnCtx.deferredDeliveredByAck` clause stood last in this gate: if the start-ack lane
-    // had spoken, the person counted as served and the floor stood down. That flag has ONE
-    // writer — the promotion in `terminal-text.ts` — so on a promoted turn BOTH arms of this
-    // sentinel went quiet at once: the override above had nothing left to promote (the
-    // promotion consumed it) and this floor believed the ask was answered. The turn just
-    // ended, and the ledger — keyed on `turns.answer_message_id`, which knows nothing of the
-    // ack lane — recorded silence. MEASURED, ritual v3.1.26 round 3, agent turn 5649, ask
-    // `695067c2`: the model front-loaded its WHOLE researched answer into the promoted bubble
-    // at 12:46:23, ended honestly with `[no-reply]` at 12:46:26, and the authority re-served
-    // the settled question four times, logged `ask re-serve STOOD DOWN` at ERROR and left the
-    // owner's ask `blocked` — with his answer on screen throughout.
-    //
-    // SO THE CLAUSE IS GONE AND THE STEER GAINS SIGHT. The engine does not decide whether those
-    // words were an answer — ruling 10(a)/OR2: detect, steer, verify by delivery record, and
-    // never adjudicate content by heuristic where the model can be made to speak. Nor may it
-    // resolve the doubt by closing — ruling 10(d), in the owner's words, *"Priority one out of
-    // literally anything is 'the user asks the agent to do something and it does it.'
-    // Period."* — so ambiguity resolves toward ANSWERING AGAIN, never toward a quiet close.
-    // The model is handed its own line back, told the ledger still shows the question open, and
-    // asked to settle it either way: confirm it in one ordinary reply, or deliver the answer
-    // now if that line was only a status line. Either lands through the ONE door — the ordinary
-    // persist seam sets the key — so the ask settles on what the model actually said.
-    //
-    // NOTHING ELSE MOVES: the bound is this ladder's own (`steerFired`, one rung apiece, then
-    // silence stands), a model that ghosts it reaches the existing stood-down path unchanged,
-    // and with no promotion the sight clause is empty, so the genuine-silence steer is
-    // byte-identical to the sentence it has always sent.
+    // Ghosted work ask: a bare [no-reply] on a human ask classified as work, with nothing surfaced, gets a
+    // steer to point at the settled delivery or do the work. If a promoted start-ack line was shown, the
+    // steer quotes it and asks the model to confirm it or answer now: ambiguity resolves toward answering.
+    // Each rung fires once; a model that ghosts both leaves silence standing, loudly logged.
     const promotedRowId = turnCtx.startAckPromotedRowId;
     const ghostedWorkAsk =
       isBareNoReply && !!triggerRow && turnCtx.inboundClassifiedAsWork &&
       !state.surfacedReplyThisTurn;
     if (ghostedWorkAsk && !steerFired(state.steerQueue, 'ghosted-ask')) {
       broadcast({ type: 'chat:chunk', agentId, messageId, content: '', done: true });
-      // T9: was an EMPTY chat:message meaning "drop this bubble" — an event named
-      // "here is a message" carrying its own opposite, and the one shape that made
-      // "every broadcast has a row" unstateable. It is a named event now. (It names THIS
-      // iteration's empty bubble; a promoted line is a different row and stays on screen,
-      // which is the whole reason it can be quoted below.)
+      // A named retract drops this iteration's empty bubble; a promoted line is a different row and stays.
       broadcast({ type: 'chat:retract', agentId, messageId });
-      // The model's OWN words, read back off the row that carried them — never the engine's
-      // paraphrase (OR2), and never a judgment of what they were. Empty when nothing was
-      // promoted, which is what keeps the sentence below byte-identical on the silent path.
+      // The model's own words read back off their row, never a paraphrase; empty when nothing was promoted.
       let promotedSight = '';
       if (promotedRowId) {
         try {
@@ -259,18 +152,8 @@ export async function runNoReply(
       return continueLoop(state);
     }
     if (ghostedWorkAsk && steerFired(state.steerQueue, 'ghosted-ask') && !steerFired(state.steerQueue, 'ghosted-ask-answer') && chosenConversationId) {
-      // Second (last) steer, owner ruling 2026-07-22: the engine never
-      // speaks as the agent, so instead of re-serving the recorded answer
-      // itself, hand the model its own recorded words to restate. If this
-      // is ghosted too, silence stands (marker row + loud log below); the
-      // ladder and stamps own the follow-up.
-      //
-      // PHASE-3 STRIP-3: gate and lookup both read `chosenConvKey` before.
-      // `recordedAnswerInConversation` filters `m1.conversation_id = ?` — a UUID column —
-      // and a conv key matches 0 of the dev body's 6,975 stamped rows where real ids match
-      // 954, so this rung had never once fired since the T10I rekey. Both values are
-      // `string` and the key crossed a function boundary: no type and no bind-site grep
-      // could see it. Pinned by integration.test.ts, "STRIP-3 … (a)".
+      // Second and last steer: the engine never speaks as the agent, so it hands back the model's own
+      // recorded answer to restate. The lookup needs the conversation id (a UUID), never the conv key.
       try {
         const excerpt = (recordedAnswerInConversation(agentId, chosenConversationId) ?? '')
           .replace(/\s+/g, ' ').trim().slice(0, 220);
@@ -301,29 +184,21 @@ export async function runNoReply(
         }, agentId);
       }
       persistedContent = null;
-      // REG-3 (comms-audit): the agent INTENTIONALLY went silent ([no-reply] /
-      // prose decline). Discard any deferred text-with-tools narration so the
-      // G-SUP-2 finalize recovery can't resurrect it and override the decision.
+      // Intentional silence: drop deferred narration so the finalize recovery cannot resurrect it.
       turnCtx.deferredUserReplyWithTools = null;
 
-      // Silent turn that still opened a canvas (or queued attachments via
-      // show_to_user): surface the pending "Open in canvas" chip / thumbnails
-      // onto this otherwise-empty assistant bubble instead of dropping it. The
-      // user asked the agent to open a canvas; even on [no-reply] they need the
-      // affordance back to it (an explicit canvas_render + [no-reply] otherwise
-      // left NO chip). Draining here also pre-empts the end-of-turn safety net,
-      // so the chip is surfaced exactly once.
+      // A silent turn that opened a canvas or queued attachments still surfaces them on this bubble; draining
+      // here pre-empts the end-of-turn safety net, so the chip is surfaced exactly once.
       let surfacedNoReplyAttachments = false;
       try {
         const { drainPendingAttachments } = await import('../../../pending-attachments.js');
         const noReplyAttachments = drainPendingAttachments(agentId);
         if (noReplyAttachments.length > 0) {
-          // A short factual line so the bubble renders cleanly (and tells the
-          // user WHAT opened); the "Open in canvas" chip rides on it.
+          // A short factual line tells the user what opened; the canvas chip rides on it.
           const canvasDoc = noReplyAttachments.find((a) => a.openInCanvas);
           const noReplyCaption = canvasDoc
             ? `Dojo: opened ${canvasDoc.filename ? `"${canvasDoc.filename.replace(/\.[a-z0-9]+$/i, '')}"` : 'a document'} in the canvas.`
-            : '';   // no engine words in the agent's voice (OR-ENGINE-LABELLED)
+            : '';   // no engine words in the agent's voice
           const surfacedRow = insertMessageIfAbsent({
             id: messageId, agentId, role: 'assistant', content: noReplyCaption,
             attachments: JSON.stringify(noReplyAttachments), turnNumber,
@@ -344,13 +219,8 @@ export async function runNoReply(
           });
           surfacedNoReplyAttachments = true;
 
-          // N-3 (comms-audit): same gap as A-1, on the [no-reply] path. The drain
-          // above surfaces the files onto the DASHBOARD bubble only. If the requester
-          // is on iMessage, the deliverable they asked for never reaches their channel
-          // (the end-of-turn channel router is skipped on a no-reply turn, and the
-          // stranded safety net can't re-find these, they're already drained). Deliver
-          // to the iMessage counterparty here. iMessage user only (a dashboard turn
-          // already rendered them in the bubble).
+          // An iMessage requester gets the files on their channel too: the end-of-turn router is skipped on a
+          // no-reply turn, and the safety net cannot find drained files.
           if (counterparty.kind === 'user' && counterparty.channel === 'imessage' && counterparty.senderId) {
             try {
               const { textFilesToRequester } = await import('../text-files-to-requester.js');
@@ -367,16 +237,8 @@ export async function runNoReply(
       }
 
       if (!surfacedNoReplyAttachments) {
-        // Clear the streaming bubble in the dashboard. We need BOTH events:
-        //  - chat:chunk done:true ends the bubble's streaming state (without
-        //    this the thinking dots stay forever, since the normal done:true
-        //    at line ~923 only fires when persistedContent or tools exist).
-        //  - chat:retract drops the bubble entirely so the chat doesn't show an
-        //    empty assistant row. T9: this was an EMPTY chat:message, and the
-        //    overload had a visible failure mode — when NO bubble existed for the
-        //    id the client APPENDED the empty message instead of dropping it, and
-        //    it rendered as a bare timestamp (research 17 §4 item 1). A retract on
-        //    a bubble that is not there is a no-op.
+        // End the bubble's streaming state (or the thinking dots stay), then retract it so no empty
+        // assistant row renders; a retract of a bubble that is not there is a no-op.
         broadcast({
           type: 'chat:chunk',
           agentId,
@@ -386,11 +248,7 @@ export async function runNoReply(
         });
         broadcast({ type: 'chat:retract', agentId, messageId });
         const sysId = uuidv4();
-        // THE COMMA IS GONE (PHASE-1 T8). This literal was written with a comma while
-        // both matchers — @dojo/shared's constant and the dashboard's inline copy —
-        // expected an em-dash, so the row this line writes was invisible to its own
-        // reader and rendered raw in the owner's chat. Taking the constant is what makes
-        // that class impossible rather than merely fixed.
+        // The shared constant, so the row matches the readers that look for it.
         const sysContent = NO_REPLY_CLOSED_MARKER;
         try {
           insertMessageIfAbsent({ id: sysId, agentId, role: 'system', content: sysContent, turnNumber });
@@ -410,8 +268,7 @@ export async function runNoReply(
           }, agentId);
         }
       }
-      // t141: declining ([no-reply]) IS addressing the counterparty; this turn's own rows already
-      // carry the conversation from their INSERT, so the late re-tag that stood here is deleted.
+      // This turn's rows already carry the conversation from their INSERT; no re-tag is needed.
       logger.info('v2: agent ended turn silently via [no-reply] sentinel', {
         agentId, loopCount: state.loopCount,
       }, agentId);
