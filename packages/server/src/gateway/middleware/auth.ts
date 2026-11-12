@@ -7,22 +7,13 @@ import { createLogger } from '../../logger.js';
 
 const logger = createLogger('auth-middleware');
 
-// ── The unauthenticated surface, in two lists and no more ──
-//
-// This file is the ONLY place that decides what may be reached without the
-// owner's token. Anything not named below takes the token path, whatever
-// headers it claims (see the WEBSOCKET_PATHS note further down for what
-// happened the last time a header could buy entry).
+// Only this file decides what is reachable without the owner's token; anything not listed takes the token path.
 
-// ALWAYS PUBLIC — reachable without a token for the life of the box, because
-// each entry either authenticates by another means or carries nothing worth
-// authenticating. Every entry states which.
+// ALWAYS PUBLIC: each entry authenticates by another means or carries nothing worth protecting.
 const ALWAYS_PUBLIC_PATHS = [
-  '/api/auth/login',         // mints the token; bcrypt against the stored hash IS the auth
+  '/api/auth/login',         // mints the token; bcrypt against the stored hash is the auth
   '/api/health',             // liveness only, no data
-  '/api/setup/status',       // three booleans; the login screen reads it pre-token to
-                             // decide "create password" vs "password", so it can never
-                             // become OOBE-only without breaking the way back in
+  '/api/setup/status',       // three booleans; the login screen reads it pre-token, so never OOBE-only
   '/api/microsoft/callback', // OAuth redirect; the handler verifies the state token
   '/api/google/callback',    // OAuth redirect; ditto (google/auth.ts getFlowForState)
 ];
@@ -31,28 +22,17 @@ const ALWAYS_PUBLIC_PREFIXES = [
   '/api/upload/download/',    // unguessable UUID is the credential
   '/api/voice/assets/',       // static voice-mode runtime assets (VAD model, ORT wasm)
   '/api/twilio/webhook/',     // verified by X-Twilio-Signature in the handler (verifySignatureOr401)
-  '/api/twilio/voice-stream', // Twilio Media Streams WS — opened by Twilio, no JWT to give
+  '/api/twilio/voice-stream', // Twilio Media Streams WS, opened by Twilio with no JWT
 ];
 
-// OOBE ONLY — open while the box has genuinely never completed first run, and
-// shut the moment it has. These routes install software, pull models, grant
-// system permissions and provision the first agent; a fresh machine has no
-// credential to present, which is the ONLY reason they are reachable at all.
-//
-// SECURITY (2026-07-27, PHASE-0 T9): `/api/setup/` used to sit in one flat
-// public list with no such condition, so on a finished, internet-reachable box
-// anyone could still call them — and the migration router was mounted a SECOND
-// time under `/api/setup/migration`, which made "restore this database over
-// yours" an unauthenticated request. That mount is gone; the router now lives
-// only at `/api/migration`, behind the token, like every other owner surface.
+// OOBE ONLY: open until first run completes. These routes install software and provision the first agent,
+// so they must never be reachable on a finished box (the migration router lives only at /api/migration).
 const OOBE_ONLY_PREFIXES = [
   '/api/setup/',
 ];
 
-// The only paths where an `Upgrade: websocket` request may skip token auth
-// here — each authenticates in its own upgrade handler (ws.ts
-// verifyAndTrackClient / the voice + vnc handlers). Registered in
-// gateway/server.ts. Adding a route here means that route owns its auth.
+// The only paths where `Upgrade: websocket` skips token auth; each route authenticates in its own upgrade
+// handler (ws.ts verifyAndTrackClient, voice and vnc handlers), registered in gateway/server.ts.
 const WEBSOCKET_PATHS = new Set([
   '/api/ws',
   '/api/ws/voice',
@@ -65,7 +45,6 @@ export interface JwtPayload {
   exp: number;
 }
 
-// ── Cookie Parsing ──
 
 function parseCookies(cookieHeader: string | undefined): Record<string, string> {
   if (!cookieHeader) return {};
@@ -80,13 +59,11 @@ function parseCookies(cookieHeader: string | undefined): Record<string, string> 
   return cookies;
 }
 
-// ── CSRF Token Generation ──
 
 export function generateCsrfToken(): string {
   return crypto.randomBytes(32).toString('hex');
 }
 
-// ── Auth Middleware ──
 
 export const authMiddleware = async (c: Context, next: Next): Promise<Response | void> => {
   const requestPath = new URL(c.req.url).pathname;
@@ -99,23 +76,13 @@ export const authMiddleware = async (c: Context, next: Next): Promise<Response |
     return next();
   }
 
-  // The out-of-box window: open only until first run is finished, then these
-  // take the token path like everything else.
+  // Open only until first run is finished, then these take the token path.
   if (OOBE_ONLY_PREFIXES.some(p => requestPath.startsWith(p)) && !isPastFirstRun()) {
     return next();
   }
 
-  // WebSocket upgrades authenticate INSIDE their own handler (ws.ts
-  // verifyAndTrackClient reads ?token= and closes 1008 on failure), so the
-  // three real WS endpoints are exempted here — BY PATH.
-  //
-  // SECURITY (2026-07-26, PHASE-0 T9 Step 0): this used to exempt ANY request
-  // carrying `Upgrade: websocket`, on the whole /api/* mount, before any token
-  // was read — so `GET /api/agents` with that one header returned 200 with no
-  // credentials at all (verified live against the running dev server, and the
-  // box was publicly tunneled at the time). The header is attacker-controlled;
-  // the path is not. Anything that is not a WS endpoint now takes the normal
-  // token path regardless of what headers it claims.
+  // WS endpoints authenticate in their own handler, so they are exempted by PATH: the Upgrade header is
+  // attacker-controlled and must never buy entry to any other route.
   if (
     WEBSOCKET_PATHS.has(requestPath) &&
     c.req.header('upgrade')?.toLowerCase() === 'websocket'
@@ -126,13 +93,11 @@ export const authMiddleware = async (c: Context, next: Next): Promise<Response |
   const cookies = parseCookies(c.req.header('Cookie'));
   let token: string | null = null;
 
-  // Check Authorization header first (for backwards compatibility)
   const authHeader = c.req.header('Authorization');
   if (authHeader?.startsWith('Bearer ')) {
     token = authHeader.slice(7);
   }
 
-  // Fall back to httpOnly cookie
   if (!token) {
     token = cookies['token'] ?? null;
   }
@@ -146,20 +111,19 @@ export const authMiddleware = async (c: Context, next: Next): Promise<Response |
     const payload = jwt.verify(token, secret) as JwtPayload;
     c.set('userId', payload.userId);
 
-    // CSRF validation for state-changing methods
     const method = c.req.method;
     if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
       const csrfHeader = c.req.header('X-CSRF-Token');
       const csrfCookie = cookies['csrf'] ?? null;
 
-      // Only enforce CSRF if the csrf cookie exists (allows gradual migration)
+      // Enforced only when the csrf cookie exists.
       if (csrfCookie && csrfHeader !== csrfCookie) {
         logger.warn('CSRF validation failed', { path: requestPath, method });
         return c.json({ ok: false, error: 'CSRF validation failed' }, 403);
       }
     }
 
-    // Refresh cookie maxAge on each authenticated request (sliding session)
+    // Sliding session: refresh the cookie lifetime on each authenticated request.
     c.header('Set-Cookie', `token=${token}; HttpOnly; Path=/; SameSite=Strict; Max-Age=86400`, { append: true });
 
     return next();
