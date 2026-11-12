@@ -1,13 +1,8 @@
 import type Database from 'better-sqlite3';
 import { isPastFirstRun } from '../../config/setup-state.js';
 
-/**
- * Which agent a setup provision call is about, and which placeholder agents it may remove.
- * The primary is found by the stored primary_agent_id, never by the name typed in the wizard:
- * after first run, a primary request naming a different id means the stored primary (when that
- * agent exists). Placeholder agents (primary, pm) are removed only during first run; later an
- * agent with such an id is a real agent with history. The caller reads the id back from the response.
- */
+// Resolves the agent a provision call is about: after first run a primary request maps to the stored
+// primary_agent_id when it exists; placeholders (primary, pm) are removed only during first run.
 export function resolveProvision(db: Database.Database, requestedId: string, primary: boolean | undefined): { id: string; placeholders: string[] } {
   if (!isPastFirstRun()) return { id: requestedId, placeholders: ['primary', 'pm'] };
   let id = requestedId;

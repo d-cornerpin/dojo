@@ -11,23 +11,18 @@ import { homeDir } from '../../home.js';
 const logger = createLogger('upload');
 
 const UPLOAD_DIR = path.join(homeDir(), '.dojo', 'uploads');
-// 1 GB per file / 2 GB per message. Single-user local install — caps are
-// to catch obviously-wrong inputs, not to defend against abuse. Memory
-// note: Hono's formData() parser buffers the whole body in memory before
-// our handler runs, so a 1 GB upload over the localhost path stages 1 GB
-// of RAM. For tunnel uploads, use the chunked endpoints below to stay
-// under Cloudflare's per-request 100 MB body limit.
+// 1 GB per file / 2 GB per message. Single-user local install: the caps catch obviously-wrong inputs, not
+// abuse. Hono's formData() buffers the whole body in memory before our handler runs (a 1 GB upload stages 1
+// GB of RAM); tunnel uploads use the chunked endpoints below to stay under Cloudflare's 100 MB per-request
+// body limit.
 const MAX_FILE_SIZE = 1024 * 1024 * 1024;       // 1 GB
 const MAX_TOTAL_SIZE = 2 * 1024 * 1024 * 1024;  // 2 GB
-// Chunked upload knobs. Cloudflare's free / Pro plans reject HTTP request
-// bodies over 100 MB, so the dashboard splits anything bigger than this
-// threshold into chunks and assembles them server-side. Picked 25 MB to
-// give ~75 MB of headroom under Cloudflare's cap (multipart envelope +
-// other request overhead) and to keep the per-chunk memory footprint low.
+// Chunked upload: Cloudflare rejects request bodies over 100 MB, so the dashboard splits anything bigger
+// than this threshold into chunks assembled server-side; 25 MB leaves ~75 MB of headroom for the multipart
+// envelope.
 const CHUNK_THRESHOLD_BYTES = 25 * 1024 * 1024;
 const CHUNK_SESSION_IDLE_MS = 60 * 60 * 1000;   // sessions auto-expire after 1h idle
 
-// File type categories
 const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
 const PDF_TYPES = new Set(['application/pdf']);
 const AUDIO_EXTENSIONS = new Set(['.mp3', '.wav', '.m4a', '.aac', '.ogg', '.opus', '.flac', '.webm']);
@@ -61,14 +56,13 @@ function getFileCategory(mimeType: string, filename: string): UploadedFile['cate
   if (VIDEO_EXTENSIONS.has(ext)) return 'video';
   if (TEXT_EXTENSIONS.has(ext)) return 'text';
   if (['.doc', '.docx', '.xls', '.xlsx', '.pptx'].includes(ext)) return 'office';
-  // Fallback: check if mime suggests text
   if (mimeType.startsWith('text/')) return 'text';
   return 'unknown';
 }
 
 const uploadRouter = new Hono();
 
-// POST /upload/:agentId — upload files for a chat message
+// POST /upload/:agentId: upload files for a chat message
 uploadRouter.post('/:agentId', async (c) => {
   const agentId = c.req.param('agentId');
 
@@ -80,7 +74,6 @@ uploadRouter.post('/:agentId', async (c) => {
       return c.json({ ok: false, error: 'No files provided' }, 400);
     }
 
-    // Check total size
     let totalSize = 0;
     for (const file of files) {
       if (file.size > MAX_FILE_SIZE) {
@@ -128,28 +121,14 @@ uploadRouter.post('/:agentId', async (c) => {
   }
 });
 
-// ── Chunked upload (for files larger than ~100MB, mainly through the
-// Cloudflare tunnel which rejects single requests larger than that) ──
-//
-// Flow:
-//   1. POST /upload/start/:agentId  →  body { filename, mimeType, size }
-//      Server allocates a session, returns { uploadId }.
-//   2. POST /upload/chunk/:agentId/:uploadId/:chunkIndex
-//      Server appends the chunk bytes to the session's `.part` file.
-//      Chunks must arrive in order — client sends them sequentially.
-//   3. POST /upload/finish/:agentId/:uploadId
-//      Server validates the assembled file matches the declared size,
-//      renames `.part` → final stored name, registers the attachment,
-//      and returns the same UploadedFile shape as the one-shot endpoint.
-//
-// Memory footprint: one chunk at a time per session, capped by the
-// CHUNK_THRESHOLD_BYTES the dashboard sends. The .part file lives on
-// disk; only the active chunk is buffered.
-//
-// Session expiry: idle sessions are dropped after 1h. If the dashboard
-// disconnects mid-upload, the `.part` file is cleaned up by the same
-// older-than-7-days sweep that cleans up regular uploads — no
-// dedicated GC pass for chunked sessions.
+// Chunked upload, for files over CHUNK_THRESHOLD_BYTES (so tunnel requests stay under Cloudflare's 100 MB
+// cap). Flow: POST /upload/start/:agentId {filename, mimeType, size} allocates a session and returns
+// {uploadId}; POST /upload/chunk/:agentId/:uploadId/:chunkIndex appends the bytes to the session's `.part`
+// file (chunks must arrive in order, one at a time); POST /upload/finish/:agentId/:uploadId checks the
+// assembled size against the declared one, renames `.part` to the final stored name, registers the
+// attachment and returns the same UploadedFile shape as the one-shot endpoint. Idle sessions drop after 1h,
+// and a `.part` file left by a disconnect is removed by the older-than-7-days sweep that cleans regular
+// uploads (no dedicated GC pass).
 interface ChunkSession {
   agentId: string;
   filename: string;
@@ -175,7 +154,7 @@ function reapStaleChunkSessions(): void {
   }
 }
 
-// POST /upload/start/:agentId — register a chunked upload session.
+// POST /upload/start/:agentId: register a chunked upload session.
 uploadRouter.post('/start/:agentId', async (c) => {
   const agentId = c.req.param('agentId');
   const body = await c.req.json().catch(() => null) as
@@ -214,7 +193,7 @@ uploadRouter.post('/start/:agentId', async (c) => {
   return c.json({ ok: true, data: { uploadId } });
 });
 
-// POST /upload/chunk/:agentId/:uploadId/:chunkIndex — append a chunk.
+// POST /upload/chunk/:agentId/:uploadId/:chunkIndex: append a chunk.
 uploadRouter.post('/chunk/:agentId/:uploadId/:chunkIndex', async (c) => {
   const agentId = c.req.param('agentId');
   const uploadId = c.req.param('uploadId');
@@ -264,7 +243,7 @@ uploadRouter.post('/chunk/:agentId/:uploadId/:chunkIndex', async (c) => {
   }
 });
 
-// POST /upload/finish/:agentId/:uploadId — close the session, register attachment.
+// POST /upload/finish/:agentId/:uploadId: close the session, register attachment.
 uploadRouter.post('/finish/:agentId/:uploadId', async (c) => {
   const agentId = c.req.param('agentId');
   const uploadId = c.req.param('uploadId');
@@ -280,7 +259,6 @@ uploadRouter.post('/finish/:agentId/:uploadId', async (c) => {
     }, 400);
   }
 
-  // Rename .part → final stored name. Drops the .part suffix.
   const finalPath = session.partPath.replace(/\.part$/, '');
   try {
     fs.renameSync(session.partPath, finalPath);
@@ -330,7 +308,6 @@ export function cleanupOldUploads(): void {
         } catch { /* skip */ }
       }
 
-      // Remove empty directories
       try {
         const remaining = fs.readdirSync(dirPath);
         if (remaining.length === 0) {
@@ -343,7 +320,7 @@ export function cleanupOldUploads(): void {
   }
 }
 
-// GET /file/:agentId/:filename — serve uploaded files (for image preview)
+// GET /file/:agentId/:filename: serve uploaded files (for image preview)
 uploadRouter.get('/file/:agentId/:filename', async (c) => {
   const agentId = c.req.param('agentId');
   const filename = c.req.param('filename');
@@ -369,40 +346,18 @@ uploadRouter.get('/file/:agentId/:filename', async (c) => {
   });
 });
 
-// ════════════════════════════════════════
-// SECURITY (2026-07-27, PHASE-0 T12b / P421) — the download route is PUBLIC.
-//
-// `/api/upload/download/` sits in ALWAYS_PUBLIC_PREFIXES (gateway/middleware/
-// auth.ts): the unguessable UUID is the whole credential, so it is reachable
-// with no token, over the tunnel, by anyone holding a link. It also serves
-// MODEL-AUTHORED bytes — every file_write/file_append registers itself here.
-// And in production the dashboard is served from this same origin (the SPA
-// fallback in gateway/server.ts), where the httpOnly session cookie and the
-// localStorage token live.
-//
-// Before this task, `?inline=1` on an .html file answered
-// `Content-Type: text/html` + `Content-Disposition: inline`, so opening that
-// public URL in a tab executed model-written script as a first-class document
-// on the dashboard's origin — able to fetch /api/* with the session cookie
-// attached. `?inline=1` was appended automatically by tools.ts on every canvas
-// open, so the URLs existed in the wild.
-//
-// The rule now: a response may render as a document ONLY if its type cannot
-// carry script. Everything else is `attachment`, which browsers download
-// instead of rendering, and script-capable *document* types are additionally
-// relabelled `application/octet-stream` so a sniffing browser has nothing to
-// latch onto either. `X-Content-Type-Options: nosniff` closes the third door.
-//
-// What still renders, and why it is safe:
-//   • raster images / PDF / audio / video / plain text — no script execution
-//     in the server's origin (Chrome runs PDF JS in its own isolated viewer).
-//   • SVG keeps `image/svg+xml` but is FORCED to `attachment`: scripts inside
-//     an SVG only run when it is a top-level document, never when it is loaded
-//     through <img>, and Content-Disposition does not affect subresource loads.
-//     So the canvas's <img src=inlineUrl> still shows it; a tab cannot run it.
-//   • HTML is fetched, not navigated to — CanvasView hands the body to a
-//     sandboxed srcDoc iframe. fetch() ignores Content-Disposition entirely.
-// ════════════════════════════════════════
+// SECURITY: the download route is PUBLIC. `/api/upload/download/` sits in ALWAYS_PUBLIC_PREFIXES
+// (gateway/middleware/auth.ts): the unguessable UUID is the whole credential, so anyone holding a link
+// reaches it with no token, over the tunnel. It serves MODEL-AUTHORED bytes (every file_write/file_append
+// registers itself here) from the same origin as the production dashboard, where the session cookie and
+// localStorage token live. Rule: a response may render as a document ONLY if its type cannot carry script.
+// Everything else is `attachment`, and script-capable document types are also relabelled
+// `application/octet-stream` so a sniffing browser has nothing to latch onto; `X-Content-Type-Options:
+// nosniff` closes the third door. Still rendered: raster images, PDF, audio, video and plain text (no script
+// runs in the server's origin). SVG keeps `image/svg+xml` but is FORCED to `attachment`: its scripts run
+// only as a top-level document, never through <img>, and Content-Disposition does not affect subresource
+// loads, so the canvas <img src=inlineUrl> shows it and a tab cannot run it. HTML is fetched, not navigated
+// to: CanvasView hands the body to a sandboxed srcDoc iframe.
 
 /** Types that can be rendered inline because they cannot execute script in our origin. */
 const INLINE_SAFE_MIME = /^(?:image\/(?:png|jpeg|jpg|gif|webp|bmp|x-icon|vnd\.microsoft\.icon|avif)|application\/pdf|audio\/|video\/|text\/plain)(?:$|;)/i;
@@ -430,9 +385,8 @@ export function safeDownloadHeaders(
   const mime = (mimeType ?? '').trim();
   const e = ext.toLowerCase();
 
-  // Script-capable documents lose their label as well as their disposition.
-  // SVG is the deliberate exception — it keeps its mime so <img> still renders
-  // it, and relies on `attachment` to stop a top-level navigation.
+  // Script-capable documents lose their label as well as their disposition. SVG is the deliberate exception:
+  // it keeps its mime so <img> still renders it, and `attachment` stops a top-level navigation.
   const scriptable = SCRIPTABLE_DOC_MIME.test(mime) || SCRIPTABLE_DOC_EXT.has(e);
   if (scriptable) return { contentType: 'application/octet-stream', disposition: 'attachment' };
 
@@ -448,7 +402,7 @@ export function sanitizeFilenameForHeader(filename: string): string {
   return filename.replace(/[\r\n"\\]/g, '_');
 }
 
-// GET /download/:fileId — serve any shared file by ID (works through tunnel)
+// GET /download/:fileId: serve any shared file by ID (works through tunnel)
 uploadRouter.get('/download/:fileId', async (c) => {
   const fileId = c.req.param('fileId');
   let db;
@@ -458,7 +412,6 @@ uploadRouter.get('/download/:fileId', async (c) => {
     return routeFailure(c, logger, err, { status: 500, message: 'Database not available' });
   }
 
-  // Check if the shared_files table exists
   const tableExists = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='shared_files'").get();
   if (!tableExists) {
     return c.json({ ok: false, error: 'File sharing not available, server needs to be restarted to run migrations' }, 500);
@@ -469,31 +422,26 @@ uploadRouter.get('/download/:fileId', async (c) => {
   } | undefined;
 
   if (!row) {
-    // Check how many entries exist for debugging
     const count = (db.prepare('SELECT COUNT(*) as c FROM shared_files').get() as { c: number }).c;
     return c.json({ ok: false, error: `File ID not found in registry (${count} files registered). The link may have expired or the server was restarted before the migration ran.` }, 404);
   }
 
   if (!fs.existsSync(row.file_path)) {
-    return c.json({ ok: false, error: `File was registered but no longer exists on disk.` /* audit 26: do not leak the absolute file_path to the client */ }, 404);
+    return c.json({ ok: false, error: `File was registered but no longer exists on disk.` /* never leak the absolute file_path to the client */ }, 404);
   }
 
-  // `?inline=1` asks for in-page rendering (Content-Disposition: inline)
-  // instead of a download. The right-dock canvas and the attachment chips use
-  // it; see the disposition rules below for which types still get it.
+  // `?inline=1` asks for in-page rendering (Content-Disposition: inline); the right-dock canvas and the
+  // attachment chips use it. The disposition rules below decide which types still get it.
   const inline = c.req.query('inline') === '1' || c.req.query('disposition') === 'inline';
   const ext = path.extname(row.filename).toLowerCase();
   const isHtml = ext === '.html' || ext === '.htm' || row.mime_type === 'text/html';
 
   let content: Buffer;
   if (inline && isHtml) {
-    // Inline the HTML's local sibling assets (relative <img>/<link>/url() refs)
-    // as data URIs so they render in the canvas, which otherwise can't resolve
-    // filesystem-relative paths and 404s every local asset. The canvas FETCHES
-    // this body and hands it to a sandboxed srcDoc iframe (CanvasView.tsx) —
-    // it is never navigated to, which is what lets the disposition below stay
-    // `attachment` without costing the canvas anything. The plain download URL
-    // (no ?inline=1) still hands over the file exactly as it is on disk.
+    // Inline the HTML's local sibling assets (relative <img>/<link>/url() refs) as data URIs: the canvas
+    // cannot resolve filesystem-relative paths. The canvas FETCHES this body into a sandboxed srcDoc iframe
+    // (CanvasView.tsx) and never navigates to it, so the disposition can stay `attachment`. The plain
+    // download URL serves the file as is.
     content = Buffer.from(inlineHtmlAssets(row.file_path), 'utf-8');
   } else {
     content = await fs.promises.readFile(row.file_path);
@@ -512,7 +460,7 @@ uploadRouter.get('/download/:fileId', async (c) => {
   });
 });
 
-// GET /render/:fileId — render a Word/Excel file to HTML for the canvas iframe.
+// GET /render/:fileId: render a Word/Excel file to HTML for the canvas iframe.
 // Office docs are binary OOXML the browser can't display, so we convert them
 // server-side (mammoth for .docx, SheetJS for spreadsheets) and serve the HTML.
 uploadRouter.get('/render/:fileId', async (c) => {
@@ -541,18 +489,17 @@ uploadRouter.get('/render/:fileId', async (c) => {
   });
 });
 
-// GET /describe/:fileId — metadata for a shared file, for the right-dock canvas.
-// Authed (returns the on-disk path + text content), unlike /download which is
-// public-by-unguessable-id. Returns the inline + download URLs, the file's
-// type, and — for text-like files under a size cap — the current text content
-// (read fresh from disk) so the canvas can render Markdown/text/code itself.
+// GET /describe/:fileId: metadata for a shared file, for the right-dock canvas. Authed (returns the on-disk
+// path and text content), unlike /download, which is public by unguessable id. Returns the inline and
+// download URLs, the file's type and, for text-like files under a size cap, the current text read fresh from
+// disk.
 const CANVAS_TEXT_EXTS = new Set([
   '.md', '.markdown', '.txt', '.text', '.json', '.csv', '.tsv', '.log',
   '.xml', '.yaml', '.yml', '.html', '.htm', '.css', '.js', '.ts', '.jsx',
   '.tsx', '.py', '.rb', '.go', '.rs', '.java', '.c', '.h', '.cpp', '.sh',
   '.sql', '.toml', '.ini', '.env', '.svg',
 ]);
-const CANVAS_TEXT_MAX_BYTES = 512 * 1024; // 512 KB — larger files render via iframe
+const CANVAS_TEXT_MAX_BYTES = 512 * 1024; // 512 KB, larger files render via iframe
 
 uploadRouter.get('/describe/:fileId', async (c) => {
   const fileId = c.req.param('fileId');
@@ -583,7 +530,7 @@ uploadRouter.get('/describe/:fileId', async (c) => {
   if (isText && stat.size <= CANVAS_TEXT_MAX_BYTES) {
     try {
       text = await fs.promises.readFile(row.file_path, 'utf-8');
-    } catch { /* leave undefined — frontend falls back to the inline URL */ }
+    } catch { /* leave undefined, frontend falls back to the inline URL */ }
   }
 
   return c.json({
@@ -596,7 +543,7 @@ uploadRouter.get('/describe/:fileId', async (c) => {
       size: stat.size,
       path: row.file_path,
       text,
-      // Relative URLs — the dashboard resolves them against its own origin.
+      // Relative URLs: the dashboard resolves them against its own origin.
       inlineUrl: `/api/upload/download/${fileId}?inline=1`,
       downloadUrl: `/api/upload/download/${fileId}`,
       // Word/Excel render to HTML via /render; null for everything else.

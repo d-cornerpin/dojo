@@ -1,7 +1,4 @@
-// ════════════════════════════════════════
-// Setup Dependencies & Permissions API
-// Used by the OOBE wizard
-// ════════════════════════════════════════
+// Setup routes for the OOBE wizard: dependencies, Ollama models, macOS permissions and agent provisioning.
 
 import { Hono } from 'hono';
 import { execSync, spawn } from 'node:child_process';
@@ -21,18 +18,16 @@ import { isVersionRefusal, plainPullError } from '../../services/ollama-version.
 import { attachIdleBound } from '../../child-idle-bound.js';
 import { automationPermissionStatus } from './automation-probe.js';
 import { getOllamaModelInfo } from '../../services/ollama.js';
-// t202 D10: the owner's 32K floor for an agent's MAIN model.
+// The 32K floor for an agent's MAIN model.
 import { refuseSmallMainModel, refuseUnfitLocalModel } from '../../agent/main-model-floor.js';
 import { localModelFit } from '../../agent/local-model-fit.js';
-// E21 parked minor: a create/rename name must not mint a second agent the case-insensitive
-// lookup cannot tell apart.
+// A create/rename name must not mint a second agent the case-insensitive lookup cannot tell apart.
 import { caseVariantClash, caseVariantClashMessage } from '../../agent/tool-helpers.js';
 
 const logger = createLogger('setup-deps');
 
 export const setupDepsRouter = new Hono();
 
-// ── Helper ──
 
 // Extend PATH to include Homebrew locations and npm-global fallback (launchd has minimal PATH)
 const EXTENDED_PATH = [
@@ -59,11 +54,9 @@ function cmdOutput(cmd: string, timeout = 5000): string {
   } catch { return ''; }
 }
 
-// ══════════════════════════════════════
 // Dependencies
-// ══════════════════════════════════════
 
-// GET /deps/check — check all dependencies
+// GET /deps/check: check all dependencies
 setupDepsRouter.get('/deps/check', async (c) => {
   const nodeVersion = cmdOutput('node --version');
   const hasBrew = cmdExists('brew');
@@ -118,7 +111,7 @@ setupDepsRouter.get('/deps/check', async (c) => {
   });
 });
 
-// POST /deps/install/:dep — install a specific dependency
+// POST /deps/install/:dep: install a specific dependency
 setupDepsRouter.post('/deps/install/:dep', async (c) => {
   const dep = c.req.param('dep');
 
@@ -126,8 +119,8 @@ setupDepsRouter.post('/deps/install/:dep', async (c) => {
     switch (dep) {
       case 'ollama': {
         if (!cmdExists('brew')) return c.json({ ok: false, error: 'Homebrew required' }, 400);
-        // Use --cask to install the full macOS app (background service, PATH setup, etc.)
-        // Falls back to formula if cask fails (e.g., headless server)
+        // --cask installs the full macOS app (background service, PATH setup); fall back to the formula
+        // when the cask fails (headless server).
         try {
           await installIdleBounded('brew install --cask ollama');
         } catch {
@@ -138,7 +131,6 @@ setupDepsRouter.post('/deps/install/:dep', async (c) => {
       case 'ollama-start': {
         // The one Ollama upkeep starts what was installed as a kind that lasts, current, with the loaded-model limit.
         void upkeep('setup');
-        // Wait a moment for it to start
         await new Promise(r => setTimeout(r, 3000));
         try {
           const resp = await fetch('http://localhost:11434', { signal: AbortSignal.timeout(5000) });
@@ -158,8 +150,8 @@ setupDepsRouter.post('/deps/install/:dep', async (c) => {
         return c.json({ ok: true, data: { installed: true } });
       }
       case 'gws': {
-        // Try global install first (works on Homebrew Apple Silicon where prefix is user-writable).
-        // If EACCES, reconfigure npm to use ~/.npm-global and retry — avoids needing sudo.
+        // Global install first (works where the npm prefix is user-writable); on EACCES, point npm at
+        // ~/.npm-global and retry, which avoids sudo.
         try {
           await installIdleBounded('npm install -g @googleworkspace/cli');
         } catch (firstErr) {
@@ -191,47 +183,33 @@ setupDepsRouter.post('/deps/install/:dep', async (c) => {
   }
 });
 
-// ══════════════════════════════════════
-// Ollama Models
-// ══════════════════════════════════════
+// Ollama models
 
-// GET /ollama/models — list installed models
+// GET /ollama/models: list installed models
 setupDepsRouter.get('/ollama/models', async (c) => {
   try {
     const resp = await fetch('http://localhost:11434/api/tags', { signal: AbortSignal.timeout(5000) });
     if (!resp.ok) return c.json({ ok: false, error: 'Ollama not responding' }, 502);
     const data = await resp.json() as { models?: Array<{ name: string; size: number; details?: { parameter_size?: string } }> };
-    return c.json({ ok: true, data: (data.models ?? []).filter((m) => m.name !== STANDARD_DECISION_MODEL.windowTag) });   // t268 (I-1): no Remove for the Dojo's own window tag
+    return c.json({ ok: true, data: (data.models ?? []).filter((m) => m.name !== STANDARD_DECISION_MODEL.windowTag) });   // no Remove for the Dojo's own window tag
   } catch (err) {
     return routeFailure(c, logger, err, { status: 502, message: 'Cannot connect to Ollama' });
   }
 });
 
-// ── Pull progress state (pollable) ──
+// Pull progress, polled by the wizard.
 
 let currentPullProgress: PullProgress | null = null;
 
-// ── t114 (CENSUS U22) — AN INSTALLER THAT IS DOWNLOADING IS NOT A WEDGED INSTALLER ──
-//
-// THE DEFECT: every dependency install was an `execSync` with a flat total cap — brew cask 180s,
-// brew formula 120s, `npx playwright install chromium` 180s, `npm install -g` 120s, gcloud-cli
-// 300s. Each of those routinely exceeds its cap on an ordinary connection while downloading
-// perfectly, and the kill is a SIGKILL of a package manager mid-write: brew and npm are left
-// partially installed behind a generic error, which is worse than not having started, because the
-// next attempt begins from a broken tree.
-//
-// Every one of these tools reports progress continuously, so the fix is the shared idle bound —
-// a download that is talking keeps going, a genuinely stuck one is still ended, and a ceiling
-// that does not re-arm keeps a runaway bounded. `execSync` becomes a spawn because a synchronous
-// call has no per-chunk signal to read; the route handlers are already async.
+// Installs run under the shared idle bound: a download that keeps printing continues, a stuck one is ended,
+// and a ceiling that does not re-arm bounds a runaway. A flat execSync cap would SIGKILL a package manager
+// mid-write and leave brew or npm partially installed. It is a spawn because execSync has no per-chunk
+// signal to read.
 const INSTALL_IDLE_MS = 90_000;
 const INSTALL_CEILING_MS = 60 * 60_000;
 
-/**
- * Run an installer under an output-idle bound, in the shape `execSync` was called in here.
- * Throws on failure like `execSync` did, with a message naming which bound fired when one did,
- * so the route's own error path keeps working unchanged.
- */
+// Run an installer under an output-idle bound. Throws on failure like execSync, with a message naming which
+// bound fired, so each route's own error path reports it.
 async function installIdleBounded(cmd: string, opts?: { cwd?: string; env?: NodeJS.ProcessEnv }): Promise<string> {
   const child = spawn('/bin/sh', ['-c', cmd], {
     ...(opts?.cwd ? { cwd: opts.cwd } : {}),
@@ -249,13 +227,13 @@ async function installIdleBounded(cmd: string, opts?: { cwd?: string; env?: Node
   }
 }
 
-// GET /ollama/pull-progress — poll current pull progress
+// GET /ollama/pull-progress: poll current pull progress
 setupDepsRouter.get('/ollama/pull-progress', (c) => {
   return c.json({ ok: true, data: currentPullProgress });
 });
 
-// POST /ollama/pull — pull a model with progress tracking (the bounded pull of t114, shared with
-// the standard-models install: `services/ollama-pull.ts`)
+// POST /ollama/pull: pull a model with progress tracking (the bounded pull in services/ollama-pull.ts,
+// shared with the standard-models install)
 setupDepsRouter.post('/ollama/pull', async (c) => {
   const body = await c.req.json().catch(() => null);
   if (!body?.model) return c.json({ ok: false, error: 'model is required' }, 400);
@@ -278,7 +256,7 @@ setupDepsRouter.post('/ollama/pull', async (c) => {
   }
 });
 
-// DELETE /ollama/models/:name — remove a model
+// DELETE /ollama/models/:name: remove a model
 setupDepsRouter.delete('/ollama/models/:name', async (c) => {
   const name = c.req.param('name');
   try {
@@ -294,27 +272,27 @@ setupDepsRouter.delete('/ollama/models/:name', async (c) => {
   }
 });
 
-// GET /ollama/standard — the Dojo's two models: their state, their tags, the install's progress lines
+// GET /ollama/standard: the Dojo's two models: their state, their tags, the install's progress lines
 setupDepsRouter.get('/ollama/standard', async (c) => {
   const state = await standardState();
   return c.json({ ok: true, data: { ...state, tags: { decision: STANDARD_DECISION_MODEL.tag, writer: STANDARD_WRITER_MODEL.tag }, lines: standardProgressLines() } });
 });
 
-// POST /ollama/standard — install or repair them (the Ollama tile's Repair button), in the background
+// POST /ollama/standard: install or repair them (the Ollama tile's Repair button), in the background
 setupDepsRouter.post('/ollama/standard', (c) => {
   void upkeep('repair');
   return c.json({ ok: true, data: { started: true } });
 });
 
-// GET /model-fit/:modelId — would the server accept this model for an agent? (v3.5 fix round 1: the setup
-// steps default to the cheapest model this says yes to.) A probe: it marks and tells nothing.
+// GET /model-fit/:modelId: would the server accept this model for an agent? The setup steps default to the
+// cheapest model that says yes. A probe: it marks and tells nothing.
 setupDepsRouter.get('/model-fit/:modelId', async (c) => {
   const modelId = c.req.param('modelId');
   const v = await localModelFit(modelId, 'agent');
   return c.json({ ok: true, data: { refused: (v && !v.unchecked && !v.fits ? v.message : null) ?? refuseSmallMainModel(modelId) } });
 });
 
-// POST /ollama/auto-configure — create Ollama provider + discover models
+// POST /ollama/auto-configure: create Ollama provider + discover models
 setupDepsRouter.post('/ollama/auto-configure', async (c) => {
   const db = getDb();
 
@@ -323,7 +301,6 @@ setupDepsRouter.post('/ollama/auto-configure', async (c) => {
   if (!provider) return c.json({ ok: false, error: 'Could not configure the local Ollama provider' }, 500);
   const providerId = provider.id;
 
-  // Discover models
   try {
     const resp = await fetch('http://localhost:11434/api/tags', { signal: AbortSignal.timeout(5000) });
     if (resp.ok) {
@@ -332,11 +309,11 @@ setupDepsRouter.post('/ollama/auto-configure', async (c) => {
       let added = 0;
 
       for (const m of models) {
-        if (m.name === STANDARD_DECISION_MODEL.windowTag) continue;   // t268 (I-1): the Dojo's own window tag, never a model row
+        if (m.name === STANDARD_DECISION_MODEL.windowTag) continue;   // the Dojo's own window tag, never a model row
         const modelId = `ollama-${m.name.replace(/[^a-z0-9]/gi, '-')}`;
         const existingModel = db.prepare('SELECT id FROM models WHERE id = ? OR api_model_id = ?').get(modelId, m.name);
         if (!existingModel) {
-          // M41: store what Ollama reports about the model; what it does not report is NULL, never a stand-in.
+          // Store what Ollama reports about the model; what it does not report is NULL, never a stand-in.
           const info = await getOllamaModelInfo(m.name, 'http://localhost:11434');
           db.prepare(`
             INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, max_output_tokens, input_cost_per_m, output_cost_per_m, is_enabled, created_at, updated_at)
@@ -355,17 +332,15 @@ setupDepsRouter.post('/ollama/auto-configure', async (c) => {
   return c.json({ ok: true, data: { providerId, modelsFound: 0, modelsAdded: 0 } });
 });
 
-// ══════════════════════════════════════
-// macOS Permissions
-// ══════════════════════════════════════
+// macOS permissions
 
-// GET /permissions/check — check macOS permission statuses
+// GET /permissions/check: check macOS permission statuses
 setupDepsRouter.get('/permissions/check', async (c) => {
   const checkPermission = (name: string): 'granted' | 'denied' | 'unknown' => {
     try {
       switch (name) {
         case 'screen': {
-          // Try screencapture — if it works, permission is granted
+          // Try screencapture; if it works, permission is granted
           const tmpFile = `/tmp/dojo-screen-check-${Date.now()}.png`;
           try {
             execSync(`screencapture -x -t png ${tmpFile}`, { timeout: 5000, env: execEnv });
@@ -377,7 +352,7 @@ setupDepsRouter.get('/permissions/check', async (c) => {
           }
         }
         case 'accessibility': {
-          // Try cliclick — if installed and works, accessibility is granted
+          // Try cliclick; if installed and works, accessibility is granted
           if (!cmdExists('cliclick')) return 'unknown';
           try {
             execSync('cliclick p:.', { timeout: 3000, env: execEnv });
@@ -410,19 +385,15 @@ setupDepsRouter.get('/permissions/check', async (c) => {
       screen_recording: checkPermission('screen'),
       accessibility: checkPermission('accessibility'),
       full_disk: checkPermission('full-disk-access'),
-      // ── THE REAL PROBE (t115, owner ruling 2026-10-06) ──
-      // Not in `checkPermission` with the other three because it is the only one that can
-      // outlive its request: it drives Messages for real, so macOS may put a consent dialog in
-      // front of the owner and the answer arrives when they click. The mechanism, its two
-      // clocks, and the argument that its AppleScript cannot mutate anything live in
-      // `./automation-probe.ts`.
+      // Not in `checkPermission` because it drives Messages for real: macOS may show a consent dialog and
+      // the answer arrives when the user clicks. Mechanism and clocks: ./automation-probe.ts.
       automation: await automationPermissionStatus(),
       serverExecPath: process.execPath,   // see `@dojo/shared/full-disk-access`
     },
   });
 });
 
-// POST /permissions/request/:perm — open system settings for a permission
+// POST /permissions/request/:perm: open system settings for a permission
 setupDepsRouter.post('/permissions/request/:perm', (c) => {
   const perm = c.req.param('perm');
 
@@ -435,11 +406,10 @@ setupDepsRouter.post('/permissions/request/:perm', (c) => {
         execSync('open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"', { timeout: 5000 });
         break;
       case 'full-disk-access': {
-        // First, attempt to read the Messages database — this triggers macOS to register
-        // the Node process in the Full Disk Access list (even though it will fail).
-        // Without this, the user won't see "node" in the FDA list to toggle on.
+        // Reading the Messages database fails, but the attempt registers the Node process in the Full Disk
+        // Access list; without it the user would see no "node" entry to toggle on.
         const chatDbPath = path.join(homeDir(), 'Library', 'Messages', 'chat.db');
-        try { fs.readFileSync(chatDbPath); } catch { /* expected to fail — the attempt is what registers it */ }
+        try { fs.readFileSync(chatDbPath); } catch { /* expected to fail, the attempt is what registers it */ }
         // Also try via sqlite3 CLI which may register Terminal
         try { execSync(`sqlite3 "${chatDbPath}" "SELECT 1" 2>/dev/null`, { timeout: 3000, env: execEnv }); } catch { /* expected */ }
         execSync('open "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"', { timeout: 5000 });
@@ -457,11 +427,9 @@ setupDepsRouter.post('/permissions/request/:perm', (c) => {
   }
 });
 
-// ══════════════════════════════════════
-// Agent Provisioning (OOBE)
-// ══════════════════════════════════════
+// Agent provisioning (OOBE)
 
-// POST /provision-agent — create or update an agent during OOBE
+// POST /provision-agent: create or update an agent during OOBE
 setupDepsRouter.post('/provision-agent', async (c) => {
   const body = await c.req.json().catch(() => null);
   if (!body?.id || !body?.name) {
@@ -476,15 +444,14 @@ setupDepsRouter.post('/provision-agent', async (c) => {
   // Check if agent already exists with this ID
   const existing = db.prepare('SELECT id, model_id FROM agents WHERE id = ?').get(id) as { id: string; model_id: string | null } | undefined;
 
-  // E21 parked minor: this door creates AND renames (both branches take a user-chosen name), so
-  // refuse a name that differs from another live agent's name only by capital letters. Re-running
-  // setup to rename an agent to a different capitalisation of its own name stays allowed.
+  // This door creates AND renames, so refuse a name that differs from another live agent's name only by
+  // capitalisation. Re-running setup to re-capitalise an agent's own name stays allowed.
   const clash = caseVariantClash(name, existing ? id : undefined);
   if (clash) return c.json({ ok: false, error: caseVariantClashMessage(clash.name) }, 400);
 
-  // t202 D10: the owner's 32K floor for an agent's MAIN model, asked before anything is written.
-  // Re-running setup on the model an existing agent already has is not a change and never refused.
-  // v3.5: and a local model that will not fit in this box's memory is refused the same way.
+  // The 32K floor for an agent's MAIN model, asked before anything is written; re-running setup on the model
+  // an existing agent already has is never refused. A local model that will not fit in memory is refused the
+  // same way.
   const refused = await refuseUnfitLocalModel(modelId, existing?.model_id ?? null, 'agent', () => refuseSmallMainModel(modelId, existing?.model_id ?? null));
   if (refused) return c.json({ ok: false, error: refused }, 400);
 
@@ -508,7 +475,7 @@ setupDepsRouter.post('/provision-agent', async (c) => {
     }
   }
 
-  // Create the agent. T11 Step 1b: OOBE provisioning is a person setting the box up.
+  // OOBE provisioning is a person setting the box up.
   db.prepare(`
     INSERT INTO agents (id, name, model_id, system_prompt_path, status, config, created_by, created_by_kind,
                         classification, created_at, updated_at)

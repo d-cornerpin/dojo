@@ -1,6 +1,4 @@
-// ════════════════════════════════════════
-// Technique API Routes
-// ════════════════════════════════════════
+// Technique API routes.
 
 import { Hono } from 'hono';
 import fs from 'node:fs';
@@ -27,7 +25,7 @@ const logger = createLogger('technique-routes');
 
 const techniquesRouter = new Hono();
 
-// GET / — list techniques
+// GET /: list techniques
 techniquesRouter.get('/', (c) => {
   const state = c.req.query('state') ?? undefined;
   const tag = c.req.query('tag') ?? undefined;
@@ -37,7 +35,7 @@ techniquesRouter.get('/', (c) => {
   return c.json({ ok: true, data: techniques });
 });
 
-// GET /:id — technique detail
+// GET /:id: technique detail
 techniquesRouter.get('/:id', (c) => {
   const id = c.req.param('id');
   const detail = getTechniqueDetail(id);
@@ -45,7 +43,7 @@ techniquesRouter.get('/:id', (c) => {
   return c.json({ ok: true, data: detail });
 });
 
-// POST / — create technique
+// POST /: create technique
 techniquesRouter.post('/', async (c) => {
   const body = await c.req.json().catch(() => null);
   if (!body?.name || !body?.displayName || !body?.instructions) {
@@ -53,10 +51,8 @@ techniquesRouter.post('/', async (c) => {
   }
 
   try {
-    // Dashboard-initiated create: skip file-reference validation so the
-    // user can save an incomplete draft and fill in supporting files /
-    // dependencies later. The trainer-tool path keeps validation on;
-    // export-time validation is the hard backstop before sharing.
+    // Dashboard-initiated create skips file-reference validation so a draft can be saved and completed
+    // later; the trainer-tool path keeps validation on, and export-time validation is the hard backstop.
     const technique = createTechnique({
       name: body.name,
       displayName: body.displayName,
@@ -75,7 +71,7 @@ techniquesRouter.post('/', async (c) => {
   }
 });
 
-// PUT /:id — update technique metadata
+// PUT /:id: update technique metadata
 techniquesRouter.put('/:id', async (c) => {
   const id = c.req.param('id');
   const body = await c.req.json().catch(() => null);
@@ -84,8 +80,7 @@ techniquesRouter.put('/:id', async (c) => {
   const technique = getTechnique(id);
   if (!technique) return c.json({ ok: false, error: 'Technique not found' }, 404);
 
-  // Accept both `name` and `displayName` for the human-readable name —
-  // the dashboard sends `displayName`, agent tools send `name`.
+  // Accept both `name` and `displayName` (the dashboard sends displayName, agent tools send name).
   const renameTo = (body.displayName ?? body.name) as string | undefined;
 
   try {
@@ -104,7 +99,7 @@ techniquesRouter.put('/:id', async (c) => {
   }
 });
 
-// PUT /:id/instructions — update TECHNIQUE.md
+// PUT /:id/instructions: update TECHNIQUE.md
 techniquesRouter.put('/:id/instructions', async (c) => {
   const id = c.req.param('id');
   const body = await c.req.json().catch(() => null);
@@ -113,14 +108,13 @@ techniquesRouter.put('/:id/instructions', async (c) => {
   const technique = getTechnique(id);
   if (!technique) return c.json({ ok: false, error: 'Technique not found' }, 404);
 
-  // Dashboard-initiated edit: skip file-reference validation (same
-  // rationale as POST / above — let users build incrementally; the
-  // export-time check is the hard backstop).
+  // Dashboard-initiated edit skips file-reference validation, as in POST /; export-time check is the
+  // backstop.
   const updated = updateTechniqueInstructions(id, body.content, body.changeSummary ?? 'Updated from dashboard', 'dashboard', { validateReferences: false });
   return c.json({ ok: true, data: updated });
 });
 
-// POST /:id/publish — publish a technique
+// POST /:id/publish: publish a technique
 techniquesRouter.post('/:id/publish', (c) => {
   const id = c.req.param('id');
   const published = publishTechnique(id);
@@ -128,7 +122,7 @@ techniquesRouter.post('/:id/publish', (c) => {
   return c.json({ ok: true, data: published });
 });
 
-// DELETE /:id — delete technique
+// DELETE /:id: delete technique
 techniquesRouter.delete('/:id', (c) => {
   const id = c.req.param('id');
   const deleted = deleteTechnique(id);
@@ -136,14 +130,14 @@ techniquesRouter.delete('/:id', (c) => {
   return c.json({ ok: true, data: { id } });
 });
 
-// GET /:id/versions — list versions
+// GET /:id/versions: list versions
 techniquesRouter.get('/:id/versions', (c) => {
   const id = c.req.param('id');
   const versions = getVersions(id);
   return c.json({ ok: true, data: versions });
 });
 
-// GET /:id/versions/:versionId — get specific version
+// GET /:id/versions/:versionId: get specific version
 techniquesRouter.get('/:id/versions/:versionId', (c) => {
   const versionId = c.req.param('versionId');
   const version = getVersion(versionId);
@@ -151,7 +145,7 @@ techniquesRouter.get('/:id/versions/:versionId', (c) => {
   return c.json({ ok: true, data: version });
 });
 
-// POST /:id/versions/:versionId/restore — restore a version
+// POST /:id/versions/:versionId/restore: restore a version
 techniquesRouter.post('/:id/versions/:versionId/restore', (c) => {
   const id = c.req.param('id');
   const versionId = c.req.param('versionId');
@@ -160,14 +154,14 @@ techniquesRouter.post('/:id/versions/:versionId/restore', (c) => {
   return c.json({ ok: true, data: { restored: true } });
 });
 
-// GET /:id/usage — usage log
+// GET /:id/usage: usage log
 techniquesRouter.get('/:id/usage', (c) => {
   const id = c.req.param('id');
   const usage = getUsage(id);
   return c.json({ ok: true, data: usage });
 });
 
-// GET /:id/files — file tree
+// GET /:id/files: file tree
 techniquesRouter.get('/:id/files', (c) => {
   const id = c.req.param('id');
   const technique = getTechnique(id);
@@ -177,7 +171,7 @@ techniquesRouter.get('/:id/files', (c) => {
   return c.json({ ok: true, data: detail?.files ?? [] });
 });
 
-// GET /:id/files/* — read a file
+// GET /:id/files/*: read a file
 techniquesRouter.get('/:id/files/*', (c) => {
   const id = c.req.param('id');
   const technique = getTechnique(id);
@@ -192,7 +186,7 @@ techniquesRouter.get('/:id/files/*', (c) => {
   return c.json({ ok: true, data: { path: filePath, content } });
 });
 
-// PUT /:id/files/* — write a file
+// PUT /:id/files/*: write a file
 techniquesRouter.put('/:id/files/*', async (c) => {
   const id = c.req.param('id');
   const technique = getTechnique(id);
@@ -210,7 +204,7 @@ techniquesRouter.put('/:id/files/*', async (c) => {
   return c.json({ ok: true, data: { path: filePath } });
 });
 
-// DELETE /:id/files/* — delete a file
+// DELETE /:id/files/*: delete a file
 techniquesRouter.delete('/:id/files/*', (c) => {
   const id = c.req.param('id');
   const technique = getTechnique(id);
@@ -225,7 +219,7 @@ techniquesRouter.delete('/:id/files/*', (c) => {
   return c.json({ ok: true, data: { path: filePath } });
 });
 
-// POST /import — import a .dojo.zip package (multipart form-data, field: file)
+// POST /import: import a .dojo.zip package (multipart form-data, field: file)
 techniquesRouter.post('/import', async (c) => {
   try {
     const formData = await c.req.formData();
@@ -243,11 +237,9 @@ techniquesRouter.post('/import', async (c) => {
   }
 });
 
-// POST /:id/export — build a shareable .dojo.zip and stream it back.
-// Validation no longer refuses: missing references get auto-resolved
-// (bundled if locatable, declared as manual_steps otherwise). Any
-// resolutions are encoded in the X-Dojo-Export-Resolutions response
-// header for the dashboard to surface as a non-blocking toast.
+// POST /:id/export: build a shareable .dojo.zip and stream it back. Missing references are auto-resolved
+// (bundled if locatable, else declared as manual_steps) and encoded in the X-Dojo-Export-Resolutions
+// response header for the dashboard to show as a non-blocking toast.
 techniquesRouter.post('/:id/export', async (c) => {
   const id = c.req.param('id');
   try {
@@ -260,9 +252,7 @@ techniquesRouter.post('/:id/export', async (c) => {
       'Content-Disposition': `attachment; filename="${filename}"`,
     };
     if (autoResolutions.length > 0) {
-      // Compact representation — the dashboard summarizes it for the
-      // toast. Header values must stay ASCII-safe; base64 of UTF-8
-      // JSON sidesteps any non-Latin characters in detail strings.
+      // Compact form for the dashboard toast; base64 of the JSON keeps the header value ASCII-safe.
       const payload = autoResolutions.map((r) => ({
         ref: r.reference.raw,
         source: r.reference.source,
@@ -270,8 +260,7 @@ techniquesRouter.post('/:id/export', async (c) => {
         detail: r.detail,
       }));
       headers['X-Dojo-Export-Resolutions'] = Buffer.from(JSON.stringify(payload), 'utf-8').toString('base64');
-      // Expose for browser fetch (matters when this ever gets fetched
-      // cross-origin; harmless in same-origin).
+      // Expose to browser fetch (matters only cross-origin).
       headers['Access-Control-Expose-Headers'] = 'X-Dojo-Export-Resolutions, Content-Disposition';
     }
     if (skippedLinks.length > 0) {
@@ -289,7 +278,7 @@ techniquesRouter.post('/:id/export', async (c) => {
   }
 });
 
-// POST /clear-session — clear trainer agent messages for a fresh session
+// POST /clear-session: clear trainer agent messages for a fresh session
 techniquesRouter.post('/clear-session', (c) => {
   try {
     clearTrainerSession();

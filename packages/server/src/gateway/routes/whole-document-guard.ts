@@ -1,8 +1,5 @@
-// A document the dashboard saves WHOLE (an agent's prompt, USER.md) must be saved on top of the text the
-// page last read. `base` is that text. The save is refused, writing nothing, when the stored text has
-// moved since (409), and a caller that names no base may not replace a saved document with a blank (400).
-// One rule for every whole-document door; the safe-sender lists and the briefing apply the same rule to
-// their own stored form.
+// A whole-document save must build on the text the page last read (`base`): refused with 409 when the stored
+// text has moved, and with 400 when no base is given and it would blank a saved document. Every door uses it.
 
 export interface DocumentRefusal { status: 400 | 409; error: string }
 

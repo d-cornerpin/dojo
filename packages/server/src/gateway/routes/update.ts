@@ -1,6 +1,4 @@
-// ════════════════════════════════════════
-// Update System: Check for and apply updates from GitHub releases
-// ════════════════════════════════════════
+// Update system: check for and apply updates from GitHub releases.
 
 import { Hono } from 'hono';
 import { execFile, execFileSync, spawn } from 'node:child_process';
@@ -16,15 +14,14 @@ import { markBootingNew, readMarker } from '../../update-state.js';
 import { rollbackTargetPaths } from '../../update/rollback-target.js';
 import { installPlatformTree, newInstallWorkDir, runNpmInstall, acquireSwapLock } from '../../update/install-tree.js';
 import { episodeSummary } from '../../update-episode.js';
-// t114 (census U14): the updater's long subprocesses are bounded by SILENCE, not by a flat
-// total. The mechanism takes an already-spawned child, so this route keeps its own spawn and
-// never borrows the agent toolbox's capability facade (which would refuse it outright).
+// The updater's long subprocesses are bounded by silence, not a flat total. The bound takes an
+// already-spawned child, so this route keeps its own spawn (the toolbox's capability facade would refuse
+// it).
 import { attachIdleBound } from '../../child-idle-bound.js';
 import { childFailureText, isUnnamedWriteFailure } from '../../update/child-failure.js';
 import { routeFailure } from './route-failure.js';
 import { cleanUpdateLeftovers } from '../../update/leftovers.js';
 import { ARTIFACT_MANIFEST_ASSET, fetchArtifactManifest, verifyArtifactAgainstManifest } from '../../update/artifact-integrity.js';
-// SWEEP CORE-2 item 3 — the owner's disk-space check, BEFORE anything is downloaded.
 import {
   measureUpdateDiskNeed, updateDiskRefusal, isOutOfSpaceError, outOfSpaceFailureMessage,
   type UpdateDiskNeed,
@@ -34,21 +31,13 @@ import { homeDir } from '../../home.js';
 // No shell anywhere: every command is a program plus an argument array.
 const execFileAsync = promisify(execFile);
 
-// ── t114 (CENSUS U14) — THE UPDATE'S LONG LEGS ARE BOUNDED BY SILENCE ──
-//
-// `curl` on a ~200 MB zip and `npm install` were each given a FLAT 120-second total, so on a slow
-// home line the box became PERMANENTLY un-updatable. Both now re-arm on output: a moving transfer
-// or install keeps its bound alive, a stuck one still dies, and the reason says SILENCE. A
-// non-re-arming ceiling sits behind each. The install leg lives in `update/install-tree.ts`
-// (`runNpmInstall`), where it now runs in a staged tree beside the live one (t197).
+// `curl` and `npm install` re-arm their bound on output (a stuck one dies, and the reason says silence),
+// with a non-re-arming ceiling behind each. The install leg is runNpmInstall in update/install-tree.ts.
 const UPDATE_DOWNLOAD_IDLE_MS = 60_000;
 const UPDATE_DOWNLOAD_CEILING_MS = 60 * 60_000;
 
-/**
- * The idle bound with NO SHELL (review minor 3). `spawn(file, argv)` hands the arguments
- * straight to `execve`, so the release asset URL — a value from outside the process — is data
- * rather than text inside a `/bin/sh -c` string.
- */
+// The idle bound with no shell: `spawn(file, argv)` hands the arguments straight to `execve`, so the release
+// asset URL (a value from outside the process) is data, never text inside a `/bin/sh -c` string.
 async function spawnIdleBounded(
   file: string, argv: readonly string[],
   opts: { idleMs: number; ceilingMs: number },
@@ -57,13 +46,9 @@ async function spawnIdleBounded(
   return attachIdleBound(child, { idleMs: opts.idleMs, ceilingMs: opts.ceilingMs });
 }
 
-/**
- * The download ARGV. `--speed-limit`/`--speed-time` is curl's OWN stall detector and the right
- * tool for this job: abort only if the transfer sits below 1 KB/s for a whole minute, which is a
- * measured fact about the transfer rather than a guess about how long a file "should" take.
- * `--connect-timeout` bounds the handshake, which is the one phase with no bytes to measure.
- * Our idle bound is the belt to curl's braces — it also covers curl itself wedging.
- */
+// The download argv. curl's own stall detector (--speed-limit/--speed-time) aborts only when the transfer
+// sits below 1 KB/s for a whole minute; --connect-timeout bounds the handshake; our idle bound also covers
+// curl wedging.
 function curlDownloadArgv(url: string, dest: string): string[] {
   return [
     '-L', '--fail',   // no -s: the progress meter on stderr is the idle bound's only liveness signal
@@ -79,30 +64,14 @@ const GITHUB_REPO = 'd-cornerpin/dojo';
 const PLATFORM_DIR = path.join(homeDir(), '.dojo', 'platform');
 const DOJO_DIR = path.join(homeDir(), '.dojo');
 
-// THIS MODULE'S OWN DIRECTORY, DERIVED THE ONLY WAY AN ESM MODULE CAN DERIVE IT.
-// `packages/server` is `"type": "module"`, so there is NO `__dirname` here at runtime — not
-// under `tsx` in development and not under plain `node` over `dist/` either. Reading one is a
-// `ReferenceError`. `getCurrentVersion()` read one for a whole release; the note on that
-// function is the full account. Same spelling as `tools/index-generator.ts` and
-// `healer/healer-agent.ts`, which is this tree's established way of asking.
+// No `__dirname` in this ESM module (`"type": "module"`), so the directory comes from import.meta.url.
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 
-// Per-update backup directories live as siblings of PLATFORM_DIR:
-//   ~/.dojo/platform                  (current install)
-//   ~/.dojo/platform.backup-2.7.16    (one per prior version)
-//   ~/.dojo/platform.backup-2.7.15
-//   ...
-// Each backup is the previous live tree itself (t197: renamed aside, not copied), easily
-// 100-200MB. Without pruning these accumulate forever and have been
-// reported to fill mac mini disks. Keep MAX_BACKUPS_TO_KEEP most recent
-// after each update (1 = the one we just made + nothing else; 2 gives
-// us a second deeper rollback option). Default 2.
+// Per-update backups are siblings of PLATFORM_DIR, each the previous live tree itself (renamed aside, not
+// copied, 100-200MB); only the MAX_BACKUPS_TO_KEEP most recent survive each update.
 const BACKUP_PREFIX = 'platform.backup-';
-// A build that failed to boot and was set aside by rollback.sh for diagnosis
-// (`platform.failed-<version>-<YYYYMMDD>-<HHMMSS>`). These are also 100-200MB
-// each and, before FA-D5, nothing ever deleted them, so a box that hit a few
-// bad updates slowly filled its disk with dead trees. They now age out on the
-// SAME prune schedule as backups (keep the newest MAX_BACKUPS_TO_KEEP).
+// A build that failed to boot, set aside by rollback.sh for diagnosis (platform.failed-<version>-<stamp>);
+// also 100-200MB, so it ages out on the same prune schedule as backups.
 const FAILED_PREFIX = 'platform.failed-';
 const MAX_BACKUPS_TO_KEEP = 2;
 
@@ -110,20 +79,12 @@ interface BackupInfo {
   name: string;
   path: string;
   mtimeMs: number;
-  /** Version parsed from the dir NAME (not mtime). See FA-D5. */
   version: string;
 }
 
-// Fast listing: stat each backup dir's mtime (single syscall per entry).
-// Pre-v2.7.19 also walked the full tree to compute byte size, which on a
-// host with many backups stalled the settings page for minutes and burst
-// past Cloudflare's 100s timeout. Sizes are no longer reported in the
-// listing - the dashboard just shows count.
-// Parse the version encoded in a directory name.
-//   platform.backup-<version>                      → <version>
-//   platform.failed-<version>-<YYYYMMDD>-<HHMMSS>  → <version>
-// (<version> itself may carry a `-preflight.N` suffix, so strip only the
-// trailing 8-digit + 6-digit timestamp rollback.sh stamps on failed builds.)
+// Listing stats mtimes only (a tree walk for sizes stalled the settings page). The version comes from the
+// dir name; <v> may carry `-preflight.N`, so only the trailing `-YYYYMMDD-HHMMSS` stamp on failed builds is
+// stripped.
 function backupVersionFromName(name: string): string {
   return name.slice(BACKUP_PREFIX.length);
 }
@@ -153,11 +114,8 @@ function listFailedBuilds(): BackupInfo[] {
   return listDirsWithPrefix(FAILED_PREFIX, failedVersionFromName);
 }
 
-// Newest first, BY PARSED VERSION (FA-D5). The dir mtime only breaks ties
-// between two dirs that parse to the same version, so a touched mtime, or a
-// prune interrupted by process.exit, can no longer restore the wrong build
-// while deleting the right one. This is the ordering both the prune (what to
-// delete) and a rollback (what to keep as the newest target) must use.
+// Newest first BY PARSED VERSION; the mtime only breaks ties, so a touched mtime or an interrupted prune
+// cannot restore the wrong build while deleting the right one. Prune and rollback both use this ordering.
 function sortNewestFirst(list: BackupInfo[]): BackupInfo[] {
   return [...list].sort((a, b) => {
     const v = compareVersions(b.version, a.version);
@@ -182,28 +140,19 @@ function backupsToPrune(keep: number): BackupInfo[] {
   ].filter(b => !targets.has(path.resolve(b.path)));
 }
 
-// Async pruning: shell out to `rm -rf` (much faster than fs.rmSync since
-// it's native C and doesn't block the event loop) and run targets in
-// parallel. Returns a promise that resolves when all deletions complete.
-// Caller decides whether to await or fire-and-forget.
+// Async pruning shells out to `rm -rf` (native, does not block the event loop) with targets in parallel; the
+// caller decides whether to await or fire-and-forget.
 async function pruneOldBackupsAsync(keep: number = MAX_BACKUPS_TO_KEEP): Promise<{ deleted: string[]; failed: Array<{ name: string; error: string }> }> {
-  // Two independent pools, each capped to `keep` newest BY VERSION (FA-D5):
-  //   platform.backup-* , real rollback targets (keep >= 1 always, so a box
-  //                        never prunes itself out of a recovery option).
-  //   platform.failed-* , broken builds rollback.sh set aside for diagnosis;
-  //                        before FA-D5 nothing deleted these and they filled
-  //                        the disk. Same schedule, same keep count.
-  // (Work dirs of a dead installer are swept at boot by update/leftovers.ts, one owner.)
+  // Two pools, each capped to the `keep` newest BY VERSION: platform.backup-* (real rollback targets; keep
+  // >= 1 so a box never prunes itself out of a recovery option) and platform.failed-* (broken builds set
+  // aside for diagnosis). Work dirs of a dead installer are swept at boot by update/leftovers.ts, one owner.
   const toDelete = backupsToPrune(keep);
   const deleted: string[] = [];
   const failed: Array<{ name: string; error: string }> = [];
 
   const results = await Promise.allSettled(
     toDelete.map(async b => {
-      // Shell `rm -rf` is dramatically faster than Node's fs.rmSync for
-      // recursive deletes on large trees (node_modules has tens of
-      // thousands of small files). Empty timeout - we want this to take
-      // however long it needs; the caller controls flow via fire-and-forget.
+      // No timeout: a large tree takes as long as it takes; callers control flow by awaiting or not.
       await execFileAsync('rm', ['-rf', b.path], { timeout: 0 });
       return b.name;
     }),
@@ -226,19 +175,14 @@ async function pruneOldBackupsAsync(keep: number = MAX_BACKUPS_TO_KEEP): Promise
   return { deleted, failed };
 }
 
-// Boot-time entry point (FA-D5): bound both backup pools on every startup so a
-// prune the post-update fire-and-forget didn't finish (it races the scheduled
-// process.exit) still completes on the next launch. Awaitable + best-effort.
+// Boot-time entry point: bounds both backup pools on every startup, so a prune the post-update
+// fire-and-forget did not finish (it races the scheduled process.exit) still completes on the next launch.
 export async function pruneOldBackupsAsyncAtBoot(): Promise<void> {
   // Side by side: a sweep that is slow or stuck never holds the backup prune back.
   await Promise.allSettled([cleanUpdateLeftovers(DOJO_DIR), pruneOldBackupsAsync()]);
 }
 
-// Module-level cleanup state. Single in-flight cleanup at a time; status
-// is pollable via GET /api/update/backups/cleanup/status. State lives in
-// memory only - if the server restarts mid-cleanup, the dashboard polls,
-// sees inProgress=false, refreshes the listing, and observes whatever
-// `rm -rf` finished before the restart.
+// One cleanup in flight, pollable via GET /api/update/backups/cleanup/status; state is memory-only.
 interface CleanupState {
   inProgress: boolean;
   startedAt: string | null;
@@ -259,31 +203,10 @@ let cleanupState: CleanupState = {
 };
 
 /**
- * WHAT THIS PLATFORM ANSWERS WHEN IT CANNOT READ ITS OWN VERSION. NOT `'0.0.0'`.
- *
- * That literal is why a real defect cost a release: it is VALID SEMVER, so it walked past all
- * three honest-absence mechanisms this tree already had — `reportVersion()` answers null only
- * for a non-version, `issueLabelsFor()` drops the `v…` label only for a non-version, and the
- * telemetry whitelist's `platform.version` admits only a bounded semver. A plausible-looking
- * lie defeats every instrument built to catch an honest absence; a sentinel re-arms all three.
- *
- * ── WHAT IT DOES AND DOES NOT REACH (corrected, F7/F8) ──
- * THREE REPORT INSTRUMENTS — not the version authority as a whole, which is how "re-arms all
- * three" above used to read. `parseVersion` clamps non-numeric segments to 0, so on the ORDERING
- * path this sentinel was indistinguishable from `'0.0.0'`: `applyUpdate`'s guard proceeded,
- * `isCurrent` matched nothing, and the rollback door refused only because `0.0.0` is lower than
- * every real tag. `versionIsOrderable` below is that path's own mechanism; each door now decides
- * what "unknown" means for itself, on the record.
- *
- * AND THOSE THREE SEE A DIFFERENT STRING. The whitelist substitutes first: `report/gather.ts`
- * puts `getCurrentVersion()` into `platform.version`, the whitelist refuses a non-semver, and
- * the STORED telemetry carries `'<unrecognised>'`. `reportVersion`/`issueLabelsFor` read the
- * row's telemetry, so they meet that, never this literal. Both non-semver, identical outcome —
- * but do not expect to find this string at those call sites, because it never gets there.
- *
- * Angle-bracketed to match `telemetry-whitelist.ts`'s `<absent>`/`<unrecognised>`, and free of
- * a `-` deliberately: `parseVersion` below reads the first `-` as a pre-release suffix, and a
- * sentinel that parses as "0 with a pre-release" is one pretending to be ordered.
+ * What this platform answers when it cannot read its own version. Not `'0.0.0'`: that is valid semver, so it
+ * would pass the honest-absence checks (reportVersion, issueLabelsFor, the telemetry whitelist, which
+ * substitutes its own marker first) that a non-version sentinel trips. Free of `-` because parseVersion
+ * reads the first `-` as a pre-release suffix. Ordering uses `versionIsOrderable`.
  */
 export const VERSION_UNREADABLE = '<unreadable>';
 
@@ -300,33 +223,14 @@ function versionUnreadable(reason: string): string {
 }
 
 /**
- * THE VERSION THIS BUILD IS. One authority, read by the update check, the rollback ordering
- * gate, the release-step ledger, the export manifest, the boot episode and — every one of them
- * published — the report tool's signature, issue header, `dojo-version:` trailer and label.
- *
- * ── THE ESM BUG, AND WHY THE SUITE COULD NOT SEE IT (T8 LIVE, D-A) ──
- * The dev branch walked up from `__dirname` inside `try { … } catch { }`. There is no
- * `__dirname` in this module — `packages/server` is `"type": "module"`, so the identifier is
- * undeclared under `tsx` AND under plain `node` over `dist/`, and reading it throws
- * `ReferenceError`. The empty `catch` ate the throw and the function answered `'0.0.0'`.
- * It survived a release because VITEST CANNOT REACH IT: vite-node wraps every module in a
- * function whose parameters include `__dirname`, so the broken line worked in the suite, which
- * read `3.1.28` while the dev box read `0.0.0` — and nothing compared the two. Live cost,
- * 2026-09-26: two public issues stamped `v0.0.0`, both report signatures keyed on `0.0.0`.
- * Full reasoning and the live evidence:
- * `__tests__/the-version-is-read-the-way-an-esm-module-must-read-it.test.ts`, which drives this
- * function in a CHILD PROCESS under the repo's real `tsx` with `typeof __dirname` printed
- * beside the answer as its control, so re-planting the bug is red rather than invisible.
- *
- * ── AND NOTHING IS SWALLOWED ──
- * Every way out that is not a version names its reason and answers the sentinel. A manifest
- * that exists and will not PARSE stops here rather than falling through to the source walk,
- * deliberately: on a packaged install a corrupt `~/.dojo/platform/package.json` is the fact
- * worth reporting, and letting a source tree that happens to be lying around answer for it is
- * how a broken install reads as a healthy one.
+ * The version this build is: one authority for the update check, rollback gate, release-step ledger, export
+ * manifest, boot episode and the report tool. No `__dirname` exists in this ESM module, so the source walk
+ * starts from MODULE_DIR. Every exit that is not a version names its reason and answers the sentinel. A
+ * manifest that exists but will not parse stops here, not at the source walk: a corrupt installed
+ * package.json is the fact worth reporting.
  */
 export function getCurrentVersion(): string {
-  // ── 1. THE INSTALLED PLATFORM. Present on every packaged install; this is production. ──
+  // 1. The installed platform (every packaged install).
   const installed = path.join(PLATFORM_DIR, 'package.json');
   try {
     if (fs.existsSync(installed)) {
@@ -338,11 +242,8 @@ export function getCurrentVersion(): string {
     return versionUnreadable(`${installed} could not be read: ${err instanceof Error ? err.message : String(err)}`);
   }
 
-  // ── 2. DEVELOPMENT. Walk up from THIS MODULE to the repository's own manifest. ──
-  // Six levels reaches the root from both layouts this module ships in:
-  // `src/gateway/routes/` and `dist/gateway/routes/`. The walk does not stop at the first
-  // `package.json` it meets — `packages/server/package.json` is `@dojo/server` at its own
-  // version, which is not the platform's — it stops at the one NAMED `dojo-platform`.
+  // 2. Development: walk up from this module to the manifest NAMED `dojo-platform` (the first package.json
+  // met is @dojo/server, not the platform). Six levels reach the root from both `src/` and `dist/` layouts.
   try {
     let dir = MODULE_DIR;
     for (let i = 0; i < 6; i++) {
@@ -367,18 +268,14 @@ export function getCurrentVersion(): string {
   );
 }
 
-// Parse "X.Y.Z" or a preflight tag "X.Y.Z-preflight.N" into a comparable shape.
-// `pre` is null for a normal (stable) release and the numeric ordinal for a
-// pre-release.
+// Parse "X.Y.Z" or "X.Y.Z-preflight.N"; `pre` is null for a stable release, else the ordinal.
 function parseVersion(v: string): { base: number[]; pre: number | null } {
   const s = v.replace(/^v/, '');
   const dash = s.indexOf('-');
   const basePart = dash === -1 ? s : s.slice(0, dash);
   const preTag = dash === -1 ? '' : s.slice(dash + 1);
-  // Clamp non-numeric segments to 0 (FA-D7). A malformed base ("3.x.1", a
-  // hand-edited tag) would otherwise yield NaN, which BOTH scrambles the
-  // preflight sort (NaN comparisons are never < or >) AND slips past
-  // applyUpdate's downgrade guard, since `NaN <= 0` is false.
+  // Non-numeric segments clamp to 0: NaN would scramble the preflight sort and slip past applyUpdate's
+  // downgrade guard (`NaN <= 0` is false).
   const base = basePart.split('.').map(seg => {
     const n = Number(seg);
     return Number.isFinite(n) ? n : 0;
@@ -391,19 +288,14 @@ function parseVersion(v: string): { base: number[]; pre: number | null } {
   return { base, pre };
 }
 
-// A well-formed release tag: vX.Y.Z with an optional pre-release suffix.
-// Junk tags (a hand-created "nightly", a mis-typed tag) are filtered out
-// BEFORE sorting so a NaN-parsed non-semver tag can never win the preflight
-// selection and shadow the real latest release (FA-D7).
+// A well-formed release tag: vX.Y.Z with an optional pre-release suffix. Junk tags are filtered out BEFORE
+// sorting so a NaN-parsed non-semver tag can never win the preflight selection.
 export function isValidVersionTag(tag: string): boolean {
   return /^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(tag.trim());
 }
 
-// Semver-with-prerelease precedence. Same base version: a stable release
-// (no suffix) outranks any pre-release of it (3.1.6 > 3.1.6-preflight.5), and
-// two pre-releases compare by ordinal (-preflight.2 > -preflight.1). A higher
-// base always wins (3.1.7-preflight.1 > 3.1.6). Plain X.Y.Z vs X.Y.Z behaves
-// exactly as before, so Stable-channel comparisons are unchanged.
+// Semver precedence: a stable release outranks any pre-release of the same base (3.1.6 > 3.1.6-preflight.5),
+// pre-releases compare by ordinal, and a higher base always wins.
 export function compareVersions(a: string, b: string): number {
   const pa = parseVersion(a);
   const pb = parseVersion(b);
@@ -418,47 +310,19 @@ export function compareVersions(a: string, b: string): number {
 }
 
 /**
- * CAN THIS MODULE ORDER THIS VERSION AT ALL? (F7.)
- *
- * The clamp above is right for SORTING release tags — FA-D7's reason is that `NaN` scrambles the
- * preflight sort and slips past the downgrade guard, since `NaN <= 0` is false. It is wrong as an
- * answer to "which of these is newer", because it makes an unreadable version INDISTINGUISHABLE
- * FROM `0.0.0`: `parseVersion(VERSION_UNREADABLE)` is `{ base: [0], pre: null }`, byte-for-byte
- * what `'0.0.0'` produces. So the sentinel built because a plausible-looking lie defeats every
- * honest-absence instrument became one itself, on the single path with no mechanism of its own.
- *
- * This is that mechanism. It asks what `compareVersions` cannot answer from a number — which has
- * no room for "I do not know" — so each caller decides what unknown MEANS for its own door
- * instead of inheriting `0.0.0` by accident.
+ * Can this module order this version at all? The clamp in parseVersion makes an unreadable version
+ * indistinguishable from `0.0.0` and a number has no room for "unknown", so each caller decides what unknown
+ * means for its own door.
  */
 export function versionIsOrderable(v: string): boolean {
   return isValidVersionTag(v);
 }
 
 /**
- * THE ROLLBACK ORDERING CHECK (PHASE-5 T6B). `/rollback` took the caller's
- * `tag` and interpolated it straight into a GitHub API URL — so a path-shaped
- * tag selected a DIFFERENT artifact, which was then rsynced with `--delete`
- * over the running install — and it never asked whether the target was
- * actually an EARLIER version. Two arms, and each is here for its own reason:
- *
- *   SHAPE — reaching another repository's zip through a crafted tag was never
- *   a capability anyone granted, so refusing it strengthens a guard rather
- *   than narrowing one. `isValidVersionTag` already existed and was not called.
- *
- *   ORDER — this door's job is going BACK. Forward movement is `applyUpdate`,
- *   which resolves the channel, records the update episode and drives the
- *   boot-attempt/auto-rollback machinery; a "rollback" to a newer tag bypassed
- *   all of it, so the refusal names that door and redirects the capability
- *   rather than removing it. MEASURED NARROWING, on the record: installing a
- *   specific NEWER-but-not-latest release from the Settings list is refused
- *   after this change — reachable instead by channel + Check for updates.
- *
- * A legitimate rollback must still work — it is the recovery path — and that is
- * a positive clause, not an assumption. The watchdog's AUTOMATIC rollback does
- * not come through here at all (it shells `~/.dojo/scripts/rollback.sh` against
- * a local backup), so this gate cannot stand between a wedged box and its
- * recovery. Full reasoning: `update/__tests__/artifact-integrity.test.ts`.
+ * The rollback gate. SHAPE: the tag goes into a GitHub API URL and the artifact is rsynced with `--delete`
+ * over the running install, so only a version tag may pass. ORDER: this door only goes BACK; forward
+ * movement is `applyUpdate` (channel, boot-attempt and auto-rollback machinery), so a newer tag is refused.
+ * The watchdog's automatic rollback shells rollback.sh against a local backup and never comes through here.
  */
 export function authorizeRollbackTarget(
   tag: string,
@@ -469,12 +333,8 @@ export function authorizeRollbackTarget(
     return { ok: false, error: `"${trimmed}" is not a version tag (expected e.g. "v3.1.16").` };
   }
   const targetVersion = trimmed.replace(/^v/, '');
-  // FAIL CLOSED ON AN UNREADABLE INSTALLED VERSION (F7). This door's whole question — is the
-  // target EARLIER than what is installed — has no answer on a box whose manifest could not be
-  // read. The clamp supplied one anyway: the sentinel parses to `0.0.0`, so every real tag
-  // compared `>= 0` and the door refused — the right outcome by accident, which an edit to
-  // `parseVersion` would silently flip. Refusing is also safe: the watchdog's AUTOMATIC rollback
-  // shells `rollback.sh` against a local backup and never comes through here.
+  // Fail closed on an unreadable installed version: "is the target earlier?" has no answer then. Refusing is
+  // safe, since the watchdog's automatic rollback never comes through here.
   if (!versionIsOrderable(currentVersion)) {
     return {
       ok: false,
@@ -492,7 +352,6 @@ export function authorizeRollbackTarget(
   return { ok: true, targetVersion };
 }
 
-// ── Update channel (Stable / Preflight) ──
 
 export type UpdateChannel = 'stable' | 'preflight';
 const UPDATE_CHANNEL_KEY = 'update_channel';
@@ -523,13 +382,9 @@ interface GhRelease {
   assets: Array<{ name: string; browser_download_url: string; size: number }>;
 }
 
-// Resolve the release a channel should update to.
-//   stable    → GET /releases/latest (GitHub excludes drafts + pre-releases),
-//               i.e. exactly the pre-channel behavior.
-//   preflight → list releases (which DOES include pre-releases), drop drafts,
-//               and return the highest by version precedence — so a Preflight
-//               box rides the newest pre-release, and automatically takes a
-//               Stable release once its version overtakes the latest pre-release.
+// Resolve the release a channel should update to. stable: GET /releases/latest (GitHub excludes drafts and
+// pre-releases). preflight: list releases (pre-releases included), drop drafts, take the highest by version
+// precedence, so a Preflight box rides the newest pre-release and takes a Stable one once it overtakes it.
 async function resolveLatestRelease(channel: UpdateChannel): Promise<GhRelease | null> {
   if (channel === 'stable') {
     const res = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`, {
@@ -545,14 +400,13 @@ async function resolveLatestRelease(channel: UpdateChannel): Promise<GhRelease |
   });
   if (!res.ok) throw new Error(`GitHub API: ${res.status}`);
   const all = await res.json() as GhRelease[];
-  // Filter out drafts AND any non-semver tag (FA-D7) so junk can't win the sort.
+  // Filter out drafts and non-semver tags so junk cannot win the sort.
   const candidates = all.filter(r => !r.draft && isValidVersionTag(r.tag_name));
   if (candidates.length === 0) return null;
   candidates.sort((a, b) => compareVersions(b.tag_name, a.tag_name));
   return candidates[0];
 }
 
-// ── Reusable core (shared by the routes and the agent's update tools) ──
 
 export interface UpdateCheckResult {
   currentVersion: string;
@@ -564,26 +418,18 @@ export interface UpdateCheckResult {
   updateAvailable: boolean;
   downloadUrl?: string | null;
   downloadSize?: number | null;
-  /** Which channel this result was resolved against. */
   channel?: UpdateChannel;
   /**
-   * SWEEP CORE-2 item 3 — the disk-space pre-flight for THIS release, measured at check time.
-   *
-   * It rides the check result rather than living behind its own route for one reason: the
-   * check is the moment the owner decides, and the artifact's own size — the only component of
-   * the need that cannot be measured locally — is in the release metadata this call already
-   * holds. A separate endpoint would have meant a second GitHub round-trip to learn a number
-   * we were already looking at. Absent when there is no release to measure against.
+   * The disk-space pre-flight for this release, measured at check time (the artifact's size is in the
+   * release metadata this call already holds). Absent when there is no release to measure against.
    */
   disk?: UpdateDiskNeed;
   error?: string;
 }
 
 /**
- * Read-only update check: compares the installed version against the latest
- * release on the given channel (defaults to the saved channel). Never throws —
- * network/API problems come back as `error` with `updateAvailable: false` so
- * callers can surface them plainly.
+ * Read-only update check against the latest release on the given channel (default: the saved one). Never
+ * throws: network and API problems come back as `error` with `updateAvailable: false`.
  */
 export async function checkForUpdate(channel?: UpdateChannel): Promise<UpdateCheckResult> {
   const ch = channel ?? getUpdateChannel();
@@ -626,33 +472,22 @@ export async function checkForUpdate(channel?: UpdateChannel): Promise<UpdateChe
   }
 }
 
-// ── Cached daily update snapshot ──
-// The update checker (services/update-checker.ts) writes a fresh snapshot here
-// once a day so the agent's check_for_update tool can read it without a GitHub
-// round-trip per call (and without us spending a model call to push updates at
-// anyone). The snapshot holds both the installed and latest versions plus the
-// release notes, so "is there a new version + what's in it" is one DB read.
+// Cached daily update snapshot: services/update-checker.ts writes one a day so the agent's check_for_update
+// tool reads it without a GitHub round-trip per call.
 
 const UPDATE_CACHE_KEY = 'update_check_cache';
 
 export interface UpdateCacheEntry extends UpdateCheckResult {
-  /** When this snapshot was taken (ISO). */
   checkedAt: string;
-  /** Consecutive failed daily checks; 0 when the last check succeeded (FA-D6). */
+  /** Consecutive failed daily checks; 0 when the last check succeeded. */
   consecutiveCheckFailures?: number;
   /** True once the check pipeline has failed UPDATE_CHECK_FAILURE_THRESHOLD times running. */
   checkPipelineFailing?: boolean;
 }
 
-// ── Update-check pipeline health (FA-D6) ──
-// The daily check never throws, a GitHub outage, a renamed repo, or a
-// sustained rate-limit comes back as `error` with updateAvailable:false.
-// Left unobserved, a box can silently strand OFF updates (fixes included) for
-// weeks. We count CONSECUTIVE failed checks; once they cross the threshold we
-// raise a notify-only health signal (Healer diagnostic + owner-visible line).
-// This is a signal about the CHECK PIPELINE, not an update notification: the
-// no-push design is intact, we never auto-update and never nudge "update
-// available" on our own.
+// Update-check pipeline health: the daily check never throws (an outage comes back as `error`), so
+// CONSECUTIVE failures are counted and, past the threshold, raise a notify-only health signal. It is not an
+// update notice.
 export const UPDATE_CHECK_FAILURE_THRESHOLD = 7;
 
 const FAIL_COUNT_KEY = 'update_check_consecutive_failures';
@@ -677,7 +512,6 @@ function clearConfig(key: string): void {
 
 export interface UpdateCheckHealth {
   consecutiveFailures: number;
-  /** consecutiveFailures >= UPDATE_CHECK_FAILURE_THRESHOLD */
   failing: boolean;
   threshold: number;
   /** When the pipeline first crossed the threshold (ISO), or null if healthy. */
@@ -685,7 +519,6 @@ export interface UpdateCheckHealth {
   lastError: string | null;
 }
 
-/** Current update-check pipeline health, read from config. Never throws. */
 export function getUpdateCheckHealth(): UpdateCheckHealth {
   const consecutiveFailures = Number(readConfigStr(FAIL_COUNT_KEY) ?? '0') || 0;
   return {
@@ -697,10 +530,8 @@ export function getUpdateCheckHealth(): UpdateCheckHealth {
   };
 }
 
-// Fold one check outcome into the counter. A successful check resets the whole
-// failure state (the reset rule: cleared on the first success); a failed one
-// bumps the count and, the FIRST time it crosses the threshold, stamps
-// failingSince exactly once (alert-once, mirroring FA-W4/FA-X1). Never throws.
+// Fold one check outcome into the counter: a success resets all failure state; a failure bumps the count
+// and, the first time it crosses the threshold, stamps failingSince once (alert once). Never throws.
 function recordUpdateCheckOutcome(result: UpdateCheckResult): UpdateCheckHealth {
   try {
     if (!result.error) {
@@ -725,11 +556,9 @@ function recordUpdateCheckOutcome(result: UpdateCheckResult): UpdateCheckHealth 
   return getUpdateCheckHealth();
 }
 
-/** Hit GitHub, write the result to the DB cache, and return it. */
 export async function refreshUpdateCache(): Promise<UpdateCacheEntry> {
   const result = await checkForUpdate();
-  // Fold the outcome into the consecutive-failure counter (FA-D6) before we
-  // build the cache entry, so the entry carries the current pipeline health.
+  // Fold the outcome into the failure counter first, so the cache entry carries the current pipeline health.
   const health = recordUpdateCheckOutcome(result);
   const entry: UpdateCacheEntry = {
     ...result,
@@ -749,7 +578,6 @@ export async function refreshUpdateCache(): Promise<UpdateCacheEntry> {
   return entry;
 }
 
-/** Read the last cached snapshot, or null if the daily check hasn't run yet. */
 export function getUpdateCache(): UpdateCacheEntry | null {
   try {
     const row = getDb()
@@ -768,16 +596,13 @@ export interface ApplyUpdateResult {
   previousVersion?: string;
   newVersion?: string;
   backupDir?: string;
-  /** Suggested HTTP status for the route wrapper when ok=false. */
   status?: number;
 }
 
 /**
- * DOWNLOAD, VERIFY, UNPACK AND INSTALL ONE RELEASE (t197). The one sequence the update and the
- * rollback route share; the old code carried it twice, and two copies of the most dangerous
- * sequence in the product drift. Everything lands in a work dir BESIDE the live tree (same
- * volume, so the swap is a rename) and `installPlatformTree` switches it in whole or not at all.
- * The work dir is removed on every exit; one orphaned by a crash is pruned at the next boot.
+ * Download, verify, unpack and install one release: the one sequence the update and rollback routes share.
+ * Everything lands in a work dir beside the live tree (same volume, so the swap is a rename) and
+ * installPlatformTree switches it in whole or not at all. The work dir is removed on every exit.
  */
 async function downloadAndInstall(o: {
   zipUrl: string; manifestUrl: string | undefined; targetVersion: string; currentVersion: string;
@@ -795,20 +620,17 @@ async function downloadAndInstall(o: {
     await spawnIdleBounded('curl', curlDownloadArgv(o.zipUrl, zipPath), {
       idleMs: UPDATE_DOWNLOAD_IDLE_MS, ceilingMs: UPDATE_DOWNLOAD_CEILING_MS,
     });
-    // INTEGRITY BEFORE ANYTHING IS UNPACKED (PHASE-5 T6B). A release with no manifest is
-    // installed and recorded as unverified — refusing those would end the rollback path to
-    // every release published before manifests existed. Reasoning: `update/artifact-integrity.ts`.
+    // Integrity before anything is unpacked. A release with no manifest is installed and recorded as
+    // unverified: refusing those would end the rollback path to every release that predates manifests.
     const verdict = await verifyArtifactAgainstManifest(zipPath, await fetchArtifactManifest(o.manifestUrl));
     if (verdict.outcome === 'refused') return { ok: false, message: `REFUSED — ${verdict.reason}. ${kept}`, status: 502 };
 
-    // No `-q` and NO flat total: `unzip -o` prints a line per file, and each line re-arms the idle
-    // bound, so a slow Mac that is still unpacking is never failed by a clock (R25/R27). The output
-    // is streamed through the bounded spawner, which never kills for size and holds it in a
-    // safe-length string, so the 1 MiB buffer overflow that `-q` once dodged cannot come back.
+    // No `-q` and no flat total: `unzip -o` prints a line per file and each re-arms the idle bound, so a
+    // slow Mac still unpacking is never failed by a clock; the bounded spawner also keeps the output from
+    // overflowing a 1 MiB buffer.
     await spawnIdleBounded('unzip', ['-o', zipPath, '-d', work], {
       idleMs: UPDATE_DOWNLOAD_IDLE_MS, ceilingMs: UPDATE_DOWNLOAD_CEILING_MS,
     });
-    // The zip is dojo-platform/{platform,scripts,...}; only platform/ is the installed tree.
     const staged = path.join(work, 'dojo-platform', 'platform');
     if (!fs.existsSync(path.join(staged, 'package.json'))) {
       return { ok: false, message: `The download does not contain a dojo-platform/platform tree. ${kept}`, status: 500 };
@@ -835,10 +657,10 @@ async function downloadAndInstall(o: {
 }
 
 /**
- * The maintenance scripts (~/.dojo/scripts: rollback.sh and its siblings) live beside platform/
- * in the package, so the platform swap does not carry them. Each file is replaced by a rename of
- * a complete copy, never truncated in place: a half-written rollback.sh is a recovery path that
- * fails exactly when it is needed. Best-effort: never fails an otherwise-good update.
+ * The maintenance scripts (~/.dojo/scripts: rollback.sh and siblings) live beside platform/ in the package,
+ * so the platform swap does not carry them. Each file is replaced by a rename of a complete copy, never
+ * truncated in place: a half-written rollback.sh fails exactly when it is needed. Best-effort: never fails
+ * an otherwise-good update.
  */
 function refreshMaintenanceScripts(src: string, dest: string): void {
   try {
@@ -857,9 +679,8 @@ function refreshMaintenanceScripts(src: string, dest: string): void {
 }
 
 /**
- * After a successful swap: refresh the bundled watchdog (so the watchdog that supervises the
- * new build is the one shipped with it), prune old trees (keep 2, owner decision 21), then
- * flip the record to booting-new and hand the restart to launchd.
+ * After a successful swap: refresh the bundled watchdog (so the one supervising the new build ships with
+ * it), prune old trees (keep 2), flip the record to booting-new and hand the restart to launchd.
  */
 async function finishAndRestart(kind: 'update' | 'rollback', from: string, to: string): Promise<void> {
   try {
@@ -874,7 +695,7 @@ async function finishAndRestart(kind: 'update' | 'rollback', from: string, to: s
     logger.warn(`Backup prune after ${kind} failed (non-fatal)`, { error: err instanceof Error ? err.message : String(err) });
   });
   logger.info(`${kind} complete`, { from, to });
-  // D-F: the boot sentinel + watchdog take the episode from here.
+  // The boot sentinel and watchdog take the episode from here.
   markBootingNew();
   setTimeout(() => {
     logger.info(`Restarting server after ${kind}`);
@@ -883,10 +704,8 @@ async function finishAndRestart(kind: 'update' | 'rollback', from: string, to: s
 }
 
 /**
- * Download + install the latest release, then schedule a process restart
- * (launchd brings us back up). Production installs only. Shared by the
- * POST /apply route and the agent's apply_update tool. The restart is
- * scheduled internally on success, mirroring the original route behavior.
+ * Download and install the latest release, then schedule a process restart (launchd brings us back up).
+ * Production installs only. Shared by POST /apply and the agent's apply_update tool.
  */
 export async function applyUpdate(channel?: UpdateChannel): Promise<ApplyUpdateResult> {
   const ch = channel ?? getUpdateChannel();
@@ -898,7 +717,6 @@ export async function applyUpdate(channel?: UpdateChannel): Promise<ApplyUpdateR
   }
 
   try {
-    // 1. Resolve the channel's target release + its download URL
     let release: GhRelease | null;
     try {
       release = await resolveLatestRelease(ch);
@@ -915,11 +733,8 @@ export async function applyUpdate(channel?: UpdateChannel): Promise<ApplyUpdateR
     }
 
     const latestVersion = release.tag_name.replace(/^v/, '');
-    // "ALREADY UP TO DATE" IS A CLAIM, AND AN UNREADABLE VERSION CANNOT SUPPORT IT (F7). This
-    // is the one door where proceeding is the SAFE answer to an unknown: a box that cannot read
-    // its own manifest is a broken install, and the channel's latest is the repair. Same outcome
-    // the clamp produced, now a branch with a reason, a log line and a clause. What must never
-    // happen is the other arm — "Already up to date" about a version nobody could read.
+    // An unreadable installed version cannot support "Already up to date": here proceeding is the safe
+    // answer, since the channel's latest repairs a broken install.
     if (!versionIsOrderable(currentVersion)) {
       logger.warn('installing over a box whose own version could not be read', {
         currentVersion, latestVersion, channel: ch,
@@ -929,17 +744,9 @@ export async function applyUpdate(channel?: UpdateChannel): Promise<ApplyUpdateR
       return { ok: true, message: 'Already up to date', newVersion: currentVersion };
     }
 
-    // ── 1b. SWEEP CORE-2 item 3 — THE DISK-SPACE PRE-FLIGHT, BEFORE A SINGLE BYTE. ──
-    //
-    // Placed here on purpose: after the release metadata is in hand (so the artifact's own size
-    // is a fact rather than an estimate) and before the download, the unzip, the staged copy and
-    // the swap. Refusing HERE is strictly safer than the migration chain's refusal downstream,
-    // which the RESTORE-PATH work measured as protective precisely because nothing had been
-    // applied: refusing before the episode EXISTS means there is not even an episode to roll
-    // back. Nothing is downloaded, nothing is copied, and `markPendingUpdate` is never called.
-    //
-    // It is measured again here rather than trusting the check's copy, because the owner may
-    // have clicked ten minutes after looking, and a disk fills.
+    // Disk-space pre-flight before a single byte, once the release metadata is in hand (the artifact's size
+    // is a fact): refusing leaves no update episode to roll back. Measured again here, since a disk fills
+    // after the check.
     const disk = measureUpdateDiskNeed({ artifactBytes: zipAsset.size ?? 0 });
     const diskRefusal = updateDiskRefusal(disk);
     if (diskRefusal) {
@@ -948,7 +755,6 @@ export async function applyUpdate(channel?: UpdateChannel): Promise<ApplyUpdateR
         shortfallBytes: disk.shortfallBytes, dbBytes: disk.dbBytes,
         artifactBytes: disk.artifactBytes, platformBytes: disk.platformBytes,
       });
-      // 507 Insufficient Storage: the one status that says this without a paragraph.
       return { ok: false, message: diskRefusal, status: 507 };
     }
 
@@ -970,10 +776,8 @@ export async function applyUpdate(channel?: UpdateChannel): Promise<ApplyUpdateR
   } catch (err) {
     const msg = childFailureText(err);
     logger.error('Update failed', { error: msg });
-    // SWEEP CORE-2 item 3, requirement (3): a mid-update failure for space says SO, in plain
-    // words. `curl`, `unzip`, `cp` and `rsync` each report a full disk differently and none of
-    // those shapes is a sentence — "Update failed: ENOSPC" tells the owner nothing he can act
-    // on, and the one thing he could have done about it is the one thing it did not say.
+    // A mid-update failure for space says so in plain words: curl, unzip, cp and rsync each report a full
+    // disk differently and none of those shapes is a sentence the owner can act on.
     if (isOutOfSpaceError(err)) {
       return { ok: false, message: outOfSpaceFailureMessage(msg), status: 507 };
     }
@@ -983,13 +787,11 @@ export async function applyUpdate(channel?: UpdateChannel): Promise<ApplyUpdateR
 
 export const updateRouter = new Hono<AppEnv>();
 
-// ── Check for updates ──
 
 updateRouter.get('/check', async (c) => {
   return c.json({ ok: true, data: await checkForUpdate() });
 });
 
-// ── Update channel (Stable / Preflight) ──
 
 updateRouter.get('/channel', (c) => {
   return c.json({ ok: true, data: { channel: getUpdateChannel() } });
@@ -1003,26 +805,18 @@ updateRouter.post('/channel', async (c) => {
   }
   setUpdateChannel(channel);
   logger.info('Update channel changed', { channel });
-  // Refresh the daily cache for the new channel so the UI AND the agent's
-  // check_for_update tool (which reads that cache) are immediately consistent
-  // with the switch — no stale old-channel snapshot.
+  // Refresh the daily cache so the UI and the agent's check_for_update tool agree with the switch.
   const check = await refreshUpdateCache();
   return c.json({ ok: true, data: { channel, check } });
 });
 
-// ── Current version ──
 
 updateRouter.get('/version', (c) => c.json({ ok: true, data: { version: getCurrentVersion(), episode: episodeSummary() } }));
 
-// ── The DATA backup: did the last update leave a way back? ──
-//
-// Distinct from `/backups` above, which lists copies of the APP (`platform.backup-*`).
-// Restoring one of those puts the old code back and does not touch the database — so
-// after a chain of migrations it does not undo anything the update did to the data.
-// The only thing that undoes THAT is the pre-migration snapshot, and until this route
-// existed nothing in the product could tell anyone whether one had been made. The
-// answer is recorded by db/migration-backup.ts on the boot that ran the chain, so it
-// survives the restart the update needs.
+// The DATA backup: did the last update leave a way back? Unlike `/backups` (copies of the APP, which restore
+// old code and leave the database alone), the pre-migration snapshot is what undoes the migrations' changes
+// to the data. It is recorded by db/migration-backup.ts on the boot that ran the chain, so it survives the
+// update's restart.
 updateRouter.get('/db-backup', (c) => {
   try {
     return c.json({ ok: true, data: { backup: readLastMigrationBackup(getDb()) } });
@@ -1031,7 +825,6 @@ updateRouter.get('/db-backup', (c) => {
   }
 });
 
-// ── List recent releases (for rollback) ──
 
 updateRouter.get('/releases', async (c) => {
   const currentVersion = getCurrentVersion();
@@ -1075,7 +868,6 @@ updateRouter.get('/releases', async (c) => {
   }
 });
 
-// ── Rollback to a specific version ──
 
 updateRouter.post('/rollback', async (c) => {
   const currentVersion = getCurrentVersion();
@@ -1085,8 +877,7 @@ updateRouter.post('/rollback', async (c) => {
   }
 
   const targetTag = (body.tag as string).trim();
-  // PHASE-5 T6B: the ordering + shape gate. Nothing is fetched until the target
-  // is a version tag AND an earlier one than the installed build.
+  // Shape and ordering gate: nothing is fetched until the target is an earlier version tag.
   const authorized = authorizeRollbackTarget(targetTag, currentVersion);
   if (!authorized.ok) {
     return c.json({ ok: false, error: authorized.error }, 400);
@@ -1099,7 +890,6 @@ updateRouter.post('/rollback', async (c) => {
   }
 
   try {
-    // Fetch the specific release
     const response = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/tags/${targetTag}`, {
       headers: { 'Accept': 'application/vnd.github.v3+json' },
       signal: AbortSignal.timeout(10000),
@@ -1142,7 +932,6 @@ updateRouter.post('/rollback', async (c) => {
   }
 });
 
-// ── Apply update ──
 
 updateRouter.post('/apply', async (c) => {
   const result = await applyUpdate();
@@ -1153,13 +942,9 @@ updateRouter.post('/apply', async (c) => {
   return c.json({ ok: true, data: { message, ...rest } });
 });
 
-// ── Backup listing + manual cleanup ──
-// Auto-prune runs after every update/rollback (keeps the last 2). This
-// endpoint pair gives the user a way to inspect and free space on demand
-// for installs where backups have already piled up.
-
-// Fast listing - mtime + name only, no tree walks. Returns within ms even
-// with hundreds of backups on disk.
+// Backups: auto-prune runs after every update/rollback (keeps the last 2); this pair lets the user inspect
+// and free space on demand. The listing is mtime and name only, so it returns in ms even with hundreds on
+// disk.
 updateRouter.get('/backups', (c) => {
   try {
     const backups = listPlatformBackups();
@@ -1181,8 +966,7 @@ updateRouter.get('/backups', (c) => {
   }
 });
 
-// Cleanup: fire-and-forget. Returns 202 immediately; the actual `rm -rf`
-// runs in the background. Dashboard polls GET /backups/cleanup/status.
+// Cleanup returns 202 at once; `rm -rf` runs in the background (poll /backups/cleanup/status).
 updateRouter.post('/backups/cleanup', async (c) => {
   if (cleanupState.inProgress) {
     return c.json({
@@ -1192,16 +976,14 @@ updateRouter.post('/backups/cleanup', async (c) => {
   }
 
   const body = await c.req.json().catch(() => ({} as { keep?: number }));
-  // The newest rollback copy is never cleaned away (t286): a request that would remove it is refused.
+  // The newest rollback copy is never cleaned away: a request that would remove it is refused.
   if (typeof body.keep === 'number' && body.keep < 1) {
     return c.json({ ok: false, error: 'The newest rollback copy is always kept, so at least 1 backup must be kept.' }, 400);
   }
   const keep = typeof body.keep === 'number' && body.keep >= 0 ? Math.floor(body.keep) : MAX_BACKUPS_TO_KEEP;
 
-  // Snapshot the target count up front so the dashboard can show progress
-  // ("Cleaning up 8 backups...") even before the first deletion completes.
-  // The prune deletes all-but-`keep` of BOTH pools (backups AND failed
-  // builds, FA-D5), so count both or the progress number under-reports.
+  // Snapshot the target count up front so the dashboard can show progress. The prune deletes all-but-`keep`
+  // of BOTH pools (backups and failed builds), so count both or the number under-reports.
   const backupCount = listPlatformBackups().length;
   const failedCount = listFailedBuilds().length;
   const targetCount = backupsToPrune(keep).length;
@@ -1227,9 +1009,7 @@ updateRouter.post('/backups/cleanup', async (c) => {
     error: null,
   };
 
-  // Run the prune as fire-and-forget. The Promise updates cleanupState
-  // on completion; the response returns immediately so Cloudflare's 100s
-  // budget is never an issue regardless of how long rm -rf takes.
+  // Fire-and-forget so Cloudflare's 100s budget is never an issue however long rm -rf takes.
   pruneOldBackupsAsync(keep)
     .then(({ deleted, failed }) => {
       cleanupState = {
@@ -1266,8 +1046,7 @@ updateRouter.post('/backups/cleanup', async (c) => {
   }, 202);
 });
 
-// Poll endpoint for the dashboard. Returns the latest cleanup snapshot;
-// inProgress=true means a cleanup is still running.
+// Poll endpoint: the latest cleanup snapshot; inProgress=true means a cleanup is still running.
 updateRouter.get('/backups/cleanup/status', (c) => {
   const remaining = listPlatformBackups().length;
   return c.json({

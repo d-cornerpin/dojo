@@ -71,11 +71,8 @@ systemRouter.get('/system/logs', (c) => {
   return c.json({ ok: true, data: entries });
 });
 
-// GET /system/watchers — status of Gmail, Outlook, and Teams watchers.
-// Pre-2026-04-30 watcher state was completely invisible — silent failures
-// on a stale OAuth token or broken poll left the user with no signal that
-// new emails weren't being delivered. This endpoint exposes everything
-// the dashboard Health page needs to diagnose at a glance.
+// GET /system/watchers: status of the Gmail, Outlook and Teams watchers, so a stale OAuth token or a broken
+// poll is visible on the Health page.
 systemRouter.get('/system/watchers', async (c) => {
   try {
     const [{ getGmailWatcherStatus }, { getOutlookWatcherStatus }, { getTeamsWatcherStatus }] = await Promise.all([
@@ -96,7 +93,7 @@ systemRouter.get('/system/watchers', async (c) => {
   }
 });
 
-// GET /system/time — current server time and timezone
+// GET /system/time: current server time and timezone
 systemRouter.get('/system/time', (c) => {
   const now = new Date();
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -111,16 +108,11 @@ systemRouter.get('/system/time', (c) => {
   });
 });
 
-// og-preview fetches a URL SERVER-SIDE and the client auto-fires it for every
-// http(s) link in any rendered message, including untrusted inbound email /
-// iMessage / agent output. Without validation that is an SSRF: a planted URL
-// could make the server probe 127.0.0.1, 169.254.169.254 (cloud metadata), or
-// LAN hosts. The address-class judgement used to live here as a private copy;
-// PHASE-0 T11 extracted it to agent/net-guard.ts so the agent's outbound web
-// tools and this route share ONE owner of "may the server fetch this URL?".
-// Redirect hops are still re-checked individually (see the loop below).
+// og-preview fetches a URL server-side for every link in rendered (possibly untrusted) messages, so it must
+// refuse private targets (SSRF). agent/net-guard.ts is the one owner of that judgement; each redirect hop is
+// re-checked.
 
-// GET /og-preview?url=... — fetch Open Graph metadata for link previews
+// GET /og-preview?url=...: fetch Open Graph metadata for link previews
 systemRouter.get('/og-preview', async (c) => {
   const url = c.req.query('url');
   if (!url) return c.json({ ok: false, error: 'url parameter required' }, 400);
@@ -187,12 +179,8 @@ systemRouter.get('/og-preview', async (c) => {
   }
 });
 
-// POST /system/reset-idle-sessions — resets every agent whose status is
-// 'idle'. Used by the V2CutoverNotice's "Reset all idle sessions" button
-// (Part XI / Phase 9). Returns a count breakdown.
-//
-// Mirrors the per-agent reset_session tool's archive-and-mark-boundary
-// logic but in bulk. Skips agents that are working/paused/terminated.
+// POST /system/reset-idle-sessions: bulk reset of every idle agent (working, paused and terminated are
+// skipped), returning a count breakdown.
 systemRouter.post('/system/reset-idle-sessions', async (c) => {
   const db = getDb();
   const idle = db.prepare("SELECT id, name FROM agents WHERE status = 'idle'").all() as Array<{ id: string; name: string }>;
@@ -201,21 +189,18 @@ systemRouter.post('/system/reset-idle-sessions', async (c) => {
   let reset = 0;
   const errors: Array<{ agentId: string; error: string }> = [];
 
-  // Archive + boundary marker per idle agent. Inline the same logic as
-  // reset_session in agent/tools.ts:2817 so we don't have to refactor that
-  // big switch block to extract a shared helper.
+  // Same archive and boundary logic as the reset_session tool (agent/tools/cat/session.ts), inlined here.
   const { archiveAgentConversation } = await import('../../vault/archive.js');
 
   for (const agent of idle) {
     try {
-      // force=true (FA-V1): this is a session-boundary reset like reset_session, so
-      // always archive the pre-reset tail even if an earlier unprocessed archive exists.
+      // force=true: a session-boundary reset always archives the pre-reset tail, even if an earlier unprocessed
+      // archive exists.
       try { archiveAgentConversation(agent.id, true); } catch { /* archive is best-effort */ }
       const now = new Date();
       const boundary = now.toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
       db.prepare(
-        // Clear the session-scoped scratchpad (t140: the continuity brief it also cleared is gone)
-        // (matches agents.ts / reset_session so all reset paths behave alike).
+        // Clear the session-scoped scratchpad, as agents.ts and reset_session do, so all reset paths behave alike.
         "UPDATE agents SET session_started_at = ?, updated_at = ?, config = json_remove(COALESCE(config, '{}'), '$.scratchpad') WHERE id = ?",
       ).run(boundary, boundary, agent.id);
 
@@ -227,16 +212,11 @@ systemRouter.post('/system/reset-idle-sessions', async (c) => {
         rehomeUnclaimedEngineEvents(agent.id, boundary);
       } catch { /* best-effort carry-over, never block the reset */ }
 
-      // SMALLFRY 2026-09-26: this sweep wrote the boundary and forgot NEITHER the loaded tool
-      // docs NOR the turn-continuity scratch — the only door of five that missed both. The
-      // comment above says the reset "matches agents.ts / reset_session so all reset paths
-      // behave alike"; this is the line that makes that sentence true.
+      // Forget the loaded tool docs and the turn-continuity scratch, as every other session reset does.
       await (await import('../../agent/session-forget.js')).forgetSessionScratch(agent.id);
 
-      // The row's created_at is stamped by the writer at insert time, which is at-or-after
-      // `boundary` (computed a few lines up), so the divider still lands inside the new
-      // session for every `created_at >= session_started_at` query. The broadcast below
-      // keeps quoting `boundary` for the UI.
+      // The row's created_at is stamped at insert, at or after `boundary`, so the divider lands inside the new
+      // session for every `created_at >= session_started_at` query.
       const markerId = uuidv4();
       insertMessageIfAbsent({ id: markerId, agentId: agent.id, role: 'system', content: NEW_SESSION_DIVIDER });
       try {
@@ -269,10 +249,8 @@ systemRouter.post('/system/reset-idle-sessions', async (c) => {
   });
 });
 
-// POST /system/debug-toast — fire a chat:error broadcast for testing the
-// dashboard's 3-tier toast system (INFO green / WARN orange / ERROR red).
-// Body: { agentId: string, severity: 'info'|'warning'|'error', message: string }
-// Auth-protected via the gateway's middleware (same as the rest of /system/*).
+// POST /system/debug-toast: fire a chat:error broadcast to exercise the dashboard's three-tier toasts.
+// Body: { agentId, severity: 'info'|'warning'|'error', message }.
 systemRouter.post('/debug-toast', async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const agentId = (body.agentId as string | undefined) ?? getPrimaryAgentId();
@@ -289,18 +267,9 @@ systemRouter.post('/debug-toast', async (c) => {
   return c.json({ ok: true, data: { agentId, severity, message } });
 });
 
-// POST /system/restart - exit the process so launchd brings it back. Useful
-// as a remote-admin escape valve when a setting that genuinely requires a
-// restart was changed, or when the server has gotten into a stuck/leaky
-// state and the user can't easily SSH to the host.
-//
-// In production the server runs under launchd with KeepAlive=true, so a
-// process exit triggers a fresh start within ~1-2s. In dev (tsx watch),
-// process.exit kills the dev server and the user has to re-run `npm run
-// dev` - the dashboard's confirm dialog warns about this.
-//
-// We return 200 first, then exit on a short delay so the response body
-// flushes before the socket closes.
+// POST /system/restart: exit the process so launchd (KeepAlive) brings it back within a couple of seconds.
+// Under `tsx watch` the exit stops the dev server, which the dashboard's confirm dialog warns about.
+// The 200 is returned first and the exit deferred so the response body flushes before the socket closes.
 systemRouter.post('/system/restart', async (c) => {
   const isDev = process.env.NODE_ENV !== 'production';
   // Broadcast a system marker so the dashboard can show a "restarting…"
@@ -311,8 +280,7 @@ systemRouter.post('/system/restart', async (c) => {
     mode: isDev ? 'dev' : 'production',
   });
 
-  // Defer the exit so this response can flush. 300ms is plenty even on
-  // a loaded server.
+  // Defer the exit so this response can flush.
   setTimeout(() => {
     // eslint-disable-next-line no-console
     console.log('[system/restart] exiting on user request');

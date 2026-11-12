@@ -1,17 +1,6 @@
-// ════════════════════════════════════════
-// Twilio routes (v2.9.18)
-//
-// Two slices in one file:
-//
-//   /api/twilio/webhook/* — public, called by Twilio's servers,
-//     authenticated via the X-Twilio-Signature header (HMAC-SHA1
-//     of the canonical URL + sorted POST params).
-//
-//   /api/twilio/* (everything else) — JWT-protected by the gateway's
-//     auth middleware. The dashboard's Channels → Twilio card uses
-//     these for connect / disconnect / settings / number CRUD /
-//     safe-sender CRUD.
-// ════════════════════════════════════════
+// Twilio routes, two slices in one file: /api/twilio/webhook/*: public, called by Twilio's servers,
+// authenticated by the X-Twilio-Signature header (HMAC-SHA1 of the canonical URL plus sorted POST params).
+// /api/twilio/* (everything else): JWT-protected by the gateway's auth middleware.
 
 import { Hono } from 'hono';
 import type { AppEnv } from '../server.js';
@@ -61,16 +50,9 @@ async function verifySignatureOr401(c: import('hono').Context, params: Record<st
     return c.json({ ok: false, error: 'Twilio not configured.' }, 401);
   }
   const signature = c.req.header('X-Twilio-Signature') ?? '';
-  // Twilio signs the EXACT URL it dialed, including scheme + host +
-  // path + query string. Reconstruct from the headers behind the
-  // tunnel — x-forwarded-proto and x-forwarded-host are what the
-  // user-visible URL was. Read x-forwarded-host before host because
-  // any reverse proxy in the chain (Vite's dev proxy with
-  // changeOrigin=true, certain cloudflared configurations, etc.) may
-  // rewrite Host to an internal hostname while preserving the
-  // original in x-forwarded-host. Production (Cloudflare in front
-  // of the platform directly) sets x-forwarded-host too, so this
-  // path is correct in both modes.
+  // Twilio signs the EXACT URL it dialed (scheme, host, path, query), so rebuild it from x-forwarded-proto
+  // and x-forwarded-host, read before host because a proxy in the chain (Vite dev proxy, some cloudflared
+  // setups) may rewrite Host to an internal name. Production behind Cloudflare sets x-forwarded-host too.
   const proto = c.req.header('x-forwarded-proto') ?? 'https';
   const host = c.req.header('x-forwarded-host') ?? c.req.header('host') ?? '';
   const fullUrl = `${proto}://${host}${c.req.path}`;
@@ -106,9 +88,8 @@ twilioRouter.post('/webhook/sms', async (c) => {
     const u = formParams[`MediaUrl${i}`];
     if (u) {
       mediaUrls.push(u);
-      // Twilio declares the media MIME alongside each URL; carried through
-      // so the MMS ingest (D15) can name files / pick categories without
-      // trusting only the download response header.
+      // Twilio declares the media MIME alongside each URL; carried through so the MMS ingest need not trust
+      // only the download response header.
       mediaContentTypes.push(formParams[`MediaContentType${i}`] ?? '');
     }
   }
@@ -124,18 +105,14 @@ twilioRouter.post('/webhook/sms', async (c) => {
       messageSid, from, to, error: err instanceof Error ? err.message : String(err),
     });
   }
-  // Empty TwiML response - Twilio expects 200 with valid TwiML; we
-  // ack without sending an immediate auto-reply. The agent's reply
-  // (if any) goes via the outbound sendSms path.
+  // Empty TwiML: Twilio expects 200 with valid TwiML; any agent reply goes out via the outbound sendSms
+  // path.
   return c.text('<Response/>', 200, { 'Content-Type': 'application/xml' });
 });
 
 // ── Public: Voice inbound webhook (TwiML) ──────────────────────────
-// Stubbed for now - the voice handler in step 4 will return TwiML
-// that connects the call to our Media Streams WebSocket. For now
-// the route exists so the auth middleware can route it correctly
-// and unknown inbound calls land in the voicemail fallback once
-// the voice infra is wired.
+// Voice inbound webhook (TwiML): connects the call to the Media Streams WebSocket, or applies the
+// unknown-caller policy (voicemail or reject).
 
 twilioRouter.post('/webhook/voice', async (c) => {
   const formText = await c.req.text();
@@ -155,11 +132,8 @@ twilioRouter.post('/webhook/voice', async (c) => {
   const to = formParams.To ?? '';
   const direction = formParams.Direction ?? 'inbound';
 
-  // Outbound calls (placed via /Calls.json by the agent) ALSO POST
-  // here to fetch initial TwiML. Recognize via the Direction
-  // parameter Twilio supplies. For those we always connect to the
-  // Media Streams handler - the agent already authorized the call
-  // by placing it.
+  // Outbound calls placed by the agent also POST here for their initial TwiML (Direction says so); those
+  // always connect to the Media Streams handler, since the agent authorized the call by placing it.
   const webhook = getWebhookBase();
   if (!webhook.ok) {
     return c.text(twimlReject('busy'), 200, { 'Content-Type': 'application/xml' });
@@ -196,9 +170,7 @@ twilioRouter.post('/webhook/voicemail-recording', async (c) => {
   const formParams = Object.fromEntries(new URLSearchParams(formText)) as Record<string, string>;
   const denied = await verifySignatureOr401(c, formParams);
   if (denied) return denied;
-  // The recording itself is stored on Twilio (we don't fetch the
-  // audio - transcripts only). Persist the call log entry with the
-  // recording metadata so the dashboard surfaces it.
+  // The recording stays on Twilio (transcripts only); persist the call log entry with its metadata.
   try {
     const callSid = formParams.CallSid;
     const recordingSid = formParams.RecordingSid;
@@ -240,8 +212,7 @@ twilioRouter.post('/webhook/voicemail-transcription', async (c) => {
         SET transcript = ?
         WHERE call_sid = ?
       `).run(transcript, callSid);
-      // Surface to the primary agent as a notification-shape message
-      // (the owner decides whether the agent should act on it).
+      // Surface to the primary agent as a notification-shaped message (the owner decides whether it acts).
       const { getPrimaryAgentId, getOwnerName } = await import('../../config/platform.js');
       const { getAgentRuntime } = await import('../../agent/runtime.js');
       const primaryId = getPrimaryAgentId();
@@ -250,14 +221,10 @@ twilioRouter.post('/webhook/voicemail-transcription', async (c) => {
         const content = voicemailNoticeContent(ownerName, to, from, transcript, callSid);
         const { v4: uuidv4 } = await import('uuid');
         const msgId = uuidv4();
-        // T4/OR4: the routing facts this producer already knows (phone channel, the
-        // caller as sender, and the authorized:false verdict below) are stamped IN the
-        // insert, so the row is never briefly unstamped. recordInboundMeta still records
-        // the full meta blob for the resolver.
-        // t106 — AND THIS DOOR HAD NO CONVERSATION AT ALL: it left `conversation_id` NULL, so
-        // its RELOAD path was wrong too and no frame field alone could fix it. The identity is
-        // the caller's number, the shape `twilio/call-session.ts` resolves for the same person
-        // ringing the same number — so voicemail and live call share one thread, not an orphan.
+        // The routing facts known here (phone channel, caller as sender, authorized:false) are stamped IN
+        // the insert, so the row is never briefly unstamped; recordInboundMeta records the full meta blob
+        // for the resolver. The conversation is keyed by the caller's number, as twilio/call-session.ts does
+        // for the same caller, so voicemail and live call share one thread.
         const { resolveOrCreateConversation } = await import('../../memory/conversations.js');
         const conversationId = resolveOrCreateConversation(primaryId, {
           channel: 'phone', provider: 'twilio', counterpartyId: from ?? null, threadRoot: null,
@@ -272,11 +239,9 @@ twilioRouter.post('/webhook/voicemail-transcription', async (c) => {
           senderId: from,
           authorized: false,
         });
-        // v3.1.10 (attribution redesign §5, Phase 4) — stamp structured origin so
-        // this notification rides the awareness lane by data, not by the legacy
-        // [SOURCE: …] prose shim. A voicemail is a phone-channel notification ABOUT
-        // the owner's number; the agent surfaces it, never auto-replies to the
-        // caller, so authorized:false. This retires the last prose-only producer.
+        // Structured origin puts this notification on the awareness lane by data. A voicemail is a
+        // phone-channel notification ABOUT the owner's number: the agent surfaces it and never auto-replies,
+        // so authorized:false.
         const { recordInboundMeta } = await import('../../agent/v2/inbound-channel.js');
         recordInboundMeta(msgId, {
           channel: 'phone',
@@ -293,7 +258,7 @@ twilioRouter.post('/webhook/voicemail-transcription', async (c) => {
           message: {
             id: msgId, agentId: primaryId, role: 'user' as const,
             content,
-            // t106 — the same binding the insert just used; the live feed reads THIS frame.
+            // The same binding the insert just used; the live feed reads this frame.
             conversationId,
             tokenCount: null, modelId: null, cost: null, latencyMs: null,
             createdAt: new Date().toISOString(),
@@ -324,9 +289,8 @@ twilioRouter.post('/webhook/voice-status', async (c) => {
     const callSid = formParams.CallSid;
     const callStatus = formParams.CallStatus;
     if (callSid && callStatus) {
-      // Update the call log row's status. Most rows are created with
-      // status='in-progress' by the WS handler when the call starts;
-      // this records terminal states (completed/no-answer/busy/failed).
+      // Record terminal call states (completed/no-answer/busy/failed); the WS handler creates the row as
+      // 'in-progress'.
       getDb().prepare(`
         UPDATE twilio_call_log
         SET status = ?
@@ -493,7 +457,7 @@ twilioRouter.delete('/safe-senders/voice/:address', (c) => {
   return c.json({ ok: true, data: { totalSenders: next.length } });
 });
 
-// ── Recent calls (basic call log surface, step 9 will expand) ──
+// ── Recent calls ──
 
 twilioRouter.get('/calls/recent', (c) => {
   const rawLimit = Number(c.req.query('limit') ?? 50);

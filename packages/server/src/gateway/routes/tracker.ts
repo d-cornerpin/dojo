@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { createProject, getProject, listProjects, createTask, getTask, listTasksPage, updateTask, closeProjectAndOpenTasks, resolveTaskId, formatResolveError, setTaskStatusResult, broadcastTaskSettled } from '../../tracker/schema.js';
 import { getDb } from '../../db/connection.js';
 import { taskScope, projectScope, type TrackerStatus } from '../../work/tracker-view.js';
-// SWEEP CORE-2 item 3 — the schedule's fire time has ONE writing module.
+// The schedule's fire time has one writing module.
 import { setNextRun } from '../../work/next-run.js';
 import { armScheduleOnOwnerSave } from '../../tracker/finished-task-schedule.js';
 import { VERSION_GAP_REPORT_KEY } from '../../tracker/version-gap-reconcile.js';
@@ -21,46 +21,21 @@ import { routeFailure } from './route-failure.js';
 const logger = createLogger('tracker-routes');
 const trackerRouter = new Hono();
 
-// ── Dashboard-only system-agent filter ──
-//
-// Projects/tasks owned by internal sensei agents (Dreamer's nightly
-// vault cycles, the PM's bookkeeping, Healer's injury triage) are
-// engine artifacts the user never asked for and shouldn't see in
-// their kanban. Filtered out of the dashboard list endpoints by
-// default; agent-side tools (work_update(action="list"), the PM agent's
-// monitor loops) still see them — internal agents need to keep
-// coordinating with each other for the platform to work.
-//
-// Resolution strategy is two-pronged because system-agent identity is
-// fuzzy across installs and time:
-//   (1) Config-table keys (pm_agent_id, healer_agent_id, dreamer_agent_id)
-//       — stable per install, portable across renames, the right
-//       source of truth for "who's the current PM."
-//   (2) Legacy name match (HIDDEN_AGENT_NAMES) — catches stale agents
-//       from prior sessions whose IDs aren't current but whose
-//       projects still exist (the DB shows ~5 historical Dreamer rows
-//       across reincarnations). Names are stable defaults from the
-//       platform spec.
-//
-// Override with ?includeSystem=true for debugging.
-// v2.9.22: the actual hidden-agent set lives in config/platform.ts as
-// getDashboardHiddenAgentIds() so the same definition is also reachable
-// from non-route code (the auto-create gate in schema.ts uses it).
+// Projects and tasks owned by internal system agents (Dreamer, PM, Healer) are engine artifacts: the
+// dashboard list endpoints hide them by default (?includeSystem=true shows them); agent-side tools still see
+// them. The set is getDashboardHiddenAgentIds() (config/platform.ts), also used by the auto-create gate.
 function hiddenAgentIdSet(): Set<string> {
   return getDashboardHiddenAgentIds();
 }
 
-// The repeat units a schedule may name — the engine's accepted set; the
-// dashboard's dropdown is a subset of it.
+// The repeat units the engine accepts; the dashboard's dropdown offers a subset.
 const REPEAT_UNITS = new Set([
   'minutes', 'hours', 'days', 'weeks', 'months', 'years', 'weekdays', 'specific_days',
 ]);
 
-// A plain-words reason the schedule the dashboard sent cannot run, or null when it can.
-// The check is about the INPUT, not the run: a start the engine cannot parse, an interval
-// that is not a whole number of at least 1, a unit the form never offers, or an interval
-// and a unit given without the other. Each of these would otherwise land as a "waiting"
-// schedule that never fires, so it is refused before the first write.
+// A plain-words reason the schedule the dashboard sent cannot run, or null when it can: an unparseable
+// start, an interval that is not a whole number of at least 1, an unknown unit, or an interval and unit not
+// given together. Each would otherwise store a "waiting" schedule that never fires, so it is refused first.
 function scheduleInputError(body: Record<string, unknown>): string | null {
   const start = body.scheduled_start;
   const interval = body.repeat_interval;
@@ -85,9 +60,8 @@ function scheduleInputError(body: Record<string, unknown>): string | null {
   return null;
 }
 
-// ── Projects ──
 
-// GET /projects — list all projects (filtered to user-facing only)
+// GET /projects: list all projects (filtered to user-facing only)
 trackerRouter.get('/projects', (c) => {
   const status = c.req.query('status');
   const includeSystem = c.req.query('includeSystem') === 'true';
@@ -98,7 +72,7 @@ trackerRouter.get('/projects', (c) => {
   return c.json({ ok: true, data: projects });
 });
 
-// GET /projects/:id — project detail with tasks
+// GET /projects/:id: project detail with tasks
 trackerRouter.get('/projects/:id', (c) => {
   const id = c.req.param('id');
   const project = getProject(id);
@@ -110,7 +84,7 @@ trackerRouter.get('/projects/:id', (c) => {
   return c.json({ ok: true, data: project });
 });
 
-// POST /projects — create project
+// POST /projects: create project
 trackerRouter.post('/projects', async (c) => {
   const body = await c.req.json().catch(() => null);
 
@@ -135,12 +109,8 @@ trackerRouter.post('/projects', async (c) => {
         }))
       : undefined;
 
-    // createdBy must be a real agent id — tasks.assigned_to has a FK to
-    // agents(id), and schema.createProject defaults task.assignedTo to
-    // createdBy when a task has none. Hardcoding the literal string
-    // 'dashboard' triggered FOREIGN KEY constraint failed on every
-    // dashboard-initiated project. Use the primary agent (the user's
-    // surrogate) as the default actor for dashboard mutations.
+    // createdBy must be a real agent id (tasks.assigned_to has a FK to agents(id) and createProject defaults
+    // the task assignee to it), so the primary agent stands in for the dashboard user.
     const result = createProject({
       origin: { kind: 'user_direct', sourceMessageId: null, turn: null, convKey: null },
       title: body.title,
@@ -158,10 +128,9 @@ trackerRouter.post('/projects', async (c) => {
   }
 });
 
-// ── Tasks ──
 
-// GET /tasks: list tasks with filters (hides internal sensei tasks). Re-review 2 (S4): the finished ones are
-// paged (`closedBefore` + `closedBeforeId` for the page before; `closedHasOlder` says one exists).
+// GET /tasks: list tasks with filters (hides internal system-agent tasks). The finished ones are paged
+// (`closedBefore` + `closedBeforeId` for the page before; `closedHasOlder` says one exists).
 trackerRouter.get('/tasks', (c) => {
   const status = c.req.query('status') ?? undefined;
   const assignedTo = c.req.query('assignedTo') ?? undefined;
@@ -175,15 +144,14 @@ trackerRouter.get('/tasks', (c) => {
   if (priority) filter.priority = priority;
   if (projectId) filter.projectId = projectId;
 
-  // Re-review 2 (S4): paged. The live tasks come whole on the first page; the finished ones a page at a
-  // time, newest closed first, with the cursor of the oldest one the caller holds for the page before.
+  // The live tasks come whole on the first page; the finished ones a page at a time, newest closed first,
+  // with the cursor of the oldest one the caller holds for the page before.
   const closedBefore = c.req.query('closedBefore');
   const closedBeforeId = c.req.query('closedBeforeId');
-  // v2.9.22: tasks of the system agents (PM/Healer/Dreamer) are platform mechanics the owner should not
-  // see on the board, so they are hidden by default; one in dispute (thrown back, awaiting the owner's
-  // verdict, or a STALEMATE task) stays visible so he can intervene (production incident 2026-06-07).
-  // Re-review 3 (M3): the hiding happens in the page's own query, before the page is cut, so a page of
-  // hidden tasks can never stall the "show older" cursor. ?includeSystem=true shows them all.
+  // System-agent tasks are platform mechanics hidden from the board by default; one in dispute (thrown back,
+  // awaiting the owner's verdict, or a STALEMATE task) stays visible so he can intervene. The hiding happens
+  // in the page's own query, before the page is cut, so a page of hidden tasks can never stall the "show
+  // older" cursor.
   const page = listTasksPage(Object.keys(filter).length > 0 ? filter : undefined, {
     ...(closedBefore && closedBeforeId ? { before: { at: closedBefore, id: closedBeforeId } } : {}),
     ...(includeSystem ? {} : { hideAgentIds: hiddenAgentIdSet() }),
@@ -191,7 +159,7 @@ trackerRouter.get('/tasks', (c) => {
   return c.json({ ok: true, data: page.tasks, closedHasOlder: page.closedHasOlder });
 });
 
-// GET /tasks/:id — task detail
+// GET /tasks/:id: task detail
 trackerRouter.get('/tasks/:id', (c) => {
   const id = c.req.param('id');
   const task = getTask(id);
@@ -203,7 +171,6 @@ trackerRouter.get('/tasks/:id', (c) => {
   return c.json({ ok: true, data: task });
 });
 
-// POST /tasks/:id/observation — user-added observation entry from dashboard (Phase B.0)
 trackerRouter.post('/tasks/:id/observation', async (c) => {
   const rawId = c.req.param('id');
   let body: { note?: string };
@@ -258,15 +225,13 @@ trackerRouter.post('/tasks/:id/decision', async (c) => {
   return c.json({ ok: true, data: { to: r.to, text: r.text } });
 });
 
-// GET /tasks/:id/log — structured audit log entries for a task (Phase B.0)
+// GET /tasks/:id/log: structured audit log entries for a task
 trackerRouter.get('/tasks/:id/log', async (c) => {
   const rawId = c.req.param('id');
   const limitParam = c.req.query('limit');
   const limit = limitParam ? Math.min(Math.max(parseInt(limitParam, 10) || 100, 1), 500) : 100;
   const kindsParam = c.req.query('kinds');
-  // PHASE-2 T10G: the vocabulary has ONE owner (`TaskLogEntryKind`) instead of being restated
-  // here. The inline copy had already drifted — it was missing the two verdict kinds the trail
-  // now names — which is the same two-declarations-of-one-list problem this phase exists to end.
+  // The vocabulary has one owner (`TaskLogEntryKind`) instead of being restated here.
   const kinds = kindsParam
     ? (kindsParam.split(',').map((k) => k.trim()).filter(Boolean) as TaskLogEntryKind[])
     : undefined;
@@ -286,7 +251,7 @@ trackerRouter.get('/tasks/:id/log', async (c) => {
   }
 });
 
-// POST /tasks — create standalone task
+// POST /tasks: create standalone task
 trackerRouter.post('/tasks', async (c) => {
   const body = await c.req.json().catch(() => null);
 
@@ -294,12 +259,10 @@ trackerRouter.post('/tasks', async (c) => {
     return c.json({ ok: false, error: 'title (string) is required' }, 400);
   }
 
-  // FA-S4: reject a specific_days schedule with an empty/invalid day allowlist
-  // BEFORE the row is created, so a config error fails loudly instead of
-  // silently degrading to a single fire then complete (the scheduler's
-  // specific_days walk can't advance with no allowed weekday). Only matters
-  // when a schedule is actually written (scheduled_start present). Mirrors the
-  // agent-side creator check in work_open(kind="task").
+  // Reject a specific_days schedule with an empty or invalid day allowlist BEFORE the row is created, so a
+  // config error fails loudly instead of degrading to a single fire then complete (the scheduler's
+  // specific_days walk cannot advance with no allowed weekday). Mirrors the agent-side check in
+  // work_open(kind="task").
   if (body.scheduled_start && body.repeat_unit === 'specific_days') {
     const { parseDaysOfWeek } = await import('../../scheduler/engine.js');
     if (!parseDaysOfWeek((body.repeat_days_of_week ?? null) as string | null)) {
@@ -324,7 +287,7 @@ trackerRouter.post('/tasks', async (c) => {
       title: body.title,
       description: body.description ?? undefined,
       assignedTo: body.assignedTo ?? undefined,
-      // Same FK reason as POST /projects above — 'dashboard' isn't an agent.
+      // Same FK reason as POST /projects above: 'dashboard' isn't an agent.
       createdBy: getPrimaryAgentId(),
       priority: body.priority ?? undefined,
       stepNumber: body.stepNumber ?? undefined,
@@ -332,20 +295,16 @@ trackerRouter.post('/tasks', async (c) => {
       phase: body.phase ?? undefined,
     });
 
-    // T34: the view `createTask` just broadcast. The schedule below lands AFTER it, so the
-    // settle frame at the end of this handler compares against this one — same seam, same
-    // staleness, same fix as the agent's `work_open` door.
+    // The view `createTask` just broadcast. The schedule below lands AFTER it, so the settle frame at the
+    // end of this handler compares against this one (same seam as the agent's `work_open` door).
     const announced = getTask(taskId);
 
-    // Handle scheduling if provided
     if (body.scheduled_start) {
       const { calculateNextRun } = await import('../../scheduler/engine.js');
-      // v2.5.2 — specific_days requires the day-of-week allowlist.
-      // Dashboard sends repeat_days_of_week as a CSV string (e.g. "1,3").
+      // specific_days requires the day-of-week allowlist; the dashboard sends repeat_days_of_week as a CSV
+      // string.
       const repeatDaysOfWeek = (body.repeat_days_of_week ?? null) as string | null;
-      // v2.5.45 — anchor_time. Defaults to scheduled_start when caller
-      // doesn't provide one (the typical UI path: pick a start time,
-      // check "repeat", and the same time becomes the anchor).
+      // anchor_time defaults to scheduled_start when the caller gives none (pick a start, check "repeat").
       const anchorTime = (body.anchor_time ?? body.scheduled_start) as string;
       const taskForCalc = {
         id: taskId,
@@ -379,17 +338,14 @@ trackerRouter.post('/tasks', async (c) => {
         },
       }), 'dashboard: schedule recorded on task create', { taskId });
 
-      // SWEEP CORE-1 CT2 — AND THIS IS THE DOOR THE OWNER'S OWN BRIEFS COME THROUGH.
-      // It has no `kind` field and never has, which is exactly why the deliverable declaration
-      // is DERIVED from the task's definition here rather than asked for as a parameter: a
-      // requirement that only the tool door can express would leave every schedule the owner
-      // creates himself permanently undeclared, and that is the population his 2026-08-07
-      // incident came from. Same call, same rules, same audit row as the tool door.
+      // This door has no `kind` field, so the deliverable declaration is DERIVED from the task's definition
+      // rather than asked for: otherwise every schedule the owner creates himself would stay undeclared.
+      // Same call, rules and audit row as the tool door.
       const { declareDeliverableOnSchedule } = await import('../../work/deliverable-declaration.js');
       declareDeliverableOnSchedule(taskId);
     }
 
-    // T34: the LAST frame for this id must equal the stored row. No-op when nothing settled.
+    // The LAST frame for this id must equal the stored row; a no-op when nothing settled.
     broadcastTaskSettled(taskId, announced);
 
     const task = getTask(taskId);
@@ -419,7 +375,7 @@ function ownerMoveRefusal(id: string, status: string): string | null {
   return isStateConflict(result) ? `the task moved to "${result.actual}" while this request was in flight` : `${result.reason}: ${result.detail}`;
 }
 
-// PUT /tasks/:id — update task
+// PUT /tasks/:id: update task
 trackerRouter.put('/tasks/:id', async (c) => {
   const id = c.req.param('id');
   const body = await c.req.json().catch(() => null);
@@ -428,18 +384,15 @@ trackerRouter.put('/tasks/:id', async (c) => {
     return c.json({ ok: false, error: 'Request body is required' }, 400);
   }
 
-  // Check task exists
   const existing = getTask(id);
   if (!existing) {
     return c.json({ ok: false, error: 'Task not found' }, 404);
   }
 
-  // FA-S4: this route fully overwrites the schedule from the body when
-  // scheduled_start is set, so the effective unit/days are exactly the body's.
-  // Reject a specific_days schedule with an empty/invalid day allowlist before
-  // touching the row, so it fails loudly instead of degrading to a single fire
-  // then complete. `!= null` covers both undefined (no schedule edit) and null
-  // (the remove-schedule branch), neither of which writes specific_days.
+  // This route fully overwrites the schedule from the body when scheduled_start is set, so the effective
+  // unit and days are the body's. Reject a specific_days schedule with an empty or invalid allowlist before
+  // touching the row. `!= null` covers undefined (no schedule edit) and null (remove-schedule), neither of
+  // which writes days.
   if (body.scheduled_start != null && body.repeat_unit === 'specific_days') {
     const { parseDaysOfWeek } = await import('../../scheduler/engine.js');
     if (!parseDaysOfWeek((body.repeat_days_of_week ?? null) as string | null)) {
@@ -450,9 +403,9 @@ trackerRouter.put('/tasks/:id', async (c) => {
     }
   }
 
-  // A bad schedule in the same Save must refuse the whole Save — the priority,
-  // status and assignee writes below must not land when the schedule cannot run.
-  // Gated on a schedule edit: null is the remove-schedule branch and is valid on its own.
+  // A bad schedule in the same Save refuses the whole Save: the priority, status and assignee writes below
+  // must not land when the schedule cannot run. Gated on a schedule edit (null is the remove-schedule
+  // branch).
   if (body.scheduled_start != null) {
     const scheduleErr = scheduleInputError(body);
     if (scheduleErr) return c.json({ ok: false, error: scheduleErr }, 400);
@@ -464,10 +417,8 @@ trackerRouter.put('/tasks/:id', async (c) => {
     if (body.assignedTo !== undefined) updates.assignedTo = body.assignedTo;
     if (body.priority) updates.priority = body.priority;
 
-    // Phase B.0: dashboard observations go through task_log, not the
-    // legacy tasks.notes column. Caller can still pass `notes` and we
-    // route it as a user-observation entry for back-compat with older
-    // dashboard builds.
+    // Dashboard observations go through task_log; a caller-supplied `notes` is routed as a user-observation
+    // entry for older dashboard builds.
     if (body.notes) {
       const { writeTaskLog } = await import('../../tracker/task-log.js');
       writeTaskLog({
@@ -484,10 +435,9 @@ trackerRouter.put('/tasks/:id', async (c) => {
       const fromStatus = prior?.status ?? null;
       const { status: statusUpdate, ...columnUpdates } = updates;
       if (Object.keys(columnUpdates).length > 0) updateTask(id, columnUpdates);
-      // t90 D1: a PERSON moving a task is the only reassignment this platform still has — the PM
-      // lost the verb entirely (owner ruling 2026-10-02) — so this is where it gets recorded: who,
-      // why, and what the previous assignee was last seen doing, the half nobody can reconstruct
-      // afterwards. `prior` above is the pre-write read; no second query.
+      // A PERSON moving a task is the only reassignment this platform still has (the PM has no such verb),
+      // so it is recorded here: who, why, and what the previous assignee was last seen doing. `prior` is the
+      // pre-write read.
       if (updates.assignedTo !== undefined && updates.assignedTo !== (prior?.assignedTo ?? null)) {
         recordReassignment({
           taskId: id, actor: 'user', fromAgentId: prior?.assignedTo ?? null,
@@ -517,7 +467,6 @@ trackerRouter.put('/tasks/:id', async (c) => {
       }
     }
 
-    // Handle schedule updates
     if (body.scheduled_start !== undefined) {
       if (body.scheduled_start === null) {
         // Remove schedule
@@ -534,16 +483,14 @@ trackerRouter.put('/tasks/:id', async (c) => {
         const { calculateNextRun } = await import('../../scheduler/engine.js');
         const existingTask = getTask(id);
         const repeatDaysOfWeek = (body.repeat_days_of_week ?? null) as string | null;
-        // v2.5.45 — anchor_time. If caller provides one, use it. If not,
-        // preserve the existing anchor on edit (so changing repeat_interval
-        // doesn't reset the anchor). Falls back to scheduled_start only
-        // when neither is set.
+        // anchor_time: use the caller's if given, else preserve the existing anchor (so changing
+        // repeat_interval does not reset it), else fall back to scheduled_start.
         const anchorTime = (
           body.anchor_time
           ?? existingTask?.anchorTime
           ?? body.scheduled_start
         ) as string;
-        // The row's own zone (`getTask` does not project it) — the walk runs on the clock the
+        // The row's own zone (`getTask` does not project it): the walk runs on the clock the
         // owner set, not the box's.
         const taskZone = (getDb().prepare('SELECT tz FROM work WHERE id = ?').get(id) as { tz: string | null } | undefined)?.tz ?? null;
         const taskForCalc = {
@@ -593,7 +540,7 @@ trackerRouter.put('/tasks/:id', async (c) => {
   }
 });
 
-// POST /projects/:id/close — bulk-close project and every open task on it
+// POST /projects/:id/close: bulk-close project and every open task on it
 trackerRouter.post('/projects/:id/close', async (c) => {
   const id = c.req.param('id');
   const db = getDb();
@@ -629,7 +576,7 @@ trackerRouter.post('/projects/:id/close', async (c) => {
   }
 });
 
-// DELETE /projects/:id — delete project and all its tasks
+// DELETE /projects/:id: delete project and all its tasks
 trackerRouter.delete('/projects/:id', (c) => {
   const id = c.req.param('id');
   const db = getDb();
@@ -643,14 +590,10 @@ trackerRouter.delete('/projects/:id', (c) => {
   const taskIds = db.prepare(`SELECT w.id AS id FROM work w WHERE ${taskScope('w')} AND w.parent_id = ?`).all(id) as Array<{ id: string }>;
   const ids = taskIds.map(t => t.id);
 
-  // Delete child rows for these tasks.
-  // PHASE-2 T10F — AND THIS SITE WAS ALREADY BROKEN, which the absorption exposed rather
-  // than caused. `deleteTrackerRow(project)` deletes the project's CHILDREN (the tasks); an
-  // occurrence is a child of a TASK, so it is a GRANDCHILD, and `parent_id REFERENCES
-  // work(id)` has no cascade. Since T8c2 started writing occurrence rows, deleting a project
-  // whose task had ever fired would fail the whole transaction on a foreign key. Removing
-  // the grandchildren first is what the old per-run delete line was doing by accident, and
-  // now it is done on purpose. Logged as its own defect in DOJO-ISSUES-LOG.md.
+  // Delete child rows for these tasks. An occurrence is a child of a TASK, so under a project it is a
+  // grandchild, and `parent_id REFERENCES work(id)` has no cascade: `deleteTrackerRow(project)` removes only
+  // the tasks, so the occurrences go first or a task that ever fired would fail the whole transaction on a
+  // foreign key.
   if (ids.length > 0) {
     deleteOccurrencesOf(ids);
   }
@@ -662,7 +605,7 @@ trackerRouter.delete('/projects/:id', (c) => {
   return c.json({ ok: true, data: { projectId: id, tasksDeleted: ids.length } });
 });
 
-// DELETE /tasks/:id — delete a single task
+// DELETE /tasks/:id: delete a single task
 trackerRouter.delete('/tasks/:id', (c) => {
   const id = c.req.param('id');
   const db = getDb();
@@ -672,10 +615,9 @@ trackerRouter.delete('/tasks/:id', (c) => {
     return c.json({ ok: false, error: 'Task not found' }, 404);
   }
 
-  // PHASE-2 T10F: no separate run cascade is owed here — an occurrence is a CHILD of this
-  // task, and `deleteTrackerRow` already deletes children and their events in one
-  // transaction. (The project route above is different: there the occurrences are
-  // grandchildren, which nothing was removing.)
+  // No run cascade is owed here: an occurrence is a child of this task, and `deleteTrackerRow` deletes
+  // children and their events in one transaction (under a project they are grandchildren, handled in the
+  // route above).
   deleteTrackerRow(id);
 
   logger.info('Task deleted', { taskId: id });
@@ -684,13 +626,9 @@ trackerRouter.delete('/tasks/:id', (c) => {
 
 export { trackerRouter };
 
-// ════════════════════════════════════════════════════════════════════════════════════════
-// SWEEP CORE-2 item 3 — THE VERSION-GAP RECONCILE REPORT, so the ONE plain line has somewhere
-// to point. The owner's requirement is *"ONE plain line on first boot with the detail in a
-// report he can open"*; the line goes to the primary (OR2, the 2026-07-30 ruling) and this is
-// the detail. It reads the durable `config` record rather than re-running the scan, because a
-// report that recomputes itself is a different report every time you open it.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// The version-gap reconcile report: the detail behind the one plain line shown on first boot. It reads the
+// durable `config` record rather than re-running the scan, so the report is the same every time it is
+// opened.
 trackerRouter.get('/reconcile-report', (c) => {
   try {
     const row = getDb().prepare('SELECT value FROM config WHERE key = ?')
