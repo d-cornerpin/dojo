@@ -1,24 +1,10 @@
-// ════════════════════════════════════════
-// Technique Index Builder
-// Generates a lightweight technique index for agent system prompts
-// ════════════════════════════════════════
+// Builds the technique index injected into agent system prompts.
 
 import { getDb } from '../db/connection.js';
 import { mayUseTechnique } from '../agent/access/read.js';
 
-/**
- * Generate the published technique index for injection into system prompts.
- * Target: under 500 tokens for up to 50 techniques (~10 tokens per listing).
- *
- * UX-ACCESS A4 — IT TAKES AN AGENT NOW. It never did: the sole caller
- * (`prompt/registry/entries.ts`'s `sys.techniques-index`) was written
- * `render: () => generateTechniqueIndex()`, discarding the context, so the one
- * place a per-agent filter could attach threw the agent id away and every agent
- * on the box read the same advertisement. `agentId` is OPTIONAL because the
- * honest absence answer is the pre-A4 one — every published technique — and a
- * caller that genuinely has no agent (a dashboard preview, a test) must not get
- * a silently narrowed list.
- */
+// Published technique index for system prompts (about 10 tokens per listing). Without `agentId` every
+// published technique is listed, never a silently narrowed set.
 export function generateTechniqueIndex(agentId?: string): string {
   const db = getDb();
   const all = db.prepare(`
@@ -27,16 +13,13 @@ export function generateTechniqueIndex(agentId?: string): string {
     ORDER BY usage_count DESC, name ASC
   `).all() as Array<{ id: string; name: string; description: string | null; tags: string }>;
 
-  // The SAME predicate the `use_technique` door asks (`checkTechniqueAccess`),
-  // so an agent is never advertised a procedure it would then be refused — the
-  // advertised-vs-permitted drift this phase exists to end.
+  // Same predicate as `use_technique` access, so no agent is advertised a procedure it would be refused.
   const techniques = agentId ? all.filter((t) => mayUseTechnique(agentId, t.id)) : all;
 
   if (techniques.length === 0) return '';
 
   let index = '## Available Techniques\n';
-  // Audit C4: ladder-anchored, not absolute — the live user message outranks
-  // a technique's standing steps (precedence tier 1 vs tier 2).
+  // The live user message outranks a technique's standing steps.
   index += 'You have learned the following techniques. When a task matches one, call `use_technique(name="<technique-id>")` first to load the full instructions, then follow them — they carry steps, scripts, and context that improve the result. The user\'s live message outranks a technique: if they conflict, follow the user.\n\n';
 
   for (const t of techniques) {
@@ -53,9 +36,7 @@ export function generateTechniqueIndex(agentId?: string): string {
   return index;
 }
 
-/**
- * Generate draft technique context for agents in a build squad.
- */
+// Draft technique context for agents in a build squad.
 export function generateDraftTechniqueContext(agentGroupId: string | null): string {
   if (!agentGroupId) return '';
 

@@ -1,24 +1,8 @@
-// ════════════════════════════════════════
-// Imported-Technique Setup (Share)
-// ════════════════════════════════════════
-//
-// The placeholder surface the Trainer drives after a technique arrives in a shared
-// package: read the staged manifest, substitute a value the user supplied, ask
-// what is still unfilled, and finalize.
-//
-// ── WHY IT IS ITS OWN MODULE (PHASE-5 T8 Step 3, RULING P5-R15 part 2) ──
-// `share-import.ts` held these four functions beside the package IMPORT, and the
-// two surfaces have disjoint callers: the import half is reached only by the
-// dashboard upload route, this half only by the technique tool handlers. One
-// module with one `node:fs` import made both classifications dishonest. They
-// partition perfectly by enclosing function, so this is a relocation and not a
-// rewrite; only the manifest TYPE is shared, and it crosses as a type-only
-// import — nothing crosses at runtime.
-//
-// Everything here runs inside a tool dispatch, so it reaches the disk through
-// the effect facade on the technique tree the call's own reference resolved to
-// (RULING P5-R15 ADDENDUM 3(1)(a)).
-// ════════════════════════════════════════
+// The placeholder surface the Trainer drives after a technique arrives in a shared package: read the
+// staged manifest, substitute a user-supplied value, ask what is still unfilled, and finalize.
+// Kept apart from `share-import.ts` (reached only by the dashboard upload route; this half only by the
+// technique tool handlers); only the manifest type crosses, as a type-only import.
+// Runs in a tool dispatch: the effect facade allows disk only in the call's resolved technique folder.
 
 import path from 'node:path';
 import * as effectFs from '../agent/effects/fs.js';
@@ -29,12 +13,7 @@ import type { ImportedManifest } from './share-import.js';
 
 const logger = createLogger('technique-import-setup');
 
-/**
- * Read the import manifest for a technique, if it has one. Returns null
- * for techniques that weren't imported (i.e. were created locally).
- * Used by the Trainer tools to discover placeholder lists and remaining
- * setup work.
- */
+/** Read a technique's import manifest, or null if it was created locally (not imported). */
 export function readImportManifest(directoryPath: string): ImportedManifest | null {
   const manifestPath = path.join(directoryPath, 'IMPORT_MANIFEST.json');
   if (!effectFs.existsSync(manifestPath)) return null;
@@ -45,10 +24,7 @@ export function readImportManifest(directoryPath: string): ImportedManifest | nu
   }
 }
 
-/**
- * Apply a placeholder value across every file in the technique that
- * mentions it. Returns the number of substitutions made.
- */
+/** Apply a placeholder value across every file that mentions it; returns the substitution count. */
 export function applyPlaceholderToTechnique(directoryPath: string, label: string, value: string): number {
   const manifest = readImportManifest(directoryPath);
   if (!manifest) return 0;
@@ -74,11 +50,7 @@ export function applyPlaceholderToTechnique(directoryPath: string, label: string
   return total;
 }
 
-/**
- * Scan the technique's files for remaining {{NEEDS_FROM_USER:LABEL}}
- * markers. Used to decide whether finalize is allowed and to surface
- * progress to the user.
- */
+/** Scan the technique's files for remaining {{NEEDS_FROM_USER:LABEL}} markers (gates finalize). */
 export function findRemainingPlaceholders(directoryPath: string): string[] {
   const manifest = readImportManifest(directoryPath);
   if (!manifest) return [];
@@ -101,9 +73,8 @@ export function findRemainingPlaceholders(directoryPath: string): string[] {
 }
 
 /**
- * Finalize an imported technique: removes the staged import manifest,
- * flips state from needs_setup → draft, and broadcasts so the dashboard
- * refreshes. Requires that no placeholders remain unfilled.
+ * Finalize an imported technique: removes the staged manifest, flips state needs_setup to draft and
+ * broadcasts. Refused while any placeholder is unfilled.
  */
 export function finalizeImportedTechnique(techniqueId: string): { ok: true } | { ok: false; error: string } {
   const db = getDb();
@@ -116,7 +87,7 @@ export function finalizeImportedTechnique(techniqueId: string): { ok: true } | {
     return { ok: false, error: `Cannot finalize: ${remaining.length} placeholder(s) still unfilled — ${remaining.join(', ')}.` };
   }
 
-  // Remove the import manifest (technique is now indistinguishable from a locally-created one)
+  // The technique is now indistinguishable from a locally created one.
   const manifestPath = path.join(row.directory_path, 'IMPORT_MANIFEST.json');
   try {
     if (effectFs.existsSync(manifestPath)) effectFs.unlinkSync(manifestPath);

@@ -1,10 +1,6 @@
-// ════════════════════════════════════════
-// SHARE DISK WORK — the disk reads and writes the technique package export and import do.
-//
-// Only share-export.ts and share-import.ts import this module, and both are reached only from the
-// dashboard's technique route (gateway/routes/techniques.ts). No tool dispatch reaches it. Every
-// path it writes or reads inside a technique folder goes through insideTechniqueDir.
-// ════════════════════════════════════════
+// The disk reads and writes the technique package export and import do. Only share-export.ts and
+// share-import.ts import it, both reached only from the dashboard's technique route; no tool dispatch
+// reaches it. Paths inside a technique folder go through insideTechniqueDir.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -16,7 +12,7 @@ import { insideTechniqueDir } from './technique-folder.js';
 
 const logger = createLogger('technique-share-disk');
 
-// ── Export-side gathering (every text entry returned is scrubbed by share-export) ──
+// Export-side gathering (every text entry returned is scrubbed by share-export)
 
 export interface FileEntry {
   relPath: string;        // path within technique dir, forward slashes
@@ -25,13 +21,8 @@ export interface FileEntry {
   isBinary: boolean;
 }
 
-/**
- * Walk the technique directory and return every file we want in the
- * zip. Skips metadata.json (DB is the source of truth), and skips the
- * versions/ folder (snapshots are reconstructable from the latest
- * TECHNIQUE.md + version history — including them would bloat the
- * package and leak old un-scrubbed content).
- */
+// Every file wanted in the zip. Skips metadata.json (the DB is the source of truth) and versions/
+// (snapshots are reconstructable, and would bloat the package and leak old unscrubbed content).
 export function collectTechniqueFiles(dirPath: string): { entries: FileEntry[]; skippedLinks: string[] } {
   const entries: FileEntry[] = [];
   const skippedLinks: string[] = [];
@@ -125,7 +116,7 @@ export function packageNotes(entries: FileEntry[], skippedLinks: string[]): stri
   return notes;
 }
 
-// ── Import-side unpacking ──
+// Import-side unpacking
 
 /** One file an import wrote: its path, and the bytes it replaced (null when it did not exist before). */
 export interface ExtractedWrite { dest: string; prior: Buffer | null }
@@ -175,7 +166,7 @@ export function extractPackageEntries(zip: AdmZip, dirPath: string, journal: Ext
   return { extractedCount, hasInstructions };
 }
 
-// ── Import-side disk work (share-import.ts holds no disk access of its own) ──
+// Import-side disk work (share-import.ts holds no disk access of its own)
 
 /** Make `dirPath` (and any parents) if it is missing. */
 export function ensureFolder(dirPath: string): void {

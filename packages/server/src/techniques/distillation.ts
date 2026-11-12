@@ -1,24 +1,10 @@
-// ════════════════════════════════════════
-// Distillation trigger — remediation Phase 5 (5b/5c/5d), Invariant VI.
-//
-// "Learn over time" needs the open half of the loop closed: repeated task
-// SUCCESS distills into a reusable technique, and techniques that keep
-// failing get retired. A previous auto path (Dreamer→Trainer handoff) was
-// removed in v1.15.96 because it burned tokens and broke user-built
-// techniques. Those reasons are BINDING constraints here:
-//
-//   OUTCOME-GATED — candidates come from the tracker's durable completion
-//     record, never from conversation mining.
-//   BATCHED — one engine pass per dreaming cycle; at most ONE message to the
-//     Trainer and ONE to the primary per cycle, regardless of candidates.
-//   DRAFT-ONLY — the Trainer is instructed to save drafts (publish: false).
-//     Drafts are inert: recall only matches published techniques, so an
-//     auto-distilled procedure can never shadow or modify user-built work.
-//   CAPPED — at most MAX_CANDIDATES_PER_CYCLE new draft requests per cycle.
-//   OWNER-IN-THE-LOOP — the approval ask reaches the owner through the
-//     PRIMARY agent (engine-delivered notice; the primary asks on its normal
-//     channel; publishing stays a deliberate act via the Trainer).
-// ════════════════════════════════════════
+// Distillation trigger: repeated task success distills into a draft technique, and techniques that keep
+// failing are flagged for retirement. Constraints:
+//  - outcome-gated: candidates come from the tracker's durable completion record, not conversation mining.
+//  - batched: one engine pass per dreaming cycle, at most one message to the Trainer and one to the primary.
+//  - draft-only (publish: false): recall matches only published techniques, so drafts never shadow user work.
+//  - capped at MAX_CANDIDATES_PER_CYCLE; the owner is asked through the primary agent, and publishing stays
+//    a deliberate act via the Trainer.
 
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
@@ -47,9 +33,8 @@ interface CompletionGroup {
   count: number;
 }
 
-// Normalized grouping key: lowercase, digits and dates stripped, whitespace
-// collapsed — "Send weekly status email 6/3" and "Send weekly status email
-// 6/10" group together. Deterministic by design (no LLM in the trigger).
+// Grouping key: lowercase, digits and dates stripped, whitespace collapsed ("status email 6/3" and
+// "status email 6/10" group together). Deterministic: no LLM in the trigger.
 function normalizeTitle(title: string): string {
   return title
     .toLowerCase()
@@ -96,8 +81,7 @@ async function isCoveredByExistingTechnique(group: CompletionGroup): Promise<boo
     });
     return hits.length > 0;
   } catch {
-    // Embeddings down: assume covered (do NOT create drafts blind — the
-    // v1.15.96 lesson says err toward not flooding the store).
+    // Embeddings down: assume covered, so no drafts are created blind.
     return true;
   }
 }
@@ -121,16 +105,9 @@ function findRetirementCandidates(): RetireCandidate[] {
   return rows.map((r) => ({ id: r.id, name: r.name, uses: r.uses, successRate: r.success_rate }));
 }
 
-/**
- * FA-TS6: persist the retirement signal durably on the technique row so it
- * survives the cycle and any dashboard reading the table sees it. Set
- * retire_flagged_at on current candidates that aren't already flagged (the first
- * flag time is preserved while a technique stays a candidate), and clear it back
- * to NULL on any still-flagged technique that is NOT a candidate this cycle,
- * i.e. it became healthy again (success rate recovered) or its usage fell below
- * the retirement floor. Retirement itself stays owner-manual; this only tracks
- * the suggestion.
- */
+// Persist the retirement signal on the technique row: set retire_flagged_at on new candidates (the first
+// flag time is kept) and clear it on any flagged technique that is no longer a candidate. Retirement
+// itself stays owner-manual; this only tracks the suggestion.
 function persistRetirementFlags(candidates: RetireCandidate[]): void {
   const db = getDb();
   const flaggedIds = new Set(candidates.map((c) => c.id));
@@ -151,7 +128,7 @@ function persistRetirementFlags(candidates: RetireCandidate[]): void {
   }
 }
 
-// ── K34: the Dreamer's lessons about techniques are candidates too ──
+// Lessons the Dreamer wrote about techniques are candidates too.
 // A lesson is fed to the Trainer once per write: the cursor is the latest write time already fed.
 const LESSONS_FED_KEY = 'trainer.lessons_fed_ms';
 const touchedAt = (l: LessonRow): number => l.expires_at - LESSON_LIFETIME_MS;
@@ -169,13 +146,10 @@ function markLessonsFed(lessons: LessonRow[]): void {
     .run(LESSONS_FED_KEY, String(latest));
 }
 
-/**
- * One engine pass per dreaming cycle. Never spawns agents itself; it sends
- * at most one batched A2A to the Trainer (draft authoring) and one to the
- * primary (owner-approval relay + retirement flags).
- */
+// One engine pass per dreaming cycle; never spawns agents. At most one batched A2A to the Trainer (drafts)
+// and one agent notice (not A2A) to the primary (owner-approval relay and retirement flags).
 export async function runDistillationCycle(): Promise<void> {
-  // ── 5b: repeated-success → draft candidates ──
+  // Repeated success: draft candidates.
   const groups = findRepeatedSuccessGroups();
   const candidates: CompletionGroup[] = [];
   for (const group of groups) {
@@ -189,11 +163,9 @@ export async function runDistillationCycle(): Promise<void> {
     candidates.push(group);
   }
 
-  // ── 5d: failing published techniques → retirement flags ──
+  // Failing published techniques: retirement flags.
   const retireFlags = findRetirementCandidates();
-  // FA-TS6: persist the flag durably (and clear healthy-again techniques) EVERY
-  // cycle, before the early-return, so a cycle with zero current candidates
-  // still un-flags anything that recovered.
+  // Persisted every cycle, before the early return, so a cycle with no candidates still clears recovered ones.
   persistRetirementFlags(retireFlags);
 
   const lessons = unfedTechniqueLessons();
@@ -205,11 +177,8 @@ export async function runDistillationCycle(): Promise<void> {
 
   const { deliverA2ANotice } = await import('../agent/a2a-notice.js');
 
-  // K34-fix — the delivery result matters. `deliverA2ANotice` does NOT throw on
-  // refusal; it returns `{ delivered: false, reason, threadId }` (e.g. a missing
-  // Trainer or SEMANTIC_DUPLICATE). A refused batch was received by NOBODY, so the
-  // lessons must NOT be marked fed (they are offered again next cycle) and the owner
-  // must NOT be told "Drafted N technique(s)". `undefined` counts as not delivered.
+  // deliverA2ANotice returns delivered: false on refusal instead of throwing. A refused batch reached nobody:
+  // lessons stay unfed (offered again next cycle) and the owner is not told drafts were made.
   let batchDelivered = false;
 
   if (candidates.length > 0 || lessons.length > 0) {
@@ -260,26 +229,13 @@ export async function runDistillationCycle(): Promise<void> {
     }
   }
 
-  // ── 5c: the primary hears about it — briefly ──
-  // comms-audit (critic find): this used to deliver an enumerated nightly report
-  // ("spotted N patterns and asked the Trainer to draft: 'title' (Nx), … Retirement
-  // flags: 'name' succeeded only X% of its last Y uses; …") as an FYI through the A2A
-  // transport, which lands it as an unstamped role='user' [A2A:FYI from:system] row in
-  // the primary's live tail and reaches the model — a verbose firehose. The full
-  // candidate + retirement enumeration already goes to the Trainer's ASSIGN thread
-  // (above) and the technique/tracker tables the owner reads when acting. The primary
-  // only needs a brief, actionable heads-up in its awareness lane.
-  //
-  // FA-TS6: the retirement half now NAMES the flagged techniques (name + uses +
-  // success%) so the owner knows which ones to look at, and says plainly they
-  // are suggestions, nothing is auto-retired. Kept compact for the floor model:
-  // the named list is capped, with an overflow count.
+  // The primary gets a brief heads-up only; the full enumeration goes to the Trainer's thread. The retirement
+  // half names the flagged techniques (capped, with an overflow count) and says nothing is auto-retired.
   const RETIRE_NAME_CAP = 6;
   if (candidates.length > 0 || retireFlags.length > 0) {
     const lines: string[] = ['Nightly learning pass:'];
     let hadBullet = false;
-    // K34-fix — only claim drafts were made if the batch actually reached the
-    // Trainer. A refused batch is not a draft, and the owner is not told about one.
+    // Claim drafts only if the batch actually reached the Trainer.
     if (candidates.length > 0 && batchDelivered) {
       lines.push(
         `• Drafted ${candidates.length} technique${candidates.length === 1 ? '' : 's'} from repeated task patterns (inert drafts until you promote them).`,
@@ -301,8 +257,7 @@ export async function runDistillationCycle(): Promise<void> {
       hadBullet = true;
     }
     lines.push('Want me to promote any drafts or archive any flagged ones? Say the word; otherwise nothing changes.');
-    // K34-fix — if nothing was actually drafted and nothing was flagged, there is
-    // nothing to tell the owner; don't post an empty "Nightly learning pass:".
+    // Nothing drafted and nothing flagged: post nothing.
     if (!hadBullet) return;
     postAgentNotice({
       toAgentId: getPrimaryAgentId(),

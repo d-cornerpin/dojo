@@ -1,6 +1,4 @@
-// ════════════════════════════════════════
-// Technique Store — CRUD & Directory Management
-// ════════════════════════════════════════
+// Technique store: CRUD and directory management.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -19,11 +17,8 @@ import {
   validateTechniqueFileReferences,
   formatValidationRefusal,
 } from './dependencies.js';
-// The reference → row → directory read lives in its own leaf so the executor's
-// gate loop can perform it before it mints a call's capability, without pulling
-// this module's fs, embeddings and broadcast into every dispatch's graph
-// (PHASE-5 T8, RULING P5-R15 ADDENDUM 3(1)(a)). Re-exported below, so nothing
-// that imported these names from the store had to move.
+// The reference -> row -> directory read lives in its own leaf so the executor's gate loop can run it before
+// minting a call's capability, without pulling this module's fs, embeddings and broadcast into every dispatch.
 import { getTechnique, resolveTechniqueRef, rowToTechnique, type TechniqueMetadata } from './technique-dir.js';
 import { homeDir } from '../home.js';
 
@@ -33,12 +28,8 @@ export type { TechniqueMetadata } from './technique-dir.js';
 
 const logger = createLogger('technique-store');
 
-/**
- * Thrown when TECHNIQUE.md references files that don't resolve inside
- * the technique directory and aren't declared in dependencies.json.
- * Callers (tools, share-export) catch this to return a structured
- * refusal to the agent instead of a generic error.
- */
+// Thrown when TECHNIQUE.md references files that are not inside the technique dir and not declared in
+// dependencies.json; tools.ts turns it into a structured refusal for the agent.
 export class TechniqueValidationError extends Error {
   constructor(public refusalText: string) {
     super(refusalText);
@@ -54,7 +45,6 @@ function ensureTechniquesDir(): void {
   }
 }
 
-// ── Types ──
 
 export interface TechniqueDetail extends TechniqueMetadata {
   instructions: string | null; // Current TECHNIQUE.md content
@@ -68,22 +58,12 @@ export interface CreateTechniqueParams {
   instructions: string;
   tags?: string[];
   files?: Array<{ path: string; content: string }>;
-  /**
-   * External dependencies (npm/pip/brew packages, git repos, downloaded
-   * assets, manual steps). Omitted = empty manifest. Validation will
-   * still run, but it can only catch references to files inside the
-   * technique dir; without a manifest, any external dep referenced in
-   * TECHNIQUE.md will be flagged as missing.
-   */
+  // External dependencies (packages, repos, assets, manual steps). Omitted means an empty manifest, so any
+  // external dep TECHNIQUE.md references is flagged missing.
   dependencies?: DependencyManifest;
-  /**
-   * If true (default), refuses the save when TECHNIQUE.md references
-   * files that don't resolve in the support dir or the dependency
-   * manifest. Passed false by the dashboard's create-from-UI route so
-   * users can build incrementally (the trainer / export-time check
-   * still catches the problem before a broken technique escapes the
-   * dojo). Always true for trainer-tool-initiated saves.
-   */
+  // Default true: refuse the save when TECHNIQUE.md references files missing from the support dir and the
+  // manifest. The dashboard's create-from-UI route passes false so users can build incrementally (the
+  // export-time check still catches it); trainer-tool saves are always true.
   validateReferences?: boolean;
   publish?: boolean;
   authorAgentId?: string;
@@ -92,7 +72,6 @@ export interface CreateTechniqueParams {
   buildSquadId?: string;
 }
 
-// ── CRUD ──
 
 // Embed the technique's intent surface (name + description + tags), not its
 // body: recall matches the user's ASK against what the technique is FOR; the
@@ -136,19 +115,13 @@ export function createTechnique(params: CreateTechniqueParams): TechniqueMetadat
     fs.writeFileSync(filePath, file.content, 'utf-8');
   }
 
-  // Write dependencies.json (always — even an empty manifest, so the
-  // file exists for downstream readers and the export bundle stays
-  // structurally consistent across techniques).
+  // Always written (even an empty manifest) so downstream readers and the export bundle see one shape.
   const manifest = params.dependencies ?? emptyDependencyManifest();
   writeDependencyManifest(dirPath, manifest);
 
-  // ── File-reference validation ──
-  // Refuse to create the technique if TECHNIQUE.md references files
-  // that aren't in the support dir AND aren't declared in the manifest.
-  // Roll back the partial directory so a failed create leaves no trace.
-  // Skipped when validateReferences=false (dashboard create-from-UI
-  // path — users can build incrementally; the export-time check still
-  // catches the problem before sharing).
+  // Refuse the create when TECHNIQUE.md references files missing from the support dir and the manifest, and roll
+  // back the partial directory so a failed create leaves no trace. Skipped when validateReferences=false
+  // (dashboard create-from-UI path; the export-time check still catches it).
   if (params.validateReferences !== false) {
     const validation = validateTechniqueFileReferences(dirPath, params.instructions, manifest);
     if (!validation.ok) {
@@ -311,9 +284,8 @@ export function updateTechnique(id: string, updates: Partial<{
   params.push(id);
   db.prepare(`UPDATE techniques SET ${setClauses.join(', ')} WHERE id = ?`).run(...params);
 
-  // Mirror name/description changes into metadata.json on disk so the
-  // file-system view stays consistent with the DB. Versions snapshot only
-  // TECHNIQUE.md content, so metadata edits don't bump the version number.
+  // Mirror name/description changes into metadata.json so the file view matches the DB. Versions snapshot only
+  // TECHNIQUE.md content, so metadata edits do not bump the version number.
   if (updates.name !== undefined || updates.description !== undefined) {
     try {
       const technique = getTechnique(id);
@@ -364,10 +336,8 @@ export function updateTechniqueInstructions(
   const technique = getTechnique(id);
   if (!technique) return null;
 
-  // Validate file references against the current state of the support
-  // dir + dependency manifest BEFORE writing — same rule as create.
-  // Skipped when validateReferences=false (dashboard manual-edit path —
-  // see CreateTechniqueParams.validateReferences for rationale).
+  // Validate file references against the current support dir and manifest BEFORE writing, same rule as create.
+  // Skipped when validateReferences=false (dashboard manual-edit path).
   if (options?.validateReferences !== false) {
     const manifest = readDependencyManifest(technique.directoryPath);
     const validation = validateTechniqueFileReferences(technique.directoryPath, content, manifest);
@@ -405,12 +375,8 @@ export function updateTechniqueInstructions(
   return getTechnique(id);
 }
 
-/**
- * Replace the technique's dependency manifest. Re-runs file-reference
- * validation against the existing TECHNIQUE.md so a manifest edit that
- * REMOVES a declared dep doesn't silently leave the .md referencing a
- * now-missing path.
- */
+// Replace the technique's dependency manifest, re-running file-reference validation against the existing
+// TECHNIQUE.md so removing a declared dep cannot leave the .md referencing a now-missing path.
 export function updateTechniqueDependencies(id: string, manifest: DependencyManifest): TechniqueMetadata | null {
   const technique = getTechnique(id);
   if (!technique) return null;
@@ -432,11 +398,8 @@ export function updateTechniqueDependencies(id: string, manifest: DependencyMani
   return getTechnique(id);
 }
 
-// Remediation Phase 5 (5a): close the loop the dormant `success` column was
-// waiting for — the most recent usage row for this (technique, agent) gets
-// the turn's outcome. Deliberately coarse (turn completed vs errored): the
-// signal only needs to separate "keeps working" from "keeps failing" for
-// ranking and retirement.
+// Record the turn's outcome on the most recent usage row for this (technique, agent). Deliberately coarse
+// (completed vs errored): it only needs to separate "keeps working" from "keeps failing" for ranking.
 export function recordTechniqueOutcome(techniqueId: string, agentId: string, success: boolean): void {
   try {
     getDb().prepare(`
@@ -471,10 +434,8 @@ export function deleteTechnique(id: string): boolean {
 
   const db = getDb();
 
-  // T2: four tables, ONE unit. A failure part-way through used to leave a technique that
-  // no longer exists still owning usage rows, versions or an embedding — searchable, and
-  // unloadable. (Cascades do not cover it: three of the four are separate statements
-  // precisely because there is no FK between them.)
+  // Four tables, one unit: a failure part-way must not leave a deleted technique owning usage rows, versions
+  // or an embedding (no FK covers them, so they are separate statements).
   withUnit(() => {
     db.prepare('DELETE FROM technique_usage WHERE technique_id = ?').run(id);
     db.prepare('DELETE FROM technique_versions WHERE technique_id = ?').run(id);
@@ -495,9 +456,7 @@ export function deleteTechnique(id: string): boolean {
 
 export function recordTechniqueUsage(techniqueId: string, agentId: string, agentName?: string): void {
   const db = getDb();
-  // T2: the usage ROW and the counter that summarises it are ONE unit. Split, the
-  // counter can disagree with the rows it counts — and `usage_count` is a maintained
-  // integer, the shape this overhaul has already had to repair once (`revert_count`).
+  // The usage row and the usage_count that summarises it are one unit, or the counter can disagree with the rows.
   withUnit(() => {
     db.prepare(`
       INSERT INTO technique_usage (id, technique_id, agent_id, agent_name, used_at)
@@ -507,11 +466,10 @@ export function recordTechniqueUsage(techniqueId: string, agentId: string, agent
     db.prepare("UPDATE techniques SET usage_count = usage_count + 1, last_used_at = datetime('now'), updated_at = datetime('now') WHERE id = ?").run(techniqueId);
   });
 
-  // Emitted after the commit by `broadcast` itself — see gateway/ws.ts.
+  // Emitted after the commit by `broadcast` itself (see gateway/ws.ts).
   broadcast({ type: 'technique:used', data: { id: techniqueId, name: '', agentId, agentName: agentName ?? '' } });
 }
 
-// ── Helpers ──
 
 function getFileTree(dirPath: string): Array<{ path: string; size: number; isDirectory: boolean }> {
   const results: Array<{ path: string; size: number; isDirectory: boolean }> = [];

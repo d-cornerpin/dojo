@@ -1,20 +1,6 @@
-// ════════════════════════════════════════
-// One-shot Technique Dependency Audit Migration
-// ════════════════════════════════════════
-//
-// First server boot after the dependency-manifest feature ships, this
-// drops a single message in the trainer agent's chat asking them to
-// walk every existing technique and bring it up to the new contract:
-//   - dependencies.json populated (was missing or empty before this
-//     feature shipped — no code path created one).
-//   - Every file referenced in TECHNIQUE.md exists in the support dir.
-//
-// Persists a config-table flag (`technique_dep_audit_dispatched_at`)
-// after the message goes out, so subsequent boots don't re-fire. The
-// flag stores the dispatch timestamp rather than a boolean so we can
-// see in the DB exactly when each install ran the migration.
-//
-// Idempotent: if the flag is already set, this is a no-op.
+// One-time boot audit: asks the trainer agent to bring every existing technique up to the dependency
+// manifest contract (dependencies.json populated, every file TECHNIQUE.md references in the support dir).
+// The config flag holds the dispatch timestamp, so later boots are a no-op.
 
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
@@ -93,8 +79,7 @@ export async function runTechniqueDependencyAuditOnce(): Promise<void> {
   parts.push(`This is a one-time migration. Future techniques will be validated at save time, so this won't come up again.`);
   const message = parts.join('\n');
 
-  // Insert + wake. Same insert-then-handleMessage pattern other engine→
-  // trainer handoffs use.
+  // Insert the message, then wake the trainer to handle it.
   try {
     const msgId = uuidv4();
     insertMessage({ id: msgId, agentId: trainerId, role: 'user', content: message });

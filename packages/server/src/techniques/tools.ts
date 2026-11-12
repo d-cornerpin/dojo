@@ -1,6 +1,4 @@
-// ════════════════════════════════════════
-// Technique Agent Tools
-// ════════════════════════════════════════
+// Technique agent tools.
 
 import * as effectFs from '../agent/effects/fs.js';
 import { supportingFileTargets } from './technique-folder.js';
@@ -33,29 +31,16 @@ import {
 import { VERSIONS_SUBDIR } from './versioning.js';
 import { getTrainerAgentId, getTrainerAgentName, isTrainerAgent } from '../config/platform.js';
 import { mayUseTechnique } from '../agent/access/read.js';
-// (getDb is already imported above)
 
 const logger = createLogger('technique-tools');
 
-/**
- * Authorization check for technique-mutating tools (save/update/publish/
- * delete). Returns null when the caller is allowed, or a refusal string
- * when they aren't.
- *
- * Policy:
- *   - The trainer agent is always allowed.
- *   - If the configured trainer agent doesn't exist / has been terminated,
- *     fall back to allowing any sensei-class caller. Without this fallback,
- *     installs with no live trainer would have ALL technique mutation
- *     refused, bricking the feature.
- *   - Otherwise, refuse with a redirect to the trainer.
- */
+// Authorization for technique-mutating tools (save/update/publish/delete): null when allowed, else a refusal
+// string. The trainer is always allowed; with no live trainer any sensei-class caller is (otherwise every
+// mutation would be refused); everyone else is redirected to the trainer.
 function authorizeTechniqueMutation(agentId: string, classification: string, verb: string): string | null {
   if (isTrainerAgent(agentId)) return null;
 
-  // Fallback: no live trainer agent exists. Allow sensei-class callers (mirrors the pre-trainer-
-  // ownership behavior so the feature still works on a trainer-less
-  // install).
+  // No live trainer: allow sensei-class callers so the feature still works on a trainer-less install.
   try {
     const trainerId = getTrainerAgentId();
     const row = getDb()
@@ -66,7 +51,7 @@ function authorizeTechniqueMutation(agentId: string, classification: string, ver
       return `Refused: ${verb} is restricted to Sensei agents (no live trainer agent on this install).`;
     }
   } catch {
-    // DB hiccup — be permissive rather than block legitimate work.
+    // DB hiccup: be permissive rather than block legitimate work.
     if (classification === 'sensei') return null;
   }
 
@@ -78,34 +63,12 @@ function authorizeTechniqueMutation(agentId: string, classification: string, ver
   );
 }
 
-// ── Technique freshness enforcement (v2.7.4, banner shortened v2.7.6) ──
-//
-// Single source of truth for the "this is a technique tool result"
-// sentinel. Every technique_read / use_technique response gets this
-// banner prepended. Four consumers downstream:
-//
-//   1. The assembler's stubOldToolResults() — looks for this sentinel
-//      and stubs the matching tool_result blocks after just 1 turn
-//      (vs 12 for normal tool results), so the agent literally cannot
-//      reference a prior read on the next turn.
-//   2. vault_remember — refuses to store any entry whose content
-//      contains this sentinel.
-//   3. scratchpad_set — refuses to write technique content into
-//      scratchpad (added v2.7.6).
-//   4. Compaction — replaces sentinel-wrapped blocks with a stub
-//      BEFORE summarizing, so technique content doesn't leak into
-//      summaries the model later reads as authoritative (added v2.7.6).
-//
-// v2.7.6 — banner shortened. The v2.7.4 banner spelled out the
-// enforcement policy in every response ("prior reads get stubbed",
-// "do not reference cached memory", etc.), which made the agent
-// second-guess whether the fresh response it was looking at was
-// actually fresh, and bail to exec/memory instead of trusting the
-// content. The policy now lives ONLY in the tool descriptions
-// (system prompt level); each result just identifies itself.
-//
-// PHASE-3 T5: this export WAS the owner and was imported by NOBODY — two modules
-// re-declared the literal, two more inlined it. The literal lives in @dojo/shared now.
+// Every technique_read / use_technique response is prefixed with TECHNIQUE_FRESH_SENTINEL (from @dojo/shared).
+// Consumers: memory/assembler.ts stubs prior technique reads so an agent cannot lean on an earlier one;
+// vault_remember and scratchpad_set refuse content containing it; compaction stubs sentinel-wrapped blocks
+// before summarizing so technique text never reaches a summary as authority. The banner only identifies the
+// result: the enforcement policy lives in the tool descriptions, because spelling it out in every response
+// made agents doubt the content was fresh.
 export { TECHNIQUE_FRESH_SENTINEL } from '@dojo/shared';
 import { TECHNIQUE_FRESH_SENTINEL } from '@dojo/shared';
 import { compactCountNote } from '../agent/tool-helpers.js';
@@ -117,15 +80,13 @@ function wrapTechniqueResult(techniqueName: string, body: string): string {
   );
 }
 
-// Convert the structured TechniqueValidationError into something the
-// calling agent sees as a refusal rather than a generic platform error.
+// Turn the structured TechniqueValidationError into a refusal the agent reads, not a generic platform error.
 function formatValidationError(err: unknown, fallbackPrefix: string): string {
   if (err instanceof TechniqueValidationError) return err.refusalText;
   const msg = err instanceof Error ? err.message : String(err);
   return `${fallbackPrefix}: ${msg}`;
 }
 
-// ── save_technique ──
 
 export function executeSaveTechnique(agentId: string, agentName: string, classification: string, args: Record<string, unknown>): string {
   const refusal = authorizeTechniqueMutation(agentId, classification, 'save_technique');
@@ -137,11 +98,8 @@ export function executeSaveTechnique(agentId: string, agentName: string, classif
   const instructions = args.instructions as string;
   const tags = (args.tags as string[]) ?? [];
   const files = args.files as Array<{ path: string; content: string }> | undefined;
-  // Partial-manifest tolerance: LLMs routinely send `{ system_packages: [] }`
-  // and omit the rest. Pre-fix, the cast-and-fallback kept the partial as-is
-  // and the validator (`dependencies.ts:279` iterating `manifest.repos`)
-  // crashed with `TypeError: repos is not iterable`. Deep-merge into a fresh
-  // empty manifest so every bucket is guaranteed to be an array.
+  // Partial-manifest tolerance: models often send only some buckets (`{ system_packages: [] }`). Deep-merge into
+  // a fresh empty manifest so every bucket is an array and the validator never iterates undefined.
   const rawDeps = (args.dependencies ?? {}) as Partial<DependencyManifest>;
   const base = emptyDependencyManifest();
   const dependencies: DependencyManifest = {
@@ -186,16 +144,14 @@ export function executeSaveTechnique(agentId: string, agentName: string, classif
   }
 }
 
-// ── list_techniques ──
 
 export function executeListTechniques(agentId: string, classification: string, args: Record<string, unknown>): string {
   const tag = args.tag as string | undefined;
   const includeDrafts = (args.include_drafts as boolean) && classification === 'sensei';
   const verbose = args.verbose as boolean | undefined;
 
-  // UX-ACCESS A4: the browse verb answers with what this agent may RUN. The
-  // same predicate the door asks — a list that offers what `use_technique` then
-  // refuses is the advertised-vs-permitted drift in miniature.
+  // The browse verb lists what this agent may RUN: the same predicate as `use_technique`, so a list never
+  // offers what `use_technique` then refuses.
   const techniques = listTechniques({
     tag,
     includeDrafts,
@@ -212,9 +168,8 @@ export function executeListTechniques(agentId: string, classification: string, a
     if (verbose) {
       return `- ${t.name} (${t.id}): ${t.description ?? 'No description'}${tags}${state} — used ${t.usageCount} time(s)`;
     }
-    // Compact: name + id + tags + non-default state. Drop description and
-    // usage count — they're only useful when picking between options, and
-    // the caller can verbose=true or use_technique to get the full thing.
+    // Compact: name, id, tags and non-default state; description and usage count only matter when choosing
+    // between options (verbose=true or use_technique gives the full thing).
     return `- ${t.name} (${t.id})${tags}${state}`;
   });
 
@@ -223,7 +178,6 @@ export function executeListTechniques(agentId: string, classification: string, a
   return `${header}\n\n${compactCountNote(techniques.length)}. For full detail on one: use_technique(name=<id>). For all details on every result: re-call list_techniques with verbose=true.`;
 }
 
-// ── publish_technique ──
 
 export function executePublishTechnique(agentId: string, classification: string, args: Record<string, unknown>): string {
   const refusal = authorizeTechniqueMutation(agentId, classification, 'publish_technique');
@@ -238,14 +192,10 @@ export function executePublishTechnique(agentId: string, classification: string,
   if (!technique) return `Error: Technique "${name}" not found.`;
   if (technique.state === 'published') return `Technique "${technique.name}" is already published.`;
 
-  // FA-TS3: the placeholder-completeness invariant lived ONLY in
-  // finalizeImportedTechnique. A floor model that skips finalize can publish a
-  // still-in-setup technique carrying literal {{NEEDS_FROM_USER:...}} markers,
-  // which use_technique then feeds to other agents as if they were real values.
-  // The TOOL-SURFACE strip is advisory (text-mode emission bypasses it), so the
-  // gate has to live here in the executor. Refuse a needs_setup technique, and
-  // belt-and-suspenders re-scan the files for unfilled markers (no-op for
-  // locally-created techniques, which have no import manifest).
+  // The placeholder-completeness check must live here in the executor: the tool-surface strip is advisory
+  // (text-mode emission bypasses it), and a still-in-setup technique with literal {{NEEDS_FROM_USER:...}}
+  // markers would be fed to other agents as real values. Refuse needs_setup and re-scan the files for unfilled
+  // markers (no-op for locally created techniques, which have no import manifest).
   if (technique.state === 'needs_setup') {
     return (
       `Refused: "${technique.name}" is still in setup (needs_setup) and cannot be published. ` +
@@ -268,7 +218,6 @@ export function executePublishTechnique(agentId: string, classification: string,
   return `Technique "${published.name}" is now published and available to all agents in the dojo.`;
 }
 
-// ── update_technique ──
 
 export function executeUpdateTechnique(agentId: string, _agentName: string, classification: string, args: Record<string, unknown>): string {
   const refusal = authorizeTechniqueMutation(agentId, classification, 'update_technique');
@@ -335,15 +284,11 @@ export function executeUpdateTechnique(agentId: string, _agentName: string, clas
   return `Technique "${updated?.name}" updated (version ${updated?.version}). ${changeSummary}`;
 }
 
-// ── technique_set_placeholder ──
-// Used during import setup. After the Trainer asks the user for a secret/value,
-// he calls this to write it into the technique files in place of the
-// {{NEEDS_FROM_USER:LABEL}} marker.
+// Import setup: after the Trainer asks the user for a value, this writes it into the technique files in place
+// of the {{NEEDS_FROM_USER:LABEL}} marker.
 
 export function executeTechniqueSetPlaceholder(agentId: string, classification: string, args: Record<string, unknown>): string {
-  // FA-TS7: the sensei/trainer gate was only ever enforced by the tool-surface
-  // strip, which text-mode emission bypasses. Re-check in the executor, same
-  // ownership rule and corrective surface as save/publish.
+  // Executor-side sensei/trainer re-check (the tool-surface strip is advisory), same rule as save/publish.
   const refusal = authorizeTechniqueMutation(agentId, classification, 'technique_set_placeholder');
   if (refusal) return refusal;
 
@@ -386,13 +331,11 @@ export function executeTechniqueSetPlaceholder(agentId: string, classification: 
   return `Placeholder "${label}" set across ${replacements} location(s). Remaining placeholders: ${remaining.join(', ')}.`;
 }
 
-// ── technique_finalize ──
-// Used during import setup. Once every placeholder is filled the Trainer calls
-// this to flip the technique out of needs_setup into draft state and
-// remove the staged import manifest.
+// Import setup: once every placeholder is filled, flips the technique from needs_setup to draft and removes
+// the staged import manifest.
 
 export function executeTechniqueFinalize(agentId: string, classification: string, args: Record<string, unknown>): string {
-  // FA-TS7: executor-side sensei/trainer re-check (surface strip is advisory).
+  // Executor-side sensei/trainer re-check (the tool-surface strip is advisory).
   const refusal = authorizeTechniqueMutation(agentId, classification, 'technique_finalize');
   if (refusal) return refusal;
 
@@ -411,10 +354,9 @@ export function executeTechniqueFinalize(agentId: string, classification: string
   return `Technique "${technique.name}" is finalized and now in draft state. Use publish_technique to make it available to other agents, or test it first via use_technique.`;
 }
 
-// ── submit_technique_for_review ──
 
 export function executeSubmitForReview(agentId: string, classification: string, args: Record<string, unknown>): string {
-  // FA-TS7: executor-side sensei/trainer re-check (surface strip is advisory).
+  // Executor-side sensei/trainer re-check (the tool-surface strip is advisory).
   const refusal = authorizeTechniqueMutation(agentId, classification, 'submit_technique_for_review');
   if (refusal) return refusal;
 
@@ -431,20 +373,10 @@ export function executeSubmitForReview(agentId: string, classification: string, 
   return `Technique "${technique.name}" submitted for Sensei review.`;
 }
 
-// ════════════════════════════════════════
-// technique_read (v2.5.44)
-//
-// Replaces the slurp-the-whole-technique pattern of use_technique with
-// targeted, partial reads. Agents were avoiding techniques entirely
-// because (a) use_technique truncated big ones and (b) there was no way
-// to read just the part they needed — so they fell back to memory, which
-// is compacted and often wrong. This tool fixes both.
-//
-// Five actions: outline (default), section, search, list_files, read_file.
-// Outline never truncates — only headings + ranges + sizes. Section caps
-// at SECTION_SOFT_CAP chars; oversize sections require an explicit line
-// range. Search returns ±SEARCH_CONTEXT_LINES of context per hit, capped.
-// ════════════════════════════════════════
+// technique_read: targeted partial reads instead of slurping the whole technique, because agents avoided
+// techniques that use_technique truncated and fell back to compacted memory. Actions: outline (default,
+// never truncates), section (capped at SECTION_SOFT_CAP; oversize needs a line range), search (capped,
+// ±SEARCH_CONTEXT_LINES per hit), list_files, read_file.
 
 const SECTION_SOFT_CAP = 12000;       // chars per single section read
 const READ_FILE_SOFT_CAP = 12000;     // chars per single supporting file read
@@ -492,21 +424,9 @@ function parseSections(content: string): SectionEntry[] {
   return sections;
 }
 
-/**
- * THE TECHNIQUE DOOR.
- *
- * UX-ACCESS A4 gave it an agent id. Until now it took only the squad: the rule
- * was `published ⇒ everybody`, written in the file as *"// Everyone can use
- * published techniques"*, so nothing anywhere asked WHICH agent was reading.
- * `agents.equipped_techniques` existed and was a pre-load list, never an
- * allow-list.
- *
- * The GRANT is asked FIRST, and the order is the message the agent reads: a
- * technique it may not run is refused for that reason whatever its state, and
- * only then does the state/squad rule (unchanged, byte for byte) answer. Every
- * agent alive before A4 holds `'*'` — the measured pre-A4 fact — so this refuses
- * nobody until an owner narrows it.
- */
+// THE TECHNIQUE DOOR. The agent's GRANT is asked FIRST (`agents.equipped_techniques` is a pre-load list, not an
+// allow-list), so a technique the agent may not run is refused for that reason whatever its state; only then
+// does the state/squad rule answer.
 function checkTechniqueAccess(
   technique: { id: string; state: string; enabled: boolean; buildSquadId: string | null; name: string },
   agentGroupId: string | null,
@@ -575,10 +495,7 @@ function formatSection(technique: { name: string; instructions: string | null },
       ?? sections.find((s) => s.title.toLowerCase().includes(needle));
     if (!match) {
       const available = sections.map((s) => `"${s.title}"`).join(', ') || '(none)';
-      // The agent that hit this error in v2.7.5 testing bailed straight
-      // to exec/memory instead of trying a different action. The new
-      // text walks them through the alternatives explicitly so they
-      // stay inside the technique_read tool family.
+      // Point at alternative actions so the agent stays inside the technique_read family instead of bailing to exec.
       return (
         `Error: section "${sectionName}" not found in "${technique.name}".\n` +
         `Available sections: ${available}.\n\n` +
@@ -661,7 +578,7 @@ function formatSearch(technique: { name: string; directoryPath: string; instruct
               // Skip binary files (best-effort heuristic)
               if (buf.includes(0)) continue;
               searchOne(rel, buf.toString('utf-8'));
-            } catch { /* unreadable file — skip */ }
+            } catch { /* unreadable file: skip */ }
           }
         }
       };
@@ -758,7 +675,7 @@ export function executeTechniqueRead(
   const accessErr = checkTechniqueAccess(technique, agentGroupId, agentId);
   if (accessErr) return accessErr;
 
-  // Outline doesn't count as "usage" — it's introspection. Section/search/read_file
+  // Outline doesn't count as "usage" (it's introspection). Section/search/read_file
   // do (the agent is actually consuming the technique's content).
   if (action !== 'outline' && action !== 'list_files') {
     try { recordTechniqueUsage(technique.id, agentId, agentName); } catch { /* best effort */ }
@@ -772,7 +689,7 @@ export function executeTechniqueRead(
     case 'list_files': body = formatListFiles(technique); break;
     case 'read_file':  body = formatReadFile(technique, args); break;
     default:
-      // Don't wrap error responses — the sentinel only attaches to real
+      // Don't wrap error responses: the sentinel only attaches to real
       // technique content so the stubber doesn't trip on a bad-action
       // refusal message.
       return `Error: unknown action "${action}". Valid actions: outline, section, search, list_files, read_file.`;
@@ -780,16 +697,8 @@ export function executeTechniqueRead(
   return wrapTechniqueResult(technique.name, body);
 }
 
-// ── technique_acknowledge ──
-//
-// Clears the engine's pendingTechniqueAck gate. Required after any
-// successful technique_read / use_technique call before the agent can
-// run any other (non-allowlisted) tool. The summary parameter forces
-// the agent to write SOMETHING in their own words about the technique
-// — engagement, not just reading. The runtime owns the actual gate
-// state (in agents.config.pendingTechniqueAck); this executor just
-// validates the ack payload and returns success/refusal. The runtime
-// clears the persisted state when this returns success.
+// Acknowledges a technique read. The runtime owns the pendingTechniqueAck state (agents.config); this executor
+// only validates the payload (the summary must show the agent engaged), and the runtime clears the state on success.
 const TECHNIQUE_ACK_MIN_SUMMARY_CHARS = 100;
 
 export function executeTechniqueAcknowledge(
@@ -803,15 +712,9 @@ export function executeTechniqueAcknowledge(
   if (!name) {
     return { ok: false, content: 'Error: name (technique slug/id) is required.' };
   }
-  // D6 removed the hard acknowledgement GATE; acking is now an OPTIONAL affordance
-  // and the turn loop tracks the pending state itself (v2/loop.ts). This executor
-  // is dispatched from executeTool, which has no turn state, so it can legitimately
-  // see pendingAck=null even right after a read. Erroring in that case (the old
-  // "no pending acknowledgement on file" wall) broke every technique flow, because
-  // the tool descriptions still nudge the model to acknowledge. Treat a missing or
-  // unmatched pending as a friendly no-op success: there is nothing to gate, so the
-  // agent should just keep working. We only enforce the paraphrase-length nudge when
-  // there is a genuine pending ack to clear.
+  // Acking is optional and the turn loop tracks the pending state (v2/loop.ts); this executor is dispatched
+  // without turn state, so pendingAck can be null even right after a read. That is a friendly no-op success,
+  // not an error. The paraphrase-length check only applies when a genuine pending ack is being cleared.
   if (!pendingAck) {
     return {
       ok: true,

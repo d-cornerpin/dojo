@@ -1,13 +1,6 @@
-// ════════════════════════════════════════
-// Technique Export (Share)
-// ════════════════════════════════════════
-//
-// Packages a technique + its supporting files into a portable `.dojo`
-// zip that another Dojo install can import. Secrets are stripped by
-// scrub.ts and replaced with {{NEEDS_FROM_USER:LABEL}} placeholders;
-// the Trainer (trainer) does a second pass to flag any patterns the
-// deterministic scrubber missed and writes the README that walks the
-// importer through setup.
+// Packages a technique and its supporting files into a portable `.dojo` zip another Dojo install can import.
+// Secrets are stripped by scrub.ts and replaced with {{NEEDS_FROM_USER:LABEL}} placeholders; the Trainer does
+// a second pass for patterns the deterministic scrubber missed and writes the setup README.
 
 import archiver from 'archiver';
 import { Readable, PassThrough } from 'node:stream';
@@ -27,13 +20,7 @@ import {
   type DependencyManifest,
 } from './dependencies.js';
 
-/**
- * Thrown when export-time validation finds TECHNIQUE.md references
- * that aren't satisfied by the support dir or the dependency manifest.
- * The HTTP route catches this and surfaces the refusal text as a 422
- * to the dashboard so the user gets a clear "ask your trainer to fix
- * technique X" message instead of a corrupt download.
- */
+// Export refusal error; nothing throws it, since exportTechnique auto-resolves every violation.
 export class TechniqueExportValidationError extends Error {
   constructor(public refusalText: string) {
     super(refusalText);
@@ -50,7 +37,7 @@ export interface ExportManifest {
   format: typeof PACKAGE_FORMAT;
   version: typeof PACKAGE_FORMAT_VERSION;
   technique: {
-    id: string;            // original slug — importer may rename to avoid collisions
+    id: string;            // original slug; importer may rename to avoid collisions
     name: string;          // display name
     description: string | null;
     tags: string[];
@@ -61,11 +48,7 @@ export interface ExportManifest {
   placeholders: Array<{ label: string; hint: string; files: string[] }>;
 }
 
-/**
- * Run the deterministic scrubber over the text files in the package.
- * Returns the post-scrub view that will go into the zip (binary files
- * pass through untouched).
- */
+// Run the deterministic scrubber over the package's text files; binary files pass through untouched.
 function applyScrub(entries: FileEntry[]): { entries: FileEntry[]; redactions: Redaction[]; placeholders: Array<{ label: string; hint: string; files: string[] }> } {
   const textFiles = entries
     .filter((e): e is FileEntry & { content: string } => !e.isBinary && e.content !== undefined)
@@ -96,18 +79,9 @@ function applyScrub(entries: FileEntry[]): { entries: FileEntry[]; redactions: R
   return { entries: next, redactions: result.redactions, placeholders };
 }
 
-/**
- * Ask the Trainer (the trainer model) to:
- *   1. Flag any remaining secret-shaped strings the regexes missed.
- *   2. Write a README.md that walks the importer through any setup
- *      steps (placeholders, manual steps, external accounts needed).
- *
- * Returns { readme, additionalRedactions }. additionalRedactions are
- * applied to the entries after the Trainer's pass.
- *
- * If the model call fails for any reason we fall back to a
- * deterministically-generated README so export still succeeds.
- */
+// Ask the Trainer model to flag secret-shaped strings the regexes missed and to write a README.md walking
+// the importer through setup. Returns { readme, additionalRedactions } (applied after the pass). If the
+// model call fails, a deterministic README is used so the export still succeeds.
 async function runTrainerReviewPass(
   technique: { id: string; name: string; description: string | null },
   entries: FileEntry[],
@@ -116,8 +90,7 @@ async function runTrainerReviewPass(
   const db = getDb();
   const trainerId = getTrainerAgentId();
 
-  // Pick a model — prefer the explicit trainer_agent_model, fall back to
-  // the primary agent's model. If neither is set we skip the LLM pass
+  // Prefer the explicit trainer_agent_model, else the primary agent's model; with neither, skip the LLM pass
   // and emit a deterministic README.
   const trainerModelRow = db.prepare("SELECT value FROM config WHERE key = 'trainer_agent_model'").get() as { value: string } | undefined;
   let modelId = trainerModelRow?.value ?? null;
@@ -131,8 +104,7 @@ async function runTrainerReviewPass(
     return { readme: buildFallbackReadme(technique, entries, initialPlaceholders), additionalRedactions: [] };
   }
 
-  // Build the package summary the model will review. We only include
-  // text files — binary files don't need scrubbing and bloat the prompt.
+  // Only text files go in the summary: binary files need no scrubbing and bloat the prompt.
   const textEntries = entries.filter(e => !e.isBinary && e.content !== undefined);
   const bundleForModel = textEntries.map(e => `### File: ${e.relPath}\n\`\`\`\n${e.content}\n\`\`\``).join('\n\n');
 
@@ -184,8 +156,7 @@ ${bundleForModel}`;
       systemPrompt,
       messages: [{ role: 'user', content: userMessage }],
       tools: false,
-      // W3-1: fully handled, the catch below falls back to the deterministic
-      // README builder. Fail fast and log at WARN instead of ERROR.
+      // Fully handled (the catch below falls back to the deterministic README), so fail fast and log at WARN.
       abortSignal: AbortSignal.timeout(60_000),
       bestEffort: true,
     });
@@ -253,14 +224,9 @@ function buildFallbackReadme(
 }
 
 /**
- * Build the technique package and return a Readable stream of the
- * resulting zip (so callers can pipe it to the HTTP response).
- *
- * The zip layout:
- *   manifest.json          — format identifier + technique meta + placeholder list
- *   README.md              — the Trainer-generated setup instructions
- *   TECHNIQUE.md           — the main instructions (scrubbed)
- *   <relative-paths>...   — every other supporting file (scrubbed if text)
+ * Build the technique package and return a Readable stream of the zip (so callers can pipe it).
+ * Layout: manifest.json (format id, technique meta, placeholder list), README.md (Trainer-generated setup
+ * instructions), TECHNIQUE.md (scrubbed), then every other supporting file (scrubbed if text).
  */
 export async function exportTechnique(
   techniqueId: string,
@@ -270,25 +236,10 @@ export async function exportTechnique(
     throw new Error(`Technique "${techniqueId}" not found`);
   }
 
-  // ── Auto-resolve file references (v2.7.5) ──
-  // Pre-v2.7.5 this path refused the export when TECHNIQUE.md
-  // referenced anything not on disk and not declared in
-  // dependencies.json. That was wrong: agents don't fix techniques,
-  // they author them — and the user shouldn't have to play
-  // dependency-manifest-whack-a-mole every time they want to share.
-  //
-  // Now: run validation, then try to RESOLVE each violation —
-  //   • Concrete source paths (absolute, ~/, ../) that exist on disk
-  //     and aren't sensitive get COPIED into the zip and declared in
-  //     the manifest as bundled assets.
-  //   • Concrete source paths that don't exist (runtime artifacts
-  //     like /tmp/foo.yaml) get added as manual_steps with a
-  //     "user supplies at runtime" note.
-  //   • References we can't locate at all get added as manual_steps
-  //     with a "MISSING — author should re-export" note.
-  // Whatever's left after auto-resolve is returned alongside the
-  // stream for the dashboard to surface via toast. Export ALWAYS
-  // produces a zip.
+  // Auto-resolve file references: concrete source paths that exist on disk and are not sensitive are COPIED
+  // into the zip and declared as bundled assets; paths that do not exist (runtime artifacts) or cannot be
+  // located become manual_steps. Whatever remains is returned beside the stream for the dashboard to show.
+  // Export always produces a zip.
   let workingManifest: DependencyManifest = readDependencyManifest(technique.directoryPath);
   let autoResolutions: AutoResolution[] = [];
   const extraBundledFiles: Array<{ relPath: string; absSourcePath: string }> = [];
@@ -325,7 +276,7 @@ export async function exportTechnique(
 
   const { entries: scrubbedEntries, placeholders: initialPlaceholders } = applyScrub(entries);
 
-  // Trainer review pass — may add more redactions and writes the README
+  // Trainer review pass: may add more redactions and writes the README
   const { readme: trainerReadme, additionalRedactions } = await runTrainerReviewPass(
     { id: technique.id, name: technique.name, description: technique.description },
     scrubbedEntries,

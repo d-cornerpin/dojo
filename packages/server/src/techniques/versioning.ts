@@ -1,6 +1,4 @@
-// ════════════════════════════════════════
-// Technique Versioning — Snapshots & Restore
-// ════════════════════════════════════════
+// Technique versioning: disk snapshots and restore.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -12,14 +10,8 @@ import { getTechnique } from './store.js';
 
 const logger = createLogger('technique-versioning');
 
-// ── Disk-based version snapshots ──
-//
-// Every TECHNIQUE.md update writes a copy to a versions/ subdirectory of
-// the technique. This gives the Trainer (and the user) a browsable
-// on-disk history alongside the DB-backed `technique_versions` table.
-// Pre-2026-04-30 the only version history was in SQLite, which the
-// Trainer couldn't reach via file_read — meaning agents had no way to
-// look at a prior version for context or restore reasoning.
+// Every TECHNIQUE.md update writes a copy under a versions/ subdirectory of the technique, so the Trainer
+// can read prior versions with file_read alongside the DB `technique_versions` table.
 
 export const VERSIONS_SUBDIR = 'versions';
 
@@ -137,11 +129,9 @@ export function restoreVersion(techniqueId: string, versionId: string): boolean 
 }
 
 /**
- * Backfill disk version snapshots for a technique that pre-dates v1.15.97.
- * Reads the DB-side version rows and writes a TECHNIQUE_v{N}.md (+ sidecar)
- * for each one. No-op if any disk versions already exist (so this can't
- * clobber a partially-written disk history). Returns the number of
- * snapshots written.
+ * Backfill disk version snapshots for a technique that has none yet: writes TECHNIQUE_v{N}.md (+ sidecar)
+ * from the DB version rows. No-op if any disk version exists, so it cannot clobber a partial history.
+ * Returns the number of snapshots written.
  */
 export function backfillDiskVersionsFromDb(techniqueId: string, techniqueDir: string): number {
   const dir = versionsDir(techniqueDir);

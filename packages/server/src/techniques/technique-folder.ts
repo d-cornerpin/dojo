@@ -1,19 +1,10 @@
-// ════════════════════════════════════════
-// THE TECHNIQUE FOLDER'S DISK DOOR — the one "resolve inside this folder" check, in one place.
-//
-// Requirement: the EXPORT walks a technique folder and never follows an entry that leads outside it
-// (it is reported as a skipped link). Writes and reads the agent asks for are NOT limited to the
-// folder: the Mac belongs to the agent (OR-MAC-BELONGS-TO-THE-AGENT).
-// A pure leaf (node:fs and node:path only) so any module can import it.
-// ════════════════════════════════════════
+// The one "resolve inside this folder" check: the export never follows an entry out of a technique
+// folder (reported as a skipped link); agent writes and reads are not limited to it. A leaf (fs, path only).
 
 import fs from 'node:fs';
 import path from 'node:path';
-/**
- * The real path of the nearest part of `p` that exists (so a link anywhere along it is followed),
- * or null when an entry exists but cannot be resolved (a broken link or a link loop): a write
- * through it could land anywhere, so the caller must treat it as outside.
- */
+// Real path of the nearest existing part of `p`, or null when an entry exists but cannot be resolved
+// (dead link or loop: a write through it could land anywhere, so the caller treats it as outside).
 function realOfNearestExisting(p: string): string | null {
   let cur = p;
   for (;;) {
@@ -25,10 +16,6 @@ function realOfNearestExisting(p: string): string | null {
   }
 }
 
-/**
- * The full path of `rel` inside `dirPath`, or null when `rel` is empty, not a string, absolute,
- * resolves to the folder itself or outside it, or passes through a link that leads outside.
- */
 export function insideTechniqueDir(dirPath: string, rel: string): string | null {
   if (typeof rel !== 'string' || rel === '' || rel.includes('\0') || path.isAbsolute(rel)) return null;
   const root = path.resolve(dirPath);
@@ -41,11 +28,8 @@ export function insideTechniqueDir(dirPath: string, rel: string): string | null 
   return resolved;
 }
 
-/**
- * Every supporting-file name resolved against `dirPath`: a Map of name to full path. The Mac belongs
- * to the agent (OR-MAC-BELONGS-TO-THE-AGENT), so an absolute name or one that climbs out is written
- * where it says. Only a name that cannot be written at all (empty, not text) is refused.
- */
+// Supporting-file names resolved against `dirPath` (absolute or climbing names are written where they say);
+// only an unwritable name (empty, not text) is refused.
 export function supportingFileTargets(dirPath: string, files: Array<{ path: string }> | undefined): Map<string, string> | string {
   const targets = new Map<string, string>();
   for (const file of files ?? []) {
