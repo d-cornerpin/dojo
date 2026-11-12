@@ -1,45 +1,20 @@
-// ── The work spine's ONE writer (PHASE-2 T2 Step 3) ──
-//
-// `transition()` is the only function in this tree that may change `work.state`. Everything
-// that used to be a convention re-typed at each call site — check the project rollup, retire
-// the assignment notice, advance the schedule, remember the countdown — is an EFFECT INSIDE
-// this function, run once, on every path. That is the whole point: today's tree has 48
-// state-writing sites across two routes and no transition function at all
-// (`tracker/schema.ts:888` is a generic column patcher whose SQL is
-// `UPDATE tasks SET ${setClauses.join(', ')}`, applying no gate), and every one of the four
-// documented "forgets" is a site that did four of the five things.
-//
-// THE FIVE PROPERTIES THIS FILE OWES, EACH TESTED BOTH WAYS:
-//   1. A discriminated result the caller MUST read: applied | rejected | noop | conflict.
-//      No `catch {}` that turns a failed close into a success message (RC4).
-//   2. Gates run INSIDE, never at the call site.
-//   3. Effects run INSIDE, once, atomically with the state change.
-//   4. `by: 'engine'` REQUIRES an `evidenceRef` that RESOLVES to a real occurrence,
-//      delivery or artifact row — "the engine may only assert what it can point at" (OR2).
-//   5. `claim` is a TYPE: 'decided' is the only value, and `work/done/decide.ts` is the only
-//      caller that passes it. A board task reaches done, failed or abandoned only with it.
-//
-// WHAT IS DELIBERATELY NOT HERE YET, AND WHO OWES IT. `transition()`'s effect set is
-// complete for everything that exists in `work` TODAY. Three effects named in the lift
-// (research 19 s1c / MAP:4694) have nothing to act on until their own task moves their data
-// into the spine, and writing them now would mean writing them against the legacy tables —
-// which is the two-mechanism disease this phase deletes:
-//   * assignment-notice retirement  -> PHASE-2 T8 (the notices are tracker rows today)
-//   * live-schedule termination     -> PHASE-2 T9 (schedules are legacy columns today)
-//   * dependency cascade            -> PHASE-2 T8 (`depends_on` is a JSON blob on the
-//                                       legacy row; it becomes parent/child rows)
-// They are listed here rather than in a plan file so the next person to read this function
-// can see what it does not do yet without having to trust that a document is current.
+// The work spine's one writer: `transition()` is the only function that may change `work.state`. It owes:
+//   1. A discriminated result the caller must read: applied | no_change | refused (a lost race is the
+//      `state-conflict` refusal).
+//   2. Gates inside it, never at the call site. The fan-out countdown and its `compile_pending` wake run
+//      inside the transaction; obligation-memory retirement and the task-ended notice run after it commits.
+//   3. `by: 'engine'` (except a hand-in) requires an `evidenceRef` that resolves to a real occurrence,
+//      delivery or artifact.
+//   4. `claim` is a type: 'decided' is the only value, passed only by `work/done/decide.ts`,
+//      `work/done/housekeeping.ts` and `work/done/project-state.ts`; board work ends only with it.
+// Not effects of this function: assignment-notice retirement, schedule termination, the dependency cascade.
 
 import { createHash } from 'node:crypto';
 import { getDb } from '../db/connection.js';
 import { redactHandedCredentials } from '../credentials/secret-values.js';
 import { withUnit } from '../db/unit.js';
 import { createLogger } from '../logger.js';
-// PHASE-4 T1. `work/outcome.ts` DECLARES the boundary's answer (and carries the
-// `TransitionResult` STRIP record); this module is its public surface, exactly as
-// it was for `TransitionResult`, so every caller keeps ONE import path and the
-// split is an implementation detail rather than a second place to look.
+// `work/outcome.ts` declares the boundary's answer; re-exported here so callers keep one import path.
 import type { WorkEventKind } from './event-kinds.js';
 import { noSuchWorkDetail } from './outcome.js';
 import { retireObligationMemory } from './obligation-memory.js';
@@ -57,22 +32,15 @@ export type WorkState =
 
 export type WorkKind = 'ask' | 'task' | 'project' | 'occurrence' | 'commitment';
 
-/** Who is asking for the change. The authority table below is keyed on this and nothing else. */
 export type Actor = 'owner' | 'pm' | 'agent' | 'engine' | 'scheduler' | 'healer';
 
-/** A decision was made (`work/done/decide.ts`). The only way a board task becomes terminal. */
 export type Claim = 'decided';
 
 export { TERMINAL_STATES, isTerminal };
 
-/** The legal-transition table. A move that is not listed is refused by gate `illegal-transition`,
- *  which is why every row here had to be written down rather than left to the caller's judgement.
- *  Reopening a TERMINAL row is legal but only for an authority (see gate G8): "late answer
- *  reopens the work" is a real requirement, and it is also exactly the move a confused model
- *  makes on a stale id. */
-// Every open state may go back to Open (a recurring row waits there between runs) and reach any
-// outcome; a terminal state only reopens. A hold (paused, blocked) is not a state: `work/done/hold.ts`.
-// `blocked` is a chat ask's state (its delegated work is outstanding), never a board row's.
+/** The legal-transition table; a move not listed is refused by gate `illegal-transition`. Reopening a
+ *  terminal row is legal only for an authority (G8). A hold is not a state (`work/done/hold.ts`);
+ *  `blocked` is a chat ask's state, never a board row's. */
 const LEGAL: Record<WorkState, readonly WorkState[]> = {
   open:      ['claimed', 'handed_in', 'blocked', 'done', 'failed', 'abandoned'],
   claimed:   ['open', 'handed_in', 'blocked', 'done', 'failed', 'abandoned'],
@@ -84,9 +52,7 @@ const LEGAL: Record<WorkState, readonly WorkState[]> = {
   abandoned: ['open'],
 };
 
-/** The sentence every refused lift or overwrite of an owner's hold carries. */
 export const OWNER_HOLD_REFUSAL = 'The owner put this task on hold. Only the owner can release it.';
-/** True when the owner holds the row and someone else is acting: then the hold is neither lifted nor replaced. */
 export function ownerHoldStands(workId: string, ownerActing: boolean): boolean {
   return !ownerActing && !!getDb().prepare(`SELECT 1 FROM work w WHERE w.id = ? AND ${heldByOwnerSql('w')}`).get(workId);
 }
@@ -94,72 +60,38 @@ export function ownerHoldStands(workId: string, ownerActing: boolean): boolean {
 /** Who may reopen settled work. Anyone else is a confused model acting on a stale id. */
 const REOPENERS: readonly Actor[] = ['owner', 'pm', 'engine'];
 
-/** Board work: the tracker's tasks and projects, never a join piece of an ask. The same scope as
- *  the `board_done_needs_decision` trigger, so the gate and the constraint never disagree. */
+/** Board work: tasks and projects, never a join piece; the scope of the `board_done_needs_decision`
+ *  trigger. */
 const isBoardWork = (row: Pick<WorkRow, 'kind' | 'root_kind'>): boolean =>
   (row.kind === 'task' || row.kind === 'project') && row.root_kind !== 'a2a_thread';
 
 export interface TransitionInput {
   to: WorkState;
   by: Actor;
-  /** Free text, REQUIRED. A state change nobody can explain is the thing this spine replaces. */
   reason: string;
-  /** REQUIRED when `by === 'engine'`. Must resolve to a real occurrence / delivery / artifact. */
   evidenceRef?: string | null;
-  /** The delivery that makes `done` true. `done` is unreachable without one. */
   resultDeliveryId?: string | null;
-  /**
-   * UNSETTLE the row: drop `result_delivery_id` as part of this move. Only meaningful on a
-   * NON-terminal `to`, and it exists because `resultDeliveryId: null` cannot say this — the
-   * binding below reads `?? row.result_delivery_id`, so an explicit null is indistinguishable
-   * from "not supplied" and several callers already pass one believing otherwise.
-   *
-   * SWEEP-A TB6 (TB5 hand-up HU-1). The column is CURRENT STATE — "the delivery this row is
-   * settled on" — not history, and `closed_at`, its other half in the DDL's own
-   * `state='done'` pair, is already cleared on every non-terminal move by the CASE above it.
-   * A row that has been handed back is settled on nothing, and until this existed it kept
-   * pointing at the receipt of the close that was undone (measured: 4 m 55 s on
-   * `ask:fa74a65f`, battery `bmsgh439cdv`). The EVENT record is untouched: the undo carries
-   * the receipt in its own `evidence_ref`, because undoing the RECORD would be the forgery
-   * this spine exists to refuse.
-   *
-   * Deliberately opt-in rather than "clear on every non-terminal move": the wider rule would
-   * silently change every tracker status edit and every retask in the same commit, and those
-   * paths have their own owners. See the TB6 report for the census of callers that pass an
-   * explicit null today and get a no-op.
-   */
+  /** Drop `result_delivery_id` in this move (non-terminal `to` only); `resultDeliveryId: null` cannot say
+   *  it, as the binding reads `?? row.result_delivery_id`. Opt-in, so tracker status edits and retasks keep
+   *  their binding; the event record is untouched. */
   clearResultDelivery?: boolean;
   claim?: Claim;
-  /** The result this transition carries, recorded on the ROW in the same transaction as the
-   *  state change. A delegated piece's delivered text lands here (PHASE-2 T4, requirement
-   *  3h): the mechanism it replaces wrote the piece into a `join-piece:<thread>` conv_key
-   *  namespace on a second message row, so a crash between "the countdown moved" and "the
-   *  content was recorded" lost the piece. One transaction, one row, no gap. */
+  /** The result this transition carries, recorded on the row in the same transaction as the state change. */
   note?: string | null;
-  /** Optimistic concurrency: the state the caller believed it was acting on. Supplying it
-   *  turns a lost race into a `conflict` the caller can see instead of a silent overwrite. */
   expectedState?: WorkState;
-  /** Set when `to === 'claimed'`; cleared when the row leaves `claimed`. */
   claimedByTurn?: number | null;
-  /** Who specifically (agent id, 'owner', a subsystem name). Recorded on the event. */
   actorId?: string | null;
 }
 
-// PHASE-4 T1: `TransitionResult` (four private arms) and `TransitionGate` moved to
-// `work/outcome.ts` and became `WorkOutcome`, the shared five-way. The STRIP entry,
-// the arm-for-arm mapping and the requirement it preserves are in that file's header.
 interface WorkRow {
   id: string;
   kind: WorkKind;
-  /** Which producer opened this row. G9 reads it: `kind='task'` alone does not mean "a
-   *  tracker row" — T4's join pieces are `kind='task'` too. */
+  /** Which producer opened this row (read by G9): join pieces are `kind='task'` too. */
   root_kind: string;
   parent_id: string | null;
   state: WorkState;
   result_delivery_id: string | null;
   remaining_children: number | null;
-  /** T17: the two columns the obligation-memory retirement needs. Read here rather than in a
-   *  second SELECT because this row is already the transition's own read of the work item. */
   agent_id: string;
   title: string | null;
   source_message_id: string | null;
@@ -167,9 +99,6 @@ interface WorkRow {
 
 const now = (): number => Date.now();
 
-/** An engine assertion must point at something that exists. Occurrences live in `work`
- *  (kind='occurrence') because OR1 gave them the same ID space; deliveries and artifacts are
- *  their own tables. Anything else is not evidence. */
 function evidenceResolves(ref: string): boolean {
   const db = getDb();
   const hit = db.prepare(
@@ -185,17 +114,8 @@ function deliveryExists(id: string): boolean {
   return getDb().prepare('SELECT 1 AS ok FROM deliveries WHERE id = ?').get(id) !== undefined;
 }
 
-/** Append a row to the work event log. The ONE place events are written, so "did anyone
- *  record this?" is not a question a reader has to ask per call site.
- *
- *  PHASE-2 T8b: exported as `appendWorkEvent` for the rest of the `work/` directory. The
- *  directory is the single-writer boundary now (T6 acceptance §3), and `work_events` keeps
- *  ONE writing FUNCTION rather than spreading the INSERT across the modules that need it.
- *
- *  PHASE-4 T4-SCHEMA: `kind` was a bare `string` beside a column with no CHECK, so `135`'s
- *  "12-value enum" comment was never true of either side. `work/event-kinds.ts` is the
- *  declared list now, migration `152` is the same list as the column's CHECK, and an
- *  undeclared kind fails to COMPILE here — before the database is ever asked. */
+/** The one place work events are written; `work/event-kinds.ts` is the declared list (the column CHECK
+ *  mirrors it). */
 function appendEvent(workId: string, kind: WorkEventKind, actor: string, payload: unknown, at?: number): number {
   const info = getDb().prepare(
     'INSERT INTO work_events (work_id, kind, payload, actor, created_at) VALUES (?, ?, ?, ?, ?)',
@@ -205,20 +125,12 @@ function appendEvent(workId: string, kind: WorkEventKind, actor: string, payload
 
 export { appendEvent as appendWorkEvent };
 
-/**
- * The ONE writer of `work.state`.
- *
- * Every gate below refuses by RETURNING, never by throwing: a caller that ignores the result
- * gets a value it did not use rather than an exception it swallowed, and the conformance walk
- * plus the type make the ignoring visible.
- */
+/** The one writer of `work.state`. Every gate refuses by RETURNING, never by throwing. */
 export function transition(workId: string, input: TransitionInput): WorkOutcome {
   const db = getDb();
   const actorId = input.actorId ?? input.by;
 
-  // ── G1: the row must exist. A stale id from a previous session is the platform's own
-  //        recorded baseline red; it must be REFUSED with something steerable, never
-  //        silently create or silently succeed. ──
+  // ── G1: the row must exist; a stale id is refused with something steerable. ──
   const row = db.prepare(
     'SELECT id, kind, root_kind, parent_id, state, result_delivery_id, remaining_children, agent_id, title, source_message_id FROM work WHERE id = ?',
   ).get(workId) as WorkRow | undefined;
@@ -226,12 +138,10 @@ export function transition(workId: string, input: TransitionInput): WorkOutcome 
     return { kind: 'refused', workId, reason: 'no-such-work', detail: noSuchWorkDetail(workId) };
   }
 
-  // ── G2: a state change nobody can explain does not happen. ──
   if (!input.reason || input.reason.trim().length === 0) {
     return { kind: 'refused', workId, reason: 'reason-required', detail: 'every transition states its reason' };
   }
 
-  // ── G3: lost race, seen instead of silently overwritten. ──
   if (input.expectedState !== undefined && input.expectedState !== row.state) {
     return {
       kind: 'refused', workId, reason: 'state-conflict',
@@ -240,9 +150,7 @@ export function transition(workId: string, input: TransitionInput): WorkOutcome 
     };
   }
 
-  // ── G4: already there. Not an error, and NOT a success either — the caller asked for a
-  //        change that did not happen, and #40 of the tracker requirements says an explicit
-  //        NO-OP is never reported as [OK]. ──
+  // ── G4: already there is a no-op, never reported as a success. ──
   if (row.state === input.to) {
     return {
       kind: 'no_change', workId, reason: 'already-in-state',
@@ -250,7 +158,6 @@ export function transition(workId: string, input: TransitionInput): WorkOutcome 
     };
   }
 
-  // ── G5: the legal-transition table. ──
   if (!LEGAL[row.state].includes(input.to)) {
     return {
       kind: 'refused', workId, reason: 'illegal-transition',
@@ -258,8 +165,7 @@ export function transition(workId: string, input: TransitionInput): WorkOutcome 
     };
   }
 
-  // ── G6: the engine may only assert what it can point at (OR2). An engine hand-in points at the
-  //        proof items the hand-in door already checked. ──
+  // ── G6: the engine may only assert what it can point at; a hand-in points at the door's proof. ──
   if (input.by === 'engine' && input.to !== 'handed_in') {
     if (!input.evidenceRef) {
       return {
@@ -275,8 +181,7 @@ export function transition(workId: string, input: TransitionInput): WorkOutcome 
     }
   }
 
-  // ── G7: done means DELIVERED. The DB CHECK enforces the column; this gate enforces that
-  //        the id points at a delivery that exists, which a CHECK cannot see. ──
+  // ── G7: done means DELIVERED: the DB CHECK covers the column, this gate the delivery. ──
   const deliveryId = input.resultDeliveryId ?? row.result_delivery_id;
   if (input.to === 'done') {
     if (!deliveryId) {
@@ -300,8 +205,7 @@ export function transition(workId: string, input: TransitionInput): WorkOutcome 
       detail: `reopening ${row.state} work needs the owner or the PM`,
     };
   }
-  // ── G9: board work ends only by a decision (`work/done/decide.ts`), for every actor. The worker
-  //        hands in (`work/done/hand-in.ts`); nobody, the engine included, sets it done directly. ──
+  // ── G9: board work ends only by a decision (`work/done/decide.ts`); workers hand in. ──
   if (isBoardWork(row) && isTerminal(input.to) && input.claim !== 'decided') {
     return {
       kind: 'refused', workId, reason: 'needs-decision',
@@ -313,16 +217,14 @@ export function transition(workId: string, input: TransitionInput): WorkOutcome 
   if (row.state === 'handed_in' && (input.to === 'open' || input.to === 'claimed') && !(input.by === 'scheduler' && input.to === 'claimed') && input.claim !== 'decided') {
     return { kind: 'refused', workId, reason: 'needs-decision', detail: 'handed-in work waits for a decision: it is approved or sent back, not moved' };
   }
-  // ── G11: a hold the owner set is lifted only by the owner. ──
   if (ownerHoldStands(workId, input.by === 'owner')) return { kind: 'refused', workId, reason: 'owner-hold', detail: OWNER_HOLD_REFUSAL };
 
-  // ══ EFFECTS — all of them, once, in one transaction with the state change ══
+  // ══ EFFECTS: all of them, once, in one transaction with the state change ══
   const from = row.state;
   const terminal = isTerminal(input.to);
   let eventId = 0;
 
-  // One instant for the whole transaction: the adjudication below is filed before the UPDATE
-  // (the BEFORE UPDATE trigger reads it), and both writes carry the same time.
+  // One instant for the whole transaction: the state change and its event carry the same time.
   const at = now();
 
   withUnit(() => {
@@ -362,10 +264,8 @@ export function transition(workId: string, input: TransitionInput): WorkOutcome 
       note: input.note ?? null,
     }, at);
 
-    // EFFECT: the fan-out countdown. A child settling is the ONLY thing that decrements it,
-    // and it decrements atomically in the same transaction as the child's own state change —
-    // which is what makes "joins are counts, never string arithmetic" true rather than
-    // aspirational. Guarded at zero so a double-settle cannot drive it negative.
+    // EFFECT: a child settling decrements its parent's countdown in the same transaction as its own state
+    // change, guarded at zero so a double-settle cannot drive it negative.
     if (terminal && !isTerminal(from) && row.parent_id) {
       const dec = db.prepare(
         'UPDATE work SET remaining_children = remaining_children - 1, updated_at = ? WHERE id = ? AND remaining_children > 0',
@@ -376,16 +276,9 @@ export function transition(workId: string, input: TransitionInput): WorkOutcome 
         appendEvent(row.parent_id, 'child_settled', actorId, {
           child_id: workId, child_state: input.to, remaining: parent?.remaining_children ?? null,
         });
-        // EFFECT: THE PARENT WAKES AT ZERO (PHASE-2 T4, requirement 3a), and what it wakes
-        // INTO is `compile_pending` — a fact distinct from "the owner got the answer" (3b).
-        // This is the same countdown, not a second one: it runs inside the same transaction
-        // as the decrement that reached zero, so there is no window in which the join is
-        // complete and nobody has recorded it.
-        //
-        // The outcome is computed from the children, not asserted by the caller: a join
-        // whose pieces ALL failed or were abandoned has nothing to compile, and telling the
-        // owner "here is your combined answer" from zero pieces is the dishonesty requirement
-        // 3e exists to refuse. Nothing landed -> the join is left for the fail-closed notice.
+        // EFFECT: the parent wakes at zero into `compile_pending` (distinct from the owner getting the
+        // answer), in the same transaction. The outcome is computed from the children: a join whose pieces
+        // all failed or were abandoned has nothing to compile and is left for the fail-closed notice.
         if ((parent?.remaining_children ?? -1) === 0) {
           const landed = (db.prepare(
             "SELECT count(*) AS c FROM work WHERE parent_id = ? AND state = 'done'",
@@ -401,31 +294,18 @@ export function transition(workId: string, input: TransitionInput): WorkOutcome 
       }
     }
 
-    // (The adjudication INSERT used to live HERE, after the UPDATE. PHASE-2 T8T moved it to
-    // the top of this transaction: migration `139`'s trigger is BEFORE UPDATE, so a verdict
-    // written afterwards is a verdict the trigger cannot see. `adjudications` still carries
-    // no 'pending' verdict by design — its CHECK is upheld|rejected — so the REQUEST is the
-    // `validation_requested` work_events row and only the ANSWER lands in that table. Revert
-    // count is therefore COUNT(verdict='rejected'), a query, never a maintained counter.)
   });
 
   logger.info('work transition applied', { workId, from, to: input.to, by: input.by, eventId });
 
-  // ── UX-REPAIR ROUND 3 T17 — THE OBLIGATION'S MEMORY DIES WITH THE OBLIGATION ──
-  // A commitment reaching a terminal state is the moment — and the ONLY moment — at which
-  // the platform knows a promise is no longer owed. Before this, no lifecycle exit touched
-  // `vault_entries` at all, so a promise the ledger had closed kept being recalled in the
-  // present tense (round-3 F3). It is HERE, at the one writer of `work.state`, rather than in
-  // `dismissCommitment`/`resolveCommitment`, so no future closer can be added without it.
-  //
-  // Rung AFTER the transaction, for the doorbell's reason and one more: retiring a memory is
-  // not one of the spine's atomic effects, and it must never be able to fail a state change
-  // that has already been decided (`retireObligationMemory` swallows its own failures).
+  // A commitment ending means its promise is no longer owed: retire its recalled memory here, after the
+  // transaction, so a failure can never undo a decided state change (`retireObligationMemory` swallows its
+  // own).
   if (row.kind === 'commitment' && terminal && !isTerminal(from)) {
     retireObligationMemory({ workId, agentId: row.agent_id, title: row.title, state: input.to });
   }
 
-  // t152: a tracker task linked to an owner's request ended — what it held back from settling may settle now.
+  // A tracker task that ended or was handed in may unblock settling of the owner's request linked to it.
   if (row.kind === 'task' && (input.to === 'handed_in' || (terminal && !isTerminal(from)))) notifyTaskEnded(row.agent_id, row.source_message_id);
 
   const value: TransitionApplied = { workId, from, to: input.to, eventId };
@@ -433,60 +313,32 @@ export function transition(workId: string, input: TransitionInput): WorkOutcome 
 }
 
 
-// ════════════════════════════════════════════════════════════════════════════════
-// PHASE-2 T3 — THE ASK: every ask is a ticket, and a claim is a STATE.
-//
-// What this section replaces, named so the removal can be checked rather than trusted:
-// `messages.conv_key` was ONE column doing TWO unrelated jobs — the conversation's
-// IDENTITY and the turn's CLAIM (`NULL` = nobody has picked this up). `conv_key IS NULL`
-// WAS the work queue for an owner's ask. It is now `work.state = 'open'`, and conv_key
-// keeps only the job it was named for (07 §3g/3l: state and identity are separate fields).
-//
-// requirement preserved, in one line each:
-//   * a person's message is an obligation the moment it arrives  -> the ask is INSERTed in
-//     the same transaction as the message, so there is no instant where one exists alone;
-//   * exactly one turn may serve an ask, across processes        -> `transition()`'s
-//     `expectedState` CAS; the loser gets `conflict`, which is the D-2 bail;
-//   * a transient failure must not strand a person in silence    -> a claim reverts on an
-//     abort that produced nothing;
-//   * a turn that already acted must never run twice (P6b)       -> the revert is refused
-//     when the turn recorded effectful calls, and the refusal is a row, not a silence.
-// ════════════════════════════════════════════════════════════════════════════════
+// The ask: every owner message is an obligation and a claim is a state. It opens in the same transaction as
+// its message; exactly one turn may serve it (`expectedState` CAS, the loser gets `conflict`); a claim
+// reverts on an abort that produced nothing and is refused when the turn made effectful calls.
 
-/** An ask's id is derived from the message that caused it, so "did this message already
- *  open a ticket?" is answerable without a second index, and a producer retrying an insert
- *  cannot mint a second obligation for one message. */
+/** An ask's id is derived from its message, so a retried insert cannot mint a second obligation. */
 export function askIdForMessage(messageId: string): string {
   return `ask:${messageId}`;
 }
 
 export interface OpenAskInput {
   agentId: string;
-  /** The inbound row this obligation is FOR. Becomes `root_id` — origin is required. */
   messageId: string;
   conversationId: string | null;
   requesterId: string | null;
-  /** The MESSAGE's own timestamp, not the clock at some later step: every age cliff in the
-   *  platform reads `opened_at`, and an obligation is as old as the ask that created it. */
+  /** The message's own timestamp, not a later clock: every age cliff reads `opened_at`. */
   openedAt: number;
   title: string | null;
 }
 
-/**
- * Open the ticket for an inbound ask. Called from inside the message writer's transaction —
- * it deliberately does NOT open one of its own, so the caller owns atomicity and this
- * function cannot silently commit half a pair.
- *
- * Throws on a duplicate. That is the point: two tickets for one message would be two
- * obligations for one question, and swallowing the collision is how the platform grew five
- * partial trackers.
- */
+/** Open the ask row for an inbound message inside the message writer's transaction (the caller owns
+ *  atomicity). Throws on a duplicate: two asks for one message would be two obligations. */
 export function openAsk(p: OpenAskInput): string {
   const db = getDb();
   const id = askIdForMessage(p.messageId);
-  // `conversation_id` carries a real FK. A producer handing us an id with no conversation
-  // row would otherwise take the OWNER'S MESSAGE down with it on the FK violation, so a
-  // dangling id is recorded as absent identity and logged — never allowed to drop the ask.
+  // `conversation_id` has a real FK: a dangling id is recorded as absent, never allowed to drop the owner's
+  // message.
   let conversationId = p.conversationId;
   if (conversationId != null
       && !db.prepare('SELECT 1 FROM conversations WHERE id = ?').get(conversationId)) {
@@ -508,13 +360,7 @@ export function openAsk(p: OpenAskInput): string {
   return id;
 }
 
-/**
- * Pickup. The compare-and-swap that used to be a conditional conv_key stamp on the inbound
- * row, read back through `.changes`.
- *
- * `by: 'agent'` is the honest actor: it is this agent's own turn taking its own ask. The
- * engine actor would need evidence it cannot have yet — the turn has not happened.
- */
+/** Pickup: `by: 'agent'`, since the engine actor would need evidence the turn has not yet produced. */
 export function claimAsk(workId: string, agentId: string): WorkOutcome {
   return transition(workId, {
     to: 'claimed', by: 'agent', actorId: agentId, expectedState: 'open',
@@ -522,18 +368,9 @@ export function claimAsk(workId: string, agentId: string): WorkOutcome {
   });
 }
 
-/**
- * Record WHICH turn holds the claim, once the turn has been allocated its number.
- *
- * Deliberately not part of `claimAsk`: the claim must happen BEFORE the turn record exists,
- * because the D-2 race has to be settled before any work is done, and the turn number is
- * allocated from the turn's own subject — which the claim is what decides. This writes the
- * forward link only; `state` still has exactly one writer, `transition()`. It is the direct
- * counterpart of `markServedByRowid` on the message row.
- *
- * `claimed_by_turn IS NULL` in the WHERE means a later turn can never quietly re-label
- * somebody else's claim.
- */
+/** Record which turn holds the claim, once it has its number; separate from `claimAsk` because the claim
+ *  is settled before the turn record exists. `claimed_by_turn IS NULL` keeps a later turn from
+ *  re-labelling a claim. */
 export function stampClaimingTurn(workId: string, turnNumber: number): number {
   return withUnit((): number => {
     const changed = getDb().prepare(
@@ -545,24 +382,9 @@ export function stampClaimingTurn(workId: string, turnNumber: number): number {
   });
 }
 
-/**
- * WHICH TURN PICKED THIS ROW UP — the reader of the event `stampClaimingTurn` writes, and the
- * ONE copy of that read.
- *
- * ⚠ `work.claimed_by_turn` IS NOT THE PLACE TO ASK. `transition()` sets that column to NULL on
- * every move out of `claimed` — including the mid-turn `claimed -> done` an ordinary answered
- * ask takes the moment its reply is delivered — so by the time a turn-boundary reader looks,
- * the column no longer says who claimed it. Two modules had already learned this the hard way
- * and each kept its own private copy of this query (`ask-settlement.ts`'s delegating-turn read
- * and `ask-remediation.ts`'s evidence read, whose comment states the clearing outright); a
- * third reader — UX-REPAIR T61(b)'s unsourced-specifics marker — asked the column instead and
- * was answered NULL on every single turn, which is why it wrote 0 rows in its whole life
- * (T64; driven at HEAD 2026-08-17, probe on t4996: `claimedByTurn: null`, `turnNumber: 4996`).
- *
- * The event is the immutable record and outlives every state move, so it is the only honest
- * answer to the question. `ORDER BY id DESC` is the LATEST claim, so a re-claimed row reports
- * the turn holding it now.
- */
+/** The turn that picked this row up, read from the event `stampClaimingTurn` writes, not from
+ *  `work.claimed_by_turn` (`transition()` nulls it on every move out of `claimed`). `ORDER BY id DESC` is
+ *  the latest claim. */
 export function claimingTurnOf(workId: string): number | null {
   const r = getDb().prepare(
     `SELECT json_extract(payload, '$.turn_number') AS t FROM work_events
@@ -571,25 +393,9 @@ export function claimingTurnOf(workId: string): number | null {
   return r?.t ?? null;
 }
 
-/**
- * P6b, the whole rule in one function.
- *
- * A turn that ended with no answer and NO effectful call may hand its ask back: the person
- * is still waiting and nothing has happened on their behalf, so re-serving costs a retry. A
- * turn that already sent an email, created a task or wrote a file may NOT, because
- * re-serving it would do that a second time — "a duplicate send is worse than a stranded
- * ask" is the recorded direction of error, and it is preserved exactly.
- *
- * Returns the transition when the claim was handed back, or `null` when it was deliberately
- * held. The refusal is written as an event, so a held ask is a fact somebody can find,
- * rather than the absence of a log line.
- */
-/* PHASE-4 T2, MEASURED AND NOT WRAPPED (#14). §T0-PINS B lists this as un-atomic
- * ("transition + appendEvent"). Re-derived at 9d3507e: there is no pair. The refusal
- * branch writes ONE event and returns; the other branch calls `transition`, which is
- * already one unit. Wrapping a single write in a transaction is the ceremony this step
- * was told not to add — the point is ownership. Recorded here so the next reader does
- * not re-open it from the pin list. */
+/** A turn that ended with no answer and no effectful call may hand its ask back (re-serving costs a
+ *  retry); one that already acted may not, since re-serving would repeat it: a duplicate send is worse
+ *  than a stranded ask. Returns the transition, or `null` when held; the refusal is written as an event. */
 export function revertAskClaimOnAbort(
   workId: string, effectfulCalls: number, reason: string,
 ): WorkOutcome | null {
@@ -606,87 +412,13 @@ export function revertAskClaimOnAbort(
   return r;
 }
 
-// ⚠ DEMOLISHED HERE, SWEEP-A TB1 (`DESIGN-2BUGS/DESIGN.md` §1b, rows 1 and 3): the two ask
-// closers that used to live at this point in the file are gone, and their decision is one
-// function in `work/ask-settlement.ts`.
-//
-//   * `closeAsksForDelivery` (send time, in the delivery transaction) — verdict KEEP as the
-//     authority's delivery arm.
-//     requirement preserved: "a quick ask is done when something was DELIVERED for it —
-//     never because a model said so" IS the authority's rule; the three narrowings (the send
-//     succeeded, it belongs to the claiming turn, it went to the ask's OWN conversation) and
-//     the `engine-ack` exclusion survive verbatim as negative controls in
-//     `__tests__/ask-settlement.test.ts`, and the solo lifecycle still closes AT SEND TIME
-//     through `settleAsksForDelivery`, called from the same statement inside `recordDelivery`.
-//     Its header's claimed-forever trade-off ("visible and inert") is REVERSED by the owner's
-//     2026-08-05 governing-priority ruling, which is recorded in the authority's own header.
-//   * `reconcileOrphanedClaims` (dead turns) — verdict KEEP, moved beside the decision it
-//     shares and later into `work/orphaned-claims.ts`; its 30-minute window is gone (3.5 O2:
-//     a timer must not decide an owner message's fate — the dead turn is the signal).
-//     requirement preserved: closed-on-the-delivery / re-armed outcomes unchanged; only the
-//     answered arm's DECISION is the authority's.
-//
-// `NON_ANSWERING_DELIVERY_TOOLS` moved with the closer it belonged to and is unchanged; it is
-// still kept in step with `agent/v2/answered-edge.ts`'s `NON_ANSWERING_TOOLS`.
 
-/**
- * 2b, CAUSE 3 — an ask NOBODY CAN EVER SERVE OR CLOSE gets an honest terminal state.
- *
- * FIVE shapes, every one structural and unservable by construction. The first two are the
- * original pair; the last three are SWEEP CORE-2 item 5's, and each was MEASURED on the
- * owner's own body before it was written (TB3 §8.2 for the middle two, this task's Step 0 for
- * the sender arm):
- *   * no conversation identity — the settlement authority matches evidence on the
- *     conversation, so a ticket without one can never be closed by any delivery, ever;
- *   * the root message is GONE — a cleared history or a terminated agent takes the row the
- *     obligation was FOR, and nothing can be served against a message nobody can read;
- *   * the SENDER IS IGNORED — the platform is required not to serve them, so a ticket saying
- *     work is owed to them was never true (30 measured at `e1108c7`);
- *   * the AGENT IS TERMINATED — C20 forbids resurrection, so nobody is left to serve it
- *     (7 measured);
- *   * the ask is BELOW ITS AGENT'S SESSION BOUNDARY — the user's own line, which both the
- *     waiting-set read and the staleness sweep floor on, so it is invisible to everything
- *     that could pick it up (12 measured).
- *
- * `abandoned` is the honest word for all five: the platform is not going to answer this, and
- * saying so is better than a ticket that sits `open` forever poisoning the settled read.
- * The once-guard is `transition()`'s own `expectedState` CAS — the same guard the quarantine
- * and the delegated-piece abandon use, which is what makes `abandoned` "reachable from >= 3
- * causes with a SINGLE-transition once-guard" rather than five hand-rolled ones.
- *
- * PHASE-2 T6 closed the PRODUCERS of the first two shapes and SWEEP CORE-2 item 5 closed the
- * producer of the third (`memory/message-store.ts`'s ingest gate now reads the OR4 trust
- * stamp), so on a tree from this commit forward the reaper finds those nothing to do. It
- * stays because a producer nobody has met yet is exactly what #15 says not to assume away,
- * and because the gone-root, dead-agent and session-boundary shapes have no producer to
- * close — they are made by events (a wipe, a kill, a reset) that are legitimate in
- * themselves.
- */
-// ── SWEEP CORE-2 item 5 — THE STRUCTURAL INVARIANT, AND ITS THREE NEW ARMS ──
-//
-// The orchestrator's post-TB3 adjudication (SWEEP-A §POST-TB3 item 2) states the law in one
-// sentence: **no open ask may exist that the platform's own rules make unservable — one
-// reaper, named reasons, never ageing.** TB3 §8.2 measured nineteen such rows in three
-// pre-existing classes and this reaper knew about none of them; it knew only about a missing
-// conversation and a missing root message.
-//
-// The five classes below are ONE expression, used by TWO readers that must never disagree:
-// `unservableOpenAskCensus()` (the invariant — what MUST NOT exist) and
-// `abandonUnservableAsks()` (the remediation — what CLOSES it). A census keyed on a
-// different predicate from the pass that satisfies it is how a class goes on recurring while
-// its check stays green, so there is only one predicate.
-//
-// ⚠ NO AGEING (owner, 2026-08-05, resolving the question outright). Not one arm reads a
-// clock. The main user's open asks never expire; every class here is UNSERVABLE BY
-// CONSTRUCTION — a rule the platform itself enforces makes it impossible to serve — and a
-// provably-dead-but-open ask is a defect this hunts, never a thing to age away. The
-// `no-unservable-open-ask.test.ts` §5 clauses grep this SQL for a clock and refuse one.
-//
-// PRECEDENCE, and why it is this order: identity first (the two original arms, which are
-// facts about the ROW), then the sender (a fact about WHO), then the agent (a fact about
-// WHO OWES IT), then the boundary (a fact about WHEN, relative to the user's own line). A row
-// that qualifies twice is reported once, under the first class that names it, so the
-// denominators sum to the population rather than double-counting it.
+/** Asks nobody can ever serve or close get an honest terminal state (`abandoned`), in five structural
+ *  classes: no conversation identity, root message gone, sender ignored, agent terminated, below its
+ *  agent's session boundary. The once-guard is `transition()`'s `expectedState` CAS. The reaper stays
+ *  because wipes, kills and resets legitimately make these. One SELECT serves the census and the abandon
+ *  pass so they never disagree. No arm may read a clock. The CASE order is the precedence, so a row is
+ *  counted once and the class counts sum to the total. */
 const UNSERVABLE_OPEN_ASK_SELECT = `
     SELECT w.id AS id, w.agent_id AS agent_id, w.state AS state, w.opened_at AS opened_at,
            CASE
@@ -709,8 +441,6 @@ const UNSERVABLE_OPEN_ASK_SELECT = `
              AND w.opened_at < (unixepoch(a.session_started_at) * 1000))
        )`;
 
-/** One row per class. The reason is the RECORD — a reader of `work_events` months later has
- *  to be able to see not just that the platform gave up, but by which of its own rules. */
 const UNSERVABLE_REASON: Readonly<Record<string, string>> = {
   'no-identity':
     'no conversation identity: no delivery can ever match this ask, so it can never be closed',
@@ -729,19 +459,11 @@ const UNSERVABLE_REASON: Readonly<Record<string, string>> = {
 
 export interface UnservableOpenAsk {
   id: string; agentId: string; state: WorkState;
-  /** One of the five keys of `UNSERVABLE_REASON`. */
   cls: string;
 }
 
-/**
- * THE INVARIANT, as a census: this must return NOTHING.
- *
- * Census-shaped rather than a schema CHECK, and that is a measurement rather than a
- * preference — every arm but `no-identity` needs a JOIN (to `messages` for the sender's
- * ingest stamp, to `agents` for the assignee's status and the session boundary), and SQLite
- * CHECK constraints cannot reach another table. What a CHECK could express is already
- * expressed: `work`'s own DDL.
- */
+/** The invariant as a census: this must return nothing. Not a schema CHECK because every arm but
+ *  `no-identity` needs a JOIN (to `messages` or `agents`), which CHECK constraints cannot reach. */
 export function unservableOpenAskCensus(agentId?: string): UnservableOpenAsk[] {
   const scoped = agentId != null;
   const rows = getDb().prepare(
@@ -756,7 +478,8 @@ export function abandonUnservableAsks(agentId?: string): {
   abandoned: number; ids: string[]; byClass: Record<string, number>;
 } {
   const scoped = agentId != null;
-  // Paged (200, keyset on opened_at then id) until the WHOLE set is read: a page bounds a statement, never how many settle (R3-7).
+  // Paged (200, keyset on opened_at then id) until the whole set is read: a page bounds a statement,
+  // never how many settle.
   const page = getDb().prepare(
     `${UNSERVABLE_OPEN_ASK_SELECT}${scoped ? ' AND w.agent_id = ?' : ''} AND (w.opened_at, w.id) > (?, ?) ORDER BY w.opened_at ASC, w.id ASC LIMIT 200`,
   );
@@ -780,141 +503,48 @@ export function abandonUnservableAsks(agentId?: string): {
   return { abandoned: ids.length, ids, byClass };
 }
 
-// ════════════════════════════════════════════════════════════════════════════════
-// PHASE-2 T4 — FAN-OUT IS PARENT/CHILD ROWS WITH AN ATOMIC COUNTDOWN.
-//
-// What this section replaces, named so the removal can be checked rather than trusted:
-// the PARK STRING MACHINE in `agent/a2a-transport.ts`. One owner ask delegated to N agents
-// was held by rewriting the owner message's `conv_key` into `park:~<t1>|<t2>#<remaining>`
-// and shrinking the text after the '#' as pieces came back. The join state WAS a string,
-// the countdown WAS string arithmetic, and the column it lived in was the same column that
-// carries the conversation's identity — so parking an ask DESTROYED the record of where it
-// came from (research 07 §3, "worst coupling").
-//
-// requirement preserved, one line each (research 07-FULL rows 3a–3l):
-//   3a  N-way join            -> N child rows with `parent_id`, `remaining_children` on the
-//                                parent, decremented INSIDE `transition()`;
-//   3b  compile-pending       -> `work.compile_pending`, a column, set by the countdown that
-//                                reached zero and cleared by the settle that answers;
-//   3c  transactional CAS     -> one guarded UPDATE in the child's own transaction. The old
-//                                one retried five times and then returned 'noop' in silence
-//                                (07 §3 defect i: "piece lost, join hangs to TTL");
-//   3d  TTL fail-closed once  -> `work.ttl_at` + a `transition()` with `expectedState`; the
-//                                loser of the race gets `conflict`, a value, not a silence;
-//   3e  abandonment           -> a child settling `abandoned` decrements like any other, and
-//                                a join with zero landed pieces can only fail closed;
-//   3f  late-answer re-open   -> `failed -> open -> done`, both moves recorded, and the
-//                                second late answer is refused by the same `expectedState`;
-//   3g  state vs identity     -> `state` and `reply_conversation_id` are different columns on
-//                                the same row. The owner's message keeps its conv_key;
-//   3h  piece result          -> the child's own `notes` + `result_delivery_id`, written in
-//                                the transition's transaction (07 §3 defect: the harvest read
-//                                a fake `join-piece:` namespace and "could come up empty");
-//   3i  answered-by edge      -> `result_delivery_id`, never a string match on the thread;
-//   3j  no short-token parks  -> `root_id` holds the FULL thread id and is matched EXACTLY;
-//                                `parent_id` is a real FK (07 §3 defect ii: an 8-char token
-//                                could not be matched back and `failParksForAbandonedAsk`
-//                                silently missed every fan-out park);
-//   3l  identity stays        -> nothing here writes `messages.conv_key`.
-// ════════════════════════════════════════════════════════════════════════════════
+// Fan-out: parent/child rows with an atomic countdown. `remaining_children` on the parent is decremented
+// inside `transition()`; `compile_pending` is set when it reaches zero and cleared by the settle that
+// answers. A late answer reopens `failed -> open -> done`, the second one refused by `expectedState`.
+// Nothing here writes `messages.conv_key`.
 
-/** How long a delegated join may wait before the engine fails it closed and tells the owner.
- *  Carried verbatim from `PARK_TTL_MINUTES` (`a2a-transport.ts`), which this replaces. */
 export const JOIN_TTL_MINUTES = 60;
 
-/** Joins older than this are stale history: nothing re-fires them and telling the owner about
- *  a week-old delegated question is noise. Carried verbatim from `PARK_MAX_AGE_DAYS`. */
+/** Joins older than this are stale: nothing re-fires them and the owner is not told about them. */
 export const JOIN_MAX_AGE_DAYS = 7;
 
-/**
- * t114 (census U3) — THE HARD CEILING ON TTL EXTENSION, declared beside the TTL it bounds.
- *
- * `JOIN_TTL_MINUTES` above used to be the whole story: at minute 60 the join was failed closed
- * on wall-clock alone, with no read of whether the agent it was waiting on was still working.
- * A sub-agent healthily grinding its delegated piece at minute 61 — well inside its own
- * creator-set runtime — had its join declared dead, the owner told the answer never came, and
- * its eventual reply arrived to a terminal join. That is the opposite of row 33's contract one
- * file over, where a spawn timeout lands on a DECISION POINT rather than a kill.
- *
- * So the deadline now yields to PROOF OF LIFE: while an outstanding piece's assignee is
- * provably working, the reaper grants more time instead of failing the join. This number is the
- * bound on that generosity, and it exists because "every sign of life buys unlimited further
- * time" is the same unbounded-renewal trap the stream watchdog's own header refuses — a wedged
- * agent that looks busy for ever would never be reaped at all.
- *
- * FOUR HOURS, and the unit is a MULTIPLE of the declared TTL rather than a new invented cliff
- * (#14): four turns of the platform's own declared answer to "how long may a delegated reply be
- * waited for". Past it the join fails closed whatever the assignee looks like, and the exit
- * reason says that is what happened.
- */
+/** Hard ceiling on TTL extension (four TTLs): the reaper grants more time while a piece's assignee is
+ *  provably working, and this bounds that so a wedged agent that looks busy is still reaped. Past it the
+ *  join fails closed. */
 export const JOIN_LIVENESS_MAX_TOTAL_MS = 4 * JOIN_TTL_MINUTES * 60_000;
 
-/**
- * The A2A per-thread hop cap, declared ONCE, beside the column it now keys on.
- *
- * DECIDED D2 (PHASE-2 T0): the transport's private `MAX_HOPS_PER_THREAD` dissolves into
- * `work.hop_count`. The value is carried over unchanged — 8 — because #14 forbids inventing
- * a threshold, and reconciling it with the classifier's `A2A_HOP_LIMIT = 5` is SWEEP A's job
- * with its own written instruction ("pick one with a reason and delete the other").
- *
- * ⚠ MEASURED CORRECTION TO D2 (PHASE-2 T4, 2026-07-28). D2 records both caps as live —
- * "TWO LIVE VALUES ON ONE CONCEPT ... Both fire." At this HEAD only ONE fires:
- * `git grep -n "a2aIntentValidator" HEAD` returns the definition and its own test file and
- * NOTHING ELSE, so the classifier's cap of 5 has no production caller and cannot reject
- * anything. That makes this the tree's ONLY live hop cap, which is why the enforcement is
- * carried across rather than dropped.
- */
+/** The only live A2A per-thread hop cap, keyed on `work.hop_count`; the classifier's `A2A_HOP_LIMIT`
+ *  (`agent/v2/classifiers/a2a.ts`) sits in `a2aIntentValidator`, which has no production caller. */
 export const THREAD_HOP_CAP = 8;
 
-/**
- * HOW LONG A HOP COUNTS AGAINST THE CAP — t109 item A, the half that was missing. Nothing ever
- * aged or reset `hop_count`, on EITHER store, so the cap was a lifetime budget of eight
- * deliveries and any long-lived thread died at it. The cap is now eight hops inside a ROLLING
- * WINDOW, materialised on both the read and the write side below.
- *
- * THE NUMBER IS CARRIED, NOT CHOSEN (#14): it IS `JOIN_TTL_MINUTES`, the platform's declared
- * answer to *"how long a delegated reply may be waited for before the engine declares it
- * dead"* (`work-reaper.ts`'s `join_ttl`). Past that line the platform has already given up on
- * the previous turn, so the next message cannot be a continuation of it. A tighter window
- * weakens the cap; a looser one keeps the bug on any thread slower than the window.
- *
- * WHY A WINDOW AND NOT RESET-ON-REPLY — the option a reader reaches for first, and why it
- * measures wrong — is argued once, in
- * `agent/__tests__/a-long-thread-is-not-a-runaway-loop.test.ts`'s header, with the clauses.
- */
+/** How long a hop counts against the cap: eight hops inside a rolling window (`JOIN_TTL_MINUTES`, past
+ *  which the platform has given up on the previous turn), not a lifetime budget. A tighter window weakens
+ *  the cap; a looser one lets a slow thread die at it. */
 export const THREAD_HOP_WINDOW_MS = JOIN_TTL_MINUTES * 60_000;
 
-/** One delegated thread, as the delegation exit knows it. */
 export interface DelegationThread {
-  /** The FULL A2A thread id. Never an 8-char token — 3j, and the collision that produced it. */
   threadId: string;
-  /** Who was asked. The string machine had to re-derive this by scanning messages around the
-   *  park's timestamp (`findAskedAgentForPark`); the delegation knows it at the time. */
   assigneeAgent?: string | null;
-  /** The A2A intent this thread was opened with (QUESTION / ASSIGN / BLOCK). */
   intent?: string;
-  /** The thread's hop count at delegation time — D2's rekey (see THREAD_HOP_CAP). */
   hopCount?: number;
   title?: string | null;
 }
 
 export interface OpenJoinInput {
-  /** The owner's ask. It is the PARENT: OR1's one ID space, not a second record. */
   parentWorkId: string;
   agentId: string;
-  /**
-   * The conversation the answer must come back on, COPIED here at delegation time and never
-   * resolved later. This is the whole of the "worst coupling" fix: the old machine had to
-   * recover the channel from an `inbound_meta` JSON blob because parking had overwritten the
-   * identity column, and a park whose meta was missing fell back to the dashboard.
-   */
+  /** The conversation the answer must come back on, copied at delegation time and never resolved later. */
   replyConversationId: string | null;
-  /** Absolute epoch-ms deadline. The reaper reads this column and nothing else. */
+  /** Absolute epoch-ms deadline; the due-join finders read the deadline from this column alone. */
   ttlAt: number;
   threads: DelegationThread[];
 }
 
-/** A child of a join, as its readers need it. */
 export interface JoinChild {
   id: string;
   parentId: string;
@@ -929,7 +559,6 @@ export interface JoinPiece {
   childId: string;
   threadId: string;
   state: WorkState;
-  /** What the peer actually delivered, recorded on the child at land time. */
   content: string | null;
   resultDeliveryId: string | null;
   assigneeAgent: string | null;
@@ -946,25 +575,17 @@ export interface JoinState {
   compilePending: boolean;
   replyConversationId: string | null;
   ttlAt: number | null;
-  /** t114: when the join opened, so a TTL extension can be bounded against its TOTAL life
-   *  rather than against a deadline it has itself moved. */
+  /** When the join opened, so a TTL extension is bounded against its total life, not a deadline it moved. */
   openedAt: number | null;
   rootId: string;
-  /** What an at-zero join can honestly do: compile the pieces, or admit it got nothing. */
   outcome: 'compile' | 'fail-closed';
 }
 
 const CHILD_OPEN_STATES = "('open','claimed','blocked')";
 
-/**
- * Open the join for a delegation turn: N children under the owner's ask, the countdown on
- * the parent, and the reply conversation copied onto every row — all in ONE transaction, so
- * there is no instant in which some children exist and the countdown does not.
- *
- * Returns the child ids in hand-off order. An empty thread list is a no-op and says so by
- * returning nothing: a delegation that opened no threads has no join, and writing
- * `remaining_children = 0` would make the reaper believe a join completed.
- */
+/** Open the join for a delegation turn: N children, the countdown on the parent and the reply
+ *  conversation on every row, in one transaction. No threads means no join: `remaining_children = 0`
+ *  would read as a completed join. */
 export function openDelegationJoin(p: OpenJoinInput): string[] {
   const db = getDb();
   if (p.threads.length === 0) return [];
@@ -976,8 +597,7 @@ export function openDelegationJoin(p: OpenJoinInput): string[] {
     }, p.agentId);
     return [];
   }
-  // Same discipline as `openAsk`: a dangling conversation id is recorded as ABSENT identity
-  // rather than allowed to take the whole delegation down on an FK violation.
+  // Same as `openAsk`: a dangling conversation id is recorded as absent rather than failing the delegation.
   let replyConversationId = p.replyConversationId;
   if (replyConversationId != null
       && !db.prepare('SELECT 1 FROM conversations WHERE id = ?').get(replyConversationId)) {
@@ -1008,10 +628,8 @@ export function openDelegationJoin(p: OpenJoinInput): string[] {
                   ?, ?, ?, ?, ?, ?, 'live')
       `).run(
         childId, p.parentWorkId, p.agentId, t.assigneeAgent ?? null, p.agentId,
-        // t118 (census row 11): an A2A thread child's `title` is the SENDING agent's
-        // model-authored thread name, bound straight into a prose column on `work`. Same
-        // class as the scaffold leak, same one redactor, keyed to the creator (`p.agentId`,
-        // the sender whose handed-value set its own prose can carry).
+        // A thread child's `title` is the sender's model-authored text: redacted against the values handed
+        // to that sender.
         t.threadId, t.intent ?? 'ASSIGN', t.hopCount ?? 0,
         typeof t.title === 'string' ? redactHandedCredentials(p.agentId, t.title) : null,
         replyConversationId, p.ttlAt, at, at,
@@ -1021,21 +639,9 @@ export function openDelegationJoin(p: OpenJoinInput): string[] {
       });
       ids.push(childId);
     }
-    // ── SWEEP CORE-2 item 5 — THE COUNTDOWN COUNTS CHILDREN THAT EXIST, NOT ATTEMPTS ──
-    //
-    // It was `ids.length`, and `ids` was pushed to UNCONDITIONALLY after an `INSERT OR
-    // IGNORE`. That is the silent-discard class `insertMessage`'s own R1 header names —
-    // IGNORE swallows NOT NULL and CHECK failures as well as UNIQUE ones — so a child that
-    // never landed still moved the countdown, and the parent was left holding a number no
-    // decrement could ever reach. TB3 §8.4's fourteen phantom countdowns are that shape (their
-    // producer on this box turned out to be the harness teardown, but the writer could make
-    // them too, and a hole is closed at the writer rather than argued about).
-    //
-    // ⚠ THE SUBSET IS DELIBERATE, and it is the same number on every ordinary open: the rows
-    // are counted from `work` itself, restricted to this parent, to the children THIS call
-    // handled, and to the states a child can still settle FROM. A sibling that already settled
-    // between two opens cannot decrement again — counting it is how `ask:7a4810b1…` came to
-    // hold `remaining_children = 2` against one live thread.
+    // The countdown counts children that exist, not attempts (`INSERT OR IGNORE` swallows CHECK failures):
+    // rows are counted from `work` for this parent, this call's children and states they can still settle
+    // from. A sibling already settled cannot decrement again, so counting it would strand the countdown.
     const ph = ids.map(() => '?').join(', ');
     const live = ids.length === 0 ? [] : (db.prepare(
       `SELECT id FROM work
@@ -1066,14 +672,7 @@ export function openDelegationJoin(p: OpenJoinInput): string[] {
   return ids;
 }
 
-/**
- * The OPEN child of a join for this thread, or null.
- *
- * EXACT match on the full thread id. The mechanism this replaces had to sniff the length of
- * a thread reference and prefix-match anything ≤ 8 characters, because a regex fallback
- * minted 8-char park tokens — and `makeThreadId`'s own comment records that an 8-char prefix
- * of a `thread-<hash>-<seed>` id is ~36 buckets and "collides heavily".
- */
+/** The open child of a join for this thread, or null; exact match on the full thread id. */
 export function findJoinChildByThread(agentId: string, threadId: string): JoinChild | null {
   const r = getDb().prepare(`
     SELECT id, parent_id, agent_id, root_id, state, assignee_agent, reply_conversation_id
@@ -1092,37 +691,12 @@ export function findJoinChildByThread(agentId: string, threadId: string): JoinCh
   };
 }
 
-// ════════════════════════════════════════════════════════════════════════════════
-// SWEEP CORE-2 item 5, BATCH C — NO COUNTDOWN WITHOUT CHILDREN
-// ════════════════════════════════════════════════════════════════════════════════
-//
-// SWEEP-A's POST-TB3 adjudication item 4, from TB3 §8.4: a `remaining_children > 0` with ZERO
-// child rows is a countdown that can never reach zero — "a shape the ledger should not
-// contain; cannot storm, cannot resolve". Fourteen measured, all `done`, all on this box's
-// harness bot.
-//
-// ── WHY A CENSUS AND NOT A SCHEMA TRIGGER, WHICH WAS CONSIDERED AND REFUSED ──
-// Migration 151 already proves a trigger CAN hold a shape like this at the database, below
-// the `foreign_keys` pragma a CLI leaves off. It is refused here on a MEASUREMENT rather than
-// a preference: the only producer on this box is the harness teardown
-// (`dojo-test-kit/behavioral/runner.mjs`, which deletes a settled join PIECE whose delivery
-// belongs to a swept peer and leaves the parent's countdown behind), and a refusing trigger
-// would ABORT that sweep — the exact failure 151's own comment records having caused once
-// already, one class earlier. So the shape is hunted, not forbidden, and the WRITER's own
-// path to it is closed above instead.
-//
-// ── ONE-SHOT, WITHOUT A ONE-SHOT'S BOOKKEEPING ──
-// The adjudication asks for "a one-shot dated clear, same non-falsifying shape as the
-// orphan-flag clear". The SHAPE is exactly that: the row keeps its state, its receipt and its
-// close time; only the stale number moves, and it moves through a recorded, dated event that
-// preserves what it used to say. The HOST is the standing reaper rather than a migration-armed
-// pass, because the arm is idempotent BY PREDICATE — after one sweep there is nothing left to
-// find, which is what "one-shot" buys — and because an invariant a one-shot cannot enforce
-// twice is not an invariant. No migration is owed and none is written.
+// A `remaining_children > 0` with no child rows is a countdown that can never reach zero. It is hunted by a
+// census and cleared by the standing reaper, not forbidden by a schema trigger: a refusing trigger would
+// abort a sweep that deletes a join piece and leaves the parent's countdown behind.
 
 export interface PhantomCountdown { id: string; remainingChildren: number }
 
-/** THE INVARIANT, as a census: this must return NOTHING. */
 export function phantomCountdownCensus(): PhantomCountdown[] {
   return (getDb().prepare(`
     SELECT w.id AS id, w.remaining_children AS n
@@ -1133,14 +707,8 @@ export function phantomCountdownCensus(): PhantomCountdown[] {
   `).all() as Array<{ id: string; n: number }>).map((r) => ({ id: r.id, remainingChildren: r.n }));
 }
 
-/**
- * Clear the countdowns that no child can ever move. Returns the denominator.
- *
- * ⚠ THE RECORD IS NEVER FALSIFIED. The number it USED to say rides the event, so a reader of
- * `work_events` months later can see both what the row claimed and why it stopped claiming it.
- * Nothing is deleted, nothing is back-dated, and no ask is re-opened: these rows were not
- * wrong about being answered, only about what they were still waiting for.
- */
+/** Clear the countdowns no child can ever move; returns the count and ids. The record is never falsified:
+ *  the number it used to say rides the event, nothing is deleted or back-dated, and no ask is reopened. */
 export function clearPhantomCountdowns(): { cleared: number; ids: string[] } {
   const db = getDb();
   const rows = phantomCountdownCensus();
@@ -1170,8 +738,7 @@ export function clearPhantomCountdowns(): { cleared: number; ids: string[] } {
   return { cleared: ids.length, ids };
 }
 
-/** Read a join's live counts. `total` and `landed` are COUNTED off the children, never
- *  maintained as a second number that can drift from the one the countdown moves. */
+/** A join's live counts, counted off the children so there is no second number to drift. */
 export function joinState(parentWorkId: string): JoinState | null {
   const db = getDb();
   const p = db.prepare(
@@ -1198,8 +765,6 @@ export function joinState(parentWorkId: string): JoinState | null {
   };
 }
 
-/** Every piece of a join, with the content each peer actually delivered. This is the harvest
- *  the compile steer quotes; it reads the CHILDREN, never a conv_key namespace. */
 export function joinPieces(parentWorkId: string): JoinPiece[] {
   return (getDb().prepare(
     `SELECT id, root_id, state, notes, result_delivery_id, assignee_agent
@@ -1229,33 +794,8 @@ function joinAfter(childId: string): JoinState & { complete: boolean } {
   };
 }
 
-/**
- * A piece came back. The child settles `done` against the delivery that proves it, its
- * delivered text is recorded on the row in the SAME transaction, and the countdown moves.
- *
- * The empty-reply refusal is HERE rather than at the call site because it was a real
- * incident (2026-07-23, run bmrwsrsi9gl): a worker blurted an instant empty DELIVERABLE, the
- * join advanced on "(no delivered content found)", and the compile steer fired 18 seconds
- * after the ASSIGNs went out. A nothing is not a deliverable; the piece stays outstanding so
- * the real one can land, and if it never does the TTL fails the join closed.
- */
-/**
- * ── PHASE-2 T10, RULING 7 rider (b): a piece landing that ABORTS names its row ──
- *
- * On 2026-07-29 a database-side trigger (present on the box, present in no commit) raised
- * `two-key: completion requires an upheld adjudication` on every fan-out piece landing. The
- * throw unwound into `a2a-transport.ts`, which logged `A2A close-the-loop delivery failed`
- * with the error string and nothing else, at `warn`. For six hours the countdown never
- * reached zero, the engine's deterministic single-piece relay never fired, and the ordinary
- * "surface this deliverable" hint stayed deliberately suppressed because a join owned the
- * thread — the platform had taken responsibility for a delivery and was then prevented from
- * making it, silently.
- *
- * The loudness belongs HERE and not at the catch sites, on the same reasoning the empty-piece
- * refusal already uses: inside the settle function, no caller can forget it. This wrapper only
- * ADDS a log line — it rethrows, so control flow is exactly as before, and an in-band refusal
- * (which returns a value rather than throwing) stays quiet.
- */
+/** Piece-landing wrapper: only ADDS an error log naming the failed row, then rethrows, so a trigger abort
+ *  inside the settle is never silent. An in-band refusal (a returned value) stays quiet. */
 function loudOnPieceAbort<T>(childId: string, settle: () => T): T {
   try {
     return settle();
@@ -1278,6 +818,9 @@ function loudOnPieceAbort<T>(childId: string, settle: () => T): T {
   }
 }
 
+/** A piece came back: the child settles `done` against its delivery, its text recorded in the same
+ *  transaction, and the countdown moves. An empty reply is refused here: the piece stays outstanding so
+ *  the real one can land (else the TTL fails the join closed). */
 export function landPiece(
   childId: string,
   p: { deliveryId: string; content: string; messageId?: string | null; actorId?: string | null },
@@ -1301,11 +844,8 @@ export function landPiece(
   return { result, join: joinAfter(childId) };
 }
 
-/**
- * A piece settled WITHOUT a result: the peer replied FAIL, or the runtime gave up on it
- * (synthetic ABANDONED). Both count as LANDED — the piece came back, and "it failed" is an
- * answer the owner is entitled to — so both decrement the countdown exactly like a success.
- */
+/** A piece settled without a result (the peer replied FAIL, or the runtime abandoned it) decrements the
+ *  countdown like a success; the join's `landed` count still counts only `done` pieces. */
 export function settlePieceWithoutResult(
   childId: string,
   p: { to: 'failed' | 'abandoned'; reason: string; content?: string | null; actorId?: string | null },
@@ -1317,36 +857,11 @@ export function settlePieceWithoutResult(
   return { result, join: joinAfter(childId) };
 }
 
-// ════════════════════════════════════════════════════════════════════════════════
-// UX-REPAIR ROUND 11 T43 leg (c) — THE JOIN EDGE FOLLOWS THE WORK
-// ════════════════════════════════════════════════════════════════════════════════
-//
-// THE INCIDENT. The harness bot delegated research to the PM, who holds no web tools.
-// The PM punted it to the primary agent and replied with a hand-off note; `landPiece` settled her piece on
-// that note ("the delegated piece came back"), the countdown reached zero with ONE research
-// stream in hand, and the compile steer told the model the pieces were back.
-//
-// WHY NOT THE VERB FIX, which is the obvious one and is NOT-DOING: `a2a_replies` intents on
-// the dev body are ANSWER 341 · DELIVERABLE 262 · COMPLETE 42 · FAIL 2. "Only COMPLETE
-// settles" would break the dominant working flow. And the engine may not READ the reply to
-// decide whether it is a hand-off — prose classification is the round-11 banned class. So the
-// assignee DECLARES it, through the tool it is already using, and the engine only counts
-// structure.
-//
-// WHAT MOVES AND WHAT DOES NOT. The piece keeps its parent, its countdown slot, its reply
-// conversation and — the one that had to be argued — its TTL: the owner's deadline is about
-// the work, not about who is holding it. What moves is the EDGE: the thread the piece is
-// waiting on, the assignee it is waiting for, and the agent the reply will arrive to (the
-// hand-off sender, because the third agent replies to THEM, not to the delegator; that is
-// what `findJoinChildByThread` has to resolve when the real deliverable lands).
-//
-// CENSUS/COLLISION (mission rule). No new counter: the chain is bounded by the EXISTING
-// `THREAD_HOP_CAP` over the piece's own `hop_count`, which is D2's rekey of the transport's
-// per-thread count and is already continuous across a delegation. No new state, no new floor,
-// no new lane, no new steer. The redrive ladder keys on the join and is unaffected; the
-// empty-piece refusal and `settlePieceWithoutResult` are untouched.
+// A hand-off moves the piece's join edge, not its slot: it keeps its parent, countdown slot, reply
+// conversation and TTL (the deadline is about the work). What moves is the thread it waits on, its assignee
+// and the agent the reply arrives to. The assignee declares the hand-off; the engine never classifies reply
+// prose. The chain is bounded by `THREAD_HOP_CAP` over the piece's `hop_count`.
 
-/** Why a repoint was refused. Each one is a fact the caller can state to the model. */
 export type HandOffRefusalReason =
   | 'no-live-piece'      // no outstanding piece with this id (settled, or never existed)
   | 'not-the-assignee'   // the sender is not the agent this piece is waiting for
@@ -1366,21 +881,12 @@ export type HandOffOutcome =
     }
   | { kind: 'refused'; reason: HandOffRefusalReason; detail: string };
 
-/**
- * Re-point a live join piece at the thread its assignee handed the work off on.
- *
- * REFUSES BY RETURNING, never by throwing — the same discipline `transition` states for
- * itself: a caller that ignores the result gets a value it did not use rather than an
- * exception it swallowed. Every refusal leaves the row byte-identical, which is what lets the
- * transport fall through and settle the reply exactly as it does today.
- */
+/** Re-point a live join piece at the thread its assignee handed the work off on. Refuses by returning;
+ *  every refusal leaves the row byte-identical so the transport can settle the reply as usual. */
 export function repointJoinPieceToHandOff(p: {
   childId: string;
-  /** Who is handing off. MUST be the piece's own assignee — a repoint writes on somebody
-   *  else's join, so the only agent entitled to move it is the one it is waiting for. */
   handOffSender: string;
   newThreadId: string;
-  /** The agent the work went to, derived structurally by the caller from the send itself. */
   newAssignee: string | null;
 }): HandOffOutcome {
   const db = getDb();
@@ -1428,9 +934,8 @@ export function repointJoinPieceToHandOff(p: {
          SET root_id = ?, agent_id = ?, assignee_agent = ?, hop_count = ?, updated_at = ?
        WHERE id = ? AND state IN ${CHILD_OPEN_STATES}
     `).run(target, p.handOffSender, p.newAssignee ?? null, nextHop, at, p.childId);
-    // 'audit' with a marker, exactly like `clearPhantomCountdowns` — a repoint is not a
-    // state change and inventing a `work_events.kind` for it would owe a migration, a CHECK
-    // and a conformance row for a fact the audit lane already carries.
+    // 'audit' with a marker, like `clearPhantomCountdowns`: a repoint is not a state change, so it needs no
+    // new `work_events.kind`.
     appendEvent(p.childId, 'audit', p.handOffSender, {
       marker: 'join_edge_repointed',
       from_thread: r.root_id,
@@ -1451,8 +956,6 @@ export function repointJoinPieceToHandOff(p: {
   };
 }
 
-/** Joins whose deadline has passed and which have not settled. The reaper reads `ttl_at`
- *  and nothing else — no string scan, no LIKE, no age arithmetic in SQL text. */
 export function dueJoins(nowMs: number, limit = 25): JoinState[] {
   const floor = nowMs - JOIN_MAX_AGE_DAYS * 24 * 60 * 60 * 1000;
   const rows = getDb().prepare(`
@@ -1465,50 +968,11 @@ export function dueJoins(nowMs: number, limit = 25): JoinState[] {
   return rows.map((r) => joinState(r.id)).filter((s): s is JoinState => s !== null);
 }
 
-/**
- * Joins past their deadline whose PARENT has already closed — the second timeout arm, and the
- * whole of issues-log #19.
- *
- * WHY THE POPULATION EXISTS AT ALL. The parent ask closes on the reply the agent sends the owner
- * (T5's send-time closer, now the settlement authority's delivery arm) and the join opens in the
- * SAME turn: in the event log `join_opened` lands AFTER the `claimed -> done` transition. A
- * `done` parent with a live countdown was therefore the NORMAL product of every delegating turn.
- * (SWEEP-A TB1 gives the authority a HOLD arm — an ask with delegated work outstanding goes
- * `blocked`, never `done` — and TB2 finishes the ordering so this population empties at source.
- * The finder stays until it is measured empty on a lived-in body.)
- * `dueJoins` above and `openJoins` below both carry `state NOT IN ('done','failed','abandoned')`
- * on the parent, so neither ever yielded one — T11 measured 14 delegated pieces sitting `open`
- * 8–13 HOURS past their TTL under 13 such parents, with the fail-closed owner notice never sent.
- * A late reply still lands (`landPiece` is happy under a terminal parent), so the row was
- * reachable by the peer and by nothing else, and the person who asked was never told.
- *
- * IT IS A SEPARATE FINDER RATHER THAN A WIDENED ONE, deliberately. Dropping the state predicate
- * from `dueJoins` hands `resolveOpenJoin` — and therefore `failJoinClosed` — a terminal parent,
- * and `failJoinClosed` transitions the PARENT with its current state as the exactly-once guard.
- * `done -> failed` is a terminal-to-terminal move this machine does not make, and teaching it to
- * would let a reaper re-open work whose answer was already delivered. This arm's caller settles
- * the outstanding CHILDREN instead: a move the machine already makes, on the same countdown,
- * leaving every fact that describes the owner's answer exactly as it was.
- *
- * `remaining_children > 0`, not `IS NOT NULL`: a terminal parent at zero has nothing
- * outstanding. (`dueJoins` needs `IS NOT NULL` because a LIVE parent at zero still owes the
- * compile relay.) Same `ttl_at` read and the same age cap as the first arm — no second clock and
- * no invented staleness bound.
- *
- * ⚠ `state = 'done'` AND NOT "any terminal state", and the reason was found by the test rather
- * than reasoned out. The first draft matched all three terminal states, and
- * `join-closed-parent-reaper.test.ts`'s first-arm control went red immediately: the first arm's
- * own `failJoinClosed` leaves the parent `failed` WITH the countdown still above zero, which is
- * character-for-character the shape this finder hunts — so the owner got the fail-closed notice
- * and then a second notice about the same join, in the same pass, every pass. The distinguishing
- * fact is what the owner has already been told:
- *   * `done`      — the parent's answer was DELIVERED and said nothing about the outstanding
- *                   piece. That silence is #19, and it is this arm's whole subject.
- *   * `failed`    — reached by `failJoinClosed`, which delivers its own notice. Nothing is owed.
- *   * `abandoned` — reached by the ask-abandon paths (quarantine, unservable-ask reaper), which
- *                   own their own honesty story. Speaking here would be a new behaviour, not a
- *                   repair, so it is deliberately out of scope and asserted as such.
- */
+/** Joins past their deadline whose PARENT already closed `done` with pieces still outstanding (a residual
+ *  shape: the settlement authority holds a delegating ask `blocked`). Separate from `dueJoins` because
+ *  `failJoinClosed` transitions the parent and `done -> failed` is a move this machine does not make:
+ *  this arm's caller settles the outstanding CHILDREN instead. `state = 'done'` only: `failed` parents
+ *  already got their notice and `abandoned` ones own their story. */
 export function dueJoinsUnderClosedParent(nowMs: number, limit = 25): JoinState[] {
   const floor = nowMs - JOIN_MAX_AGE_DAYS * 24 * 60 * 60 * 1000;
   const rows = getDb().prepare(`
@@ -1521,8 +985,6 @@ export function dueJoinsUnderClosedParent(nowMs: number, limit = 25): JoinState[
   return rows.map((r) => joinState(r.id)).filter((s): s is JoinState => s !== null);
 }
 
-/** Every join of one agent that reached zero and is still waiting for the compiled answer.
- *  Read at turn end, so the loop closes no matter what the model did with the steer. */
 export function compilePendingJoins(agentId: string, limit = 5): JoinState[] {
   const rows = getDb().prepare(`
     SELECT id FROM work
@@ -1532,17 +994,9 @@ export function compilePendingJoins(agentId: string, limit = 5): JoinState[] {
   return rows.map((r) => joinState(r.id)).filter((s): s is JoinState => s !== null);
 }
 
-/**
- * Fail a join CLOSED. The `expectedState` IS the exactly-once guard: two reapers, a boot
- * re-drain and a live relay may all reach the same join, and exactly one gets `applied` —
- * the others get `conflict`, which is a VALUE the caller reads, not a zero somebody has to
- * remember to check. The owner notice is sent by the winner and only by the winner.
- *
- * `by: 'scheduler'` is the honest actor and it is deliberate: a deadline decided this, and
- * the engine actor would have to point at an occurrence, delivery or artifact it does not
- * have (G6). Writing `by: 'engine'` here would mean widening that gate to make a caller
- * pass, which is the move this project bans.
- */
+/** Fail a join CLOSED. `expectedState` is the exactly-once guard: of several reapers, a re-drain and a
+ *  live relay, one gets `applied`, the rest a `state-conflict` refusal, and only the winner notifies the
+ *  owner. The actor is the scheduler because an engine actor would need evidence (G6). */
 export function failJoinClosed(
   parentWorkId: string, p: { reason: string; expectedState: WorkState },
 ): WorkOutcome {
@@ -1552,20 +1006,9 @@ export function failJoinClosed(
   });
 }
 
-/**
- * t114 (census U3) — GRANT A WAITING JOIN MORE TIME, because the agent it waits on is provably
- * still working. The alternative at this point in the reaper is `failJoinClosed`, so this is the
- * "do not kill work you cannot prove is dead" door.
- *
- * It is a `ttl_at` write and NOT a `transition()`: nothing about the join's state changes, which
- * is the point — the join stays exactly as open as it was and keeps every exactly-once guard it
- * had. `work.state` writes still belong to `transition`; this module remains their single writer.
- *
- * REFUSES rather than clamps when the join's TOTAL life has passed `JOIN_LIVENESS_MAX_TOTAL_MS`,
- * and returns `false` so the caller can fail the join closed with an exit reason that says the
- * ceiling is what ended it. A `null` `opened_at` also refuses: an extension that cannot be
- * bounded is the unbounded renewal the ceiling exists to prevent.
- */
+/** Grant a waiting join more time because its assignee is provably working: a `ttl_at` write, not a
+ *  `transition()`. Refuses (`extended: false`) once the join's total life passes
+ *  `JOIN_LIVENESS_MAX_TOTAL_MS`, or when `opened_at` is null, so the caller can fail it closed. */
 export function extendJoinTtl(
   parentWorkId: string, p: { grantMs: number; nowMs?: number },
 ): { extended: boolean; ttlAt: number | null; reason?: 'no-join' | 'no-opened-at' | 'past-ceiling' } {
@@ -1584,27 +1027,11 @@ export function extendJoinTtl(
   return { extended: true, ttlAt };
 }
 
-// ── DEMOLISHED, SWEEP-A TB2: `settleJoinDelivered` ──
-// It was the FOURTH owner of "this ask is done" (verify report M2, owner 6) and the last one
-// outside the authority — Census A carried it with `handedTo: 'SWEEP-A TB2 (the join arm)'`
-// so it could not be forgotten. It is now `work/ask-settlement.ts:settleAskOnJoin`, the same
-// rule invoked from the relay.
-// requirement preserved (DESIGN §1b, row 5): *"close the join-ask when the compiled result is
-// actually delivered — already evidence-backed"*, and `compile_resolved` is written on it at
-// last. What it gained is the ability to REFUSE: the children must have settled and the
-// delivery must postdate `join_complete`, so the delegating turn's own status line can never
-// be the receipt. `reopenJoinForLateAnswer` moved with it, because it is a composition of
-// this settle and `claimFailedJoinForLateAnswer` (which stays here, untouched — it is a
-// `work.state` write and this module is the single writer).
+// The join-delivered settle is `settleAskOnJoin` in `work/ask-settlement.ts`;
+// `claimFailedJoinForLateAnswer` stays here as a `work.state` write.
 
-/**
- * Claim the right to tell the owner about a LATE answer — the first half of the re-open, and
- * the exactly-once guard for it. `failed -> open` succeeds for exactly one caller; everyone
- * else gets `conflict`, which is what stops the owner being told twice.
- *
- * It is a separate call from the settle because the DELIVERY happens between them: the guard
- * has to be won BEFORE the send, and the send is what produces the id the settle points at.
- */
+/** Claim the right to tell the owner about a late answer: `failed -> open` succeeds for exactly one
+ *  caller. Separate from the settle because the guard is won before the send. */
 export function claimFailedJoinForLateAnswer(
   parentWorkId: string, evidenceDeliveryId: string, reason: string,
 ): WorkOutcome {
@@ -1614,7 +1041,6 @@ export function claimFailedJoinForLateAnswer(
   });
 }
 
-/** Every join of this agent that has not settled, newest first. The boot re-drain's input. */
 export function openJoins(limit = 50): JoinState[] {
   const floor = now() - JOIN_MAX_AGE_DAYS * 24 * 60 * 60 * 1000;
   const rows = getDb().prepare(`
@@ -1626,8 +1052,6 @@ export function openJoins(limit = 50): JoinState[] {
   return rows.map((r) => joinState(r.id)).filter((s): s is JoinState => s !== null);
 }
 
-/** The children on a thread, whatever their state. Used by the ABANDONED hook, which must be
- *  able to see a piece it is about to settle. */
 export function childrenForThread(threadId: string): JoinChild[] {
   return (getDb().prepare(`
     SELECT id, parent_id, agent_id, root_id, state, assignee_agent, reply_conversation_id
@@ -1643,7 +1067,6 @@ export function childrenForThread(threadId: string): JoinChild[] {
   }));
 }
 
-/** The FAILED-CLOSED join this thread belongs to, if any — the late-answer lookup. */
 export function findFailedJoinForThread(
   agentId: string, threadId: string,
 ): { childId: string; parentId: string } | null {
@@ -1657,12 +1080,8 @@ export function findFailedJoinForThread(
   return r ? { childId: r.child_id, parentId: r.parent_id } : null;
 }
 
-/**
- * The compile answered the owner, but through a path that records no delivery yet (dashboard
- * replies — T5 owns the doors). The join stops waiting to be compiled; it deliberately does
- * NOT become `done`, because `done` requires a delivery to point at and inventing one to make
- * a state reachable is the forgery this spine exists to refuse.
- */
+/** The compile answered the owner through a path that records no delivery (dashboard replies): the join
+ *  stops waiting to be compiled but does not become `done`, which needs a real delivery to point at. */
 export function clearJoinCompilePending(parentWorkId: string, reason: string): number {
   return withUnit((): number => {
     const changed = getDb().prepare(
@@ -1673,18 +1092,8 @@ export function clearJoinCompilePending(parentWorkId: string, reason: string): n
   });
 }
 
-/**
- * D2: the A2A thread's hop count, on the spine. THE STORED NUMBER, UNAGED.
- *
- * `null` means "this thread has no work row", which is a different answer from `0` and the
- * caller must be able to tell them apart — a thread nobody delegated on is not a thread that
- * has taken zero hops on the spine.
- *
- * ⚠ NOT THE CAP'S READ — that is `threadHopCountInWindow`. This answers the raw stored value,
- * which is what `delegation-exit.ts` wants when it CARRIES a chain's count onto a new child row:
- * a copy of history, not a decision about whether the chain is live. Fix round 1 gave the two
- * questions two names; before it, this one briefly aged and silently changed that seeding read.
- */
+/** The A2A thread's stored hop count, unaged; `null` means no work row (not `0`). `delegation-exit.ts`
+ *  uses it to copy a chain's count onto a new child row; the cap itself reads `threadHopCountInWindow`. */
 export function threadHopCount(threadId: string): number | null {
   const r = getDb().prepare(
     `SELECT hop_count FROM work WHERE root_kind = 'a2a_thread' AND root_id = ?
@@ -1693,46 +1102,25 @@ export function threadHopCount(threadId: string): number | null {
   return r ? r.hop_count : null;
 }
 
-/**
- * THE COUNT THE CAP READS: the stored number, aged against the last recorded DELIVERY.
- *
- * ⚠ THE INSTANT IS THE CALLER'S TO SUPPLY, AND THAT IS THE WHOLE POINT (fix round 1, review
- * Important 1). The first cut read `work.updated_at` and called it "time since the last
- * delivery". IT IS NOT: EIGHT statements in this file stamp that column and only ONE is the hop
- * bump — `transition` (:461), the children decrement (:500), the compile-pending set (:523),
- * `stampClaimingTurn` (:717), `openDelegationJoin`'s countdown (:1199, :1296), the TTL sweep
- * (:1572), `clearJoinCompilePending` (:1782) — and every one fires on exactly these
- * a2a_thread-rooted join and piece rows. So a thread at the cap whose join row kept being
- * TOUCHED inside each window never aged, and the BACKLOG failure shape survived in that state.
- *
- * The honest clock is the DELIVERY WRITER'S OWN STAMP and it needs no migration:
- * `a2a_threads.updated_at`, written by exactly two statements in the tree (`ensureThread`'s
- * insert and `recordThreadDelivery`'s update, both in `a2a-transport.ts`, both on the delivery
- * path). The transport reads it once per delivery and hands it in, which keeps this module off a
- * table it does not own and makes the coupling a declared argument rather than an accident.
- * Clauses FIX-1a/1b/1c in `agent/__tests__/a-long-thread-is-not-a-runaway-loop.test.ts`.
- */
+/** The count the cap reads: the stored number aged against the last DELIVERY. The caller supplies that
+ *  instant, since `work.updated_at` is stamped by many writes on these rows; the honest clock is
+ *  `a2a_threads.updated_at` (set by `ensureThread` and `recordThreadDelivery` in `a2a-transport.ts`). */
 export function threadHopCountInWindow(threadId: string, lastDeliveryMs: number | null): number | null {
   const stored = threadHopCount(threadId);
   if (stored === null) return null;
   return hopWindowLapsed(lastDeliveryMs) ? 0 : stored;
 }
 
-/** True when the last recorded DELIVERY is outside the rolling window, so the hops before it no
- *  longer count. ⚠ WHAT MAY BE PASSED (corrected in fix round 1): the instant a DELIVERY was
- *  recorded, and nothing else — never `work.updated_at`, see above. A NULL instant is LAPSED: no
- *  evidence of recent traffic, and the safe direction is to deliver rather than to drop on a
- *  timestamp nobody wrote. */
+/** True when the last recorded DELIVERY is outside the rolling window. Pass a delivery instant, never
+ *  `work.updated_at`. A null instant is lapsed: deliver rather than drop on a timestamp nobody wrote. */
 export function hopWindowLapsed(lastDeliveryMs: number | null | undefined): boolean {
   if (lastDeliveryMs == null) return true;
   return now() - lastDeliveryMs > THREAD_HOP_WINDOW_MS;
 }
 
-/** Count one delivered hop on the thread's work row. Returns the new count, or null when the
- *  thread has no work row. A hop that arrives after the window lapsed RESTARTS the count at 1
- *  rather than incrementing — the write-side half of the aging. `lastDeliveryMs` is the delivery
- *  writer's own stamp, read BEFORE this delivery moved it, and it is required for the reason
- *  `threadHopCountInWindow` gives at length. */
+/** Count one delivered hop on the thread's work row; returns the new count, or null with no work row. A
+ *  hop after the window lapsed restarts the count at 1; `lastDeliveryMs` is read BEFORE this delivery
+ *  moved it. */
 export function bumpThreadHopCount(threadId: string, lastDeliveryMs: number | null): number | null {
   const db = getDb();
   const restart = hopWindowLapsed(lastDeliveryMs);
@@ -1747,23 +1135,14 @@ export function bumpThreadHopCount(threadId: string, lastDeliveryMs: number | nu
   return threadHopCount(threadId);
 }
 
-/**
- * THE PURGE THE TABLE NEVER HAD — t109 item A's third half. Before this the only DELETE against
- * `a2a_threads` in the whole tree was in a test, so it grew for the life of the box (measured
- * body: 232 rows, migration `143`'s own census — hygiene, not a crisis, but the PM's
- * per-interval re-drive threads add rows on a clock). BOTH GUARDS ARE NECESSARY: older than
- * `JOIN_MAX_AGE_DAYS` (the declared "stale history, nothing re-fires it" horizon, carried as the
- * join sweeps carry it) AND no `work` row still rooted on the thread — a delegated thread's
- * count lives on the spine and its join may still be live, so age alone must never take the
- * row out from under live work. Returns the row count, for the sweep's log line.
- */
+/** Purge `a2a_threads` rows older than `JOIN_MAX_AGE_DAYS` that no `work` row is rooted on (a delegated
+ *  thread's count lives on the spine and its join may be live). Returns the row count. */
 export function purgeDeadA2AThreads(): number {
   const floor = now() - JOIN_MAX_AGE_DAYS * 24 * 60 * 60 * 1000;
   try {
     return getDb().prepare(
-      // `NOT EXISTS`, never `NOT IN (SELECT …)` — the shape the tree's NULL-id census requires
-      // (`db/__tests__/a-null-id-silences-a-sweep.test.ts`), and right twice here: one NULL in
-      // the subquery would make `NOT IN` match NOTHING and purge silently.
+      // `NOT EXISTS`, never `NOT IN (SELECT ...)`: one NULL in the subquery would make `NOT IN` match
+      // nothing and purge silently.
       `DELETE FROM a2a_threads
         WHERE unixepoch(updated_at) * 1000 < ?
           AND NOT EXISTS (
@@ -1771,8 +1150,7 @@ export function purgeDeadA2AThreads(): number {
              WHERE w.root_kind = 'a2a_thread' AND w.root_id = a2a_threads.thread_id)`,
     ).run(floor).changes;
   } catch (err) {
-    // The table predates the spine and a fixture may not have it. A missing table is not a
-    // reason to fail a reaper tick.
+    // The table predates the spine and a fixture may not have it; that must not fail a reaper tick.
     logger.warn('a2a_threads purge skipped', {
       error: err instanceof Error ? err.message : String(err),
     });
@@ -1780,94 +1158,45 @@ export function purgeDeadA2AThreads(): number {
   }
 }
 
-// ════════════════════════════════════════════════════════════════════════════════
-// PHASE-2 T7 — COMMITMENTS. Requirements 4a + 4b.
-//
-// The obligation that had no home. An ASK is created at ingest (T3, above): a person sent a
-// message, and the message row and its ticket are written in one transaction. A COMMITMENT is
-// the other direction — the agent said it would do something — and until this task the
-// platform had no structural record of one at all. It recovered them AFTERWARDS, from prose,
-// by parsing a fenced section out of a summary and matching entries with a Jaccard similarity
-// function (`memory/open-loops.ts`, 623 lines, deleted here).
-//
-// Why that had to go, in the ledger's own words: the parser could not tell an OBLIGATION from
-// a SELF-NARRATION. A transient "I couldn't read your last message" became a durable row and
-// was re-raised to the owner five times over 36 hours. The module's answer was a second regex
-// guarding the first. The answer here is that there is no parser — an obligation exists
-// because a caller declared one, and the declaration carries its own origin.
-//
-// AGEING IS A MARKER, NOT A STATE (4b). The deleted module wrote `status='stale'` from inside
-// the daily-brief generator — a read that mutated rows. Here "aged" is `opened_at` compared
-// against `COMMITMENT_AGING_DAYS`; nothing is written, no state exists for it, and the only
-// two ways a commitment closes are `resolveCommitment` (which needs the delivery that makes
-// `done` true) and `dismissCommitment` (`abandoned` — honest that nothing was delivered).
-// ════════════════════════════════════════════════════════════════════════════════
+// Commitments: the agent's own promises, declared by a caller with their origin; nothing is parsed from
+// prose. Ageing is a marker, not a state (`opened_at` against `COMMITMENT_AGING_DAYS`); a commitment closes
+// only via `resolveCommitment` (needs a delivery) or `dismissCommitment`.
 
-/**
- * The ageing threshold, carried VERBATIM from the deleted `STALE_AFTER_DAYS = 7`
- * (`memory/open-loops.ts:49`). #14: a threshold that is carried is not a threshold that is
- * invented, and this one is not re-derived.
- */
 export const COMMITMENT_AGING_DAYS = 7;
 
-/** The states an obligation is still owed in. A `claimed` ask is being served RIGHT NOW by the
- *  turn holding it, so it is not something the model needs reminding about. */
+/** The states an obligation is still owed in (a `claimed` ask is being served right now). */
 const OWED_STATES = "('open','blocked')";
 
-/** Kinds that are obligations to a person rather than board work. Both are hidden from the
- *  project board by the same rule (T3: `kind='ask'` never appears there). */
 const OBLIGATION_KINDS = "('ask','commitment')";
 
 export interface OpenCommitmentInput {
   agentId: string;
-  /** What was promised, in the agent's own words. Stored on `title`; never parsed. */
   description: string;
   conversationId: string | null;
-  /** The turn that made the promise. Half of the row's identity — see `commitmentId`. */
   turnNumber: number;
-  /** The message the promise was made in, when there is one. Becomes `root_id`. */
   sourceMessageId: string | null;
 }
 
-/**
- * A commitment's id is derived from (agent, turn, normalized description).
- *
- * That derivation IS the dedup rule, and it draws a line the Jaccard matcher could not: a
- * model repeating itself inside ONE turn owes ONE thing, and the same words on a LATER turn
- * are a SECOND promise. The deleted matcher collapsed anything 60% similar across the whole
- * agent for ever, so "send the invoice" promised on Monday and again on Friday was one loop,
- * and closing it closed both.
- *
- * Short and whole-printable on purpose: the block shows the WHOLE id, so the tool matches
- * exactly and the deleted module's ambiguous-prefix branch has nothing left to do.
- */
+/** A commitment's id is derived from (agent, turn, normalized description): a repeat inside one turn owes
+ *  one thing, the same words on a later turn are a second promise. Short and whole-printable so the tool
+ *  matches exactly. */
 function commitmentId(agentId: string, turnNumber: number, description: string): string {
   const norm = description.toLowerCase().replace(/\s+/g, ' ').trim();
   const h = createHash('sha256').update(`${agentId} ${turnNumber} ${norm}`).digest('hex');
   return `cmt:${h.slice(0, 12)}`;
 }
 
-/**
- * Open a commitment. Returns its id, or null when there is nothing to record.
- *
- * The derived id is what makes it idempotent per turn: a model that says "I'll send it" twice
- * in one turn gets one row, and the second call returns the same id rather than a second
- * obligation or an error.
- */
+/** Open a commitment; returns its id, or null when there is nothing to record. Idempotent per turn. */
 export function openCommitment(p: OpenCommitmentInput): string | null {
-  // t118 (census row 12): the commitment's own text is agent-authored prose and is bound to
-  // `work.title` by the insert below. Redacted BEFORE `commitmentId` derives the dedupe id
-  // from it, so the id and the stored title are derived from the same bytes — a redaction
-  // applied after the derivation would key the dedupe on a string the row does not hold.
+  // The text is agent-authored prose bound to `work.title`: redacted BEFORE `commitmentId` derives the
+  // dedupe id, so the id and the stored title come from the same bytes.
   const description = redactHandedCredentials(p.agentId, (p.description ?? '').trim());
   if (!description) return null;
   const db = getDb();
   const id = commitmentId(p.agentId, p.turnNumber, description);
   if (db.prepare('SELECT 1 FROM work WHERE id = ?').get(id)) return id;
 
-  // Same discipline as `openAsk` and `openDelegationJoin`: a dangling conversation id is
-  // recorded as ABSENT identity rather than allowed to take the promise down on an FK
-  // violation. Losing the obligation is worse than losing the attribution.
+  // Same as `openAsk`: a dangling conversation id is recorded as absent; losing the obligation is worse.
   let conversationId = p.conversationId;
   if (conversationId != null
       && !db.prepare('SELECT 1 FROM conversations WHERE id = ?').get(conversationId)) {
@@ -1894,26 +1223,9 @@ export function openCommitment(p: OpenCommitmentInput): string | null {
   return id;
 }
 
-/**
- * Resolve a commitment: it was kept, and here is the delivery that proves it.
- *
- * There is no "the model says so" path, deliberately. `transition()`'s G7 refuses `done`
- * without a delivery that RESOLVES, so a promise cannot be closed by announcing it — which is
- * the single behaviour every honesty floor in this tree exists to prevent.
- *
- * ── NARROWED, SWEEP-A TB1 (`DESIGN-2BUGS/DESIGN.md` §1b, row 4) ──
- * A COMMITMENT is the agent's own promise, and closing it is the agent's. An ASK is the
- * owner's, and it is closed by the RECORD — the settlement authority — never by the model
- * saying so. The two kinds deliberately share one obligation frame (`OBLIGATION_KINDS`), so
- * the model's close tool could reach an ask id straight out of the OPEN WORK block, and on
- * 2026-08-05 it was measured doing exactly that (verify report §5.2, probe ask B3: one
- * transition `open -> done`, reason "commitment kept", pointing at another ask's delivery).
- * The refusal is HERE, at the writer, so it cannot be forgotten at a door.
- * requirement preserved: the one real case the tool caught — an ask answered inside a turn
- * that never claimed it — is covered STRUCTURALLY by `work/ask-settlement.ts`, which
- * adjudicates every ask that entered the turn's context at finalize; `ask-settlement.test.ts`
- * carries that exact shape ("THE B3 SHAPE") as a clause.
- */
+/** Resolve a commitment: kept, with the delivery that proves it (G7 refuses `done` without one). An ASK
+ *  is refused here, at the writer: the record closes it (`work/ask-settlement.ts` adjudicates every ask
+ *  that entered the turn's context at finalize), never the model's close tool. */
 export function resolveCommitment(
   workId: string,
   p: { agentId: string; resultDeliveryId: string | null; note?: string | null },
@@ -1934,13 +1246,8 @@ export function resolveCommitment(
   });
 }
 
-/**
- * Dismiss a commitment: it is no longer owed, and nothing was delivered for it.
- *
- * `abandoned`, never `done` — 4b's "dismissal" is the owner (or the agent on their word)
- * dropping the obligation, and calling that "done" would file a kept-promise record on a
- * promise nobody kept. The same reading T12's status map gives `cancelled`.
- */
+/** Dismiss a commitment: no longer owed, nothing delivered. `abandoned`, never `done`, which would file a
+ *  kept promise. */
 export function dismissCommitment(
   workId: string,
   p: { agentId: string; reason: string },
@@ -1950,18 +1257,11 @@ export function dismissCommitment(
   });
 }
 
-/** One obligation, as the surfaces that render it need it. */
 export interface Obligation {
   id: string;
   kind: 'ask' | 'commitment';
   title: string | null;
   conversationId: string | null;
-  /** The party label's inputs, read from the CONVERSATION's own identity columns.
-   *
-   *  The deleted module derived the label by string-parsing `conv_key` — the column that also
-   *  carried the claim token and the park sigils, so a parked row silently changed which party
-   *  its loops were attributed to. Phase 1 gave conversations real identity columns; this reads
-   *  those, and it is why nothing here depends on the column T10 deletes. */
   channel: string | null;
   counterpartyName: string | null;
   counterpartyId: string | null;
@@ -1974,21 +1274,15 @@ const OBLIGATION_COLUMNS = `
   c.channel AS channel, c.counterparty_name AS counterpartyName, c.counterparty_id AS counterpartyId,
   w.opened_at AS openedAt, w.state AS state`;
 
-/** LEFT JOIN, never INNER: an obligation whose conversation identity is absent is still owed,
- *  and an inner join would silently drop it from both surfaces. */
+/** LEFT JOIN, never INNER: an obligation with no conversation identity is still owed. */
 const OBLIGATION_FROM = 'work w LEFT JOIN conversations c ON c.id = w.conversation_id';
 
 function agingCutoff(): number {
   return Date.now() - COMMITMENT_AGING_DAYS * 24 * 60 * 60 * 1000;
 }
 
-/**
- * Obligations still owed and NOT yet aged — what the per-turn block renders.
- *
- * The ageing split is the whole of 4b's "aging is a marker": an aged row is still `open` and
- * still owed, it simply moves from the per-turn lane to the daily brief, exactly as the
- * deleted `status='stale'` flip arranged — without a second state and without a write.
- */
+/** Obligations still owed and not yet aged (the per-turn block); aged ones move to the daily brief,
+ *  ageing writes nothing. */
 export function openObligations(agentId: string): Obligation[] {
   return getDb().prepare(`
     SELECT ${OBLIGATION_COLUMNS}
@@ -1998,7 +1292,6 @@ export function openObligations(agentId: string): Obligation[] {
      ORDER BY w.opened_at ASC`).all(agentId, agingCutoff()) as Obligation[];
 }
 
-/** Obligations still owed that have gone past the ageing threshold — the daily brief's set. */
 export function agedObligations(agentId: string): Obligation[] {
   return getDb().prepare(`
     SELECT ${OBLIGATION_COLUMNS}
@@ -2008,47 +1301,24 @@ export function agedObligations(agentId: string): Obligation[] {
      ORDER BY w.opened_at ASC`).all(agentId, agingCutoff()) as Obligation[];
 }
 
-/**
- * PHASE-4 T4 — THE OBLIGATION HALF OF THE CLAIMED-DELIVERY FLOOR (the owner's live fixture).
- *
- * The floor that steers a model claiming a delivery it never made was keyed on PROSE, and on
- * 2026-08-01 the owner caught it firing three times on the words "told <a name>" in a
- * transcript he had asked about — each fire ordering the agent to "do it NOW", which produced
- * double answers and a re-done delivery. Research 21's binding caution names that class
- * exactly: honesty floors are receipt-keyed, never prose-keyed.
- *
- * This is the receipt side of the rekey. An obligation a SEND would discharge is a ROW: a
- * person's own unanswered ask, or a promise the agent recorded, still owed and with no delivery
- * to point at. The engine may only assert what it can point at (G6), so a claim about somebody
- * the platform holds no owed row for is not something the engine gets to contradict.
- *
- * `claimed` is EXCLUDED with the rest of `OWED_STATES` and that exclusion is load-bearing here,
- * not inherited: the ask this turn is serving is claimed BY this turn, and the reply being
- * written is what discharges it. Counting it would make every turn its own accuser.
- *
- * `result_delivery_id IS NULL` is stated even though `state <> 'done'` already implies it by the
- * DDL's own CHECK — the reader's question is "is there a delivery to point at", and asking it
- * directly is what stops a later state edit silently changing this floor's meaning.
- */
+/** An owed obligation a SEND would discharge: a person's unanswered ask or a recorded promise with no
+ *  delivery to point at, the receipt side of the claimed-delivery floor (receipt-keyed, never
+ *  prose-keyed). `claimed` is excluded on purpose: the ask this turn is serving is claimed by it, and the
+ *  reply being written discharges it. */
 export interface OwedSendObligation {
   id: string;
   kind: 'ask' | 'commitment';
   title: string | null;
   conversationId: string | null;
-  /** From the CONVERSATION's identity columns — who this obligation is owed TO. */
   counterpartyName: string | null;
   counterpartyId: string | null;
   state: WorkState;
   openedAt: number;
 }
 
-/**
- * Every obligation this agent still owes that a delivery would discharge, newest first.
- *
- * The caller matches the claimed recipient against `counterpartyName`/`counterpartyId` through
- * the canonical identity matcher rather than by substring, so a NAME in a transcript cannot
- * become an accusation and an ask from a real contact cannot be missed because they are stored by address.
- */
+/** Every obligation this agent still owes that a delivery would discharge, newest first. `result_delivery_id
+ *  IS NULL` is asked directly, not implied by state, so a later state edit cannot change this floor. Callers
+ *  match the claimed recipient with the canonical identity matcher, never a substring. */
 export function owedSendObligations(agentId: string, limit = 50): OwedSendObligation[] {
   return getDb().prepare(`
     SELECT w.id AS id, w.kind AS kind, w.title AS title, w.conversation_id AS conversationId,
@@ -2060,12 +1330,8 @@ export function owedSendObligations(agentId: string, limit = 50): OwedSendObliga
      ORDER BY w.opened_at DESC LIMIT ?`).all(agentId, Math.max(1, Math.floor(limit))) as OwedSendObligation[];
 }
 
-/**
- * Resolve an obligation id the way a weak model typed it: brackets stripped, any case, with or
- * without the `cmt:` prefix. Carried from the deleted `resolveOpenLoopByPrefix`'s forgiveness
- * (#37/#77 — absorb, do not refuse), minus its ambiguous-prefix branch, which whole-id
- * rendering makes unreachable.
- */
+/** Resolve an obligation id as a weak model types it: brackets stripped, any case, with or without `cmt:`
+ *  (absorb, do not refuse). */
 export function findObligationByTypedId(agentId: string, typed: string): Obligation | null {
   const raw = (typed ?? '').trim().replace(/^\[+|\]+$/g, '').toLowerCase();
   if (!raw) return null;

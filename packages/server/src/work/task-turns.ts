@@ -1,31 +1,6 @@
-// ════════════════════════════════════════
-// WHICH TURNS WORKED A TASK — one `claim_turn` event per (task, turn), written at the turn's end.
-//
-// `claim_turn` on an ASK row is the pickup record (`stampClaimingTurn`: the turn that claimed the
-// owner's message). A TASK is never claimed that way: an assignee comes to it by an assignment or
-// retask notice, by a continuation park carrying its job, or by taking it up itself with work_update,
-// and a task is worked across many turns. So the timeline's task scope ("everything its assignee did
-// in the turns that claimed it", `inspect/timeline.ts`) and the last-turn-end read (`lastTurnEnd`)
-// found nothing on a task, in practice, ever.
-//
-// The one honest writer is the turn's own end (`tracker/task-stamps.ts`, the ticket-stamp point,
-// which already decides which tasks the ending turn served). At that point the engine knows:
-//   - the tasks the turn structurally serves (`turnWorkIds`: the job it carries, the task it was
-//     served, the tasks it created or answered for), less a task it was only WOKEN about by a notice
-//     (being woken is not working it); and
-//   - the tasks the agent itself moved during the turn (a transition or an activity note written
-//     under its name since the turn started: picking a task up, noting progress, closing it).
-// Each is recorded once against the task with the same payload the ask pickup writes.
-//
-// "Held by" is the row's holder as every reader of these turn numbers reads it: `assignee_agent` when
-// set, else `agent_id` (`COALESCE`, as the timeline and the friction census join), so after a hand-off
-// the turn numbers are the new assignee's own.
-//
-// KNOWN GAP, stated in the timeline's note: a turn that works the task only through exec, files or
-// mail, while neither serving it nor touching it in the tracker, is not recorded.
-//
-// Nothing here touches the task's last-moved time: the event is not movement (`taskMovedAtSql`).
-// ════════════════════════════════════════
+// One `claim_turn` event per (task, turn), written at the turn's end by `tracker/task-stamps.ts`: the tasks
+// the turn served plus those the agent moved. Held by `assignee_agent`, else `agent_id`. Not task movement.
+// Known gap: a turn that works a task only through exec, files or mail is not recorded.
 import { getDb } from '../db/connection.js';
 import { taskScope } from './tracker-view.js';
 import { appendWorkEvent } from './store.js';
@@ -44,8 +19,8 @@ function movedByTheTurn(agentId: string, turnNumber: number): string[] {
   ).all(agentId, agentId, agentId, turnNumber, agentId) as Array<{ id: string }>).map((r) => r.id);
 }
 
-/** Record this turn against every task it worked (once per task and turn). Returns the task ids written.
- *  Best-effort at the turn's end: a failure is logged and never stops the stamps beside it. */
+/** Record this turn on every task it worked, once per task and turn; returns the ids written. A failure is
+ *  logged and never stops the stamps beside it. */
 export function recordTurnOnTasks(agentId: string, turnNumber: number, served: string[]): string[] {
   const written: string[] = [];
   try { write(agentId, turnNumber, served, written); } catch (err) {

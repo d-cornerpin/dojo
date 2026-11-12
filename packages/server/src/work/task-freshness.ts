@@ -1,21 +1,6 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// WHEN A TASK LAST MOVED — ONE EXPRESSION, READ BY THE PM'S LADDER AND THE CLOSE-OUT GATE
-// (t143 round 2, orchestrator ruling: a task's freshness may only be refreshed by activity that
-// structurally names THAT task).
-//
-// `work.updated_at` is written only by changes to that row (a status, a claim, an edit, a
-// schedule; and, since round 2, the engine checkpoint for the job's OWN tasks — see
-// `engine-checkpoint-note.ts`). What it never saw is a "still working" note: `work_note` appends
-// an event and touches no column. So the task's movement is the newer of its row's clock and its
-// own events: its transitions, its opening and claim, the turn-finalize `activity` stamp (written
-// only for turns whose trigger names the task, round 2), and what its assignee wrote on it, EXCEPT its
-// plain notes (t151: a "still working" note is a record, an answer to a check-in, not the task moving;
-// real work shows as a status, an edit, a delivery or the turn's `activity` stamp).
-// A PM poke, the PM's own notes and engine bookkeeping are not the task moving.
-//
-// And WHICH work a turn names (`turnWorkIds`), which the engine checkpoint and the turn-finalize
-// stamp use instead of "every claim of this agent" / "every ticket of this conversation".
-// ════════════════════════════════════════════════════════════════════════════════════════
+// When a task last moved: one expression, read by the PM's ladder and the close-out gate. Only activity that
+// structurally names THAT task refreshes it. Plain assignee notes, PM pokes and engine bookkeeping are not
+// movement; a status, an edit, a delivery or the turn's `activity` stamp is.
 
 import { getDb } from '../db/connection.js';
 import { taskScope } from './tracker-view.js';
@@ -23,39 +8,24 @@ import { turnContext } from '../agent/turn-context.js';
 import type { JobOrigin } from './job-origin.js';
 import { workingExpr } from './terminal-states.js';
 
-/** (`claim_turn` is deliberately not movement: it records that a turn worked the task, `work/task-turns.ts`, and a
- *  continuation that made no progress is such a turn.)
- * Epoch ms the task aliased `a` last moved. v3.5: an item its calls touched (the engine's ledger,
- *  `work/ledger-store.ts`) is movement too, so a job working through a set never reads as idle. The upgrade's
- *  own mapping (actor `migration-901`) is not movement. */
+/** Epoch ms the task aliased `a` last moved. `claim_turn` is not movement (`work/task-turns.ts`); a ledger
+ *  item its calls touched (`work/ledger-store.ts`) is, so a job working through a set never looks idle. */
 export const taskMovedAtSql = (a: string): string => `MAX(${a}.updated_at,
   COALESCE((SELECT MAX(l.last_at) FROM work_ledger l WHERE l.work_id = ${a}.id), 0), COALESCE((SELECT MAX(e.created_at)
   FROM work_events e WHERE e.work_id = ${a}.id AND ((e.kind IN ('transition', 'activity', 'opened') AND e.actor <> 'migration-901')
   OR (e.actor IN (${a}.agent_id, 'agent:' || ${a}.agent_id)
       AND NOT (e.kind = 'audit' AND json_extract(e.payload, '$.entry_kind') = 'observation')))), 0))`;
 
-/** SQL: when the stall ladder first ran on this box (migration 901's applied time), epoch ms; 0 when unknown. */
 export const LADDER_ANCHOR_SQL = `COALESCE((SELECT unixepoch(applied_at) * 1000 FROM _migrations WHERE name LIKE '901%'), 0)`;
 
-/** SQL: when the row under alias `a` started to stall: its last movement, the newest lift of a hold, or the
- *  ladder's anchor, whichever is latest. */
+/** SQL: when the row under alias `a` began to stall: last move, latest hold lift, or the ladder anchor. */
 export const stallSinceSql = (a: string): string => `MAX(${taskMovedAtSql(a)}, ${LADDER_ANCHOR_SQL}, COALESCE((SELECT MAX(c.created_at)
   FROM work_events c WHERE c.work_id = ${a}.id AND c.kind = 'audit' AND json_extract(c.payload, '$.entry_kind') = 'hold_cleared'), 0))`;
 
-/** THE JOB IN FLIGHT. Its task ids travel ON the park's own continuation wake (t143 round 6), so
- *  it can be neither stolen nor orphaned:
- *    - a park (`carryJobWork`) names the ids and queues exactly one continuation wake — on the
- *      shared wake set that the runtime's drain serves (`drainWake`), or on the tool-loop park's own
- *      timer (`timerWakes`). Both are registered by the park's helpers (`engine-checkpoint-note.ts`);
- *    - only a run LAUNCHED FROM THAT WAKE carries the job (`beginJobRun`): the timer's run, or the
- *      drain's run while a drain wake is registered. Any other run (an owner message, an A2A, an
- *      engine event, the scheduler) neither carries it nor ends it — it touches none of this;
- *    - the carrying run ends it only by ending (`endJobRun`), and a further park inside it re-hands
- *      the job to the next continuation it queues;
- *    - the job is also over when its tasks close, when the queued wake is dropped (`dropDrainJobWake`),
- *      when the owner stops the agent, or when the agent leaves the running states (`endJobCarry`,
- *      called by the one status writer).
- *  In memory on purpose: a restart ends the job's turn. There is no clock: a call may run for hours. */
+/** The job in flight. Its task ids travel on the park's own continuation wake, so it can be neither stolen
+ *  nor orphaned: only a run launched from that wake carries it (`beginJobRun`), and it ends with that run
+ *  (`endJobRun`), when its tasks close, its wake drops, or the agent stops (`endJobCarry`). In memory on
+ *  purpose: a restart ends the job's turn. No clock: a call may run for hours. */
 const jobWork = new Map<string, { ids: string[]; asks: string[]; origin: JobOrigin | null; drainWake: boolean; timerWakes: number; running: boolean }>();
 
 const carryOf = (agentId: string) => {
@@ -64,43 +34,35 @@ const carryOf = (agentId: string) => {
   return c;
 };
 
-/** A park names the job it is handing on: never replaces a standing job with less. `asks` (t145) are the
- *  owner messages the parking turn SERVED — the same record carries them, so a job with no task still
- *  has its words re-shown to its continuation (`memory/served-ask.ts`), and ONLY to that continuation. */
+/** A park names the job it hands on, never replacing a standing job with less. `asks` are the owner messages
+ *  the parking turn served, re-shown only to its continuation (`memory/served-ask.ts`). */
 export function carryJobWork(agentId: string, ids: string[], asks: string[] = [], origin: JobOrigin | null = null): void {
   if (ids.length === 0 && asks.length === 0 && !origin && !jobWork.has(agentId)) return;
   const c = carryOf(agentId);
   c.ids = [...new Set([...c.ids, ...ids])];
   c.asks = [...new Set([...c.asks, ...asks])];
-  c.origin = c.origin ?? origin;   // t173b: the request the job started from; the first one a park found stands for the whole chain
+  c.origin = c.origin ?? origin;   // the first park's origin stands for the whole chain
 }
 
-/** t173b: where the job this agent carries started (`work/job-origin.ts`), whether or not any task rides with it. */
 export function jobCarriedOrigin(agentId: string): JobOrigin | null {
   return jobWork.get(agentId)?.origin ?? null;
 }
 
-/** The park queued its continuation on the shared wake set (the runtime's drain serves it). */
 export function registerDrainWake(agentId: string): void {
   const c = jobWork.get(agentId);
   if (c) c.drainWake = true;
 }
 
-/** The park armed its continuation on the tool-loop timer. */
 export function registerTimerWake(agentId: string): void {
   const c = jobWork.get(agentId);
   if (c) c.timerWakes += 1;
 }
 
-/** t158 E — A PARK QUEUES EXACTLY ONE CONTINUATION, KEPT BY BOOKKEEPING AND NOT BY TIMING. The tool-loop
- *  park's timer wake carries a token. When the ask-settlement re-open lets the drain start the real
- *  continuation first (it serves one of the job's own asks), THAT run is the continuation: its start
- *  spends the token, and the timer, whenever it fires and whatever the agent is doing, finds its token
- *  spent and does nothing. A park with no ask (no drain) is never spent, so its timer is the only wake. */
+/** A park queues exactly one continuation. Its timer wake carries a token: if the drain starts the real
+ *  continuation first, that run spends the token and the timer, whenever it fires, does nothing. */
 export interface TimerWake { spent: boolean }
 const armedTimerWakes = new Map<string, TimerWake[]>();
 
-/** The park armed its continuation on the tool-loop timer: count it, and hand the timer its token. */
 export function armTimerWake(agentId: string): TimerWake {
   registerTimerWake(agentId);
   const wake: TimerWake = { spent: false };
@@ -108,16 +70,15 @@ export function armTimerWake(agentId: string): TimerWake {
   return wake;
 }
 
-/** The timer fired: forget its token; true when the token was already spent (nothing to run). */
 export function timerWakeIsSpent(agentId: string, wake: TimerWake): boolean {
   const rest = (armedTimerWakes.get(agentId) ?? []).filter((w) => w !== wake);
   if (rest.length > 0) armedTimerWakes.set(agentId, rest); else armedTimerWakes.delete(agentId);
   return wake.spent;
 }
 
-/** A queued-wakeup run is STARTING, before any turn context exists. If it will serve one of the parked
- *  job's own asks (`servedIds`, read lazily, only while a park's timer wake is owed), it IS the park's
- *  continuation: spend one timer token and carry the job as a timer-started run does. */
+/** A queued-wakeup run is starting, before any turn context exists. If it serves one of the parked job's own
+ *  asks (`servedIds`, read only while a timer wake is owed) it is the continuation: it spends a token and
+ *  carries the job. */
 export function beginContinuationRun(agentId: string, servedIds: () => string[]): boolean {
   const c = jobWork.get(agentId);
   const wake = (armedTimerWakes.get(agentId) ?? []).find((w) => !w.spent);
@@ -129,9 +90,6 @@ export function beginContinuationRun(agentId: string, servedIds: () => string[])
   return true;
 }
 
-/** A run is starting FROM a continuation wake: `'timer'` (the park's own timer fired) or `'drain'`
- *  (the runtime's queued-wakeup drain, which serves a registered drain wake). Returns whether this
- *  run now carries the job. */
 export function beginJobRun(agentId: string, from: 'timer' | 'drain'): boolean {
   const c = jobWork.get(agentId);
   if (!c) return false;
@@ -142,16 +100,13 @@ export function beginJobRun(agentId: string, from: 'timer' | 'drain'): boolean {
   return true;
 }
 
-/** The park's timer fired while the agent was busy: its wake is now queued on the shared set. */
 export function deferTimerWake(agentId: string): void {
   const c = jobWork.get(agentId);
   if (c && c.timerWakes > 0) { c.timerWakes -= 1; c.drainWake = true; }
 }
 
-/** The run that carried the job has ended. A further park inside it registered a new wake, so the
- *  job lives on exactly when a continuation is still queued. `wakeQueued`: the run ended with a wake of
- *  its own on the shared set (a recovery re-queue, a self-wake, an arrival merged with it) and none
- *  registered: that wake becomes the job's continuation, with the same ids (t143 round 7). */
+/** The carrying run ended: the job lives on only while a continuation is queued. `wakeQueued` (a wake of its
+ *  own on the shared set, none registered) makes that wake the continuation. */
 export function endJobRun(agentId: string, wakeQueued = false): void {
   const c = jobWork.get(agentId);
   if (!c?.running) return;
@@ -159,8 +114,6 @@ export function endJobRun(agentId: string, wakeQueued = false): void {
   if (wakeQueued && !c.drainWake && c.timerWakes === 0) c.drainWake = true;
 }
 
-/** A carrying run is scheduling a retry of itself on a timer (the 429 silent retry): the retry is the
- *  job's continuation. Returns whether it was registered (the caller then starts it `{ job: true }`). */
 export function registerRetryWake(agentId: string): boolean {
   const c = jobWork.get(agentId);
   if (!c?.running) return false;
@@ -168,34 +121,27 @@ export function registerRetryWake(agentId: string): boolean {
   return true;
 }
 
-/** The queued continuation was skipped or dropped (a stop state, a stop fence, a terminated agent). */
 export function dropDrainJobWake(agentId: string): void {
   const c = jobWork.get(agentId);
   if (c) c.drainWake = false;
 }
 
-/** The job's chain is over: the owner stopped the agent, or it left the running states. Its parked
- *  timer wakes are over with it (t168): a wake that waits minutes for a named event (a full context's
- *  compaction brake) must not fire into a Stop the owner pressed meanwhile; the timer finds its token
- *  spent and does nothing, exactly as when the drain started the continuation first. */
+/** The job's chain is over (owner stop, or the agent left the running states): its parked timer wakes end
+ *  with it, so a wake waiting on a named event cannot fire into a Stop pressed meanwhile. */
 export function endJobCarry(agentId: string): void {
   jobWork.delete(agentId);
   for (const wake of armedTimerWakes.get(agentId) ?? []) wake.spent = true;
 }
 
-/** The tasks this agent's job is carrying right now: those still open, while a run carries the job
- *  or a continuation wake is queued for it. The one answer to "is this task the job in flight?". */
 export function jobCarriedIds(agentId: string): string[] {
   return settleJob(agentId).tasks;
 }
 
-/** The owner messages (t145) this agent's job is carrying: those whose ask is still claimed, under the same
- *  rule as the tasks (a run carries the job or a continuation wake is queued). A finished ask drops out. */
 export function jobCarriedAsks(agentId: string): string[] {
   return settleJob(agentId).asks;
 }
 
-/** One settle for both: what is still open of the job's tasks and of its asks; the job is over when neither is. */
+/** What is still open of the job's tasks and asks; the job is over when neither is. */
 function settleJob(agentId: string): { tasks: string[]; asks: string[] } {
   const c = jobWork.get(agentId);
   if (!c) return { tasks: [], asks: [] };
@@ -207,19 +153,17 @@ function settleJob(agentId: string): { tasks: string[]; asks: string[] } {
   const asks = !inFlight || c.asks.length === 0 ? [] : (db.prepare(
     `SELECT w.root_id AS id FROM work w WHERE w.kind = 'ask' AND w.state = 'claimed'
        AND w.root_id IN (${c.asks.map(() => '?').join(', ')})`).all(...c.asks) as Array<{ id: string }>).map((r) => r.id);
-  if (tasks.length === 0 && asks.length === 0 && !(inFlight && c.origin)) jobWork.delete(agentId);   // t173b: a job carried by its origin alone lives while its chain does
+  if (tasks.length === 0 && asks.length === 0 && !(inFlight && c.origin)) jobWork.delete(agentId);   // a job carried by its origin alone lives while its chain does
   else { c.ids = tasks; c.asks = asks; }
   return { tasks, asks };
 }
 
-/** Is the CURRENT run the one carrying the job (launched from the park's continuation wake)? */
 export function runCarriesJob(agentId: string): boolean {
   return jobWork.get(agentId)?.running === true;
 }
 
-/** Was this task served to this turn by a tracker NOTICE (a PM re-drive, a retask, an assignment)?
- *  Being woken by one is not progress on the task (t143 round 4): only what the agent then does on
- *  it (its tool calls, notes, status changes, a delivery about it) moves it. */
+/** Was this task served to this turn by a tracker notice (re-drive, retask, assignment)? Being woken by one
+ *  is not progress: only what the agent then does on the task moves it. */
 export function servedByNotice(agentId: string, turnNumber: number, taskId: string | null | undefined): boolean {
   try {
     return !!taskId && !!getDb().prepare(`SELECT 1 FROM messages WHERE agent_id = ? AND served_by_turn = ?
@@ -227,7 +171,6 @@ export function servedByNotice(agentId: string, turnNumber: number, taskId: stri
   } catch { return false; /* unreadable: the served task is tied as before */ }
 }
 
-/** The tasks the CURRENT turn of this agent structurally serves (see the header above). */
 export function turnWorkIds(agentId: string): string[] {
   const ctx = turnContext(agentId);
   if (!ctx || ctx.turnNumber === undefined) return [];
