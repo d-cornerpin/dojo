@@ -1,6 +1,6 @@
 // ════════════════════════════════════════
-// System Control Routes (Phase 5A)
-// Dashboard endpoints for manual system control testing
+// System Control Routes
+// Dashboard endpoints for manual system control
 // ════════════════════════════════════════
 
 import { Hono } from 'hono';

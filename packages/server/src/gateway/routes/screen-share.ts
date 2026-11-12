@@ -1,8 +1,4 @@
-// ════════════════════════════════════════
-// Screen Share API Routes
-// Drives the Settings > Screen Sharing panel: status, enable (with no-clobber
-// detection), set-dedicated-password, and disable. JWT-protected via the mount.
-// ════════════════════════════════════════
+// Screen Share routes (JWT-protected via the mount): status, enable, disable, saved VNC password.
 
 import { Hono } from 'hono';
 import { createLogger } from '../../logger.js';
@@ -18,13 +14,12 @@ import {
 const logger = createLogger('screen-share-routes');
 const screenShareRouter = new Hono();
 
-// GET /status — current feature + service state (never returns the password)
+// GET /status (feature and service state; never returns the password)
 screenShareRouter.get('/status', async (c) => {
   return c.json({ ok: true, data: await getStatus() });
 });
 
-// POST /enable — use existing Screen Sharing or turn it on (admin prompt on the
-// Mac). No password is stored; users authenticate with their Mac login.
+// POST /enable (use existing Screen Sharing or turn it on; no password is stored)
 screenShareRouter.post('/enable', async (c) => {
   try {
     const result = await enable();
@@ -35,8 +30,7 @@ screenShareRouter.post('/enable', async (c) => {
   }
 });
 
-// POST /disable — turn the feature off; only reverts macOS Screen Sharing if the
-// dojo was the one that enabled it.
+// POST /disable (reverts macOS Screen Sharing only if the dojo enabled it)
 screenShareRouter.post('/disable', async (c) => {
   try {
     const result = await disable();
@@ -47,14 +41,12 @@ screenShareRouter.post('/disable', async (c) => {
   }
 });
 
-// GET /vnc-password — the user's saved VNC password (or null) for auto-fill.
-// Behind JWT; returned only to the authenticated dashboard for the user's own
-// connection. Empty unless the user explicitly opted to save it.
+// GET /vnc-password (the saved password or null, for auto-fill; empty unless the user opted in)
 screenShareRouter.get('/vnc-password', (c) => {
   return c.json({ ok: true, data: { password: getSavedVncPassword() } });
 });
 
-// POST /vnc-password — save the VNC password after a successful connect (opt-in).
+// POST /vnc-password (save after a successful connect)
 screenShareRouter.post('/vnc-password', async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const password = typeof body?.password === 'string' ? body.password : '';
@@ -63,7 +55,7 @@ screenShareRouter.post('/vnc-password', async (c) => {
   return c.json({ ok: true, data: { saved: true } });
 });
 
-// DELETE /vnc-password — forget the saved password (manual, or after it fails).
+// DELETE /vnc-password (forget the saved password)
 screenShareRouter.delete('/vnc-password', (c) => {
   clearSavedVncPassword();
   return c.json({ ok: true, data: { saved: false } });

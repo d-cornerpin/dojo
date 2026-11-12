@@ -1,5 +1,5 @@
 // ════════════════════════════════════════
-// Agent Groups API Routes (Phase 6)
+// Agent Groups API Routes
 // ════════════════════════════════════════
 
 import { Hono } from 'hono';
@@ -11,7 +11,7 @@ const logger = createLogger('routes:groups');
 
 export const groupsRouter = new Hono();
 
-// POST / — create a group
+// POST / (create a group)
 groupsRouter.post('/', async (c) => {
   const body = z.object({
     name: z.string().min(1),
@@ -25,12 +25,12 @@ groupsRouter.post('/', async (c) => {
   return c.json({ ok: true, data: group }, 201);
 });
 
-// GET / — list all groups
+// GET / (list all groups)
 groupsRouter.get('/', (c) => {
   return c.json({ ok: true, data: getGroups() });
 });
 
-// GET /:id — group detail with members
+// GET /:id (group detail with members)
 groupsRouter.get('/:id', (c) => {
   const id = c.req.param('id');
   const group = getGroupDetail(id);
@@ -38,7 +38,7 @@ groupsRouter.get('/:id', (c) => {
   return c.json({ ok: true, data: group });
 });
 
-// PUT /:id — update group
+// PUT /:id (update group)
 groupsRouter.put('/:id', async (c) => {
   const id = c.req.param('id');
   const body = z.object({
@@ -59,7 +59,7 @@ groupsRouter.put('/:id', async (c) => {
   return c.json({ ok: true, data: getGroupDetail(id) });
 });
 
-// DELETE /:id — delete group
+// DELETE /:id (delete group)
 groupsRouter.delete('/:id', (c) => {
   const id = c.req.param('id');
   if (id === SYSTEM_GROUP_ID) return c.json({ ok: false, error: 'System group cannot be deleted' }, 403);
@@ -68,7 +68,7 @@ groupsRouter.delete('/:id', (c) => {
   return c.json({ ok: true, data: { deleted: id } });
 });
 
-// PUT /agents/:agentId/group — assign agent to group
+// PUT /agents/:agentId/group (assign agent to group)
 groupsRouter.put('/agents/:agentId/group', async (c) => {
   const agentId = c.req.param('agentId');
   const body = z.object({

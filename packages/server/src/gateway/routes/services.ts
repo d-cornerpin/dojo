@@ -1,6 +1,4 @@
-// ════════════════════════════════════════
-// System Services API Routes
-// ════════════════════════════════════════
+// System services API routes
 
 import { Hono } from 'hono';
 import path from 'node:path';
@@ -20,18 +18,15 @@ import {
   setNamedTunnelUrl, type TunnelMode,
 } from '../../services/tunnel.js';
 
-// In-memory provider health tracking — updated by model.ts after successful calls
+// In-memory provider health tracking, updated by model.ts after successful calls
 const providerLastSuccess = new Map<string, string>();
 const providerErrorCounts = new Map<string, number>();
 
-// Consecutive failures (including stream idle timeouts) at which the provider's
-// Health card flips unhealthy (owner decision 2026-07-10: sustained slowdowns
-// surface through the EXISTING provider cards, with log lines only, no toasts).
-// recordProviderSuccess zeroes the count, so the card clears itself on the
-// first healthy call, matching how the other card problems behave.
+// Consecutive failures (including stream idle timeouts) at which the provider's Health card flips
+// unhealthy. recordProviderSuccess zeroes the count, so the card clears on the first healthy call.
 export const PROVIDER_DEGRADED_THRESHOLD = 3;
 
-/** `call`: the model that answered and what the call was for (t268 breaker fix: the signal a waiting summary span wakes on). */
+/** `call`: the model that answered and what the call was for (the signal a waiting summary span wakes on). */
 export function recordProviderSuccess(providerId: string, call?: { modelId?: string; purpose?: string }): void {
   const prev = providerErrorCounts.get(providerId) ?? 0;
   if (prev >= PROVIDER_DEGRADED_THRESHOLD) {
@@ -41,9 +36,8 @@ export function recordProviderSuccess(providerId: string, call?: { modelId?: str
   }
   providerLastSuccess.set(providerId, new Date().toISOString());
   providerErrorCounts.set(providerId, 0);
-  // v3.2.3 layer 3: a call that actually worked is the only evidence that beats a
-  // recorded permanent failure, so it closes the breaker too. (The owner's manual
-  // retry is the other way — `POST /api/services/providers/:id/clear-breaker`.)
+  // A call that actually worked is the only evidence that beats a recorded permanent failure, so it
+  // closes the breaker too. (The owner's manual retry is `POST /api/services/providers/:id/clear-breaker`.)
   noteProviderSuccess(providerId);
   if (call?.purpose !== 'memory_summarize') clearOn({ kind: 'writer-answered', providerKey: providerId, modelId: call?.modelId });   // a summary call's own outcome speaks for itself
 }
@@ -66,23 +60,15 @@ import { homeDir } from '../../home.js';
 const logger = createLogger('services-routes');
 const servicesRouter = new Hono();
 
-// GET /watchdog — watchdog status
+// GET /watchdog (watchdog status)
 servicesRouter.get('/watchdog', (c) => {
-  // FA-W5: the watchdog now owns its own liveness store (a JSON file under
-  // ~/.dojo) instead of writing its heartbeat/last-alert into the platform DB
-  // read-write every cycle. That restores the watchdog's read-only discipline
-  // over the platform DB (a DB lock can no longer drop a heartbeat and show a
-  // false "watchdog down"). We just read that file here; missing/unreadable
-  // means the watchdog has never reported in, so running:false.
+  // The watchdog owns its own liveness store (a JSON file under ~/.dojo) and this route only reads
+  // it. Missing or unreadable means it has never reported in, so running:false.
   try {
     const statePath = path.join(homeDir(), '.dojo', 'watchdog-state.json');
     let lastHeartbeat: string | null = null;
-    // UX-REPAIR T14: the watchdog stores `{ message, at }` and this route used to keep only
-    // `.message`, then serve it under the key `lastAlert` — which the Health card feeds to a
-    // TIMESTAMP formatter, so any box with a live alert rendered a literal "Invalid Date".
-    // Both facts travel now, in the watchdog's own shape, or neither does: half an alert is
-    // what produced the lie, so a state file missing `at` reads as no alert rather than as an
-    // alert with an unparseable time.
+    // The watchdog stores `{ message, at }`; both travel in its own shape or neither does, so a
+    // state file missing `at` reads as no alert rather than an alert with an unparseable time.
     let lastAlert: { message: string; at: string } | null = null;
     try {
       const parsed = JSON.parse(fs.readFileSync(statePath, 'utf-8')) as {
@@ -96,8 +82,7 @@ servicesRouter.get('/watchdog', (c) => {
         lastAlert = { message: parsed.lastAlert.message, at: parsed.lastAlert.at };
       }
     } catch {
-      // File absent or unreadable (watchdog not running yet, or crash mid-boot).
-      // Fall through with nulls → running:false, the truthful state.
+      // File absent or unreadable (watchdog not running yet, or crash mid-boot): fall through with nulls.
     }
 
     const isRecent = lastHeartbeat
@@ -117,7 +102,7 @@ servicesRouter.get('/watchdog', (c) => {
   }
 });
 
-// GET /imessage — bridge status
+// GET /imessage (bridge status)
 servicesRouter.get('/imessage', (c) => {
   const status = getIMBridgeStatus();
   // The Health card's test box prefills its To field with the owner's own (starred)
@@ -125,7 +110,7 @@ servicesRouter.get('/imessage', (c) => {
   return c.json({ ok: true, data: { ...status, ownerAddress: getDefaultSender() } });
 });
 
-// POST /imessage/test — send test message
+// POST /imessage/test (send test message)
 servicesRouter.post('/imessage/test', async (c) => {
   const body = await c.req.json().catch(() => null);
 
@@ -142,8 +127,7 @@ servicesRouter.post('/imessage/test', async (c) => {
   }
 
   try {
-    // PHASE-2 T5: PINNED §8 named both of this file's sends among the paths that record
-    // nothing — an outbound to a real person, from a route. Both are the platform's.
+    // The send is recorded as a platform outbound (a message to a real person, sent from a route).
     const sent = await withOutboundAsyncIfAbsent(
       { agentId: PLATFORM_SENDER, tool: 'imessage-test', channel: 'imessage', recipientId: approved.address },
       () => sendIMessage(approved.address, body.message),
@@ -159,7 +143,7 @@ servicesRouter.post('/imessage/test', async (c) => {
   }
 });
 
-// POST /imessage/welcome — send welcome message and start the bridge (used during OOBE)
+// POST /imessage/welcome (send welcome message and start the bridge, used during OOBE)
 servicesRouter.post('/imessage/welcome', async (c) => {
   const body = await c.req.json().catch(() => null);
   const rawRecipient = body?.recipient;
@@ -170,10 +154,8 @@ servicesRouter.post('/imessage/welcome', async (c) => {
   const recipient = rawRecipient.trim();
 
   try {
-    // Start the bridge first
     startIMBridge(recipient);
 
-    // Send welcome message
     const sent = await withOutboundAsyncIfAbsent(
       { agentId: PLATFORM_SENDER, tool: 'oobe-welcome', channel: 'imessage', recipientId: recipient },
       () => sendIMessage(recipient, '🥋 Welcome to the D.O.J.O! Your agent platform is set up and ready. You can talk to your agents through iMessage when you\'re away from the dashboard.'),
@@ -191,7 +173,7 @@ servicesRouter.post('/imessage/welcome', async (c) => {
   }
 });
 
-// GET /providers/health — provider health check
+// GET /providers/health (provider health check)
 servicesRouter.get('/providers/health', async (c) => {
   const db = getDb();
   const providers = db.prepare(`
@@ -205,7 +187,6 @@ servicesRouter.get('/providers/health', async (c) => {
       const healthy = await checkOllamaHealth(provider.base_url ?? undefined);
       results.push({ id: provider.id, name: provider.name, type: provider.type, healthy });
     } else {
-      // For API providers, check if credential exists
       const credential = getProviderCredential(provider.id);
       if (credential) clearOn({ kind: 'writer-answered', providerKey: provider.id });   // this check's poll is the re-test of a waiting writer nobody calls
       const errorCount = providerErrorCounts.get(provider.id) ?? 0;
@@ -229,7 +210,7 @@ servicesRouter.get('/providers/health', async (c) => {
   return c.json({ ok: true, data: results });
 });
 
-// GET /resources — system resources (shaped for dashboard)
+// GET /resources (system resources, shaped for dashboard)
 servicesRouter.get('/resources', async (c) => {
   const info = getResourceInfo();
   const totalMb = info.memory.total;
@@ -246,8 +227,7 @@ servicesRouter.get('/resources', async (c) => {
     ollama = { running: false, models: [] };
   }
 
-  // CPU usage approximation from load average
-  // Use 5-minute average (loadAvg[1]) for a smoother, less spiky reading
+  // CPU usage approximation from the 5-minute load average (loadAvg[1]), a smoother reading.
   const cpuCount = (await import('node:os')).cpus().length || 1;
   const cpuUsage = Math.min(100, Math.round((info.cpu.loadAvg[1] / cpuCount) * 100));
 
@@ -262,28 +242,25 @@ servicesRouter.get('/resources', async (c) => {
   });
 });
 
-// GET /ollama/models — list Ollama models
+// GET /ollama/models (list Ollama models)
 servicesRouter.get('/ollama/models', async (c) => {
   const baseUrl = c.req.query('baseUrl') ?? undefined;
   const models = await listOllamaModels(baseUrl);
   return c.json({ ok: true, data: models });
 });
 
-// GET /ollama/status — Ollama status
+// GET /ollama/status (Ollama status)
 servicesRouter.get('/ollama/status', (c) => {
   const status = getOllamaStatus();
   return c.json({ ok: true, data: status });
 });
 
-// GET /ollama/lock — Ollama concurrency lock status (per-provider)
+// GET /ollama/lock (Ollama concurrency lock status, per provider)
 servicesRouter.get('/ollama/lock', (c) => {
   const lockStatus = getOllamaLock().getStatus();
   const byProvider = getActiveOllamaModelsByProvider();
-  // One warning record per provider that's currently over its limit.
-  // The dashboard renders each warning as a separate banner naming the
-  // specific machine, so having the Mac Mini at 2 concurrent and the Mac
-  // Studio at 1 no longer triggers a single lumped "3 models across all
-  // Ollama providers" message.
+  // One warning record per provider currently over its limit; the dashboard renders each as its own
+  // banner naming the specific machine.
   const warnings = byProvider
     .filter(p => p.count > lockStatus.maxConcurrentModels)
     .map(p => ({
@@ -303,31 +280,25 @@ servicesRouter.get('/ollama/lock', (c) => {
   });
 });
 
-// GET /ws-status — WebSocket connection info
+// GET /ws-status (WebSocket connection info)
 servicesRouter.get('/ws-status', (c) => {
   return c.json({ ok: true, data: getWSStatus() });
 });
 
-// GET /presence — get user presence status
+// GET /presence (user presence status)
 servicesRouter.get('/presence', (c) => {
   return c.json({
     ok: true,
     data: {
       status: getPresence(),
-      // Gates the composer's in-dojo/away toggle: only show it when the iMessage
-      // bridge is actually ENABLED (not merely set up), so a disabled bridge
-      // hides the toggle entirely.
+      // Gates the composer's in-dojo/away toggle: shown only when the iMessage bridge is enabled.
       imessageConfigured: isImessageEnabled(),
     },
   });
 });
 
-// POST /presence — set user presence status
-// ── v3.2.3 LAYER 3: THE OWNER'S MANUAL RETRY, which is what makes a non-self-closing
-//    breaker fair. The card says "top up or switch"; when they have, this is the button's
-//    door: clear the wall and let the next call try for real. It answers whether anything
-//    WAS open, so a dashboard can say "nothing was blocked" instead of implying it fixed
-//    something. GET lists what is open, so the Health card can render the state.
+// GET /providers/breakers lists open breakers for the Health card. POST /providers/:id/clear-breaker
+// is the owner's manual retry: it clears the wall and answers whether anything WAS open.
 servicesRouter.get('/providers/breakers', (c) => {
   return c.json({ ok: true, data: { breakers: openBreakers_readonly() } });
 });
@@ -349,14 +320,13 @@ servicesRouter.post('/presence', async (c) => {
   return c.json({ ok: true, data: { status: body.status } });
 });
 
-// ── Tunnel (Remote Access) ──
 
-// GET /tunnel — tunnel status
+// GET /tunnel (tunnel status)
 servicesRouter.get('/tunnel', (c) => {
   return c.json({ ok: true, data: getTunnelStatus() });
 });
 
-// POST /tunnel/enable — enable tunnel
+// POST /tunnel/enable (enable tunnel)
 servicesRouter.post('/tunnel/enable', async (c) => {
   const body = await c.req.json().catch(() => null);
   const mode = (body?.mode === 'named' ? 'named' : 'quick') as TunnelMode;
@@ -364,35 +334,34 @@ servicesRouter.post('/tunnel/enable', async (c) => {
   return c.json({ ok: result.ok, error: result.error, data: getTunnelStatus() });
 });
 
-// POST /tunnel/disable — disable tunnel
+// POST /tunnel/disable (disable tunnel)
 servicesRouter.post('/tunnel/disable', (c) => {
   disableTunnel();
   return c.json({ ok: true, data: getTunnelStatus() });
 });
 
-// POST /tunnel/token — save named tunnel token (and optionally the public URL)
+// POST /tunnel/token (save named tunnel token, and optionally the public URL)
 servicesRouter.post('/tunnel/token', async (c) => {
   const body = await c.req.json().catch(() => null);
   if (typeof body?.token !== 'string' || body.token.trim() === '') {
     return c.json({ ok: false, error: 'Token is required' }, 400);
   }
-  // setNamedTunnelUrl trims, so a non-string url would throw AFTER the token is
-  // saved — check it before any write instead. null/undefined clear it.
+  // setNamedTunnelUrl trims, so a non-string url would throw after the token is saved: check it
+  // before any write. null/undefined clear it.
   if (body.url !== undefined && body.url !== null && typeof body.url !== 'string') {
     return c.json({ ok: false, error: 'url must be text' }, 400);
   }
   setTunnelToken(body.token.trim());
-  // v2.5.6 — same payload can carry the public URL the user configured in
-  // Cloudflare's Published Application Routes. Optional. null/empty clears it.
+  // The same payload can carry the public URL from Cloudflare's Published Application Routes.
+  // Optional; null/empty clears it.
   if (body.url !== undefined) setNamedTunnelUrl(body.url);
   return c.json({ ok: true });
 });
 
-// POST /tunnel/named-url — set just the named-tunnel URL (no token change)
+// POST /tunnel/named-url (set just the named-tunnel URL, no token change)
 servicesRouter.post('/tunnel/named-url', async (c) => {
   const body = await c.req.json().catch(() => null);
-  // setNamedTunnelUrl trims, so a non-string url would throw — check it first.
-  // null/undefined still clear it.
+  // setNamedTunnelUrl trims, so a non-string url would throw: check it first. null/undefined clear it.
   if (body?.url !== undefined && body?.url !== null && typeof body?.url !== 'string') {
     return c.json({ ok: false, error: 'url must be text' }, 400);
   }
@@ -400,7 +369,7 @@ servicesRouter.post('/tunnel/named-url', async (c) => {
   return c.json({ ok: true, data: getTunnelStatus() });
 });
 
-// POST /tunnel/install-cloudflared — install cloudflared via brew
+// POST /tunnel/install-cloudflared (install cloudflared via brew)
 servicesRouter.post('/tunnel/install-cloudflared', (c) => {
   if (isCloudflaredInstalled()) {
     return c.json({ ok: true, data: { alreadyInstalled: true } });

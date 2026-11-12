@@ -1,48 +1,15 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// THE PREVIEW CARD IS THE ONLY DOOR (DOJO-REPORT T6).
-//
-// Owner ruling D4 is absolute: *"The user sees the exact text before anything posts. No preview,
-// no post."* This file is that ruling's only entrance, and every shape below is the ruling
-// rather than bookkeeping.
-//
-//  1. `POST /:id/approve` IS THE ONE PLACE `approveOnce` IS CALLED, IN THE WHOLE TREE. Two
-//     guards hold that from different directions: `__tests__/only-the-card-can-post-a-report
-//     .test.ts` walks the source and asserts the CALL-SITE set is exactly this file;
-//     `agent/tools/__tests__/the-report-tool-reaches-no-new-door.test.ts` walks the IMPORT graph
-//     and requires every module BINDING a consent door to be named on ALLOWED_CONSENT_CALLERS —
-//     and this file's one-line addition to that list IS the review that grants posting rights.
-//
-//  2. THE EDIT DOOR IS NARROW, AND IT IS `editBrief` — NEVER `attachDraft` (contract C2).
-//     `attachDraft` is the AGENT's write door, legal only from `drafting`; a route that reached
-//     it could swap the brief a human is looking at, which is exactly what D4 forbids. The name
-//     does not appear in this file and a clause reads this file's text to keep it that way.
-//     T66b's rule in its own words: *"each door owns its own columns, the user sees one button,
-//     and a field the user did not touch is never mentioned in any request."* So the five brief
-//     fields are all this door accepts, and the columns other doors own are refused BY NAME with
-//     a sentence pointing at the right door — `.strict()`'s "unrecognized key" is true and
-//     useless to the person reading it.
-//
-//  3. SAVING IS NEVER APPROVING. A successful PATCH answers the row and nothing else: the card
-//     returns to the preview, the owner re-reads, and the owner presses Post.
-//
-//  4. `editBrief` CAN THROW, NOT ONLY ANSWER NULL (contract C8) — it is the one door with a
-//     transaction, and under concurrent writers SQLite raises SQLITE_BUSY_SNAPSHOT. Both
-//     branches exist below and they say DIFFERENT things: null is "somebody already decided
-//     this", a throw is "the save did not happen, try again".
-//
-//  5. `approveOnce` ANSWERING NULL IS "ALREADY DECIDED", NEVER 404 (contract C4). The row is
-//     there; it is simply no longer awaiting a decision, and the sentence says so.
-//
-//  6. NOTHING IS DELIVERED, NOTHING IS SPENT (T7). The approval is minted before the send
-//     (C3's consume-then-send), so when the send does not happen the decision is handed BACK
-//     with `releaseApproval` — a report may never strand in `approved` with nothing delivered.
-//
-// ── WHERE THE REQUEST SCHEMA LIVES, AND WHY IT IS NOT IN `config/schema.ts` ──
-// The plan names `config/schema.ts`. Measured at T6's HEAD it is 240 lines against a 240 growth
-// baseline and the crossing line for an unpinned file is exactly 240 — so ANY addition to it,
-// including a comment, fails a blocking gate. Splitting is the plan's own instruction for that
-// case, and this door's ACCEPT list and REFUSE list are one decision, now adjacent.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// The preview card is the only door: the user sees the exact text before anything posts.
+// 1. `POST /:id/approve` is the one place `approveOnce` is called in the whole tree (guarded by
+//    `__tests__/only-the-card-can-post-a-report.test.ts` and, for the import graph, by
+//    `agent/tools/__tests__/the-report-tool-reaches-no-new-door.test.ts`).
+// 2. The edit door is `editBrief`, never the agent's `attachDraft` (legal only from `drafting`): a
+//    route reaching it could swap the brief the owner is reading. Only the five brief fields are accepted.
+// 3. Saving is never approving: a successful PATCH answers the row and the owner presses Post.
+// 4. `editBrief` can throw (SQLite busy snapshot) as well as answer null: null is "already
+//    decided", a throw is "the save did not happen, try again". `approveOnce` null is likewise
+//    "already decided", never 404.
+// 5. The approval is consumed before the send; when nothing is delivered it is handed back with
+//    `releaseApproval` so a report never strands in `approved`.
 
 import { Hono } from 'hono';
 import { z } from 'zod';
@@ -63,7 +30,7 @@ const logger = createLogger('report-routes');
 
 export const reportsRouter = new Hono<AppEnv>();
 
-/** The five brief fields, each optional, nothing else. `.strict()` is the floor, not the wall. */
+/** The five brief fields, each optional; kept here so the accept and refuse lists sit together. */
 export const EditReportSchema = z.object({
   title: z.string().min(1).max(120).optional(),
   whatHappened: z.string().min(1).max(8000).optional(),
@@ -76,12 +43,7 @@ export const EditReportSchema = z.object({
       + '`whyItWentWrong` or `fixIdeas`',
   });
 
-/**
- * The columns this door does NOT own, each named with the door that does. Refused ahead of the
- * schema, because a person reading "Unrecognized key: status" learns nothing about where a status
- * actually changes — and every field here would, if it landed, change something the owner has
- * already read and approved.
- */
+/** Columns this door does not own, refused ahead of the schema with the door that does own them. */
 const OTHER_DOORS: Readonly<Record<string, string>> = {
   status: 'A report moves with POST /api/reports/:id/approve or /cancel, never with an edit.',
   signature: 'The signature is derived from the failure shape when the agent drafts the report.',
@@ -96,7 +58,6 @@ const OTHER_DOORS: Readonly<Record<string, string>> = {
 
 const NOT_FOUND = 'No such report. It may have been cancelled, or this box may have been reset.';
 
-/** Why an edit is refused. Each status gets its own sentence; "failed" is not one of them. */
 function editRefusal(status: ReportStatus): string {
   if (status === 'approved' || status === 'posted') {
     return 'This report was already approved — the text is frozen. What you read is what was '
@@ -106,14 +67,8 @@ function editRefusal(status: ReportStatus): string {
   return 'This report has not been submitted for your decision yet, so there is nothing to edit.';
 }
 
-// ── the two reads the card lives on ─────────────────────────────────────────────────────
-// `listOpenReports` is `awaiting_approval` ONLY (C1): a drafting row has no brief to show and a
-// decided one is already decided. A card with no decision in it is how a gate becomes a habit.
-// `destinationRepo` rides BESIDE the rows rather than on them: it is a per-box fact, not a per-
-// report one, and the card's consent sentence has to name it (T8 finding 5 — the sentence said
-// "the Dojo's issue tracker" while `DOJO_REPORT_REPO` pointed at a scratch repository). It is the
-// SERVER's answer on purpose: `reportRepo()` is the function the poster and the export both call,
-// so the card cannot name a destination the delivery would not use.
+// `listOpenReports` is awaiting_approval only. `destinationRepo` comes from `reportRepo()`, which the
+// poster and export also call, so the card cannot name a destination delivery would not use.
 reportsRouter.get('/', (c) => {
   return c.json({ ok: true, data: listOpenReports(), destinationRepo: reportRepo() });
 });
@@ -124,7 +79,6 @@ reportsRouter.get('/:id', (c) => {
   return c.json({ ok: true, data: row });
 });
 
-// ── the owner's own edit ────────────────────────────────────────────────────────────────
 
 reportsRouter.patch('/:id', async (c) => {
   const id = c.req.param('id');
@@ -151,13 +105,10 @@ reportsRouter.patch('/:id', async (c) => {
 
   try {
     const row = editBrief(id, parsed.data);
-    // C4's shape, one door over: null is a VERDICT ("the row moved out from under this edit"),
-    // and the row's current status is the honest sentence for it.
     if (!row) return c.json({ ok: false, error: editRefusal(getReport(id)?.status ?? 'cancelled') }, 409);
     return c.json({ ok: true, data: row });
   } catch (err) {
-    // C8. A transaction that lost a write race is not a broken server and not a frozen report:
-    // it is a save that did not happen, and the only honest instruction is to save again.
+    // A lost write race is a save that did not happen, not a broken server: tell the owner to save again.
     return routeFailure(c, logger, err, {
       status: 500, level: 'warn',
       message: 'That edit did not save — the report was being written by something else at the '
@@ -166,25 +117,19 @@ reportsRouter.patch('/:id', async (c) => {
   }
 });
 
-// ── THE ONE DOOR ────────────────────────────────────────────────────────────────────────
 
 reportsRouter.post('/:id/approve', async (c) => {
   const id = c.req.param('id');
   const existing = getReport(id);
   if (!existing) return c.json({ ok: false, error: NOT_FOUND }, 404);
 
-  // OPTIONAL body: it carries the owner's answer to a duplicate this door already showed them,
-  // and nothing else. Unreadable is the same as no answer, never a 500.
+  // Optional body: only the owner's answer to a duplicate already shown; unreadable counts as none.
   const choice = parsePostChoice(await c.req.json().catch(() => null));
   if (choice === 'invalid') return c.json({ ok: false, error: DUPLICATE_ANSWER_HELP }, 400);
 
-  // ⚠ THE T7 SEAM. T6 stood a 503 here because there was no sender; the poster exists now, so
-  // the block is REPLACED by the send and the ORDER is the one C3 pins — CONSUME, THEN SEND, so
-  // nothing can be delivered that was not approved. T6's clause held an ORDERING, not an answer:
-  // "the owner's one approval is never spent on a delivery that cannot happen". The other half
-  // of that property is below — when nothing is delivered, the decision is handed back.
+  // Consume the approval, then send, so nothing is delivered that was not approved; when nothing
+  // is delivered the decision is handed back below.
   const approved = approveOnce(id);
-  // C4: the row exists. It is simply no longer awaiting a decision.
   if (!approved) {
     return c.json({ ok: false, error: 'This report was already decided, it is '
       + `${existing.status}. One approval, one delivery.` }, 409);
@@ -194,16 +139,13 @@ reportsRouter.post('/:id/approve', async (c) => {
     const outcome = await postApprovedReport(id, choice);
     if (outcome.kind === 'created' || outcome.kind === 'commented') {
       broadcast({ type: 'report:resolved', data: { id, status: 'posted' } });
-      // `labelsDropped` rides the SUCCESS answer (T8): the report landed, so this is not an
-      // error — but the issue on the tracker is not the one the owner pressed Post for, and
-      // only they can label it. Absent on the comment path, which carries no labels at all.
+      // `labelsDropped` rides the success answer: the issue landed unlabelled and only the owner can label it.
       return c.json({ ok: true, data: { status: 'posted', exportPath: null,
         issueUrl: outcome.issueUrl, issueNumber: outcome.issueNumber,
         labelsDropped: outcome.kind === 'created' ? outcome.labelsDropped : null } });
     }
-    // NOTHING LEFT THE BOX, so the approval bought no delivery and is returned: the row goes
-    // back on the card, decidable, nothing recorded against it. Leaving it `approved` would
-    // strand it — off the list the card reads (C1) and refused by `approveOnce` forever.
+    // Nothing left the box, so return the approval: the row goes back on the card, decidable.
+    // Leaving it `approved` would strand it off the list the card reads.
     releaseApproval(id);
     if (outcome.kind === 'duplicate-found') {
       return c.json({ ok: true, data: { status: 'awaiting_approval', issueUrl: null,
@@ -218,16 +160,11 @@ reportsRouter.post('/:id/approve', async (c) => {
     return routeFailure(c, logger, new Error(`report ${id} had no brief to export`),
       { status: 500, message: 'The report could not be written to a file. Nothing was sent.' });
   }
-  // `markExported` CONSUMES the approval, exactly as `markPosted` does (C3): D4 binds the export
-  // door too, so one approval is one delivery whichever way the report leaves.
+  // `markExported` consumes the approval like `markPosted`: one approval is one delivery either way.
   const delivered = markExported(id, exported.filePath);
-  // ⚠ UNREACHABLE THROUGH THIS ROUTE, AND NOT AN OVERSIGHT (review N1). `approveOnce` above has
-  // already won the row, so `markExported` can only answer null under a race no caller can
-  // produce today. Defensive depth, deliberately untested: no clause can reach it.
+  // Unreachable through this route (`approveOnce` already won the row); kept as defensive depth.
   if (!delivered) return c.json({ ok: false, error: 'This report was already delivered.' }, 409);
   broadcast({ type: 'report:resolved', data: { id, status: 'posted' } });
-  // `newIssueUrl`/`bodyWasTrimmed`/`reportText` are beyond the plan's four and needed: without
-  // them the owner has no way to post it (half of D2). `reportText` is what Copy puts on the clipboard.
   return c.json({ ok: true, data: {
     status: delivered.status, issueUrl: delivered.issueUrl, issueNumber: delivered.issueNumber,
     exportPath: delivered.exportPath, newIssueUrl: exported.newIssueUrl,
@@ -235,7 +172,6 @@ reportsRouter.post('/:id/approve', async (c) => {
   } });
 });
 
-// ── the safe direction ──────────────────────────────────────────────────────────────────
 
 reportsRouter.post('/:id/cancel', (c) => {
   const id = c.req.param('id');

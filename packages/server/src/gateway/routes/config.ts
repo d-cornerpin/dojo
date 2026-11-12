@@ -31,7 +31,6 @@ import { ownerMailboxes } from '../../services/owner-mailboxes.js';
 import { TERMINAL_JOB_STATUSES, TERMINAL_JOB_STATUS_SQL } from '../../services/media-job-status.js';
 import { settleAskOnJobEnded } from '../../work/ask-settlement.js';
 
-// ── Model Usage Helper ──
 
 interface ModelUsage {
   modelId: string;
@@ -44,7 +43,6 @@ function getModelUsage(modelId: string): ModelUsage {
   const model = db.prepare('SELECT id, name FROM models WHERE id = ?').get(modelId) as { id: string; name: string } | undefined;
   const usedBy: ModelUsage['usedBy'] = [];
 
-  // Check agents
   const agents = db.prepare(
     "SELECT id, name FROM agents WHERE model_id = ? AND status != 'terminated'"
   ).all(modelId) as Array<{ id: string; name: string }>;
@@ -52,13 +50,11 @@ function getModelUsage(modelId: string): ModelUsage {
     usedBy.push({ type: 'agent', id: a.id, name: a.name });
   }
 
-  // Check PM model config
   const pmModel = db.prepare("SELECT value FROM config WHERE key = 'pm_agent_model'").get() as { value: string } | undefined;
   if (pmModel?.value === modelId) {
     usedBy.push({ type: 'pm_model', id: 'pm_agent_model', name: 'PM Agent Default Model' });
   }
 
-  // Check dreamer model config
   const dreamerModel = db.prepare("SELECT value FROM config WHERE key = 'dreaming_model_id'").get() as { value: string } | undefined;
   if (dreamerModel?.value === modelId) {
     usedBy.push({ type: 'dreamer_model', id: 'dreaming_model_id', name: 'Dreamer Model' });
@@ -73,11 +69,9 @@ function reassignAffectedAgents(modelIds: string[]): number {
   const db = getDb();
   let reassigned = 0;
 
-  // Find a fallback model — first enabled TEXT-capable model not in the affected
-  // set. Media-generation/embedding models cost 0 and would otherwise win the
-  // cost order, leaving an agent pointed at a model that can't hold a chat.
-  // 32K main-model floor (owner decision 13): the cheapest candidate that clears it wins; if
-  // none does, the cheapest is still used so the agent is never left without a model.
+  // Fallback: the first enabled TEXT-capable model outside the affected set (media-generation and
+  // embedding models cost 0 and would otherwise win the cost order). The cheapest that clears the 32K
+  // main-model floor wins; if none does, the cheapest is still used so the agent always has a model.
   let candidates: Array<{ id: string }>;
   try {
     const placeholders = modelIds.map(() => '?').join(',');
@@ -95,19 +89,16 @@ function reassignAffectedAgents(modelIds: string[]): number {
   const fallbackId = fallback?.id ?? null;
 
   for (const mid of modelIds) {
-    // Reassign agents
     const result = db.prepare(
       "UPDATE agents SET model_id = ?, updated_at = datetime('now') WHERE model_id = ? AND status != 'terminated'"
     ).run(fallbackId, mid);
     reassigned += result.changes;
 
-    // Clear PM model if it matches
     const pmModel = db.prepare("SELECT value FROM config WHERE key = 'pm_agent_model'").get() as { value: string } | undefined;
     if (pmModel?.value === mid && fallbackId) {
       db.prepare("UPDATE config SET value = ?, updated_at = datetime('now') WHERE key = 'pm_agent_model'").run(fallbackId);
     }
 
-    // Clear dreamer model if it matches
     const dreamerModel = db.prepare("SELECT value FROM config WHERE key = 'dreaming_model_id'").get() as { value: string } | undefined;
     if (dreamerModel?.value === mid && fallbackId) {
       db.prepare("UPDATE config SET value = ?, updated_at = datetime('now') WHERE key = 'dreaming_model_id'").run(fallbackId);
@@ -119,7 +110,7 @@ function reassignAffectedAgents(modelIds: string[]): number {
 
 const logger = createLogger('config-routes');
 
-// Fallback Anthropic models — used only if models.list() API call fails
+// Fallback Anthropic models, used only if the models.list() API call fails
 const ANTHROPIC_MODELS_FALLBACK = [
   {
     name: 'Claude Opus 4.6',
@@ -184,7 +175,7 @@ const ANTHROPIC_COST_MAP: Record<string, { input: number; output: number }> = {
   haiku: { input: 0.80, output: 4.0 },
 };
 
-// M41: a family the catalog does not list has NO price (NULL, which the Models page flags as unknown),
+// A family the catalog does not list has NO price (NULL, which the Models page flags as unknown),
 // never another family's price.
 function getAnthropicCost(modelId: string): { input: number; output: number } | null {
   for (const [key, cost] of Object.entries(ANTHROPIC_COST_MAP)) {
@@ -193,30 +184,14 @@ function getAnthropicCost(modelId: string): { input: number; output: number } | 
   return null;
 }
 
-// DeepSeek models — OpenAI-compatible provider at https://api.deepseek.com.
-//
-// Per the live DeepSeek API docs (verified 2026-05-08):
-//   - Base host is https://api.deepseek.com (no /v1 segment); the model
-//     dispatch in agent/model.ts has a NO_V1_HOSTS list that handles this.
-//   - The legacy `deepseek-chat` and `deepseek-reasoner` IDs are
-//     DEPRECATED with a sunset of 2026-07-24; both transparently map to
-//     the v4-flash family today.
-//   - Current models are `deepseek-v4-flash` and `deepseek-v4-pro`.
-//     Both support a 1M-token context, 384K max output, OpenAI-style
-//     function/tool calling, and a thinking-mode toggle. Neither
-//     supports vision content blocks.
-//   - Thinking is a per-call toggle (not a separate model). v4-pro
-//     defaults to thinking-on; we explicitly send `thinking:{type:disabled}`
-//     in the dispatcher today (until the reasoning_content echo path
-//     lands), so both models behave as plain chat/tools models.
-//   - Pricing as of 2026-05-08 (per the docs' /quick_start/pricing page):
-//     v4-flash: $0.14 in / $0.28 out per 1M tokens (cache miss).
-//     v4-pro:   $0.435 in / $0.87 out per 1M tokens (currently
-//               75%-off promotional rate, listed as effective through
-//               2026-05-31). Cache-hit input is much cheaper but the
-//               cost tracker doesn't model that yet — using cache-miss
-//               as the recorded rate slightly over-records cost, which
-//               is the safe direction.
+// DeepSeek models: OpenAI-compatible provider at https://api.deepseek.com.
+//   - The base host has no /v1 segment; `resolveOpenAIBaseUrl` (agent/model.ts) keeps bare-host roots.
+//   - The legacy `deepseek-chat` and `deepseek-reasoner` IDs are deprecated and map to the v4-flash family.
+//   - Current models are `deepseek-v4-flash` and `deepseek-v4-pro`: 1M-token context, 384K max output,
+//     tool calling and a thinking-mode toggle; neither supports vision content blocks.
+//   - Thinking is a per-call toggle, not a separate model; v4-pro defaults to thinking-on.
+//   - Costs are the cache-miss rate. The cost tracker does not model cache hits, so this slightly
+//     over-records cost, which is the safe direction.
 const DEEPSEEK_MODELS = [
   {
     name: 'DeepSeek V4 Flash',
@@ -240,10 +215,8 @@ const DEEPSEEK_MODELS = [
 
 const DEEPSEEK_HOSTS = ['api.deepseek.com', 'deepseek.com'];
 
-// IDs DeepSeek's /models endpoint still lists for backwards compatibility
-// but that we don't want to seed — they're deprecated (sunset 2026-07-24)
-// and map internally to v4-flash anyway. Keeping them out of the catalog
-// avoids confusing duplicate entries on the Models page.
+// IDs DeepSeek's /models endpoint still lists but that we do not seed: they are deprecated and map
+// internally to v4-flash, so seeding them would only duplicate entries on the Models page.
 const DEEPSEEK_DEPRECATED_IDS = new Set(['deepseek-chat', 'deepseek-reasoner']);
 
 function isDeepSeekProvider(baseUrl: string | null | undefined): boolean {
@@ -257,43 +230,23 @@ function isDeepSeekProvider(baseUrl: string | null | undefined): boolean {
 }
 
 /**
- * T63 — where an OpenAI-compatible provider's API actually is, by the ONE rule the model
- * client itself uses (`resolveOpenAIBaseUrl`, `agent/model.ts`): bare-host providers keep
- * their root, everyone else gets `/v1`, and a base URL that ALREADY ends in `/v1` is left
- * alone.
- *
- * These two routes used to build `${baseUrl}/v1/models` by hand with one inline exception for
- * DeepSeek. That is byte-identical for the presets — `https://openrouter.ai/api` →
- * `…/api/v1/models`, `https://api.deepseek.com` → `…/models` — and WRONG for the case T63
- * exists for: the base URL a local server prints for you to paste already ends in `/v1`, so
- * the hand-rolled version asked for `…/v1/v1/models` and got a 404 the owner would read as
- * "my server is broken". Two copies of a URL rule is one copy too many; this defers to the
- * copy that has to be right for the actual chat call.
+ * Where an OpenAI-compatible provider's API actually is, by the one rule the model client uses
+ * (`resolveOpenAIBaseUrl`, `agent/model.ts`): bare-host providers keep their root, everyone else
+ * gets `/v1`, and a base URL that already ends in `/v1` is left alone (never `/v1/v1/models`).
  */
 function openAiCompatibleApiRoot(baseUrl: string): string {
   return resolveOpenAIBaseUrl(baseUrl) ?? baseUrl;
 }
 
-/**
- * T63 — the auth header, when there is auth. A local server that checks nothing is handed
- * nothing: `Authorization: Bearer null` is what the old template produced for a keyless
- * provider, which means nothing to a server that ignores the header and breaks one that
- * doesn't. Providers with a credential are unchanged.
- */
+/** The auth header, when there is auth: a keyless local server is handed nothing, never `Bearer null`. */
 function openAiCompatibleAuthHeaders(credential: string | null | undefined): Record<string, string> {
   return credential ? { 'Authorization': `Bearer ${credential}` } : {};
 }
 
 /**
- * Idempotent DeepSeek model seed. Inserts the reference catalog AND
- * any non-deprecated model IDs DeepSeek's live /models endpoint reports
- * — but only those that aren't already in the database for this provider.
- * Safe to call multiple times (create and validate both call this).
- *
- * Pre-2026-05-08 we used INSERT OR IGNORE keyed on the row UUID, which
- * was useless: the UUID is generated fresh per call so OR IGNORE never
- * triggered, and every call double-seeded the catalog. We now check
- * `(provider_id, api_model_id)` explicitly before inserting.
+ * Idempotent DeepSeek model seed: inserts the reference catalog and any non-deprecated model IDs the
+ * live /models endpoint reports that are not already in the database. Safe to call repeatedly (create
+ * and validate both call it); presence is checked on `(provider_id, api_model_id)`.
  */
 async function seedDeepSeekModels(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -310,9 +263,8 @@ async function seedDeepSeekModels(
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'), datetime('now'))
   `);
 
-  // Heal zero-cost rows from earlier seed versions. Only updates pricing
-  // when the existing row has input_cost_per_m == 0 AND output_cost_per_m == 0
-  // — preserves any user-customized prices. v2.3.15.
+  // Heal zero-cost rows from earlier seeds: update pricing only when both costs are 0, so
+  // user-customized prices are kept.
   const healZeroCostStmt = db.prepare(`
     UPDATE models
     SET input_cost_per_m = ?, output_cost_per_m = ?, updated_at = datetime('now')
@@ -365,7 +317,7 @@ async function seedDeepSeekModels(
           insertStmt.run(
             uuidv4(), providerId, m.id, m.id,
             JSON.stringify(['chat', 'code', 'tools']),
-            null, null, null, null,   // M41: a live-listed id the reference catalog does not know has no known window, cap or price
+            null, null, null, null,   // a live-listed id the reference catalog does not know has no known window, cap or price
           );
           liveInserted++;
         }
@@ -389,7 +341,7 @@ async function seedDeepSeekModels(
   });
 }
 
-// Known OpenAI models — API doesn't return token limits, so we maintain a reference table
+// Known OpenAI models: the API does not return token limits, so we keep a reference table
 const OPENAI_MODELS = [
   { name: 'GPT-5', apiModelId: 'gpt-5', contextWindow: 400000, maxOutputTokens: 128000, inputCostPerM: 10.0, outputCostPerM: 40.0 },
   { name: 'GPT-4.1', apiModelId: 'gpt-4.1', contextWindow: 1047576, maxOutputTokens: 32768, inputCostPerM: 2.0, outputCostPerM: 8.0 },
@@ -425,14 +377,12 @@ async function fetchAnthropicModels(client: Anthropic): Promise<Array<{
       outputCostPerM: number | null;
     }> = [];
 
-    // Fetch all models from Anthropic API
     const response = await client.models.list({ limit: 100 });
 
     for (const model of response.data) {
       // Only include Claude chat models (skip embeddings, legacy, etc.)
       if (!model.id.startsWith('claude-')) continue;
 
-      // Derive a friendly name from the model ID
       const idParts = model.id.split('-');
       const familyName = idParts.slice(0, 2).map(p => p.charAt(0).toUpperCase() + p.slice(1)).join(' ');
       const version = idParts.slice(2).join('.');
@@ -440,9 +390,8 @@ async function fetchAnthropicModels(client: Anthropic): Promise<Array<{
 
       const cost = getAnthropicCost(model.id);
 
-      // M41: the API reports `max_input_tokens` (the window) and `max_tokens` (the output cap) on model
-      // objects. A figure it does not report is NULL, not a stand-in: a stand-in is stored looking exactly
-      // like a real one and then overwrites the real one.
+      // The API reports `max_input_tokens` (the window) and `max_tokens` (the output cap). A figure it
+      // does not report is NULL, not a stand-in: a stand-in is stored looking like a real one.
       const apiModel = model as unknown as Record<string, unknown>;
       const positive = (n: unknown): number | null => (typeof n === 'number' && Number.isFinite(n) && n > 0 ? n : null);
       const maxOutput = positive(apiModel.max_tokens) ?? positive(apiModel.max_output_tokens);
@@ -476,7 +425,6 @@ async function fetchAnthropicModels(client: Anthropic): Promise<Array<{
 
 const configRouter = new Hono();
 
-// ── Providers ──
 
 // GET /providers
 configRouter.get('/providers', (c) => {
@@ -511,7 +459,6 @@ configRouter.post('/providers', async (c) => {
   const { id, name, type, baseUrl, authType, credential, behavesLike, firstChunkTimeoutMs, streamIdleTimeoutMs, prefillTokensPerSec } = parsed.data;
   const db = getDb();
 
-  // If provider already exists, update it instead of erroring
   const existing = db.prepare('SELECT id FROM providers WHERE id = ?').get(id);
   if (existing) {
     db.prepare(`
@@ -534,7 +481,7 @@ configRouter.post('/providers', async (c) => {
     logger.info('Storing provider credential', {
       providerId: id,
       authType,
-      credentialLength: credential.length, // never log secret bytes (audit finding 8/21)
+      credentialLength: credential.length, // never log secret bytes
     });
     setProviderCredential(id, credential, authType as 'api_key' | 'oauth');
     clearClientCache(id);
@@ -542,19 +489,10 @@ configRouter.post('/providers', async (c) => {
     logger.info('No credential to store (local provider)', { providerId: id });
   }
 
-  // Insert provider into DB.
-  // T63: `behaves_like` is the owner's declaration of the dialect behind the URL (migration
-  // 162). NULL for every preset — a hosted provider's URL already identifies it, and the
-  // resolver falls back to exactly the sniffing it always did. Note the re-POST arm above
-  // rewrites it along with name/type/base_url/auth_type: this door has always treated a POST
-  // over an existing id as a full replace of the identity fields, and the declaration is one.
-  //
-  // T64b: the patience pair joins that same replace set, for the same reason and with the
-  // same consequence — a re-POST that omits it clears it. The dashboard therefore edits
-  // patience through `PATCH /providers/:id/response-patience` and never a re-POST.
-  //
-  // T81b: the prefill throughput joins the same replace set for the identical reason, and is
-  // edited through `PATCH /providers/:id/prefill-throughput` for the identical consequence.
+  // Insert provider into DB. `behaves_like` (the owner's declared dialect behind the URL) is NULL for
+  // every preset. A re-POST over an existing id is a full replace of the identity fields, which includes
+  // `behaves_like`, the patience pair and the prefill throughput (omitting one clears it), so the
+  // dashboard edits the last two through their own PATCH routes, never a re-POST.
   db.prepare(`
     INSERT INTO providers (id, name, type, base_url, auth_type, behaves_like, first_chunk_timeout_ms, stream_idle_timeout_ms, prefill_tokens_per_sec, is_validated, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'), datetime('now'))
@@ -622,7 +560,6 @@ configRouter.post('/providers', async (c) => {
       );
     }
 
-    // Also try to discover any additional models from the API
     if (credential) {
       try {
         const response = await fetch('https://api.openai.com/v1/models', {
@@ -642,7 +579,7 @@ configRouter.post('/providers', async (c) => {
               insertExtra.run(
                 uuidv4(), id, m.id, m.id,
                 JSON.stringify(['chat', 'code', 'tools']),
-                null, null, null, null,   // M41: a model the catalog does not list has no known window, cap or price
+                null, null, null, null,   // a model the catalog does not list has no known window, cap or price
               );
             }
           }
@@ -655,12 +592,9 @@ configRouter.post('/providers', async (c) => {
     logger.info('Auto-inserted OpenAI models', { providerId: id, count: OPENAI_MODELS.length });
   }
 
-  // Auto-insert DeepSeek models when the provider is openai-compatible AND
-  // the baseUrl points at api.deepseek.com. Hybrid: hardcoded reference
-  // catalog (gives correct metadata DeepSeek's /models doesn't return —
-  // context window, max output, capabilities, costs) PLUS a live /models
-  // fetch to catch any new IDs DeepSeek has shipped that we don't yet know
-  // about. Same pattern the OpenAI auto-seed uses.
+  // Auto-insert DeepSeek models when the provider is openai-compatible AND the baseUrl points at
+  // api.deepseek.com: the hardcoded reference catalog (metadata /models does not return: window, max
+  // output, capabilities, costs) plus a live /models fetch for IDs we do not know yet.
   if (type === 'openai-compatible' && isDeepSeekProvider(baseUrl)) {
     await seedDeepSeekModels(db, id, baseUrl, credential);
   }
@@ -676,7 +610,7 @@ configRouter.post('/providers', async (c) => {
  * Remove every reference the rest of the DB still holds to a model: the router tier rows it
  * sits in and the config keys that can point at it. Shared by the provider delete (which
  * forgets several models at once, with FKs off) and the single-model delete, so the two
- * forget-lists cannot drift again.
+ * forget-lists cannot drift.
  */
 function forgetModelReferences(modelId: string): void {
   const db = getDb();
@@ -697,11 +631,9 @@ configRouter.delete('/providers/:id', (c) => {
       return c.json({ ok: false, error: 'Provider not found' }, 404);
     }
 
-    // Find all models from this provider and reassign affected agents
     const providerModels = db.prepare('SELECT id FROM models WHERE provider_id = ?').all(id) as Array<{ id: string }>;
     const modelIds = providerModels.map(m => m.id);
 
-    // Nullify agent model references first
     for (const mid of modelIds) {
       db.prepare("UPDATE agents SET model_id = NULL WHERE model_id = ?").run(mid);
     }
@@ -711,7 +643,7 @@ configRouter.delete('/providers/:id', (c) => {
       forgetModelReferences(mid);
     }
 
-    // Temporarily disable FK constraints, delete everything, re-enable — always restore the
+    // Temporarily disable FK constraints, delete everything, re-enable, always restore the
     // pragma, even when a delete throws, so the shared connection is never left unguarded.
     try {
       db.exec('PRAGMA foreign_keys = OFF');
@@ -750,14 +682,11 @@ configRouter.post('/providers/:id/validate', async (c) => {
     providerId: id,
     providerType: provider.type,
     hasCredential: !!credential,
-    credentialLength: credential ? credential.length : 0, // never log secret bytes (audit finding 8/21)
+    credentialLength: credential ? credential.length : 0, // never log secret bytes
   });
 
-  // T63: `auth_type='none'` is a provider that DECLARES it has no key — a local
-  // OpenAI-compatible server (ollama / vLLM / LM Studio). It has been a legal value since
-  // migration 005 and, until T63, only the Ollama branch read it, so a manually-added local
-  // server could never be validated at all. A provider that claims a key and has none is
-  // still refused, unchanged.
+  // `auth_type='none'` is a provider that declares it has no key (a local OpenAI-compatible server:
+  // ollama / vLLM / LM Studio). A provider that claims a key and has none is still refused.
   if (!credential && provider.type !== 'ollama' && provider.authType !== 'agent-sdk' && provider.authType !== 'none') {
     return c.json({ ok: false, error: 'No credential found for this provider' }, 400);
   }
@@ -779,22 +708,20 @@ configRouter.post('/providers/:id/validate', async (c) => {
         INSERT OR IGNORE INTO models (id, provider_id, name, api_model_id, capabilities, context_window, max_output_tokens, input_cost_per_m, output_cost_per_m, is_enabled, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 0, datetime('now'), datetime('now'))
       `);
-      // M41: a figure is written only when the server REPORTED one. NULL keeps what the row already
-      // holds (seeded, or typed by the owner in the Model Limits editor); a new row the server says
-      // nothing about is stored as "not set", which the editor and the engine already understand.
+      // A figure is written only when the server reported one. NULL keeps what the row already holds
+      // (seeded, or typed in the Model Limits editor); a new row the server says nothing about is "not set".
       const updateModel = db.prepare(`
         UPDATE models SET context_window = COALESCE(?, context_window), max_output_tokens = COALESCE(?, max_output_tokens), updated_at = datetime('now')
         WHERE provider_id = ? AND api_model_id = ?
       `);
 
       for (const m of ollamaModels) {
-        if (m.name === STANDARD_DECISION_MODEL.windowTag) continue;   // t268 (I-1): the Dojo's own window tag, never a pickable model
+        if (m.name === STANDARD_DECISION_MODEL.windowTag) continue;   // the Dojo's own window tag, never a pickable model
         const capabilities = ['chat'];
         const nameLower = m.name.toLowerCase();
         if (nameLower.includes('code') || nameLower.includes('coder') || nameLower.includes('deepseek')) capabilities.push('code');
         if (nameLower.includes('vision') || nameLower.includes('llava')) capabilities.push('vision');
 
-        // Fetch actual model metadata from Ollama
         const modelInfo = await getOllamaModelInfo(m.name, baseUrl);
         const contextWindow = modelInfo?.contextWindow ?? null;
         const maxOutputTokens = modelInfo?.maxOutputTokens ?? null;
@@ -816,7 +743,6 @@ configRouter.post('/providers/:id/validate', async (c) => {
       }
       logger.info('Ollama models synced', { providerId: id, count: ollamaModels.length });
     } else if (provider.type === 'anthropic' && provider.authType === 'agent-sdk') {
-      // Agent SDK validation — use the SDK auth checker
       logger.info('Provider validation: checking Agent SDK auth', { providerId: id });
       const { checkSdkAuth } = await import('../../providers/anthropic-sdk-auth.js');
       const sdkResult = await checkSdkAuth();
@@ -854,7 +780,6 @@ configRouter.post('/providers/:id/validate', async (c) => {
       } else {
         client = new Anthropic({ apiKey: credential });
       }
-      // Minimal API call to validate the credential
       await client.messages.create({
         model: 'claude-haiku-4-5',
         max_tokens: 10,
@@ -893,7 +818,6 @@ configRouter.post('/providers/:id/validate', async (c) => {
         logger.warn('Failed to sync Anthropic model metadata', { error: syncErr instanceof Error ? syncErr.message : String(syncErr) });
       }
     } else if (provider.type === 'openai') {
-      // Direct OpenAI provider — validate against api.openai.com
       logger.info('Provider validation: checking OpenAI API', { providerId: id });
 
       const response = await fetch('https://api.openai.com/v1/models', {
@@ -908,7 +832,6 @@ configRouter.post('/providers/:id/validate', async (c) => {
 
       logger.info('Provider validation: OpenAI API call succeeded', { providerId: id });
 
-      // Discover any new models from the API and merge with known models
       try {
         const data = await response.json() as { data?: Array<{ id: string; owned_by?: string }> };
         const apiModels = (data.data ?? []).filter(m => m.id.startsWith('gpt-') || m.id.match(/^o[1-4]/));
@@ -922,13 +845,12 @@ configRouter.post('/providers/:id/validate', async (c) => {
         for (const m of apiModels) {
           const known = knownMap.get(m.id);
           if (!known) {
-            // New model not in our reference table — insert with defaults
             const existing = db.prepare('SELECT id FROM models WHERE provider_id = ? AND api_model_id = ?').get(id, m.id);
             if (!existing) {
               insertModel.run(
                 uuidv4(), id, m.id, m.id,
                 JSON.stringify(['chat', 'code', 'tools']),
-                null, null, null, null,   // M41: a model the catalog does not list has no known window, cap or price
+                null, null, null, null,   // a model the catalog does not list has no known window, cap or price
               );
             }
           }
@@ -938,13 +860,9 @@ configRouter.post('/providers/:id/validate', async (c) => {
         logger.warn('Failed to sync OpenAI models', { error: syncErr instanceof Error ? syncErr.message : String(syncErr) });
       }
     } else if (provider.type === 'openai-compatible') {
-      // OpenRouter and other OpenAI-compatible providers — validate credential only.
-      // Models are NOT bulk-inserted by default; users browse and add
-      // individual models via the UI. Exception: DeepSeek (and other
-      // first-class openai-compatible presets) get their default model
-      // catalog auto-inserted on validation as a backfill, in case the
-      // creation-time seed missed (e.g., user added the provider manually
-      // before this preset existed).
+      // OpenRouter and other OpenAI-compatible providers: validate the credential only. Models are not
+      // bulk-inserted; users add them via the UI. Exception: DeepSeek (and other first-class presets) get
+      // their default catalog auto-inserted on validation, as a backfill.
       const baseUrl = (provider.baseUrl || 'https://openrouter.ai/api').replace(/\/+$/, '');
       const isDeepSeek = isDeepSeekProvider(baseUrl);
       if (isDeepSeek) {
@@ -982,17 +900,12 @@ configRouter.post('/providers/:id/validate', async (c) => {
         const apiModels = modelsData.data ?? [];
         const apiMap = new Map(apiModels.map(m => [m.id, m]));
 
-        // Update existing models (ones the user previously added).
-        // Pricing semantics: COALESCE(?, current) — only overwrite when the
-        // API actually gave us a number. Old behaviour wrote `0` whenever
-        // the API didn't list pricing, which silently clobbered any
-        // previously-known prices and also made unknown-pricing models
-        // indistinguishable from actually-free ones. Now: `"0"` from the
-        // API → store 0 (truly free), missing/empty → null (unknown).
+        // Update existing models (ones the user previously added). Pricing is COALESCE(?, current):
+        // written only when the API gave a number, `"0"` stores 0 (truly free), missing/empty stores
+        // null (unknown).
         const existingModels = db.prepare('SELECT id, api_model_id, max_output_tokens FROM models WHERE provider_id = ?').all(id) as Array<{ id: string; api_model_id: string; max_output_tokens: number | null }>;
-        // M41: the window and the cap follow the same rule as the prices — written only when the
-        // provider REPORTED one. NULL keeps the figure the row already holds (a preset's seed, or one
-        // the owner typed), so a /models list that says nothing about a model changes nothing.
+        // The window and the cap follow the same rule: written only when the provider reported one, so a
+        // /models list that says nothing about a model changes nothing.
         const updateModel = db.prepare(`
           UPDATE models SET
             context_window = COALESCE(?, context_window),
@@ -1009,16 +922,11 @@ configRouter.post('/providers/:id/validate', async (c) => {
           if (apiModel) {
             const reported = (n: unknown): number | null => (typeof n === 'number' && Number.isFinite(n) && n > 0 ? n : null);
             const reportedWindow = reported(apiModel.context_length) ?? reported(apiModel.top_provider?.context_length);
-            // T72b claim 1, the write side. `floor(cw / 4)` is exactly 1024 for a
-            // 4096-window model — llama.cpp's default `n_ctx` — and a stored cap of 1024 is
-            // a guaranteed empty answer for anything that reasons before it writes. When the
-            // provider states its own `max_completion_tokens` we take it verbatim, as
-            // before; it is OUR OWN DERIVATION that must not be allowed below the floor. A
-            // provider that genuinely cannot produce this much will say so, which is
-            // information; silently persisting an unusable cap is not.
-            // M41: the derivation exists only to FILL A BLANK cap, and only from a window the provider
-            // reported. It never replaces a cap the row already holds, and with no reported window there
-            // is nothing to derive from.
+            // The derived cap `floor(cw / 4)` is exactly 1024 for a 4096-window model (llama.cpp's
+            // default `n_ctx`), and a stored cap of 1024 guarantees an empty answer for anything that
+            // reasons before it writes, so a derived cap may not fall below the floor; a provider-stated
+            // `max_completion_tokens` is taken verbatim. The derivation only fills a blank cap, and only
+            // from a window the provider reported.
             const maxOutputTokens = reported(apiModel.top_provider?.max_completion_tokens)
               ?? (reportedWindow !== null && existing.max_output_tokens === null
                 ? Math.max(THINKING_OUTPUT_FLOOR_TOKENS, Math.min(Math.floor(reportedWindow / 4), 16384))
@@ -1037,7 +945,6 @@ configRouter.post('/providers/:id/validate', async (c) => {
       return c.json({ ok: false, error: `Validation not implemented for provider type: ${provider.type}` }, 400);
     }
 
-    // Mark as validated
     db.prepare(`
       UPDATE providers SET is_validated = 1, validated_at = datetime('now'), updated_at = datetime('now')
       WHERE id = ?
@@ -1060,7 +967,6 @@ configRouter.post('/providers/:id/validate', async (c) => {
   }
 });
 
-// ── Models ──
 
 // GET /providers/:id/models
 configRouter.get('/providers/:id/models', (c) => {
@@ -1087,15 +993,14 @@ configRouter.get('/models', (c) => {
   return c.json({ ok: true, data: models });
 });
 
-// GET /video-jobs?status=active — list video generation jobs. With
-// status=active returns only in-flight jobs (queued/polling) for the
-// ActiveJobsIndicator; otherwise returns the most recent jobs for history.
+// GET /video-jobs?status=active (list video generation jobs). With status=active returns only
+// in-flight jobs (queued/polling) for the ActiveJobsIndicator; otherwise the most recent jobs.
 configRouter.get('/video-jobs', (c) => {
   const db = getDb();
   const statusFilter = c.req.query('status');
   const rows = statusFilter === 'active'
     ? db.prepare(
-        // t122: "active" means NOT terminal (services/media-job-status.ts holds the census).
+        // "active" means NOT terminal (services/media-job-status.ts holds the census).
         `SELECT id, agent_id, model_id, provider_id, prompt, title, status, started_at, updated_at, finished_at, duration_seconds, cost_usd, error FROM video_jobs WHERE status NOT IN (${TERMINAL_JOB_STATUS_SQL}) ORDER BY started_at DESC`
       ).all()
     : db.prepare(
@@ -1119,7 +1024,7 @@ configRouter.get('/video-jobs', (c) => {
   return c.json({ ok: true, data });
 });
 
-// POST /video-jobs/:id/cancel — stop an in-flight job. Best-effort
+// POST /video-jobs/:id/cancel: stop an in-flight job. Best-effort
 // provider cancel, then mark the row 'cancelled'. The poller drops the
 // job on its next tick.
 configRouter.post('/video-jobs/:id/cancel', async (c) => {
@@ -1131,9 +1036,8 @@ configRouter.post('/video-jobs/:id/cancel', async (c) => {
   if (!row) {
     return c.json({ ok: false, error: 'Video job not found.' }, 404);
   }
-  // t122: the door refuses only a row that is genuinely FINISHED. Asked the other way round
-  // ("is it one of the two words I know"), an open row spelled any other way could never be
-  // cancelled by the owner at all.
+  // The door refuses only a row that is genuinely FINISHED: asking "is it one of the two words I know"
+  // would leave an open row spelled any other way impossible for the owner to cancel.
   if ((TERMINAL_JOB_STATUSES as readonly string[]).includes(row.status)) {
     return c.json({ ok: false, error: `Job is already ${row.status}; nothing to cancel.` }, 409);
   }
@@ -1142,13 +1046,13 @@ configRouter.post('/video-jobs/:id/cancel', async (c) => {
     try {
       const { cancelProviderVideo } = await import('../../services/video-generation.js');
       await cancelProviderVideo(row.provider_id, row.provider_job_id);
-    } catch { /* best effort — we still mark it cancelled locally */ }
+    } catch { /* best effort, we still mark it cancelled locally */ }
   }
 
   db.prepare(
     `UPDATE video_jobs SET status='cancelled', finished_at=datetime('now'), updated_at=datetime('now') WHERE id = ? AND status NOT IN (${TERMINAL_JOB_STATUS_SQL})`
   ).run(id);
-  settleAskOnJobEnded(row.agent_id, id);   // t152: the last job of a request called off settles it
+  settleAskOnJobEnded(row.agent_id, id);   // the last job of a request called off settles it
 
   try {
     const { broadcast } = await import('../ws.js');
@@ -1164,7 +1068,7 @@ configRouter.post('/video-jobs/:id/cancel', async (c) => {
   return c.json({ ok: true, data: { id, status: 'cancelled' } });
 });
 
-// GET /generation-jobs?status=active — list run-once media generation jobs
+// GET /generation-jobs?status=active: list run-once media generation jobs
 // (image / audio / music). MERGED with video_jobs so the ActiveJobsIndicator
 // can fetch one list covering every generator. Each row is normalized with a
 // `kind` field; video rows are tagged kind='video'.
@@ -1218,7 +1122,7 @@ configRouter.get('/generation-jobs', (c) => {
   return c.json({ ok: true, data });
 });
 
-// POST /generation-jobs/:id/cancel — stop an in-flight run-once job. The
+// POST /generation-jobs/:id/cancel: stop an in-flight run-once job. The
 // worker honors the cancel via CAS on its next state transition (and skips
 // delivery if the asset finishes after the cancel lands).
 configRouter.post('/generation-jobs/:id/cancel', async (c) => {
@@ -1230,7 +1134,7 @@ configRouter.post('/generation-jobs/:id/cancel', async (c) => {
   if (!row) {
     return c.json({ ok: false, error: 'Generation job not found.' }, 404);
   }
-  // t122: as above — refuse only what is genuinely finished.
+  // Refuse only what is genuinely finished, as above.
   if ((TERMINAL_JOB_STATUSES as readonly string[]).includes(row.status)) {
     return c.json({ ok: false, error: `Job is already ${row.status}; nothing to cancel.` }, 409);
   }
@@ -1238,7 +1142,7 @@ configRouter.post('/generation-jobs/:id/cancel', async (c) => {
   db.prepare(
     `UPDATE generation_jobs SET status='cancelled', finished_at=datetime('now'), updated_at=datetime('now') WHERE id = ? AND status NOT IN (${TERMINAL_JOB_STATUS_SQL})`
   ).run(id);
-  settleAskOnJobEnded(row.agent_id, id);   // t152: as above
+  settleAskOnJobEnded(row.agent_id, id);   // as above
 
   try {
     const { broadcast } = await import('../ws.js');
@@ -1259,14 +1163,14 @@ configRouter.post('/generation-jobs/:id/cancel', async (c) => {
   return c.json({ ok: true, data: { id, status: 'cancelled' } });
 });
 
-// GET /pricing-sync/status — last LiteLLM price-index run (success/failure,
+// GET /pricing-sync/status: last LiteLLM price-index run (success/failure,
 // timestamp, count). Powers the status pill on the Costs page.
 configRouter.get('/pricing-sync/status', async (c) => {
   const { getLitellmSyncStatus } = await import('../../services/litellm-pricing-sync.js');
   return c.json({ ok: true, data: getLitellmSyncStatus() });
 });
 
-// POST /pricing-sync/run — kick off a LiteLLM refresh on demand. Returns
+// POST /pricing-sync/run: kick off a LiteLLM refresh on demand. Returns
 // the fresh status when the run completes (synchronous, but it's a single
 // HTTP fetch + a small loop so well under HTTP timeouts).
 configRouter.post('/pricing-sync/run', async (c) => {
@@ -1275,7 +1179,7 @@ configRouter.post('/pricing-sync/run', async (c) => {
   return c.json({ ok: true, data: status });
 });
 
-// GET /providers/:id/browse-models?q=search — live search of provider's model catalog (not stored in DB)
+// GET /providers/:id/browse-models?q=search: live search of provider's model catalog (not stored in DB)
 configRouter.get('/providers/:id/browse-models', async (c) => {
   const db = getDb();
   const providerId = c.req.param('id');
@@ -1291,8 +1195,8 @@ configRouter.get('/providers/:id/browse-models', async (c) => {
   }
 
   const credential = getProviderCredential(providerId);
-  // T63: same rule as validation — a provider that declares no auth is not one that is
-  // missing its key, and browsing is how a model gets attached to a local server at all.
+  // A provider that declares no auth is not one missing its key, and browsing is how a model gets
+  // attached to a local server at all.
   if (!credential && provider.authType !== 'none') return c.json({ ok: false, error: 'No credential found' }, 400);
 
   const baseUrl = (provider.baseUrl || 'https://openrouter.ai/api').replace(/\/+$/, '');
@@ -1333,13 +1237,11 @@ configRouter.get('/providers/:id/browse-models', async (c) => {
 
     const allModels = data.data ?? [];
 
-    // Get already-added model IDs for this provider
     const addedIds = new Set(
       (db.prepare('SELECT api_model_id FROM models WHERE provider_id = ?').all(providerId) as Array<{ api_model_id: string }>)
         .map(r => r.api_model_id),
     );
 
-    // Filter by search query and exclude already-added models
     const filtered = allModels
       .filter(m => {
         if (!m.id) return false;
@@ -1383,7 +1285,7 @@ configRouter.get('/providers/:id/browse-models', async (c) => {
   }
 });
 
-// POST /providers/:id/add-model — add a single model from the provider's catalog to the DB
+// POST /providers/:id/add-model: add a single model from the provider's catalog to the DB
 configRouter.post('/providers/:id/add-model', async (c) => {
   const db = getDb();
   const providerId = c.req.param('id');
@@ -1394,7 +1296,6 @@ configRouter.post('/providers/:id/add-model', async (c) => {
   const existing = db.prepare('SELECT id FROM providers WHERE id = ?').get(providerId);
   if (!existing) return c.json({ ok: false, error: 'Provider not found' }, 404);
 
-  // Check if already added
   const alreadyAdded = db.prepare('SELECT id FROM models WHERE provider_id = ? AND api_model_id = ?').get(providerId, body.apiModelId);
   if (alreadyAdded) return c.json({ ok: false, error: 'Model already added' }, 409);
 
@@ -1405,13 +1306,9 @@ configRouter.post('/providers/:id/add-model', async (c) => {
     ? body.capabilities.filter((c: unknown) => typeof c === 'string')
     : null;
 
-  // Pricing path: token rows use the input/output $/M-token columns;
-  // every other unit (megapixel / second / minute / character / item)
-  // stores a single cost_per_unit value and leaves the token columns
-  // null. The browse "Add" modal and Manual Add both send pricingUnit +
-  // costPerUnit. A null cost_per_unit is meaningful ("unknown" — the user
-  // chose to leave it blank). costPerMegapixel is still mirrored into the
-  // legacy column during the compat window.
+  // Token rows use the input/output $/M-token columns; every other unit (megapixel / second / minute /
+  // character / item) stores a single cost_per_unit and leaves the token columns null. A null
+  // cost_per_unit means "unknown" (the user left it blank). costPerMegapixel is still mirrored to the legacy column.
   const ADD_VALID_UNITS = ['token', 'megapixel', 'second', 'character', 'minute', 'item'] as const;
   const pricingUnit: typeof ADD_VALID_UNITS[number] =
     ADD_VALID_UNITS.includes(body.pricingUnit) ? body.pricingUnit : 'token';
@@ -1445,10 +1342,8 @@ configRouter.post('/providers/:id/add-model', async (c) => {
     costPerMegapixel,
   );
 
-  // Probe capabilities from the provider catalog — but only if the caller
-  // didn't supply explicit ones. For manually-added models (not in the
-  // catalog), the probe would return empty and overwrite the user's
-  // selection, so we skip it.
+  // Probe capabilities from the provider catalog only if the caller supplied none: for a manually-added
+  // model the probe would return empty and overwrite the user's selection.
   if (!explicitCapabilities) {
     try {
       const { probeAndStoreCapabilities } = await import('../../services/capabilities.js');
@@ -1510,26 +1405,18 @@ configRouter.post('/providers/:id/add-model', async (c) => {
   return c.json({ ok: true, data: rowToModel(row) }, 201);
 });
 
-// PATCH /providers/:id — edit a provider that already exists. Body: any of
-// { name, baseUrl, behavesLike, credential }; ONLY what the body names is changed.
+// PATCH /providers/:id: edit a provider that already exists. Body: any of
+// { name, baseUrl, behavesLike, credential }; ONLY what the body names is changed (an absent field
+// is not a request).
 //
-// T66b. Until now a provider's name, base URL and dialect were create-only: the sole way to
-// change one was `POST /providers` over the existing id, and that door is a FULL REPLACE of
-// the identity fields (documented at the insert above, and by W45 before it). So an edit form
-// built on the re-POST would clear a dialect declaration, or a patience pair, or a base URL,
-// for anyone who opened it to change a name and did not happen to re-send everything else.
-// This door cannot: an absent field is not a request.
+// A re-POST over the existing id is a full replace of the identity fields and would clear a dialect
+// declaration, patience pair or base URL by omission; this door cannot. It is one of the narrow doors
+// (`host-ram`, `response-patience`, this) that each own their own properties; patience stays at its
+// own door and the dashboard's one Save calls both.
 //
-// It is the fourth of the same narrow family — `host-ram`, `response-patience`, and this. Each
-// owns its own properties, so no door is ever in a position to rewrite one it was not asked
-// about. PATIENCE STAYS AT ITS OWN DOOR for that reason; the dashboard's one Save calls both.
-//
-// THREE FIELDS ARE REFUSED BY NAME. A provider's `type` and `id` identify what it IS — a
-// different type is a different provider, and the id is the key that `models.provider_id`,
-// `~/.dojo/secrets.yaml` and every cache resolve through. `authType` changes how the
-// credential is read and stored, which is the same kind of claim. Delete and re-add is the
-// correct move for all three, and the message says so; `.strict()` would have refused them
-// too, but "Unrecognized key(s)" is not an answer a person can act on.
+// `type`, `id` and `authType` are refused by name: they identify what the provider IS (the id is the
+// key `models.provider_id`, `~/.dojo/secrets.yaml` and every cache resolve through), so delete and
+// re-add is the correct move and the message says so.
 configRouter.patch('/providers/:id', async (c) => {
   const id = c.req.param('id');
   const body = await c.req.json().catch(() => null);
@@ -1543,9 +1430,8 @@ configRouter.patch('/providers/:id', async (c) => {
     }, 400);
   }
 
-  // The patience pair has its own door and keeps it. Named here rather than left to
-  // `.strict()` because "Unrecognized key(s)" tells a caller that the field is wrong without
-  // telling them where the right one is.
+  // The patience pair has its own door. Named here rather than left to `.strict()`, whose
+  // "Unrecognized key(s)" does not tell a caller where the right door is.
   const patience = ['firstChunkTimeoutMs', 'streamIdleTimeoutMs'].filter(k => k in raw);
   if (patience.length > 0) {
     return c.json({
@@ -1554,8 +1440,7 @@ configRouter.patch('/providers/:id', async (c) => {
     }, 400);
   }
 
-  // T81b: same reasoning, one door over. `prefillTokensPerSec` has its own narrow PATCH, for
-  // the same reason the patience pair does.
+  // Same reasoning: `prefillTokensPerSec` has its own narrow PATCH.
   if ('prefillTokensPerSec' in raw) {
     return c.json({
       ok: false,
@@ -1568,11 +1453,8 @@ configRouter.patch('/providers/:id', async (c) => {
     return c.json({ ok: false, error: parsed.error.issues.map(i => i.message).join(', ') }, 400);
   }
 
-  // The engine's own sentinel. `GET /providers` has always filtered it out of the list
-  // (`id != '__system__'` above), so it never reaches the UI, but nothing refused it at a
-  // write door — and this is the door that rewrites identity, with the router's 'auto'
-  // pointer hanging off that row. Refused here; the older doors are left exactly as they are,
-  // which is a measured asymmetry rather than an oversight.
+  // The engine's own sentinel: `GET /providers` filters it out of the list, but nothing refused it at
+  // a write door, and this door rewrites identity with the router's 'auto' pointer hanging off that row.
   if (id === '__system__') {
     return c.json({ ok: false, error: 'The System provider is part of the engine and cannot be edited' }, 400);
   }
@@ -1598,7 +1480,7 @@ configRouter.patch('/providers/:id', async (c) => {
   if (rotatedCredential) {
     logger.info('Rotating provider credential', {
       providerId: id,
-      credentialLength: rotatedCredential.length, // never log secret bytes (audit finding 8/21)
+      credentialLength: rotatedCredential.length, // never log secret bytes
     });
     // The existing store, and the provider's OWN auth type picks the slot, so an OAuth
     // provider's token does not land in the api_key field and read back as the wrong kind.
@@ -1616,14 +1498,11 @@ configRouter.patch('/providers/:id', async (c) => {
     id,
   );
 
-  // THE STALE CLIENT. `getOpenAIClient` caches on `${providerId}:${baseUrl}` and closes over
-  // the credential it read when it built the client, and `setProviderCredential` writes
-  // through `saveSecrets`, which records its own mtime — so the loader's "the file changed
-  // under us" invalidation (config/loader.ts) deliberately does not fire for our own write.
-  // Rotate a key without this line and the base URL is unchanged, so the cache key is
-  // unchanged, so every later call keeps sending the key the owner just replaced. The create
-  // door has always cleared by hand for the same reason. Proved on the wire in
-  // `agent/__tests__/an-edited-provider-is-the-one-that-gets-called.test.ts`.
+  // The stale client: `getOpenAIClient` caches on `${providerId}:${baseUrl}` and closes over the
+  // credential it read at build time, and `setProviderCredential` records its own mtime so the loader's
+  // changed-file invalidation (config/loader.ts) does not fire for our own write. Without this line a
+  // rotated key leaves the cache key unchanged and every later call sends the replaced key.
+  // Test: `agent/__tests__/an-edited-provider-is-the-one-that-gets-called.test.ts`.
   if (connectionChanged) clearClientCache(id);
 
   const row = db.prepare('SELECT * FROM providers WHERE id = ?').get(id) as Record<string, unknown>;
@@ -1634,20 +1513,18 @@ configRouter.patch('/providers/:id', async (c) => {
     connectionChanged,
   });
 
-  // `revalidationRequired` is the caller's cue to run `POST /providers/:id/validate` — the
-  // existing route, unchanged, which is also what the add form runs straight after a create.
-  // Kept as two calls rather than validating inside this handler: a DB write door that makes
-  // a network call to a possibly-unreachable local box would take the user's Save hostage for
-  // as long as that box takes to time out.
+  // `revalidationRequired` is the caller's cue to run `POST /providers/:id/validate`. Kept as two calls
+  // rather than validating here: a DB write door that makes a network call to a possibly unreachable
+  // local box would hold the user's Save hostage until that box times out.
   return c.json({ ok: true, data: rowToProvider(row), revalidationRequired: connectionChanged });
 });
 
-// PATCH /providers/:id/host-ram — set or clear the manually-entered RAM
+// PATCH /providers/:id/host-ram: set or clear the manually-entered RAM
 // (in GB) for a remote Ollama provider. Body: { ramGb: number | null }.
 // On success, every model belonging to this provider is re-run through
 // the num_ctx calculator so the Settings UI sees fresh recommendations
 // immediately after the user enters a RAM value. Only meaningful for
-// provider type 'ollama' — the server accepts and stores the value for
+// provider type 'ollama', the server accepts and stores the value for
 // any provider type but the calculator only reads it from Ollama rows.
 configRouter.patch('/providers/:id/host-ram', async (c) => {
   const id = c.req.param('id');
@@ -1691,16 +1568,12 @@ configRouter.patch('/providers/:id/host-ram', async (c) => {
   return c.json({ ok: true, data: rowToProvider(row), recomputed: recomputeSummary });
 });
 
-// PATCH /providers/:id/response-patience — set or clear how long this provider's streaming
+// PATCH /providers/:id/response-patience: set or clear how long this provider's streaming
 // calls may wait, in milliseconds. Body: { firstChunkTimeoutMs?: number | null,
 // streamIdleTimeoutMs?: number | null }. Null on a field means "use the standard bound".
 //
-// T64b. The owner's local DeepSeek box is ALREADY a configured provider — he is not going to
-// delete and re-create it to change one number — so the pair has to be editable in place. It
-// is its own narrow door rather than a re-POST because `POST /providers` over an existing id
-// full-replaces the identity fields, and a timeout edit must not be able to rewrite a base
-// URL. It changes these two columns and nothing else, which the door test asserts column by
-// column.
+// Its own narrow door, not a re-POST, because `POST /providers` over an existing id full-replaces the
+// identity fields and a timeout edit must not rewrite a base URL. It changes these two columns only.
 configRouter.patch('/providers/:id/response-patience', async (c) => {
   const id = c.req.param('id');
   const body = await c.req.json().catch(() => null);
@@ -1715,7 +1588,7 @@ configRouter.patch('/providers/:id/response-patience', async (c) => {
 
   // A field the body did not name keeps its stored value; a field named as null is cleared.
   // Those are different requests and the schema's `.optional().nullable()` is what keeps them
-  // distinguishable — collapsing them would make "set the first bound" silently clear the
+  // distinguishable, collapsing them would make "set the first bound" silently clear the
   // second.
   const nextFirst = parsed.data.firstChunkTimeoutMs === undefined
     ? existing.first_chunk_timeout_ms ?? null
@@ -1727,13 +1600,9 @@ configRouter.patch('/providers/:id/response-patience', async (c) => {
   db.prepare("UPDATE providers SET first_chunk_timeout_ms = ?, stream_idle_timeout_ms = ?, updated_at = datetime('now') WHERE id = ?")
     .run(nextFirst, nextIdle, id);
 
-  // T73b: THIS DOOR NOW HAS A CACHED CLIENT TO INVALIDATE. Until T73b these two columns were
-  // read fresh on every call and no client was built from them, so an edit took effect on the
-  // next request with nothing to clear. The HTTP client's own clock is derived from them now —
-  // a declaration past the standing 300 s gets an undici dispatcher built to carry it — so a
-  // cached client would keep serving this provider on the patience it used to declare, and the
-  // owner would raise the number on the Providers page and see no change until a restart. The
-  // same sentence the edit door at `:1555` writes for a rotated credential, for the same reason.
+  // The HTTP client's own clock derives from these columns (a declaration past the standing 300 s gets
+  // an undici dispatcher built to carry it), so a cached client would keep the old patience until a
+  // restart. Invalidate it, as the edit door does for a rotated credential.
   clearClientCache(id);
 
   const row = db.prepare('SELECT * FROM providers WHERE id = ?').get(id) as Record<string, unknown>;
@@ -1743,16 +1612,12 @@ configRouter.patch('/providers/:id/response-patience', async (c) => {
   return c.json({ ok: true, data: rowToProvider(row) });
 });
 
-// PATCH /providers/:id/prefill-throughput — set or clear how many tokens per second this
-// provider's owner says it chews through a prompt at. Body:
-// { prefillTokensPerSec: number | null }. Null clears it back to "undeclared", which turns
-// `resolveDoomCeiling` (and therefore the pre-dial gate it feeds) off entirely for this
-// provider — the byte-preservation default every provider has today.
+// PATCH /providers/:id/prefill-throughput: set or clear how many tokens per second this provider's
+// owner says it chews through a prompt at. Body: { prefillTokensPerSec: number | null }. Null clears
+// it to "undeclared", which turns `resolveDoomCeiling` (and the pre-dial gate it feeds) off for this
+// provider.
 //
-// NO-DOOMED-DIALS T81b. Same narrow-door shape as the patience door above it, and for
-// the same reason: the owner's local box is already a configured provider, editing one number
-// should not mean deleting and re-adding it, and a re-POST would full-replace the identity
-// fields. It changes this one column and nothing else.
+// Same narrow-door shape as the patience door; it changes this one column only.
 configRouter.patch('/providers/:id/prefill-throughput', async (c) => {
   const id = c.req.param('id');
   const body = await c.req.json().catch(() => null);
@@ -1765,9 +1630,8 @@ configRouter.patch('/providers/:id/prefill-throughput', async (c) => {
   const existing = db.prepare('SELECT * FROM providers WHERE id = ?').get(id) as Record<string, unknown> | undefined;
   if (!existing) return c.json({ ok: false, error: 'Provider not found' }, 404);
 
-  // Undefined (the body did not name the field) never reaches here — the schema's own
-  // `.refine()` requires it — but the ternary matches the patience door above it exactly, so a
-  // caller reading both handlers side by side sees one idiom, not two.
+  // Undefined never reaches here (the schema's `.refine()` requires the field); the ternary matches
+  // the patience door so both handlers read as one idiom.
   const nextThroughput = parsed.data.prefillTokensPerSec === undefined
     ? existing.prefill_tokens_per_sec ?? null
     : parsed.data.prefillTokensPerSec;
@@ -1775,24 +1639,16 @@ configRouter.patch('/providers/:id/prefill-throughput', async (c) => {
   db.prepare("UPDATE providers SET prefill_tokens_per_sec = ?, updated_at = datetime('now') WHERE id = ?")
     .run(nextThroughput, id);
 
-  // No client cache to invalidate here, unlike the patience door: nothing
-  // about this column ever shapes an HTTP client or a cached dispatcher. It is read fresh,
-  // straight off the row, at the one place that checks it (`agent/model.ts`'s pre-dial gate,
-  // via `resolveDoomCeiling`) — an edit here takes effect on that provider's very next call.
+  // No client cache to invalidate here, unlike the patience door: this column never shapes an HTTP
+  // client. It is read fresh off the row at the one place that checks it (`agent/model.ts`'s pre-dial
+  // gate, via `resolveDoomCeiling`), so an edit takes effect on the provider's very next call.
   const row = db.prepare('SELECT * FROM providers WHERE id = ?').get(id) as Record<string, unknown>;
   logger.info('Provider prefill throughput updated', { providerId: id, prefillTokensPerSec: nextThroughput });
   return c.json({ ok: true, data: rowToProvider(row) });
 });
 
-// PATCH /models/:id/num-ctx — set or clear the per-model Ollama num_ctx
-// override. Body: { override: number | null }. Null (or missing field)
-// clears the override and reverts to Ollama's Modelfile default.
-// Validated range: 512 – 2_097_152 tokens (server-side sanity cap; Ollama
-// will still refuse values the loaded model can't support). Only
-// meaningful for Ollama models — other providers store the value but
-// never translate it at call time.
-// DELETE /models/:id — remove a model from the DB. Checks for active usage
-// by agents first and warns if any are using it. Removes from router tiers,
+// DELETE /models/:id: remove a model from the DB. Checks for active usage
+// by agents first and refuses (409) while a live agent uses it. Removes from router tiers,
 // clears config references (PM model, dreamer model, imaginer model).
 configRouter.delete('/models/:id', async (c) => {
   const id = c.req.param('id');
@@ -1803,7 +1659,6 @@ configRouter.delete('/models/:id', async (c) => {
     | undefined;
   if (!model) return c.json({ ok: false, error: 'Model not found' }, 404);
 
-  // Check if any agent is using this model
   const agents = db.prepare(
     "SELECT id, name FROM agents WHERE model_id = ? AND status != 'terminated'",
   ).all(id) as Array<{ id: string; name: string }>;
@@ -1815,17 +1670,15 @@ configRouter.delete('/models/:id', async (c) => {
     }, 409);
   }
 
-  // Clean up config references and remove from router tiers
   forgetModelReferences(id);
 
-  // Delete the model
   db.prepare('DELETE FROM models WHERE id = ?').run(id);
   logger.info('Model deleted', { modelId: id, name: model.name, apiModelId: model.api_model_id });
 
   return c.json({ ok: true });
 });
 
-// PUT /models/:id/capabilities — write capabilities directly. Used by
+// PUT /models/:id/capabilities: write capabilities directly. Used by
 // the dashboard's Edit Capabilities UI when a probe missed a model's
 // true capabilities (e.g. OpenRouter not advertising an audio-output
 // modality on a newly-launched SKU). Body: { capabilities: string[] }.
@@ -1868,9 +1721,9 @@ configRouter.put('/models/:id/capabilities', async (c) => {
   return c.json({ ok: true, data: rowToModel(row), capabilities: filtered });
 });
 
-// PUT /models/:id/generation-params — write the per-model generation param
+// PUT /models/:id/generation-params: write the per-model generation param
 // spec (the editable model-card panel for image/video/audio generators).
-// Body: { generationParams: GenerationParamSpec } — a record of canonical
+// Body: { generationParams: GenerationParamSpec }, a record of canonical
 // param name -> field config. We validate the field shape and store it as
 // JSON; this is the user-confirmed source of truth that overrides the
 // family-seeded defaults and is never clobbered by the boot backfill.
@@ -1933,9 +1786,9 @@ configRouter.put('/models/:id/generation-params', async (c) => {
   return c.json({ ok: true, data: rowToModel(row) });
 });
 
-// PUT /models/:id/voice-catalog — write the per-model TTS voice catalog (the
+// PUT /models/:id/voice-catalog: write the per-model TTS voice catalog (the
 // editable model-card panel for audio-generation models).
-// Body: { voiceCatalog: VoiceOption[] | null } — an array of { id,
+// Body: { voiceCatalog: VoiceOption[] | null }, an array of { id,
 // description, gender }. null clears the catalog and lets the family seed
 // re-apply on the next backfill. The stored catalog is the user-confirmed
 // source of truth and is never clobbered by the boot backfill.
@@ -1989,11 +1842,9 @@ configRouter.put('/models/:id/voice-catalog', async (c) => {
   return c.json({ ok: true, data: rowToModel(row) });
 });
 
-// POST /models/:id/refresh-capabilities — force a fresh capability probe
-// for one model. Useful when a new capability vocabulary is added (e.g.
-// image_generation in v1.12) and the user's existing rows are stale.
-// The normal boot backfill only touches rows whose normalized caps are
-// empty; this endpoint bypasses that check and always re-probes.
+// POST /models/:id/refresh-capabilities: force a fresh capability probe for one model. Useful
+// when a new capability vocabulary is added and existing rows are stale. The normal boot backfill
+// only touches rows whose normalized caps are empty; this endpoint always re-probes.
 configRouter.post('/models/:id/refresh-capabilities', async (c) => {
   const id = c.req.param('id');
   const db = getDb();
@@ -2001,18 +1852,14 @@ configRouter.post('/models/:id/refresh-capabilities', async (c) => {
   if (!exists) return c.json({ ok: false, error: 'Model not found' }, 404);
 
   try {
-    // Clear the row so probeAndStoreCapabilities unconditionally overwrites
-    // even if the probe result is "same as before". This guarantees a fresh
-    // read on next use.
+    // Clear the row so probeAndStoreCapabilities unconditionally overwrites it, guaranteeing a fresh read.
     db.prepare("UPDATE models SET capabilities = '[]', updated_at = datetime('now') WHERE id = ?").run(id);
     const { probeAndStoreCapabilities } = await import('../../services/capabilities.js');
     const caps = await probeAndStoreCapabilities(id);
     const row = db.prepare('SELECT * FROM models WHERE id = ?').get(id) as Record<string, unknown>;
     logger.info('Model capabilities refreshed', { modelId: id, capabilities: caps });
-    // A capability refresh might newly reveal a model as vision-capable
-    // (or revoke that capability). Re-run the obvious-fallback check so
-    // the platform-wide fallback stays sensible without the user having
-    // to manually intervene every time.
+    // A refresh can newly reveal (or revoke) vision capability; re-run the obvious-fallback check so the
+    // platform-wide fallback stays sensible.
     try {
       const { autoConfigureFallbackVisionModelIfObvious } = await import('../../services/vision-model.js');
       autoConfigureFallbackVisionModelIfObvious();
@@ -2023,6 +1870,8 @@ configRouter.post('/models/:id/refresh-capabilities', async (c) => {
   }
 });
 
+// PATCH /models/:id/num-ctx: set or clear the per-model Ollama num_ctx override
+// (null clears it; 512 to 2_097_152; only Ollama translates it at call time).
 configRouter.patch('/models/:id/num-ctx', async (c) => {
   const id = c.req.param('id');
   const body = await c.req.json().catch(() => null);
@@ -2049,15 +1898,10 @@ configRouter.patch('/models/:id/num-ctx', async (c) => {
 
   const row = db.prepare('SELECT * FROM models WHERE id = ?').get(id) as Record<string, unknown>;
 
-  // ── ONE HONEST LINE, NOT A BLOCK (t103 C — OWNER RULING 2026-10-05 #2) ────────────────
-  // The recommendation is the DEFAULT cap now, and an override still wins — "user-overridable"
-  // is half the ruling. But the recommendation is sized to what this box can actually afford
-  // (`services/num-ctx-calculator.ts` budgets against total RAM, this model's weights, the other
-  // enabled models' weights and two reserves), so an override ABOVE it is a person choosing to
-  // spend memory the sizer says is not there. That is their call to make; it is not a thing they
-  // should have to infer. So the response SAYS what the recommendation was and by how much the
-  // override exceeds it, and refuses nothing — a block here would be the platform overruling an
-  // owner on his own hardware.
+  // The recommendation is the default cap and an override still wins. It is sized to what this box can
+  // afford (`services/num-ctx-calculator.ts`), so an override above it is the owner choosing to spend
+  // memory the sizer says is not there: the response says what the recommendation was and by how much
+  // the override exceeds it, and refuses nothing.
   const recommended = typeof row.num_ctx_recommended === 'number' ? row.num_ctx_recommended : null;
   const exceedsRecommended = typeof override === 'number' && recommended !== null && override > recommended;
   const notice = exceedsRecommended
@@ -2069,29 +1913,22 @@ configRouter.patch('/models/:id/num-ctx', async (c) => {
   logger.info('Model num_ctx override updated', {
     modelId: id, override, recommended, exceedsRecommended,
   });
-  await (await import('../../agent/v2/honest-stop-lock.js')).noteModelsChanged();   // t148: a window changed; no-fit locks get another look
+  await (await import('../../agent/v2/honest-stop-lock.js')).noteModelsChanged();   // a window changed; no-fit locks get another look
   return c.json({ ok: true, data: rowToModel(row), notice });
 });
 
-// ════════════════════════════════════════════════════════════════════════════════════
-// PATCH /models/:id/limits — the two numbers that decide how much answer fits (T72b/1)
+// PATCH /models/:id/limits: the two numbers that decide how much answer fits.
 //
 // Body: { maxOutputTokens?: number | null, contextWindow?: number | null }
 //
 // `max_output_tokens` and `context_window` set `max_tokens` on every request through
-// `resolveOutputBudget`, and for a manual provider both are GUESSES: browse-add stores NULL
-// for both (no local server reports OpenRouter's `top_provider`), provider-validate stores
-// `context_length ?? 128000` and a cap derived from it, and vLLM's `max_model_len` /
-// LM Studio's `max_context_length` are not read at all. Same provider, two different answers
-// depending on which button was pressed last — and until this door there was no way to
-// correct either one short of editing SQLite, because every other writer of these columns is
-// a discovery sync and re-adding the model writes NULL again.
+// `resolveOutputBudget`, and for a manual provider both are guesses (browse-add stores NULL,
+// provider-validate stores `context_length ?? 128000` and a derived cap, and vLLM's `max_model_len` /
+// LM Studio's `max_context_length` are not read). Every other writer is a discovery sync, so this is
+// the only way to correct either.
 //
-// PARTIAL by construction, in the shape `/models/:id/num-ctx` established: only the fields
-// present in the body move. `POST /providers` is a full replace with a documented
-// clears-on-omit trap, and repeating that trap on a model row would mean an owner correcting
-// their output cap silently wiped their context window. NULL is accepted and is NOT the
-// same as absent: it is how a person hands the field back to discovery.
+// Partial, in the shape of `/models/:id/num-ctx`: only the fields present in the body move. NULL is not
+// the same as absent: it hands the field back to discovery.
 configRouter.patch('/models/:id/limits', async (c) => {
   const id = c.req.param('id');
   const body = await c.req.json().catch(() => null) as Record<string, unknown> | null;
@@ -2129,18 +1966,17 @@ configRouter.patch('/models/:id/limits', async (c) => {
 
   const row = db.prepare('SELECT * FROM models WHERE id = ?').get(id) as Record<string, unknown>;
   logger.info('Model limits updated', { modelId: id, ...Object.fromEntries(updates) });
-  await (await import('../../agent/v2/honest-stop-lock.js')).noteModelsChanged();   // t148: a window changed; no-fit locks get another look
+  await (await import('../../agent/v2/honest-stop-lock.js')).noteModelsChanged();   // a window changed; no-fit locks get another look
   return c.json({ ok: true, data: rowToModel(row) });
 });
 
-// PATCH /models/:id/thinking — toggle per-model thinking/reasoning, and/or set its level
+// PATCH /models/:id/thinking: toggle per-model thinking/reasoning, and/or set its level
 // Body: { enabled?: boolean, level?: 'low' | 'high' | 'max' } (at least one)
-// t195: the level is stored for any model but is only SENT to a model whose contract lists it
-// (`model-contract.ts` `thinkingLevels`). A level the model's contract does not offer is refused here,
+// The level is stored for any model but only SENT to a model whose contract lists it
+// (`model-contract.ts` `thinkingLevels`). A level the contract does not offer is refused here,
 // so the stored value is always one the wire would accept.
-// Only meaningful when the model's capabilities array includes 'thinking';
-// we accept the update for any model (forward-compat) but it only affects
-// call-time behavior on providers we've wired (ollama, openrouter).
+// Only meaningful when the model's capabilities include 'thinking'; the update is accepted for any
+// model but only affects call-time behavior on providers we've wired (ollama, openrouter).
 configRouter.patch('/models/:id/thinking', async (c) => {
   const id = c.req.param('id');
   const body = await c.req.json().catch(() => null);
@@ -2180,7 +2016,7 @@ configRouter.patch('/models/:id/thinking', async (c) => {
   return c.json({ ok: true, data: rowToModel(row) });
 });
 
-// PUT /models/:id/pricing — update model pricing
+// PUT /models/:id/pricing: update model pricing
 configRouter.put('/models/:id/pricing', async (c) => {
   const id = c.req.param('id');
   const body = await c.req.json().catch(() => null);
@@ -2274,12 +2110,10 @@ configRouter.post('/models/enable', async (c) => {
 
   enableMany(modelIds);
   logger.info('Models enabled', { count: modelIds.length });
-  await (await import('../../agent/v2/honest-stop-lock.js')).noteModelsChanged();   // t148: a model is available; no-fit locks get another look
+  await (await import('../../agent/v2/honest-stop-lock.js')).noteModelsChanged();   // a model is available; no-fit locks get another look
 
-  // If the platform now has exactly one enabled vision-capable model
-  // and no fallback is configured yet, opportunistically set it. Keeps
-  // the "I just enabled my first vision model" path from leaving the
-  // Settings → Models warning hanging around until the user notices.
+  // If the platform now has exactly one enabled vision-capable model and no fallback is configured,
+  // set it, so the Settings > Models warning does not linger.
   try {
     const { autoConfigureFallbackVisionModelIfObvious } = await import('../../services/vision-model.js');
     autoConfigureFallbackVisionModelIfObvious();
@@ -2288,7 +2122,7 @@ configRouter.post('/models/enable', async (c) => {
   return c.json({ ok: true, data: { enabled: modelIds.length } });
 });
 
-// POST /models/check-usage — check which agents use these models before disabling/deleting
+// POST /models/check-usage: check which agents use these models before disabling/deleting
 configRouter.post('/models/check-usage', async (c) => {
   const body = await c.req.json().catch(() => null);
   const parsed = EnableModelsSchema.safeParse(body);
@@ -2321,7 +2155,6 @@ configRouter.post('/models/disable', async (c) => {
 
   disableMany(modelIds);
 
-  // Reassign any agents using the disabled models to a fallback
   const reassigned = reassignAffectedAgents(modelIds);
 
   logger.info('Models disabled', { count: modelIds.length, agentsReassigned: reassigned });
@@ -2329,9 +2162,7 @@ configRouter.post('/models/disable', async (c) => {
   return c.json({ ok: true, data: { disabled: modelIds.length, agentsReassigned: reassigned } });
 });
 
-// ── Identity (Prompt Files) ──
 
-// ── Platform Settings (key-value config) ──
 
 // GET /settings/:key
 configRouter.get('/settings/:key', (c) => {
@@ -2379,8 +2210,8 @@ configRouter.put('/settings/:key', async (c) => {
     }
   }
 
-  // The 32K main-model floor (owner decision 13) for a service agent's MAIN model, and (v3.5) the memory
-  // fit for every local-model key. Refused before any write; re-saving the stored value never is.
+  // The 32K main-model floor for a service agent's MAIN model, and the memory fit for every local-model
+  // key. Refused before any write; re-saving the stored value never is.
   if (LOCAL_MODEL_SETTING_KEYS.includes(key)) {
     const current = (db.prepare('SELECT value FROM config WHERE key = ?').get(key) as { value: string } | undefined)?.value;
     const main = MAIN_MODEL_SETTING_KEYS.includes(key);   // memory first, so a refusal names the true reason
@@ -2388,24 +2219,18 @@ configRouter.put('/settings/:key', async (c) => {
     if (refused) return c.json({ ok: false, error: refused }, 400);
   }
 
-  // UX-REPAIR T50 — THE DECISIVE RENAME DOOR, and the one nobody would guess.
-  // `<role>_agent_name` IS the display name for the primary / PM / trainer / imaginer / healer /
-  // dreamer: `config/platform.ts`'s getters read this key, not the `agents` row, and
-  // `substitutePlatformNames` bakes the result INTO the stored soul at seed time. So a write
-  // here renamed the agent everywhere that matters while `agents.name` and every stored soul
-  // kept the old one. Route it through the one door, which writes the row, writes this key, and
-  // re-fills the souls. The generic upsert below still runs and is idempotent: it rewrites the
-  // same value, so every other key — and a role key whose agent does not exist yet, during
-  // setup — behaves exactly as it did.
+  // `<role>_agent_name` is the display name for the primary / PM / trainer / imaginer / healer / dreamer:
+  // `config/platform.ts`'s getters read this key, not the `agents` row, and `substitutePlatformNames`
+  // bakes it into the stored soul at seed time. So a rename goes through the one door that writes the
+  // row, writes this key and re-fills the souls. The generic upsert below still runs and is idempotent.
   const roleIdKey = roleNameKeyToIdKey(key);
   if (roleIdKey) {
     const idRow = db.prepare('SELECT value FROM config WHERE key = ?').get(roleIdKey) as { value: string } | undefined;
     const targetId = idRow?.value;
     if (targetId && db.prepare('SELECT id FROM agents WHERE id = ?').get(targetId)) {
       const renameOutcome = renameAgent(targetId, body.value);
-      // E21 parked minor: the rename door refused a case-variant clash with another live agent.
-      // Short-circuit BEFORE the generic upsert, so the config key does not move with the row
-      // (the upsert below would rewrite the refused name into the key the getters read).
+      // The rename door refuses a case-variant clash with another live agent. Short-circuit before the
+      // generic upsert, so the config key does not move with the row.
       if (renameOutcome.refusal) return c.json({ ok: false, error: renameOutcome.refusal }, 400);
     }
   }
@@ -2434,9 +2259,8 @@ configRouter.put('/settings/:key', async (c) => {
     });
   }
 
-  if (key === 'router.context_window') await (await import('../../agent/v2/honest-stop-lock.js')).noteModelsChanged();   // N42: the router window changed; no-fit locks get another look
+  if (key === 'router.context_window') await (await import('../../agent/v2/honest-stop-lock.js')).noteModelsChanged();   // the router window changed; no-fit locks get another look
 
-  // Clear platform config cache when platform keys are updated
   const platformKeys = ['platform_name', 'owner_name', 'primary_agent_id', 'primary_agent_name', 'pm_agent_id', 'pm_agent_name', 'trainer_agent_id', 'trainer_agent_name', 'imaginer_agent_id', 'imaginer_agent_name', 'setup_completed', 'sudo_policy'];
   if (platformKeys.includes(key)) {
     const { clearPlatformConfigCache } = await import('../../config/platform.js');
@@ -2446,7 +2270,7 @@ configRouter.put('/settings/:key', async (c) => {
   // iMessage bridge holds approvedSenders in module-local state, populated
   // only at startIMBridge(). When the dashboard adds a new approved sender,
   // the DB row updates but the bridge keeps matching against the original
-  // list — messages from the new sender arrive in Messages.app but never
+  // list, messages from the new sender arrive in Messages.app but never
   // reach the agent. Hot-reload the in-memory list on config save.
   if (key === 'imessage_approved_senders') {
     try {
@@ -2461,7 +2285,7 @@ configRouter.put('/settings/:key', async (c) => {
   }
 
   // iMessage bridge runs from in-memory state. Just writing imessage_enabled
-  // to the config table does nothing — the bridge keeps polling until the
+  // to the config table does nothing, the bridge keeps polling until the
   // server restarts. Toggle the actual bridge in lockstep with the setting.
   if (key === 'imessage_enabled') {
     try {
@@ -2478,7 +2302,7 @@ configRouter.put('/settings/:key', async (c) => {
         stopIMBridge();
       }
     } catch (err) {
-      // Don't fail the setting write — log and continue. The user can retry.
+      // Don't fail the setting write, log and continue. The user can retry.
       const { createLogger } = await import('../../logger.js');
       createLogger('config').error('Failed to toggle iMessage bridge in lockstep with setting', {
         enabled: body.value,
@@ -2505,7 +2329,7 @@ configRouter.put('/settings/:key', async (c) => {
   return c.json({ ok: true, data: { key, value: body.value } });
 });
 
-// GET /settings — get all settings
+// GET /settings: get all settings
 configRouter.get('/settings', (c) => {
   const db = getDb();
   const rows = db.prepare('SELECT key, value FROM config').all() as Array<{ key: string; value: string }>;
@@ -2533,8 +2357,7 @@ configRouter.get('/identity/:file', (c) => {
     return c.json({ ok: false, error: `Unknown identity file: ${fileKey}` }, 400);
   }
 
-  // USER.md goes through its one source of truth (ruling #11); the route neither computes the
-  // path nor composes the default any more.
+  // USER.md goes through its one source of truth; the route neither computes the path nor composes the default.
   if (entry.filename === 'USER.md') {
     try {
       return c.json({ ok: true, data: { content: readUserProfileForEditor(), mailboxes: ownerMailboxes() } });
@@ -2583,8 +2406,7 @@ configRouter.put('/identity/:file', async (c) => {
     if (refusal) return c.json({ ok: false, error: refusal.error }, refusal.status);
   }
 
-  // The dashboard edit door for USER.md — the SAME door the OOBE writes through, which is what
-  // ruling #11's "editable from the dashboard AND the OOBE" means in code.
+  // The dashboard edit door for USER.md, the same door the OOBE writes through.
   if (entry.filename === 'USER.md') {
     writeUserProfile(body.content, 'dashboard');
     return c.json({ ok: true, data: { message: 'Updated' } });
@@ -2605,45 +2427,36 @@ configRouter.post('/identity/generate', async (c) => {
     return c.json({ ok: false, error: 'Request body required' }, 400);
   }
 
-  // THE OOBE SUBSTITUTES INTO THE SHIPPED DEFAULTS; IT COMPOSES NOTHING (t111-A1, owner
-  // ruling #11 + t107 hand-up 1). This route used to write its own `# Identity` soul and its
-  // own `# User Profile` — a THIRD and FOURTH source of the primary's identity, with
-  // `- Name: ${userName}` defaulting to the literal 'User' and two INVENTED preferences
-  // whenever the form's field was blank, which its only caller (`pages/Setup.tsx`) leaves
-  // blank always. Both composers now live beside the text they seed from, and the writes go
-  // through the one soul door and the one profile door. See `prompt/oobe-soul.ts` and
-  // `prompt/user-profile.ts` for the full argument.
+  // The OOBE substitutes into the shipped defaults and composes nothing: both composers live beside the
+  // text they seed from (`prompt/oobe-soul.ts`, `prompt/user-profile.ts`) and the writes go through the
+  // one soul door and the one profile door.
   const { communicationStyle = 'balanced', rules = '', userName = '', userRole = '', userPreferences = '' } = body;
 
   // Past first run an edited soul is kept unless the owner changed style/rules (then backed up).
   const { soul, backup: soulBackup } = writeOobeSoul({ communicationStyle, rules }, isPastFirstRun(), body.restyle === true);
 
-  // Only while no human has written in it. The old guard ("absent, or under 20 characters")
-  // could not tell the engine's own ~600-byte seed from an owner's profile, so a box whose
-  // first assembly beat setup to the file never recorded the name just typed.
+  // Only while no human has written in it: a guard of "absent, or under 20 characters" cannot tell the
+  // engine's own ~600-byte seed from an owner's profile.
   if (userProfileIsEngineSeeded()) {
     writeUserProfile(composeUserProfile({ userName, userRole, userPreferences }), 'oobe');
   }
-  // THE RESPONSE IS WHAT IS ON DISK, not what we composed (t111 review M3). Returning the
-  // composed text would show the caller a profile that was REFUSED — the guard above declines
-  // to overwrite a profile a person wrote, and a UI echoing the composed version would claim
-  // the owner's own words had just been replaced. One read, through the one door.
+  // The response is what is on disk, not what we composed: the guard above declines to overwrite a
+  // profile a person wrote, so echoing the composed text would claim the owner's words were replaced.
   const user = readUserProfile();
 
   logger.info('Identity files generated', { style: communicationStyle, namedOwner: !!String(userName).trim() });
   return c.json({ ok: true, data: { soul, user, soulBackup } });
 });
 
-// ── Search Config ──
 
-// GET /search — returns current search provider config
+// GET /search: returns current search provider config
 configRouter.get('/search', (c) => {
   const provider = getSearchProvider();
   const hasKey = !!getSearchApiKey();
   return c.json({ ok: true, data: { provider: provider ?? 'brave', hasKey } });
 });
 
-// PUT /search — save search provider and API key
+// PUT /search: save search provider and API key
 configRouter.put('/search', async (c) => {
   const body = await c.req.json().catch(() => null);
   if (!body || typeof body.provider !== 'string' || typeof body.apiKey !== 'string') {
@@ -2656,7 +2469,7 @@ configRouter.put('/search', async (c) => {
   return c.json({ ok: true, data: { provider: body.provider, hasKey: true } });
 });
 
-// POST /search/validate — test the search API key
+// POST /search/validate: test the search API key
 configRouter.post('/search/validate', async (c) => {
   const body = await c.req.json().catch(() => null);
   if (!body || typeof body.apiKey !== 'string') {
@@ -2686,7 +2499,6 @@ configRouter.post('/search/validate', async (c) => {
   }
 });
 
-// ── Helpers ──
 
 function rowToProvider(row: Record<string, unknown>): Provider {
   return {
@@ -2696,18 +2508,13 @@ function rowToProvider(row: Record<string, unknown>): Provider {
     baseUrl: row.base_url as string | null,
     authType: row.auth_type as Provider['authType'],
     behavesLike: (row.behaves_like ?? null) as Provider['behavesLike'],
-    // T64b: read back as stored. A pre-163 row read through an old path has neither column,
-    // and `?? null` says "declared nothing" rather than inventing a number.
+    // Read back as stored: a row read through an old path may lack these columns, and `?? null` says
+    // "declared nothing" rather than inventing a number.
     firstChunkTimeoutMs: typeof row.first_chunk_timeout_ms === 'number' ? row.first_chunk_timeout_ms : null,
     streamIdleTimeoutMs: typeof row.stream_idle_timeout_ms === 'number' ? row.stream_idle_timeout_ms : null,
-    // T81b: read back as stored. A pre-166 row read through an old path has no column, and
-    // `?? null` says "declared nothing" rather than inventing a number.
     prefillTokensPerSec: typeof row.prefill_tokens_per_sec === 'number' ? row.prefill_tokens_per_sec : null,
-    // Prefill self-calibration (owner ruling 2026-09-22, migration 167): read back as measured,
-    // and READ-ONLY — there is deliberately no write door for this pair. It is the engine's own
-    // observation, and a form that let a person edit it would turn a measurement back into the
-    // declaration it exists to stop asking for. A pre-167 row read through an old path has
-    // neither column, and `null` says "nothing measured yet" rather than inventing a number.
+    // Measured prefill is READ-ONLY (no write door): it is the engine's own observation, and a form that
+    // let a person edit it would turn a measurement back into the declaration it exists to stop asking for.
     measuredPrefillTokensPerSec: typeof row.measured_prefill_tokens_per_sec === 'number' ? row.measured_prefill_tokens_per_sec : null,
     measuredPrefillAt: typeof row.measured_prefill_at === 'string' ? row.measured_prefill_at : null,
     isValidated: Boolean(row.is_validated),
@@ -2754,9 +2561,7 @@ function rowToModel(row: Record<string, unknown>): Model {
   const numCtxRecommendedRaw = row.num_ctx_recommended;
   const numCtxRecommended = typeof numCtxRecommendedRaw === 'number' ? numCtxRecommendedRaw : null;
 
-  // Default to 'token' for backward compat — older rows pre-migration
-  // 060 won't have the column at all, and the default keeps every
-  // existing model behaving exactly as it did before the change.
+  // Default to 'token': an older row may lack the column, and this keeps every existing model as it was.
   const pricingUnitRaw = row.pricing_unit;
   const pricingUnit: 'token' | 'megapixel' | 'second' | 'character' | 'minute' | 'item' =
     pricingUnitRaw === 'megapixel' || pricingUnitRaw === 'second' ||
@@ -2764,10 +2569,8 @@ function rowToModel(row: Record<string, unknown>): Model {
       ? pricingUnitRaw
       : 'token';
 
-  // Read cost_per_unit (new in migration 061). For megapixel rows added
-  // pre-061 the column will be null but cost_per_megapixel still holds
-  // the value; fall back to it so the dashboard / cost tracker see the
-  // right number during the compat window.
+  // cost_per_unit may be null on a megapixel row that predates it; fall back to cost_per_megapixel so
+  // the dashboard and cost tracker see the right number.
   const costPerUnitRaw = row.cost_per_unit;
   const costPerMegapixelRaw = row.cost_per_megapixel;
   const costPerUnit =
@@ -2776,27 +2579,22 @@ function rowToModel(row: Record<string, unknown>): Model {
       : pricingUnit === 'megapixel' && typeof costPerMegapixelRaw === 'number'
         ? costPerMegapixelRaw
         : null;
-  // Keep costPerMegapixel populated alongside costPerUnit during the
-  // compat window. Drop in a future migration once we're confident no
-  // readers depend on it.
+  // Keep costPerMegapixel populated alongside costPerUnit while readers still use it.
   const costPerMegapixel =
     pricingUnit === 'megapixel'
       ? (typeof costPerMegapixelRaw === 'number' ? costPerMegapixelRaw : costPerUnit)
       : null;
 
-  // priceUnknown (derived, no column): the rate that applies to this model is
-  // NULL in the DB rather than an explicit 0. For token rows that's a missing
-  // input or output $/M; for every other unit it's a missing cost_per_unit.
-  // Per D-H the biller bills an unknown rate as $0, so this flag surfaces the
-  // "price unknown, set a rate" state and keeps a paid model with a failed
-  // price lookup from being silently hidden at $0.
+  // priceUnknown (derived, no column): the rate that applies to this model is NULL in the DB rather
+  // than an explicit 0 (for token rows a missing input or output $/M; otherwise a missing cost_per_unit).
+  // The biller bills an unknown rate as $0, so this flag surfaces the "price unknown, set a rate" state
+  // and keeps a paid model with a failed price lookup from being silently hidden at $0.
   const priceUnknown = pricingUnit === 'token'
     ? (row.input_cost_per_m === null || row.input_cost_per_m === undefined ||
        row.output_cost_per_m === null || row.output_cost_per_m === undefined)
     : costPerUnit === null;
 
-  // generation_params (new in migration 065): per-model canonical→wire param
-  // spec for generation tools. null when not yet seeded.
+  // generation_params: per-model canonical-to-wire param spec for generation tools; null when not seeded.
   let generationParams: Model['generationParams'] = null;
   if (typeof row.generation_params === 'string' && row.generation_params) {
     try {
@@ -2806,8 +2604,7 @@ function rowToModel(row: Record<string, unknown>): Model {
     }
   }
 
-  // voice_catalog (new in migration 066): per-model TTS voice list. null
-  // when not yet seeded.
+  // voice_catalog: per-model TTS voice list; null when not seeded.
   let voiceCatalog: Model['voiceCatalog'] = null;
   if (typeof row.voice_catalog === 'string' && row.voice_catalog) {
     try {
@@ -2825,7 +2622,7 @@ function rowToModel(row: Record<string, unknown>): Model {
     apiModelId: row.api_model_id as string,
     capabilities: JSON.parse(row.capabilities as string),
     contextWindow: row.context_window as number | null,
-    // M41: a window that is not set is not a silent gap. The row names the figure the engine budgets with.
+    // A window that is not set is not a silent gap. The row names the figure the engine budgets with.
     assumedContextWindow: typeof row.context_window === 'number' && row.context_window > 0 ? null : engineWindowFor(row.id),
     maxOutputTokens: row.max_output_tokens as number | null,
     inputCostPerM: row.input_cost_per_m as number | null,
@@ -2847,9 +2644,8 @@ function rowToModel(row: Record<string, unknown>): Model {
   };
 }
 
-// ── Agent SDK Routes ──
 
-// GET /api/config/agent-sdk/status — check if Claude CLI is installed and authenticated
+// GET /api/config/agent-sdk/status: check if Claude CLI is installed and authenticated
 configRouter.get('/agent-sdk/status', async (c) => {
   try {
     const { isClaudeCliInstalled, getClaudeCliVersion, isSdkPackageAvailable } = await import('../../providers/anthropic-sdk-auth.js');
@@ -2871,7 +2667,7 @@ configRouter.get('/agent-sdk/status', async (c) => {
   }
 });
 
-// POST /api/config/agent-sdk/verify — test auth by running a minimal query
+// POST /api/config/agent-sdk/verify: test auth by running a minimal query
 configRouter.post('/agent-sdk/verify', async (c) => {
   try {
     const { checkSdkAuth } = await import('../../providers/anthropic-sdk-auth.js');
@@ -2883,10 +2679,9 @@ configRouter.post('/agent-sdk/verify', async (c) => {
   }
 });
 
-// ── THE OWNER'S CARDS ──
-// The dashboard asks on load and on every reconnect: the standing notices the one writer recorded
-// (`healer/owner-notice-kinds.ts`). Dismissing stamps that notice, so it stays dismissed across reloads
-// and restarts, and a NEW incident is a new card.
+// The owner's cards: the dashboard asks on load and on every reconnect for the standing notices the one
+// writer recorded (`healer/owner-notice-kinds.ts`). Dismissing stamps that notice, so it stays dismissed
+// across reloads and restarts, and a NEW incident is a new card.
 
 // GET /api/config/owner-notices: the owner cards still standing
 configRouter.get('/owner-notices', (c) => c.json({ ok: true, data: servedOwnerNotices() }));
@@ -2900,11 +2695,9 @@ configRouter.post('/owner-notices/dismiss', async (c) => {
   return c.json({ ok: true, data: { dismissed: hit ? 1 : 0 } });
 });
 
-// GET /api/config/openrouter/credits — fetch OpenRouter account balance
-//
-// READ ONLY. The warning-threshold check that used to live here (and only ran while the Ledger
-// page was open) is the background check in `costs/provider-balance-check.ts`, on the
-// scheduler's clock; this route reads through the same reader and decides nothing.
+// GET /api/config/openrouter/credits: fetch OpenRouter account balance. READ ONLY: the warning-threshold
+// check is the background check in `costs/provider-balance-check.ts`, on the scheduler's clock; this
+// route reads through the same reader and decides nothing.
 configRouter.get('/openrouter/credits', async (c) => {
   const provider = findOpenRouterProvider();
   if (!provider) {
@@ -2925,19 +2718,18 @@ configRouter.get('/openrouter/credits', async (c) => {
   }
 });
 
-// GET /api/config/openrouter/threshold — get saved warning threshold
+// GET /api/config/openrouter/threshold: get saved warning threshold
 configRouter.get('/openrouter/threshold', (c) => {
   const db = getDb();
   const row = db.prepare("SELECT value FROM config WHERE key = 'openrouter_warning_threshold'").get() as { value: string } | undefined;
   return c.json({ ok: true, data: { value: row?.value ?? '' } });
 });
 
-// ── DeepSeek balance + warning threshold (v2.3.14) ──
-// Mirrors the OpenRouter pattern. DeepSeek exposes account balance at
-// https://api.deepseek.com/user/balance — returns balance_infos[] with
-// currency + total_balance + granted_balance + topped_up_balance.
+// DeepSeek balance + warning threshold, mirroring the OpenRouter pattern. DeepSeek exposes account
+// balance at https://api.deepseek.com/user/balance (balance_infos[]: currency, total_balance,
+// granted_balance, topped_up_balance).
 
-// GET /api/config/deepseek/balance — fetch DeepSeek account balance
+// GET /api/config/deepseek/balance: fetch DeepSeek account balance
 //
 // READ ONLY, like the OpenRouter route above: the threshold check is the background check.
 configRouter.get('/deepseek/balance', async (c) => {
@@ -2960,14 +2752,14 @@ configRouter.get('/deepseek/balance', async (c) => {
   }
 });
 
-// GET /api/config/deepseek/threshold — get saved warning threshold
+// GET /api/config/deepseek/threshold: get saved warning threshold
 configRouter.get('/deepseek/threshold', (c) => {
   const db = getDb();
   const row = db.prepare("SELECT value FROM config WHERE key = 'deepseek_warning_threshold'").get() as { value: string } | undefined;
   return c.json({ ok: true, data: { value: row?.value ?? '' } });
 });
 
-// POST /api/config/deepseek/threshold — save warning threshold
+// POST /api/config/deepseek/threshold: save warning threshold
 configRouter.post('/deepseek/threshold', async (c) => {
   const body = await c.req.json().catch(() => null);
   if (!body || typeof body.threshold !== 'number') {
@@ -2981,13 +2773,12 @@ configRouter.post('/deepseek/threshold', async (c) => {
     INSERT INTO config (key, value, updated_at) VALUES ('deepseek_warning_threshold', ?, datetime('now'))
     ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = datetime('now')
   `).run(String(body.threshold), String(body.threshold));
-  // The latch is NOT reset here (it used to be, for DeepSeek only): the background check
-  // re-arms on its own when the balance sits above the new line, and a balance still under it
-  // after a threshold edit is not a new crossing — the owner was already told.
+  // The latch is NOT reset here: the background check re-arms on its own when the balance sits above the
+  // new line, and a balance still under it after a threshold edit is not a new crossing.
   return c.json({ ok: true });
 });
 
-// POST /api/config/openrouter/threshold — save warning threshold
+// POST /api/config/openrouter/threshold: save warning threshold
 configRouter.post('/openrouter/threshold', async (c) => {
   const body = await c.req.json().catch(() => null);
   if (!body || typeof body.threshold !== 'number') {

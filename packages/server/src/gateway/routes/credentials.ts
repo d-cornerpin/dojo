@@ -1,11 +1,5 @@
-// ════════════════════════════════════════
-// Credentials Routes
-// Powers the "Credentials" tab on the Memory page.
-// Default list endpoint returns metadata only (no values). Separate
-// /reveal endpoint returns the decrypted value for the dashboard "Show"
-// button. Every read - via the agent OR via the dashboard - is logged
-// in the credentials store.
-// ════════════════════════════════════════
+// Credentials routes for the Memory page's Credentials tab. The list returns metadata only;
+// /reveal returns the decrypted value. Every read, by agent or dashboard, is logged in the store.
 
 import { Hono } from 'hono';
 import type { AppEnv } from '../server.js';
@@ -25,7 +19,7 @@ const logger = createLogger('credentials-routes');
 export const credentialsRouter = new Hono<AppEnv>();
 
 // Nothing from this router may be kept by a browser, proxy or cache: the reveal carries a decrypted
-// secret in its body. Set after the handler so every response (errors included) carries it (t286).
+// secret in its body. Set after the handler so every response (errors included) carries it.
 credentialsRouter.use('*', async (c, next) => {
   await next();
   c.res.headers.set('Cache-Control', 'no-store');
@@ -109,22 +103,15 @@ credentialsRouter.patch('/:id', async (c) => {
     return c.json({ ok: false, error: 'credentials must be an object.' }, 400);
   }
 
-  // M7 / P362: this is a PATCH, so `credentials` is a PATCH — a field the caller did not
-  // mention keeps its stored value and an explicit `null` REMOVES that field. The route used
-  // to hand the body straight to `updateCredential`, which stringifies the whole blob over
-  // the old ciphertext: a client sending only the key it rotated destroyed the rest with no
-  // error and nothing to recover from. The agent tool keeps whole-blob replace because its
-  // own schema declares it ("replaces the existing one entirely"); the HTTP verb is the one
-  // that promised partial, so the merge belongs here.
+  // This is a PATCH: a field the caller did not mention keeps its stored value and an explicit
+  // `null` removes it. The agent tool replaces the whole blob; the HTTP verb is the partial one,
+  // so the merge belongs here.
   const current = getCredentialById(id, null);
   if (!current) return c.json({ ok: false, error: 'Credential not found.' }, 404);
   const merged = mergeObjectPatch(current.credentials, credentials);
 
-  // T83: `overwrite: true`, stated here rather than exempted in the store. This route IS the
-  // owner, in their own Credentials tab, editing a row they opened — the click is the
-  // confirmation the flag exists to capture, and refusing it would be asking somebody to
-  // confirm to themselves. The store's rule is identical for every caller; what differs is
-  // who is answering for it, and that is what this line records.
+  // `overwrite: true` is stated here, not exempted in the store: this route is the owner editing a row
+  // in their own Credentials tab, so the click is the confirmation the flag exists to capture.
   const result = updateCredential(existing.serviceName, merged, description, null, { overwrite: true });
   if (!result.ok) return c.json({ ok: false, error: result.error }, 404);
   return c.json({ ok: true, data: { id: result.record.id, service_name: result.record.serviceName } });
@@ -132,9 +119,8 @@ credentialsRouter.patch('/:id', async (c) => {
 
 credentialsRouter.delete('/:id', (c) => {
   const id = c.req.param('id');
-  // T83 FIX ROUND (review IMPORTANT B-1): `confirm: true`, declared here rather than exempted
-  // in the store. This route IS the owner, pressing delete on a row they opened in their own
-  // Credentials tab — the click is the confirmation the flag exists to capture.
+  // `confirm: true` is stated here, not exempted in the store: the owner pressing delete in their
+  // own Credentials tab is the confirmation the flag exists to capture.
   const result = deleteCredentialById(id, null, { confirm: true });
   if (!result.ok) return c.json({ ok: false, error: result.error ?? 'Delete failed.' }, 404);
   return c.json({ ok: true, data: { deleted: true } });

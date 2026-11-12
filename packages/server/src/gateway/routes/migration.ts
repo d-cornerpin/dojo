@@ -1,6 +1,4 @@
-// ════════════════════════════════════════
-// Migration API Routes — export, import, manifest, status
-// ════════════════════════════════════════
+// Migration API routes: export, import, manifest, status
 
 import { Hono } from 'hono';
 import fs from 'node:fs';
@@ -27,22 +25,12 @@ import { homeDir } from '../../home.js';
 const logger = createLogger('migration-routes');
 bindImportCardMarker(fs, path.join(homeDir(), '.dojo-import-stuck.json')); // beside ~/.dojo, so the card outlives a restart
 
-// ONE mount, `/api/migration/*`, behind the owner's token (PHASE-0 T9).
-//
-// This router used to be mounted a second time at `/api/setup/migration/*`,
-// which the auth middleware skipped unconditionally — so "restore this database
-// over yours" and "run this installer" were reachable from the network, forever,
-// on a fully set-up box. That mount is deleted. With it went its deny-list (a
-// `PUBLIC_MOUNT_DENY` set holding `/export`) and the two-tier error-text helper
-// that decided how much detail a caller deserved based on which mount it came
-// through: a second list describing a surface that no longer exists is the next
-// silent bypass, not a safety net. The dashboard's OOBE import wizard already
-// runs authenticated (the /setup route sits behind RequireAuth, and the password
-// is created at the login screen before the wizard opens), so it simply calls
-// this mount with its token.
+// ONE mount, `/api/migration/*`, behind the owner's token. There is no second public mount, so
+// restore and installer routes are never reachable without auth; the import wizard calls this
+// mount with its token.
 const migrationRouter = new Hono<AppEnv>();
 
-// POST /api/migration/export — create encrypted export zip
+// POST /api/migration/export (create encrypted export zip)
 migrationRouter.post('/export', async (c) => {
   try {
     const body = await c.req.json().catch(() => null);
@@ -56,7 +44,6 @@ migrationRouter.post('/export', async (c) => {
     logger.info('Export requested');
     const { filePath, manifest } = await createExport(body.password);
 
-    // Stream the file as download
     const fs = await import('node:fs');
     const stat = fs.statSync(filePath);
     const stream = fs.createReadStream(filePath);
@@ -66,11 +53,9 @@ migrationRouter.post('/export', async (c) => {
     c.header('Content-Disposition', `attachment; filename="${fileName}"`);
     c.header('Content-Length', stat.size.toString());
 
-    // Convert Node stream to Response
     const { Readable } = await import('node:stream');
     const webStream = Readable.toWeb(stream) as ReadableStream;
 
-    // Cleanup temp file after streaming
     stream.on('close', () => {
       try { fs.unlinkSync(filePath); } catch { /* ignore */ }
     });
@@ -89,12 +74,10 @@ migrationRouter.post('/export', async (c) => {
   }
 });
 
-// POST /api/migration/manifest — read manifest from uploaded zip (no password needed)
+// POST /api/migration/manifest (read manifest from uploaded zip, no password needed)
 //
-// The export zip is sent as the raw request body (application/octet-stream),
-// NOT multipart form-data. We stream it straight to a temp file so a multi-GB
-// export never gets buffered into a single in-memory Buffer (formData() +
-// arrayBuffer() throws "length out of range" past ~2GB).
+// The zip is the raw request body (application/octet-stream), not multipart, and is streamed to a
+// temp file so a multi-GB export is never buffered in memory (formData() throws past ~2GB).
 migrationRouter.post('/manifest', async (c) => {
   let tmpPath: string | null = null;
   try {
@@ -117,12 +100,10 @@ migrationRouter.post('/manifest', async (c) => {
   }
 });
 
-// POST /api/migration/preflight — scan the upload WITHOUT importing.
+// POST /api/migration/preflight (scan the upload WITHOUT importing)
 //
-// Powers the wizard's "scan" step: verify archive integrity (checksum over the
-// full payload), the password (cheap prefix-decrypt), and that there's enough
-// free disk for the restore — before anything touches ~/.dojo. Same raw-body +
-// X-Export-Password transport as /import.
+// Verifies archive integrity (checksum), the password (prefix-decrypt) and free disk before
+// anything touches ~/.dojo. Same raw-body and X-Export-Password transport as /import.
 migrationRouter.post('/preflight', async (c) => {
   let tmpPath: string | null = null;
   try {
@@ -147,7 +128,7 @@ migrationRouter.post('/preflight', async (c) => {
       const st = fs.statfsSync(homeDir());
       freeBytes = Number(st.bavail) * Number(st.bsize);
       diskOk = freeBytes >= manifest.contents.database_size_bytes * 2;
-    } catch { diskOk = true; /* can't determine — don't block */ }
+    } catch { diskOk = true; /* can't determine, so don't block */ }
 
     return c.json({ ok: true, data: { manifest, integrityOk, passwordOk, diskOk, freeBytes } });
   } catch (err) {
@@ -159,11 +140,10 @@ migrationRouter.post('/preflight', async (c) => {
   }
 });
 
-// POST /api/migration/import — full import from encrypted zip
+// POST /api/migration/import (full import from encrypted zip)
 //
-// Like /manifest, the zip is the raw request body (streamed to a temp file to
-// avoid the ~2GB single-Buffer ceiling) and the export password rides in the
-// X-Export-Password header instead of a multipart field.
+// Like /manifest, the zip is the raw request body streamed to a temp file, and the export
+// password rides in the X-Export-Password header.
 migrationRouter.post('/import', async (c) => {
   let tmpPath: string | null = null;
   try {
@@ -190,7 +170,7 @@ migrationRouter.post('/import', async (c) => {
       jwtSecret: getJwtSecret(),
     };
 
-    // Final round: the runs in flight are STOPPED (the database closes for the swap), never terminated, and a failed
+    // Runs in flight are stopped (the database closes for the swap), never terminated; a failed
     // import brings them back (`migration/import-agents.ts`).
     let stoppedForImport: string[] = [];
     const stopServices = async () => {
@@ -214,22 +194,21 @@ migrationRouter.post('/import', async (c) => {
   }
 });
 
-// GET /api/migration/import/status — current post-migration check state
+// GET /api/migration/import/status (current post-migration check state)
 migrationRouter.get('/import/status', (c) => {
   const checks = getChecks();
   const dismissed = isMigrationDismissed();
   return c.json({ ok: true, data: { checks, dismissed } });
 });
 
-// POST /api/migration/import/dismiss — dismiss post-migration banner
+// POST /api/migration/import/dismiss (dismiss post-migration banner)
 migrationRouter.post('/import/dismiss', (c) => {
   dismissMigration();
   return c.json({ ok: true, data: { dismissed: true } });
 });
 
-// POST /api/migration/import/recheck — re-evaluate the post-migration checks
-// against the most recent import (e.g. after the user grants Full Disk Access or
-// reconnects an account). Broadcasts migration:checks and returns the fresh set.
+// POST /api/migration/import/recheck (re-evaluate the post-migration checks against the most
+// recent import, e.g. after granting Full Disk Access). Broadcasts migration:checks.
 migrationRouter.post('/import/recheck', async (c) => {
   const manifest = getLastManifest();
   if (!manifest) {
@@ -245,14 +224,12 @@ migrationRouter.post('/import/recheck', async (c) => {
   }
 });
 
-// POST /api/migration/run-dependency-setup — run the bundled technique
-// dependency installer (setup-dependencies.sh) and stream its output over WS
-// (migration:depsetup events). User-triggered from the post-import wizard.
+// POST /api/migration/run-dependency-setup (run the bundled dependency installer and stream its
+// output over WS as migration:depsetup events; user-triggered from the post-import wizard)
 migrationRouter.post('/run-dependency-setup', (c) => {
   try {
-    // Combined installer: core tools (Ollama/cloudflared, guarded) + the bundled
-    // per-technique installer. Written to a temp file and run; output streams via
-    // migration:depsetup, exactly as before.
+    // Combined installer: core tools (Ollama/cloudflared, guarded) plus the bundled per-technique
+    // installer, written to a temp file and run; output streams via migration:depsetup.
     const script = buildCombinedInstaller();
     const scriptPath = path.join(os.tmpdir(), `dojo-setup-combined-${Date.now()}-${process.pid}.sh`);
     fs.writeFileSync(scriptPath, script, { mode: 0o755 });

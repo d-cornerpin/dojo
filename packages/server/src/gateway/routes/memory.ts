@@ -30,7 +30,7 @@ import { routeFailure } from './route-failure.js';
 const logger = createLogger('memory-routes');
 export const memoryRouter = new Hono();
 
-// GET /:agentId/dag — query summaries and links, optional depth filter
+// GET /:agentId/dag: query summaries and links, optional depth filter
 memoryRouter.get('/:agentId/dag', (c) => {
   const agentId = c.req.param('agentId');
   const depthParam = c.req.query('depth');
@@ -76,7 +76,7 @@ memoryRouter.get('/:agentId/dag', (c) => {
   }
 });
 
-// GET /:agentId/summary/:summaryId — full summary detail
+// GET /:agentId/summary/:summaryId: full summary detail
 memoryRouter.get('/:agentId/summary/:summaryId', (c) => {
   const agentId = c.req.param('agentId');
   const summaryId = c.req.param('summaryId');
@@ -126,7 +126,7 @@ memoryRouter.get('/:agentId/summary/:summaryId', (c) => {
   }
 });
 
-// DELETE /:agentId/summary/:summaryId — delete summary
+// DELETE /:agentId/summary/:summaryId: delete summary
 memoryRouter.delete('/:agentId/summary/:summaryId', (c) => {
   const agentId = c.req.param('agentId');
   const summaryId = c.req.param('summaryId');
@@ -150,7 +150,7 @@ memoryRouter.delete('/:agentId/summary/:summaryId', (c) => {
   }
 });
 
-// PUT /:agentId/summary/:summaryId — edit summary content
+// PUT /:agentId/summary/:summaryId: edit summary content
 memoryRouter.put('/:agentId/summary/:summaryId', async (c) => {
   const agentId = c.req.param('agentId');
   const summaryId = c.req.param('summaryId');
@@ -182,7 +182,7 @@ memoryRouter.put('/:agentId/summary/:summaryId', async (c) => {
   }
 });
 
-// GET /:agentId/search — search memory (hybrid FTS + vector)
+// GET /:agentId/search: search memory (hybrid FTS + vector)
 memoryRouter.get('/:agentId/search', async (c) => {
   const agentId = c.req.param('agentId');
   const q = c.req.query('q');
@@ -206,7 +206,7 @@ memoryRouter.get('/:agentId/search', async (c) => {
   }
 });
 
-// POST /:agentId/inject — inject manual memory
+// POST /:agentId/inject: inject manual memory
 memoryRouter.post('/:agentId/inject', async (c) => {
   const agentId = c.req.param('agentId');
 
@@ -236,7 +236,7 @@ memoryRouter.post('/:agentId/inject', async (c) => {
   }
 });
 
-// GET /:agentId/briefing — get latest briefing
+// GET /:agentId/briefing: get latest briefing
 memoryRouter.get('/:agentId/briefing', (c) => {
   const agentId = c.req.param('agentId');
 
@@ -271,7 +271,7 @@ memoryRouter.get('/:agentId/briefing', (c) => {
   }
 });
 
-// PUT /:agentId/briefing — edit briefing
+// PUT /:agentId/briefing: edit briefing
 memoryRouter.put('/:agentId/briefing', async (c) => {
   const agentId = c.req.param('agentId');
 
@@ -303,7 +303,7 @@ memoryRouter.put('/:agentId/briefing', async (c) => {
   }
 });
 
-// POST /:agentId/briefing/regenerate — regenerate briefing
+// POST /:agentId/briefing/regenerate: regenerate briefing
 memoryRouter.post('/:agentId/briefing/regenerate', async (c) => {
   const agentId = c.req.param('agentId');
 
@@ -337,7 +337,7 @@ memoryRouter.post('/:agentId/briefing/regenerate', async (c) => {
   }
 });
 
-// POST /:agentId/compact — trigger manual compaction
+// POST /:agentId/compact: trigger manual compaction
 memoryRouter.post('/:agentId/compact', async (c) => {
   const agentId = c.req.param('agentId');
 
@@ -360,7 +360,7 @@ memoryRouter.post('/:agentId/compact', async (c) => {
       ok: true,
       data: {
         leafSummariesCreated: result.leafCreated, condensedCreated: result.condensedCreated,
-        byRunningPass: result.byRunningPass === true,   // v3.5 D18 r5: a pass already running did it (its counts)
+        byRunningPass: result.byRunningPass === true,   // a pass already running did it (its counts)
       },
     });
   } catch (err) {
@@ -370,11 +370,9 @@ memoryRouter.post('/:agentId/compact', async (c) => {
   }
 });
 
-// ════════════════════════════════════════
-// Embedding / Vector Search Routes (Phase 5C)
-// ════════════════════════════════════════
+// Embedding / vector search routes
 
-// GET /embeddings/status — embedding backfill progress
+// GET /embeddings/status: embedding backfill progress
 memoryRouter.get('/embeddings/status', (c) => {
   try {
     const status = getEmbeddingStatus();
@@ -392,7 +390,7 @@ memoryRouter.get('/embeddings/status', (c) => {
   }
 });
 
-// POST /embeddings/backfill — trigger embedding backfill
+// POST /embeddings/backfill: trigger embedding backfill
 memoryRouter.post('/embeddings/backfill', async (c) => {
   try {
     if (isBackfillRunning()) {
@@ -412,7 +410,7 @@ memoryRouter.post('/embeddings/backfill', async (c) => {
   }
 });
 
-// PUT /embeddings/config — update embedding configuration
+// PUT /embeddings/config: update embedding configuration
 memoryRouter.put('/embeddings/config', async (c) => {
   try {
     const body = await c.req.json();
@@ -423,7 +421,7 @@ memoryRouter.put('/embeddings/config', async (c) => {
   }
 });
 
-// GET /vector-search — vector similarity search
+// GET /vector-search: vector similarity search
 memoryRouter.get('/vector-search', async (c) => {
   const q = c.req.query('q');
   const agentId = c.req.query('agent_id');
@@ -443,14 +441,10 @@ memoryRouter.get('/vector-search', async (c) => {
   }
 });
 
-// ── v2.7.2 — Forensic memory search + purge ──
-//
-// Operator-grade tools for cleaning up self-reinforcing memory loops. The
-// agent's vault_search uses semantic embeddings and is structurally blind
-// to exact substrings (a query for "corp erp.in" embeds to "email domain"
-// concepts and misses the literal string). These routes do plain SQL LIKE
-// across every place a stale or wrong string can hide in an agent's
-// persistent state, and let the operator bulk-delete the offending rows.
+// Forensic memory search and purge: operator tools for cleaning up self-reinforcing memory loops.
+// The agent's vault_search uses semantic embeddings and is blind to exact substrings, so these routes
+// do plain SQL LIKE across every place a stale or wrong string can hide in an agent's state,
+// and let the operator bulk-delete the offending rows.
 
 interface ForensicHit {
   kind: 'vault' | 'summary' | 'project' | 'task' | 'scratchpad';
@@ -462,10 +456,9 @@ interface ForensicHit {
 }
 
 // GET /memory/forensic-search?q=...&limit=...
-// Returns matches across vault_entries, summaries, projects, tasks, and per-
-// agent scratchpads (stored as JSON in agents.config). Always exact LIKE
-// match — case-insensitive by default. Caller should pass distinctive
-// strings; a query of "the" will return thousands.
+// Returns matches across vault_entries, summaries, projects, tasks, and per-agent scratchpads
+// (stored as JSON in agents.config). Always exact LIKE match, case-insensitive by default. Pass
+// distinctive strings; a query of "the" will return thousands.
 memoryRouter.get('/forensic-search', (c) => {
   const q = c.req.query('q')?.trim();
   if (!q) return c.json({ ok: false, error: 'q is required' }, 400);
@@ -476,8 +469,7 @@ memoryRouter.get('/forensic-search', (c) => {
   const db = getDb();
   const hits: ForensicHit[] = [];
 
-  // Vault entries — include obsolete so the operator can see what's been
-  // soft-deleted but is still in the table.
+  // Vault entries include obsolete rows so the operator can see what has been soft-deleted.
   const vaultRows = db.prepare(
     `SELECT id, agent_id, type, content, created_at FROM vault_entries
      WHERE content LIKE ? ORDER BY created_at DESC LIMIT ?`,
@@ -630,9 +622,9 @@ memoryRouter.post('/forensic-purge', async (c) => {
   return c.json({ ok: true, data: { deleted, total: items.length, results } });
 });
 
-// Helper: return ~120 chars of content centered on the first match of `q`,
-// with ellipses to mark truncation. Falls back to the prefix if the query
-// isn't found case-sensitively (defensive — caller used LIKE so it should be).
+// Helper: return ~120 chars of content centered on the first match of `q`, with ellipses to mark
+// truncation. Falls back to the prefix if the query isn't found case-sensitively (defensive; the
+// caller used LIKE so it should be).
 function snippetAround(content: string, q: string, radius = 80): string {
   const lower = content.toLowerCase();
   const idx = lower.indexOf(q.toLowerCase());

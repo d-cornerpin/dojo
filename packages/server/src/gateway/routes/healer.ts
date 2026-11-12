@@ -16,20 +16,19 @@ const logger = createLogger('healer-routes');
 
 export const healerRouter = new Hono();
 
-// GET /config — get healer settings
+// GET /config (get healer settings)
 healerRouter.get('/config', (c) => {
   const config = getHealerConfig();
   return c.json({ ok: true, data: config });
 });
 
-// POST /config — update healer settings
+// POST /config (update healer settings)
 healerRouter.post('/config', async (c) => {
   const body = await c.req.json().catch(() => null);
   if (!body) return c.json({ ok: false, error: 'Invalid request body' }, 400);
 
-  // 32K main-model floor (owner decision 13): this is the healer's MAIN model; refuse before any write.
+  // Refuse before any write: memory fit first, then the 32K main-model floor, so the refusal names the true reason.
   const { getHealerAgentId } = await import('../../config/platform.js');
-  // v3.5: then the memory fit — a local model that will not fit in this box's memory is refused too.
   const newModel = typeof body.modelId === 'string' ? body.modelId : null;
   const current = (getDb().prepare('SELECT model_id FROM agents WHERE id = ?').get(getHealerAgentId()) as { model_id: string | null } | undefined)?.model_id;
   const refused = await refuseUnfitLocalModel(newModel, current, 'agent', () => refuseSmallMainModel(newModel, current));
@@ -66,10 +65,7 @@ healerRouter.post('/config', async (c) => {
   return c.json({ ok: true, data: getHealerConfig() });
 });
 
-// GET /proposals — list pending proposals + recently-resolved (last 48h).
-// Pending entries always show (the user might need to act on them). Resolved
-// (approved/denied) entries fall off after 48 hours so the vitals view stays
-// uncluttered. Older history is still in the DB if you query it directly.
+// GET /proposals (pending ones always, resolved ones only from the last 48h; older rows stay in the DB)
 healerRouter.get('/proposals', (c) => {
   const db = getDb();
   const proposals = db.prepare(`
@@ -84,7 +80,7 @@ healerRouter.get('/proposals', (c) => {
   return c.json({ ok: true, data: proposals });
 });
 
-// POST /proposals/:id — approve or deny a proposal
+// POST /proposals/:id (approve or deny a proposal)
 healerRouter.post('/proposals/:id', async (c) => {
   const id = c.req.param('id');
   const body = await c.req.json().catch(() => null);
@@ -101,10 +97,7 @@ healerRouter.post('/proposals/:id', async (c) => {
   return c.json({ ok: true, data: { status: result.status } });
 });
 
-// GET /actions — list auto-fix actions from the last 48 hours.
-// Auto-fixes are inherently resolved (no user action needed), so anything
-// older than 48 hours falls off the vitals view. Older history stays in the
-// DB if you need to query it directly.
+// GET /actions (auto-fix actions from the last 48 hours; older rows stay in the DB)
 healerRouter.get('/actions', (c) => {
   const db = getDb();
   const actions = db.prepare(`
@@ -116,14 +109,14 @@ healerRouter.get('/actions', (c) => {
   return c.json({ ok: true, data: actions });
 });
 
-// GET /diagnostics — get latest diagnostic report
+// GET /diagnostics (latest diagnostic report)
 healerRouter.get('/diagnostics', (c) => {
   const db = getDb();
   const latest = db.prepare('SELECT * FROM healer_diagnostics ORDER BY created_at DESC LIMIT 1').get();
   return c.json({ ok: true, data: latest ?? null });
 });
 
-// POST /run — trigger an immediate healing cycle (for testing)
+// POST /run (trigger an immediate healing cycle, for testing)
 healerRouter.post('/run', async (c) => {
   try {
     const result = await runHealingCycle();
@@ -133,13 +126,13 @@ healerRouter.post('/run', async (c) => {
   }
 });
 
-// GET /report — get the current healer log content
+// GET /report (current healer log content)
 healerRouter.get('/report', (c) => {
   const content = getHealerLogContent();
   return c.json({ ok: true, data: { content, hasContent: content !== null } });
 });
 
-// POST /report/send — email the healer report and archive the log
+// POST /report/send (email the healer report and archive the log)
 healerRouter.post('/report/send', async (c) => {
   try {
     const result = await sendHealerReport();
@@ -153,17 +146,9 @@ healerRouter.post('/report/send', async (c) => {
   }
 });
 
-// ════════════════════════════════════════
-// Shared proposal-resolution core (D-B step 5)
-//
-// The dashboard route (POST /proposals/:id) AND the iMessage approve/deny lane
-// (services/imessage-commands.ts) both resolve a proposal through THIS single
-// function, so the two surfaces can never drift: approve mints the bound
-// destructive approval + kicks the cycle + status-broadcasts; deny resolves +
-// notifies the primary for discussion. Owner authority is established by the
-// caller (dashboard = single-user JWT; iMessage = the is_primary owner gate in
-// handleIMCommand), so this core does no auth of its own.
-// ════════════════════════════════════════
+// Shared proposal-resolution core: the dashboard route (POST /proposals/:id) and the iMessage
+// approve/deny lane (services/imessage-commands.ts) both resolve through this one function so the
+// two surfaces cannot drift. The caller establishes owner authority; this core does no auth.
 
 export type ResolveHealerProposalResult =
   | { ok: true; status: 'approved' | 'denied'; title: string }
@@ -184,11 +169,9 @@ export function resolveHealerProposal(input: {
   const title = String(proposal.title ?? 'a sensitive change');
 
   if (input.action === 'approve') {
-    // D-B step 2: an engine-HELD destructive call files a proposal that carries a
-    // bound one-shot token + the canonical signature of the exact call the gate
-    // paused. Mint the consumable destructive_approvals row now so the Healer's
-    // re-attempt of that same call consumes it once and executes. Model-authored
-    // proposals carry no token and skip this entirely.
+    // A held destructive call files a proposal with a one-shot token and the signature of the exact
+    // call. Mint the consumable approval now so the Healer's retry consumes it once. Model-authored
+    // proposals carry no token and skip this.
     if (proposal.approval_token && proposal.approval_signature && proposal.agent_id) {
       try {
         grantApprovalForSignature({
@@ -196,8 +179,7 @@ export function resolveHealerProposal(input: {
           signature: proposal.approval_signature as string,
           requestText: (proposal.proposed_fix as string | null) ?? (proposal.title as string),
           decidedBy: 'owner',
-          // P7b: the proposal carries the held call's FULL args, so the minted
-          // grant is exact-call like every other approval.
+          // The proposal carries the held call's full args, so the grant is exact-call.
           argsJson: (proposal.approval_args_json as string | null) ?? null,
         });
       } catch (err) {
@@ -209,19 +191,12 @@ export function resolveHealerProposal(input: {
 
     db.prepare("UPDATE healer_proposals SET status = 'approved', resolved_at = datetime('now') WHERE id = ?").run(id);
     logger.info('Healer proposal approved', { proposalId: id, title: proposal.title });
-    // D-B step 4 seam: status-stamped broadcast so a pending decision toast for
-    // this proposal drops even when the owner approved from a DIFFERENT surface
-    // (the Vitals card or an iMessage reply). The toast's own button also
-    // dismisses locally; this makes the surfaces converge.
+    // Status-stamped broadcast so a pending decision toast drops even when the owner approved from
+    // another surface (the Vitals card or an iMessage reply).
     try { broadcast({ type: 'healer:proposal', data: { id, status: 'approved' } }); } catch { /* best effort */ }
 
-    // FA-X7(b): approval only flips status; without a kick the approved fix
-    // waits up to ~24h for the next scheduled cycle to apply it (and re-wakes
-    // the Healer every cycle until then). Kick a prompt cycle so it applies
-    // soon. runHealingCycle already wakes the Healer when an approved-but-
-    // unapplied proposal exists, so this is a one-shot ~30s delay (lets the
-    // status write settle without blocking this response), no new machinery
-    // and no change to the Healer's normal cadence.
+    // Approval only flips status; kick a healing cycle after ~30s (lets the status write settle)
+    // so the fix applies soon instead of waiting for the next scheduled cycle.
     setTimeout(() => {
       runHealingCycle().catch((err) => {
         logger.warn('Post-approval healing cycle kick failed', {
@@ -233,17 +208,11 @@ export function resolveHealerProposal(input: {
     return { ok: true, status: 'approved', title };
   }
 
-  // ⚠ THE VERB IS `deny`; THE CARD THE HUMAN READ SAYS "decline" (v3.2.2 fourth review — PARKED, on
-  // purpose, with the mapping written down instead). Both words are right where they are: "decline" is
-  // accurate and softer on a card where declining genuinely costs nothing, and `deny` matches every
-  // other verdict in the authorization path. Renaming the verb would strand stored payloads for a
-  // cosmetic gain; renaming the copy would make the card harsher for none. THE ONE REAL COST is a
-  // reader trying to correlate `status = 'denied'` in the database or a log line with a user who says
-  // "I declined it" — so: DECLINE (owner card, dashboard) === deny (this route) === 'denied' (the
-  // `healer_proposals.status` value). One mapping, one place.
+  // Verb mapping: the owner card says "decline", this route's verb is `deny`, and the stored
+  // `healer_proposals.status` is 'denied'. All three mean the same thing.
   if (input.action === 'deny') {
     db.prepare("UPDATE healer_proposals SET status = 'denied', user_note = ?, resolved_at = datetime('now') WHERE id = ?").run(note ?? null, id);
-    // D-B step 4 seam: same status-stamped broadcast as the approve branch.
+    // Same status-stamped broadcast as the approve branch.
     try { broadcast({ type: 'healer:proposal', data: { id, status: 'denied' } }); } catch { /* best effort */ }
 
     // Send denial + user note to primary agent for discussion
@@ -262,10 +231,8 @@ export function resolveHealerProposal(input: {
         'If you resolve it, save the outcome to the vault so the Healer learns for next time.',
       ].join('\n');
 
-      // D-A step 4: a Healer-denied discussion prompt is engine traffic
-      // (lane='events'), so it lands on the EVENTS lane, structurally outside
-      // the primary's `messages` chat table. The merged tail + assembler surface it
-      // as a pending engine event (conv_key NULL) exactly as the old row did.
+      // A Healer-denied discussion prompt is engine traffic: it goes on the events lane (conv_key NULL),
+      // not into the primary's chat rows, and surfaces as a pending engine event.
       insertEngineEventIfAbsent({
         work: null,
         id: msgId,
@@ -275,10 +242,8 @@ export function resolveHealerProposal(input: {
         originIntent: 'healer',
       });
 
-      // D-A step 5 seam: this row persists to the inter-agent STORE (above), so
-      // its live broadcast rides the interagent:message lane like every other
-      // engine-origin notice, never chat:message (a chat frame would show a
-      // bubble that does not exist in `messages` and vanishes on reload).
+      // The row is on the events lane, so its live broadcast rides interagent:message, never
+      // chat:message (a chat frame would show a bubble that vanishes on reload).
       broadcast({
         type: 'interagent:message',
         agentId: primaryId,

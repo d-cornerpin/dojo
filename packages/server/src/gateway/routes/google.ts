@@ -1,7 +1,4 @@
-// ════════════════════════════════════════
-// Google Workspace API Routes — Native OAuth 2.0
-// Multi-account (agent + user slots) as of v2.7.0.
-// ════════════════════════════════════════
+// Google Workspace API routes: native OAuth 2.0, multi-account (agent + user slots)
 
 import { Hono } from 'hono';
 import type { AppEnv } from '../server.js';
@@ -43,20 +40,13 @@ import { routeFailure } from './route-failure.js';
 
 const logger = createLogger('google-routes');
 
-// SECURITY (2026-07-27, PHASE-0 T12b / P350): `/api/google/callback` is in
-// ALWAYS_PUBLIC_PATHS (gateway/middleware/auth.ts) — it must be, the OAuth
-// provider redirects the browser there with no credential to present — and it
-// answers with hand-built HTML. Anything interpolated into that HTML is
-// therefore attacker-reachable on an unauthenticated URL, and in production the
-// dashboard is served from this same origin (gateway/server.ts SPA fallback),
-// so an injected <script> would run with the dashboard's origin, its httpOnly
-// session cookie, and its localStorage token. Three values reach the response:
-// the `error` QUERY PARAM (fully attacker-controlled — anyone can hand the
-// owner a /api/google/callback?error=<payload> link) and the token-exchange
-// result's `email` / `error` (relayed provider text). All three go through
-// escapeHtml. Every one of them is a TEXT node, so escaping the five HTML
-// metacharacters is the complete job here; nothing is interpolated into an
-// attribute, a URL, or a <script> body. Regression: __tests__/google-oauth-callback.test.ts
+// SECURITY: `/api/google/callback` is in ALWAYS_PUBLIC_PATHS (gateway/middleware/auth.ts) because the
+// OAuth provider redirects the browser there with no credential, and it answers with hand-built HTML.
+// Anything interpolated into it is attacker-reachable, and the production dashboard shares this origin,
+// so an injected <script> would run with its session and token. The three values that reach the
+// response (the `error` query param, and the token exchange's `email` and `error`) all go through
+// escapeHtml; they are text nodes only, so escaping the five HTML metacharacters is the whole job.
+// Regression: __tests__/google-oauth-callback.test.ts
 export function escapeHtml(value: unknown): string {
   return String(value ?? '')
     .replace(/&/g, '&amp;')
@@ -73,7 +63,7 @@ function parseSlot(value: string | undefined): AccountSlot {
   return value === 'user' ? 'user' : 'agent';
 }
 
-// GET /api/google/status — returns both slots' state in one payload
+// GET /api/google/status (both slots' state in one payload)
 googleRouter.get('/status', async (c) => {
   // Probe granted scopes for each connected slot (no-op when already known).
   for (const slot of ACCOUNT_SLOTS) {
@@ -88,15 +78,13 @@ googleRouter.get('/status', async (c) => {
     user: buildSlotPayload('user'),
   };
 
-  // Backward-compat top-level fields mirror the agent slot — existing
-  // dashboards and integrations that read `enabled`/`connected`/`email`
-  // directly keep working without modification.
+  // Top-level fields mirror the agent slot so readers of `enabled`/`connected`/`email` keep working.
   return c.json({
     ok: true,
     data: {
-      // Per-slot detail (legacy: position-1 of each kind)
+      // Per-slot detail (position 1 of each kind)
       slots,
-      // Path B: full per-account list (up to 5 per kind) + the cap.
+      // Full per-account list (up to 5 per kind) and the cap.
       accounts: listGoogleAccountViews(),
       maxPerKind: MAX_ACCOUNTS_PER_KIND,
       // Aggregate counters (not slot-specific)
@@ -128,8 +116,8 @@ function buildSlotPayload(slot: AccountSlot) {
   };
 }
 
-// POST /api/google/connect — start an OAuth flow. Three shapes:
-//   ?slot=agent|user            reconnect/connect that kind's primary (back-compat)
+// POST /api/google/connect (start an OAuth flow). Three shapes:
+//   ?slot=agent|user            reconnect/connect that kind's primary
 //   ?add=true&kind=agent|user   add a NEW account to the kind (cap-enforced)
 //   ?accountId=<id>             reconnect a specific existing account
 googleRouter.post('/connect', (c) => {
@@ -165,7 +153,7 @@ googleRouter.post('/connect', (c) => {
   }
 });
 
-// GET /api/google/callback — OAuth redirect handler (recovers slot from state)
+// GET /api/google/callback (OAuth redirect handler; recovers the flow from state)
 googleRouter.get('/callback', async (c) => {
   const code = c.req.query('code');
   const state = c.req.query('state');
@@ -180,8 +168,8 @@ googleRouter.get('/callback', async (c) => {
     return c.html('<html><body><h2>Missing authorization code or state</h2><p>You can close this tab.</p></body></html>');
   }
 
-  // Recover the flow (kind + target account + redirect) from the state token.
-  // The state→flow map is the authoritative "which flow is this completing."
+  // Recover the flow (kind + target account + redirect) from the state token, the authority on
+  // which flow this callback is completing.
   const flow = getFlowForState(state);
   if (!flow) {
     logger.warn('Google OAuth callback with unknown state', { state });
@@ -217,7 +205,7 @@ googleRouter.post('/disconnect', (c) => {
   return c.json({ ok: true, data: { slot } });
 });
 
-// POST /api/google/test?slot=agent|user — test a slot's connection
+// POST /api/google/test?slot=agent|user (test a slot's connection)
 googleRouter.post('/test', async (c) => {
   const slot = parseSlot(c.req.query('slot'));
   const auth = await testGoogleAuth(slot);
@@ -232,7 +220,7 @@ googleRouter.post('/test', async (c) => {
   });
 });
 
-// PUT /api/google/services?slot=agent|user  (or ?accountId=) — enable/disable
+// PUT /api/google/services?slot=agent|user  (or ?accountId=): enable/disable
 // services for a kind's primary account, or a specific account.
 googleRouter.put('/services', async (c) => {
   try {
@@ -262,7 +250,7 @@ googleRouter.put('/services', async (c) => {
   }
 });
 
-// PUT /api/google/watch-email?slot=agent|user  (or ?accountId=) — toggle the
+// PUT /api/google/watch-email?slot=agent|user  (or ?accountId=): toggle the
 // Gmail watcher for a kind's primary account, or a specific account.
 googleRouter.put('/watch-email', async (c) => {
   try {
@@ -280,12 +268,8 @@ googleRouter.put('/watch-email', async (c) => {
     }
     logger.info('Gmail email-monitoring toggled', { accountId: accountId ?? slot, enabled: body.enabled });
 
-    // Bounce the watcher so the change takes effect immediately. The poll
-    // loop reads isEmailMonitoringEnabled on every tick, so this is mostly
-    // cosmetic for an enabled-true → enabled-false flip (next tick will
-    // skip the slot anyway), but for a disabled → enabled flip on a freshly
-    // connected slot the watcher needs the per-slot lastCheckedAt seeded —
-    // which only happens in startGmailWatcher().
+    // Bounce the watcher so the change takes effect: a disabled to enabled flip on a freshly
+    // connected slot needs the per-slot lastCheckedAt seeded, which only startGmailWatcher() does.
     try {
       const { stopGmailWatcher, startGmailWatcher, markGmailWatchBaselineNow } =
         await import('../../services/gmail-watcher.js');
@@ -307,10 +291,9 @@ googleRouter.put('/watch-email', async (c) => {
   }
 });
 
-// PUT /api/google/send-email?slot=agent|user  (or ?accountId=) — toggle the
-// agent's permission to send/reply/forward from a kind's primary account, or a
-// specific account. Pure config flip; enforcement happens in the tool executor
-// right before the Gmail API call. No watcher to bounce.
+// PUT /api/google/send-email?slot=agent|user  (or ?accountId=): toggle the agent's permission
+// to send/reply/forward from a kind's primary account, or a specific account. Pure config flip;
+// enforcement happens in the tool executor right before the Gmail API call. No watcher to bounce.
 googleRouter.put('/send-email', async (c) => {
   try {
     const accountId = c.req.query('accountId');

@@ -1,6 +1,4 @@
-// ════════════════════════════════════════
-// Router API Routes
-// ════════════════════════════════════════
+// Router API routes
 
 import { Hono } from 'hono';
 import { getDb } from '../../db/connection.js';
@@ -13,7 +11,7 @@ import type { RouterConfig, TierConfig } from '../../router/types.js';
 const logger = createLogger('router-routes');
 const routerRouter = new Hono();
 
-// GET /config — tiers + dimensions, and (v3.5 N42) the one window every automatic pick runs at
+// GET /config (tiers + dimensions, and the one window every automatic pick runs at)
 routerRouter.get('/config', async (c) => {
   const db = getDb();
 
@@ -74,7 +72,7 @@ routerRouter.get('/config', async (c) => {
   return c.json({ ok: true, data: config });
 });
 
-// GET /available-models — all enabled models (models can appear in multiple tiers)
+// GET /available-models (all enabled models; a model can appear in multiple tiers)
 routerRouter.get('/available-models', (c) => {
   const db = getDb();
 
@@ -95,7 +93,7 @@ routerRouter.get('/available-models', (c) => {
   return c.json({ ok: true, data: models });
 });
 
-// PUT /tiers/:tierId/models — reorder models in tier
+// PUT /tiers/:tierId/models (reorder models in tier)
 routerRouter.put('/tiers/:tierId/models', async (c) => {
   const tierId = c.req.param('tierId');
   const body = await c.req.json().catch(() => null);
@@ -112,19 +110,18 @@ routerRouter.put('/tiers/:tierId/models', async (c) => {
     return c.json({ ok: false, error: 'Tier not found' }, 404);
   }
 
-  // v3.5 (owner ruling 2026-10-19: "Remove it. Those models are hard coded as the small decision and
-  // small writer."): the 'system' tier is the Dojo's standard writer, written only by the install
-  // routine (`services/local-standard.ts`). Refused here so no door can point it elsewhere.
+  // The 'system' tier is the Dojo's standard writer, written only by the install routine
+  // (`services/local-standard.ts`). Refused here so no door can point it elsewhere.
   if (tierId === 'system') {
     return c.json({ ok: false, error: "The Dojo's writer is fixed; it is installed by setup." }, 409);
   }
 
-  // v3.5 (owner ruling 2026-10-19, "an agent or anything else"): a local model ADDED to a tier must fit in
-  // this box's memory. Models already in the tier are not re-judged (re-saving is never refused).
+  // A local model added to a tier must fit in this box's memory. Models already in the tier are
+  // not re-judged (re-saving is never refused).
   const current = new Set((db.prepare('SELECT model_id FROM router_tier_models WHERE tier_id = ?').all(tierId) as Array<{ model_id: string }>).map((r) => r.model_id));
   for (const { modelId } of body.models as Array<{ modelId: string }>) {
-    // Audit #14 (M5, owner: "anything under 32k simply wouldn't be selectable for an agent"): an agent tier runs agent
-    // turns, so a model added to one meets the main-model floor, with the same sentence every agent door gives.
+    // An agent tier runs agent turns, so a model added to one meets the 32k main-model floor, with
+    // the same sentence every agent door gives.
     const refused = current.has(modelId) ? null : refuseSmallMainModel(modelId, null) ?? await refuseUnfitLocalModel(modelId, null, 'agent');
     if (refused) return c.json({ ok: false, error: refused }, 400);
   }
@@ -143,7 +140,7 @@ routerRouter.put('/tiers/:tierId/models', async (c) => {
     transaction();
 
     logger.info('Tier models updated', { tierId, modelCount: body.models.length });
-    await (await import('../../agent/v2/honest-stop-lock.js')).noteModelsChanged();   // t148: a tier changed; no-fit locks get another look
+    await (await import('../../agent/v2/honest-stop-lock.js')).noteModelsChanged();   // a tier changed; no-fit locks get another look
     return c.json({ ok: true, data: { tierId, models: body.models } });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -152,7 +149,7 @@ routerRouter.put('/tiers/:tierId/models', async (c) => {
   }
 });
 
-// PUT /dimensions/:dimensionId — update weight
+// PUT /dimensions/:dimensionId (update weight)
 routerRouter.put('/dimensions/:dimensionId', async (c) => {
   const dimensionId = c.req.param('dimensionId');
   const body = await c.req.json().catch(() => null);
@@ -200,7 +197,7 @@ routerRouter.put('/dimensions/:dimensionId', async (c) => {
   }
 });
 
-// POST /test — test scorer with a prompt
+// POST /test (test scorer with a prompt)
 routerRouter.post('/test', async (c) => {
   const body = await c.req.json().catch(() => null);
 
@@ -213,16 +210,10 @@ routerRouter.post('/test', async (c) => {
 
   const result = scoreQuery(systemPrompt, messages);
 
-  // v2.9.17: shape the response for the Settings → Router test panel.
-  // The dashboard's RouterTest component reads `score` on each
-  // dimension entry (and crashes on .toFixed() of undefined when the
-  // field is missing) and expects a `selectedModel` string. The
-  // scorer returns `raw` and doesn't run the selector. Mirror the
-  // real routing decision here by aliasing raw → score on every
-  // dimension and calling selectModel(tier, ...) to fill in the
-  // selected-model card. selectModel can return null if every tier
-  // is exhausted (rate-limited, no enabled models, budget cap hit);
-  // surface that explicitly instead of leaving the field undefined.
+  // Shape the response for the Settings router test panel: it reads `score` on each dimension
+  // (the scorer returns `raw`, so alias it) and a `selectedModel` string (the scorer does not run the
+  // selector, so call selectModel(tier, ...)). selectModel can return null when every tier is
+  // exhausted (rate-limited, no enabled models, budget cap hit); surface that explicitly.
   const { selectModel } = await import('../../router/selector.js');
   const db = getDb();
   let selectedModel = '(no model available)';
@@ -260,7 +251,7 @@ routerRouter.post('/test', async (c) => {
   });
 });
 
-// GET /stats — routing statistics
+// GET /stats (routing statistics)
 routerRouter.get('/stats', (c) => {
   const db = getDb();
   const period = c.req.query('period') ?? '24h';

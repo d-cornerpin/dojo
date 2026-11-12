@@ -1,14 +1,7 @@
-// ════════════════════════════════════════
-// Inter-Agent lane API
-//
-// The dashboard's dedicated lane for agent-to-agent (A2A) traffic and engine-
-// origin notices. D-A kept those rows in their own physical table so they could
-// never leak into human chat; Phase 1 moved that separation into the schema —
-// they are `lane IN ('a2a','events')` rows in `messages`, and the human surface
-// is the fail-closed `chat_messages` view (`WHERE lane = 'owner'`). This route is
-// the lane's history source; the live path is the `interagent:message` WS event.
-// Scope is per-recipient-agent (agentId), mirroring the chat history route.
-// ════════════════════════════════════════
+// Inter-Agent lane API: the dashboard's lane for agent-to-agent (A2A) traffic and engine-origin
+// notices. They are `lane IN ('a2a','events')` rows in `messages`; the human surface is the
+// fail-closed `chat_messages` view (`WHERE lane = 'owner'`). This route is the lane's history
+// source; the live path is the `interagent:message` WS event. Scope is per recipient agent.
 
 import { Hono } from 'hono';
 import { getDb } from '../../db/connection.js';
@@ -64,8 +57,7 @@ interface LaneRow {
   created_at: string;
 }
 
-/** The two non-owner lanes the Threads view exists to show. The route used to be
- *  scoped by reading a different TABLE; it is scoped by the column now. */
+/** The two non-owner lanes the Threads view shows; the route is scoped by this column. */
 const THREADS_LANES = "lane IN ('a2a','events')";
 
 /** Every read below projects exactly this list. */
@@ -122,11 +114,8 @@ interAgentRouter.get('/:agentId', (c) => {
   let rows: LaneRow[];
   try {
     if (before) {
-      // The cursor is the insertion key. It was a (created_at, rowid) TUPLE because a
-      // bare `created_at <` skips the cursor row's same-second siblings at a page
-      // boundary, and coordination bursts land several rows in one second; the
-      // insertion key is strictly monotonic, so one column says the same thing.
-      // 400-on-miss contract unchanged.
+      // The cursor is the insertion key (strictly monotonic), so same-second siblings at a page
+      // boundary are not skipped. An unknown cursor id answers 400.
       const cursor = db.prepare('SELECT seq AS _rowid FROM messages WHERE id = ?').get(before) as { _rowid: number } | undefined;
       if (!cursor) {
         return c.json({ ok: false, error: 'Invalid cursor message ID' }, 400);
