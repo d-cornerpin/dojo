@@ -1,96 +1,16 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// THE LIVE INTEGRATION-STATUS LINE — EVIDENCE OVER MEMORY, MADE STRUCTURAL. T76b (W85).
-//
-// ── THE INCIDENT (W84, 2026-09-16) ──────────────────────────────────────────────────────
-// A regex in `plaud/tools-read.ts` never matched a single row the Plaud CLI printed, so
-// `plaud_recent_recordings` answered `No recordings found.` over an account holding 23
-// recordings. The tool did not fail — it LIED, in a confident sentence — and the cost was a
-// day. What made it a day rather than a minute is recorded in W84 §5: during the diagnosis
-// the agent concluded from that sentence that "Plaud flaps" and WROTE THAT INTO ITS VAULT.
-// A false memory about a connection is self-sealing: the next turn recalls it, declines to
-// call the tool, and reports the remembered breakage as current fact. The vault entry was
-// deleted by hand (`c5db6b5e-…`), which fixes one row and not the mechanism.
-//
-// ── THE OWNER'S RULING, WHICH IS THIS FILE'S WHOLE CHARTER ──────────────────────────────
-// The agent must never have to trust a notebook entry saying a connection is broken. The
-// PLATFORM'S LIVE TRUTH sits in front of it every turn and OUTRANKS memory. Same shape HL5
-// gave open commitments (`recall-lane.ts`): publish the complete current set, say out loud
-// that it supersedes every earlier mention, and the recalled claim stops being the only
-// thing in the room.
-//
-// ── LEDGER-BACKED ONLY, AND THE CENSUS THAT BOUNDS IT ───────────────────────────────────
-// A status line that invents a freshness is the W84 defect one surface over, so every term
-// below names a real reader and nothing else is said. The census (T76b Step 0, run against
-// the worn-in dev body at `~/.dojo/data/dojo.db`):
-//
-//   TERM              SOURCE, and what it actually holds
-//   state             `listIntegrationStatuses()` (`services/capability-registry.ts`), which
-//                     reads `isGoogleConnected`/`isMicrosoftConnected` per account slot and
-//                     `getPlaudStatus()`. Plaud's flag is an EPISODE LATCH, not a cache: the
-//                     first failing call flips `plaud_connected` false (`plaud/auth.ts`, T38),
-//                     so "connected" here means no call has failed it since the reconnect.
-//   last success      `google_activity` / `microsoft_activity` — `MAX(created_at)` where
-//                     `success = 1`, scoped to THIS agent. 16,820 and 16,555 rows on the dev
-//                     body, written by `google/activity-log.ts` / `microsoft/activity-log.ts`.
-//                     SCOPED TO THE AGENT FOR TWO REASONS, both measured: this block exists to
-//                     contradict a claim THE AGENT remembers making, and 16,432 of those rows
-//                     are `agent_id='system'` inbox polls firing on a timer — an unscoped MAX
-//                     would tick every 30 seconds and churn the tail with nothing the agent
-//                     did having changed. Agent-scoped on the dev body: the primary agent 146 google / 34
-//                     microsoft. COVERAGE IS PARTIAL AND THE ERROR IS ONE-WAY: not every tool
-//                     logs a row, so this stamp can be OLDER than the true last call, never
-//                     newer. Understating freshness is safe here; overstating it is W84.
-//                     PLAUD HAS NO SUCH TABLE. No plaud row exists in `tool_receipts` (that
-//                     table is send-class only: `send_to_agent`, `imessage_send`,
-//                     `gmail_reply`, `gmail_send`), and `audit_log` action_type='tool_call'
-//                     names only the handful of tools that call `auditLog()` by hand. So the
-//                     Plaud line states NO last use, and the block's footer says why — an
-//                     absence of records, never a record of failure.
-//   last failure      `agent_tool_outcomes` (mig 195, `agent/v2/tool-outcomes.ts`), written on
-//                     every tool result: per agent and TOOL, last success, last failure with its
-//                     error text, failures in a row since the last success. A tool's own success
-//                     ends its failure, so a failure prints only while it is the last thing
-//                     recorded for that tool. (It once read `agent_tool_failures`, a per-CALL
-//                     circling record: one old failure printed as unresolved for weeks while the
-//                     tool worked, and a worker blocked itself four times.)
-//   connected since   Plaud only: `plaud_connected_at` in `config`, via `getPlaudStatus()`.
-//                     Rendered ONLY when no last-success term exists, so it is the fallback
-//                     recency fact rather than a second one competing with it.
-//
-// ONE CANDIDATE WAS CENSUSED AND REJECTED, because rejecting it quietly is how the next task
-// re-adds it. `google_accounts.last_verified_at` / `microsoft_accounts.last_verified_at` look
-// like the Workspace twin of `plaud_connected_at` and are not: they are rewritten by the
-// BACKGROUND TOKEN REFRESH, not by anything the agent did. Read off the dev body they carried
-// `2026-09-17T05:26:49.561Z` and moved again on the next poll — a value that advances on a
-// timer, which is the wall-clock-shaped churn T69b spent a whole task deleting from the tail.
-// `plaud_connected_at` is written once, at connect, and is a genuine recorded instant.
-//
-// Nothing here reads a wall clock. Every instant is `recordedInstant(...)` — T69b's rule,
-// unchanged: a block that is a function of `Date.now()` cannot be asserted about and re-bills
-// the tail on a bucket boundary with nothing in the world having moved.
-//
-// ── ONLY WHAT THE AGENT MAY ACTUALLY TOUCH ──────────────────────────────────────────────
-// The line is grant-scoped, because a status line that advertises an integration the agent
-// cannot call teaches it to promise work it will be refused for — the exact drift
-// `toolCategoryGranted` exists to stop between "advertised" and "permitted" (`access/read.ts`
-// §ONE PREDICATE, TWO LAYERS). The grant readers are the same ones `agent/tools/surface.ts`
-// filters the toolset with: `mayUsePlaud(agentId)` and `widestIntegrationLevel(agentId, …)`.
-// NOT `getAgentGoogleAccessLevel`, which folds connectivity INTO the grant and answers
-// 'none' for a disconnected provider — this block has to say "granted AND disconnected"
-// out loud, and a reader that cannot distinguish the two cannot say it.
-//
-// ── WHAT THIS DOES NOT REPLACE ──────────────────────────────────────────────────────────
-// `renderIntegrationReconnect` (`prompt/assembler.ts`, Inv I) already breadcrumbs a
-// configured-but-disconnected family inside `msg.turn-context`. UNTOUCHED, and a different
-// job: REMEDIATION-voiced (what to tell the user, plus the local-Office carve-out), PM-gated,
-// and blind to both grants and ledgers. The overlap is one word (`disconnected`); folding the
-// two together would rewrite turn-context, a behaviour change nobody asked for. Residual,
-// recorded rather than taken.
-//
-// POSITION — 1877, the last seat in the stable group. Argued where it is decided:
-// `prompt/registry/types.ts` (MessageSlot.IntegrationStatusTail) and the injection site in
-// `agent/v2/steps/call-llm/pre-call-injections.ts`.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// The live integration-status line: the platform's own record of each connection, shown to the agent every
+// turn and outranking any remembered claim that an integration is broken (a false note about one persists).
+// Ledger-backed only: every term below names a real reader and nothing else is said.
+//   state: `listIntegrationStatuses()`; Plaud's flag is an episode latch (the first failing call flips it).
+//   last success: `MAX(created_at)` of `google_activity` / `microsoft_activity` (success = 1), this agent
+//   only (system polls on a timer would tick it). Coverage is partial: the stamp can be older than the
+//   true last call, never newer. Plaud has no such ledger: its line has no last use; the footer says why.
+//   last failure: `agent_tool_outcomes` (`agent/v2/tool-outcomes.ts`), per tool; a later success ends it.
+//   connected since: Plaud only (`plaud_connected_at`), rendered only when no last-success term exists.
+// `last_verified_at` on the account tables is not used: the background token refresh rewrites it on a timer.
+// Nothing reads a wall clock: every instant is `recordedInstant(...)`, so the block never re-bills the tail.
+// Grant-scoped via `mayUsePlaud` and `widestIntegrationLevel`, not `getAgentGoogleAccessLevel`, which folds
+// connectivity into the grant and so cannot say "granted AND disconnected".
 
 import { getDb } from '../db/connection.js';
 import { isOpenFailure, readToolOutcomes } from '../agent/v2/tool-outcomes.js';
@@ -100,57 +20,34 @@ import { estimateTokens } from './budget.js';
 import { sessionBoundaryText } from './session-boundary.js';
 import { laneLimit, truncateWrappedText } from './lanes.js';
 
-/** The lane's own id (the reserve) and the registry entry that rides it. */
 export const INTEGRATION_STATUS_LANE_ID = 'lane.integration-status';
 export const INTEGRATION_STATUS_ENTRY_ID = 'msg.integration-status';
 
-/** The integration families this block can speak about — the registry's own union. */
 export type IntegrationFamily = 'google' | 'microsoft' | 'plaud';
 
-/** The last failure a family's tool still carries: the last thing recorded for that tool. */
 export interface UnresolvedFailure {
   tool: string;
-  /** `agent_tool_outcomes.last_fail_at`, rendered as a recorded instant by the row builder. */
   lastAt: string;
   hits: number;   // failures in a row since that tool last succeeded (at least 1)
-  /** Test-2 rank 6: whose account the tool acts on. The owner's `user_` twins act on the owner's
-   *  account; every other tool on the agent's own. A failure on one says nothing about the other. */
+  /** Whose account the tool acts on: the owner's (`user_` twins) or the agent's own. */
   account?: 'agent' | 'owner';
 }
 
-/**
- * One integration's row, shaped so the worst-case generator can fabricate a maximal block
- * without a database — the `work-board-lane.ts` / `recall-lane.ts` discipline.
- */
 export interface IntegrationStatusRow {
   family: IntegrationFamily;
-  /** What the owner calls it in the dashboard. */
   displayName: string;
   connected: boolean;
-  /** `MAX(created_at)` over the family's success ledger for THIS agent; null when the
-   *  platform keeps no such ledger, or keeps one and it is empty for this agent. */
+  /** Latest success for this agent; null when there is no ledger or it is empty. */
   lastSuccessAt: string | number | null;
-  /** Rendered ONLY when `lastSuccessAt` is null. Plaud's `plaud_connected_at` today. */
   connectedSince: string | number | null;
-  /** Null means the ledger holds NOTHING unresolved — which is itself a printed fact. */
   unresolved: UnresolvedFailure | null;
-  /** False when the platform records no per-call outcome ledger for this family at all.
-   *  Drives the footer, so "no last use" is never read as "it stopped working". */
   hasSuccessLedger: boolean;
 }
 
 export const INTEGRATION_STATUS_HEAD = '═══ YOUR CONNECTED INTEGRATIONS — LIVE PLATFORM STATUS ═══';
 export const INTEGRATION_STATUS_TAIL = '═══ END INTEGRATION STATUS ═══';
 
-/**
- * THE SUPERSESSION PREAMBLE, in HL5's voice and for HL5's reason.
- *
- * `SNAPSHOT_SUPERSEDES` (`recall-lane.ts`) had to name the surfaces it outranks — summaries,
- * recalled memory, earlier in the conversation — because naming them is what stops the model
- * treating the published set as one more opinion. This one names the same three and adds the
- * one W84 actually died on: the agent's OWN SAVED NOTE. The incident's vault entry said Plaud
- * "flaps"; it arrived through `msg.relevant-memory`, which sits directly behind this block.
- */
+/** Names the surfaces it outranks, as `SNAPSHOT_SUPERSEDES` in `recall-lane.ts` does, plus saved notes. */
 export const INTEGRATION_STATUS_SUPERSEDES =
   'These lines are the CURRENT truth about your connections and they outrank any remembered '
   + 'claim about whether an integration works — in summaries, in recalled memory, in notes you '
@@ -159,24 +56,14 @@ export const INTEGRATION_STATUS_SUPERSEDES =
   + 'the platform\'s own records on this turn. Where the two disagree, this block is right: call '
   + 'the tool and answer from what it returns, not from what you remember about it.';
 
-/**
- * The footer, emitted only when some row has no last-use term.
- *
- * It exists because silence is exactly how W84 got expensive. `No recordings found.` was an
- * absence of parsed rows rendered as a confident claim; a blank where a last use would go is
- * the same shape, and a model that reads it as "so it has never worked" has been taught the
- * defect by the block meant to cure it.
- */
+/** Footer when some row has no last-use term: an absence of records is not a record of failure. */
 export const INTEGRATION_STATUS_NO_LEDGER_NOTE =
   'Where no last successful use is shown, the platform keeps no per-call success ledger for '
   + 'that integration. That is an absence of RECORDS, not a record of failure — it says nothing '
   + 'about whether the tool works, so find out by calling it.';
 
-/** A family with no unresolved failure says so, because that is the sentence a false "it is
- *  broken" memory has to be measured against. */
 const NO_UNRESOLVED_FAILURE = 'No unresolved tool failure on record.';
 
-/** One row, exactly the terms the ledger holds and no others. Pure. */
 export function integrationStatusLine(r: IntegrationStatusRow): string {
   const toolCap = laneLimit(INTEGRATION_STATUS_LANE_ID, 'chars', 'tool');
   const parts: string[] = [];
@@ -187,8 +74,7 @@ export function integrationStatusLine(r: IntegrationStatusRow): string {
         : 'CONNECTED.',
     );
   } else {
-    // No false reassurance, and no reconnect advice either — `renderIntegrationReconnect`
-    // owns that sentence inside `msg.turn-context` and two copies would be two truths.
+    // No reconnect advice: `renderIntegrationReconnect` owns that sentence in `msg.turn-context`.
     parts.push('DISCONNECTED. Its tools are not in your toolset this turn.');
   }
   if (r.lastSuccessAt !== null) parts.push(`Last successful use ${recordedInstant(r.lastSuccessAt)}.`);
@@ -206,7 +92,6 @@ export function integrationStatusLine(r: IntegrationStatusRow): string {
   return `• ${r.displayName} — ${parts.join(' ')}`;
 }
 
-/** The block, from rows already built. Pure — the worst-case generator calls this one. */
 export function renderIntegrationStatusBlock(rows: IntegrationStatusRow[]): string | null {
   if (rows.length === 0) return null;
   const lines = rows.map(integrationStatusLine);
@@ -216,7 +101,6 @@ export function renderIntegrationStatusBlock(rows: IntegrationStatusRow[]): stri
   return `${INTEGRATION_STATUS_HEAD}\n${INTEGRATION_STATUS_SUPERSEDES}\n${lines.join('\n')}${footer}\n${INTEGRATION_STATUS_TAIL}`;
 }
 
-/** Display names, the owner's own words for these three (the reconnect breadcrumb's map). */
 const DISPLAY_NAME: Record<IntegrationFamily, string> = {
   google: 'Google Workspace',
   microsoft: 'Microsoft 365',
@@ -224,22 +108,9 @@ const DISPLAY_NAME: Record<IntegrationFamily, string> = {
 };
 
 /**
- * THE FAMILY A TOOL NAME BELONGS TO — tool NAMES read out of `TOOL_CATEGORIES`; only the
- * LABEL → family assignment is written here.
- *
- * WHY THE CATEGORY TABLE AND NOT THE DEFINITION ARRAYS. The obvious source is
- * `googleReadToolDefinitions` & friends — each array IS a family. It was built that way first
- * and MEASURED: importing those seven modules drags in the whole provider world (`googleapis`,
- * and through the media tools `phonemizer` with its espeak data blob). This runs on the
- * assembly path of every turn. `tools/categories.ts` carries the same names behind ONE
- * type-only import, is already the door `access/read.ts` reads for `toolCategoryGranted`, and
- * is the table an owner actually edits when a tool is added.
- *
- * WHY IT CANNOT ROT SILENTLY. What is typed is not tool names but LABELS — every one of the
- * category table's, including those that are deliberately NOT an integration family. A new
- * label with no row here fails `the-status-line-beats-the-note.test.ts` §1 instead of quietly
- * dropping a family's failures. Against the prefix list it replaces, that is the whole
- * difference: an omission is loud.
+ * Tool name to family, read from `TOOL_CATEGORIES` (the definition arrays would import the provider SDKs
+ * on every turn). Every label is classified here or in `NOT_AN_INTEGRATION`, so a new one fails
+ * `the-status-line-beats-the-note.test.ts` instead of silently dropping a family.
  */
 const LABEL_FAMILY: Record<string, IntegrationFamily> = {
   'Gmail': 'google',
@@ -259,17 +130,7 @@ const LABEL_FAMILY: Record<string, IntegrationFamily> = {
   'Plaud (voice recorder integration)': 'plaud',
 };
 
-/**
- * Category labels that are NOT one of the three families, listed so the census is COMPLETE
- * and an unclassified label is a test failure rather than a silent drop.
- *
- * The first two are the ones that could plausibly have been attributed and must not be:
- * 'Office Documents' runs on THIS MACHINE with no Microsoft account (the local carve-out
- * `renderIntegrationReconnect` declares, battery scenario document-creation-office
- * 2026-07-06), so a failure there is no evidence about the Graph connection; 'Unified
- * Search' is `email_search`, which spans every connected mailbox at once and so cannot be
- * charged to Google OR Microsoft without guessing.
- */
+/** Labels that are no family ('Office Documents' runs locally; 'Unified Search' spans every mailbox). */
 const NOT_AN_INTEGRATION: ReadonlySet<string> = new Set([
   'Office Documents', 'Unified Search (all connected accounts at once)',
   'Twilio (SMS + Voice phone calls)', 'Meta', 'File & System', 'Web',
@@ -283,9 +144,7 @@ const NOT_AN_INTEGRATION: ReadonlySet<string> = new Set([
   'Oversight & Admin', 'Healer (self-repair)', 'Tunnel (Remote Access)',
 ]);
 
-/** Exported so the gate can assert the census is COMPLETE against the live category table.
- *  `undefined` means UNCLASSIFIED — neither a family nor declared irrelevant — which is the
- *  only answer this module treats as a defect. */
+/** `undefined` means unclassified (neither a family nor declared irrelevant), which is a defect. */
 export function integrationFamilyForLabel(label: string): IntegrationFamily | null | undefined {
   return LABEL_FAMILY[label] ?? (NOT_AN_INTEGRATION.has(label) ? null : undefined);
 }
@@ -300,9 +159,6 @@ function toolFamilyIndex(): Map<string, IntegrationFamily> {
     if (!family) continue;
     for (const tool of category.tools) {
       index.set(tool, family);
-      // The `user_` twins are generated from the same names at the surface (`surface.ts`
-      // strips the prefix before asking its service gate), so a failure recorded against
-      // `user_gmail_search` belongs to the family its canonical does.
       index.set(`user_${tool}`, family);
     }
   }
@@ -310,21 +166,15 @@ function toolFamilyIndex(): Map<string, IntegrationFamily> {
   return familyIndex;
 }
 
-/** Test seam — the index is derived from a module constant, so forgetting is always safe. */
 export function forgetToolFamilyIndex(): void {
   familyIndex = null;
   toolNamePattern = null;
 }
 
-// ── v3.5 owner test 2, fix rank 5: WHICH INTEGRATION A SAVED TECHNIQUE WORKS IN ──
-// A technique declares no family field, but its procedure names the tools it calls (`outlook_send`,
-// `user_gmail_search`), and those are identifiers from this one table, never prose. A technique's families are the
-// families of the tool names its text names, plus a tag that IS a family name. None named: it is not an integration
-// technique, and no family gate applies to it.
+// A technique's families: those of the tool names its text names, plus a tag naming a family.
 let toolNamePattern: RegExp | null = null;
 const FAMILY_NAMES: readonly IntegrationFamily[] = ['google', 'microsoft', 'plaud'];
 
-/** The integration families a technique's procedure and tags name (see above). */
 export function techniqueFamilies(text: string | null | undefined, tags: readonly string[] = []): Set<IntegrationFamily> {
   const index = toolFamilyIndex();
   const out = new Set<IntegrationFamily>();
@@ -341,7 +191,6 @@ export function techniqueFamilies(text: string | null | undefined, tags: readonl
   return out;
 }
 
-/** The integration families this agent can use now: configured, granted to it, and connected. */
 export async function usableIntegrationFamilies(agentId: string): Promise<Set<IntegrationFamily>> {
   try {
     return new Set((await integrationRows(agentId)).filter((r) => r.connected).map((r) => r.family));
@@ -351,18 +200,9 @@ export async function usableIntegrationFamilies(agentId: string): Promise<Set<In
 }
 
 /**
- * The open failure each family carries for this agent (test-2 rank 6: by ACCOUNT, and expiring on a
- * real signal).
- *
- * Per family AND per account (the agent's own tools, or the owner's `user_` twins), only the NEWEST
- * outcome is the status: a later success of ANY tool on that account clears an earlier failure, and a
- * later different failure replaces it. It used to take only a success of the exact failed tool, so an
- * agent that believed the block never called that tool again and the failure never cleared (the
- * owner's field test: one agent-account `gmail_list_labels` failure read as "label listing is broken",
- * for the owner's mailbox too). A failure from before the agent's current session boundary is history,
- * not status. No timer: the two bounds are the next call on that account and the session boundary.
- * `readToolOutcomes` is newest-first, so the first row seen per (family, account) is its newest outcome;
- * the per-tool ledger itself is untouched (the Healer reads its streaks).
+ * The open failure each family carries for this agent, per family and account (the agent's own tools or
+ * the owner's `user_` twins). Only the newest outcome counts: a later success of any tool on that account
+ * clears it, and one from before the session boundary is history. `readToolOutcomes` is newest-first.
  */
 function unresolvedByFamily(agentId: string): Map<IntegrationFamily, UnresolvedFailure> {
   const out = new Map<IntegrationFamily, UnresolvedFailure>(), index = toolFamilyIndex();
@@ -383,14 +223,6 @@ function unresolvedByFamily(agentId: string): Map<IntegrationFamily, UnresolvedF
   return out;
 }
 
-/**
- * The last SUCCESSFUL call this agent made on a Workspace provider.
- *
- * `google_activity` / `microsoft_activity` are written by `google/activity-log.ts` and
- * `microsoft/activity-log.ts` on every API call, with `success INTEGER` and `error TEXT`.
- * Scoped to the agent on purpose: this block exists to contradict a claim the AGENT
- * remembers making, and "someone else's call worked" is a weaker sentence than "yours did".
- */
 function lastSuccessAt(agentId: string, table: 'google_activity' | 'microsoft_activity'): string | null {
   try {
     const row = getDb().prepare(
@@ -401,11 +233,8 @@ function lastSuccessAt(agentId: string, table: 'google_activity' | 'microsoft_ac
 }
 
 /**
- * The block for this agent, or null when it holds no configured, granted integration.
- *
- * Async and dynamically imported, like `buildWorkBoardLane`: the connection and grant readers
- * sit under `google/`, `microsoft/`, `plaud/` and `agent/access/`, all of which are upstream
- * of nothing in `memory/` today and should stay that way.
+ * The block for this agent, or null. The readers are imported dynamically so `memory/` does not depend on
+ * `google/`, `microsoft/`, `plaud/` or `agent/access/`.
  */
 export async function buildIntegrationStatusLane(agentId: string): Promise<string | null> {
   try {
@@ -415,7 +244,6 @@ export async function buildIntegrationStatusLane(agentId: string): Promise<strin
   }
 }
 
-/** The rows as bare lines, for the PM's block review (`tracker/block-review-facts.ts`). */
 export async function integrationFactLines(agentId: string): Promise<string[]> {
   try { return (await integrationRows(agentId)).map(integrationStatusLine); } catch { return []; }
 }
@@ -429,13 +257,10 @@ async function integrationRows(agentId: string): Promise<IntegrationStatusRow[]>
       import('../plaud/auth.js'),
     ]);
   const failures = unresolvedByFamily(agentId);
-  // Sorted by family name so the block is byte-deterministic regardless of the registry's
-  // iteration order — C28 P-6's rule, which this block needs for the same reason.
+  // Sorted by family name so the block is byte-deterministic.
   const statuses = [...listIntegrationStatuses()].sort((a, b) => a.name.localeCompare(b.name));
   for (const s of statuses) {
-    // CONFIGURED is the gate, not CONNECTED: a family the owner never set up has no truth
-    // to publish, while one that is set up and currently down is precisely what a false
-    // memory forms around. The disconnected row is the negative control, not an omission.
+    // Gate on configured, not connected: a configured family that is down is where a false memory forms.
     if (!s.configured) continue;
     if (s.name === 'plaud') {
       if (!mayUsePlaud(agentId)) continue;
@@ -444,7 +269,7 @@ async function integrationRows(agentId: string): Promise<IntegrationStatusRow[]>
         family: 'plaud',
         displayName: DISPLAY_NAME.plaud,
         connected: s.connected,
-        lastSuccessAt: null,           // no ledger exists; see the census in this file's head
+        lastSuccessAt: null,           // no ledger exists
         connectedSince: plaud.connectedAt,
         unresolved: failures.get('plaud') ?? null,
         hasSuccessLedger: false,
@@ -465,20 +290,14 @@ async function integrationRows(agentId: string): Promise<IntegrationStatusRow[]>
   return rows;
 }
 
-/** A post-budget lane may not exceed the reserve it declared — `work-board-lane.ts`'s rule,
- *  applied at the render because no allocator runs downstream of a post-budget lane. */
+/** Holds the block to its declared reserve here, because no allocator runs after a post-budget lane. */
 function enforce(block: string | null, maxTokens: number): string | null {
   if (!block) return null;
   return estimateTokens(block) > maxTokens ? truncateWrappedText(block, maxTokens) : block;
 }
 
-// ── THE DECLARED RESERVE, DERIVED BY CALLING THE RENDERER ───────────────────────────────
-//
-// `lanes.ts`'s `PostBudgetLane.measured` says a reserve with no derivation is a rumour. The
-// number is produced by feeding the REAL renderer a maximal block — every declared cap
-// flooded at once, every optional term present on every row — so a cap that changes moves the
-// reserve with it, and `the-status-line-beats-the-note.test.ts` pins the literal to this
-// function.
+// The reserve is derived by rendering a maximal block (every cap flooded, every optional term present), so
+// a cap change moves it; `the-status-line-beats-the-note.test.ts` pins the literal to this function.
 
 let worstCase: number | null = null;
 
@@ -486,8 +305,6 @@ export function integrationStatusWorstCaseTokens(): number {
   if (worstCase !== null) return worstCase;
   const rowCap = laneLimit(INTEGRATION_STATUS_LANE_ID, 'rows', 'integrations');
   const toolCap = laneLimit(INTEGRATION_STATUS_LANE_ID, 'chars', 'tool');
-  // The widest instant `recordedInstant` can return is its own fallback or a full stamp;
-  // both are produced by CALLING it rather than counted beside it.
   const widestInstantSource = '2026-09-30T23:41:59.999Z';
   const rows: IntegrationStatusRow[] = [];
   const widestName = Object.values(DISPLAY_NAME)
@@ -496,9 +313,7 @@ export function integrationStatusWorstCaseTokens(): number {
     rows.push({
       family: 'google',
       displayName: widestName,
-      // DISCONNECTED is the longer of the two state clauses, and `connectedSince` is only
-      // rendered when `lastSuccessAt` is null — so the maximal row takes the longer state
-      // clause AND the last-success term, which is the widest combination the renderer emits.
+      // DISCONNECTED is the longer state clause; with a last success set this is the widest row the renderer emits.
       connected: false,
       lastSuccessAt: widestInstantSource,
       connectedSince: widestInstantSource,
@@ -506,7 +321,7 @@ export function integrationStatusWorstCaseTokens(): number {
       hasSuccessLedger: true,
     });
   }
-  // One extra row in the "no ledger" shape so the FOOTER is inside the measurement.
+  // One no-ledger row so the footer is inside the measurement.
   rows.push({
     family: 'plaud',
     displayName: widestName,

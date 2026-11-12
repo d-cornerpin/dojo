@@ -1,18 +1,10 @@
-// ════════════════════════════════════════
-// The read door for stored large files.
-// ════════════════════════════════════════
-//
-// v1's interception machinery — the threshold check, the type sniffing, the
-// summary generators, the store-and-stub write — lost its last caller and is
-// gone. This file now only reads a stored large file back from disk.
+// Reads a stored large file back from disk.
 
 import * as effectFs from '../agent/effects/fs.js';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 
 const logger = createLogger('memory-large-files');
-
-// ── Retrieve ──
 
 export function getLargeFile(fileId: string): { content: string; metadata: Record<string, unknown> } | null {
   const db = getDb();

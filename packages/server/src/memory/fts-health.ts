@@ -1,52 +1,7 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// FTS HEALTH AT BOOT (t89 deliverable 3) — a long-lived database must not search by LIKE for ever.
-//
-// ⚠ THE DEFECT, in the brief's own words: "A DB born before the `messages_fts` migration (or with a
-// broken FTS table) silently LIKE-scans FOREVER — the fallback is a warn nobody sees." Deliverable 2
-// made that fallback BOUNDED and LOUD, so the degradation is visible and finite. This file is the
-// other half: notice the broken index and fix it, rather than complaining on every search for the
-// rest of the database's life.
-//
-// ── WHAT WAS THERE BEFORE, AND WHY IT HAD TO GO (read this before adding anything back) ──
-// `db/migrations.ts` used to carry a post-migration region (PHASE-1 T7) that compared
-// `messages_fts_docsize` against `messages` and repaired a mismatch with fts5's `'rebuild'`. It asked
-// the RIGHT question — it replaced an earlier probe that compared `messages` against itself and whose
-// repair structurally could not fire: measured on a `VACUUM INTO` copy of a lived-in box with ONE row
-// genuinely removed from the index, both counts read 3,629, the NOT-IN subquery returned 0 rows, the
-// `if` never fired, and the message stayed unsearchable. Three things about the region that replaced
-// it are why THIS module exists, and why that region is now DELETED (t98 D3):
-//   1. IT WAS BOOT-BLOCKING. It ran inside `runMigrations()`, hundreds of lines before the port bind,
-//      and `'rebuild'` on a 729 MB database is minutes of synchronous C++ on the thread that will
-//      serve HTTP. The brief is explicit — "rebuild it as a BACKGROUND job (never boot-blocking)" —
-//      and a box whose index is broken is exactly the box that cannot afford to spend its whole boot
-//      window rebuilding before it answers anything.
-//   2. IT COULD NOT SEE A MISSING TABLE. With no `messages_fts`, `COUNT(*) FROM messages_fts_docsize`
-//      THROWS, the catch logs, and nothing is repaired — the precise case the brief names.
-//   3. IT COULD NOT SEE A CORRUPT ONE. Agreeing counts say the row COUNT is right and say nothing
-//      about whether `MATCH` works: a corrupt index with the right number of rows reads healthy and
-//      searches by LIKE for ever.
-// ⚠ THIS MODULE NOW OWNS EVERY REPAIR CASE — `missing`, `unpopulated`, `stale` and `corrupt` — AND IS
-// THE ONLY THING THAT REPAIRS THE INDEX ANYWHERE. While both mechanisms shipped (t89 → t98) migrations
-// repaired the COUNT-MISMATCH case synchronously first, so this module found the common case already
-// healthy and did nothing: the background job was real and the boot was still blocked. The deletion is
-// what makes "never boot-blocking" true of the TREE rather than of one module, and a clause reads
-// `db/migrations.ts` with its comments stripped and reds if an fts5 `'rebuild'` ever reappears there.
-//
-// ── WHERE THE WORK RUNS ──
-// Detection is three cheap reads through the READER POOL when it is up, for the same reason every
-// other read in this package does. The REPAIR is a WRITE, so it cannot use the read-only pool: it
-// gets its own short-lived worker with a writable connection, by the same inline-source argument
-// `reader-pool.ts` makes at length (a worker FILE resolves as `.ts` under `tsx watch`, `.js` under
-// `node dist/`, and differently again under vitest's loader — in a fresh context that does not
-// inherit the parent's).
-//
-// ⚠ AND THE COST OF THE REPAIR, STATED RATHER THAN HIDDEN: an fts5 rebuild is one large write
-// transaction, so while it runs the platform's own writers wait on the write lock (`busy_timeout`,
-// generously set in the worker). That is real, it is bounded by the rebuild's duration, it is paid
-// ONCE per box, and it does not touch the event loop — the server keeps answering throughout. The
-// alternative is a database that LIKE-scans for the rest of its life, which is what produced this
-// package.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// Boot-time check of the `messages_fts` index: probe it, repair a broken one on a background worker.
+// This module owns every repair case; `db/migrations.ts` must never run an fts5 'rebuild' (it blocks boot).
+// The repair is a write, so it runs on its own short-lived worker with a writable connection (inline source,
+// as in `reader-pool.ts`) and holds the write lock for the rebuild while the event loop keeps serving.
 
 import { Worker } from 'node:worker_threads';
 import { createRequire } from 'node:module';
@@ -56,129 +11,57 @@ import { readerPoolAvailable, readerQuery } from './reader-pool.js';
 
 const logger = createLogger('fts-health');
 
-/**
- * How long after the server is listening the first health check runs.
- *
- * Not zero, and not a number picked for taste: the platform's other post-boot background jobs sit at
- * 60 s (the embedding backfill) and 90 s (the vault re-embed), and this one must not compete with the
- * boot it was moved out of. 45 s puts it after the box has settled and still inside the first minute,
- * so a broken index is found in the same session a user notices slow search rather than the next one.
- */
 export const FTS_HEALTH_DELAY_MS = 45_000;
 
-/**
- * The repair's hard deadline. Past it the worker is terminated and the next boot tries again.
- *
- * Ten minutes is deliberately far above the reader pool's 15 s: that deadline guards a SEARCH, which
- * must be fast or it is a defect, while this one guards a once-per-box full reindex of what may be a
- * 729 MB table. A rebuild that has not finished in ten minutes is not slow, it is wedged.
- */
 export const FTS_REPAIR_DEADLINE_MS = 10 * 60_000;
 
-/**
- * ⚠ THE INDEX'S DECLARATION, AND IT HAS EXACTLY ONE OWNER — the migration.
- *
- * `missing` is the only state whose repair needs the DDL, because fts5's `'rebuild'` command needs a
- * table to rebuild. Writing the DDL here makes a SECOND spelling of a schema the migrations own, which
- * is the drift class this tree has spent whole tasks removing. It is admitted on one condition, and the
- * condition is enforced rather than promised: a clause reads `db/migrations/129b_stable_merge_messages.sql`
- * and asserts these three statements match the migration's, normalised for whitespace. If the migration
- * ever redeclares the index differently, that clause reds and this string is corrected with it.
- *
- * ⚠ ONE DELIBERATE DIFFERENCE FROM THE MIGRATION'S OWN TEXT, and it is not drift: the populate
- * statement projects `seq AS rowid` where the migration writes a bare `rowid`. Same value — PHASE-1
- * T10 made `seq` the table's rowid alias (`INTEGER PRIMARY KEY AUTOINCREMENT`) — and the INSERT binds
- * positionally, so nothing about the repair changes. What changes is that a bare `rowid` projection
- * over `messages` is refused in TypeScript by T10's own reader guard (`memory/__tests__/lane-readers`),
- * because SQLite names that result column `seq` and a JavaScript `row.rowid` read then returns
- * `undefined` WITHOUT THROWING. The guard does not care that this particular projection is never read
- * from JavaScript, and it is right not to: the rule earns its value by having no exceptions. The clause
- * normalises this one substitution by name before comparing, so the comparison stays byte-level.
- */
+/** The index's declaration; the migration `129b_stable_merge_messages.sql` owns it and a test compares
+ *  this copy to it. `seq AS rowid` replaces a bare `rowid`, which the lane-readers guard refuses. */
 export const FTS_RECREATE_SQL = [
   'DROP TABLE IF EXISTS messages_fts;',
   "CREATE VIRTUAL TABLE messages_fts USING fts5(content, content='messages', content_rowid='rowid');",
   'INSERT INTO messages_fts(rowid, content) SELECT seq AS rowid, content FROM messages;',
 ].join('\n');
 
-/** The same three statements, separately, because the repair now DRIVES them (I1/I8) rather than
- *  handing the lot to `db.exec`: the populate runs in interruptible chunks and the whole sequence
- *  runs inside one transaction. `FTS_RECREATE_SQL` above stays as the one-owner declaration the
- *  migration clause compares against — these are the same strings, split at the semicolons. */
+// The same statements as `FTS_RECREATE_SQL`, split so the worker can chunk the populate; change both.
 export const FTS_DROP_SQL = 'DROP TABLE IF EXISTS messages_fts;';
 export const FTS_CREATE_SQL =
   "CREATE VIRTUAL TABLE messages_fts USING fts5(content, content='messages', content_rowid='rowid');";
-/** One chunk of the populate, by insertion-key range. `seq AS rowid` for T10's reader guard. */
 export const FTS_POPULATE_CHUNK_SQL =
   'INSERT INTO messages_fts(rowid, content) SELECT seq AS rowid, content FROM messages'
   + ' WHERE seq > ? AND seq <= ?;';
 
-/** fts5's own emptying command — the first half of a chunked `rebuild` (I1). */
 export const FTS_DELETE_ALL_SQL = `INSERT INTO messages_fts(messages_fts) VALUES('delete-all');`;
 
-/** fts5's own repair command. Kept as the declaration of what a rebuild MEANS; the worker reaches the
- *  same end state through `delete-all` plus the chunked populate, because the single command is one
- *  uninterruptible native call and a SIGTERM during it hangs the process (I1). */
+/** What a rebuild means. The worker never runs it: one native call cannot stop, so SIGTERM would hang. */
 export const FTS_REBUILD_SQL = `INSERT INTO messages_fts(messages_fts) VALUES('rebuild');`;
 
-/**
- * How many rows one populate chunk indexes.
- *
- * ⚠ THIS NUMBER IS A SHUTDOWN BUDGET, not a throughput knob. The process can only exit between
- * chunks — nothing in JavaScript preempts a native sqlite call — so the chunk size IS the worst-case
- * delay a SIGTERM can meet. 5,000 wide rows is a fraction of a second; the whole 123,000-row repair
- * the brief's box needed is ~25 chunks. Measured consequence of getting this wrong: a single-statement
- * rebuild on a 729 MB table is minutes, and launchd SIGKILLs at its `ExitTimeOut` (20 s by default).
- */
+/** A shutdown budget, not a throughput knob: exit can happen only between chunks, so keep a chunk short. */
 export const FTS_POPULATE_CHUNK_ROWS = 5_000;
 
-/**
- * How long a stopped repair gets to reach its next chunk boundary and roll back cleanly.
- *
- * It is a CHUNK's worth of time plus slack, not a guess: the worker only checks the stop flag between
- * statements, so this must outlast one chunk or the backstop kill makes the boundary check pointless.
- * Two seconds is far above a 5,000-row insert and far below launchd's 20-second `ExitTimeOut`, which
- * is the deadline the whole of I1 is measured against.
- */
+/** Grace for a stopped repair to reach its next chunk boundary: above one chunk, under launchd's timeout. */
 export const FTS_STOP_GRACE_MS = 2_000;
 
 export type FtsState =
-  /** The index exists, covers exactly the table's rows, and answers a MATCH. Nothing to do. */
   | 'healthy'
-  /** No `messages_fts` at all — a database whose index migration never landed, or was dropped. */
   | 'missing'
-  /** The index holds FEWER rows than the table: rows the agent owns that it can no longer find. */
   | 'unpopulated'
-  /** The index holds MORE rows than the table. Measured on a lived-in box at 809 stale rows (129b). */
   | 'stale'
-  /** The counts agree and `MATCH` fails anyway — the state a count comparison cannot see. */
   | 'corrupt'
-  /** The probe itself could not run. Never repaired: an unreadable database is not a broken index. */
   | 'unknown';
 
 export interface FtsHealth {
   readonly state: FtsState;
-  /** Rows actually in the index (`messages_fts_docsize`), or null when it could not be read. */
   readonly indexedRows: number | null;
   readonly tableRows: number | null;
-  /** One short sentence for the log. Never carries user content — counts and state names only. */
+  /** One short sentence for the log: counts and state names only, never user content. */
   readonly detail: string;
 }
 
-/** What a probe needs: run a statement, get rows back. Injected so the probe is pure and testable,
- *  and so production can route it through the reader pool without this function knowing. */
 export type FtsProbeRun = (sql: string, params?: readonly unknown[]) => Promise<unknown[]>;
 
-/**
- * The three cheap reads, in the order that makes each one's failure mean something.
- *
- * ⚠ THE MATCH PROBE IS CHEAP ON PURPOSE AND ITS LIMIT IS STATED: fts5 offers a full
- * `'integrity-check'`, which reads the entire index — the very shape this package exists to keep off a
- * serving box. So the probe runs one `MATCH` for a token that matches nothing, which still forces fts5
- * to open and walk the index structure and therefore still throws on a broken one. It can miss
- * corruption confined to a page the probe never reads. That is a smaller hole than a minutes-long
- * check nobody dares run, and the bounded LIKE fallback is what covers the remainder.
- */
+/** The three cheap reads. The MATCH probe uses a no-match token: it walks the index, throwing if broken,
+ *  where `integrity-check` would read all of it. */
 export async function probeFtsHealth(run: FtsProbeRun): Promise<FtsHealth> {
   let present: unknown[];
   try {
@@ -201,15 +84,12 @@ export async function probeFtsHealth(run: FtsProbeRun): Promise<FtsHealth> {
   let indexedRows: number;
   let tableRows: number;
   try {
-    // ⚠ `messages_fts_docsize` IS THE RIGHT TABLE and not an implementation detail leaking: the index
-    // is EXTERNAL-CONTENT (`content='messages'`), so a plain SELECT from `messages_fts` reads THROUGH
-    // to the content table and counting it compares `messages` with itself. The shadow table's count
-    // is the number of rows actually indexed, which is the question. (PHASE-1 T7 learned this the
-    // expensive way: the probe it replaced repaired nothing for months.)
+    // `messages_fts_docsize` is counted because the index is external-content: counting `messages_fts`
+    // reads through to `messages` and would compare it with itself.
     indexedRows = ((await run('SELECT COUNT(*) AS n FROM messages_fts_docsize'))[0] as { n: number }).n;
     tableRows = ((await run('SELECT COUNT(*) AS n FROM messages'))[0] as { n: number }).n;
   } catch (err) {
-    // The shadow tables are PART of the index. One that cannot be counted is broken, not unreadable.
+    // The shadow tables are part of the index: one that cannot be counted is broken, not unreadable.
     return {
       state: 'corrupt', indexedRows: null, tableRows: null,
       detail: `the index's own shadow table could not be counted: ${err instanceof Error ? err.message : String(err)}`,
@@ -230,8 +110,6 @@ export async function probeFtsHealth(run: FtsProbeRun): Promise<FtsHealth> {
   }
 
   try {
-    // A token that matches nothing, so the probe costs an index open and not a result set. No user
-    // text reaches this query by construction — the token is a literal in this file.
     await run(`SELECT rowid AS rid FROM messages_fts WHERE messages_fts MATCH ? LIMIT 1`, ['zzqxhealthprobe']);
   } catch (err) {
     return {
@@ -248,12 +126,7 @@ export async function probeFtsHealth(run: FtsProbeRun): Promise<FtsHealth> {
 
 export type FtsRepairPlan = 'none' | 'rebuild' | 'recreate';
 
-/**
- * The repair a state earns. Pure, so the policy is testable without a database.
- *
- * `unknown` repairs NOTHING, and that is the load-bearing line: a probe that could not read must not
- * trigger a DROP TABLE. The failure direction of a wrong guess here is destroying a working index.
- */
+/** `unknown` repairs nothing: an unreadable probe must never DROP TABLE. */
 export function ftsRepairPlan(state: FtsState): FtsRepairPlan {
   if (state === 'missing') return 'recreate';
   if (state === 'unpopulated' || state === 'stale' || state === 'corrupt') return 'rebuild';
@@ -265,30 +138,14 @@ export interface FtsRepairResult {
   readonly ms: number;
   readonly indexedRows: number | null;
   readonly tableRows: number | null;
-  /** How many populate chunks ran — the number that makes "interruptible" checkable (I1). */
   readonly chunks?: number;
   readonly error?: string;
 }
 
 /**
- * The repair's whole program, on its own thread with its own WRITABLE connection.
- *
- * ⚠ CHUNKED AND INTERRUPTIBLE (I1), because `process.exit()` JOINS this thread. Measured: an
- * `unref()`'d eval worker inside a 4.65 s sqlite statement, with `process.exit(0)` requested at
- * +404 ms, exited at 5,630 ms wall — `unref` lets the loop drain, it does not make exit skip the
- * join, and neither `terminate()` nor anything else in JavaScript preempts `sqlite3_step`. A
- * single-statement rebuild on a 729 MB table is MINUTES, so a SIGTERM during the once-per-box repair
- * hung until launchd's `ExitTimeOut` SIGKILLed it, the transaction rolled back, and the next boot
- * redid the whole thing. So the populate is a loop of bounded statements and a stop is checked
- * between them; the worst-case exit delay is now one chunk.
- *
- * ⚠ AND IT IS ONE TRANSACTION (I8). `DROP; CREATE; INSERT` in autocommit left `messages_fts`
- * PRESENT AND EMPTY for the whole populate — minutes on a large table — during which `MATCH`
- * succeeded with zero rows, nothing threw, the LIKE fallback was therefore NOT taken, and every
- * `history_search` returned "No results" while looking perfectly healthy. Readers must see the old
- * index or the new one, never an empty one. SQLite permits `CREATE VIRTUAL TABLE` inside a
- * transaction; the rule that forbids a rebuild inside one belongs to the migration RUNNER, not to
- * SQLite, and this does not run in a migration.
+ * The repair program, on its own thread with a writable connection. Chunked and interruptible, because
+ * `process.exit()` joins this thread and nothing preempts a native sqlite call. One transaction, so readers
+ * never see a present but empty index (it answers `MATCH` with zero rows and skips the LIKE fallback).
  */
 const REPAIR_WORKER_SOURCE = `
   const { parentPort, workerData, receiveMessageOnPort } = require('node:worker_threads');
@@ -351,28 +208,12 @@ const REPAIR_WORKER_SOURCE = `
   }
 `;
 
-/** The repair in flight, if any — so a shutdown can ask it to stop at its next chunk boundary. */
 let liveRepair: Worker | null = null;
 
 /**
- * ⚠ ASK A RUNNING REPAIR TO STOP, AND CALL THIS FROM `shutdown` (I1).
- *
- * `process.exit()` joins worker threads, so a repair inside a native statement holds the exit for the
- * length of that statement — measured at 5.2 s for a 4.65 s statement, and a single-statement rebuild
- * on a 729 MB table is minutes. Nothing in JavaScript can preempt `sqlite3_step`, so the only honest
- * answer is a boundary the worker checks, which is why the populate is chunked. The message is a
- * REQUEST and the worker answers it between chunks; `terminate()` is the backstop for a thread that
- * is somehow already past caring.
- *
- * ⚠ THE REQUEST IS NOT FOLLOWED BY AN IMMEDIATE `terminate()`, AND THAT IS THE WHOLE POINT. My first
- * cut posted the stop and killed the thread on the next line; the kill won the race every time, the
- * chunk-boundary check never ran, and the clause recorded "the repair worker exited without
- * answering" — i.e. the mechanism this fix exists to add was dead on arrival behind its own backstop.
- * The worker gets `FTS_STOP_GRACE_MS` to reach its next boundary and unwind its transaction cleanly;
- * `terminate()` is the backstop for a thread that is somehow past caring, on an `unref`'d timer so it
- * is never itself a reason the process stays up.
- *
- * Returns true when there was something to stop — which is the only interesting case to log.
+ * Ask a running repair to stop; `index.ts` calls this on shutdown. The stop is a request the worker answers
+ * between chunks; `terminate()` follows only after `FTS_STOP_GRACE_MS` (unref'd timer) so the check can run.
+ * Returns true when there was something to stop.
  */
 export function stopFtsRepair(): boolean {
   const w = liveRepair;
@@ -385,10 +226,6 @@ export function stopFtsRepair(): boolean {
   return true;
 }
 
-/**
- * Run one repair on a short-lived worker. Resolves with what the index looked like afterwards, so the
- * caller logs a MEASURED outcome rather than "we ran something".
- */
 export function runFtsRepair(
   plan: Exclude<FtsRepairPlan, 'none'>,
   opts: { dbPath?: string; deadlineMs?: number; chunkRows?: number } = {},
@@ -403,9 +240,7 @@ export function runFtsRepair(
         workerData: {
           dbPath,
           plan,
-          // ⚠ THE NATIVE MODULE'S PATH, RESOLVED HERE (I3's lesson, applied to this worker too): an
-          // eval worker's bare `require` resolves from `process.cwd()`, which is not a property of
-          // this code. The parent knows where the module is.
+          // The native module's path is resolved here: an eval worker's bare `require` uses `process.cwd()`.
           betterSqlitePath: createRequire(import.meta.url).resolve('better-sqlite3'),
           dropSql: FTS_DROP_SQL,
           createSql: FTS_CREATE_SQL,
@@ -439,7 +274,6 @@ export function runFtsRepair(
   });
 }
 
-/** Production's probe runner: the reader pool when it is up, the serving connection otherwise. */
 async function defaultProbeRun(sql: string, params: readonly unknown[] = []): Promise<unknown[]> {
   if (readerPoolAvailable()) return readerQuery<unknown>('fts_health:probe', sql, params);
   return getDb().prepare(sql).all(...params) as unknown[];
@@ -447,14 +281,7 @@ async function defaultProbeRun(sql: string, params: readonly unknown[] = []): Pr
 
 let checked = false;
 
-/**
- * ⚠ ONE CHECK PER PROCESS, AND BOTH TRANSITIONS ARE LOGGED. The brief asks for both lines because a
- * repair that starts and never reports is indistinguishable from one that never ran.
- *
- * A healthy index logs NOTHING. Every other state logs on the way in and on the way out, at a level
- * that survives production (`logger.ts` pins `debug` out of existence there, which is how the original
- * silent fallback stayed silent).
- */
+/** Logs in and out at warn or above, never debug (the logger drops it); a healthy index logs nothing. */
 export async function checkFtsHealthAndRepair(
   opts: { run?: FtsProbeRun; repair?: typeof runFtsRepair } = {},
 ): Promise<{ health: FtsHealth; plan: FtsRepairPlan; result: FtsRepairResult | null }> {
@@ -473,17 +300,8 @@ export async function checkFtsHealthAndRepair(
     return { health, plan, result: null };
   }
 
-  // TRANSITION IN. Named with what searches do in the meantime, because that is the question a reader
-  // of this line actually has.
-  //
-  // ⚠ AND THE ANSWER IS NOT THE SAME FOR EVERY STATE (I8). This line used to say "takes the bounded
-  // LIKE fallback" unconditionally, which is true only when the index cannot answer at all:
-  //   · `missing`  — no table, `MATCH` throws, the fallback IS taken.
-  //   · `corrupt`  — `MATCH` throws, the fallback IS taken.
-  //   · `unpopulated` / `stale` — the index ANSWERS, just not for every row, and nothing throws, so
-  //     `retrieval.ts` never reaches its catch. Search is partial, not fallen back. Saying otherwise
-  //     sends a reader of the log looking for warns that will never appear.
-  // The honest sentence per state, rather than one sentence that is wrong for half of them.
+  // Say what searches do meanwhile, per state: missing and corrupt make `MATCH` throw, so the LIKE
+  // fallback runs; unpopulated and stale still answer, only partially.
   const meanwhile = (health.state === 'missing' || health.state === 'corrupt')
     ? 'until it finishes, message search takes the bounded LIKE fallback'
     : 'the index still answers until it finishes, but not for every message — results may be incomplete';
@@ -494,7 +312,6 @@ export async function checkFtsHealthAndRepair(
 
   const result = await repair(plan);
 
-  // TRANSITION OUT, with the measurement.
   if (result.ok) {
     logger.info('the message search index was rebuilt in the background; message search is back on the index', {
       state: health.state, plan, ms: result.ms, chunks: result.chunks,
@@ -508,17 +325,12 @@ export async function checkFtsHealthAndRepair(
   return { health, plan, result };
 }
 
-/**
- * ⚠ THE BOOT WIRE, AND THE "NEVER BOOT-BLOCKING" PROPERTY LIVES HERE rather than in the caller — so a
- * clause can prove it. This function returns IMMEDIATELY and touches no database; everything happens
- * inside an `unref`'d timer after the server is already serving. A caller cannot get this wrong by
- * forgetting to defer, because there is nothing to defer at the call site.
- */
+/** The boot wire: returns immediately and touches no database. All work runs in an unref'd timer after the
+ *  server is serving, so a caller cannot block boot. */
 export function scheduleFtsHealthCheck(delayMs: number = FTS_HEALTH_DELAY_MS): void {
   if (checked) return;
   checked = true;
-  // A worker reads and writes the database BY PATH on its own connection, so a path no second
-  // connection can reach has no repair to offer, honestly. Same guard, same reason as the reader pool.
+  // A worker reaches the database by path, so an in-memory database has no repair to offer.
   if (getDbPath() === ':memory:') return;
   const timer = setTimeout(() => {
     void checkFtsHealthAndRepair().catch((err) => {
@@ -530,7 +342,6 @@ export function scheduleFtsHealthCheck(delayMs: number = FTS_HEALTH_DELAY_MS): v
   timer.unref?.();
 }
 
-/** Test seam: let a clause run the schedule again. */
 export function resetFtsHealthForTest(): void {
   checked = false;
 }
