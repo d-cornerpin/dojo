@@ -215,19 +215,12 @@ export function matchDomainPattern(pattern: string, domain: string): boolean {
   return pattern === '*' || domain === pattern || domain.endsWith('.' + pattern);
 }
 
-/** Command matching, verbatim `checkExecCommand` semantics: glob on the line or the base. */
+/** Command matching: glob on the line or the base command, a star spanning any text. */
 export function matchCommandPattern(pattern: string, trimmed: string, baseCommand: string): boolean {
-  if (pattern === '*') return true;
-  if (matchAgentGlob(pattern, trimmed) || matchAgentGlob(pattern, baseCommand)) return true;
-  return false;
+  return pattern === '*' || matchAgentGlob(pattern, trimmed, true) || matchAgentGlob(pattern, baseCommand, true);
 }
 
-/** The deny-side command shape, which additionally honours a `"prefix *"` row. */
+/** The deny-side command shape; a `"prefix *"` row also denies the bare prefix. */
 export function matchCommandDenyPattern(pattern: string, trimmed: string): boolean {
-  if (matchAgentGlob(pattern, trimmed)) return true;
-  if (pattern.endsWith(' *')) {
-    const prefix = pattern.slice(0, -2);
-    if (trimmed === prefix || trimmed.startsWith(prefix + ' ')) return true;
-  }
-  return false;
+  return matchAgentGlob(pattern, trimmed, true) || (pattern.endsWith(' *') && trimmed === pattern.slice(0, -2));
 }

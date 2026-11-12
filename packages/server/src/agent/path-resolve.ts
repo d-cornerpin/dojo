@@ -91,8 +91,9 @@ export function isProtectedIdentityPath(filePath: string): boolean {
   return PROTECTED_IDENTITY_PATHS.some(pattern => matchAgentPathGlob(pattern, real));
 }
 
-/** Glob matcher: * = within one segment, ** = any number of segments, ? = one character. */
-export function matchAgentGlob(pattern: string, value: string): boolean {
+/** Glob matcher: * = within one segment (any text when starCrossesSlash, for command lines),
+ *  ** = any number of segments, ? = one character. */
+export function matchAgentGlob(pattern: string, value: string, starCrossesSlash = false): boolean {
   const expandedPattern = expandTilde(pattern);
   const expandedValue = expandTilde(value);
 
@@ -111,7 +112,7 @@ export function matchAgentGlob(pattern: string, value: string): boolean {
           regex += '.*';
         }
       } else {
-        regex += '[^/]*';
+        regex += starCrossesSlash ? '[\\s\\S]*' : '[^/]*';
         i++;
       }
     } else if (ch === '?') {
