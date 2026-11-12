@@ -1,11 +1,6 @@
-// Where the agent CAN act on a failure (a generated image that failed, a file that did not reach the person), the
-// engine hands the failure to the agent and WAKES it, so the agent tells the person now in its own words (R1, R7,
-// OWNER ANSWER 2). The engine writes nothing to the person.
-//
-// The wake is the engine's existing one for engine events: persist a deliverable event on the events lane
-// (`insertEngineEventIfAbsent`, as spawner.ts' kickoff and the scheduler fire do) and call
-// `getAgentRuntime().handleMessage` (it reads the persisted row; a busy agent parks the wake until its run ends).
-// The intent ('delivery_failure_owed') is a DECLARED DELIVERABLE, not a rider (agent/v2/engine-riders.ts): it IS the reason for a turn.
+// Wakes the agent on a failure it can act on, so it tells the person in its own words; the engine writes
+// nothing to the person. A busy agent parks the wake until its run ends. The intent is the reason for the turn,
+// so it must stay out of ENGINE_RIDER_INTENTS (agent/v2/engine-riders.ts).
 
 import { v4 as uuidv4 } from 'uuid';
 import { insertEngineEventIfAbsent } from '../memory/message-store.js';
@@ -19,17 +14,14 @@ const logger = createLogger('wake-with-notice');
 /** Persist the notice as a deliverable engine event for `agentId` and start (or queue) its turn. Never throws. */
 export async function tellAgentAndWake(opts: { agentId: string; from: string; brief: string; inFailureTurn?: boolean; intent?: 'delivery_failure_owed' | 'background_command_done' }): Promise<void> {
   try {
-    // NO WAKE LOOP (real signal, no counter or timer): a failure that happens inside a turn which a failure notice
-    // itself woke is told to the agent as a rider; it is already on this request and will see it.
+    // No wake loop: a failure inside a turn a failure notice itself woke goes to the agent as a rider instead.
     if (opts.inFailureTurn ?? isFailureWokenTurn(opts.agentId)) {
       postAgentNotice({ toAgentId: opts.agentId, fromName: opts.from, brief: opts.brief, selfIntro: false });
       return;
     }
-    // Re-review 4 (LOW): a background command's result keeps its lines (a listing, a build log); every
-    // other brief is one line, as before.
+    // A background command's result keeps its lines (a listing, a build log); every other brief is one line.
     const body = opts.intent === 'background_command_done' ? opts.brief.trim() : opts.brief.replace(/\s+/g, ' ').trim();
     const content = `[SOURCE: AGENT NOTICE from ${opts.from}] ${body}`;
-    // Field fix 3 re-review 3 (L1): a background command's finished result names itself; it is not a failure.
     if (opts.intent === 'background_command_done') {
       insertEngineEventIfAbsent({ id: uuidv4(), agentId: opts.agentId, content, sourceAgentId: null, originIntent: 'background_command_done', work: null });
     } else {
@@ -44,10 +36,7 @@ export async function tellAgentAndWake(opts: { agentId: string; from: string; br
   }
 }
 
-/**
- * R4: the woken turn is an ENGINE turn, so its written reply does not reach an iMessage requester. Name who to tell
- * (name, relation, channel, address) and say plainly how to reach them. Never throws.
- */
+/** An engine turn's reply does not reach an iMessage requester: name them and how to reach them. */
 export async function requesterReachSentence(address: string): Promise<string> {
   let name = address; let relation = 'a contact';
   try {

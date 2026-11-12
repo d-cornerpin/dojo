@@ -1,6 +1,4 @@
-// ════════════════════════════════════════
-// Web Search and Fetch Implementations
-// ════════════════════════════════════════
+// Web search (Brave) and web fetch for agents.
 
 import { createLogger } from '../logger.js';
 import { openAgentCall, STOPPED_BY_USER } from './abortable-call.js';
@@ -8,10 +6,8 @@ import { stripHtmlTags } from './html-text.js';
 import { outsideSpan } from '../tools/external-content.js';
 import { getSearchApiKey } from '../config/loader.js';
 import { checkPermission } from './permissions.js';
-// ── t114 (census U17) — web_fetch's two phases, named ──
-// The headers bound is the old flat 15s keeping its honest job: how long a server may take to
-// ANSWER. The body bounds are new, because the old number was also silently governing the
-// download and could not do both.
+// web_fetch is bounded in two phases: the server gets 15s to answer, then the body read gets its own
+// deadline sized from the declared content-length, between the base and the ceiling.
 const WEB_FETCH_HEADERS_TIMEOUT_MS = 15_000;
 const WEB_FETCH_BODY_BASE_TIMEOUT_MS = 20_000;
 const WEB_FETCH_BODY_CEILING_MS = 2 * 60_000;
@@ -92,8 +88,8 @@ export async function webSearch(
     logger.info('Web search queued', { query, queuePosition }, agentId);
   }
 
-  // A-6. The slot opens INSIDE the queue: a registration for a call still waiting behind the
-  // 1.1 s rate limiter would report work the box is not doing. `turn` scope, clock composed.
+  // The slot opens inside the queue, so a call still waiting behind the rate limiter is not reported as
+  // running work. `turn` scope, with the 15s clock composed.
   return enqueueSearch(async () => {
     const slot = openAgentCall(agentId, 'turn', AbortSignal.timeout(15000));
     try {
@@ -113,10 +109,8 @@ export async function webSearch(
 
     if (!response.ok) {
       const errorText = await response.text().catch(() => '');
-      // F5 (harness finding): a 429 is the provider's rate/quota limit, an
-      // environmental condition, not an agent error. Retrying just burns more
-      // quota (observed: a research turn retried into three consecutive 429s).
-      // Tell the agent plainly to proceed without more searches, and log WARN.
+      // A 429 is the provider's rate or quota limit, not an agent error, and retrying only burns more quota:
+      // tell the agent to proceed without more searches, and log at WARN.
       if (response.status === 429) {
         logger.warn('Brave Search rate/quota limit hit (429)', {
           body: errorText.slice(0, 200),
@@ -148,9 +142,7 @@ export async function webSearch(
       return `No results found for: "${query}"`;
     }
 
-    // Phase 3.5 (2026-05-04) — per-result snippet cap at 200 chars per
-    // Part XVIII §A. Brave's `description` is the snippet; truncating it
-    // here keeps even a 20-result query well under the 3K token cap.
+    // Brave's `description` is the snippet; capping it at 200 chars keeps a 20-result query small.
     const SNIPPET_CHARS = 200;
     const formatted = results.map((r, i) => {
       const snippet =
@@ -160,7 +152,7 @@ export async function webSearch(
       return `${i + 1}. ${r.title}\n   ${r.url}\n   ${snippet}`;
     }).join('\n\n');
 
-    return `Search results for "${query}":\n\n${outsideSpan(formatted)}`;   // v3.5 K33: only the results are outside text
+    return `Search results for "${query}":\n\n${outsideSpan(formatted)}`;   // only the results are outside text
     } catch (err) {
       // The discriminator is this call's OWN controller, never the message: a composed clock
       // rejects with the same `AbortError` a stop does.
@@ -186,12 +178,8 @@ export async function webFetch(
   agentId: string,
   params: { url: string; prompt?: string; maxTokens?: number },
 ): Promise<string> {
-  // Phase 3.5 (2026-05-04) — `prompt` is now required at the dispatcher
-  // level. Keeping the optional signature here so legacy callers still
-  // compile, but the documented contract is `{ url, prompt }`. When prompt
-  // is absent we fall back to raw fetch (cap'd at maxTokens) only as a
-  // safety net for legacy in-process callers; the agent-facing tool
-  // schema enforces required.
+  // The web_fetch tool requires `prompt` (agent/tools/cat/web.ts refuses without it); without one this
+  // returns the raw page capped at maxTokens.
   const { url, prompt, maxTokens = 8000 } = params;
 
   // Permission check
@@ -203,20 +191,8 @@ export async function webFetch(
 
   logger.info('Web fetch', { url, domain, hasPrompt: !!prompt }, agentId);
 
-  // A-6. ONE slot for the whole redirect loop — a stop on hop three must not be survived by
-  // hop four — with the clock composed, so a slow page still times out as a page.
-  //
-  // ── t114 (census U17) — THE 15s COVERED BODY CONSUMPTION, AND THAT IS WHERE PAGES LIVE ──
-  //
-  // THE DEFECT: one flat `AbortSignal.timeout(15000)` for the whole operation. undici's signal
-  // covers the BODY read (`response.text()` below), so a 5 MB page arriving at 400 KB/s needs
-  // ~12.5 seconds of body ALONE — the download was aborted with the page nearly in hand, and the
-  // agent was told the fetch failed. No bytes-received check existed anywhere on the path.
-  //
-  // Phased now: the server gets the same 15s to ANSWER (unchanged for every ordinary page, which
-  // is the overwhelming majority), and once headers are in the body earns a deadline from the
-  // `content-length` it declared. A page that declares nothing still gets a real allowance rather
-  // than the remainder of a window it has already spent.
+  // One slot for the whole redirect loop, so a stop on one hop is not survived by the next, with the
+  // phased deadline composed: 15s for headers, then a body deadline from the declared content-length.
   const deadline = phasedTransferDeadline({
     headersMs: WEB_FETCH_HEADERS_TIMEOUT_MS,
     bodyBaseMs: WEB_FETCH_BODY_BASE_TIMEOUT_MS,
@@ -227,12 +203,8 @@ export async function webFetch(
 
   let text: string;
   try {
-    // Follow redirects MANUALLY and re-run the network permission check on each
-    // hop. Checking only the initial URL lets an allowlisted host (or an open
-    // redirect on it) bounce a domain-restricted agent to a NON-allowlisted
-    // origin whose content is then returned. Wildcard ('*') agents pass every
-    // hop, so this only tightens restricted agents; the boundary now holds
-    // across redirects instead of just at the first request.
+    // Follow redirects manually and re-check network permission on every hop, so an allowlisted host (or an
+    // open redirect on it) cannot bounce a domain-restricted agent to a non-allowlisted origin.
     let response: Response = null as unknown as Response;
     let currentUrl = url;
     for (let hop = 0; hop < 5; hop++) {
@@ -241,24 +213,14 @@ export async function webFetch(
       if (!hopPerm.allowed) {
         return `Permission denied: ${hopPerm.reason}`;
       }
-      // T11 (SSRF): every hop resolves to a public address or we stop here.
-      // Inside the loop, not before it, so an open redirect on an allowed host
-      // cannot bounce us onto loopback/LAN/metadata. Rejection is a NetGuardError
-      // handled in the catch below.
-      if (!ownsTheMac(agentId)) await assertPublicHttpTarget(currentUrl);   // OR-AUDIT-ANSWERS: the main agent
+      // SSRF guard on every hop, inside the loop, so an open redirect cannot bounce us onto loopback, LAN or
+      // metadata addresses. A rejection is a NetGuardError, handled in the catch below.
+      if (!ownsTheMac(agentId)) await assertPublicHttpTarget(currentUrl);   // the main agent may reach local addresses
       response = await fetch(currentUrl, {
         headers: {
           'User-Agent': 'DOJO/1.0 (agent-fetch)',
-          // The trailing `*/*;q=0.1` is LOAD-BEARING, not politeness. Without it this
-          // header is an HTML-ONLY offer, and a strict JSON API reads it as "this client
-          // does not accept what I serve" and answers 415 Unsupported Media Type — so
-          // web_fetch could not read ANY JSON API. Measured against api.github.com,
-          // every endpoint: bare `text/html` → 415; `*/*` → 200; `application/json` →
-          // 200; `text/html,*/*;q=0.1` → 200. Appending the catch-all at q=0.1 is the
-          // MINIMAL measured form: HTML still wins the negotiation for ordinary pages
-          // (so stripHtmlTags keeps getting the HTML it expects, and a content-negotiating
-          // site still serves its human page), while a JSON-only origin now has something
-          // it is allowed to answer with instead of a 415.
+          // The trailing `*/*;q=0.1` is load-bearing: without it strict JSON APIs answer 415. At q=0.1 HTML
+          // still wins negotiation for ordinary pages, so stripHtmlTags keeps getting HTML.
           'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.1',
         },
         signal: slot.signal,
@@ -273,17 +235,8 @@ export async function webFetch(
     }
 
     if (!response.ok) {
-      // A non-2xx from an EXTERNAL url (404/410 gone, 403 gated, 5xx server
-      // erroring, etc.) is an environmental condition about that page, not a
-      // tool malfunction or an agent mistake, exactly like the web_search 429
-      // path above. Retrying the same dead URL just wastes a turn. Return a
-      // CLEAR, actionable NON-error result: the dispatcher flags is_error only
-      // on the "Fetch failed"/"Permission denied" prefixes, so avoiding that
-      // prefix keeps a handled HTTP failure from surfacing as a BLOCKING tool
-      // error. Genuine tool-arg errors (missing prompt, invalid url) and
-      // permission denials are still is_error at the dispatcher. (harness
-      // finding, 2026-07-03: an external 404 during a research turn was
-      // failing the run's NO_UNEXPECTED_TOOL_ERROR invariant.)
+      // A non-2xx from an external url is a fact about that page, not a tool error. Return actionable
+      // guidance without the "Fetch failed"/"Permission denied" prefixes, which web.ts flags as is_error.
       logger.warn('Web fetch got a non-OK HTTP status', {
         url, status: response.status, statusText: response.statusText,
       }, agentId);
@@ -294,8 +247,7 @@ export async function webFetch(
     }
 
     const contentType = response.headers.get('content-type') ?? '';
-    // t114: headers are in and redirects are resolved — the body gets time sized from what this
-    // page declared, instead of whatever was left of a 15-second whole-trip budget.
+    // Headers are in and redirects resolved: the body gets time sized from this page's declared length.
     deadline.armBody(Number(response.headers.get('content-length') ?? '0') || null);
     const body = await response.text();
 
@@ -304,27 +256,20 @@ export async function webFetch(
     } else {
       text = body;
     }
-  // ⚠ Released at the end of the TRANSPORT, not of the function: what follows is the
-  // prompt-extraction model call, which registers its own slot through `callModel`.
+  // Released at the end of the transport, not of the function: the extraction call below registers its
+  // own slot through `callModel`.
   } catch (err) {
     if (err instanceof NetGuardError) {
       logger.warn('Web fetch refused by the network guard', { url, address: err.address, reason: err.message }, agentId);
       return `Permission denied: ${err.message}`;
     }
     const msg = err instanceof Error ? err.message : String(err);
-    // ANSWERED FIRST: the ladder below turns an `AbortError` into "request timed out. The server
-    // is slow or unresponsive." — the user's own button wearing a provider's failure.
+    // Checked first: the ladder below would turn the user's stop (an AbortError) into a server timeout.
     if (slot.cutByStop()) { slot.release(); return STOPPED_BY_USER; }
-    // A network-layer fetch failure (timeout / DNS / refused / TLS) to an EXTERNAL
-    // url is environmental, and this branch already HANDLES it: it returns actionable
-    // guidance to the agent (below), not an is_error. Log at WARN, matching the
-    // sibling non-2xx branch. Logging at ERROR mislabels a handled external failure
-    // as an agent-level error (it red-ed research turns on a transient remote timeout).
+    // A network-layer failure to an external url is environmental and handled here with actionable
+    // guidance, so it logs at WARN like the non-2xx branch, not ERROR.
     logger.warn('Web fetch failed (handled, returned actionable guidance to the agent)', { error: msg, url }, agentId);
-    // v2.3.19 — translate the raw Node fetch error into something
-    // actionable. Pre-spec the agent got "Web fetch failed: fetch
-    // failed" which is doubled-up and unhelpful — the doubled "fetch
-    // failed" is the literal Node error message with no detail.
+    // Translate the raw Node error (often just "fetch failed") into something the agent can act on.
     const lower = msg.toLowerCase();
     let friendly: string;
     if (lower.includes('enotfound') || lower.includes('getaddrinfo')) {
@@ -343,50 +288,28 @@ export async function webFetch(
     }
     return friendly;
   } finally {
-    // t114: the phased deadline is disarmed wherever the slot is handed back, so neither of its
-    // timers outlives the fetch it was bounding.
+    // Disarm the phased deadline wherever the slot is released, so neither timer outlives the fetch.
     deadline.done();
     slot.release();
   }
 
-  // Phase 3.5 (2026-05-04) — when a `prompt` is provided, call a cheap
-  // model to extract the focused content matching the prompt instead of
-  // returning the raw page. This is the structural fix for context bloat
-  // on web_fetch — a 50K-token page becomes a ~1-2K targeted extract.
-  // Falls back to raw fetch if the extractor model isn't available or
-  // the call fails (callers always get *something* useful back).
-  // ── t114 (census row 34, the `web_fetch` extractor arm) — THE DEGRADATION STOPS BEING SILENT ──
-  //
-  // The 45-second bound below is DEFENSIBLE and deliberately kept: F3 measured a busy local
-  // extractor stalling real turns for MINUTES against the provider's 5-minute default, and
-  // failing fast to the raw-fetch fallback is the point of this path. Scaling it with declared
-  // patience would reinstate the defect F3 closed.
-  //
-  // What was NOT defensible is that the fallback was INVISIBLE TO THE AGENT. On expiry the
-  // extraction was discarded and the agent received the raw page under an unchanged header, so
-  // it could not tell that the prompt it asked to be applied never was — a silent quality
-  // degradation, worst exactly when the page is large enough to need extracting. The census
-  // called this arm a silent degrade rather than a silent kill, and this is the half that makes
-  // it honest: the record travels with the result the agent reads, not only into the log.
+  // With a prompt, a light-tier model extracts what the prompt asks for instead of returning the raw page.
+  // Its 45s bound fails fast to the raw page; on any fallback the result says the prompt was not applied.
   let extractionSkipped: string | null = null;
   if (prompt && prompt.trim().length > 0) {
     try {
       const { selectModel } = await import('../router/selector.js');
       const { callModel } = await import('./model.js');
-      // Use the agent's own model unless we can find a cheaper 'light'
-      // tier model. Light tier is the right home for compress-the-page
-      // calls — they're short prompts with bounded outputs.
+      // Extraction runs on the light-tier model: short prompts with bounded outputs.
       const lightModel = selectModel('light', agentId);
       const fetchModelId = lightModel?.modelId ?? null;
       if (fetchModelId) {
-        // Cap input to prevent runaway costs on huge pages. ~50K chars
-        // (~12K tokens) is plenty for a focused-extraction prompt; longer
-        // pages are heuristically the wrong tool anyway (use search).
+        // Cap input at ~50K chars (~12K tokens) to bound cost on huge pages.
         const pageSnippet = text.length > 50_000 ? text.slice(0, 50_000) : text;
         const result = await callModel({
           agentId,
           modelId: fetchModelId,
-          // t88: a fetched page distilled for the agent to read — an engine artifact, not a turn.
+          // A fetched page distilled for the agent to read: an engine artifact, not a turn.
           purpose: 'page_summary',
           systemPrompt:
             'You are a focused web content extractor. Given a page and an extraction prompt, ' +
@@ -399,11 +322,8 @@ export async function webFetch(
             },
           ],
           tools: false,
-          // F3 (harness finding): this is a best-effort utility call with a raw-fetch
-          // fallback right below. A busy local extractor model was stalling real turns
-          // for minutes against the provider's default 5-minute timeout, then logging
-          // at ERROR even though the failure is fully handled here. Fail fast to the
-          // fallback instead; 45s is generous for a bounded extraction.
+          // Best-effort with the raw-page fallback below: fail fast instead of waiting out the provider's
+          // 5-minute default behind a busy local model.
           abortSignal: AbortSignal.timeout(45_000),
           bestEffort: true,
         });
@@ -433,11 +353,11 @@ export async function webFetch(
 
   // Raw fetch fallback (when no prompt, no light model, or extraction failed).
   const maxChars = maxTokens * 4;
-  // v3.5 K33: only the page is outside text; the truncation note, the NOTE and the header are the platform's.
+  // Only the page is outside text; the truncation note, the NOTE and the header are the platform's.
   text = text.length > maxChars
     ? outsideSpan(text.slice(0, maxChars)) + `\n\n... [TRUNCATED: content is ${text.length} characters, showing first ${maxChars}]`
     : outsideSpan(text);
-  // t114: the note rides the RESULT, so the agent learns its prompt was not applied.
+  // The note rides the result, so the agent learns its prompt was not applied.
   return extractionSkipped
     ? `Fetched from ${url} (NOTE: your extraction prompt was NOT applied — ${extractionSkipped}):\n\n${text}`
     : `Fetched from ${url}:\n\n${text}`;
