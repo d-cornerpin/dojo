@@ -1,12 +1,7 @@
 // THE ONE PROOF CHECK: "is there real proof, made by this task's worker for this task, that the work
-// happened?" is answered here and nowhere else.
-//   - `checkProof` judges the items a worker names: every item resolves to a row the engine wrote, made
-//     by this worker at or after the task was opened (`proof-kinds.ts` holds the per-kind rule); a
-//     "finished" hand-in needs a file, a delivery to the asker, a command that exited 0, a confirmed
-//     receipt or the measure at 0; "can't be done" needs a failure, a remainder, the asker's withdrawal,
-//     a command that did not exit 0 or a receipt carrying an error. Prose and status claims never resolve.
-//   - `proofFor` is the engine's own finder: the items the worker's rows show for the task, each held
-//     to the same rule. A scheduled task is judged on its current run, never on an earlier one.
+// happened?" is answered here only. `checkProof` judges the items a worker names: each must resolve to a row
+// the engine wrote, made by this worker at or after the task opened (`proof-kinds.ts` holds the per-kind
+// rule); prose never resolves. `proofFor` is the engine's own finder, holding what it finds to the same rule.
 // Neither judges whether the proof meets the goal: a decider does that after opening it.
 import { getDb } from '../../db/connection.js';
 import { measureReadsZero } from '../measure-close-gate.js';
@@ -32,7 +27,6 @@ function taskOf(workId: string): (ProofTask & { worker: string }) | null {
   return w ? { id: w.id, title: w.title, openedAt: w.opened_at, worker: w.agent_id, ask: w.ask_id ? { receipt: w.ask_receipt } : null } : null;
 }
 
-/** Does this resolved item show the attempt failed (for a "can't be done")? */
 function showsFailure(item: ResolvedItem): boolean {
   if (CANT_BE_DONE_KINDS.has(item.kind)) return true;
   if (item.kind === 'command') return item.facts.exit !== 0;
@@ -77,7 +71,6 @@ const sqlFloor = (ms: number): string => new Date(Math.floor(ms / 1000) * 1000).
 type Found = 'delivery' | 'file' | 'receipt' | 'measure';
 type Finder = (workId: string, worker: string, floor: string) => ProofItemInput[];
 
-/** Where the engine finds each kind of item for a task, oldest first. */
 const FINDERS: Record<Found, Finder> = {
   delivery: (_w, worker, floor) => (getDb().prepare(
     `SELECT id FROM deliveries WHERE agent_id = ? AND outcome = 'delivered' AND tool <> 'engine-ack' AND created_at >= ?
@@ -98,8 +91,6 @@ const FINDERS: Record<Found, Finder> = {
 /** Channels that reach no person: a run's engine-found delivery must not be one of them. */
 const NO_PERSON_CHANNELS: ReadonlySet<string> = new Set(['a2a', 'none']);
 
-/** The items of these kinds the worker's own rows prove for the task, each held to `checkProof`'s rule
- *  for a finished task. */
 function found(workId: string, kinds: readonly Found[], byEngine = false): ResolvedItem[] {
   const task = taskOf(workId);
   if (!task) return [];
@@ -122,7 +113,6 @@ export const engineProof = (workId: string): ResolvedItem[] => found(workId, ['f
 
 const fact = (f: ResolvedItem['facts'], k: string): string => (f[k] === undefined ? '' : String(f[k]));
 
-/** One line saying what an item shows, from its facts. */
 function summarize(i: ResolvedItem): string {
   const f = i.facts;
   switch (i.kind) {
@@ -144,7 +134,6 @@ export function proofLines(items: readonly ResolvedItem[]): string[] {
 }
 
 
-/** `engineProof` as one line, or null when there is none. */
 export function engineProofLine(workId: string): string | null {
   const lines = proofLines(engineProof(workId));
   return lines.length > 0 ? lines.join('; ') : null;

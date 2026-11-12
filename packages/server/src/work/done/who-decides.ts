@@ -1,7 +1,6 @@
-// WHO DECIDES a handed-in task: the PM. Once the PM has reviewed it twice since the hand-in and gave no
-// verdict, or the task has been sent back three times, the main agent decides another agent's task and the
-// owner decides the main agent's own. A task the PM worked is decided by the main agent. Never an agent that
-// worked it (`workersOf`): when the next decider worked it, the owner decides.
+// WHO DECIDES a handed-in task: the PM, until two verdictless reviews or three send-backs; then the main agent
+// (another agent's task) or the owner (the main agent's own). A task the PM worked starts with the main agent.
+// Never a worker of the task (`workersOf`): then the owner.
 import { getDb } from '../../db/connection.js';
 import { getPMAgentId, getPrimaryAgentId } from '../../config/platform.js';
 import { AUDIT_KIND } from '../audit-trail.js';
@@ -9,11 +8,8 @@ import { workerOf, workersOf } from './record.js';
 
 export type Decider = { kind: 'agent'; agentId: string } | { kind: 'owner' };
 
-/** How many PM reviews with no verdict past the hand-in hand the decision on. */
 const PM_ASKS_BEFORE_ESCALATION = 2;
-/** How many send-backs on one task bring in the next decider. */
 export const SEND_BACKS_BEFORE_ESCALATION = 3;
-/** The trail entry a PM review that gave no verdict on a waiting hand-in leaves on it. */
 export const REVIEW_MISS_ENTRY = 'review_miss';
 
 /** The PM's reviews of this row since its newest hand-in that gave no verdict. */

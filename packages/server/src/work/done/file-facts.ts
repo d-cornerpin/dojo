@@ -1,12 +1,9 @@
-// What a `file` proof item points at, read off the disk when it is checked: its size, modification
-// time, the sha256 of its bytes and the first 8 KB as an excerpt, so every reader sees the file as it
-// stood. The read is asked of `agent/permissions.ts` with the worker's own permissions first, and the
-// file is hashed in fixed-size chunks, never held in memory whole.
+// What a `file` proof item points at, read off disk when checked: size, mtime, sha256 and an 8 KB excerpt.
+// Read through `agent/permissions.ts` with the worker's permissions; hashed in chunks, never held whole.
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { checkPermission } from '../../agent/permissions.js';
 
-/** The most of a file's text a decider is shown. */
 export const EXCERPT_BYTES = 8192;
 const CHUNK_BYTES = 1 << 20;
 

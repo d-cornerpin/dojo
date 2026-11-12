@@ -1,18 +1,11 @@
-// THE DECISION: how board work that was handed in, or that the owner closes, becomes Done, Closed
-// (couldn't be done), Sent back or Cancelled. (The other two ends are a project derived from its tasks,
-// `project-state.ts`, and a service agent's housekeeping, `housekeeping.ts`.)
-//   - approve / send_back decide a waiting hand-in. The caller is `whoDecides` (never the worker) or
-//     the owner. An agent approves only after opening every proof item (`open-proof.ts`); the owner
-//     is exempt. The reason is one line saying how the proof meets the goal, or what is missing.
+// THE DECISION: how board work handed in, or closed by the owner, becomes Done, Closed (couldn't be done),
+// Sent back or Cancelled. Project ends are `project-state.ts`; service housekeeping is `housekeeping.ts`.
+//   - approve / send_back decide a waiting hand-in, by `whoDecides` (never the worker) or the owner. An agent
+//     approves only after opening every proof item (`open-proof.ts`); the reason is one line.
 //   - owner_done / cancel are the owner's alone, from the dashboard, from any open state.
-//   - a run of a live schedule (scope `run`) is decided on its own: approve or send back returns the row
-//     to Open for its next run, and a send-back is a hint to the worker.
-// The owner decides from the dashboard (decider null), or approves or sends back a hand-in he was
-// asked about by his own words to the relaying agent, verified against his messages (`ownerQuoteProof`); the decision
-// records who relayed them and the quote.
-// One unit per row (`applyDecision`): the adjudication, the `decided` event and the transition with
-// `claim: 'decided'`, then the decision's effects (`effects.ts`). A project that ends closes each of its
-// open tasks the same way.
+//   - a run of a live schedule (scope `run`) is decided on its own: approve or send back returns it to Open.
+// The owner may also decide by words an agent relays, verified against his messages (`ownerQuoteProof`).
+// One unit per row (`applyDecision`): adjudication, `decided` event, transition (`claim: 'decided'`), effects.
 import { getDb } from '../../db/connection.js';
 import { getPMAgentId } from '../../config/platform.js';
 import { ownerQuoteProof } from '../../tracker/owner-words.js';

@@ -1,12 +1,7 @@
-// Who asked for a task, by the engine's own record, and whether a delivery or an inbound message is
-// that asker's:
-//   - an agent asker is the task's `requester_id` (requester 'agent', another agent than the worker): a
-//     delivery reaches it on the a2a lane addressed to that id, and its message carries that id as sender;
-//   - a person asker is identified by the message the task (or its project) exists for: that message's
-//     conversation and its channel sender;
-//   - when the person is the owner (no source message from anyone else, or one the owner wrote), the
-//     owner's own surfaces count too: the dashboard, voice, and each channel's owner rule (`isOwnerOn`).
-// Anything else is not the asker, so the label "the worker's own message to the asker" stays true.
+// The task's asker, by the engine's own record: an agent asker is the task's `requester_id` (another agent
+// than the worker); a person asker is the sender of the message the task or its project exists for, and
+// when that is the owner, his own surfaces count too (dashboard, voice, each channel's `isOwnerOn`).
+// Anything else is not the asker, so "the worker's own message to the asker" stays true.
 import { getDb } from '../../db/connection.js';
 import { ownerWords } from '../../tracker/owner-words.js';
 import { isOwnerOn } from '../../services/owner-on.js';
@@ -47,7 +42,7 @@ export function askerOf(taskId: string): Asker {
   };
 }
 
-/** An agent reference (id or name, as `send_to_agent` takes it) to the agent's id; the reference itself when unknown. */
+/** An agent reference (id or name) to the agent's id; the reference itself when unknown. */
 function agentIdOf(ref: string | null): string | null {
   if (!ref) return null;
   const r = getDb().prepare('SELECT id FROM agents WHERE id = ? OR name = ? COLLATE NOCASE ORDER BY (id = ?) DESC LIMIT 1')
@@ -67,7 +62,7 @@ export function deliveredToAsker(
   return d.channel === 'dashboard' || d.channel === 'voice' || (!!d.recipient_id && isOwnerOn(d.channel, d.recipient_id));
 }
 
-/** Does a send to these agents (ids or names) reach the task's asker? Every recipient must be the agent that asked. */
+/** Does a send to these agents (ids or names) reach the asker? Every recipient must be the asker. */
 export function sendReachesAsker(taskId: string, recipients: readonly string[]): boolean {
   const a = askerOf(taskId);
   return a.kind === 'agent' && a.id !== null && recipients.length > 0 && recipients.every((r) => agentIdOf(r) === a.id);

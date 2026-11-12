@@ -1,19 +1,15 @@
-// THE HAND-IN RECORD: what a `handed_in` event carries and how the rest of work/done reads it (the row's
-// worker, its newest hand-in, everyone who worked it), the one-unit move, and the adjudication row a
-// decision writes. Every module here reads these; none of them is a door.
+// THE HAND-IN RECORD: what a `handed_in` event carries and how work/done reads it; none of these is a door.
 import { getDb } from '../../db/connection.js';
 import { withUnit } from '../../db/unit.js';
 import { PATIENCE_ENTRY } from '../../tracker/assignee-patience.js';
 import type { WorkOutcome, WorkState } from '../store.js';
 import type { HandInOutcome, ResolvedItem } from './proof-kinds.js';
 
-/** The owner's id wherever a decision or a decider names him. */
 export const OWNER_ID = 'user';
 
 /** `run`: one run of a live schedule, which goes on; `schedule`: the scheduled work as a whole. */
 export type HandInScope = 'run' | 'schedule';
 
-/** What a `handed_in` event carries. */
 export interface HandInRecord { outcome: HandInOutcome; items: ResolvedItem[]; note: string; filedBy: string; scope?: HandInScope }
 
 /** The worker of a task: its assignee, else the agent holding it. Empty when there is no such row. */
@@ -34,11 +30,9 @@ export function latestHandIn(workId: string, eventId?: number): (HandInRecord & 
 export const handedInSinceExpr = (a: string): string =>
   `EXISTS (SELECT 1 FROM work_events h WHERE h.work_id = ${a}.id AND h.kind = 'handed_in' AND h.created_at >= ?)`;
 
-/** SQL: the note of the row's newest hand-in, or NULL. */
 export const handInNoteExpr = (a: string): string =>
   `(SELECT json_extract(h.payload, '$.note') FROM work_events h WHERE h.work_id = ${a}.id AND h.kind = 'handed_in' ORDER BY h.id DESC LIMIT 1)`;
 
-/** SQL: the delivery ids the row's hand-ins carry as proof. */
 export const handInDeliveriesExpr = (a: string): string =>
   `(SELECT json_extract(i.value, '$.ref') FROM work_events h, json_each(h.payload, '$.items') i
      WHERE h.work_id = ${a}.id AND h.kind = 'handed_in' AND json_extract(i.value, '$.kind') = 'delivery')`;

@@ -1,8 +1,6 @@
-// A HOLD: an Open or Working task put on standby, paused (the asker has the ball) or blocked (something
-// is in the way), with a one-line reason. The row's state does not move, so a hold is never a way out of
-// the work: a held task is handed in and decided, or cancelled by the owner; a hold the owner set only he lifts.
-// Any change of state ends the hold (`transition()` clears the columns). Each set and clear is one entry
-// on the task's trail. The columns are written through the attribute door, which redacts the reason.
+// A HOLD: an Open or Working task on standby, paused (the asker has the ball) or blocked, with a one-line
+// reason. The state does not move; any change of state ends the hold (`transition()` clears the columns).
+// A hold the owner set only he lifts. The attribute door writes the columns and redacts the reason.
 import { getDb } from '../../db/connection.js';
 import { withUnit } from '../../db/unit.js';
 import { appendAuditEntry } from '../audit-trail.js';
