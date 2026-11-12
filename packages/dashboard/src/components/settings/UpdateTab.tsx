@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from 'react';
 import * as api from '../../lib/api';
 import { DataBackupNotice } from '../DataBackupNotice';
 import { DiskSpaceNotice } from '../DiskSpaceNotice';
+import { CanvasMarkdown } from '../CanvasMarkdown';
 import { formatDateShort } from '../../lib/dates';
 import { useRestartWait } from '../../lib/use-restart-wait';
 
@@ -154,9 +155,9 @@ export const UpdateTab = () => {
         {updateInfo?.releaseNotes && updateInfo.updateAvailable && (
           <div>
             <span className="text-xs text-ui/40">Release Notes</span>
-            <pre className="mt-1 text-xs text-ui/55 whitespace-pre-wrap font-mono bg-ui/[0.03] rounded p-2 max-h-40 overflow-y-auto">
-              {updateInfo.releaseNotes}
-            </pre>
+            <div className="mt-1 text-xs text-ui/55 bg-ui/[0.03] rounded p-2 max-h-60 overflow-y-auto">
+              <CanvasMarkdown content={updateInfo.releaseNotes} />
+            </div>
           </div>
         )}
 

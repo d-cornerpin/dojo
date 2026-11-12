@@ -450,7 +450,7 @@ export async function checkForUpdate(channel?: UpdateChannel): Promise<UpdateChe
       latestTag: release.tag_name,
       releaseName: release.name,
       publishedAt: release.published_at,
-      releaseNotes: release.body?.slice(0, 1000) ?? null,
+      releaseNotes: release.body ?? null,
       updateAvailable,
       downloadUrl: zipAsset?.browser_download_url ?? null,
       downloadSize: zipAsset?.size ?? null,

@@ -109,7 +109,7 @@ export const platformHandlers: ToolHandlerMap = {
     }
     if (info.updateAvailable) {
       return {
-        content: `An update is available${asOf}.${chanNote}\nInstalled: ${info.currentVersion}\nLatest: ${info.latestVersion}${info.releaseName ? ` (${info.releaseName})` : ''}\n\nRelease notes:\n${info.releaseNotes ?? '(none provided)'}\n\nIf the user wants it, call apply_update to install and restart.`,
+        content: `An update is available${asOf}.${chanNote}\nInstalled: ${info.currentVersion}\nLatest: ${info.latestVersion}${info.releaseName ? ` (${info.releaseName})` : ''}\n\nRelease notes:\n${info.releaseNotes?.slice(0, 1000) ?? '(none provided)'}\n\nIf the user wants it, call apply_update to install and restart.`,
         isError: false,
       };
     }
