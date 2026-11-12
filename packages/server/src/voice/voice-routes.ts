@@ -1,14 +1,14 @@
 /**
  * Voice settings & model management API.
  *
- *   GET    /api/voice/voices                       — list Kokoro voice presets
- *   GET    /api/voice/models                       — installed STT/TTS models + disk usage
- *   POST   /api/voice/models/:kind/:id             — download (whisper) / preload (kokoro)
- *   DELETE /api/voice/models/:kind/:id             — delete a model file from disk
- *   POST   /api/voice/preview                      — synthesize a short clip in a voice
+ *   GET    /api/voice/voices                      : list Kokoro voice presets
+ *   GET    /api/voice/models                      : installed STT/TTS models + disk usage
+ *   POST   /api/voice/models/:kind/:id            : download (whisper) / preload (kokoro)
+ *   DELETE /api/voice/models/:kind/:id            : delete a model file from disk
+ *   POST   /api/voice/preview                     : synthesize a short clip in a voice
  *
  * Voice config (preferred voice, playback speed, VAD sensitivity, STT model)
- * lives in the existing `config` table via /api/config/settings/:key — no new
+ * lives in the existing `config` table via /api/config/settings/:key, so no new
  * routes needed there.
  */
 
@@ -68,7 +68,7 @@ voiceRouter.get('/models', async (c) => {
   const freeMb = await freeDiskMb();
 
   // Annotate each whisper entry with its label + approximate download size,
-  // so the dashboard can render "Base (147 MB) — fast, lower quality".
+  // so the dashboard can render "Base (147 MB): fast, lower quality".
   const whisper = models
     .filter((m) => m.kind === 'whisper')
     .map((m) => {

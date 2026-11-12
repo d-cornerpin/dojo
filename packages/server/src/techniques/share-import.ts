@@ -205,7 +205,7 @@ export async function importTechnique(zipBuffer: Buffer): Promise<ImportResult> 
   // = dropping a message in the trainer's chat with the staged path,
   // any dependency manifest, and any placeholders that need filling.
   // The trainer's prompt teaches them how to install deps and
-  // finalize. Fire-and-forget — a failed handoff doesn't fail the
+  // finalize. Fire-and-forget: a failed handoff doesn't fail the
   // import (the user can still see the technique sitting in needs_setup
   // and message the trainer manually).
   void notifyTrainerOfImport(newId, manifest.technique.name, dirPath, manifest.placeholders ?? []).catch((err) => {

@@ -199,8 +199,8 @@ export function generateDependencySetupScript(exportedAtIso: string): DepScriptR
 // up the core tools the migrated dojo needs but that aren't technique deps:
 // Ollama (if the dojo uses local models) and cloudflared (if a tunnel is
 // configured). Each install is guarded by `command -v`, so re-running is a
-// no-op. Ollama MODEL downloads are intentionally left out — those run in the
-// background via runPostMigrationChecks once Ollama is on PATH. Output flows
+// no-op. Ollama MODEL downloads are intentionally left out (those run in the
+// background via runPostMigrationChecks once Ollama is on PATH). Output flows
 // through the same stdout/stderr the run-dependency-setup route streams.
 export function buildCombinedInstaller(): string {
   let needOllama = false;
@@ -217,7 +217,7 @@ export function buildCombinedInstaller(): string {
       .prepare("SELECT value FROM config WHERE key = 'tunnel_enabled'")
       .get() as { value: string } | undefined;
     needCloudflared = tunnelRow?.value === 'true';
-  } catch { /* fresh/partial db — install nothing extra */ }
+  } catch { /* fresh/partial db: install nothing extra */ }
 
   const pre: string[] = [];
   if (needOllama || needCloudflared) {

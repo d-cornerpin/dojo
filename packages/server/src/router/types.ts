@@ -31,7 +31,7 @@ export interface TierConfig {
 
 export interface RouterConfig {
   tiers: TierConfig[];
-  /** v3.5 N42: the one window every automatic pick runs at (`router-window.ts`); null with no tier model. */
+  /** The one window every automatic pick runs at (`router-window.ts`); null with no tier model. */
   window: import('./router-window.js').RouterWindowReport | null;
   dimensions: Array<{
     id: string;

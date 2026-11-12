@@ -161,7 +161,7 @@ function scoreReasoningMarkers(text: string): number {
     if (found) matches += found.length;
   }
 
-  // Each match is a strong signal — scale aggressively
+  // Each match is a strong signal, so scale aggressively
   if (matches === 0) return 0.0;
   if (matches === 1) return 0.4;
   if (matches === 2) return 0.6;
@@ -347,17 +347,17 @@ function scoreAgenticIndicators(text: string): number {
 
 function scoreToolCallPresence(text: string): number {
   // Recent tool calls suggest mid-task work, but in an agent this is the common
-  // case, not the exception. Softened so it nudges rather than forces heavy.
+  // case, not the exception. Scores stay low so it nudges rather than forces heavy.
   const toolCalls = (text.match(/\[TOOL_CALL\]/g) ?? []).length;
   if (toolCalls === 0) return 0.0;
   if (toolCalls < 3) return 0.15;
   if (toolCalls < 6) return 0.3;
-  return 0.5; // Heavy tool use — a real signal, but no longer overwhelming
+  return 0.5; // Heavy tool use: a real signal, capped at half the scale
 }
 
 function scoreConversationMomentum(text: string, messages: Array<{ role: string; content: string | object[] }>): number {
   // If the user's latest message is very short but the conversation has been complex,
-  // maintain momentum — don't drop tiers on "yes", "do it", "go ahead", etc.
+  // maintain momentum: don't drop tiers on "yes", "do it", "go ahead", etc.
   const userMessages = messages.filter(m => m.role === 'user');
   if (userMessages.length === 0) return 0.0;
 
@@ -367,7 +367,7 @@ function scoreConversationMomentum(text: string, messages: Array<{ role: string;
 
   if (!isShortConfirmation) return 0.0;
 
-  // Short confirmation detected — check if the preceding assistant message was substantial
+  // Short confirmation detected: check if the preceding assistant message was substantial
   const assistantMessages = messages.filter(m => m.role === 'assistant');
   if (assistantMessages.length === 0) return 0.0;
 
@@ -393,7 +393,7 @@ function scoreVisionMultimodal(messages: Array<{ role: string; content: string |
       }
     }
   }
-  return 0.0; // No vision content — neutral, don't penalize
+  return 0.0; // No vision content: neutral, don't penalize
 }
 
 // ── Scorer map ──
@@ -456,7 +456,7 @@ export function scoreQuery(
     totalWeighted += weighted;
   }
 
-  // Use the raw sum — tier thresholds are calibrated for un-normalized scores
+  // Use the raw sum: tier thresholds are calibrated for un-normalized scores
   const rawScore = totalWeighted;
 
   // Determine tier

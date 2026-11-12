@@ -72,7 +72,7 @@ export function createVncBridge(reqUrl: string) {
       if (hsBuf.length < 1) return;
       const count = hsBuf[0];
       if (count === 0) {
-        // Server-side handshake failure (count 0, then a reason string) — pass through.
+        // Server-side handshake failure (count 0, then a reason string): pass through.
         sendBin(ws, hsBuf);
         hsBuf = Buffer.alloc(0);
         hsPhase = 'done';

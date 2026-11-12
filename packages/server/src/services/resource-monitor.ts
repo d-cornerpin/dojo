@@ -28,7 +28,7 @@ export interface ResourceInfo {
 /**
  * Get memory info using macOS `vm_stat` which accounts for purgeable/cached memory.
  * os.freemem() only reports "free" pages, ignoring inactive/purgeable memory
- * that macOS can reclaim instantly — making it look like 99% used when it's really ~50%.
+ * that macOS can reclaim instantly, making it look like 99% used when it's really ~50%.
  */
 function getMacMemoryMb(): { total: number; used: number; free: number } {
   const totalMb = Math.round(os.totalmem() / (1024 * 1024));

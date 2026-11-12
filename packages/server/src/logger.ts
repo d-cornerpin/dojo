@@ -84,7 +84,7 @@ function flushBuffer(): void {
 /** Serialise one entry to a JSON line without ever throwing.
  *
  *  The common case stays a bare `JSON.stringify`, byte for byte. Only when that
- *  throws — a BigInt in `meta`, or a value reached twice on the way down (a cycle) —
+ *  throws (a BigInt in `meta`, or a value reached twice on the way down, a cycle),
  *  do we retry through a replacer that renders a BigInt as its decimal string and a
  *  seen object as `[Circular]`. If even that throws, we keep just the fields this
  *  logger controls, still opening with `{"timestamp":"` so log rotation recognises
@@ -120,7 +120,7 @@ function writeEntry(entry: LogEntry): void {
   const line = serializeEntry(entry) + '\n';
   writeBuffer.push(line);
 
-  // Broadcast only warn/error to dashboard (not info/debug — too noisy)
+  // Broadcast only warn/error to dashboard (not info/debug, too noisy)
   if (logBroadcastCallback && (entry.level === 'warn' || entry.level === 'error')) {
     try {
       logBroadcastCallback(entry);
@@ -182,7 +182,7 @@ process.on('exit', () => {
   }
 });
 
-/** v3.5 dojo_inspect: the log as it stands, oldest first: the one rotated backup
+/** The log as it stands, oldest first: the one rotated backup
  *  (`log-rotation.ts` keeps exactly `dojo.log.1`), then the live file plus the lines this
  *  process has buffered but not yet written. Reads only; a missing file reads as empty. */
 export function readLogFiles(): string[] {
