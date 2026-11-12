@@ -1,16 +1,11 @@
 import { dropEmptyMessages } from './drop-empty.js';
 import type Anthropic from '@anthropic-ai/sdk';
-// W81: the tracker-stamp and tracker-view imports LEFT with the two work-board lanes. Their
-// one reader in this tree is `memory/work-board-lane.ts` now, which is where the SQL that
-// needs them went. An import kept beside a deleted reader is a symbol waiting to be wrong.
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { type PromptTurnContext } from '../prompt/assembler.js';
 import { conversationKey, type TurnCounterparty } from '../agent/v2/counterparty.js';
 import { getModelOutputCap, getProviderCeilingTokens } from '../agent/model.js';
 import { agentTurnWindow } from '../router/router-window.js';
-// PHASE-3 T9: the ONE tool_use ⇄ tool_result pairing repair. The assembler's own second
-// copy is deleted; see the call site and `__tests__/one-pairing-repair.test.ts`.
 import { repairToolPairing, type PairedMessage } from '../agent/tool-pairing.js';
 import { measureAgentToolPayloadTokens } from '../tools/tool-docs.js';
 import { getRecentMessages, getMessagesByIds } from './store.js';
@@ -27,7 +22,6 @@ import {
 import { readCall, toolResultView } from './tool-result-view.js';
 import { overRoomRowView } from './kept-row-view.js';
 import { chargeTurnAttachments } from './turn-attachments.js';
-// t113 G: the person-facing half of the starved-window refusal. See the call site below.
 import { noteWindowHolds, reportStarvedWindow } from './window-starvation-card.js';
 import {
   fitLanes,
@@ -49,9 +43,8 @@ import { tagMessageLane, tagMessageLanes, collectMessageLaneIds } from './messag
 import { getContextSummaries } from './dag.js';
 import { cachedToolPayloadTokens, toolSurfaceKey } from './assembled-estimate-cache.js';
 import { buildRecallLaneMessage } from './recall-lane.js';
-// W81: the two WORK-BOARD blocks, moved below the conversation with their own module for the
-// reason `memory/recall-lane.ts` has one — a post-budget lane must be able to DERIVE its
-// reserve by calling its own renderer, and a render buried inside a lane literal cannot be.
+// The work-board blocks live in their own module so a post-budget lane can derive its reserve by calling its
+// renderer.
 import { buildWorkBoardLane } from './work-board-lane.js';
 import { otherThreadsReserveExtra } from './other-threads-lane.js';
 import { otherThreadsRoomTokens } from './other-threads-room.js';
@@ -62,79 +55,28 @@ import { pinnedContextSection } from '../vault/retrieval.js';
 import { isPMAgent } from '../config/platform.js';
 import { buildAssemblyContext, assembleSystemFromRegistry } from '../prompt/registry/assembler.js';
 import { MessageSlot, type AssemblyTurnState } from '../prompt/registry/types.js';
-// (getRuntimeVersion import removed in Phase 9 Stage 2, single-track v2)
 import { turnBoundary } from '../agent/turn-state.js';
-// ALIASED: `turnContext` already means `PromptTurnContext` (an assembly's per-turn
-// INPUTS) throughout this file. This one is the turn's own ambient facts (PHASE-6 T1).
+// ALIASED: `turnContext` already means `PromptTurnContext` (an assembly's per-turn inputs) in this file.
+// This one is the turn's own ambient facts.
 import { turnContext as liveTurnContext } from '../agent/turn-context.js';
 import type { Summary } from './dag.js';
 import type { Message, MessageOrigin } from '@dojo/shared';
-// PHASE-3 T5 — the marker taxonomy. Four shapes this file used to spell itself.
 import { A2A_INBOUND_RE, a2aThreadTokenMatches, parseA2AThreadShort, parseTechniqueFreshRead, parseWorkingNote } from '@dojo/shared';
 
 const logger = createLogger('memory-assembler');
 
-// STRIP (PHASE-3 T2): `DEFAULTS.contextThreshold = 0.75`, one of five declarations of one
-// number (§T0-C) and the one that disagreed. Requirement preserved: ONE threshold, in
-// `memory/budget.ts`, decided by the owner at T0b — 0.96.
 
-// ── Per-tool-result cap (Part V + Part XVIII §A) ──
-// Raw tool results stay capped at assembly time so a single oversized tool result can't dominate
-// context. The number and the cut note live in `./tool-result-view.ts`, one source for this file's two
-// cap sites and for the paging tool that sizes its page to it (t159 H).
+// Raw tool results are capped at assembly time so one oversized result cannot dominate context; the number
+// and cut note live in `./tool-result-view.ts`, shared by both cap sites and the paging tool.
 
-// ── v2 stub-and-store age (Part XVIII §E) ──
-// After this many turns, a tool_result message in the assembled context
-// gets replaced by a stub. Combined with the vault as long-term memory
-// (§C), the agent doesn't need the raw result kept around.
-//
-// v2.7.3, raised from 5 → 12. Paired with the per-result cap
-// bump above: lifting the per-result cap didn't help if the result was
-// stubbed out 5 turns later. A "read doc → think → make changes" cycle
-// routinely spans 6-10 turns; under the old threshold the source doc
-// was already gone by the time the agent was acting on it, forcing a
-// re-read (and burning the assembler-cap retruncate cycle again). 12
-// covers the typical workflow without letting tool results accumulate
-// indefinitely on long-running agents. The fresh-tail count (80 on a
-// 200K model, 64 on 128K, 40 on 32K) still bounds how many turns are
-// ever visible to the assembler, so this number caps "alive within the
-// visible window" rather than total memory growth.
+// After this many turns a tool_result becomes a stub (the vault is the long-term memory), decided at the
+// next compaction boundary (`compaction.ts stubOldToolResultsAtBoundary`).
 export const V2_STUB_AFTER_TURNS = 12;
 
-// v2.7.6, the v2.7.4 1-turn override for technique tool results
-// has been REMOVED. It tried to enforce freshness by stubbing
-// technique reads on the next turn so the agent would have to
-// re-call to access the content. With v2.7.6's technique-ack gate
-// (loop.ts: pendingTechniqueAck), every fresh load now forces an
-// explicit acknowledgement before any other tool can run, that's
-// the engagement enforcement.
-//
-// Keeping both produced a loop: agent reads → gate engages → agent
-// acks → next turn the read is stubbed → agent re-reads → gate
-// re-engages → agent re-acks → ... forever. The gate is the
-// stronger and correct mechanism; stubbing was a weaker indirect
-// attempt at the same goal. Technique reads now use the generic
-// V2_STUB_AFTER_TURNS like every other tool result.
+// Technique reads use this age too: a shorter one loops with the technique-ack gate (`pendingTechniqueAck`):
+// read, ack, stubbed, re-read, re-ack.
 
-// ── Stale-summary scrub against fresh technique reads (v2.7.7) ──
-//
-// reset_session deliberately preserves summaries to keep project
-// context across resets, but pre-existing summaries describe the
-// PRIOR version of any technique the agent has freshly re-read this
-// session. Real failure mode reported on prod: agent reads the
-// current "M365 Campaign Demo Builder" technique, but its summaries
-// from the prior session still describe an OLD workflow with a
-// `campaign_runner.py` script that no longer exists in the current
-// technique. The agent reads the fresh technique correctly, but then
-// references the old script because the summary says they used it
-// "last time."
-//
-// Fix: at assembly time, find techniques that have been freshly read
-// recently (sentinel-bearing tool_results in the fresh tail). For
-// each such technique, replace any summary whose content mentions
-// the technique name with a stub. The fresh read is the source of
-// truth; summaries describing earlier versions are noise at best
-// and contradictions at worst.
+// Summaries naming a technique freshly re-read this session describe its old version, so they become a stub.
 
 
 function extractFreshlyReadTechniques(messages: Message[]): Set<string> {
@@ -151,7 +93,6 @@ function extractFreshlyReadTechniques(messages: Message[]): Set<string> {
     for (const block of blocks) {
       const b = block as { type?: string; content?: unknown };
       if (b.type !== 'tool_result' || typeof b.content !== 'string') continue;
-      // PHASE-3 T5 (E19): this regex was byte-duplicated in agent/v2/loop.ts. ONE extractor.
       const name = parseTechniqueFreshRead(b.content);
       if (name) names.add(name);
     }
@@ -159,15 +100,8 @@ function extractFreshlyReadTechniques(messages: Message[]): Set<string> {
   return names;
 }
 
-/**
- * T67b — the technique-scrub's input, read over THE SESSION rather than a scrolling window.
- *
- * Tool rows only (that is all `extractFreshlyReadTechniques` inspects), since
- * `session_started_at` when one is set, capped by a declared row limit so a runaway session
- * cannot turn this into an unbounded scan. Monotonic within a session by construction: rows
- * are only ever added, so a technique that has been read stays read and the summaries lane
- * cannot un-scrub itself because the tail moved on.
- */
+/** Tool rows for the technique scrub, read over the whole session (not a scrolling window) under a row
+ *  limit. */
 function sessionToolRows(agentId: string): Message[] {
   const db = getDb();
   const sessionRow = db.prepare('SELECT session_started_at FROM agents WHERE id = ?')
@@ -201,7 +135,6 @@ function scrubSummariesAgainstFreshTechniques<S extends SummaryLike>(
     const contentLower = s.content.toLowerCase();
     const mentionedNames = lowered.filter((n) => contentLower.includes(n));
     if (mentionedNames.length === 0) return s;
-    // Restore display-case version of the names for the stub message.
     const displayNames = [...freshTechniqueNames].filter((n) =>
       mentionedNames.includes(n.toLowerCase()),
     );
@@ -216,73 +149,31 @@ function scrubSummariesAgainstFreshTechniques<S extends SummaryLike>(
   });
 }
 
-// Model-aware tail sizing (getFreshTailCount) is imported from store.js: the
-// SINGLE source of truth shared with compaction (FA-M3), so the tail count the
-// assembler SHOWS always equals the count compaction treats as inside-tail.
 
-// ── Context Assembly ──
 
-// HL8 (B) — `reasoningContent` IS DECLARED HERE, AND THAT IS THE LOAD-BEARING EDIT.
-// It was declared at both ENDS of the chain — `LaneMessage` (`lanes.ts:71`) and
-// `ModelCallParams` (`model.ts:120`) — and nowhere in the middle, so it crossed assembly
-// as an UNDECLARED STRUCTURAL EXTRA that TypeScript could not see being dropped.
-// `mergeConsecutiveRoles` is where it was dropped, live-measured at 1,889 and 2,548
-// characters in one turn (W23). Declaring it is what turns that loss into a type error.
+// `reasoningContent` is declared here, on `LaneMessage` (`lanes.ts`) and on `ModelCallParams` (`model.ts`),
+// so assembly cannot drop it unseen: a drop is a type error.
 type LoopMsg = {
   role: 'user' | 'assistant';
   content: string | Anthropic.ContentBlockParam[];
   reasoningContent?: string;
 };
 
-// ── Per-message time stamps (time-awareness, owner ruled 2026-07-16) ──
-//
-// The model receives exactly one time datum per call: the current-time line at
-// the END of the volatile lane. Every conversation message renders bare, so the
-// model cannot compute elapsed time ("how long have I been at this") and
-// confabulates durations ("working for hours" two minutes in). Fix: prefix each
-// TEXT message in the assembled view with the message's own recorded time, so
-// duration questions become subtraction against the current-time footer.
-//
-// Cache safety, the load-bearing property: a message's created_at never changes
-// and the box timezone is stable, so a given row renders BYTE-IDENTICAL on
-// every future call. The message lane stays append-only and incremental prompt
-// caching is unaffected (unlike relative forms, "2 min ago", which would churn
-// every message every turn). Date and year are ALWAYS included: any "today"/
-// "yesterday" relativity would mutate a rendered row at midnight and break the
-// append-only property. A box timezone change re-forms the cache once, which is
-// correct and acceptable.
-//
-// t141: the stamp became the row's LABEL, one subject header per conversation block
-// (`memory/row-label.ts labelRows`); same cache argument — a pure function of stored rows. A tool
-// CALL that opens a block carries it as a leading text block; tool RESULTS stay bare.
+// Each text message carries its own recorded time as its row label (`memory/row-label.ts labelRows`), so the
+// model can compute elapsed time. A row renders byte-identically each call (created_at and the box timezone
+// are stable; the date and year are always included), so the cached prefix is unaffected. Tool results stay
+// bare.
 
-/** SQLite stores "YYYY-MM-DD HH:MM:SS" (UTC, no marker); ISO rows carry T/Z; and from
- *  migration 131 `messages.created_at` is epoch-ms INTEGER, so a NUMBER arrives too.
- *  Normalize all three to an ISO-UTC string Date can parse unambiguously, or null.
- *
- *  T6b, on the number arm: every SQL read that hands a row to TypeScript projects the
- *  column back through `datetime(created_at/1000,'unixepoch')`, so the string form still
- *  arrives here in practice — but the declared type is `string`, typecheck cannot see a
- *  number slipping through, and before this arm a missed projection was a thrown
- *  TypeError inside the assembler (i.e. every turn dying). Now it is the same stamp,
- *  byte-identical, pinned in `__tests__/message-time-stamps.test.ts`. The floor is
- *  `sent_at`'s own CHECK from migration 127 — same quantity, same rejections — so epoch
- *  SECONDS, 0 and negatives render unstamped instead of as a confident wrong date. */
-// T69b: `normalizeCreatedAtUtc` + `renderMessageTimeStamp` MOVED to `memory/message-stamp.ts`
-// and are re-exported here, byte-unchanged, so every existing import site is untouched. They
-// moved because T69b needs the same formatter in `agent/v2/outbound-ledger.ts`,
-// `work/obligations.ts` and `memory/deliveries-lane.ts` — all three UPSTREAM of this module,
-// so importing it from here would close an import cycle. See that file's header for what the
-// stamp is for; in one line: a tail block that says "3 hours ago" is a function of the wall
-// clock and re-bills every token behind it once an hour, a block that states the recorded
-// instant is a pure function of its rows.
+// `normalizeCreatedAtUtc` and `renderMessageTimeStamp` live in `memory/message-stamp.ts` and are re-exported
+// here; `agent/v2/outbound-ledger.ts`, `work/obligations.ts` and `memory/deliveries-lane.ts` are upstream of
+// this module, so the formatter cannot live here (an import cycle).
 import { renderMessageTimeStamp } from './message-stamp.js';
 import { servedRowsOutOfView } from './served-ask.js';
 import { END_OF_HISTORY, endOfHistoryMarker } from './end-of-history.js';
 export { renderMessageTimeStamp };
 
-/** Put a row's label in front of what the model reads: before a text body, or as a leading text
- *  block on a structured row that is not a tool result. No label, or an empty row: untouched. */
+/** Put a row's label before what the model reads: before a text body, or as a leading text block on a
+ *  structured row that is not a tool result. No label, or an empty row: untouched. */
 export function labelContent(
   content: string | Anthropic.ContentBlockParam[],
   label: string | null,
@@ -293,26 +184,15 @@ export function labelContent(
   return [{ type: 'text', text: label }, ...content];
 }
 
-/**
- * Integrity pass (R6), the post-combine repairs that make the message array a
- * valid provider request, by construction. Run as one named stage after the
- * scaffolding + fresh tail are combined: prune old images, cap large tool
- * results, strip leading orphans, merge consecutive roles, sanitize orphaned
- * tool blocks, strip a leading tool_result, and pop a trailing assistant.
- *
- * Scope note (mutation ledger B-rows): the PRE-combine cap/budget (B1/B2, "cap
- * BEFORE fit") stays in tail construction by design, and the DELIVERY markers
- * (B12 [New Session] / B13 stop / B14 a2a-preempt) + the empty-context fallback
- * (B11) stay after this pass because they depend on session/config state. This
- * pass is the INTEGRITY core (B3-B10). Byte-equivalent extraction.
- */
+/** Post-combine repairs that make the message array a valid provider request. The pre-combine cap stays
+ *  in tail construction; delivery markers and the empty-context fallback run after, on session and
+ *  config state. */
 function applyIntegrityPass(messages: LoopMsg[], agentId: string, markerText = END_OF_HISTORY): LoopMsg[] {
   pruneOldImageBlocksInPlace(messages, /* maxKeepImages */ 1);
   capLargeToolResultsInPlace(messages);
 
-  // Ensure messages start with user role (Anthropic API requirement). Drop
-  // leading assistant messages and pure tool_result messages that reference
-  // tool_use IDs no longer in context. Stop at the first real user message.
+  // Messages must start with a user role (provider requirement): drop leading assistant and orphan tool_result
+  // messages.
   while (messages.length > 0) {
     const first = messages[0];
     if (first.role === 'assistant') {
@@ -330,24 +210,10 @@ function applyIntegrityPass(messages: LoopMsg[], agentId: string, markerText = E
     break;
   }
 
-  // Ensure alternating roles (t183: after dropping messages and blocks that say nothing).
   const merged = mergeConsecutiveRoles(dropEmptyMessages(messages));
 
-  // Self-heal: drop orphaned tool blocks so a broken tool_use/tool_result
-  // invariant doesn't cause provider errors. Loud warning if >half is dropped.
-  //
-  // PHASE-3 T9 — STRIP, one owner per job. This used to call the assembler's OWN
-  // `sanitizeToolBlocks`, a SECOND implementation of the pairing invariant that T6
-  // enumerated for this task. It validated a `tool_use` only against the SINGLE
-  // immediately-next message, so N parallel calls answered across TWO consecutive
-  // carriers cost a VALID pair — and the only thing that kept that unreachable was
-  // `mergeConsecutiveRoles` running one line above, an UNDECLARED coupling that any
-  // reorder or second caller would have re-opened in silence.
-  // requirement preserved: "no array reaches a provider carrying a `tool_use` nothing
-  // answered or a `tool_result` nothing asked for" — now held once, by
-  // `agent/tool-pairing.ts:repairToolPairing`, which closes BOTH directions and is the
-  // same repair the provider boundary runs. Shown over the divergent input in
-  // `memory/__tests__/one-pairing-repair.test.ts`.
+  // Self-heal: drop orphaned tool blocks (loud warning if over half). `repairToolPairing` is the array-level
+  // repair, the same one the provider boundary runs.
   const preSanitizeCount = merged.length;
   const pairingRepair = repairToolPairing(merged as unknown as PairedMessage[]);
   if (pairingRepair.strippedToolUse > 0 || pairingRepair.strippedToolResult > 0) {
@@ -365,7 +231,6 @@ function applyIntegrityPass(messages: LoopMsg[], agentId: string, markerText = E
     }, agentId);
   }
 
-  // Final safety: strip any remaining tool_result blocks from the first message.
   if (merged.length > 0 && merged[0].role === 'user' && Array.isArray(merged[0].content)) {
     const firstBlocks = merged[0].content as unknown as Array<Record<string, unknown>>;
     const filtered = firstBlocks.filter(b => b.type !== 'tool_result');
@@ -381,15 +246,8 @@ function applyIntegrityPass(messages: LoopMsg[], agentId: string, markerText = E
     }
   }
 
-  // Ensure the conversation ends with a user message (providers reject a
-  // trailing assistant message as prefill). HOW matters enormously: this used
-  // to POP trailing assistant messages, which deleted the agent's own newest
-  // delivered answer from context on every wake turn, because the awareness
-  // lift had just removed the (newer) notification row that followed it. The
-  // model then saw its last turn as promised-and-computed-but-never-delivered,
-  // and dutifully re-delivered, the months-long re-answer ghost (owner
-  // transcripts 2026-07-07/09/10, reproduced live on dev). Append a neutral
-  // engine line instead: the API constraint is satisfied, nothing is deleted.
+  // Providers reject a trailing assistant message. Append a neutral engine line instead of popping it: popping
+  // deletes the agent's newest delivered answer and the model re-delivers it.
   if (merged.length > 0 && merged[merged.length - 1].role === 'assistant') {
     merged.push(tagMessageLane({
       role: 'user',
@@ -402,133 +260,52 @@ function applyIntegrityPass(messages: LoopMsg[], agentId: string, markerText = E
 
 export interface AssembledContext {
   systemPrompt: string;
-  // C28 Part 1 (P-2, defense-in-depth): a system-side lane for any content that
-  // must live in the system role yet is volatile per turn. It renders AFTER the
-  // cached stable system block (Anthropic: a second uncached text block;
-  // OpenRouter: a second unmarked system message), so it can never invalidate the
-  // cached prefix. EMPTY after P-1 (all volatile content moved to msg.turn-context);
-  // the Part 3 determinism check asserts it stays empty.
+  // A system-side lane for volatile per-turn content, rendered after the cached system block; stays empty.
   systemVolatile: string;
-  // HL8 (B): the contract stops lying about what it returns. Reasoning has ALWAYS crossed
-  // this boundary (the model client reads it off these very messages); it was simply
-  // undeclared, which is how it could be dropped in the middle without a type error.
   messages: Array<{ role: 'user' | 'assistant'; content: string | Anthropic.ContentBlockParam[]; reasoningContent?: string }>;
-  /**
-   * Registry path only: the entry id that produced each system-prompt part
-   * (aligned to parts) / each message. Fed to the context receipt so it shows
-   * which registered injections fired. Undefined on the legacy path.
-   */
   systemEntryIds?: (string | null)[];
   messageEntryIds?: (string | null)[];
-  /**
-   * FA-M1: how many fresh-tail messages budgetFreshTail dropped to fit the window
-   * on this assembly (oldest-first, whole groups). >0 means the model lost recent
-   * turns from its live view; the loop surfaces this as a warning. The dropped rows
-   * are persisted and later summarized, so it is live-view loss, not data loss.
-   */
+  /** Rows out of the live view: the trim's whole-group drop plus the horizon's unread rows. They are
+   *  persisted and later summarized, so this is live-view loss, not data loss. */
   freshTailDropped?: number;
-  /**
-   * t140 round 2 (re-review C1): the newest `messages.seq` this assembly took OUT of the live
-   * view — the token trim's front cut (`budgetFreshTail`) or the rows the horizon's bounded read
-   * left unread, whichever reaches further. 0/absent when nothing left the view. Every unsummarised row at or
-   * below it is out of view with no summary, which the engine's assembly door
-   * (`out-of-view.ts`'s `assembleWithNothingOutOfViewUnsummarised`) folds before the turn dials.
-   * Read off the trim's own result, so the fold covers exactly what the trim took.
-   */
+  /** The newest `messages.seq` this assembly took out of the live view (token trim or the horizon's
+   *  unread rows, whichever reaches further); 0/absent when none. `out-of-view.ts` folds the unsummarised
+   *  rows at or below it. */
   outOfViewThroughSeq?: number;
-  /**
-   * PHASE-3 T4: what this assembly set aside for tool schemas + output, MEASURED — the
-   * tools payload this agent's transport will serialise plus the derived output allowance.
-   * The loop reads it to size the compaction gate's compressible budget; before T4 it
-   * imported a 15,000 constant that was smaller than the primary's tool schemas alone.
-   */
+  /** Tokens set aside for tool schemas and output, measured; sizes the compaction gate's compressible
+   *  budget. */
   reserveTokens?: number;
-  /**
-   * PHASE-3 T3: the allocator's own record — one grant per lane, INCLUDING the rejected and
-   * the truncated ones, plus every recorded over-budget event. Before this, a section the
-   * budget dropped produced a byte-identical context to a section that never existed
-   * (research 06 §8). Undefined on the PM path until T6 gives it the same shape (F22).
-   */
+  /** The allocator's record: one grant per lane (rejected and truncated included) plus over-budget
+   *  events. */
   allocation?: AllocationReport;
-  /**
-   * PHASE-3 T3 / S3 — ASSEMBLY IS PURE. The one-shot engine markers (A2A preempt, Stop) are
-   * READ here and CLEARED by the turn that owns them (`agent/v2/loop.ts`). Assembly used to
-   * `UPDATE agents SET config` from its own read path, so any probe, retry or dry-run
-   * silently consumed a marker the user had earned.
-   */
+  /** Assembly is pure: one-shot markers (A2A preempt, Stop) are cleared by the turn that owns them, not
+   *  here. */
   consumedOneShotFlags?: ConsumedOneShotFlags;
-  /**
-   * SWEEP CORE-2 item 4 — THE RECALL LANE, COMPUTED HERE AND EMITTED BY THE LOOP.
-   *
-   * This assembly owns the read (the window policy, and whether this is a scaffolding turn —
-   * on those the vault is already injected at slot 200 and must not be pulled twice), but the
-   * lane's content is retrieved against the LIVE ASK, so it may not sit in `messages`:
-   * everything in that array is the cacheable region by definition (`volatileFrom` is its
-   * length). The loop appends it past the boundary as `msg.relevant-memory` (slot 1870).
-   *
-   * It is carried here rather than re-derived in the loop for the same reason `reserveTokens`
-   * is: the loop reading the assembly's decision is one owner, the loop re-deriving it is two.
-   * It also keeps the dev context-dump able to show content the assembler no longer emits.
-   */
+  /** The recall lane: read here but retrieved against the live ask, so the loop appends it past the cache
+   *  boundary as `msg.relevant-memory`. Carried here so one owner decides it, as with `reserveTokens`. */
   recallLane?: string | null;
-  /**
-   * T69b — HL5's OPEN COMMITMENTS SNAPSHOT, THE OTHER HALF OF THE SAME RETRIEVAL.
-   *
-   * It rode inside `recallLane`'s string, appended AFTER the retrieved half. The two have
-   * different sources — this one is a pure function of the work board, that one is fetched
-   * against the live ask — so a new ask re-billed ~1,400 chars of board state on every turn
-   * (measured, `2557747`, three consecutive quiet turns). It is a separate block now and the
-   * loop injects it FIRST, in front of the divergence rather than behind it. Same lane, same
-   * reserve, same single read: only the position in the array changed.
-   */
+  /** The open-commitments snapshot, a pure function of the work board; the loop injects it ahead of the
+   *  per-ask recall half. */
   openCommitmentsLane?: string | null;
-  /**
-   * W81 — THE FOUR LANES THE OWNER'S DS4 FINDING 2 MOVED OUT OF THE CACHED REGION.
-   *
-   * Same split as `recallLane`, and for the one rule this task turns on:
-   * whatever a tool can mutate must render BELOW the conversation. Each is READ by this
-   * assembly — the work board and the pad are agent-scoped reads only the assembler holds the
-   * scoping for, and the events block is derived from the tail this assembly already
-   * computed — and each is EMITTED by the loop past `volatileFrom`, at
-   * MessageSlot.AttemptLedgerTail 1810 / ActiveTasksTail 1820 / ScratchpadTail 1830 /
-   * EventsTail 1840. They may not sit in `messages`: everything in that array is the
-   * cacheable region by definition, and a block a `work_update` rewrites re-bills every token
-   * behind it (measured: six occurrences, 15-50K tokens each, 2026-09-12).
-   */
+  /** Lanes the loop emits past `volatileFrom` (attempt ledger, active tasks, scratchpad, events):
+   *  whatever a tool can mutate must render below the conversation, or a rewritten block re-bills every
+   *  token behind it. */
   attemptLedgerLane?: string | null;
   activeTasksLane?: string | null;
   scratchpadLane?: string | null;
   eventsLane?: string | null;
-  /** T76b: the live integration-status line (`memory/integration-status-lane.ts`), at 1877. */
   integrationStatusLane?: string | null;
-  /**
-   * T68b — WHETHER THE FAN-OUT COMPILE ORDER ARRIVED WHOLE, decided by the only module that
-   * can decide it: the one that built the array.
-   *
-   * `null` when this turn's tail holds no compile order. `false` when it holds one whose bytes
-   * are not intact in `messages`. The pre-turn compile gate refuses the model's tool calls
-   * only on `true` — before this field the refusal asserted "the pieces are in the steer,
-   * quoted verbatim" as an article of faith, and W61 found it false in 6 of 6 recorded grinds.
-   */
+  /** Whether the fan-out compile order arrived whole: null when none, false when not intact in
+   *  `messages`. */
   compileOrderIntact?: boolean | null;
-  /** t194 (D1): a dry run's answer — the view this fit admitted (`measureView`). */
   view?: ContextView;
 }
 
-/** One-shot agent-config markers an assembly consumed; the turn clears them (S3). */
 export interface ConsumedOneShotFlags {
   a2aPreemptPending?: boolean;
   stopMarkerPending?: boolean;
 }
 
-/**
- * Assemble the full per-turn context (system prompt + message array). The
- * declarative registry is the sole assembler: the registry walker produces the
- * system prompt and the message-context builder produces the messages. The
- * `prompt_assembler_mode` flag, the parallel legacy system-prompt builder, and
- * the shadow guard were all removed once the registry was verified byte-identical
- * to legacy for every agent type. See DOJO-PROMPT-REGISTRY-PLAN.md.
- */
 export async function assembleContext(
   agentId: string,
   modelId: string,
@@ -538,16 +315,6 @@ export async function assembleContext(
   return assembleContextViaRegistry(agentId, modelId, turnContext, turnState);
 }
 
-/**
- * The assembler. The registry walker produces the system prompt; the message-
- * context builder produces the message array, budgeted against that system
- * prompt's size, and threads the per-slot entry ids to the receipt.
- *
- * Through R7 this ran a shadow comparison against a parallel legacy system-
- * prompt build and shipped legacy on any drift. Once the registry was verified
- * byte-identical to legacy for every agent type, the legacy system build and
- * the shadow guard were deleted; the registry is now the sole source.
- */
 async function assembleContextViaRegistry(
   agentId: string,
   modelId: string,
@@ -556,37 +323,17 @@ async function assembleContextViaRegistry(
 ): Promise<AssembledContext> {
   const ctx = buildAssemblyContext(agentId, modelId, turnContext, turnState);
   const sys = assembleSystemFromRegistry(ctx);
-  // C28 Part 1: the counterparty header, the othersWaiting head-of-line hint, and
-  // the conversational-turn hint used to be appended to the system string HERE
-  // (small but volatile, they broke prompt caching on every counterparty / waiting
-  // / turn-type change). They now render inside the msg.turn-context near-tail
-  // engine message (prompt/registry/entries.ts renderTurnContext), so the system
-  // prefix stays byte-stable and cacheable across those changes.
+  // The counterparty header and hints render in the msg.turn-context near-tail message, keeping the system
+  // prefix stable.
   const systemPrompt = sys.text;
   const built = await assembleMessageContext(agentId, modelId, systemPrompt, turnContext);
-  // systemVolatile is empty after P-1 (all per-turn volatile content moved to the
-  // msg.turn-context tail); the field is the reserved system-side lane (P-2).
-  //
-  // SPREAD, not a hand-listed set of fields. This wrapper used to destructure
-  // `{ messages, freshTailDropped }` and rebuild the object, which silently DROPPED
-  // PHASE-3 T3's `allocation` and `consumedOneShotFlags` on their first live run — the
-  // second would have left every one-shot A2A-preempt / Stop marker uncleared forever.
-  // A re-listing wrapper is a place for a field to die quietly; the spread cannot do that.
+  // SPREAD the built result, never re-list its fields: a re-listing wrapper silently drops new ones.
   return { ...built, systemPrompt, systemVolatile: '', systemEntryIds: sys.entryIds };
 }
 
-// PHASE-3 T5: `A2A_INBOUND_RE` is IMPORTED. It was declared here WITHOUT `/i` and again in
-// compaction.ts WITH it — research 06 §5's seed pair. Still only the prose FALLBACK; the
-// primary signal remains the structured `origin.kind === 'agent'`.
 
-/**
- * RC-5.4: build a compact awareness-lane gist for a mailbox/channel notification from
- * its STRUCTURED inbound_meta (sender + subject) plus a short preview lifted from the
- * notification body, instead of slicing 400 chars of boilerplate (the MAILBOX EVENT
- * preamble alone is ~407 chars, so the raw slice often carried no actual email
- * metadata). Returns null when no structured meta is present, so the caller falls back
- * to the raw slice. Pure.
- */
+/** Compact awareness-lane gist from a notification's structured inbound_meta (sender + subject) plus a
+ *  body preview; null when there is no structured meta, so the caller uses the raw slice. Pure. */
 function buildAwarenessGist(inboundMetaRaw: string | null | undefined, rawContent: string): string | null {
   if (!inboundMetaRaw) return null;
   let meta: { sender?: string | null; emailSubject?: string | null } | null = null;
@@ -595,13 +342,9 @@ function buildAwarenessGist(inboundMetaRaw: string | null | undefined, rawConten
   } catch {
     return null;
   }
-  // t141 round 3: outside text, rendered inert — a subject can never break the bullet's line.
   const sender = labelText(meta?.sender ?? '', 254);
   const subject = labelText(meta?.emailSubject ?? '', 140);
-  // Nothing structured to lean on, let the caller use its raw-slice fallback.
   if (!sender && !subject) return null;
-  // The mailbox watchers include a "Preview: <snippet>" line in the body; lift it as a
-  // short preview (subject is the headline; preview is the flavor).
   const previewMatch = /(?:^|\n)\s*Preview:\s*([^\n]+)/i.exec(rawContent);
   const preview = previewMatch ? previewMatch[1].replace(/\s+/g, ' ').trim() : '';
   const parts: string[] = [];
@@ -611,17 +354,9 @@ function buildAwarenessGist(inboundMetaRaw: string | null | undefined, rawConten
   return parts.join(' | ');
 }
 
-/**
- * Remove inter-agent traffic from a fresh tail for a normal/user turn:
- *   (a) inbound A2A messages (role='user' with origin.kind==='agent'),
- *   (b) the agent's own send_to_agent / broadcast_to_group tool calls,
- *   (c) the tool_results paired to those calls (matched by tool_use_id).
- * This is what keeps inter-agent traffic OUT of the primary's HUMAN conversation so
- * it isn't confused about who it's talking to, the a2a message still exists in the
- * store (dashboard wordy mode shows it) and is seen by the receiver on its own A2A
- * turn; it just doesn't bleed into a human turn. Keys on STRUCTURED origin, not prose
- * (the marker regex is only a fallback for rows lacking origin). Pure, no DB writes.
- */
+/** Remove inter-agent traffic from a fresh tail for a user turn: inbound A2A, the agent's own
+ *  send_to_agent / broadcast_to_group calls and their paired tool_results. Keys on structured origin.
+ *  Pure. */
 function stripA2AFromTail(tail: Message[]): Message[] {
   const a2aToolIds = new Set<string>();
   for (const m of tail) {
@@ -650,8 +385,6 @@ function stripA2AFromTail(tail: Message[]): Message[] {
     } catch { return false; }
   };
   return tail.filter((m) => {
-    // Structural first: an inbound A2A row is origin.kind==='agent' (from the a2a
-    // columns). Fall back to the prose marker only when origin is absent (legacy rows).
     if (m.role === 'user' && (m.origin?.kind === 'agent' || A2A_INBOUND_RE.test(m.content ?? ''))) return false;
     if (m.role === 'assistant' && isA2AAssistant(m.content ?? '')) return false;
     if (m.role === 'tool' && isA2AToolResult(m.content ?? '')) return false;
@@ -659,30 +392,11 @@ function stripA2AFromTail(tail: Message[]): Message[] {
   });
 }
 
-/**
- * Scope a fresh tail to a single A2A thread (attribution redesign, Phase 4).
- * On a dedicated A2A turn the live conversation is JUST that thread plus the
- * agent's own output, the human's inbound messages, other A2A threads, and
- * engine events are excluded so the agent never conflates the user with the
- * agent it's replying to. The agent answers questions about the user's work
- * from MEMORY (vault/summaries/tracker), which is assembled separately. Uses
- * structured origin (deriveOrigin), no marker regex.
- */
+/** Scope a fresh tail to one A2A thread plus the agent's own output, so the agent never conflates the
+ *  user with its peer. */
 export function scopeToA2AThread(tail: Message[], threadId: string | null): Message[] {
-  // The message's origin.threadId is the FULL a2a_thread_id (36-char UUID from
-  // the column). The turn's counterparty.threadId (passed here as `threadId`) is
-  // the 8-char SHORT id parsed from the "[A2A:… thread:xxxxxxxx …]" marker
-  // (resolveTurnCounterparty → a2aThreadShort). C-2 hardened this to a FULL-id
-  // equality to stop two prefix-sharing threads bleeding, but exact-equality
-  // then NEVER matched short-vs-full, so scopeToA2AThread dropped THIS thread's
-  // own inbound task from every A2A turn. That left a tool-only tail the
-  // integrity pass consumed to zero, starving worker agents mid-delegation
-  // (behav-sig:ca67b479). Compare canonically: exact match stays the primary
-  // case (full==full / short==short, C-2's determinism preserved); otherwise
-  // treat the shorter id as an ≥8-char prefix of the longer (the short IS the
-  // full UUID's first 8 hex). Two genuinely distinct threads for one agent's
-  // live work colliding on 8 hex chars is the negligible case C-2 guarded, and
-  // exact-equality still wins whenever both ids are full.
+  // origin.threadId is the full id; the turn's `threadId` may be the 8-char short id. Exact match, else
+  // prefix: exact-only never matches short to full and drops this thread's own inbound task.
   const sameThread = (t?: string | null): boolean => {
     if (!t || !threadId) return false;
     if (t === threadId) return true;
@@ -695,163 +409,63 @@ export function scopeToA2AThread(tail: Message[], threadId: string | null): Mess
     if (!o) return true;                                  // unclassified, keep
     if (o.kind === 'agent') return sameThread(o.threadId); // only THIS thread's A2A
     if (o.kind === 'self') {
-      // Keep the agent's tool activity (JSON content blocks) and its A2A sends;
-      // drop standalone user-facing reply TEXT (and engine acks) so the user
-      // conversation doesn't bleed into the A2A turn even via the agent's own
-      // prior lines. (m.content for tool_use/tool_result is a JSON array.)
-      // Tool activity STAMPED FOR A HUMAN CONVERSATION is dropped too: a served
-      // human turn's leftover tool debris (minus its conv-stamped answer, which
-      // the text rule above already drops) otherwise reads as an unfinished job
-      // and the agent re-does settled work at its A2A counterparty (the
-      // re-answer ghost, same root as the human/engine scopers).
-      //
-      // PHASE-2 T10I: "is this a HUMAN stamp" used to be spelled by EXCLUDING two sentinel
-      // shapes from the key (`!== 'a2a'`, `!startsWith('engine')`) — a test that depended on
-      // the engine writing a fake key and on that list staying in step with ten writers of it.
-      // requirement preserved exactly: an own-output row belonging to a human conversation is
-      // dropped from an A2A turn's tail.
+      // Keep tool activity and A2A sends; drop reply text, engine acks and human-stamped tool debris
+      // (without its answer it reads as an unfinished job and the agent redoes settled work).
       const isToolActivity = typeof m.content === 'string' && m.content.trimStart().startsWith('[{');
-      // t141: "stamped for a HUMAN conversation" is the insert-time LABEL; it differs from
-      // "carries an id" only on a 188-reconstructed `legacy` row, unstamped (kept) before.
       const humanStamped = subjectOf(m) === 'conv';
-      // t161: AN OWN ROW BELONGS TO ONE A2A THREAD, AND ONLY THAT THREAD'S TURN CARRIES IT. The inbound
-      // rows above are scoped to this thread; the agent's own tool work was not, so a turn woken on
-      // thread B was handed thread A's tool calls and results (a mailbox search, a send) with the
-      // question that explains them already scoped out: another conversation's output, orphaned
-      // (ritual run 7, S3). `origin.threadId` of a self row IS its `a2a_thread_id` stamp
-      // (`deriveOrigin`), compared by the same `sameThread` as the inbound rows, so the short and
-      // full id forms both match. A row with NO thread stamp (older rows, a turn whose thread was
-      // never recorded) is judged as it always was, and so is every turn with no thread id at all
-      // (a terminal wake): nothing can be said to belong elsewhere.
+      // An own row stamped for another A2A thread is dropped (`origin.threadId` is its `a2a_thread_id`);
+      // the rest (this thread's, unstamped, or a turn with no thread id) fall through to the rule below.
       if (o.threadId && threadId && !sameThread(o.threadId)) return false;
       return (isToolActivity && !humanStamped) || o.channel === 'a2a';
     }
-    // UX-REPAIR ROUND 2 T10 — THE ONE NARROW EXEMPTION, and why it is not a class.
-    //
-    // `b2027b0`'s rule ("one counterparty per turn; engine/human rows out") predates the
-    // fan-out compile rider by six weeks and was never reconciled with it. The rider's own
-    // recorded delivery contract is "the deliverable's own wake carries it to the model"
-    // (`a2a-transport.ts`, owner option B 2026-07-18) — but a delegated job's own wake IS an
-    // A2A turn, so this `return false` deleted the compile order from exactly the turns it
-    // was designed to ride. Measured on the box (S4, 2026-08-10): the order and redrives 1
-    // and 2 were absent from turns 4553 and 4554; the answer came on 4555 only because that
-    // wake happened to be bare and took the HUMAN scoper, which keeps engine rows (`:734`).
-    //
-    // requirement preserved: the exclusion exists so a SECOND CONVERSATION never bleeds into
-    // this thread. The compile order is not a conversation at all — it is an imperative
-    // addressed to THIS agent, quoting THIS agent's own children's returned pieces. Every
-    // other engine intent stays excluded, and `__tests__/a-compile-order-the-model-can-see`
-    // enumerates `ENGINE_RIDER_INTENTS` so a new rider is excluded by default and a future
-    // widening has to come here and argue for itself.
+    // The one exemption: a fan-out compile order is an imperative to this agent, so it stays. Every other
+    // engine intent stays out; the compile-order test enumerates `ENGINE_RIDER_INTENTS` to hold that.
     if (isFanoutJoinImperative(m)) return true;
     return false;                                          // exclude human + engine
   });
 }
 
-/**
- * T10's exemption, named once so the TWO seams that must honour it cannot drift apart.
- *
- * ── WHY THIS FUNCTION EXISTS AT ALL (T68b, 2026-09-01) ──
- * T10 spelled its carve-out as a bare `o.intent === 'fanout_join'` inside `scopeToA2AThread`,
- * and the carve-out was then NULLIFIED two hundred lines below by the awareness partition,
- * which reclassified the very row T10 had just kept and rendered it as a 400-char gist. The
- * exemption was a literal in one filter instead of a property of the row, so the second
- * filter never knew it existed. Both seams call this now; a third one will find it here.
- *
- * ── WHAT MAKES THIS INTENT DIFFERENT, AND WHY IT IS NOT A CLASS ──
- * `fanout_join` is the only engine intent that is an IMPERATIVE ADDRESSED TO THIS AGENT
- * carrying content the agent cannot obtain any other way: the compile order quotes its own
- * children's delivered pieces verbatim (`work/join-drive.ts compileSteerText`), and the
- * stuck-steer and the never-came-back notice are the same ladder's later rungs. Every other
- * engine row on this lane is AMBIENT AWARENESS — "this happened, you may want to mention it"
- * — which is exactly what a gist is for, and every one of them stays gisted.
- */
+/** The fan-out compile-order exemption, named once so the seams that honour it agree: `fanout_join` is
+ *  the one engine intent carrying content the agent cannot get elsewhere; other engine rows are ambient
+ *  and stay a gist. */
 export function isFanoutJoinImperative(m: { origin?: MessageOrigin | null }): boolean {
   return m.origin?.kind === 'engine' && m.origin?.intent === 'fanout_join';
 }
 
-/**
- * Scope a fresh tail for an ENGINE turn (a scheduler task / reminder firing).
- * (OPEN-11.) An engine turn is the engine asking the agent to execute a
- * specific task, it is NOT a conversation with the owner, even though the
- * trigger row is stored as role='user'. Before this, an engine turn synthesized
- * an owner/dashboard counterparty and took scopeToHumanConversation, which kept
- * the owner's whole recent tail live, so an hour-old, already-answered request
- * (e.g. "give me a RAM rundown") sat at full salience and the model ran THAT
- * instead of the scheduled task (the gastro-digest hijack). Here we drop the
- * human conversation entirely: the task lives in the engine event and the EVENTS lane,
- * and the agent works it from there + memory, exactly the way an A2A turn answers from memory rather than the raw user tail.
- * Keeps: the agent's own current-turn work (untagged / tool activity) and engine
- * events (the caller lifts those into the EVENTS lane). Drops: all human inbound
- * and all A2A.
- */
+/** Scope a fresh tail for an engine turn: drop the human conversation (the task lives in the engine
+ *  event and EVENTS lane); keep the agent's current-turn work and engine events; drop all human inbound
+ *  and all A2A. */
 function scopeToEngineTurn(tail: Message[], inFlightTurn: number | null): Message[] {
   return tail.filter((m) => {
     const o = m.origin;
     const keepOwn = isInFlight(m, inFlightTurn) || subjectOf(m) !== 'conv';
-    // Unclassified rows (tool-role rows have no derivable origin) follow the
-    // same rule as classified self output below: a conv-stamped row belongs to
-    // a prior conversation's turn and is dropped; only untagged (current-turn
-    // in-flight / legacy) rows keep the old safe default. Without this, a
-    // settled turn's tool debris leaked into engine turns even after the
-    // haiku-failure fix dropped the conv-stamped SELF rows.
+    // Unclassified rows follow the same rule as self output: conv-stamped rows are dropped, untagged kept.
     if (!o) return keepOwn;
     if (o.kind === 'engine') return true;      // kept; EVENTS lane lifts it out
     if (o.kind === 'self') {
-      // Keep ONLY the current turn's own work (untagged — `conversation_id` is stamped at
-      // turn END on own output, deliberately). Any self message stamped with a PRIOR
-      // conversation, including its tool RESULTS, is dropped. This is stricter than the A2A
-      // scoper on purpose: the bug it fixes is the engine turn regenerating a
-      // stale human request's answer from that request's leftover tool results
-      // (a scheduled haiku task re-emitted the previous "memory rundown" because
-      // the rundown's exec results, tagged for the human conversation, were tool
-      // activity and survived). A scheduled task works from its directive + fresh
-      // tools, never a prior conversation's loaded data.
-      // t141: "a prior conversation's" is the `conv` LABEL; the turn's own rows, the in-flight fact.
+      // Keep only the current turn's own work (untagged: `conversation_id` is stamped at turn end), never a prior
+      // conversation's data.
       return keepOwn;
     }
     return false;                              // drop human + agent inbound
   });
 }
 
-/**
- * Scope a fresh tail to the ONE human conversation this turn addresses
- * (attribution redesign, Phase 4, human side). The A2A-turn path has its own
- * scoper above; this is the human-turn equivalent and closes the gap that let
- * a DIFFERENT human's inbound (e.g. a friend on iMessage) sit in, and then
- * get merged with, the owner's dashboard turn. Without it the model saw
- * "[SOURCE: IMESSAGE FROM a contact] dinner? <the owner's question>" as one message
- * and could not tell who asked what, the exact conflation this redesign kills.
- *
- * Keeps: messages whose origin resolves to the SAME conversation as the
- * counterparty (same channel + sender, via conversationKey), the agent's own
- * output (A2A sends already stripped), and engine events (which the caller then
- * lifts into the EVENTS lane). Drops: every other human's inbound and all A2A.
- * Falls back to the A2A-only strip when there's no counterparty (legacy path).
- *
- * Exported for the RC-1 no-bleed regression tests (memory/__tests__): the dual-home
- * echo row must land in the RECIPIENT's scoped tail and NOWHERE else, and no other
- * conversation's user rows may ever cross into a turn's scoped tail.
- */
+/** Scope a fresh tail to the one human conversation this turn addresses: keeps the counterparty's
+ *  conversation (conversationKey), the agent's own output and engine events; drops other humans and all
+ *  A2A. Exported for the tests. */
 export function scopeToHumanConversation(
   tail: Message[],
   cp: TurnCounterparty | undefined,
-  /** PHASE-2 T10I: the counterparty's conversation as `conversations.id`, resolved once by the
-   *  turn at pickup and handed down. The INBOUND half below still matches on
-   *  `conversationKey()` — a human row's membership is decided from its ORIGIN, which the row
-   *  carries in full, and that function is the one matcher for the question. The OWN-OUTPUT
-   *  half needs the FK: a self row has no origin to key on, so its membership IS the stamp.
-   *  t141: own output is kept unless it is POSITIVELY a person's reply in another
-   *  conversation (`subject_kind = 'conv'`); this turn's own rows are the in-flight fact. */
+  /** The counterparty's conversation as `conversations.id`; own-output rows are kept unless they are a
+   *  person's reply in another conversation. */
   cpConversationId?: string | null,
   inFlightTurn: number | null = null,
 ): Message[] {
   const a2aStripped = stripA2AFromTail(tail);
   if (!cp) return a2aStripped;
   const cpKey = conversationKey(cp.channel, cp.senderId, cp.name, cp.threadId);
-  // t141 fix round 1 (ruling R-V333-6, option a): this counterparty's OTHER conversations whose
-  // questions are in view here (one sender, two mail threads). Their answers stay beside them,
-  // labelled with their own thread, so a question already answered never looks unanswered.
+  // This counterparty's other conversations whose questions are in view keep their answers beside them.
   const shownHere = new Set(a2aStripped.filter((m) => m.origin?.kind === 'user' && m.origin.authorized
     && m.conversationId && m.conversationId !== cpConversationId
     && conversationKey(m.origin.channel, m.origin.senderId, m.origin.senderName, m.origin.threadId) === cpKey)
@@ -859,32 +473,15 @@ export function scopeToHumanConversation(
   return a2aStripped.filter((m) => {
     const o = m.origin;
     if (o?.kind === 'user') {
-      // Unauthorized human inbound (a mailbox notification about the owner's inbox,
-      // an unknown sender) is NOT a conversation. Keep it so the caller can lift it
-      // into the EVENTS/awareness lane (surfaced to the owner, never answered as
-      // chat). Authorized human inbound stays in the live tail only if it's THIS
-      // counterparty's conversation; other humans get their own turn.
+      // Unauthorized human inbound (a mailbox notification, an unknown sender) is not a conversation: keep it so
+      // the caller lifts it into the EVENTS lane. Authorized inbound stays only for this counterparty.
       if (!o.authorized) return true;
       return conversationKey(o.channel, o.senderId, o.senderName, o.threadId) === cpKey;
     }
-    // engine → EVENTS lane (handled by the caller); keep here.
     if (o?.kind === 'engine') return true;
-    // EVERYTHING ELSE is the agent's own turn output: final reply text, engine
-    // acks, tool calls, and tool RESULTS, however deriveOrigin classified them
-    // (tool-role rows come through unclassified). A turn's output belongs to
-    // its conversation AS A UNIT: `conversation_id` is that stamp, and it must gate the
-    // debris exactly like the answer. The old shape kept unclassified rows
-    // unconditionally while dropping the conv-stamped final reply, so a turn
-    // scoped elsewhere saw a settled turn's promise + tool math WITHOUT its
-    // delivered answer, an apparently unfinished job the model then dutifully
-    // finished, re-answering the user (the months-long re-answer ghost; owner
-    // transcripts 2026-07-07 and 2026-07-09, reproduced on dev 2026-07-10).
-    // Same rule the engine scoper adopted for the identical bug (the re-emitted
-    // memory-rundown haiku failure), now applied symmetrically.
-    //
-    // t141 — NULL NO LONGER MEANS "MINE" (tracker #12: an email wake's searches stayed unstamped
-    // for ever and sat here as the owner's task). Two explicit facts: THIS turn's rows, and a
-    // person's reply in ANOTHER conversation (the re-answer-ghost guard). The rest stay, labelled.
+    // Everything else is the agent's own turn output, which belongs to its conversation as a unit:
+    // `conversation_id` gates the debris like the answer, else a turn scoped elsewhere re-answers. Dropped
+    // only when positively a person's reply in another conversation, not in flight and not shown here.
     return isInFlight(m, inFlightTurn)
       || m.conversationId === cpConversationId
       || subjectOf(m) !== 'conv'
@@ -892,63 +489,37 @@ export function scopeToHumanConversation(
   });
 }
 
-/** t141: the in-flight fact. A row belongs to the turn being assembled iff it says so. */
 function isInFlight(m: Message, inFlightTurn: number | null): boolean {
   return inFlightTurn != null && m.turnNumber === inFlightTurn;
 }
 
-// ════════════════════════════════════════════════════════════════════════════════════════
-// THE MESSAGE CONTEXT, BUILT FROM THE LANE TABLE (PHASE-3 T3, requirements B4–B8).
-//
-// What stood here before, measured by reading at `8f36cdb` (§T0-B): twelve independent
-// admission gates in build order, two adds with no gate at all, an EVENTS push with neither
-// gate nor add, 41 bare numeric literals, and a hardcoded ack that told the model the
-// priority order was the exact reverse of the one the budget spent. `usedTokens` was
-// write-only past the gates.
-//
-// Now: every section is a LANE (`memory/lanes.ts`) that declares its id, its priority, its
-// floor, its ceiling, its position and its own `truncate()`. The lanes render, the two-pass
-// fit decides, and every decision — including every rejection — lands in an
-// `AllocationReport` that also GENERATES the ack, so the array can no longer claim a
-// section the budget dropped.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// The message context, built from the lane table (`memory/lanes.ts`): the fit's decisions, rejections
+// included, land in an `AllocationReport` that also generates the ack.
 
-/** The bundle every lane render reads. Built once per assembly; the expensive parts lazily. */
 interface LaneRenderCtx {
   agentId: string;
   modelId: string;
   contextWindow: number;
   policy: ReturnType<typeof contextWindowPolicy>;
   turnContext?: PromptTurnContext;
-  /** Scoped live tail + the awareness rows lifted out of it. Computed once. */
   tail: () => { freshTail: Message[]; awarenessEvents: Message[] };
-  /** Scrubbed context summaries. Computed once. */
   summaries: () => Summary[];
 }
 
-/** Every lane declares a floor of at least this — a header and a sentence still say something. */
 const MIN_LANE_FLOOR_TOKENS = 64;
 
 type TailPayload = {
   rows: Message[]; agentId: string; dropped: number;
-  /** t145 round 4: the owner message(s) a running turn serves that are NOT among `rows` (folded behind
-   *  the boundary or trimmed off the front): emitted verbatim, labelled, at the front of the tail. */
+  /** Owner message(s) a running turn serves that are not among `rows`: emitted verbatim, labelled, at the
+   *  front of the tail. */
   served?: Message[];
-  /** t140 round 2: the newest seq the token trim has taken off this tail's front (0: none). */
   droppedThroughSeq?: number;
-  /** t207 (D8): rows the EVENTS lane carries (the awareness rows it renders). A served trigger that is one of
-   *  them is in view there and is not re-emitted beside it. */
+  /** Rows the EVENTS lane carries; a served trigger among them is in view there and not re-emitted. */
   inEvents?: Array<{ id: string }>;
-  /** v3.5 D18b r1: charges a served row the attachments this turn injects into it (`turn-attachments.ts`). */
   charge?: (rows: Message[]) => Message[];
 };
 
-// STRIP (T56): `storedRowCost` MOVED to `memory/budget.ts`, with its PHASE-3 T3 history
-// attached, because the compaction gate spends the same unit and held its own copy of the
-// expression (`??` where this one had `||`). One owner now answers "what does carrying this
-// row cost", and the answer includes the `reasoning_content` the replay site will send.
 
-/** Cost of carrying stored rows, the unit `budgetFreshTail` spends (canonical since T2). */
 function rowTokens(rows: Message[]): number {
   return rows.reduce((t, m) => t + storedRowCost(m), 0);
 }
@@ -959,17 +530,13 @@ function textRender(content: string | null): LaneRender | null {
   return { messages, tokens: renderTokens(messages) };
 }
 
-/** §T0-B E `:1595` — `min(available * 0.7, 6000)`: the summaries lane's ceiling, read by the lane and the gauge. */
+/** The summaries lane's ceiling, `min(available * 0.7, 6000)`, read by the lane and the gauge. */
 function summariesCeilingFor(contentBudget: number): number {
   return Math.min(Math.floor(contentBudget * SUMMARY_SHARE), laneLimit('lane.summaries', 'tokens', 'relevanceBudget'));
 }
 
-// ── t194 (v3.4 D1, owner decision 7) — THE GAUGE IS THE VIEW ──────────────────────────────
-// STRIP: `compaction.ts` kept a private model of this fit — summaries counted up to 70% of the room
-// (this lane admits at most `summariesCeilingFor`; a dev-box log: 41-52K counted, 6,000 sent) and the
-// tail priced BEFORE the token trim — so a 65K worker's gate surrendered turns at "99-103%" of a number
-// its model was never sent. requirement preserved: "compaction knows what the assembler will admit" —
-// owned by `measureView`, which IS this fit, stopped before the post-budget lanes (reserved off the top).
+// The gauge is the view: `measureView` IS this fit, stopped before the post-budget lanes, so compaction
+// knows what the assembler will admit.
 export interface ContextView {
   /** The content budget, the live conversation's room in it, the tools/output reserve, the system prompt. */
   budgetTokens: number; tailRoomTokens: number; reserveTokens: number; systemTokens: number;
@@ -979,8 +546,8 @@ export interface ContextView {
   tailTokens: number; tailKeptTokens: number; tailKeptRows: number;
   /** The newest seq the trim took out of view now; the rows one more trim block of growth would take. */
   outOfViewThroughSeq: number; leavingThroughSeq: number; leavingRows: number; leavingTokens: number;
-  /** THE PROTECTED RECENT PART, in tokens (owner decision 7b): the newest whole groups within half the
-   *  tail's room — the half a trim keeps — and never less than the newest group. */
+  /** The protected recent part: the newest whole groups within half the tail's room, never less than the
+   *  newest group. */
   protectedFromSeq: number;
 }
 
@@ -993,20 +560,18 @@ function viewOf(f: {
   const tailTokens = costs.reduce((a, b) => a + b, 0);
   const room = Math.max(0, f.budget - f.cached);
   const block = tailTrimBlockGroups(policy.freshTailCount);
-  // One trim block of growth ahead, at this tail's average group (t140's lead: the fold needs room to
-  // finish before the cut). When a cut is coming, what leaves ahead of need is the trim's whole-block cut,
-  // the front half. What its minimum-fit fallback takes beyond that (a giant newest row) reaches into the
-  // running turn, so it is the in-turn door's (`out-of-view.ts`): exact, and no race with the turn.
+  // One trim block of growth ahead: the fold needs room to finish before the cut. A giant newest row belongs
+  // to the in-turn door (`out-of-view.ts`).
   const lead = groups.length > 0 ? block * (tailTokens / groups.length) : 0;
   let from = groups.length - 1;
   for (let i = groups.length - 2, used = costs[groups.length - 1] ?? 0; i >= 0 && used + costs[i] <= room / 2; i--) { used += costs[i]; from = i; }
-  // …and never into the protected recent part: no fold, routine or pressure, takes it.
+  // Never into the protected recent part (`from`): no fold, routine or pressure, takes it.
   const next = groupsToDropForBudget(costs, Math.max(0, room - lead), block) > 0 ? Math.min(maxTrimUnits(groups.length, block), from) : 0;
   const leaving = groups.slice(0, next).flatMap((g) => g.messages);
   const sum = (xs: Summary[] | undefined): number => (xs ?? []).reduce((n, x) => n + (x.tokenCount ?? 0), 0);
   return {
     budgetTokens: f.budget, tailRoomTokens: room, reserveTokens: policy.toolAndOutputReserve, systemTokens,
-    // The selection takes the newest two whole, then the fit cuts the lane's TEXT to its grant: the smaller is sent.
+    // The selection's chosen summaries, then the fit cuts the lane's TEXT to its grant: the smaller is sent.
     summaryTokens: Math.min(sum(f.summariesAdmitted), f.summaryGrantTokens ?? 0), summaryRawTokens: sum(f.summaries), summaryCount: f.summaries?.length ?? 0,
     tailTokens, tailKeptTokens: rowTokens(f.kept), tailKeptRows: f.kept.length, outOfViewThroughSeq: f.outOfViewThroughSeq,
     leavingThroughSeq: leaving.length > 0 ? (leaving[leaving.length - 1].rowid ?? 0) : 0,
@@ -1015,8 +580,8 @@ function viewOf(f: {
   };
 }
 
-/** t194 — THE ASSEMBLER'S OWN DRY RUN of the view it would send now. `contextWindow` overrides the
- *  model's own (a caller measuring for a window it was handed). Pure: the fit is a read (S3). */
+/** The assembler's own dry run of the view it would send now (`contextWindow` overrides the model's
+ *  own). Pure: the fit is a read. */
 export async function measureView(
   agentId: string, modelId: string, opts: { contextWindow?: number; turnContext?: PromptTurnContext } = {},
 ): Promise<ContextView> {
@@ -1025,25 +590,14 @@ export async function measureView(
   return dry.view!;
 }
 
-/**
- * THE LANE TABLE. Priority is data here and nowhere else; `slot` is position and is
- * independent of it (the briefing is emitted FIRST and drops FIRST — see `lanes.ts`).
- * Every entry carries a `truncate`, so a lane under pressure is shortened, not deleted.
- */
+/** The lane table. Priority is data here only; `slot` is position (the briefing is emitted first and
+ *  drops first, see `lanes.ts`). Every entry has a `truncate`, so pressure shortens a lane. */
 function buildContentLanes(
   contentBudget: number,
-  // t94: the TOKEN trim's block size, derived from this window's own row cap. Threaded in
-  // rather than read from a constant so one ladder rung's tail cannot be cut on another's
-  // quantum (`memory/tail-horizon.ts`, `tailTrimBlockGroups`).
+  // The token trim's block size, from this window's own row cap, so one ladder rung's tail is never cut on
+  // another's quantum (`memory/tail-horizon.ts`).
   freshTailCount: number,
 ): Array<Lane<LaneRenderCtx, unknown>> {
-  // W81: the `lim` shorthand went with its last caller. Every lane that used it —
-  // attempt-ledger, active-tasks, events — is below the conversation now and reads
-  // `laneLimit` directly from the module that renders it.
-  // §T0-B E `:1595` — `min(available * 0.7, 6000)`. The SHARE survives as this lane's
-  // ceiling (it is the same 0.7 `memory/budget.ts` hands the compaction gate, so the gate's
-  // model of the assembler cannot drift from it again); the "available" it multiplies is now
-  // the declared content budget rather than "whatever two earlier gates happened to leave".
   const summariesCeiling = summariesCeilingFor(contentBudget);
   return [
     {
@@ -1053,20 +607,8 @@ function buildContentLanes(
       minTokens: 0,
       maxTokens: Infinity,
       truncate: truncateTextLane,
-      // ── T67b §1 + §2 ──────────────────────────────────────────────────────────────────
-      // TWO defects, one lane, both inside the cacheable region:
-      //   (a) the stamp was `new Date()` AT ASSEMBLY. A briefing has ONE generation date and
-      //       the row records it; reading the wall clock made the first message of every
-      //       context change at midnight for no content reason. This is the byte the owner's
-      //       DS4 trace diverged on.
-      //   (b) the lane rendered only on `shouldFireScaffolding`, so the block was PRESENT on
-      //       a session-start turn and ABSENT on the next one — message 0 moving one turn
-      //       into every conversation, which re-bills the whole prefix behind it. The gate
-      //       is gone: a briefing row that exists is session-stable content and belongs in
-      //       the cached prefix on every turn. It costs its own tokens once and is a cache
-      //       HIT thereafter; a lane that appears and disappears costs the whole history
-      //       every time it moves. `fitLanes` still ranks it last (priority 110), so under
-      //       real pressure it is still the first thing dropped.
+      // The briefing has one generation date recorded on its row and renders every turn: a block that appears and
+      // disappears moves message 0 and re-bills the prefix. It ranks last (priority 110), so it drops first.
       render: (ctx) => {
         const briefing = getLatestBriefing(ctx.agentId);
         if (!briefing) return null;
@@ -1082,29 +624,8 @@ function buildContentLanes(
       minTokens: 0,
       maxTokens: Infinity,
       truncate: truncateTextLane,
-      // ── T67b §4 — THE SPLIT. THE STATIC HALF STAYED; THE RETRIEVAL LEFT. ───────────────
-      //
-      // This lane used to build a query FROM THE RECENT MESSAGES and run a semantic search
-      // with it, from slot 200 — ahead of everything. That is the exact shape roadmap
-      // non-negotiable #10 forbids and that SWEEP CORE-2 item 4 moved `lane.relevant-memory`
-      // out of position for: *"a lane whose content changes with the live ask CANNOT sit at
-      // its current position; the front-position lane may hold only session-stable content."*
-      // It also ran `updateRetrievalStats` — a WRITE from the assembly read path, the same
-      // impurity PHASE-3 S3 removed everywhere else.
-      //
-      // WHAT MOVED, and where it went, because nothing may be deleted in silence:
-      //   • the semantic hits -> `memory/recall-lane.ts`, which ALREADY performed exactly
-      //     this search (same `semanticSearch`, same `personalOnly`, same agent scope) and
-      //     already excluded the pinned set to avoid double-rendering this lane. Its
-      //     `includeVault` gate — false on scaffolding turns, precisely because THIS lane
-      //     fired there — is therefore always true now. One retrieval, one owner, in the
-      //     tail where a per-ask retrieval belongs.
-      //   • the FN-1 unfiled-archive bridge -> the same lane, for the same reason: it
-      //     searches archives BY THE QUERY.
-      //
-      // WHAT STAYED is what was always session-stable: the PINNED and PERMANENT entries
-      // (they change when the user pins, not when the ask moves) and the `session_context`
-      // tagged entries. No query, no clock, no write.
+      // Pinned and permanent entries and `session_context` entries: session-stable content only. Per-ask retrieval
+      // lives in `memory/recall-lane.ts`, in the tail.
       render: async (ctx) => {
         try {
           const sections: string[] = [];
@@ -1136,104 +657,38 @@ function buildContentLanes(
       slot: MessageSlot.Summaries,
       priority: LANE_PRIORITY['lane.summaries'],
       minTokens: 0,
-      // t210: the ROOM bounds the lane; `summariesCeiling` only decides how many OLDER summaries
-      // ride along, and the newest is never cut to meet it (`memory/summaries-lane.ts`).
+      // The ROOM bounds the lane; `summariesCeiling` only decides how many older summaries ride along, and the
+      // newest is never cut to meet it (`memory/summaries-lane.ts`).
       maxTokens: Math.floor(contentBudget * SUMMARY_SHARE),
       truncate: truncateSummariesLane as Lane<LaneRenderCtx, unknown>['truncate'],
-      // ── T67b §4 — THE SELECTION STOPS ASKING WHAT THE LIVE ASK IS ─────────────────────
-      // `selectSummariesByRelevance` ranked this block by vector similarity to
-      // `buildPerTurnRecallQuery` — the live ask — from MessageSlot.Summaries = 300, ahead of
-      // the whole conversation. A new question therefore re-picked the set and rewrote
-      // history above itself, and because summaries render with `earliest="…"` date
-      // attributes, the first byte to differ is a DATE. That is the shape of the owner's own
-      // trace. The rule is roadmap non-negotiable #10's and it is not re-argued here: a lane
-      // ahead of the tail may hold only session-stable content.
-      //
-      // WHAT REPLACES IT is deterministic and content-driven: newest-first under the SAME
-      // ceiling, emitted chronologically. The set changes when a summary is WRITTEN — a real
-      // content-change event, which the invariance gate permits exactly once — and at no
-      // other time.
-      //
-      // WHAT IS NOT LOST, stated rather than assumed: the ask-responsive surface still
-      // exists and is stronger than this ranking was. `memory/recall-lane.ts` retrieves raw
-      // MESSAGES and VAULT entries by meaning against the live ask on every turn, from the
-      // tail; `history_search` reaches the summaries themselves on demand. What is given up
-      // is an OLD summary being auto-hoisted into the prefix because it matched today's
-      // question — and it was being paid for with the entire prefix behind it.
+      // Newest-first under the ceiling, emitted chronologically, so the set changes only when a summary is written
+      // (not ranked by the live ask: a lane ahead of the tail is session-stable).
       render: async (ctx) => renderSummariesLane(ctx.summaries(), ctx.agentId, summariesCeiling),
     },
-    // SWEEP CORE-2 item 4: `lane.relevant-memory` LEFT this candidate list. It is a
-    // post-budget TAIL lane now (`memory/recall-lane.ts`, MessageSlot.RecalledMemory = 1870):
-    // everything emitted here is the cacheable region (`volatileFrom` is this array's length),
-    // and a lane whose content is retrieved against the LIVE ASK may not sit in it. The block
-    // is still computed on this assembly — see `recallLane` below, which is where the
-    // scaffolding gate and the window policy live — and the loop appends it past the boundary.
-    // ── W81: `lane.attempt-ledger` (500) AND `lane.active-tasks` (600) LEFT THIS LIST ────
-    //
-    // They STATE THE WORK BOARD, and the owner's DS4 FINDING 2 (2026-09-12, six occurrences)
-    // is the bill for stating it ahead of the conversation: a state-mutating tool call
-    // followed within seconds by a deep invalidation of 15-50K tokens landing between the
-    // stable prefix and the history. Two of his six were `work_update`, and the census found
-    // that the doors are not a small set — every `work_*` write reaches both blocks, and the
-    // engine's own >=6-non-trivial-tool-call tracker floor mints an in_progress row out of
-    // six PURE READS (`agent/v2/steps/execute/tracker-floors.ts`), which is why `plaud_*`
-    // and `outlook_*` are in his list beside the two writes.
-    //
-    // A lane written by that many doors cannot be change-keyed into stability, so the rule
-    // decides it: WHATEVER A TOOL CAN MUTATE MUST RENDER BELOW THE CONVERSATION. They are
-    // post-budget tail lanes now — `memory/work-board-lane.ts`, MessageSlot.AttemptLedgerTail
-    // = 1810 and MessageSlot.ActiveTasksTail = 1820 — rendered from ONE tracker read and
-    // appended by the loop past `volatileFrom`, each with a DECLARED RESERVE derived by
-    // calling its own renderer.
+    // `lane.relevant-memory` and the work-board lanes are post-budget tail lanes (`memory/recall-lane.ts`,
+    // `memory/work-board-lane.ts`), each with a reserve derived by calling its own renderer; the recall block is
+    // computed here.
 
-    // ── STRIP (t140): `lane.continuity` (slot 700) IS GONE, with the brief it rendered ──────
-    // It injected the pre-compaction continuity brief for three turns after a compaction —
-    // ahead of the conversation, inside the cached region, appearing and vanishing outside any
-    // compaction boundary (the one bounded flap T67b kept). Its writer is deleted
-    // (`memory/compaction.ts`, STRIP note at the pressure path) and migration 187 removes the
-    // stored keys, so the lane could only ever render nothing. requirement preserved: "after a
-    // compaction the agent knows what it was working on" — the task list, and the live
-    // conversation a fold no longer reaches into (t140).
+    // There is no continuity lane; after a compaction the agent knows its work from the task list and the live
+    // conversation.
 
-    // ── W81: `lane.scratchpad` (800) LEFT THIS LIST ──────────────────────────────────────
-    //
-    // Three tools rewrite `agents.config.scratchpad` mid-conversation — `scratchpad_set`,
-    // `scratchpad_clear` and `reset_session` — and this lane held PRIORITY 20, the highest
-    // content priority in the assembly, at slot 800: ahead of the whole conversation and
-    // first in line to be paid for. The scaffolding ack's own sentence stated the volatility
-    // out loud ("I maintain it via scratchpad_set as I make progress"), which is the same
-    // shape of self-witness the deleted directive pin carried. It is a post-budget tail lane
-    // now at MessageSlot.ScratchpadTail = 1830, and its pad is capped where it was not.
+    // `lane.scratchpad` is a post-budget tail lane too (MessageSlot.ScratchpadTail), since tools rewrite it.
 
-    // ── W81: `lane.events` (1050) LEFT THIS LIST, AND IT IS THE SUBTLEST OF THE FOUR ─────
-    //
-    // NO TOOL WRITES IT. Its content is `awarenessEvents.slice(-10)` taken from the fresh
-    // tail's FIXED ROW WINDOW (`getRecentMessages(agentId, policy.freshTailCount)`), so every
-    // tool call appends two rows and eventually pushes an awareness row out of the window —
-    // the block re-renders because the CONVERSATION moved, with nothing mutated anywhere.
-    // Driven at `0cc9a3ba` across a single `outlook_search` on a 14-notice body: 1,344 ->
-    // 1,276 chars, at slot 1050, ahead of every message in the array. That is the same
-    // scrolling-window defect T67b deleted from this file's recent-mention suppression, and
-    // it is what explains the READ tools in the owner's six occurrences.
-    //
-    // A scrolling window cannot be re-keyed into stability — the window IS the content — so
-    // position is the only door. `renderEventsLane` below, MessageSlot.EventsTail = 1840.
+    // `lane.events` is a post-budget tail lane too (`renderEventsLane`): a slice of the tail's awareness rows
+    // re-renders as the conversation scrolls.
 
     {
       id: 'lane.fresh-tail',
       slot: MessageSlot.FreshTail,
       priority: LANE_PRIORITY['lane.fresh-tail'],
-      // B8: the ONE mandatory floor. A context with no live conversation is worse than one
-      // slightly over budget — `budgetFreshTail`'s last-group safety, made a declaration.
       minTokens: MIN_LANE_FLOOR_TOKENS,
       mandatoryFloor: true,
       maxTokens: Infinity,
       truncate: (render, maxTokens) => {
         const p = render.payload as TailPayload;
         let kept = budgetFreshTail(p.rows, maxTokens, tailTrimBlockGroups(freshTailCount));
-        // t145 round 4: the served owner message is never out of view. If the trim took it (or it was
-        // already behind the boundary), it is re-emitted, and its cost comes off what the rest may spend.
-        // D18 r3: never whole over the room; D18b r1: its attachments counted (`p.charge`).
+        // The served owner message is never out of view: if the trim took it (or it sits behind the boundary) it is
+        // re-emitted and its cost (attachments via `p.charge`) comes off the rest's room.
         const servedOf = (rows: Message[]): Message[] => (p.charge ?? ((r: Message[]) => r))(servedRowsOutOfView(p.agentId, [...rows, ...(p.inEvents ?? [])])).map((m) => overRoomRowView(m, maxTokens));
         let served = servedOf(kept);
         if (served.length > 0) {
@@ -1241,16 +696,13 @@ function buildContentLanes(
           served = servedOf(kept);
         }
         const dropped = Math.max(0, p.rows.length - kept.length);
-        // `kept` is a suffix of `rows` (whole groups off the front), so the trim's front cut ends
-        // at the row just before it.
+        // `kept` is a suffix of `rows` (whole groups off the front), so the front cut ends just before it.
         const droppedThroughSeq = Math.max(p.droppedThroughSeq ?? 0, dropped > 0 ? (p.rows[dropped - 1].rowid ?? 0) : 0);
         return tailRender({ rows: kept, agentId: p.agentId, dropped: p.dropped + dropped, droppedThroughSeq, served, inEvents: p.inEvents, charge: p.charge });
       },
       render: (ctx) => {
         const { freshTail, awarenessEvents } = ctx.tail();
         if (freshTail.length === 0) return null;
-        // Pre-cap oversized tool_result content BEFORE budgeting: without it a single
-        // 5.9MB tool_result consumes the whole budget and evicts the user's question.
         const rows = capLargeToolResultStrings(freshTail);
         const inEvents = awarenessEvents.slice(-laneLimit('lane.events', 'rows', 'events'));
         const charge = (r: Message[]): Message[] => chargeTurnAttachments(ctx.agentId, ctx.modelId, r, contentBudget);
@@ -1260,28 +712,12 @@ function buildContentLanes(
   ];
 }
 
-/**
- * Convert stored rows into the emitted messages. The lane's COST is the row cost — the unit
- * `budgetFreshTail` spends and the one migration `150` made canonical — so the allocator and
- * the truncator speak one language. The stamp/parse difference between a stored row and its
- * emitted form rides inside the declared post-budget reserve.
- */
-// ════════════════════════════════════════════════════════════════════════════════════════
-// v3.5 owner test 2, fix rank 1: THE MODEL SEES WHAT IT SAID BESIDE A TOOL CALL.
-//
-// When a round's text rides with tool calls and is not the turn's answer, the engine demotes it to a working note
-// (owner ruling 2026-07-10, demote don't discard): a `role='system'` `[working-note]` row the owner reads as a dimmed
-// bubble, and an assistant row holding only the `tool_use` blocks. A system row never enters model context, so the
-// model's own words left the only record it reads, and it said them again on the next round ("On it" four times, the
-// same list three times; T52's recorded root, `post-call-classify/terminal-text.ts`).
-//
-// So here, at the model's one reader: a demoted note of the same turn that precedes an assistant row carrying
-// `tool_use` and no text is that row's text, rendered as its first block. THE STORED ROWS DO NOT CHANGE. The note
-// stays the owner's display, and the assistant row's bytes stay what every reader of assistant TEXT reads (the reply
-// floors, channel routing, ask settlement, the dashboard's answer rules), so none of them starts counting narration as
-// a reply. The render is a pure function of stable rows, so the cached prefix does not move. One copy: a note the
-// engine retired because it delivered the same words as the answer (`finalize/deferred-recovery.ts`) is not rendered.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// A round's text that rides with tool calls and is not the turn's answer is demoted to a system
+// `[working-note]` row, which never enters model context. Here, at the model's one reader, a demoted note of
+// the same turn that precedes an assistant row with `tool_use` and no text is rendered as that row's first
+// block, so the model sees its own words. The stored rows do not change (reply floors, routing and the
+// dashboard read assistant text), and the render is a pure function of stable rows. A note retired for
+// duplicating the answer (`finalize/deferred-recovery.ts`) is skipped.
 function demotedNarrationByRow(rows: readonly Message[]): Map<string, string> {
   const out = new Map<string, string>();
   let pending: { turn: number | null | undefined; ids: string[]; texts: string[] } | null = null;
@@ -1321,16 +757,16 @@ function demotedNarrationByRow(rows: readonly Message[]): Map<string, string> {
   return out;
 }
 
+/** Convert stored rows into the emitted messages. The lane's cost is the row cost (the unit
+ *  `budgetFreshTail` spends); the stamp/parse difference rides inside the post-budget reserve. */
 function tailRender(payload: TailPayload): LaneRender<TailPayload> {
   let rows = sanitizeToolPairs(payload.rows);
   const narration = demotedNarrationByRow(rows);
   rows = stubOldToolResults(rows, payload.agentId);
   const labels = labelRows(payload.agentId, rows);
   const messages: LaneMessage[] = [];
-  // t145 round 4: the served owner message(s), verbatim, ahead of the live rows they precede. Emitted
-  // only when not otherwise in view, so exactly once.
-  // t158 B: it wears the standard row label (`renderRowLabel`, as `labelRows` gives it in place) plus a
-  // pronoun-free phrase; the old sentence had the time only, and "from you" read as the agent's own.
+  // The served owner message(s), verbatim, ahead of the live rows they precede and only when not otherwise in
+  // view, so exactly once. It wears the standard row label plus a pronoun-free phrase.
   const served = payload.served ?? [];
   if (served.length > 0) {
     const facts = new LabelFacts(payload.agentId);
@@ -1344,22 +780,19 @@ function tailRender(payload: TailPayload): LaneRender<TailPayload> {
     if (msg.role === 'tool') {
       messages.push({ role: 'user', content: parsed as Anthropic.ContentBlockParam[] });
     } else if (msg.role === 'user' || msg.role === 'assistant') {
-      const said = msg.role === 'assistant' ? narration.get(msg.id) : undefined;   // test-2 rank 1 (above)
+      const said = msg.role === 'assistant' ? narration.get(msg.id) : undefined;   // the demoted working note (demotedNarrationByRow)
       const own = said !== undefined && Array.isArray(parsed) ? [{ type: 'text' as const, text: said }, ...parsed] : parsed;
       const out: LaneMessage = { role: msg.role, content: labelContent(own, labels.get(msg.id) ?? null) };
-      // T56 leg (b): a row whose reasoning was RETIRED at a compaction boundary renders
-      // without it, for ever after. The stamp is durable and one-way, which is what makes
-      // this stable: between two compactions the same row renders byte-identically, so no
-      // prefix byte moves except at a boundary a compaction has already rewritten. The text
-      // itself is kept on the row — the dashboard's "Thinking…" panel still reads it.
+      // A row whose reasoning was retired at a compaction boundary renders without it for ever after: the stamp is
+      // one-way, so no prefix byte moves between compactions. The text stays on the row.
       if (msg.role === 'assistant' && msg.reasoningContent && !msg.reasoningAgedOut) {
         out.reasoningContent = msg.reasoningContent;
       }
       messages.push(out);
     }
   }
-  // t141: labels ride the uncounted stamp slack, as the instant did; counting them here alone
-  // (not in the horizon) MEASURED 8 prefix rewrites in 200 turns, not 2 (t94 §2). Kept small instead.
+  // Labels ride the uncounted stamp slack, so they stay small: counting them here alone, not in the
+  // horizon, rewrites the prefix.
   return { messages, tokens: rowTokens(payload.rows) + rowTokens(payload.served ?? []), payload };
 }
 
@@ -1368,20 +801,14 @@ async function assembleMessageContext(
   modelId: string,
   systemPrompt: string,
   turnContext?: PromptTurnContext,
-  dryRun?: { contextWindow?: number },   // t194: stop at the fit and report the view (`measureView`)
+  dryRun?: { contextWindow?: number },   // stop at the fit and report the view (`measureView`)
 ): Promise<AssembledContext> {
-  const contextWindow = dryRun?.contextWindow ?? agentTurnWindow(agentId, modelId);   // N42: an auto agent's one router window
-  // ONE budget (PHASE-3 T2): threshold, reserve and ceiling from `memory/budget.ts`.
-  // PHASE-3 T4: the reserve is MEASURED, not a constant — the tools payload this agent's
-  // transport will actually serialise, plus the derived output allowance. The old 15,000
-  // literal was smaller than the primary's tool schemas alone, so the assembler's ceiling
-  // sat ABOVE the window and the provider front-trimmers were doing the real work.
-  // T82a: the box's own declared serving ceiling, off the SAME provider join `refuseIfDoomed`
-  // already trusts (`getModelInfo`). `null` (either half of a provider's declaration is
-  // missing, which is every provider configured before this task) leaves `assemblyBudgetTokens`
-  // exactly what it was before this line existed — R6's byte-preservation control.
+  const contextWindow = dryRun?.contextWindow ?? agentTurnWindow(agentId, modelId);   // an auto agent's one router window
+  // One budget: threshold, reserve and ceiling come from `memory/budget.ts`. The reserve is measured; the
+  // serving ceiling comes from the join `refuseIfDoomed` trusts (`getModelInfo`), and `null` leaves the budget
+  // unchanged.
   const policy = contextWindowPolicy(contextWindow, {
-    // t194: a dry run reads the per-surface memo (the freeze fix kept this stringify off the measuring path).
+    // A dry run reads the per-surface memo so the tool-payload stringify stays off the measuring path.
     toolPayloadTokens: dryRun ? await cachedToolPayloadTokens(agentId, toolSurfaceKey(agentId, modelId), () => measureAgentToolPayloadTokens(agentId))
       : await measureAgentToolPayloadTokens(agentId),
     maxOutputTokens: getModelOutputCap(modelId),
@@ -1389,18 +816,10 @@ async function assembleMessageContext(
   });
   const maxTokens = policy.assemblyBudgetTokens;
 
-  // Budget the message array against the registry-produced system prompt's size.
   const systemTokens = estimateTokens(systemPrompt);
-  // Fail loud rather than assemble a lie: a negative budget used to produce a
-  // single-message context silently (budgetFreshTail's last-group safety, nothing logged).
-  //
-  // t113 G — AND LOUD TO THE PERSON, NOT ONLY TO THE LOG. The refusal below is unchanged and
-  // still throws with its three repairs named; t109 §D kept it deliberately. What it could not
-  // do is reach the one human who can act: they saw an agent that answered with no memory of
-  // anything and nothing told them why. `reportStarvedWindow` cards them once per outage;
-  // `noteWindowHolds` is the other half of "per outage" — it forgets the note when assembly
-  // fits again, so a later outage cards again instead of being swallowed as a duplicate.
-  if (dryRun) assertSystemPromptFits(systemTokens, policy);   // t194: a dry run reads the refusal, never cards it
+  // Fail loud rather than assemble a lie: a negative budget would silently yield a one-message context.
+  // `reportStarvedWindow` cards the person once per outage; `noteWindowHolds` forgets it when assembly fits.
+  if (dryRun) assertSystemPromptFits(systemTokens, policy);   // a dry run reads the refusal, never cards it
   else try {
     assertSystemPromptFits(systemTokens, policy);
     noteWindowHolds(agentId);
@@ -1409,38 +828,20 @@ async function assembleMessageContext(
     throw err;
   }
 
-  // Reservations taken off the top: the generated ack (slot 1000) and the post-budget lanes
-  // (B7 — the seven appends plus the loop's own tail-append). Before this they were spent
-  // after `usedTokens` stopped being consulted (research 06's write-only finding).
-  //
-  // t109 D: THE LADDER IS NO LONGER FLAT. The bare sum (11,145) took more than a small window
-  // had left after its system prompt, so the content budget clamped to ZERO and the array
-  // collapsed to `lane.empty-context-fallback` every turn. The bound, its derivation, the floor
-  // and the G2 argument are all at `reserveLadderFor`.
-  // tracker #24: reserved for the block as it will be LAID OUT, in its share of the room.
+  // Reservations taken off the top: the generated ack (slot 1000) and the post-budget lanes. A flat sum would
+  // clamp a small window's content budget to zero, so `reserveLadderFor` holds the bound and floor.
   const loopTailExtra = otherThreadsReserveExtra(agentId, liveTurnContext(agentId)?.conversationId ?? null, otherThreadsRoomTokens(maxTokens, systemPrompt));
   const ladder = reserveLadderFor(maxTokens - systemTokens, loopTailExtra);
   const offTheTop = ladder.offTheTop;
-  const contentBudget = Math.max(0, maxTokens - systemTokens - offTheTop);   // the PM's tail is fitted to this too: the loop's appends need room (paid run H9)
-  // PM agent gets a lightweight context: system prompt + its live conversation only.
-  // No briefing, no vault, no summaries. The tracker is its memory.
+  const contentBudget = Math.max(0, maxTokens - systemTokens - offTheTop);   // the PM's tail is fitted to this too: the loop's appends need room
+  // The PM agent gets a lightweight context: system prompt + its live conversation only (the tracker is its
+  // memory).
   if (isPMAgent(agentId)) {
-    // ── t206 (v3.4 D3, owner decision 11): THE PM'S TAIL GROWS AND FOLDS, LIKE EVERY TAIL ────
-    // STRIP: `lane.pm-tail`'s 40-row cap, read as "the newest 40 rows" (`getRecentMessages(cap)`),
-    // and t123's one re-ask for the `role='system'` rows that spent its slots. A window measured
-    // from the BACK scrolls by construction: each new row pushed the oldest off the front, so the
-    // first message moved on every call and the provider re-read the whole tail. Measured on the
-    // dev box (`scripts/cost-measure.mjs --agent <the PM>`, 220 calls): the tail was 89% of the
-    // PM's input cost at a 61% hit rate, and the prefix broke at the tail's head on 49% of turn
-    // starts and 70% of the calls inside a turn. requirement preserved: "the PM's prompt stays
-    // bounded" — by the same two owners every other agent's tail answers to: the compaction
-    // boundary (`freshTailHorizon`: every row since the newest folded one, read newest-first until
-    // the budget is covered) and the token trim below. Between folds the tail is a pure append; at a fold the
-    // front moves once. t123's slot problem cannot recur: the read is no longer a row count, so a
-    // row that renders to nothing spends no one else's place.
-    const horizon = freshTailHorizon(agentId, policy, 2 * (maxTokens - systemTokens));   // t207: a token-bounded read
+    // The PM's tail grows and folds like every tail: `freshTailHorizon` (rows since the newest fold) plus the
+    // token trim. A window measured from the back would scroll and move the first message each call.
+    const horizon = freshTailHorizon(agentId, policy, 2 * (maxTokens - systemTokens));   // a token-bounded read
     const freshTailRows = getRecentMessages(agentId, horizon.requestRows);
-    const freshTail = chargeTurnAttachments(agentId, modelId, horizon.keepFromSeq > 0   // D18b r1: its attachments in the fit
+    const freshTail = chargeTurnAttachments(agentId, modelId, horizon.keepFromSeq > 0   // its attachments in the fit
       ? freshTailRows.filter((m) => (m.rowid ?? 0) >= horizon.keepFromSeq)
       : freshTailRows, contentBudget);
     const budgeted = budgetFreshTail(
@@ -1453,24 +854,13 @@ async function assembleMessageContext(
     );
     const pm = tailRender({ rows: budgeted, agentId, dropped: 0 });
     tagMessageLanes(pm.messages, 'lane.pm-tail');
-    // ── F22 + T4's day-0 defect (ii): THE PM PATH RETURNS THE SAME SHAPE. ──
-    // It used to end at `while (messages[0].role !== 'user') shift()` and return — role
-    // normalisation WITHOUT the rest of the integrity pass. A first message that is a user
-    // message whose blocks are all `tool_result` satisfies that loop and is exactly what
-    // Anthropic rejects, which is 3 of the detect window's 17 day-0 divergences, all on
-    // `the PM`. `applyIntegrityPass` does the role normalisation AND strips the leading
-    // tool_result AND repairs the pairing AND refuses a trailing assistant — the loop it
-    // replaces was a strictly weaker copy of its first clause, so it is DELETED, not kept
-    // beside it. Requirement C9's "no PM bypass" is now true of the assembler as well as
-    // of the validator.
+    // The PM path returns the same shape as the main path: `applyIntegrityPass` normalises roles, strips a
+    // leading tool_result, repairs pairing and refuses a trailing assistant.
     if (dryRun) return { systemPrompt, systemVolatile: '', messages: [], reserveTokens: policy.toolAndOutputReserve,
       view: viewOf({ budget: contentBudget, cached: 0, before: freshTail, kept: budgeted, outOfViewThroughSeq }, policy, systemTokens) };
     const messages = applyIntegrityPass([...pm.messages], agentId);
-    // FA-M1: live-view loss, as the main path counts it — the trim's drop plus the ceiling's skip.
     const freshTailDropped = trimmed + horizon.unreadRows;
-    // The report the PM path never produced. One lane, its real grant, its reason in words:
-    // a receipt that simply lacked the PM's assembly could not tell "the PM has no lanes"
-    // from "nobody wrote this down" (research 06 §8's own complaint about this return).
+    // One lane with its real grant and reason, so a receipt can tell "the PM has no lanes" from "unrecorded".
     const report: AllocationReport = {
       budgetTokens: contentBudget,
       reservedTokens: 0,
@@ -1482,8 +872,7 @@ async function assembleMessageContext(
         priority: LANE_PRIORITY['lane.fresh-tail'],
         requested: pm.tokens,
         granted: renderTokens(messages),
-        // T1 2b checked this derived `empty`: the PM tail is rendered INLINE here, with no
-        // swallowed catch, so a failure throws the assembly rather than reading as silence.
+        // The PM tail renders inline with no swallowed catch, so a failure throws rather than reading as silence.
         status: messages.length > 0 ? 'admitted' : 'empty',
         reason: `PM lightweight context: the tracker is its memory, so the tail is its only ` +
           `lane (every row since the newest fold, ${freshTailDropped} row(s) out of view)`,
@@ -1507,33 +896,12 @@ async function assembleMessageContext(
     };
   }
 
-  // ── T67b: THE SCAFFOLDING GATE IS GONE, AND THAT IS THE FLAP HALF OF THIS TASK ─────────
-  //
-  // WHAT IT WAS: `shouldFireScaffolding = isV2SessionStart(agentId) || <5 turns past the
-  // continuity-brief horizon>`, and three lanes ahead of the fresh tail rendered ONLY when it
-  // was true — `lane.briefing` (100), `lane.vault` (200), `lane.active-tasks` (600). So the
-  // message prefix had TWO SHAPES and alternated between them one turn into every
-  // conversation, and again at the far edge of every post-compaction window. A block that
-  // appears and disappears at position ~0 costs the entire cached history behind it EVERY
-  // TIME IT MOVES; that is the same bill as a byte changing there, paid twice.
-  //
-  // WHAT REPLACES IT: nothing, because the lanes render unconditionally now. That is
-  // STRICTLY MORE scaffolding than the gate ever granted, so a contact's 2026-06-06 photo-album
-  // incident — the reason the post-compaction re-fire exists at all, an agent that could not
-  // tell it should re-establish procedural context — is covered a fortiori rather than
-  // weakened. The tokens are real and they are paid ONCE: after the first turn they are
-  // cache HITS, which is precisely the trade the owner's incident is about. `fitLanes` still
-  // ranks all three below the live conversation, so genuine budget pressure still drops them
-  // first, in priority order, with a recorded grant.
-  //
-  // `isV2SessionStart` survives as the reader of `session_started_at` for the [New Session]
-  // prefix below; the continuity-brief horizon survives as `lane.continuity`'s own gate.
+  // The scaffolding lanes render unconditionally: a gate firing at session start and for five turns past the
+  // continuity-brief horizon gave the prefix two shapes and re-billed the history each flip. `fitLanes`
+  // still drops them first under pressure.
 
-  // ── The lane render context ──
   let tailCache: { freshTail: Message[]; awarenessEvents: Message[] } | null = null;
-  // t94: rows the HORIZON's bounded read left unread, carried out to FA-M1's `freshTailDropped`.
   let horizonSkippedRows = 0;
-  /** t140 round 2: the newest seq the horizon's bounded read left unread (0: it left none). */
   let horizonSkippedThroughSeq = 0;
   let summaryCache: Summary[] | null = null;
   const laneCtx: LaneRenderCtx = {
@@ -1545,17 +913,8 @@ async function assembleMessageContext(
     summaries: () => {
       if (summaryCache) return summaryCache;
       const rawSummaries = getContextSummaries(agentId);
-      // v2.7.7: scrub summaries that describe an EARLIER version of a technique the agent
-      // has freshly re-read this session — the path by which an agent references a script
-      // that no longer exists.
-      //
-      // T67b: THE WINDOW IS THE SESSION, NOT THE LAST N ROWS. The scrub read
-      // `getRecentMessages(scrubWindow)`, so a technique read 30 messages ago SCROLLED OUT
-      // of the window and the scrubbed summary came BACK — a lane ahead of the tail
-      // rewriting itself because the tail moved, which is the class this task closes. The
-      // rule's own words are "freshly re-read THIS SESSION", and reading the session says
-      // exactly that: monotonic while the session lasts, so the set only ever grows, and it
-      // grows on a real event (a technique read) rather than on the tail scrolling.
+      // Scrub summaries describing an earlier version of a technique freshly re-read this session. The window is
+      // the session, not the last N rows, so a scrolled-out read cannot bring the stale summary back.
       let freshlyReadTechniques: Set<string> = new Set();
       try {
         freshlyReadTechniques = extractFreshlyReadTechniques(sessionToolRows(agentId));
@@ -1565,35 +924,16 @@ async function assembleMessageContext(
     },
     tail: () => {
       if (tailCache) return tailCache;
-      // Exclude user messages that arrived after the current turn started so they get a
-      // clean run via the wakeup mechanism instead of being buried mid-context.
+      // User messages newer than this turn's start are excluded; they get their own run via the wakeup.
       const turnCutoff = turnBoundary.get(agentId);
-      // ── t94: THE TAIL'S FRONT IS THE COMPACTION BOUNDARY, NOT A SCROLLING ROW WINDOW ──
-      //
-      // This line read `getRecentMessages(agentId, policy.freshTailCount, turnCutoff)` — the
-      // newest N rows — and N is a ROW CAP (`getFreshTailCount`: 24/40/64/80 by window). So
-      // the live conversation front-trimmed TWO ROWS EVERY TURN once it reached the cap, at
-      // any utilisation, for ever, and a positional prefix cache re-prefilled everything
-      // behind the new row 0. The owner's capture is 55K tokens ≈ 270s per turn; this lane's
-      // instrument measured 8,856 of 8,908 bytes re-billed on 15 consecutive fictional turns
-      // with the token budget nowhere near binding. `memory/tail-horizon.ts` carries the
-      // whole derivation and its hysteresis.
-      // t207: the read stops once the newest rows cover twice the content budget; the rest are owed their fold.
+      // The tail's front is the compaction boundary, not a scrolling row window (a row cap would re-prefill the
+      // cache every turn). `memory/tail-horizon.ts` carries the derivation; the read stops at twice the content
+      // budget.
       const horizon = freshTailHorizon(agentId, policy, 2 * contentBudget);
       horizonSkippedRows = horizon.unreadRows;
       horizonSkippedThroughSeq = horizon.unreadRows > 0 && horizon.keepFromSeq > 0 ? horizon.keepFromSeq - 1 : 0;
-      // THE ASK, and the slack is CONDITIONAL — review I1. The slack exists for ONE reason:
-      // `turnCutoff` excludes the newest user rows, so a `LIMIT` sized to the span would
-      // reach that many rows further back, and the seq filter below is what trims them off
-      // again. Where there is no filter — the FLOOR, `keepFromSeq: 0` — slack is pure
-      // over-ask, and `getRecentMessages` excludes nothing a summary already covers (nor
-      // does anything else in this assembly). Asking 2×cap unfiltered there put up to `cap`
-      // already-summarised rows into the live tail BESIDE the summary covering them, on the
-      // one turn the context is tightest, and the next turn dropped them and paid a second
-      // prefix rewrite. Conditional, the floor is LITERALLY the pre-t94 call — which is what
-      // the horizon's own floor comment promises, and the conservative reading of G2: no
-      // prompt byte can move for any agent in the floor case, the deep-compaction one
-      // (`rows_since < cap`) included. `__tests__` §10 holds it with the divider deleted.
+      // The slack refills the rows `turnCutoff` excludes; the seq filter trims the overreach. With no
+      // filter (the floor, `keepFromSeq: 0`) it would add summarised rows beside their summary: ask plain.
       const freshTailRows = getRecentMessages(
         agentId,
         horizon.keepFromSeq > 0 ? horizon.requestRows + policy.freshTailCount : horizon.requestRows,
@@ -1602,56 +942,17 @@ async function assembleMessageContext(
       const freshTailRaw = withSubjectKinds(agentId, horizon.keepFromSeq > 0
         ? freshTailRows.filter((m) => (m.rowid ?? 0) >= horizon.keepFromSeq)
         : freshTailRows);
-      // Counterparty scoping (attribution redesign): the live conversation is scoped to the
-      // ONE counterparty this turn addresses, so the model can never see two senders mixed.
       const inFlightTurn = liveTurnContext(agentId)?.turnNumber ?? null;
       const scopedTail = turnContext?.counterparty?.kind === 'agent'
         ? scopeToA2AThread(freshTailRaw, turnContext.counterparty.threadId)
         : turnContext?.isEngineTurn
         ? scopeToEngineTurn(freshTailRaw, inFlightTurn)
         : scopeToHumanConversation(freshTailRaw, turnContext?.counterparty, servedConversationId(agentId, turnContext), inFlightTurn);
-      // EVENTS / awareness lane: engine notices AND unauthorized human inbound — things the
-      // agent should be AWARE of but is NOT in conversation with. An action-required
-      // engine-origin A2A stays FULL in the live tail on its engine turn.
-      //
-      // ── T68b (2026-09-01): THE FAN-OUT COMPILE ORDER IS NOT AN AWARENESS EVENT. ────────
-      //
-      // THE DEFECT, MEASURED (W61, verdict A, driven byte-identically at two commits).
-      // The order is 3,660 chars and quotes both delegated pieces verbatim. It is filed
-      // `lane='events'` (`agent/a2a-transport.ts steerModelToCompile`), `origin.ts` turns
-      // that into `originKind='engine'`, this filter swept it into the awareness set, and
-      // the lane below rendered it whitespace-collapsed and sliced to 400 chars. What
-      // reached the model was:
-      //     "• [Aug 31, 2026, 04:38 PM][fanout_join] All 2 delegated pieces … do not trust
-      //      a tracker row that says "complete" over the delivered text itself). Do NOT
-      //      search, op"
-      // — the exact half that PROMISES the pieces and FORBIDS looking for them, with
-      // "Here is each piece's delivered content, verbatim:" and both pieces cut off. The
-      // model then spent three entire 16,384-token output budgets in twelve minutes
-      // searching its own context for content the platform had removed, wrote
-      // "I'm fabricating… I keep going in circles", and never compiled. Six recorded
-      // grinds on this agent, six inside an owed fan-out arc.
-      //
-      // WHY HERE AND NOT AT THE LANE. T10 already ruled that this row must reach the model
-      // (`isFanoutJoinImperative`, `scopeToA2AThread` above) and this line silently
-      // overrode that ruling. The fix is to stop making the claim twice: a row T10 keeps is
-      // not an awareness event, so it never enters the set the gist owns.
-      //
-      // WHY THE FRESH TAIL IS THE RIGHT HOME, not "the events lane but ungisted".
-      //   * CACHE (the binding tenet, and this task is tail-side by construction): the
-      //     events block is `MessageSlot.Events = 1050`, AHEAD of `FreshTail = 1100`.
-      //     Adding a bullet there rewrites a message the whole tail sits behind, re-billing
-      //     it. Landing the row in the fresh tail is a pure APPEND — zero prefix bytes move,
-      //     which is what keeps `__tests__/the-prefix-holds-still` green.
-      //   * APPEND-ONLY, and it is why the rule is unconditional. "Keep only the NEWEST
-      //     order whole and gist the older ones" would move an already-emitted row from the
-      //     tail into a block ahead of it the moment a redrive lands — a mid-session prefix
-      //     rewrite outside a compaction boundary, which is exactly what T56/T67b forbid.
-      //   * The row is `display_tier='agent-only'`, so nothing here reaches a human.
-      //
-      // THE CHARTER IS UNCHANGED FOR EVERYTHING ELSE. One intent, the one T10 already
-      // enumerated; every other engine notice and every unauthorized human inbound still
-      // gists at 400. `__tests__/a-compile-order-the-model-can-see` §T68b §2 is that control.
+      // EVENTS lane: engine notices and unauthorized human inbound, gisted at 400. A fan-out compile order
+      // (`isFanoutJoinImperative`) is not one: every order, older ones too, stays whole in the fresh tail as
+      // a pure append (a gist cuts off the pieces it promises; gisting an older one when a redrive lands
+      // would move an emitted row ahead of the tail, a mid-session prefix rewrite), as
+      // `__tests__/a-compile-order-the-model-can-see` checks. This turn's own trigger row stays whole too.
       const keepFullId = turnContext?.engineEventKeepFullId ?? null;
       const awarenessEvents = scopedTail.filter((m) =>
         m.role === 'user' &&
@@ -1660,14 +961,11 @@ async function assembleMessageContext(
         (m.origin?.kind === 'engine' || (m.origin?.kind === 'user' && m.origin?.authorized === false)),
       );
       const awarenessIds = new Set(awarenessEvents.map((m) => m.id));
-      // v3.5 D18b r1: a row whose attachments this turn injects carries their cost into the fit (`turn-attachments.ts`).
       tailCache = { freshTail: chargeTurnAttachments(agentId, modelId, scopedTail.filter((m) => !awarenessIds.has(m.id)), contentBudget), awarenessEvents };
       return tailCache;
     },
   };
 
-  // The line's "told plainly" half needs nothing here: `assertSystemPromptFits` above already
-  // refuses that state by name. This reports the SQUEEZE, which nothing else could see.
   if (ladder.scaled) {
     logger.warn('Post-budget reserves scaled down: this window cannot hold the full ladder', {
       contextWindow: policy.contextWindow, declaredReserveTokens: ladder.declared,
@@ -1676,7 +974,6 @@ async function assembleMessageContext(
     }, agentId);
   }
 
-  // ── Render every lane, then let the two-pass fit decide ──
   const lanes = buildContentLanes(contentBudget, policy.freshTailCount);
   const candidates: LaneCandidate[] = [];
   for (const lane of lanes) {
@@ -1685,11 +982,8 @@ async function assembleMessageContext(
     try {
       render = (await lane.render(laneCtx)) as LaneRender | null;
     } catch (err) {
-      // One bad lane may not fail the whole assembly — but PHASE-4 T1 Step 2b: it may not
-      // read as "the lane had nothing" either. The old note said "recorded as empty with
-      // the error in the log", and the log is not the receipt: `lanes.ts:572-574` requires
-      // the RECEIPT to tell these facts apart, and until now it recorded a thrown lane
-      // byte-identically to a silent one. The error rides into the grant as `failed`.
+      // One bad lane may not fail the whole assembly nor read as "had nothing": the error rides into the grant as
+      // `failed`, so the receipt tells a thrown lane from a silent one.
       renderError = err instanceof Error ? err.message : String(err);
       logger.warn('lane render failed', { lane: lane.id, error: renderError }, agentId);
     }
@@ -1700,17 +994,14 @@ async function assembleMessageContext(
   const { emitted, report } = fitLanes(candidates, contentBudget, { offTheTopTokens: offTheTop });
   report.loopTailExtraTokens = loopTailExtra;
 
-  // ── Emit in SLOT order, with the generated ack at its declared position ──
   const ackText = renderScaffoldingAck(report.admittedIds);
   const messages: Array<{ role: 'user' | 'assistant'; content: string | Anthropic.ContentBlockParam[] }> = [];
   let ackEmitted = false;
   const pushAck = () => {
     if (ackEmitted || !ackText) return;
     ackEmitted = true;
-    // The ack is generated from the admitted lane ids and NOTHING else — no clock, no
-    // counts, no ids. It sits AHEAD of the tail boundary, so a single volatile byte here
-    // re-bills every message after it on every turn (research 25 H2; `lanes.test.ts` pins
-    // the purity, the assembled-array golden pins the bytes).
+    // The ack is generated from the admitted lane ids only (no clock, counts or ids): it sits ahead of the tail
+    // boundary, so a volatile byte re-bills every message after it (`lanes.test.ts` pins the purity).
     messages.push(tagMessageLane({ role: 'assistant', content: ackText }, 'lane.scaffolding-ack'));
     report.grants.push({
       id: 'lane.scaffolding-ack',
@@ -1724,25 +1015,19 @@ async function assembleMessageContext(
   };
   for (const e of emitted) {
     if (e.slot > MessageSlot.ScaffoldingAck) pushAck();
-    // F21/F23: TAGGED AT EMISSION, at the one place every lane's output passes through.
-    // Tagging here rather than inside each lane's `render` is what makes it impossible for
-    // a new lane to arrive untagged — there is no second door into the array.
+    // Tagged here, the one door every lane's output passes, so a new lane can never arrive untagged.
     tagMessageLanes(e.messages, e.id);
     messages.push(...e.messages);
   }
   pushAck();
 
-  // NOTE: the current clock time is intentionally NOT injected here. It is volatile per
-  // call, and injecting it BEFORE the fresh tail would break prompt caching for the entire
-  // history. It is the LAST engine message in the loop (msg.current-time), after the tail.
+  // The current time is not injected here: volatile per call, it would break caching for the history. It is
+  // the last engine message in the loop (msg.current-time), after the tail.
 
   const tailGrant = report.grants.find((g) => g.id === 'lane.fresh-tail');
   const tailPayload = (candidates.find((c) => c.lane.id === 'lane.fresh-tail')?.render?.payload ?? null) as TailPayload | null;
-  // FA-M1: >0 means the model lost recent turns from its live view. The dropped rows are
-  // persisted and later summarized, so it is live-view loss, not data loss.
   const freshTailDropped = (tailPayload?.dropped ?? 0) + horizonSkippedRows;
   const outOfViewThroughSeq = Math.max(tailPayload?.droppedThroughSeq ?? 0, horizonSkippedThroughSeq);
-  // t194 (D1, owner decision 7a): THE GAUGE IS THIS FIT, not a second model of it. A dry run stops here.
   if (dryRun) {
     const summaryGrant = report.grants.find((g) => g.id === 'lane.summaries');
     return { systemPrompt, systemVolatile: '', messages: [], reserveTokens: policy.toolAndOutputReserve, view: viewOf({
@@ -1753,18 +1038,13 @@ async function assembleMessageContext(
     }, policy, systemTokens) };
   }
 
-  // ── Integrity pass (R6): post-combine repairs, one named stage ──
   let merged = applyIntegrityPass(messages, agentId, endOfHistoryMarker(agentId, tailPayload?.rows ?? []));
 
-  // ── Post-budget lanes (B7). Each is DECLARED in `lanes.ts` with a reserved allowance, so
-  // the fit above already set their tokens aside instead of spending them after the fact. ──
   const postBudget: string[] = [];
   const consumedOneShotFlags: ConsumedOneShotFlags = {};
 
-  // Guard: if we have zero messages after all filtering, pull the last user message
-  // directly from DB so the agent at least sees what it's supposed to respond to.
-  // CRITICAL: respect session_started_at — recovering a pre-reset message makes the model
-  // re-process "reset your session" and call reset_session again → loop.
+  // Guard: with zero messages after filtering, pull the last user message from the DB so the agent sees what
+  // to answer. Respect session_started_at, or a pre-reset message makes it call reset_session again.
   let fallbackLabel: { msg: LoopMsg; label: string | null } | null = null;
   if (merged.length === 0) {
     postBudget.push('lane.empty-context-fallback');
@@ -1793,11 +1073,10 @@ async function assembleMessageContext(
         logger.error('Context assembly produced 0 messages after filtering, recovering last user message', {
           agentId,
         }, agentId);
-        // t159 I: the last resort wears the standard row label like every other row (`renderRowLabel`, as the
-        // served message does), so the model is never handed an unlabelled message with no time or subject.
-        // Applied after the A2A salience pass below, which reads the marker at the START of a message.
+        // The last resort wears the standard row label like every other row, so the model is never handed an
+        // unlabelled message. Applied after the A2A salience pass below, which reads the marker at the START.
         const [row] = withSubjectKinds(agentId, getMessagesByIds([lastUserMsg.id]));
-        const msg = tagMessageLane({ role: 'user' as const, content: row ? overRoomRowView(row, contentBudget).content : lastUserMsg.content }, 'lane.empty-context-fallback');   // D18 r5: never whole over the room
+        const msg = tagMessageLane({ role: 'user' as const, content: row ? overRoomRowView(row, contentBudget).content : lastUserMsg.content }, 'lane.empty-context-fallback');   // never whole over the room
         fallbackLabel = { msg, label: row ? `${renderRowLabel(row, new LabelFacts(agentId))} (recovered: the last message sent to you)` : null };
         merged.push(msg);
       } else if (sessionBoundary) {
@@ -1815,8 +1094,6 @@ async function assembleMessageContext(
     }
   }
 
-  // If this is a new session, prepend a context note to the first user message so the agent
-  // understands the conversation was intentionally reset.
   try {
     const db = getDb();
     const sessionRow = db.prepare('SELECT session_started_at FROM agents WHERE id = ?').get(agentId) as { session_started_at: string | null } | undefined;
@@ -1834,9 +1111,6 @@ async function assembleMessageContext(
     }
   } catch { /* session_started_at column may not exist yet */ }
 
-  // ── One-shot engine markers (A2A preempt, Stop). PURE READ (S3): the flags are READ here
-  // and CLEARED by the turn that owns them. Assembly used to `UPDATE agents SET config` from
-  // the read path, so a probe, a retry or a dry-run silently consumed a one-shot marker. ──
   try {
     const db = getDb();
     const row = db.prepare('SELECT config FROM agents WHERE id = ?').get(agentId) as { config: string } | undefined;
@@ -1879,8 +1153,8 @@ async function assembleMessageContext(
       }
 
       if (config.stopMarkerPending === true) {
-        // v2.5.35 wording: the marker is PREPENDED to the user's new message, so it must not
-        // say "the next user message" — weaker models read that as "wait for one to arrive".
+        // The marker is PREPENDED to the user's message, so it must not say "the next user message" (weaker models
+        // read that as "wait for one to arrive").
         const STOP_MARKER = '[Context note: the user just hit the Stop button on your previous turn. Your previous plan is CANCELLED. Do NOT continue the tool loop you were executing. Do NOT retry the last action with a different approach. Do NOT resume your prior work. The user\'s new request follows IMMEDIATELY BELOW, respond to that message as a fresh ask, not whatever you were doing before.]';
         if (merged.length > 0 && merged[merged.length - 1].role === 'user') {
           const lastMsg = merged[merged.length - 1];
@@ -1899,22 +1173,11 @@ async function assembleMessageContext(
     }
   } catch { /* config may not exist or be malformed */ }
 
-  // ── A2A reply salience (v3.1.10) ──
-  // On a FORCED A2A turn the inbound A2A is buried behind an already-answered user exchange,
-  // so a weak model never realizes it owes a reply. Move the most-recent unreplied A2A to
-  // the tail with a reply directive, so the forced turn looks like a natural one.
+  // A2A reply salience: on a forced A2A turn the inbound A2A is buried behind an answered user exchange, so
+  // move the most-recent unreplied A2A to the tail with a reply directive.
   if (turnContext?.isA2ATurn && merged.length > 0) {
-    // ⚠ t109 item B — THE KEY WAS THE SHARED PREFIX. This read `substr(thread_id,1,8)`, the
-    // FRONT eight characters of the stored FULL id, and compared it to the marker's own front
-    // eight. For the ids `makeThreadId` mints (`thread-<hash>-<seed>`) those eight are
-    // `thread-` plus ONE hash character, so named threads shared a bucket: one reply on one
-    // named thread filtered the salience lift off EVERY other named thread this agent had not
-    // answered, which is the one message a forced A2A turn exists to surface.
-    //
-    // The whole FULL ids come back now, and the match runs through `a2aThreadTokenMatches` —
-    // which accepts the current token (eight characters of the VARYING region) AND the legacy
-    // front slice, so a marker already sitting in this agent's history keeps resolving against
-    // the same thread. Both directions are claused.
+    // Replied-thread matching uses the stored FULL thread ids and `a2aThreadTokenMatches` (current token and
+    // legacy front slice), since a front-eight slice collides across named `thread-<hash>-<seed>` ids.
     const repliedFullIds: string[] = [];
     try {
       const rows = getDb().prepare(
@@ -1924,8 +1187,6 @@ async function assembleMessageContext(
     } catch { /* table may not exist yet */ }
     const alreadyReplied = (token: string | null): boolean =>
       !!token && repliedFullIds.some((full) => a2aThreadTokenMatches(token, full));
-    // PHASE-3 T5: was hex-only, so it returned null for every NAMED thread id and skipped
-    // the dedupe. Measured live: 70 of 250 `thread:` tokens (28%) are not hex.
     const threadShortOf = (c: string): string | null => parseA2AThreadShort(c);
     const isA2AMsg = (m: { role: string; content: string | Anthropic.ContentBlockParam[] }) =>
       m.role === 'user' && typeof m.content === 'string' && A2A_INBOUND_RE.test(m.content);
@@ -1958,24 +1219,12 @@ async function assembleMessageContext(
 
   if (fallbackLabel && merged.includes(fallbackLabel.msg)) fallbackLabel.msg.content = labelContent(fallbackLabel.msg.content, fallbackLabel.label);
 
-  // ── THE RECALL LANE (SWEEP CORE-2 item 4) ────────────────────────────────────────────────
-  // Computed here, emitted by the loop past `volatileFrom`. `includeVault` is false on
-  // scaffolding turns because those already inject the vault via `retrieveForContext` at slot
-  // 200, and quoting it twice is the double-injection that gate has always prevented. It is
-  // best-effort in exactly the way the lane render was: a recall failure costs recall, never
-  // the assembly. Computed BEFORE the post-budget report below so the grant states whether it
-  // fired — this lane, unlike `lane.deliveries`, is READ here even though it is EMITTED there.
+  // The recall lane: computed here, emitted by the loop past `volatileFrom`. Best-effort: a recall failure
+  // costs recall, never the assembly. Computed before the post-budget report so the grant says if it fired.
   let recallLane: string | null = null;
-  // T69b: HL5's OPEN COMMITMENTS snapshot, returned as its OWN block by the same single
-  // retrieval, so the loop can inject it AHEAD of the per-ask half instead of behind it.
   let openCommitmentsLane: string | null = null;
   try {
-    // T67b: `includeVault` is unconditionally TRUE now. It was `!shouldFireScaffolding`
-    // because `lane.vault` ran the identical `semanticSearch` from slot 200 on scaffolding
-    // turns and quoting it twice was the double-injection this flag prevented. That prefix
-    // retrieval is gone (see the lane's own note), so this lane is the ONE owner of the
-    // vault pull, on every turn, from the tail — and the double-injection it guarded against
-    // is now impossible rather than merely avoided.
+    // `includeVault` is unconditionally true: this lane is the one owner of the vault pull, from the tail.
     const blocks = await buildRecallLaneMessage(
       agentId,
       true,
@@ -1989,32 +1238,20 @@ async function assembleMessageContext(
       error: err instanceof Error ? err.message : String(err),
     }, agentId);
   }
-  // ONE lane, ONE reserve: both halves are `lane.relevant-memory`'s and always were, and
-  // `recallLaneWorstCaseTokens` still derives the reserve by rendering both through the real
-  // renderer. Either half firing is the lane firing.
+  // One lane, one reserve: both halves are `lane.relevant-memory`'s, and `recallLaneWorstCaseTokens` derives
+  // it by rendering both. Either half firing is the lane firing.
   if (recallLane || openCommitmentsLane) postBudget.push('lane.relevant-memory');
 
-  // ── W81: THE FOUR LANES THE OWNER'S FINDING 2 MOVED BELOW THE CONVERSATION ─────────────
-  // Read HERE and emitted by the loop past `volatileFrom`, the same split `lane.relevant-memory`
-  // uses. The reason is the one sentence this whole task turns on: whatever a tool can mutate
-  // must render below the conversation, because a block ahead of it re-bills every token
-  // behind it whenever it moves. Best-effort, each in its own try, so one failed read costs its
-  // own block and never the assembly.
+  // The scratchpad and events blocks are read here and emitted by the loop past `volatileFrom`; a failed
+  // scratchpad read costs only its block.
   const scratchpadLane = renderScratchpadLane(agentId);
   if (scratchpadLane) postBudget.push('lane.scratchpad');
 
   const eventsLane = renderEventsLane(agentId, laneCtx.tail().awarenessEvents);
   if (eventsLane) postBudget.push('lane.events');
 
-  // ── T76b (W85): THE LIVE INTEGRATION-STATUS LINE ──────────────────────────────────────
-  // Read HERE and emitted by the loop past `volatileFrom` at 1877, the same split the four
-  // lanes above use. A false memory about a connection ("Plaud is unreliable / returns
-  // nothing", written into the vault during W84's own diagnosis) is self-sealing, because it
-  // comes back through `msg.relevant-memory` and nothing in context outranks it. This block
-  // is what outranks it, and everything it says is read from a ledger on this turn.
-  // Best-effort in its own try: a failed read costs this block and never the assembly — but
-  // it WARNS, because an agent assembling a turn with no live connection truth in front of it
-  // is the exact state W84 measured a day against.
+  // The live integration-status line, read here and emitted past `volatileFrom`. It outranks a stale memory
+  // about a connection; best-effort in its own try, but it warns when the read fails.
   let integrationStatusLane: string | null = null;
   try {
     integrationStatusLane = await buildIntegrationStatusLane(agentId);
@@ -2025,8 +1262,7 @@ async function assembleMessageContext(
   }
   if (integrationStatusLane) postBudget.push('lane.integration-status');
 
-  // The work board is read LAST of these blocks (t139 R-V333-14): the task list is laid out in
-  // the room the whole array leaves, and points to requests the live conversation already shows.
+  // The work board is read last: it is laid out in the room the array and the blocks above leave.
   let attemptLedgerLane: string | null = null;
   let activeTasksLane: string | null = null;
   try {
@@ -2044,9 +1280,8 @@ async function assembleMessageContext(
   if (attemptLedgerLane) postBudget.push('lane.attempt-ledger');
   if (activeTasksLane) postBudget.push('lane.active-tasks');
 
-  // Record the post-budget lanes that actually fired, against their declared reserves.
-  // T1 2b checked this derived `empty` too: these lanes are inline pushes onto `postBudget`,
-  // not `lane.render()` calls behind a catch, so "did not fire" is the whole truth here.
+  // Record the post-budget lanes that fired against their declared reserves. They are inline pushes, not
+  // `lane.render()` calls behind a catch, so "did not fire" is the whole truth.
   for (const l of POST_BUDGET_LANES) {
     const fired = postBudget.includes(l.id);
     report.grants.push({
@@ -2063,17 +1298,9 @@ async function assembleMessageContext(
   }
   report.grants.sort((a, b) => a.slot - b.slot);
 
-  // ── T68b — THE ONE FACT A GATE DOWNSTREAM IS NOT ALLOWED TO GUESS. ─────────────────────
-  //
-  // `steps/execute/refusal-gates.ts` refuses the model's reads while a compile is owed, and
-  // its refusal SAYS: "Compose it — the pieces are in the steer, quoted verbatim." That is a
-  // claim about the assembled context, made by a module that has never read one. In all six
-  // recorded grinds it was FALSE, and a refusal that misinforms the model is worse than no
-  // refusal: it is what turned a missing piece into three exhausted output budgets.
-  //
-  // Only this function knows the answer, so this is where it is answered — after the
-  // integrity pass, off the array that is actually returned, not off the intent to build it.
-  // The gate reads the verdict and enforces only on `true` (`compile-owed-gate.ts`).
+  // A downstream gate may not guess this: `steps/execute/refusal-gates.ts` claims the pieces are in the steer,
+  // and only this function knows, off the array returned. The gate enforces only on `true`
+  // (`compile-owed-gate.ts`).
   const compileOrderIntact = compileOrderReachedTheModel(laneCtx.tail().freshTail, merged);
 
   logger.info('Context assembled', {
@@ -2084,7 +1311,7 @@ async function assembleMessageContext(
     spentTokens: report.spentTokens,
     admittedLanes: report.admittedIds.length,
     rejectedLanes: report.grants.filter((g) => g.status === 'rejected').length,
-    failedLanes: report.grants.filter((g) => g.status === 'failed').length,   // T1 2b
+    failedLanes: report.grants.filter((g) => g.status === 'failed').length,
     truncatedLanes: report.grants.filter((g) => g.status === 'truncated').length,
     overBudgetEvents: report.overBudget.length,
     freshTailCount: tailGrant?.granted ?? 0,
@@ -2095,8 +1322,7 @@ async function assembleMessageContext(
     systemPrompt,
     systemVolatile: '',
     messages: merged,
-    // F21: the dead plumbing ends here. Read OFF the array it describes, after every
-    // mutation above, so it is aligned by construction rather than by maintenance.
+    // Read off the final array after every mutation, so the ids align by construction.
     messageEntryIds: collectMessageLaneIds(merged),
     freshTailDropped,
     outOfViewThroughSeq,
@@ -2114,36 +1340,14 @@ async function assembleMessageContext(
   };
 }
 
-// ── Helpers ──
 
 /**
- * DID THE FAN-OUT COMPILE ORDER — ALL OF IT — REACH THE EMITTED MESSAGES? (T68b)
- *
- * `null` = there is no compile order in this turn's tail, so there is nothing to assert about.
- * `false` = there is one and its bytes are NOT intact in what the model will be handed.
- * `true`  = at least one compile order arrived whole, pieces included.
- *
- * ── STRUCTURAL, NOT PROSE-READING, AND THE DISTINCTION IS THE WHOLE POINT ──
- * The prose-classification ban forbids the engine deciding what a message MEANS. This decides
- * nothing about meaning: it asks whether a byte string the PLATFORM ITSELF wrote is present in
- * an array the platform itself just built. Both ends of the comparison are ours.
- *   * which rows are compile orders: `origin.kind==='engine' && origin.intent==='fanout_join'`
- *     — stamped columns — narrowed to the rung that carries a payload by
- *     `COMPILE_ORDER_PIECES_MARKER`, the constant `compileSteerText` emits. The ladder's other
- *     two `fanout_join` rungs (the stuck steer, the never-came-back notice) quote no pieces,
- *     so they can neither satisfy nor fail this question.
- *   * did it arrive: the row's OWN stored content is a substring of the emitted text. Whole,
- *     contiguous, unedited. A gist, a truncation, a budget eviction or a merge that dropped it
- *     all answer `false` without any of them having to know this check exists.
- *
- * It reads `freshTail` and not the raw tail on purpose: after T68b that is where the order
- * lives, and if some future change puts it back on a lane that truncates, the row will be
- * absent from `freshTail` and this returns `false` — the gate stops enforcing and the log says
- * why, instead of the model being told a falsehood and refused its tools for believing itself.
- *
- * Exported for `__tests__/a-compile-order-the-model-can-see` §T68b §4, which drives the
- * TRUNCATED input directly: the shape the product must never produce again is the one shape a
- * seeded assembly cannot be made to produce once the fix is in.
+ * Did the fan-out compile order, all of it, reach the emitted messages? `null`: none in this turn's tail;
+ * `false`: its bytes are not intact in what the model is handed; `true`: one arrived whole. Arrival is the
+ * row's stored content being a substring of the emitted text; compile-order rows (`intent === 'fanout_join'`)
+ * are narrowed by `COMPILE_ORDER_PIECES_MARKER`. It reads `freshTail` on purpose: an order moved to a
+ * truncating lane is absent there, answers false, and the gate stands down instead of misinforming.
+ * Exported for `__tests__/a-compile-order-the-model-can-see`.
  */
 export function compileOrderReachedTheModel(
   freshTail: Message[],
@@ -2161,24 +1365,16 @@ export function compileOrderReachedTheModel(
   return orders.some((m) => text.includes(m.content as string));
 }
 
-// t210: the summaries lane (render, selection, room-driven truncate) is `memory/summaries-lane.ts`.
 
-// ════════════════════════════════════════════════════════════════════════════════════════
-// W81 — THE SCRATCHPAD AND THE EVENTS BLOCK, RENDERED FOR THE TAIL.
-//
-// Both were `buildContentLanes` entries until this task; both are read here and emitted by
-// the loop past `volatileFrom`. The renders are the lane renders, byte for byte, plus the
-// ONE bounding change each needed to be declarable as a post-budget reserve — the pad cap
-// and the ceiling enforcement. A diff that also changed what the model reads would have made
-// the before/after measurement meaningless, so neither did.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// The scratchpad and events blocks, rendered for the tail: the lane renders byte for byte plus the one
+// bounding change each needs to be declarable as a reserve (the pad cap, the ceiling enforcement).
+// Both renderers stay pure: the worst-case reserves are derived by calling them.
 
 const SCRATCHPAD_HEAD =
   '═══ YOUR SCRATCHPAD (agent-maintained outline + progress, survives compaction; update '
   + 'with scratchpad_set) ═══';
 const SCRATCHPAD_TAIL = '═══ END SCRATCHPAD ═══';
 
-/** The block, from a pad already read. Pure, so the worst-case generator calls this one. */
 export function renderScratchpadBlock(pad: string): string | null {
   if (pad.length === 0) return null;
   const cap = laneLimit('lane.scratchpad', 'chars', 'pad');
@@ -2202,8 +1398,8 @@ function renderScratchpadLane(agentId: string): string | null {
   }
 }
 
-/** Derived by CALLING the renderer with the pad cap flooded — never counted beside it. */
 let scratchpadWorstCase: number | null = null;
+/** Derived by CALLING the renderer with the pad cap flooded, never counted beside it. */
 export function scratchpadWorstCaseTokens(): number {
   if (scratchpadWorstCase !== null) return scratchpadWorstCase;
   const cap = laneLimit('lane.scratchpad', 'chars', 'pad');
@@ -2211,8 +1407,6 @@ export function scratchpadWorstCaseTokens(): number {
   return scratchpadWorstCase;
 }
 
-// t141 — the "surface one to the owner" steer is gone (audit RC4); notices stay visible, each
-// marked NEW or HANDLED (OR-V333-SET (7); `row-label.ts lastViewedTriggerSeq`).
 const EVENTS_HEAD =
   '═══ EVENTS & NOTICES (things that happened; each says who it is addressed to. A notice '
   + 'TO THE OWNER is about his mail or channels: you are AWARE of it but NOT in conversation '
@@ -2220,7 +1414,6 @@ const EVENTS_HEAD =
   + 'An item TO YOU comes from the platform or another agent. NEW = arrived since your last '
   + 'finished turn; HANDLED = already in front of you on a finished turn) ═══';
 
-/** The block, from bullets already built. Pure, for the same reason. */
 export function renderEventsBlock(lines: string[]): string | null {
   if (lines.length === 0) return null;
   return `${EVENTS_HEAD}\n${lines.join('\n')}`;
@@ -2241,19 +1434,18 @@ function renderEventsLane(agentId: string, awarenessEvents: Message[]): string |
   return renderEventsBlock(lines);
 }
 
-/** One EVENTS bullet, from the real formatter: `• <status> [<instant>][<addressee>] <gist>`.
- *  Exported so the kit renders bullets with the platform's own bytes (t135 N4 hand-up). */
+/** One EVENTS bullet from the real formatter: `• <status> [<instant>][<addressee>] <gist>`. */
 export function renderEventsBullet(m: Message, status: 'NEW' | 'HANDLED', gist: string): string {
   return `• ${status} ${renderMessageTimeStamp(m.createdAt) ?? ''}[${eventAddressee(m)}] ${gist}`;
 }
 
-/** Derived by CALLING the renderer with every declared cap flooded at once. */
 let eventsWorstCase: number | null = null;
+/** Derived by CALLING the renderer with every declared cap flooded at once. */
 export function eventsLaneWorstCaseTokens(): number {
   if (eventsWorstCase !== null) return eventsWorstCase;
   const rows = laneLimit('lane.events', 'rows', 'events');
   const gistCap = laneLimit('lane.events', 'chars', 'gist');
-  // The widest label the renderer can build, and the widest instant its stamp can print.
+  // The widest label `eventAddressee` can build (its 24/64/32 caps) and widest stamp instant; keep in step.
   const label = [`${'c'.repeat(24)} notice TO THE OWNER, from ${'s'.repeat(64)}`,
     `TO YOU, from ${'s'.repeat(64)}: ${'i'.repeat(32)}`].sort((x, y) => y.length - x.length)[0];
   const at = renderMessageTimeStamp('2026-09-30T23:41:59.999Z') ?? '';
@@ -2262,76 +1454,12 @@ export function eventsLaneWorstCaseTokens(): number {
   return eventsWorstCase;
 }
 
-// ── The recall lane MOVED (SWEEP CORE-2 item 4) ─────────────────────────────────────────
-//
-// `buildRelevantMemoryBlock` and everything it owned — the per-turn recall query and its
-// turn-boundary memo, the synthetic-row filter, the FTS degrade, the vector/vault retrieval
-// and the render — are `memory/recall-lane.ts` now, whole. Nothing was deleted; the module
-// header carries the incident history that used to live here, plus the two things this task
-// added: the position (past `msg.turn-context`, because the content changes with the live
-// ask) and the ANSWERED PAIRS read off the migration-113 stamps.
-//
-// T67b: `buildPerTurnRecallQuery` is no longer imported back for the summaries lane. That
-// lane was its second reader and the reason it reached into the cacheable region at all; the
-// recall lane is its ONE owner now, in the tail, where a per-ask derivation belongs.
 
-/**
- * Walk the assembled messages newest-first and replace image / document
- * blocks beyond the keep limit with text placeholders. The model only
- * needs to "see" the most recent image; older ones blow context budget
- * for no semantic gain. Mutates messages in place.
- *
- * Specifically prunes:
- *   - tool_result blocks whose content array contains image / document blocks
- *   - top-level image / document blocks (rare, but possible)
- *
- * Keeps:
- *   - The MOST RECENT N images (default 1)
- *   - All text blocks
- *   - All tool_use blocks (those are tiny)
- */
-/**
- * v2, Detect "session start" turns: turns where scaffolding (briefing,
- * vault, active tasks, continuity brief) should be re-injected.
- *
- * T67b: `isV2SessionStart` IS GONE with the scaffolding gate that was its only reader.
- * Its definition — "no assistant message since `session_started_at`, or none at all" — is
- * still LIVE, inline, at the [New Session] prefix below, which is where it started and which
- * is the one place the answer is still used. Three prefix lanes were gated on it and all
- * three render unconditionally now (see the gate's own note), so keeping a helper for a
- * question nobody asks would be the shape this task exists to remove.
- */
-/**
- * Stub-and-store (Part XVIII §E). Replace tool_result content older than
- * V2_STUB_AFTER_TURNS turns with a short stub so context stays roughly
- * flat as the agent works.
- *
- * Operates on Message[] (the DB-shaped objects), not on the
- * Anthropic-format ContentBlockParam arrays, turn_number is only available
- * on the DB row.
- *
- * NULL turn_number (v1-era messages, user messages from chat route) is
- * treated as "very old" and stubbed if it's a tool_result. In practice
- * user messages are never tool_result, so this only affects pre-v2 tool
- * results, the intended behavior per spec.
- */
+/** Stub-and-store: replace tool_result content older than V2_STUB_AFTER_TURNS turns with a short stub.
+ *  Works on Message[] (turn_number is only on the DB row); a NULL turn_number counts as very old. */
 export function stubOldToolResults(messages: Message[], agentId: string): Message[] {
-  // ── T67b — THE WATERMARK DECIDES, NOT THE LIVE CLOCK ─────────────────────────────────
-  //
-  // This read `currentTurnNumber(agentId)` and compared it to each row's turn on EVERY
-  // assembly, so a tool_result twelve turns back flipped from full to stubbed mid-session
-  // and rewrote bytes in the middle of the cached history with no compaction anywhere near
-  // it. T56 leg (b) settled that question for `reasoning_content` — a byte the provider has
-  // cached may move only at an instant when the prefix is being rewritten anyway — and this
-  // is the same question one column over.
-  //
-  // The DECISION now lives at the compaction boundary (`compaction.ts
-  // stubOldToolResultsAtBoundary`), which advances a monotonic watermark in the agent's
-  // config; this function only RENDERS it. The rule and the distance are unchanged. The read
-  // is pure: assembly never advances the watermark.
-  //
-  // A missing watermark stubs NOTHING — the fail-safe direction, and the same disposition
-  // `currentTurnNumber`'s own failure path takes.
+  // The watermark decides, not the live clock: `compaction.ts stubOldToolResultsAtBoundary` advances it at the
+  // boundary, so a tool_result never flips to a stub mid-session. A missing watermark stubs nothing.
   let watermark = Number.NEGATIVE_INFINITY;
   try {
     const row = getDb().prepare('SELECT config FROM agents WHERE id = ?').get(agentId) as
@@ -2345,8 +1473,6 @@ export function stubOldToolResults(messages: Message[], agentId: string): Messag
 
   const stubbed = messages.map((msg) => {
     if (msg.role !== 'tool') return msg;
-    // turn_number can be NULL for very old / non-v2-written messages.
-    // Treat NULL as -infinity so it's always older than the threshold.
     const msgTurn = msg.turnNumber ?? -Infinity;
     if (!(msgTurn < watermark)) return msg;
 
@@ -2390,25 +1516,8 @@ export function stubOldToolResults(messages: Message[], agentId: string): Messag
 }
 
 
-/**
- * v2, Cap the text content of tool_result blocks at V2_MAX_TOOL_RESULT_TOKENS.
- * Mutates messages in place. Each oversized result is truncated with a stub
- * that tells the agent how to retrieve more.
- *
- * Per Part V, without this, a single file_read of a 50K-token file dominates
- * the context budget and triggers the 90% WARN within a few turns.
- */
-/**
- * Pre-budget cap for raw tool messages (content is still a JSON string at
- * this point). Walks any tool-role message, parses its tool_result blocks,
- * truncates each block's text content to V2_MAX_TOOL_RESULT_TOKENS, and
- * re-serializes. Mirrors capLargeToolResultsInPlace but operates BEFORE
- * budgetFreshTail so the budget sees realistic token counts.
- *
- * Without this, a single oversized tool_result could consume the entire
- * fresh-tail budget and force older messages, including the user's
- * question, out of context.
- */
+/** Pre-budget cap for raw tool messages (content still a JSON string), run before budgetFreshTail so
+ *  the budget sees realistic counts and one result cannot evict the user's question. */
 export function capLargeToolResultStrings(messages: Message[]): Message[] {
   return messages.map((msg) => {
     if (msg.role !== 'tool') return msg;
@@ -2426,7 +1535,6 @@ export function capLargeToolResultStrings(messages: Message[]): Message[] {
       if (blk.type !== 'tool_result') return block;
       const c = blk.content;
       if (typeof c !== 'string') return block;
-      // t200: a result stored whole on its row (recorded before t200) is shown as its pointer.
       const truncated = toolResultView(c, String(blk.tool_use_id ?? ''));
       if (truncated === c) return block;
       mutated = true;
@@ -2437,6 +1545,8 @@ export function capLargeToolResultStrings(messages: Message[]): Message[] {
   });
 }
 
+/** Post-combine cap of string tool_result content, in place. Array content (images, documents) is left
+ *  to pruneOldImageBlocksInPlace. */
 function capLargeToolResultsInPlace(
   messages: Array<{ role: 'user' | 'assistant'; content: string | Anthropic.ContentBlockParam[] }>,
 ): void {
@@ -2452,9 +1562,6 @@ function capLargeToolResultsInPlace(
       const blk = block as unknown as Record<string, unknown>;
       if (blk.type !== 'tool_result') return block;
 
-      // tool_result.content can be either a string or an array of content blocks
-      // (e.g., text + image when file_read returns an image). We only cap the
-      // string variant, image/document blocks are handled by pruneOldImageBlocksInPlace.
       const content = blk.content;
       if (typeof content !== 'string') return block;
 
@@ -2477,6 +1584,8 @@ function capLargeToolResultsInPlace(
   }
 }
 
+/** Walk newest-first, keep the newest `maxKeepImages` images, and turn every older image and every document
+ *  (top-level or inside a tool_result) into a text placeholder. In place. */
 function pruneOldImageBlocksInPlace(
   messages: Array<{ role: 'user' | 'assistant'; content: string | Anthropic.ContentBlockParam[] }>,
   maxKeepImages: number,
@@ -2492,7 +1601,6 @@ function pruneOldImageBlocksInPlace(
     const newContent: Anthropic.ContentBlockParam[] = msg.content.map(block => {
       const blk = block as unknown as Record<string, unknown>;
 
-      // tool_result blocks: walk their nested content array
       if (blk.type === 'tool_result' && Array.isArray(blk.content)) {
         const nestedContent = blk.content as Array<Record<string, unknown>>;
         const newNested = nestedContent.map(nested => {
@@ -2513,7 +1621,6 @@ function pruneOldImageBlocksInPlace(
         return { ...blk, content: newNested } as unknown as Anthropic.ContentBlockParam;
       }
 
-      // Top-level image (e.g., user attachment), same rules.
       if (blk.type === 'image') {
         if (imagesKept < maxKeepImages) {
           imagesKept++;
@@ -2539,10 +1646,9 @@ function pruneOldImageBlocksInPlace(
   }
 }
 
-/** The trim's atoms: a standalone message, or an [assistant(tool_use), tool(tool_result)] pair. t194: a row
- *  that renders nothing (`role='system'`, e.g. the "Memory Compacted" divider) rides with the group before
- *  it — as its own NEWEST group it took the "newest group always rides" safety, and the real newest row
- *  (a large result) was cut and folded out of the agent's sight. */
+/** The trim's atoms: a standalone message, or an [assistant(tool_use), tool(tool_result)] pair. A row
+ *  that renders nothing (`role='system'`) rides with the group before it, so it never takes the
+ *  newest-group safety. */
 export function groupTail(messages: Message[]): Array<{ messages: Message[]; tokens: number }> {
   const groups: Array<{ messages: Message[]; tokens: number }> = [];
   let i = 0;
@@ -2556,7 +1662,6 @@ export function groupTail(messages: Message[]): Array<{ messages: Message[]; tok
       continue;
     }
 
-    // Check if this assistant message has tool_use and is followed by a tool message
     let hasToolUse = false;
     try {
       const parsed = JSON.parse(msg.content);
@@ -2583,25 +1688,13 @@ function budgetFreshTail(
 ): Message[] {
   const groups = groupTail(messages);
 
-  // ── t94: DROP WHOLE BLOCKS OFF THE FRONT, OR NOTHING AT ALL ───────────────────────────
-  //
-  // What stood here walked BACKWARDS from the newest group and kept whatever fit — i.e. it
-  // dropped the MINIMUM number of groups, which is the most expensive possible cadence on a
-  // positional prefix cache: a group or two leaves the front every turn and the provider
-  // re-prefills the entire remainder each time. On local hardware dropping 2 costs exactly
-  // what dropping 200 costs, so the cheap answer is to drop rarely and drop a lot.
-  //
-  // `groupsToDropForBudget` returns 0 whenever everything fits — the common case, and
-  // byte-identical to the old answer there — and otherwise a MULTIPLE OF THE BLOCK counted
-  // from the front of this array. The front of this array is the compaction boundary (the
-  // horizon above), which is what makes an index into it a stable address rather than a
-  // scrolling one. `memory/tail-horizon.ts` carries the derivation of the block.
+  // Drop whole blocks off the front, or nothing: dropping the minimum is the costliest cadence on a prefix
+  // cache. `groupsToDropForBudget` returns 0 when all fits, else a multiple of the block from the front
+  // (`memory/tail-horizon.ts`).
   const dropped = groupsToDropForBudget(groups.map((g) => g.tokens), availableTokens, blockGroups);
   const includedGroups = groups.slice(Math.min(dropped, Math.max(0, groups.length - 1)));
 
-  // Safety, unchanged in effect: an over-budget context is better than no context at all, so
-  // the newest group rides even when it alone exceeds the budget. Reached only when a whole
-  // block could not be freed, which is a window too small to hold one block of conversation.
+  // Safety: an over-budget context beats none, so the newest group rides even when alone over the budget.
   const keptTokens = includedGroups.reduce((t, g) => t + g.tokens, 0);
   if (groups.length > 0 && keptTokens > availableTokens) {
     logger.warn('budgetFreshTail: all groups exceed budget, forcing last group inclusion', {
@@ -2612,20 +1705,12 @@ function budgetFreshTail(
     });
   }
 
-  // v3.5 D18 r3: what rides over the budget is never a whole row that ALONE exceeds the room: such a
-  // row is shown as its head, its tail and the kept-whole pointer (`kept-row-view.ts`). Rows the trim can
-  // take out of view are untouched; they leave the view and are folded as before.
-  // Already chronological: the slice preserved the input's order.
+  // What rides over the budget is never a whole row that alone exceeds the room: it is shown as head, tail and
+  // the kept-whole pointer (`kept-row-view.ts`). The result is already chronological.
   return includedGroups.flatMap(g => (keptTokens > availableTokens ? g.messages.map((m) => overRoomRowView(m, availableTokens)) : g.messages));
 }
 
-/**
- * Ensure tool_use / tool_result pairs are always complete.
- * Every tool_use in an assistant message must have a matching tool_result in the
- * immediately following user/tool message, and vice versa.
- */
 function sanitizeToolPairs(messages: Message[]): Message[] {
-  // Build list with parsed tool IDs for each message.
   interface Annotated {
     msg: Message;
     toolUseIds: string[];   // IDs from tool_use blocks (assistant messages)
@@ -2649,50 +1734,15 @@ function sanitizeToolPairs(messages: Message[]): Message[] {
         }
       }
     } catch {
-      // Plain text, no tool blocks
     }
 
     return { msg, toolUseIds, toolResultIds };
   });
 
-  // Bug history: the old version of this function required the tool_use
-  // message to be IMMEDIATELY followed by its tool_result message
-  // (next.role === 'tool', next.toolResultIds matches). Any intruder
-  // in between (an engine ack, a tool's synthetic-delivery assistant
-  // message, a mid-turn system note) caused BOTH the valid tool_use
-  // AND its tool_result to be dropped, the model lost all record of
-  // having called the tool, and naturally called it again on the next
-  // iteration. Every subsequent loop appended another broken pair,
-  // producing the "agent repeats itself" behavior seen on image_create,
-  // transcribe_audio, and any other tool that delivers mid-turn.
-  //
-  // The new behavior: instead of dropping the pair, drop the
-  // intruders between them. We walk forward from each unmatched
-  // tool_use, search for the first tool message whose resultIds
-  // satisfy the use, and mark any non-tool messages we pass through
-  // for removal. This preserves the model's tool-call context while
-  // still producing API-valid adjacency.
+  // Pairing never deletes conversation: each unmatched tool_use finds its tool_result and REORDERS, so a valid
+  // pair emits back to back and the messages between emit after it. Only genuine brokenness is dropped
+  // (unmatched tool_use, partial parallel match, orphaned tool_result).
 
-  // Bug history, part two (2026-07-10, the months-long re-answer ghost): the
-  // "drop the intruders" behavior above turned out to be the root cause of the
-  // agent re-answering settled questions. In a tail where several turns and
-  // conversations interleave by created_at, the walk from a tool_use to its
-  // result passes over ORDINARY CONVERSATION, the agent's delivered answers,
-  // acks, other turns' text, and deleted it all as intruders. The model then
-  // saw a promise and tool math with no delivered answer (an apparently
-  // unfinished job) and dutifully finished it, re-answering the user on every
-  // wake. 54 messages went into this function on the diagnosed box; 14 came
-  // out. The tool-repeat disease this function's LAST fix addressed was the
-  // same disease one level down; deletion just moved the damage.
-  //
-  // The invariant actually required is ADJACENCY, not absence: REORDER instead
-  // of remove. A valid pair emits use-then-result back to back; the messages
-  // that sat between them emit immediately AFTER the pair, in their original
-  // relative order. Chronology bends slightly at the seam; nothing is lost.
-  // Tool_use messages encountered while deferring stay unconsumed so the outer
-  // walk gives each its own pairing pass. All the genuine-brokenness drops are
-  // preserved exactly: an unmatched tool_use is dropped, a partial parallel
-  // match drops the pair, an orphaned tool_result is dropped in pass two.
   const consumed = new Array<boolean>(annotated.length).fill(false);
   const dropped = new Array<boolean>(annotated.length).fill(false);
   const outOrder: number[] = [];
@@ -2708,8 +1758,6 @@ function sanitizeToolPairs(messages: Message[]): Message[] {
 
     const useIdSet = new Set(entry.toolUseIds);
 
-    // Walk forward looking for the matching tool_result, collecting what sits
-    // in between for deferral (NOT deletion).
     let resultIdx = -1;
     const betweenIdx: number[] = [];
     for (let j = i + 1; j < annotated.length; j++) {
@@ -2721,8 +1769,6 @@ function sanitizeToolPairs(messages: Message[]): Message[] {
           resultIdx = j;
           break;
         }
-        // An orphaned tool_result for some other use; defer past it, pass two
-        // decides its fate.
         betweenIdx.push(j);
         continue;
       }
@@ -2730,17 +1776,13 @@ function sanitizeToolPairs(messages: Message[]): Message[] {
     }
 
     if (resultIdx === -1) {
-      // No matching tool_result anywhere ahead. The tool_use is genuinely
-      // unanswered (in-progress turn that hasn't reached tool execution yet,
-      // or a real broken state). Drop the tool_use itself; everything deferred
-      // stays for the outer walk.
+      // No matching tool_result ahead: the tool_use is genuinely unanswered, so drop it; deferred rows stay.
       dropped[i] = true;
       continue;
     }
 
-    // Verify EVERY use_id has a matching result_id in the chosen tool message.
-    // Partial matches mean the model expected N parallel results but only got
-    // M; treating that as a mismatch is the conservative choice.
+    // Every use_id must have a matching result_id in the chosen tool message; a partial parallel match is a
+    // mismatch.
     const resultIdSet = new Set(annotated[resultIdx].toolResultIds);
     const allMatched = entry.toolUseIds.every((id) => resultIdSet.has(id));
     if (!allMatched) {
@@ -2749,9 +1791,6 @@ function sanitizeToolPairs(messages: Message[]): Message[] {
       continue;
     }
 
-    // Pair valid: emit adjacently, then the deferred conversation in order.
-    // Deferred tool_use messages (and stray tool messages) stay unconsumed so
-    // the outer walk pairs them on its own pass.
     outOrder.push(i);
     consumed[i] = true;
     outOrder.push(resultIdx);
@@ -2766,8 +1805,6 @@ function sanitizeToolPairs(messages: Message[]): Message[] {
     }
   }
 
-  // Anything never consumed nor dropped (trailing orphan tool messages the
-  // deferral skipped) joins the tail in original order for pass two to judge.
   for (let i = 0; i < annotated.length; i++) {
     if (!consumed[i] && !dropped[i]) {
       outOrder.push(i);
@@ -2775,10 +1812,7 @@ function sanitizeToolPairs(messages: Message[]): Message[] {
     }
   }
 
-  // Second pass (unchanged semantics, applied over the EMITTED order): drop
-  // orphaned tool_result messages that never sit adjacent to their kept
-  // tool_use. With pairs emitted adjacently, the nearest preceding
-  // tool_use-bearing kept message must match.
+  // Pass two: drop a tool_result the nearest kept tool_use before it does not match (pairs are adjacent now).
   const keepOut = new Array<boolean>(outOrder.length).fill(true);
   for (let oi = 0; oi < outOrder.length; oi++) {
     const entry = annotated[outOrder[oi]];
@@ -2801,9 +1835,6 @@ function sanitizeToolPairs(messages: Message[]): Message[] {
 
   const droppedCount = annotated.length - result.length;
   if (droppedCount > 0) {
-    // Only genuinely broken tool messages are dropped now (unmatched tool_use,
-    // partial parallel match, orphaned tool_result); conversation is never
-    // dropped, it is deferred past the pair instead.
     const droppedDetails = annotated
       .map((a, i) => (dropped[i] || !consumed[i]) ? `[${i}] role=${a.msg.role} useIds=${a.toolUseIds.join(',')} resultIds=${a.toolResultIds.join(',')}` : null)
       .filter(Boolean);
@@ -2829,36 +1860,16 @@ function parseMessageContent(
   }
 }
 
-/**
- * Fold consecutive same-role messages so the array alternates, as the providers require.
- *
- * ── HL8 (B) — REASONING SURVIVES THE FOLD. ──
- * This function kept only the run's FIRST message's fields (`merged.push({ ...msg })`)
- * and merged only `content` into it. On a live five-hop research turn that discarded
- * 1,889 and 2,548 characters of `reasoning_content` from TOOL-CALL messages, which then
- * reached DeepSeek with the `''` fallback and stayed corrupted on every later hop and
- * every later turn — the rows are intact, the loss is at assembly (W23, measured).
- *
- * Two shapes trigger it and neither is exotic: a turn whose model call persisted as TWO
- * rows (the text, then the `tool_use` blocks — the reasoning rides the second), and a
- * turn whose predecessor's last row was a plain answer separated only by a `role='system'`
- * row that `tailRender` does not emit.
- *
- * JOIN, not last-wins: it mirrors dsh's `serializeAssistant`, which joins every reasoning
- * block of a message (`llm-deepseek/src/serialize.ts`), and it cannot lose a body when
- * three assistants merge. Order is preserved — earlier thinking first.
- */
+/** Fold consecutive same-role messages so the array alternates. A run's `reasoning_content` bodies are
+ *  JOINED in order, earlier first, so merging cannot lose one. */
 function mergeConsecutiveRoles(messages: LoopMsg[]): LoopMsg[] {
   const merged: LoopMsg[] = [];
 
   for (const msg of messages) {
     if (merged.length > 0 && merged[merged.length - 1].role === msg.role) {
       const prev = merged[merged.length - 1];
-      // Reasoning belongs to the tool-call turn and is REQUIRED on it, so a merged run
-      // that contains a tool call must carry the reasoning of every message that
-      // contributed one, in order. Nothing is invented: a run where nobody had reasoning
-      // still comes out with the property absent, not with `''` (that fallback stays
-      // `model.ts`'s alone).
+      // A tool-call message requires reasoning, so a merged run carries every contributor's, in order.
+      // A run where nobody had reasoning stays absent, not `''` (that fallback is `model.ts`'s alone).
       if (msg.reasoningContent) {
         prev.reasoningContent = prev.reasoningContent
           ? `${prev.reasoningContent}\n\n${msg.reasoningContent}`
@@ -2873,7 +1884,6 @@ function mergeConsecutiveRoles(messages: LoopMsg[]): LoopMsg[] {
         const msgArr = typeof msg.content === 'string'
           ? [{ type: 'text' as const, text: msg.content }]
           : msg.content;
-        // Deduplicate tool_result blocks by tool_use_id
         const combined = [...prevArr, ...msgArr];
         const seenToolResultIds = new Set<string>();
         const deduped = combined.filter((block) => {
