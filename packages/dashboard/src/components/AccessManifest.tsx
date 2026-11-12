@@ -7,13 +7,13 @@
 //
 // THE STORAGE IS NOT HERE. Every switch writes the `PermissionManifest` inside
 // `agents.permissions`, the `tools_policy` column, or `config.shareUserProfile`,
-// through the agent editor's one PUT. The arithmetic is `lib/manifest-edits.ts`,
-// pure; this file only renders and asks.
+// through the Access panel's one save (a PUT to `/agents/:id`). The arithmetic is
+// `lib/manifest-edits.ts`, pure; this file only renders and asks.
 //
 // ── A BUILT-IN AGENT'S MANIFEST IS NOT EDITABLE ──
 // A NOTE is rendered instead of the editor for every platform agent: `editable`
-// comes from the parent, which knows which agent is the main one. The panel itself
-// never learns a rank, and neither does this file.
+// is decided by the agent config page from the sensei classification and passed through
+// AccessPanel. Neither the panel nor this file classifies an agent.
 // ════════════════════════════════════════════════════════════════════════════
 
 import { useState } from 'react';

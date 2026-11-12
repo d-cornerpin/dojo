@@ -33,7 +33,7 @@ import { openTrackerProject, openTrackerTask, stampTicket } from '../../work/tra
 import { openAsk, claimAsk, stampClaimingTurn, askIdForMessage } from '../../work/store.js';
 import { settleAsksAtTurnFinalize } from '../../work/ask-settlement.js';
 import { engineProofLine, proofDelivery } from '../../work/done/proof.js';
-import { trackerCompleteStep, trackerGetStatus, trackerUpdateStatus } from '../tools.js';
+import { trackerGetStatus, trackerUpdateStatus } from '../tools.js';
 
 const AGENT = 'agent-primary';
 const CONV = 'conv-owner';

@@ -49,7 +49,7 @@ vi.mock('../../config/platform.js', () => ({
   isPMAgent: (id: string) => id === PM,
 }));
 
-import { trackerUpdateStatus, trackerEditTask, trackerCompleteStep, trackerCloseProject, trackerRequestOverride } from '../tools.js';
+import { trackerUpdateStatus, trackerEditTask, trackerCloseProject, trackerRequestOverride } from '../tools.js';
 import { trackerHandlers } from '../../agent/tools/cat/tracker.js';
 import { updateTask } from '../schema.js';
 import { createWorkTable, seedTrackerTask, seedTrackerProject } from '../../work/__tests__/work-fixture.js';
