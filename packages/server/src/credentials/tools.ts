@@ -1,14 +1,7 @@
-// ════════════════════════════════════════
-// Agent Credentials Tools
-// 5 tools agents call from inside techniques to manage API credentials
-// for third-party services the user has them connect to.
-// ════════════════════════════════════════
+// The five credential tools agents call from techniques to manage third-party API credentials.
 
 import type { ToolDefinition } from '../agent/tools/types.js';
 import { CREDENTIAL_FRESH_SENTINEL } from '../memory/compaction.js';
-// The value set and the declared-secret-field map live together in ONE module
-// (T5b): "which fields are secret" and "which values are secret" are the same
-// job, and a secret is only ever learned from a DECLARED field, never a shape.
 import { noteHandedCredentialValues } from './secret-values.js';
 import { unchangedReceipt } from './write-doors.js';
 import {
@@ -100,8 +93,6 @@ export async function executeCredentialTool(
     case 'credential_list': {
       const records = listCredentials();
       if (records.length === 0) {
-        // t120: named the verb but not its shape, so the one outcome whose next call is
-        // unambiguous was the vaguest message in the family.
         return 'No credentials stored. When the person you are talking to provides one, save it with credential_add(service_name="short-name", credentials={"api_key": "..."}).';
       }
       const lines = records.map(r => {
@@ -124,8 +115,6 @@ export async function executeCredentialTool(
         return `Error: ${err instanceof Error ? err.message : String(err)}`;
       }
       if (!record) {
-        // t120: this miss path was the family's BEST message and still named its two verbs
-        // without their shapes. The census holds every outcome to the same bar.
         return (
           `No credential found for service "${serviceName}" — the name is case-sensitive. ` +
           `Call credential_list() to see the names that ARE stored. If this value has not been ` +
@@ -137,26 +126,18 @@ export async function executeCredentialTool(
       const fields = Object.entries(record.credentials)
         .map(([k, v]) => `  ${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`)
         .join('\n');
-      // NEXT-WAVE item 5: remember these secret values so the engine can scrub
-      // them out of any persisted/broadcast tool_use command that inlines them
-      // (rule 6: secrets never in message content). In-process only.
+      // Register the values so any stored copy that inlines them is scrubbed (in-process only).
       noteHandedCredentialValues(
         agentId,
         Object.values(record.credentials).map((v) => (typeof v === 'string' ? v : JSON.stringify(v))),
       );
-      // t118 round 2: the READ side can also be the first time this process learns a value
-      // (a fresh boot fetching a credential stored in an earlier session), so it re-vets ask
-      // titles for the same reason the write side does. Dynamically imported: this module is
-      // reached from the tool layer that `work/ask-title.ts` sits above, and a static edge
-      // here would point the credential store at the work spine — the cycle the ask-title
-      // header warns about on its own system-model imports.
+      // A fresh process may first learn a value here, so open ask titles are re-vetted against it.
+      // Dynamic import: a static edge would point the credential store at the work spine, a cycle.
       void import('../work/ask-title.js')
         .then((m) => { m.revetOpenAskTitles(agentId); })
         .catch(() => { /* a re-vet that cannot load may not cost the fetch its answer */ });
-      // Lead with the engine sentinel so this secret-bearing result is stubbed
-      // deterministically if it ever ages into a compaction summary (Rule 6:
-      // secrets never enter the memory DAG). The sentinel is invisible guidance
-      // to the model; the fields below are what it uses this turn.
+      // The sentinel leads so this result is stubbed if it ages into a compaction summary;
+      // secrets never enter the memory DAG.
       return (
         `${CREDENTIAL_FRESH_SENTINEL}\n` +
         `Credential "${serviceName}":\n${fields}\n\n` +
@@ -172,8 +153,7 @@ export async function executeCredentialTool(
       if (!credentials || typeof credentials !== 'object' || Array.isArray(credentials)) {
         return 'Error: credentials must be an object (e.g. {"api_key": "..."} or {"api_key": "...", "secret": "..."}). Pass a string value as {"value": "..."} if the service needs just one opaque token.';
       }
-      // T83: the flag is passed through EXPLICITLY and is only ever true when the model said
-      // so. The store owns the rule; this layer owns nothing but the hand-off.
+      // The flag is true only when the model passed it; the store owns the rule.
       const result = addCredential(serviceName, credentials, description, agentId, { overwrite: args.overwrite === true });
       if (!result.ok) return `Error: ${result.error}`;
       if (result.unchanged) return unchangedReceipt(result.record.serviceName, result.descriptionChanged === true);
@@ -186,16 +166,11 @@ export async function executeCredentialTool(
       const description = (args.description as string | undefined);
       if (!serviceName || typeof serviceName !== 'string') return 'Error: service_name is required.';
       if (!credentials || typeof credentials !== 'object' || Array.isArray(credentials)) {
-        // t120: was 'credentials must be an object.' — the same fact `credential_add` states
-        // WITH the shape. A refusal that withholds the shape makes the caller guess, and this
-        // family's defect is a caller that retries instead of guessing right.
         return 'Error: credentials must be an object (e.g. {"api_key": "..."} or {"api_key": "...", "secret": "..."}). Pass a string value as {"value": "..."} if the service needs just one opaque token.';
       }
       const result = updateCredential(serviceName, credentials, description, agentId, { overwrite: args.overwrite === true });
       if (!result.ok) return `Error: ${result.error}`;
       if (result.unchanged) return unchangedReceipt(result.record.serviceName, result.descriptionChanged === true);
-      // The three-word receipt T83's header recorded as "the whole receipt" is what left the
-      // caller with nothing to do next. It now ends where `credential_add`'s success ends.
       return `Credential "${result.record.serviceName}" updated — the previous value is gone. Retrieve the new one with credential_get(service_name="${result.record.serviceName}") when you need it for an API call.`;
     }
 

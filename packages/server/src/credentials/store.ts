@@ -1,20 +1,10 @@
-// ════════════════════════════════════════
-// Agent Credentials Store (v2.7.21)
-// Encrypted storage for credentials agents need to call third-party APIs
-// from inside techniques. Separate from secrets.yaml (platform-managed)
-// and vault entries (knowledge that can decay).
-//
-// Encryption: AES-256-GCM with a master key from secrets.yaml. Per-row
-// random IV + auth tag. Never decays. Never appears in vault_search,
-// vault listings, or Dreamer extraction.
-// ════════════════════════════════════════
+// Encrypted store for credentials agents use from techniques; separate from secrets.yaml and the vault.
+// Sealed per row through at-rest.ts. Values never decay and never reach vault search or dreamer extraction.
 
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { sealSecret, openSecret } from './at-rest.js';
-// t120: the door TEXTS and the is-this-a-change judgement live in one module of their own.
-// This file owns the writes; that one owns the words. It imports nothing from here, so the
-// `credentials/store.js` importer pin (secret-at-rest §2) is unaffected.
+// write-doors.ts owns the refusal texts and the is-this-a-change judgement; it imports nothing from here.
 import {
   overwriteRefusal,
   deleteRefusal,
@@ -45,40 +35,12 @@ export interface CredentialRecordWithValue extends CredentialRecord {
   credentials: Record<string, unknown>;
 }
 
-// ════════════════════════════════════════
-// T83 — A CREDENTIAL IS NEVER SILENTLY OVERWRITTEN.
-//
-// THE DATA LOSS, measured not inferred. `agent_credentials.sendgrid` was created
-// 2026-06-21 03:03:03 by the primary agent from a key the owner provisioned. At 2026-09-21 06:42:22 a
-// battery-minted `sk-live-…` fake replaced it. The write was NOT `credential_add`, which
-// already refused a duplicate name — it was `credential_update` (messages seq 79103), and
-// the whole receipt was `Credential "sendgrid" updated.`. `credential_add`'s own refusal
-// text is what routed the caller there: "use credential_update to change its value".
-// `openweather` went the same way on 2026-09-20 23:29:08. Neither prior value is
-// recoverable: one ciphertext column, overwritten in place, no version, no audit row.
-//
-// THE RULE, and it is one rule for every caller so no surface can be the quiet one: a write
-// that would DESTROY a stored value refuses unless the caller passes `overwrite: true`. The
-// refusal names what it is protecting — created when, by whom, last changed when — and names
-// the flag. The flag is not a formality; it is the caller saying on the record which specific
-// existing value it is ending; every authorised destruction BY AN AGENT leaves an audit row.
-//
-// The callers that are not an agent — the dashboard PATCH (the owner's own hand on their own
-// row), the VNC rotate (the engine turning its own private slot), the T83 remediation purge —
-// pass the flag EXPLICITLY at their sites rather than being exempted here by some actor sniff.
-// A rule with an exception nobody can see is how this defect got in.
-//
-// FIX ROUND (review IMPORTANT B-1): the rule covers `credential_delete` too. It was the quiet
-// surface — no flag, no statement of what it was ending, no audit row — and a delete-then-add
-// reaches the same end state as a refused overwrite while leaving LESS record than an
-// authorised one. A law with one unguarded door is a speed bump.
-// ════════════════════════════════════════
+// A write that would destroy a stored value refuses unless the caller passes `overwrite: true` (a delete
+// needs `confirm: true`). Non-agent callers pass the flag at their own sites; nothing is exempted here.
 
 /**
- * t120: `unchanged` is the one bit the tool layer needs to tell the caller the truth about what
- * its write did. It means the SEALED VALUE was not written because the payload already equalled
- * what the row held — so nothing was destroyed and no audit row was cut. `descriptionChanged`
- * rides along because a no-op on the value can still carry a new note.
+ * `unchanged`: the payload equalled the stored value, so the sealed value was not rewritten and no audit row cut.
+ * `descriptionChanged`: a no-op on the value can still carry a new note.
  */
 export type CredentialWriteResult =
   | { ok: true; record: CredentialRecord; unchanged?: boolean; descriptionChanged?: boolean }
@@ -89,16 +51,7 @@ export interface CredentialWriteOptions {
   readonly overwrite?: boolean;
 }
 
-/**
- * T83 FIX ROUND (review IMPORTANT B-1) — the same authorisation for the OTHER destroy door.
- *
- * `credential_delete` was the quiet surface the first cut left standing: an agent-callable
- * tool that removed a stored value with no flag, no statement of what it was ending, no audit
- * row and a five-word receipt. A delete-then-add reaches the same end state as a refused
- * overwrite while leaving LESS record than an authorised one — which makes the overwrite rule
- * a speed bump rather than a law. It is a separate word from `overwrite` because it is a
- * separate act, and the door text prints the exact call either way.
- */
+/** Delete authorisation; a separate word from `overwrite` because it is a separate act. */
 export interface CredentialDeleteOptions {
   /** Authorise permanently removing this credential. */
   readonly confirm?: boolean;
@@ -124,10 +77,8 @@ function findExisting(serviceName: string): ExistingRow | undefined {
 }
 
 /**
- * Record an authorised DESTRUCTION — an overwrite or a deletion. NEVER carries a value.
- * `audit_log.agent_id` is NOT NULL, so the three agent-less doors — the dashboard PATCH, the
- * VNC rotate, the T83 remediation purge — get the warn line INSTEAD of a row, each being its
- * own record already. "An audit row on every destruction" is a claim about AGENTS only.
+ * Record an authorised overwrite or delete; never carries a value. audit_log.agent_id is NOT NULL,
+ * so callers with no agent get only the warn line.
  */
 function auditDestroy(
   serviceName: string, row: ExistingRow, actingAgentId: string | null, verb: string, act: 'overwrote' | 'deleted',
@@ -151,12 +102,8 @@ function auditDestroy(
   }
 }
 
-/**
- * The shared no-op branch for both write doors: the DB half of the decision `write-doors.ts`
- * makes. Returns a result when the payload is already what the row holds — so the store
- * performs no re-seal, no value-bearing `updated_at` bump and NO destruction audit row — and
- * `undefined` when this is a real change, leaving the ordinary destroy-and-write path untouched.
- */
+// The DB half of write-doors.ts's no-op decision: when the payload already matches the row, return a result
+// without re-sealing or auditing; otherwise undefined and the ordinary write proceeds.
 function noopWrite(
   serviceName: string,
   existing: ExistingRow,
@@ -199,12 +146,6 @@ function writeValue(
      WHERE id = ?`,
   ).run(ciphertext, iv, authTag, description, id);
 }
-
-// ── Crypto ──
-// PHASE-5 T6C: the AES-256-GCM pair that used to live here is now
-// `credentials/at-rest.ts`, shared with `twilio/auth.ts`. Same algorithm, same
-// key, same wire shape — the extraction was proven value-preserving against
-// every live row before it landed.
 
 // ── CRUD ──
 
@@ -296,7 +237,7 @@ export function getCredentialByService(
   return { ...rowToRecord(row), credentials };
 }
 
-/** Same as getCredentialByService but takes the row's id instead of name. Used by the dashboard "reveal" button. */
+/** getCredentialByService by row id; the dashboard reveal route uses it. */
 export function getCredentialById(
   id: string,
   accessingAgentId: string | null,
@@ -321,16 +262,12 @@ export function addCredential(
 
   const existing = findExisting(trimmedName);
   if (existing) {
-    // T83: the refusal used to say only that the name was taken, and then hand the caller the
-    // verb that overwrites without asking. It now says WHOSE value is there and how old it is,
-    // and the only way past it is the flag.
     if (!opts?.overwrite) return { ok: false, error: overwriteRefusal(trimmedName, existing, 'credential_add') };
-    // t120: an authorised overwrite of the bytes already sealed here destroys nothing, so it
-    // writes nothing and records nothing. The reasoning is in `write-doors.ts`.
+    // An authorised overwrite with the same bytes destroys nothing, so it writes and records nothing.
     const noop = noopWrite(trimmedName, existing, credentials, description, 'credential_add');
     if (noop) return noop;
-    // IN PLACE, never delete-and-reinsert: `created_at` / `created_by_agent_id` are what make
-    // the NEXT refusal able to name what it is protecting, and a reinsert launders exactly that.
+    // In place, never delete-and-reinsert: created_at and created_by_agent_id let the next refusal
+    // name what it protects.
     auditDestroy(trimmedName, existing, createdByAgentId, 'credential_add', 'overwrote');
     writeValue(existing.id, credentials, description);
     return { ok: true, record: readRecord(existing.id) };
@@ -361,13 +298,8 @@ export function updateCredential(
   const row = findExisting(serviceName);
   if (!row) return { ok: false, error: missingRefusal(serviceName, 'credential_update') };
 
-  // T83 — THIS IS THE DOOR THE DATA WENT OUT OF, so this is the door that closes. A rotate is
-  // a real and common thing; what was missing is the caller saying it MEANT to end the value
-  // that is there. Same rule, same door text as `addCredential` above.
   if (!opts?.overwrite) return { ok: false, error: overwriteRefusal(serviceName, row, 'credential_update') };
 
-  // t120: the re-write loop that stormed the spin brake came through HERE, thirteen times in one
-  // attempt, every call authorised and every call writing the bytes already in the row.
   const noop = noopWrite(serviceName, row, credentials, description, 'credential_update');
   if (noop) return noop;
 
@@ -379,12 +311,8 @@ export function updateCredential(
 }
 
 /**
- * Replace ONLY the description. No re-seal, no touch of the encrypted columns.
- *
- * Exists for the one job that must not go through `updateCredential`: telling the owner, on
- * the row itself, that the slot's value is junk and needs re-entering. The T83 remediation
- * annotates `sendgrid` and `openweather` this way rather than deleting them — a deleted row
- * takes the owner's only record of what the slot was FOR with it.
+ * Replace only the description, never the encrypted columns: marks a junk value for re-entry while
+ * keeping the row's record of what the slot was for.
  */
 export function annotateCredential(
   serviceName: string,
@@ -415,9 +343,6 @@ export function deleteCredentialByService(
   const row = findExisting(serviceName);
   if (!row) return { ok: false, error: missingRefusal(serviceName, 'credential_delete') };
 
-  // T83 FIX ROUND (review IMPORTANT B-1): THE SECOND DESTROY DOOR, closed with the same rule as
-  // the first. This one took no confirmation at all, and a delete-then-add reaches the same end
-  // state as a refused overwrite while leaving LESS record than an authorised one.
   if (!opts?.confirm) return { ok: false, error: deleteRefusal(serviceName, row) };
 
   auditDestroy(serviceName, row, deletingAgentId, 'credential_delete', 'deleted');

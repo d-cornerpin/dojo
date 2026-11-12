@@ -1,34 +1,5 @@
-// ════════════════════════════════════════════════════════════════════════════
-// CONVERTING SECRET COLUMNS THAT ALREADY HOLD PLAINTEXT — ONE OWNER
-// (PHASE-5 T10, owner decision D1)
-//
-// THE REQUIREMENT: after the update that encrypts a secret column, the values
-// ALREADY on a box are ciphertext too. A column that is encrypted for new writes
-// and plaintext for everything written before it is not encrypted; it is a
-// half-migrated store, which is the state this phase refuses to ship.
-//
-// WHY IT IS CODE AND NOT A NUMBERED MIGRATION. The migration chain is `.sql`,
-// executed by SQLite, and SQLite has no AES. The key lives in
-// `~/.dojo/secrets.yaml` and is reachable only from TypeScript. This platform
-// already carries the shape for exactly this reason — the Workspace account seed
-// is a data migration that had to be code, and the secrets-file mode repair
-// (T6C) is a self-repair on the first boot after its update. This is the third
-// of that family and it is registered beside the first, in `index.ts`.
-//
-// WHY IT IS ONE FUNCTION AND NOT ONE PER PROVIDER. The first draft was a copy in
-// `google/accounts.ts` and a near-identical copy in `microsoft/accounts.ts`, and
-// the size-ratchet gate refused the growth — which was the right refusal for the
-// wrong-looking reason: two copies of one loop is the duplicate-mechanism disease
-// this project exists to remove, and the gate caught it before it landed. The
-// loop lives here once; each provider contributes only the two things that
-// genuinely differ, its table name and its own update function.
-//
-// THE WRITE GOES THROUGH THE PROVIDER'S OWN ENCODE POINT. This module never
-// writes a token column itself. It hands the recovered plaintext back to
-// `updateGoogleAccount` / `updateMicrosoftAccount`, whose encoder seals it —
-// so there is still exactly one place per table that knows how a token is
-// stored, and adding a third would have been the same disease one level down.
-// ════════════════════════════════════════════════════════════════════════════
+// Seals token columns that already hold plaintext, at boot (SQLite has no AES, so not a .sql migration).
+// It never writes a column itself: each provider's update function is the one place that seals.
 
 import { getDb } from '../db/connection.js';
 import { isSealedText } from './at-rest.js';
@@ -36,7 +7,6 @@ import { createLogger } from '../logger.js';
 
 const logger = createLogger('secret-at-rest');
 
-/** The two columns every provider account table stores its OAuth material in. */
 type TokenPatch = { accessToken?: string; refreshToken?: string };
 
 interface TokenTable {
@@ -44,13 +14,7 @@ interface TokenTable {
   update: (id: string, patch: TokenPatch) => void;
 }
 
-/**
- * Seal every plaintext token column in `spec.table`, in place. Idempotent: a
- * column already carrying the envelope is skipped, so after the first boot this
- * costs one SELECT.
- *
- * @returns how many COLUMNS were converted (unit: columns, not rows).
- */
+/** Seal plaintext token columns in place; idempotent. Returns COLUMNS converted, not rows. */
 function sealTable(spec: TokenTable): number {
   const rows = getDb()
     .prepare(`SELECT id, access_token, refresh_token FROM ${spec.table}`)
@@ -68,18 +32,9 @@ function sealTable(spec: TokenTable): number {
   return converted;
 }
 
-/**
- * Seal every Workspace OAuth token still stored in the clear, both providers.
- * Called at boot AFTER the legacy-config seed, so a row the seed has just created
- * from the pre-Path-B keys is sealed in the same boot and never rests plaintext.
- *
- * @returns how many COLUMNS were converted across both tables.
- */
+/** Seal both providers' tokens; runs at boot after the legacy seed so new rows never rest plaintext. */
 export async function sealWorkspaceTokensAtRest(): Promise<number> {
-  // NEVER THROWS, and it owns that rather than leaving it to each caller: this
-  // runs on the boot path, and a box whose master key cannot be read must still
-  // start and still serve mail from the tokens it already holds. A conversion
-  // that cannot happen is a warning to act on, not a dead platform.
+  // Never throws: boot must still serve mail from existing tokens when the master key is unreadable.
   try {
     const { updateGoogleAccount } = await import('../google/accounts.js');
     const { updateMicrosoftAccount } = await import('../microsoft/accounts.js');
