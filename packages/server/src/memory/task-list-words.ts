@@ -1,35 +1,22 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// THE WORDS THE TASK LIST PRINTS: the pool they are spent from, and the owner's LATER messages.
-//
-// Split out of `work-board-lane.ts` (t145 group A) so the list's word-spending primitives and the
-// later-message section live together and the lane file does not grow.
-//
-// LATER MESSAGES (the structural newer-instruction link, `tracker/later-instruction.ts`): a
-// message the owner sent after the request that opened a task, which a turn serving it used to
-// update that task. They print after the original words, in the order they were sent, spending
-// the same room-driven pool — and, like the original words, a message already in the live
-// conversation above is POINTED TO, not printed twice (t139 round 6). Nothing is ever chosen by
-// reading the words: the set is exactly the recorded links.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// The words the task list prints: the pool they are spent from, and the owner's later messages.
+// Later messages are exactly the recorded newer-instruction links (`tracker/later-instruction.ts`),
+// never chosen by reading the words.
 
 import { getDb } from '../db/connection.js';
 import { recordedInstant } from './message-stamp.js';
 import { conversationLabel } from './party-label.js';
 
-/** The characters of original words this rendering may spend, shared across its tasks in pass
- *  order. `fitTaskList` sets it from the room the assembly left the list. Mutable: each line spends it. */
+/** Characters of original words this rendering may spend, shared across its tasks in pass order. */
 export interface WordsPool { remaining: number }
 
-/** The widths of the three short terms the block does not author. */
 export interface TermCaps { title: number; label: number; note: number }
 
-/** A message the list can print or point to: the request, or a later message. */
 export interface ListedMessage {
   messageId: string | null;
   words: string | null;
   createdAt: number | string | null;
   label: string | null;
-  /** The words are already in the live conversation the model is reading (t139 round 6). */
+  /** The words are already in the live conversation the model is reading. */
   inView?: boolean;
 }
 
@@ -38,8 +25,7 @@ export function capLabel(raw: string | null | undefined, fallback: string, caps:
   return label.length > caps.label ? `${label.slice(0, caps.label)}...` : label;
 }
 
-/** "<party> on <channel>", without saying the channel twice when the party label already
- *  carries it (`conversationLabel` renders a contact as "Name (channel)"). */
+/** "<party> on <channel>", without repeating a channel the party label already carries. */
 export function originLabel(party: string | null, channel: string | null): string | null {
   if (party && channel && !party.includes(`(${channel})`)) return `${party} on ${channel}`;
   return party ?? (channel ? `the ${channel} channel` : null);
@@ -79,16 +65,10 @@ export function readLaterMessages(taskId: string): ListedMessage[] {
 }
 
 /**
- * The later-message section of a current task's line. WHAT THE LABEL CLAIMS is only what the link
- * records (`tracker/later-instruction.ts`): the message was sent while the task was open, and the
- * turn that answered it touched the task. It never says the message "updated" anything.
- *
- * UNDER ROOM PRESSURE THE NEWEST WORDS GET THE ROOM FIRST: messages are paid newest to oldest
- * (and `renderTaskLines` runs this pass BEFORE the original request's), then printed in the order
- * they were sent. Each message spends the pool for its whole rendering (framing included), so the
- * section is bounded by the room, never by a count. When the pool is gone the OLDER messages left
- * collapse into ONE line, printed first, that says how many and names the newest of them (label,
- * never a silent cut).
+ * The later-message section of a current task's line. The label claims only what the link records:
+ * the message was sent while the task was open and the turn answering it touched the task.
+ * Messages are paid newest to oldest (before the original request's pass) and printed oldest first;
+ * when the pool is gone the older ones collapse into one counted line that names the newest.
  */
 export function laterSection(laters: readonly ListedMessage[], pool: WordsPool, caps: TermCaps): string {
   const printed: string[] = new Array(laters.length).fill('');

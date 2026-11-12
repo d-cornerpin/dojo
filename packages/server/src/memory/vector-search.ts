@@ -1,7 +1,4 @@
-// ════════════════════════════════════════
-// Vector Search (Phase 5C)
-// Cosine similarity search over embeddings
-// ════════════════════════════════════════
+// Vector search: cosine similarity over embeddings, and the hybrid (FTS5 + vector) search.
 
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
@@ -48,9 +45,8 @@ export async function vectorSearch(
     limit?: number;
     sourceType?: 'all' | 'message' | 'summary' | 'technique';
     minSimilarity?: number;
-    // D4: a pre-computed query embedding. When the caller already embedded the
-    // per-turn recall query (assembler auto-recall), pass it so the same query
-    // isn't re-embedded once per search lane (messages + summaries + vault).
+    // A pre-computed query embedding: when the caller already embedded the per-turn recall query, pass it
+    // so the same query is not re-embedded once per search lane (messages, summaries, vault).
     queryEmbedding?: Float32Array;
   },
 ): Promise<VectorSearchResult[]> {
@@ -78,18 +74,10 @@ export async function vectorSearch(
     params.push(sourceType);
   }
 
-  // ── AN EMBEDDING MAY NOT SERVE ONCE ITS SOURCE IS GONE (BACKLOG-CAMPAIGN) ──────────────
-  // This read used to take `content_preview` with no liveness check at all, and previews are
-  // served straight to the caller — so a row whose message had been deleted still surfaced as a
-  // semantic hit carrying the first 200 characters of content the platform had already deleted.
-  // Measured on the owner's box at the time of the fix: 645 such rows, 630 of them messages.
-  //
-  // The cascades (triggers) are the CLEANUP; this is the SERVE-SIDE half, and it is deliberately
-  // not redundant. A trigger cannot fire for rows lost to a `DROP TABLE`, which is how the 630
-  // came to exist across four rebuilds of `messages` — so the cleanup alone can only ever
-  // promise "clean right now", while this promises "cannot serve, ever, however it got here".
-  // The predicate is built from `EMBEDDING_SOURCE_TABLES`, the one declared map, so a new source
-  // kind cannot be silently half-wired.
+  // An embedding may not serve once its source is gone: previews are served straight to the caller. The
+  // cascades (triggers) clean up, but cannot fire for rows lost to a `DROP TABLE`, so this serve-side check
+  // is deliberately not redundant. The predicate is built from `EMBEDDING_SOURCE_TABLES`, the one declared
+  // map, so a new source kind cannot be half-wired.
   conditions.push(embeddingSourceAliveSql('e'));
 
   conditions.push('e.embedding_model = ?'); params.push(embeddingModelKey());   // one model's vectors only: embedding-model.ts
@@ -150,14 +138,11 @@ export async function hybridSearch(
   // Run both searches in parallel
   const db = getDb();
 
-  // FTS5 search — the keyword arm. It must stay in line with `searchMessagesInner` in
-  // retrieval.ts, the path that owns it. Three drifts are corrected here, each the reason this
-  // half silently went dead in the field: the MATCH text is FTS-safe (`ftsSafeQuery`, so a `?`,
-  // `.`, `'` or `-` in the question does not throw a syntax error that the catch swallows and
-  // drops the keyword half entirely); it ranks only the newest `FTS_CANDIDATE_ROWS` rows (a
-  // common term over a large table is a full synchronous B-tree walk on the serving thread); and
-  // it drops the agent's own pure tool_use echo (`isPureToolCallMessage`), which would otherwise
-  // trigger the grep-the-grep loop.
+  // The FTS5 keyword arm must stay in line with `searchMessagesInner` in retrieval.ts, which owns it: the
+  // MATCH text is FTS-safe (`ftsSafeQuery`; a `?`, `.`, `'` or `-` must not throw a syntax error the catch
+  // swallows, dropping the keyword half); it ranks only the newest `FTS_CANDIDATE_ROWS` rows (a common term
+  // over a large table is a full synchronous walk on the serving thread); it drops the agent's own pure
+  // tool_use echo (`isPureToolCallMessage`), which would trigger the grep-the-grep loop.
   const ftsResults: Array<{ sourceType: string; sourceId: string; preview: string; score: number }> = [];
   const pattern = ftsSafeQuery(query, 8);
   if (pattern.length > 0) {
@@ -169,8 +154,8 @@ export async function hybridSearch(
       const maxSeq = (db.prepare('SELECT MAX(seq) AS r FROM messages WHERE agent_id = ?').get(agentId) as { r: number | null } | undefined)?.r ?? 0;
       const candidateFloor = ftsCandidateRowidFloor(maxSeq);
 
-      // Over-fetch, then drop echoes, then keep the first `limit` — the same shape as
-      // `searchMessagesInner`, so the two arms cannot drift apart again.
+      // Over-fetch, then drop echoes, then keep the first `limit`: the same shape as
+      // `searchMessagesInner`, so the two arms cannot drift apart.
       const fetchLimit = limit * 3;
       const params: unknown[] = [pattern, agentId];
       let floorClause = '';
@@ -199,7 +184,7 @@ export async function hybridSearch(
         });
       }
     } catch (error) {
-      // Message text only — never the query text, which is user input and must not land in logs.
+      // Message text only, never the query text, which is user input and must not land in logs.
       logger.warn('hybrid search keyword arm failed', { patternChars: query.length, error });
     }
   }

@@ -1,35 +1,21 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// t140 rounds 3–4 — THE NOT-YET-CONDENSED NOTE ITSELF: its head, its text, and the rule that a real
-// summary always wins over it.
-//
-// A leaf module (the DB, the message store, the estimator — nothing from the compactor), so the
-// condenser can recognise a note and the leaf fold can supersede one without importing the
-// placeholder machinery in `out-of-view.ts`.
-//
-//   · THE KIND (`summaries.kind = 'uncondensed'`) is what makes a row a note — never its text.
-//     Condensation never merges one: it would bury the note where its replacement cannot find it.
-//   · THE TEXT is built from stored columns only — a count, a fixed channel/lane word, a UTC range —
-//     so nothing a sender wrote or was called reaches it.
-//   · ONE NOTE PER ROW (round 4, re-review 3 F1). Whenever a REAL leaf summary is written over rows
-//     a placeholder covers, those rows leave the placeholder (it is rewritten for the rows it still
-//     covers, or deleted when none are left). The other direction is the placeholder writer's: it
-//     only ever covers rows nothing covers.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// The not-yet-condensed note: its head, its text, and the rule that a real summary wins over it. A leaf
+// module (nothing from the compactor) so the condenser and the leaf fold need not import `out-of-view.ts`.
+// The kind (`summaries.kind`) makes a row a note, never its text; condensation never merges one (it would
+// bury it). The text is built from stored columns only, so nothing a sender wrote or was called reaches it.
+// One note per row: a real leaf summary over rows a placeholder covers removes them from it; the writer
+// only ever covers rows nothing covers.
 
 import { getDb } from '../db/connection.js';
 import { getMessagesByIds } from './store.js';
 import { estimateTokens } from './budget.js';
 import type { Message } from '@dojo/shared';
 
-/** THE IDENTITY of a note — `summaries.kind`, set ONLY by `writeUncondensedPlaceholders`. Never the
- *  text: a model summary or a hand-written memory can say anything, the heading included. Any other
- *  writer of a summary's text (`dag.ts`'s `updateSummaryContent`: the replacement, an owner's edit)
- *  turns the row into a real leaf. */
+/** The identity of a note: `summaries.kind`, set only by `writeUncondensedPlaceholders`, never the text.
+ *  Any other writer of a summary's text (`dag.ts` `updateSummaryContent`) makes it a real leaf. */
 export const UNCONDENSED_KIND = 'uncondensed';
-/** The note's human-readable heading. WRITTEN, never read: nothing identifies a note by it. */
 export const UNCONDENSED_PLACEHOLDER_HEAD = '[Not yet condensed]';
 
-/** The ONLY words a note uses to say where its messages came from. Own-property lookups only. */
+/** The only words a note uses to say where its messages came from. Own-property lookups only. */
 const CHANNEL_WORDS: Readonly<Record<string, string>> = {
   dashboard: 'the dashboard conversation', voice: 'a voice conversation', phone: 'a phone call',
   imessage: 'an iMessage conversation', sms: 'a text-message conversation', email: 'an email conversation',
@@ -60,7 +46,6 @@ function stamp(at: unknown): string {
   return Number.isNaN(d.getTime()) ? 'an unrecorded time' : `${d.toISOString().slice(0, 16).replace('T', ' ')} UTC`;
 }
 
-/** The note, from stored columns only. */
 export function placeholderText(rows: readonly Message[]): string {
   const n = rows.length;
   const first = stamp(rows[0]?.createdAt);
@@ -69,11 +54,7 @@ export function placeholderText(rows: readonly Message[]): string {
     + `${first}${last !== first ? ` – ${last}` : ''}, not yet condensed — the originals are kept and searchable.`;
 }
 
-/**
- * A REAL leaf summary now covers `messageIds`: take those rows out of every placeholder of this
- * agent. A placeholder left with rows is rewritten for exactly them; one left with none is deleted.
- * Synchronous; the caller rebuilds the context items as it already does after a leaf write.
- */
+/** A real leaf summary now covers `messageIds`: remove them from every placeholder (emptied ones go). */
 export function supersedeUncondensedPlaceholders(agentId: string, messageIds: readonly string[]): number {
   if (messageIds.length === 0) return 0;
   const db = getDb();

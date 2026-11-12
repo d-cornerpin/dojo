@@ -1,77 +1,43 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// THE SIZE OF ONE TOOL RESULT IN THE MODEL'S VIEW, AND WHAT A LONGER ONE BECOMES.
-//
-// The agent sees at most V2_MAX_TOOL_RESULT_TOKENS of any single tool result. A tool that pages
-// (file_read) sizes its page to that number so its "continue at offset N" footer is never the part
-// left out (run 7, S4). History of the number: raised 3000 → 15000 in v2.7.3 so a typical document
-// the agent just read stays intact while one runaway result still cannot take the whole window.
-//
-// ── t200 (D12, the owner's own design): A LONGER RESULT IS KEPT WHOLE, NEVER CUT AWAY ──
-// Until t200 a longer result was cut: `exec`/`shell` at 16,000 characters per stream before it was
-// stored, every tool with a declared `maxResultTokens` at that size, and everything else to its
-// first ~15,000 tokens in the view, each with advice to run the tool again. The rest was not
-// offered to the agent at all. Now a result that does not fit is kept whole (the executor admits
-// it, the loop's recorder writes it to `kept_tool_results`), and what the agent sees is a POINTER
-// built here: the start, the end, a label in the gap that says how big the whole is and the exact
-// `tool_result_read` call that reads any line range or searches it. Running the tool again is
-// never the advice — the rest is one read away.
-//
-// ── WHY THE POINTER IS SHORT, AND WHAT THAT BUYS A BATCH ──
-// The excerpt is an eighth of one view. One response can call several tools at once and all their
-// results land in one stored row, which the trim and the fold treat as one unit; showing each long
-// result at the full view made a batch of six 40K-token results ~90K tokens in one row. As pointers
-// they cost ~1/8 view each, so eight long results cost what ONE cut result used to. And because
-// shrinking a result to its pointer loses nothing, a batch admission (ctx 11) can pass a smaller
-// `viewChars` for every result of a batch that does not fit and still lose no data: the view is
-// decided once, when the result is admitted, and stored on the row, so later assemblies render the
-// same bytes.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// The view of one tool result. The agent sees at most V2_MAX_TOOL_RESULT_TOKENS of any result; a longer one
+// is kept whole (the executor admits it, the loop's recorder writes `kept_tool_results`) and the view is a
+// pointer built here: start, end, and a label naming the size and the read call. The view is decided once
+// at admission and stored on the row, so later assemblies render the same bytes.
 
 import { CHARS_PER_TOKEN } from './budget.js';
 import { fenceRanges, fenceHead, fenceEnd } from '../tools/external-content.js';
 
 export const V2_MAX_TOOL_RESULT_TOKENS = 15000;
 
-/** The same bound in characters, for a tool sizing a page: `estimateTokens(text) <= V2_MAX_TOOL_RESULT_TOKENS`
- *  holds exactly when `text.length <= TOOL_RESULT_VIEW_CHARS`. */
+/** The view bound in characters; `file_read` sizes its page under it so its "continue" footer stays in. */
 export const TOOL_RESULT_VIEW_CHARS = V2_MAX_TOOL_RESULT_TOKENS * CHARS_PER_TOKEN;
 
-/** The tool that reads a kept result. Named once: the pointer, the definition and the handler use it. */
 export const RESULT_READ_TOOL = 'tool_result_read';
 
-/** How much of a too-long result its pointer shows: an eighth of one view (header). */
 export const RESULT_EXCERPT_CHARS = Math.floor(TOOL_RESULT_VIEW_CHARS / 8);
 
-/** The room a pointer's label takes beyond its excerpt: a view of `RESULT_EXCERPT_CHARS` plus this is the view
- *  at which a result becomes its standard pointer (`toolResultView` shows `viewChars` less this much of it). */
+/** The label's room beyond the excerpt: this plus the excerpt is the view of a standard pointer. */
 export const POINTER_LABEL_ROOM_CHARS = 1000;
 export const POINTER_VIEW_CHARS = RESULT_EXCERPT_CHARS + POINTER_LABEL_ROOM_CHARS;
 
-/** A result's lines, numbered from 1. A final newline ends the last line rather than opening an
- *  empty one, so the count is the one a person reading the output would give. */
+/** A result's lines; a final newline ends the last line rather than opening an empty one. */
 export function resultLines(text: string): string[] {
   const lines = text.split('\n');
   if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop();
   return lines;
 }
 
-/** The exact call that reads a kept result, as the agent should type it. */
 export function readCall(id: string, args: Record<string, string | number> = {}): string {
   return `${RESULT_READ_TOOL}(${JSON.stringify({ id, ...args })})`;
 }
 
 const n = (x: number): string => x.toLocaleString('en-US');
 
-// ── v3.5 D18 fix round 4: A CUT NEVER SPLITS A CHARACTER ──
-// The indexes below are UTF-16 units, and an emoji (or any character beyond the common plane) is two of them:
-// a cut between the two left a lone surrogate in the view, the same malformed string on every assembly. A cut
-// lands on a whole grapheme where one is near (an emoji with its joiners, a letter with its combining marks),
-// and never inside a surrogate pair. Only a short window around the cut is segmented.
+// Cuts land on a whole grapheme where one is near, never inside a surrogate pair (a lone surrogate is
+// malformed on every assembly). Indexes are UTF-16 units; only a short window around the cut is segmented.
 const graphemes = typeof Intl !== 'undefined' && 'Segmenter' in Intl ? new Intl.Segmenter(undefined, { granularity: 'grapheme' }) : null;
 const GRAPHEME_WINDOW = 64;
 const isLow = (c: number): boolean => c >= 0xdc00 && c <= 0xdfff;
 
-/** The character boundary at or before `at` (`toward: 'back'`) or at or after it (`'forward'`). */
 export function charBoundary(text: string, at: number, toward: 'back' | 'forward'): number {
   if (at <= 0) return 0;
   if (at >= text.length) return text.length;
@@ -86,28 +52,20 @@ export function charBoundary(text: string, at: number, toward: 'back' | 'forward
     // The window's first boundary is only trusted past its own start (a window may open mid-character).
     if (toward === 'back' && best >= 0 && (best > from || from === 0)) return best;
   }
-  // No grapheme boundary near (or no segmenter): never inside a surrogate pair.
   return isLow(text.charCodeAt(at)) ? (toward === 'back' ? at - 1 : at + 1) : at;
 }
 
-/** 1-based number of the line holding character `at`. */
 function lineAt(text: string, at: number): number {
   let line = 1;
   for (let i = text.indexOf('\n'); i !== -1 && i < at; i = text.indexOf('\n', i + 1)) line++;
   return line;
 }
 
-/**
- * The view of one tool result. A result that fits `viewChars` is returned exactly as it is. A
- * longer one becomes its pointer: the start, a labelled gap, the end. `id` is the tool call's id,
- * which is the handle `tool_result_read` takes. The whole must be kept by the caller; this only
- * says what the agent sees. `noun` names what was kept (a stored message row is "message", a call's argument "argument").
- */
+/** Exact when the result fits `viewChars`, else its pointer; the caller must keep the whole. */
 export function toolResultView(text: string, id: string, viewChars: number = TOOL_RESULT_VIEW_CHARS, noun = 'tool result'): string {
   if (text.length <= viewChars) return text;
   const excerpt = Math.max(0, Math.min(RESULT_EXCERPT_CHARS, viewChars - POINTER_LABEL_ROOM_CHARS));
   const headBudget = Math.floor(excerpt * 3 / 4);
-  // Cut at a line end when one falls in the second half of the budget; otherwise mid-line.
   const nl = text.lastIndexOf('\n', headBudget);
   const headEnd = nl > headBudget / 2 ? nl : charBoundary(text, headBudget, 'back');
   const tailBudget = excerpt - headBudget;
@@ -130,9 +88,8 @@ export function toolResultView(text: string, id: string, viewChars: number = TOO
   return excerpt === 0 ? label : `${head}\n\n${label}\n\n${tail}`;
 }
 
-/** v3.5 K33: the two excerpts of a FENCED whole. When the cut falls inside the fence, the start closes
- *  with that fence's end and the end reopens with its head (same code), so the label — the platform's
- *  own words — stands outside the fence, never in it. */
+/** The two excerpts of a FENCED whole: a cut inside the fence closes the start with the fence end and
+ *  reopens the end with its head, so the label (the platform's own words) never sits inside the fence. */
 function aroundTheLabel(text: string, headEnd: number, tailStart: number): [string, string] {
   let head = text.slice(0, headEnd);
   let tail = text.slice(tailStart);

@@ -1,18 +1,8 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// t140 — THE TURN'S PATIENCE: how long condensing work may hold the owner's turn.
-//
-// The out-of-view fold (round 5) and the forced emergency pass (round 6, H3) both sit in front of
-// the turn's own model call. Neither has a clock of its own: each may take as long as the owner
-// already lets the model this turn dials take to start answering — its provider's declared
-// first-chunk patience, or the transport's standing one. One owner of that number, so the two can
-// never disagree. (Owner ruling 2026-10-13: no hard limits; the dojo knows when enough is enough.)
-// ════════════════════════════════════════════════════════════════════════════════════════
-
+// Condensing work may hold the owner's turn only as long as the dialed model takes to start answering (its
+// provider's first-chunk patience, else the transport's): one owner of that number.
 import { getDb } from '../db/connection.js';
 import { resolveStreamPatience } from '../agent/stream-patience.js';
 
-/** `dialedModelId` when the caller knows the pick; else the agent's configured model's (an
- *  auto-routed agent's assembly, before the router names its pick, gets the standing one). */
 export function turnPatienceMs(agentId: string, dialedModelId?: string): number {
   try {
     const db = getDb();
