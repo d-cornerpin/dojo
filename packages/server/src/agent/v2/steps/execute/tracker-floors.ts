@@ -1,22 +1,11 @@
-// ════════════════════════════════════════
-// PHASE-6 T7 (CUT 7) — THE TWO TRACKER TIERS, moved byte-faithfully out of
-// `loop.ts`'s `execute` span: the >3 NUDGE (a one-shot, non-blocking model-choice
-// assist) and the >=6 ENGINE FLOOR (the engine opens ONE work row itself, so the
-// work is tracked on the weakest model regardless of what the model chooses).
-//
-// BOTH THRESHOLDS ARE COPIED VERBATIM (Global Constraints), and so is the reason
-// they ask two DIFFERENT questions: DECIDED D4 root-caused a contradiction where
-// the nudge's own success disarmed the floor in the same turn. No threshold was
-// touched then and none is touched here.
-// ════════════════════════════════════════
+// Two tracker tiers: a one-shot >3 nudge (a model-choice assist) and a >=6 engine floor that opens
+// one work row itself, so work is tracked on the weakest model whatever the model chooses.
 
 import { isDreamerAgent, isHealerAgent, isPMAgent } from '../../../../config/platform.js';
 import { clearUntrackedWorkAcrossTurns, getUntrackedWorkAcrossTurns } from '../../../turn-state.js';
 import { ENGINE_SCAFFOLD_ROOT_KIND } from '../../../../work/tracker-view.js';
 import { persistEngineSteer } from '../../engine-steer.js';
 import { advance, type AgentTurnState } from '../../state.js';
-// T53: `enqueueSteer` and the events-lane writer are gone from this file. Both tracker
-// floors steer through `persistEngineSteer`, which owns the enqueue and the durable row.
 import { TRACKER_STEER_FLOORS, steerFiredAny } from '../../steer-queue.js';
 import { broadcast } from '../../../../gateway/ws.js';
 import { createLogger } from '../../../../logger.js';
@@ -26,23 +15,7 @@ import { recordedInstant } from '../../../../memory/message-stamp.js';
 const logger = createLogger('v2-loop');
 import type { ExecuteContext } from './index.js';
 
-/**
- * t139 (#7 C1) — THE FLOOR'S TITLE COMES FROM ENGINE FACTS, NEVER THE TURN'S MESSAGE.
- *
- * The floor used to title (and describe) the row it opens from `state.lastUserMessageContent`
- * — whatever text the turn happened to be serving — and then hand that text to the PM to
- * "give it a proper name". On the owner's box a "You there?" turn that went on to make nine
- * untracked calls became a task titled "You there", which the PM was then asked to dress up as
- * a real piece of work. The floor cannot know what work was asked for; only the request can say.
- * So the row carries no words of the request: it is LINKED to the row the turn served
- * (`source_message_id`), and the task list shows that row's words, dated and labelled.
- *
- * ROUND 2 (review I5): one fixed label made every engine-opened task identical on the owner's
- * tracker. The title now states what the ENGINE observed — the untracked calls it counted, the
- * tool it saw most this turn, and the turn's recorded start — e.g.
- * "Multi-step task — 9 calls: image_create [Oct 7, 2026, 02:35 PM]". Nothing in it is read from
- * the message, and the note invites the agent to rename it to what it is doing.
- */
+/** The floor's title: engine facts only, never the turn's message (the row links to it instead). */
 export const SCAFFOLD_TITLE = 'Multi-step task';
 
 /** The most-used tool this turn, from the turn's own persisted `tool_use` rows. */
@@ -78,67 +51,23 @@ export async function runTrackerFloors(state: AgentTurnState, ctx: ExecuteContex
   } = ctx;
   const STALE_TASK_WINDOW_MINUTES = staleTaskWindowMinutes;
 
-  // F2 (post-D3): the deleted anti-hoarding gate was ALSO the thing that forced
-  // task scaffolding at the 6th load; deleting it removed all engine pressure to
-  // scaffold multi-step work (observed: a 7-call research job created no tracker
-  // task, drifted, and the PM had nothing to monitor). Re-homed as two tiers:
-  //   nudge at >3 real work calls (model-choice assist, one-shot, non-blocking),
-  //   ENGINE FLOOR at >=6: the engine auto-creates the task itself via the same
-  //   ENGINE FLOOR at >=6: the engine opens ONE work(kind='task') itself, so on the
-  //   weakest model the work is tracked regardless of what the model chooses.
   const TRACKER_NUDGE_THRESHOLD = 3;
   const TRACKER_AUTO_SCAFFOLD_AT = 6;
-  // RC-19 item 3: the >=6 auto-scaffold FLOOR keys on the CROSS-TURN untracked-work
-  // total for this human conversation (accumulated above), so an A2A send that
-  // breaks the turn can no longer drop the count below the floor. Falls back to the
-  // per-turn count on a2a/engine turns (conv_key null). The per-turn count is a
-  // subset of the cross-turn total on a human turn, so Math.max is just defensive.
-  // The >3 NUDGE tier stays per-turn (it is a within-turn model-choice assist).
+  // The floor counts the conversation's cross-turn untracked total so an A2A send cannot reset it.
   const turnConvForFloor = turnCtx.convKey;
   const effectiveUntracked =
     typeof turnConvForFloor === 'string' && turnConvForFloor.length > 0
       ? Math.max(state.nonTrackerToolCalls, getUntrackedWorkAcrossTurns(agentId, turnConvForFloor))
       : state.nonTrackerToolCalls;
   if (
-    // D-B v2: the Healer is tracker-exempt (no tracker tools; SOUL forbids
-    // touching it). Neither nudge it nor auto-open a task it cannot tend,
-    // which would go stale and trip the PM poke ladder, the exact trap a held
-    // destructive consent must not spring against the waiting Healer.
+    // The Healer is tracker-exempt: a task it cannot tend would go stale and trip the PM poke ladder.
     !isHealerAgent(agentId) &&
-    // ── DECIDED D4, EXECUTED (PHASE-2 T8c item 3) ──
-    // This condition used to be a single `!state.trackerWriteThisTurn` gating BOTH
-    // tiers, and that is the contradiction D4 root-caused: the >3 nudge's own SUCCESS
-    // (the agent opens a row) set `trackerWriteThisTurn`, which disarmed the >=6 floor
-    // in the same turn. The scenario asked for both tiers; the code forbade both. No
-    // threshold was touched to resolve it (#14 — no invented thresholds); the two tiers
-    // now ask the two DIFFERENT questions they were always meant to ask:
-    //   NUDGE  — "has the agent tended its work this turn?"  (any disarming write)
-    //   FLOOR  — "does a work row exist for this turn's work?" (an OPENING op)
-    // The floor's requirement is the weakest-model guarantee, which is about existence,
-    // so keyed on existence it is satisfied by whichever tier produced the row — and
-    // "a work row exists at turn end" is true either way, which is what the scenario
-    // now asserts.
+    // The tiers ask different questions. Nudge: has the agent tended its work this turn (any write)?
+    // Floor: does a work row exist for this turn's work (an opening op)? A nudge-opened row satisfies it.
     ((!state.trackerWriteThisTurn && !steerFiredAny(state.steerQueue, TRACKER_STEER_FLOORS) && state.nonTrackerToolCalls > TRACKER_NUDGE_THRESHOLD) ||
       (!state.workRowOpenedThisTurn && effectiveUntracked >= TRACKER_AUTO_SCAFFOLD_AT))
   ) {
-    // Secondary check: the agent may have a RECENTLY-TENDED task from a
-    // previous turn that they're just continuing. Don't nudge them either.
-    // The v2.5.40 concern (a nudge firing right after the agent cleanly
-    // completed a 3-task project, when every task was already `complete`) is
-    // covered by the trackerWriteThisTurn gate above: completing tasks is a
-    // tracker write, which disarms this whole block. on_deck was previously
-    // counted here as belt-and-suspenders, but is now EXCLUDED (NEXT-WAVE
-    // item 2, see the candidate filter below): a queued/scheduled task is not
-    // active work, so it must neither suppress this nudge nor be named by it.
-    //
-    // v3.1.11 (FN-9): "recently tended", not "has any active task". A STALE
-    // open task (assigned but untouched for longer than
-    // STALE_TASK_WINDOW_MINUTES) no longer suppresses the tiers. That was
-    // the second disarm hole: an agent sitting on a long-dead in_progress
-    // task could do unlimited untracked multi-step work and never be
-    // nudged. Movement is `taskMovedAtSql` (a tracker write, or an item the task's calls
-    // touched), so active work stays inside the window; a parked job touching nothing does not. A stale open task (if any) is captured
-    // so the nudge can name it and offer "update it, or open a new one".
+    // A recently moved in_progress task suppresses the nudge; the first stale one is named by it.
     let hasRecentlyTendedTask = false;
     let hasAnyInProgressTask = false;
     let staleOpenTask: { id: string; title: string } | null = null;
@@ -147,19 +76,11 @@ export async function runTrackerFloors(state: AgentTurnState, ctx: ExecuteContex
       const { normalizeDbTimestamp } = await import('../../../../scheduler/engine.js');
       const { taskLastMovedAt } = await import('../../../../tracker/liveness.js');
       const cutoffMs = Date.now() - STALE_TASK_WINDOW_MINUTES * 60_000;
-      // NEXT-WAVE item 2 (verified misfire): candidates are in_progress ONLY.
-      // on_deck (queued / scheduled) tasks are NOT work the agent is
-      // neglecting, they are waiting their turn, and their naturally-old
-      // updatedAt made a queued task (e.g. a recurring scheduled brief) get
-      // named as "the only open tracker task... hasn't been updated in a
-      // while" while the agent was actively working a DIFFERENT in_progress
-      // task. A queued scheduled task coming due is a SCHEDULER concern and
-      // must never be cited by this nudge, so it can no longer be picked as
-      // staleOpenTask nor count toward the floor.
+      // in_progress only: queued or scheduled on_deck tasks are not neglected work and are never named.
       const candidates = listTasks({ status: 'in_progress', assignedTo: agentId });   // Working: claimed or sent back
       for (const t of candidates) {
         hasAnyInProgressTask = true;
-        const tendedMs = taskLastMovedAt(t.id, new Date(normalizeDbTimestamp(t.updatedAt)).getTime());   // v3.5 D1: REAL movement (ledger included); a park touches nothing
+        const tendedMs = taskLastMovedAt(t.id, new Date(normalizeDbTimestamp(t.updatedAt)).getTime());   // real movement (ledger included); a park touches nothing
         if (tendedMs >= cutoffMs) {
           hasRecentlyTendedTask = true;
         } else if (!staleOpenTask) {
@@ -172,49 +93,21 @@ export async function runTrackerFloors(state: AgentTurnState, ctx: ExecuteContex
       }, agentId);
     }
     if (
-      // NEXT-WAVE item 2: never auto-scaffold a NEW project when an
-      // in_progress task already exists (worked or not). If it exists but is
-      // stale, the nudge branch below names it and asks the agent to bring it
-      // current, rather than opening a duplicate. Only genuinely-untracked
-      // work (zero in_progress tasks) reaches the engine floor here.
+      // Never open a new task while an in_progress one exists; a stale one is named by the nudge instead.
       !hasAnyInProgressTask &&
       effectiveUntracked >= TRACKER_AUTO_SCAFFOLD_AT &&
-      // t139: the floor opens a row only for a turn that serves a REQUEST it can link to. With
-      // no served row there is nothing to link, and the floor refuses to invent one.
+      // The floor opens a row only for a turn serving a request it can link to; it never invents one.
       state.lastUserMessageId &&
       !isPMAgent(agentId) &&
-      // P2b: the Dreamer's batch turns make dozens of vault_remember work
-      // calls, so this >=6 floor fired EVERY batch and auto-created a tracker
-      // project on it, which same-turn-closed and posted a notifyPrimaryAgent
-      // completion pair to the primary's chat. Its cycle work is engine-
-      // orchestrated maintenance, not a user ask, so the floor skips it (same
-      // reasoning as the turn-start classifier skip above).
+      // The Dreamer's batch work is engine-orchestrated maintenance, not a user ask.
       !isDreamerAgent(agentId)
     ) {
-      // ENGINE FLOOR: the model has done 6+ real work calls with no tracker
-      // engagement (the exact point where the old anti-hoarding gate used to
-      // force scaffolding). Stop asking; create the task ourselves via the
-      // engine's own row, stamped `root_kind='engine_scaffold'`, so the
-      // work is tracked on the weakest model regardless of what it chooses.
       try {
         const { openTrackerTask } = await import('../../../../work/tracker-store.js');
-        // t118's redaction of the scaffold prompt is GONE WITH THE PROMPT: the floor no longer
-        // captures the turn's message text at all, so none of the four surfaces t118 named (the
-        // row's title and description, the engine note, the PM rename handoff) can carry it.
-        // requirement preserved: no handed credential reaches the work spine from this floor —
-        // now by construction, since nothing from the message is written here
-        // (`the-scaffold-floor-never-persists-a-credential.test.ts`).
+        // No message text is captured here, so no handed credential can reach the work row from this floor.
         const scaffoldName = scaffoldTitle(effectiveUntracked, mostUsedToolThisTurn(agentId, turnNumber), state.turnStartMs);
-        // ── ONE TASK, NOT A PROJECT-AND-A-TASK (PHASE-2 T8c item 3, DECIDED D4) ──
-        // The floor used to call `createProject`, which opened a project row, a first
-        // task under it, and — because the project's description carried a prose
-        // ENGINE_AUTO_MARKER — a string the dup guard and three other readers matched on.
-        // D4's requirement names exactly one row: "the >=6 floor opens ONE
-        // `work(kind='task')`". The project was never the requirement; it was how the
-        // marker and the same-turn close were plumbed.
-        // THE MARKER IS A COLUMN NOW: `root_kind='engine_scaffold'` on the row itself,
-        // which is a fact stamped at creation instead of a prefix on prose that any edit
-        // could truncate away.
+        // One task, not a project: the engine-scaffold marker is the `root_kind` column stamped at creation,
+        // never a prefix on prose that an edit could truncate.
         const scaffoldTaskId = openTrackerTask({
           title: scaffoldName,
           assignedTo: agentId,
@@ -223,31 +116,14 @@ export async function runTrackerFloors(state: AgentTurnState, ctx: ExecuteContex
           rootKind: ENGINE_SCAFFOLD_ROOT_KIND,
           origin: { kind: 'engine_scaffold', sourceMessageId: state.lastUserMessageId, turn: turnNumber, convKey: chosenConvKey },
         });
-        // F2.2: scaffold note on the model-visible steer channel — the QUEUE, and since
-        // T53 (owner ruling 5) only the queue. F2.2's own finding is why: a bare
-        // role='system' row is stripped by the assembler, so a continuing agent never
-        // learned the engine had opened the task. That finding is satisfied by the queue
-        // entry, which delivers the whole note on the very next iteration; the events-lane
-        // row this site also wrote was a SECOND model-facing copy a turn later, rendered as
-        // a ≤400-char gist — and this note's operative half ("close it with
-        // work_update(action=\"status\", complete) plus result/evidence") is at the END,
-        // exactly what the cut drops. `persistEngineSteer` (the RC-19 door) files the same
-        // entry and writes the durable `role='system'` row, so the note is still recorded
-        // and classified identically for the dashboard (`agent-only`/`engine-note`).
-        // Driven before/after in `execute/__tests__/answered-turns-clear-untracked-debt.test.ts`
-        // and `agent/v2/__tests__/the-second-channel-stops-double-writing.test.ts`.
-        // UX-REPAIR T1 (observability): the note used to print ONLY `nonTrackerToolCalls`,
-        // the PER-TURN counter — the one that did not decide anything. The gate reads
-        // `effectiveUntracked`. Printing one while gating on the other is how a firing could
-        // read "you made 2 work calls" against a floor of 6 and look like a string bug
-        // instead of the accumulator defect it was. BOTH numbers, always, so the next reader
-        // sees which one fired the floor.
+        // The steer queue reaches the model (the assembler strips system rows); the row serves the dashboard.
+        // The note prints both counts so the one that fired the floor (effectiveUntracked) is visible.
         const autoNoteText = (
           `[System] The engine opened tracker task "${scaffoldName}" (task_id: ${scaffoldTaskId}) for this work ` +
           `(work calls with no tracker entry — this turn: ${state.nonTrackerToolCalls}; ` +
           `total untracked in this conversation: ${effectiveUntracked}; floor: ${TRACKER_AUTO_SCAFFOLD_AT}; ` +
           `untracked multi-step work drifts and the PM cannot monitor it). ` +
-          // Review round 3: facts and how to keep the row honest; no close-coaching (product law).
+          // Facts and how to keep the row honest; no close-coaching.
           `Keep working; rename it with work_update(action="edit", title=…) to what you are doing, and update it with work_note as you go.`
         );
         state = persistEngineSteer(
@@ -255,34 +131,15 @@ export async function runTrackerFloors(state: AgentTurnState, ctx: ExecuteContex
           { agentId, content: autoNoteText, turnNumber, floor: 'tracker-scaffold', atLoop: state.loopCount },
           { broadcast },
         );
-        // The floor just OPENED a work row, so set both flags to disarm the gate
-        // above and stop it re-entering on later iterations —
-        // `workRowOpenedThisTurn` is the one the floor tier itself reads now (D4).
-        // trackerToolCalledThisTurn is kept for parity with the agent-engaged-tracker
-        // signal. The queue entry
-        // delivers the scaffold note to a continuing agent this turn (F2.2).
-        //
-        // UX-REPAIR T1: `autoScaffoldedTaskIdThisTurn` USED TO BE SET HERE, and the comment
-        // that stood in these lines promised "natural turn-end can close JUST this task
-        // (F2.1)". That close path died with `d00f270` — `closeEngineScaffoldSameTurn` was
-        // the ONLY engine path allowed to write `status='complete'` on a task, and the
-        // two-key contract removed it deliberately. The field had ZERO readers from that
-        // commit onward, so the write and both comments were live misinformation about a
-        // mechanism the tree does not have. The row is closed by the going-idle close-out
-        // gate, the PM ladder's delivery-evidence consult, or the reaper — as `d00f270` says.
+        // The floor opened a work row: set the flags so neither tier re-enters this turn.
         state = advance(state, {
           trackerToolCalledThisTurn: true,
           trackerWriteThisTurn: true,
           workRowOpenedThisTurn: true,
         });
-        // RC-19 item 3: the floor just tracked the work, so reset
-        // the cross-turn untracked-work total. This is an engine-side tracker
-        // write that never flows through the per-iteration accumulate/clear above,
-        // so clear it explicitly or the count would re-trip the floor next turn.
+        // This engine-side write bypasses the per-iteration accumulate/clear, so reset the cross-turn
+        // total explicitly or it would re-trip the floor next turn.
         clearUntrackedWorkAcrossTurns(agentId);
-        // UX-REPAIR T1: the log line carried only `nonTrackerToolCalls` too, so the misfire
-        // was invisible in the logs as well as in the note. `effectiveUntracked` is the
-        // number the gate compared against the floor; record it beside its input.
         logger.info('v2: tracker auto-scaffold fired (engine floor)', {
           agentId,
           nonTrackerToolCalls: state.nonTrackerToolCalls,
@@ -290,32 +147,18 @@ export async function runTrackerFloors(state: AgentTurnState, ctx: ExecuteContex
           floor: TRACKER_AUTO_SCAFFOLD_AT,
           taskId: scaffoldTaskId,
         }, agentId);
-        // START ACK (NEXT-WAVE item 1): the engine floor is now the ONLY
-        // engine-side work-opening site, so this is where the requirement lives.
-        // The engine just decided this in-flight work is trackable, so
-        // the person who asked hears it is being tracked, once per turn.
-        // RC-4.2: never start-ack an agent-flagged counterparty (ack ping-pong).
+        // The only engine site that opens work requests a start-ack steer once per turn (the model words it);
+        // never for an agent counterparty (ack ping-pong).
         if (counterparty.kind === 'user' && !counterpartyIsAgentSender && !engineStartAckDeliveredThisTurn && !turnCtx.startAckSteerArmedThisTurn && !turnCtx.startAckSteerRequested) {
-          // Owner ruling 2026-07-22 (engine detects, agent speaks): request
-          // the steer; the next iteration boundary injects it and the model
-          // says it is on it mid-work, in its own words.
           turnCtx.startAckSteerRequested = true;
         }
-        // t139: the PM RENAME HANDOFF IS GONE. It shipped the turn's message to the PM and asked
-        // for "a short 3-6 word name" describing "the WHOLE effort the user asked for" — a model
-        // inventing a description of work from whatever the turn served, which on a presence
-        // ping is nothing. What was asked is now on the task list verbatim, through the link.
       } catch (err) {
         logger.warn('Tracker auto-scaffold failed (non-fatal, falling back to nudge)', {
           agentId, err: err instanceof Error ? err.message : String(err),
         }, agentId);
       }
     } else if (!hasRecentlyTendedTask && !steerFiredAny(state.steerQueue, TRACKER_STEER_FLOORS)) {
-      // v3.1.11 (FN-9): two wordings. When the agent has a STALE open task
-      // (assigned but not recently tended), name it and give a fork: update
-      // that task if this is the same work, otherwise open a project for
-      // the new work. When there's no open task at all, keep the original
-      // create-a-project wording.
+      // A stale open task is named with a choice to update it or start new work; otherwise ask for a project.
       const nudgeText = staleOpenTask
         ? (
           `[System: you've made ${state.nonTrackerToolCalls} work tool calls this turn, but the only open tracker task assigned to you ("${staleOpenTask.title}", task_id ${staleOpenTask.id.slice(0, 8)}) hasn't been updated in a while. ` +
@@ -331,10 +174,7 @@ export async function runTrackerFloors(state: AgentTurnState, ctx: ExecuteContex
           `Then update each task as you complete it via work_update(action="status"), and use scratchpad_set to keep a running outline that survives compaction. ` +
           `Resume the work after the project is opened.]`
         );
-      // RC-19 (F-18): via persistEngineSteer so the STOP/open-a-project directive
-      // reaches the model (the steer queue) AND keeps its dashboard row. This is the
-      // site the owner remembered "ignoring the STOP": the bare role='system' row was
-      // stripped by the assembler, so the model was never actually told to stop.
+      // Through persistEngineSteer so the STOP directive reaches the model, not only the dashboard row.
       state = persistEngineSteer(
         state,
         { agentId, content: nudgeText, turnNumber, floor: 'tracker-stop-directive', atLoop: state.loopCount },
