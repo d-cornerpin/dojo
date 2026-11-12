@@ -9,7 +9,6 @@ import { appendAuditEntry } from '../work/audit-trail.js';
 import { heldDeliveryLine } from './owed-delivery.js';
 import { readLaterMessages } from '../memory/task-list-words.js';
 import { getDb } from '../db/connection.js';
-// SWEEP CORE-2 item 2: the PM's one status write goes through the ONE writer.
 import { writeAgentStatus } from '../agent/agent-status.js';
 import { taskScope, holdWordsSql, heldByOwnerSql } from '../work/tracker-view.js';
 import { workingExpr } from '../work/terminal-states.js';
@@ -42,15 +41,9 @@ function ownerWordsLines(taskId: string): string {
 
 const logger = createLogger('pm-agent');
 
-// ── PM permission manifest ──
-// The PM is a narrow-purpose oversight agent. It gets read-only artifact
-// verification (C2 sub-finding) so close-out validation confirms the actual
-// deliverable rather than trusting the agent's claim; file_read is the H4
-// evidence gate. Reads are still bounded by the engine's global read-deny
-// (secrets.yaml + Healer logs are refused regardless of this manifest). Every
-// other capability stays fully confined: no file_write, file_delete, exec,
-// network, or agent-spawning. Single source of truth for all three write sites
-// (create / reactivate / boot-sync) so they cannot drift.
+// The PM is a narrow-purpose oversight agent: read-only file access so close-out validation confirms the real
+// deliverable (still bounded by the engine's global read-deny), and no file_write, file_delete, exec, network or
+// agent-spawning. The one source for the create and reactivate paths below.
 const PM_PERMISSIONS_JSON = JSON.stringify({
   file_read: '*',
   file_write: 'none',
@@ -62,60 +55,22 @@ const PM_PERMISSIONS_JSON = JSON.stringify({
   can_assign_permissions: false,
 });
 
-// ── PM tool allow-list (single source of truth) ──
-//
-// RC-16: the PM is an OVERSEER, not a worker. It validates, overrides and retasks;
-// it never edits task CONTENT, flips a worker's status, or REASSIGNS (owner ruling 2026-10-02).
-// The worker verbs (work_update(action="status"), work_update(action="complete_step"),
-// work_update(action="edit")) are intentionally ABSENT so a stale copy sitting in the PM's
-// long-lived context can't silently rewrite a task's description or re-close
-// already-closed work (P-1 / F-15). work_validate(action="retask") is the PM's corrective verb; the read-only / utility tools below are what the PM
-// legitimately needs to do oversight (list, inspect, message, read artifacts for
-// close-out verification, search memory/history).
-//
-// This constant is the ONE place the list lives. All three tools_policy write
-// sites (create / reactivate / boot-sync) read it, so the advertised surface
-// (computeFilteredTools' allow filter) cannot drift. It is also EXPORTED and
-// re-checked at the executor chokepoint (agent/tools.ts executeToolInner): per
-// Architecture Rule 1 the surface strip is only advice (the floor model can emit
-// a tool name from free text and reach the executor), so the PM verb enforcement
-// re-checks this same set and rejects any tool outside it with a TOOL-RESULT
-// error naming the overseer verbs.
-// PHASE-2 T8V — THE SITE THE VERB COLLAPSE BREAKS HARDEST, so it moved from
-// NAMES to OPERATIONS rather than being renamed.
-//
-// The rule this list encodes is not "the PM may call these tools". It is "the
-// PM may perform these OPERATIONS": it may close a whole project, but it may
-// NOT flip a worker's task status; it may edit, but it may not complete a step.
-// Before the collapse those were different tool names, so a name set said it.
-// After the collapse `work_update` performs all of them, so a name set can no
-// longer distinguish them — allowing `work_update` would hand the PM the status
-// flip and the step advance that this gate has refused since the demolition,
-// and refusing it would take away the edit the scaffold rename handoff needs.
-// So the authority is the OP list; the NAME list below is derived from it and
-// is only what the advertised surface can express.
+// PM tool policy: the PM is an OVERSEER, not a worker. It validates, overrides and retasks; it never edits task
+// CONTENT, flips a worker's status or REASSIGNS. The authority is a list of OPERATIONS, not tool names, because
+// `work_update` carries status, complete_step and edit as well as list; the advertised name list is derived from it.
+// Exported and re-checked at the executor chokepoint (`agent/tools/index.ts`): the surface strip is only advice,
+// so any operation outside the set is rejected there.
 export const PM_ALLOWED_WORK_OPS: readonly WorkOp[] = [
   'work_update:list', 'work_update:get',        // read-only inspection
-  // T60: the third read. The PM judges whether work was done; "what moved on this board
-  // over a window" is inspection of exactly the kind the two above already grant, and
-  // withholding it would leave the validator reading state with no history behind it.
+  // The third read: judging whether work was done needs the board's history, not only its state.
   'work_update:activity',
   'work_note',                                   // leave a note on a task
   'work_schedule:pause', 'work_schedule:resume',
   'work_validate:decide', 'work_validate:open_proof', 'work_validate:retask',
   'work_update:hand_in',                         // a task the PM itself works; the main agent decides it
-  // ⛔ `work_update:reassign` WAS HERE. OWNER RULING 2026-10-02: "Their job is not to reassign a
-  // task because they don't feel it is getting worked on fast enough. At no point during the
-  // construction of the dojo did I ever ask for the PM agent to simply reassign tasks to another
-  // agent." Re-ruled for v3.4 (dec 1): NEVER. `work/row-authority.ts:checkMove` also refuses the
-  // PM by identity. `the-pm-waits-for-the-model-it-assigned.test.ts` §2 censuses this list.
-  // The edit ops are REQUIRED by the engine's scaffold rename handoff
-  // (loop.ts dispatchPMRenameHandoff explicitly instructs the PM to call it).
-  // Omitting them (2026-07-17 battery, untracked-multistep-floor red) made the
-  // executor gate refuse the rename; the PM's local model then compensated by
-  // rewriting the PROJECT description (which used to strip the engine marker, before T8c
-  // made that fact a `root_kind` column no edit can reach) and
-  // FYI-ing the primary to do the task rename for it.
+  // `work_update:reassign` is deliberately absent: the PM never reassigns (`work/row-authority.ts` `checkMove`
+  // also refuses the PM by identity). The edit op is in the set, so the executor gate lets the PM edit a task
+  // (title and other fields).
   'work_update:edit',
 ];
 
@@ -125,41 +80,29 @@ const PM_ALLOWED_WORK_OPS_SET: ReadonlySet<string> = new Set<string>(PM_ALLOWED_
  *  decision door itself says who decides (`work/done/who-decides.ts`). */
 export const PM_ONLY_WORK_OPS: ReadonlySet<string> = new Set<string>(['work_validate:retask']);
 
-// Non-work tools the PM may call. Plain names: these tools were not collapsed.
 const PM_ALLOWED_OTHER_TOOLS: readonly string[] = [
   'send_to_agent', 'broadcast_to_group', 'list_agents', 'list_groups',
-  // UX-REPAIR round 2 T11: `vault_get` was named by the PM's own prompt (`PM-SOUL.md:66`) and
-  // refused by this gate — the prompt described a door that did not exist. Read-only, and the
-  // alignment is to the prompt: no prompt text changed (it is the PM's prefix; cache tenet).
+  // The PM's own prompt names `vault_get`, so the gate must allow it (read-only).
   'vault_search', 'vault_get', 'vault_remember', 'history_search', 'history_get',
   'load_tool_docs', 'get_current_time', 'tool_result_read',
-  // Read-only artifact verification for close-out validation (C2 sub-finding):
-  // confirm the actual deliverable instead of trusting the agent's claim.
-  // Read only, never file_write / file_delete / exec / network.
+  // Read-only artifact verification for close-out validation: confirm the deliverable, never write or exec.
   'file_read', 'file_list',
 ];
 
-// The ADVERTISED surface (tools_policy.allow, written to the agents row by the
-// three sync sites below). It can only name verbs, so a verb appears here as
-// soon as ANY of its operations is allowed — the executor gate below is what
-// enforces which operation. That asymmetry is deliberate and is exactly
-// Architecture Rule 1: the surface is advice, the engine enforces.
+// The ADVERTISED surface (tools_policy.allow) can only name verbs, so a verb appears as soon as ANY of its
+// operations is allowed; the executor gate enforces which operation (the surface is advice, the engine enforces).
 export const PM_ALLOWED_TOOLS: readonly string[] = [
   ...new Set(PM_ALLOWED_WORK_OPS.map((op) => op.split(':')[0])),
   ...PM_ALLOWED_OTHER_TOOLS,
 ];
 
-/**
- * The executor gate's real check. `args` are required for a work verb because
- * the operation — not the name — is what the PM is or is not allowed to do.
- */
+/** The executor gate's real check: a work verb needs `args`, since the operation, not the name, decides. */
 export function pmMayCall(name: string, args?: Record<string, unknown>): boolean {
   const op = workOperation(name, args);
   if (op !== null) return PM_ALLOWED_WORK_OPS_SET.has(op);
   return PM_ALLOWED_OTHER_TOOLS.includes(name);
 }
 
-// ── Ensure PM Agent Running ──
 
 export function ensurePMAgentRunning(): void {
   if (!isSetupCompleted()) {
@@ -181,33 +124,13 @@ export function ensurePMAgentRunning(): void {
 
   if (pm && pm.status !== 'terminated') {
     logger.info('PM agent already running', { status: pm.status });
-    // ⟨RETIRED — UX-ACCESS A1, owner ruling 3⟩ The per-boot rewrite of this
-    // agent's `tools_policy` + `permissions` stood here. Census C8: it was one of
-    // four sites that overwrote a live row on EVERY restart, which meant an owner
-    // edit to this agent was silently reverted — the exact defect ruling 3 names
-    // ("the boot rewriter retires so edits stop silently reverting").
-    //
-    // WHAT STILL HOLDS THE INVARIANT IT WAS PROTECTING. The frozen deny/allow list
-    // was never the real wall: a sensei that is not the primary now carries
-    // `channels.master = null` and no channel grant at all, so every tool on the
-    // build-checked `SEND_TO_PEOPLE` surface is refused AT THE DOOR by
-    // `mayUseChannel` — including one added after this boot, which a frozen list
-    // of names could never have covered. The declared grants are seeded once, from
-    // this row's own values, by `agent/access/materialize.ts`.
-    //
-    // The CREATE and REACTIVATE paths below still write the policy: those mint a
-    // row rather than overwrite a live one, so they revert nobody.
-    // ⟨TOMBSTONE⟩ W24: the Phase-B.1 "keep the PM-SOUL system message in sync on every boot"
-    // block stood here. Its comment claimed *"the runtime message-assembly path reads the
-    // LATEST system message for context"* — that was false when it was written and false
-    // every boot since (`tailRender` emits user/assistant/tool only), so this wrote a row
-    // nothing reads and reported success. The requirement it was reaching for — a prompt
-    // update actually arriving at an already-running PM — is met by the soul file being the
-    // one store both the runtime and the card read; see the tombstone above.
+    // A running PM's `tools_policy` and `permissions` are never rewritten at boot, so an owner edit cannot
+    // silently revert. The wall is `mayUseChannel` at the door (a non-primary sensei has `channels.master = null`),
+    // with grants seeded once by `agent/access/materialize.ts`. The create and reactivate paths below mint a row.
+    // No PM-SOUL system message is synced here: the soul file is the one store the runtime and the card read.
     return;
   }
 
-  // Get PM model: check saved setting first, fall back to primary agent's model
   const pmModelSetting = db.prepare("SELECT value FROM config WHERE key = 'pm_agent_model'").get() as { value: string } | undefined;
   let modelId: string | null = pmModelSetting?.value ?? null;
   if (!modelId) {
@@ -216,12 +139,9 @@ export function ensurePMAgentRunning(): void {
   }
 
   if (pm) {
-    // PM exists but was terminated, reactivate with correct name, model, and permissions
     const reactivatePermissions = PM_PERMISSIONS_JSON;
     const reactivateToolsPolicy = JSON.stringify({ allow: [...PM_ALLOWED_TOOLS] });
-    // SWEEP CORE-2 item 2: the identity columns stay here; the STATUS goes through the ONE
-    // writer (`agent/agent-status.ts`). Both inside ONE transaction, so the reactivation is
-    // as atomic as the single statement it replaces.
+    // Identity columns here; STATUS through the ONE writer (`agent/agent-status.ts`), both in ONE transaction.
     db.transaction(() => {
       db.prepare(`
         UPDATE agents SET
@@ -242,11 +162,9 @@ export function ensurePMAgentRunning(): void {
 
     logger.info('PM agent reactivated', { pmId, pmName });
   } else {
-    // Create PM agent with permissions for tracker, messaging, and monitoring
     const pmPermissions = PM_PERMISSIONS_JSON;
-    // Allow only the tools the PM needs (single source: PM_ALLOWED_TOOLS).
     const pmToolsPolicy = JSON.stringify({ allow: [...PM_ALLOWED_TOOLS] });
-    // T11 Step 1b: the PM is platform machinery, not a person's agent.
+    // The PM is platform machinery, not a person's agent.
     db.prepare(`
       INSERT INTO agents (id, name, model_id, system_prompt_path, status, config, created_by, created_by_kind,
                           parent_agent, spawn_depth, agent_type, classification, max_runtime, timeout_at,
@@ -256,14 +174,12 @@ export function ensurePMAgentRunning(): void {
               ?, ?, NULL, datetime('now'), datetime('now'))
     `).run(pmId, pmName, modelId, primaryId, primaryId, pmPermissions, pmToolsPolicy);
 
-    // ⟨TOMBSTONE⟩ W24: the seed `role='system'` row went in here. A system row is not the
-    // PM's identity — `prompt/assembler.ts`'s soul file is, for a fresh PM and a worn one
-    // alike — and the message assembler cannot show a system row to a model in any case.
+    // No seed system row: it is not the PM's identity (the soul file is) and no model can see one.
     logger.info('PM agent created', { pmId, pmName });
   }
 }
 
-// ── THE PM'S REVIEW: one pass over the hand-ins waiting for its decision, plus the stalls the ladder marked ──
+// The PM's review: one pass over the hand-ins waiting for its decision, plus the stalls the ladder marked.
 
 const REVIEW_DEBOUNCE_MS = 10_000;
 let reviewTimer: ReturnType<typeof setTimeout> | null = null;
@@ -283,13 +199,11 @@ export function armDebouncedReview(taskId: string, why: string): void {
   }, REVIEW_DEBOUNCE_MS);
 }
 
-/** The hand-ins the PM decides now, oldest first. */
 function waitingForPM(pmId: string): string[] {
   const rows = getDb().prepare(`SELECT w.id FROM work w WHERE ${taskScope('w')} AND w.state = 'handed_in' ORDER BY w.updated_at`).all() as Array<{ id: string }>;
   return rows.map((r) => r.id).filter((id) => { const d = whoDecides(id); return d?.kind === 'agent' && d.agentId === pmId; }).slice(0, 10);
 }
 
-/** Working rows the ladder marked for the PM since its last report. */
 function markedStalls(pmId: string): string[] {
   return (getDb().prepare(
     `SELECT w.id FROM work w WHERE ${taskScope('w')} AND ${workingExpr('w')} AND NOT ${heldByOwnerSql('w')} AND EXISTS (SELECT 1 FROM work_events e
@@ -333,8 +247,8 @@ function recordMisses(pmId: string, held: ReadonlyMap<string, number>, why: stri
   }
 }
 
-/** THE PM'S REVIEW (header). The PM runs once; when its turn has ended (or never ran), each held hand-in still
- *  undecided records the miss. */
+/** One PM review: wake the PM once with the waiting hand-ins and marked stalls (up to ten each); once its turn
+ *  has ended (or never ran), each held hand-in still undecided records a miss. */
 export async function runPMReview(): Promise<void> {
   if (reviewing) { rungWhileReviewing = true; return; }
   reviewing = true;
@@ -378,25 +292,15 @@ export async function runPMReview(): Promise<void> {
   }
 }
 
-// How many recent messages to keep for the PM. Bumped from 10 to 30 in
-// v2.7.27, at 10 the pair-aware cutoff + downstream orphan sanitizer
-// were trimming the PM down to 1-2 effective messages on bad turns,
-// leaving it with no context to judge anything. 30 gives the sanitizer
-// more pair-completeness to work with while still keeping the PM's
-// window small. PM is still stateless conceptually (tracker is its
-// memory), this is just enough scratch space.
-// t123 RAISED THIS FROM 30 TO 60, for coherence with the lane rather than as a tuning nudge.
-// t206: a FLOOR now. The PM's tail is every row since its newest fold, often more than 60 rows,
-// so the pruner also stops at the fold boundary: it removes only rows a fold took out of view.
+// How many recent PM engine rows to keep, a FLOOR: the PM's tail is every row since its newest fold, often more
+// than this, so the pruner also stops at the fold boundary and removes only rows a fold took out of view.
 export const PM_MAX_MESSAGES = 60;
 
-/** Prune old PM engine rows to bound the table, never at or past the fold boundary (t206): the
- *  cut is the older of the newest `PM_MAX_MESSAGES` rows and the boundary. Exported for t206 §1d. */
+/** Prune old PM engine rows to bound the table, never at or past the fold boundary: the cut is the older of
+ *  the newest `PM_MAX_MESSAGES` rows and the boundary. */
 export function pruneOldPMMessages(pmId: string): void {
   const db = getDb();
   try {
-    // The fold boundary (`freshTailHorizon` owns where a tail starts). `keepFromSeq` 0 is the
-    // floor, where the view is "the newest rows" and nothing is out of view for good.
     const modelId = (db.prepare('SELECT model_id FROM agents WHERE id = ?').get(pmId) as { model_id: string | null } | undefined)?.model_id ?? '';
     const horizon = freshTailHorizon(pmId, contextWindowPolicy(agentTurnWindow(pmId, modelId), { toolPayloadTokens: 0 }));
     if (horizon.keepFromSeq <= 0 || horizon.anchorSeq <= 0) return;
@@ -407,16 +311,9 @@ export function pruneOldPMMessages(pmId: string): void {
     if (!floorRow) return;
     const cutSeq = Math.min(floorRow.seq, horizon.anchorSeq);
 
-    // v2.7.27: tool_call_pair-aware cutoff. If the initial cutoff lands on a
-    // 'tool' role message, the resulting kept window starts with an orphaned
-    // tool result (no preceding assistant with tool_calls). DeepSeek and most
-    // other providers 400 with "Messages with role 'tool' must be a response
-    // to a preceding message with 'tool_calls'", which then triggered the
-    // injury-recovery loop and made the PM perpetually broken. The fix walks
-    // forward from the initial cutoff to find the first non-tool message,
-    // using that as the safe cutoff. We may keep fewer than PM_MAX_MESSAGES
-    // when this fires; that's fine, PM is stateless and tracker is its memory.
-    // t206: the walk never passes the boundary row, so it cannot reach into the view.
+    // Tool-pair aware: a kept window must not start with an orphaned 'tool' result (providers reject it), so
+    // walk forward to the first non-tool row, never past the boundary row. Keeping fewer rows is safe: the
+    // tracker is the PM's memory.
     const cutoff = db.prepare(`
       SELECT id FROM messages
       WHERE agent_id = ?
@@ -429,16 +326,8 @@ export function pruneOldPMMessages(pmId: string): void {
 
     if (!cutoff) return;
 
-    // The incident this line remembers: summary_messages.message_id used to reference
-    // messages(id) WITHOUT ON DELETE CASCADE, so a raw DELETE on a compacted PM message
-    // threw and the prune failed forever ("Failed to prune PM messages" every 10 min for
-    // hours, observed in production). The PM doesn't need its archived summaries anyway —
-    // the tracker is its memory — so the link rows go first, then the messages, both inside
-    // deleteAgentDebrisBefore in one transaction.
-    // PHASE-1 T7 re-stated: the reference is BACK (migration 130, now that one table holds
-    // every lane) and it is ON DELETE CASCADE precisely so this incident cannot return by
-    // way of some other delete path forgetting the ordering. deleteAgentDebrisBefore keeps its
-    // explicit first delete regardless — see the note there.
+    // The summary link rows and the messages go together inside `deleteAgentDebrisBefore`, in one transaction;
+    // that function keeps its explicit first delete even though the reference cascades since migration 130.
     const deleted = deleteAgentDebrisBefore(pmId, cutoff.id);
 
     if (deleted > 0) {

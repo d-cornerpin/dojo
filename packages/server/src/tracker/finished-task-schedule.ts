@@ -1,9 +1,5 @@
-// A schedule set on a FINISHED task: one subject, one module.
-//
-// The fire-time writer (`work/next-run.ts`) records a schedule armed on a settled row as ended, so
-// every door that can arm one must first make the row live or refuse. The owner's dashboard save
-// means "run this again" and reopens the row; the agent doors cannot reopen a finished row (the
-// product refuses that) and refuse up front, before any write.
+// A schedule set on a FINISHED task. Every door that can arm one must first make the row live or refuse,
+// because the fire-time writer (`work/next-run.ts`) records a schedule armed on a settled row as ended.
 import { getDb } from '../db/connection.js';
 import { withUnit, afterCommit } from '../db/unit.js';
 import { broadcast } from '../gateway/ws.js';
@@ -21,16 +17,11 @@ export function finishedStateOf(taskId: string): string | null {
   return isTerminalName(st) ? st! : null;
 }
 
-/** True when an edit's schedule fields would SET a schedule: undefined is untouched, and null or
- *  '' is the supported way to CLEAR one, which arms nothing. */
+/** True when the schedule fields would SET a schedule (undefined is untouched; null or '' clears). */
 export const setsASchedule = (values: readonly unknown[]): boolean =>
   values.some((v) => v !== undefined && v !== null && v !== '');
 
-/**
- * The agent doors' answer to a schedule change on a FINISHED task. An agent cannot reopen a
- * finished row, so the door refuses BEFORE any write and says exactly what happened, in the
- * owner-facing status words (complete / fallen / cancelled).
- */
+/** The agent doors' refusal of a schedule change on a FINISHED task, made before any write. */
 export function finishedScheduleRefusal(taskId: string, title: string, doing: string): string | null {
   const st = finishedStateOf(taskId);
   if (!st) return null;
@@ -41,13 +32,8 @@ class ReopenRefused extends Error {}
 const refusedWhy = (o: WorkOutcome | WorkPatchOutcome): string =>
   isStateConflict(o as WorkOutcome) ? `it moved to "${(o as { actual: string }).actual}"` : o.kind === 'refused' ? `${o.reason}: ${o.detail}` : 'it could not be written';
 
-/**
- * The OWNER door's write. A live row just takes the schedule. A FINISHED row means "run it again":
- * the reopen (a finished row's only way back is Open, where a recurring task waits) and the
- * schedule write land in ONE unit, so either the task comes back
- * armed or nothing changes at all. The caller has already computed everything `arm` writes.
- * Returns null, or the plain-words refusal (the unit has rolled back).
- */
+/** The OWNER door's write: a finished row is reopened and armed in ONE unit (both or neither). Returns
+ *  null or the plain-words refusal. The caller has already computed everything `arm` writes. */
 export function armScheduleOnOwnerSave(taskId: string, arm: () => WorkPatchOutcome): string | null {
   const finished = finishedStateOf(taskId);
   const unsettled = (o: WorkPatchOutcome): boolean => o.kind !== 'applied' && o.kind !== 'no_change';

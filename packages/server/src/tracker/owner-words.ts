@@ -1,19 +1,10 @@
-// v3.5 DONE IS MEASURED (t250 fix rounds 4–5, orchestrator rulings) — WHEN A QUOTE IS THE OWNER'S.
-//
-// `work_validate(action="apply_user_verdict")` is called by a MODEL with a `user_quote` the model
-// supplies. The owner's exemption (he can always close his own task) applies to a VERIFIED owner
-// act only: after the platform's one quote normalisation (`work/row-authority.ts` `normalizeQuote`:
-// case, curly quotes, whitespace, edge punctuation), the quote must EQUAL a whole message the owner
-// wrote since the verdict was asked, or a whole sentence of one (split on . ! ? and newlines). A
-// fragment never verifies: "close it" is not in "Do not close it.", and "o" is not in "No.".
-//
-// Whose message: one that came in through an ingest door (it has a channel) on any channel the owner
-// uses — the dashboard, voice and the owner's iMessage, by the stamped origin (`deriveOrigin`, the
-// one "who is this from" answer). EMAIL VERIFIES ONLY ONE WAY (t250 fix round 6, reopened by the owner's P44
-// ruling 2026-10-27): a From header alone is nobody authenticated, and a reply carries the agent's own quoted
-// question back. So an email row counts only when the mail watcher stamped `relation: 'owner'` after the PROVIDER's
-// own DMARC result confirmed an owner address (`services/mail-owner-intake.ts`), and then ONLY the owner's new words
-// the watcher stored beside it (`ownerWords`, the quoted thread cut) — never the row's content, never a preview.
+// When a quote is the owner's: `apply_user_verdict` is called by a MODEL with a `user_quote` it supplies, so the
+// owner's exemption needs a VERIFIED owner act: after `normalizeQuote` the quote must EQUAL a whole message (or
+// whole sentence) the owner wrote since the verdict was asked. A fragment never verifies.
+// Whose message: an ingest-door row (it has a channel) on an owner channel, by the stamped origin (`deriveOrigin`).
+// Email counts only when the mail watcher stamped `relation: 'owner'` after the provider's DMARC result
+// (`services/mail-owner-intake.ts`), and then only the `ownerWords` it stored, never the row's content (a From
+// header is nobody authenticated, and replies quote the agent).
 import { deriveOrigin, legacyOriginInputs, stripInboundChannelMarker, type InboundMeta } from '@dojo/shared';
 import { getDb } from '../db/connection.js';
 import { WORK_EVENT } from '../work/tracker-view.js';
@@ -25,8 +16,7 @@ interface Row {
   inbound_meta: string | null; origin_intent: string | null;
 }
 
-/** The owner's new words in an email row the watcher stamped as the owner's, or null. Every stamp must agree: the
- *  watcher's own owner relation, the agent's mailbox (never the owner's inbox), and a non-empty `ownerWords`. */
+/** The owner's new words in an email row the watcher stamped as the owner's, or null; every stamp must agree. */
 function confirmedOwnerEmailWords(raw: string | null, askedAtMs: number): string | null {
   let meta: Partial<InboundMeta> | null = null;
   try { meta = raw ? JSON.parse(raw) as Partial<InboundMeta> : null; } catch { return null; }
@@ -36,7 +26,6 @@ function confirmedOwnerEmailWords(raw: string | null, askedAtMs: number): string
   return typeof meta.ownerWords === 'string' && meta.ownerWords.trim() !== '' ? meta.ownerWords : null;
 }
 
-/** The owner's own words in this row, or null when the row is not the owner writing. */
 export function ownerWords(m: Row, askedAtMs: number): string | null {
   if (m.channel === 'email') return confirmedOwnerEmailWords(m.inbound_meta, askedAtMs);
   const o = deriveOrigin({
@@ -47,10 +36,8 @@ export function ownerWords(m: Row, askedAtMs: number): string | null {
   return o.kind === 'user' && o.relation === 'owner' ? stripInboundChannelMarker(m.content) : null;
 }
 
-/** The whole message (when it is a statement) and each whole sentence that did not end with a
- *  question mark, normalised. A sentence the owner ended with "?" is a question — it asks, it
- *  does not say — so it is never a quotable approval; statements ending in ".", "!", a newline
- *  or the end of the message still match as before. */
+/** The whole message (when a statement) and each whole sentence not ending in "?", normalised: a
+ *  question asks, it does not say, so it is never a quotable approval. */
 const quotableUnits = (words: string): string[] => {
   const units: string[] = [];
   if (!/\?[.!?\s]*$/.test(words)) units.push(words);
@@ -65,7 +52,6 @@ const quotableUnits = (words: string): string[] => {
 
 const ROW_COLS = `content, lane, channel, source_agent_id, a2a_thread_id, a2a_intent, a2a_requires_response,
             inbound_meta, origin_intent`;
-/** The candidate rows: person-authored inbound (role user, through an ingest door, no agent sender). */
 const PERSON_INBOUND = "role = 'user' AND channel IS NOT NULL AND source_agent_id IS NULL";
 
 const saidIn = (rows: Row[], q: string, floorMs: number): boolean =>
@@ -74,7 +60,6 @@ const saidIn = (rows: Row[], q: string, floorMs: number): boolean =>
     return words !== null && quotableUnits(words).includes(q);
   });
 
-/** The newest instant the owner was asked about `taskId`, by the ask's own event kind, or null. */
 function askedAt(taskId: string, kind: string): number | null {
   const r = getDb().prepare(
     'SELECT MAX(created_at) AS at FROM work_events WHERE work_id = ? AND kind = ?',
@@ -82,7 +67,6 @@ function askedAt(taskId: string, kind: string): number | null {
   return r.at;
 }
 
-/** Did the owner write `q` (normalised) to `agentId` in a message sent at or after `atMs`? */
 function ownerSaidSince(atMs: number, q: string, agentId: string): boolean {
   const floor = Math.floor(atMs / 1000) * 1000;   // `sent_at`'s default is second-resolution
   const rows = getDb().prepare(
@@ -91,11 +75,7 @@ function ownerSaidSince(atMs: number, q: string, agentId: string): boolean {
   return saidIn(rows, q, floor);
 }
 
-// "The owner decided" is accepted only when the owner's words really appear in the conversation: agents
-// must not close jobs on their own to get out of the work, so a relayed owner decision is checked here.
-//
-// Newer than the ask, and written to the agent relaying it: the ask is the task's own `validation_escalated` event; with
-// no ask on record nothing verifies.
+// A relayed owner decision is verified here: agents must not close jobs themselves.
 export type OwnerQuoteProof = { ok: true } | { ok: false; why: string };
 
 export function ownerQuoteProof(taskId: string, quote: string, agentId: string): OwnerQuoteProof {

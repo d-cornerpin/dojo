@@ -12,8 +12,7 @@ export function relAgoFromNow(sqliteUtc: string | null): string {
   return `${Math.floor(h / 24)}d ago`;
 }
 
-/** The same fact with no clock in it: the recorded instant, minute precision, UTC. Pure in
- *  its argument, which is the whole point — see `renderTaskStamps`' header. */
+/** The recorded instant, minute precision, UTC: no clock in it, so the prompt prefix stays cache-stable. */
 export function absInstant(sqliteUtc: string | null): string {
   if (!sqliteUtc) return '';
   const ms = Date.parse(sqliteUtc.replace(' ', 'T') + 'Z');

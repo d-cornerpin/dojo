@@ -1,16 +1,7 @@
-// The tracker's data access layer.
-//
-// PHASE-2 T8b: every statement in this file now reads and writes `work`. The row SHAPES
-// below are unchanged on purpose — `TaskRow` / `ProjectRow` are what `mapTaskRow` /
-// `mapProjectRow` turn into the shared `Task` / `Project` types the dashboard board renders,
-// so the storage moved and the contract did not. The translation (vocabulary, time form,
-// column names, which `work` rows are the tracker's) lives in ONE place,
-// `work/tracker-view.ts`, and the writes in `work/tracker-store.ts`; this file composes them.
-//
-// What was deleted here rather than moved: `updateTask()`'s status branch. It was PINNED
-// §13's "route R2" — a generic column patcher that applied NO gate to a state change, with
-// eleven call sites. Status now goes through `transition()` like every other state change on
-// the spine, and the attribute half stays a patch.
+// The tracker's data access layer: every statement reads and writes `work`. `TaskRow` / `ProjectRow` map to the
+// shared `Task` / `Project` types the dashboard board renders. The translation (vocabulary, time form, column
+// names, which `work` rows are the tracker's) lives in `work/tracker-view.ts` and the writes in
+// `work/tracker-store.ts`; this file composes them. A status change goes through `transition()`, never a patch.
 
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
@@ -38,7 +29,6 @@ import { proofLines } from '../work/done/proof.js';
 
 const logger = createLogger('tracker-schema');
 
-// ── Row Types ──
 
 interface ProjectRow {
   id: string;
@@ -95,14 +85,12 @@ interface TaskRow {
   evidence_json: string | null;
 }
 
-/** The two projections, built once. Interpolating a constant fragment rather than re-typing
- *  the column list at each call site is what keeps "the row shape" one fact. */
-const TASK_COLS = taskRowColumns();      // names the table literally — see tracker-view.ts
+/** The two projections, built once: the one place the row shape is spelled. */
+const TASK_COLS = taskRowColumns();      // names the table literally (see tracker-view.ts)
 const PROJECT_COLS = projectRowColumns();
 const TASK_WHERE = taskScope('work');
 const PROJECT_WHERE = projectScope('work');
 
-// ── Row Mappers ──
 
 function mapProjectRow(row: ProjectRow): Project {
   return {
@@ -195,15 +183,13 @@ function parseEvidence(raw: string | null): Task['evidence'] {
   }
 }
 
-// ── Project CRUD ──
 
 export function createProject(params: {
   title: string;
   description?: string; plan?: Plan;
   level: number;
   createdBy: string;
-  // P1 lineage spine: see createTask. Applied to the project row AND inherited
-  // by its inline tasks.
+  // Applied to the project row AND inherited by its inline tasks (see createTask).
   origin: { kind: string | null; sourceMessageId: string | null; turn: number | null; convKey: string | null };
   tasks?: Array<{
     title: string;
@@ -221,12 +207,8 @@ export function createProject(params: {
 
   const { title, description, level, createdBy, tasks } = params;
 
-  // One transaction for the project row AND its inline tasks: a failed task
-  // insert (e.g. an FK reject on assigned_to) must not strand an empty
-  // project (2026-07-17 run bmrpkqai2v6: two orphan zero-task projects from
-  // exactly that; the PM had no row to poke and the model "reused" an empty
-  // shell). Broadcasts fire after commit so a rollback never announces
-  // phantom rows.
+  // One transaction for the project row AND its inline tasks: a failed task insert (e.g. an FK reject on
+  // assigned_to) must not strand an empty project. Broadcasts fire after commit, so a rollback announces nothing.
   db.transaction(() => {
     openTrackerProject({
       id: projectId, title, description: description ?? null, level, createdBy,
@@ -240,19 +222,8 @@ export function createProject(params: {
         const taskId = uuidv4();
         taskIds.push(taskId);
 
-        // Status default: all subtasks land in 'in_progress'. The previous
-        // model (only the first-step task assigned to the creator started
-        // in_progress, everything else 'on_deck') routinely produced the
-        // failure mode where the agent finished the first task and then
-        // never returned to the on_deck pile, those tasks went unseen
-        // forever. New rule: 'on_deck' is reserved for "scheduled for
-        // later". A task with no future scheduled_start belongs in
-        // 'in_progress' so the assigned agent (and the PM) keep seeing it
-        // as work to do.
-        //
-        // Phase 7: original_description is an immutable copy of the user's
-        // original ask. Mirrors the standalone createTask path. Without it the
-        // onTaskComplete hook surfaces "(none recorded)" to the parent.
+        // All subtasks land in 'in_progress': 'on_deck' is reserved for work scheduled for later, so the assigned
+        // agent and the PM keep seeing it. original_description is an immutable copy of the user's original ask.
         openTrackerTask({
           id: taskId,
           projectId,
@@ -376,7 +347,6 @@ export function closeProjectAndOpenTasks(params: {
   const tasksClosed = pr?.kind === 'decided' ? tasks.length - alreadyClosed - pr.unclosed.length : 0;
   logger.info('Project bulk-closed by the owner', { projectId, tasksClosed, alreadyClosed, refused: unsettled.length, verdict });
 
-  // Broadcast updated tasks + project so the dashboard repaints.
   for (const t of tasks) {
     const updated = getTask(t.id);
     if (updated) {
@@ -425,7 +395,6 @@ export function updateProject(
   }
 }
 
-// ── Task CRUD ──
 
 export function createTask(params: {
   projectId?: string;
@@ -438,34 +407,20 @@ export function createTask(params: {
   dependsOn?: string[];
   phase?: number;
   kind?: string;
-  /**
-   * UX-REPAIR ROUND 8 T34 — the goal rides the INSERT now, optional so no existing caller
-   * changes. It used to be patched on immediately AFTER this function broadcast the row, which
-   * made the announcement frame stale on every tool-door creation the moment it was sent. A row
-   * is announced complete or it is announced twice; complete is better.
-   */
+  /** The goal rides the INSERT, so the row is announced complete rather than patched after the broadcast. */
   goal?: string | null;
-  // P1 lineage spine (migration 112): REQUIRED so every creation path states
-  // its origin deliberately. Values may be null (legacy/no-turn contexts), the
-  // PARAM may not be omitted: a new writer that forgets lineage fails to
-  // compile instead of silently minting origin-less work.
+  // REQUIRED so every creation path states its origin: a null value is allowed, omitting the param is a compile error.
   origin: { kind: string | null; sourceMessageId: string | null; turn: number | null; convKey: string | null };
 }): string {
   const { projectId, title, description, assignedTo, createdBy, priority, stepNumber, dependsOn, phase, kind, goal } = params;
 
-  // v2.8.x rule: 'on_deck' is reserved for tasks with a future
-  // scheduled_start (the scheduler owns the transition to 'in_progress'
-  // at fire time). Tasks with no schedule belong in 'in_progress' so
-  // they stay visible to the assigned agent and the PM. createTask
-  // doesn't take scheduled_start directly; the trackerCreateTask
-  // wrapper applies the schedule override after this insert.
+  // 'on_deck' is reserved for tasks with a future scheduled_start (the scheduler moves them to 'in_progress'
+  // at fire time). createTask takes no schedule: the trackerCreateTask wrapper applies it after this insert.
   const taskId = openTrackerTask({
     projectId: projectId ?? null,
     title,
     description: description ?? null,
-    // original_description is an immutable copy of the user's original ask.
-    // Phase 7 onTaskComplete uses it to surface the original intent to the
-    // parent agent at completion time even if the description was edited.
+    // An immutable copy of the user's original ask, kept when the description is later edited.
     originalDescription: description ?? null,
     status: 'in_progress',
     assignedTo: assignedTo ?? null,
@@ -493,24 +448,10 @@ export function createTask(params: {
 }
 
 /**
- * UX-REPAIR ROUND 8 T34 — THE LAST FRAME FOR A ROW EQUALS THE STORED ROW.
- *
- * `createTask` announces the row it inserted, and a creation door that then SETTLES that row
- * (a future `scheduled_start` moves it to `on_deck`; `setNextRun` writes the fire time and
- * `schedule_status='waiting'`; the goal is patched on afterwards) left the announcement as the
- * last thing the wire ever said about it. Neither `setTrackerStatus` nor `setNextRun`
- * broadcasts — they are work-store writers that run inside transactions — so a dashboard
- * watching live showed round 8's reminders as `in_progress` / `unscheduled` / `nextRunAt:null`
- * until someone reloaded the page (observed twice in one review round, S2 and S6).
- *
- * This is the discipline the rest of the tracker already follows — `updateTask`,
- * `closeProject` and `tracker/tools.ts` all read the row back after their writes and
- * broadcast the FRESH one. Here it is named, so both creation doors share it.
- *
- * It is a no-op when nothing settled: `announced` is the view the creation frame carried, and
- * an identical view means the announcement is already the truth, so an unscheduled creation
- * still emits exactly ONE frame. One settle frame, never a firehose.
- *
+ * Re-announce a row that a creation door settled after `createTask` broadcast it (a future `scheduled_start`,
+ * `setNextRun`, a later goal patch): neither `setTrackerStatus` nor `setNextRun` broadcasts, since they are
+ * work-store writers inside transactions. A no-op when `announced` (the view the creation frame carried)
+ * already equals the stored row, so an unscheduled creation emits exactly ONE frame.
  * @returns true when a correcting frame was sent.
  */
 export function broadcastTaskSettled(taskId: string, announced: Task | null): boolean {
@@ -522,39 +463,22 @@ export function broadcastTaskSettled(taskId: string, announced: Task | null): bo
 }
 
 /**
- * Engine-driven task creation for A2A ASSIGN intent.
- *
- * Called from deliverA2AMessage when an agent's send_to_agent uses
- * intent=ASSIGN. Auto-creates a tracker task on behalf of the sender so
- * the assignment is structurally tracked from the moment of the handoff
- *, no LLM cooperation required.
- *
- * If a task already exists for this thread (later ASSIGNs on the same
- * thread are treated as clarifications, not new assignments), returns
- * the existing task ID instead of creating a duplicate.
- *
- * Returns null only on hard DB error so callers can fall back gracefully
- *, the message itself still gets delivered even if the auto-task fails.
+ * Engine-driven task creation for A2A ASSIGN intent (called from deliverA2AMessage), so the assignment is
+ * tracked from the handoff with no LLM cooperation. A later ASSIGN on the same thread is a clarification:
+ * it returns the existing task id. Null only on a hard DB error; the message itself still delivers.
  */
 export function autoCreateAssignTask(params: {
   senderId: string;
   receiverId: string;
   payload: string;
   threadId: string;
-  // P1 lineage spine: the id of the ASSIGN message row that births this task
-  // (the one origin key this path always had in hand and never stored).
+  // The id of the ASSIGN message row that births this task (its lineage origin).
   assignMessageId?: string | null;
 }): { taskId: string; isNew: boolean } | null {
   const db = getDb();
   try {
-    // v2.9.22, never auto-create tracker rows for system agents
-    // (PM/Healer/Dreamer). Their roles are meta and they don't own
-    // user-facing work tasks. ASSIGN to a system agent is still a
-    // valid wake-the-agent signal; the message delivers, just no
-    // tracker row is created. Pre-fix, every ASSIGN to PM (typical
-    // close-out escalation pattern) auto-created a task assigned
-    // to PM, which then became invisible to the user but kept
-    // firing PM validation loops (production incident 2026-06-07).
+    // Never auto-create rows for system agents (PM/Healer/Dreamer): they own no user-facing work, and a task
+    // assigned to the PM would be invisible to the user yet keep firing PM validation loops. The message still delivers.
     if (isDashboardHiddenAgent(params.receiverId)) {
       logger.info('autoCreateAssignTask skipped, receiver is a system agent', {
         receiverId: params.receiverId, senderId: params.senderId, threadId: params.threadId,
@@ -562,18 +486,9 @@ export function autoCreateAssignTask(params: {
       return null;
     }
 
-    // v2.10.2, never auto-create tracker rows when the SENDER is the
-    // PM agent. PM's remediation flow is supposed to re-open the
-    // existing task via work_validate(action="retask") (or close it via work_validate(action="override")
-    // / work_validate(action="validate")), NOT fork a new task. Pre-fix, PM
-    // sending send_to_agent(intent='ASSIGN') to remediate a close-out
-    // miss spawned a duplicate task and left the original abandoned,
-    // producing two tasks for one unit of work and, for non-idempotent
-    // tools (gmail_send, sms_send, voice_call, exec hitting live APIs),
-    // a duplicate side effect. Production incident 2026-06-08: Email
-    // 08 (Mariana Vázquez task) duplicated when PM rerouted the primary agent
-    // after an auto-pause. The ASSIGN message itself still delivers
-    // and wakes the receiver; just no fork.
+    // Never auto-create when the SENDER is the PM: its remediation re-opens the existing task (work_validate
+    // retask/override/validate), and a forked task duplicates the work and any non-idempotent side effect.
+    // The ASSIGN still delivers and wakes the receiver.
     if (isPMAgent(params.senderId)) {
       logger.info('autoCreateAssignTask skipped, sender is PM (remediation should use work_validate(action="retask"))', {
         senderId: params.senderId, receiverId: params.receiverId, threadId: params.threadId,
@@ -597,11 +512,8 @@ export function autoCreateAssignTask(params: {
       : cleaned.slice(0, 80).trim();
     const title = rawTitle.length > 0 ? rawTitle : 'Assigned task (untitled)';
 
-    // Phase B.1: goal is required on every task. For engine-auto-created
-    // ASSIGN tasks we use the payload itself as the goal, it IS the
-    // sender's stated definition of done for the receiver.
-    // v2.8.x rule: auto-created ASSIGN tasks land in 'in_progress' so the
-    // receiver and the PM keep seeing them as work to do.
+    // The payload IS the sender's stated definition of done, so it is the goal. ASSIGN tasks land in
+    // 'in_progress' so the receiver and the PM keep seeing them.
     const taskId = openTrackerTask({
       title,
       description: params.payload,
@@ -649,20 +561,8 @@ export function getTask(id: string): Task | null {
   return mapTaskRow(row);
 }
 
-// ── ID prefix resolution ──
-//
-// The tracker list tools display task/project ids truncated to 8 chars
-// (see tracker/tools.ts, `t.id.slice(0, 8)`). Agents naturally copy that
-// prefix back when calling update/pause/etc. tools, but the underlying
-// DB rows have full UUID primary keys, so a WHERE id = 'aaa73e0e' lookup
-// returns nothing even when the task exists. This caused a loop where
-// the agent couldn't act on any task it saw in the list.
-//
-// These resolvers accept either a full UUID or a ≥4-char prefix and
-// return a discriminated result so callers can surface precise errors
-// to the agent (not_found vs ambiguous vs too short) instead of the
-// generic "Task was deleted while being updated" that the runtime was
-// synthesizing from a null updateTask() return.
+// Resolvers accept a full UUID or a >=4-char prefix (list tools show ids truncated to 8 chars) and return a
+// discriminated result, so callers can say not_found vs ambiguous vs too short precisely.
 
 export type IdResolution =
   | { ok: true; id: string }
@@ -670,12 +570,8 @@ export type IdResolution =
       ok: false;
       reason: 'empty' | 'too_short' | 'not_found' | 'ambiguous';
       matches?: string[];
-      /** PHASE-6 T0D: did the TITLE fallback also run and find nothing? Carried as a
-       *  FIELD rather than baked into the message, because "we tried both routes" is a
-       *  fact the renderer needs and a caller might one day branch on — and because a
-       *  message that claims a lookup happened when it did not is the same dishonesty,
-       *  one layer up, that this task is closing at the doors. Only meaningful on
-       *  `not_found`. */
+      /** True when the TITLE fallback also ran and found nothing, so the message never claims a lookup that did
+       *  not happen. Only meaningful on `not_found`. */
       triedTitle?: boolean;
     };
 
@@ -690,7 +586,6 @@ function resolveIdIn(kind: 'task' | 'project', idOrPrefix: string, agentId?: str
   const db = getDb();
   const scope = kind === 'task' ? TASK_WHERE : PROJECT_WHERE;
 
-  // Full UUID form (with or without dashes), try direct lookup first.
   if (input.length >= 32) {
     const row = db.prepare(`SELECT work.id AS id FROM work WHERE ${scope} AND work.id = ?`)
       .get(input) as { id: string } | undefined;
@@ -705,36 +600,12 @@ function resolveIdIn(kind: 'task' | 'project', idOrPrefix: string, agentId?: str
   if (matches.length === 1) return { ok: true, id: matches[0].id };
   if (matches.length > 1) return { ok: false, reason: 'ambiguous', matches: matches.map(m => m.id) };
 
-  // Correctness-floor: the weak model routinely passes the human-readable
-  // TITLE it saw in a work_update(action="list") row where an id is expected
-  // ("Mechanical Keyboards Research"). Rather than hard-fail with not_found,
-  // fall back to resolving that string as a TITLE scoped to THIS agent's own
-  // task/project before erroring. Only runs when the id/prefix search found
-  // nothing, so it never competes with a real id and only helps a wrong-shape
-  // arg do the right thing. Requires an agentId to scope; unscoped callers
-  // (no agentId) keep the original id-only behavior.
-  //
-  // ── PHASE-6 T0D DECIDED THIS ONE, AND IT STANDS ──
-  // The survey named it the stale-task-id class's second open half: a dead id
-  // that happens to match a live row's TITLE resolves to that other row, so
-  // refusing stale ids at the doors while this stands would be a half-measure
-  // with an escape hatch. It stands for two reasons, one recorded and one
-  // measured.
-  //   RECORDED: it is the 2026-07-17 PM 189-call spin's fix. Hard-failing a
-  //     title-shaped argument sent the PM into a retry loop on the same string.
-  //     Deleting it re-opens a closed incident, and non-negotiable #2 says a
-  //     guard's requirement becomes a test before its code is touched — so the
-  //     requirement is now pinned in
-  //     `__tests__/id-resolution-and-the-title-fallback.test.ts`.
-  //   MEASURED, on the dev body at this commit: 340 tracker rows, of which 0
-  //     have an id-shaped title, 0 carry a title equal to any other row's id,
-  //     and 0 equal their own. T0B's 37 ask rows whose title IS their own id
-  //     are `kind='ask'` and sit outside `TASK_WHERE`/`PROJECT_WHERE` by
-  //     construction, so the one interaction that could have created the hazard
-  //     cannot reach it.
-  // What DOES change is the refusal: it now says the title was tried too, so a
-  // model that passed a title learns both routes failed instead of retrying the
-  // same string — the 189-call spin from the other side.
+  // A weak model often passes the human-readable TITLE where an id is expected, so when the id/prefix search
+  // found nothing, resolve the string as a TITLE scoped to THIS agent's own rows (needs an `agentId`). It stays
+  // even though a dead id can then match a live row's title: hard-failing a title-shaped argument sent the PM
+  // into a retry loop on the same string (pinned in `__tests__/id-resolution-and-the-title-fallback.test.ts`).
+  // Ask rows (kind='ask') sit outside TASK_WHERE/PROJECT_WHERE by construction. The refusal says the title
+  // was tried too (`triedTitle`), so a model learns both routes failed.
   if (agentId) {
     const byTitle = resolveByTitleScoped(kind, input, agentId);
     if (byTitle) return byTitle;
@@ -743,20 +614,15 @@ function resolveIdIn(kind: 'task' | 'project', idOrPrefix: string, agentId?: str
   return { ok: false, reason: 'not_found', triedTitle: false };
 }
 
-/**
- * Resolve an id argument that turned out to be a TITLE, scoped to the calling
- * agent's own rows (tasks: assigned_to OR created_by; projects: created_by).
- * Tries an exact case-insensitive title match first, then a prefix match for
- * light wording drift. Returns ok on a single hit, ambiguous on several, or
- * null when nothing matched (caller then emits the normal not_found).
- */
+/** Resolve an id argument that is really a TITLE, scoped to the caller's own rows (tasks: assigned_to OR
+ *  created_by; projects: created_by): exact case-insensitive match first, then prefix. Returns ok on one hit,
+ *  ambiguous on several, null on none. */
 function resolveByTitleScoped(kind: 'task' | 'project', title: string, agentId: string): IdResolution | null {
   const db = getDb();
   const scope = kind === 'task' ? TASK_WHERE : PROJECT_WHERE;
   const scopeSql = kind === 'task' ? '(work.agent_id = ? OR work.requester_id = ?)' : 'work.requester_id = ?';
   const scopeParams = kind === 'task' ? [agentId, agentId] : [agentId];
 
-  // Exact, case-insensitive.
   let rows = db.prepare(
     `SELECT work.id AS id FROM work WHERE ${scope} AND lower(work.title) = lower(?) AND ${scopeSql} LIMIT 5`,
   ).all(title, ...scopeParams) as Array<{ id: string }>;
@@ -780,16 +646,11 @@ export function resolveTaskId(idOrPrefix: string, agentId?: string): IdResolutio
   return resolveIdIn('task', idOrPrefix, agentId);
 }
 
-/** Resolve a project id from a full UUID, ≥4-char prefix, or (with agentId) a title. */
 export function resolveProjectId(idOrPrefix: string, agentId?: string): IdResolution {
   return resolveIdIn('project', idOrPrefix, agentId);
 }
 
-/**
- * Format a resolver failure as a clear error string for an agent tool
- * response. Callers should check `ok` first and only call this on
- * failures.
- */
+/** Format a resolver failure as an error string for an agent tool response (call only on failures). */
 export function formatResolveError(
   kind: 'task' | 'project',
   input: string,
@@ -808,18 +669,13 @@ export function formatResolveError(
         const what = input.trim().startsWith('piece:') ? 'a piece of a request' : 'a request';
         return `Error: '${input}' is ${what} from the person who asked, not a task, so no task call takes it. It ends when you answer them; reply with your normal message.`;
       }
-      // 2026-07-17 (the PM 189-call spin): a title-shaped input deserves an
-      // explicit title-vs-id correction, or the floor model retries the same
-      // title forever. Title resolution is also scoped to the CALLER's own
-      // tasks, so a cross-agent title can list-match yet not resolve here.
+      // A title-shaped input gets an explicit title-vs-id correction, or the floor model retries the same
+      // title forever. Title resolution is scoped to the CALLER's own tasks.
       const titleShaped = /\s/.test(input.trim());
       const titleHint = titleShaped
         ? ` That looks like a TITLE, not an id: pass the id (or its first 8 characters) shown in [brackets] by the listing.`
         : '';
-      // PHASE-6 T0D: when the title fallback ALSO ran and found nothing, say so.
-      // Without it the model is told only that an id was not found, and retrying
-      // the same title is the obvious next move — which is the shape of the
-      // 2026-07-17 spin this fallback was built to stop.
+      // When the title fallback ALSO ran and found nothing, say so: otherwise the model retries the same title.
       const triedTitle = resolution.triedTitle
         ? ` It was looked up as an id and no ${kind} of yours matches it as a title either, so a different spelling will not help.`
         : '';
@@ -837,8 +693,7 @@ export interface TaskListFilter {
   assignedTo?: string;
   priority?: string;
   projectId?: string;
-  /** PHASE-6 T0C-W: restrict to the overdue set, `dueScope()`'s single declaration of
-   *  what the word means. See its header for the two live meanings it reconciles. */
+  /** Restrict to the overdue set (`dueScope()` declares what the word means). */
   overdue?: boolean;
 }
 
@@ -875,8 +730,7 @@ function taskListWhere(filter?: TaskListFilter): { conditions: string[]; params:
   return { conditions, params };
 }
 
-// t139 round 2: `priority` is TEXT ('high'|'normal'|'low'), so `priority DESC` sorted it
-// ALPHABETICALLY (normal, low, high) and listed high-priority work LAST. Ranked explicitly.
+// `priority` is TEXT, so ORDER BY priority DESC would list high-priority work last: ranked explicitly.
 const TASK_LIST_ORDER = " ORDER BY CASE work.priority WHEN 'high' THEN 0 WHEN 'normal' THEN 1 WHEN 'low' THEN 2 ELSE 1 END,"
   + ' work.step_number ASC, work.opened_at ASC';
 
@@ -892,11 +746,9 @@ export function listTasks(filter?: TaskListFilter): Task[] {
 export const TASK_CLOSED_PAGE = 50;
 
 /**
- * Re-review 2 (S4): the board's list, PAGED. The live tasks (anything not finished) come whole, since they
- * are bounded by the work still open; the finished ones (done, failed, abandoned) come newest-closed first,
- * one page at a time. `before` is the cursor of the oldest finished task already held (its closed time as
- * the list renders it, and its id for ties); with a cursor, only the page before it is returned (the live
- * tasks were sent with the first page). `closedHasOlder` says whether a further page exists.
+ * The board's list, PAGED. Live tasks (not finished) come whole; finished ones come newest-closed first, one
+ * page at a time. `before` is the cursor of the oldest finished task held (its closed time as listed, and its
+ * id for ties); with a cursor only the page before it is returned. `closedHasOlder` says a further page exists.
  */
 export function listTasksPage(
   filter: TaskListFilter | undefined,
@@ -904,9 +756,8 @@ export function listTasksPage(
 ): { tasks: Task[]; closedHasOlder: boolean } {
   const db = getDb();
   const { conditions, params } = taskListWhere(filter);
-  // Re-review 3 (M3): the system agents' tasks are dropped HERE, before the page is cut. Dropped after,
-  // a page made only of them reached the board empty, its cursor never moved, and the older visible
-  // tasks were out of reach. A system agent's task that was sent back stays visible so the owner can act on it.
+  // System agents' tasks are dropped HERE, before the page is cut: dropped after, a page made only of them
+  // reached the board empty and its cursor never moved. One that was sent back stays visible for the owner.
   const hidden = [...(page.hideAgentIds ?? [])];
   if (hidden.length > 0) {
     const marks = hidden.map(() => '?').join(', ');
@@ -916,9 +767,8 @@ export function listTasksPage(
   }
   const terminal = `work.state IN (${TERMINAL_STATE_NAMES.map((st) => `'${st}'`).join(', ')})`;
   const open = page.before ? [] : (db.prepare(`${TASK_COLS} WHERE ${[...conditions, `NOT ${terminal}`].join(' AND ')}${TASK_LIST_ORDER}`).all(...params) as TaskRow[]);
-  // The order and the cursor share ONE key: the closed time as the caller sees it (`completedAt`, to
-  // the second), then the id. Ordering by the ms value while comparing at the second let two tasks
-  // closed in the same second straddle a page edge in the wrong order (re-review 3, M3).
+  // The order and the cursor share ONE key: the closed time as the caller sees it (`completedAt`, to the
+  // second), then the id; ordering by ms while comparing at the second let same-second closes straddle a page edge.
   const closedAt = msToText('work.closed_at');
   const cursor = page.before ? [`(${closedAt} < ? OR (${closedAt} = ? AND work.id < ?))`] : [];
   const cursorParams = page.before ? [page.before.at, page.before.at, page.before.id] : [];
@@ -926,24 +776,16 @@ export function listTasksPage(
   return { tasks: [...open, ...closed.slice(0, TASK_CLOSED_PAGE)].map(mapTaskRow), closedHasOlder: closed.length > TASK_CLOSED_PAGE };
 }
 
-/**
- * Patch a task's editable columns.
- *
- * PHASE-2 T8b: the `status` argument is GONE. It was PINNED §13's route R2 — a state change
- * with no gate, no reason, no event and no actor, sitting beside `transition()`. Callers that
- * want a status change call `setTaskStatus` below, which is `transition()` and says who and
- * why. This function now does exactly what its name says: it patches columns.
- */
+/** Patch a task's editable columns. Status is not one of them: a status change goes through `setTaskStatus`,
+ *  which is `transition()` and says who and why. */
 export function updateTask(id: string, updates: Partial<{
   assignedTo: string | null;
   priority: string;
   notes: string;
   title: string;
   description: string | null;
-  // Editable structural fields, added so work_update(action="edit") can change them
-  // without forcing a delete+recreate. None of these have notification or
-  // scheduler side-effects that the simpler tools (update_status, pause)
-  // already cover, so it's safe to update them in the generic edit path.
+  // Editable structural fields, so work_update(action="edit") can change them without delete+recreate; none has
+  // notification or scheduler side effects.
   dependsOn: string[];
   stepNumber: number | null;
   phase: number | null;
@@ -956,11 +798,9 @@ export function updateTask(id: string, updates: Partial<{
   anchorTime: string | null;
 }>): Task | null {
   const patch: WorkPatch = {};
-  // t193 — THE ASSIGNEE HALF IS WRITTEN BY `work/row-authority.ts:writeAssignee`, the one writer
-  // of the assignee columns (M7 / P706's clear protocol and t129 / S5's both-columns rule live
-  // there now). After t193 the only caller that passes `assignedTo` is the OWNER's dashboard PUT
-  // (`gateway/routes/tracker.ts`, which records the reassignment itself); the model doors move
-  // work only through `moveAssignee`. `t193-row-authority-census.test.ts` holds both facts.
+  // The assignee half is written by `writeAssignee` (`work/row-authority.ts`), the one writer of the assignee
+  // columns. The only caller passing `assignedTo` is the OWNER's dashboard PUT (`gateway/routes/tracker.ts`, which
+  // records the reassignment itself); the model doors move work only through `moveAssignee`.
   let assigneeWritten = false;
   if (updates.assignedTo !== undefined) {
     const changed = writeAssignee(id, updates.assignedTo === null ? { clear: true } : { agentId: updates.assignedTo });
@@ -989,16 +829,8 @@ export function updateTask(id: string, updates: Partial<{
     ? { kind: 'applied' as const, value: 1 }
     : patchWork(id, patch);
   if (patched.kind !== 'applied') {
-    // The door refused or had nothing to do. Callers that pass the result
-    // through tracker tools should have already resolved the id via
-    // resolveTaskId() before calling updateTask(), so a refusal here generally
-    // means a race (task deleted between resolve and update) or a caller that
-    // bypassed the resolver.
-    //
-    // PHASE-6 T0D: this branch used to be `changes === 0`, which was BOTH of the
-    // door's two failures wearing one number — "the id does not exist" and "the
-    // patch named no field" — and the log asserted the first of them either way.
-    // Now it says which, and the null it returns is unchanged for both.
+    // The door refused or had nothing to do: generally a race (task deleted between resolve and update) or a
+    // caller that bypassed `resolveTaskId()`. The log names which; the null is the same for both.
     logger.warn(`updateTask: patch not applied (${patched.reason})`, { taskId: id, detail: patched.detail });
     return null;
   }
@@ -1020,13 +852,9 @@ export function updateTask(id: string, updates: Partial<{
 }
 
 /**
- * Change a task's status. THE tracker's status door: `transition()` with the tracker's
- * vocabulary on the outside and the spine's on the inside.
- *
- * Returns the refreshed `Task` on success and `null` when the gate refused — and the refusal
- * is logged with its gate name, because "the status did not change and nobody said why" is
- * the exact silence this phase is removing. Callers that need to tell the model WHY use
- * `setTaskStatusResult`.
+ * Change a task's status: THE tracker's status door, `transition()` with the tracker's vocabulary outside and
+ * the spine's inside. Returns the refreshed `Task`, or `null` when the gate refused (logged with its gate
+ * name); callers that must tell the model WHY use `setTaskStatusResult`.
  */
 export function setTaskStatus(id: string, status: TrackerStatus, input: SetStatusInput): Task | null {
   const r = setTrackerStatus(id, status, input);
@@ -1047,14 +875,8 @@ export function setTaskStatusResult(id: string, status: TrackerStatus, input: Se
   return { result: r, task };
 }
 
-// t129 — THE BLOCKED-WORK DISPOSAL DOOR lives in `work/tracker-store.ts`, on
-// `setTrackerStatus`, which that file's own docstring calls "the tracker's one status
-// writer". It was briefly guarded HERE instead, at the two doors above — and the review
-// census found a model-driven path below them (`agent/spawner.ts` calls `setTrackerStatus`
-// directly with `by: 'agent'`, so `complete_task(status="fallen")` still disposed of a
-// PM-ruled blocked row). Guarding both doors would have meant two copies of one predicate.
-// So the gate moved DOWN to the crossing point rather than being repeated, and these two
-// functions get its refusal through the result they already pass on unchanged.
+// The blocked-work disposal gate lives in `work/tracker-store.ts` on `setTrackerStatus`, the one status writer:
+// model-driven paths below these doors (`agent/spawner.ts` calls it directly) would bypass a guard placed here.
 
 export function addTaskNotes(id: string, notes: string): void {
   const timestamp = new Date().toISOString();

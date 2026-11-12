@@ -1,30 +1,13 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// LIVENESS, JUDGED ON MOVEMENT (t143, v3.3.3 — OR-LONG-JOBS, OR-PM-1, OR-V333-SET (3)).
-//
-// The owner, 2026-10-12: "if there is progress of any kind, maybe we just let them work … a true
-// connection issue or no movement (no tokens going in or out) for a couple hours, we notify the
-// user." The ONE reader of what the Dojo can see an agent doing; the scheduler's own clock sweeps it.
-//
-// MOVEMENT: tokens in or out (a model call's `cost_records` row); a request open on a live
-// connection (the abort registry: every model call registers for its whole life, and the stream
-// watchdog cuts a dead connection at the provider's own patience — declared, or sized by the
-// measured prefill speed through the pre-dial doom gate — so the clock does not run while a request
-// is open, and a slow-prefill local model is never called SILENT); a tool started or finished (the
-// agent's own assistant / tool `messages` rows). NOT movement: the 30-second status heartbeat
-// (`runtime.ts` `startStatusHeartbeat`, a timer bumping `agents.updated_at` regardless);
-// `audit_log` (only some tools write it, and owner-side doors file rows ON the agent); inbound rows
-// (a PM poke or the owner's words arriving is not the agent doing anything).
-//
-// PER TASK (t137 review M3, round 2): a task's movement is its own record (`work/task-freshness.ts`):
-// its row's clock, what its assignee wrote on it, its transitions and claim, the finalize stamp of
-// a turn whose trigger names it. The engine checkpoint now touches only the job's own work.
-//
-// SILENT: one notice per incident through the owner-notice door, recorded on `agents.silent_notice`
-// (migration 191), which decides the text, the card and the clear (the agent moving again). Not
-// told: an agent the owner stopped, or one whose status says something louder (paused, error,
-// rate-limited: BROKEN-class, told by their own doors). The window: `agents.silent_window_minutes`,
-// default 2 hours (owner-confirmed).
-// ════════════════════════════════════════════════════════════════════════════════════════
+// Liveness, judged on movement: the ONE reader of what the Dojo can see an agent doing, swept by the
+// scheduler's background checks (`sweepSilentAgents`).
+// MOVEMENT: tokens in or out (a model call's `cost_records` row); a request open on a live connection
+// (the abort registry; the stream watchdog cuts a dead one, so the clock does not run while one is open);
+// a tool started or finished (the agent's own assistant / tool `messages` rows). NOT movement: the status
+// heartbeat (`runtime.ts` `startStatusHeartbeat` bumps `agents.updated_at` regardless), `audit_log`
+// rows, and inbound rows (a PM poke or the owner's words). A task's own movement is `work/task-freshness.ts`.
+// SILENT: one notice per incident through the owner-notice door, recorded on `agents.silent_notice`, which
+// decides the text, the card and the clear (the agent moving again). Not told: an agent the owner stopped,
+// or one whose status says something louder (paused, error, rate-limited). Window: `agents.silent_window_minutes`.
 
 import { getDb } from '../db/connection.js';
 import { countAbortable, isStopFenced, activeRuns } from '../agent/shared-state.js';
@@ -37,7 +20,7 @@ import { createLogger } from '../logger.js';
 
 const logger = createLogger('liveness');
 
-export { DEFAULT_SILENT_WINDOW_MINUTES, silentWindowMs } from './silent-window.js';   // a leaf now (audit #14: the exec door reads it)
+export { DEFAULT_SILENT_WINDOW_MINUTES, silentWindowMs } from './silent-window.js';
 import { silentWindowMs } from './silent-window.js';
 import { heldExpr, workingExpr } from '../work/done/hold.js';
 
@@ -45,16 +28,13 @@ const MIN_MS = 60_000;
 const textMs = (col: string): string => `CAST(strftime('%s', ${col}) AS INTEGER) * 1000`;
 
 export interface Activity {
-  /** The newest movement, epoch ms; `null` when the agent has never moved. */
   lastAt: number | null;
-  /** The newest movement that left a ROW (tokens, a tool start or finish) — an open request is not
-   *  one. This, never `lastAt`, is what ends a SILENT incident (t143 round 3, I3). */
+  /** The newest movement that left a ROW (tokens, a tool start or finish); an open request is not one.
+   *  Only this ends a SILENT incident. */
   lastRowAt: number | null;
-  /** That movement, in plain words. */
   lastWhat: string;
   /** The newest finished model call, epoch ms (BROKEN's "healthy work" signal). */
   lastModelCallAt: number | null;
-  /** A tool the agent started and that has not returned, in plain words; else null. */
   waitingOn: string | null;
 }
 
@@ -68,7 +48,6 @@ function toolNames(content: string): string[] {
   } catch { return []; }
 }
 
-/** What the agent has visibly done, newest first, from the records above. */
 export function agentActivity(agentId: string, now = Date.now()): Activity {
   const db = getDb();
   const call = db.prepare(`SELECT ${textMs('created_at')} AS at, input_tokens + COALESCE(cache_read_tokens, 0) AS tin,
@@ -77,7 +56,6 @@ export function agentActivity(agentId: string, now = Date.now()): Activity {
   const own = db.prepare(`SELECT role, content, created_at AS at FROM messages
       WHERE agent_id = ? AND role IN ('assistant', 'tool') ORDER BY created_at DESC, seq DESC LIMIT 1`)
     .get(agentId) as { role: string; content: string; at: number } | undefined;
-  // The newest own row is an assistant row that asked for tools: those tools have not returned.
   const started = own?.role === 'assistant' ? toolNames(own.content) : [];
   const waitingOn = started.length > 0 ? started.join(', ') : null;
 
@@ -101,10 +79,8 @@ export function agentActivity(agentId: string, now = Date.now()): Activity {
   };
 }
 
-/** Is a turn live, or a model request open on a live connection, RIGHT NOW? The live-run registry
- *  and the abort registry — never a row (a crash leaves rows behind; nothing live is left behind).
- *  The stall ladder leaves an agent alone for exactly this instant; the 2-hour any-row window is for
- *  the SILENT notice only. */
+/** Is a turn live, or a model request open on a live connection, RIGHT NOW? From the live-run and abort
+ *  registries, never a row (a crash leaves rows behind). The stall ladder leaves an agent alone for this. */
 export function agentIsLive(agentId: string): boolean {
   return activeRuns.has(agentId) || countAbortable(agentId) > 0;
 }
@@ -114,7 +90,7 @@ export function taskLastMovedAt(taskId: string, updatedAtMs: number): number {
   try {
     const r = getDb().prepare(`SELECT ${taskMovedAtSql('w')} AS at FROM work w WHERE w.id = ?`).get(taskId) as { at: number } | undefined;
     return r?.at ?? updatedAtMs;
-  } catch { return updatedAtMs; /* the row's own clock, as before */ }
+  } catch { return updatedAtMs; /* the row's own clock */ }
 }
 
 function roleOf(agentId: string): string {
@@ -130,7 +106,7 @@ const dur = (ms: number): string => {
   return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h${m % 60 ? ` ${m % 60} min` : ''}`;
 };
 
-interface OpenWork { id: string; title: string; updated: number; opened: number /* D17/#26: when the agent was HANDED the work: newest of open, last fire, last movement */ }
+interface OpenWork { id: string; title: string; updated: number; opened: number /* when the agent was HANDED the work: newest of open, last fire, last movement */ }
 
 function openWorkOf(agentId: string, now: number): OpenWork[] {
   return getDb().prepare(`SELECT w.id, COALESCE(w.title, w.id) AS title, w.updated_at AS updated,
@@ -140,16 +116,15 @@ function openWorkOf(agentId: string, now: number): OpenWork[] {
     .all(agentId, now) as OpenWork[];
 }
 
-/** The owner stopped this agent and it has not started a turn since (his Stop is standing, or the
- *  last turn ended on it). Not measured against the agent's last row: a straggling row landing
- *  after the stopped turn ended does not make the Stop forgotten (t143 round 3, M2). */
+/** The owner stopped this agent and it has not started a turn since. Not measured against the agent's
+ *  last row: a straggling row landing after the stopped turn ended must not make the Stop forgotten. */
 function ownerStopped(agentId: string): boolean {
   if (isStopFenced(agentId)) return true;
   return !!getDb().prepare(`SELECT 1 FROM turns s WHERE s.agent_id = ? AND s.exit_reason = 'stop' AND NOT EXISTS (
       SELECT 1 FROM turns t WHERE t.agent_id = s.agent_id AND t.started_at > s.ended_at) LIMIT 1`).get(agentId);
 }
 
-/** The words of a SILENT notice: agent and role, task, last movement, what it was doing. */
+/** The open task that moved most recently. */
 function newestOf(work: OpenWork[]): OpenWork | undefined {
   return [...work].sort((a, b) => taskLastMovedAt(b.id, b.updated) - taskLastMovedAt(a.id, a.updated))[0];
 }
@@ -163,11 +138,8 @@ function silentWords(agentId: string, name: string, quietMs: number, work: OpenW
     + `The last thing it did: ${act.lastWhat}.${doing} Open its chat to check on it; Stop ends the turn if it is stuck.`;
 }
 
-/**
- * The PM sweep's liveness pass: tell the owner once about every agent gone SILENT past its
- * window, end every SILENT incident whose agent moved again, and end every BROKEN incident whose
- * agent has since completed a model call. Never throws into the sweep.
- */
+/** The liveness pass: tell the owner once about each agent gone SILENT past its window, end
+ *  SILENT incidents whose agent moved and BROKEN ones whose agent completed a model call. Never throws. */
 export function sweepSilentAgents(now = Date.now()): void {
   let agents: Array<{ id: string; name: string; status: string }>;
   try {
@@ -193,10 +165,8 @@ function judge(a: { id: string; name: string; status: string }, now: number): vo
 
   const silent = readNotice(a.id, 'silent_notice');
   const work = openWorkOf(a.id, now);
-  // t143 round 3 (I5): SILENT is a WEDGE — something it owes is meant to be in progress: a working
-  // status or a live run (round 4: the live-run registry, never a `turns` row — a crash leaves an
-  // open row behind). An idle agent between turns (waiting on the owner's answer, or on a
-  // delegate) owes nothing in progress and is never SILENT.
+  // SILENT is a WEDGE: something it owes is meant to be in progress (a working status or a live run,
+  // never a `turns` row: a crash leaves an open row behind). An idle agent between turns is never SILENT.
   const owes = a.status === 'working' || activeRuns.has(a.id);
   // A louder status owns this agent, or there is nothing it was meant to be doing: not SILENT.
   if (['paused', 'error', 'rate_limited'].includes(a.status) || (work.length === 0 && a.status !== 'working') || !owes) {
@@ -205,21 +175,18 @@ function judge(a: { id: string; name: string; status: string }, now: number): vo
   }
   if (silent) {
     const since = silent.since ?? silent.at;
-    // t143 round 3 (I3): only a ROW ends the incident. A request that opens and dies without tokens
-    // is a retry loop inside the same wedge, not progress: it neither ends the card nor earns a
-    // second text (an open request only ever suppresses RAISING a notice, below).
+    // Only a ROW ends the incident: a request that opens and dies without tokens is a retry loop in the
+    // same wedge (an open request only ever suppresses RAISING a notice, below).
     if ((act.lastRowAt !== null && act.lastRowAt > since) || ownerStopped(a.id)) endNotice(a.id, 'silent_notice');
     return;
   }
   // The quiet runs from the newest movement, or from when the agent was handed what it holds.
   const handed = Math.max(0, ...work.map((w) => w.opened), openTurnStartedAt(a.id));
   const since = Math.max(act.lastAt ?? 0, handed);
-  // No movement ever, nothing handed, no open turn: there is no instant to measure quiet from.
   if (since === 0 || now - since <= silentWindowMs(a.id) || ownerStopped(a.id)) return;
   const words = silentWords(a.id, a.name, now - since, work, act);
   if (noteNoticeOnce(a.id, 'silent_notice', words, since)) {
     logger.warn('liveness: an agent is SILENT past its window; the owner is told once', { agentId: a.id, quietMs: now - since });
-    // Its card stands in the owner-notices list in these exact words (`silent_notice`).
     void sendAlert(words, 'notice', { kind: 'broken-agent', agentId: a.id });
   }
 }

@@ -10,8 +10,7 @@ import { msToUtcText } from '../work/tracker-view.js';
 const fmt = (v: number): string => v.toLocaleString('en-US');
 type Reading = { ok?: boolean; remaining?: number | null; at?: number; error?: string } | null;
 
-/** The Measure line of the validation request, in one of its shapes: a reading, a reading with the
- *  remainder the worker named, a reading that could not be made, or no measure at all. */
+/** The Measure line: a reading, a reading plus the worker's named remainder, an unreadable one, or none. */
 function measureText(taskId: string, touched: number, commands: number, byTool: Array<{ tool: string }>): string {
   const db = getDb();
   const r = db.prepare('SELECT measure_json, measure_initial, measure_remaining, measure_at FROM work WHERE id = ?')
@@ -39,15 +38,12 @@ function measureText(taskId: string, touched: number, commands: number, byTool: 
     + `${r.measure_at ? ` (measured ${msToUtcText(r.measure_at)})` : ''}${named ? `, named by the worker: ${named.slice('Remainder named at close:'.length).trim()}` : ''}`;
 }
 
-/** What the validator judges a close on, from the records (done-is-measured E1): the measure, and the
- *  ledger of what the task's calls touched. The remainder the worker named rides on the Measure line. */
+/** What the validator judges a close on: the measure and the ledger of what the task's calls touched. */
 export function validationMeasureLines(taskId: string, roomTokens?: number): string {
   const { touched, commands, byTool } = ledgerTotals(taskId);
-  // v3.5 field fix 3 (#6a): the files the task's calls wrote and the commands they ran, one per line,
-  // so the validator can open what the work produced instead of reading the worker's account of it.
-  // Review M1: the review SHOWS a page of it, laid out in `roomTokens` (the PM's measured budget split
-  // across the rows it is asked about, `reviewLedgerRoomTokens`): failures first, then the files, then
-  // the clean commands, newest first; the rest is counted. The ledger itself records everything.
+  // Files written and commands run, one per line, so the validator can open what the work produced;
+  // the review lists a page laid out in `roomTokens` (failures, files, clean commands; newest first)
+  // and counts the rest. The ledger itself records everything.
   const entries = ledgerListing(taskId);
   const head = `\n  Measure: ${measureText(taskId, touched, commands, byTool)}`
     + `\n  Ledger: ${fmt(touched)} items touched (${byTool.map((b) => `${b.tool} ${fmt(b.n)}`).join(', ') || 'none'})`
@@ -62,8 +58,7 @@ export function validationMeasureLines(taskId: string, roomTokens?: number): str
 
 const commandsRun = (n: number): string => `${fmt(n)} ${n === 1 ? 'command' : 'commands'} run`;
 
-/** A command as the review shows it, by its own shape: a one-line command whole, a script by its first
- *  line and its size (the ledger keeps the whole text; the PM reads the files it produced). */
+/** A command as the review shows it: a one-liner whole, a script by its first line and size. */
 function commandShown(cmd: string): string {
   const lines = cmd.split('\n');
   if (lines.length === 1) return cmd.trim();
@@ -74,7 +69,7 @@ function commandShown(cmd: string): string {
 function notListedLine(rest: readonly LedgerWorkEntry[]): string {
   if (rest.length === 0) return '';
   const files = rest.filter((e) => e.kind === 'file').length;
-  // Re-review 5 (LOW): a command still running in the background has not failed; it is counted apart.
+  // A command still running in the background has not failed; it is counted apart.
   const running = rest.filter((e) => e.kind === 'command' && e.status === STILL_RUNNING).length;
   const failed = rest.filter((e) => e.kind === 'command' && e.status !== 'exit 0' && e.status !== STILL_RUNNING).length;
   const clean = rest.length - files - failed - running - rest.filter((e) => e.kind === 'send').length;
@@ -89,9 +84,8 @@ function notListedLine(rest: readonly LedgerWorkEntry[]): string {
   return `\n    … and ${parts.join(', ')}, not listed (all of it is on the ledger)`;
 }
 
-/** The room one row's ledger listing may take in a review: a declared layout share of the PM's measured
- *  assembly budget (like the other-threads block's), split across the rows the review asks about. A
- *  layout share, not a cap on what is recorded. */
+/** The room one row's ledger listing may take in a review: a layout share of the PM's measured budget,
+ *  split across the rows. Not a cap on what is recorded. */
 export const REVIEW_LEDGER_ROOM_SHARE = 0.25;
 export function reviewLedgerRoomTokens(assemblyBudgetTokens: number, rowsInReview: number): number {
   return Math.max(0, Math.floor((assemblyBudgetTokens * REVIEW_LEDGER_ROOM_SHARE) / Math.max(1, rowsInReview)));

@@ -1,21 +1,6 @@
-// ════════════════════════════════════════
-// Ticket stamps (owner design 2026-07-22; DOJO-TICKET-STAMPS-PLAN).
-//
-// The engine stamps each task ticket with what it OBSERVED as work happens,
-// at ONE point: turn finalize, where the turns/deliveries/artifacts records
-// for the ending turn already exist. The model then reads the stamps on
-// every surface where it meets the ticket, so "what has been done" comes
-// from engine records, never from conversation memory (which compaction
-// eats) and never from guessing.
-//
-// HARD RULES (conformance-locked):
-//   - stamp writes NEVER touch updated_at (the drive ladder's idle clock;
-//     touching it would silence pokes forever),
-//   - stamp writes NEVER touch status or any *_validated column (two-key
-//     contract),
-//   - one atomic UPDATE per ticket per finalize (per-agent turn
-//     serialization makes this race-free for the agent's own tickets).
-// ════════════════════════════════════════
+// Task stamps: the engine records what it OBSERVED at ONE point, turn finalize, so "what has been done" comes
+// from engine records, never conversation memory. A stamp is one `activity` work event per task (`stampTicket`)
+// and touches no work-row column: not `updated_at` (the drive ladder's idle clock), not status, not *_validated.
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { taskScope } from '../work/tracker-view.js';
@@ -23,52 +8,28 @@ import { stampTicket } from '../work/tracker-store.js';
 import { turnWorkIds, servedByNotice } from '../work/task-freshness.js';
 import { recordTurnOnTasks } from '../work/task-turns.js';
 import { relAgoFromNow, absInstant } from './task-stamp-time.js';
-// T19 (D7): the declared set of bubbles the platform has already ruled not-an-answer. Read,
-// never retyped — same owner as `work/occurrences.ts` and `agent/v2/answered-edge.ts`.
+// The declared set of bubbles ruled not-an-answer: read, never retyped (see `work/occurrences.ts`).
 import { NON_ANSWERING_DISPLAY_KINDS } from '../work/ask-settlement.js';
 import { workingExpr } from '../work/done/hold.js';
 
 const logger = createLogger('task-stamps');
 
 /**
- * ⚠ UX-REPAIR ROUND 4 T19 (D7) — THE CHANNELS A SUMMARY MAY NAME WITHOUT LICENSING A CLOSE.
- *
- * The TANGIBILITY RULE has its own incident and it is not being narrowed here. Battery catch
- * 2026-07-22: *"A reply without a recorded delivery is often just an ack ('back with you
- * soon'); nudging CLOSE on it strangled a delegation synthesis task mid-wait."* Four consumers
- * read "is `last_delivery_summary` set" and every one of them MEANS "is there a tangible
- * handover" — the CLOSE-if-done nudge below, the ALREADY-DELIVERED block
- * (`tracker/tools.ts`), the close-out gate's evidence consult, and the strike-0 same-turn
- * close (`steps/teardown/finalize-record.ts`).
- *
- * The defect D7 fixes is a different one: the summary EXCLUDED the dashboard outright, so a
- * reminder the owner read in chat was stamped `(no delivery recorded)` for ever. On
- * 2026-08-10 13:45Z the model read ONE tool result carrying both that line and
- * `[ENGINE RECORD: this task's work appears ALREADY DELIVERED …]` (which does NOT exclude the
- * dashboard) and spent ~700 words of reasoning trying to reconcile them.
- *
- * So the summary becomes TRUE without becoming a licence: a dashboard-or-voice-only delivery
- * is NAMED, as one of these declared values, and `isTangibleDeliverySummary` reports it as not
- * a handover. One writer, one reader, exact strings, a closed set — never a prose test, and
- * never a second copy of the rule.
+ * Delivery summaries that name a channel WITHOUT licensing a close: a dashboard or voice only delivery is named
+ * so the stamp is true, but it is not a handover (an ack is not one). `isTangibleDeliverySummary` is the one
+ * test, read by the ladder re-arm below and the close-out floor (`post-call-classify/silent-closeout.ts`).
+ * A closed set of exact strings: never a prose test.
  */
 export const NON_TANGIBLE_DELIVERY_SUMMARIES: readonly string[] = ['via dashboard', 'via voice'];
 
-/** Does this stored summary describe a TANGIBLE handover — the 2026-07-22 standard, unchanged?
- *  The ONE predicate every consumer of the finished-work question asks. */
+/** Does this stored summary describe a TANGIBLE handover? The ONE predicate for the finished-work question. */
 export function isTangibleDeliverySummary(summary: string | null | undefined): boolean {
   return !!summary && !NON_TANGIBLE_DELIVERY_SUMMARIES.includes(summary);
 }
 
-/** Compose the compact delivery summary for a turn from its delivery and
- *  artifact records. Empty string when the turn delivered nothing.
- *
- *  Two halves, in order: the TANGIBLE handover (files, out-of-band channels) exactly as
- *  before; and, only when there is no tangible handover at all, the honest naming of a
- *  dashboard/voice message the person actually read — see `NON_TANGIBLE_DELIVERY_SUMMARIES`.
- *  A chip is not a message: the dashboard half asks the same declared set
- *  (`NON_ANSWERING_DISPLAY_KINDS`) that the deliverable authority and the turn-receipt reader
- *  ask, so a `tool-turn` or `working-note` receipt names nothing. */
+/** Compose the compact delivery summary for a turn ('' when it delivered nothing): the TANGIBLE handover (files,
+ *  out-of-band channels) and, only when there is none, a dashboard/voice message the person read. Chips
+ *  (`NON_ANSWERING_DISPLAY_KINDS`) are not messages. */
 export function composeTurnDeliverySummary(agentId: string, turnNumber: number): string {
   try {
     const db = getDb();
@@ -89,17 +50,11 @@ export function composeTurnDeliverySummary(agentId: string, turnNumber: number):
       }
       if (n) names.push(n);
     }
-    // One file often has several artifact rows (canvas doc + download link);
-    // the summary names it once.
     const unique = [...new Set(names)];
     if (unique.length > 0) parts.push(`file ${unique.join(', ')}`);
-    // t139 round 2 (I3): an `a2a` delivery is a HANDOVER only when it went BACK to the agent who
-    // asked on that thread — the requester. A delegation (the ASSIGN this agent sent a helper)
-    // is recorded as `a2a`/`delivered` too, and counting it closed the delegating turn's own
-    // task at the strike-0 boundary and stamped it "delivered" while the work was still out
-    // (driven in `work/__tests__/t139-every-request-lands-on-the-task-list.test.ts`). The thread
-    // comes from the delivered row itself; the requester from the inbound row on that thread.
-    // Excluding `a2a` outright would stop an A2A-ASSIGNED task closing on its DELIVERABLE back.
+    // An `a2a` delivery is a HANDOVER only when it went BACK to the requester on that thread: a delegation this
+    // agent sent is also `a2a`/`delivered`, and counting it closed the delegating turn's task early. Excluding
+    // `a2a` outright would stop an A2A-ASSIGNED task closing on its deliverable.
     const a2aBackToRequester = (): boolean => {
       try {
         return !!db.prepare(
@@ -120,9 +75,8 @@ export function composeTurnDeliverySummary(agentId: string, turnNumber: number):
       .filter((c) => c.channel !== 'a2a' || a2aBackToRequester());
     if (chans.length > 0) parts.push(`via ${chans.map((c) => c.channel).join('/')}`);
     if (parts.length > 0) return parts.join('; ').slice(0, 120);
-    // T19 (D7): no tangible handover — but the person may still have READ something. Name it
-    // truthfully, as one of the declared non-tangible values, so `(no delivery recorded)`
-    // means what it says. Chips excluded by the same set the deliverable authority reads.
+    // No tangible handover, but the person may still have READ something: name it as a declared non-tangible
+    // value so `(no delivery recorded)` means what it says. Chips are excluded by the same declared set.
     const chipKinds = NON_ANSWERING_DISPLAY_KINDS.map((k) => `'${k}'`).join(', ');
     const seen = db.prepare(
       `SELECT DISTINCT d.channel AS channel FROM deliveries d
@@ -146,21 +100,17 @@ function turnMadeEffectfulCall(db: ReturnType<typeof getDb>, agentId: string, tu
         FROM turns WHERE agent_id = ? AND turn_number = ?`)
       .get(agentId, turnNumber) as { n: number | null; started_ms: number | null } | undefined;
     if ((r?.n ?? 0) === 0) return false;
-    // Field fix 3 re-review 3 (L7, the S3 residual): an effectful call counts as work on THIS task only
-    // when it reached the task's own items (its ledger) during the turn. Counted turn-wide, a turn the
-    // poke woke that did effectful work on something else re-armed the poked task's ladder.
+    // Counts as work on THIS task only when it reached the task's own ledger during the turn; counted
+    // turn-wide, a poke-woken turn that worked elsewhere re-armed this task's ladder.
     if (!taskId) return true;
     const touched = db.prepare('SELECT 1 FROM work_ledger WHERE work_id = ? AND last_at >= ? LIMIT 1')
       .get(taskId, r?.started_ms ?? 0);
     return !!touched;
-  } catch { return false; /* no record of an effect: a turn that only talked, as before */ }
+  } catch { return false; /* no record of an effect: a turn that only talked */ }
 }
 
-/**
- * The single stamping point, called from the loop's turn-finalize block.
- * Stamps every ticket of THIS agent whose origin ties to the ending turn.
- * Best-effort: never throws into a live finalize.
- */
+/** The single stamping point (`steps/teardown/finalize-record.ts`): stamps every task of THIS agent tied to the
+ *  ending turn. Best-effort: never throws into a live finalize. */
 export function stampTasksAtTurnFinalize(input: {
   agentId: string;
   turnNumber: number;
@@ -172,18 +122,15 @@ export function stampTasksAtTurnFinalize(input: {
 }): void {
   try {
     const db = getDb();
-    // t143 r2: only work THIS turn's trigger names (a continuation inherits its job from the park
-    // that queued it) — never by conversation: `input.convKey` kept a same-conversation abandoned task fresh.
+    // Only work THIS turn's trigger names (a continuation inherits its job from the park that queued it),
+    // never by conversation: `input.convKey` kept a same-conversation abandoned task fresh.
     const deliverySummary = composeTurnDeliverySummary(input.agentId, input.turnNumber);
     const hasDelivery = deliverySummary.length > 0;
-    // t143 r4: being woken by a re-drive or assignment notice is not progress (a delivery is); the carry decides "the job".
-    // t151 (B): and the turn's reply to the notice is an ANSWER, not progress — a chat line the person read
-    // ('via dashboard') is the answer itself. Only real work re-arms the ladder: a tangible deliverable, or an
-    // effectful call the turn's own record counts (`turns.effectful_calls`, made durable at the effect).
+    // A wake by a re-drive or assignment notice is not progress, and the turn's reply to it is an ANSWER: only a
+    // tangible deliverable or an effectful call the turn's record counts (`turns.effectful_calls`) re-arms the ladder.
     const worked = isTangibleDeliverySummary(deliverySummary) || turnMadeEffectfulCall(db, input.agentId, input.turnNumber, input.servedTaskId);
     const woken = !worked && servedByNotice(input.agentId, input.turnNumber, input.servedTaskId) ? input.servedTaskId : null;
     const carried = turnWorkIds(input.agentId).filter((id) => id !== woken);
-    // Which turns worked a task, on each task's own spine (`work/task-turns.ts`): the same served set, less a notice-only wake.
     recordTurnOnTasks(input.agentId, input.turnNumber, [...carried, ...(woken || !input.servedTaskId ? [] : [input.servedTaskId])]);
     const tied = db.prepare(
       `SELECT w.id AS id FROM work w
@@ -208,21 +155,7 @@ export function stampTasksAtTurnFinalize(input: {
 
     const answered = input.outcome === 'answered';
 
-    // One atomic UPDATE per ticket. COALESCE keeps prior answered/delivery
-    // stamps when THIS turn did not answer/deliver. Deliberately no
-    // updated_at, no status, no validation columns (conformance-locked).
-    //
-    // PHASE-2 T8b: on `work`, and TWO columns are gone rather than moved.
-    // `last_answer_message_id` and `last_delivery_at` had exactly one occurrence each in
-    // production — this statement — and it was a COALESCE onto themselves, i.e. a write
-    // that read the column only to preserve it. Migration `137` therefore did not carry
-    // them (T8a report §2.3c enumerates every occurrence; #15: proven by enumeration, never
-    // by absence). Writing a column nobody reads is the accretion this phase removes, so
-    // the two assignments are deleted here with their column.
-    //   requirement preserved: "the ticket records which message answered it, and when it
-    //   was last delivered to" — `last_answered_turn` + `last_answered_at` +
-    //   `last_delivery_summary` carry both facts and DO have readers; the answer MESSAGE id
-    //   is `deliveries.message_id` on the row this turn's delivery already wrote (T5).
+    // One `activity` work event per task (`stampTicket`); the answer MESSAGE id is `deliveries.message_id`.
     const stampMs = Date.now();
     for (const t of tied) {
       stampTicket(t.id, {
@@ -259,38 +192,17 @@ export interface TaskStampFields {
   id?: string;
 }
 
-/**
- * T67b — THE AGE IS RELATIVE FOR A TOOL RESULT AND AN INSTANT FOR THE PREFIX.
- *
- * `relAgo` is a clock read, so a caller that renders this line INSIDE the cacheable message
- * region re-bills every cached token behind it once a minute with no tracker row changed —
- * `lane.active-tasks` (MessageSlot.ActiveTasks = 600) was doing exactly that. It passes
- * `{ relative: false }` and gets the recorded instant instead. Every other caller here is a
- * tool result or a PM report — 0 prefix bytes — and keeps the relative form, which is the
- * more readable one and the reason it exists.
- *
- * The instant form is the HL5 snapshot's own answer to this question (`memory/recall-lane.ts`:
- * "an ISO instant is unambiguous, costs six words, and cannot disagree with the clock lane").
- */
+/** `relAgo` reads the clock, so a caller inside the cacheable message region passes `{ relative: false }` for the
+ *  recorded instant (a changing age would re-bill the cache); tool results and PM reports keep the relative form. */
 export interface TaskStampOptions {
   /** false renders the recorded instant instead of "10m ago". Default true. */
   relative?: boolean;
 }
 
-/** The one compact stamp line the model reads (<=~90 chars typical). FACTS ONLY.
- *
- *  v3.5 field fix 3, review round 2 (ruled): an ack never counts as completion, on any channel,
- *  and close-coaching in engine text is a defect. This line used to append "CLOSE if done" on any
- *  tangible summary, so an iMessage "On it" read as a finished handover. It now says what was
- *  sent and when, and nothing else; whether the task's work is DELIVERED is a different question,
- *  answered only by `tracker/delivery-evidence.ts:taskWorkOnRecord` (a delivered file or a measure at 0). */
+/** The one compact stamp line the model reads. FACTS ONLY (what was sent and when); an ack is never completion. */
 export function renderTaskStamps(t: TaskStampFields, opts?: TaskStampOptions): string {
   const relAgo = opts?.relative === false ? absInstant : relAgoFromNow;
   if (t.last_answered_turn !== null && t.last_answered_at) {
-    // T19 (D7): "facts only" used to mean "(no delivery recorded)", which on the owner's
-    // primary channel was FALSE — and the model read it in the same tool result as an
-    // ALREADY-DELIVERED assertion built from the same window. Facts only still means facts
-    // only; it now means the TRUE ones.
     if (t.last_delivery_summary) {
       return `answered T${t.last_answered_turn} ${relAgo(t.last_answered_at)}; ${t.last_delivery_summary}`;
     }
@@ -302,9 +214,6 @@ export function renderTaskStamps(t: TaskStampFields, opts?: TaskStampOptions): s
   return 'no engine activity yet';
 }
 
-/** Live sequence facts for a step task (owner ruling: sequence by VISIBILITY,
- *  never by gating; derived from siblings at read time, no stored state).
- *  Empty string for non-step tasks or when no earlier step is open. */
 export function renderStepFacts(t: TaskStampFields): string {
   if (!t.project_id || t.step_number === null || t.step_number === undefined || !t.total_steps) return '';
   try {
