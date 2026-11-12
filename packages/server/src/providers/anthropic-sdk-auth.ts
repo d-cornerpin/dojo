@@ -1,15 +1,10 @@
-// ════════════════════════════════════════
-// Agent SDK Auth — CLI detection and connection verification
-// ════════════════════════════════════════
+// Agent SDK auth: CLI detection and connection verification.
 
 import { execSync } from 'node:child_process';
 import { createLogger } from '../logger.js';
 
 const logger = createLogger('agent-sdk-auth');
 
-/**
- * Check if the Claude Code CLI is installed (which ships with the Agent SDK).
- */
 export function isClaudeCliInstalled(): boolean {
   try {
     execSync('which claude', { encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -19,9 +14,6 @@ export function isClaudeCliInstalled(): boolean {
   }
 }
 
-/**
- * Get the installed Claude Code CLI version.
- */
 export function getClaudeCliVersion(): string | null {
   try {
     const result = execSync('claude --version', { encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -31,9 +23,6 @@ export function getClaudeCliVersion(): string | null {
   }
 }
 
-/**
- * Check if the Agent SDK npm package is available for import.
- */
 export function isSdkPackageAvailable(): boolean {
   try {
     require.resolve('@anthropic-ai/claude-agent-sdk');
@@ -43,21 +32,17 @@ export function isSdkPackageAvailable(): boolean {
   }
 }
 
-/**
- * Verify Agent SDK auth by running a minimal test query.
- * Returns account info if authenticated, null if not.
- */
+/** Verifies Agent SDK auth by running a minimal one-turn query. */
 export async function checkSdkAuth(): Promise<{ authenticated: boolean; error?: string }> {
   if (!isClaudeCliInstalled()) {
     return { authenticated: false, error: 'Claude Code CLI not installed' };
   }
 
   try {
-    // Dynamic import to avoid crashing if SDK not installed
+    // Dynamic import so a missing SDK package does not crash at load.
     const sdk = await import('@anthropic-ai/claude-agent-sdk');
     const { query } = sdk;
 
-    // Run a minimal query to test auth
     for await (const message of query({
       prompt: 'Say exactly "ok" and nothing else.',
       options: {
@@ -68,7 +53,6 @@ export async function checkSdkAuth(): Promise<{ authenticated: boolean; error?: 
       },
     })) {
       if (message.type === 'assistant') {
-        // If we got a response, auth works
         logger.info('Agent SDK auth verified');
         return { authenticated: true };
       }

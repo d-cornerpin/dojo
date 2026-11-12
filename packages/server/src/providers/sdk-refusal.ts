@@ -1,6 +1,5 @@
-// 9603 — the SDK delivers a provider refusal as an assistant message carrying a top-level
-// `error`. These helpers name which kinds are refusals and phrase them in words the shared
-// classifier (`classifyProviderErrorText`) reads. `max_output_tokens` and `unknown` are not refusals.
+// A provider refusal arrives as an assistant message with a top-level `error`; these helpers name the refusal
+// kinds and phrase them for `classifyProviderErrorText`. `max_output_tokens` and `unknown` are not refusals.
 const PHRASES: Record<string, string> = {
   billing_error: 'insufficient balance (billing_error)',
   authentication_failed: 'authentication_error (authentication_failed)',
@@ -18,9 +17,8 @@ export function sdkRefusalMessage(kind: string, text: string): string {
 }
 
 /**
- * Watches the SDK's messages for a refusal. `observe` returns true for a message that is the
- * provider's own sentence (so the caller skips it as reply text); `throwIfNoReply` raises it after
- * the loop when no real reply text arrived, or raises a bare error result that carried no text.
+ * `observe` returns true for the provider's own sentence (skip it as reply text); `throwIfNoReply` raises it
+ * after the loop when no reply text arrived, or raises a bare error result that carried no text.
  */
 export class SdkRefusalWatch {
   private kind: string | null = null;

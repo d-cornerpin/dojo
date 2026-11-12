@@ -1,8 +1,5 @@
-// ════════════════════════════════════════
-// Agent SDK Transport, uses query() as a transport layer only
-// No SDK tools, no SDK agent loop, no SDK context management.
-// We send system prompt + messages and get text back.
-// ════════════════════════════════════════
+// Agent SDK transport: query() only sends a system prompt plus messages and returns text.
+// No SDK tools, agent loop or context management.
 
 import { isOfferedTool } from '../agent/text-tool-fallback.js';
 import { createLogger } from '../logger.js';
@@ -11,9 +8,7 @@ import { createSdkStopReasonTracker } from './sdk-stop-reason.js';
 
 const logger = createLogger('agent-sdk');
 
-// Map model IDs to SDK short names.
-// Agent SDK models are already stored as "opus"/"sonnet"/"haiku".
-// Other Anthropic models (if routed here) get mapped by family.
+// Maps a model id to the SDK short name (opus, sonnet, haiku); other Anthropic ids map by family.
 function mapModelName(apiModelId: string): string {
   if (apiModelId === 'opus' || apiModelId === 'sonnet' || apiModelId === 'haiku') return apiModelId;
   if (apiModelId.includes('opus')) return 'opus';
@@ -22,7 +17,6 @@ function mapModelName(apiModelId: string): string {
   return apiModelId;
 }
 
-// ── Tool Call Parsing ──
 
 interface ParsedToolCall {
   id: string;
@@ -32,10 +26,7 @@ interface ParsedToolCall {
 
 let toolCallIdCounter = 0;
 
-/**
- * Format tool definitions into the system prompt as text (prompt-based tool calling).
- * The model sees tools as text instructions and returns tool calls as XML blocks.
- */
+/** Formats tool definitions into the prompt as text; the model answers with <tool_call> XML blocks. */
 export function formatToolsForPrompt(tools: ToolDefinition[]): string {
   if (tools.length === 0) return '';
 
@@ -65,10 +56,7 @@ You may call multiple tools in one response. After tool results are returned, co
 ${toolDescriptions}`;
 }
 
-/**
- * Parse tool calls from the model's text response.
- * Looks for <tool_call> XML blocks; with `offeredNames`, only calls to those tools are taken.
- */
+/** Parses <tool_call> blocks from the reply; with `offeredNames`, only calls to those tools are taken. */
 export function parseToolCallsFromText(text: string, offeredNames?: string[]): { cleanText: string; toolCalls: ParsedToolCall[] } {
   const toolCalls: ParsedToolCall[] = [];
   let cleanText = text;
@@ -97,9 +85,6 @@ export function parseToolCallsFromText(text: string, offeredNames?: string[]): {
   return { cleanText, toolCalls };
 }
 
-/**
- * Format tool results to include in the next prompt.
- */
 export function formatToolResultsForPrompt(results: Array<{ toolCallId: string; name: string; content: string; isError: boolean }>): string {
   return results.map(r => {
     return `<tool_result>
@@ -109,24 +94,15 @@ export function formatToolResultsForPrompt(results: Array<{ toolCallId: string; 
   }).join('\n\n');
 }
 
-// ── Conversation Formatting ──
 
-// Placeholders substituted for attachment blocks in HISTORY. This transport
-// packs history into a plain-text system prompt (query() takes a string prompt,
-// options.systemPrompt is a string), so historical image/document blocks cannot
-// be re-sent as real attachments. We keep a short marker so turn count and
-// context alignment survive instead of the block silently vanishing (FA-PC4).
+// Stand-ins for attachment blocks in HISTORY: history is packed into a text system prompt, so real
+// attachments cannot be re-sent. A marker keeps the turn count and context alignment intact.
 const HISTORY_IMAGE_PLACEHOLDER = '[image omitted by this connection]';
 const HISTORY_DOCUMENT_PLACEHOLDER = '[document omitted by this connection]';
 
 /**
- * Thrown when the CURRENT user message carries an image this transport cannot
- * forward. The SDK's query() prompt is text in the shape we use (a string, with
- * history folded into options.systemPrompt), so rather than answer blind we
- * surface loudly (FA-PC4). The wording is chosen to hit the provider
- * classifier's vision_mismatch branch (agent/v2/classifiers/provider.ts), so
- * the recovery cascade hands the agent a plain "this model can't see images"
- * note instead of injuring it.
+ * Thrown when the CURRENT user message carries an image this transport cannot forward; the wording hits the
+ * classifier's vision_mismatch branch (agent/v2/classifiers/provider.ts).
  */
 export class AgentSdkVisionUnsupportedError extends Error {
   constructor() {
@@ -139,27 +115,8 @@ export class AgentSdkVisionUnsupportedError extends Error {
 }
 
 /**
- * T81d FIX ROUND (NO-DOOMED-DIALS review, CRITICAL) — thrown INSTEAD of a bare SDK abort
- * error when THIS transport's OWN derived-patience timer is what ended the call.
- *
- * ONLY the timer throws this, and that is the code's doing rather than the controller's
- * solitude: T83 wired an external `params.abortSignal` (the stop) into the SAME controller, and
- * `timedOutByPatience` — set in the timer callback and nowhere else — is what keeps the two
- * apart. So this TYPE is still the disambiguator `streamWasCutByWatchdog` gives the other two
- * transports via a shared signal, and a stop never mints one.
- * `sawAnyContent` carries the one fact `agent/model.ts`'s catch needs to rebuild the
- * same first-chunk-vs-idle distinction the other two transports' real `StreamWatchdog` makes —
- * whether the model had already started answering before this trip, which decides
- * `DECLARED_PATIENCE_EXCEEDED_CODE` (never retryable) vs `STREAM_IDLE_TIMEOUT_CODE` (a genuine
- * mid-stream stall, which keeps its ordinary retry).
- *
- * THE DEFECT THIS CLOSES: the first cut of this timer threw a plain, untyped `Error`. Its
- * message SAID "declared patience" in prose, but nothing downstream reads prose —
- * `provider-error.ts` classified it 'unknown', `v2/recovery.ts`'s `recordInjury` never set
- * `declaredPatienceHonestFailTurn` (the code, not the text, is what it keys on), T81c's
- * restart-decline never fired, and the Healer's 5s blind auto-wake cold-redialled the identical
- * unfinishable prompt — reopening the exact GPU livelock this whole plan exists to close,
- * through the one transport this task was scoped to protect.
+ * Thrown instead of a bare abort when the patience timer (never a stop) ended the call. Downstream reads the
+ * type: `sawAnyContent` picks DECLARED_PATIENCE_EXCEEDED_CODE or STREAM_IDLE_TIMEOUT_CODE in agent/model.ts.
  */
 export class AgentSdkPatienceExceededError extends Error {
   readonly timeoutMs: number;
@@ -174,20 +131,14 @@ export class AgentSdkPatienceExceededError extends Error {
 
 type SdkContentBlock = { type?: string; text?: string; [k: string]: unknown };
 
-/** True when a message's content carries at least one top-level image block. */
 function contentHasTopLevelImage(content: string | object[]): boolean {
   if (typeof content === 'string') return false;
   return (content as SdkContentBlock[]).some(b => b.type === 'image');
 }
 
 /**
- * Render one message's content to plain text for the transport. Faithfully
- * preserves tool_use / tool_result blocks using this transport's OWN
- * <tool_call> / <tool_result> convention (the same shapes formatToolsForPrompt
- * teaches the model and parseToolCallsFromText reads back), mirroring how the
- * OpenAI-compat translator folds tool_result -> role:'tool' and tool_use ->
- * tool_calls. Image/document blocks become a short placeholder so nothing
- * silently vanishes. Exported for unit tests.
+ * Renders message content to text in this transport's <tool_call>/<tool_result> convention; image and
+ * document blocks become placeholders. Exported for unit tests.
  */
 export function renderContentToText(content: string | object[]): string {
   if (typeof content === 'string') return content;
@@ -229,7 +180,6 @@ export function renderContentToText(content: string | object[]): string {
         parts.push(HISTORY_DOCUMENT_PLACEHOLDER);
         break;
       default:
-        // Unknown block shape: keep any text-ish field, else skip.
         if (b.text) parts.push(b.text);
         break;
     }
@@ -238,23 +188,14 @@ export function renderContentToText(content: string | object[]): string {
 }
 
 /**
- * Format conversation history into the system prompt.
- * The SDK's query() takes a single prompt string, so we pack history into the
- * system prompt and use the latest user message as the prompt. Roles map
- * faithfully to Human/Assistant (the two the text form supports); tool_use /
- * tool_result blocks are folded to their <tool_call>/<tool_result> text (no
- * longer relabeled or dropped), and image blocks are stubbed (FA-PC4).
- * Throws AgentSdkVisionUnsupportedError when the CURRENT user message carries an
- * image, since the string prompt cannot forward it and answering blind is worse.
- * Exported for unit tests.
+ * Packs history into the system prompt; the latest user message becomes the prompt. Throws
+ * AgentSdkVisionUnsupportedError on a current image. Exported for unit tests.
  */
 export function formatHistoryForSystemPrompt(
   messages: Array<{ role: string; content: string | object[] }>,
 ): { historySection: string; lastUserMessage: string } {
   let lastUserMessage = '';
 
-  // Extract the last user message as the prompt
-  // Everything else becomes history in the system prompt
   const historyMessages: Array<{ role: string; content: string }> = [];
 
   for (let i = 0; i < messages.length; i++) {
@@ -262,11 +203,8 @@ export function formatHistoryForSystemPrompt(
     const isLast = i === messages.length - 1;
 
     if (isLast && msg.role === 'user') {
-      // The current message becomes the SDK prompt (a plain string). A
-      // user-attached image cannot ride a string prompt, so refuse loudly
-      // rather than let the model answer blind (FA-PC4). Tool-result images
-      // mid-loop are top-level tool_result blocks (not 'image'), so they fall
-      // through to renderContentToText and are stubbed, not refused.
+      // A user-attached image cannot ride a string prompt, so refuse rather than answer blind.
+      // Tool-result images are tool_result blocks, not 'image', so they are stubbed instead.
       if (contentHasTopLevelImage(msg.content)) {
         throw new AgentSdkVisionUnsupportedError();
       }
@@ -291,15 +229,13 @@ export function formatHistoryForSystemPrompt(
   return { historySection, lastUserMessage };
 }
 
-// ── Main Call Function ──
 
 export interface AgentSdkCallResult {
   content: string;
   toolCalls: ParsedToolCall[];
   inputTokens: number;
   outputTokens: number;
-  // Prompt-cache tokens when the SDK reports them (C28 P-7); undefined when
-  // absent so the recorder persists NULL rather than a fabricated zero.
+  // Prompt-cache tokens when the SDK reports them; undefined when absent, so the recorder stores NULL.
   cacheReadTokens?: number;
   cacheCreationTokens?: number;
   stopReason: string;
@@ -312,44 +248,11 @@ export async function callAnthropicViaSdk(params: {
   messages: Array<{ role: string; content: string | object[] }>;
   tools?: ToolDefinition[];
   onChunk?: (text: string) => void;
-  /**
-   * T81d (NO-DOOMED-DIALS) — the transport clock derived from this provider's declared patience
-   * (`agent/stream-patience.ts` `resolveTransportTimeouts`, called by `agent/model.ts` before
-   * this function is reached). `null`/`undefined` means exactly what it always has for this
-   * transport: no bound at all — `query()` runs with whatever `@anthropic-ai/claude-agent-sdk`
-   * does on its own, byte-identical to every call before this task.
-   */
+  /** First-chunk bound from the provider's declared patience; null or undefined means no bound. */
   timeoutMs?: number | null;
-  /**
-   * t114 (census row 35) — THE IDLE HALF OF THE BOUND, WHICH IS WHAT MAKES IT A GAP.
-   *
-   * `timeoutMs` above is now the FIRST-CHUNK bound and this is the BETWEEN-CHUNK bound, the
-   * same pair every other transport in the tree arms (`makeStreamWatchdog(signal, firstChunkMs,
-   * idleMs)`). Both arrive from the one `resolveTransportTimeouts` struct, whose two numbers are
-   * already defined as inter-read bounds — `headersTimeoutMs` is "request written -> first
-   * response" and `bodyTimeoutMs` is "the gap between two bytes of the response body". This
-   * transport was the only one applying them as a TOTAL. `null`/`undefined` falls back to
-   * `timeoutMs` for both, which keeps a single-bound caller behaving sensibly.
-   */
+  /** Between-chunk (idle) bound; null or undefined falls back to `timeoutMs`. */
   idleTimeoutMs?: number | null;
-  /**
-   * T83 FIX ROUND — THE EXTERNAL CANCELLATION THIS TRANSPORT USED TO DROP ON THE FLOOR.
-   *
-   * The stop button's signal. Every other transport in `agent/model.ts` has honoured
-   * `params.abortSignal` for as long as the stop button has existed; this one had no parameter
-   * for it, so `callAnthropicSdkModel` simply did not pass it. After T83's registry rework the
-   * consequence got WORSE rather than better: `stopAgent` registered a controller for the call,
-   * aborted it, and logged `callsAborted: 1` — a receipt for a cancellation that never reached
-   * the wire, on the one ticket whose subject is the engine not lying about a stop.
-   *
-   * It composes with T81d's patience timer rather than replacing it: ONE `AbortController` goes
-   * to the SDK (the only lever `Options` exposes), and both sources abort it. The
-   * discrimination T81d built is preserved exactly — `timedOutByPatience` is set ONLY by the
-   * timer, so an external abort can never mint `AgentSdkPatienceExceededError` and can never be
-   * mistaken downstream for a declared-patience trip. That is the invariant T81d's own doc
-   * anticipated a future caller would need ("the flag costs nothing and means this site never
-   * has to be revisited if a future caller adds one"); this is that caller.
-   */
+  /** The stop button's signal; aborts the same controller as the timer but never counts as a patience trip. */
   abortSignal?: AbortSignal;
 }): Promise<AgentSdkCallResult> {
   const { agentId, apiModelId, systemPrompt, messages, tools, onChunk, timeoutMs, idleTimeoutMs, abortSignal } = params;
@@ -358,10 +261,8 @@ export async function callAnthropicViaSdk(params: {
   const sdk = await import('@anthropic-ai/claude-agent-sdk');
   const { query } = sdk;
 
-  // Format conversation: history goes into system prompt, last user msg becomes the prompt
   const { historySection, lastUserMessage } = formatHistoryForSystemPrompt(messages);
 
-  // Build the full system prompt with history and tool definitions
   let fullSystemPrompt = systemPrompt + historySection;
   if (tools && tools.length > 0) {
     fullSystemPrompt += formatToolsForPrompt(tools);
@@ -373,12 +274,9 @@ export async function callAnthropicViaSdk(params: {
   let outputTokens = 0;
   let cacheReadTokens: number | undefined;
   let cacheCreationTokens: number | undefined;
-  // T81d FIX ROUND: the one fact `AgentSdkPatienceExceededError` needs to let `model.ts` rebuild
-  // the first-chunk-vs-idle distinction — true the moment GENERATED CONTENT (a text delta) has
-  // arrived, mirroring `makeStreamWatchdog`'s own `contentStarted()` definition exactly ("a text
-  // delta, a reasoning delta, or a tool-call delta" — this transport only ever streams text).
+  // True once a text delta has arrived; selects the idle bound.
   let sawAnyContent = false;
-  const stopReason = createSdkStopReasonTracker();   // B14: the provider's own word for why it stopped
+  const stopReason = createSdkStopReasonTracker();   // the provider's own word for why it stopped
 
   logger.info('Calling Anthropic via Agent SDK', {
     model: sdkModel,
@@ -389,46 +287,16 @@ export async function callAnthropicViaSdk(params: {
     promptLength: lastUserMessage.length,
   }, agentId);
 
-  // T81d: `abortController` is the ONE cancellation lever `Options` (sdk.d.ts) exposes — the
-  // SDK has no numeric timeout field of its own, so an externally-armed abort is the whole
-  // mechanism. `timedOutByPatience` distinguishes OUR timer firing from any other reason the
-  // controller might later be aborted — T83's stop signal is that other reason, which is why
-  // the catch reads the flag rather than the fact of the abort.
-  //
-  // T83 FIX ROUND: the controller is now built whenever EITHER source can cancel — the patience
-  // timer (T81d, unchanged) or the caller's external signal (the stop button). A provider with
-  // no declared patience and no live stop still gets `undefined`, i.e. byte-identical behaviour
-  // to before both tasks. `timedOutByPatience` stays the timer's alone: that is what keeps an
-  // external abort from being reported as a declared-patience trip.
-  // ── t114 (CENSUS ROW 35) — THIS TIMER BOUNDS A GAP, NOT A TOTAL ──
-  //
-  // THE DEFECT, in the shape census row 7 was closed for: the timer below was armed ONCE at
-  // dial and nothing ever touched it again. The `for await` loop receives content and calls
-  // `onChunk` throughout, so a call that was streaming perfectly was aborted the instant the
-  // wall-clock total hit the bound. Worse than row 7 in one respect — it only arms for a row
-  // that DECLARED its patience, so it punished exactly the owner who tried to configure the
-  // problem away: a provider row declaring 600s of patience got `bodyTimeoutMs = 630_000` and
-  // its healthy 700-second generation was murdered at 630s mid-sentence.
-  //
-  // The in-file comment at the `model.ts` call site used to justify this by saying it "matches
-  // `callOllamaModel`'s raw-fetch transport for the CLOCK itself: one flat derived ceiling" —
-  // citing T79e, which the census's own row 7 note records as INSUFFICIENT ("a derived flat
-  // ceiling is still a flat ceiling. Only the `makeStreamWatchdog` half is a fix"). The lesson
-  // was written down and then not applied one transport over. It is applied here now.
-  //
-  // THE SHAPE: `arm()` is re-entrant and every chunk re-arms it, which is `makeStreamWatchdog`'s
-  // contract (`bump`/`contentStarted`) expressed locally — this module cannot import it from
-  // `agent/model.ts` without a cycle, since `model.ts` is what dynamically imports this file.
-  // Absence of progress stays a MEASURED fact: silence longer than the declared gap still trips,
-  // and it trips with the bound that actually expired, so the honest exit reason names the right
-  // number. t140 round 6: a NULL row is bounded by the standing patience too (`agent/model.ts`), and
-  // `query()` is asked for token events, so "no first token" and "a gap" are measured on tokens.
+  // An AbortController is the only cancellation lever query() exposes. It is built when the patience timer
+  // or the caller's stop signal can cancel; with neither, query() gets none.
+  // The timer bounds a GAP, not a total: every stream message re-arms it (first-chunk bound until content
+  // arrives, then the idle bound). The shared makeStreamWatchdog lives in agent/model.ts, which dynamically
+  // imports this file, so importing it here would be a cycle.
   let timedOutByPatience = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let abortController: AbortController | undefined;
   let detachExternal: (() => void) | undefined;
-  // The bound that actually expired, so the error reports the gap it tripped on rather than
-  // whichever number happened to be in `timeoutMs`.
+  // The bound that actually expired, so the error names the right gap.
   let trippedBoundMs: number | null = null;
   const firstChunkBoundMs = timeoutMs;
   const idleBoundMs = idleTimeoutMs ?? timeoutMs;
@@ -450,11 +318,8 @@ export async function callAnthropicViaSdk(params: {
       arm(firstChunkBoundMs);
     }
     if (abortSignal) {
-      // ALREADY ABORTED means the stop landed before this call could dial — abort before
-      // `query()` is ever entered, so nothing reaches the provider. This is the SDK-side half of
-      // `registerAbortable`'s refusal: the caller hands down a pre-aborted signal and no request
-      // is made, which is the same "there is no third state" the other transports get for free
-      // because `fetch` rejects immediately on an aborted signal.
+      // Already aborted: the stop landed before dialling, so abort before query() is entered and nothing
+      // reaches the provider.
       if (abortSignal.aborted) controller.abort();
       else {
         const onExternalAbort = (): void => { controller.abort(); };
@@ -464,19 +329,14 @@ export async function callAnthropicViaSdk(params: {
     }
   }
 
-  /**
-   * t114 — `makeStreamWatchdog.bump()`, locally. Called for EVERY message the stream yields,
-   * because any message at all is evidence the far end is alive; which bound gets re-armed
-   * depends on whether generated content has started, exactly as the shared watchdog decides it
-   * (`bump: () => arm(contentSeen ? idleMs : firstChunkMs)`).
-   */
   let sawTokenEvents = false;
+  /** Any stream message is evidence of life; the idle bound applies once content has started. */
   const bumpGap = (): void => {
     if (!armGap) return;
     const ms = sawAnyContent ? idleBoundMs : firstChunkBoundMs;
     if (ms != null) armGap(ms);
   };
-  /** `contentStarted()` + `bump()`: generated content has arrived, so the idle bound governs. */
+  /** Generated content has arrived, so the idle bound governs from here. */
   const noteContent = (): void => {
     sawAnyContent = true;
     bumpGap();
@@ -495,11 +355,9 @@ export async function callAnthropicViaSdk(params: {
         ...(abortController ? { abortController } : {}),
       },
     })) {
-      // t114: ANY message is evidence of life — re-arm before inspecting what it was.
       bumpGap();
-      if (stopReason.observe(message as { type?: string })) continue; // 9603: a provider refusal is raised, never the reply
+      if (stopReason.observe(message as { type?: string })) continue; // a provider refusal is held back and raised after the loop only if no reply text arrived
       if (message.type === 'assistant') {
-        // Full assistant message with content blocks
         const betaMsg = (message as any).message;
         if (betaMsg?.content) {
           for (const block of betaMsg.content) {
@@ -512,16 +370,13 @@ export async function callAnthropicViaSdk(params: {
             }
           }
         }
-        // Extract usage if available
         if (betaMsg?.usage) {
           inputTokens = betaMsg.usage.input_tokens ?? 0;
           outputTokens = betaMsg.usage.output_tokens ?? 0;
-          // Anthropic reports these disjoint from input_tokens (C28 P-7).
           if (betaMsg.usage.cache_read_input_tokens != null) cacheReadTokens = betaMsg.usage.cache_read_input_tokens;
           if (betaMsg.usage.cache_creation_input_tokens != null) cacheCreationTokens = betaMsg.usage.cache_creation_input_tokens;
         }
       } else if (message.type === 'stream_event') {
-        // Streaming chunks
         const event = (message as any).event;
         if (event?.type === 'content_block_delta' && event?.delta?.type === 'text_delta') {
           sawTokenEvents = true;
@@ -539,24 +394,17 @@ export async function callAnthropicViaSdk(params: {
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    // T81d FIX ROUND: name OUR abort with a TYPE `agent/model.ts`'s catch can structurally
-    // detect, not just a prose message — see `AgentSdkPatienceExceededError`'s own doc comment
-    // for the exact chain a plain `Error` here broke.
+    // Name our own abort with a type agent/model.ts's catch can detect structurally (it never reads prose).
     if (timedOutByPatience) {
-      // t114: the number reported is the GAP that actually expired — the first-chunk bound when
-      // nothing ever arrived, the idle bound when the stream went quiet mid-answer. Reporting
-      // `timeoutMs` for both was survivable while the clock was one flat total; now that the two
-      // bounds differ it would misname which one the provider actually failed.
+      // Report the gap that actually expired: the first-chunk bound if nothing arrived, else the idle bound.
       const boundMs = trippedBoundMs ?? timeoutMs!;
       logger.error(`Agent SDK call aborted: exceeded this provider's declared patience (${boundMs}ms gap)`, {
         error: msg, model: sdkModel, boundMs, firstChunkBoundMs, idleBoundMs, sawAnyContent,
       }, agentId);
       throw new AgentSdkPatienceExceededError(boundMs, sawAnyContent);
     }
-    // T83: an EXTERNAL abort (the stop button) lands here and is re-thrown untouched, exactly
-    // like any other SDK failure. It deliberately does NOT get a type of its own: `model.ts`'s
-    // catch and `model-call.ts`'s catch both decide "was this a stop?" by reading the stop flag,
-    // not by classifying the error — which is what lets every transport's abort behave the same.
+    // An external abort (the stop button) is re-thrown untouched with no type of its own: the callers decide
+    // "was this a stop?" from the stop flag, not from the error.
     logger.error('Agent SDK call failed', { error: msg, model: sdkModel }, agentId);
     throw err;
   } finally {
@@ -564,7 +412,6 @@ export async function callAnthropicViaSdk(params: {
     detachExternal?.();
   }
   stopReason.throwIfNoReply(fullResponse);
-  // Estimate tokens if not provided by the SDK
   if (inputTokens === 0) {
     inputTokens = Math.ceil((fullSystemPrompt.length + lastUserMessage.length) / 4);
   }
@@ -572,7 +419,6 @@ export async function callAnthropicViaSdk(params: {
     outputTokens = Math.ceil(fullResponse.length / 4);
   }
 
-  // Parse tool calls from response text
   const { cleanText, toolCalls } = parseToolCallsFromText(fullResponse, (tools ?? []).map(t => t.name));
 
   logger.info('Agent SDK call complete', {

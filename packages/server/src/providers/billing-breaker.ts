@@ -1,48 +1,8 @@
-// ════════════════════════════════════════════════════════════════════════════
-// A PROVIDER THAT IS OUT OF MONEY IS NOT A PROVIDER HAVING A BAD MINUTE.
-// (v3.2.3 incident, layer 3)
-//
-// ── THE INCIDENT, IN ITS OWN NUMBERS ──
-// A user's box logged **3,604 provider errors over 27 hours** — every one an HTTP
-// 402 from a cloud provider with no balance — and the platform kept dialling it,
-// silently, for a day and a night. `recordProviderError`
-// (`gateway/routes/services.ts`) counted them and flipped a Health CARD; nothing
-// ever stopped a dial, because a counter with no consequence is a log line with
-// extra steps. Meanwhile the summary writer used that same dead provider, so
-// memory compaction re-attempted the entire backlog on every prompt (layer 1),
-// and the auto-router kept offering the cheapest model — the dead one — first,
-// which the public report measured at **+15-20 s of tax per turn**.
-//
-// ── THE ONE DISTINCTION THIS FILE ADDS ──
-// The platform already classifies provider errors well: `classifyProviderErrorText`
-// gives a class, and `classifyPlatformError` turns it into a `PlatformErrorKind`.
-// What neither answers is **PERMANENCE** — will trying again in ten seconds help?
-//
-//   TRANSIENT: overloaded, rate-limited, a socket that died, a timeout. Retry is
-//     the correct response and the cascade already handles it.
-//   PERMANENT: no balance (402), a revoked or invalid key (401), a hard refusal
-//     (403). Nothing the platform does changes the answer. Only the OWNER can.
-//
-// Retrying a permanent failure is not caution, it is a busy-wait against a wall —
-// and because every retry costs a real round trip, it is also the mechanism that
-// turned one billing problem into a frozen box.
-//
-// ── WHAT THE BREAKER IS, AND WHAT IT DELIBERATELY IS NOT ──
-// After `PERMANENT_FAILURES_TO_BREAK` permanent failures a provider is OPEN: the
-// router skips it, the summary writer refuses to use it, and the owner gets a card
-// naming the provider and the two things they can do about it. It is NOT a health
-// heuristic, NOT time-based decay, and NOT self-closing: a wall does not stop
-// being a wall after five minutes. It closes when the owner says so
-// (`clearProviderBreaker`, reached from the retry affordance) or when a call to
-// that provider genuinely succeeds — which can only happen through a path the
-// breaker does not gate, e.g. the owner's own "test connection" in Settings.
-//
-// ⚠ AND IT NEVER GATES THE LAST DOOR. `mayDialProvider` answers `true` when the
-// caller says this is the only provider it has. A box with ONE provider must be
-// told it is out of balance, not silently stopped — see `pauseInsteadOfRetrying`
-// and the PM-agent case in the incident report. A breaker that made a
-// single-provider box unusable would be a worse outage than the one it prevents.
-// ════════════════════════════════════════════════════════════════════════════
+// Circuit breaker for PERMANENT provider failures (402 no balance, 401 rejected key, 403 refused), which
+// retrying cannot fix. After PERMANENT_FAILURES_TO_BREAK of them the provider is OPEN: the router and summary
+// writer skip it and the owner gets one card. It never decays; it closes only on `clearProviderBreaker` or a
+// genuine success. It never gates the last door: `mayDialProvider` admits a caller whose only provider this is,
+// so a single-provider box is told it is out of balance instead of going silent.
 
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
@@ -53,15 +13,9 @@ import { getDb } from '../db/connection.js';
 
 const logger = createLogger('billing-breaker');
 
-/**
- * Two, not three, and not one. One is a flake (a 402 can be a race with a
- * top-up that just landed); three means a third full round trip bought nothing.
- * The incident's box would have tripped this inside the first minute instead of
- * dialling 3,604 times.
- */
+/** One failure can be a 402 racing a fresh top-up; a third buys nothing. */
 export const PERMANENT_FAILURES_TO_BREAK = 2;
 
-/** Why a provider is open, kept so the card and the log can name it. */
 export type PermanentReason = 'no_balance' | 'credential_rejected' | 'access_refused';
 
 export interface OpenBreaker {
@@ -69,33 +23,18 @@ export interface OpenBreaker {
   reason: PermanentReason;
   failures: number;
   since: string;
-  /** The provider's own last words, for the card. Never a secret: this is its error text. */
+  /** The provider's own error text, shown on the card; never a secret. */
   detail: string;
 }
 
 const permanentFailureCounts = new Map<string, number>();
 const openBreakers = new Map<string, OpenBreaker>();
 
-/**
- * IS THIS FAILURE PERMANENT, AND WHY?
- *
- * Delegates the hard part — reading a provider's status, structured type and
- * transport code without matching digits inside a token count — to
- * `classifyProviderErrorText`, which exists and was written for exactly that trap
- * (a 400 "prompt is too long: 204015 tokens" once read as `auth_invalid` on the
- * "401" inside the number). This function adds only the permanence verdict.
- *
- * `null` means "not permanent" — which includes "not classifiable". The default
- * direction is deliberately TRANSIENT: a breaker that opens on an unrecognised
- * string would take a working provider off the board on a bad parse.
- */
+/** Maps a classified error to a permanent reason; null (including unclassifiable) is not permanent. */
 function reasonForClass(c: ProviderErrorFacts['class']): PermanentReason | null {
   switch (c) {
-    // 402 / "insufficient balance" / "credit". The wall this incident hit.
     case 'quota': return 'no_balance';
-    // 401 and prose-named revoked keys. A retry cannot mint a credential.
     case 'auth': return 'credential_rejected';
-    // 403. The owner must change something on the provider's side.
     case 'access_denied': return 'access_refused';
     default: return null;
   }
@@ -109,36 +48,22 @@ export function permanentFailureReason(
   const reason = reasonForClass(f.class);
   if (!reason) return null;
 
-  // ⚠ THE CLASS IS NOT ENOUGH. (v3.2.3 review, H2 — this gate is the whole finding.)
-  //
-  // The classes above are reached through a substring match on the status number, and a hyphen or
-  // a space is a word boundary. The review measured five innocent strings — a model name, a
-  // progress ratio, a URL path, a quoted upstream status, a retry counter — every one of which
-  // arrived here as PERMANENT and would have taken a provider that was working perfectly well off
-  // the board. That is the exact failure this module's header forbids.
-  //
-  // A latch therefore needs evidence stronger than *the digits are somewhere in the sentence*. Any
-  // ONE of three qualifies, and they are in order of how much they are worth:
+  // The class alone is not enough: it comes from a substring match on the status number, so digits in a
+  // model name, progress ratio, URL or retry counter would read as permanent. Require one of three proofs:
   const permanent = (
-    // 1. THE SDK SAID SO. `basis: 'status' | 'body'` means `classifyProviderError` read the number
-    //    out of a real field on a real error object, not out of prose. Nothing beats that.
+    // 1. The SDK's own status or body field (a real error object, not prose).
     ((f.basis === 'status' || f.basis === 'body') && f.status !== null)
-    // 2. THE NUMBER IS WHERE A STATUS GOES — leading, or introduced by `error`/`status`/`code`.
+    // 2. The number sits where a status goes (leading, or after error/status/code).
     || (f.status !== null && statusIsAnchored(text, f.status))
-    // 3. THE WORDS SAY IT WITHOUT THE NUMBER. Strip every digit and ask the one classifier again:
-    //    if it still lands on the same permanent class, the prose carried the verdict by itself
-    //    (`insufficient balance`, `invalid_api_key`, `forbidden`) and the number was never load-
-    //    bearing. Re-asking rather than keeping a second phrase list here is deliberate: there is
-    //    one implementation of what these words mean, and it cannot drift from itself.
+    // 3. The words alone carry it: with digits stripped, the one classifier gives the same class.
     || reasonForClass(classifyProviderErrorText(text.replace(/\d/g, '#')).class) === reason
   );
 
-  // Uncertain ⇒ TRANSIENT. The recovery cascade retries and the owner is never lied to about a
-  // provider being dead. A missed latch costs retries on one call; a false latch costs the box.
+  // Uncertain means TRANSIENT: a missed latch costs retries on one call, a false latch takes a working
+  // provider off the board.
   return permanent ? reason : null;
 }
 
-/** The card text per reason. Plain words, an action, and no jargon. */
 function cardText(providerId: string, reason: PermanentReason): string {
   switch (reason) {
     case 'no_balance':
@@ -156,14 +81,7 @@ function cardText(providerId: string, reason: PermanentReason): string {
   }
 }
 
-/**
- * Record one PERMANENT failure and open the breaker at the threshold.
- *
- * Returns the open breaker when this call is what opened it (so the caller can
- * stop what it was doing), or `null` while it is still counting. Idempotent once
- * open: a provider already open is not re-carded, which is the difference between
- * "one card the owner acts on" and "3,604 toasts the owner learns to ignore".
- */
+/** Records one PERMANENT failure; returns the breaker when this call opened it. Once open, never re-carded. */
 export function recordPermanentFailure(
   providerId: string, reason: PermanentReason, detail: string, agentId?: string,
 ): OpenBreaker | null {
@@ -188,24 +106,20 @@ export function recordPermanentFailure(
     providerId, reason, failures: n,
   }, agentId);
   try {
-    // The REAL card machinery: the same `chat:error` frame the context gate and the
-    // healer already surface as a dashboard toast. `QUOTA_EXHAUSTED` is an existing
-    // Tier-D code whose whole meaning is "the engine cannot proceed and the user must
-    // act" — exactly this, so no new frame type is invented for it.
+    // The same chat:error frame the context gate uses; QUOTA_EXHAUSTED means the user must act.
     broadcast({
       type: 'chat:error',
       agentId: agentId ?? '',
       error: cardText(providerId, reason),
       code: 'QUOTA_EXHAUSTED',
       severity: 'error',
-      cardClass: 'action',   // he tops up or changes the key
+      cardClass: 'action',   // the owner tops up or changes the key
       retryable: false,
     });
   } catch { /* a card nobody could be shown is not a reason to keep dialling */ }
   return open;
 }
 
-/** Classify, then record. The one call site a caller with an error string needs. */
 export function noteProviderFailure(
   providerId: string, errText: string, agentId?: string, facts?: ProviderErrorFacts,
 ): OpenBreaker | null {
@@ -214,7 +128,6 @@ export function noteProviderFailure(
   return recordPermanentFailure(providerId, reason, errText, agentId);
 }
 
-/** A successful call is the only evidence that beats a recorded wall. */
 export function noteProviderSuccess(providerId: string): void {
   permanentFailureCounts.delete(providerId);
   if (openBreakers.delete(providerId)) {
@@ -230,14 +143,7 @@ export function openBreakers_readonly(): readonly OpenBreaker[] {
   return [...openBreakers.values()];
 }
 
-/**
- * MAY THIS CALL BE DIALLED?
- *
- * `isOnlyOption` is the last-door carve-out described in the header: a caller that
- * has nowhere else to go is allowed through, because a single-provider box must
- * fail with an explanation rather than fall silent. Everything with an alternative
- * — the router, the summary writer — passes `false` and gets skipped past.
- */
+/** `isOnlyOption` is the last-door carve-out: a caller with no alternative is admitted. */
 export function mayDialProvider(providerId: string, isOnlyOption = false): boolean {
   const open = openBreakers.get(providerId);
   if (!open) return true;
@@ -250,13 +156,7 @@ export function mayDialProvider(providerId: string, isOnlyOption = false): boole
   return false;
 }
 
-/**
- * The owner's manual retry: clear the wall and try again.
- *
- * Returns whether anything was open, so the route can answer honestly instead of
- * always saying "cleared". The counter goes too — otherwise one more failure
- * re-opens it instantly and the retry looks like it did nothing.
- */
+/** The owner's manual retry; clears the counter too, or one more failure re-opens it at once. */
 export function clearProviderBreaker(providerId: string): boolean {
   permanentFailureCounts.delete(providerId);
   const wasOpen = openBreakers.delete(providerId);
@@ -264,14 +164,7 @@ export function clearProviderBreaker(providerId: string): boolean {
   return wasOpen;
 }
 
-/**
- * THE SINGLE-PROVIDER CASE: pause with a status, never retry-for-ever.
- *
- * The incident's PM agent had one provider. With the breaker open and no
- * alternative, the honest answer is a sentence the owner can act on — which is
- * what this returns, for the caller to put where its user will see it. A caller
- * that gets a string here must STOP, not loop.
- */
+/** The status sentence while open (null otherwise); a caller given one must STOP, not loop. */
 export function pauseInsteadOfRetrying(providerId: string): string | null {
   const open = openBreakers.get(providerId);
   if (!open) return null;
@@ -279,24 +172,9 @@ export function pauseInsteadOfRetrying(providerId: string): string | null {
 }
 
 /**
- * THE SUMMARY WRITER'S OWN DOOR (the incident's inner loop).
- *
- * Takes a MODEL id because that is what compaction holds, resolves its provider, and
- * records a permanent failure against it. Returns the reason when the failure was
- * permanent (so the caller can log which kind it was), `null` when it was transient
- * and the existing retry behaviour is correct.
- *
- * ⚠ AND IT TAKES THE SDK'S OWN FACTS, or it is decorative (t87b review I1, measured on main
- * 2026-10-05). `agent/model.ts` WRAPS every failure before the summary writer sees it, and
- * `OpenAI call failed: 402 Payment Required` classifies `unknown`/`basis:'none'` — `failed:` is
- * not one of `statusIsAnchored`'s introducers and the number is no longer leading — so arms 2
- * and 3 below both decline and the breaker never opened on the incident's own door. Every throw
- * site already attaches `provider: facts` with `basis:'status'`, which arm 1 takes without
- * reading prose at all. OPTIONAL: absent is exactly today's behaviour, so no caller changes.
- *
- * Deliberately swallows its own lookup errors: a breaker that throws inside a catch
- * block would turn a provider outage into a crash, which is a worse failure than the
- * one it exists to bound.
+ * The summary writer's door: takes a MODEL id, records a permanent failure against its provider, returns the
+ * reason (null when transient). Pass `facts`: model.ts wraps failures, so prose alone can classify unknown.
+ * Swallows lookup errors: throwing inside a catch block would turn an outage into a crash.
  */
 export function noteSummaryWriterFailure(
   modelId: string | undefined, errText: string, agentId?: string, facts?: ProviderErrorFacts,
@@ -310,7 +188,6 @@ export function noteSummaryWriterFailure(
   return reason;
 }
 
-/** Test-only reset. Module state is per-process and the suite runs many boxes. */
 export function __resetBreakersForTests(): void {
   permanentFailureCounts.clear();
   openBreakers.clear();
