@@ -1,18 +1,5 @@
-/**
- * Short spoken acknowledgments fired when the agent is about to run
- * tools on a voice-triggered turn. Plays through the active TTS burst
- * so the user doesn't sit in silence while tool calls execute.
- *
- * Picked at random per turn. Mix of register/length so repeated use
- * doesn't sound robotic - one-word ("checking"), casual two-word ("on
- * it"), and short phrasal ("give me a sec") all sit alongside each
- * other.
- *
- * Punctuation matters: trailing comma/period gives Kokoro's clause
- * splitter a clean boundary so the filler renders as its own audio
- * chunk and the actual response (when it arrives) doesn't blend with
- * it mid-word.
- */
+// Spoken acknowledgments played through the active TTS burst while tools run on a voice turn. The
+// trailing punctuation gives the clause splitter a clean boundary so the filler is its own audio chunk.
 const FILLER_PHRASES: readonly string[] = [
   'On it.',
   'One sec.',
@@ -36,10 +23,7 @@ const FILLER_PHRASES: readonly string[] = [
   'Checking on that.',
 ] as const;
 
-/**
- * Returns a random filler phrase. Cheap (constant-time index pick),
- * deterministic per call from Math.random.
- */
+// A random phrase from the list.
 export function pickFillerPhrase(): string {
   const idx = Math.floor(Math.random() * FILLER_PHRASES.length);
   return FILLER_PHRASES[idx] ?? FILLER_PHRASES[0];

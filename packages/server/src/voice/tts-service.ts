@@ -9,30 +9,13 @@ import { listCustomVoices, installCustomVoicePatch } from './custom-voices.js';
 
 const logger = createLogger('voice-tts');
 
-// Park the @huggingface/transformers cache under ~/.dojo/voice/kokoro/ instead
-// of the npm package's bundled `.cache/`. Two reasons:
-//   1. `npm install` wipes node_modules — the bundled cache vanishes with it,
-//      forcing a 330 MB re-download on every reinstall.
-//   2. We want the dashboard's "Text-to-speech model" row to know whether the
-//      model is on disk; tying it to a stable path we own makes that trivial.
-// Must be set before the first `from_pretrained` call.
+// Keep the transformers cache under ~/.dojo/voice/kokoro/ (not node_modules, which npm install wipes) so the
+// dashboard can tell whether the model is on disk. Must be set before the first from_pretrained call.
 try {
   fs.mkdirSync(KOKORO_CACHE_DIR, { recursive: true });
-  // Bypass transformers.js's broken cache layer by serving the Kokoro files
-  // from disk ourselves (see model-manager.ensureKokoroFiles). We download
-  // every file required by `style_text_to_speech_2` directly into
-  // KOKORO_CACHE_DIR/onnx-community/Kokoro-82M-v1.0-ONNX/, then tell
-  // transformers to treat KOKORO_CACHE_DIR as a local model root. Its
-  // local-file branch returns a FileResponse and short-circuits before
-  // ever touching cache.put/cache.match — the path that was reproducibly
-  // throwing "Unable to get model file path or buffer." in the dev-server
-  // process (2026-05-19).
-  //
-  //   env.localModelPath = "<cacheDir>"
-  //   env.allowRemoteModels = false   (force local-only — any remote fetch
-  //                                    would hit the broken cache layer)
-  //   env.useFSCache stays at its default (true) — irrelevant because
-  //                                    we never reach the cache code path.
+  // Serve the Kokoro files from disk ourselves (model-manager.ensureKokoroFiles downloads them): with a local
+  // model root and remote models off, transformers takes its local-file branch and never touches the cache
+  // layer, which throws "Unable to get model file path or buffer."
   const env = transformersEnv as {
     cacheDir?: string;
     localModelPath?: string;
@@ -48,17 +31,10 @@ try {
   });
 }
 
-/**
- * One-time migration: if a previous run cached Kokoro at the old default
- * (inside `node_modules/@huggingface/transformers/.cache/`), move it to the
- * pinned location so a) the dashboard sees "installed" and b) the next
- * `npm install` doesn't wipe 330 MB.
- */
+/** Move a Kokoro cache left in the old node_modules location to the pinned location, once. */
 function migrateLegacyKokoroCache(): void {
-  // Walk up from this file: src/voice/tts-service.ts → repo root.
-  // ⚠ `fileURLToPath`, never `new URL(…).pathname`: a `file:` URL is percent-encoded, so an
-  // install path with a space in it comes back as `~/My%20Apps/...` (tilde = the home dir) and the migration
-  // below silently finds nothing. Same family as `getCurrentVersion`'s T8 fix.
+  // Walk up from this file to the repo root. fileURLToPath, never new URL().pathname: the latter stays
+  // percent-encoded, so an install path containing a space would silently find nothing.
   const here = path.dirname(fileURLToPath(import.meta.url));
   const repoRoot = path.resolve(here, '../../../..');
   const legacyRoot = path.join(repoRoot, 'node_modules/@huggingface/transformers/.cache');
@@ -71,8 +47,7 @@ function migrateLegacyKokoroCache(): void {
     fs.renameSync(legacyKokoro, newKokoro);
     logger.info('Migrated legacy Kokoro cache out of node_modules', { from: legacyKokoro, to: newKokoro });
   } catch (err) {
-    // Rename across filesystems can fail with EXDEV; the model will just
-    // re-download on next session, which is acceptable.
+    // A rename across filesystems can fail (EXDEV); the model then re-downloads, which is acceptable.
     logger.warn('Kokoro cache migration failed (non-fatal)', {
       error: err instanceof Error ? err.message : String(err),
     });
@@ -83,7 +58,7 @@ export const DEFAULT_VOICE = 'am_michael';
 
 export type LoadProgress = {
   stage: string;
-  /** 0–100 percent for the file currently downloading. */
+  /** 0-100 percent for the file currently downloading. */
   progress: number;
   /** Bytes downloaded for the current file, if transformers reports it. */
   loaded?: number;
@@ -95,10 +70,7 @@ export type LoadProgressCallback = (p: LoadProgress) => void;
 let modelPromise: Promise<KokoroTTS> | null = null;
 let lastDtype: 'fp32' | 'fp16' | 'q8' | 'q4' | 'q4f16' = 'q8';
 
-/**
- * Load and cache the Kokoro model. Subsequent calls return the cached instance.
- * Pass `onProgress` only on the first call — later calls ignore it.
- */
+/** Load and cache the Kokoro model; `onProgress` is honored only on the first call. */
 export function loadKokoro(
   onProgress?: LoadProgressCallback,
   dtype: 'fp32' | 'fp16' | 'q8' | 'q4' | 'q4f16' = 'q8',
@@ -108,12 +80,8 @@ export function loadKokoro(
   logger.info('Loading Kokoro model', { modelId: KOKORO_MODEL_ID, dtype });
 
   const promise = (async () => {
-    // Make sure every required Kokoro file is on disk BEFORE transformers
-    // starts looking. With `env.localModelPath` set to KOKORO_CACHE_DIR and
-    // `allowRemoteModels=false`, transformers will only read locally — so a
-    // missing file would crash from_pretrained instead of falling back to
-    // a remote fetch. ensureKokoroFiles is idempotent and a no-op once
-    // everything is present.
+    // Download every required file first: with remote models off, a missing file would crash
+    // from_pretrained rather than fall back to a fetch. Idempotent.
     if (!isKokoroFullyDownloaded()) {
       logger.info('Kokoro files missing; downloading direct (bypassing transformers cache layer)');
       await ensureKokoroFiles((p) => {
@@ -132,20 +100,12 @@ export function loadKokoro(
       dtype,
       device: 'cpu',
     });
-    // Teach the loaded instance about imported custom voicepacks (Phase 2).
-    // Built-in voices keep working through their original code paths; only
-    // ids that look like custom ones and have a matching .bin on disk are
-    // intercepted.
+    // Teach the instance about imported custom voicepacks; built-in voices keep their original path.
     await installCustomVoicePatch(tts);
     return tts;
   })();
   modelPromise = promise;
-  // If the load rejects, drop the cached promise so the next attempt actually
-  // retries. Without this, a single transient transformers.js error (e.g.
-  // network hiccup, or the "Unable to get model file path or buffer." race
-  // we hit 2026-05-19) would poison the cache for the rest of the server's
-  // lifetime — every subsequent loadKokoro() would re-throw the original
-  // failure without trying again.
+  // Drop a rejected promise so the next call retries instead of replaying the first failure forever.
   promise.catch((err) => {
     logger.warn('Kokoro load rejected — clearing cached promise so retry works', {
       error: err instanceof Error ? err.message : String(err),
@@ -160,8 +120,7 @@ export function isKokoroLoaded(): boolean {
 }
 
 export function listVoices(): Array<{ id: string; name: string; language: string; gender: string; custom?: boolean }> {
-  // Mirror of the static voice list in kokoro-js to avoid forcing a model load.
-  // Keep in sync with node_modules/kokoro-js/dist/kokoro.js voice table.
+  // Mirror of the voice table in node_modules/kokoro-js/dist/kokoro.js (avoids forcing a model load); keep in sync.
   const voices: Record<string, { name: string; language: string; gender: string }> = {
     af_heart: { name: 'Heart', language: 'en-us', gender: 'Female' },
     af_alloy: { name: 'Alloy', language: 'en-us', gender: 'Female' },
@@ -222,18 +181,9 @@ export interface TtsChunk {
 }
 
 /**
- * Phase 4 — clause-level synthesis queue.
- *
- * kokoro-js's TextSplitterStream chunks by sentence (its v1.2.1 splitter
- * only recognises .!?…) so the first audio waits for a full sentence even
- * when the LLM has already streamed half a paragraph. ClauseQueue is a
- * tiny producer/consumer for pre-split clauses — the caller pushes ready
- * clauses, `synthesizeClauseStream` pulls them one at a time and runs
- * `tts.generate(clauseText)` per clause, yielding PCM as soon as each
- * clause finishes synthesis.
- *
- * Surface mirrors TextSplitterStream's contract so the call sites only
- * change at the queue/sentence-stream swap, not at every push.
+ * Producer/consumer queue of pre-split clauses. The kokoro-js sentence splitter makes first audio wait for a
+ * full sentence; here the caller pushes ready clauses and synthesizeClauseStream synthesizes one at a time.
+ * The surface mirrors TextSplitterStream so call sites only swap the queue.
  */
 export class ClauseQueue {
   private items: string[] = [];
@@ -285,11 +235,7 @@ export function createClauseQueue(): ClauseQueue {
   return new ClauseQueue();
 }
 
-/**
- * Stream synthesis driven by a ClauseQueue. One Kokoro `generate` call
- * per clause — first audio lands within one short clause of the LLM
- * starting to stream (vs one full sentence with the kokoro-js splitter).
- */
+/** Synthesize each queued clause with its own `generate` call, yielding PCM as each finishes. */
 export async function* synthesizeClauseStream(
   queue: ClauseQueue,
   voice: string = DEFAULT_VOICE,

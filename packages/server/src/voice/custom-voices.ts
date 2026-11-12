@@ -1,25 +1,9 @@
 /**
- * Custom Kokoro voicepack management.
- *
- * Users can fine-tune or otherwise produce their own Kokoro style vector
- * (.bin file) and import it here. Imported voices appear in the voice
- * picker next to the 28 built-ins.
- *
- * Storage layout (under VOICE_ROOT/custom/):
- *
- *   <id>.bin           — raw Float32 style vector, EXPECTED_VOICE_BYTES long
- *   <id>.json          — sidecar metadata { name, language, gender, createdAt }
- *
- * The voice id is the value that gets stored in `voice.preferred_voice` and
- * passed to KokoroTTS.generate(). It must follow Kokoro's [language][gender]_
- * prefix convention (e.g. `am_myvoice`) so kokoro-js's phonemizer picks the
- * right locale: first char a=en-US, b=en-GB; second char f=female, m=male.
- *
- * kokoro-js v1.2.1 hardcodes its voice registry (Object.freeze'd) and rejects
- * unknown ids in `_validate_voice`. installCustomVoicePatch() monkey-patches a
- * loaded KokoroTTS instance so the validator accepts our custom ids and the
- * synthesizer pulls the style tensor from our in-memory cache instead of the
- * built-in disk loader.
+ * Custom Kokoro voicepacks, stored under VOICE_ROOT/custom/ as <id>.bin (raw Float32 style vector,
+ * EXPECTED_VOICE_BYTES long) plus <id>.json (name, language, gender, createdAt). The id must follow
+ * Kokoro's [language][gender]_ prefix (a=en-US, b=en-GB; f=female, m=male) so the phonemizer picks the
+ * right locale. installCustomVoicePatch() patches a loaded KokoroTTS, whose built-in registry rejects
+ * unknown ids, to accept these ids and read their style tensors from the cache.
  */
 
 import fs from 'node:fs';
@@ -29,26 +13,13 @@ import { VOICE_ROOT } from './model-manager.js';
 
 const logger = createLogger('voice-custom');
 
-/**
- * Bytes per voicepack for Kokoro-82M v1.0:
- *   510 token-length buckets × 256-dim style × 4 bytes per float32 = 522,240.
- * Measured against node_modules/kokoro-js/voices/am_michael.bin (2026-06-01).
- * Tied to the v1.0 weights; bump this if KOKORO_MODEL_ID ever moves to a new
- * style dim or bucket count.
- */
+/** Bytes per voicepack for Kokoro-82M v1.0: 510 token buckets x 256-dim style x 4 bytes (float32). */
 export const EXPECTED_VOICE_BYTES = 522_240;
 
 /**
- * FA-VO3, the exact Kokoro model id the custom-voicepack geometry is pinned
- * to. EXPECTED_VOICE_BYTES above AND the 256-dim / 510-bucket slice math in
- * installCustomVoicePatch below are both derived from THIS model's style
- * tensors. A KOKORO_MODEL_ID bump can leave a pack byte-valid but
- * dimensionally wrong (a different style dim or bucket count), which would
- * make Kokoro throw for every custom-voice user at once. The runtime gate in
- * checkCustomVoiceUsable disables custom voices whenever the live model id no
- * longer matches this pin: a clean degrade to the default voice instead of a
- * per-clause throw. Bump this (and re-derive EXPECTED_VOICE_BYTES + the slice
- * math) only after re-validating the geometry against the new model.
+ * The Kokoro model id the pack geometry (EXPECTED_VOICE_BYTES and the 256/510 slice math below) is pinned
+ * to. checkCustomVoiceUsable disables custom voices when the live model differs, so users degrade to the
+ * default voice instead of a per-clause throw. Re-derive the geometry before bumping.
  */
 export const PINNED_KOKORO_MODEL_ID = 'onnx-community/Kokoro-82M-v1.0-ONNX';
 
@@ -73,10 +44,8 @@ export interface CustomVoiceMeta {
   createdAt: string;
 }
 
-/** In-memory cache of style tensors, keyed by voice id. */
 const styleCache = new Map<string, Float32Array>();
 
-/** A loaded KokoroTTS instance that has had the patch applied. */
 type PatchableKokoro = {
   _validate_voice: (voice: string) => string;
   generate_from_ids: (input_ids: unknown, opts?: { voice?: string; speed?: number }) => Promise<unknown>;
@@ -96,7 +65,6 @@ export function isValidCustomVoiceId(id: string): boolean {
   return VOICE_ID_RE.test(id) && !BUILTIN_VOICE_IDS.has(id);
 }
 
-/** Read a .bin file off disk and check it parses to a finite Float32 vector. */
 function validateVoiceBuffer(buf: Buffer): { ok: true } | { ok: false; error: string } {
   if (buf.length === 0) return { ok: false, error: 'file is empty' };
   if (buf.length !== EXPECTED_VOICE_BYTES) {
@@ -105,9 +73,7 @@ function validateVoiceBuffer(buf: Buffer): { ok: true } | { ok: false; error: st
       error: `not a valid voice file: expected ${EXPECTED_VOICE_BYTES} bytes, got ${buf.length}`,
     };
   }
-  // The buffer might not be 4-byte aligned within its underlying ArrayBuffer
-  // (Node's pooled allocator). Copy into a fresh ArrayBuffer to be safe before
-  // viewing as Float32Array, otherwise the constructor throws RangeError.
+  // Copy into a fresh ArrayBuffer: a pooled Buffer may be unaligned, and viewing it as Float32Array would throw.
   const ab = new ArrayBuffer(buf.length);
   new Uint8Array(ab).set(buf);
   const f = new Float32Array(ab);
@@ -213,23 +179,9 @@ function loadStyleVector(id: string): Float32Array {
 }
 
 /**
- * FA-VO3, decide whether a voice can be synthesized RIGHT NOW, so callers can
- * fall back to a built-in default instead of letting Kokoro's patched
- * generate_from_ids throw on every clause (a corrupt/missing pack, or a
- * byte-valid pack whose geometry no longer matches the live Kokoro model).
- *
- *   - Built-in ids: always ok, nothing custom to check.
- *   - Custom ids: ok only when BOTH
- *       (a) the live Kokoro model still matches the geometry pin
- *           (PINNED_KOKORO_MODEL_ID), and
- *       (b) the .bin loads to a valid style vector.
- *
- * The version gate (a) is a pure comparison and short-circuits BEFORE any disk
- * I/O, so it is assertable in isolation. Only a matching-model custom id
- * touches disk (via loadStyleVector) to confirm the pack is intact. Never
- * throws: a failure is returned as { ok: false, reason }. Install-time
- * rejection of malformed packs (installCustomVoice → validateVoiceBuffer) is
- * unchanged; this is purely the runtime read-path degrade.
+ * Whether a voice can be synthesized right now, so callers can fall back to a built-in default instead
+ * of a throw on every clause. Built-in ids are always ok; a custom id needs the live model to match
+ * PINNED_KOKORO_MODEL_ID (checked first, before any disk I/O) and its .bin to load. Never throws.
  */
 export function checkCustomVoiceUsable(
   voiceId: string,
@@ -250,28 +202,12 @@ export function checkCustomVoiceUsable(
   }
 }
 
-/**
- * Patch a freshly-loaded KokoroTTS so it recognises our custom voice ids and
- * synthesises them using the on-disk style tensors instead of trying to hit
- * the kokoro-js bundled voices directory.
- *
- * Idempotent — calling it twice on the same instance is a no-op.
- *
- * Implementation notes:
- *   - kokoro-js v1.2.1's `_validate_voice` throws on unknown ids; we wrap it
- *     to short-circuit on our ids, returning the language-prefix char which
- *     drives downstream phonemizer locale selection.
- *   - `generate_from_ids` is the single internal call that turns input ids +
- *     a voice id into audio. We wrap it to look up our style vector when the
- *     id is custom, then run the model with the appropriate Tensor inputs.
- */
+/** Patch a loaded KokoroTTS to recognise custom voice ids and synthesize them from the style cache. Idempotent. */
 export async function installCustomVoicePatch(tts: unknown): Promise<void> {
   const inst = tts as PatchableKokoro;
   if (inst.__dojoCustomVoicePatched) return;
 
-  // Lazy import so the patch module stays decoupled from how the caller
-  // resolves transformers — and so we don't pin a specific subpath at the
-  // top of the file.
+  // Lazy import keeps this module decoupled from how the caller resolves transformers.
   const transformers = await import('@huggingface/transformers');
   const Tensor = (transformers as unknown as { Tensor: new (kind: string, data: unknown, dims: number[]) => unknown }).Tensor;
   const RawAudio = (transformers as unknown as { RawAudio: new (data: Float32Array, sr: number) => unknown }).RawAudio;
@@ -279,8 +215,7 @@ export async function installCustomVoicePatch(tts: unknown): Promise<void> {
   const origValidate = inst._validate_voice.bind(inst);
   inst._validate_voice = (voice: string): string => {
     if (isValidCustomVoiceId(voice) && fs.existsSync(binPath(voice))) {
-      // Returning the first char matches the built-in path's behaviour: it
-      // selects the phonemizer locale ('a' → en-us, anything else → en).
+      // The first char selects the phonemizer locale, as on the built-in path.
       return voice.charAt(0);
     }
     return origValidate(voice);
@@ -295,8 +230,7 @@ export async function installCustomVoicePatch(tts: unknown): Promise<void> {
     if (!(isValidCustomVoiceId(voice) && fs.existsSync(binPath(voice)))) {
       return origGenFromIds(inputIds, opts);
     }
-    // Mirror the kokoro-js internal slice math: 256-dim style picked by the
-    // input-id length (clamped to the 510 bucket range).
+    // Mirror kokoro-js's slice: a 256-dim style chosen by input length, clamped to the 510 buckets.
     const dims = (inputIds as { dims: number[] }).dims;
     const lastDim = dims[dims.length - 1];
     const sliceStart = 256 * Math.min(Math.max(lastDim - 2, 0), 509);

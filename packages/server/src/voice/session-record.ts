@@ -1,18 +1,6 @@
-// ════════════════════════════════════════
-// Voice session records (lanes & lineage phase 8, migration 123).
-//
-// The durable identity of a spoken session. The dashboard WS session was pure
-// process memory (a dropped connection left no record); phone calls had
-// twilio_call_log but no shared identity with in-person voice. One writer
-// module, two kinds:
-//   kind 'dashboard'  - the in-person voice WS session (voice-ws.ts)
-//   kind 'phone'      - a live call (call-session.ts; external_id = callSid,
-//                       twilio_call_log stays the call's own record)
-// Message rows stamp voice_session_id + speaker at the producer; the spoken
-// reply is bound by id at turn finalize (riding the P4 answer stamp).
-//
-// Best-effort by contract: a record failure must never break the audio path.
-// ════════════════════════════════════════
+// Durable identity of a spoken session: kind 'dashboard' (voice-ws.ts) or 'phone' (call-session.ts, with
+// external_id = callSid). Message rows stamp voice_session_id + speaker at the producer, and the spoken
+// reply is bound by id at turn finalize. Best-effort: a record failure must never break the audio path.
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { stampVoiceSpeaker } from '../memory/message-store.js';

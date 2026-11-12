@@ -17,14 +17,8 @@ import {
 
 const logger = createLogger('voice-stt');
 
-// ── Engine selection ──
-//
-// `voice.stt_model` is a flat string key. Two shapes are accepted:
-//   - 'moonshine-base'  → Moonshine v2 base (default, no native deps)
-//   - any WhisperSize   → Whisper.cpp via the local whisper-server binary
-//
-// Default is Moonshine. Existing installs that had `voice.stt_model` set to
-// a WhisperSize value keep their preference (backward compatible).
+// Engine selection: `voice.stt_model` is 'moonshine-base' (default, no native deps) or a WhisperSize
+// (Whisper.cpp via the local whisper-server binary).
 
 export const DEFAULT_STT_MODEL_KEY = 'moonshine-base' as const;
 
@@ -52,11 +46,7 @@ interface SttEngine {
   dispose(): Promise<void>;
 }
 
-// ── Whisper engine ──
-//
-// Wraps the existing whisper-server child process model. Same spawn /
-// free-port / TCP-poll / multipart-POST / exponential-backoff logic as the
-// pre-engine-abstraction version, just behind the SttEngine interface.
+// Whisper engine: a local whisper-server child process (spawn, free port, TCP poll, multipart POST, backoff).
 
 const WHISPER_SERVER_BINARY = '/opt/homebrew/bin/whisper-server';
 
@@ -86,9 +76,8 @@ class WhisperEngine implements SttEngine {
   async load(): Promise<void> {
     if (this.disposed) throw new Error('WhisperEngine: load called after dispose');
     if (this.server) return;
-    // One reload at a time: after a crash `this.server` is null for everyone,
-    // so without this each waiting transcription ran its own `spawnServer()`
-    // and the last assignment orphaned the earlier child.
+    // One reload at a time: after a crash `this.server` is null for everyone, and parallel respawns
+    // would orphan the earlier child.
     if (!this.loading) this.loading = this.doLoad().finally(() => { this.loading = null; });
     return this.loading;
   }
@@ -136,9 +125,7 @@ class WhisperEngine implements SttEngine {
       ],
       { stdio: ['ignore', 'pipe', 'pipe'] },
     );
-    // t114 (census U18): these two handlers were ALREADY reading the server's output and
-    // throwing it at the debug log. That output is the boot-progress signal `waitForServerReady`
-    // needed and did not have — loading a large model off a slow disk prints as it goes.
+    // Output on either stream is the boot-progress signal waitForServerReady re-arms on.
     proc.stdout?.on('data', (chunk: Buffer) => {
       noteWhisperBootOutput();
       const line = chunk.toString().trim();
@@ -160,9 +147,8 @@ class WhisperEngine implements SttEngine {
     try {
       await waitForServerReady(port);
     } catch (err) {
-      // The child is still alive and nothing holds its handle (this.server
-      // is still null), so kill it before rethrowing — otherwise it stays up
-      // holding its port while the next load() spawns a fresh one.
+      // The child is alive and unreferenced (this.server is still null): kill it before rethrowing,
+      // or it keeps its port while the next load() spawns another.
       proc.kill('SIGKILL');
       throw err;
     }
@@ -231,10 +217,8 @@ class WhisperEngine implements SttEngine {
     if (!h) return;
     this.server = null;
     await new Promise<void>((resolve) => {
-      // `killed` flips as soon as the signal is *sent*, not when the child
-      // dies — so decide "still running" from the exit state, which stays
-      // null until the process actually terminates (the case a model is
-      // still loading). Otherwise a SIGTERM-ignoring child is orphaned.
+      // `killed` flips when the signal is sent, not when the child dies: decide "still running" from the
+      // exit state (null until it terminates) or a SIGTERM-ignoring child is orphaned.
       const timer = setTimeout(() => {
         if (h.process.exitCode === null && h.process.signalCode === null) {
           h.process.kill('SIGKILL');
@@ -251,18 +235,10 @@ class WhisperEngine implements SttEngine {
   }
 }
 
-// ── Moonshine engine ──
-//
-// In-process transformers.js automatic-speech-recognition pipeline. Files
-// are downloaded directly into MOONSHINE_CACHE_DIR via ensureMoonshineFiles
-// (bypassing the transformers cache layer's known bug — see
-// model-manager.ts ensureModelFiles).
-//
-// We avoid an env.localModelPath conflict with Kokoro (which pins its own
-// dir at module-import time in tts-service.ts) by passing the absolute
-// local model dir directly to pipeline(). transformers.js treats an
-// absolute filesystem path as a local model and skips env.localModelPath
-// resolution entirely.
+// Moonshine engine: an in-process transformers.js ASR pipeline. Files are downloaded into MOONSHINE_CACHE_DIR
+// by ensureMoonshineFiles (the transformers cache layer is bypassed, see model-manager.ts ensureModelFiles).
+// The absolute model dir goes straight to pipeline() so env.localModelPath, which tts-service.ts pins for
+// Kokoro at import time, is never involved.
 
 type TransformersPipeline = {
   (audio: Float32Array | { array: Float32Array; sampling_rate: number }, options?: Record<string, unknown>): Promise<{ text: string }>;
@@ -305,8 +281,7 @@ class MoonshineEngine implements SttEngine {
       const pipe = await pipeline(
         'automatic-speech-recognition',
         moonshineLocalDir(),
-        // q8 = int8 quantized. The `_quantized.onnx` files in the manifest
-        // match this dtype.
+        // q8 = int8 quantized, matching the `_quantized.onnx` files in the manifest.
         { dtype: 'q8' },
       );
       logger.info('Moonshine ASR pipeline ready');
@@ -320,9 +295,8 @@ class MoonshineEngine implements SttEngine {
     if (!this.pipelinePromise) throw new Error('moonshine pipeline not ready');
     const pipe = await this.pipelinePromise;
     const start = Date.now();
-    // The voice WS passes a WAV-wrapped 16 kHz mono Float32 buffer (see
-    // pcmFloatToWav). Moonshine expects 16 kHz mono Float32 audio. We
-    // unwrap the WAV header (44 bytes) and pass the raw PCM samples.
+    // The voice WS passes a WAV-wrapped 16 kHz mono Float32 buffer (see pcmFloatToWav); Moonshine needs
+    // the raw PCM samples.
     const pcm = wavToFloat32(audio);
     const out = await pipe(pcm);
     const text = (out.text ?? '').trim();
@@ -342,12 +316,8 @@ class MoonshineEngine implements SttEngine {
 }
 
 /**
- * Decode a WAV buffer into a mono Float32Array in [-1, 1]. Handles:
- *   - 16-bit signed PCM (format code 1, what `pcmFloatToWav` writes)
- *   - 32-bit IEEE float (format code 3, what kokoro-js's audio.toWav emits)
- * Walks the chunk list rather than assuming a fixed 44-byte header so
- * files with extra metadata chunks (LIST, fact, etc.) before `data` still
- * parse correctly.
+ * Decode a WAV buffer into a mono Float32Array in [-1, 1]: 16-bit PCM (what pcmFloatToWav writes) or
+ * 32-bit float (what kokoro-js emits). Walks the chunk list, so extra chunks before `data` still parse.
  */
 function wavToFloat32(wav: Buffer): Float32Array {
   if (wav.length < 44 || wav.toString('ascii', 0, 4) !== 'RIFF' || wav.toString('ascii', 8, 12) !== 'WAVE') {
@@ -377,8 +347,7 @@ function wavToFloat32(wav: Buffer): Float32Array {
   }
   if (dataOffset < 0) throw new Error('wavToFloat32: no data chunk found');
   if (numChannels !== 1) {
-    // We could downmix, but voice mode always sends mono so anything else
-    // is a misconfiguration upstream — fail loudly rather than guess.
+    // Voice mode always sends mono; anything else is an upstream misconfiguration, so fail loudly.
     throw new Error(`wavToFloat32: expected mono, got ${numChannels} channels`);
   }
   // 16-bit signed PCM (format 1).
@@ -403,16 +372,9 @@ function wavToFloat32(wav: Buffer): Float32Array {
   throw new Error(`wavToFloat32: unsupported format code=${formatCode}, bits=${bitsPerSample}`);
 }
 
-// ── Engine registry / lifecycle ──
-//
-// Single resident engine. Switching the active engine disposes the old one
-// (terminating the whisper-server child if applicable) and loads the new
-// one. In-flight transcriptions are NOT actively interrupted (the
-// transformers.js ASR pipeline has no cancellation hook); instead, the
-// transcribeBuffer wrapper at the bottom of this file checks whether the
-// engine it used is still the active one when the call returns. If a swap
-// happened during the call, the wrapper throws stt_engine_swapped so the
-// caller doesn't emit a stale partial under the new model's name.
+// Single resident engine. Switching disposes the old one. An in-flight transcription cannot be cancelled
+// (the ASR pipeline has no hook), so the transcribeBuffer wrapper checks the engine is still the active one
+// on return and throws stt_engine_swapped otherwise, so no stale result surfaces under the new model.
 
 let activeEngine: SttEngine | null = null;
 let activeEngineLoad: Promise<SttEngine> | null = null;
@@ -458,12 +420,8 @@ export async function transcribeBuffer(
   const engineAtStart = activeEngine;
   if (!engineAtStart) throw new Error('STT engine not available after ensureSttReady');
   const result = await engineAtStart.transcribeBuffer(audio, { language: options.language, mime: options.mime });
-  // Phase 1.4 swap guard — if another caller swapped engines while this
-  // transcribe was in flight, the result belongs to the old engine and we
-  // refuse to surface it under the new active model. On a PARTIAL, voice-ws
-  // drops it and stays 'listening' rather than emit a stale partial; on the
-  // FINAL transcribe it retries once against the now-active engine (FA-VO6b)
-  // so the real utterance isn't lost.
+  // A swap during the call means the result belongs to the old engine; refuse to surface it under the
+  // new active model. The caller decides whether to drop or retry.
   if (activeEngine !== engineAtStart) {
     throw new Error('stt_engine_swapped');
   }
@@ -471,9 +429,8 @@ export async function transcribeBuffer(
 }
 
 /**
- * Tear down the active whisper-server child process and clear the engine
- * registry. Public for the gateway shutdown path. Only acts on Whisper —
- * Moonshine has no external resource to release.
+ * Tear down the active whisper-server child and clear the engine registry (gateway shutdown).
+ * No-op for Moonshine.
  */
 export async function stopWhisperServer(): Promise<void> {
   if (activeEngine instanceof WhisperEngine) {
@@ -484,7 +441,6 @@ export async function stopWhisperServer(): Promise<void> {
   }
 }
 
-// ── Helpers ──
 
 async function pickFreePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -502,10 +458,8 @@ async function pickFreePort(): Promise<number> {
   });
 }
 
-// ── t114 (census U18) — the boot's two bounds ──
-// `WHISPER_BOOT_QUIET_MS` carries the old flat 60s with its meaning corrected: silence, not age.
-// The ceiling is generous because a first-run model load off a slow disk is legitimately slow,
-// and the cost of being wrong is a user's first voice turn failing for no reason.
+// Boot bounds: the wait gives up when the server has been silent for WHISPER_BOOT_QUIET_MS, or at the
+// ceiling, which does not re-arm. The ceiling is generous because a first-run load off a slow disk is slow.
 const WHISPER_BOOT_QUIET_MS = 60_000;
 const WHISPER_BOOT_CEILING_MS = 10 * 60_000;
 
@@ -527,16 +481,9 @@ function probeTcp(port: number, timeoutMs = 1000): Promise<boolean> {
   });
 }
 
-// ── t114 (CENSUS U18) — A SLOW BOOT IS NOT A FAILED BOOT ──
-//
-// THE DEFECT: a flat 60-second wall from spawn. The loop polled a TCP PORT and never measured
-// boot PROGRESS, so a cold first start of a large model off a slow disk — the exact case a new
-// user hits once, on their first voice turn — was abandoned and `load()` failed, even though the
-// server was visibly loading the whole time. "No port yet" is absence of evidence.
-//
-// The progress fact existed and was being discarded: both stream handlers above were reading the
-// server's output straight into the debug log. The wait now re-arms while that output keeps
-// arriving, with a ceiling that does NOT re-arm so a wedged binary is still given up on.
+// A slow boot is not a failed boot: the wait polls the TCP port but re-arms its quiet window each time
+// whisper-server writes output (see noteWhisperBootOutput), while the ceiling stays fixed so a wedged
+// binary is still given up on.
 let lastWhisperBootOutputAt = 0;
 
 /** Called for every chunk whisper-server writes while booting. */
@@ -570,8 +517,7 @@ async function waitForServerReady(
       );
     }
     if (quietFor >= quietMs) {
-      // The honest message: it went QUIET, which is what was actually observed. The old wording
-      // claimed it "did not become ready in 60s" even when it was loading busily throughout.
+      // Report what was observed: the server went quiet, not merely that it was slow.
       throw new Error(
         `whisper-server stopped reporting progress for ${Math.round(quietFor / 1000)}s while starting on port ${port}`,
       );

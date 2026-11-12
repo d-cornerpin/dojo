@@ -1,29 +1,10 @@
-// ════════════════════════════════════════════════════════════════════════
-// Smart Turn v3 — semantic (acoustic) end-of-turn detection.
+// Smart Turn: acoustic end-of-turn detection. A local ONNX model (pipecat-ai/smart-turn, on the same
+// onnxruntime-node the Moonshine STT path uses) outputs P(turn complete) in [0, 1] from a Whisper log-mel
+// spectrogram (1, 80, 800) of up to 8 s of 16 kHz mono audio; above 0.5 the speaker is done.
 //
-// Replaces the fixed-debounce / lexical-conjunction turn-taking heuristic with
-// an audio model that predicts whether the speaker actually finished their
-// turn. Runs locally in-process on the same onnxruntime-node the Moonshine STT
-// path already pulls in, so there is no new native dependency.
-//
-// Model: pipecat-ai/smart-turn-v3 (BSD-2, ~8.6 MB int8 ONNX, Whisper-tiny
-// encoder backbone + linear head). Input is a Whisper log-mel spectrogram
-// (1, 80, 800) for 8 s of 16 kHz mono audio; output `logits` is already a
-// sigmoid probability in [0, 1] — P(turn complete). >0.5 means "they're done".
-//
-// Preprocessing mirrors the reference inference.py exactly:
-//   WhisperFeatureExtractor(chunk_length=8) called with
-//   padding='max_length', max_length=8*16000, truncation=True, do_normalize=True
-// transformers.js's WhisperFeatureExtractor matches the HF one for the mel
-// stage but does NOT apply the waveform-level zero-mean/unit-var normalization
-// (do_normalize), so we apply that ourselves before extraction. The FE also
-// needs n_samples / nb_max_frames supplied explicitly (it derives them from
-// preprocessor_config.json normally; this repo ships none).
-//
-// Everything degrades gracefully: if the model is not downloaded yet, or any
-// stage throws, predictTurnComplete returns null and the caller falls back to
-// the legacy heuristic. Nothing in the voice path hard-depends on this.
-// ════════════════════════════════════════════════════════════════════════
+// The feature extractor needs the waveform normalized (zero-mean/unit-variance) by us, and n_samples /
+// nb_max_frames passed explicitly. Every failure degrades: predictTurnComplete returns null and the caller
+// falls back to the heuristic debounce.
 
 import path from 'node:path';
 import fs from 'node:fs';
@@ -35,18 +16,16 @@ const logger = createLogger('smart-turn');
 
 const SMART_TURN_DIR = path.join(VOICE_ROOT, 'smart-turn');
 const SMART_TURN_MODEL_ID = 'pipecat-ai/smart-turn-v3';
-// v3.2 CPU build — newest, int8, ~12 ms/inference on a laptop CPU.
 const SMART_TURN_FILE = 'smart-turn-v3.2-cpu.onnx';
 const SMART_TURN_APPROX_BYTES = 8_679_182;
 const MODEL_PATH = path.join(SMART_TURN_DIR, SMART_TURN_FILE);
 
-// Whisper feature-extractor params for chunk_length=8 (matches the model's
-// fixed positional embeddings: 800 mel frames, not the 3000 of stock Whisper).
+// Whisper feature-extractor params for 8 s chunks: the model expects 800 mel frames, not stock Whisper's 3000.
 const SAMPLE_RATE = 16_000;
 const N_SAMPLES = 8 * SAMPLE_RATE; // 128_000
 const NB_MAX_FRAMES = 800;
 
-/** Default decision threshold: P(complete) above this ⇒ the turn is done. */
+/** P(complete) above this means the turn is done. */
 export const TURN_COMPLETE_THRESHOLD = 0.5;
 
 export function isSmartTurnDownloaded(): boolean {
@@ -57,11 +36,7 @@ export function isSmartTurnDownloaded(): boolean {
   }
 }
 
-/**
- * Download the single ONNX file directly from the HF resolve URL into the
- * smart-turn cache dir (same direct-fetch approach the other voice models use).
- * Idempotent: returns immediately if already present.
- */
+/** Download the ONNX file from the HF resolve URL into the cache dir. Idempotent. */
 export async function ensureSmartTurnModel(): Promise<string> {
   if (isSmartTurnDownloaded()) return MODEL_PATH;
   await fsp.mkdir(SMART_TURN_DIR, { recursive: true });
@@ -77,11 +52,8 @@ export async function ensureSmartTurnModel(): Promise<string> {
   }
   const reader = res.body.getReader();
   const writer = fs.createWriteStream(tmp);
-  // A failed write (disk full) surfaces as an 'error' event on the writer;
-  // with no listener here that is an uncaught exception and takes the server
-  // down. Remember the first error and throw it once the writes below are
-  // awaited — after the stream is destroyed, end() only reports a generic
-  // ERR_STREAM_DESTROYED that would mask the real cause.
+  // An unhandled 'error' event on the writer (disk full) would crash the server, so remember the first one
+  // and throw it after the awaited writes; end() on a destroyed stream only reports a generic error.
   let streamError: Error | null = null;
   writer.on('error', (err: Error) => {
     if (!streamError) streamError = err;
@@ -92,7 +64,7 @@ export async function ensureSmartTurnModel(): Promise<string> {
       const { done, value } = await reader.read();
       if (done) break;
       if (!writer.write(Buffer.from(value)) && !streamError) {
-        // Backpressure: wait for the drain, or for the stream to error/close.
+        // Backpressure: wait for drain, or for the stream to error or close.
         await new Promise<void>((resolve) => {
           writer.once('drain', resolve);
           writer.once('error', () => resolve());
@@ -117,10 +89,7 @@ export async function ensureSmartTurnModel(): Promise<string> {
   return MODEL_PATH;
 }
 
-// ── Lazy, single-resident session + feature extractor ──
-
-// onnxruntime-node InferenceSession (typed loosely: it's a dynamic import and
-// we only touch .run, mirroring the STT service's untyped transformers usage).
+// Lazy single-resident session and feature extractor. onnxruntime-node is typed loosely (dynamic import).
 type OrtModule = {
   InferenceSession: { create(p: string): Promise<{ run(feeds: Record<string, unknown>): Promise<Record<string, { data: ArrayLike<number> }>> }> };
   Tensor: new (type: 'float32', data: Float32Array, dims: number[]) => unknown;
@@ -141,9 +110,7 @@ async function getOrt(): Promise<OrtModule> {
       return (ns.default ?? ns) as OrtModule;
     })();
     ortPromise = promise;
-    // If the load rejects, drop the cached promise so a later call actually
-    // retries instead of replaying the first failure for the server's whole
-    // lifetime (same fix as tts-service.ts's loadKokoro).
+    // Drop a rejected promise from the cache so a later call retries.
     promise.catch(() => {
       if (ortPromise === promise) ortPromise = null;
     });
@@ -160,9 +127,7 @@ async function getSession() {
       return ort.InferenceSession.create(MODEL_PATH);
     })();
     sessionPromise = promise;
-    // A first-time download failing (offline box, HF hiccup, full disk) must
-    // not disable smart-turn until restart: clear the cache on rejection so
-    // the next call re-downloads and retries.
+    // Drop a rejected promise (failed first download) so the next call retries.
     promise.catch(() => {
       if (sessionPromise === promise) sessionPromise = null;
     });
@@ -183,14 +148,12 @@ async function getFeatureExtractor(): Promise<FeatureExtractor> {
         chunk_length: 8,
         n_fft: 400,
         padding_value: 0.0,
-        // transformers.js does not derive these from chunk_length; supply the
-        // exact values the Python FE computes (8 s → 128000 samples → 800 frames).
+        // transformers.js does not derive these from chunk_length (8 s = 128000 samples = 800 frames).
         n_samples: N_SAMPLES,
         nb_max_frames: NB_MAX_FRAMES,
       });
     })();
     fePromise = promise;
-    // Same retry-on-rejection as the loaders above.
     promise.catch(() => {
       if (fePromise === promise) fePromise = null;
     });
@@ -198,10 +161,7 @@ async function getFeatureExtractor(): Promise<FeatureExtractor> {
   return fePromise;
 }
 
-/**
- * Preload the model + warm one inference so the first real turn doesn't pay
- * the model-load + JIT cost. Fire-and-forget; safe to call repeatedly.
- */
+/** Preload the model and run one inference so the first real turn skips load and JIT cost. */
 export async function warmUpSmartTurn(): Promise<void> {
   try {
     const [fe, sess] = await Promise.all([getFeatureExtractor(), getSession()]);
@@ -217,8 +177,7 @@ export async function warmUpSmartTurn(): Promise<void> {
   }
 }
 
-/** Cheap linear resample to 16 kHz. Voice sessions default to 16 kHz, so this
- *  is a rarely-hit safety path, not the common case. */
+/** Linear resample to 16 kHz; voice sessions are normally already 16 kHz. */
 function resampleTo16k(pcm: Float32Array, srcRate: number): Float32Array {
   if (srcRate === SAMPLE_RATE) return pcm;
   const ratio = SAMPLE_RATE / srcRate;
@@ -234,8 +193,7 @@ function resampleTo16k(pcm: Float32Array, srcRate: number): Float32Array {
   return out;
 }
 
-/** WhisperFeatureExtractor do_normalize: zero-mean / unit-variance over the
- *  valid (non-padded) samples. HF uses (x - mean) / sqrt(var + 1e-7). */
+/** do_normalize: zero-mean/unit-variance over the valid samples, (x - mean) / sqrt(var + 1e-7). */
 function normalizeWaveform(a: Float32Array): Float32Array {
   let mean = 0;
   for (let i = 0; i < a.length; i++) mean += a[i];
@@ -252,12 +210,8 @@ function normalizeWaveform(a: Float32Array): Float32Array {
 }
 
 /**
- * Predict P(turn complete) for an utterance's PCM. Returns a probability in
- * [0, 1], or null if the model isn't available / inference failed (caller
- * should fall back to the legacy heuristic). Never throws.
- *
- * For audio longer than 8 s we keep the TAIL — end-of-turn detection depends on
- * the most recent acoustics (trailing intonation / silence), not the opening.
+ * P(turn complete) for an utterance's PCM, or null if the model is unavailable or inference failed. Never
+ * throws. Audio over 8 s keeps its tail: end-of-turn depends on the most recent acoustics.
  */
 export async function predictTurnComplete(
   pcm: Float32Array,

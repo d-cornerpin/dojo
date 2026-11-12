@@ -10,16 +10,13 @@ const logger = createLogger('voice-models');
 export const VOICE_ROOT = path.join(homeDir(), '.dojo', 'voice');
 export const MODELS_DIR = path.join(VOICE_ROOT, 'models');
 /**
- * Where @huggingface/transformers (used by kokoro-js) caches its model files.
- * We pin this to a stable path we control instead of letting the library
- * default to `node_modules/@huggingface/transformers/.cache/`, which gets
- * wiped on every `npm install`. tts-service.ts assigns this to
- * `transformersEnv.cacheDir` at import time.
+ * Pinned cache dir for @huggingface/transformers (used by kokoro-js), outside node_modules so `npm install`
+ * does not wipe it. tts-service.ts assigns it to `transformersEnv.cacheDir` at import time.
  */
 export const KOKORO_CACHE_DIR = path.join(VOICE_ROOT, 'kokoro');
 /** Legacy locations checked as a fallback so existing installs aren't forced to re-download. */
 const KOKORO_LEGACY_HF_CACHE = path.join(homeDir(), '.cache', 'huggingface');
-// ⚠ `fileURLToPath`, NEVER `.pathname`: a `file:` URL is %-encoded, so a spaced install path loses this lookup silently (census: `__tests__/this-files-own-path-has-one-idiom`).
+// fileURLToPath, never `.pathname`: a `file:` URL is %-encoded, so a spaced install path would silently miss.
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
 const KOKORO_LEGACY_NODE_MODULES_CACHE = path.join(repoRoot, 'node_modules/@huggingface/transformers/.cache');
 
@@ -69,13 +66,8 @@ export const DEFAULT_WHISPER: WhisperSize = 'large-v3-turbo';
 /** Kokoro is loaded via kokoro-js which caches under HF cache. */
 export const KOKORO_MODEL_ID = 'onnx-community/Kokoro-82M-v1.0-ONNX';
 
-// ── Moonshine (STT) ──
-// Runs through @huggingface/transformers, same runtime as Kokoro. The
-// transformers cache bug documented above bites Moonshine identically, so we
-// reuse the direct-download workaround: pull every required file directly
-// from the HF resolve URLs into MOONSHINE_CACHE_DIR, then point
-// env.localModelPath at the cache and disable remote fetches so the
-// local-file branch fires.
+// Moonshine (STT) runs on the same transformers.js runtime as Kokoro, so it uses the same workaround:
+// download every file straight from the HF resolve URLs into MOONSHINE_CACHE_DIR.
 
 export const MOONSHINE_CACHE_DIR = path.join(VOICE_ROOT, 'moonshine');
 export const MOONSHINE_MODEL_ID = 'onnx-community/moonshine-base-ONNX';
@@ -83,15 +75,9 @@ export const MOONSHINE_MODEL_ID = 'onnx-community/moonshine-base-ONNX';
 export type MoonshineSize = 'base';
 
 /**
- * Files the transformers.js automatic-speech-recognition pipeline needs for
- * Moonshine at dtype='q8'. With dtype='q8' transformers appends `_quantized`
- * to the encoder/decoder onnx filenames. The "merged" decoder bundles the
- * with-past variant so a single session handles both initial and
- * incremental decoding.
- *
- * Byte counts pulled from the HF API tree on 2026-06-02. They're a hint
- * for progress estimation — the actual content-length header overrides
- * them when present.
+ * Files the ASR pipeline needs for Moonshine at dtype='q8' (transformers appends `_quantized` to the
+ * encoder/decoder names; the merged decoder serves both initial and incremental decoding). Byte counts
+ * are progress hints, overridden by the content-length header when present.
  */
 const MOONSHINE_REQUIRED_FILES: Array<{ path: string; approxBytes: number }> = [
   { path: 'config.json',                              approxBytes: 922 },
@@ -120,11 +106,8 @@ export function moonshineCacheBytes(): number {
 }
 
 /**
- * The complete set of files Kokoro's `style_text_to_speech_2` config needs.
- * We download these directly (bypassing transformers.js's broken cache layer
- * — see tts-service.ts for context) and place them in KOKORO_CACHE_DIR. With
- * `env.localModelPath` pointed at the cache dir, transformers reads them
- * locally and never touches its own cache.put/match path.
+ * Every file Kokoro's `style_text_to_speech_2` config needs, downloaded directly into KOKORO_CACHE_DIR
+ * so transformers reads them locally and never touches its own cache layer (see tts-service.ts).
  */
 const KOKORO_REQUIRED_FILES: Array<{ path: string; approxBytes: number }> = [
   { path: 'config.json',              approxBytes: 50 },
@@ -161,11 +144,9 @@ async function ensureDir(dir: string): Promise<void> {
 }
 
 /**
- * Attach the 'error' listener every download writer must have. Without one, a
- * failed write (full disk, lost volume, permission error) is an uncaught
- * exception, and index.ts answers those by exiting the process. The first
- * error is remembered so the download loops throw the real cause; `close()`
- * ends the stream without letting end()'s ERR_STREAM_DESTROYED replace it.
+ * Attach the 'error' listener every download writer needs: an unhandled write failure is an uncaught
+ * exception and index.ts exits the process on those. The first error is remembered so the download loops
+ * throw the real cause; `close()` ends the stream without end()'s ERR_STREAM_DESTROYED replacing it.
  */
 function watchDownloadWriter(writer: fs.WriteStream) {
   let firstError: Error | undefined;
@@ -228,9 +209,7 @@ export async function ensureWhisperModel(
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      // Await the write callback like the other downloaders: one write in
-      // flight at a time keeps memory flat when the disk is slower than the
-      // network. Failures arrive via the stream's 'error' event.
+      // One write in flight at a time keeps memory flat when the disk is slower than the network.
       await new Promise<void>((resolve) => {
         writer.write(Buffer.from(value), () => resolve());
       });
@@ -295,9 +274,7 @@ export function listInstalledModels(): InstalledModelInfo[] {
     installed: isKokoroCached(),
   });
 
-  // Moonshine — same dual-file pattern as Kokoro (transformers.js cache bug
-  // workaround). The "installed" check is the canonical "every required file
-  // present", with cache size as a soft signal for partial-download states.
+  // Moonshine: the canonical "installed" check is every required file present; cache size is a soft signal.
   out.push({
     kind: 'moonshine',
     id: MOONSHINE_MODEL_ID,
@@ -319,9 +296,8 @@ function kokoroCachePaths(): string[] {
 }
 
 export function isKokoroCached(): boolean {
-  // The authoritative "installed" check: every required file exists in our
-  // pinned local dir. Legacy paths still get a size-based fallback so old
-  // installs continue to show as installed until migration moves them.
+  // Authoritative check: every required file exists in the pinned local dir. Legacy paths fall back to size
+  // until the migration moves them.
   if (isKokoroFullyDownloaded()) return true;
   return kokoroCachePaths().slice(1).some((p) => {
     try { return fs.existsSync(p) && dirSizeSync(p) > 1024 * 1024; }
@@ -330,16 +306,9 @@ export function isKokoroCached(): boolean {
 }
 
 /**
- * Generic direct-download for transformers.js model files. Mirrors what
- * `ensureKokoroFiles` did for Kokoro and `ensureMoonshineFiles` does for
- * Moonshine — both bypass the @huggingface/transformers cache layer
- * (cache.put writes but cache.match returns undefined in our dev-server
- * context) by writing files directly into a pinned local dir and pointing
- * env.localModelPath at it.
- *
- * Idempotent: skips files already on disk with non-zero size. Streams
- * downloads through .partial then renames so a crashed download never
- * leaves a half-written file that future calls would skip.
+ * Generic direct download for transformers.js model files into a pinned local dir, bypassing the
+ * @huggingface/transformers cache layer. Idempotent: skips files already present with non-zero size, and
+ * streams through .partial then renames so a crash never leaves a half file.
  */
 async function ensureModelFiles(
   kind: 'kokoro' | 'moonshine',
@@ -428,23 +397,12 @@ async function ensureModelFiles(
   onProgress?.({ kind, modelId, bytesDownloaded: totalBytes, bytesTotal: totalBytes });
 }
 
-/**
- * Download every required Kokoro file directly into KOKORO_CACHE_DIR. Bypasses
- * the @huggingface/transformers cache layer entirely — that layer has a
- * reproducible bug in our dev-server context where cache.put writes but
- * cache.match returns undefined ("Unable to get model file path or buffer.").
- *
- * Idempotent: skips files that are already on disk with non-zero size.
- * Streams downloads through a .partial file then renames so a crashed
- * download never leaves a half-written file that future calls would skip.
- */
+/** Download every required Kokoro file directly into KOKORO_CACHE_DIR, like ensureModelFiles. Idempotent. */
 export async function ensureKokoroFiles(onProgress?: ProgressCallback): Promise<void> {
   const base = kokoroLocalDir();
   await ensureDir(base);
 
-  // First pass — figure out total bytes we still need to download so progress
-  // is in real bytes, not approximate. Counts already-downloaded files as
-  // completed against the total.
+  // First pass: total the bytes still needed so progress is in real bytes, counting finished files.
   const filesToFetch: Array<{ path: string; dest: string; approxBytes: number; alreadyHaveBytes: number }> = [];
   let totalBytes = 0;
   let alreadyHave = 0;
@@ -481,8 +439,7 @@ export async function ensureKokoroFiles(onProgress?: ProgressCallback): Promise<
       throw new Error(`Kokoro file download failed (${file.path}): HTTP ${res.status} ${res.statusText}`);
     }
 
-    // If we got a real content-length, fold it into total so the bar reflects
-    // the actual size we're about to write.
+    // Fold a real content-length into the total so the bar reflects the actual size.
     const cl = res.headers.get('content-length');
     if (cl) {
       const actualBytes = Number(cl);
@@ -531,11 +488,7 @@ export async function ensureKokoroFiles(onProgress?: ProgressCallback): Promise<
   onProgress?.({ kind: 'kokoro', modelId: KOKORO_MODEL_ID, bytesDownloaded: totalBytes, bytesTotal: totalBytes });
 }
 
-/**
- * Download every required Moonshine file directly into MOONSHINE_CACHE_DIR.
- * Same direct-download pattern as Kokoro (transformers.js cache bug
- * workaround). Idempotent.
- */
+/** Download every required Moonshine file directly into MOONSHINE_CACHE_DIR. Idempotent. */
 export async function ensureMoonshineFiles(onProgress?: ProgressCallback): Promise<void> {
   return ensureModelFiles(
     'moonshine',
