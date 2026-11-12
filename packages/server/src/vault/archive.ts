@@ -1,7 +1,4 @@
-// ════════════════════════════════════════
-// Vault Archive: Pre-compaction raw conversation archival
-// Fast, dumb copy -- no LLM calls, no processing
-// ════════════════════════════════════════
+// Pre-compaction raw conversation archival: a fast, dumb copy with no LLM calls and no processing.
 
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
@@ -14,17 +11,8 @@ import type { Message } from '@dojo/shared';
 
 const logger = createLogger('vault-archive');
 
-/**
- * Service agents (Dreamer, Trainer, Healer, PM, Imaginer) have conversation
- * histories that are pure platform mechanics: system prompts, cycle
- * messages, recovery pokes, image-gen requests. None of it is memory-
- * worthy, and feeding it back through the Dreamer is a recursive
- * token-burn loop. Always skip.
- *
- * Returns true if the archive should be silently dropped. Caller must
- * treat the return-null path the same way it does for dreamer-ignored
- * agents.
- */
+// Service-agent histories are platform mechanics; feeding them back through the Dreamer would be a recursive
+// token-burn loop. True means drop the archive silently, as for a dreamer-ignored agent.
 function shouldSkipServiceAgent(agentId: string): boolean {
   if (isSystemServiceAgent(agentId)) {
     logger.debug('Skipping archive: service agent (Dreamer/Trainer/Healer/PM/Imaginer)', { agentId });
@@ -33,17 +21,8 @@ function shouldSkipServiceAgent(agentId: string): boolean {
   return false;
 }
 
-/**
- * Idempotent cleanup that nukes any unprocessed archives belonging to a
- * service agent. Pre-2026-04-30 the Dreamer/PM/Healer/etc. were getting
- * archived alongside everything else. The user repeatedly discarded the
- * backlog only to see fresh archives reappear because each service-agent
- * compaction recreated one. This function purges the residue from the
- * existing DB on server startup; the source-side `shouldSkipServiceAgent`
- * checks above prevent any new ones from being created.
- *
- * Returns the number of archives deleted. Safe to call repeatedly.
- */
+// Idempotent startup cleanup of unprocessed service-agent archives; `shouldSkipServiceAgent` stops new ones.
+// Returns the number deleted.
 export function purgeServiceAgentArchives(): number {
   try {
     const db = getDb();
@@ -68,22 +47,11 @@ export function purgeServiceAgentArchives(): number {
   }
 }
 
-/**
- * Check whether the Dreamer should ignore this agent. Returns true if the
- * agent itself or its group has dreamer_ignore=1. When true, callers
- * should skip archiving entirely, conversations stay in the live messages
- * table for the agent's lifetime but never enter vault_conversations,
- * so the Dreamer never sees them.
- *
- * Exported so compaction.ts can pre-check and skip the post-archive abort
- * path: archiveMessagesBeforeCompaction returns null both when archive
- * fails AND when the agent is intentionally ignored. Compaction needs to
- * differentiate so it doesn't refuse-to-compact an ignored agent.
- */
+// True when the agent or its group has dreamer_ignore=1, so its conversations are never archived. Exported so
+// compaction.ts can tell an ignored agent (null from the archive, still compacts) from a failed archive.
 export function isDreamerIgnored(agentId: string): boolean {
   try {
-    // Rulings audit #14 (M20, owner: "Dreaming is a core principal of the Dojo"): the main agent always dreams; its
-    // own flag (or its group's, set before this) is not read.
+    // The main agent always dreams: neither its own flag nor its group's is read.
     if (agentId === getPrimaryAgentId()) return false;
     const db = getDb();
     const row = db.prepare(`
@@ -99,26 +67,10 @@ export function isDreamerIgnored(agentId: string): boolean {
   }
 }
 
-/**
- * D1: the archival high-water mark for an agent, the highest message ROWID
- * already copied into vault_conversations. Archival must only ever copy
- * messages NEWER than this so a session reset (or a later compaction) can never
- * re-copy history that is already in the vault. This single signal is what stops
- * the "every reset re-archives all-time history" bloat: before it, each reset
- * wrote another full multi-MB copy of the whole conversation, duplicate blobs
- * that starved the Dreamer (it re-chewed the same history and dedup-dropped it)
- * and grew the DB ~1 GB/day.
- *
- * The high-water is a rowid, not the old MAX(latest_at) whole-second TEXT
- * timestamp (migration 088). messages.created_at is second-granular, so two
- * messages in the same second tied on the old high-water and the strict
- * `created_at > highWater` filter skipped the equal-second boundary row: it was
- * never copied to the vault yet still got compacted, a silent loss. rowid is
- * unique and monotonic, so callers filter `rowid > highWater` with no ties.
- * Returns null when the agent has never been archived (archive everything the
- * first time). Best-effort: on any lookup error return null so archiving still
- * proceeds.
- */
+// The archival high-water mark: the highest message rowid already copied into vault_conversations, or null
+// when the agent was never archived. Archival copies only newer messages, so a reset or later compaction
+// never re-copies history. It is a rowid, not a timestamp: created_at is second-granular, so equal-second
+// rows tied and one was skipped yet still compacted. Any lookup error returns null so archiving proceeds.
 export function getArchiveHighWaterMark(agentId: string): number | null {
   try {
     const db = getDb();
@@ -131,37 +83,22 @@ export function getArchiveHighWaterMark(agentId: string): number | null {
   }
 }
 
-/**
- * Archive ALL messages for a terminated/completed agent.
- * Called on agent termination to ensure conversations are preserved for the Dreamer.
- *
- * `force` bypasses the duplicate-archive guard. Used by reset_session: each reset
- * is a distinct conversation boundary, so we always want a new archive even if
- * a previous one is still unprocessed.
- */
+// Archives an agent's messages newer than its high-water mark. `force` bypasses the duplicate-archive guard:
+// each reset_session is a distinct conversation boundary.
 export function archiveAgentConversation(agentId: string, force = false): string | null {
   const db = getDb();
 
-  // v3.2.3 (review M2), re-aimed by OR-COMPACT-1: a reset still deserves a fresh start. All six
-  // archive/new-session/reset doors funnel through here, and each of them is about to give this
-  // agent room; ahead of the skips below, because an ignored agent gets its room back too.
+  // A reset deserves a fresh start: every archive/new-session/reset door funnels through here, so clear the
+  // compaction backoff ahead of the skips below (an ignored agent gets its room back too).
   clearCompactionBackoff(agentId);
 
-  // Skip entirely if this agent (or its group) is on the Dreamer ignore list.
-  // The user explicitly opted out of having this agent's conversations
-  // remembered. Their chatter just goes away.
   if (isDreamerIgnored(agentId)) {
     logger.debug('Agent on Dreamer ignore list, skipping archive', {}, agentId);
     return null;
   }
 
-  // Skip service agents (Dreamer, Trainer, Healer, PM, Imaginer). Their
-  // histories are pure platform plumbing, see the comment on
-  // shouldSkipServiceAgent for the recursion-loop rationale.
   if (shouldSkipServiceAgent(agentId)) return null;
 
-  // Check if this agent already has an unprocessed archive, avoid duplicates
-  // (unless force=true, e.g. reset_session)
   if (!force) {
     const existing = db.prepare(
       'SELECT id FROM vault_conversations WHERE agent_id = ? AND is_processed = 0'
@@ -172,20 +109,9 @@ export function archiveAgentConversation(agentId: string, force = false): string
     }
   }
 
-  // D1: only archive messages NEWER than what's already in the vault. Before
-  // this, reset (force=true) re-copied the ENTIRE all-time history every time,
-  // producing duplicate multi-MB blobs. The high-water mark bounds each archive
-  // to the genuinely-new tail; a reset with nothing new archives nothing.
-  // Migration 088: bound by the insertion key (unique, tie-free) instead of the old
-  // second-granular created_at, which skipped an equal-second boundary row.
-  //
-  // T5 — ONE ARM. This was two archive passes over two tables with two high-waters, plus
-  // an anti-join here to stop a double-homed id landing in both blobs. Agent-to-agent
-  // rows are `lane='a2a'` in THIS table now, so a single pass carries them, and the
-  // agent's whole history reaches the Dreamer as one per-agent blob — which is the
-  // granularity it had before the split, and the granularity the Dreamer expects.
-  // STRIP; requirement preserved: every lane the agent owns is archived exactly once,
-  // bounded by a high-water in the SAME keyspace it is compared against.
+  // Archive only messages newer than the vault high-water mark, keyed by `seq` (unique, tie-free). One pass
+  // covers every lane the agent owns, agent-to-agent rows (lane='a2a') included, so each is archived
+  // exactly once as one per-agent blob.
   const highWater = getArchiveHighWaterMark(agentId);
   const rows = (highWater != null
     ? db.prepare(`SELECT *, datetime(created_at/1000,'unixepoch') AS created_at FROM messages WHERE agent_id = ? AND seq > ? ORDER BY seq ASC`)
@@ -195,15 +121,11 @@ export function archiveAgentConversation(agentId: string, force = false): string
 
   if (rows.length === 0) return null;
 
-  // Mapped through the ONE row mapper, so `rowid` is `seq` and `origin` is projected from
-  // the stamped lane. That last part is load-bearing here: `summaryPartyTag` below reads
-  // `m.origin` to tell the Dreamer WHOSE request a line was, and the a2a rows that used to
-  // arrive via the store arm (which did map through rowToMessage) now arrive through this
-  // one. Hand-rolling the object again is how they would lose their "(agent)" label.
+  // Mapped through the one row mapper so `rowid` is `seq` and `origin` comes from the stamped lane:
+  // `summaryPartyTag` below reads `m.origin` to tell the Dreamer whose request a line was.
   const messages: Message[] = rows.map(r => {
     const m = rowToMessage(r as unknown as MessageRow);
-    // rowToMessage does not project attachments; carry them so a row that shipped a file
-    // is archived whole.
+    // rowToMessage does not project attachments; carry them so a row that shipped a file is archived whole.
     if (r.attachments) {
       try {
         m.attachments = JSON.parse(r.attachments as string) as Message['attachments'];
@@ -217,10 +139,6 @@ export function archiveAgentConversation(agentId: string, force = false): string
   return archiveMessagesBeforeCompaction(agentId, messages);
 }
 
-/**
- * Archive raw messages to vault_conversations BEFORE compaction destroys them.
- * This is called from checkAndCompact() before runLeafCompaction().
- */
 export function archiveMessagesBeforeCompaction(
   agentId: string,
   messages: Message[],
@@ -230,35 +148,24 @@ export function archiveMessagesBeforeCompaction(
     return null;
   }
 
-  // Skip entirely if this agent (or its group) is on the Dreamer ignore list.
-  // Returning null here means the agent's compaction continues, but the raw
-  // messages just don't get copied to vault_conversations.
+  // An ignored agent's compaction continues, but its raw messages are not copied.
   if (isDreamerIgnored(agentId)) {
     logger.debug('Agent on Dreamer ignore list, skipping pre-compaction archive', {}, agentId);
     return null;
   }
 
-  // Skip service agents, see shouldSkipServiceAgent for rationale. This is
-  // the place that was producing the giant Dreamer-self archives the user
-  // saw: the Dreamer's compaction was archiving its own conversation
-  // (containing its SOUL.md + every old cycle message + every full
-  // 3000+ archive enumeration), which then re-entered the Dreamer queue.
   if (shouldSkipServiceAgent(agentId)) return null;
 
   try {
-    // Get agent name for attribution
     const db = getDb();
     const agent = db.prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
 
-    // Serialize full message objects
     const serialized = messages.map(m => ({
       id: m.id,
       role: m.role,
       content: m.content,
-      // Conversation/party attribution (channel-aware redesign): preserve WHO each
-      // message is from so the Dreamer can keep whose-request-is-whose when it
-      // writes vault memories. Derived now because the raw origin columns are not
-      // carried into the archive blob.
+      // WHO each message is from, so the Dreamer keeps whose-request-is-whose (the raw origin columns are not
+      // carried into the archive blob).
       party: summaryPartyTag(m),
       tokenCount: m.tokenCount,
       modelId: m.modelId,
@@ -275,10 +182,8 @@ export function archiveMessagesBeforeCompaction(
 
     const earliestAt = messages[0].createdAt;
     const latestAt = messages[messages.length - 1].createdAt;
-    // Migration 088: persist the highest archived rowid as the tie-free
-    // high-water. Derive from the max over the batch (not positional) so it is
-    // correct even if a re-homed engine event left created_at and rowid out of
-    // lockstep. Null when the batch carried no rowid (defensive only).
+    // The highest archived rowid is the high-water; take the max over the batch (not positional) because
+    // created_at and rowid can be out of lockstep.
     const rowids = messages.map(m => m.rowid).filter((r): r is number => typeof r === 'number');
     const latestRowid = rowids.length ? Math.max(...rowids) : null;
 
@@ -302,7 +207,6 @@ export function archiveMessagesBeforeCompaction(
 
     return archiveId;
   } catch (err) {
-    // Archive is best-effort -- don't block compaction if it fails
     logger.error('Failed to archive messages before compaction', {
       error: err instanceof Error ? err.message : String(err),
       messageCount: messages.length,

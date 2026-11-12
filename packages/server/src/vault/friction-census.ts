@@ -1,7 +1,4 @@
-// ════════════════════════════════════════
-// The friction census (K34): which tracker tasks went badly since an instant. Deterministic SQL
-// over records the engine already keeps; no model reads anything here.
-//
+// The friction census: which tracker tasks went badly since an instant (deterministic SQL over engine records).
 // A task has friction when, in the window, any of these happened to it:
 //   claim_rejected          the PM rejected its close
 //   rearm_refused           a re-arm was refused
@@ -11,11 +8,6 @@
 //   destructive_hold        a turn that claimed it had a destructive call held for approval
 //   task_failed             the task itself ended failed (its helper errored out, or the reaper gave up on it)
 // The last two are tied to the task by the `claim_turn` event that recorded which turn took it.
-//
-// OWED, with the measured-work lane that records them (they do not exist on this base): a
-// task reported stalled, and a measured event with a remainder left at close. Add them here as
-// two more `SOURCES` entries when those events land.
-// ════════════════════════════════════════
 
 import { getDb } from '../db/connection.js';
 import { taskScope } from '../work/tracker-view.js';

@@ -1,14 +1,9 @@
-// ════════════════════════════════════════
-// The lessons table's single writer (K34; migration 204).
-//
-// A lesson is the Dreamer's one-sentence answer to "what should be done differently next time"
-// for one rough task. It is NOT a vault entry and is never injected into an agent. Every write
-// goes through `recordLesson`, which is where the three rules live:
+// The lessons table's single writer. A lesson is the Dreamer's one-sentence answer to "what should be done
+// differently next time" for one rough task; it is not a vault entry and is never injected into an agent.
+// `recordLesson` holds the three rules:
 //   · the task must exist, and every evidence id must be one of THAT task's own events;
 //   · every lesson expires 90 days after it was last written;
-//   · a cue we already hold (same words, or a cosine at the shared dedup threshold) renews the
-//     lesson it matches instead of adding a second row.
-// ════════════════════════════════════════
+//   · a cue we already hold (same words, or a cosine at the shared dedup threshold) renews that lesson.
 
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
@@ -16,7 +11,7 @@ import { SEMANTIC_DEDUP_THRESHOLD } from '../memory/dedup-threshold.js';
 import { cosineSimilarity } from './bounded-reads.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-/** A lesson lives this long after it was last written or renewed (the plan's figure). */
+/** A lesson lives this long after it was last written or renewed. */
 export const LESSON_LIFETIME_MS = 90 * DAY_MS;
 
 export const LESSON_COMPONENTS = ['technique', 'door_text', 'soul', 'engine'] as const;
@@ -40,9 +35,8 @@ export interface LessonRow {
   created_at: number; expires_at: number; renewed_count: number;
 }
 
-// ── One lesson per task per cycle ──
-// The ROUGH TASKS batch stamps the instant it was built; that instant starts the cycle. A task that
-// already has a lesson written or renewed since then is done for this cycle.
+// One lesson per task per cycle: the ROUGH TASKS batch stamps the instant the cycle starts, and a task with a
+// lesson written or renewed since then is done for this cycle.
 const CYCLE_KEY = 'dreamer.lessons_batch_ms';
 
 export function markLessonCycleStart(now: number = Date.now()): void {

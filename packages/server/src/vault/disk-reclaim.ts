@@ -1,36 +1,12 @@
-// ════════════════════════════════════════════════════════════════════════
-// Nightly vault-archive disk reclaim (D1 follow-up, owner chose automatic)
-//
-// The archive high-water fix (vault/archive.ts) stopped NEW duplicate
-// archives, and migration 079 cleared the redundant UNPROCESSED backlog.
-// What remained on upgraded installs was the legacy stock of PROCESSED
-// nested full-history archives (~6 GB on the reference DB): every pre-fix
-// session reset re-copied the agent's entire history, so the processed set
-// is hundreds of blobs each fully contained in a newer, larger one.
-//
-// This job runs nightly inside the vault maintenance window (BEFORE the
-// Dreamer wakes, so the box is idle) and:
-//   1. deletes PROCESSED archives that are redundant: fully covered by
-//      another PROCESSED archive of the same agent (superset span with >=
-//      message_count). Keep-set per agent: the newest processed archive per
-//      (earliest_at, latest_at) span, always the newest processed archive
-//      overall, anything referenced by vault_entries provenance, and never
-//      an agent's only remaining archive. Unprocessed rows (the Dreamer
-//      queue) are never touched, neither as delete candidates nor as
-//      coverage witnesses.
-//   2. if the freelist says the reclaim is significant (> ~10% of pages),
-//      runs VACUUM, but only when no agent turn is active. If the box is
-//      busy the VACUUM is skipped and retried the next night.
-//
-// VACUUM notes (first-run safety): on a fresh update with ~6 GB of legacy
-// archives the first night does the big cleanup. The DELETE itself is fast
-// (metadata temp table + PK lookups, ~2 s even at 700+ archives). VACUUM
-// rewrites the whole file and CANNOT be safely interrupted mid-way, there
-// is no partial-progress mode; we therefore never try to abort it. It IS
-// crash-safe: if the process dies during VACUUM, SQLite rolls back and the
-// file is simply not shrunk (retried the next night). Expected duration is
-// logged before starting, based on the current file size.
-// ════════════════════════════════════════════════════════════════════════
+// Nightly vault-archive disk reclaim, run in the vault maintenance window before the Dreamer wakes.
+//   1. Deletes PROCESSED archives fully covered by another PROCESSED archive of the same agent (superset
+//      span with >= message_count). Kept: the newest per (earliest_at, latest_at) span, the newest overall,
+//      anything referenced by vault_entries provenance, and an agent's only remaining archive. Unprocessed
+//      rows (the Dreamer queue) are never touched, neither as delete candidates nor as coverage witnesses.
+//   2. If the freelist exceeds ~10% of pages, runs VACUUM, only when no agent turn is active; otherwise
+//      it retries the next night.
+// VACUUM rewrites the whole file and cannot be safely interrupted, so it is never aborted. It is crash-safe:
+// if the process dies mid-VACUUM, SQLite rolls back and the shrink is retried the next night.
 
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
@@ -52,8 +28,7 @@ export interface DiskReclaimResult {
   fileBytesAfter: number;
 }
 
-/** True when it is safe to take the DB offline-ish for a VACUUM: no in-process
- *  agent turn is running and no agent row claims to be mid-turn. */
+/** True when no in-process agent turn is running and no agent row claims to be mid-turn (safe for a VACUUM). */
 export function isPlatformIdleForVacuum(): { idle: boolean; reason: string | null } {
   if (activeRuns.size > 0) {
     return { idle: false, reason: `${activeRuns.size} in-process agent run(s) active` };
@@ -66,11 +41,7 @@ export function isPlatformIdleForVacuum(): { idle: boolean; reason: string | nul
   return { idle: true, reason: null };
 }
 
-/**
- * Nightly entry point. Deletes redundant processed archives, then VACUUMs
- * when worthwhile and safe. Synchronous by design (better-sqlite3): it runs
- * in the maintenance window before any agent work is kicked off.
- */
+/** Nightly entry point: deletes redundant processed archives, then VACUUMs when worthwhile and safe. Synchronous. */
 export function reclaimVaultArchiveSpace(): DiskReclaimResult {
   const db = getDb();
   const pageSize = db.pragma('page_size', { simple: true }) as number;
@@ -86,10 +57,8 @@ export function reclaimVaultArchiveSpace(): DiskReclaimResult {
     fileBytesAfter: fileBytesBefore,
   };
 
-  // ── Phase 1: delete redundant PROCESSED archives ──
-  //
-  // Metadata temp table so the O(n^2) span-coverage check never rescans the
-  // multi-GB messages blob column (same technique migration 079 proved out).
+  // Delete redundant PROCESSED archives. A metadata temp table keeps the O(n^2) span-coverage check from
+  // rescanning the multi-GB messages blob column.
   try {
     db.exec('DROP TABLE IF EXISTS temp._vc_reclaim; DROP TABLE IF EXISTS temp._vc_redundant;');
     db.exec(`
@@ -99,9 +68,8 @@ export function reclaimVaultArchiveSpace(): DiskReclaimResult {
       CREATE INDEX _vc_reclaim_agent ON _vc_reclaim(agent_id);
     `);
 
-    // Redundant = processed, and fully covered by another PROCESSED archive of
-    // the same agent. The tiebreak is a strict total order so that among
-    // identical-span duplicates exactly one row (fullest, then newest) survives;
+    // Redundant = processed, and fully covered by another PROCESSED archive of the same agent. The tiebreak is a
+    // strict total order, so among identical-span duplicates exactly one (fullest, then newest) survives;
     // coverage is transitive, so every deleted row is covered by a SURVIVOR.
     db.exec(`
       CREATE TEMP TABLE _vc_redundant AS
@@ -123,8 +91,7 @@ export function reclaimVaultArchiveSpace(): DiskReclaimResult {
            );
     `);
 
-    // Keep-set guards (belt and braces; each is provably already excluded by
-    // the coverage rule above, but they are the contract, so enforce directly):
+    // Keep-set guards (each already implied by the coverage rule, but enforced directly as the contract):
     // (a) the newest processed archive overall per agent is never deleted;
     db.exec(`
       DELETE FROM _vc_redundant WHERE id IN (
@@ -183,7 +150,7 @@ export function reclaimVaultArchiveSpace(): DiskReclaimResult {
     });
   }
 
-  // ── Phase 2: VACUUM when worthwhile and safe ──
+  // VACUUM when worthwhile and safe.
   try {
     const pageCount = db.pragma('page_count', { simple: true }) as number;
     const freelist = db.pragma('freelist_count', { simple: true }) as number;
@@ -205,8 +172,7 @@ export function reclaimVaultArchiveSpace(): DiskReclaimResult {
     }
 
     const fileGB = (pageCount * pageSize) / (1024 * 1024 * 1024);
-    // Rough SSD estimate; the point is an order-of-magnitude expectation in
-    // the log so an operator watching a big first-run cleanup is not alarmed.
+    // Rough SSD estimate, logged so an operator watching a big first-run cleanup expects the duration.
     const estSecondsLow = Math.max(1, Math.round(fileGB * 5));
     const estSecondsHigh = Math.max(5, Math.round(fileGB * 30));
     logger.warn('Vault disk reclaim: starting VACUUM (this rewrites the whole DB file and cannot be interrupted mid-way; if the process dies, SQLite rolls back and the shrink is retried next night)', {
@@ -217,9 +183,8 @@ export function reclaimVaultArchiveSpace(): DiskReclaimResult {
 
     const activityId = `maintenance_vacuum_${Date.now()}`;
     const startedAt = new Date().toISOString();
-    // Rendered by ActiveJobsIndicator as an engine-managed row (no Stop
-    // button). Reuses the 'compaction' kind so no dashboard/shared type
-    // changes are needed; the label carries the real meaning.
+    // Rendered by ActiveJobsIndicator as an engine-managed row (no Stop button); reuses the 'compaction' kind
+    // so no dashboard/shared type changes are needed.
     broadcast({
       type: 'engine:activity',
       data: { id: activityId, kind: 'compaction', agentId: null, label: 'Nightly maintenance: reclaiming disk space', startedAt, phase: 'start' },

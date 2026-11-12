@@ -1,25 +1,6 @@
-// ════════════════════════════════════════
-// vault/namespaces.ts — Phase 7 squad shared memory (Part X)
-//
-// Squad coordination today goes through A2A messages: high-latency, lossy,
-// no semantic recall. v2 adds a vault namespace per squad so members can
-// write/read shared knowledge directly.
-//
-// Implementation: leverages the existing `vault_entries` table via a
-// `namespace` column (NULL = personal vault, 'squad:<group_id>' = squad).
-// Reuses the existing embedding pipeline, semantic-duplicate detection,
-// and retrieval, so squad entries get the same quality of recall as
-// personal-vault entries.
-//
-// Public surface:
-//   - vaultRememberInNamespace(agentId, namespace, content, tags)
-//   - vaultSearchInNamespace(agentId, namespace, query, opts)
-//
-// Namespace strings are conventionally `squad:<group_id>`. The functions
-// don't validate the format — caller (squad_share / squad_recall executors
-// in agent/tools.ts) is responsible for resolving the agent's group_id and
-// composing the namespace.
-// ════════════════════════════════════════
+// Squad shared memory: vault entries in a namespace ('squad:<group_id>'; NULL is the personal vault), reusing the
+// `vault_entries` embedding pipeline and duplicate detection. The namespace format is not validated here;
+// the squad_share / squad_recall executors (agent/tools/cat/contacts.ts) compose it.
 
 import { createLogger } from '../logger.js';
 import { createEntry, listEntries, type VaultEntry } from './store.js';
@@ -40,10 +21,7 @@ export interface NamespaceRecallResult {
   fullLength: number;
 }
 
-/**
- * Write a vault entry into a squad namespace. Same dedup + embedding path
- * as personal `vault_remember`; only difference is the `namespace` field.
- */
+/** Writes a vault entry into a squad namespace through the same dedup and embedding path as `vault_remember`. */
 export async function vaultRememberInNamespace(params: {
   agentId: string;
   agentName?: string;
@@ -70,24 +48,17 @@ export async function vaultRememberInNamespace(params: {
 }
 
 /**
- * Recall entries from a squad namespace. Combines a literal LIKE filter
- * (cheap, deterministic) with an `ORDER BY created_at DESC` window. The
- * existing semantic-search path is keyed off personal-vault and would need
- * a deeper refactor to scope by namespace cleanly — keyword + recency is
- * sufficient for Phase 7 acceptance ("members can retrieve each other's
- * writes"). If we want semantic recall in v2.1 we add a parallel namespaced
- * `semanticSearch` then.
+ * Recalls from a squad namespace by literal LIKE filter, newest first (keyword and recency, not semantic):
+ * the semantic search path is scoped to the personal vault and cannot scope by namespace.
  */
 export function vaultSearchInNamespace(params: {
   namespace: string;
   query?: string;
   limit?: number;
-  agentIdFilter?: string; // optional — restrict to writes by a specific squad member
+  agentIdFilter?: string; // restrict to writes by a specific squad member
   tag?: string;
 }): NamespaceRecallResult[] {
   const limit = params.limit ?? DEFAULT_RECALL_LIMIT;
-  // listEntries returns entries scoped to the namespace; we just narrow with
-  // search/tag/agent filters and shape the result for the tool consumer.
   const rows = listEntries({
     namespace: params.namespace,
     search: params.query && params.query.trim().length > 0 ? params.query : undefined,
@@ -110,9 +81,8 @@ export function vaultSearchInNamespace(params: {
 }
 
 /**
- * Resolve an agent's squad namespace string from its group_id, or null if
- * the agent isn't in a group. Tools call this before share/recall so they
- * can return a clean error to the model when the agent has no squad.
+ * Resolves an agent's squad namespace from its group_id, or null when it is in no group, so the share/recall
+ * tools can return a clean error to the model.
  */
 export function resolveAgentNamespace(agentId: string): string | null {
   const db = getDb();

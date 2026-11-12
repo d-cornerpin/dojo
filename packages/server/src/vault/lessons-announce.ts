@@ -1,7 +1,5 @@
-// ════════════════════════════════════════
-// How the owner hears about a cycle's lessons: once, as an informational owner card (`lessons`), and as a line in the
-// Dreamer's cycle report. Nothing here writes a message, and nothing here reaches the main agent.
-// ════════════════════════════════════════
+// How the owner hears about a cycle's lessons: one informational owner card and a line in the Dreamer's report.
+// Nothing here writes a message or reaches the main agent.
 
 import { ownerConditionCleared, tellOwner } from '../healer/owner-notices.js';
 import { lessonsTouchedSince } from './lessons-store.js';
@@ -9,7 +7,6 @@ import { lessonsTouchedSince } from './lessons-store.js';
 const words = (n: number): string =>
   `${n} lesson${n === 1 ? '' : 's'} from yesterday's rough tasks. They are in the Dreamer's report; the Trainer reads the ones about techniques.`;
 
-/** The lines the Dreamer's cycle report carries about this cycle's lessons (none when there are none). */
 export function lessonReportLines(cycleStartedAtMs: number): string[] {
   const n = lessonsTouchedSince(cycleStartedAtMs).length;
   return n === 0 ? [] : [words(n)];
