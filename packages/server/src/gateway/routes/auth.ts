@@ -25,7 +25,7 @@ authRouter.post('/login', async (c) => {
   const { password } = parsed.data;
   const storedHash = getDashboardPasswordHash();
 
-  // First-run: no password set yet — set it now
+  // First-run: no password set yet, so set it now
   if (!storedHash) {
     const hash = await bcrypt.hash(password, SALT_ROUNDS);
     setDashboardPassword(hash);

@@ -1,5 +1,5 @@
 // ════════════════════════════════════════
-// Google Forms Toolkit — Native REST API
+// Google Forms Toolkit, Native REST API
 // Available to: primary agent ONLY (write tools), all agents (read tools)
 //
 // Lets agents create surveys/quizzes, add and edit questions, delete items,
@@ -594,14 +594,12 @@ export async function executeGoogleFormsTool(
         }
         // Forms API updateItem identifies the target via location.index, NOT
         // by itemId in the body. We must look up the item's current index
-        // first. (v2.5.5 fix — earlier code passed location.index=0 always,
-        // which silently overwrote whichever item happened to be at position 0
-        // regardless of the item_id the agent specified.)
+        // first (a fixed index would overwrite whichever item sits at that position).
         const targetIdx = await findItemIndex(formId, itemId);
         if (targetIdx === null) return err(`item ${itemId} not found in form ${formId}`);
         const res = await batchUpdate(formId, [{
           updateItem: {
-            item, // do NOT include itemId — Forms API ignores it for updates
+            item, // do NOT include itemId (the Forms API ignores it for updates)
             location: { index: targetIdx },
             updateMask: 'title,description,questionItem',
           },
@@ -695,7 +693,7 @@ export async function executeGoogleFormsTool(
       case 'forms_delete_form': {
         const formId = args.form_id as string;
         const permanent = args.permanent === true;
-        // Forms API has no delete endpoint — forms are Drive files, so this
+        // Forms API has no delete endpoint, so forms are Drive files, so this
         // routes through Drive. Default to TRASH (recoverable for 30 days)
         // unless the agent explicitly asks for permanent deletion.
         if (permanent) {
@@ -735,7 +733,7 @@ export async function executeGoogleFormsTool(
           { formId, fields },
         );
         if (!result.ok) return err(`reading form: ${result.error}`);
-        return outsideSpan(ok(result.data));   // v3.5 K33: the form as its author wrote it
+        return outsideSpan(ok(result.data));   // the form as its author wrote it
       }
 
       case 'forms_list_responses': {
@@ -755,7 +753,7 @@ export async function executeGoogleFormsTool(
         // explicitly so the agent can't miss it (it's a top-level field
         // either way, but the comment in the result reinforces it).
         const data = result.data as { responses?: unknown[]; nextPageToken?: string };
-        return outsideSpan(ok({   // v3.5 K33: what the respondents wrote
+        return outsideSpan(ok({   // what the respondents wrote
           responses: data.responses ?? [],
           nextPageToken: data.nextPageToken,
           has_more: Boolean(data.nextPageToken),
@@ -776,7 +774,7 @@ export async function executeGoogleFormsTool(
 
 /**
  * Internal lookup of a form's items. Uses googleSilentFetch so the lookup
- * doesn't pollute the activity log with a separate "forms_*:lookup" entry —
+ * doesn't pollute the activity log with a separate "forms_*:lookup" entry;
  * the user-visible parent action is the one that gets logged.
  */
 async function fetchItemsSilent(formId: string): Promise<Array<{ itemId: string }> | null> {
@@ -794,7 +792,7 @@ async function createItem(
   action: string,
 ): Promise<string> {
   // If no position given, query the form to find the current item count and
-  // append. Silent fetch — only the createItem batchUpdate logs as an activity.
+  // append. Silent fetch: only the createItem batchUpdate logs as an activity.
   let index = position;
   if (typeof index !== 'number') {
     const items = await fetchItemsSilent(formId);
@@ -811,7 +809,7 @@ async function createItem(
 }
 
 /**
- * Find the current index of an item by ID. Silent — no activity log entry,
+ * Find the current index of an item by ID. Silent (no activity log entry),
  * because this is plumbing for the user-visible parent action (delete,
  * update, move).
  */

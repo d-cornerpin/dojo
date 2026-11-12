@@ -153,9 +153,9 @@ vaultRouter.get('/conversations/:id', (c) => {
 // for users who have built up a backlog of junk archives and want to
 // reset the Dreamer queue without waiting for it to grind through them.
 // Body shape (one of the three required to act):
-//   { agentId: string }      — discard all unprocessed archives from this agent
-//   { olderThanDays: number } — discard archives older than N days
-//   { all: true }             — nuke every unprocessed archive
+//   { agentId: string }       discard all unprocessed archives from this agent
+//   { olderThanDays: number } discard archives older than N days
+//   { all: true }              nuke every unprocessed archive
 vaultRouter.post('/conversations/discard', async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const filter: { agentId?: string; olderThanIso?: string; all?: boolean } = {};
@@ -253,9 +253,9 @@ vaultRouter.get('/dream/config', (c) => {
 
 vaultRouter.put('/dream/config', async (c) => {
   const body = await c.req.json();
-  // 32K main-model floor (owner decision 13): this is the dreamer's MAIN model; refuse before any write.
+  // 32K main-model floor: this is the dreamer's MAIN model; refuse before any write.
   const { getDreamerAgentId } = await import('../../config/platform.js');
-  // v3.5: then the memory fit — a local model that will not fit in this box's memory is refused too.
+  // Then the memory fit: a local model that will not fit in this box's memory is refused too.
   const newModel = typeof body.modelId === 'string' ? body.modelId : null;
   const current = (getDb().prepare('SELECT model_id FROM agents WHERE id = ?').get(getDreamerAgentId()) as { model_id: string | null } | undefined)?.model_id;
   const refused = await refuseUnfitLocalModel(newModel, current, 'agent', () => refuseSmallMainModel(newModel, current));

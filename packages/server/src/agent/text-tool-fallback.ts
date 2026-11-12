@@ -1,4 +1,4 @@
-// 9604 — the text-based tool-call fallback for models that print a tool call as text instead of
+// The text-based tool-call fallback for models that print a tool call as text instead of
 // using the structured mechanism. A call is taken ONLY when its name is a tool this very call
 // offered; a JSON or tag example inside an ordinary answer (a package.json, a quoted
 // `<tool_call>` tag) is the answer, and stays in the reply untouched.

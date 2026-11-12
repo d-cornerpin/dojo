@@ -1,7 +1,7 @@
 // ════════════════════════════════════════
 // Microsoft 365 API Routes
-// Public client with PKCE — no client secret needed.
-// Multi-account (agent + user slots) as of v2.7.0.
+// Public client with PKCE, no client secret needed.
+// Multi-account (agent + user slots).
 // ════════════════════════════════════════
 
 import { Hono } from 'hono';
@@ -98,7 +98,7 @@ microsoftRouter.get('/status', (c) => {
   });
 });
 
-// POST /api/microsoft/connect — three shapes (see Google /connect):
+// POST /api/microsoft/connect, three shapes (see Google /connect):
 //   ?slot=agent|user            reconnect/connect that kind's primary
 //   ?add=true&kind=agent|user   add a NEW account to the kind (cap-enforced)
 //   ?accountId=<id>             reconnect a specific existing account
@@ -133,7 +133,7 @@ microsoftRouter.post('/connect', async (c) => {
   }
 });
 
-// GET /api/microsoft/callback — recovers slot from state token
+// GET /api/microsoft/callback: recovers slot from state token
 microsoftRouter.get('/callback', async (c) => {
   const code = c.req.query('code');
   const error = c.req.query('error');
@@ -259,7 +259,7 @@ microsoftRouter.put('/watch-email', async (c) => {
   }
 });
 
-// PUT /api/microsoft/send-email?slot=agent|user  (or ?accountId=) — toggle the
+// PUT /api/microsoft/send-email?slot=agent|user  (or ?accountId=): toggle the
 // agent's permission to send/reply/forward. Pure config flip; enforced in the
 // tool executor.
 microsoftRouter.put('/send-email', async (c) => {
@@ -283,7 +283,7 @@ microsoftRouter.put('/send-email', async (c) => {
   }
 });
 
-// POST /api/microsoft/install-office-tools — retry Office package installation
+// POST /api/microsoft/install-office-tools: retry Office package installation
 microsoftRouter.post('/install-office-tools', (c) => {
   installOfficePackages();
   return c.json({ ok: true, data: { message: 'Installation started' } });

@@ -83,7 +83,7 @@ costsRouter.put('/budget/global', async (c) => {
 
   try {
     setGlobalBudget(body.limitUsd);
-    await releaseClearedBudgetStops();   // t148: a changed limit lifts the honest stop it was holding
+    await releaseClearedBudgetStops();   // A changed limit lifts the honest stop it was holding
     return c.json({ ok: true, data: { scope: 'global', limitUsd: body.limitUsd, period: 'daily' } });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -109,7 +109,7 @@ costsRouter.put('/budget/agent/:agentId', async (c) => {
 
   try {
     setAgentBudget(agentId, body.limitUsd, period);
-    await releaseClearedBudgetStops();   // t148: a changed limit lifts the honest stop it was holding
+    await releaseClearedBudgetStops();   // A changed limit lifts the honest stop it was holding
     return c.json({ ok: true, data: { agentId, limitUsd: body.limitUsd, period } });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

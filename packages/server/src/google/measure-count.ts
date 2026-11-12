@@ -1,7 +1,7 @@
-// v3.5 DONE IS MEASURED: the Gmail counter behind a task's measure (work/measure.ts).
+// Done is measured: the Gmail counter behind a task's measure (work/measure.ts).
 //
-// It reads the mailbox the agent's own `gmail_search` / `user_gmail_search` would read — the same
-// kind (the agent's account or the user's) and the same account resolver — so the count the
+// It reads the mailbox the agent's own `gmail_search` / `user_gmail_search` would read (the same
+// kind, the agent's account or the user's, and the same account resolver), so the count the
 // engine holds the task to is the count the agent would see if it ran the query itself.
 import { googleSilentFetch } from './client.js';
 import { resolveGoogleAccountForRead } from './accounts.js';

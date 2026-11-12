@@ -2,7 +2,7 @@ import { WORK_MEASURE_REF_PROP } from './work-verb-schema.js';
 
 type PropSchema = Record<string, unknown>;
 
-// v3.5 PLAN BEFORE PROJECT — `plan` (work_open kind="project"). The agent writes it; the engine checks
+// The project plan: `plan` (work_open kind="project"). The agent writes it; the engine checks
 // the parts are there (`work/plan.ts checkPlan`) and stores them on the project. `measure` is the same
 // object a task carries, on the step that works a set of items.
 export const WORK_PLAN_PROP: PropSchema = {

@@ -1,5 +1,5 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
-// v3.5 inspect B3 — THE CONFIGURATION AND HEALTH OF THE PLATFORM, AS ONE PAGE.
+// THE CONFIGURATION AND HEALTH OF THE PLATFORM, AS ONE PAGE.
 //
 // What the dashboard spreads over several tabs, read live on the read-only connection: the
 // running version, every agent, the providers and their models, the router's tiers, the models
@@ -26,7 +26,7 @@ const MODEL_KEY = /model/i;
 const SWITCH_KEY = /_(connected|enabled)$/i;
 
 /** Every distinct setting as one line, except a FAMILY of keys that differ only after a `:` (one
- *  row per agent, say — 554 `proactive_send_streak:<id>` rows on the dev box): that is one line
+ *  row per agent, say, `proactive_send_streak:<id>`): that is one line
  *  with its count and the query that reads it, so the page stays a page and nothing is hidden. */
 function settings(rows: Row[]): string[] {
   const family = new Map<string, number>();

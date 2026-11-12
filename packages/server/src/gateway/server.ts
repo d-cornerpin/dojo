@@ -264,7 +264,7 @@ export function createServer() {
   app.route('/api/interagent', interAgentRouter); // /api/interagent/:agentId, inter-agent lane history
   app.route('/api/upload', uploadRouter); // /api/upload/:agentId, /api/upload/file/:agentId/:filename
   app.route('/api/agents', agentsRouter); // /api/agents, /api/agents/:id
-  app.route('/api/access', accessRouter); // /api/access/catalog — the Access panel's tool groups + presets
+  app.route('/api/access', accessRouter); // /api/access/catalog: the Access panel's tool groups + presets
   app.route('/api/memory', memoryRouter); // /api/memory/:agentId/*
   app.route('/api/tracker', trackerRouter); // /api/tracker/projects/*, /api/tracker/tasks/*
   app.route('/api/router', routerRouter);  // /api/router/config, /api/router/test, etc.
@@ -281,7 +281,7 @@ export function createServer() {
   app.route('/api/microsoft', microsoftRouter); // /api/microsoft/status, /api/microsoft/callback, etc.
   app.route('/api/plaud', plaudRouter);     // /api/plaud/status, /api/plaud/connect, etc.
   app.route('/api/github', githubRouter);   // /api/github/status, /api/github/connect, etc.
-  app.route('/api/reports', reportsRouter); // the report preview card — the ONLY door to posting
+  app.route('/api/reports', reportsRouter); // the report preview card, the ONLY door to posting
   app.route('/api/credentials', credentialsRouter); // agent credentials vault CRUD
   app.route('/api/contacts', contactsRouter); // DOJO contacts store CRUD
   app.route('/api/twilio', twilioRouter); // Twilio SMS + Voice (webhooks + config + numbers)
@@ -300,7 +300,7 @@ export function createServer() {
       app.use('/assets/*', serveStatic({ root: './packages/dashboard/dist' }));
       app.use('/favicon.png', serveStatic({ root: './packages/dashboard/dist', path: '/favicon.png' }));
       app.use('/dojologo.svg', serveStatic({ root: './packages/dashboard/dist', path: '/dojologo.svg' }));
-      // v2.5.5, Feng Shui theme files live in dashboard's public/themes/<id>/
+      // Feng Shui theme files live in dashboard's public/themes/<id>/
       // and are emitted to dist/themes/ at build time. ThemeProvider injects
       // <link href="/themes/<id>/theme.css"> at runtime when the user picks a
       // non-default theme. Without this handler, those requests fall through
