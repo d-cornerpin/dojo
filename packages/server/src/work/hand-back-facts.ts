@@ -1,18 +1,8 @@
-// ════════════════════════════════════════════════════════════════════════════════
-// THE HAND-BACK FACTS — what a dead turn left behind, kept ON THE ASK and given whole to the
-// one turn that serves that ask again.
-//
-// Review B1/M1 on proof-fix-f, coordinator ruling 2026-11-01: the hand-back used to be an
-// events-lane notice. That lane gists every engine row to 400 characters (`memory/lanes.ts`) and
-// is in view on every human turn, so the part that prevents a second answer never reached the
-// model, and a contact's turn saw the owner's message. The facts are now recorded on the ask's
-// own history (one `audit` event per hand-back, marker below) and rendered at SERVE time into a
-// steer on the turn whose root is that ask (`agent/v2/steps/assemble/hand-back-steer.ts`): whole,
-// in that conversation only, and with the message's age as it is when the agent reads it.
-//
-// ORDER IS THE RULING'S: what already happened and what may already have reached the person come
-// first, then the message and its age, then the instruction.
-// ════════════════════════════════════════════════════════════════════════════════
+// THE HAND-BACK FACTS: what a dead turn left behind, recorded on the ask as one `audit` event per hand-back.
+// They render at serve time into a steer on the turn serving it (`agent/v2/steps/assemble/hand-back-steer.ts`),
+// ordered: what already happened, what may have reached the person, the message and its age, then the
+// instruction. Never an events-lane notice: that lane gists rows to 400 chars (`memory/lanes.ts`) and is in
+// view on every human turn.
 import { getDb } from '../db/connection.js';
 import { appendWorkEvent } from './store.js';
 import { formatTimeForAgent } from '../services/format-time.js';
@@ -22,7 +12,7 @@ import { redactDeclaredSecretArgs } from '../credentials/secret-fields.js';
 /** The `audit` marker one hand-back writes on the ask it hands back. */
 export const HAND_BACK_MARKER = 'orphan_hand_back';
 
-/** "3 days", "2 hours", "5 minutes", "40 seconds" — the age as a person would say it. */
+/** "3 days", "2 hours", "5 minutes", "40 seconds": the age as a person would say it. */
 export function ageInWords(ms: number): string {
   const s = Math.max(0, Math.round(ms / 1000));
   const [n, unit] = s >= 86_400 ? [Math.floor(s / 86_400), 'day'] : s >= 3_600 ? [Math.floor(s / 3_600), 'hour']
@@ -33,12 +23,8 @@ export function ageInWords(ms: number): string {
 /** One effectful call the dead turn made, read back from its own stored tool rows. */
 interface DeadTurnEffect { name: string; input: unknown; finished: boolean }
 
-/**
- * What the dead turn already DID, from the ledger it wrote as it went: its `tool_use` rows and
- * their `tool_result` rows on `messages`. Counted by the same rule as `turns.effectful_calls`
- * (`isEffectfulTool`); a call whose result errored did nothing and is left out, and a call with
- * no result at all is the one the process died inside — it may or may not have happened.
- */
+/** What the dead turn already DID, from its stored tool rows (same rule as `turns.effectful_calls`); a call with no
+ *  result is the one the process died inside, so it may or may not have happened. */
 function effectsOf(agentId: string, turnNumber: number | null): DeadTurnEffect[] {
   if (turnNumber == null) return [];
   const rows = getDb().prepare(
@@ -98,8 +84,8 @@ export function recordHandBack(o: { id: string; agent_id: string; turn_number: n
   const rec: HandBackRecord = {
     marker: HAND_BACK_MARKER, turn: o.turn_number, by,
     effects: effects.map(describeEffect),
-    // M2: the count is the durable fact; a model whose calls left no structured rows (text-only tool
-    // fallback, an aliased name) still made them, and the agent must hear that much.
+    // The count is the durable fact: a model whose calls left no structured rows (text-only tool fallback,
+    // an aliased name) still made them, and the agent must hear that much.
     unnamedEffectful: Math.max(0, o.effectful_calls - effects.filter((e) => e.finished).length),
     maybeSent,
   };
@@ -107,11 +93,8 @@ export function recordHandBack(o: { id: string; agent_id: string; turn_number: n
   return { effects: Math.max(effects.length, o.effectful_calls), maybeSent: maybeSent.length };
 }
 
-/**
- * The facts for the turn serving `workId`, or null when it was never handed back. Rendered now,
- * so the age is the age the agent reads it at. Every hand-back on the ask is listed: a message
- * whose serving run keeps dying shows that pattern, with no count that silences it.
- */
+/** The facts for the turn serving `workId`, or null if it was never handed back; rendered now so the age is current.
+ *  Every hand-back is listed, so a repeating death shows as a pattern. */
 export function handBackFactsFor(workId: string): string | null {
   const db = getDb();
   const recs = (db.prepare(
@@ -134,7 +117,7 @@ export function handBackFactsFor(workId: string): string | null {
       + `${before.join(', ')} stopped the same way, and the run stopped again. `
       + 'If something in the message itself stops the run, do the part you can and say plainly what you could not do.');
   }
-  // What already happened, and what may already have reached the person — FIRST (B1).
+  // What already happened, and what may already have reached the person, comes first.
   const effects = recs.flatMap((r) => r.effects);
   if (effects.length > 0) {
     parts.push(`Already done, on the record: ${effects.map((e, i) => `(${i + 1}) ${e}`).join('; ')}. `

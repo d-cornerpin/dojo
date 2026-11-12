@@ -1,12 +1,6 @@
-// The two records a turn end leaves on a job's task, the one read of them, and the per-turn count of new
-// successful calls the turn end reads as momentum. Written by the engine (`'engine'`), so neither reads as the task moving
-// (`taskMovedAtSql`), and the park that writes `continued` does not touch the task's last-moved time
-// either (`engine-checkpoint-note.ts`): a continuation is not progress, and a stall is its absence.
-//
-//   `continued` — the turn ended mid-job WITH momentum and the engine continued it
-//                 (`agent/v2/steps/post-call-classify/job-continues.ts`);
-//   `stalled`   — a turn the engine continued came back with NO momentum. Nothing is parked or
-//                 closed; the stall ladder (`work/done/ladder.ts`) takes the task from there.
+// Turn-end records on a job's task, both engine-written so `taskMovedAtSql` never reads them as a move:
+// `continued` (ended mid-job with momentum, written by `agent/v2/steps/post-call-classify/job-continues.ts`)
+// and `stalled` (a continued turn came back with none; `work/done/ladder.ts` takes it from there).
 import { createHash } from 'node:crypto';
 import { getDb } from '../db/connection.js';
 import { appendWorkEvent } from './store.js';
@@ -15,7 +9,6 @@ import type { WorkEventKind } from './event-kinds.js';
 export const CONTINUED_EVENT = 'continued' as const satisfies WorkEventKind;
 export const STALLED_EVENT = 'stalled' as const satisfies WorkEventKind;
 
-/** `remaining` is the measure's count (or its last stored reading). */
 export interface ContinuedFacts { remaining: number; touchedThisTurn: number; novelCallsThisTurn: number; turnNumber: number }
 export interface StalledFacts { remaining: number; turnNumber: number }
 
@@ -27,11 +20,8 @@ export function recordStalled(taskId: string, f: StalledFacts): void {
   appendWorkEvent(taskId, STALLED_EVENT, 'engine', f);
 }
 
-/** How the task's last turn ended, as its spine records it: the latest `continued` or `stalled` event
- *  (the plan's "previous turn's kind"), with its payload and when it was written. null when none.
- *  ONLY those two: a `claim_turn` on a task (`work/task-turns.ts`) says a turn worked it, not how that
- *  turn ended, and a turn that parked by another door or only noted the task must not hide the job's
- *  last `continued` or the stall from the readers that ask "was the last end a continuation / a stall". */
+/** How the task's last turn ended: its latest `continued` or `stalled` event, payload and time, or null. ONLY
+ *  those two: a `claim_turn` or a note says a turn worked the task, not how it ended. */
 export function lastTurnEnd(taskId: string): { kind: 'continued' | 'stalled'; payload: Record<string, unknown>; at: number } | null {
   const r = getDb().prepare(
     `SELECT kind, payload, created_at AS at FROM work_events WHERE work_id = ? AND kind IN ('continued', 'stalled') ORDER BY id DESC LIMIT 1`,
@@ -42,7 +32,6 @@ export function lastTurnEnd(taskId: string): { kind: 'continued' | 'stalled'; pa
   return { kind: r.kind, payload, at: r.at };
 }
 
-/** A tool call as a turn made it. */
 export interface TurnCall { id?: string; name: string; arguments?: unknown }
 
 /** The tool and its arguments with object keys sorted, so key order never makes two calls differ. */
@@ -75,7 +64,6 @@ export function noteTurnCalls(taskId: string, calls: readonly TurnCall[], turn: 
   turnNovelty.set(taskId, { turnStartMs: turn.startMs, novel: (t?.turnStartMs === turn.startMs ? t.novel : 0) + novel });
 }
 
-/** The new, successful calls the turn that started at `turnStartMs` made on this task (0 when none). */
 export function novelCallsInTurn(taskId: string, turnStartMs: number): number {
   const t = turnNovelty.get(taskId);
   return t && t.turnStartMs === turnStartMs ? t.novel : 0;

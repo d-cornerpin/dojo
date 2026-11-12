@@ -1,12 +1,6 @@
-// v3.5 DONE IS MEASURED: a task's MEASURE — a read the engine can replay and count, so "how much
-// is left" is a number the engine holds, not a claim the model makes.
-//
-// The registry maps each countable read tool to its counter, one entry each, the counter file beside
-// the client it reads with. v3.5 field fix 3 (audit #5, the owner's "This was something you just fixed
-// in 3.5"): Gmail was the only counter; Outlook search and a file set under a folder join it.
-// The counter is loaded when a count is made, never at import: a static import here put this module on a
-// cycle (google/client → … → the runtime → tracker/pm-agent → back here), so any module of the PM's graph that
-// read a measure's words saw a half-loaded registry, and a test seam on `countMeasure` stopped being reached.
+// A task's MEASURE: a read the engine can replay and count, so "how much is left" is a number the engine holds.
+// Each counter is loaded when a count is made, never at import: a static import put this module on a cycle
+// (google/client, runtime, tracker/pm-agent) that left the registry half-loaded.
 const gmail = async (): Promise<typeof import('../google/measure-count.js')> => import('../google/measure-count.js');
 const outlook = async (): Promise<typeof import('../microsoft/measure-count.js')> => import('../microsoft/measure-count.js');
 const files = async (): Promise<typeof import('../tools/file-set-count.js')> => import('../tools/file-set-count.js');
@@ -59,8 +53,7 @@ export async function countMeasure(m: Measure, agentId: string, agentName: strin
   }
 }
 
-/** What the measure counts, as the board and the request print it: the quoted search, or the quoted
- *  pattern and the folder it is counted under. */
+/** What the measure counts, as the board prints it: the quoted search, or the pattern and its folder. */
 export function measureSubject(m: Measure): string {
   return isFileMeasure(m.tool) ? `"${m.args.pattern ?? '*'}" under ${m.args.path ?? ''}` : `"${m.args.query ?? ''}"`;
 }

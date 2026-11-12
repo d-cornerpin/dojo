@@ -1,6 +1,5 @@
-// AN ENGINE CHECKPOINT (the turn-time budget, the tool-loop cap, a job that continues) parks a turn and
-// queues its continuation. It carries the job's work to that continuation and notes the park on each of the
-// job's open tasks; it never touches a task's movement, so a job that stops moving still reads as stalled.
+// An engine checkpoint parks a turn and queues its continuation: it carries the job's work over and notes
+// the park on each open task. It never touches a task's movement, so a stalled job still reads as stalled.
 import { getDb } from '../db/connection.js';
 import { writeTaskLog } from '../tracker/task-log.js';
 import { turnWorkIds, carryJobWork } from './task-freshness.js';
@@ -17,8 +16,7 @@ const REASON_TEXT: Record<EngineCheckpointReason, string> = {
   'job-continues': 'the turn ended mid-job while making progress; the engine parked it for a fresh continuation',
 };
 
-/** Call just before a checkpoint queues its continuation: the work the turn served (and `jobTaskIds`) is
- *  carried to it, and each of this agent's board tasks among them still open gets one note. Returns the number noted. */
+/** Call just before a checkpoint queues its continuation; returns how many open tasks got a note. */
 export function noteEngineCheckpoint(agentId: string, reason: EngineCheckpointReason, jobTaskIds: string[] = []): number {
   const tied = [...new Set([...turnWorkIds(agentId), ...jobTaskIds])];
   carryJobWork(agentId, tied, servedOwnerMessageIds(agentId));

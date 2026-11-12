@@ -1,121 +1,35 @@
-// ════════════════════════════════════════════════════════════════════════════════
-// UX-REPAIR ROUND 3 T17 — NO PARALLEL MEMORY OF OBLIGATIONS
-//
-// SWEEP CORE-2 item 4 gave the recall lane one rule: a hit is resolved against the
-// authoritative record before the model is shown it — NO PARALLEL MEMORY OF ANSWERS.
-// This module is that rule pointed the other way. The spine (`work`, kind='commitment')
-// is the only truth about what is OWED; the vault is a memory of what was SAID, and a
-// sentence in it is never a ledger entry.
-//
-// THE DEFECT IT CLOSES (round-3 F3, measured on the live body). Three vault entries
-// described promises whose spine rows were ALL `abandoned` — `retrieval_count`
-// 1560 / 714 / 346, `confidence 1.0`, `is_obsolete 0`. Every arm of the vault's own
-// hygiene (`vault/maintenance.ts:152-215`) is keyed on `retrieval_count = 0`, so being
-// recalled is precisely what kept a dead promise alive: the feedback loop is closed by
-// `vault/store.ts`'s retrieval bump. The recall lane then rendered the line under
-// "From your long-term vault (retrieved by meaning):" in the present tense — "Waiting
-// on Bob's address before proceeding." — with no state, no age and no validity signal,
-// while the OPEN WORK block in the SAME assembled prompt correctly carried none of
-// them. Two blocks disagreed and nothing reconciled them.
-//
-// WHAT COUNTS AS TERMINAL IS ASKED OF THE SCHEMA, NOT RESTATED HERE.
-// `db/migrations/135_work_spine.sql:64` carries
-//     CHECK ((state IN ('done','failed','abandoned')) = (closed_at IS NOT NULL))
-// so `closed_at IS NOT NULL` IS the terminal predicate, enforced by the database on
-// every write. Copying the three state names into this file would be a second
-// declaration of a fact that already has exactly one owner, and it is also what lets
-// this module stay out of `work/store.ts`'s import graph entirely.
-//
-// THE TAG IS THE ONLY JOIN, AND IT IS NEVER GUESSED. The link between a vault line and
-// its commitment does not exist as a column: `openCommitment` writes no vault row and
-// the vault subsystem has no concept of a commitment (verified: zero `vault` imports
-// under `work/`, zero `work/` imports under `vault/` before this file). What DOES exist
-// is a token the model itself wrote into both the vault content and the commitment
-// title — `promise-<runid>` — plus the spine's own printable id, `cmt:<12 hex>`, which
-// the OPEN WORK block shows whole. Those two literal tokens are the entire join. There
-// is no fuzzy matching, no similarity, no title comparison: a line with no resolvable
-// token resolves to NOTHING and is handled as unverifiable, never as dead.
-//
-// AMBIGUITY RESOLVES TOWARD THE OBLIGATION. A `promise-` token is a fixture RUN id and
-// can match several commitments at once (measured: one entry, three `cmt:` rows). So a
-// tag set is "closed" only when EVERY row it resolves to is closed; one still-owed row
-// anywhere in the set makes the memory live and it is rendered exactly as today. The
-// same rule governs retirement — a shared token never retires a memory while one of its
-// siblings is still owed.
-//
-// ── UX-REPAIR ROUND 7 T28 — THE ONE SHAPE THE TOKEN RULE COULD NOT REACH ────────
-// The paragraph above says "no title comparison", and for the VAULT leg (§1–§3) that is
-// still exactly true: nothing below is reachable from `obligationVerdict`,
-// `obligationShape` or `retireObligationMemory`, and the vault's write guard and read
-// marker behave byte-identically to the day they shipped.
-//
-// §4 exists because the token rule left a measured hole. T20 counted 17 obligation lines
-// in stored summaries that cite no id at all and left them, deliberately, as an id-only
-// pass. Round 7 measured the cost: on 2026-08-11 five stored summaries for one agent
-// still carried "the fence and roof quotes are still parked, waiting on Bob's address"
-// while ALL 131 of that agent's commitment rows were terminal (87 of them naming Bob,
-// every one `abandoned`, newest closed 2026-08-06) — and the model served those lines to
-// the owner as live work. Fourth recurrence of the same class across rounds 3, 4 and 7.
-//
-// So the ban is narrowed, not lifted, and the narrowing is the whole design:
-//   · it runs ONLY on a line that is already obligation-shaped IN PROSE (§4's cue list),
-//   · it matches ONLY within one agent's own spine,
-//   · the vocabulary comes FROM the spine rows — never invented from the prose — and a
-//     row matches only when the line names BOTH its counterparty (a proper noun the
-//     title carries) AND one of its deliverable nouns,
-//   · AND the line and the title must share a three-word PHRASE containing that
-//     counterparty. Bag-of-words agreement alone was measured on the worn-in body first
-//     and it was not good enough: it joined "Yorvak is still owed the final reply" to a
-//     commitment about a codeword on the strength of "Yorvak" plus "final", and it hung a
-//     validity marker on a bare heading. The phrase requirement is what makes a match
-//     something a reader can check in one glance ("waiting on Bob's address" is in both),
-//     and it is the difference between a join and a resemblance,
-//   · and it can only ever say the thing that is safe to be wrong about: a match whose
-//     rows are wholly terminal is annotated as history; ONE still-open row anywhere in
-//     the match set leaves the line exactly as written (same rule as §2, same reason).
-// It never retires a memory, never rewrites a word, and never runs on the vault.
-// ════════════════════════════════════════════════════════════════════════════════
+// NO PARALLEL MEMORY OF OBLIGATIONS: the spine (`work`, kind='commitment') is the only truth about what is
+// OWED; the vault is a memory of what was SAID. A vault line joins the spine only by a literal token the
+// model wrote (`promise-<runid>`, `cmt:<12 hex>`), never fuzzily; a line with no resolvable token is
+// unverifiable, not dead. Terminal is `closed_at IS NOT NULL` (the schema's CHECK), so no state names are
+// copied here. A tag set is closed only when EVERY row it resolves to is. The id-less matcher
+// (`idlessObligationVerdict`) reads summary lines only (`memory/summary-obligations.ts`), never vault lines:
+// an obligation-shaped line, one agent's spine, annotating wholly terminal matches; never retiring a memory.
 
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { markObsolete } from '../vault/store.js';
-// §7's board counts ask `tracker-view.ts` which rows are the tracker's (see the §7 header).
 import { taskScope, projectScope } from './tracker-view.js';
 import { heldExpr } from './done/hold.js';
 
 const logger = createLogger('obligation-memory');
 
-// ── 1. SHAPE ────────────────────────────────────────────────────────────────────
-//
-// What makes a sentence an OBLIGATION rather than a fact. Deliberately narrow, and
-// the narrowness is the whole design: the writer guard below REFUSES on this, so a
-// false positive costs the agent a legitimate memory. Every marker here is either an
-// explicit obligation LABEL, a first-person commissive ("I will", "I need to"), a
-// first-person promise report ("I promised to"), or one of the two join tokens — all
-// four are things a note about the world does not say about itself. Measured against
-// every live vault entry on the worn-in dev box before the guard was enabled; the
-// false-positive report is in `task-W7-report.md`.
+// SHAPE: what makes a sentence an OBLIGATION. Deliberately narrow, because the writer guard REFUSES on
+// this: only a label, a first-person commissive or promise report, or a join token, which a note about the
+// world never says.
 
-/** An obligation LABEL heading the content, after the engine's optional `[date]` stamp
- *  (`vault/tools.ts` adds that prefix; it is not the model's). */
+/** An obligation LABEL heading the content, after the engine's optional `[date]` stamp (`vault/tools.ts`). */
 const OBLIGATION_LABEL =
   /^\s*(?:\[\d{4}-\d{2}-\d{2}\]\s*)?(commitment|promise|todo|to-do|action item|follow[- ]?up|owed|deliverable)\s*[:\-—]/i;
 
-/** First person, future, undertaken by the speaker. `I'll`, `I will`, `we need to`… */
 const COMMISSIVE = /\b(?:i|we)\s*(?:'ll|’ll|\s+(?:will|shall|must|am going to|'m going to|’m going to|are going to|'re going to|’re going to|need to|have to|ought to))\s+\S/i;
 
-/** First person, reporting the undertaking itself. */
 const PROMISE_REPORT = /\b(?:i|we)\s+(?:promised?|committed?|undertook|undertake|agreed)\s+to\b/i;
 
-/** The two literal join tokens. Their presence alone is obligation shape: nothing but a
- *  commitment record writes them. */
+/** The two literal join tokens; only a commitment record writes them, so either alone is obligation shape. */
 const CMT_TAG = /\bcmt:[0-9a-f]{6,}\b/gi;
 const PROMISE_TAG = /\bpromise-[a-z0-9]{6,}\b/gi;
 
-/**
- * The marker that fires, or null. Returning the MARKER rather than a boolean is what
- * lets the refusal name its reason and the report name its false positives.
- */
 export function obligationShape(content: string): string | null {
   const text = (content ?? '').trim();
   if (!text) return null;
@@ -130,7 +44,6 @@ export function obligationShape(content: string): string | null {
   return null;
 }
 
-/** Every join token in the content, deduplicated, lower-cased. Order preserved. */
 export function obligationTags(content: string): string[] {
   const out: string[] = [];
   for (const re of [CMT_TAG, PROMISE_TAG]) {
@@ -143,12 +56,9 @@ export function obligationTags(content: string): string[] {
   return out;
 }
 
-// ── 2. RESOLUTION AGAINST THE SPINE ─────────────────────────────────────────────
 
 interface CommitmentRow { id: string; state: string; closed: number }
 
-/** The commitments a token set resolves to. `cmt:` tokens are ids; `promise-` tokens are
- *  matched as a literal substring of the title the model wrote them into. */
 function rowsForTags(tags: string[]): CommitmentRow[] {
   if (tags.length === 0) return [];
   const db = getDb();
@@ -171,23 +81,14 @@ function rowsForTags(tags: string[]): CommitmentRow[] {
 }
 
 export type ObligationVerdict =
-  /** Not obligation-shaped. The caller must leave it exactly as it found it. */
   | { kind: 'not-an-obligation' }
-  /** Obligation-shaped, and at least one commitment it names is still owed. */
   | { kind: 'live'; workIds: string[] }
-  /** Obligation-shaped, and EVERY commitment it names is closed on the spine. */
   | { kind: 'closed'; workIds: string[]; states: string[] }
-  /** Obligation-shaped, and nothing it says resolves to a record. Not dead — UNKNOWN. */
+  /** Obligation-shaped, and nothing it says resolves to a record: UNKNOWN, not dead. */
   | { kind: 'unresolvable'; marker: string };
 
-/**
- * What the recall lane needs to know about one vault hit, in one call.
- *
- * The read is bounded by construction: the lane retrieves at most `vaultLimit` (6) hits
- * per turn and caches the whole block for 60s (`memory/recall-lane.ts`), so this is at
- * most six indexed lookups per minute per agent, and none at all on a turn whose hits
- * carry no obligation shape.
- */
+/** What the recall lane needs about one vault hit: at most six lookups a minute (60s block cache,
+ *  `memory/recall-lane.ts`). */
 export function obligationVerdict(content: string): ObligationVerdict {
   const marker = obligationShape(content);
   if (!marker) return { kind: 'not-an-obligation' };
@@ -198,35 +99,19 @@ export function obligationVerdict(content: string): ObligationVerdict {
   return { kind: 'closed', workIds: rows.map((r) => r.id), states: [...new Set(rows.map((r) => r.state))] };
 }
 
-// ── 3. RETIREMENT AT THE TERMINAL EXIT ──────────────────────────────────────────
 
-/**
- * A commitment just went terminal: retire the agent's vault memory of it.
- *
- * Called from the ONE writer of `work.state` once the transaction has committed, so a
- * rolled-back state change can never obsolete a memory. `markObsolete` is the vault's
- * own primitive and it sets a FLAG — it never rewrites the agent's words, which is the
- * append-only-in-substance property the vault's recorded intent protects (the engine
- * writes no free text into the agent's memory).
- *
- * Fires only where a join token exists. A commitment whose vault line carries no
- * `cmt:`/`promise-` token is invisible here and is handled at READ time instead, by the
- * validity marker — that split is deliberate, because the alternative is matching by
- * prose, which is the mechanism `839eedc` deleted 623 lines to be rid of.
- *
- * Returns the number of entries retired (0 is the normal case).
- */
+/** A commitment just went terminal: retire the agent's vault memory of it (a flag; the agent's words are
+ *  never rewritten). Called after the ONE writer of `work.state` commits. Token-less lines are handled
+ *  at READ time by the validity marker. */
 export function retireObligationMemory(p: {
   workId: string; agentId: string; title: string | null; state: string;
 }): number {
   try {
     const db = getDb();
     const selfTag = p.workId.toLowerCase();
-    // The tokens THIS row can be recognised by: its own printable id, plus any
-    // `promise-` token the agent wrote into its title.
     const tags = [selfTag, ...obligationTags(p.title ?? '')].filter((t, i, a) => a.indexOf(t) === i);
-    // A shared `promise-` token may name siblings that are still owed. Ask the spine
-    // before touching anything: if the token set is not wholly closed, nothing retires.
+    // A shared `promise-` token may name siblings still owed: if the token set is not wholly closed,
+    // nothing retires.
     const safeTags = tags.filter((t) => {
       if (t.startsWith('cmt:')) return true;
       const rows = rowsForTags([t]);
@@ -248,9 +133,7 @@ export function retireObligationMemory(p: {
     }
     return hits.length;
   } catch (err) {
-    // Best effort in exactly the way the recall lane is: losing the retirement costs a
-    // stale memory that the READ side then marks; letting it throw would take down a
-    // state transition that has already committed.
+    // Best effort: throwing would take down a state transition that has already committed.
     logger.warn('obligation memory retirement failed', {
       workId: p.workId, error: err instanceof Error ? err.message : String(err),
     }, p.agentId);
@@ -258,24 +141,10 @@ export function retireObligationMemory(p: {
   }
 }
 
-// ── 4. THE ID-LESS OBLIGATION LINE (UX-REPAIR ROUND 7 T28) ──────────────────────
-//
-// Everything below is additive and is called from exactly one place — the summary
-// annotator. §1–§3 do not reach it.
 
-/**
- * The prose an obligation line uses when the model wrote no id.
- *
- * Every cue here was read off the ten stored lines the round-7 incident produced
- * ("still parked", "waiting on Bob's address", "pending Bob's address", "two
- * outstanding quotes", "remain parked"). It is a GATE, not the decision: a line that
- * fires this and matches no commitment of its own agent is still left alone.
- */
 const IDLESS_OBLIGATION_PROSE =
   /\b(?:waiting (?:on|for)|awaiting|parked|still owed?|outstanding|pending)\b/i;
 
-/** Words a title capitalises that are not counterparties. Sentence-initial words are
- *  dropped positionally; this list covers the rest ("… address. Waiting on Bob's …"). */
 const NOT_A_COUNTERPARTY = new Set([
   'email', 'send', 'sends', 'sent', 'reply', 'record', 'note', 'waiting', 'wait',
   'commitment', 'promise', 'deliver', 'the', 'once', 'after', 'before', 'later',
@@ -283,9 +152,6 @@ const NOT_A_COUNTERPARTY = new Set([
   'reminder', 'task', 'project', 'ask',
 ]);
 
-/** Title words that describe the PROCEDURE rather than the thing owed. Excluding them is
- *  what makes "names the deliverable" mean something: a line that shares only "address"
- *  with a title has not named what is owed. */
 const NOT_A_DELIVERABLE = new Set([
   'address', 'send', 'sends', 'sending', 'sent', 'once', 'later', 'today', 'tomorrow',
   'before', 'after', 'proceeding', 'waiting', 'provides', 'need', 'needs', 'email',
@@ -293,24 +159,15 @@ const NOT_A_DELIVERABLE = new Set([
   'his', 'her', 'their', 'have', 'will', 'until', 'about', 'over',
 ]);
 
-/** Singular form for the crude plural the summariser writes ("quotes" ↔ "quote"). */
 function fold(word: string): string {
   return word.length > 4 && word.endsWith('s') && !word.endsWith('ss') ? word.slice(0, -1) : word;
 }
 
 interface NamedCommitmentRow { id: string; state: string; closed: number; title: string }
 
-/**
- * A run/fixture identifier the model wrote into the prose — `promise-bms6yg5klro`,
- * `failproj-bmsgoeiyu25-a1`. Alphabetic prefix, then a segment that is long AND carries a
- * digit, which is what separates an id from an ordinary hyphenated word
- * ("technique-distillation" is not an id) and from a UUID fragment.
- *
- * It exists for ONE purpose: when a line and a title BOTH name an id and the ids differ,
- * the model has told us they are different records and no amount of shared phrasing
- * outranks that. On a body full of fixture runs whose titles differ only in that id, this
- * is the difference between joining the right row and joining its twin.
- */
+/** A run/fixture id in the prose (`promise-bms6yg5klro`: a prefix, then a long segment with a digit).
+ *  When a line and a title both name an id and the ids differ they are different records, whatever
+ *  phrasing they share. */
 const RUN_ID_TOKEN = /\b[a-z]{4,}-(?=[a-z0-9]*\d)[a-z0-9]{8,}(?:-[a-z0-9]+)?\b/gi;
 
 function runIds(text: string): string[] {
@@ -318,22 +175,18 @@ function runIds(text: string): string[] {
   return [...new Set((text.match(RUN_ID_TOKEN) ?? []).map((t) => t.toLowerCase()))];
 }
 
-/** Possessives collapse so "Bob's address" and "Bob" are the same name, then words only.
- *  Both sides of every comparison go through this one function. */
 function normalizedWords(text: string): string[] {
   return (text.replace(/['’]s\b/gi, '').match(/\b[A-Za-z][A-Za-z-]*\b/g) ?? [])
     .map((w) => w.toLowerCase());
 }
 
-/** The three-word phrases of a text. Three, not two: two-word agreement on "waiting on"
- *  is the cue itself and joins nothing. */
+/** The three-word phrases of a text: two-word agreement on "waiting on" is the cue itself. */
 function trigrams(words: string[]): Set<string> {
   const out = new Set<string>();
   for (let i = 0; i + 2 < words.length; i++) out.add(`${words[i]} ${words[i + 1]} ${words[i + 2]}`);
   return out;
 }
 
-/** One spine row reduced to what a line has to share with it to match. */
 export interface RowVocabulary {
   row: NamedCommitmentRow;
   counterparties: string[];
@@ -350,8 +203,6 @@ function vocabularyOf(row: NamedCommitmentRow): RowVocabulary {
   const deliverables: string[] = [];
   words.forEach((w, i) => {
     const lower = w.replace(/['’]s$/i, '').toLowerCase();
-    // A counterparty is a proper noun the title carries — capitalised, and never the
-    // word the title happens to open with.
     if (i > 0 && /^[A-Z][a-z]{2,}(?:['’]s)?$/.test(w) && !NOT_A_COUNTERPARTY.has(lower)
         && !counterparties.includes(lower)) counterparties.push(lower);
     const f = fold(lower);
@@ -367,7 +218,6 @@ function vocabularyOf(row: NamedCommitmentRow): RowVocabulary {
   };
 }
 
-/** Agent-scoped, read once per sweep/annotation rather than per line. */
 function commitmentVocabulary(agentId: string): RowVocabulary[] {
   const rows = getDb().prepare(
     `SELECT id, state, (closed_at IS NOT NULL) AS closed, COALESCE(title, '') AS title
@@ -378,20 +228,11 @@ function commitmentVocabulary(agentId: string): RowVocabulary[] {
 }
 
 export type IdlessObligationVerdict =
-  /** Not obligation-shaped in prose, or it names nobody this agent ever owed anything to. */
   | { kind: 'not-an-obligation' }
-  /** It names a commitment of this agent's that is STILL OWED. Leave it exactly as written. */
   | { kind: 'live'; workIds: string[] }
-  /** Every commitment it names is closed on the spine. */
   | { kind: 'closed'; workIds: string[]; states: string[]; newest: string; matchedTitle: string }
-  /** It names a counterparty this agent has commitments with, but no deliverable of theirs. */
   | { kind: 'unmatched'; counterparty: string };
 
-/**
- * Resolve ONE id-less summary line against ONE agent's commitment spine.
- *
- * `vocab` is passed in so a sweep over a whole body reads the spine once per agent.
- */
 export function idlessObligationVerdict(
   line: string, agentId: string, vocab?: RowVocabulary[],
 ): IdlessObligationVerdict {
@@ -403,8 +244,6 @@ export function idlessObligationVerdict(
   const words = normalizedWords(text);
   const lineWords = new Set(words.map(fold));
   const linePhrases = trigrams(words);
-  // The counterparty must be named as a PROPER NOUN in the line too — "bob" inside a URL
-  // or a lowercase word is not somebody being owed something.
   const properInLine = new Set(
     (text.match(/\b[A-Z][a-z]{2,}(?:['’]s)?\b/g) ?? [])
       .map((w) => w.replace(/['’]s$/i, '').toLowerCase()),
@@ -417,12 +256,9 @@ export function idlessObligationVerdict(
   for (const v of rows) {
     const person = v.counterparties.find((c) => properInLine.has(c));
     if (!person) continue;
-    // Both sides named an id and they disagree: the model already told us these are two
-    // different records.
     if (lineIds.length > 0 && v.ids.length > 0 && !v.ids.some((i) => lineIds.includes(i))) continue;
-    // The phrase test: line and title must share three consecutive words, one of them the
-    // counterparty. Without it, agreement on a name plus one common noun is enough to
-    // join two unrelated records — measured, and it was.
+    // The phrase test: three consecutive shared words, one of them the counterparty (a name plus a noun
+    // joins strangers).
     const shared = [...linePhrases].some((p) => v.phrases.has(p) && p.split(' ').includes(person));
     if (!shared) continue;
     counterpartySeen ??= person;
@@ -433,7 +269,7 @@ export function idlessObligationVerdict(
       ? { kind: 'not-an-obligation' }
       : { kind: 'unmatched', counterparty: counterpartySeen };
   }
-  // Same law as §2: one still-owed row anywhere in the set makes the line live.
+  // One still-owed row anywhere in the set makes the line live.
   const open = matched.filter((m) => !m.row.closed);
   if (open.length > 0) return { kind: 'live', workIds: open.map((m) => m.row.id) };
   return {
@@ -445,31 +281,14 @@ export function idlessObligationVerdict(
   };
 }
 
-/** Exposed so a caller sweeping many lines of one agent reads the spine once. */
 export function commitmentVocabularyFor(agentId: string): RowVocabulary[] {
   return commitmentVocabulary(agentId);
 }
 
-// ── 5. THE SET, NOT THE LINE (HARNESS-LEARNINGS HL5) ────────────────────────────
-//
-// §1–§4 all answer the same question: "is THIS line still owed?" — and they answer it
-// by marking the line where it sits. That is annotation, and the record says annotation
-// loses. T28 appended a terminal-state marker to twenty stored lines and the floor model
-// parroted "still parked, waiting on Bob's address" 2/2 (W11); T28b moved the same marker
-// to the front of the line and it parroted 2/2 again (W12) — both times while its own
-// OPEN WORK block was empty and its own `work_update(list)` had just answered "No active
-// tasks". Four driven runs across two sittings, zero behaviour change.
-//
-// dsh's rule is not a better marker (`deepseek-harness-findings.md` P2.2/P2.3, quoting
-// their own strings): state is RE-PUBLISHED as a whole superseding snapshot, with an
-// explicit sentence when the set is EMPTY, and it is never amended in place. So this
-// section answers the other question — "what is owed, all of it, right now?" — and the
-// recall lane publishes THAT instead of serving lines one at a time.
-//
-// IT LIVES HERE, beside the resolver, for the reason the resolver's own header gives:
-// "what does the spine say is owed" must keep having exactly one owner. The predicate is
-// §2's predicate, unchanged — `closed_at IS NULL`, which the schema's own CHECK makes the
-// definition of "still owed" — so a snapshot can never disagree with a per-line verdict.
+// THE SET, NOT THE LINE: annotating a stored line in place was measured not to change what the model says,
+// so state is RE-PUBLISHED as a whole superseding snapshot (an explicit sentence when EMPTY). It lives here
+// so "what does the spine say is owed" keeps one owner: `closed_at IS NULL`, so a snapshot never disagrees
+// with a per-line verdict.
 
 export interface LiveCommitment {
   id: string;
@@ -478,18 +297,9 @@ export interface LiveCommitment {
   openedAt: number;
 }
 
-/**
- * Every commitment this agent still owes, newest first. The whole set — no age cutoff, no
- * conversation scope, no state allowlist beyond the schema's own terminal predicate. A
- * snapshot that quietly omitted a row would make "anything not listed is not owed" a lie,
- * which is the one sentence this whole task turns on.
- *
- * Deliberately NOT `openObligations()` (`work/store.ts`): that reader serves the OPEN WORK
- * block, and it is narrower in two ways that are correct there and wrong here — it drops
- * rows past the ageing horizon (ageing demotes to the daily brief, requirement 4b) and it
- * excludes `claimed`. Reusing it would make the snapshot's completeness claim false for an
- * aged or in-flight commitment. One question, one predicate: the resolver's.
- */
+/** Every commitment this agent still owes, newest first, with no age cutoff or scope: a snapshot that
+ *  omitted a row makes "anything not listed is not owed" false. Not `openObligations()`
+ *  (`work/store.ts`): it drops aged rows and `claimed`. */
 export function liveCommitments(agentId: string): LiveCommitment[] {
   return getDb().prepare(
     `SELECT id, COALESCE(title, '') AS title, state, opened_at AS openedAt
@@ -499,20 +309,9 @@ export function liveCommitments(agentId: string): LiveCommitment[] {
   ).all(agentId) as LiveCommitment[];
 }
 
-/**
- * Has this agent ever recorded a commitment? The snapshot's gate.
- *
- * MEASURED, not assumed: gating on RETRIEVAL would never fire on the case this exists for.
- * §2 already tells the recall lane to DROP a closed obligation hit, so on the body this
- * class was measured on — 136 commitment rows, every one terminal — an obligation-shaped
- * hit reaches the render and is discarded before anything could gate on it. The spine is
- * the gate instead: one indexed lookup, deterministic, and it is what makes the empty-set
- * statement reachable at all.
- *
- * An agent that has never made a commitment publishes nothing, which is also correct: there
- * is no earlier mention for a snapshot to supersede, and a lane that says "you owe nothing"
- * to an agent with no history is noise.
- */
+/** Has this agent ever recorded a commitment? The snapshot's gate: the spine, not retrieval, since the
+ *  recall lane drops a closed obligation hit before anything could gate on it. With no history there is
+ *  nothing to supersede. */
 export function hasCommitmentHistory(agentId: string): boolean {
   const row = getDb().prepare(
     `SELECT 1 FROM work WHERE kind = 'commitment' AND agent_id = ? LIMIT 1`,
@@ -520,35 +319,14 @@ export function hasCommitmentHistory(agentId: string): boolean {
   return row !== undefined;
 }
 
-// ── 6. THE SAME ANSWER, AT THE DOOR (HARNESS-LEARNINGS HL6) ─────────────────────
-//
-// The sharpest datum in this whole class is W8's driven replay, because in it the model did
-// the RIGHT thing: asked before speaking. `work_update(action="list")` answered "No active
-// tasks." and, four seconds later, the reply asserted the dead Bob quotes as still parked.
-// That is not a model ignoring its instruments. That tool lists TASKS and PROJECTS and has
-// never listed commitments at all, so a model that checks its board is told the truth about
-// two thirds of it and left to infer the third — and inferring from an older summary is the
-// rational move when nothing contradicts it.
-//
-// dsh's F4 in one sentence: "a static instruction does not reliably reach the retry decision,
-// while the error message is present exactly when the model must act." The decision moment
-// here is the board read. So the answer goes there, in the same words the snapshot uses,
-// FROM THE SAME READER — one owner of "what does the spine say is owed", now rendered at two
-// surfaces instead of answered by two mechanisms.
-//
-// It is a tool RESULT, so it costs zero cached prefix bytes — the [FILED] precedent (W17),
-// verified the same way at W18's release check.
+// THE SAME ANSWER AT THE DOOR: the board read (`work_update(action="list")`) never lists commitments, so
+// the answer goes there in the snapshot's words from the same reader. It is a tool RESULT, so it costs zero
+// cached prefix bytes.
 
-/** The whole-board statement when nothing is open. One literal, so the tool result, the test
- *  and any future reader all read the same bytes and cannot drift. */
 export const COMMITMENT_POSITION_NONE =
   'Commitments: none open. Every commitment on your board is closed, so nothing is owed — '
   + 'whatever an older summary or note still says in the present tense.';
 
-/**
- * One line for a board-read result, or null when this agent has no commitment history at all
- * (the same gate the snapshot uses, for the same reason: nothing to correct, so no noise).
- */
 export function commitmentPositionLine(agentId: string): string | null {
   if (!hasCommitmentHistory(agentId)) return null;
   const live = liveCommitments(agentId);
@@ -558,61 +336,23 @@ export function commitmentPositionLine(agentId: string): string | null {
     + 'tasks and projects only.';
 }
 
-// ── 7. THE REST OF THE BOARD, COUNTED (UX-REPAIR ROUND 11 T44) ──────────────────
-//
-// §5 answers "what commitments are owed, all of them, right now?" and the recall lane
-// publishes that set. Round-11 S4 is the same defect one noun over: the reply said "One
-// thing's still on my plate" while the live board held TEN non-terminal rows — six owner
-// `ask` rows in state `blocked` and four tracker `task` rows — and the turn had made no
-// board-wide read at all. Nothing in the model's context could source a count of any kind:
-// the snapshot is commitments-only by charter, and `engine.open-work` is
-// conversation-scoped, 600-char capped, ageing-filtered and excludes `claimed`.
-//
-// So this reader answers "how much else is on the board?" — COUNTS, never lists. That
-// distinction is the whole collision argument with `engine.open-work`: that block shows SOME
-// rows, this states ALL the numbers, and the line the lane renders says which it is and
-// points at the list door. A count is also O(1) bytes, so completeness here needs no cap and
-// no ageing horizon — the two things that make the other surface incomplete.
-//
-// IT LIVES HERE for §5's reason, restated: "what does the spine say is outstanding" keeps
-// exactly one owner. The predicate is §2's predicate unchanged — `closed_at IS NULL`, which
-// the schema's own CHECK makes the definition of terminal — and the scope is the agent's.
-//
-// WHICH ROWS ARE THE TRACKER'S is asked of `tracker-view.ts`, which owns that question
-// (`taskScope`/`projectScope`). Re-typing the three root kinds here would be a second
-// declaration of a fact that already has an owner, and it would also make this count
-// disagree with the door it sends the model to: T4's fan-out opens its countdown children as
-// `kind='task'` with `root_kind='a2a_thread'`, and those are pieces of an ask that
-// `work_update(action="list")` does not show.
+// THE REST OF THE BOARD, COUNTED: counts, never lists (O(1) bytes, so no cap or ageing horizon), beside
+// `engine.open-work`, which shows SOME rows. Which rows are the tracker's is asked of `tracker-view.ts`:
+// fan-out countdown children (`kind='task'`, `root_kind='a2a_thread'`) are pieces of an ask that the list
+// door does not show.
 
 export interface BoardCounts {
-  /** Non-terminal `kind='ask'` rows: someone's unanswered request to this agent. */
   asks: number;
   asksBlocked: number;
-  /** Non-terminal tracker rows — the board's own two nouns, join pieces excluded. */
   tracker: number;
   trackerBlocked: number;
 }
 
 const TRACKER_ROWS = `((${taskScope('w')}) OR (${projectScope('w')}))`;
 
-/**
- * The whole board, in four numbers. One statement, one pass, one predicate.
- *
- * Commitments are deliberately absent: §5 already renders that set completely and the line
- * this feeds sits directly beneath it. Two answers to one question is the parallel memory
- * this module exists to prevent.
- */
-// ── T69b: `boardLastChangedAt` IS DELETED, not parked beside its replacement ─────────────
-// T67b added it so HL5's snapshot could stamp itself with the board's last change instead of
-// the wall clock. T69b removed the stamp entirely — measured on the dev box (`7c95ab5`, four
-// consecutive quiet turns), NO definition of "when the board last changed" can be stable on a
-// conversational agent, because serving a turn OPENS AN ASK ROW that is open while the turn is
-// assembled and is counted by the block itself. Every variant lands on the current turn, and
-// the `as of` minute was the only byte that differed in the whole 995-char snapshot on every
-// judged pair. The block states what it PRINTS and nothing else now (`memory/recall-lane.ts`,
-// SNAPSHOT_HEAD), so this function had exactly zero callers left and is gone rather than left
-// as a second, unreferenced way to ask a question nothing asks.
+/** The whole board in four numbers, one statement and one predicate. Commitments are absent: that set is
+ *  rendered completely by the snapshot, and two answers to one question is the parallel memory this
+ *  module prevents. */
 
 export function openBoardCounts(agentId: string): BoardCounts {
   const row = getDb().prepare(

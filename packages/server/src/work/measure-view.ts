@@ -1,12 +1,7 @@
-// v3.5 DONE IS MEASURED — the Progress line a task carries on its agent's own board
-// (`memory/work-board-lane.ts`): what the task's calls touched (the engine's ledger) and what its
-// measure last returned, of how many at the start, and WHEN it was read. Facts from the records
-// only, never a claim.
-//
-// The instant is the RECORDED instant, never "N minutes ago": the board's T67b rule (a block that
-// is a function of the wall clock cannot be asserted about, and the current time is already in
-// view). The two model-authored terms (the query and the unit) are cut at the board's title width
-// when the view cannot hold them whole, like every other term the board does not author.
+// The Progress line a task carries on its agent's board (`memory/work-board-lane.ts`): what the task's calls
+// touched, what its measure last returned, of how many at the start, and when. The instant is the RECORDED
+// instant, never "N minutes ago": a block that follows the wall clock cannot be asserted about. The query and
+// unit (model-authored) are cut at the board's title width.
 import { getDb } from '../db/connection.js';
 import { parseMeasure, describeMeasure, measureSubject, type Measure } from './measure.js';
 import { ledgerTotals } from './ledger-store.js';
@@ -49,7 +44,7 @@ export function formatMeasureLine(f: MeasureFacts, termWidth = Infinity): string
   return `${head} returned ${n(f.remaining)} remaining (of ${start} at start), measured ${recordedInstant(f.at)}`;
 }
 
-/** v3.5 Part C1 (the assignment notice, `tracker/notify.ts`): a measured task states its count and the continuation; an unmeasured one is told how to get one. */
+/** The assignment notice's measure line (`tracker/notify.ts`): its count, or how to set a measure. */
 export function assignmentMeasureLine(taskId: string): string {
   const f = readMeasureFacts(taskId);
   if (!f?.measure) {
