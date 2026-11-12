@@ -1,41 +1,9 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// GITHUB CONNECTS BY DEVICE FLOW — ONE SCOPE, NO SECRET, AND A CLOCK THAT ANSWERS TO GITHUB.
-//
-// ── WHY DEVICE FLOW, BEYOND OWNER DECISION D3 ──
-// Google and Microsoft connect by REDIRECT, and the Settings page carries a standing warning
-// because of it: OAuth only works from `localhost`, and over a Cloudflare tunnel the callback
-// silently fails. Device flow has NO CALLBACK ROUTE AT ALL — nothing to add to
-// `ALWAYS_PUBLIC_PATHS`, nothing that breaks when the box is reached through a tunnel. That is
-// a real advantage of this shape, not a consolation for D3.
-//
-// ── THE SCOPE, PINNED: `public_repo`. ONE STRING. ──
-// It is the narrowest scope a GitHub OAUTH APP offers that can create an issue on a public
-// repository; there is no issues-only OAuth scope. The narrower GitHub-APP permission
-// (`Issues: write` on one repository) was measured and REFUSED: a GitHub App's user-to-server
-// token EXPIRES, and refreshing it requires the client SECRET — which D3 forbids shipping
-// ("no secret in the build, nothing extractable"). An OAuth App's device-flow exchange needs
-// no secret and its token does not expire. The client id is PUBLIC by design and lives in the
-// `config` table, set once by the owner; there is no secret anywhere in this build to leak.
-//
-// ── THE CLOCK, AND WHY IT IS NOT OURS (NO-DOOMED-DIALS census row 39) ──
-// Every wait here is a number GITHUB DECLARED. `/login/device/code` answers with `interval`
-// (how often we may poll) and `expires_in` (how long the user's code lives); the `slow_down`
-// error answers with a NEW `interval` and we obey it. Our two constants are a FLOOR and a
-// CEILING that refuse an absurd server answer, and nothing else — that is P2 satisfied by
-// DECLARATION, the same argument `providers.first_chunk_timeout_ms` makes on row 1.
-//
-// P3: when a bound trips, we FAIL HONESTLY TO THE HUMAN AND STOP. Expiry, denial, an error we
-// have never seen, or an endpoint we cannot reach all END the loop and broadcast a sentence
-// the card shows. Nothing re-dials, nothing auto-restarts, nothing retries in the background.
-// A user pressing Connect again is a NEW HUMAN ACT and is the only restart there is.
-//
-// P1 is not engaged: this bounds a network handshake between two servers, never an agent's
-// work, and no clock here judges whether anything is stuck.
-//
-// NO `net-guard`, the same call `google/`, `microsoft/`, `twilio/` and `update.ts` all make:
-// that header says the address check exists for ATTACKER-INFLUENCEABLE URLs, and these three
-// are fixed product constants no model, agent or user input reaches.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// Connects GitHub by device flow: no callback route (so it works through a tunnel) and no client secret.
+// Scope is `public_repo`, the narrowest OAuth App scope that can open a public issue; a GitHub App token
+// would expire and need the client secret to refresh.
+// Every wait is a number GitHub declared (`interval`, `expires_in`, `slow_down`); our constants only bound them.
+// Any stop (expiry, denial, unknown error, unreachable) ends the loop and tells the card; Connect restarts it.
+// No `net-guard`: the three URLs are fixed constants that no model, agent or user input reaches.
 
 import { broadcast } from '../gateway/ws.js';
 import { createLogger } from '../logger.js';
@@ -52,7 +20,7 @@ export const GITHUB_USER_URL = 'https://api.github.com/user';
 export const DEVICE_POLL_MIN_INTERVAL_MS = 5_000;
 /** CEILING on GitHub's declared `expires_in`. Refuses a server answer of a week. */
 export const DEVICE_POLL_MAX_LIFETIME_MS = 900_000;
-/** Bound on ONE HTTP call. Not a retry budget — a call that trips this ends the flow. */
+/** Bound on ONE HTTP call; a call that trips it ends the flow (no retry). */
 export const DEVICE_HTTP_TIMEOUT_MS = 10_000;
 
 export interface DeviceFlowState {
@@ -64,10 +32,7 @@ export type DeviceFlowStart =
 
 const NOT_CONFIGURED = 'GitHub is not configured on this box yet.';
 
-// ── The one flow in flight ──
-// ONE at a time, held in a module variable keyed by its device code — the same in-memory
-// flow-plus-lifetime shape `google/auth.ts` uses for its state parameter. A second Connect
-// press cancels the first rather than racing it.
+// One flow at a time, keyed by its device code; a second Connect press cancels the first.
 
 interface Flow { deviceCode: string; state: DeviceFlowState; cancelled: boolean }
 let current: Flow | null = null;
@@ -158,8 +123,7 @@ async function pollUntilAnswered(flow: Flow): Promise<void> {
   for (;;) {
     await sleep(intervalMs);
     if (flow.cancelled || current !== flow) return;
-    // GitHub's own `expires_in`, honestly surfaced. Not a local kill: the code really is dead
-    // on GitHub's side, and the only cure is a new one, which only the user can ask for.
+    // GitHub's own `expires_in`: the code is dead on GitHub's side, so only a new Connect helps.
     if (Date.now() >= flow.state.expiresAt) {
       fail(flow, 'That sign-in code expired. Press Connect to get a new one.');
       return;
@@ -172,7 +136,7 @@ async function pollUntilAnswered(flow: Flow): Promise<void> {
         grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
       });
     } catch (err) {
-      // P3: a call that failed is not re-dialled. It ends the flow and says so.
+      // A failed call is not re-dialled: it ends the flow and says so.
       fail(flow, `Could not reach GitHub (${err instanceof Error ? err.message : String(err)}). Press Connect to try again.`);
       return;
     }
@@ -206,9 +170,7 @@ export async function startDeviceFlow(): Promise<DeviceFlowStart> {
   if (!deviceCode || !userCode) {
     return { ok: false, error: `GitHub did not start a sign-in (${String(body.error ?? 'no device code')}).` };
   }
-  // BOTH numbers are GitHub's. Ours only refuse the absurd: a floor under the interval so a
-  // zero cannot become a hot loop, a ceiling over the lifetime so a bad answer cannot park a
-  // loop here for a week.
+  // Both numbers are GitHub's; ours only floor the interval (no hot loop) and cap the lifetime.
   const state: DeviceFlowState = {
     userCode,
     verificationUri: typeof body.verification_uri === 'string'
@@ -227,5 +189,5 @@ export async function startDeviceFlow(): Promise<DeviceFlowStart> {
   return { ok: true, state };
 }
 
-// What the CARD is told is not this module's job: the status unions the stored row with this
-// live flow, so it lives in `github/status.ts`, which reads both and is imported by neither.
+// The card's status unions the stored row with this flow in `github/status.ts`, which imports both and is
+// imported by neither.
