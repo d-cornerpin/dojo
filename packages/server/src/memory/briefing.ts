@@ -98,19 +98,12 @@ Do NOT include preamble like "Here is your briefing" — start directly with the
       messages: [{ role: 'user', content: userMessage }],
       systemPrompt,
       tools: false,
-      // t88: the continuity brief — a few paragraphs handed to the next turn, not a conversation.
+      // The continuity brief: a few paragraphs handed to the next turn, not a conversation.
       purpose: 'continuity_brief',
     });
 
-    // PHASE-2 T7 (4b): aged obligations are never silently dropped. Anything still owed past
-    // the ageing threshold gets a deterministic one-line-per-item section appended AFTER the
-    // model pass, so a weak model cannot drop it ("still open, no answer: X, ask again or
-    // drop?"). Only an explicit resolution or dismissal closes one.
-    //
-    // THIS IS NOW A PURE READ. The mechanism it replaces (`markStaleLoops`) fired an UPDATE
-    // from inside this generator, flipping rows to `status='stale'` and then listing what it
-    // had just written — a report that decided its own data. Ageing is a comparison against
-    // `work.opened_at` now; the brief changes nothing.
+    // Work still owed past the ageing threshold is appended AFTER the model pass, one line per item, so a
+    // weak model cannot drop it. This is a pure read: ageing compares against `work.opened_at`, writes nothing.
     const agedSection = buildAgedWorkBriefSection(agentId);
     const content = agedSection ? `${result.content}\n\n${agedSection}` : result.content;
 
@@ -143,17 +136,9 @@ Do NOT include preamble like "Here is your briefing" — start directly with the
 // ── Get Latest Briefing ──
 
 /**
- * T67b — `generatedAt` IS RETURNED, AND THAT IS THE LOAD-BEARING PART.
- *
- * `lane.briefing` stamped its block `generated="${new Date()...}"` — THE ASSEMBLY CLOCK —
- * from inside the cacheable message region. The owner's local-DS4 trace found the prefix
- * diverging at token ~33,600 ON A DATE, with ~14,200 tokens re-prefilled every turn. A
- * briefing has exactly one generation date and the row has always recorded it; the lane was
- * simply reading the wrong clock. Returning the column is what lets the block state the
- * truth AND hold still between two assemblies of the same row.
- *
- * Format is the column's own (`datetime('now')` -> `YYYY-MM-DD HH:MM:SS`, or an ISO string
- * from `updateBriefing`'s manual path); the lane takes the leading date and nothing else.
+ * `generatedAt` is returned so the briefing lane can state the row's own generation date. Reading the
+ * assembly clock instead would put a changing date in the cacheable region. Format is the column's own
+ * (`YYYY-MM-DD HH:MM:SS`, or an ISO string from `updateBriefing`); the lane takes the leading date only.
  */
 export function getLatestBriefing(
   agentId: string,

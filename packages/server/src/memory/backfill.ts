@@ -1,7 +1,4 @@
-// ════════════════════════════════════════
-// Embedding Backfill (Phase 5C)
-// One-time job to generate embeddings for existing data
-// ════════════════════════════════════════
+// Generates embeddings for rows that have none: the boot drain and the owner-requested re-embed.
 
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
@@ -11,12 +8,8 @@ import { broadcast } from '../gateway/ws.js';
 
 const logger = createLogger('backfill');
 
-// Cap the work PER RUN. On a months-deep box the un-embedded backlog can be tens
-// of thousands of rows; embedding them all in ONE pass would peg the local
-// embedder for hours on the first boot after an upgrade. The boot drain re-fires
-// on an interval (index.ts), every embedded row is excluded by the LEFT JOIN on
-// the next pass, and rows are taken oldest-first (the file's existing intent), so
-// a bounded slice per run drains the backlog incrementally without ever blocking.
+// Cap per run: a months-deep backlog embedded in one pass would peg the local embedder for hours.
+// The boot drain (index.ts) re-fires on an interval; embedded rows drop out via the LEFT JOIN.
 const BACKFILL_PER_RUN_CAP = 500;
 
 let backfillRunning = false;
@@ -31,9 +24,8 @@ export function getBackfillProgress(): typeof backfillProgress {
 }
 
 /**
- * `includeStale` also takes the rows whose vector was made by a DIFFERENT embedding model than the
- * current one, and replaces them. Unset, it is on only when the current model is free to use; the
- * owner's own backfill request passes true.
+ * `includeStale` also takes rows embedded by a different model than the current one and replaces them.
+ * Unset, it is on only when the current model is local; the backfill route and embedding switch pass true.
  */
 export async function runBackfill(opts?: { includeStale?: boolean }): Promise<{ completed: number; failed: number; total: number }> {
   if (backfillRunning) {
@@ -49,14 +41,11 @@ export async function runBackfill(opts?: { includeStale?: boolean }): Promise<{ 
   // A row to do: no vector yet, or (when asked) a vector made by another model.
   const todo = includeStale ? '(e.id IS NULL OR e.embedding_model IS NOT ?)' : 'e.id IS NULL';
   const todoParams: unknown[] = includeStale ? [model] : [];
-  // Taking old-model rows back: the newest first, so the memories most likely to be asked about come back first.
-  // The plain drain of never-embedded rows keeps its oldest-first order.
+  // A re-embed run goes newest first (likeliest to be asked about); the plain drain goes oldest first.
   const dir = includeStale ? 'DESC' : 'ASC';
 
   try {
-    // Collect un-embedded messages (with sufficient content), oldest first, capped
-    // to the per-run budget so a deep backlog is drained incrementally, not in one
-    // multi-hour pass.
+    // Un-embedded messages with sufficient content, capped to the per-run budget.
     const messages = db.prepare(`
       SELECT m.id, m.agent_id, m.content
       FROM messages m
@@ -76,8 +65,8 @@ export async function runBackfill(opts?: { includeStale?: boolean }): Promise<{ 
       LIMIT ?
     `).all(...todoParams, BACKFILL_PER_RUN_CAP) as Array<{ id: string; agent_id: string; content: string }>;
 
-    // Collect un-embedded techniques (intent surface only: name + description
-    // + tags — recall matches the ask against what a technique is FOR).
+    // Un-embedded techniques: intent surface only (name, description, tags), since recall matches
+    // the ask against what a technique is for.
     const techniques = db.prepare(`
       SELECT t.id, t.name, t.description, t.tags
       FROM techniques t
@@ -87,8 +76,7 @@ export async function runBackfill(opts?: { includeStale?: boolean }): Promise<{ 
       LIMIT ?
     `).all(...todoParams, BACKFILL_PER_RUN_CAP) as Array<{ id: string; name: string; description: string | null; tags: string | null }>;
 
-    // One combined per-run budget across all three sources (messages first, so a
-    // deep message backlog drains before the small summary/technique tails).
+    // One combined per-run budget; messages first so a deep message backlog drains before the tails.
     const messageItems = messages.map(m => ({ type: 'message' as const, id: m.id, agentId: m.agent_id, content: m.content }));
     const summaryItems = summaries.map(s => ({ type: 'summary' as const, id: s.id, agentId: s.agent_id, content: s.content }));
     const items: Array<{ type: 'message' | 'summary' | 'technique'; id: string; agentId: string | null; content: string }> = [
@@ -100,8 +88,7 @@ export async function runBackfill(opts?: { includeStale?: boolean }): Promise<{ 
       }),
     ].slice(0, BACKFILL_PER_RUN_CAP);
 
-    // Remaining un-embedded backlog across all sources (cheap COUNTs), so the
-    // drain's progress is visible boot-to-boot as it resumes.
+    // Remaining un-embedded backlog across all sources (cheap COUNTs), so progress shows boot to boot.
     const remaining = (() => {
       try {
         const c = (q: string): number => (db.prepare(q).get(...todoParams) as { c: number }).c;
@@ -117,13 +104,11 @@ export async function runBackfill(opts?: { includeStale?: boolean }): Promise<{ 
 
     logger.info(`Backfill started: embedding ${items.length} item(s) this run (cap ${BACKFILL_PER_RUN_CAP}); ${remaining ?? 'unknown'} still pending after this run`);
 
-    // Broadcast progress start
     broadcast({
       type: 'backfill:progress',
       data: { ...backfillProgress, status: 'running' },
     });
 
-    // Process in batches
     const batchSize = 10;
 
     // storeEmbedding is best-effort: it swallows every failure and returns void,

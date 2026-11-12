@@ -1,30 +1,8 @@
-// ════════════════════════════════════════════════════════════════════════════
-// WHEN COMPACTION DOES NOT WORK, SOMEBODY IS TOLD (OR-COMPACT-1, parts 2 and 3)
-//
-// The owner, 2026-10-02: *"If compaction fails for a different reason, that is something
-// that needs to be repaired."* So there are exactly two audiences for a compaction that
-// ended over budget with nothing to show, and this file is both of them:
-//
-//   · WHOEVER REPAIRS THE PLATFORM gets a structured line at ERROR level naming WHICH
-//     STAGE refused and the numbers it refused with. One per pass, never silent. That is
-//     the whole of part 3, and it replaces the user-facing dead end part 2 deleted.
-//   · THE OWNER gets a card ONLY when the reason is one they can act on — the model that
-//     writes summaries is down or is answering with nothing usable. `retryable: true`,
-//     because it is: fix the model and compaction resumes with no manual step.
-//
-// ⚠ ONE OUTAGE, ONE CARD. The provider breaker already cards a 402/401/403 by name
-// (`QUOTA_EXHAUSTED`: *"Provider X is out of balance… Top up that account or switch this
-// agent to another provider"*) — which is exactly "compaction is failing for a repairable
-// reason", said better and said first. So when that breaker is open this file stays quiet
-// and logs that it deferred. Stacking a second toast on one outage is how an owner learns
-// to ignore toasts, which is the finding t87 was written for.
-//
-// ⚠ AND WHAT IS *NOT* CARDED. "Nothing left to condense", "every summary is at the floor",
-// "the run hit its bound" — those are platform defects, reported in the log for repair. The
-// card that used to exist for them told the owner to archive their conversation or reset
-// their agent, and the owner abolished it. A person must never be asked to destroy memory
-// because the engine ran out of ideas.
-// ════════════════════════════════════════════════════════════════════════════
+// A compaction that ends over budget with nothing to show is told to two audiences. Whoever repairs the
+// platform gets one ERROR line per pass naming the refusing stage and its numbers. The owner gets a card ONLY
+// when the reason is theirs to fix (the summary writer model is down or unusable), once per outage; when the
+// provider breaker is open it already cards that outage, so this file stays quiet. Platform defects (nothing
+// left to condense, every summary at the floor, the run hit its bound) are logged, never carded.
 
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
@@ -33,54 +11,43 @@ import { writerBreaker } from './writer.js';
 
 const logger = createLogger('compaction-defect');
 
-/** What a pass reported when it ended over budget with nothing to show. */
 export interface CompactionFailure {
   stage: string;
   detail: string | null;
   since: string;
 }
 
-/** What the caller knows about the pass it just ran. All optional: a caller that only
- *  wants the anti-thrash brake passes nothing and behaves exactly as it did before. */
 export interface CompactionPassFacts {
-  /** The stage `condense-until-fits.ts` named as refusing, when one did. */
   stage?: string | null;
   detail?: string | null;
   assembledTokens?: number;
   budgetTokens?: number;
   tokensBefore?: number;
-  /** What this agent's summaries cost, and what the assembler will admit of them — the pair
-   *  the condenser actually works on (the gate's total above cannot see summary bloat). */
+  /** What the summaries cost and what the assembler admits of them (the gate total cannot see summary bloat). */
   summaryTokens?: number;
   admittedSummaryTokens?: number;
   compactableRows?: number;
   topLevelSummaries?: number;
   /** The summary-WRITER model, so a writer-caused failure can name and clear itself. */
   modelId?: string;
-  /** t268 fix round 5: no writer of the agent's order could run, so the span WAITS — still told, never braked. */
+  /** No writer of the agent's order could run, so the span waits: still told, never braked. */
   waiting?: boolean;
 }
 
 const failures = new Map<string, CompactionFailure>();
 
-/** t140 round 4 (re-review 3): ONE CARD PER INCIDENT, where an incident ends only after a SUSTAINED
- *  recovery. A flaky writer fails, recovers, fails again — measured at five cards an hour. A new
- *  outage within this long of the last card is recorded and logged but not carded again. */
+/** One card per incident: a new outage within this long of the last card is recorded and logged but not
+ *  carded again, so a flaky writer cannot card repeatedly. */
 export const CARD_QUIET_AFTER_MS = 60 * 60_000;
 const lastCardAt = new Map<string, number>();
 
-/** The stages the owner can repair. Everything else is the platform's own bug. */
 const REPAIRABLE_BY_THE_OWNER = new Set([
   'summary_writer_unavailable', 'summariser_refused', 'summariser_threw',
-  // review I3: no enabled model can write a summary at all, so compaction cannot even start.
   'summary_writer_unresolvable',
 ]);
 
-/** The card the owner gets, and the only compaction card that is left. v3.5 field fix 3 (owner ruling: there is no
- *  summarization model setting; each agent's own model writes its summaries): a FACT, short, naming the agent and
- *  its own model, sending the owner to no setting and telling him to change nothing, because there is nothing for him
- *  to do: it retries by itself. Nothing destructive either (no archiving, no resetting, no "your memory is full").
- *  No em-dash (owner, standing). Informational: the frame is a warning (a toast that leaves by itself), never red. */
+/** The card text: a short fact naming the agent and its own model, asking the owner to change nothing because
+ *  it retries by itself. Nothing destructive; informational (a warning frame), never red. */
 export function compactionFailingCardText(stage: string, agentId?: string): string {
   let name = 'This agent';
   try {
@@ -95,36 +62,16 @@ export function compactionFailingCardText(stage: string, agentId?: string): stri
 }
 
 /**
- * THE DEFECT LINE (D3), and the card decision behind it.
- *
- * Logs every time it is called — a pass that failed is a pass worth a line (a pass that WAITS for a
- * writer: once per outage, t268). Records the note and cards at most once per outage, and never
- * while the provider breaker is already carding the same outage.
- *
- * ⚠ WHICH SPACER IS WHICH, CORRECTED — t91 re-review M-b, and the sentence this file and
- * `compaction.ts:596` both got wrong. This said "the brake is what keeps that from being
- * per-turn", and `compaction.ts`'s own `!resolved` branch said "the brake spaces the card".
- * NEITHER IS TRUE OF THAT BRANCH: it returns `NO_COMPACTION` before `runCheckAndCompact`
- * reaches its `compactionIsBraked` check, so a pass that dies on an unresolvable summary
- * writer never consults the brake at all. What is actually true, and what the clause holds:
- *   · THE CARD is spaced by the once-per-outage `failures` map below — for EVERY stage,
- *     brake or no brake, and stronger than the brake (one card per outage, not per window).
- *   · THE LINE is per failing pass, deliberately: it is the repair audience's record, not the
- *     owner's toast, and gating it on the brake would silence the box that needs repairing.
- *     On a mis-set box that is one line per forced pass, which is the intended volume.
- * `compaction-has-no-bottom.test.ts` §6 drives three forced passes and asserts ONE card and
- * THREE lines, so neither sentence can rot back into the other.
- *
- * Returns the note when THIS call created it, so the caller can tell a new failure from a
- * continuing one.
- */
+ * The defect line and the card decision. Logs once per failing pass (the repair audience's record, never gated
+ * on the brake). Records the note and cards at most once per outage, never while the provider breaker already
+ * cards the same outage. Returns the note when THIS call created it, so the caller can tell a new failure
+ * from a continuing one. */
 export function reportCompactionDefect(
   agentId: string, stage: string, facts: CompactionPassFacts | undefined,
   result: { leafCreated: number; condensedCreated: number; tokensReclaimed: number },
 ): CompactionFailure | null {
   const breaker = writerBreaker(facts?.modelId);
-  // t268 breaker fix (M-4): a pass that WAITS for a writer is one outage however many passes meet it — its line is
-  // written once, with the note; the passes after it say so at debug.
+  // A pass waiting for a writer is one outage however many passes meet it: error once, then debug.
   (facts?.waiting && failures.has(agentId) ? logger.debug : logger.error)('COMPACTION_DEFECT a pass ended over budget having reclaimed nothing', {
     stage, detail: facts?.detail ?? null,
     assembledTokens: facts?.assembledTokens ?? null, budgetTokens: facts?.budgetTokens ?? null,
@@ -138,7 +85,7 @@ export function reportCompactionDefect(
   if (failures.has(agentId)) return null;   // one note, one card, per outage
   const note: CompactionFailure = { stage, detail: facts?.detail ?? null, since: new Date().toISOString() };
   failures.set(agentId, note);
-  // The work is not moving, whatever the stage, so the catch-up glyph ends (a later turn on notes shows it again).
+  // The work is not moving, whatever the stage, so the catch-up glyph ends.
   void import('./out-of-view.js').then((m) => m.withdrawCatchUpProgress(agentId),   // loaded late: the door imports the compactor
     (err: unknown) => logger.warn('The catch-up glyph could not be withdrawn', { error: err instanceof Error ? err.message : String(err) }, agentId));
   if (!REPAIRABLE_BY_THE_OWNER.has(stage)) return note;
@@ -162,16 +109,13 @@ export function reportCompactionDefect(
       agentId,
       error: compactionFailingCardText(stage, agentId),
       code: 'COMPACTION_FAILING',
-      severity: 'warning',   // v3.5 field fix 3: informational (the owner has nothing to do), never sticky or red
-      // TRUE, and the difference between this card and the one it replaces: fix the model
-      // and compaction resumes on its own. Nothing here asks the owner to destroy memory.
+      severity: 'warning',   // informational: the owner has nothing to do
       retryable: true,
     });
-  } catch { /* best effort — the defect line is the fix, the card is the courtesy */ }
+  } catch { /* best effort: the defect line is the fix, the card is the courtesy */ }
   return note;
 }
 
-/** A pass worked. Forget the failure, and say out loud that nothing had to be clicked. */
 export function noteCompactionRecovered(agentId: string, tokensReclaimed: number): void {
   const was = failures.get(agentId);
   if (!was) return;
@@ -181,18 +125,15 @@ export function noteCompactionRecovered(agentId: string, tokensReclaimed: number
   }, agentId);
 }
 
-/** Drop the note without a recovery claim — a reset gave the agent a fresh start. */
 export function clearCompactionFailure(agentId: string): boolean {
   lastCardAt.delete(agentId);   // a reset is a fresh start for the card too
   return failures.delete(agentId);
 }
 
-/** The stage compaction is currently failing at, or null when it is not failing. */
 export function compactionFailureReason(agentId: string): string | null {
   return failures.get(agentId)?.stage ?? null;
 }
 
-/** Test-only reset; the map is per-process. */
 export function __resetCompactionFailuresForTests(): void {
   failures.clear();
   lastCardAt.clear();

@@ -1,9 +1,5 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// THE ATTEMPT LEDGER — the engine's record of work on the agent's in-progress tasks, laid out in the room
-// the array leaves (t207, D6). It was a fixed shape (800 tokens, 2 tasks, 4 notes + 4 transitions, 6 entries
-// each); it is now every in-progress task and as many entries of each as fit, newest first, with a counted
-// line where entries are left off. A post-budget TAIL lane: no cached prefix byte moves with it.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// Engine record of work on in-progress tasks: every task, and as many entries of each as fit, newest first.
+// A post-budget tail lane: no cached prefix byte moves with it.
 
 import { getDb } from '../db/connection.js';
 import { revertCountExpr } from '../work/tracker-view.js';
@@ -18,7 +14,7 @@ const ATTEMPT_LEDGER_HEAD =
   + 'already logged here) ═══';
 const ATTEMPT_LEDGER_TAIL = '═══ END ATTEMPT LEDGER ═══';
 
-/** The ledger block, from sections already built. Pure, for the same reason. */
+/** The ledger block, from sections already built. Pure. */
 export function renderAttemptLedgerBlock(sections: string[]): string | null {
   if (sections.length === 0) return null;
   return `${ATTEMPT_LEDGER_HEAD}\n${sections.join('\n\n')}\n${ATTEMPT_LEDGER_TAIL}`;
@@ -26,7 +22,6 @@ export function renderAttemptLedgerBlock(sections: string[]): string | null {
 
 let attemptLedgerWorstCase: number | null = null;
 
-/** What one task contributes to the ledger. Entries ascend (oldest first), as they are printed. */
 interface LedgerTask {
   task: BoardTask;
   title: string;
@@ -54,10 +49,9 @@ function entryLine(line: string, width: number): string {
 const earlierLine = (n: number): string => `  (${n} earlier entr${n === 1 ? 'y' : 'ies'} not shown)\n`;
 
 /**
- * The ledger in `roomTokens`: every in-progress task that has entries, and as many entries of each as fit,
- * newest first, with a counted line where entries are left off (t207: no fixed rows, no token cap).
+ * The ledger in `roomTokens`: every in-progress task that has entries, and as many entries of each as fit.
  *   1. each task gets its newest entry (cut to its share of the room if one entry alone is longer);
- *   2. further entries, newest first across all tasks, are added whole while they fit — the first one that
+ *   2. further entries, newest first across all tasks, are added whole while they fit; the first one that
  *      does not fit ends it, so every task's list is a contiguous newest run;
  *   3. a task is left off only when even its newest entry does not fit; those are counted, never silent.
  */
@@ -90,7 +84,6 @@ export async function attemptLedgerFrom(tasks: BoardTask[], roomTokens: number):
     const frame = (renderAttemptLedgerBlock(['']) ?? '').length - 1;
     const header = (lt: LedgerTask): number => `Task "${lt.title}"${lt.revertNote}:\n`.length;
 
-    // The state: how many of the newest entries each listed task shows, and how many tasks are listed.
     const take = ledgerTasks.map(() => 1);
     let listed = ledgerTasks.length;
     const lineLen = (i: number, k: number, width: number): number => {   // the k-th newest entry of task i
@@ -155,11 +148,9 @@ export async function attemptLedgerFrom(tasks: BoardTask[], roomTokens: number):
 }
 
 /**
- * The ledger's GUARANTEE, derived by calling its renderer on the smallest block it promises: the frame, one
- * task whose title is at the title width and which carries a revert note, a pointer to its notes, the
- * "earlier entries" line, and its newest entry at the entry floor. It is what the budget sets aside for the
- * ledger on every assembly (`POST_BUDGET_LANES`) and the least it is ever laid out in; on a roomy window the
- * ledger is far larger, in the room the list leaves. t207: it replaces the 800-token ceiling it was before.
+ * The ledger's guarantee: its renderer run on the smallest block it promises (frame, one task with a revert
+ * note and notes pointer, the "earlier entries" line, and its newest entry at the entry floor). The budget
+ * sets this aside on every assembly (`POST_BUDGET_LANES`); on a roomy window the ledger is far larger.
  */
 export function attemptLedgerWorstCaseTokens(): number {
   if (attemptLedgerWorstCase !== null) return attemptLedgerWorstCase;

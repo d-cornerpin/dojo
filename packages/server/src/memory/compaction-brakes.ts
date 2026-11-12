@@ -1,5 +1,4 @@
 // The one brake between compaction passes, and the one record per agent of how its passes went.
-//
 // Compaction never ends: a memory that will not shrink is a defect to report (`compaction-defect.ts`), never a
 // state to live in. A pass that wins nothing backs off for a while and always lets go: on the clock, a session
 // reset, a model change, a shrunken history, or the summary writer's provider answering again. A forced pass is
@@ -44,7 +43,6 @@ const recordOf = (agentId: string): PassRecord => {
   return r;
 };
 
-/** Did a pass make progress: it wrote a summary, or reclaimed at least the floor? */
 export const progressed = (r: PassResult): boolean => r.leafCreated + r.condensedCreated > 0 || r.tokensReclaimed >= FORCED_YIELD_FLOOR_TOKENS;
 
 function brakeFacts(agentId: string): { seq: number; session: string | null; model: string | null } {
@@ -149,7 +147,6 @@ export function forcedCompactionOptions(turnPatienceMs: number): { force: true; 
   return { force: true, abortSignal: ctl.signal };
 }
 
-/** What the last forced pass did: threw (its park is told through the compaction card), or was skipped by the brake. */
 export const lastForcedPass = (agentId: string): { threw: boolean; braked?: boolean } =>
   ({ threw: records.get(agentId)?.threw === true, braked: records.get(agentId)?.braked });
 
@@ -209,7 +206,6 @@ export async function compactionDoor<T extends PassResult>(agentId: string, run:
   }, { ifBusy: 'wait' });
 }
 
-/** Test-only reset of the records and the failure notes with them. */
 export function __resetBrakesForTests(): void {
   records.clear();
   __resetCompactionFailuresForTests();

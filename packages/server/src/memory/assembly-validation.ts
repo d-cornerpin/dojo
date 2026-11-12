@@ -1,58 +1,10 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// EXIT VALIDATION. One validator between assembly and the provider, for every transport.
-// PHASE-3 T4. Research 06 requirements C9, C10, C11.
-// ════════════════════════════════════════════════════════════════════════════════════════
-//
-// ── WHAT STOOD HERE BEFORE ──────────────────────────────────────────────────────────────
-// Nothing. Research 06 §3: "Exit-boundary validation — NONE in assembler." The assembler
-// returned its array with no final size or shape check, and `applyIntegrityPass` ran BEFORE
-// six further mutations and before the loop's own tail-append.
-//
-// The only size authority in the tree is a pair of provider FRONT-TRIMMERS — `model.ts`'s
-// Anthropic block (splice(0,1) until it fits) and its OpenAI block (splice(1,1)) — which
-// delete the OLDEST messages with no notion of priority, and the Anthropic one, when the
-// array is STILL over after trimming, "logs a warning and SENDS ANYWAY". That is the exact
-// shape requirement C11 names: warn-and-send.
-//
-// ── THE THREE REQUIREMENTS, AND WHERE EACH ONE LIVES ────────────────────────────────────
-//   C9  one `validateAssembly()` between assembly and `callModel`, running AFTER every
-//       mutation, the SAME for every agent type — no PM bypass. `validateAssembly` below
-//       takes no agent-TYPE input at all, so there is no signature through which an
-//       exemption could later be added; the `agentId` it does take is for the log line.
-//   C10 on violation, repair in PRIORITY order — drop the lowest lane — NEVER oldest-first.
-//       `repairAssembly` below. When it cannot identify lanes it REFUSES rather than
-//       falling back to oldest-first, because the fallback IS the mechanism being deleted.
-//   C11 unrepairable is a THROW (`AssemblyValidationError`), never a warning.
-//
-// ── THE MODE, AND WHY IT IS REPAIR (PHASE-3 T4 Step 2b, 2026-08-01) ─────────────────────
-// `ASSEMBLY_VALIDATION_MODE` was `'detect'` from 2026-07-31 (`b6699c9`). The owner CANCELLED
-// the 7-calendar-day window on 2026-08-01 ("on the dev box, elapsed time is not evidence —
-// driven traffic is") and replaced the date with an evidence threshold, refusal-shaped: run
-// the phase's union OR8 set through the detect-mode validator and flip only if NO new
-// divergence class appears.
-//
-// THE EVIDENCE THE FLIP RESTS ON, all measured, none inherited:
-//   • day 0 (2026-07-31, `b6699c9`): 73 real calls, 17 divergent, **0 of them budget** — two
-//     SHAPE classes, both root-caused and FIXED at T6 (`efc949c`);
-//   • the durable sink `~/.dojo/logs/assembly-validation.jsonl` has held **2 lines since**,
-//     and both PREDATE the fix commits;
-//   • the driven pre-flip arm (2026-08-01, `1d112ad`, one process): **checked=63 diverged=0**,
-//     9/9 scenarios GREEN, **zero new sink lines and no new divergence class**.
-// Both front-trimmers are deleted IN THIS SAME COMMIT. Coupled, never separate: repair
-// without the deletion is two authorities; deletion without repair is no authority at all.
-//
-// The `'detect'` value is KEPT on the type, and the branch below with it. It is the revert
-// path for one constant, which is what made this flip a one-line decision in the first place;
-// PHASE-3 T9's exit gate asserts `'repair'`, so it cannot rot back to detecting unnoticed.
-//
-// ── WHAT THIS MODULE DELIBERATELY DOES NOT DO ───────────────────────────────────────────
-// It does not repair SHAPE. Orphan tool blocks are `sanitizeOrphanToolBlocks`'s job and it
-// runs immediately before this — layered defense, not a duplicate mechanism (Part I). This
-// validator REPORTS shape violations so a survivor after that sanitizer is visible instead
-// of silently 400-ing at the provider. The one shape thing it does do is re-normalise the
-// HEAD after a drop it made itself, because a repair that leaves the array starting on an
-// assistant turn has traded one violation for another.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// Exit validation: one validator between assembly and the provider, for every transport.
+// `validateAssembly` runs after every mutation and takes no agent-type input, so no agent can be exempted.
+// `repairAssembly` fixes size violations in lane-priority order (lowest lane first), never oldest-first, and
+// refuses when it cannot identify lanes. Unrepairable is a throw (`AssemblyValidationError`), never warn-and-send.
+// Shape is not repaired here: orphan tool blocks are `sanitizeOrphanToolBlocks`'s job, which runs just before.
+// Surviving shape violations are reported; the one shape fix made here is re-normalising the head after a drop.
+// The `'detect'` mode (log only, array untouched) is kept as the one-constant revert path.
 import type Anthropic from '@anthropic-ai/sdk';
 import { createLogger } from '../logger.js';
 import { messageTokens, LANE_PRIORITY, isProtectedLaneId } from './lanes.js';
@@ -69,12 +21,7 @@ export type ValidatedMessage = {
 
 export type AssemblyValidationMode = 'detect' | 'repair';
 
-/**
- * THE MODE. `'repair'` since PHASE-3 T4 Step 2b (2026-08-01), in the same commit that
- * deleted both provider front-trimmers. PHASE-3 T9's exit gate asserts `'repair'`, and
- * `assembly-validation.test.ts` pins whichever value is current so a change here is a
- * one-line change with a test that notices it.
- */
+/** `'repair'` repairs and throws when it cannot; `'detect'` only logs and leaves the array untouched. */
 export const ASSEMBLY_VALIDATION_MODE: AssemblyValidationMode = 'repair';
 
 export type ViolationCode =
@@ -90,25 +37,18 @@ export type ViolationCode =
 
 export interface AssemblyViolation {
   code: ViolationCode;
-  /** Plain words. Never empty — a verdict with no reason is what this replaces. */
+  /** Plain words, never empty. */
   detail: string;
   /** Index in the validated array, where the violation belongs to one message. */
   index?: number;
 }
 
 export interface ValidateOptions {
-  /**
-   * What this array was allowed to cost, in tokens of the ONE estimator. At the provider
-   * boundary that is the assembler's own remaining budget: `assemblyBudgetTokens` minus the
-   * system prompt. Passing the same number the assembler spent against is what makes a
-   * divergence mean "something after the assembler grew the array".
-   */
+  /** What this array was allowed to cost, in tokens of the one estimator: at the provider boundary, the
+   *  assembler's remaining budget, so a divergence means something grew the array after the allocator. */
   budgetTokens: number;
-  /**
-   * Lane id per message, ALIGNED to `messages` — `null` for a message no lane owns (the
-   * loop's tail-append, the volatile near-tail). Only used by `repairAssembly`. Absent
-   * means the repair has no priority map and must refuse; see C10 above.
-   */
+  /** Lane id per message, aligned to `messages` (null for a message no lane owns). Only `repairAssembly` uses it;
+   *  absent means the repair has no priority map and must refuse. */
   laneIds?: ReadonlyArray<string | null>;
   /** For the log line and the error text. NEVER consulted to decide anything (C9). */
   agentId?: string;
@@ -119,12 +59,10 @@ export interface AssemblyValidation {
   violations: AssemblyViolation[];
   tokenTotal: number;
   budgetTokens: number;
-  /** 0 when inside budget. */
   overBy: number;
 }
 
-/** Why a repair refused: the C11 refusals that stood before t140, or (t140) an array that fits
- *  only without the live conversation — see `LIVE_CONVERSATION_LANE`. */
+/** Why a repair refused: the array cannot be repaired, or it fits only without the live conversation. */
 export type AssemblyRefusalCode = 'UNREPAIRABLE' | 'LIVE_CONVERSATION_PROTECTED';
 
 export class AssemblyValidationError extends Error {
@@ -137,53 +75,37 @@ export class AssemblyValidationError extends Error {
     super(message);
     this.name = 'AssemblyValidationError';
   }
-  /** v3.5 D18: set on a SIZE refusal by `refuseAndCondense` — what was dialed, and the condense it started. */
+  /** Set on a size refusal by `refuseAndCondense`: what was dialed, and the condense it started. */
   refusedDial?: { modelId: string; systemPromptTokens: number; tokenTotal: number; budgetTokens: number; condensed: Promise<unknown> | null };
 }
 
 /**
- * t140 (tracker #13, OR-COMPACT-1) — THE LIVE CONVERSATION IS NOT REPAIR MATERIAL. It was the
- * last rung of the droppable ladder, and dropping it sent the model a call holding the system
- * prompt and nothing it was working on, so it redid steps it could no longer see (the reporting
- * box's run of calls flat at ~45K). Shipping that is warn-and-send wearing C10's name. The repair
- * still drops every OTHER droppable lane in priority order; when the array fits only without the
- * conversation it refuses with `LIVE_CONVERSATION_PROTECTED` and the boundary starts condensing
- * against the dialed window — a repairable defect with the repair under way, never a dead end.
- * `fitLanes` still ranks the lane; only the repair may not take it. In normal running this never
- * fires: `reassemble-for-fit.ts` sizes every pick for its own window before dial.
- */
+ * The live conversation is not repair material: dropping it would send the model a call without what it is
+ * working on. The repair drops every other droppable lane in priority order; when the array fits only without
+ * this lane it refuses with `LIVE_CONVERSATION_PROTECTED` and the boundary starts condensing. `fitLanes` still
+ * ranks the lane; only the repair may not take it. */
 export const LIVE_CONVERSATION_LANE = 'lane.fresh-tail';
 
 export interface RepairResult {
   messages: ValidatedMessage[];
-  /** Lanes dropped, in the order they were dropped — lowest priority first. */
+  /** Lanes dropped, in the order they were dropped (lowest priority first). */
   droppedLaneIds: string[];
   before: AssemblyValidation;
   after: AssemblyValidation;
 }
 
-// ── cost ────────────────────────────────────────────────────────────────────────────────
-
-/**
- * The cost of the array, by the ONE estimator, through `lanes.ts`'s own per-message
- * function. Not a second cost model: if the allocator and the validator disagreed about
- * what a message costs, the validator would refuse arrays the allocator was right to build.
- */
+/** The cost of the array, by the one estimator through `lanes.ts`'s per-message function. A second cost model
+ *  would make the validator refuse arrays the allocator was right to build. */
 export function assemblyTokens(messages: readonly ValidatedMessage[]): number {
   let total = 0;
   for (const m of messages) total += messageTokens(m);
   return total;
 }
 
-// ── the five clauses ────────────────────────────────────────────────────────────────────
-
 const blocksOf = (m: ValidatedMessage): Array<Record<string, unknown>> | null =>
   Array.isArray(m.content) ? (m.content as unknown as Array<Record<string, unknown>>) : null;
 
-/**
- * C9. Every clause, every time — the array is walked once and ALL violations are returned,
- * because the first one is rarely the interesting one.
- */
+/** Every clause, every time: all violations are returned, because the first is rarely the interesting one. */
 export function validateAssembly(
   messages: readonly ValidatedMessage[],
   opts: ValidateOptions,
@@ -321,14 +243,8 @@ export function validateAssembly(
   };
 }
 
-// ── C10: repair, in priority order, or not at all ───────────────────────────────────────
-
-/**
- * The head rule the assembler's own integrity pass applies, re-applied after a drop THIS
- * function made. Not a second mechanism: a repair that hands back an array starting on an
- * assistant turn has swapped one violation for another, and the caller would be right to
- * refuse it.
- */
+/** The head rule the assembler's integrity pass applies, re-applied after a drop THIS function made: a repair
+ *  must not hand back an array starting on an assistant turn. */
 function normaliseHead(messages: ValidatedMessage[]): void {
   while (messages.length > 0) {
     const first = messages[0];
@@ -346,17 +262,10 @@ function normaliseHead(messages: ValidatedMessage[]): void {
 }
 
 /**
- * C10. Drop the LOWEST-PRIORITY lane, re-check, repeat. Never the oldest message, never a
- * message no lane claims (that is the loop's tail-append — the thing that just arrived, and
- * the first casualty of every oldest-first trimmer this replaces).
- *
- * Refuses, loudly, in three cases, and each refusal is the point rather than a gap:
- *   • no lane map at all — a repair that cannot see priority cannot repair IN priority
- *     order, and the only other order available is the one being deleted;
- *   • a lane id `LANE_PRIORITY` does not declare — an undeclared lane is a finding, and
- *     dropping content on a guess is how a directive gets eaten;
- *   • everything droppable is gone and it still does not fit (C11).
- */
+ * Drop the lowest-priority lane, re-check, repeat. Never the oldest message, never a message no lane claims (the
+ * loop's tail-append). Refuses loudly when there is no lane map (the only other order is oldest-first), when a
+ * lane id is declared in no lane table (dropping on a guess eats directives), or when everything droppable is
+ * gone and it still does not fit. */
 export function repairAssembly(
   messages: readonly ValidatedMessage[],
   opts: ValidateOptions,
@@ -369,35 +278,9 @@ export function repairAssembly(
 
   const sizeViolation = before.violations.some((v) => v.code === 'budget-exceeded');
   if (!sizeViolation) {
-    // ── SHAPE-ONLY: ENFORCING since PHASE-3 T4 Step 2b (2026-08-01), and the line moved on
-    // EVIDENCE, exactly as it was drawn on evidence in the first place ──
-    //
-    // T4 made shape report-only, and it was right to: the first live detect run
-    // (2026-07-31, 73 real calls) produced 17 divergences, **0 of them size**, every one
-    // shape, and 17/17 came from TWO PRODUCT DEFECTS this validator did not create —
-    // `sanitizeOrphanToolBlocks` repairing one orphan direction and creating the other
-    // (14), and the PM path skipping `applyIntegrityPass` (3). Throwing then would have
-    // killed 23% of turns over pre-existing faults.
-    //
-    // BOTH DEFECTS WERE ROOT-CAUSED AND FIXED AT T6 (`efc949c`), and the measurement after
-    // them is what licenses this: the durable sink has taken **zero** new lines since, and
-    // the driven pre-flip arm at `1d112ad` read **checked=63 diverged=0** across the union
-    // OR8 set. The 23% is 0%.
-    //
-    // Why THROW rather than keep reporting: this module does not repair shape BY DESIGN
-    // (see the header — orphan blocks are `sanitizeOrphanToolBlocks`'s job, and a second
-    // repairer would be the duplicate mechanism this phase exists to delete). A shape
-    // violation that reaches this line has therefore survived `sanitizeOrphanToolBlocks`,
-    // `applyIntegrityPass` AND both T6 fixes, which makes it UNREPAIRABLE here and unknown
-    // everywhere — and "unrepairable is a loud failure, never warn-and-send" is C11's own
-    // clause, restored. Anthropic answers these shapes with a 400 regardless, so sending
-    // anyway does not save the turn; it only trades a local failure that names the defect
-    // for an opaque provider error that does not.
-    //
-    // The revert is the SAME one constant the mode is: set `ASSEMBLY_VALIDATION_MODE` back
-    // to `'detect'` and nothing here can throw. T9's full battery is the large-denominator
-    // confirmation with repair live; a shape throw there is a finding with a named owner,
-    // which is the outcome this line exists to produce.
+    // A shape violation reaching here survived `sanitizeOrphanToolBlocks` and `applyIntegrityPass`, and this module
+    // does not repair shape (a second repairer would duplicate them). Throwing names the defect locally; the
+    // provider answers these shapes with a 400 anyway. In `'detect'` mode this is never reached.
     throw new AssemblyValidationError(
       `assembly has a SHAPE violation this validator cannot repair${who}: ` +
         `${before.violations.map((v) => `${v.code}: ${v.detail}`).join(' | ')}. ` +
@@ -422,16 +305,8 @@ export function repairAssembly(
     );
   }
 
-  // ── BOTH LANE TABLES, NOT ONE (PHASE-6 T13) ──
-  // The tree declares two: `LANE_PRIORITY`, the allocator's droppable ladder, and
-  // `POST_BUDGET_LANES` plus the entries that ride it — content added AFTER the budget
-  // decision, each with its own reserve. This check read only the first, so from PHASE-3 T6
-  // (which tagged every injection at emission) a real engine assembly reaching this line
-  // carried `msg.turn-context` / `msg.current-time` and was REFUSED here, before the repair
-  // below ever ran. Requirement C10 could therefore never repair a real turn — and `c4680c9`
-  // deleted both provider front-trimmers in the same commit that made this path live, so
-  // there is nothing underneath it. An id in neither table is still a finding and still
-  // refuses; that is what this guard is for.
+  // Lane ids come from two tables: `LANE_PRIORITY` (the allocator's droppable ladder) and the post-budget lanes
+  // (`isProtectedLaneId`), content added after the budget decision. An id in neither is a finding and refuses.
   const unknown = [...new Set(laneIds.filter((id): id is string => id !== null))]
     .filter((id) => LANE_PRIORITY[id] === undefined && !isProtectedLaneId(id));
   if (unknown.length > 0) {
@@ -444,10 +319,8 @@ export function repairAssembly(
     );
   }
 
-  // Droppable lanes, LOWEST PRIORITY FIRST (priority is a rank: bigger number survives less).
-  // Only the ALLOCATOR's ladder is droppable. A protected id is recognised above and skipped
-  // here, which is the same treatment an untagged message has always had — `null` never
-  // entered this set either, and the untagged message this header describes IS the tail.
+  // Droppable lanes, lowest priority first (a bigger number survives less). Protected ids are skipped, like
+  // untagged messages (the loop's tail), and the live conversation lane is never dropped.
   const droppable = [...new Set(laneIds.filter((id): id is string => id !== null))]
     .filter((id) => LANE_PRIORITY[id] !== undefined && id !== LIVE_CONVERSATION_LANE)
     .sort((a, b) => LANE_PRIORITY[b] - LANE_PRIORITY[a] || a.localeCompare(b));
@@ -480,7 +353,7 @@ export function repairAssembly(
   }
 
   const after = validateAssembly(kept, { ...opts, laneIds: keptLanes });
-  // Review M1: LIVE_CONVERSATION_PROTECTED only when it would fit without the tagged conversation (both condense, D18).
+  // `LIVE_CONVERSATION_PROTECTED` only when the array would fit without the tagged conversation (both condense).
   const tailTokens = kept.reduce((t, m, i) => t + (keptLanes[i] === LIVE_CONVERSATION_LANE ? messageTokens(m) : 0), 0);
   if (keptLanes.includes(LIVE_CONVERSATION_LANE) && after.tokenTotal - tailTokens <= after.budgetTokens) {
     throw new AssemblyValidationError(
@@ -505,43 +378,18 @@ export function repairAssembly(
   );
 }
 
-// ── THE PROVIDER BOUNDARY: one install, every transport ─────────────────────────────────
-//
-// PHASE-3 T4 Step 2. `callModel` calls this ONCE, immediately after the universal orphan
-// sanitizer and above every transport branch (ollama / openai / agent-sdk / anthropic), so
-// there is one validation site rather than one per provider — which is what made the two
-// front-trimmers diverge in estimator, reserve and repair strategy in the first place.
-//
-// ── THE LOG IS THE INSTRUMENT, so it is built to be READ ────────────────────────────────
-// Step 2b's flip decision is taken FROM this instrument, so "it looked fine" is not an
-// answer it can accept. Two stable tokens, both greppable:
-//
-//   ASSEMBLY_VALIDATION_DIVERGENCE   one per divergent call, carrying the violation codes,
-//                                    the numbers, AND the running checked/diverged counters,
-//                                    so a single line yields a RATE, not just an incident.
-//   ASSEMBLY_VALIDATION_HEARTBEAT    every 200 clean calls. Positive evidence that the
-//                                    validator RAN — because "no divergence lines" is
-//                                    otherwise ambiguous between "clean" and "never
-//                                    installed", and inferring health from absence is the
-//                                    reasoning roadmap #15 exists to forbid.
-//
-// ── BUT THE LOG ALONE CANNOT ANSWER DAY 7 (PHASE-3 T5 opening rider) ────────────────────
-// `logger.ts:48-66` rotates `dojo.log` at 10MB keeping ONE backup: measured at T5's HEAD,
-// both files together held 16m14s, and T4's own 17 day-0 lines were already unrecoverable.
-// So each divergence is ALSO appended, beside the logger call below, to a durable
-// append-only sink — `~/.dojo/logs/assembly-validation.jsonl`, divergences only, exempt
-// from rotation by construction. **THE DAY-7 READ INSTRUCTIONS, THE RETENTION ARITHMETIC
-// AND THE FAILURE CONTRACT ARE `assembly-validation-sink.ts`'s HEADER. Read it first.**
-//
-// Counters are per PROCESS and reset on restart, deliberately: they describe this build's
-// behaviour, and a counter persisted across a deploy would blur two builds. That is why
-// every sink record carries its `pid` — group by it, never sum across it.
+// The provider boundary: `callModel` calls this once, after the universal orphan sanitizer and above every
+// transport branch, so there is one validation site rather than one per provider.
+// Greppable log tokens: ASSEMBLY_VALIDATION_DIVERGENCE (one per divergent call, with the running checked and
+// diverged counters, so one line yields a rate) and ASSEMBLY_VALIDATION_HEARTBEAT (every 200 clean calls: proof
+// the validator ran, since absence of divergence lines cannot tell clean from never installed). Each divergence
+// is also appended to the durable sink (`assembly-validation-sink.ts`) because dojo.log rotates in minutes.
+// Counters are per process and reset on restart; every sink record carries its `pid`: group by it, never sum.
 
 let checkedCalls = 0;
 let divergentCalls = 0;
 const HEARTBEAT_EVERY = 200;
 
-/** Reset for tests. Never called in production. */
 export function __resetAssemblyValidationCounters(): void {
   checkedCalls = 0;
   divergentCalls = 0;
@@ -554,32 +402,24 @@ export function assemblyValidationCounters(): { checked: number; diverged: numbe
 export interface BoundaryCheckInput {
   agentId: string;
   modelId: string;
-  /** MUTATED IN PLACE in repair mode — see `validateAtProviderBoundary`. */
+  /** Mutated in place in repair mode; see `validateAtProviderBoundary`. */
   messages: ValidatedMessage[];
   systemPrompt: string;
   contextWindow: number;
   maxOutputTokens?: number;
-  /** t283: a declared utility dial's own output cap; absent = charge `maxOutputTokens`. */
+  /** A declared utility dial's own output cap; absent = charge `maxOutputTokens`. */
   dialOutputTokens?: number | null;
-  /** t140: does THIS dial carry the agent's tools? Absent = yes. A `tools: false` dial (summariser, classifiers) sends none, so charging it
-   *  the tool payload measured a budget for a request nobody was making (on a small window, zero). */
+  /** Does this dial carry the agent's tools? Absent = yes. A `tools: false` dial sends none, so charging it
+   *  the tool payload would measure a budget for a request nobody makes. */
   toolsSent?: boolean;
-  /** Lane id per message when the caller can supply one. See `repairAssembly`. */
   laneIds?: ReadonlyArray<string | null>;
 }
 
 /**
- * The exit boundary. In `'detect'` mode it LOGS and leaves the array untouched — the
- * provider front-trimmers are still the ceiling backstop and T4's sequencing rider forbids
- * removing them while this only watches. In `'repair'` mode it repairs in priority order,
- * IN PLACE, and THROWS when it cannot; the trimmers are deleted in that same commit.
- *
- * IN PLACE is deliberate and it is the same contract `sanitizeOrphanToolBlocks` uses two
- * lines above the call site: every transport branch below reads the same `messages` array,
- * so a repair that returned a new array would need threading through four branches and
- * would be silently ignored by any branch a later task forgot. The returned validation is
- * the report, not the payload.
- */
+ * The exit boundary. In `'detect'` mode it logs and leaves the array untouched. In `'repair'` mode it repairs in
+ * priority order, IN PLACE, and throws when it cannot. In place because every transport branch reads the same
+ * `messages` array (as with `sanitizeOrphanToolBlocks`), so a returned copy could be ignored by one branch; the
+ * returned validation is the report, not the payload. */
 export async function validateAtProviderBoundary(
   input: BoundaryCheckInput,
 ): Promise<AssemblyValidation> {
@@ -588,9 +428,8 @@ export async function validateAtProviderBoundary(
     toolPayloadTokens: input.toolsSent === false ? 0 : await measureAgentToolPayloadTokens(input.agentId),
     maxOutputTokens: input.dialOutputTokens ?? input.maxOutputTokens,
   });
-  // The comparable budget is the assembler's OWN remaining budget: what it was allowed to
-  // spend, minus the system prompt it had to spend it against. A divergence therefore means
-  // "the array grew after the allocator decided", which is the question worth asking.
+  // The comparable budget is the assembler's own remaining budget (its allowance minus the system prompt), so a
+  // divergence means the array grew after the allocator decided.
   const budgetTokens = Math.max(0, policy.assemblyBudgetTokens - estimateTokens(input.systemPrompt));
 
   const opts: ValidateOptions = { budgetTokens, laneIds: input.laneIds, agentId: input.agentId };
@@ -613,7 +452,7 @@ export async function validateAtProviderBoundary(
   const codes = codeList.join(',');
   const violations = result.violations.map((v) => `${v.code}: ${v.detail}`);
 
-  // The DURABLE half FIRST — the logger's copy can be rotated away in minutes, this cannot.
+  // Durable record first: the logger's copy can be rotated away in minutes, this cannot.
   appendDivergenceRecord({
     at: new Date().toISOString(), pid: process.pid, mode: ASSEMBLY_VALIDATION_MODE,
     agentId: input.agentId, modelId: input.modelId, codes: codeList, violations,
@@ -641,20 +480,16 @@ export async function validateAtProviderBoundary(
     input.agentId,
   );
 
-  // DETECT: send anyway. This was the dated window's deliberate no-op (2026-07-31 →
-  // 2026-08-01), and it is kept as the ONE-CONSTANT REVERT PATH for the flip above — the
-  // property that let Step 2b be a one-line decision rather than a re-write. T9's exit gate
-  // asserts `'repair'`, so this branch cannot quietly become the resting state again.
+  // Detect mode: send anyway. This branch is the one-constant revert path.
   if (ASSEMBLY_VALIDATION_MODE === 'detect') return result;
 
-  // Repair mode: fix the array the transports are about to read, or throw (C11). The throw
-  // must reach the caller — a boundary that swallows its own loud failure is warn-and-send
-  // with extra steps.
+  // Repair mode: fix the array the transports are about to read, or throw. The throw must reach the caller:
+  // a boundary that swallows its own loud failure is warn-and-send.
   let repaired: RepairResult;
   try {
     repaired = repairAssembly(input.messages, opts);
   } catch (err) {
-    // v3.5 D18: EVERY size refusal condenses (UNREPAIRABLE went to the injury path); a shape refusal does not.
+    // Every size refusal condenses; a shape refusal does not.
     if (err instanceof AssemblyValidationError && err.violations.some((v) => v.code === 'budget-exceeded')) refuseAndCondense(input, err, result);
     throw err;
   }
@@ -671,12 +506,10 @@ export async function validateAtProviderBoundary(
 }
 
 /**
- * t140 — the refusal as a repairable-defect report, with the repair started: a durable sink
- * record under its own code (countable on a box, not just a rotated log line), a named log line,
- * and a FORCED condense against the dialed window, in the background (it dials a model; skip-if-busy).
- * The caller re-throws; the condense rides the error so recovery re-assembles only after it (D18).
- * A system prompt that alone leaves no room (budget 0) is condensed for nothing: no condense helps.
- */
+ * A size refusal as a repairable-defect report with the repair started: a durable sink record under its own
+ * code, a named log line, and a forced background condense against the dialed window (it dials a model;
+ * skip-if-busy). The caller re-throws; the condense rides the error so recovery re-assembles only after it.
+ * Budget 0 is not condensed: no condense helps. */
 function refuseAndCondense(
   input: BoundaryCheckInput, err: AssemblyValidationError, result: AssemblyValidation,
 ): void {
@@ -693,8 +526,8 @@ function refuseAndCondense(
     { agentId: input.agentId, modelId: input.modelId, contextWindow: input.contextWindow },
     input.agentId,
   );
-  // Measured for the dialed model; WRITTEN by the summary writer resolved from the agent's
-  // configured model (fix round 1, review I3), never by a dialed routed pick.
+  // Measured for the dialed model; written by the summary writer resolved from the agent's configured model,
+  // never by a dialed routed pick.
   err.refusedDial = { modelId: input.modelId, systemPromptTokens: estimateTokens(input.systemPrompt), tokenTotal: result.tokenTotal, budgetTokens: result.budgetTokens, condensed: result.budgetTokens === 0 ? null : Promise.all([import('./compaction.js'), import('../db/connection.js'), import('./turn-patience.js')])
     .then(([{ checkAndCompact, forcedCompactionOptions }, { getDb }, { turnPatienceMs }]) => {
       const configured = (getDb().prepare('SELECT model_id FROM agents WHERE id = ?').get(input.agentId) as

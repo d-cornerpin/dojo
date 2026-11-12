@@ -1,192 +1,41 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// THE BUDGET. One module owns the window, the thresholds, the reserve — and the estimator.
-// PHASE-3 T2. Research 06 requirement A1/A2.
-// ════════════════════════════════════════════════════════════════════════════════════════
-//
-// ── WHAT STOOD HERE BEFORE, measured at `81fc6b7` (PHASE-3 §T0-C) ───────────────────────
-// The same three numbers were declared in five modules, and two of the copies DISAGREED:
-//
-//   the threshold      memory/assembler.ts:26     0.75   the assembler's fill fraction
-//                      memory/compaction.ts:209   0.96   the compaction gate
-//                      agent/v2/classifiers/compaction.ts:38-41   0.90 / 0.96 / 0.99
-//                      memory/compaction.ts:529   0.90 and 0.96 again, as bare literals
-//   the reserve        memory/assembler.ts:670    15000  a LOCAL literal
-//                      memory/compaction.ts:82    15000  the exported const
-//   the assembly       memory/assembler.ts:671    floor(0.75·cw) − 15000
-//   budget             memory/compaction.ts:123   floor(0.96·cw) − 15000
-//
-// That last pair is the one that matters: `estimateAssembledTokens` existed to cap the
-// compaction gate's summary total "at the same budget the assembler applies", and it
-// modelled that budget with its OWN threshold. Two functions, one noun, different answers.
-//
-// ── THE THRESHOLD IS DECIDED, NOT DERIVED ───────────────────────────────────────────────
-// PHASE-3 T0b, owner, 2026-07-26, asked with the current value in hand: **0.96 — keep
-// current behaviour.** Fuller context, dearer turns, rarer compaction. It is THE constant here
-// and no task re-asks it. (t194: it is the ADMISSION fill. The 0.90 warn and 0.99 block lines
-// that stood beside it measured a private model of the view and are gone — owner decision 7.)
-//
-// A real product change, stated out loud: the assembler used to stop filling at 0.75 while
-// compaction only fired at 0.96, so it dropped history 21 points of window before anything
-// would have compacted it. One threshold closes that gap, in the direction the owner chose.
-//
-// ── THE ESTIMATOR, AND WHY /4 ───────────────────────────────────────────────────────────
-// §T0-C found SIX implementations plus a SQL dialect. Their divisors are a CLAIM ABOUT
-// REALITY, so T2 measured reality rather than picking the most popular fork: 1,409 real
-// context receipts joined to their own `cost_records` row (same agent, same instant),
-// against the live tools payload measured at 70,006 chars for the primary agent —
-//
-//     the primary agent, n=289 calls:  3.88 – 3.93 chars per token
-//                                      per-call p10 3.78 · median 3.92 · p90 3.99
-//
-//     /4    2% UNDER the measured cost   ← survivor
-//     /3.5  12% over
-//     /3    30% over
-//
-// A 30% over-estimate is not caution; it is the assembler dropping history the window did
-// not require — the same defect Step 3b removes from the stored column. /4 is also already
-// the dialect in `messages.token_count`, in `agent/v2/receipt.ts` and in the SQL, so the
-// canonical value costs no rewrite of history it did not owe. The 2% shortfall is not
-// hidden: Step 3 records the provider's own `input_tokens` beside this estimate on every
-// call, so the error is measured and trending. Re-derive before changing it; never tune it.
-//
-// ── WHY THIS TAKES A WINDOW AND NOT A MODEL ─────────────────────────────────────────────
-// The plan wrote `ContextWindowPolicy(model)`, but `getContextWindow(modelId)` lives in
-// `agent/model.ts` → `memory/message-store.js` → `memory/store.js` → here, so taking a
-// modelId would make the budget cyclic with its own consumers. Callers already hold the
-// window and pass it; the policy is a pure function of it, and testable without a database.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// The budget: one module owns the window, the compaction threshold, the reserve and the token estimator.
+// It is a leaf: callers pass the window, not a model (a model lookup would make it cyclic with its consumers).
+// `CHARS_PER_TOKEN` is 4, measured against provider-reported input tokens; re-derive before changing it.
 
-// ── T82a (ANSWER-ANYWAY): the one import this leaf module now has ─────────────────────────
-//
-// `providerAwareBudgetTokens` is `agent/stream-patience.ts`'s own function, not re-derived
-// here — the header above already refuses to let a threshold/reserve/estimator exist twice,
-// and a second "cap this budget at the box's ceiling" written out again inline would be
-// exactly that mistake wearing this module's name instead. `stream-patience.ts` is a LEAF (its
-// own header: no imports of its own), so this does not create the cycle the header above
-// explains this module was designed to avoid with `agent/model.ts`.
+// The one import: stream-patience.ts is a leaf too (no cycle); its ceiling cap is reused, never re-derived.
 import { providerAwareBudgetTokens } from '../agent/stream-patience.js';
 
-// ── The estimator ──
 
-/** Characters per token. Measured, not inherited — see the header. */
 export const CHARS_PER_TOKEN = 4;
 
-/**
- * THE token estimator. One implementation, whole tree.
- *
- * Every other divisor in the repo was folded into this one at PHASE-3 T2:
- * `memory/store.ts` (/4), `agent/model.ts` Anthropic (/3.5) and OpenAI (/3),
- * `agent/v2/receipt.ts` (/4), `vault/maintenance.ts` (/3), `healer/healer-agent.ts` (/3).
- *
- * NOT folded in, deliberately, because they do a different job (§T0-C):
- *   `agent/model.ts:1682-1683` and `providers/anthropic-sdk.ts:365,:368` — usage
- *   FALLBACKS, used only when a provider reports no usage at all; and
- *   `agent/tools.ts:4992,:5030,:10465` — recall-budget accounting. A "one estimator"
- *   rule that ate those would make the phase look finished while breaking two features.
- */
+/** The one char-based token estimator (usage fallbacks and recall-budget accounting stay separate: other jobs). */
 export function estimateTokens(text: string): number {
   return estimateTokensFromChars(text.length);
 }
 
-/**
- * The same estimate for a caller that already counted the characters and no longer holds
- * the text — `agent/v2/receipt.ts` measures a prompt it has already joined and released.
- * One implementation: `estimateTokens` is this function with a `.length` in front of it.
- */
 export function estimateTokensFromChars(chars: number): number {
   return Math.ceil(Math.max(0, chars) / CHARS_PER_TOKEN);
 }
 
-// ════════════════════════════════════════════════════════════════════════════════════════
-// THE REQUEST ESTIMATE — where the MEASURED divisor is spent (BACKLOG lines 56 + 36).
-// ════════════════════════════════════════════════════════════════════════════════════════
-//
-// ── THE DEFECT, MEASURED, AND WHAT IT COSTS AT THE DIAL ──
-// BACKLOG line 56: "estimator_chars_per_token pinned at 4.0 but provider-reported totals run
-// 1.88-2.08x the estimate on dense prompts — any budget keyed on estimated_input_tokens
-// undercounts real billing by ~half." Migration 174 and `costs/ledger-calibration.ts` ENDED the
-// unmeasured half: the divisor is now observed per provider from the platform's own ledger. But
-// that module's header says plainly that nothing spent it — "`estimateTokens` does not read it
-// YET — that function is provider-agnostic and called from 71 sites". This is where it is spent.
-//
-// The consumer that the undercount actually HURTS is the pre-dial fit gate (`agent/model.ts`'s
-// `refuseIfDoomed`): it compares this estimate against what the provider's prefill throughput can
-// cover inside its first-chunk patience. Halve the estimate and the gate waves through a request
-// that will take twice as long to prefill as it believes — and the turn then dies at the
-// first-chunk watchdog, which is the one outcome the gate exists to buy out. The output budget
-// (`resolveOutputBudget`) reads the same number and over-grants from the same error.
-//
-// ⚠ A CORRECTION TO THAT BACKLOG LINE, re-derived at this head (G11): it names "the v3.1.27
-// unattended budget" as a victim. It was not one: that budget counted MINUTES, never tokens, and
-// v3.3.3 deleted it outright (migration 186 — there is no total-time cap any more).
-// The real consumers keyed on this estimate are the two named above.
-//
-// ── WHY THIS IS A NEW DOOR AND NOT A CHANGE TO `estimateTokens` ──
-// `estimateTokens` is the ONE char estimator and it stays exactly as it is, divisor included,
-// for three reasons that are each load-bearing:
-//   1. ITS 71 CALLERS ARE MOSTLY ABOUT A STORED ROW'S CARRYING COST, counted in the same
-//      `/4` dialect as `messages.token_count`, the SQL and `agent/v2/receipt.ts`. Re-dialecting
-//      history is a different change with a different blast radius.
-//   2. IT IS PROVIDER-AGNOSTIC AND SYNCHRONOUS. A learned divisor is a property of the
-//      TOKENISER, which travels with the serving endpoint; a function that does not know the
-//      provider cannot honestly spend one.
-//   3. THIS MODULE IS A LEAF and its header explains why (taking a modelId would make the
-//      budget cyclic with its own consumers). So the arithmetic here is PURE and takes the
-//      readings as an argument; `costs/estimator-divisors.ts` does the one DB read.
-//
-// ── THE TWO POPULATIONS, AND WHY THE SPLIT IS AT THE CALL SITE ──
-// The populations are prose and dense JSON tool schemas (the full argument is in migration 181
-// and in `costs/ledger-calibration.ts`). Both dial sites in `agent/model.ts` ALREADY compute
-// their estimate as "messages + system" plus "the tools array", separately — so the call site
-// already knows which characters are which, and no classifier is needed to find out.
-//
-// ── THE CONSERVATIVE FLOOR, WHICH IS THE WHOLE SAFETY ARGUMENT ──
-// Two bounds, in this order, and neither is a tuning knob:
-//   A. EACH DIVISOR IS CAPPED AT THE ASSERTED CONSTANT. `min(CHARS_PER_TOKEN, measured)`. A
-//      measured divisor may only make the estimate LARGER, never smaller. So a box that has
-//      measured itself is a box that plans more cautiously, and a measurement that is somehow
-//      too generous cannot make this estimate less safe than today's.
-//   B. THE RESULT IS FLOORED AT TODAY'S ANSWER. `max(result, estimateTokensFromChars(total))`.
-//      Bound A already implies this for every divisor it admits; B is here because it is the
-//      property that actually matters to a consumer and it should not depend on anyone
-//      re-deriving that implication after editing A.
-// Together: THE ESTIMATE NEVER SHRINKS. Every decision this number feeds — the fit gate
-// refusing, the output budget granting, compaction firing — moves only toward caution. That is
-// migration 174's own direction of travel ("an over-measured box is a cautious box") and it is
-// why spending a MINIMUM is safe at all.
-//
-// ── AND THE EFFECTIVE DIVISOR IS RECORDED, NOT ASSUMED ──
-// `effectiveCharsPerToken` is `totalChars / tokens`. The ledger stores it in
-// `estimator_chars_per_token`, which keeps that column's contract exact: `chars = estimate x
-// divisorUsed` still recovers this request's character count, so the next reading measures the
-// TRUE ratio and the loop cannot feed on itself. Recording a flat `4` beside an estimate that
-// did not use 4 is what WOULD poison it.
+// The request estimate (apart from the provider-agnostic `estimateTokens`) feeds the fit gate and
+// `resolveOutputBudget`. Not tunable, never shrinks: divisors capped at 4, result floored at the `/4` answer.
+// The ledger stores totalChars / tokens, never a flat 4, so chars = estimate x divisor stays exact.
 
-/** What a request is made of, in characters, split by population. */
 export interface RequestChars {
-  /** System prompt + messages: prose. */
   readonly proseChars: number;
-  /** The serialised tools array: dense JSON. Zero on a toolless call. */
   readonly schemaChars: number;
 }
 
-/** The measured readings, as `costs/estimator-divisors.ts` supplies them. `null` = unmeasured. */
 export interface MeasuredDivisors {
-  /** `providers.measured_chars_per_token_prose` — the prose-population minimum. */
   readonly prose: number | null;
-  /** `providers.measured_chars_per_token` — the all-rows (denser, conservative) minimum. */
   readonly dense: number | null;
 }
 
-/** An estimate, and the single divisor it is equivalent to — which is what the ledger records. */
 export interface RequestEstimate {
   readonly tokens: number;
-  /** `totalChars / tokens`. Keeps `chars = estimate x divisor` exact for the ledger. */
   readonly effectiveCharsPerToken: number;
 }
 
-/** Bound A: a measurement may only make the estimate larger. Exported so the cap is argued in a
- *  test rather than only here. */
 export function effectiveDivisor(measured: number | null | undefined): number {
   if (typeof measured !== 'number' || !Number.isFinite(measured) || measured <= 0) {
     return CHARS_PER_TOKEN;
@@ -194,16 +43,7 @@ export function effectiveDivisor(measured: number | null | undefined): number {
   return Math.min(CHARS_PER_TOKEN, measured);
 }
 
-/**
- * THE REQUEST ESTIMATE: each population's characters divided by that population's measured
- * divisor, floored at the answer the asserted constant would have given. Pure — the readings
- * come in as an argument, so this module stays the leaf its header says it is.
- *
- * `MeasuredDivisors` entirely null is today's behaviour, exactly: both divisors fall back to
- * `CHARS_PER_TOKEN` and the result equals `estimateTokensFromChars(prose + schema)`. That is the
- * state every box is in until it has measured itself, so this function changes nothing on a box
- * that has no reading — the same promise migrations 167 and 174 make.
- */
+/** Each population's chars over its measured divisor, floored at the constant's answer. Pure. */
 export function estimateRequestTokens(chars: RequestChars, measured: MeasuredDivisors): RequestEstimate {
   const proseChars = Math.max(0, chars.proseChars);
   const schemaChars = Math.max(0, chars.schemaChars);
@@ -212,54 +52,22 @@ export function estimateRequestTokens(chars: RequestChars, measured: MeasuredDiv
   const split = Math.ceil(proseChars / effectiveDivisor(measured.prose))
     + Math.ceil(schemaChars / effectiveDivisor(measured.dense));
 
-  // Bound B — the conservative floor, stated independently of bound A (see the header).
   const tokens = Math.max(split, estimateTokensFromChars(totalChars));
 
   return {
     tokens,
-    // A zero-character request estimates zero tokens; the constant is the only honest divisor to
-    // report for it, and it keeps the quotient out of 0/0.
     effectiveCharsPerToken: tokens > 0 ? totalChars / tokens : CHARS_PER_TOKEN,
   };
 }
 
-/**
- * The cost of carrying one STORED ROW, which is `estimateTokens` plus the floor the write
- * path has always applied (`memory/message-store.ts:227`): "never zero — a row that costs
- * nothing to carry does not exist". A name, not a second estimator: it calls the one above.
- */
 export function estimateStoredTokens(text: string): number {
   return Math.max(1, estimateTokens(text));
 }
 
-// ── The replayed-reasoning half of a row's cost (T56 leg (a)) ────────────────────────────
-//
-// A STORED ROW COSTS WHAT THE WIRE WILL CARRY, and until T56 every arithmetic here counted
-// its `content` and stopped. Assistant rows that carry a tool call ALSO ship their stored
-// `reasoning_content` back to the provider (`agent/model.ts`'s replay site, dsh's own
-// passback rule), and those tokens were spent by every request and billed to no budget:
-//
-//   • 7,575 replayable rows on the dev body carried 3,806,926 reasoning tokens against the
-//     690,900 content tokens the assembler counted for the same rows — 5.5x.
-//   • the worst single row (`d68a9576…`) was budgeted at 35 tokens and carried 14,310.
-//   • across 37,872 sliding 40-row windows of that body: mean counted 6,025, mean UNCOUNTED
-//     3,981, max uncounted 78,909. Eviction and the compaction gate were both deciding
-//     against a number that was ~60% of the truth.
-//
-// This changes NO REQUEST BYTE. The same rows render the same way; only the count that
-// decides how many of them fit is now the count of what is actually sent.
+// A stored row costs what the wire carries: tool-call assistant rows also replay `reasoning_content`, so it counts.
 
-/**
- * THE REPLAY RULE, in one place. Reasoning rides an assistant turn if and only if that turn
- * carries a tool call — dsh's official passback rule (`llm-deepseek/src/serialize.ts:96-100`:
- * "reasoning_content must return on tool-call turns; it is ignored on plain turns"), adopted
- * at HL8 (C). The replay site in `agent/model.ts` and the token arithmetic here ask the SAME
- * question through this function, so the budget can never bill for bytes the serialiser drops
- * (or miss bytes it sends).
- *
- * Takes either a parsed block array or a stored row's JSON text; a plain-text row can never
- * carry a tool call, which is why the parse failure arm is `false` rather than an error.
- */
+/** The replay rule: reasoning rides an assistant turn iff that turn carries a tool call. The replay site in
+ *  `agent/model.ts` and this budget ask this same function, so the budget never bills bytes the serialiser drops. */
 export function reasoningRidesThisTurn(content: unknown): boolean {
   const blocks = typeof content === 'string' ? tryParseBlocks(content) : content;
   return Array.isArray(blocks)
@@ -275,132 +83,55 @@ function tryParseBlocks(content: string): unknown {
   }
 }
 
-/** The fields a row's cost is computed from. Structural on purpose: the assembler holds a
- *  `Message`, the compaction gate holds the same rows, and neither has to hand this module
- *  a database type it would then have to import. */
 export interface StoredRowCostInput {
   role: string;
   content: string;
   tokenCount?: number | null;
   reasoningContent?: string | null;
-  /** T56 leg (b): a row whose reasoning was retired at a compaction boundary no longer replays it, so it no longer costs anything either. */
+  /** Reasoning retired at a compaction boundary no longer replays, so it costs nothing. */
   reasoningAgedOut?: boolean | null;
-  /** v3.5 D18b r1: what this turn's injected attachments add to the row (`turn-attachments.ts`); absent: none. */
   attachmentTokens?: number;
 }
 
-/** What this row's `reasoning_content` will cost on the wire — 0 when nothing replays it. */
 export function replayedReasoningTokens(m: StoredRowCostInput): number {
   if (m.role !== 'assistant' || !m.reasoningContent || m.reasoningAgedOut) return 0;
   return reasoningRidesThisTurn(m.content) ? estimateTokens(m.reasoningContent) : 0;
 }
 
-/**
- * COST OF CARRYING ONE STORED ROW. One owner for the expression the assembler's fresh-tail
- * lane, `budgetFreshTail` and the compaction gate all spend.
- *
- * The content half is `memory/assembler.ts`'s own `storedRowCost`, moved here unchanged and
- * with its history intact — PHASE-3 T3 found it written `msg.tokenCount ?? estimateTokens(…)`,
- * and `0 ?? x` is **0**, so a row whose stored `token_count` was 0 was FREE TO CARRY (§T0-D
- * measured 116 such rows before migration `150` re-computed every row to `MAX(1, …)`; any
- * writer bypassing `memory/message-store.ts` — the kit's own golden fixture is one — brings
- * it straight back). `||` not `??`, deliberately: a stored 0 is not a measurement, it is a
- * missing one. The compaction gate's copy used `??` and now shares this one. The reasoning half is T56 leg (a), above.
- */
+/** Cost of carrying one stored row: the one expression the fresh-tail lane, `budgetFreshTail` and the compaction
+ *  gate spend. `||` not `??`: a stored `token_count` of 0 is a missing measurement, not a free row. */
 export function storedRowCost(m: StoredRowCostInput): number {
   return Math.max(1, m.tokenCount || estimateTokens(m.content)) + replayedReasoningTokens(m) + (m.attachmentTokens ?? 0);
 }
 
-// ── The image estimator (PHASE-6 T4-CAP) ────────────────────────────────────────────────
-//
-// AN IMAGE IS NOT TEXT AND MUST NOT BE BILLED AS TEXT. Everything above answers "what does
-// this text cost", and until 2026-08-04 an image block was answered by the same function —
-// `messageTokens` JSON-stringified the block, so an image cost the length of its base64
-// over four. **No provider charges for base64 length.** The fallback vision captioner's own
-// payload — one image and three sentences — therefore measured 185,178 tokens against
-// budgets of 170,071–179,553 and C11 threw at the provider boundary before the request was
-// ever sent; the agent then told its owner its vision pipeline had failed. Nine of those
-// refusals are on the platform's own durable record (`~/.dojo/logs/assembly-validation.jsonl`,
-// 2026-08-01 → 2026-08-03, `tokenTotal` 185,178 on every one), and the user-visible symptom
-// is `behav-sig:360ba8e3` in `DOJO-ISSUES-LOG.md`.
-//
-// ── THE THREE NUMBERS BELOW ARE RECEIPTS. Re-measure before touching one. ────────────────
-// Driven on the dev box 2026-08-04: **64 image calls + 20 text-only controls = 84 provider
-// receipts**, five models over two providers (`google/gemini-2.5-flash-image`,
-// `google/gemini-3.1-flash-image-preview`, `qwen/qwen3.5-9b`, `~moonshotai/kimi-latest` via
-// OpenRouter; `gemma4:31b` via ollama-local). Each call replayed `captionOne`'s exact
-// payload carrying ONE synthetic PNG of known dimensions; an image's own bill is that call's
-// provider-reported `input_tokens` minus the text-only control's. The receipts are kept at
-// `~/.dojo/receipts/t4cap-image-token-measurement/` and, per call, in `cost_records`, where
-// `estimated_input_tokens` (ours) sits beside `input_tokens` (theirs).
-//
-//   BYTES DO NOT MOVE THE BILL, and that one fact IS the defect. Nine flat-vs-noise pairs at
-//   IDENTICAL dimensions, byte ratios up to 346x: the largest provider token delta across
-//   all nine was **3**. Our estimator moved by up to 65,463 on the same pairs.
-//
-//   PIXELS DO. Per-megapixel rates measured: gemini 2.5 / 3.1 flat 258 at every size ·
-//   gemma4 ~450 · qwen ~980 · kimi ~1,300–1,408. Above each provider's own working
-//   resolution the curve STOPS — kimi bills a flat 11,674 from 3,072² through 8,192² (67
-//   megapixels), qwen a flat 16,387 from 4,096² up — because providers downscale.
-//
-// The law is the worst arm of that measurement, because the direction of error matters:
-// an estimator that UNDER-bills lets the allocator admit an assembly the provider will
-// refuse, which is the failure requirement C11 exists to prevent. Checked against all 64
-// measurements — 0 under-billed, two of them exactly on the bound (kimi 512² sets the slope,
-// qwen 4,096²+ sets the ceiling). `__tests__/image-token-rate.test.ts` pins the corpus.
-//
-// ⚠ ONE HONEST VARIANCE, recorded rather than smoothed away: OpenRouter routed the SAME
-// model and the SAME image to backends with different image preprocessing, so `qwen3.5-9b`
-// billed between 963 and 16,387 tokens for one 4,096² image across four drives. The law
-// covers the expensive arm; a cheaper one costs the allocator nothing but headroom.
+// An image is costed from its pixels, not its base64 length (no provider bills that). The constants below are
+// measured receipts, the worst arm of each; re-measure before touching one (`__tests__/image-token-rate.test.ts`).
 
-/** Tokens per megapixel — the STEEPEST rate measured (kimi-latest @ 512x512). */
 export const IMAGE_TOKENS_PER_MEGAPIXEL = 1408;
 
-/** No image was measured to cost less than this. Both Gemini models bill it flat, at every
- *  size from 64x64 to 1536x1536, so a thumbnail is not free anywhere. */
 export const IMAGE_TOKEN_FLOOR = 258;
 
-/** The largest bill any image produced (qwen3.5-9b at 4096x4096 and above). Past its own
- *  working resolution a provider downscales, so the curve stops climbing — and an estimator
- *  that kept climbing would refuse assemblies the provider would have answered. */
+/** The largest bill any image produced (qwen3.5-9b at 4096x4096 and up); providers downscale past it. */
 export const IMAGE_TOKEN_CEILING = 16387;
 
-/**
- * What one image costs, from its pixels — the only dimension the receipts show a provider
- * charging for. Unknown dimensions are the caller's problem, not this function's: see
- * `IMAGE_TOKEN_CEILING` for what "I cannot size it" must cost.
- */
 export function estimateImageTokens(width: number, height: number): number {
   const megapixels = (Math.max(0, width) * Math.max(0, height)) / 1_000_000;
   const fromPixels = Math.ceil(megapixels * IMAGE_TOKENS_PER_MEGAPIXEL);
   return Math.min(IMAGE_TOKEN_CEILING, Math.max(IMAGE_TOKEN_FLOOR, fromPixels));
 }
 
-/**
- * Pixel dimensions sniffed from an image's own magic bytes. Returns null for anything it
- * cannot read, which is a QUESTION for the caller and never an answer — see #15.
- *
- * ONE OWNER: this was `services/image-generation.ts`'s private `getImageDimensions`, where
- * the cost tracker used it for megapixel-priced models. It moved here rather than being
- * copied, because two functions answering "how big is this image" is how the six token
- * estimators happened. `image-generation.ts` imports this one.
- */
+/** Pixel dimensions from an image's magic bytes; null when unreadable (a question for the caller). */
 export function imagePixelDimensions(bytes: Buffer): { width: number; height: number } | null {
-  // PNG: 8-byte signature 89 50 4E 47 0D 0A 1A 0A, then IHDR with width at offset 16 and
-  // height at offset 20, both big-endian uint32.
   if (
     bytes.length >= 24 &&
     bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47
   ) {
     return { width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20) };
   }
-  // GIF: 'GIF87a' / 'GIF89a', then width and height as little-endian uint16.
   if (bytes.length >= 10 && bytes.subarray(0, 3).toString('ascii') === 'GIF') {
     return { width: bytes.readUInt16LE(6), height: bytes.readUInt16LE(8) };
   }
-  // JPEG: starts FF D8. Scan segments for an SOFn marker (FF C0..CF, excluding C4/C8/CC
-  // which are DHT/JPG/DAC). The 5 bytes after the marker are precision, height, width.
+  // JPEG: scan segments for an SOFn marker (FF C0..CF, excluding C4, C8, CC which are DHT, JPG, DAC).
   if (bytes.length >= 4 && bytes[0] === 0xff && bytes[1] === 0xd8) {
     let i = 2;
     while (i < bytes.length - 9) {
@@ -415,7 +146,6 @@ export function imagePixelDimensions(bytes: Buffer): { width: number; height: nu
       i += 2 + segLen;
     }
   }
-  // WebP: RIFF....WEBPVP8?
   if (
     bytes.length >= 30 &&
     bytes.subarray(0, 4).toString('ascii') === 'RIFF' &&
@@ -423,14 +153,12 @@ export function imagePixelDimensions(bytes: Buffer): { width: number; height: nu
   ) {
     const fourcc = bytes.subarray(12, 16).toString('ascii');
     if (fourcc === 'VP8X') {
-      // Extended: 4-byte flags @ offset 20, then 3-byte (width-1) LE, 3-byte (height-1) LE.
       return {
         width: 1 + (bytes[24] | (bytes[25] << 8) | (bytes[26] << 16)),
         height: 1 + (bytes[27] | (bytes[28] << 8) | (bytes[29] << 16)),
       };
     }
     if (fourcc === 'VP8L') {
-      // Lossless: 1 byte signature 0x2F at offset 20, then 14-bit (width-1), 14-bit (height-1).
       const b1 = bytes[21], b2 = bytes[22], b3 = bytes[23], b4 = bytes[24];
       return {
         width: 1 + ((b1 | (b2 << 8)) & 0x3fff),
@@ -438,86 +166,22 @@ export function imagePixelDimensions(bytes: Buffer): { width: number; height: nu
       };
     }
     if (fourcc === 'VP8 ') {
-      // Lossy: dimensions at offset 26 (frame tag + start code already past).
       return { width: bytes.readUInt16LE(26) & 0x3fff, height: bytes.readUInt16LE(28) & 0x3fff };
     }
   }
   return null;
 }
 
-// ── The thresholds ──
 
-/**
- * THE compaction threshold. Owner ruling, PHASE-3 T0b, 2026-07-26: 0.96, keep current
- * behaviour. Fuller context, dearer turns, rarer compaction. No task re-asks this.
- */
+/** Compaction threshold and assembler fill, chosen for fuller context and rarer compaction; not a tunable. */
 export const CONTEXT_THRESHOLD = 0.96;
 
-/**
- * THE OUTPUT HALF OF THE RESERVE. **DERIVED, and here is the derivation** (PHASE-3 T4).
- *
- * It is not a number this module chose. It WAS `agent/model.ts`'s own
- * `minOutputReserve = 4096` — the Anthropic transport's declared floor, the STRICTER of the
- * two the tree then enforced (the OpenAI path declared 1,024). Reserving less than the
- * transport itself demanded would have guaranteed the transport re-trimming whatever the
- * assembler admitted, which is the two-authorities defect this phase exists to close.
- *
- * PHASE-3 T4 STEP 2B (2026-08-01) CLOSED IT, AND THIS IS NOW THE ONLY DECLARATION. Both
- * front-trimmers are deleted, so `minOutputReserve` no longer exists in `agent/model.ts` and
- * this constant is not a copy of anything — it is the number itself, with its derivation
- * (below) attached. The provenance above is kept rather than tidied away: 4,096 is not an
- * arbitrary reserve, it is the floor a real transport demanded, and a later worker who reads
- * only "4096" without that history is one step from re-tuning it on taste.
- *
- * CHECKED against reality rather than assumed, because a floor inherited from one transport
- * is still a claim about what a model emits (#14). Measured on the dev body,
- * `SELECT output_tokens FROM cost_records WHERE output_tokens > 0` — **n = 8,244 real
- * calls**:
- *
- *     p50 227 · p90 674 · p99 1,581 · p99.9 3,121 · max 6,907
- *
- * So 4,096 covers better than 99.9% of everything this platform has ever generated, with
- * 31% headroom over p99.9. The all-time max (6,907, one call in 8,244) exceeds it, and that
- * is NOT a lie in the arithmetic: the reserve governs how much HISTORY the assembler
- * admits, while the transport's own `max_tokens` is computed from what the window actually
- * has left (`model.ts`: `min(maxOutputTokens, cw - inputEstimate - 500)`). A long answer
- * gets the room the window really has; the reserve only stops the assembler from spending
- * it in advance.
- *
- * Re-derive before changing it. The command is written above; never tune it to a number.
- */
+/** The output half of the reserve: covers over 99.9% of measured generations (p99.9 3,121 in 8,244 calls).
+ *  It bounds history admitted, not the answer: max_tokens uses what the window has left. Never tune it. */
 export const OUTPUT_RESERVE_TOKENS = 4096;
 
-/**
- * The reserve, COMPUTED — the tokens the assembler must not spend because the model layer
- * will.
- *
- * ── WHAT STOOD HERE, AND WHY IT HAD TO GO ──
- * `TOOL_AND_OUTPUT_RESERVE = 15000`, a literal that arrived in `assembler.ts:670` with no
- * derivation anywhere. T2 measured what it was standing in for and found it was not merely
- * imprecise, it had the wrong SIGN: the primary agent's tools array alone measures 70,006
- * chars = **17,502 tokens**, so the schemas exceeded the entire reserve before a single
- * output token. Read forward, the arithmetic said the assembler's ceiling was ALREADY over
- * the window:
- *
- *     assemblyBudget = floor(0.96 · cw) − 15,000
- *     what the wire carries = assemblyBudget + tools = floor(0.96 · cw) + 2,502
- *
- * On a 32K model that is 33,222 tokens of input against a 32,000-token window — over the
- * ceiling before output, every turn, which is exactly why the provider front-trimmers were
- * still doing real work. T2 refused to retune it (#14) and named the prerequisite: the
- * assembler has to know the payload. T3's S1 made the payload knowable; this closes it.
- *
- * With the reserve honest the arithmetic closes exactly:
- *
- *     assemblyBudget + tools + output = floor(0.96 · cw)
- *
- * `toolPayloadTokens` is MEASURED per agent per call (`measureAgentToolPayloadTokens`),
- * never a constant, because a sub-agent's array is a different size from the primary's and
- * one number for both would over-reserve for one and under-reserve for the other.
- * `maxOutputTokens` caps the output half at what the model can actually emit — reserving
- * 4,096 from a model that tops out at 2,048 sets aside room nothing can use.
- */
+/** The reserve the assembler must not spend because the model layer will: the agent's tool payload (measured per
+ *  agent per call) plus the output half, capped at what the model can emit. */
 export function toolAndOutputReserve(measured: {
   toolPayloadTokens: number;
   maxOutputTokens?: number;
@@ -530,45 +194,14 @@ export function toolAndOutputReserve(measured: {
   return tools + output;
 }
 
-/**
- * The share of what remains after scaffolding that summaries may take (the summaries lane's
- * ceiling with its 6,000 cap, `assembler.ts`'s `summariesCeilingFor`). t194: STRIP the gate's
- * `GATE_MESSAGE_CAP_TOKENS` (4,000 per row) beside it — the gauge prices rows as the trim does.
- */
 export const SUMMARY_SHARE = 0.7;
 
-/**
- * W81 — THE CACHED REGION'S CEILING, AND WHY A CEILING HAD TO EXIST AT ALL.
- *
- * `fitLanes` used to spend pass 2 in pure PRIORITY order, and `lane.fresh-tail` outranks
- * every lane emitted AHEAD of it (priority 30 against summaries' 80, the vault's 100, the
- * briefing's 110). So the live conversation was granted FIRST and the cached lanes divided
- * whatever it left — which made the bytes of the cached region a function of the size of the
- * uncached one. A single mail search appending a 15,000-token tool_result re-truncated
- * `lane.summaries` at slot 300 and re-billed the entire array behind it, with no content
- * changed anywhere (measured: 22,424 -> 10,580 chars across one `outlook_search`).
- *
- * The walk is now CACHED-PHASE-FIRST (`lanes.ts`), so a cached lane's grant can no longer
- * move with the tail. That inverts who gives way under pressure, so the live conversation
- * needs a DECLARED guarantee where it previously had a race it always won: the cached phase
- * may spend at most this share of the content budget, and the remainder is the tail's floor.
- *
- * WHY 0.7 AND NOT A NEW NUMBER: `SUMMARY_SHARE` above is already the declared ceiling of the
- * largest lane in that region, so on any body where summaries ARE the cached region this cap
- * cannot bind — it is the largest value that changes nothing today, and it still leaves the
- * live conversation a guaranteed 30% of the content budget (~29,000 tokens on a 128k window
- * with a measured tool payload). Two names rather than one because they answer two different
- * questions, and welding them would make a later change to either one silently move the
- * other.
- */
+/** Cached lanes are walked first and may spend at most this share of the content budget; the rest is
+ *  the tail's floor. Equals `SUMMARY_SHARE`, a separate name so changing one never moves the other. */
 export const CACHED_REGION_SHARE = 0.7;
 
-/**
- * The window's row RUNG (FA-M3, moved from `memory/store.ts`): it sizes the tail horizon's row
- * ceiling and the token trim's block (`tail-horizon.ts`) — the cadence of a cut, for the cache.
- * t194 (owner decision 7b): it is NOT the protected recent part any more; that is tokens, the
- * view's `protectedFromSeq` (`assembler.ts`'s `ContextView`).
- */
+/** The window's row rung: sizes the tail horizon's row ceiling and the trim block (`tail-horizon.ts`).
+ *  Not the protected recent part, which is tokens (`ContextView.protectedFromSeq` in `assembler.ts`). */
 export function getFreshTailCount(contextWindow: number): number {
   const cw = clampWindow(contextWindow);
   if (cw >= 200000) return 80;   // 200k+ (Sonnet, Opus), ~15-20 turns
@@ -577,18 +210,13 @@ export function getFreshTailCount(contextWindow: number): number {
   return 24;                     // Small models, ~5 turns
 }
 
-// ── The policy ──
 
 export interface ContextWindowPolicy {
-  /** The model's full context window, clamped finite and >= 0. */
   contextWindow: number;
-  /** 0.96 — the assembler's fill fraction. */
   compactionThreshold: number;
-  /** Tokens the assembler does not control (tool schemas + output). */
   toolAndOutputReserve: number;
-  /** What the assembler may spend on system prompt + messages. Never negative. */
+  /** What the assembler may spend on system prompt plus messages. Never negative. */
   assemblyBudgetTokens: number;
-  /** The window's row rung: the horizon ceiling and the trim block (`getFreshTailCount`). */
   freshTailCount: number;
 
 }
@@ -598,41 +226,17 @@ function clampWindow(contextWindow: number): number {
   return contextWindow;
 }
 
-/**
- * The eight-plus numbers, derived once, clamped, from the one place that owns them.
- *
- * `measured` IS REQUIRED, and that is the design (PHASE-3 T4). There is no default and no
- * overload without it, so no caller can quietly fall back to a constant nobody derived —
- * which is how the 15,000 survived four phases. Both production callers hold an `agentId`
- * and a window; measuring costs one already-memoised tool-list read.
- *
- * CLAMPING IS NOT COSMETIC. `floor(0.96 · 15000) − reserve` is negative on a small window,
- * and a negative budget does not fail — it flows into `budgetFreshTail(tail, maxTokens −
- * usedTokens)`, whose "include the last group anyway" safety then hands the model exactly
- * one message with nothing logged and nothing broadcast. Zero is representable; negative
- * is a lie. `assertSystemPromptFits` is what turns that zero into a loud failure.
- *
- * ── T82a (ANSWER-ANYWAY): `measured.providerCeilingTokens`, OPTIONAL and additive ─────────
- * `null`/`undefined` (every provider configured before this task, and every provider that has
- * declared only patience or only throughput but not both) leaves `assemblyBudgetTokens`
- * EXACTLY the expression above — the byte-preservation control R6 requires. A caller that HAS
- * resolved a box-speed ceiling (`agent/model.ts`'s `getProviderCeilingTokens`, off the same
- * `getModelInfo` join `agent/model.ts` already performs for `refuseIfDoomed`) passes it here,
- * and the window-derived budget is capped at it via `providerAwareBudgetTokens` — the same
- * arithmetic the pre-dial gate already trusted, now spent BEFORE the assembler decides what to
- * admit rather than only after it has already built a prompt too big to send.
- */
+/** The window numbers, derived once, clamped at 0 (`assertSystemPromptFits` makes a zero budget loud).
+ *  `measured` is required so no caller falls back to an underived constant. `providerCeilingTokens`
+ *  (optional) also caps the window budget; null leaves the window expression exactly. */
 export function contextWindowPolicy(
   contextWindow: number,
   measured: { toolPayloadTokens: number; maxOutputTokens?: number; providerCeilingTokens?: number | null },
 ): ContextWindowPolicy {
   const cw = clampWindow(contextWindow);
   const reserve = Math.max(0, toolAndOutputReserve(measured));
-  // v3.5 field fix 3 (#11, review round L3): two bounds, each with ITS OWN reserve. The WINDOW holds the tools, the
-  // output and the assembly, so the whole reserve comes off it. The prefill CEILING bounds what the box must prefill:
-  // the tools are prefilled (they sit inside it, and the old code let them overflow it), the output is not (it never
-  // passes through prefill), so only the tool payload comes off the ceiling's planned half. On a 200K window with a
-  // 17,502-token tool payload and a 102,600 ceiling: 51,300 - 17,502 = 33,798 (it was 51,300, the tools unbudgeted).
+  // Two bounds, each with its own reserve: the window holds tools, output and assembly, so the whole reserve comes
+  // off it; the prefill ceiling bounds what the box must prefill (tools yes, output no), so only tools come off it.
   const windowBudget = Math.max(0, Math.floor(CONTEXT_THRESHOLD * cw) - reserve);
   const { providerCeilingTokens } = measured;
   const inputReserve = Math.max(0, Math.ceil(measured.toolPayloadTokens || 0));
@@ -648,7 +252,6 @@ export function contextWindowPolicy(
   };
 }
 
-/** Thrown when a model's window cannot hold this agent's system prompt at all. */
 export class SystemPromptTooLargeError extends Error {
   constructor(
     readonly systemPromptTokens: number,
@@ -665,12 +268,7 @@ export class SystemPromptTooLargeError extends Error {
   }
 }
 
-/**
- * Fail loud rather than assemble a lie (research 06 requirement C11's philosophy, applied
- * to the one case T2 can already see). Before this, a window small enough to make the
- * budget negative produced a single-message context with no warning anywhere — the agent
- * looked like it had forgotten everything and no log said why.
- */
+/** Fail loud rather than assemble a lie: a negative budget would otherwise give a one-message context silently. */
 export function assertSystemPromptFits(systemPromptTokens: number, policy: ContextWindowPolicy): void {
   if (systemPromptTokens > policy.assemblyBudgetTokens) {
     throw new SystemPromptTooLargeError(systemPromptTokens, policy);
