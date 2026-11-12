@@ -1,13 +1,6 @@
-// ════════════════════════════════════════
-// Which embedding model is in use, and whether it costs money.
-//
-// A leaf (database access only) so the vector readers, the writers and the switch handler all ask
-// the same question. Every stored vector carries the key of the model that made it
-// (`embeddings.embedding_model`, `vault_entries.embedding_model`), and a search only scores vectors
-// whose key equals the current one: two models' vectors are never compared, even when their widths
-// happen to match (the width check alone cannot tell them apart).
-// ════════════════════════════════════════
-
+// Which embedding model is in use, and whether it costs money. A leaf (database access only) so the readers,
+// writers and the switch handler ask one question. Every stored vector carries its model's key and a search
+// scores only vectors with the current key: widths can match across models, so width cannot tell them apart.
 import { getDb } from '../db/connection.js';
 
 export interface EmbeddingConfig {
@@ -43,11 +36,8 @@ export function embeddingModelKey(cfg: Pick<EmbeddingConfig, 'provider' | 'model
   return `${cfg.provider}:${cfg.model}`;
 }
 
-/**
- * True when using this embedder costs nothing: Ollama always, and an OpenAI-compatible endpoint
- * only when it is on this machine or a private network address. Anything else (a hosted API, or an
- * address that cannot be told apart from one) counts as paid, the safe direction.
- */
+/** True when using this embedder costs nothing: Ollama, or an OpenAI-compatible endpoint on this machine or a
+ *  private network address. Anything else counts as paid (the safe direction). */
 export function embeddingIsLocal(cfg: Pick<EmbeddingConfig, 'provider' | 'baseUrl'> = readEmbeddingConfig()): boolean {
   if (cfg.provider === 'ollama') return true;
   try {

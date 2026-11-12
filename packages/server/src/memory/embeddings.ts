@@ -1,7 +1,4 @@
-// ════════════════════════════════════════
-// Embedding Generation (Phase 5C)
-// Generates vector embeddings via Ollama or OpenAI-compatible APIs
-// ════════════════════════════════════════
+// Embedding generation via Ollama or OpenAI-compatible APIs.
 
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
@@ -13,7 +10,6 @@ import { readEmbeddingConfig, embeddingModelKey, type EmbeddingConfig } from './
 
 const logger = createLogger('embeddings');
 
-// ── Configuration ──
 
 function getEmbeddingConfig(): EmbeddingConfig {
   return readEmbeddingConfig();
@@ -38,19 +34,9 @@ export function setEmbeddingConfig(config: Partial<EmbeddingConfig>): void {
 
 // ── Backend absence, reported as a fact instead of guessed from prose ──
 //
-// The embedder is OPTIONAL and fires on every message, response and summary, so
-// whatever this module does when it is missing, it does hundreds of times an
-// hour. ROUND 9 of the release ritual (2026-09-21, v3.1.26) measured the cost of
-// getting that wrong: Ollama was UP serving zero models, every embed came back
-// `HTTP 404 {"error":"model ... not found"}`, and absence was classified by a
-// prose regex that knew refused connections and nothing about 404 — so an
-// optional subsystem emitted 102 ERROR lines in 19 minutes and the SAFETY gate
-// stopped the release.
-//
-// Widening the regex would be the same mistake spelled longer. `provider-error.ts`
-// states the house rule — the reported CODE decides, prose is the LAST resort —
-// so the 404 leaves the fetch as a TYPE, and prose is left to the one layer with
-// no status to read: a daemon that never answered at all.
+// The embedder is OPTIONAL and fires on every message, response and summary, so its absence must not be an ERROR
+// storm. The reported CODE decides (`provider-error.ts`; prose is the LAST resort): a 404 leaves the fetch as a
+// TYPE, and prose covers only a daemon that never answered at all.
 export class EmbeddingBackendUnavailableError extends Error {
   /** Duck-typed marker: `instanceof` is not reliable across module instances. */
   readonly backendUnavailable = true;
@@ -60,10 +46,8 @@ export class EmbeddingBackendUnavailableError extends Error {
   }
 }
 
-/** True when the failure means THE BACKEND IS NOT THERE — the daemon never
- *  answered (transport; no status to read) or answered that it has no such model
- *  (HTTP 404). A 500, a malformed body or a DB write fault is a genuine failure
- *  and keeps the ERROR branch. */
+/** True when THE BACKEND IS NOT THERE: the daemon never answered (transport) or has no such model (HTTP 404).
+ *  A 500, a malformed body or a DB write fault is a genuine failure and keeps the ERROR branch. */
 export function isEmbeddingBackendUnavailable(err: unknown): boolean {
   if (err instanceof Error && (err as { backendUnavailable?: unknown }).backendUnavailable === true) return true;
   const msg = err instanceof Error ? err.message : String(err);
@@ -71,11 +55,8 @@ export function isEmbeddingBackendUnavailable(err: unknown): boolean {
 }
 
 // ── The absence is announced ONCE, by whoever notices first ──
-// One fact, several witnesses: memory writes, the vault's per-entry embed and its
-// per-search query embed each used to warn on their own schedule. They share this
-// latch. It re-arms the moment the backend ANSWERS (see generateEmbedding), not
-// when some caller manages to store a row — so "until it answers again" is the
-// mechanism rather than an approximation of it.
+// Memory writes, the vault's per-entry embed and its per-search query embed share this latch, which re-arms the
+// moment the backend ANSWERS (see generateEmbedding), not when some caller stores a row.
 let backendAbsenceReported = false;
 
 export function warnEmbeddingBackendAbsentOnce(context: Record<string, unknown>): void {
@@ -84,9 +65,8 @@ export function warnEmbeddingBackendAbsentOnce(context: Record<string, unknown>)
   logger.warn('Embedding backend unavailable — embeddings are paused until it answers again', context);
 }
 
-// The one place a non-OK embed response becomes an error. 404 is "no such model"
-// on both backends; some OpenAI-compatible servers say it in prose under another
-// status, so the body is read as a fallback.
+// The one place a non-OK embed response becomes an error. 404 is "no such model" on both backends; some
+// OpenAI-compatible servers say it in prose under another status, so the body is read as a fallback.
 function embedResponseError(prefix: string, status: number, body: string): Error {
   const msg = `${prefix}: HTTP ${status} ${body.slice(0, 200)}`;
   return status === 404 || /model[^.]{0,40}not found|model_not_found|no such model/i.test(body)
@@ -94,19 +74,15 @@ function embedResponseError(prefix: string, status: number, body: string): Error
     : new Error(msg);
 }
 
-// ── Embedding Generation ──
 
-// Default per-request embed deadline. Background memory embeds (summaries,
-// message backfill) can tolerate a cold GPU load, so they keep the generous
-// 30s. Latency-sensitive callers on a turn's critical path (the router, FA-R4)
-// pass a short timeoutMs so a slow or cold embedder degrades to the fallback
-// instead of stalling first token.
+// Default per-request embed deadline: background embeds tolerate a cold GPU load, while latency-sensitive callers
+// (the router) pass a short timeoutMs so a slow embedder degrades to the fallback instead of stalling first token.
 const DEFAULT_EMBED_TIMEOUT_MS = 30000;
 
 export async function generateEmbedding(
   text: string,
-  // A-6/L2-3: `agentId` is whose stop this answers to — an agent AWAITS this on seven paths
-  // (`recall-lane`, `vector-search`, `vault_search`, four a2a). The corpus sweep passes none.
+  // `agentId` is whose stop this answers to: an agent AWAITS this on seven paths (`recall-lane`, `vector-search`,
+  // `vault_search`, four a2a). The corpus sweep passes none.
   opts?: { keepAlive?: string | number; timeoutMs?: number; agentId?: string },
 ): Promise<Float32Array> {
   const slot = opts?.agentId === undefined ? null : openAgentCall(opts.agentId, 'turn');
@@ -114,13 +90,8 @@ export async function generateEmbedding(
   const config = getEmbeddingConfig();
   const timeoutMs = opts?.timeoutMs ?? DEFAULT_EMBED_TIMEOUT_MS;
 
-  // D17: cap raised 2000 -> 7000. The C12 fix over-corrected: a flat 2000-char cap
-  // embedded only the first 20-45% of a typical summary (avg ~4.7k chars, depth-2 ~12k),
-  // so the back half of most summaries was invisible to vector recall (77% of summaries
-  // exceeded 2000 chars). The token-overflow safety C12 was protecting against is ALREADY
-  // handled by the adaptive halving-retry below (a dense input that overflows the embed
-  // model's token context is halved and retried up to 3x), so the char cap can be raised
-  // back to capture most summaries whole while the retry still rescues the rare dense one.
+  // The char cap embeds most summaries whole; a dense input that overflows the model's token context is rescued by
+  // the halving retry below.
   const EMBED_CHAR_CAP = 7000;
   let truncated = text.length > EMBED_CHAR_CAP ? text.slice(0, EMBED_CHAR_CAP) : text;
 
@@ -128,8 +99,7 @@ export async function generateEmbedding(
     const baseUrl = config.baseUrl.replace(/\/+$/, '');
     const endLocalWork = localWorkBegins(baseUrl);   // an Ollama restart waits for it
     try {
-    // C12: adaptive retry, on a token-context overflow, halve the input and retry (up to
-    // 3x) so a dense input still embeds instead of dropping to un-searchable.
+    // On a token-context overflow, halve the input and retry (up to 3x) so a dense input still embeds.
     for (let attempt = 0; attempt < 3; attempt++) {
       const response = await fetch(`${baseUrl}/api/embeddings`, {
         method: 'POST',
@@ -137,16 +107,14 @@ export async function generateEmbedding(
         body: JSON.stringify({
           model: config.model,
           prompt: truncated,
-          // keep_alive: how long Ollama holds the model resident after this call.
-          // The router warmer passes a window so the embedder stays loaded while
-          // auto-router is in use (no cold ~300ms reloads per route).
+          // keep_alive: how long Ollama holds the model resident after this call (the router warmer passes a window).
           ...(opts?.keepAlive !== undefined ? { keep_alive: opts.keepAlive } : {}),
         }),
         signal: slot ? AbortSignal.any([slot.signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
       });
       if (response.ok) {
         const data = await response.json() as { embedding: number[] };
-        backendAbsenceReported = false; // it ANSWERED — re-arm the absence warning
+        backendAbsenceReported = false; // it ANSWERED, re-arm the absence warning
         return new Float32Array(data.embedding);
       }
       const errorText = await response.text().catch(() => '');
@@ -160,7 +128,7 @@ export async function generateEmbedding(
     } finally { endLocalWork(); }
   }
 
-  // OpenAI-compatible endpoint, C12: same adaptive halving retry on a context overflow.
+  // OpenAI-compatible endpoint: same adaptive halving retry on a context overflow.
   for (let attempt = 0; attempt < 3; attempt++) {
     const response = await fetch(openAiCompatibleUrl(config.baseUrl, 'embeddings'), {
       method: 'POST',
@@ -171,24 +139,13 @@ export async function generateEmbedding(
         model: config.model,
         input: truncated,
       }),
-      // ── t114 (CENSUS U16) — THE DECLARED BOUND IS HONOURED ON BOTH TRANSPORTS ──
-      //
-      // THE DEFECT: a hardcoded flat 30s here, while the Ollama branch thirty lines above arms
-      // the caller's own `timeoutMs`. The parameter exists precisely so a latency-sensitive
-      // caller can ask for less and a background embed can tolerate a cold GPU load — and on
-      // this transport it was silently discarded, so a caller's declared bound meant nothing.
-      // Census row 8's shape exactly: two numbers that were always meant to be the same one.
-      //
-      // Why this is the whole fix: an abort here is already classified as
-      // `isEmbeddingBackendUnavailable` (it matches /aborted|timeout/), which pauses embedding
-      // behind the announce-once latch rather than silently dropping the work, and
-      // `memory/backfill.ts` is the sweep that re-embeds what was missed. So the row is
-      // recoverable — the un-honoured bound was the part that was not.
+      // The caller's declared `timeoutMs` is honoured on this transport too. An abort is classified by
+      // `isEmbeddingBackendUnavailable` (pausing embedding behind the latch) and `memory/backfill.ts` re-embeds it.
       signal: slot ? AbortSignal.any([slot.signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
     });
     if (response.ok) {
       const data = await response.json() as { data: Array<{ embedding: number[] }> };
-      backendAbsenceReported = false; // it ANSWERED — re-arm the absence warning
+      backendAbsenceReported = false; // it ANSWERED, re-arm the absence warning
       return new Float32Array(data.data[0].embedding);
     }
     const errorText = await response.text().catch(() => '');
@@ -202,7 +159,6 @@ export async function generateEmbedding(
   } finally { slot?.release(); }   // by identity, across the halving retries
 }
 
-// ── Store Embedding ──
 
 // Source kinds, liveness rules and the guarded write are a LEAF (`embedding-sources.ts` says why).
 import { insertEmbeddingIfSourceAlive, UNDECLARED_EMBEDDING_KIND_WARNING, type EmbeddingSourceType } from './embedding-sources.js';
@@ -217,21 +173,17 @@ export async function storeEmbedding(
   opts?: { replaceStale?: boolean },
 ): Promise<void> {
   try {
-    // Skip very short content
     if (content.trim().length < 20) return;
 
-    // The label is read BEFORE the model call, so a vector is stamped with the model that made it
-    // even if the settings change while the call is in flight.
+    // The label is read BEFORE the model call, so a vector is stamped with the model that made it.
     const model = embeddingModelKey();
 
-    // Check if already embedded
     const db = getDb();
     const existing = db.prepare(
       'SELECT id, embedding_model AS model FROM embeddings WHERE source_type = ? AND source_id = ?'
     ).all(sourceType, sourceId) as Array<{ id: string; model: string | null }>;
-    // `embeddings` has no unique key per source, so a source can hold several rows (an embed that was in
-    // flight across a model switch can land an old-model row beside a current one). The re-embed treats
-    // the source as done once ONE current row exists, and removes every stale row.
+    // `embeddings` has no unique key per source: an embed in flight across a model switch can land an old-model row
+    // beside a current one. The re-embed treats the source as done once ONE current row exists and removes stale rows.
     const hasCurrent = existing.some((r) => r.model === model);
     const dropStale = (): void => {
       db.prepare('DELETE FROM embeddings WHERE source_type = ? AND source_id = ? AND embedding_model IS NOT ?').run(sourceType, sourceId, model);
@@ -245,7 +197,7 @@ export async function storeEmbedding(
     // and only when the new one is written: a failed embed leaves the old rows in place.
     if (existing.length > 0) dropStale();
 
-    // GUARDED WRITE — the `await` above is the orphan class's whole mechanism; see the leaf.
+    // GUARDED WRITE: the `await` above is the orphan class's whole mechanism; see `embedding-sources.ts`.
     const written = insertEmbeddingIfSourceAlive(db, {
       id: uuidv4(), sourceType, sourceId, agentId, preview: content.slice(0, 200),
       vector: Buffer.from(embedding.buffer), dimensions: embedding.length, model,
@@ -259,9 +211,7 @@ export async function storeEmbedding(
     logger.debug('Embedding stored', { sourceType, sourceId, dimensions: embedding.length }, agentId ?? undefined);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    // The default embed backend (Ollama) is engine-optional. Absent is not a
-    // fault: it is WARN, said once (see the latch above). ERROR stays for the
-    // genuine failure an operator has to act on.
+    // The default embed backend (Ollama) is engine-optional: absent is WARN, said once (see the latch above).
     if (isEmbeddingBackendUnavailable(err)) {
       warnEmbeddingBackendAbsentOnce({ error: msg, site: 'memory.storeEmbedding', sourceType, sourceId });
       return; // best-effort, don't throw
@@ -271,11 +221,9 @@ export async function storeEmbedding(
       sourceType,
       sourceId,
     });
-    // Embedding is best-effort, don't throw
   }
 }
 
-// ── Queue Embedding (async, non-blocking) ──
 
 export function queueEmbedding(
   sourceType: EmbeddingSourceType,
@@ -283,7 +231,6 @@ export function queueEmbedding(
   agentId: string | null,
   content: string,
 ): void {
-  // Fire and forget, don't block the caller
   storeEmbedding(sourceType, sourceId, agentId, content).catch(err => {
     logger.debug('Queued embedding failed', {
       error: err instanceof Error ? err.message : String(err),
@@ -293,9 +240,8 @@ export function queueEmbedding(
   });
 }
 
-// Re-embed a source whose content changed. The insert path dedups by
-// (source_type, source_id), so updates must drop the stale row first or the
-// new content would be silently ignored.
+// Re-embed a source whose content changed: the insert path dedups by (source_type, source_id), so updates must
+// drop the stale row first.
 export function refreshEmbedding(
   sourceType: EmbeddingSourceType,
   sourceId: string,
@@ -308,7 +254,6 @@ export function refreshEmbedding(
   queueEmbedding(sourceType, sourceId, agentId, content);
 }
 
-// ── Embedding Status ──
 
 export function getEmbeddingStatus(): {
   total: number;

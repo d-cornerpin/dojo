@@ -1,21 +1,7 @@
-// ════════════════════════════════════════════════════════════════════════════
-// WHAT HAPPENS TO THE MEMORIES WHEN THE EMBEDDING MODEL IS SWITCHED (owner ruling).
-//
-// Every stored vector names the model that made it (migration 207), and a search scores only the
-// current model's vectors, so right after a switch the old memories are unsearchable by meaning
-// until they are embedded again. Two cases:
-//
-//   · The new model is LOCAL (costs nothing): they are re-embedded in the background, here.
-//   · The new model is PAID (a hosted API): nothing is re-embedded automatically, because that would
-//     spend the owner's money without his say. He is told once, through the dashboard's existing
-//     owner card (healer/owner-notices.ts, key `embedding-switch`), how many memories still use the old model and
-//     that search will not find them until they are re-processed, and that switching to a local model re-processes them automatically.
-//     v3.5 field fix 3, review round L1 (OR-FIELD3 (c)): it is an INFORMATIONAL card, a toast that leaves by itself.
-//     Re-processing is optional, nothing is billed until he chooses, and the card has no button to press.
-//
-// The way to re-process them is to switch the memory search model to a local one (no agent tool or button
-// re-processes them on request; the owner's own POST /embeddings/backfill route also does, with no screen of its own).
-// ════════════════════════════════════════════════════════════════════════════
+// What happens to the memories when the embedding model is switched. Every stored vector names its model
+// (migration 207) and a search scores only the current model's vectors, so old memories are unsearchable by meaning
+// until re-embedded. A LOCAL model re-embeds in the background here; a PAID one re-embeds nothing (it would spend the
+// owner's money unasked) and tells the owner once, via an informational owner card (`healer/owner-notices.ts`).
 
 import { createLogger } from '../logger.js';
 import { tellOwner, ownerConditionCleared, wordsOf } from '../healer/owner-notices.js';
@@ -25,18 +11,14 @@ const logger = createLogger('embedding-switch');
 
 export const EMBEDDING_SWITCH_KEY = 'embedding-switch';
 
-/** No memory is left on another model: the owner card ends (every open dashboard, and the load-time list). */
 export function embeddingSwitchSettled(): void {
   try { if (countMemoriesOnOtherModels() === 0) ownerConditionCleared(EMBEDDING_SWITCH_KEY); } catch { /* best effort */ }
 }
 
 let reembedding = false;
 
-/**
- * Re-embed everything made by another model. It ends when none is left, or when a whole pass leaves the
- * count of memories on other models where it was (nothing more can be done now: the embedder is down, or a
- * source cannot be embedded). The count is the real signal; the number of calls that returned is not.
- */
+/** Re-embed everything made by another model. It ends when none is left, or when a whole pass leaves the count
+ *  where it was (the embedder is down, or a source cannot be embedded): the count is the real signal. */
 async function reembedAllStale(): Promise<void> {
   if (reembedding) return;
   reembedding = true;
@@ -65,7 +47,6 @@ async function reembedAllStale(): Promise<void> {
   }
 }
 
-/** Called once, by `setEmbeddingConfig`, when the saved model label changed. */
 export async function handleEmbeddingModelSwitch(previousKey: string): Promise<void> {
   ownerConditionCleared(EMBEDDING_SWITCH_KEY);   // a new switch starts a new telling
   const count = countMemoriesOnOtherModels();
@@ -76,5 +57,5 @@ export async function handleEmbeddingModelSwitch(previousKey: string): Promise<v
     return;
   }
   // Paid: nothing is spent. A lasting card, told once per switch.
-  tellOwner(EMBEDDING_SWITCH_KEY, wordsOf(EMBEDDING_SWITCH_KEY));   // an optional choice: nothing billed, no button
+  tellOwner(EMBEDDING_SWITCH_KEY, wordsOf(EMBEDDING_SWITCH_KEY));
 }

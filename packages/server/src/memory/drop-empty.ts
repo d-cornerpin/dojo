@@ -1,7 +1,5 @@
-// t183 — a message that says nothing never reaches a provider. Run 17 S2: an EMPTY assistant row (a blank start
-// line, row 153626) was merged into the next assistant row as `{ type: 'text', text: '' }`; the shape validator
-// refused the assembly (providers reject an empty text block), recovery misread it, and the owner's conversation
-// was quarantined. Empty messages and blank text blocks carry no information: they are dropped before the merge.
+// A message that says nothing never reaches a provider: providers reject an empty text block, so empty messages
+// and blank text blocks are dropped before the assistant-row merge.
 type Block = { type?: string; text?: unknown };
 type Msg = { role: string; content: unknown; reasoningContent?: string };
 

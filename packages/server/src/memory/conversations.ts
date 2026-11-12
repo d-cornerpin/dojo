@@ -1,10 +1,8 @@
-// ── First-class conversations (lanes & lineage P5, 2026-07-21) ──
+// ── First-class conversations ──
 //
-// The ONE writer of conversations rows. Identity = channel + provider +
-// counterparty + thread root, resolved-or-created at ingest so every message
-// row carries its conversation_id atomically. Best-effort by contract: a
-// resolution failure returns null and the producer inserts with a NULL id
-// (pre-P5 behavior), never blocks an inbound.
+// The ONE writer of conversations rows. Identity = channel + provider + counterparty + thread root, resolved or
+// created at ingest so every message row carries its conversation_id. Best-effort: a failure returns null and the
+// producer inserts with a NULL id, never blocking an inbound.
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
@@ -20,19 +18,10 @@ export interface ConversationIdentity {
 }
 
 /**
- * The `conversations` identity of a resolved counterparty — the SAME three inputs
- * `conversationKey()` takes, mapped onto this table's unique key instead of onto a string.
- *
- * PHASE-2 T10I. It exists so a turn can resolve its own conversation at PICKUP when the
- * producer could not at ingest (this module is best-effort by contract and returns null rather
- * than blocking an inbound). Measured first: 66 owner-lane user rows on the dev box carry no
- * `conversation_id`, all of them non-door inserts (harness fixtures, spawn kickoffs).
- *
- * ⚠ `provider` and `threadRoot` are DELIBERATELY NULL — a real limit, not an omission. A door
- * knows gmail-vs-outlook and WHICH mail thread; a turn does not. So this is strictly coarser
- * than a producer's identity and is only reached for a row no producer stamped (every email and
- * teams row on both measured bodies carries a producer-resolved id). If that stops being true
- * the fix is at the door, not a coarser identity here — and the caller logs when it fires.
+ * The `conversations` identity of a resolved counterparty: the SAME three inputs `conversationKey()` takes, mapped
+ * onto this table's unique key. Lets a turn resolve its conversation at pickup when the producer could not at ingest.
+ * `provider` and `threadRoot` are DELIBERATELY NULL: a door knows gmail-vs-outlook and WHICH mail thread, a turn
+ * does not, so this is coarser than a producer's identity; if that matters, the fix is at the door.
  */
 export function conversationIdentityOf(
   channel: string | null, senderId: string | null, senderName: string | null, threadId?: string | null,
@@ -40,9 +29,8 @@ export function conversationIdentityOf(
   if (channel === 'a2a') {
     return { channel: 'a2a', provider: null, counterpartyId: senderId ?? null, threadRoot: threadId ?? null };
   }
-  // `conversationKey()` folds dashboard, voice AND a null channel into the one string
-  // 'owner'; the owner's conversation is per-agent and per-channel here, and 'dashboard' is
-  // the one the four owner-side producers resolve.
+  // `conversationKey()` folds dashboard, voice and a null channel into 'owner'; here the owner's conversation is
+  // per-agent and per-channel, and 'dashboard' is the one the owner-side producers resolve.
   if (channel === 'dashboard' || channel === 'voice' || channel === null) {
     return { channel: channel ?? 'dashboard', provider: null, counterpartyId: 'owner', threadRoot: null };
   }
@@ -92,25 +80,10 @@ export function resolveOrCreateConversation(agentId: string, ident: Conversation
   }
 }
 
-/** Dominant (modal) non-null lineage across a set of message ids (lanes & lineage P5c).
- *  Summaries and archives call this so conversation identity survives the compaction
- *  boundary instead of dropping at it. Each field's mode is computed independently.
- *  Ties break deterministically (count, then lexicographic).
- *
- *  ── SHRINK (PHASE-2 T10I): the `conv_key` tally is GONE because its INPUT is
- *  (`messages.conv_key` drops at `148`). Measured before cutting: `dag.ts` is the only writer
- *  AND the only reader of `summaries.conv_key` (`:153`, a higher-depth summary's modal lineage
- *  from its parents'), so the value went in a circle and out to nobody. That column now has no
- *  writer — residue on a table this phase does not own, NAMED for SWEEP C rather than dropped
- *  in passing.
- *  requirement preserved: a summary still carries the modal CONVERSATION and A2A THREAD of the
- *  chunk it compressed — the two lineage fields anything outside `dag.ts` reads.
- *  Best-effort by design: any failure returns all-null lineage and never blocks the writer.
- *
- *  T5: ONE query per chunk. This ran the same statement twice, once against each message
- *  store, and summed the tallies — which also meant a double-homed id voted TWICE and could
- *  carry a mode on its own. STRIP; requirement preserved: a summary carries the modal
- *  lineage of the chunk it compressed, counted once per row. */
+/** Dominant (modal) non-null lineage across a set of message ids. Summaries and archives call this so conversation
+ *  identity survives the compaction boundary. Each field's mode is computed independently, ties break by count
+ *  then lexicographic, and each row counts once. Best-effort: any failure returns all-null lineage and never
+ *  blocks the writer. */
 export function dominantMessageLineage(messageIds: string[]): {
   conversationId: string | null;
   a2aThreadId: string | null;

@@ -2,19 +2,17 @@ import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { MIN_COMPACTABLE_ROWS, compactionDoor, compactionIsBraked, notePassOutcome, progressed,
   summaryWriterUnavailable } from './compaction-brakes.js';
-import { condenseUntilFits, condensableSummaries, rawContextSummaryTokens, type CondensationOutcome } from './condense-until-fits.js';   // OR-COMPACT-1
+import { condenseUntilFits, condensableSummaries, rawContextSummaryTokens, type CondensationOutcome } from './condense-until-fits.js';
 import { cachedAssembledEstimate } from './assembled-estimate-cache.js';
 export { forcedCompactionOptions } from './compaction-brakes.js';   // the emergency path's bounds, published where its callers already look
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
-// (getRuntimeVersion import removed in Phase 9 Stage 2, single-track v2)
 import { getMessagesOutsideFreshTail, getRecentMessages } from './store.js';
 import { rowsLeavingView, rowsStrandedBelowBoundary, type LeavingView } from './tail-horizon.js';
 import { estimateTokens, getFreshTailCount, SystemPromptTooLargeError } from './budget.js';
 import type { PromptTurnContext } from '../prompt/assembler.js';
 import { insertMessageIfAbsent, retireReplayedReasoningBeforeTurn } from './message-store.js';
-// T67b: the stub distance is DECLARED by the assembler, which renders it, and READ here,
-// which decides when it applies. One number, two readers — never a second literal.
+// The assembler declares and renders the stub distance, this module decides when it applies: one literal.
 import { V2_STUB_AFTER_TURNS, groupTail, type ContextView } from './assembler.js';
 import { summaryWriterCandidates, eligibleSummaryWriters, ownModel, pickWriter, summaryRoom, writerPassedOver, spanWaitsForAWriter } from './writer.js';
 import { supersedeUncondensedPlaceholders } from './uncondensed-head.js';
@@ -30,7 +28,6 @@ import { generateSummary } from './summarize.js';
 import { modelCharsPerToken } from '../services/token-density.js';
 import { LEAF_CHUNK_TOKENS, fullSpanTargetTokens, leafKeepCap, summaryShare, summaryTargetTokens } from './summary-target.js';
 import { authoredInputLines, fitInputToBudget, resultForSummary, resultText } from './summary-authored-text.js';
-// T20: the summariser's own cited work id, resolved against the spine before the row is stored.
 import { annotateSummaryObligations } from './summary-obligations.js';
 import { archiveMessagesBeforeCompaction, isDreamerIgnored, getArchiveHighWaterMark } from '../vault/archive.js';
 import { isSystemServiceAgent } from '../config/platform.js';
@@ -38,48 +35,28 @@ import { lastCompactionDividerAt, isStopFenced } from '../agent/shared-state.js'
 import { summaryPartyTag } from './party-label.js';
 import { groupBySubject, conversationLabels } from './summary-subject.js';
 import { renderInstant } from './message-stamp.js';
-import { currentTurnNumber } from '../agent/v2/turn-record.js';   // G24
+import { currentTurnNumber } from '../agent/v2/turn-record.js';
 import { isPlatformNoise } from './platform-noise.js';
 import type { Message } from '@dojo/shared';
-// PHASE-3 T5 — the marker taxonomy. Both of the latter two were re-declared below.
 import { formatDivider, A2A_INBOUND_RE, TECHNIQUE_FRESH_SENTINEL } from '@dojo/shared';
 
-// Inbound A2A, a peer agent's message TO this agent. For the primary's own context
-// summary this is inter-agent traffic, not the user's conversation, so it is excluded
-// from summary input. Must match the SAME marker set the assembler strips from a human
-// turn (assembler.ts A2A_INBOUND_RE): the modern [A2A: …] envelope plus the legacy
-// agent-message / group-broadcast / PM-poke source markers, otherwise a legacy variant
-// would be stripped from live turns but still bleed into the persistent summary.
-// PHASE-3 T5: was `A2A_INBOUND_MARKER_RE` here with `/i` and the byte-identical
-// alternation WITHOUT it in assembler.ts. The comment's promise above is now enforced by
-// the import rather than by hope.
+// Inbound peer A2A is inter-agent traffic, not the user's conversation: it is excluded from summary input
+// through the assembler's own marker set (A2A_INBOUND_RE), so the two strips cannot disagree.
 
-/** A row that must NOT be folded into a context summary: platform/inter-agent plumbing
- *  or an inbound peer A2A message. Keeps another agent's work out of the primary's
- *  narrative so the model can't later read it back and narrate it to the user.
- *  Exported for the nightly contaminated-summary rebuild (memory/summary-rebuild.ts),
- *  which re-runs old summaries' source messages through this same filter. */
+/** A row that must NOT be folded into a context summary: platform/inter-agent plumbing or an inbound peer
+ *  A2A message. Also the filter the nightly rebuild (memory/summary-rebuild.ts) replays. */
 export function isNonConversationForSummary(content: string | null | undefined): boolean {
   return isPlatformNoise(content) || (!!content && A2A_INBOUND_RE.test(content));
 }
 
-/** Placeholder stored when a summarized span contains no user conversation at all
- *  (pure system/inter-agent plumbing or tool traffic). Shared with the nightly
- *  summary rebuild so both paths write the identical minimal placeholder. */
+/** Placeholder stored for a span with no user conversation; shared with the nightly summary rebuild. */
 export const NO_CONVERSATION_PLACEHOLDER = '(system/inter-agent activity, no user conversation in this span)';
 
-// ── THE GAUGE: what the next model call will actually be sent ──────────────────────────────
-//
-// t194 (v3.4 D1, owner decision 7a, 2026-10-17): the gauge measures exactly what the agent sees.
-// STRIP: this was a private model of the assembly — summaries counted up to 70% of the room (the
-// summaries lane admits at most 6,000), the live tail priced at `min(row, 4000)` BEFORE the token trim,
-// and a 0.90/0.96/0.99 ladder over the result. On a 65K worker that number sat at 99-103% while the array
-// the model received fit, and the gate surrendered the turn. Also STRIP: `liveViewIsFull`, a third
-// model of the same fit (the condense trigger's), and the gate's per-row cap. requirement preserved:
-// "the condense trigger, the pressure pass and condense-until-fits read what the assembler admits" —
-// owned by the assembler's own dry run (`measureView`): its fit, stopped before the post-budget lanes.
+// ── THE GAUGE: what the next model call will actually be sent ──
+// The assembler's own dry run (`measureView`) is the one measure that the condense trigger, the pressure pass
+// and condense-until-fits read.
 
-/** Where the newest group starts — what the trim keeps whatever happens (a tool result with its call). */
+/** Where the newest group starts: what the trim keeps whatever happens (a tool result with its call). */
 function newestGroupSeq(agentId: string): number {
   const rows = getDb().prepare('SELECT seq, role FROM messages WHERE agent_id = ? ORDER BY seq DESC LIMIT 2').all(agentId) as Array<{ seq: number; role: string }>;
   return rows[0]?.role === 'tool' && rows[1] ? rows[1].seq : rows[0]?.seq ?? 0;
@@ -90,13 +67,9 @@ const EMPTY_VIEW: ContextView = {
   tailKeptTokens: 0, tailKeptRows: 0, outOfViewThroughSeq: 0, leavingThroughSeq: 0, leavingRows: 0, leavingTokens: 0, protectedFromSeq: 0,
 };
 
-/** The assembler's own dry run, for `modelId` (the model whose call the measurement is for), on
- *  `contextWindow`. `summaryTokens`/`freshTailTokens` are what the view ADMITS (the summaries sent, the
- *  tail the trim keeps); `total` is what it WANTS to hold — the summaries the lane sends plus the live
- *  tail before the trim — so `total > view.budgetTokens` means the view is cutting the live conversation.
- *  t269: summaries the lane leaves out are not counted: older notes leave the view WHOLE by design (they
- *  are named, stored and recallable), and a note is no longer rewritten to make them fit. Absent
- *  `modelId`, the agent's configured model. */
+/** The assembler's own dry run for `modelId` (default: the agent's configured model). `summaryTokens` and
+ *  `freshTailTokens` are what the view ADMITS; `total` is what it WANTS to hold (summaries sent plus the live
+ *  tail before the trim), so `total > view.budgetTokens` means the view is cutting the live conversation. */
 export async function estimateAssembledTokens(
   agentId: string,
   contextWindow: number,
@@ -108,8 +81,7 @@ export async function estimateAssembledTokens(
 }> {
   const model = modelId ?? (getDb().prepare('SELECT model_id FROM agents WHERE id = ?').get(agentId) as { model_id: string | null } | undefined)?.model_id ?? '';
   const { measureView } = await import('./assembler.js');
-  // A window that cannot hold the system prompt admits nothing: an empty view (the real assembly
-  // refuses that state by name and cards the owner — `window-starvation-card.ts`).
+  // A window that cannot hold the system prompt admits nothing: an empty view (see `window-starvation-card.ts`).
   const view = await measureView(agentId, model, { contextWindow, turnContext: opts?.turnContext }).catch((err: unknown) => {
     if (err instanceof SystemPromptTooLargeError) return { ...EMPTY_VIEW, summaryRawTokens: rawContextSummaryTokens(agentId), protectedFromSeq: newestGroupSeq(agentId) };
     throw err;
@@ -120,17 +92,15 @@ export async function estimateAssembledTokens(
   };
 }
 
-/** The rows leaving the view, off the gauge: what one more trim block of
- *  growth would cut (t207: there is no row ceiling). Exactly the trim's own cut (whole half-tail blocks), so never "a few rows every
- *  turn" (fix round 1, I4): those rows leave whatever happens, and folding them first is owed. */
+/** The rows leaving the view, off the gauge: the trim's own cut (whole half-tail blocks). They leave whatever
+ *  happens, so folding them first is owed. */
 export function leavingFromView(view: ContextView): LeavingView | null {
   const full = view.leavingThroughSeq > 0 ? { throughSeq: view.leavingThroughSeq, rows: view.leavingRows } : null;
   return rowsLeavingView({ full });
 }
 
-/** t194 (D4, owner decision 12): when each agent last needed a FORCED pass. Every context-overflow door
- *  forces one (the provider's "too long" recovery, the doomed-request retry, the live-conversation
- *  refusal), so a run that saw one failed on its window, not on the message it served (`runtime.ts`). */
+/** When each agent last needed a FORCED pass. Every context-overflow door forces one, so a run that saw one
+ *  failed on its window, not on the message it served (`runtime.ts`). */
 const forcedPassAt = new Map<string, number>();
 export function contextOverflowSince(agentId: string, sinceMs: number): boolean {
   return (forcedPassAt.get(agentId) ?? Number.NEGATIVE_INFINITY) >= sinceMs;
@@ -138,31 +108,18 @@ export function contextOverflowSince(agentId: string, sinceMs: number): boolean 
 
 const logger = createLogger('memory-compaction');
 
-// ── Technique-content scrub for summarization (v2.7.6) ──
-//
-// Tool results from technique_read / use_technique all carry the
-// freshness sentinel (techniques/tools.ts:TECHNIQUE_FRESH_SENTINEL).
-// Before sending chunk text into the summarizer, replace any such
-// block with a one-line stub so the technique body NEVER appears in
-// the generated summary. Without this, the summary keeps a
-// paraphrased copy of the technique and the agent later reads the
-// summary as authoritative, defeating the v2.7.4 stub-after-1-turn
-// freshness enforcement on the raw tool_result side.
+// ── Technique-content scrub for summarization ──
+// technique_read / use_technique results carry TECHNIQUE_FRESH_SENTINEL; they are stubbed before summarizing so
+// the body never lands in a summary the agent would later read as authoritative.
 const TECHNIQUE_SCRUB_STUB =
   '[technique read withheld from summary by engine policy, call technique_read for the current on-disk content; do not paraphrase from this summary]';
 
-// Same risk class, higher stakes: a credential_get result carries a raw secret
-// in its body. If it ages into a compaction chunk the summarizer would otherwise
-// see the value and could fold it into a persisted leaf summary, re-injected
-// across sessions (a Rule-6 leak that must NOT rest on the summarizer model's
-// discretion). credential_get prepends this sentinel; the summary scrub stubs it
-// deterministically at the engine, exactly like a fresh technique read.
+// Same risk class: credential_get prepends this sentinel to a raw secret; the engine stubs it deterministically
+// so a persisted summary never rests on the summarizer model's discretion.
 export const CREDENTIAL_FRESH_SENTINEL = '══ CREDENTIAL FRESH READ ══';
 const CREDENTIAL_SCRUB_STUB =
   '[credential value withheld from summary by engine policy, call credential_get for the current value; never persist or paraphrase a secret]';
 
-// Return the deterministic stub for a sentinel-tagged body, or null if the body
-// carries no scrubbable sentinel.
 function scrubStubFor(content: string): string | null {
   if (content.startsWith(TECHNIQUE_FRESH_SENTINEL)) return TECHNIQUE_SCRUB_STUB;
   if (content.startsWith(CREDENTIAL_FRESH_SENTINEL)) return CREDENTIAL_SCRUB_STUB;
@@ -170,12 +127,8 @@ function scrubStubFor(content: string): string | null {
 }
 
 export function scrubTechniqueContentForSummary(messageContent: string): string {
-  // Fast path: plain string content that starts with a sentinel
-  // (covers any flow where the runtime persists the raw tool string
-  // rather than a JSON tool_result block).
   const fast = scrubStubFor(messageContent);
   if (fast) return fast;
-  // JSON path: walk tool_result blocks the way the assembler does.
   try {
     const parsed = JSON.parse(messageContent);
     if (!Array.isArray(parsed)) return messageContent;
@@ -195,18 +148,11 @@ export function scrubTechniqueContentForSummary(messageContent: string): string 
   }
 }
 
-// ── Defaults ── summary SHAPES, not budget. (t194: the threshold ladder that stood beside them is
-// gone; the view's own fit is the only measure — see the gauge above.)
+// ── Defaults: summary SHAPES, not budget ──
 
-// t269: the fixed 5,000 / 6,000-token targets are gone — a target follows its input (`summary-target.ts`).
 const DEFAULTS = {
   leafChunkTokens: LEAF_CHUNK_TOKENS,
-  // OR-COMPACT-1: the fanout is still the batch SIZE for a level with enough waiting
-  // summaries, but it is no longer a FLOOR below which a level refuses to condense —
-  // `condense-until-fits.ts` condenses 2, 3 or even 1. `incrementalMaxDepth: 1` is gone with
-  // it: it capped `newDepth` at 2, which made a depth-2 summary the ceiling of the DAG and so
-  // impossible to condense again. (NOT "depth 2 was unreachable" — see the condenser's header
-  // for the re-read that corrected that claim.)
+  // The fanout is the batch SIZE, not a floor: `condense-until-fits.ts` condenses 2, 3 or even 1.
   condensedMinFanout: 4,
 };
 
@@ -219,64 +165,23 @@ export function getLeafTargetTokens(): number {
   return fullSpanTargetTokens();
 }
 
-// t194 (owner decision 7b): the protected recent part is TOKENS — the view's `protectedFromSeq`
-// (`assembler.ts`'s `ContextView`). STRIP: the 24/40/64/80 row floor as what compaction may not fold.
 
-// ── STRIP (t140): THE ROW-GAP TRIGGER IS GONE ──────────────────────────────────────────────
-// `UNCOMPACTED_GAP_THRESHOLD` (30) and `getUncompactedGapCount` lived here and drove the pre-call
-// gate's routine drain: more than 30 unsummarised rows outside the newest row cap fired a
-// summarise "regardless of token level". After t94 the live view is every row since the
-// boundary, so those rows were the ones the model was READING (tracker #13; the owner's
-// decision #16, re-opened and reversed 2026-10-12). requirement preserved: "every row is
-// summarised before it leaves the live view" — owned now by `tail-horizon.ts`'s
-// `rowsLeavingView` and the leaving-view pass
-// below, which fold exactly the rows that are leaving and nothing the agent is still reading.
+// Every row is summarised before it leaves the live view: `tail-horizon.ts`'s `rowsLeavingView` and the
+// leaving-view pass below fold exactly the rows that are leaving, never ones the agent is still reading.
 
 // ── Chat divider helpers ──
-//
-// After compaction, we drop a "── Memory Compacted ──" system message
-// into the agent's chat so the user sees a horizontal divider in the
-// timeline. Mirrors the existing "── New Session ──" pattern. The
-// dashboard renders any system message shaped "── label ──" as a
-// divider with the label centered.
 
 function formatTokens(n: number): string {
   if (n >= 1000) return `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}K tokens`;
   return `${n} tokens`;
 }
 
-// v2.5.11, After the divider, drop a separate, agent-facing system message
-// that nudges the agent toward recall_recent_thread if it needs detail from
-// the summarized portion. Sits in the messages table so it lands in the
-// v2.7.10, insertRecallNudge / RECALL_NUDGE_TEXT removed.
-//
-// The nudge text told the agent to call recall_recent_thread before
-// responding. Paired with the v2/loop.ts hard intercept (also removed)
-// that AUTO-RAN that recall and pasted ~15K chars of prior thread
-// content back into the message log as a system message. Real
-// production failure: scheduled-task agent processing 17 emails in
-// sequence hit compaction → nudge inserted → auto-recall re-injected
-// 8 turns of fresh-tail content as a new system message → next turn's
-// fresh tail was bigger → compaction triggered again → another
-// re-injection → context spiraled. Agent started sending emails twice
-// and marking unsent emails complete because the re-injected log made
-// past work look pending.
-//
-// Recovery: recall_recent_thread is back to being a TOOL the agent
-// calls on demand. The "── Memory Compacted ──" divider still appears
-// (insertCompactionDivider, throttled to once per 10 min) so the
-// agent sees compaction happened, but nothing else is auto-injected
-// into the message log.
+// Never auto-inject recalled thread content into the message log after a compaction: it grows the next tail and
+// re-triggers compaction. recall_recent_thread stays a tool the agent calls on demand.
 
-/** Min interval between compaction dividers shown to the user, per agent. */
 const COMPACTION_DIVIDER_THROTTLE_MS = 10 * 60 * 1000;
 
-/**
- * True when enough time has elapsed since the last divider broadcast for
- * this agent to show another one. Avoids spamming the chat during a backlog
- * drain that runs across many turns, while still surfacing compactions
- * during a normal long task at most once per 10 minutes.
- */
+/** True when this agent's last divider is 10+ minutes old (no chat spam during a backlog drain). */
 function shouldShowCompactionDivider(agentId: string): boolean {
   const last = lastCompactionDividerAt.get(agentId) ?? 0;
   return Date.now() - last >= COMPACTION_DIVIDER_THROTTLE_MS;
@@ -312,10 +217,7 @@ function insertCompactionDivider(agentId: string, opts: { label: string }): void
   }
 }
 
-// Wrap a compaction work call so the dashboard's ActiveJobsIndicator shows a
-// "Compacting memory" row while it runs. Engine-managed (no Stop button): the
-// panel adds the row on the 'start' broadcast and removes it on 'end'. Robust
-// across the work's early returns/throws via try/finally.
+// Wraps a compaction work call so the dashboard shows "Compacting memory" while it runs (try/finally ends it).
 async function withCompactionActivity<T>(agentId: string, work: () => Promise<T>): Promise<T> {
   const id = `compaction_${agentId}_${Date.now()}`;
   const startedAt = new Date().toISOString();
@@ -329,68 +231,34 @@ async function withCompactionActivity<T>(agentId: string, work: () => Promise<T>
   }
 }
 
-// ── Main Entry Point ──
 
 export interface CheckAndCompactOptions {
   force?: boolean;
-  inTurn?: boolean;   // v3.5 D18 r5: a turn's forced pass never waits on the lock; it is told (`lockBusy`) and parks
-  untilItFits?: boolean;   // v3.5 D18 r2: a boundary refusal's pass; nothing else to fold folds the protected part's oldest exchange
-  // STRIP (t140 r6, H3): `maxChunksPerRun` (bounded by what is leaving and by the turn's patience now).
-  // v2.5.14, Optional abort signal for cancellation. Used by the
-  // background condense in the v2 pre-call gate so a hung summarizer LLM call
-  // can actually be cancelled instead of running until the SDK's
-  // 10-minute default timeout fires.
+  inTurn?: boolean;   // a turn's forced pass never waits on the lock; it is told (`lockBusy`) and parks
+  untilItFits?: boolean;   // a boundary refusal's pass: with nothing else to fold, folds the protected part's oldest exchange
+  // Optional abort signal: lets the background condense cancel a hung summarizer call.
   abortSignal?: AbortSignal;
-  /**
-   * t140: the rows the caller has measured are leaving the live view (`rowsLeavingView`). When
-   * the call is not under pressure, ONLY these are folded. Absent, an unforced call asks
-   * the gauge itself (`leavingFromView`).
-   */
+  /** The rows the caller measured as leaving the live view; an unpressured call folds ONLY these. Absent, an
+   *  unforced call asks the gauge (`leavingFromView`). */
   leaving?: LeavingView | null;
-  /**
-   * t140 fix round 1 (review I3): the model this call's pressure was measured for — the box
-   * actually serving the turn, whose declared ceiling the trigger keys on. Absent, it is
-   * `modelId`. It is kept APART from `modelId` because `modelId` is the summary WRITER's
-   * preference (`pickWriter`): an auto-routed loop locked to an expensive routed
-   * model must still have its summaries written by the owner's compaction model, else its own
-   * (its router's standard pick), else the Dojo's small writer — nothing after (t268 round 5).
-   */
+  /** The model this call's pressure was measured for (the box serving the turn); absent, `modelId`. Kept apart
+   *  from `modelId`, the summary WRITER's preference (`pickWriter`). */
   dialedModelId?: string;
-  /** t140: a background fold — with no writer answering it dials nothing (round 6). */
+  /** A background fold: with no writer answering it dials nothing. */
   inTheBackground?: boolean;
 }
 
-/** `cannotHelp` (v3.5 field fix 3 #12): the condensation pass's own measure says it cannot help this summary set
- *  (every summary already fits, or fewer than two notes of one depth can merge). The routine check holds off until
- *  the set changes (`context-gates.ts`). */
+/** `cannotHelp`: the condensation pass measured that it cannot help this summary set (all fit, or fewer than two
+ *  notes of one depth can merge); the routine check holds off until the set changes (`context-gates.ts`). */
 export type CompactionResult = { leafCreated: number; condensedCreated: number; tokensReclaimed: number; lockBusy?: true; byRunningPass?: boolean; cannotHelp?: true };
 
 const NO_COMPACTION: CompactionResult = { leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 };
 
 /**
- * PHASE-1 T2: the ONE site that covers all seven compaction entry points (the
- * v2 loop's four, recovery, the memory route, and the routine background
- * drain). Every one of them arrives here, so the mutual exclusion belongs here
- * and nowhere else.
- *
- * Requirement preserved: a second compaction for the SAME agent can no longer
- * overlap the first. Both used to read the uncompacted set before either wrote
- * a summary, so both summarised the same messages and both wrote depth-0 rows
- * over them — 11.4% of depth-0 summaries were duplicates in real data (44/387,
- * research 22). The race last fired 2026-06-26; the corruption class is real
- * and the platform had no mutual-exclusion primitive to stop it.
- *
- * `ifBusy:'skip'` and not `'wait'`, deliberately: a queued second compaction
- * would run against a history the first one just compacted and find nothing to
- * do, after holding the caller's turn open for a full summarizer round-trip.
- * Skipping returns the same zero result those callers already handle — every
- * caller reads the counts and none treats zero as an error — and the work is
- * not lost: the next turn's gate re-checks and compacts if pressure remains. v3.5 D18 r4: for an UNFORCED
- * pass only; a forced pass is never skipped silently: a turn's parks, the owner's waits (`compactionDoor`).
- *
- * Scope: `withLock` is IN-PROCESS. One dojo server owns its box, which is the
- * shape of the observed race; it is not a cross-process lock and must not be
- * described as one.
+ * The one site covering every compaction entry point, so the per-agent mutual exclusion lives here: an unforced
+ * pass skips when busy, a forced one never silently (a turn's parks, the owner's waits: `compactionDoor`).
+ * Skip, not wait: a queued pass would find nothing after holding the turn; callers treat zero as no work.
+ * The lock is IN-PROCESS only.
  */
 export async function checkAndCompact(
   agentId: string,
@@ -414,24 +282,19 @@ async function runCheckAndCompact(
   contextWindow: number,
   options?: CheckAndCompactOptions,
 ): Promise<CompactionResult> {
-  // T82a: the model whose BOX is actually serving this agent's turns — captured before the
-  // summary-writer resolution below can reassign `modelId` to a different (often cheaper,
-  // often different-provider) model. The compaction trigger cares about the box that produced
-  // the pressure, not the box that will write the summary describing it.
+  // The box serving the turn, captured before the writer resolution below reassigns `modelId`.
   const turnModelId = options?.dialedModelId ?? modelId;
 
-  // Resolve which model WRITES the summaries: the agent's own, else the small writer, else none can run now.
   {
     const resolved = pickWriter(agentId, modelId);
-    if (!resolved && (spanWaitsForAWriter(agentId) || options?.inTheBackground || summaryWriterCandidates(modelId, agentId).length > 0)) {   // the wait is recorded (breaker fix)
+    if (!resolved && (spanWaitsForAWriter(agentId) || options?.inTheBackground || summaryWriterCandidates(modelId, agentId).length > 0)) {   // the wait is recorded
       logger.info('No summary writer can run now: the span waits for one, rows whole', {}, agentId);
-      if (options?.force) notePassOutcome(agentId, true, NO_COMPACTION, { stage: 'summary_writer_unavailable', modelId: summaryWriterCandidates(modelId, agentId)[0], waiting: true });   // t268 r5: told, never braked
+      if (options?.force) notePassOutcome(agentId, true, NO_COMPACTION, { stage: 'summary_writer_unavailable', modelId: summaryWriterCandidates(modelId, agentId)[0], waiting: true });   // told, never braked
       return NO_COMPACTION;
     }
     if (!resolved) {
-      // OR-COMPACT-1 part 3 (review I3): under pressure this is a repairable reason, not a shrug.
-      // `force` IS the pressure signal — the overflow doors and compact-now force — so no reorder is needed.
-      // ⚠ NOT the brake (t91 M-b): it returns before `compactionIsBraked`; see compaction-defect.
+      // Under pressure (`force` is the pressure signal) this is a repairable reason, not a shrug.
+      // Not the brake: it returns before `compactionIsBraked`; see compaction-defect.
       if (options?.force) notePassOutcome(agentId, true, NO_COMPACTION, { stage: 'summary_writer_unresolvable', modelId: turnModelId });
       logger.warn('No text-capable model available for compaction, skipping', {}, agentId);
       return NO_COMPACTION;
@@ -439,24 +302,17 @@ async function runCheckAndCompact(
     modelId = resolved;
   }
 
-  // t194 (D1): measured for the box serving the turn — the view its next call will be sent. The
-  // writer resolved above never enters it: the view is the dialed model's, output cap and ceiling
-  // both (STRIP: T82's `ceilingModelId` split, which existed only because the writer's id leaked in).
   const assembled = await measured(agentId, contextWindow, turnModelId);
   const { view } = assembled;
   const totalTokens = assembled.total;
   const budget = view.budgetTokens;
   const force = options?.force ?? false;
-  // THE TRIGGERS. Forced: an overflow door or the owner's compact-now. Rows leaving the view
-  // (`rowsLeavingView`, off the same measurement). And the view dropping summaries the agent holds,
-  // which is condensation's own case (OR-COMPACT-1). STRIP (t194): the 0.96 x window token trigger,
-  // which the compressible total could never cross, and the 90% "should not happen" warn and its toast.
-  // A STARVED window (it cannot hold the system prompt; the owner is carded by the assembler) admits no
-  // summary whatever condensation does, so it is never condensation's case.
+  // THE TRIGGERS: forced (an overflow door or the owner's compact-now); rows leaving the view; the view dropping
+  // summaries the agent holds (condensation's case). A STARVED window (it cannot hold the system prompt) admits
+  // no summary whatever condensation does, so it is never condensation's case.
   const starved = view.budgetTokens === 0;
   const summariesDropped = !starved && view.summaryRawTokens > view.summaryTokens;
   const leaving = force ? null : options?.leaving !== undefined ? options.leaving : leavingFromView(view);
-  // The pressure pass folds only BEFORE the protected recent part, sized in tokens (owner decision 7b).
   const outsideProtected = (): Message[] => {
     const compacted = getCompactedMessageIds(agentId);
     return getMessagesOutsideFreshTail(agentId, 1).filter(m => !compacted.has(m.id) && (m.rowid ?? Infinity) < view.protectedFromSeq);
@@ -484,18 +340,13 @@ async function runCheckAndCompact(
 
   if (force) {
     const guardUncompactedCount = uncompactedOutsideFloor;
-    // Minimum-yield floor (owner report 2026-07-23: "compaction SO much, saving like 16 tokens"):
-    // after a low-yield run, back off for a while (`compaction-brakes.ts`).
+    // Minimum-yield floor: after a low-yield run, back off for a while (`compaction-brakes.ts`).
     if (compactionIsBraked(agentId, force)) return NO_COMPACTION;
-    // ── OR-COMPACT-1: NOTHING LEFT AT THE LEAF IS THE CASE FOR CONDENSATION ──
-    // Three things stood here and all three said "no pass can help" (t87's latch and two no-op
-    // guards). That state — ~86K of summaries with nothing raw left to fold — is more condensation,
-    // not a dead end. The anti-thrash property is kept: the pass below runs no archive and no leaf
-    // chunking, returns early when every summary fits, and a pass that reclaims nothing arms the
-    // 15-minute backoff through `notePassOutcome`.
+    // Nothing left at the leaf is the case for condensation: the pass below runs no archive and no leaf
+    // chunking, and a pass that reclaims nothing arms the backoff through `notePassOutcome`.
     if (guardUncompactedCount < MIN_COMPACTABLE_ROWS) {
       if (options?.untilItFits) return foldOldestProtectedGroup({ agentId, protectedFromSeq: view.protectedFromSeq, condensed: await condenseOnlyPass(agentId, modelId, turnModelId, contextWindow, budget, force, guardUncompactedCount, options),
-        fold: async (throughSeq) => (await leavingViewPass(agentId, modelId, contextWindow, { cause: 'out-of-view', throughSeq, rowsLeaving: 0 }, options)).leafCreated });   // D18 r2: never a dead end
+        fold: async (throughSeq) => (await leavingViewPass(agentId, modelId, contextWindow, { cause: 'out-of-view', throughSeq, rowsLeaving: 0 }, options)).leafCreated });   // never a dead end
       return condenseOnlyPass(agentId, modelId, turnModelId, contextWindow, budget, force, guardUncompactedCount, options);
     }
 
@@ -505,45 +356,19 @@ async function runCheckAndCompact(
       uncompactedOutsideTail: guardUncompactedCount,
     }, agentId);
 
-    // ── STRIP (t140): THE PRE-COMPACTION CONTINUITY BRIEF IS GONE ──────────────────────────
-    // A model call here wrote a 1,500–3,000-word "continuity brief" into `agents.config` before
-    // every non-routine compaction, injected for three turns ahead of the conversation
-    // (`lane.continuity`, slot 700, inside the cached region) and announced for 24 hours in the
-    // system prompt. It asked for the user's last instructions VERBATIM and "what the agent was
-    // about to do next … continue exactly from here", built from undated rows with no record of
-    // what was already answered — a second "what's current" beside the task list, which the
-    // owner ruled is the only one (OR-TRACKER-1), and a carrier of finished work back into a live
-    // turn (tracker #7). It existed to bridge compaction cutting what the agent was reading;
-    // t140 removes that cause (only rows LEAVING the view are folded), so it is deleted, not
-    // repaired (build plan §1 choice 6). requirement preserved: "after a compaction the agent
-    // knows what it was working on" — owned by the task list (the tracker survives compaction
-    // unchanged) and by the live conversation itself, which a fold no longer reaches into.
-    // Migration 187 removes the stored keys.
 
-    // Archive raw messages to vault BEFORE compaction destroys them.
-    // If archival fails, ABORT compaction, better to have a bloated context than lost data.
-    // Exception: if the agent is on the Dreamer ignore list, the archive is
-    // intentionally skipped (returns null). Don't abort compaction in that case.
+    // Archive raw messages to the vault BEFORE compaction destroys them; if archival fails, ABORT (better a
+    // bloated context than lost data). An agent on the Dreamer ignore list skips the archive (null): do not abort.
     const messagesForArchive = outsideProtected();
     const archiveCompactedIds = getCompactedMessageIds(agentId);
-    // D1: never re-archive messages already copied to the vault. A reset archives
-    // messages without marking them compacted, so without the high-water bound a
-    // later compaction would re-copy them (reintroducing the duplicate-blob bloat).
-    // This bounds only the ARCHIVE input; compaction itself is unaffected.
-    // Migration 088: bound by rowid (tie-free) instead of the old second-granular
-    // created_at, which dropped an equal-second boundary row from the archive
-    // while it was still compacted (silent loss). A missing rowid falls to
-    // "include" so the safe direction is always to archive, never to skip.
+    // Never re-archive what the vault already holds (a reset archives without marking compacted): bound by
+    // rowid; a missing rowid falls to "include", so the safe direction is to archive. Bounds the ARCHIVE input only.
     const archiveHighWater = getArchiveHighWaterMark(agentId);
     const uncompactedForArchive = messagesForArchive.filter(
       m => !archiveCompactedIds.has(m.id) && (archiveHighWater == null || m.rowid == null || m.rowid > archiveHighWater),
     );
-    // C11: service agents (Healer/Trainer/PM/Imaginer/Dreamer) are excluded from archival, 
-    // archiveMessagesBeforeCompaction returns null for them (its own service-agent skip),
-    // and this guard previously misread that null as "archive FAILED → abort compaction",
-    // so the healer never compacted, grew unbounded, and retried every few seconds. Their
-    // histories are pure plumbing (never memory-worthy), so skipping the archive step is
-    // correct; compaction then proceeds normally.
+    // Service agents are excluded from archival (it returns null for them): that null is not a failed archive.
+    // Their histories are plumbing, so compaction proceeds.
     if (uncompactedForArchive.length > 0 && !isDreamerIgnored(agentId) && !isSystemServiceAgent(agentId)) {
       const archiveId = archiveMessagesBeforeCompaction(agentId, uncompactedForArchive);
       if (!archiveId) {
@@ -552,8 +377,7 @@ async function runCheckAndCompact(
       }
     }
 
-    // Reclaimed is measured on what the view WANTS to show (admitted summaries + the live tail before
-    // the trim): the trim already caps what it is sent, so a fold's yield is the demand it removes.
+    // Yield is measured on demand (summaries held plus the live tail): the trim already caps what is sent.
     const demand = (v: ContextView): number => v.summaryRawTokens + v.tailTokens;
     const tokensBefore = demand(view);
     const leaf = await withCompactionActivity(agentId, () => eachWriter(agentId, modelId,
@@ -561,14 +385,10 @@ async function runCheckAndCompact(
         { abortSignal: options?.abortSignal, left, throughSeq: view.protectedFromSeq - 1, floorRows: 1 }), options?.abortSignal));
     const leafCreated = leaf.leafCreated;
     modelId = leaf.writer;   // the writer that wrote (or the last one tried) writes the condensation too
-    // The pressure path condenses until the assembly fits (OR-COMPACT-1). The routine fold of
-    // rows leaving the view never reaches here (`leavingViewPass`), so nothing needs skipping.
     const condensation = starved ? null : await condenseUntilFits(condenseArgs(agentId, modelId, turnModelId, contextWindow, options?.abortSignal));
     const condensedCreated = condensation?.condensedCreated ?? 0;
     rebuildContextItems(agentId);
-    // T56 leg (b): the prefix has just been rewritten, so this is the one instant at which
-    // retiring reasoning costs no cache reuse. Gated on a summary actually having been
-    // created — see the header above `ageOutReplayedReasoning`.
+    // The prefix has just been rewritten: the one instant retiring reasoning costs no cache reuse.
     if (leafCreated > 0) { ageOutReplayedReasoning(agentId); stubOldToolResultsAtBoundary(agentId); }
 
     const tokensAfter = demand((await measured(agentId, contextWindow, turnModelId)).view);
@@ -576,11 +396,8 @@ async function runCheckAndCompact(
 
     const result = { leafCreated, condensedCreated, tokensReclaimed: Math.max(tokensReclaimed, 0) };
 
-    // v3.2.3 L1, re-aimed by OR-COMPACT-1: the brake, plus the D3 defect report. The stage
-    // the condenser named (if any) travels with the numbers, so a pass that ended over
-    // budget having reclaimed nothing says WHICH stage refused instead of showing a card.
+    // The stage the condenser named travels with the numbers, so a pass that reclaimed nothing says which refused.
     const waiting = spanWaitsForAWriter(agentId);   // with no writer able to run, the pass is a wait, never a brake
-    // A pass that bought almost nothing backs off instead of treadmilling (`lowYield`).
     const lowYield = result.tokensReclaimed < 2000 && result.leafCreated <= 1;
     if (!isStopFenced(agentId)) notePassOutcome(agentId, Boolean(force), result, { ...passFacts(condensation, budget, guardUncompactedCount, agentId, modelId), assembledTokens: tokensAfter, tokensBefore, waiting, lowYield }, options?.abortSignal);
     broadcast({
@@ -589,19 +406,6 @@ async function runCheckAndCompact(
       ...result,
     });
 
-    // Insert a chat divider only when something *actually* changed.
-    // A reactive compaction that created no summaries and reclaimed no
-    // meaningful tokens is just noise in the timeline (and was a symptom
-    // of the pre-v1.15.108 runaway-loop bug). The no-op guard above
-    // should catch most of those, but also gate the divider as
-    // belt-and-braces.
-    // v2.5.29, Show the divider on routine drains too, throttled to once
-    // per 10 min per agent. Pre-v2.5.29 routine drains suppressed it
-    // entirely (because backlog upgrades would emit one per turn); the
-    // side effect was zero compaction visibility on normal long tasks,
-    // which is exactly the path that hits compaction most often. The
-    // throttle covers both: backlog stays quiet across rapid drains,
-    // normal flow gets a marker the user can actually see.
     if (
       (result.leafCreated > 0 || result.condensedCreated > 0 || result.tokensReclaimed > 1000) &&
       shouldShowCompactionDivider(agentId)
@@ -615,22 +419,16 @@ async function runCheckAndCompact(
     return result;
   }
 
-  // ── STRIP (t140): THE "PROACTIVE LEAF COMPACTION" ARM IS GONE ──────────────────────────
-  // It folded every unsummarised row outside the newest row cap once they held 30,000 tokens, with
-  // no pressure at all. requirement preserved: "rows do not accumulate unsummarised past the view"
-  // — owned by `rowsLeavingView` and `leavingViewPass` (the first arm above).
+  // No proactive leaf arm: `rowsLeavingView` and `leavingViewPass` fold rows as they leave the view.
   logger.info('Compaction skipped: the view holds every summary and nothing is leaving it', {
     assembledTokens: totalTokens, budgetTokens: budget,
   }, agentId);
   return { leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 };
 }
 
-// ── OR-COMPACT-1 — the recursion's three call-site helpers ──────────────────────────────
-//
-// The policy itself lives in `memory/condense-until-fits.ts`. These three are only the seam:
-// what to pass it, what to tell the brake afterwards, and the leaf-less pass. They sit here
-// because the SINGLE assembled estimate and `rebuildContextItems` are this module's, and the
-// condenser takes both as arguments precisely so there is never a second estimator.
+// ── The recursion's call-site helpers ──
+// The policy lives in `memory/condense-until-fits.ts`; it takes the single estimate and `rebuildContextItems`
+// as arguments, so there is never a second estimator.
 
 /** THE single estimate, memoised on the facts that move it (`assembled-estimate-cache.ts`). */
 async function measured(agentId: string, contextWindow: number, turnModelId: string): Promise<Awaited<ReturnType<typeof estimateAssembledTokens>>> {
@@ -638,7 +436,6 @@ async function measured(agentId: string, contextWindow: number, turnModelId: str
     () => estimateAssembledTokens(agentId, contextWindow, turnModelId)) as Awaited<ReturnType<typeof estimateAssembledTokens>>;
 }
 
-/** The condenser's arguments, with THE single estimate wired in as its `measure`. */
 function condenseArgs(
   agentId: string, modelId: string, turnModelId: string, contextWindow: number,
   abortSignal?: AbortSignal,
@@ -652,7 +449,6 @@ function condenseArgs(
   };
 }
 
-/** What the brake and the defect line need to know about the pass that just ran. */
 function passFacts(
   condensation: CondensationOutcome | null, budgetTokens: number,
   compactableRows: number, agentId: string, modelId: string,
@@ -665,22 +461,14 @@ function passFacts(
   };
 }
 
-/**
- * THE LEAF-LESS PASS — over budget with nothing raw left to fold, which is the incident's
- * own state and used to be the dead end.
- *
- * It runs condensation and nothing else: no archive (there
- * is nothing to archive), no leaf chunking (the handful of rows outside the tail is below the
- * floor that makes folding them worth a model call). A view that already holds every summary
- * returns before spending anything at all.
- */
+/** The leaf-less pass: over budget with nothing raw left to fold, so condensation only
+ *  (no archive, no leaf chunking). */
 async function condenseOnlyPass(
   agentId: string, modelId: string, turnModelId: string, contextWindow: number,
   budget: number, force: boolean, compactableRows: number, options?: CheckAndCompactOptions,
 ): Promise<CompactionResult> {
   const args = condenseArgs(agentId, modelId, turnModelId, contextWindow, options?.abortSignal);
-  // Asked BEFORE the activity broadcast, so a tail-bloated agent does not flicker
-  // "Compacting memory" on the dashboard every turn for work nobody is going to do.
+  // Asked BEFORE the activity broadcast, so a tail-bloated agent does not flicker "Compacting memory".
   const est = await args.measure() as Awaited<ReturnType<typeof estimateAssembledTokens>>;
   if (rawContextSummaryTokens(agentId) <= est.summaryTokens || est.view.budgetTokens === 0) {
     logger.info('Compaction skipped: nothing outside the protected recent part, and every summary already fits', {
@@ -688,12 +476,11 @@ async function condenseOnlyPass(
     }, agentId);
     return { ...NO_COMPACTION, cannotHelp: true };
   }
-  // t269: only notes of one depth merge, where a writer is left for them; else the oldest leave the view whole.
+  // Only notes of one depth merge, where a writer is left for them; else the oldest leave the view whole.
   if (condensableSummaries(agentId, { modelId, minFanout: DEFAULTS.condensedMinFanout }) < 2) return { ...NO_COMPACTION, cannotHelp: true };
   const condensation = await withCompactionActivity(agentId, () => condenseUntilFits(args));
-  // ⚠ RECLAIMED IN SUMMARY TOKENS, NOT IN THE GATE'S TOTAL, and the module header says why:
-  // the gate's total already reports the CAPPED figure, so condensation cannot move it. What
-  // these tokens buy is oldest summaries NOT being dropped from the agent's context.
+  // Reclaimed is counted in summary tokens, not the gate's total (which reports the capped figure and cannot move):
+  // what these tokens buy is oldest summaries not being dropped.
   const result = {
     leafCreated: 0, condensedCreated: condensation.condensedCreated,
     tokensReclaimed: Math.max(condensation.summaryTokensBefore - condensation.summaryTokensAfter, 0),
@@ -709,11 +496,8 @@ async function condenseOnlyPass(
   return result;
 }
 
-/**
- * t140 round 4 (re-review 3 F2): THE ONE ARCHIVE STEP before rows are covered — by a summary or by a
- * not-yet-condensed placeholder. Rows past the vault's high-water mark are copied to the vault first;
- * a failed archive REFUSES the cover, so nothing is marked done that the vault never received.
- */
+/** The one archive step before rows are covered: a failed archive REFUSES the cover, so nothing is marked done
+ *  that the vault never received. */
 export function archiveBeforeCovering(agentId: string, rows: readonly Message[]): boolean {
   const highWater = getArchiveHighWaterMark(agentId);
   const toArchive = rows.filter(m => highWater == null || m.rowid == null || m.rowid > highWater);
@@ -724,21 +508,9 @@ export function archiveBeforeCovering(agentId: string, rows: readonly Message[])
 }
 
 /**
- * t140 — THE LEAVING-VIEW PASS. Fold exactly the rows `rowsLeavingView` named, and nothing the
- * agent is still reading.
- *
- * The leaf machinery is the pressure path's own (archive first, abort if the archive fails,
- * chunk, summarise, rebuild, age out at the boundary), pointed at one bounded span: every
- * unsummarised row of this session with `seq <= leaving.throughSeq`. The span is the bound: the
- * trim never names the newest group (t194: no row floor besides). Condensing
- * older summaries is the caller's (`runCheckAndCompact`, in the same background pass, so the
- * prefix moves once). No backoff is ARMED by a small yield either — the span
- * is leaving the view whatever it reclaims — but an existing brake is honoured, so a summary
- * writer that keeps failing is not dialed again every turn.
- *
- * t140 round 3 (R-V333-10 item 5): EXCEPT cause 'out-of-view' — rows the view has already dropped
- * are owed their fold now; the brake (built for low-yield pressure passes) neither blocks it nor is
- * armed or reset by it. Its own bound, writer fallback and placeholders live in its door.
+ * The leaving-view pass: fold exactly the rows `rowsLeavingView` named, through the leaf machinery on one bounded
+ * span, never what the agent still reads. Cause 'out-of-view' is exempt from the brake (those rows are owed their
+ * fold now): it neither is blocked by it nor arms or resets it.
  */
 export async function leavingViewPass(
   agentId: string, modelId: string, contextWindow: number, leaving: LeavingView,
@@ -754,9 +526,7 @@ export async function leavingViewPass(
   const floorRows = 1;
   const span = getMessagesOutsideFreshTail(agentId, floorRows)
     .filter(m => !compactedIds.has(m.id) && (m.rowid ?? Number.POSITIVE_INFINITY) <= leaving.throughSeq);
-  // v3.5 field fix 3 (#10): an empty span is no work. Nothing is archived, written or shown: the orb's compaction
-  // glyph went up and down around this pass on every tool round (field report 3, Problem 5), and no brake is armed
-  // by it either (an empty span says nothing about the writer).
+  // An empty span is no work: nothing is archived, written or shown, and no brake is armed.
   if (span.length === 0) {
     logger.info('Leaving-view condense skipped: every row through the boundary already has its summary', { cause: leaving.cause, throughSeq: leaving.throughSeq }, agentId);
     return NO_COMPACTION;
@@ -769,12 +539,10 @@ export async function leavingViewPass(
   const leafCreated = await withCompactionActivity(agentId, async () => outOfView
     ? pass(modelId) : (await eachWriter(agentId, modelId, pass, options?.abortSignal)).leafCreated);
   rebuildContextItems(agentId);
-  // T56 leg (b): the prefix has just been rewritten at the summaries lane, so this is the one
-  // instant at which retiring reasoning and stubbing old tool results costs no cache reuse.
   if (leafCreated > 0) { ageOutReplayedReasoning(agentId); stubOldToolResultsAtBoundary(agentId); }
 
   const result = { leafCreated, condensedCreated: 0, tokensReclaimed: 0 };
-  if (!outOfView && !isStopFenced(agentId)) notePassOutcome(agentId, false, result, { waiting: spanWaitsForAWriter(agentId) }, options?.abortSignal);   // a Stopped pass is not an outcome (t149 r4)
+  if (!outOfView && !isStopFenced(agentId)) notePassOutcome(agentId, false, result, { waiting: spanWaitsForAWriter(agentId) }, options?.abortSignal);   // a Stopped pass is not an outcome
   broadcast({ type: 'memory:compaction', agentId, ...result });
   if (leafCreated > 0 && shouldShowCompactionDivider(agentId)) {
     insertCompactionDivider(agentId, {
@@ -785,8 +553,8 @@ export async function leavingViewPass(
   return result;
 }
 
-/** With nothing left outside the protected recent part, a boundary refusal's pass folds that part's OLDEST whole
- *  exchange (never the newest, which the agent is answering), so every round makes progress. */
+/** With nothing outside the protected recent part, a boundary refusal's pass folds that part's OLDEST whole
+ *  exchange (never the newest), so every round makes progress. */
 async function foldOldestProtectedGroup(args: {
   agentId: string; protectedFromSeq: number; condensed: CompactionResult; fold: (throughSeq: number) => Promise<number>;
 }): Promise<CompactionResult> {
@@ -827,40 +595,16 @@ async function eachWriter(agentId: string, first: string, pass: (writer: string,
   }
 }
 
-// ── T56 leg (b) — the age-out, and the boundary it may never cross ──────────────────────
-//
-// THE COST. Stored `reasoning_content` replays on every assistant row that carries a tool
-// call, for as long as that row is in the live tail. It is the model's thinking about a tool
-// chain that finished, and nothing re-reads it once the chain is done — but on the dev body
-// a single 40-row window carried up to 78,909 tokens of it, and the 80-row window of the
-// primary agent carried 17,513, of which ZERO belonged to the turn in progress.
-//
-// THE BOUNDARY, and why this is cache-safe rather than cache-costly. Dropping reasoning from
-// a row changes bytes the provider has already cached, so it may happen ONLY at an instant
-// when the prefix is being rewritten anyway. A compaction that created a leaf summary is
-// exactly that instant: the summaries lane (slot 300) sits ahead of the fresh tail, so the
-// cached prefix is re-formed from the summary onward regardless. `leafCreated > 0` is the
-// gate; a run that summarised nothing moves nothing (and the background gap-drain, which is
-// fire-and-forget and CAN overlap a live turn, is bound by the same rule).
-//
-// THE CUT, chosen from the measurement and not from taste. The provider needs reasoning for
-// the ACTIVE tool chain and nothing else: dsh's own serialiser omits `reasoning_content`
-// entirely on a tool-call turn that has none (`llm-deepseek/src/serialize.ts:96-100`), and
-// our `requiresReasoningReplay` contract is satisfied by the `''` fallback that already
-// ships on every reasoning-less tool-call row today. So the cut is the TURN: rows of the
-// agent's current turn keep their reasoning; everything older is retired. `turn_number` is
-// never null on a replayable row (measured: 0 of 7,575 on the dev body), and a
-// `currentTurnNumber` that fails answers 0, which retires nothing — the fail-safe direction.
+// ── The age-out, and the boundary it may never cross ──
+// Stored `reasoning_content` replays on every tool-call row in the live tail, though nothing re-reads it once
+// the chain is done. Dropping it changes bytes the provider has cached, so it happens ONLY when the prefix is being
+// rewritten anyway (a compaction that created a leaf summary). Rows of the current turn keep theirs; a failing
+// `currentTurnNumber` answers 0, which retires nothing.
 
-/**
- * Retire the reasoning of every row older than the ACTIVE turn. One-way, durable, and only
- * ever called from a compaction that has already rewritten this agent's prefix.
- *
- * Returns the number of rows retired, for the caller's log line.
- */
+/** Retire the reasoning of every row older than the ACTIVE turn. One-way, durable, and only called from a
+ *  compaction that has already rewritten this agent's prefix. Returns the number of rows retired. */
 export function ageOutReplayedReasoning(agentId: string): number {
   const activeTurn = currentTurnNumber(agentId);
-  // The write itself belongs to the single writer of `messages`; this function owns WHEN.
   const rowsRetired = retireReplayedReasoningBeforeTurn({ agentId, activeTurn });
   if (rowsRetired > 0) {
     logger.info('Retired replayed reasoning at a compaction boundary', {
@@ -870,34 +614,10 @@ export function ageOutReplayedReasoning(agentId: string): number {
   return rowsRetired;
 }
 
-// ── T67b — THE TOOL-RESULT STUB CROSSES THE SAME BOUNDARY, FOR THE SAME REASON ──────────
-//
-// `stubOldToolResults` (`memory/assembler.ts`) replaced the content of every tool_result
-// older than `V2_STUB_AFTER_TURNS` with a short stub. Correct in intent — context stays
-// roughly flat as the agent works — but it RE-DERIVED the decision from the LIVE TURN
-// COUNTER on every assembly, so on a 200K window (80 tail rows, ~15-20 turns) a row twelve
-// turns back flipped from full to stubbed MID-SESSION, rewriting bytes in the middle of the
-// history with no compaction anywhere near it. That is precisely what T56 leg (b)'s
-// boundary rule forbids, one column over, and the note above states the rule in full: a byte
-// the provider has already cached may move only at an instant when the prefix is being
-// rewritten anyway.
-//
-// So the DECISION moves here and becomes a durable watermark. The rule itself is unchanged —
-// the same `V2_STUB_AFTER_TURNS` distance from the same active turn — and the watermark is
-// monotonic (`Math.max` against what is already recorded), so a row that has been stubbed
-// stays stubbed and no row is ever stubbed twice at two different widths.
-//
-// WHERE IT LIVES: `agents.config.toolResultsStubbedBeforeTurn`, an integer. No migration:
-// this is a per-agent scalar of exactly the kind that column already holds
-// (the deleted continuity brief's turn horizon was its precedent), and the assembler
-// reads it on a path that already reads this config. The read stays PURE (PHASE-3 S3) —
-// assembly never writes it.
-//
-// WHAT IT COSTS, stated rather than discovered: between two compactions, tool results older
-// than twelve turns are now REPLAYED instead of stubbed. They are still capped per row by
-// `capLargeToolResultStrings` and still evictable by `budgetFreshTail`, so the window is
-// protected by the two mechanisms that were always protecting it; what changes is that the
-// growth is paid in cached tokens rather than in a prefix rewrite every single turn.
+// ── The tool-result stub watermark crosses the same boundary ──
+// Only the stub DECISION is made here, at a compaction that rewrote the prefix: a monotonic watermark
+// (`agents.config.toolResultsStubbedBeforeTurn`) the assembler reads and applies to results older than
+// `V2_STUB_AFTER_TURNS`; deriving it from the live turn counter would rewrite cached bytes mid-session.
 
 export function stubOldToolResultsAtBoundary(agentId: string): number {
   const activeTurn = currentTurnNumber(agentId);
@@ -920,32 +640,12 @@ export function stubOldToolResultsAtBoundary(agentId: string): number {
   return next;
 }
 
-// ── Leaf Compaction ──
 
-/**
- * THE summarizer's leaf input. PHASE-3 T5 Step 1c (research 06 E19: "dedupe buildLeafInput
- * + fresh-read extractor — one builder, one extractor, both imported").
- *
- * This was written twice, byte-identically: inline here and as `buildLeafInput` in
- * `memory/summary-rebuild.ts`, whose whole job is to REPLAY this exact transformation over
- * an old summary's source messages and check whether the result is still contaminated. Two
- * copies of a replay is the one duplication that cannot be tolerated: the moment they drift,
- * the nightly rebuild is measuring a summariser that does not exist, and it either loops
- * forever on rows it can never clean or declares clean rows it never fixed.
- *
- * Every clause is load-bearing and each one is an incident:
- *   • the NOISE FILTER — without it the summarizer folded another agent's completion dump
- *     into the primary's context summary and the model narrated that work back to the user
- *     (the repeated "Dreamer batch" summaries). The vault already stripped these; this is
- *     what makes live compaction agree with it.
- *   • the PARTY TAG — so the summarizer can carry attribution into every fact.
- *   • the SCRUBS — a technique body or a credential value must never reach a persisted
- *     summary (`scrubStubFor`), because a summary is re-injected across sessions.
- */
+/** The summarizer's one leaf input builder; `memory/summary-rebuild.ts` replays it, so a second copy would let the
+ *  rebuild measure a summariser that does not exist. It filters platform noise, tags each party, and scrubs
+ *  technique bodies and credential values (`scrubStubFor`) out of what a persisted summary will hold. */
 export function buildLeafSummaryInput(messages: Message[], budgetTokens: number = getLeafChunkTokens()): string {
   const answered = answeredAskTurns(messages);
-  // t144: WHICH conversation (one, normally — a mixed input names each row's in its tag) and WHEN each
-  // message was written, the summariser's only source of dates.
   const { one, labelOf } = conversationLabels(messages);
   return fitInputToBudget((keep) => {
     const body = messages
@@ -964,30 +664,13 @@ export function buildLeafSummaryInput(messages: Message[], budgetTokens: number 
   }, budgetTokens);
 }
 
-/** The literal the input builder writes and the summariser's own instruction names. One
- *  token, so the writer, the prompt and the tests cannot drift apart. Deliberately free of
- *  `]` — `summary-rebuild.ts`'s `ROLE_TAG_RE` strips `^\s*\[(USER|…)\b[^\]]*\]`, and a
- *  bracket inside the tag would break the replay that file exists to perform. */
+/** The literal the input builder writes and the summariser's instruction names. Free of `]` on purpose:
+ *  `summary-rebuild.ts`'s `ROLE_TAG_RE` strips `^\s*\[(USER|…)\b[^\]]*\]`, and a bracket would break its replay. */
 export const ANSWERED_TAG = 'ANSWERED';
 
-/**
- * UX-REPAIR ROUND 6 T24 — THE ASK'S ANSWERED STATE TRAVELS WITH THE ASK.
- *
- * T20's law, one surface further on: the spine is the only truth, and a summary is the
- * context around it. A summary that lists the afternoon's questions with no record that they
- * were ANSWERED is a parallel memory of obligations wearing a narrative's clothes — and it is
- * what the model read on 2026-08-10 at turn 4656 before it re-ran the weather and vet asks and
- * re-delivered research it had finished 100 seconds earlier.
- *
- * The state is asked of the LEDGER (`messages.answer_message_id` / `served_by_turn`, migration
- * 113 — the same stamps `engine.recently-answered` reads), never inferred from the prose, and
- * it is resolved HERE, at write, for the same reason T20 resolves where it does: summaries ride
- * `MessageSlot.Summaries = 300`, inside the cacheable prefix. Stored once, read as stored.
- *
- * It rides the INPUT rather than being appended to the output because there is no id token in
- * a user-ask line to key an annotation on, and keying one on the prose is the parser `839eedc`
- * deleted. `summary-rebuild.ts` replays through this same builder, so the replay stays honest.
- */
+/** The ask's answered state travels with the ask, so a summary cannot let the model re-run finished asks. It is
+ *  read from the LEDGER (`messages.answer_message_id` / `served_by_turn`), never inferred from prose, and resolved
+ *  at write because summaries ride the cacheable prefix; `summary-rebuild.ts` replays through the same builder. */
 function answeredAskTurns(messages: Message[]): Map<string, number> {
   const out = new Map<string, number>();
   const asks = messages.filter(m => m.role === 'user');
@@ -1005,18 +688,8 @@ function answeredAskTurns(messages: Message[]): Map<string, number> {
   return out;
 }
 
-/**
- * Does this span hold anything the ledger calls CONVERSATION?
- *
- * The placeholder branch below claims "no user conversation in this span" and then marks the
- * rows compacted, which destroys them. The claim must be answered by the record, not by the
- * content filter that produced the empty string: the filter is anchored prose matching, and a
- * genuine answer that opens "I'm sorry — I'm having trouble…" reads to it as plumbing.
- *
- * MEASURED on the dev body before it was written (2026-08-10): all three genuine placeholder
- * summaries hold ZERO owner-lane user rows and ZERO answer stamps, so they still take the
- * branch; the eaten spans hold 7 and 3, so they never could again.
- */
+/** Does this span hold anything the ledger calls CONVERSATION? The placeholder branch marks rows compacted
+ *  (destroying them), so its "no user conversation" claim comes from the record, not the content filter. */
 function spanHoldsConversation(agentId: string, messageIds: string[]): boolean {
   const stmt = getDb().prepare(
     `SELECT 1 FROM messages m
@@ -1041,14 +714,11 @@ export async function runLeafCompaction(
   contextWindow?: number,
   opts?: {
     abortSignal?: AbortSignal;
-    /** t140: fold only rows with `seq <= throughSeq` (the leaving-view span). Absent: every
-     *  unsummarised row outside the floor, the pressure path's input. */
+    /** Fold only rows with `seq <= throughSeq` (the leaving-view span). Absent: the pressure path's input. */
     throughSeq?: number;
-    /** t140 round 2: the newest rows this fold may not take. Absent: the window's floor. A fold
-     *  of rows the trim already took out of view passes 1 — the floor bounds what PRESSURE may
-     *  fold, not what the trim takes, and the newest row is never out of view. */
+    /** The newest rows this fold may not take; the floor bounds what PRESSURE may fold, not what the trim took. */
     floorRows?: number;
-    /** t149 round 4: set when a row was more than this writer holds, so the fallback can offer it to one that can. */
+    /** Set when a row was more than this writer holds, so the fallback can offer it to one that can. */
     left?: LeftBehind;
   },
 ): Promise<number> {
@@ -1057,8 +727,6 @@ export async function runLeafCompaction(
   const compactedIds = getCompactedMessageIds(agentId);
   const through = opts?.throughSeq;
 
-  // Filter to only uncompacted messages (chronological, oldest first, that's
-  // what getMessagesOutsideFreshTail returns).
   const uncompacted = messagesOutside.filter(m => !compactedIds.has(m.id)
     && (through === undefined || (m.rowid ?? Number.POSITIVE_INFINITY) <= through));
 
@@ -1067,13 +735,11 @@ export async function runLeafCompaction(
     return 0;
   }
 
-  // Group into chunks of ~leafChunkTokens, oldest first — capped by what this writer can hold (t149 F4), and
-  // (t269 round 2) by the span whose summary, at the share, is what the lane can show whole as the newest note.
   const room = summaryRoom(modelId);
   if (room <= 0) return 0;
   const ownModel = (getDb().prepare('SELECT model_id FROM agents WHERE id = ?').get(agentId) as { model_id: string | null } | undefined)?.model_id;
   const viewBudget = ownModel ? await measured(agentId, cw, ownModel).then((m) => m.view.budgetTokens, () => 0) : 0;
-  const keepCap = leafKeepCap(viewBudget, undefined, modelCharsPerToken(modelId));   // in the writer's tokens (t268's density)
+  const keepCap = leafKeepCap(viewBudget, undefined, modelCharsPerToken(modelId));   // in the writer's tokens
   const span = Math.min(getLeafChunkTokens(), room, Math.ceil(keepCap / summaryShare()));
   const chunks = chunkMessages(uncompacted, span);
   const inputBudget = Math.max(0, span - Math.min(getLeafTargetTokens(), keepCap));
@@ -1089,15 +755,9 @@ export async function runLeafCompaction(
   while (chunks.length > 0) {
     const chunk = chunks.shift()!;
     if (chunk.length === 0) continue;
-    if (summaryWriterUnavailable(agentId, modelId)) break;   // v3.2.3 L2c/L3: do not build what cannot be sent
-    if (writerWasAnswering && writerPassedOver(modelId, agentId)) break;   // t149 F4: it failed on the chunk before
+    if (summaryWriterUnavailable(agentId, modelId)) break;   // do not build what cannot be sent
+    if (writerWasAnswering && writerPassedOver(modelId, agentId)) break;   // it failed on the chunk before
 
-    // Build content from chunk messages. scrubTechniqueContentForSummary
-    // strips technique tool-result bodies so they don't leak into the
-    // summary the model writes next (and which the agent would later
-    // read as authoritative, bypassing freshness enforcement).
-    // condenseToolJsonForSummary flattens tool_use/tool_result JSON to one-liners (fed verbatim, the
-    // summarizer quoted raw JSON into summaries); a call keeps the text the agent wrote in it (t169).
     const content = buildLeafSummaryInput(chunk, inputBudget);
 
     const messageIds = chunk.map(m => m.id);
@@ -1105,26 +765,14 @@ export async function runLeafCompaction(
     const latestAt = chunk[chunk.length - 1].createdAt;
 
     try {
-      // Bail out fast if a caller-supplied abort signal has already fired
-      // (e.g. background-drain wall-clock timeout). Prevents starting a
-      // brand-new chunk's LLM call after the caller has given up.
       if (opts?.abortSignal?.aborted) {
         logger.info('Leaf compaction aborted before chunk started', {
           messageCount: chunk.length, summariesCreated,
         }, agentId);
         break;
       }
-      // A chunk that was ENTIRELY inter-agent/lifecycle plumbing has no
-      // conversation to summarize. Skip the LLM round-trip and record a minimal
-      // placeholder so the rows are still marked compacted + removed from the live
-      // tail (bookkeeping intact) without inventing narrative from plumbing.
-      //
-      // UX-REPAIR ROUND 6 T24: "entirely plumbing" is now the LEDGER'S verdict, not the
-      // content filter's. The filter is anchored prose matching; the branch it feeds marks
-      // rows compacted, and that is irreversible. Where the two disagree the span is LEFT
-      // UNCOMPACTED — the SUMMARY_REFUSED law four branches down, applied to the same cost:
-      // writing the placeholder over a span holding a real ask would be a lie about a span
-      // the summariser never read, and the rows would then be marked done.
+      // A chunk that was ENTIRELY plumbing has no conversation to summarize: record a minimal placeholder. That is
+      // the LEDGER's verdict, not the content filter's: where they disagree the span is LEFT UNCOMPACTED.
       if (content.trim().length === 0) {
         if (spanHoldsConversation(agentId, messageIds)) {
           logger.warn('COMPACTION_REFUSED filtered-empty chunk holds ledger conversation; left uncompacted', {
@@ -1140,7 +788,7 @@ export async function runLeafCompaction(
           earliestAt,
           latestAt,
         );
-        supersedeUncondensedPlaceholders(agentId, messageIds);   // t140 round 4: one note per row
+        supersedeUncondensedPlaceholders(agentId, messageIds);   // one note per row
         summariesCreated++;
         continue;
       }
@@ -1151,53 +799,27 @@ export async function runLeafCompaction(
         targetTokens: Math.min(summaryTargetTokens(content, modelCharsPerToken(modelId)), leafKeepCap(viewBudget, conversationLabels(chunk).labelOf.get(chunk[0].id), modelCharsPerToken(modelId))),
         agentId,
         modelId,
-        abortSignal: opts?.abortSignal, spanIds: messageIds, spanOpen: chunks.length === 0,   // v3.5: known by its rows; S6: the last chunk is open
+        abortSignal: opts?.abortSignal, spanIds: messageIds, spanOpen: chunks.length === 0,   // known by its rows; the last chunk is open
       });
 
-      // PHASE-3 T5 Step 2: a REFUSAL leaves the chunk exactly where it is. `createLeafSummary`
-      // is what marks these message ids compacted, so skipping it is what makes the span
-      // survive to be summarised on the next drain. Writing NO_CONVERSATION_PLACEHOLDER here
-      // instead would be a lie about a span the summariser never read — and an irreversible
-      // one, because the rows would then be marked done.
+      // A REFUSAL leaves the chunk uncompacted (`createLeafSummary` is what marks rows compacted), so the next
+      // drain retries it; a placeholder here would be a lie about a span the summariser never read.
       if (!summary.ok) {
-        if (summary.tooBig) {   // t149 F4: not dialled — more than it can hold: halved, a single row is left for a writer that can
+        if (summary.tooBig) {   // not dialled, more than it can hold: halved; a single row is left for a writer that can
           if (chunk.length > 1 && !summary.noRoom) chunks.unshift(chunk.slice(0, Math.ceil(chunk.length / 2)), chunk.slice(Math.ceil(chunk.length / 2)));
           else if (opts?.left) opts.left.tooBig = true;
-          if (summary.noRoom) break;   // t268 N-B: this writer cannot run now; nothing is halved, the rest waits
+          if (summary.noRoom) break;   // this writer cannot run now; nothing is halved, the rest waits
           continue;
         }
-        (summary.checkFailed ? logger.debug : logger.warn)('SUMMARY_REFUSED leaf chunk left uncompacted', {   // v3.5: a refused span was logged once (summary_check_failed)
+        (summary.checkFailed ? logger.debug : logger.warn)('SUMMARY_REFUSED leaf chunk left uncompacted', {
           messageCount: chunk.length, reason: summary.reason,
         }, agentId);
-        if (summary.stopped) break;   // t149 F3: the owner stopped this agent
+        if (summary.stopped) break;   // the owner stopped this agent
         continue;
       }
 
-      // PHASE-2 T7: the fenced-section ingest is GONE. Compaction used to run the summarizer's
-      // output through a parser that upserted rows into the prose-parsed obligation store and
-      // then stripped the section back out of the text it had just been handed — a summariser
-      // writing the obligation ledger. Obligations are `work` rows created when the obligation
-      // is made (4a), so a summary is a summary again: stored exactly as it was generated.
-      // (The table name is deliberately not written here: T10's grep-zero list carries the
-      // token, and a comment is not worth a false hit on it.)
-
-      // ── UX-REPAIR ROUND 4 T20 — THE CITED ID IS FINALLY DEREFERENCED ──
-      // The tombstone above records what `839eedc` removed and why: a summariser must not
-      // write the obligation ledger. It also added the instruction to CITE the work id, and
-      // nothing was ever built to read it, so a promise that died four days ago kept being
-      // served in the present tense from a stored summary while the OPEN WORK block in the
-      // same prompt correctly carried nothing. Resolving the id is not the deleted mechanism
-      // returning: nothing is parsed into a second table, no obligation is created, and the
-      // agent's sentence is left intact with the spine's answer appended beside it.
-      //
-      // It happens HERE, at write, because summaries ride slot 300 — the CACHEABLE PREFIX.
-      // Resolving at render would rewrite prefix bytes on a turn that changed nothing, which
-      // is the line T17 declined to cross for the recall lane and the reason it could fix the
-      // vault for free. Stored once, read as stored, for ever after.
-      //
-      // ROUND 7 T28: the agent is passed because the id-LESS leg is agent-scoped — it may only
-      // ever match a line against THIS agent's own commitment rows. Without it the call is
-      // T20's, unchanged.
+      // The cited work id is resolved against the spine at write, not render (summaries ride the cacheable
+      // prefix). The agent is passed because the id-less leg is agent-scoped: it matches only THIS agent's rows.
       const resolvedText = annotateSummaryObligations(summary.text, agentId);
       createLeafSummary(
         agentId,
@@ -1207,7 +829,7 @@ export async function runLeafCompaction(
         earliestAt,
         latestAt,
       );
-      supersedeUncondensedPlaceholders(agentId, messageIds);   // t140 round 4: one note per row
+      supersedeUncondensedPlaceholders(agentId, messageIds);   // one note per row
 
       summariesCreated++;
     } catch (err) {
@@ -1218,9 +840,8 @@ export async function runLeafCompaction(
     }
   }
 
-  // t144: the boundary stays true — rows a refused conversation's chunk left below a landed one are
-  // covered now (placeholder notes, replaced in the background), never left out of view unrepresented. Asked on EVERY fold, even one that landed nothing: rows an earlier fold could not cover are still owed.
-  // Under the writer fallback (`opts.left`) the covering waits for the LAST writer: a row this one could not hold may be taken by the next.
+  // Rows a refused chunk left below a landed one are covered now (placeholder notes), asked on EVERY fold, even
+  // one that landed nothing. Under the writer fallback (`opts.left`) the covering waits for the LAST writer.
   if (opts?.left) opts.left.fromSeq ??= uncompacted[0].rowid ?? 0;
   else await coverRowsStrandedBelowBoundary(agentId, uncompacted[0].rowid ?? 0);
   return summariesCreated;
@@ -1235,14 +856,12 @@ async function coverRowsStrandedBelowBoundary(agentId: string, fromSeq: number):
     : 'Rows were left below the summarised boundary and could NOT be covered (the vault archive was refused); they stay owed and the next fold retries', { stranded, covered, anchor }, agentId);
 }
 
-// ── Rebuild Context Items ──
 
 export function rebuildContextItems(agentId: string): void {
   // Get all summaries that are NOT parents in summary_parents
   // i.e., the "leaf nodes" of the DAG (top of the tree, highest depth)
   const db = getDb();
 
-  // Look up agent's model context window for tail sizing
   const agentModel = db.prepare('SELECT model_id FROM agents WHERE id = ?').get(agentId) as { model_id: string | null } | undefined;
   let contextWindow = 200000; // default
   if (agentModel?.model_id) {
@@ -1264,10 +883,8 @@ export function rebuildContextItems(agentId: string): void {
     ORDER BY s.earliest_at ASC, s.id ASC
   `).all(agentId) as TopLevelRow[];
 
-  // Fresh tail messages
   const freshTail = getRecentMessages(agentId, getFreshTailCount(contextWindow));
 
-  // Build context items: summaries first, then fresh tail messages
   const items: Array<{ itemType: 'message' | 'summary'; itemId: string }> = [];
 
   for (const summary of topLevel) {
@@ -1286,11 +903,9 @@ export function rebuildContextItems(agentId: string): void {
   }, agentId);
 }
 
-// ── Helpers ──
 
-// Persisted tool rows (and assistant tool_use rows) are raw JSON arrays. For the summarizer they are
-// flattened to lines that keep WHAT happened (tool name, ok/error, the result — t269: all of it the job
-// window holds, `resultForSummary`) and drop the wire format. Pure text content passes through untouched.
+// Persisted tool rows (and assistant tool_use rows) are raw JSON arrays; the summarizer gets lines that keep WHAT
+// happened (tool name, ok/error, the result) without the wire format. Pure text content passes through untouched.
 export function condenseToolJsonForSummary(content: string, keep: number = 1): string {
   const trimmed = content.trim();
   if (!trimmed.startsWith('[') && !trimmed.startsWith('{')) return content;
@@ -1316,8 +931,7 @@ export function condenseToolJsonForSummary(content: string, keep: number = 1): s
   }
 }
 
-/** t144: chunks NEVER cross conversations — the rows are grouped by conversation (`summary-subject.ts`),
- *  then each group is cut at ~targetTokens, oldest first. Agent-wide mixed chunking is gone. */
+/** Chunks NEVER cross conversations: rows are grouped by conversation (`summary-subject.ts`), then cut by tokens. */
 export function chunkMessages(messages: Message[], targetTokens: number): Message[][] {
   if (messages.length === 0) return [];
   return groupBySubject(messages[0].agentId, messages).flatMap((g) => chunkByTokens(g.rows, targetTokens));

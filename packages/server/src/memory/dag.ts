@@ -21,7 +21,7 @@ export interface Summary {
   latestAt: string;
   descendantCount: number;
   createdAt: string;
-  /** t144: its ONE conversation (`summary-subject.ts`); migration 192's state for an older mixed note. */
+  /** its ONE conversation (`summary-subject.ts`); migration 192's state for an older mixed note. */
   subjectKey?: string | null; rebuildState?: string | null;
 }
 
@@ -68,8 +68,8 @@ export function createLeafSummary(
   const db = getDb();
   const id = `sum_${uuidv4()}`;
 
-  // t144: ONE conversation per leaf (chunks are built per conversation); the majority vote is gone.
-  // A writer that hands a mixed chunk anyway gets the truthful `several`, and the log says so.
+  // ONE conversation per leaf (chunks are built per conversation). A writer that hands a mixed chunk anyway gets
+  // the truthful `several`, and the log says so.
   const subjectKey = subjectKeyOfIds(messageIds);
   if (subjectKey === SEVERAL_SUBJECTS) logger.error('DEFECT: a leaf summary was handed rows of more than one conversation', { messageCount: messageIds.length }, agentId);
   const lineage = lineageOf(subjectKey);
@@ -79,25 +79,11 @@ export function createLeafSummary(
     VALUES (?, ?, 0, 'leaf', ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
   `);
 
-  // PHASE-1 T7. `summary_messages.message_id` carries a real foreign key to `messages(id)`
-  // again (migration 130) now that one table holds every lane — the constraint migration 103
-  // had to remove when agent-to-agent rows lived in a second table with their own ids.
-  //
-  // This SELECT form is what stops the constraint re-opening 103's incident. On 2026-07-06 a
-  // chunk naming an id the constraint rejected took the WHOLE leaf summary down with it: the
-  // context never shrank and reactive compaction re-fired on every turn. ⚠ RESOLVED v3.2.3: it
-  // recurred on a user's box (~4,000 uncompacted rows, ~86K of summaries, a 64K window, a 402ing
-  // summary writer) because every brake in `checkAndCompact` was `!force`-gated and the gate
-  // answers 96%+ WITH force. The terminal state, the forced pass's bounds and the backoff that
-  // now sets under force live in `memory/compaction-brakes.ts`. The summarizer's
-  // model call still sits BETWEEN reading a chunk and writing it, so a reset_session or the
-  // PM prune can delete a named row inside that window. Selecting the id out of `messages`
-  // makes an unresolvable id a link not written, rather than a compaction that cannot
-  // complete — and OR IGNORE absorbs a chunk that names the same message twice.
-  //
-  // Nothing is lost by the guard that was not already lost: a link whose message does not
-  // exist resolves to nothing in getSummarySourceMessages and counts for nothing in
-  // getCompactedMessageIds. The summary's own `descendant_count` is the chunk size and is
+  // `summary_messages.message_id` carries a real foreign key to `messages(id)`. This SELECT form (selecting the id
+  // out of `messages`) makes an unresolvable id a link not written rather than a compaction that cannot complete:
+  // the summarizer's model call sits BETWEEN reading a chunk and writing it, so a reset_session or the PM prune can
+  // delete a named row inside that window. OR IGNORE absorbs a chunk that names the same message twice. Nothing is
+  // lost that was not already lost: such a link resolves to nothing, and `descendant_count` (the chunk size) is
   // written above, unaffected.
   const insertLink = db.prepare(`
     INSERT OR IGNORE INTO summary_messages (summary_id, message_id)
@@ -114,9 +100,7 @@ export function createLeafSummary(
 
   txn();
 
-  // Embed at creation so compressed history is reachable by meaning, not
-  // only by recency. (Pre-remediation, summaries were only ever embedded by
-  // the manual backfill, so vector search could not see them.)
+  // Embed at creation so compressed history is reachable by meaning, not only by recency.
   queueEmbedding('summary', id, agentId, content);
 
   logger.info('Created leaf summary', {
@@ -158,8 +142,8 @@ export function createCondensedSummary(
     `SELECT COALESCE(SUM(descendant_count), 0) as total FROM summaries WHERE id IN (${parentPlaceholders})`,
   ).get(...parentIds) as { total: number };
 
-  // t144: a parent is about the conversation its children share (no vote); older mixed notes stay
-  // that; `several` only at OR-COMPACT-1's last resort (`summary-subject.ts` subjectBatches).
+  // A parent is about the conversation its children share (no vote); older mixed notes stay that; `several` only
+  // at the last resort (`summary-subject.ts` subjectBatches).
   const kids = db.prepare(`SELECT subject_key, rebuild_state FROM summaries WHERE id IN (${parentPlaceholders})`)
     .all(...parentIds) as Array<{ subject_key: string | null; rebuild_state: string | null }>;
   const keys = new Set(kids.map((k) => k.subject_key));
@@ -307,12 +291,9 @@ export function getDescendantMessages(summaryId: string): Message[] {
     }
   }
 
-  // T5: sort by the INSERTION key, not the clock. `created_at` is second-granular TEXT, so
-  // a burst of messages inside one second sorted arbitrarily here and the expanded history
-  // came back scrambled — and the engine's undelivered-event re-home deliberately pushes a
-  // row's clock forward, which put it in the wrong place outright. `rowid` on a Message is
-  // `messages.seq`, one keyspace, no ties. Clock order is the fallback for the (defensive)
-  // case of a row that reached here without its key.
+  // Sort by the INSERTION key, not the clock: `created_at` is second-granular TEXT, and the undelivered-event
+  // re-home pushes a row's clock forward. `rowid` on a Message is `messages.seq` (one keyspace, no ties); clock
+  // order is the fallback for a row that reached here without its key.
   allMessages.sort((a, b) => (
     a.rowid != null && b.rowid != null
       ? a.rowid - b.rowid
