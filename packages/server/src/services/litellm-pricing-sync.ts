@@ -1,19 +1,7 @@
-// Refresh Anthropic / OpenAI / DeepSeek model pricing from the LiteLLM
-// community-maintained price index. Those providers' own APIs don't
-// expose pricing, and DOJO previously shipped a static cost map that
-// drifted out of date whenever a provider re-priced. This service
-// fetches the LiteLLM JSON on boot, matches it against existing DB
-// rows by api_model_id, and COALESCE-updates pricing in place.
-//
-// Source: https://github.com/BerriAI/litellm — they publish a single
-// JSON file (`model_prices_and_context_window.json`) keyed by API model
-// id, with `input_cost_per_token` / `output_cost_per_token` as decimal
-// per-token numbers. We multiply by 1e6 to land in DOJO's $/M-tokens
-// unit.
-//
-// Run status (success/failure, timestamp, error, models-updated count)
-// is persisted into the config table so the Costs page can render a
-// little green-check / red-x box. Boot fires this in the background;
+// Refreshes Anthropic / OpenAI / DeepSeek model pricing from LiteLLM's community price index (those providers'
+// APIs expose none): fetches `model_prices_and_context_window.json` on boot, matches DB rows by api_model_id and
+// COALESCE-updates pricing in place. Per-token costs are multiplied by 1e6 to land in $/M-tokens.
+// Run status is persisted to the config table for the Costs page; boot fires this in the background and
 // users can also trigger it on demand.
 
 import { getDb } from '../db/connection.js';
@@ -24,7 +12,7 @@ const logger = createLogger('litellm-pricing-sync');
 const LITELLM_JSON_URL =
   'https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json';
 
-// Status config keys — read by the /pricing-sync/status endpoint.
+// Status config keys, read by the /pricing-sync/status endpoint.
 const KEY_STATUS = 'litellm_sync_status';        // 'success' | 'failure'
 const KEY_AT = 'litellm_sync_at';                // ISO timestamp
 const KEY_UPDATED_COUNT = 'litellm_sync_updated_count'; // string number
@@ -38,10 +26,8 @@ interface LiteLlmEntry {
   mode?: string;
 }
 
-// DOJO provider-type → which litellm_provider strings we accept for it.
-// (LiteLLM keys are unique across providers, but we still gate by
-// litellm_provider to avoid matching e.g. an "openrouter/" namespaced
-// entry against an OpenAI row that happens to share an id.)
+// Which litellm_provider strings count as a match for a provider type; gating by provider keeps an
+// "openrouter/" namespaced entry from matching an OpenAI row that shares an id.
 function acceptedLiteLlmProvidersForRow(
   providerType: string,
   providerBaseUrl: string | null,
@@ -51,9 +37,8 @@ function acceptedLiteLlmProvidersForRow(
   if (providerType === 'openai-compatible') {
     const lower = (providerBaseUrl ?? '').toLowerCase();
     if (lower.includes('deepseek.com')) return ['deepseek'];
-    // OpenRouter has its own live /v1/models pricing — handled by the
-    // sibling `pricing-sync.ts` service. Skipping it here avoids two
-    // sources writing to the same rows.
+    // OpenRouter is skipped: its live /v1/models pricing is synced by the sibling `pricing-sync.ts`, and two
+    // sources must not write the same rows.
     return null;
   }
   return null;
@@ -122,8 +107,7 @@ export async function syncLitellmPricing(): Promise<LitellmSyncStatus> {
     const json = JSON.parse(text) as Record<string, LiteLlmEntry>;
 
     const db = getDb();
-    // Pull every model row alongside the parent provider's type / baseUrl
-    // so we know which litellm_provider strings count as a valid match.
+    // Each model row comes with its provider's type and baseUrl, to pick the accepted litellm_provider strings.
     const rows = db.prepare(`
       SELECT m.id AS model_id, m.api_model_id, p.type AS provider_type, p.base_url
       FROM models m

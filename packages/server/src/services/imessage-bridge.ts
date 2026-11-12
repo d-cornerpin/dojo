@@ -1,6 +1,4 @@
-// ════════════════════════════════════════
-// iMessage Bridge: Polling + Sending
-// ════════════════════════════════════════
+// iMessage bridge: polls chat.db for inbound texts and attachments and sends outbound messages.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -32,26 +30,9 @@ import {
   type SafeSender, parseSafeSenders, findSafeSenderByAddress, ownerIMessageRecord,
 } from './safe-senders.js';
 
-// ── iMessage attachment pipeline ────────────────────────────────────────────
-//
-// macOS's Messages chat.db stores a row in `message_attachment_join` for each
-// file attached to a message, and the `attachment` table has the actual path
-// (in `~/Library/Messages/Attachments/...`), MIME type, and original name.
-// When a user sends an image or PDF to the primary agent via iMessage, we:
-//
-//   1. Fetch the attachment rows linked to the message.
-//   2. Copy each supported file into `~/.dojo/uploads/<agentId>/` using the
-//      same directory layout as dashboard uploads.
-//   3. Convert HEIC → JPEG via macOS's built-in `sips` (vision models don't
-//      accept HEIC).
-//   4. Register them as an `UploadedFile[]` which gets JSON-serialized into
-//      the `messages.attachments` column, identical shape to what the
-//      /upload route writes, so the runtime's `injectAttachmentBlocks`
-//      picks them up automatically.
-//
-// Unsupported attachment types (video, audio, arbitrary docs) are logged and
-// skipped. The forwarded text is sanitized to remove the `￼` object-
-// replacement character macOS inserts as a placeholder for attachments.
+// Attachments: each file joined to a chat.db message is copied into `~/.dojo/uploads/<agentId>/` (HEIC to JPEG)
+// as an `UploadedFile[]` in the shape the /upload route writes, so `injectAttachmentBlocks` reads it. Files that
+// cannot be delivered are only mentioned by name in the message text; the U+FFFC placeholder is stripped.
 
 interface IMessageAttachmentRow {
   ROWID: number;
@@ -60,8 +41,7 @@ interface IMessageAttachmentRow {
   transfer_name: string | null;
 }
 
-// Mirror of upload.ts UploadedFile, same shape so the runtime's attachment
-// injection logic can read both without any branching.
+// Mirror of upload.ts UploadedFile: same shape, so attachment injection reads both without branching.
 interface UploadedFile {
   fileId: string;
   filename: string;
@@ -78,34 +58,13 @@ const PDF_MIMES = new Set(['application/pdf']);
 const AUDIO_EXTENSIONS = new Set(['.mp3', '.wav', '.m4a', '.aac', '.ogg', '.opus', '.flac', '.webm', '.caf', '.amr']);
 const VIDEO_EXTENSIONS = new Set(['.mp4', '.mov', '.mkv', '.avi', '.3gp']);
 
-// ── Attachment-readiness race ────────────────────────────────────────────
-//
-// When macOS receives an iMessage with an attachment, chat.db gets the
-// message row and attachment row written immediately, but the actual
-// attachment file under ~/Library/Messages/Attachments/... may take
-// several seconds to appear, especially for large photos, HEIC from an
-// iPhone, or anything being synced from iCloud. If we poll during that
-// window and advance `lastSeenRowId` past the message, we'll process it
-// as text-only and never retry. The model then says "I don't see an
-// image attached" because, from its perspective, there never was one.
-//
-// Fix: before advancing past any message that claims attachments, verify
-// every attachment file is actually on disk. If not, break out of the
-// processing loop without advancing, and try again on the next poll.
-// A per-rowid retry counter bounds the deferral so a permanently broken
-// download doesn't block the bridge forever, after ~60 seconds of
-// retries (12 polls × 5s interval) we give up and process the message
-// without the attachments, logging a warning so the reason is visible.
+// Attachment-readiness race: the file can land seconds after its chat.db row, so before advancing past a message
+// that claims attachments every file must be on disk; else retry next poll, up to MAX_ATTACHMENT_RETRIES (~60 s).
 
 const MAX_ATTACHMENT_RETRIES = 12;
 const deferredAttachmentRetries = new Map<number, number>();
 
-// Text-ish file extensions we'll read + inline directly into the forwarded
-// message body (same list as packages/server/src/gateway/routes/upload.ts).
-// Any file under `INLINE_TEXT_MAX_BYTES` whose MIME starts with `text/` or
-// whose extension is in this set gets slurped and framed with a header/
-// footer so the model reads it as context. Duplicated here rather than
-// imported to keep the iMessage bridge self-contained.
+// Text-ish files under `INLINE_TEXT_MAX_BYTES` are inlined; the list is duplicated from `gateway/routes/upload.ts`.
 const INLINE_TEXT_EXTENSIONS = new Set([
   '.txt', '.md', '.csv', '.json', '.xml', '.js', '.ts', '.py', '.html', '.css',
   '.sh', '.yaml', '.yml', '.toml', '.env', '.tsx', '.jsx', '.sql', '.rs',
@@ -119,9 +78,6 @@ function formatBytes(n: number): string {
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-// A note about an attachment we chose not to decode/deliver, still surfaced
-// to the model in the message text so it can respond "I got your video but
-// I can't play videos" etc, rather than silently dropping the context.
 interface MentionedAttachment {
   name: string;
   mimeType: string;
@@ -151,20 +107,11 @@ function safeFilenamePart(name: string): string {
   return name.replace(/[^a-zA-Z0-9._-]/g, '_');
 }
 
-// Remove the U+FFFC object-replacement character macOS inserts in the text
-// column for each inline attachment, plus any leftover whitespace. If the
-// user sent an image with no caption, this collapses to an empty string.
 function stripAttachmentPlaceholder(text: string | null): string {
   return (text ?? '').replace(/\uFFFC/g, '').trim();
 }
 
-// Quickly checks whether every attachment linked to a given message has
-// its file on disk. Read-only, no side effects, just a sanity probe the
-// poll loop uses to decide whether to defer processing.
-//
-// Returns `{ready: true}` when the message has zero attached files OR
-// every attachment's `filename` path exists on disk. Returns
-// `{ready: false, reason}` as soon as one is missing.
+// Read-only probe for the poll loop: ready when the message has no attached files or every file exists on disk.
 function isMessageAttachmentReady(
   chatDb: Database.Database,
   messageRowid: number,
@@ -176,11 +123,6 @@ function isMessageAttachmentReady(
     WHERE maj.message_id = ?
   `).all(messageRowid) as Array<{ ROWID: number; filename: string | null }>;
 
-  // No joins yet → either the message has no attachments, or the join
-  // row hasn't been written yet. In the first case we're fine; in the
-  // second, the message's text was already processed one poll earlier
-  // before the join existed, so there's nothing we can do now. Treat
-  // "no joins" as ready and move on.
   if (rows.length === 0) return { ready: true };
 
   for (const row of rows) {
@@ -237,12 +179,10 @@ export function fetchImessageAttachments(
     const fileId = uuidv4();
     const timestamp = Date.now();
 
-    // Stat once up front so every branch has size info without re-stating.
     let srcSize = 0;
     try { srcSize = fs.statSync(srcPath).size; } catch { /* leave 0 */ }
 
     try {
-      // ── Tier 1: deliverable bytes (image + PDF) ──────────────────────
       if (IMAGE_MIMES.has(mimeType)) {
         const storedName = `imessage_${timestamp}_${row.ROWID}_${safeFilenamePart(displayName)}`;
         const destPath = path.join(dir, storedName);
@@ -256,8 +196,7 @@ export function fetchImessageAttachments(
       }
 
       if (HEIC_MIMES.has(mimeType)) {
-        // Vision models don't accept HEIC, convert to JPEG via macOS's
-        // built-in `sips` tool. 30s timeout is generous for any iPhone photo.
+        // Vision models reject HEIC: convert to JPEG via macOS's `sips`.
         const jpegBase = safeFilenamePart(displayName).replace(/\.(heic|heif)$/i, '.jpg');
         const jpegName = `imessage_${timestamp}_${row.ROWID}_${jpegBase}`;
         const destPath = path.join(dir, jpegName);
@@ -299,9 +238,7 @@ export function fetchImessageAttachments(
         continue;
       }
 
-      // ── Tier 1b: audio / video, copy bytes so the receiving agent can
-      // route them through transcribe_audio. iPhone voice memos arrive as
-      // .caf or .m4a; standard mp3/wav also flow through here.
+      // Audio and video bytes are copied so the agent can route them through transcribe_audio.
       const isAudioByMime = mimeType.startsWith('audio/');
       const isVideoByMime = mimeType.startsWith('video/');
       const isAudioByExt = AUDIO_EXTENSIONS.has(ext);
@@ -312,7 +249,6 @@ export function fetchImessageAttachments(
         const destPath = path.join(dir, storedName);
         fs.copyFileSync(srcPath, destPath);
         const size = fs.statSync(destPath).size;
-        // Best-effort MIME backfill when iMessage didn't give us one.
         const inferredMime =
           mimeType
           || (category === 'audio'
@@ -325,7 +261,6 @@ export function fetchImessageAttachments(
         continue;
       }
 
-      // ── Tier 2: inline text (small text-ish files read + framed) ─────
       const looksLikeText = mimeType.startsWith('text/') || INLINE_TEXT_EXTENSIONS.has(ext);
       if (looksLikeText) {
         if (srcSize > INLINE_TEXT_MAX_BYTES) {
@@ -356,9 +291,7 @@ export function fetchImessageAttachments(
         }
       }
 
-      // ── Tier 3: mention only (video, audio, office, unknown) ─────────
-      // We don't copy the bytes. The model gets the filename, MIME type,
-      // and size in the message body and can decide how to respond.
+      // Anything else is mention only, no bytes copied: the filename, MIME type and size go in the message body.
       result.mentionedAttachments.push({
         name: displayName,
         mimeType: mimeType || 'application/octet-stream',
@@ -386,14 +319,8 @@ export function fetchImessageAttachments(
   return result;
 }
 
-// When the attachment-readiness race is lost (retries exhausted, files never
-// finished downloading from iCloud), we still owe the MODEL an honest note
-// that something was sent but did not arrive, rather than forwarding a bare
-// caption and letting the model confabulate a platform limitation. This builds
-// mention-only entries for exactly the attachments whose file is STILL missing
-// on disk (any that arrived in the meantime are handled normally by
-// fetchImessageAttachments, so run this AFTER it to avoid duplicating them).
-// Invisible-channel law: the engine may not silently drop what it knows about.
+// When retries are exhausted the MODEL still gets an honest note that something was sent but never arrived. Run
+// AFTER fetchImessageAttachments so files that did arrive are not duplicated.
 function describeUnreadyAttachments(
   chatDb: Database.Database,
   messageRowid: number,
@@ -415,8 +342,6 @@ function describeUnreadyAttachments(
   const out: MentionedAttachment[] = [];
   for (const row of rows) {
     const srcPath = row.filename ? expandHomedir(row.filename) : null;
-    // Only mention the ones that never landed; a file already on disk is
-    // delivered normally by fetchImessageAttachments.
     if (srcPath && fs.existsSync(srcPath)) continue;
     out.push({
       name: row.transfer_name || (srcPath ? path.basename(srcPath) : `attachment ${row.ROWID}`),
@@ -430,29 +355,17 @@ function describeUnreadyAttachments(
 
 const logger = createLogger('imessage');
 
-// ── Safe-sender records ──────────────────────────────────────────────────
-// The records, their parser and the owner rule live in `./safe-senders.ts` (t146: one reader
-// of "who is the owner on iMessage", importable by modules the bridge's own graph reaches).
+// Records, parser and owner rule live in `./safe-senders.ts`: the one reader of who the owner is on iMessage.
 export {
   type SharingLevel, SHARING_LEVELS, type SafeSender, parseSafeSenders, addressesMatch,
   findSafeSenderByAddress,
 } from './safe-senders.js';
 
-/**
- * Build the sharing-policy paragraph for an inbound iMessage's framing. The
- * agent reads this every turn and uses it to decide what's appropriate to
- * share with the sender. Soft enforcement only - the model still chooses
- * what to say. For non-open-book levels we append an explicit escape hatch
- * pointing the agent to the primary user (by name from the records) so it
- * can ask permission when uncertain instead of guessing.
- */
+/** The sharing-policy paragraph for an inbound's framing: soft enforcement, the model still chooses what to say. */
 function buildSharingPolicyLine(sender: SafeSender, records: readonly SafeSender[]): string {
   const primary = records.find(s => s.is_primary);
   const primaryName = primary?.name?.trim() || 'the primary user';
-  // RC-11: never point the agent at "ask the primary user" when the SENDER is
-  // the primary user, that hatch would tell the agent to ask the owner about
-  // the owner. (Owners normally sit at open_book anyway, but a non-open_book
-  // owner record must still skip it.)
+  // Never point the agent at "ask the primary user" when the SENDER is the primary user.
   const askPrimary =
     sender.is_primary || sender.sharing_level === 'open_book'
       ? ''
@@ -475,69 +388,38 @@ let approvedSenders: SafeSender[] = [];
 let lastSeenRowId = 0;
 const POLL_INTERVAL_MS = 5000;
 
-// ── Offline-replay handling (P5c shrink) ──
-// A box that was offline for days reconnects with a stale cursor; without
-// handling, the first poll would replay EVERY safe-sender text between the
-// cursor and now as a fresh inbound and auto-reply to conversations the sender
-// long since moved on from. The old floor DROPPED those rows entirely (skip +
-// advance), losing real texts. Now they are INGESTED as notes: persisted with
-// the real send time in-band, visible in history, claimable as context, but
-// swept from the waiting set (no wake, no command intercept, no auto-reply).
-// The newest IMESSAGE_STALE_BACKLOG_CAP stale rows per poll batch are ingested;
-// anything beyond the cap is skipped-and-advanced as before (a bulk bound so a
-// month-long backlog cannot flood the store in one poll). Online boxes are
-// unaffected, their inbound rows are seconds old.
+// Offline replay: after days offline the cursor is stale. Stale safe-sender rows are INGESTED as notes (real send
+// time, swept from the waiting set: no wake, command or auto-reply). Only the newest IMESSAGE_STALE_BACKLOG_CAP per
+// poll are ingested; the rest are skipped and the cursor advances.
 const IMESSAGE_MAX_REPLAY_AGE_MS = 48 * 60 * 60 * 1000;
 const IMESSAGE_STALE_BACKLOG_CAP = 25;
 
-// True while pollMessages is mid-flight. setInterval keeps firing every 5s,
-// but if a poll is still reading/persisting inbound rows we skip the next
-// tick so two polls never read chat.db (or advance lastSeenRowId)
-// concurrently. D10: the poll loop no longer awaits the agent's TURN, so
-// this guard now only spans the fast ingest work (read chat.db, persist,
-// broadcast, dispatch); turn serialization is the runtime's job
-// (activeRuns + pendingWakeups in handleMessage).
+// True while pollMessages is mid-flight: the next tick is skipped so two polls never read chat.db or advance
+// lastSeenRowId concurrently. Turn serialization is the runtime's job (activeRuns + pendingWakeups).
 let pollInFlight = false;
 
-// D19 pt3: bounded retry counter for rows whose persist INSERT failed. We
-// deliberately do NOT advance lastSeenRowId past an unpersisted row (a crash
-// or transient DB error would otherwise silently drop the text forever), but
-// an always-failing row must not wedge the bridge either: after
-// MAX_PERSIST_RETRIES polls we advance past it with a loud error log, which
-// is the OLD behavior (advance-then-drop) made deliberate and bounded.
+// Bounded retry for rows whose persist INSERT failed: the cursor never advances past an unpersisted row, but after
+// MAX_PERSIST_RETRIES polls it advances with a loud error so an always-failing row cannot wedge the bridge.
 const MAX_PERSIST_RETRIES = 12;
 const persistRetries = new Map<number, number>();
 
-// ── Sync-re-insert guid dedup ──
-// iCloud Messages sync can re-insert an OLD message under a fresh, higher
-// ROWID. The monotonic lastSeenRowId cursor treats that fresh ROWID as brand-
-// new inbound and re-forwards a message the owner sent (and we answered) hours
-// or days ago. ROWID-based newness cannot see this; the stable per-message
-// identity is chat.db's `guid`. We keep a bounded ring of the last N processed
-// guids and skip any row whose guid we have already handled. The ring is
-// mirrored into the `config` table (same idiom as imessage_last_rowid) so a
-// restart still recognizes recently-processed messages, and bounded so the
-// stored JSON never grows without limit.
+// Sync-re-insert dedup: iCloud sync can re-insert an old message under a fresh, higher ROWID. A bounded ring of
+// recently processed chat.db `guid`s skips them, mirrored into `config` so a restart keeps it.
 const RECENT_GUID_LIMIT = 200;
 const RECENT_GUIDS_CONFIG_KEY = 'imessage_recent_guids';
 let recentGuids: string[] = []; // insertion order, oldest first
 let recentGuidSet = new Set<string>();
 let recentGuidsLoaded = false;
 
-// ── D10 busy-ack ──
-// When an authorized sender's iMessage lands while a LONG turn (>60s old) is
-// already running, the message is persisted + queued behind that turn (the
-// runtime serializes per agent), which used to mean pure silence for up to a
-// whole turn. Send ONE deterministic engine ack per sender per running turn
-// so the person knows they were heard. Engine send, never a model turn.
+// Busy-ack: when an authorized sender's iMessage lands while a LONG turn (older than 60 s) is running, send ONE
+// deterministic engine ack per sender per running turn so they know they were heard. Never a model turn.
 const BUSY_ACK_TURN_AGE_MS = 60_000;
 const BUSY_ACK_TEXT = 'Dojo: your message arrived, but the agent is in the middle of a longer task. It will get to your message when that turn ends.';
 // agentId -> the running turn (identified by its start timestamp) + senders acked for it
 const busyAckState = new Map<string, { turnStartedAt: number; ackedSenders: Set<string> }>();
 
 export function maybeSendBusyAck(agentId: string, sender: string): void {
-  // Only when a turn is ALREADY running (checked before we dispatch this
-  // message, so our own dispatch can't trip it) and it's older than 60s.
+  // Only when a turn is ALREADY running (checked before this message is dispatched) and older than 60 s.
   if (!activeRuns.has(agentId)) return;
   const turnStartedAt = agentStartTimes.get(agentId);
   if (!turnStartedAt) return;
@@ -555,8 +437,7 @@ export function maybeSendBusyAck(agentId: string, sender: string): void {
     { agentId, tool: 'busy-ack', channel: 'imessage', recipientId: sender },
     () => sendIMessage(sender, BUSY_ACK_TEXT),
   ).then((ok) => tellAgentWhatDojoSent({ agentId, recipient: sender, text: BUSY_ACK_TEXT, why: 'because your turn was still running when their text arrived', sent: ok === true }), () => tellAgentWhatDojoSent({ agentId, recipient: sender, text: BUSY_ACK_TEXT, why: 'because your turn was still running when their text arrived', sent: false }));
-  // STRIP (PHASE-0 T12): dropped an `agent:status` broadcast carrying 'queued' — not an agent status, zero subscribers branch on it; Agents/Tracker wrote it into agent.status, blanking the working indicator mid-turn.
-  // requirement preserved: the person is told by the busy-ack above, and the 30s status heartbeat re-asserts 'working' on the dashboard.
+  // No 'queued' broadcast: the busy-ack above tells the person and the 30 s heartbeat re-asserts 'working'.
   logger.info('Busy-ack sent: inbound iMessage queued behind a running turn', {
     agentId,
     sender,
@@ -564,68 +445,24 @@ export function maybeSendBusyAck(agentId: string, sender: string): void {
   });
 }
 
-// P5c STRIP (lanes & lineage): the per-agent last-inbound slot
-// (pendingIMResponseMap) and its accessors are gone. Born in the initial
-// commit, rebuilt six times, it was a racy single-value global fully decoupled
-// from turn execution. The requirement it encoded, "a reply routes to the
-// sender of the message it answers", rides structural identity now: the turn's
-// counterparty (`TurnContext.imRecipient`, derived from the persisted
-// inbound_meta / conversation row) addresses replies, the D16
-// repliedToCounterpartyThisTurn turn-state suppresses the end-of-turn
-// auto-route after an explicit send, and rows without a served turn ARE the
-// "pending" signal (messages.served_by_turn). A legacy prose-fallback row
-// (no inbound_meta, so also no conversation row) resolves NO recipient and
-// falls to the owner default rather than guessing from a racy global.
+// A reply routes to the sender of the message it answers through structural identity: the turn's counterparty
+// (`TurnContext.imRecipient`, from the persisted inbound_meta / conversation row); `repliedToCounterpartyThisTurn`
+// suppresses the end-of-turn auto-route after an explicit send. A row with no inbound_meta resolves no recipient.
 
-/**
- * FA-C1: the TURN-scoped iMessage counterparty ONLY (`TurnContext.imRecipient`),
- * with NO last-inbound fallback (the legacy map is stripped, P5c). Used by the explicit
- * imessage_send default-recipient path and the image_create delivery path, so an
- * omitted recipient can only ever resolve to the person THIS turn is actually
- * conversing with. Outside a genuine iMessage turn it returns null and the caller
- * MUST refuse to guess: a last-inbound value is decoupled from turn execution,
- * so consulting one on a proactive/dashboard turn could deliver owner-directed
- * content to whatever contact happened to text moments earlier.
- */
+/** The TURN's iMessage counterparty only, no last-inbound fallback; null means the caller must refuse to guess. */
 export function getTurnScopedImRecipient(agentId: string): string | null {
-  // 3.5: read from the turn's ADDRESS (the one record of who this turn talks to), not a second field.
+  // Read from the turn's ADDRESS (the one record of who this turn talks to), not a second field.
   const a = turnContext(agentId)?.address;
   return a && a.kind === 'person' && a.inboundChannel === 'imessage' && a.senderId ? a.senderId : null;
 }
 
-// P5c STRIP: the agent-initiated (relay) contact set is gone. Its three
-// accessors had NO callers left (the v2.7.23 auto-router that consumed it was
-// replaced by turn-anchored counterparty routing), so the map was write-only
-// dead state. The requirement it encoded, "a reply to agent-initiated
-// outreach reports back to the originating conversation, not the contact",
-// lives in the turn counterparty + cross-conv send echo (RC-1) lineage.
-
-// Resolve to the stored safe-sender address so a marked recipient and a
-// later inbound sender compare equal despite formatting differences (phone
-// punctuation, email case). Falls back to a lowercased raw address.
+// Resolves to the stored safe-sender address so phone punctuation and email case compare equal.
 function canonicalContactAddress(address: string): string {
   const match = findSafeSenderByAddress(getSafeSenders(), address);
   return (match?.address ?? address).trim().toLowerCase();
 }
 
-/**
- * v2.5.7, strip system routing tags the LLM may have copied from prior
- * conversation history into its own reply (most commonly the
- * "[SENT VIA IMESSAGE to <owner>]" marker the engine writes after delivery).
- * These tags are dashboard-only metadata; if they leak into the outgoing
- * iMessage body the user sees the literal annotation on their phone, and
- * if they appear in the persisted assistant message they break the
- * dashboard's tag-detection regex (which expects the tag to be the entire
- * message content) so the tag renders as raw text.
- *
- * Aggressive strip: removes the bracket PLUS any same-line content after
- * it, the primary agent sometimes emits the tag followed by a duplicated URL on the
- * same line ("[SENT VIA IMESSAGE to the owner]https://..."). The whole
- * trailing block is hallucinated noise, not legitimate content.
- *
- * Exported so the v2 loop can sanitize persistedContent at the source and
- * presence.ts's distillForText can use the same regex.
- */
+/** Strips dashboard-only routing tags (e.g. "[SENT VIA IMESSAGE to <owner>]") the LLM copied into its reply. */
 export function stripSystemTags(text: string): string {
   return text
     .replace(/\s*\[SENT VIA IMESSAGE to [^\]]+\][^\n]*\n?/gi, ' ')
@@ -634,14 +471,7 @@ export function stripSystemTags(text: string): string {
     .trim();
 }
 
-/**
- * Auto-deliver the agent's terminal text back over iMessage. Returns the
- * recipient that actually received it ({ address, name }) so the caller can
- * label the dashboard routing badge with the TRUE recipient, or null when
- * the send was suppressed (no valid recipient / empty after sanitization).
- * The badge must never be derived from a hardcoded default, it has to
- * reflect who the message really went to.
- */
+/** Auto-delivers the agent's terminal text; returns who actually received it, or null if suppressed. */
 export async function sendResponseViaIMessage(
   text: string,
   agentId?: string,
@@ -649,10 +479,8 @@ export async function sendResponseViaIMessage(
   ownerBound?: boolean,
 ): Promise<{ address: string; name: string } | null> {
   if (!agentId) agentId = getPrimaryAgentId();
-  // C8: an OWNER-BOUND send (the away-override promoted a dashboard/proactive reply to
-  // iMessage precisely to reach the owner who stepped away) must go to the owner/primary,
-  // never to a contact, that was the "owner's private dashboard reply texted to a
-  // contact" bug (inv 1 + 4). Authoritative: checked before the recipientOverride branch.
+  // An OWNER-BOUND send (the away-override promoting a dashboard/proactive reply to iMessage to reach an absent
+  // owner) goes to the owner/primary, never a contact. Checked before the recipientOverride branch.
   if (ownerBound) {
     const owner = getDefaultSender();
     if (!owner) return null;
@@ -665,21 +493,12 @@ export async function sendResponseViaIMessage(
     }
     return { address: owner, name: findSafeSenderByAddress(getSafeSenders(), owner)?.name ?? owner };
   }
-  // Two safety rails on the fallback path:
-  //  (a) when there's no inbound trigger, default to the starred primary
-  //      (getDefaultSender), NOT approvedSenders[0]. They're often the
-  //      same but not always - the array's first entry is just whatever
-  //      the user typed first in Settings.
-  //  (b) re-validate the inbound sender against the current safe-sender
-  //      list. If the user removed that sender mid-conversation, silently
-  //      drop the auto-reply instead of texting someone no longer
-  //      authorized.
+  // Fallback rails: with no inbound trigger default to the starred primary, not approvedSenders[0]; drop the
+  // auto-reply if the inbound sender was removed from the safe-sender list mid-conversation.
   let sender: string | null = null;
   let recipientName: string | null = null;
-  // The TURN's counterparty is the only per-person recipient source (P5c).
-  // When the loop passes the turn's counterparty address, use it (validated). If
-  // it is no longer a safe sender, SUPPRESS, never fall back to texting the
-  // owner an answer meant for someone else.
+  // The TURN's counterparty is the only per-person recipient source; if it is no longer a safe sender, SUPPRESS
+  // rather than texting the owner an answer meant for someone else.
   if (recipientOverride !== undefined && recipientOverride !== null) {
     const allowed = findSafeSenderByAddress(getSafeSenders(), recipientOverride);
     if (allowed) { sender = recipientOverride; recipientName = allowed.name; }
@@ -696,11 +515,7 @@ export async function sendResponseViaIMessage(
     }
     return { address: sender, name: recipientName ?? sender };
   }
-  // P5c: no recipient override and not owner-bound -> the starred default
-  // (owner). The old branch here guessed from the racy last-inbound map, the
-  // exact "reply meant for A texts B" class; a caller that means a specific
-  // person passes them explicitly (turn counterparty), everything else is
-  // owner-bound by definition.
+  // No override and not owner-bound: the starred default (owner); a caller meaning someone else passes them explicitly.
   sender = getDefaultSender();
   if (sender) recipientName = findSafeSenderByAddress(getSafeSenders(), sender)?.name ?? null;
   if (!sender) return null;
@@ -739,9 +554,7 @@ function saveLastSeenRowId(rowId: number): void {
   }
 }
 
-// Load the persisted recent-guid ring into memory once per process. Mirrors
-// loadLastSeenRowId: read the config row, tolerate a missing/garbled value by
-// starting empty. Bounded on read so an oversized stored array is trimmed.
+// Loads the persisted recent-guid ring once per process; a missing or garbled value starts empty.
 function loadRecentGuids(): void {
   if (recentGuidsLoaded) return;
   recentGuidsLoaded = true;
@@ -760,8 +573,7 @@ function loadRecentGuids(): void {
   }
 }
 
-// Record a guid as processed and persist the trimmed ring. Idempotent: a guid
-// already in the set is a no-op. Mirrors saveLastSeenRowId's config upsert.
+// Records a guid as processed and persists the trimmed ring; a guid already in the set is a no-op.
 function rememberProcessedGuid(guid: string | null): void {
   if (!guid || recentGuidSet.has(guid)) return;
   recentGuids.push(guid);
@@ -785,28 +597,10 @@ function rememberProcessedGuid(guid: string | null): void {
 }
 
 /**
- * The single per-message inbound processor shared by the live poll loop AND
- * the dev-harness probe (gateway/routes/dev.ts). Both callers traverse this
- * exact path, so there is no bypass seam: what the probe verifies is the code
- * a real inbound text runs.
- *
- * Order: command intercept -> (on no command) persist for the primary agent +
- * dispatch -> reply delivery.
- *   COMMAND: handleIMCommand owns its own is_primary owner gate for EVERY
- *     command (status / kill / pause / resume AND the approve/deny lane); a
- *     non-owner's command-shaped text returns null there and falls through as
- *     ordinary chat, so the command surface never leaks. On a real command the
- *     reply is texted back to the sender and the agent is NOT woken.
- *   FALLTHROUGH: the message is persisted for the primary agent (with the
- *     structured inbound_meta) exactly as before, then the runtime is woken.
- *
- * The chat.db cursor is the poll loop alone: advanceRowId (the row ROWID) is
- * folded into the SAME persist transaction so INSERT + inbound_meta + cursor
- * advance commit atomically; the probe passes null (no cursor to move).
- * wakeAgent gates ONLY the final runtime dispatch: the poll loop wakes the turn
- * (true); the probe persists the row for the agent and asserts it landed
- * without burning a model turn (false). Command handling and reply delivery are
- * identical for both callers.
+ * The single per-message inbound processor, shared by the poll loop AND the dev probe (gateway/routes/dev.ts).
+ * Order: command intercept, else persist and dispatch to the primary agent. handleIMCommand owns the owner gate:
+ * a non-owner's command text returns null and flows as chat; a real command is answered and the agent NOT woken.
+ * `advanceRowId` (poll loop only) commits atomically with the INSERT; `wakeAgent` gates ONLY the runtime dispatch.
  */
 export interface InboundIMessageInput {
   sender: string;
@@ -814,13 +608,9 @@ export interface InboundIMessageInput {
   attachmentResult?: ImessageAttachmentResult;
   advanceRowId: number | null;
   wakeAgent: boolean;
-  // P5: the chat.db guid, stored on the row (external_message_id) so identity
-  // is kept instead of ring-buffered; the unique index is the durable dedup.
+  // The chat.db guid, stored as external_message_id; its unique index is the durable dedup.
   externalMessageId?: string | null;
-  /** P5c offline-replay shrink: set to the real send time (ISO) when this row
-   *  is a stale reconnect replay. The row is INGESTED (persisted, visible,
-   *  claimable as context) but treated as a note: no command intercept, no
-   *  wake, no auto-reply, and the content carries the real send time. */
+  /** Real send time (ISO) of a stale reconnect replay: ingested as a note, no command, wake or auto-reply. */
   staleSentAtIso?: string | null;
 }
 
@@ -842,11 +632,8 @@ export async function processInboundIMessage(
     attachmentResult.inlinedTextBlocks.length +
     attachmentResult.mentionedAttachments.length;
 
-  // Command intercept against the text portion only (an image-only message can
-  // never be a command). On a hit the reply goes to the SENDER and the agent
-  // is left asleep; handleIMCommand enforces the owner gate for every command.
-  // Stale replays skip it: answering a days-old "status" text on reconnect is
-  // the moved-on-conversation class the replay handling exists to prevent.
+  // Command intercept on the text portion only: the reply goes to the SENDER and the agent stays asleep. Stale
+  // replays skip it (a days-old "status" must not be answered on reconnect).
   if (cleanedText && !input.staleSentAtIso) {
     const commandResponse = await handleIMCommand(cleanedText, sender);
     if (commandResponse) {
@@ -859,13 +646,7 @@ export async function processInboundIMessage(
   const db = getDb();
   const msgId = uuidv4();
 
-  // ── Compose the forwarded message body ─────────────────────
-  // Three pieces, any of which may be empty:
-  //   1. The user's typed caption (if any)
-  //   2. Inlined text files (framed blocks ready for the model)
-  //   3. A "[Other attachments ...]" footer listing everything we
-  //      didn't deliver as bytes or inline text, gives the model
-  //      enough info to say "I can't play that video" or similar.
+  // The forwarded body: the caption, inlined text files, and a footer listing attachments not delivered as bytes.
   const bodyParts: string[] = [];
   if (cleanedText) {
     bodyParts.push(cleanedText);
@@ -879,10 +660,7 @@ export async function processInboundIMessage(
     bodyParts.push(attachmentResult.inlinedTextBlocks.join('\n\n'));
   }
 
-  // Audio / video uploads need an inline pointer to the fileId
-  // so the agent knows how to call transcribe_audio. The
-  // attachment chips render in the dashboard regardless; this
-  // is purely the agent-facing hint.
+  // Audio / video need an inline pointer to the fileId so the agent can call transcribe_audio.
   const audioOrVideoUploads = attachmentResult.uploadedFiles.filter(
     (f) => f.category === 'audio' || f.category === 'video',
   );
@@ -908,18 +686,9 @@ export async function processInboundIMessage(
 
   const textForModel = bodyParts.join('\n\n');
 
-  // ── Sender identity + sharing policy in the framing ──────────
-  // Pre-fix the template hardcoded "FROM ${ownerName}" regardless
-  // of who actually sent the message, so the agent literally could
-  // not tell the wife's message from the user's. Now we look up
-  // the matching safe-sender record and tell the agent exactly
-  // who it is, who they are to the household (description), the
-  // exact recipient string to pass back when replying, AND the
-  // sharing policy that governs what's appropriate to disclose.
+  // Sender identity and sharing policy in the framing: who sent it, who they are to the household, the reply recipient.
   const senderRecord = findSafeSenderByAddress(safeSenders, sender);
-  // Avoid the "user@example.com (user@example.com)" duplication
-  // when the user hasn't set a display name (legacy migration just
-  // copied the address into the name slot).
+  // Avoid "user@example.com (user@example.com)" when the display name is just the address.
   const senderLabel = senderRecord
     ? (senderRecord.name && senderRecord.name !== senderRecord.address
         ? `${senderRecord.name} (${senderRecord.address})`
@@ -932,69 +701,34 @@ export async function processInboundIMessage(
   const policyLine = senderRecord
     ? buildSharingPolicyLine(senderRecord, safeSenders)
     : `SHARING POLICY: Unknown sender - this address matched the bridge filter but isn't on the saved safe-sender list. Be cautious; share only what's directly asked. If in doubt, ask the primary user before responding.`;
-  // Two discipline rules in the framing the agent reads every inbound:
-  //
-  //  - SHARING POLICY (above): governs what to share WITH the iMessage
-  //    sender. Built from their sharing_level.
-  //
-  //  - UPDATING THE PRIMARY USER (below): governs whether/how to send
-  //    a separate update to the primary user about this exchange
-  //    AFTER you finish replying to the sender. Applies to BOTH
-  //    channels - dashboard chat AND a separate imessage_send to
-  //    the primary user's address. Default is silent (no update);
-  //    only update if there's something specific the user must know
-  //    or be asked, and lead with full context when you do. Without
-  //    this, agents tend to drop cryptic one-liners like "Sent."
-  //    or "Just the schedule, nothing else." that confuse the user
-  //    because they don't see the iMessage thread on their end.
+  // Two discipline rules frame every inbound: the SHARING POLICY (what to share WITH the sender) and UPDATING THE
+  // PRIMARY USER (whether and how to update them after replying). The default is silent: update only for something
+  // they must know or be asked, with full context, since they do not see the iMessage thread.
   const primary = safeSenders.find(s => s.is_primary);
   const primaryName = primary?.name?.trim() || 'the primary user';
   const exampleName = senderRecord?.name ?? '<their name>';
   const exampleRelationship = senderRecord?.description ? ` (${senderRecord.description})` : '';
-  // RC-11: when the sender IS the primary user, the third-party
-  // "updating the primary user" paragraph renders self-referential nonsense
-  // ("<owner> does NOT see the iMessage thread between you and <owner>") and
-  // its GOOD/BAD examples use third-party her/she pronouns. Branch on
-  // is_primary: the owner texting directly needs neither the update-discipline
-  // rule nor the ask-permission hatch, just one plain framing line. Every other
-  // sender keeps the paragraph, with the hardcoded her/she fixed to they/them.
+  // When the sender IS the primary user, the third-party "updating the primary user" paragraph would be
+  // self-referential and its examples use third-party pronouns: the owner gets one plain framing line instead.
   const ownerSenderName = senderRecord?.name?.trim() || primaryName;
   const updateDiscipline = senderRecord?.is_primary
     ? `This is ${ownerSenderName}, your primary user, texting you directly via iMessage. Reply here; no separate update or permission is needed.`
     : `UPDATING THE PRIMARY USER: After you finish texting ${senderRecord?.name ?? 'this person'} back, do NOT send a separate update to ${primaryName} - NOT in the dashboard, and NOT as a separate iMessage to ${primaryName}'s address - UNLESS one of these is true: (a) you need to ASK ${primaryName} something to handle this conversation, or (b) there's specific information ${primaryName} genuinely needs to know. ${primaryName} does NOT see the iMessage thread between you and ${senderRecord?.name ?? 'this person'}; an unprompted "Sent." or "Standing by." or "Just the schedule, nothing else." reads as meaningless and confusing because they have no idea what you're referring to. If you DO send an update, ALWAYS lead with full context: who you were texting (name + relationship), what they asked you, and what you did or are waiting on. GOOD: "${exampleName}${exampleRelationship} just asked for your schedule this week - I sent them the calendar entries, no other personal details, and I'll let you know when they reply." BAD: "Sent. Just the schedule." Most iMessage exchanges should resolve silently from ${primaryName}'s perspective; only break that silence with real signal and real context.`;
-  // v2.7.23, the giant `══ INBOUND IMESSAGE, MUST GO VIA imessage_send ══`
-  // delivery header was removed. The engine now auto-routes the model's
-  // terminal text back via iMessage (see reply-destination.ts), so the
-  // model no longer needs to be told to call a tool, it just writes,
-  // engine delivers. The remaining SOURCE tag below carries the policy
-  // + sender identity. The per-turn `[Reply destination: ...]` line in
-  // the assembled system prompt tells the model SMS voice is required.
+  // No delivery header: the engine auto-routes the model's terminal text back via iMessage (reply-destination.ts).
+  // The SOURCE tag below carries policy and sender identity.
   const theirText = inboundIMessageText(senderRecord?.is_primary === true, senderLabel, textForModel);
   let msgContent = `[SOURCE: IMESSAGE FROM ${senderLabel} - this person texted YOUR OWN iMessage account (the DOJO bridge - YOUR phone, not the user's). The text arrived via iMessage, not the dashboard chat. ${policyLine} ${replyHint} ${updateDiscipline} Respond to THIS topic only; do not pull in unrelated dashboard conversation context.] ${theirText}`;
   if (input.staleSentAtIso) {
-    // P5c: the row keeps its real send time in-band (absolute, cache-safe) so
-    // the model reads it as history, not as a fresh ask awaiting a reply.
+    // The row keeps its real send time in-band (absolute, cache-safe) so the model reads it as history, not a fresh ask.
     msgContent = `[Delivered late: sent ${input.staleSentAtIso}, ingested when this Mac reconnected. Old context, not a fresh message; it was NOT answered at the time.] ${msgContent}`;
   }
 
-  // Stamp structured inbound metadata (v3.1.x attribution redesign).
-  // iMessage previously relied on an in-memory last-inbound slot +
-  // prose [SOURCE: ...] marker. We now ALSO record structured meta so
-  // the origin projection can tell "the owner texting" from "a friend
-  // texting" (is_primary). recipientAddress mirrors the raw `sender`
-  // reply routing reads (turn counterparty via inbound_meta), this
-  // only ADDS the relation signal.
+  // Structured inbound meta, so the origin projection can tell the owner from a friend (is_primary).
   const inboundMetaObj = {
     channel: 'imessage' as const,
     accountKind: 'agent' as const,
-    // comms-audit I-1: authorize ONLY when there is an actual safe-sender
-    // record, matching email/SMS/Teams (unknown sender → authorized:false →
-    // downgraded to a dashboard notice, never an auto-reply). The old hardcoded
-    // `true` contradicted the relation below (which can be 'third_party' when
-    // senderRecord is null), and let a sender that passed the loose bridge
-    // pre-filter but has no record earn an auto-reply turn, an asymmetry no
-    // other channel allows. Owner/known_contact both have a record, so they are
-    // unaffected; only a true unknown is denied (invariant 5).
+    // Authorize ONLY when a safe-sender record exists, as email, SMS and Teams do: an unknown sender is downgraded
+    // to a dashboard notice, never an auto-reply. Owner and known contacts both have a record.
     authorized: !!senderRecord,
     sender,
     recipientAddress: sender,
@@ -1004,28 +738,18 @@ export async function processInboundIMessage(
       : senderRecord
         ? 'known_contact'
         : 'third_party') as 'owner' | 'known_contact' | 'third_party',
-    // RC-4/RC-8: structured agent-ness of the sender, so downstream gates
-    // (ack suppression, courtesy damping) branch on data, not description prose.
+    // Structured agent-ness of the sender, so downstream gates (ack suppression, courtesy damping) branch on data.
     senderIsAgent: !!senderRecord?.is_agent,
   };
 
-  // ── Atomic persist (+ optional cursor advance) ──
-  // INSERT + inbound_meta stamp (+ the poll loop cursor advance when a ROWID
-  // is supplied) commit in ONE transaction on the same connection, so there is
-  // no crash window in which the cursor is past a row that was never persisted.
-  // P5: conversation identity resolved BEFORE the transaction; stamped
-  // atomically with the row.
+  // Atomic persist: INSERT + inbound_meta (+ the poll loop cursor advance, when a ROWID is supplied) commit in ONE
+  // transaction, so the cursor is never past an unpersisted row. Conversation identity is resolved BEFORE it.
   const conversationId = resolveOrCreateConversation(primaryId, {
     channel: 'imessage', provider: 'imessage', counterpartyId: sender,
     counterpartyName: senderRecord?.name ?? null, threadRoot: null,
   });
-  // T4/OR4: the routing facts this producer ALREADY decided (inboundMetaObj) are
-  // stamped IN the insert, so the row is never briefly unstamped — `authorized` is
-  // this bridge's own safe-sender verdict, `senderId` the address it arrived from,
-  // and `conversationId` lands in the SAME write. recordInboundMeta below still
-  // records the full meta blob (relation, chatType, senderIsAgent) for the resolver.
-  // INSERT OR IGNORE → insertMessageIfAbsent: the external_message_id de-duplication
-  // is preserved exactly (ON CONFLICT DO NOTHING covers the unique index).
+  // The routing facts already decided (inboundMetaObj) are stamped IN the insert so the row is never briefly
+  // unstamped. insertMessageIfAbsent keeps the external_message_id dedup (ON CONFLICT DO NOTHING).
   const inboundRow: NewMessage = {
     id: msgId,
     agentId: primaryId,
@@ -1040,24 +764,19 @@ export async function processInboundIMessage(
   };
   let persisted: ReturnType<typeof insertMessageIfAbsent> = null;
   db.transaction(() => {
-    // `conversationId` stays spelled in the write itself: identity is stamped
-    // ATOMICALLY with the row (OR4), and the serve-boundary conformance walk reads
-    // exactly this statement.
+    // `conversationId` stays spelled in the write itself: identity is stamped ATOMICALLY with the row, and the
+    // serve-boundary conformance walk reads exactly this statement.
     persisted = insertMessageIfAbsent({ ...inboundRow, conversationId });
     if (persisted !== null) {
       recordInboundMeta(msgId, inboundMetaObj);
       if (input.staleSentAtIso) {
-        // P5c: the reply-vs-note decision, made structurally at ingest. A stale
-        // reconnect replay is a NOTE: visible in history and claimable as
-        // context by later turns, but swept from the waiting set so the drain
-        // never owes it a turn of its own (no days-late auto-reply).
+        // A stale reconnect replay is a NOTE: claimable as context but swept from the waiting set (no late auto-reply).
         sweepById(msgId);
       }
     }
     if (advanceRowId !== null) {
-      // The cursor moves even when the insert was the designed no-op: an old text
-      // re-inserted under a fresh ROWID (the guid ring forgot it, the unique index
-      // did not) still has to be passed, or the poll re-reads it forever.
+      // The cursor moves even when the insert was the designed no-op: an old text re-inserted under a fresh ROWID
+      // (the guid ring forgot it, the unique index did not) must still be passed, or the poll re-reads it forever.
       db.prepare(`
         INSERT INTO config (key, value, updated_at) VALUES ('imessage_last_rowid', ?, datetime('now'))
         ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = datetime('now')
@@ -1066,24 +785,16 @@ export async function processInboundIMessage(
   })();
 
   if (persisted === null) {
-    // The unique index said this guid is already stored: the text is already on
-    // the dashboard and has had its turn (or will, from the row that IS there).
-    // A broadcast for an id that was never stored would render a bubble that
-    // vanishes on reload, and a wake would burn a turn on a replay.
+    // This guid is already stored: a broadcast for an unstored id would render a bubble that vanishes on reload.
     logger.info('Inbound iMessage already stored (same guid), not shown or woken again', { rowid: advanceRowId });
     return { outcome: 'dispatched', reply: null, messageId: msgId };
   }
 
-  // Everything below is POST-COMMIT: the row is durable and (for the poll loop)
-  // the cursor advanced, so a failure here must never look like a persist
-  // failure to the caller (no retry/rollback).
+  // Everything below is POST-COMMIT: the row is durable and (poll loop) the cursor advanced, so a failure here
+  // must never look like a persist failure to the caller (no retry or rollback).
 
-  // T0B (the owner's flip of D4): the ticket has already been filed with its own
-  // identifier inside the transaction above; the system model is asked for the real
-  // title now, and it writes over that identifier when it arrives. This bridge owns
-  // its own outer transaction (the cursor advance rides with the row), so it starts
-  // the replacement itself rather than through the ingest door — the job is the same
-  // one, and it is fire-and-forget by design: nothing here waits for a title.
+  // The ask was filed with its own identifier inside the transaction above; the system model now writes the real
+  // title over it, started here (fire-and-forget) since this bridge owns its outer transaction.
   void replaceAskTitleFromModel(inboundRow, msgId);
 
   try {
@@ -1095,15 +806,8 @@ export async function processInboundIMessage(
         agentId: primaryId,
         role: 'user' as const,
         content: msgContent,
-        // OPEN-13: carry the SAME structured inbound_meta into the live
-        // broadcast that the DB row holds, so the central origin stamp
-        // (ws.ts stampChatMessageOrigin) derives identical attribution
-        // live and on HTTP refetch. Without it the live broadcast had no
-        // inboundMeta and fell back to marker-parsing, so a live-rendered
-        // iMessage bubble could disagree with the refetched one (some
-        // inbound bubbles rendered, others didn't).
-        // t106 — the same binding the insert used, on the wire too (R4 reads it live). Why:
-        // `services/__tests__/no-channel-inbound-frame-loses-its-conversation.test.ts`.
+        // Carry the SAME inbound_meta and conversationId as the DB row, so the origin stamp derives identical
+        // attribution live and on refetch.
         conversationId,
         inboundMeta: JSON.stringify(inboundMetaObj),
         tokenCount: null,
@@ -1111,24 +815,16 @@ export async function processInboundIMessage(
         cost: null,
         latencyMs: null,
         createdAt: new Date().toISOString(),
-        // Include the uploaded attachments in the WS payload so the
-        // dashboard can render thumbnails the moment the iMessage
-        // arrives, without waiting for a page refresh to re-fetch.
+        // Attachments ride the WS payload so the dashboard renders thumbnails the moment the iMessage arrives.
         ...(attachmentResult.uploadedFiles.length > 0
           ? { attachments: attachmentResult.uploadedFiles }
           : {}),
       },
     });
 
-    // RC-8 courtesy damping: a KNOWN AGENT sender volleying content-free
-    // courtesy (a stock sign-off, or one of our own ack-pool lines bounced
-    // back) must not wake a full turn, that is the machine-to-machine
-    // pleasantry loop the iMessage lane has no terminal-intent structure to
-    // stop. The inbound row is already persisted above (invariant untouched);
-    // here we skip the dispatch entirely and drop a visible system marker so
-    // the exchange is still legible in history. Human senders, and any agent
-    // message that carries real content, are unaffected and fall through to
-    // the normal wake path below.
+    // Courtesy damping: a KNOWN AGENT sender volleying content-free courtesy (a stock sign-off, or one of our own
+    // ack-pool lines) must not wake a full turn. The row is already persisted; dispatch is skipped and a system
+    // marker keeps history legible. Human senders and agent messages with real content fall through.
     const dampCourtesy =
       wakeAgent &&
       !!senderRecord?.is_agent &&
@@ -1139,8 +835,7 @@ export async function processInboundIMessage(
       const markerId = uuidv4();
       const markerContent = `[Courtesy reply from ${senderRecord.name} received; no turn taken]`;
       try {
-        // t106 — BOTH SIDES. The marker belongs to the exchange it explains; stamping only
-        // the frame is this same live-vs-reload split, mirrored.
+        // The marker row and its frame both carry the conversationId, so live and reload agree.
         insertMessageIfAbsent({
           id: markerId, agentId: primaryId, role: 'system', content: markerContent, conversationId,
         });
@@ -1164,9 +859,7 @@ export async function processInboundIMessage(
         sender, name: senderRecord.name,
       });
     } else if (wakeAgent) {
-      // D10 busy-ack: if this message just queued behind a running turn older
-      // than 60s, tell the sender once (deterministic engine send, never a
-      // model turn). No-op when no turn is running (the probe path).
+      // Busy-ack: tell the sender once if this message queued behind a running turn older than 60 s.
       try {
         maybeSendBusyAck(primaryId, sender);
       } catch (ackErr) {
@@ -1174,9 +867,7 @@ export async function processInboundIMessage(
           error: ackErr instanceof Error ? ackErr.message : String(ackErr),
         });
       }
-      // D10 ingest/dispatch split: do NOT await the turn; the runtime
-      // serializes per agent (activeRuns + pendingWakeups) and rows persist in
-      // ROWID order before dispatch, mirroring how SMS / email / Teams dispatch.
+      // Do NOT await the turn: the runtime serializes per agent and rows persist in ROWID order before dispatch.
       const runtime = getAgentRuntime();
       void runtime.handleMessage(primaryId, msgContent).catch(err => {
         logger.error('Failed to process iMessage in runtime', {
@@ -1207,17 +898,10 @@ async function pollMessages(): Promise<void> {
     const chatDb = new Database(CHAT_DB_PATH, { readonly: true, fileMustExist: true });
 
     try {
-      // Every incoming text after the cursor is read, whoever sent it, and a text from a sender who is
-      // not approved at THIS moment is passed over for good below (the cursor moves past it). So a
-      // removed sender's texts can never be delivered later, even if someone is approved afterwards.
-      // No text filter: image-only messages store U+FFFC in `text` and we want them through.
+      // Every text after the cursor is read, whoever sent it; a sender not approved at THIS moment is passed over for
+      // good below, so a removed sender's texts are never delivered later. No text filter: image-only rows hold U+FFFC.
 
-      // associated_message_type / item_type / guid are pulled alongside the
-      // existing columns (one query, not a second read) so the contentless-
-      // artifact filter and the sync-re-insert guid dedup below have what they
-      // need: associated_message_type flags reactions/edits/unsends/stickers,
-      // item_type flags group/system events, guid is the stable per-message
-      // identity that survives an iCloud re-insert under a fresh ROWID.
+      // Also selects associated_message_type, item_type and guid, which the filters below use.
       const messages = chatDb.prepare(`
         SELECT m.ROWID, m.text, m.is_from_me, m.date, m.cache_has_attachments,
                COALESCE(m.associated_message_type, 0) AS associated_message_type,
@@ -1241,27 +925,11 @@ async function pollMessages(): Promise<void> {
         chat_identifier: string;
       }>;
 
-      // ── D19 pt3: advance-after-persist ──
-      // lastSeenRowId used to advance BEFORE the message INSERT, so a crash
-      // in the read→persist window (which includes attachment copying and
-      // HEIC conversion) permanently dropped that text from both stores.
-      // Now a row's advance happens in exactly one of two places:
-      //   (a) a deliberate skip path (non-safe-sender, empty reaction row,
-      //       handled command, persist given up after bounded retries):
-      //       advancePastRow, semantics unchanged from before; or
-      //   (b) the persist path: inside the SAME SQLite transaction as the
-      //       message INSERT, so persist + advance are atomic.
-      // Crash windows, walked explicitly:
-      //   1. Crash BEFORE the transaction commits: no message row, rowid not
-      //      advanced. Next poll re-reads the same chat.db row. No loss, no
-      //      duplicate.
-      //   2. Crash AFTER the commit (before broadcast/dispatch): message row
-      //      AND rowid are both durable, so the next poll does not re-read
-      //      it; the persisted row sits waiting and the boot re-drain serves
-      //      it (D19 pt1 reconciliation). No loss. There is no window in
-      //      which the rowid is past an unpersisted message.
-      //   3. Orphaned attachment copies from a crash mid-window are benign
-      //      (re-poll re-copies under a fresh name).
+      // Advance-after-persist: a row's cursor advances in exactly one of two places: (a) a deliberate skip path
+      // (non-safe-sender, empty reaction row, handled command, persist given up after retries) via advancePastRow, or
+      // (b) the persist path, inside the SAME SQLite transaction as the message INSERT. A crash before the commit
+      // leaves no row and an unmoved cursor (re-read); a crash after it leaves both durable and the boot re-drain
+      // serves the waiting row, so the cursor is never past an unpersisted message.
       const advancePastRow = (rowId: number): void => {
         lastSeenRowId = rowId;
         saveLastSeenRowId(rowId);
@@ -1269,9 +937,7 @@ async function pollMessages(): Promise<void> {
         persistRetries.delete(rowId);
       };
 
-      // P5c: classify the batch's stale rows up front so the bulk-backlog cap
-      // keeps the NEWEST cap-many (rows arrive oldest-first; the ones beyond
-      // the cap are the oldest and least likely to still matter).
+      // Classify the batch's stale rows up front so the cap keeps the NEWEST cap-many (rows arrive oldest-first).
       const staleRowids = new Set<number>();
       {
         const staleAll = messages.filter(m => {
@@ -1280,8 +946,7 @@ async function pollMessages(): Promise<void> {
         }).map(m => m.ROWID);
         for (const rid of staleAll) staleRowids.add(rid);
         for (const rid of staleAll.slice(-IMESSAGE_STALE_BACKLOG_CAP)) staleRowids.delete(rid);
-        // staleRowids now holds only the beyond-cap overflow (skip these);
-        // capped-in stale rows are detected per-row below and ingested as notes.
+        // staleRowids holds only the beyond-cap overflow (skipped); capped-in stale rows are ingested as notes below.
       }
       for (const msg of messages) {
         if (!pollTimer) {
@@ -1293,10 +958,8 @@ async function pollMessages(): Promise<void> {
           advancePastRow(msg.ROWID);
           continue;
         }
-        // ── Offline-replay handling (P5c): ingest-as-note or capped skip ──
-        // Placed BEFORE the attachment gate so a beyond-cap stale message never
-        // triggers attachment copying. When the age can't be determined (null),
-        // process normally: dropping a real text is worse than a stale note.
+        // Offline replay: ingest as a note, or skip when beyond the cap. Before the attachment gate so an overflow message
+        // never triggers copying. An undeterminable age (null) is processed normally: dropping a real text is worse.
         const sentAtMs = appleMessageDateToUnixMs(msg.date);
         const isStaleReplay = sentAtMs !== null && Date.now() - sentAtMs > IMESSAGE_MAX_REPLAY_AGE_MS;
         if (isStaleReplay && staleRowids.has(msg.ROWID)) {
@@ -1308,17 +971,9 @@ async function pollMessages(): Promise<void> {
           continue;
         }
 
-        // ── Contentless-artifact ingest filter ──
-        // chat.db holds far more than user messages: tapbacks/reactions,
-        // message edits, unsends, and stickers all ride associated_message_type
-        // in the 2000-3007 band with no user text of their own, and group-
-        // membership / other system events ride item_type != 0. A row with
-        // neither text nor attachments carries nothing for the model to read.
-        // Forwarding any of these produces a hollow envelope ("you messaged me
-        // but I can't see the text"), so drop them here and advance the cursor
-        // (a deliberate, consumed skip, never an advance-block). Placed BEFORE
-        // the attachment gate so an artifact row never triggers deferral or
-        // attachment copying.
+        // Contentless-artifact filter: tapbacks, edits, unsends and stickers (associated_message_type 2000-3007) and
+        // group/system events (item_type != 0) carry nothing to read, and forwarding them makes a hollow envelope. Drop
+        // them and advance the cursor (a consumed skip) BEFORE the attachment gate so they never trigger deferral or copying.
         if (msg.associated_message_type !== 0) {
           logger.debug('iMessage skipped, reaction/edit/unsend artifact row (advancing cursor past it)', {
             rowid: msg.ROWID,
@@ -1343,12 +998,8 @@ async function pollMessages(): Promise<void> {
           continue;
         }
 
-        // ── Sync-re-insert guid dedup ──
-        // If an iCloud re-insert brought back a message we already forwarded
-        // (fresh ROWID, same guid), skip it and advance the cursor rather than
-        // re-forwarding a stale exchange. Placed BEFORE the attachment gate so
-        // a re-inserted message whose old attachment file is long gone cannot
-        // wedge the gate on a doomed download either.
+        // Sync-re-insert dedup: an iCloud re-insert of an already forwarded message (fresh ROWID, same guid) is skipped and
+        // the cursor advances. Before the attachment gate so a long-gone attachment file cannot wedge it.
         if (msg.guid && recentGuidSet.has(msg.guid)) {
           logger.info('iMessage skipped, guid already processed (likely iCloud sync re-insert, advancing cursor past it)', {
             rowid: msg.ROWID,
@@ -1358,17 +1009,11 @@ async function pollMessages(): Promise<void> {
           continue;
         }
 
-        // Set when the attachment-readiness race is lost below, so the never-
-        // downloaded files can be surfaced to the model after the fetch runs.
+        // Set when the attachment-readiness race is lost below, so never-downloaded files are surfaced to the model.
         let attachmentDownloadGaveUp = false;
 
-        // ── Attachment-readiness gate ──
-        // If chat.db claims this message has attachments but the files
-        // aren't on disk yet (iCloud sync, slow download, etc.), defer
-        // processing by breaking out of this poll cycle WITHOUT
-        // advancing lastSeenRowId. The next poll will see the same
-        // message again and retry. Bounded by MAX_ATTACHMENT_RETRIES so
-        // a permanently-missing file can't block the bridge forever.
+        // Attachment-readiness gate: if chat.db claims attachments that are not on disk yet, break out of this poll WITHOUT
+        // advancing lastSeenRowId so the next poll retries, bounded by MAX_ATTACHMENT_RETRIES.
         if (msg.cache_has_attachments === 1) {
           const readiness = isMessageAttachmentReady(chatDb, msg.ROWID);
           if (!readiness.ready) {
@@ -1383,8 +1028,7 @@ async function pollMessages(): Promise<void> {
               });
               break; // stop processing this cycle, do NOT advance lastSeenRowId
             }
-            // Give up and process the message without attachments so the
-            // bridge doesn't get permanently stuck on a broken download.
+            // Give up: process the message without attachments so a broken download cannot wedge the bridge.
             logger.warn('iMessage attachment never became ready, processing without it', {
               rowid: msg.ROWID,
               retriesAttempted: retries,
@@ -1398,10 +1042,7 @@ async function pollMessages(): Promise<void> {
         const sender = msg.chat_identifier;
         const primaryId = getPrimaryAgentId();
 
-        // Tighten the SQL LIKE filter: confirm the chat_identifier
-        // actually matches a saved safe-sender record (addressesMatch is
-        // stricter than SQL substring). Drops group-chat synthetic IDs
-        // and substring false-matches.
+        // Tighten the SQL LIKE filter: the chat_identifier must match a saved safe-sender record (drops group chats).
         if (!findSafeSenderByAddress(sendersThisPoll, sender)) {
           logger.warn('iMessage dropped: chat_identifier matched SQL filter but no safe-sender record', {
             chatIdentifier: sender,
@@ -1411,24 +1052,13 @@ async function pollMessages(): Promise<void> {
           continue;
         }
 
-        // Sanitize text: strip U+FFFC attachment placeholders so we don't
-        // forward control characters to the model.
         const cleanedText = stripAttachmentPlaceholder(msg.text);
 
-        // Pull every attachment linked to this message. The helper classifies
-        // each into one of three buckets: deliverable bytes (image/PDF,
-        // copied to uploads dir), inlined text (small text files read into
-        // memory), or mention-only metadata (video/audio/office/unknown ,
-        // the model is told they exist so it can decide how to respond).
+        // Each attachment is delivered as bytes (image, PDF, audio, video), inlined text, or mention-only metadata.
         const attachmentResult = fetchImessageAttachments(chatDb, msg.ROWID, primaryId);
 
-        // Download-race give-up made model-visible: if we exhausted the
-        // readiness retries above, tell the MODEL (via the same mention-only
-        // mechanism used for undeliverable formats) that an attachment was sent
-        // but never finished downloading, so it asks the sender to resend
-        // instead of confabulating that "attachments don't come through". Run
-        // AFTER the fetch so any file that landed late is delivered normally
-        // and not double-listed.
+        // Retries exhausted: tell the MODEL an attachment was sent but never finished downloading, so it asks for a
+        // resend instead of confabulating. Run AFTER the fetch so a late file is delivered and not double-listed.
         if (attachmentDownloadGaveUp) {
           const neverArrived = describeUnreadyAttachments(chatDb, msg.ROWID);
           if (neverArrived.length > 0) {
@@ -1445,8 +1075,7 @@ async function pollMessages(): Promise<void> {
           attachmentResult.inlinedTextBlocks.length +
           attachmentResult.mentionedAttachments.length;
 
-        // Skip rows that are neither text nor any kind of attachment ,
-        // these are reactions, typing indicators, etc.
+        // Skip rows that are neither text nor any attachment (reactions, typing indicators).
         if (!cleanedText && totalAttachmentCount === 0) {
           logger.debug('iMessage skipped, no text and no attachments of any kind', {
             rowid: msg.ROWID,
@@ -1463,17 +1092,9 @@ async function pollMessages(): Promise<void> {
           mentioned: attachmentResult.mentionedAttachments.length,
         });
 
-        // (v2.3.16) The dedicated `imessage:received` WS event was removed ,
-        // it duplicated the `chat:message` broadcast at line ~574 below
-        // (which the dashboard already renders) and the dashboard never
-        // subscribed to the dedicated event. iMessage is a channel on the
-        // primary agent's chat, not a separate stream.
 
-        // Command intercept + fallthrough dispatch both run through the ONE
-        // shared inbound processor the dev probe also drives, so the harness
-        // verifies the exact path a real inbound traverses (no bypass seam).
-        // The poll loop owns the chat.db cursor: it hands the ROWID for the
-        // atomic advance and does persist-failure retries here.
+        // Command intercept and dispatch run through the ONE shared inbound processor the dev probe also drives. The
+        // poll loop owns the chat.db cursor: it hands over the ROWID and retries persist failures here.
         let inboundOutcome;
         try {
           inboundOutcome = await processInboundIMessage({
@@ -1481,17 +1102,14 @@ async function pollMessages(): Promise<void> {
             cleanedText,
             attachmentResult,
             advanceRowId: msg.ROWID,
-            // P5c: a stale reconnect replay is ingested as a note, never a turn.
+            // A stale reconnect replay is ingested as a note, never a turn.
             wakeAgent: !isStaleReplay,
             externalMessageId: (msg as { guid?: string | null }).guid ?? null,
             staleSentAtIso: isStaleReplay && sentAtMs !== null ? new Date(sentAtMs).toISOString() : null,
           });
         } catch (err) {
-          // Persist failed: the message is NOT in the store and the durable
-          // lastSeenRowId was NOT advanced (the transaction rolled back).
-          // Retry this same row next poll, bounded so a permanently failing
-          // row can not wedge the bridge forever. After the cap, advance past
-          // it loudly (the pre-D19 behavior, made deliberate and bounded).
+          // Persist failed: the message is NOT stored and the cursor was NOT advanced (rolled back). Retry this row next
+          // poll, bounded so a permanently failing row cannot wedge the bridge; after the cap, advance past it loudly.
           const tries = (persistRetries.get(msg.ROWID) ?? 0) + 1;
           if (tries < MAX_PERSIST_RETRIES) {
             persistRetries.set(msg.ROWID, tries);
@@ -1513,16 +1131,13 @@ async function pollMessages(): Promise<void> {
         }
 
         if (inboundOutcome.outcome === 'command') {
-          // Command fully handled (reply already texted inside the processor);
-          // advance past the row exactly as before.
+          // Command fully handled (reply already texted inside the processor): advance past the row.
           rememberProcessedGuid(msg.guid); // dedup a later iCloud re-insert
           advancePastRow(msg.ROWID);
           continue;
         }
 
-        // Dispatched: the processor transaction already advanced
-        // imessage_last_rowid atomically with the INSERT. Sync the in-memory
-        // cursor + clear the per-row retry counters, matching prior semantics.
+        // Dispatched: the processor already advanced imessage_last_rowid atomically; sync the in-memory cursor.
         rememberProcessedGuid(msg.guid); // dedup a later iCloud re-insert
         lastSeenRowId = msg.ROWID;
         deferredAttachmentRetries.delete(msg.ROWID);
@@ -1551,15 +1166,10 @@ export function startIMBridge(recipientId: string): void {
     return;
   }
 
-  // Say at BOOT whether the attachment sender is healthy, not at the first
-  // failed send in the middle of the night (2026-07-18: a broken imsg install
-  // hid behind per-send warnings for a full day of delivery mysteries).
+  // Say at BOOT whether the attachment sender is healthy, not at the first failed send in the middle of the night.
   checkImsgHealth();
 
-  // Load approved senders from config, falling back to the legacy recipient only when the value is missing or unreadable.
-  // parseSafeSenders accepts both the legacy string[] shape and the new
-  // SafeSender[] shape, so an install that hasn't yet re-saved Settings keeps
-  // working with bare phone-string entries.
+  // Load approved senders from config; the legacy recipient is used only when the value is missing or unreadable.
   const db = getDb();
   const sendersRow = db.prepare("SELECT value FROM config WHERE key = 'imessage_approved_senders'").get() as { value: string } | undefined;
   approvedSenders = parseSafeSenders(sendersRow?.value ?? null);
@@ -1601,7 +1211,6 @@ export function startIMBridge(recipientId: string): void {
 
   logger.info('Starting iMessage bridge', { approvedSenders, lastSeenRowId });
 
-  // Start polling
   pollTimer = setInterval(() => {
     pollMessages().catch(err => {
       logger.error('iMessage poll cycle failed', {
@@ -1610,7 +1219,6 @@ export function startIMBridge(recipientId: string): void {
     });
   }, POLL_INTERVAL_MS);
 
-  // Initial poll
   pollMessages().catch(() => {});
 }
 
@@ -1623,17 +1231,7 @@ export function stopIMBridge(): void {
   }
 }
 
-/**
- * Re-read imessage_approved_senders from the config table into the bridge's
- * in-memory list. The poll loop matches only against this list, so adding a
- * second sender via the dashboard would otherwise sit in the DB while the
- * bridge keeps querying for the original sender only, incoming messages
- * from the new sender arrive in Messages but never reach the agent.
- *
- * Called from PUT /settings/:key whenever imessage_approved_senders changes.
- * No-op if the bridge isn't currently running (startIMBridge will load the
- * fresh list on its own when iMessage is re-enabled).
- */
+/** Re-reads imessage_approved_senders into the running bridge (a no-op when it is not running). */
 export function reloadApprovedSenders(): void {
   if (!pollTimer) return;
   const db = getDb();
@@ -1647,36 +1245,19 @@ export function reloadApprovedSenders(): void {
   logger.info('Reloaded approved senders from config', { count: approvedSenders.length, addresses: approvedSenders.map(s => s.address) });
 }
 
-// ── iMessage sending via imsg CLI ──────────────────────────────────────
-//
-// All iMessage sending uses the `imsg` CLI (github.com/steipete/imsg).
-// imsg is installed automatically by the dojo installer (install.sh)
-// and handles text, file attachments, phone number normalization, and
-// service detection reliably across all macOS versions.
-//
-// If imsg isn't available (shouldn't happen after a proper install),
-// falls back to raw AppleScript for text-only messages. File
-// attachments require imsg, AppleScript's POSIX file handling is
-// broken on newer macOS.
+// iMessage sending uses the `imsg` CLI (github.com/steipete/imsg), installed by the dojo installer, which handles
+// text, files, phone normalization and service detection; AppleScript is the fallback.
 
 // The candidate list and the runnability probe live with the runner (`./imessage-run.ts`).
 
-// AppleScript fallback, used when imsg isn't installed or failed. `sendClause` is the script's own
-// send line: `send "<text>"` for text, `send POSIX file "<path>"` for a file (Messages.app can send
-// a file by script, so a missing or broken imsg does not mean attachments cannot be delivered at
-// all; production 2026-07-18). Two-bubble limitation vs imsg: a file goes alone, and any caption
-// is sent as its own text bubble by the caller.
-//
-// Select the iMessage service POSITIONALLY, not via `1st service whose
-// service type = iMessage`. That filtered ("whose") reference throws
-// AppleScript error -10002 ("Invalid key form") on macOS 26/Sequoia, breaking
-// the engine's text fallback. Iterating `services` element-by-element and
-// checking each one's type avoids the bad key form; if none reports the
-// iMessage type, fall back to `item 1 of services` (the generic positional
-// reference confirmed working on Sequoia).
-//
-// v3.5 E19b: the script is osascript's own `-e` argument (no shell line, so no shell quoting), run
-// by the async runner and bound to the sending agent's Stop. Rejects on failure.
+// AppleScript fallback for a missing or failed imsg. `sendClause` is the script's own send line: `send "<text>"` or
+// `send POSIX file "<path>"`. Two-bubble limitation vs imsg: a file goes alone and any caption is sent as its own
+// text bubble by the caller.
+// Select the iMessage service POSITIONALLY, not via `1st service whose service type = iMessage`: that filtered
+// reference throws AppleScript error -10002 ("Invalid key form") on macOS 26. Iterate `services` checking each
+// type; if none reports iMessage, fall back to `item 1 of services`.
+// The script is osascript's own `-e` argument (no shell line, so no shell quoting), run by the async runner and
+// bound to the sending agent's Stop. Rejects on failure.
 function sendViaAppleScript(recipient: string, sendClause: string, timeout: number, opts: SendOpts): Promise<string> {
   const script = `
     tell application "Messages"
@@ -1704,32 +1285,20 @@ const appleScriptString = (s: string, lines = false): string => {
   return `"${lines ? escaped.replace(/\n/g, '" & (ASCII character 10) & "') : escaped}"`;
 };
 
-// The corrected imsg install command, shown wherever imsg is missing/broken.
-// The PhoneNumberKit resource bundle MUST sit next to the binary: a bare
-// `cp bin/imsg /opt/homebrew/bin/` produces a binary that crashes at launch
-// ("could not load resource bundle", observed in production 2026-07-18), which
-// is worse than not installing it because the failure looks like a send bug.
+// The corrected imsg install command, shown wherever imsg is missing or broken. The PhoneNumberKit resource bundle
+// MUST sit next to the binary: a bare copy of the binary crashes at launch, which looks like a send bug.
 const IMSG_INSTALL_HINT =
   'git clone https://github.com/steipete/imsg.git && cd imsg && make build && ' +
   'sudo cp bin/imsg /opt/homebrew/bin/ && ' +
   'sudo cp .build/*/release/PhoneNumberKit_PhoneNumberKit.bundle /opt/homebrew/bin/ ' +
   '(the bundle must sit NEXT TO the binary or imsg crashes at launch)';
 
-/**
- * Boot-time imsg health probe. A broken imsg (binary present, resource bundle
- * missing) previously surfaced only as a per-send warning nobody reads; text
- * kept working via the AppleScript fallback, so the breakage masqueraded as an
- * attachments-only delivery bug for a full day. Probe once at bridge start and
- * say it LOUDLY with the repair command. Non-fatal either way: the AppleScript
- * file fallback now covers delivery.
- */
+/** Boot-time imsg health probe: reports a broken imsg (resource bundle missing) LOUDLY with the repair command. */
 export function checkImsgHealth(): void {
   const imsg = getImsgPath();
   if (imsg) {
-    // findImsg only returns binaries that passed the runnability probe, so a
-    // non-null path IS the health signal. Name it so the boot log shows which
-    // copy won (a broken sudo-installed one can shadow a healthy self-healed
-    // one; selection now skips crashers, but the operator should see the pick).
+    // findImsg only returns binaries that passed the runnability probe, so a non-null path IS the health signal;
+    // name it so the boot log shows which copy won.
     logger.info('imsg CLI healthy', { path: imsg });
     return;
   }
@@ -1750,19 +1319,16 @@ export function checkImsgHealth(): void {
 type SendResult = 'sent' | 'failed' | 'cut' | 'not-started' | 'caption-failed';
 const STOP_DETAIL = {
   cut: "cut off by the owner's Stop (it may already have gone out)",
-  // Fix round 1: a send the standing Stop kept from starting certainly did not go out.
+  // A send the standing Stop kept from starting certainly did not go out.
   'not-started': "not sent: the owner's Stop was already standing, so it never started",
 } as const;
 /** Was this send ended (or never begun) by the owner's Stop? Then nothing is retried another way. */
 const byTheStop = (err: unknown): 'cut' | 'not-started' | null => (wasCutByTheStop(err) ? 'cut' : wasNeverStarted(err) ? 'not-started' : null);
 const stopOrFail = (result: SendResult, failed: string): string => (result === 'cut' || result === 'not-started' ? STOP_DETAIL[result] : failed);
 
-// v3.5 E19b fix round 1 — ONE SEND AT A TIME, IN THE ORDER ASKED. The synchronous sends did this
-// by accident; async ones ran in parallel, so two owner notices seconds apart could reach the phone
-// out of order. Every exported send takes its turn here; a send made INSIDE a send (an attachment's
-// caption) runs in its parent's turn. An idle queue starts the send at once, in the caller's frame.
-// LATENT (re-review N6, left as ruled): async work STARTED inside a send inherits this marker, so a
-// send it fires without awaiting would skip the queue. No send path does that today.
+// ONE SEND AT A TIME, IN THE ORDER ASKED: two owner notices seconds apart must not reach the phone out of order.
+// Every exported send takes its turn here; a send made INSIDE a send (an attachment's caption) runs in its parent's
+// turn. Async work started inside a send inherits that marker and would skip the queue; no send path does that.
 const inASend = new AsyncLocalStorage<true>();
 let sendsInFlight = 0;
 let lastSend: Promise<unknown> = Promise.resolve();
@@ -1778,22 +1344,16 @@ function oneAtATime<T>(send: () => Promise<T>): Promise<T> {
  *  A platform send (an owner notice, the auto-route) names nobody and no Stop cuts it. */
 export interface SendOpts { agentId?: string }
 
-// v2.3.19, returns true if the send actually succeeded, false if every
-// path failed (imsg CLI errored, AppleScript denied, etc.). Pre-spec
-// this returned void and silently swallowed failures, which left
-// imessage_send callers reporting "sent" to the agent (and thus to the
-// user) when nothing actually went through.
+// Returns true only if the send succeeded, so imessage_send callers never report "sent" for a failure.
 export async function sendIMessage(recipient: string, rawText: string, opts: SendOpts = {}): Promise<boolean> {
   return (await oneAtATime(() => textDoor(recipient, rawText, opts))) === 'sent';
 }
 
 async function textDoor(recipient: string, rawText: string, opts: SendOpts): Promise<SendResult> {
   const result = await sendIMessageInner(recipient, rawText, opts);
-  // PHASE-2 T5: THE DOOR RECORDS. Every iMessage the platform sends physically passes
-  // through here — the auto-route, the imessage_send tool, alerts, the busy-ack, the
-  // first-run welcome, the healer's approval prompt, the A2A relay's owner hand-back — and
-  // before this, only the first two produced a ledger row and only when the caller had
-  // already decided it worked. The outcome comes from what the transport actually returned.
+  // THE DOOR RECORDS: every iMessage the platform sends passes through here (auto-route, imessage_send, alerts,
+  // busy-ack, first-run welcome, the healer's approval prompt, the A2A relay's owner hand-back); the ledger
+  // outcome comes from what the transport actually returned.
   recordedId(recordAtDoor({
     outcome: result === 'sent' ? 'delivered' : 'failed',
     channel: 'imessage',
@@ -1805,8 +1365,7 @@ async function textDoor(recipient: string, rawText: string, opts: SendOpts): Pro
 }
 
 async function sendIMessageInner(recipient: string, rawText: string, opts: SendOpts): Promise<SendResult> {
-  // Sanitize for iMessage, strip markdown, literal \n, excessive whitespace.
-  // This runs on ALL iMessage paths so nothing gets through unsanitized.
+  // Sanitize on ALL iMessage paths: strip markdown, literal \n and excess whitespace.
   const text = sanitizeForIMessage(rawText);
 
   try {
@@ -1819,14 +1378,10 @@ async function sendIMessageInner(recipient: string, rawText: string, opts: SendO
         await runMessagesProgram(imsg, ['send', '--to', recipient, '--text', text, '--service', 'imessage'], { timeout: 15000, agentId: opts.agentId });
         via = 'imsg';
       } catch (imsgErr) {
-        // A Stop is not a broken imsg: nothing is retried another way (E19b).
+        // A Stop is not a broken imsg: nothing is retried another way.
         if (byTheStop(imsgErr)) throw imsgErr;
-        // imsg is present but FAILED, e.g. imsg v0.11.1 installed as a raw
-        // binary crashes with SIGTRAP because its compiled
-        // PhoneNumberKit_PhoneNumberKit.bundle didn't ship alongside it. Text
-        // delivery doesn't need imsg, so fall back to AppleScript instead of
-        // dropping the message. (Attachments still require imsg, see
-        // sendIMessageWithAttachment.)
+        // imsg is present but FAILED (e.g. a raw binary crashes with SIGTRAP when its PhoneNumberKit bundle did not
+        // ship alongside): text does not need imsg, so fall back to AppleScript instead of dropping the message.
         logger.warn('imsg send failed, falling back to AppleScript', {
           recipient,
           error: imsgErr instanceof Error ? imsgErr.message : String(imsgErr),
@@ -1839,9 +1394,7 @@ async function sendIMessageInner(recipient: string, rawText: string, opts: SendO
     }
 
     logger.info('iMessage sent', { recipient, textLength: text.length, via });
-    // (v2.3.16) Dropped dedicated `imessage:sent` WS broadcast, the
-    // dashboard sees outbound delivery via the [SENT VIA IMESSAGE to <owner>]
-    // system marker that the loop persists in the chat stream.
+    // No `imessage:sent` broadcast: the dashboard sees delivery via the [SENT VIA IMESSAGE to <owner>] marker.
     return 'sent';
   } catch (err) {
     const stopped = byTheStop(err);
@@ -1854,22 +1407,15 @@ async function sendIMessageInner(recipient: string, rawText: string, opts: SendO
   }
 }
 
-/**
- * Send a single file attachment via iMessage with an optional text caption.
- * Requires the imsg CLI. Returns true on success, false on any failure
- * (caller can decide how to report, internal helpers use this directly,
- * the agent-facing imessage_send tool uses sendIMessageWithAttachments).
- */
+/** Sends one file with an optional caption (imsg, else AppleScript); true on success, false on any failure. */
 export async function sendIMessageWithAttachment(recipient: string, filePath: string, caption?: string, opts: SendOpts = {}): Promise<boolean> {
   return (await oneAtATime(() => attachmentDoor(recipient, filePath, caption, opts))) === 'sent';
 }
 
 function attachmentDoor(recipient: string, filePath: string, caption: string | undefined, opts: SendOpts): Promise<SendResult> {
-  // PHASE-2 T5: the attachment siblings are doors too, and they are the reason the hole
-  // would have reopened on files. Each opens a scope when the caller declared none, so the
-  // file send and the caption's nested `sendIMessage` fold into ONE row — one thing the
-  // person received — instead of two, and a caption that fails after a delivered file makes
-  // that row honestly `failed`.
+  // The attachment sends are doors too: each opens a scope when the caller declared none, so the file send and
+  // the caption's nested `sendIMessage` fold into ONE row (one thing the person received); a caption that fails
+  // after a delivered file makes that row honestly `failed`.
   return withOutboundAsyncIfAbsent(
     { agentId: PLATFORM_SENDER, tool: 'imessage-attachment-door', channel: 'imessage', recipientId: recipient },
     async () => {
@@ -1896,12 +1442,8 @@ async function sendIMessageWithAttachmentInner(
   caption: string | undefined,
   opts: SendOpts,
 ): Promise<SendResult> {
-  // C14: safe-sender revalidation, a sender removed from the allowlist mid-conversation
-  // must not still receive FILES while their text reply is correctly suppressed (inv-5
-  // asymmetry). Mirrors sendResponseViaIMessage's recipient check. (Capturing attachment
-  // sends in test mode, "never really text a real address during a harness test", is
-  // injected by the local test harness as a patch, NOT baked into base source, so this
-  // file ships with no harness dependency.)
+  // Safe-sender revalidation: a sender removed from the allowlist mid-conversation must not still receive FILES
+  // while their text reply is suppressed; mirrors sendResponseViaIMessage's recipient check.
   if (!findSafeSenderByAddress(getSafeSenders(), recipient)) {
     logger.warn('Attachment send suppressed: recipient not on safe-sender list', { recipient });
     return 'failed';
@@ -1921,7 +1463,7 @@ async function sendIMessageWithAttachmentInner(
       return 'sent';
     } catch (err) {
       const stopped = byTheStop(err);
-      if (stopped) return stopped;   // the owner stopped it: no AppleScript retry (E19b)
+      if (stopped) return stopped;   // the owner stopped it: no AppleScript retry
       logger.warn('imsg attachment send failed, falling back to AppleScript file send. Repair imsg: ' + IMSG_INSTALL_HINT, {
         error: err instanceof Error ? err.message.slice(0, 300) : String(err),
         recipient,
@@ -1932,12 +1474,8 @@ async function sendIMessageWithAttachmentInner(
     logger.warn('imsg CLI not found, using AppleScript file send. For single-bubble captions install imsg: ' + IMSG_INSTALL_HINT);
   }
 
-  // Fallback: AppleScript file send (production 2026-07-18: a broken imsg
-  // silently killed every attachment send while text survived on its own
-  // AppleScript fallback; attachments deserve the same resilience). File goes
-  // FIRST so a caption never announces a file that failed; the caption then
-  // rides as its own bubble via sendIMessage (which sanitizes markdown and has
-  // its own delivery chain).
+  // Fallback: AppleScript file send, for a broken or missing imsg. The file goes FIRST so a caption never
+  // announces a file that failed; the caption then rides as its own bubble via sendIMessage.
   try {
     await sendViaAppleScript(recipient, `send POSIX file ${appleScriptString(filePath)}`, 15000, opts);
     logger.info('iMessage attachment sent', { recipient, filePath, via: 'applescript', hasCaption: Boolean(caption) });
@@ -1961,23 +1499,15 @@ async function sendIMessageWithAttachmentInner(
   }
 }
 
-/**
- * Send a text message plus zero or more file attachments. The caption rides
- * with the first file (iMessage shows it as a single bubble + thumbnail).
- * Additional files go in separate bubbles. Returns { ok, sent, failed } so
- * the caller can report partial-success without misleading the user.
- *
- * If `filePaths` is empty, this is equivalent to sendIMessage(recipient, text).
- */
+/** Sends a text plus files (the caption rides the first); returns { ok, sent, failed } for honest partial success. */
 export function sendIMessageWithAttachments(
   recipient: string,
   text: string,
   filePaths: readonly string[],
   opts: SendOpts = {},
 ): Promise<{ ok: boolean; sentFiles: string[]; failedFiles: string[]; textSent: boolean }> {
-  // PHASE-2 T5: one scope for the whole batch. A message with three files that partly failed
-  // is ONE delivery the person half-received, recorded once and honestly as `failed` — not
-  // three rows, and not a green row per file that happened to go through.
+  // One scope for the whole batch: a message with three files that partly failed is ONE delivery the person
+  // half-received, recorded once and honestly as `failed`, not three rows or a green row per file that went through.
   return oneAtATime(() => withOutboundAsyncIfAbsent(
     { agentId: PLATFORM_SENDER, tool: 'imessage-attachment-door', channel: 'imessage', recipientId: recipient },
     () => sendIMessageWithAttachmentsInner(recipient, text, filePaths, opts),
@@ -1995,8 +1525,7 @@ async function sendIMessageWithAttachmentsInner(
     return { ok, sentFiles: [], failedFiles: [], textSent: ok };
   }
 
-  // Verify every file exists before we start sending. Refusing up front beats
-  // a half-delivered message where some attachments arrived and one didn't.
+  // Verify every file exists before sending: refusing up front beats a half-delivered message.
   for (const p of filePaths) {
     if (!fs.existsSync(p)) {
       logger.error('iMessage attachment file missing - aborting send', { path: p });
@@ -2026,9 +1555,7 @@ async function sendIMessageWithAttachmentsInner(
     }
   }
 
-  // If the first file failed AND the caption didn't ride with anything else,
-  // make one more attempt to deliver the text on its own so the recipient at
-  // least gets the message body even though attachments didn't.
+  // If the first file failed and its caption rode with nothing else, retry the text alone.
   if (!textSent && text.trim()) {
     const ok = await sendIMessage(recipient, text, opts);
     if (ok) textSent = true;
@@ -2037,13 +1564,8 @@ async function sendIMessageWithAttachmentsInner(
   return { ok: failedFiles.length === 0, sentFiles, failedFiles, textSent };
 }
 
-// ── Alert & Sender Helpers ──
 
-/**
- * Return the full safe-sender records, loading from config if the bridge
- * isn't currently running. Always parsed through parseSafeSenders so callers
- * never see the legacy string[] shape.
- */
+/** The full safe-sender records (from config when the bridge is not running), parsed by parseSafeSenders. */
 export function getSafeSenders(): SafeSender[] {
   if (approvedSenders.length > 0) return approvedSenders.map(s => ({ ...s }));
   try {
@@ -2055,19 +1577,12 @@ export function getSafeSenders(): SafeSender[] {
   }
 }
 
-/**
- * Where owner notices go: the owner on iMessage, by the one rule (`./safe-senders.ts`), read
- * from the bridge's running copy of the records. (Its old last resort, "the first record",
- * could not be reached: `parseSafeSenders` always stars one record of a non-empty list.)
- */
+/** Where owner notices go: the owner on iMessage, by the one rule in `./safe-senders.ts`. */
 export function getDefaultSender(): string | null {
   return ownerIMessageRecord(getSafeSenders())?.address ?? null;
 }
 
-/**
- * Address-only view, kept for callers that just need the allowlist. New code
- * should prefer getSafeSenders() so it can read names/descriptions too.
- */
+/** Address-only view for callers that just need the allowlist; prefer getSafeSenders() for names and descriptions. */
 export function getApprovedSenders(): string[] {
   return getSafeSenders().map(s => s.address);
 }
@@ -2076,10 +1591,10 @@ export function getApprovedSenders(): string[] {
 const ownerNoticeLog = createLogger('owner-notice');
 
 /**
- * THE OWNER'S PHONE DOOR, where the PLATFORM, not an agent, texts the owner. `critical` (sent with a "[CRITICAL]" prefix)
- * and `notice` go to the phone; `warning` and `info` do not. Its dashboard card is the caller's, through the one writer
- * (`healer/owner-notices.ts tellOwner`). The texts are exactly these kinds (offline, back online and a failed integrity
- * check are the watchdog's); a text outside the set does not type-check and is refused here.
+ * THE OWNER'S PHONE DOOR, where the PLATFORM, not an agent, texts the owner. `critical` (prefixed "[CRITICAL]") and
+ * `notice` go to the phone; `warning` and `info` do not. Its dashboard card is the caller's, through the one writer
+ * (`healer/owner-notices.ts tellOwner`). The texts are exactly these kinds (offline, back online and a failed
+ * integrity check are the watchdog's); a text outside the set does not type-check and is refused here.
  */
 export const PLATFORM_TEXT_KINDS = ['budget', 'broken-agent', 'mac-critical', 'remote-address'] as const;
 export type PlatformTextKind = typeof PLATFORM_TEXT_KINDS[number];
@@ -2104,11 +1619,8 @@ export async function sendAlert(message: string, urgency: 'info' | 'warning' | '
     logger.info(`Sending ${urgency} alert to iMessage`, { message: scrubbed.slice(0, 200) });
 
     const recipient = getDefaultSender();
-    // PHASE-2 T5: an alert reaches a real person's phone and recorded nothing. It is a
-    // PLATFORM outbound, not an agent's — attributing it to whichever agent happened to
-    // trigger it would put watchdog-class traffic inside that agent's own ledger. So the door
-    // opens its OWN scope (t146: never the `IfAbsent` form, which folded a notice fired inside an
-    // agent's send into that send's row).
+    // An alert reaches a real person's phone: it is a PLATFORM outbound, not an agent's, so the door opens its OWN
+    // scope (never the `IfAbsent` form, which would fold a notice fired inside an agent's send into that send's row).
     const sent = recipient !== null && await withOutboundAsync(
       { agentId: PLATFORM_SENDER, tool: 'alert', channel: 'imessage', recipientId: recipient },
       async () => {

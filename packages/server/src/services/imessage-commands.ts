@@ -1,6 +1,4 @@
-// ════════════════════════════════════════
-// Built-in iMessage Command Handlers
-// ════════════════════════════════════════
+// Built-in iMessage command handlers.
 
 import os from 'node:os';
 import { getDb } from '../db/connection.js';
@@ -15,14 +13,10 @@ const logger = createLogger('imessage-commands');
 import { parseStrictCommand, parseApproveDeny, firstLineOf, type ApproveDenyCommand } from './owner-command-words.js';
 
 /**
- * Handle an inbound iMessage command from a bridged sender.
- *
- * OWNER GATE (D-B step 5, closes the pre-existing security gap): every command
- * here (status / kill / pause / resume AND the D-B approve/deny lane) mutates
- * platform state, so the sender MUST resolve to the is_primary safe-sender
- * (the owner) before ANY of them run. A non-owner's command text is NOT a
- * command: we return null so it flows on to the primary agent as an ordinary
- * message, never an error that would leak the command surface.
+ * Handle an inbound iMessage command from a bridged sender. Every command (status, kill, pause, resume and the
+ * approve/deny lane) mutates platform state, so the sender MUST resolve to the is_primary safe-sender (the
+ * owner) first. A non-owner's command text is not a command: null, so it flows to the primary agent as an
+ * ordinary message and never leaks the command surface.
  *
  * @param text          raw inbound message text
  * @param senderAddress the sender's iMessage address (phone / Apple ID)
@@ -30,15 +24,13 @@ import { parseStrictCommand, parseApproveDeny, firstLineOf, type ApproveDenyComm
 export async function handleIMCommand(text: string, senderAddress: string): Promise<string | null> {
   const reply = await routeIMCommand(text, senderAddress);
   if (reply === null) return null;
-  return dojoVoice(reply);   // OR-ENGINE-LABELLED: the Dojo speaking; the bridge tells the agent once the send is done
+  return dojoVoice(reply);   // the Dojo speaking; the bridge tells the agent once the send is done
 }
 
 async function routeIMCommand(text: string, senderAddress: string): Promise<string | null> {
   const trimmed = text.trim().toLowerCase();
 
-  // Resolve the sender to a safe-sender row and require the owner mapping.
-  // (Dynamic import keeps the module graph tidy and avoids a bridge<->commands
-  // static import cycle; these are live-binding function calls at runtime.)
+  // Resolve the sender to the owner safe-sender row. Dynamic import avoids a bridge<->commands static cycle.
   const { getSafeSenders, findSafeSenderByAddress } = await import('./imessage-bridge.js');
   const senderRecord = findSafeSenderByAddress(getSafeSenders(), senderAddress);
   const isOwner = !!senderRecord?.is_primary;
@@ -46,9 +38,8 @@ async function routeIMCommand(text: string, senderAddress: string): Promise<stri
 }
 
 /**
- * R24 (P44): a CONFIRMED owner email counts as the owner speaking, including his approvals. The mail provider's own
- * authentication check has already been the owner gate (`mail-owner-intake.ts`), so this is the SAME command and
- * approval handler a text reaches, run as the owner. Null when the words are not a command.
+ * A CONFIRMED owner email is the owner speaking (`mail-owner-intake.ts` was the gate), so this runs the SAME
+ * command and approval handler a text reaches. Null when the words are not a command.
  */
 export async function handleConfirmedOwnerEmailWords(words: string): Promise<string | null> {
   return runCommand(firstLineOf(words), true, undefined);
@@ -74,8 +65,7 @@ async function runCommand(trimmed: string, isOwner: boolean, senderRecord: unkno
     }
   }
 
-  // 2. D-B approve/deny lane (gated the same way). B2: only "yes <id>"/"no <id>"
-  // reach here; a bare reply parsed as null above and never gets this far.
+  // 2. Approve/deny lane (gated the same way): only "yes <id>"/"no <id>" reach here; a bare reply parsed as null above.
   const approveDeny = parseApproveDeny(trimmed);
   if (approveDeny) {
     if (!isOwner) {
@@ -95,9 +85,8 @@ async function runCommand(trimmed: string, isOwner: boolean, senderRecord: unkno
 }
 
 /**
- * D-B step 5: resolve an approval from the iMessage lane. Runs the SAME shared
- * core as the dashboard route (resolveHealerProposal), so the two surfaces
- * cannot drift. Only pending imessage-surface proposals are reachable here.
+ * Resolves an approval from the iMessage lane through the SAME core as the dashboard route
+ * (resolveHealerProposal), so the two surfaces cannot drift. Only pending imessage-surface proposals are reachable.
  */
 async function handleApproveDeny(cmd: ApproveDenyCommand): Promise<string | null> {
   const db = getDb();
@@ -111,9 +100,8 @@ async function handleApproveDeny(cmd: ApproveDenyCommand): Promise<string | null
   // to the agent as an ordinary reply rather than erroring.
   if (pending.length === 0) return null;
 
-  // B2: the id is mandatory (parseApproveDeny guarantees it). We match the
-  // supplied hex id against the pending set, so an owner must name the exact
-  // proposal; there is no "newest pending" fallback that a bare reply could hit.
+  // The id is mandatory (parseApproveDeny guarantees it): the owner must name the exact pending proposal,
+  // with no "newest pending" fallback a bare reply could hit.
   const wanted = cmd.shortId.toLowerCase();
   const targetId = pending.find(p => p.id.toLowerCase().startsWith(wanted))?.id;
   if (!targetId) return 'No pending approval matches that.';
@@ -226,7 +214,7 @@ function killNamedAgent(name: string): string {
 function pausePrimaryAgent(): string {
   try {
     const primaryId = getPrimaryAgentId();
-    // t148: through the one status writer, which also drops a park's tag: the owner's pause wins over a park.
+    // Through the one status writer, which also drops a park's tag: the owner's pause wins over a park.
     writeAgentStatus(primaryId, 'paused');
     logger.info('Primary agent paused via iMessage', { primaryId });
     return 'Agent paused. Send "resume" to continue.';
@@ -244,9 +232,7 @@ function resumePrimaryAgent(): string {
     const primaryId = getPrimaryAgentId();
     const current = db.prepare('SELECT status FROM agents WHERE id = ?').get(primaryId) as { status: string } | undefined;
     if (current && (current.status === 'paused' || current.status === 'error')) {
-      // s07 F6: through the one status writer, which clears a park's tag and closes the
-      // "agent has stopped" owner card — the raw UPDATE did neither, and never checked
-      // whether the agent was paused at all.
+      // Through the one status writer, which clears a park's tag and closes the "agent has stopped" owner card.
       writeAgentStatus(primaryId, 'idle', { clearError: true });
       logger.info('Primary agent resumed via iMessage', { primaryId });
       return 'Agent resumed.';

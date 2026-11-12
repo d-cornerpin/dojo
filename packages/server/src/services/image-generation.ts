@@ -1,26 +1,7 @@
-// ════════════════════════════════════════
-// Image Generation Backend
-// ════════════════════════════════════════
-//
-// Low-level HTTP call to an image-generation model. Used by the Imaginer
-// agent's dedicated image tool — it's NOT called directly by any other
-// agent. The brain-model-text-turn path goes through `callModel` as usual;
-// this module is only invoked when the `image_generate_internal` tool runs.
-//
-// Supported request shape: OpenAI-compatible `/v1/chat/completions` with
-// `modalities: ['image', 'text']`. This is what OpenRouter serves for its
-// image-output models (google/gemini-2.5-flash-image,
-// openai/gpt-5-image, etc). The response has the image as a base64
-// data URL in `choices[0].message.images[].image_url.url`.
-//
-// If the platform is ever extended to support the classic
-// `/v1/images/generations` endpoint (OpenAI DALL-E, etc.) that's a
-// separate code path — add a new branch here keyed on some provider
-// metadata. For now, the chat-completions-with-modalities pattern is
-// the most universally supported.
-//
-// Output: image is decoded and saved to ~/.dojo/uploads/generated/{uuid}.png
-// and the caller receives the absolute path + cost/token usage.
+// Image generation backend, called only by the `image_create` tool (`agent/tools/cat/media.ts`).
+// Request: OpenAI-compatible `/v1/chat/completions` with `modalities: ['image']` (what OpenRouter serves for image
+// models); the image comes back as a base64 data URL in `choices[0].message.images[].image_url.url`.
+// The decoded image is saved to ~/.dojo/uploads/generated/{uuid}.png; the caller gets the path plus cost and usage.
 
 import * as effectFs from '../agent/effects/fs.js';
 import path from 'node:path';
@@ -47,9 +28,8 @@ export function ensureGeneratedImagesDir(): void {
 export interface GenerateImageRequest {
   modelId: string;     // dojo models.id (not api_model_id)
   prompt: string;      // full prompt text to send the model
-  aspectRatio?: string; // '1:1' | '16:9' | '9:16' | '4:3' | '3:4' — appended to the prompt if the provider doesn't accept a dedicated param
-  // A-5: whose stop cuts this call. Required, not optional — an optional agent id is an
-  // un-abortable dial one forgetful caller away, which is the defect this field closes.
+  aspectRatio?: string; // '1:1' | '16:9' | '9:16' | '4:3' | '3:4'; also appended to the prompt as prose
+  // Whose stop cuts this call. Required: an optional agent id would be an un-abortable dial.
   agentId: string;
 }
 
@@ -59,10 +39,7 @@ export interface GenerateImageSuccess {
   filename: string;    // just the <uuid>.png part
   mimeType: string;    // always 'image/png' for now
   sizeBytes: number;
-  // Decoded pixel dimensions of the saved image. Null for formats we
-  // couldn't parse (rare). Used by the cost tracker for megapixel-priced
-  // image-gen models so we can compute `(W * H / 1e6) * $/MP` instead of
-  // falling back to bogus token math.
+  // Decoded pixel size (null when unparseable); the cost tracker prices megapixel-priced models from it.
   width: number | null;
   height: number | null;
   apiModelId: string;  // which model actually served the request
@@ -77,8 +54,7 @@ export interface GenerateImageSuccess {
 export interface GenerateImageError {
   ok: false;
   error: string;
-  // A-5: `STOPPED` is the user's own button and is NOT a provider failure. Every other code in
-  // this union is something that went wrong; this one is something that was asked for.
+  // `STOPPED` is the user's own button, not a provider failure; every other code is something that went wrong.
   code: 'MODEL_NOT_FOUND' | 'NO_CREDENTIAL' | 'CAPABILITY_MISSING' | 'HTTP_ERROR' | 'NO_IMAGE_RETURNED' | 'DECODE_ERROR' | 'WRITE_ERROR' | 'TIMEOUT' | 'STOPPED' | 'UNKNOWN';
 }
 
@@ -94,24 +70,11 @@ interface ModelRow {
 }
 
 function resolveChatCompletionsEndpoint(baseUrl: string | null): string {
-  // Common OpenRouter base is `https://openrouter.ai/api`; others may be
-  // `.../api/v1` or bare root.
+  // The OpenRouter base is `https://openrouter.ai/api`; others may be `.../api/v1` or a bare root.
   return openAiCompatibleUrl(baseUrl, 'chat/completions');
 }
 
-// Pixel dimensions from a raw image buffer, by sniffing the file magic.
-// Used here for megapixel-priced models' cost accounting.
-//
-// PHASE-6 T4-CAP: this WAS a private `getImageDimensions` in this file. The
-// token estimator now needs the same answer (an image is billed by its pixels,
-// not by its base64 length — `memory/budget.ts`'s header carries the receipts),
-// and two functions answering "how big is this image" is exactly how the six
-// token estimators happened. It MOVED to `memory/budget.js` rather than being
-// copied; this is the same implementation, imported. `budget.ts` imports
-// nothing, so nothing here becomes cyclic.
-
-// Parse a "W:H" aspect-ratio string (e.g. "16:9") into a numeric width/height
-// ratio. Returns null for anything we can't read so callers skip the check
+// Parse "W:H" (e.g. "16:9") into a width/height ratio; null when unreadable, so callers skip the check
 // rather than raise a false mismatch.
 function parseAspectRatio(s: string): number | null {
   const m = s.match(/^\s*(\d+(?:\.\d+)?)\s*:\s*(\d+(?:\.\d+)?)\s*$/);
@@ -132,8 +95,7 @@ function capabilitiesInclude(capsJson: string | null, capability: string): boole
   }
 }
 
-// Decode a `data:image/png;base64,....` URL into raw bytes. Also handles
-// plain base64 strings for providers that skip the `data:` prefix.
+// Decode a `data:image/png;base64,...` URL into raw bytes; also accepts plain base64 without the prefix.
 function decodeImageUrl(url: string): { bytes: Buffer; mimeType: string } | null {
   if (!url) return null;
   if (url.startsWith('data:')) {
@@ -150,19 +112,12 @@ function decodeImageUrl(url: string): { bytes: Buffer; mimeType: string } | null
   } catch { return null; }
 }
 
-// Image models (especially routed through OpenRouter under load) routinely take
-// several minutes. The old 120s cap timed out on them AND the abort fired
-// mid-body-read, surfacing as a misleading "failed to parse JSON" error. Image
-// generation runs as a background job (the agent already acked and ended its
-// turn), so holding the request open this long is fine. Unlike video — which is
-// submit-then-poll with a 30-minute poller window — image is a single blocking
-// call, so this ceiling IS the budget. 10 minutes is generous without waiting
-// forever on a truly hung provider.
+// Image models routinely take several minutes (OpenRouter under load). Generation runs as a background job and
+// image is one blocking call (no poller), so this ceiling is the whole budget.
 const IMAGE_GEN_TIMEOUT_MS = 600_000;
 
-// AbortSignal.timeout throws a DOMException named 'TimeoutError'; a manual abort
-// throws 'AbortError'. Either, plus the stringified variants, means we hit the
-// deadline — not a real decode/transport error.
+// `AbortSignal.timeout` throws 'TimeoutError' and a manual abort 'AbortError'; either (or their stringified
+// forms) means the deadline was hit, not a decode or transport error.
 function isTimeoutError(err: unknown): boolean {
   const e = err as { name?: string; message?: string } | null;
   if (!e) return false;
@@ -171,17 +126,12 @@ function isTimeoutError(err: unknown): boolean {
 }
 
 /**
- * A-5 — THE STOP DOOR, wrapping the generator rather than threaded through its dozen returns.
- *
- * The slot is opened before the model row is even read, so a stop that landed a moment ago is
- * answered by `refused` instead of by a dial; it is released in a `finally` that no early
- * return can skip. The body below keeps its shape byte for byte apart from the two lines that
- * compose the signal and the two that read `slot.cutByStop()`.
+ * The stop door: opens the call slot before the model row is read, so a stop that already landed is answered
+ * by `refused` instead of a dial. The slot is released in a `finally` that no early return can skip.
  */
 export async function generateImage(req: GenerateImageRequest): Promise<GenerateImageResult> {
-  // A-5 FIX ROUND: `background`. `image_create`'s delivery IIFE deliberately outlives its turn
-  // — it WAITS for the agent to go idle before dialling — so the turn ending is the one thing
-  // that must not kill it. Only the owner's own stop reaches this call.
+  // `background`: the delivery outlives its turn (it waits for the agent to go idle before dialling), so the
+  // turn ending must not kill it. Only the owner's own stop reaches this call.
   const slot = openAgentCall(req.agentId, 'background');
   try {
     if (slot.refused) {
@@ -229,24 +179,16 @@ async function dialImage(req: GenerateImageRequest, slot: AgentCallSlot): Promis
     };
   }
 
-  // Convey the requested aspect ratio through every channel available, because
-  // none of them is universal:
-  //   1. Structured: image_config.aspect_ratio on the request body (added just
-  //      below). image_config-aware models (the Gemini image family) honor it.
-  //   2. Prose: appended to the prompt here, for models that only read the
-  //      prompt text and ignore image_config.
-  // Flux-class models honor neither reliably, so the post-generation dimension
-  // check further down is the honesty floor: it measures the delivered image
-  // and tells the caller when the ratio was not applied.
+  // Send the requested aspect ratio on every channel, since none is universal: `image_config.aspect_ratio` on the
+  // body (Gemini-class models honor it) and prose appended to the prompt. Flux-class models honor neither, which
+  // is why the dimension check below measures the delivered image.
   const fullPrompt = req.aspectRatio
     ? `${req.prompt}\n\nAspect ratio: ${req.aspectRatio}`
     : req.prompt;
 
   const endpoint = resolveChatCompletionsEndpoint(row.provider_base_url);
-  // Use modalities: ['image'] (not ['image', 'text']). Pure image models
-  // like FLUX only support image output and return 404 if text is
-  // requested. Models that CAN output text alongside (Gemini) will still
-  // include it even when only 'image' is specified.
+  // `modalities: ['image']`, not ['image', 'text']: pure image models (FLUX) return 404 if text is requested;
+  // models that can also emit text (Gemini) still do.
   const requestBody: {
     model: string;
     messages: Array<{ role: 'user'; content: string }>;
@@ -257,12 +199,8 @@ async function dialImage(req: GenerateImageRequest, slot: AgentCallSlot): Promis
     messages: [{ role: 'user', content: fullPrompt }],
     modalities: ['image'],
   };
-  // Structured aspect-ratio passthrough. OpenRouter documents
-  // `image_config.aspect_ratio` on the chat-completions image path; models that
-  // support it (the Gemini image family) clamp to their nearest supported ratio,
-  // models that do not simply ignore the field. Sent only when a ratio was
-  // requested; the tool's ratios (1:1, 16:9, 9:16, 4:3, 3:4) are all within the
-  // documented supported set.
+  // Structured passthrough, sent only when a ratio was requested: models that support it clamp to their nearest
+  // ratio, others ignore the field.
   if (req.aspectRatio) {
     requestBody.image_config = { aspect_ratio: req.aspectRatio };
   }
@@ -276,9 +214,7 @@ async function dialImage(req: GenerateImageRequest, slot: AgentCallSlot): Promis
     aspectRatio: req.aspectRatio ?? '(unset)',
   });
 
-  // OpenRouter convention (HTTP-Referer / X-Title for attribution) — safe
-  // to send for non-OpenRouter providers since they just ignore extra
-  // headers.
+  // OpenRouter attribution headers; other providers ignore the extras.
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     'Authorization': `Bearer ${credential}`,
@@ -292,10 +228,8 @@ async function dialImage(req: GenerateImageRequest, slot: AgentCallSlot): Promis
       method: 'POST',
       headers,
       body: JSON.stringify(requestBody),
-      // A-5: COMPOSED, not replaced. The 10-minute ceiling is still this dial's budget and is
-      // still created here, at the dial, so its arming is unchanged; the stop is a second
-      // source on the same signal. `isTimeoutError` below treats a bare `AbortError` as the
-      // deadline, so the stop is discriminated FIRST or the user's button reads as a timeout.
+      // The stop is composed with the 10-minute ceiling on one signal. `isTimeoutError` treats a bare `AbortError`
+      // as the deadline, so the stop is checked FIRST or the user's button would read as a timeout.
       signal: AbortSignal.any([slot.signal, AbortSignal.timeout(IMAGE_GEN_TIMEOUT_MS)]),
     });
   } catch (err) {
@@ -342,13 +276,11 @@ async function dialImage(req: GenerateImageRequest, slot: AgentCallSlot): Promis
   try {
     data = await response.json() as typeof data;
   } catch (err) {
-    // A-5: the composed signal governs the body read too, so a stop landing while the image
-    // bytes are arriving surfaces here. Same discrimination, same order.
+    // The composed signal covers the body read too: a stop landing mid-download surfaces here, checked first.
     if (slot.cutByStop()) {
       return { ok: false, error: STOPPED_BY_USER, code: 'STOPPED' };
     }
-    // The same deadline governs the body read, so a slow provider trips here
-    // mid-stream. Report it as the timeout it is, not a parse failure.
+    // The same deadline governs the body read, so a slow provider trips here mid-stream: report it as a timeout.
     if (isTimeoutError(err)) {
       return {
         ok: false,
@@ -384,9 +316,7 @@ async function dialImage(req: GenerateImageRequest, slot: AgentCallSlot): Promis
     };
   }
 
-  // Always save as .png for now. If we ever want to preserve the source
-  // MIME (some providers return webp / jpeg) we can key the extension off
-  // decoded.mimeType, but PNG is universally compatible.
+  // Always saved as .png (universally compatible), whatever the source MIME.
   const filename = `${uuidv4()}.png`;
   const filePath = path.join(GENERATED_IMAGES_DIR, filename);
 
@@ -405,21 +335,14 @@ async function dialImage(req: GenerateImageRequest, slot: AgentCallSlot): Promis
   const notes: string[] = [];
   const dimensions = imagePixelDimensions(decoded.bytes);
 
-  // Surface cases where the source MIME wasn't PNG — we saved as PNG
-  // regardless (browsers and Anthropic accept the extension/content
-  // mismatch fine) but the caller may want to know.
+  // Tell the caller when the source MIME wasn't PNG: it is saved as .png regardless.
   if (decoded.mimeType !== 'image/png') {
     notes.push(`Provider returned ${decoded.mimeType}; saved with .png extension for portability.`);
   }
 
-  // Honesty floor for aspect_ratio. The ratio is requested via image_config
-  // and prompt prose (see requestBody/fullPrompt above), but neither channel
-  // is universal; Flux-class models ignore both and return their own native
-  // size. Rather than let that pass silently,
-  // measure the delivered image and, when it materially differs from what was
-  // asked, tell the truth in a note the agent sees so it can inform the user or
-  // retry. A relative tolerance of 5% absorbs provider rounding while still
-  // catching a real mismatch (the standard ratios are far more than 5% apart).
+  // Aspect-ratio honesty floor: when the delivered image's ratio materially differs from the one asked for, add a
+  // note so the agent can tell the user or retry. A 5% relative tolerance absorbs provider rounding; the
+  // standard ratios are much further apart than that.
   if (req.aspectRatio && dimensions && dimensions.height > 0) {
     const requestedRatio = parseAspectRatio(req.aspectRatio);
     if (requestedRatio) {

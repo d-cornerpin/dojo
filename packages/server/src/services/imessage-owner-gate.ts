@@ -1,8 +1,4 @@
-// Has the human set an iMessage owner IN THE LIST? True when a stored record is flagged as the
-// owner, or the list is the older bare-address form (first address = owner, written only by the
-// Settings screen). The older single-recipient key alone is not enough: adding any entry to an
-// empty list would end the bridge's fallback that keeps that owner reachable. The agent's
-// add_safe_sender asks this before it writes.
+// True when the safe-sender list names a human owner; the legacy single-recipient key alone does not count.
 import { getDb } from '../db/connection.js';
 import { parseSafeSenders } from './safe-senders.js';
 

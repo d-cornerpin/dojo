@@ -21,7 +21,6 @@ export function newTextOf(body: string): string {
     kept.push(lines[i].replace(/[ \t]+$/, ''));
   }
 
-  // Trim blank lines at both ends, keeping the sender's own breaks in between.
   let start = 0;
   let end = kept.length;
   while (start < end && kept[start].trim() === '') start++;
@@ -30,29 +29,22 @@ export function newTextOf(body: string): string {
   return kept.slice(start, end).join('\n');
 }
 
-// A line begins a quoted/forwarded block when (trimmed, case-insensitive) it is
-// an `On … wrote:` line (or its two-line wrap), an `----- Original/Forwarded
-// Message -----` banner, an Outlook `From:` / `Sent:`|`Date:` header, or
-// `Begin forwarded message:`.
+// Block starts: `On ... wrote:` (or its wrap), an Original/Forwarded banner, From: + Sent:/Date:, `Begin forwarded`.
 function isBlockStart(lines: string[], i: number): boolean {
   const t = lines[i].trim().toLowerCase();
 
-  // On … wrote: on the same line, or the two-line wrap where the next line carries wrote:.
   if (t.startsWith('on ')) {
     if (t.endsWith('wrote:')) return true;
     if ((lines[i + 1] ?? '').trim().toLowerCase().endsWith('wrote:')) return true;
   }
 
-  // ----- Original Message ----- / ---------- Forwarded message ---------
   if (/^-{2,}\s*(?:original message|forwarded message)\s*-{2,}$/.test(t)) return true;
 
-  // Outlook header block: a From: line immediately followed by Sent: or Date:.
   if (t.startsWith('from:')) {
     const next = (lines[i + 1] ?? '').trim().toLowerCase();
     if (next.startsWith('sent:') || next.startsWith('date:')) return true;
   }
 
-  // Begin forwarded message:
   if (t === 'begin forwarded message:') return true;
 
   return false;

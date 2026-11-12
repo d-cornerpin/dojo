@@ -1,8 +1,5 @@
-// Outbound-iMessage markdown cleaning, isolated as a pure, dependency-free helper
-// so the strip order is unit-testable without pulling in the whole iMessage bridge
-// graph. The fenced block must be stripped BEFORE the inline-code step (otherwise
-// the inline step eats a backtick off each side of the fence), and the italic step
-// must never read arithmetic like "5 * 3 * 2" as emphasis.
+// Strips markdown for outbound iMessage. Fenced code goes BEFORE inline code (else the inline step eats a fence
+// backtick), and the italic step must never read arithmetic like "5 * 3 * 2" as emphasis.
 export function sanitizeForIMessage(rawText: string): string {
   let text = rawText;
   text = text.replace(/\\n/g, '\n');                                            // literal \n -> real newline

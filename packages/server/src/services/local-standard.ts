@@ -1,8 +1,6 @@
-// THE DOJO'S TWO STANDARD LOCAL MODELS, on every box: their tags (this module is the only place they appear), their rows'
-// ids, and the local Ollama provider row. The DECISION model answers yes/no, which-one and how-much questions through
-// `/v1/systemone` (`agent/decide.ts`); the WRITER writes titles, project names and voice openers (the `system` router
-// tier), and a memory summary only when the agent's own model cannot be reached. `ollama-upkeep.ts` installs them; the
-// role agents keep their own model keys.
+// The Dojo's two standard local models: the DECISION model (yes/no and which-one questions via `/v1/systemone`,
+// `agent/decide.ts`) and the WRITER (titles, names, voice openers). Tags live only here.
+// `ollama-upkeep.ts` installs them.
 
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
@@ -10,10 +8,8 @@ import { isLocalOllamaBaseUrl } from './num-ctx-calculator.js';
 
 const logger = createLogger('local-standard');
 
-// Sizes are the registry's published download sizes for these tags. `windowTag`: the decision model at the window the
-// Dojo reserves for it (`services/decision-window.ts`). `minOllama`: the oldest Ollama the model runs on, the ONE place it
-// is declared; the upkeep updates an older Ollama first. Tev1's library page says "Tev1 requires Ollama 0.35 or later";
-// the writer's states no minimum, so none is declared.
+// `windowTag`: the decision model at the window the Dojo reserves (`services/decision-window.ts`). `minOllama`: the
+// oldest Ollama it runs on, declared only here; the upkeep updates an older Ollama first.
 export const STANDARD_DECISION_MODEL = { tag: 'tev1:4b-q4_K_M', windowTag: 'tev1-dojo:4b-q4_K_M', bytes: 2_800_000_000, minOllama: '0.35' } as const;
 export const STANDARD_WRITER_MODEL = { tag: 'qwen3.5:4b', bytes: 3_400_000_000, minOllama: null } as const;
 export const STANDARD_PAIR_BYTES = STANDARD_DECISION_MODEL.bytes + STANDARD_WRITER_MODEL.bytes;
@@ -41,7 +37,6 @@ export function localOllamaProvider(): { id: string; baseUrl: string } | null {
   }
 }
 
-/** The local Ollama provider row, created the way setup's auto-configure always created it. */
 export function ensureLocalOllamaProvider(): { id: string; baseUrl: string } | null {
   const existing = localOllamaProvider();
   if (existing) return existing;
@@ -66,7 +61,6 @@ export function standardModelRowId(which: Which): string | null {
   }
 }
 
-/** Is `modelId` one of the Dojo's own two models? */
 export function isStandardModelRow(modelId: string | null | undefined): boolean {
   return !!modelId && (modelId === standardModelRowId('writer') || modelId === standardModelRowId('decision'));
 }
