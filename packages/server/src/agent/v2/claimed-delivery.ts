@@ -1,44 +1,8 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// THE CLAIMED-DELIVERY FLOOR'S TRIGGER — PHASE-4 T4, the owner's live fixture.
-//
-// ── WHAT WENT WRONG, IN PRODUCTION, ON THE OWNER'S OWN SERVER (2026-08-01) ───────────────
-// He asked about a transcript. The reply quoted it, the transcript said "told <a name>",
-// and the floor fired on those two words. Twice more after that — once when
-// he pasted the steer's own text back at the agent — and every fire carried "do it NOW",
-// so the agent answered twice and re-did a delivery nobody had asked for. Three false
-// accusations from one English word.
-//
-// The whole trigger was `detectUngroundedDeliveryClaim`, a regex over the model's prose.
-// Research 21's binding caution names that class: **honesty floors are receipt-keyed, never
-// prose-keyed** — the deliverable-claim floor was built on prose twice before and spiralled
-// both times. This module is the rekey.
-//
-// ── WHAT THE TRIGGER IS NOW ─────────────────────────────────────────────────────────────
-// Two ROWS, either of which lets the engine point at the thing it is accusing the model of:
-//
-//   ARM A — AN OWED OBLIGATION.  `work/store.ts owedSendObligations` — an ask this person
-//           sent and never got answered, or a promise the agent recorded — still owed, with
-//           no `result_delivery_id`, whose counterparty IS the recipient the reply named.
-//           "You say you got back to Sam; Sam's message is still sitting open with nothing
-//           delivered against it."
-//   ARM B — A FAILED RECEIPT ON THIS TURN.  A `deliveries` row to that recipient THIS TURN
-//           with `outcome <> 'delivered'`. The old guard could not see this at all: it stood
-//           down the moment any delivery TOOL ran, so "I sent it" on top of a send the door
-//           recorded as FAILED was invisible to it. That is a hole the rekey closes.
-//
-// The model's prose is still read — for ONE job, and it is not the trigger. It NARROWS: it
-// says which recipient the claim names, so the ledger can be asked about that party rather
-// than about the world. A narrowing cannot fire anything on its own; both arms require a row.
-// Every fire therefore carries an id a human can look up, which is the difference between a
-// floor and an accusation.
-//
-// ── THE ONCE-ONLY LATCH ─────────────────────────────────────────────────────────────────
-// The owner's third fire was the same claim steered again. The latch key returned here is
-// the ROW's id (the obligation, or the failed delivery), and it goes onto the steer queue
-// entry (T3): one steer per obligation per turn, not one per phrase. Across turns the ledger
-// itself is the latch — the moment the send lands, the obligation carries a delivery and
-// neither arm can fire again. A boolean beside the loop could never have said that.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// THE CLAIMED-DELIVERY FLOOR'S TRIGGER. An ungrounded "I already sent it" fires only from ROWS, never
+// prose: honesty floors are receipt-keyed. ARM A: an owed obligation with no result_delivery_id whose
+// counterparty IS the named recipient. ARM B: a deliveries row to that recipient THIS TURN with outcome
+// not 'delivered'. Prose only NARROWS (names the recipient), never fires alone. Every fire carries a row
+// id a human can look up; the latch key is that ROW id, and across turns the ledger itself is the latch.
 
 import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
@@ -50,10 +14,10 @@ const logger = createLogger('claimed-delivery');
 
 /** Why the floor stood down. Every value is a fact about the LEDGER, not about the text. */
 export type ClaimedDeliveryStandDown =
-  | 'no-claim-in-text'          // the narrowing found no completed-delivery claim to a third party
-  | 'a-delivery-tool-ran'       // a send tool ran this turn and the door did not record a failure
-  | 'nothing-owed-to-them'      // ← THE OWNER'S CASE: no row says this agent owes that party anything
-  | 'receipt-backs-the-claim';  // the ledger holds a real delivery to them (the pre-existing suppressor)
+  | 'no-claim-in-text'
+  | 'a-delivery-tool-ran'
+  | 'nothing-owed-to-them'
+  | 'receipt-backs-the-claim';
 
 export interface ClaimedDeliveryFires {
   fires: true;
@@ -65,7 +29,7 @@ export interface ClaimedDeliveryFires {
   failedDeliveryId: string | null;
   /** ARM B's recorded outcome, for the steer's own wording ('failed', 'held', …). */
   failedOutcome: string | null;
-  /** The steer queue's latch key — the ROW's id, so one steer per obligation, not per phrase. */
+  /** The steer queue's latch key: the ROW's id, so one steer per obligation, not per phrase. */
   latchKey: string;
   basis: 'owed-obligation' | 'failed-receipt';
 }
@@ -73,7 +37,7 @@ export interface ClaimedDeliveryFires {
 export interface ClaimedDeliveryStandsDown {
   fires: false;
   reason: ClaimedDeliveryStandDown;
-  /** Present when the narrowing DID name somebody — the evidence a stand-down is deliberate. */
+  /** Present when the narrowing DID name somebody, the evidence a stand-down is deliberate. */
   recipient: string | null;
 }
 
@@ -82,38 +46,26 @@ export type ClaimedDeliveryDecision = ClaimedDeliveryFires | ClaimedDeliveryStan
 export interface ClaimedDeliveryInput {
   agentId: string;
   turnNumber: number | null;
-  /** The terminal user-facing text about to stand. */
   responseText: string | null;
-  /** Cumulative successful tool activity this turn (C5 — never just the last iteration). */
+  /** Cumulative successful tool activity this turn (never just the last iteration). */
   toolCallsThisTurn: ReadonlyArray<{ name: string }>;
   counterpartyName?: string | null;
-  /** The receipt suppressor, injected so the decision is testable without the ledger module:
-   *  true when a REAL delivery to this recipient is already on record (24h). */
+  /** Receipt suppressor, injected for testing: true when a REAL delivery to this recipient is on record. */
   hasDeliveryReceipt: (recipient: string) => boolean;
-  /** v3.5 C1: the decision model's narrowing (`reply-claims.ts`); absent, the prose alone. It can confirm or take
-   *  away the prose's hit, never add one: the ledger is asked about the party the prose NAMED, and only it names one. */
+  /** The decision model's narrowing (`reply-claims.ts`); absent, the prose alone. It can confirm or take
+   *  away the prose's hit, never add one: the ledger is asked about the party the prose NAMED. */
   claimInText?: (ruleSaid: boolean) => boolean;
 }
 
-/**
- * A `deliveries` row to this recipient on THIS turn recording an outbound that did not land.
- *
- * Scoped to the turn deliberately. A failure yesterday is history the model may legitimately
- * be narrating; a failure in the same breath as "I sent it" is the claim itself being wrong,
- * and it is the only shape where firing cannot cause the duplicate send the owner reported.
- */
+// THIS turn only: an older failure may be legitimately narrated; a same-turn failure beside "I sent it"
+// is the only shape where firing cannot cause a duplicate send.
 function failedDeliveryThisTurn(
   agentId: string, turnNumber: number | null, recipient: string,
 ): { id: string; outcome: string } | null {
   if (turnNumber == null) return null;
   try {
-    // The outcome list is ENUMERATED POSITIVELY and written out here rather than negated,
-    // and the difference is load-bearing. `owner_closed` is also not 'delivered' — it is the
-    // receipt the OWNER's own dashboard close writes (`agent/v2/deliveries.ts:204`), whose
-    // whole safety rests on no reader mistaking it for delivery evidence
-    // (`__tests__/owner-close-receipt.test.ts` re-derives that enumeration as a clause). An
-    // `outcome <> 'delivered'` match would have swept it in and turned an owner closing their
-    // own task into "your claim is false". Keyed positively, this reader cannot see it.
+    // The outcome list is ENUMERATED POSITIVELY, load-bearing: `owner_closed` is also not 'delivered' but is
+    // the receipt an owner closing their own task writes; `outcome <> 'delivered'` would sweep it in.
     const rows = getDb().prepare(
       `SELECT id, outcome, recipient_id, recipient_display FROM deliveries
         WHERE agent_id = ? AND turn_number = ? AND outcome IN ('failed','suppressed','held')
@@ -133,7 +85,6 @@ function failedDeliveryThisTurn(
   }
 }
 
-/** The obligation owed to this named party, or null. Canonical identity, never substring. */
 export function obligationOwedTo(
   obligations: readonly OwedSendObligation[], recipient: string,
 ): OwedSendObligation | null {
@@ -143,18 +94,9 @@ export function obligationOwedTo(
   return hit ?? null;
 }
 
-/**
- * The floor's whole decision. Reads rows; returns a stand-down with a REASON rather than a
- * bare false, so a red can say which ledger answered.
- */
 export function decideClaimedDelivery(input: ClaimedDeliveryInput): ClaimedDeliveryDecision {
-  // The narrowing. It answers "who does the reply name", nothing else — the two arms below
-  // are the trigger, and neither of them can be satisfied by text.
   const named = detectUngroundedDeliveryClaim({
     responseText: input.responseText,
-    // ARM B needs to survive a send tool having RUN, so the tool list is passed with the
-    // failed calls filtered out by the caller (C5's cumulative successful set). A send whose
-    // door recorded a failure is not a delivery, and the ledger below is what says so.
     toolCallsThisTurn: input.toolCallsThisTurn,
     counterpartyName: input.counterpartyName,
   });
@@ -163,14 +105,11 @@ export function decideClaimedDelivery(input: ClaimedDeliveryInput): ClaimedDeliv
   }
   const recipient = named.recipient;
 
-  // The pre-existing suppressor, kept verbatim in meaning: a real delivery to this party on
-  // record grounds the claim, and a floor that fires into one produces the duplicate send it
-  // exists to prevent.
   if (input.hasDeliveryReceipt(recipient)) {
     return { fires: false, reason: 'receipt-backs-the-claim', recipient };
   }
 
-  // ARM B first: a failure the door itself recorded outranks an inference from absence.
+  // ARM B before ARM A: a failure the door recorded outranks an inference from absence.
   const failed = failedDeliveryThisTurn(input.agentId, input.turnNumber, recipient);
   if (failed) {
     return {
@@ -180,8 +119,6 @@ export function decideClaimedDelivery(input: ClaimedDeliveryInput): ClaimedDeliv
     };
   }
 
-  // ARM A: the obligation ledger. THE OWNER'S CASE STOPS HERE — a name quoted out of a
-  // transcript belongs to nobody this agent owes anything, so there is nothing to contradict.
   const owed = obligationOwedTo(owedSendObligations(input.agentId), recipient);
   if (!owed) {
     return { fires: false, reason: 'nothing-owed-to-them', recipient };
@@ -193,10 +130,6 @@ export function decideClaimedDelivery(input: ClaimedDeliveryInput): ClaimedDeliv
   };
 }
 
-/**
- * The steer text. It states the ROW, because a floor that cannot say what it is pointing at is
- * the floor the owner caught. "do it NOW" survives only where the ledger earns it.
- */
 export function claimedDeliverySteer(d: ClaimedDeliveryFires): string {
   if (d.basis === 'failed-receipt') {
     return (

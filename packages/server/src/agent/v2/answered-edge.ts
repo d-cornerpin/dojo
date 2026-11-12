@@ -1,81 +1,32 @@
-// ════════════════════════════════════════════════════════════════════════════════
-// THE ANSWERED EDGE — the ONE place this tree answers "has the person heard from us".
-// PHASE-2 T6 (research 07-FULL requirement rows 1a, 1b, 1c, 1e, 1g, 2b, 2d).
-//
-// WHAT THIS REPLACES, named so the removal can be checked rather than trusted. Seven
-// mechanisms each carried their own definition, and research 07 §1 records what each one
-// got wrong when they disagreed:
-//
-//   * a PROSE CLASSIFIER (`CLOSEOUT_WHOLE_RE`, a 20-phrase regex) decided whether the
-//     model's last line "was a closeout" and suppressed it — prose as authority, the exact
-//     shape the deliverable-claim floor was removed for TWICE (research 21, caution 2);
-//   * `state.surfacedReplyThisTurn` / `deferredDeliveredByAck`, turn-local booleans that a
-//     process death erases;
-//   * a scan of `legacy_tasks.status='complete'` joined by hand, per row, to
-//     `messages.answer_message_id`;
-//   * `hasUnansweredUser`, an ARRAY the loop had to build (with a per-row origin
-//     re-derivation) just to ask "is anything outstanding";
-//   * `conv_key IS NULL` and `swept_at IS NULL`, two columns on the message doing the
-//     obligation's job (PHASE-2 T3 took the first half, this file finishes the reading
-//     side);
-//   * `terminalAnswerRowId`, a loop-local variable set at four persist sites;
-//   * and the turn record's OWN `exit_reason` / `answered` / `answer_message_id`, which
-//     `finalizeTurn` has always written and which NOTHING read (research 21, R-0 — "the
-//     one-line proof of the whole thesis").
-//
-// The edge itself is `work.result_delivery_id`: work is answered because something was
-// DELIVERED, and the delivery is a row written by the transport door that performed the
-// send (PHASE-2 T5). `messages.answer_message_id` (migration 113) stays as the second half
-// of the same edge — requirement 2d says one edge must serve BOTH the answer-receipt read
-// and the closeout-owe read — and it is the dated fallback for rows written before the
-// ticket existed, exactly the way T5 dated its own pre-ledger fallbacks.
-//
-// EVERY FUNCTION HERE IS A READER, with two exceptions at the bottom (the pause and its
-// reopen), and those two are marked, argued and named to their converting task.
-// ════════════════════════════════════════════════════════════════════════════════
+// THE ANSWERED EDGE, the ONE place answering "has the person heard from us": the send door's
+// delivery row (`work.result_delivery_id`) proves an answer, the `answer_message_id` stamp covers more.
 
 import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
 import type { TurnExitReason } from './turn-record.js';
 import { askIdForMessage } from '../../work/store.js';
-// T19 (D2): the DECLARED set of bubbles the platform has already ruled not-an-answer. One
-// owner, three readers (this file, `work/occurrences.ts`, `work/ask-remediation.ts`).
+// The declared not-an-answer bubbles: one owner, three readers; import it, never retype it.
 import { NON_ANSWERING_DISPLAY_KINDS } from '../../work/ask-settlement.js';
 import { taskScope, tsToMs } from '../../work/tracker-view.js';
 import { setHold, heldExpr, workingExpr } from '../../work/done/hold.js';
 import { recordedInstant } from '../../memory/message-stamp.js';
 import { withSessionBoundary } from '../../memory/session-boundary.js';
-// ROUND 3: the withdrawal predicate moved to its own module beside the report store (see the
-// banner below). This file imports the QUESTION, not the report vocabulary — no status literal
-// and no `dojo_reports` SQL survives here, which is the clause `a-withdrawn-report-is-not-an-
-// answer.test.ts` §5 holds.
+// Imports the withdrawal QUESTION only: no status literal, no `dojo_reports` SQL in this file.
 import { answerStillStands } from '../../report/withdrawn-claim.js';
 
 const logger = createLogger('answered-edge');
 
-/** Deliveries that are not an ANSWER to anybody, and counting one would mark a question
- *  answered before anybody looked at it.
- *
- *  ⚠ OR2-PROVISIONAL: CLOSED, PHASE-4 T4 (2026-08-02). The marker read "the engine saying
- *  'on it' … T4 removes the lane". T4 removed the ENGINE'S PROSE from it, not the lane: the
- *  one surviving caller delivers the MODEL'S own opening line early (`loop.ts:4582`,
- *  `startLine`), which §T0-PINS E names as the shape OR2 wants. The exclusion stands on its
- *  own footing now — a START-ACK IS NOT AN ANSWER, whoever wrote it. Kept in step with
- *  `work/ask-settlement.ts`'s `NON_ANSWERING_DELIVERY_TOOLS` by the conformance test beside it. */
+/** Deliveries that are not an ANSWER to anybody. A START-ACK IS NOT AN ANSWER, whoever wrote
+ *  it: the model's own opening line is not a reply. In step with `ask-settlement.ts`. */
 const NON_ANSWERING_TOOLS = ["'engine-ack'"];
 
-// ════════════════════════════════════════════════════════════════════════════════
-// 2d — the answer-receipt read AND the closeout-owe read, from one place.
-// ════════════════════════════════════════════════════════════════════════════════
 
 export interface AnswerReceipt {
-  /** Has the person had an answer to this ask? */
   answered: boolean;
   /** The delivery that proves it, when the spine holds one. */
   deliveryId: string | null;
-  /** The answering message row (migration 113), when one was stamped. */
   answerMessageId: string | null;
-  /** True when this ask has no ticket at all — a row written before PHASE-2 T3. */
+  /** True when this ask has no work row at all: only the message row exists. */
   legacyRow: boolean;
 }
 
@@ -83,33 +34,8 @@ const NO_RECEIPT: AnswerReceipt = {
   answered: false, deliveryId: null, answerMessageId: null, legacyRow: false,
 };
 
-/**
- * Requirement 2d, both directions at once.
- *
- * `answered === true`  -> the ANSWER-RECEIPT read: the person has it, do not re-announce.
- * `answered === false` -> the CLOSEOUT-OWE read: this ask still owes an answer.
- *
- * The two records are unioned deliberately rather than ranked. The ticket's
- * `result_delivery_id` is the strong form and is what every new row gets; the mig-113 stamp
- * covers rows written before the ticket existed AND any send path whose delivery record is
- * still missing. The union stands on the T8c measurement below — nineteen rows a person WAS
- * answered on — and on nothing else.
- *
- * ⚠ WHAT THIS PARAGRAPH USED TO SAY, AND WHO OVERRULED IT. It read: *"Erring toward 'answered'
- * here can only ever SUPPRESS a second announcement; erring the other way re-tells a person
- * something they already have, which is the defect this machinery exists to prevent (owner
- * transcript 2026-07-23)."* The GOVERNING priority is owner ruling **2026-08-05**, thirteen days
- * later (`DESIGN-2BUGS/DESIGN.md:46`): *"the user asks the agent to do something and it does it.
- * Period."* — when evidence of an answer is absent OR AMBIGUOUS the system errs toward SERVING
- * THE ASK AGAIN, and the no-double-answer protection survives strictly SUBORDINATE to it ("it is
- * politeness, and it may never cost the owner an answer"). `work/ask-settlement.ts:28-36` records
- * that reversal by name for its own header; this file was not swept with it, and the round-2 red
- * is what that cost. So the 2026-07-23 direction is not authority for suppressing anything: its
- * *"can only ever suppress"* premise is false the moment the earlier work has been WITHDRAWN,
- * which is what `answerStillStands` (`report/withdrawn-claim.ts`) checks for every read that lists
- * or quotes a settled ask. This function's own union is unchanged — its direction rests on the measurement, not on
- * the overruled precedent.
- */
+/** Both directions at once: `answered` true is the answer-receipt read, false the
+ *  closeout-owe read. The two records are UNIONED, never ranked; why is in the body. */
 export function answerReceiptForAsk(messageId: string | null | undefined): AnswerReceipt {
   if (!messageId) return NO_RECEIPT;
   const db = getDb();
@@ -124,29 +50,13 @@ export function answerReceiptForAsk(messageId: string | null | undefined): Answe
         no_ticket: number; no_message: number }
     | undefined;
   if (!row || (row.no_ticket === 1 && row.no_message === 1)) return NO_RECEIPT;
-  // ── PHASE-2 T8c item 2 — THE STAMP ARM WAS BOOKED TO GO PURE-LEGACY HERE, AND THE
-  // MEASUREMENT REFUSED IT. T6 concern 5 predicted that once tasks lived on the spine the
-  // mig-113 stamp would be a pure legacy fallback and could be dated out. Re-derived at this
-  // HEAD, READONLY, on this box:
-  //
-  //   stamped messages with NO ask ticket at all (genuinely legacy, pre-T3)   -> 586
-  //   stamped messages WITH a ticket that is not done-with-delivery           ->  19
-  //   ...and every one of those 19 is state='abandoned', not 'open'
-  //
-  // So the 19 are not legacy rows and not a bug in the ticket: they are asks a person WAS
-  // answered on and that T6's unservable-ask reaper later abandoned. Ranking the ticket above
-  // the stamp would flip all nineteen from "answered" to "not answered", and the consequence
-  // of THAT error is re-telling somebody something they already have — the direction T6
-  // deliberately chose against. The union therefore stands, and it stands on a measurement
-  // rather than on inertia.
-  //
-  // RETIREMENT CONDITION, as a command rather than a feeling (T10 owns it): the stamp arm may
-  // be dropped when this returns 0 —
+  // UNIONED, never ranked: a stamped ask whose work row is not done-with-delivery still counts
+  // as answered, the stamp is its own proof. Retire this stamp arm when the query below gives 0:
   //   SELECT count(*) FROM messages m JOIN work w ON w.root_id = m.id AND w.kind='ask'
   //    WHERE m.answer_message_id IS NOT NULL
   //      AND NOT (w.state='done' AND w.result_delivery_id IS NOT NULL);
-  // What IS ranked, and always was: `deliveryId` comes from the ticket or not at all, so a
-  // caller that needs a receipt it can point at never gets one the stamp cannot back.
+  // Stamped asks whose work row was later abandoned WERE answered; `deliveryId` comes from the row only.
+  // Absent or ambiguous evidence errs toward serving the ask again.
   const byTicket = row.state === 'done' && row.delivery_id !== null;
   const byStamp = row.answer_message_id !== null;
   return {
@@ -157,24 +67,13 @@ export function answerReceiptForAsk(messageId: string | null | undefined): Answe
   };
 }
 
-/** The closeout-owe read, phrased the way its callers ask it. */
 export function owesAnswer(messageId: string | null | undefined): boolean {
   return !answerReceiptForAsk(messageId).answered;
 }
 
-/**
- * THE PRE-SPINE FALLBACK for the same question, for work with no birthing ask to key on:
- * "since this instant, has the person had a substantive, MODEL-AUTHORED reply?"
- *
- * Excluded, and each exclusion is a fact the row carries rather than a guess about its text:
- * the a2a lane (not the person), tool_use/tool_result JSON blobs (`[{`), every engine-stamped
- * row (`origin_intent IS NOT NULL` — this is how a promoted start-ack is refused, exactly as
- * T2's stamp was written to be read), and anything under 40 trimmed characters.
- *
- * The boundary is ms on both sides: `unixepoch()` of an ms NUMBER is NULL, and an INTEGER ms
- * column bounded by a TEXT datetime matches nothing in SQLite, so there is no conversion
- * anywhere on the path.
- */
+/** PRE-SPINE FALLBACK with no birthing ask: a substantive MODEL-AUTHORED reply since this
+ *  instant? Exclusions are recorded facts (a2a, `[{`, `origin_intent`, under 40 chars).
+ *  The boundary is ms both sides: an INTEGER ms column vs a TEXT datetime matches nothing. */
 export function substantiveReplySince(agentId: string, sinceMs: number): boolean {
   return !!getDb().prepare(
     `SELECT 1 FROM messages
@@ -187,40 +86,10 @@ export function substantiveReplySince(agentId: string, sinceMs: number): boolean
   ).get(agentId, sinceMs);
 }
 
-// ════════════════════════════════════════════════════════════════════════════════
-// DOES THIS ANSWER STILL STAND? — THE WITHDRAWAL CHECK LIVES NEXT DOOR NOW.
-//
-// The three reads below that LIST or QUOTE a settled ask — `recordedAnswerInConversation`,
-// `recentlyAnsweredAsks` and `answeredPairsForMessages`, i.e. all five carriers of the engine's
-// "you already answered this" record — each ask `answerStillStands` first. It answers a question
-// this file deliberately does NOT own: *"is the artefact that answer announced still there?"*
-// `dojo_report` is the only user-facing door that writes no `deliveries` row, so the stamp and
-// the card it claimed have no edge, and for three release-ritual rounds the engine served a
-// cancelled card to the model under "do NOT re-execute this work". The predicate, its
-// measurements and the argument for its one text match live in `report/withdrawn-claim.ts`,
-// beside the state machine that owns those rows.
-//
-// WHAT STAYS HERE IS THE EDGE: answeredness, and the three reads that publish it.
-// ════════════════════════════════════════════════════════════════════════════════
+// Every read below that LISTS or QUOTES a settled ask first asks `answerStillStands`.
 
-/**
- * The agent's OWN recorded answer in this conversation, newest first, IN THE CURRENT SESSION.
- *
- * The engine hands this back to the model to restate when a question it already answered is
- * ghosted a second time (OR2: the engine never speaks as the agent, so it quotes the agent's own
- * words rather than re-serving them itself). It is the answered edge walked the other way — ask
- * to reply — and it lives here so the edge has one home rather than a join inside the loop.
- *
- * ⚠ THE FIFTH CARRIER OF THE ROUND-2 RED, and it is now bounded on BOTH axes. Its one consumer is
- * the ghosted-ask ladder's second rung (`steps/post-call-classify/no-reply.ts`, *"you already
- * answered this in this conversation. Your recorded answer: … Do not re-do the work and do not
- * stay silent."*) — an imperative, which is exactly why a reset must silence it: after a reset the
- * owner asked to be forgotten, and an engine record ordering the model not to re-do the work
- * overrides him. Two ways this returns `null` and the rung simply does not fire: a
- * withdrawn-report answer, and an answer from before the boundary. Neither reaches further back
- * for an OLDER answer — this read is scoped to the newest settled ask, and quoting a different
- * one would put a claim in front of the model that was never on offer.
- */
+/** The agent's OWN recorded answer, newest settled ask only, IN THE CURRENT SESSION; the engine QUOTES it.
+ *  A reset or withdrawal returns null and never falls back to an OLDER answer (never on offer). */
 export function recordedAnswerInConversation(agentId: string, conversationId: string): string | null {
   const session = withSessionBoundary(agentId, 'm1.created_at');
   const r = getDb().prepare(
@@ -237,57 +106,21 @@ export function recordedAnswerInConversation(agentId: string, conversationId: st
   return r.answer;
 }
 
-// ════════════════════════════════════════════════════════════════════════════════
-// SWEEP CORE-2 item 4 — THE PROMPT-ASSEMBLY READS OF THE SAME EDGE.
-//
-// Two blocks put "what you already answered" in front of the model, and until this task both
-// of them hand-wrote their own join against `messages.answer_message_id` at the injection
-// site — the exact shape this file's header says the edge exists to stop. They live here now.
-//
-// ⚠ WHAT MOVING THEM FOUND, and it is the mechanism behind the owner's 2026-08-09 incident:
-// the `engine.recently-answered` block was DEAD. `messages.created_at` became an epoch-ms
-// INTEGER at migration 131; the block passed that integer to `relativeTimeAgo`, which took a
-// SQLite datetime STRING and called `.replace` on it. Every render threw
-// `sqliteUtc.replace is not a function` on its FIRST row, straight into a
-// `catch { /* best effort */ }`. Measured on the owner's own body: 3,181 answered-stamped
-// rows, and the block builds for none of them. The engine's only standing instruction not to
-// re-execute finished work has not reached a model since 131 landed. The type is handled ONCE
-// here now, so a second caller cannot re-acquire the same bug.
-// ════════════════════════════════════════════════════════════════════════════════
+// The prompt-assembly reads of this edge; the epoch-ms date type is handled ONCE, here.
 
-/** How many settled asks the engine names. RC's own choice, carried: "the last few asks of
- *  THIS conversation that already have answers ... Bounded: 3 lines". The recall lane reads
- *  the same number so the two blocks cannot name different sets of the same thing. */
+/** How many settled asks the engine names; the recall lane uses this same number. */
 export const RECENTLY_ANSWERED_LIMIT = 3;
 
-/** One ask this agent has already answered in a conversation, newest first. */
 export interface AnsweredAsk {
   askId: string;
   askContent: string;
-  /** Epoch ms — `messages.created_at` since migration 131. */
+  /** Epoch ms INTEGER, not a SQLite datetime string. */
   askAt: number;
 }
 
-/**
- * The last `limit` asks of ONE conversation, IN THE CURRENT SESSION, that carry an answer stamp.
- *
- * `engine.recently-answered`'s read: a ledger of this thread's settled questions, not a search.
- * It cannot reach across a conversation boundary, it cannot reach across a SESSION boundary, and
- * it cannot say what the answer was — that last part is the recall lane's half.
- *
- * ⚠ THE SESSION HALF OF THAT SENTENCE WAS FALSE UNTIL 2026-09-26, and the reason it was believed
- * is worth carrying: a reset writes `agents.session_started_at` and NOTHING ELSE, so the same
- * `conversation_id` outlived every reset and a conversation-scoped read read straight through it.
- * Measured — 3,930 of 3,931 dividers had a prior stamped ask in the same conversation, and one
- * reach is byte-verified from a receipt. `memory/session-boundary.ts` owns the clause, the
- * INTEGER/TEXT trap it wraps, and the cited list of reads that must NOT bind it.
- *
- * ⚠ AND IT DROPS AN ANSWER WHOSE ARTEFACT IS GONE (`answerStillStands`), for both carriers it
- * feeds: this block and the recall lane's dedup set. THE LIST SHORTENS; IT DOES NOT REACH FURTHER
- * BACK — a voided row is filtered from rows already returned and nothing older is pulled up,
- * which would put an unexpected fourth ask in front of the model and drop its pair out of the
- * recall lane. Shortening changes neither.
- */
+/** The last `limit` stamped asks of ONE conversation, IN THE CURRENT SESSION: a settled-question
+ *  ledger, not a search; it crosses no conversation or session boundary (`session-boundary.ts`)
+ *  and never says what the answer was; withdrawals SHORTEN the list, never extend its reach. */
 export function recentlyAnsweredAsks(
   agentId: string, conversationId: string, limit: number,
 ): AnsweredAsk[] {
@@ -305,29 +138,9 @@ export function recentlyAnsweredAsks(
     .map((r) => ({ askId: r.id, askContent: r.content, askAt: r.created_at }));
 }
 
-// ════════════════════════════════════════════════════════════════════════════════════════
-// T69b — THE RECENTLY-ANSWERED BLOCK, A PURE FUNCTION OF ITS ROWS.
-//
-// It was an inline `.map()` in `steps/call-llm/pre-call-injections.ts` — the same shape, and
-// the same consequence, as the hand-written JOIN this file's header names as the disease. Two
-// things come with the move, and neither is cosmetic:
-//
-//  1. THE CLOCK LEAVES IT. It rendered `relativeTimeAgo(a.askAt)`, off `Date.now()`, so a
-//     byte-identical set of settled asks emitted different bytes at every bucket boundary —
-//     "just now" → "1 minute ago" → … — and this block sits AHEAD of the whole per-ask half
-//     of the tail, so each tick re-billed everything behind it. It states the RECORDED
-//     INSTANT now, in the one stamp format the fresh tail above it already uses and
-//     `msg.current-time` below it already explains ("subtract from the current time").
-//     Measured on the dev box at `2557747`, three consecutive quiet turns: this block was the
-//     FIRST divergence in the tail on every one of them.
-//
-//  2. IT IS TESTABLE. "identical rows ⇒ identical bytes" cannot be asserted about a `.map()`
-//     that only exists inside a 240-line async injection function holding an `AgentTurnState`.
-//
-// The excerpt slice, the frame and the wording are carried verbatim; only the time term moved.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// A pure function of its rows with NO clock: relative time would change bytes each bucket and re-bill
+// the cached tail behind this block. It states the recorded instant instead.
 
-/** How much of the ask is quoted. Carried verbatim from the deleted inline render. */
 const ANSWERED_EXCERPT_CHARS = 90;
 
 export const RECENTLY_ANSWERED_HEAD =
@@ -344,7 +157,6 @@ export function renderRecentlyAnsweredBlock(asks: readonly AnsweredAsk[]): strin
   return `${RECENTLY_ANSWERED_HEAD}\n${lines.join('\n')}`;
 }
 
-/** An ask and the reply that answered it, as one fact. */
 export interface AnsweredPair {
   askId: string;
   askContent: string;
@@ -354,25 +166,8 @@ export interface AnsweredPair {
   answerAt: number;
 }
 
-/**
- * Resolve any of the given message ids to the ANSWERED PAIR it belongs to — the ask half or
- * the answer half, whichever won the search.
- *
- * The recall lane hits raw rows by meaning, and a hit on an old question is worth very little
- * on its own: it tells the model it was asked something, not what it concluded. This walks
- * the same edge `recordedAnswerInConversation` walks, in both directions and for a SET, so
- * the lane can carry the conclusion beside the question.
- *
- * Scope is NOT widened: `agent_id` binds both halves, so one agent's recall can never surface
- * another's answer. The returned map holds ONE object per pair, reachable under BOTH ids —
- * which is what lets a caller dedup a pair whose two halves both hit.
- *
- * ⚠ AND A PAIR WHOSE ARTEFACT IS GONE IS NOT RETURNED (`answerStillStands`). This is the read
- * that carries the VERBATIM ANSWER — the *"Written up and sitting on your dashboard as a
- * preview card"* quote the round-2 red served for a `cancelled` row — so the predicate is
- * applied here for the same reason it is applied to `recentlyAnsweredAsks`: one question, one
- * owner, and every downstream carrier inherits the answer rather than re-deriving it.
- */
+/** Resolve any given message id, ask half or answer half, to its ANSWERED PAIR; `agent_id` binds
+ *  both halves. ONE object per pair lives under BOTH ids for caller dedup; withdrawn pairs drop. */
 export function answeredPairsForMessages(
   agentId: string, messageIds: readonly string[],
 ): Map<string, AnsweredPair> {
@@ -403,39 +198,10 @@ export function answeredPairsForMessages(
   return out;
 }
 
-// ════════════════════════════════════════════════════════════════════════════════
-// 1a — "did THIS turn already put the result in front of the person": a RECEIPT.
-// ════════════════════════════════════════════════════════════════════════════════
 
-/**
- * Requirement 1a. The old question was "does this text look like a closeout"; the honest
- * question is "is there a delivery on the ledger for this turn". PHASE-2 T5 made deliveries
- * universal at the five transport doors, so this is now answerable for every channel
- * including the dashboard bubble, which recorded nothing at all before that task.
- *
- * `conversationId` narrows to the person this turn is addressing: an email sent to a third
- * party while working on the owner's question is not the owner's answer. Pass `null` only
- * when the caller genuinely means "any person".
- *
- * ⚠ UX-REPAIR ROUND 4 T19 (D2) — AND THE HONEST QUESTION NEEDED ONE MORE CLAUSE TO BE HONEST.
- * The paragraph above was true about the LEDGER and false about the PERSON, because the
- * dashboard door records a receipt for EVERY assistant row including the tool-call chips.
- * Measured on the owner's box, 2026-08-10 13:45Z: a fired reminder produced FOUR `deliveries`
- * rows on one turn, all `outcome='delivered'`, `channel='dashboard'` — and all four pointed at
- * `display_kind='tool-turn'` message rows. Nothing the owner could read was among them. This
- * function returned TRUE, which suppressed the reminder-silence ghost (`handoff-floors.ts`),
- * the one arm whose whole job was to tell him the reminder never arrived.
- *
- * The narrowing is not new and is not invented here: `NON_ANSWERING_DISPLAY_KINDS` is the
- * declared set `work/ask-settlement.ts` already uses for exactly this reason — *"a bubble the
- * PLATFORM ITSELF has already declared not to be the answer … without this entry an ask could
- * be closed on a receipt pointing at a row the platform has on record as drafting"*, and the
- * proof check's delivery rule reads it too. Every reader of the question reads one set. IMPORTED,
- * never retyped.
- *
- * A receipt with NO message row behind it (the channel doors write those) is untouched: the
- * clause is a `NOT EXISTS`, exactly as the deliverable authority writes it.
- */
+/** The question is "is a delivery on the ledger for this turn", never how the text looks: every
+ *  door records a receipt. Bubbles are excluded via NOT EXISTS over the declared kinds; a
+ *  receipt with no message row still counts; `conversationId` narrows to the addressee. */
 export function turnDeliveredToPerson(
   agentId: string, turnNumber: number | null | undefined, conversationId?: string | null,
 ): boolean {
@@ -457,18 +223,7 @@ export function turnDeliveredToPerson(
   return hit !== undefined;
 }
 
-/**
- * Requirement 1g — the DELIVERY the truthful-answer key points at.
- *
- * `terminalAnswerRowId` is `result_delivery_id` in embryo (research 07 §1): a loop-local
- * pointer to the message row that WAS the answer, set at four genuine user-facing persists
- * and nowhere else. What it never had was the receipt — the row proving the message left
- * the building. This resolves it from the same ledger every other reader here uses, so the
- * outcome ladder, the ticket stamps and the owe-filter are all looking at one fact.
- *
- * Newest first: a turn that delivered twice (a reply plus a stranded-file surface) is
- * proven by its latest send, which is the one the answer row belongs to.
- */
+/** The delivery the truthful-answer key points at, from this ledger; newest send wins. */
 export function terminalDeliveryForTurn(
   agentId: string, turnNumber: number | null | undefined, conversationId?: string | null,
 ): string | null {
@@ -486,9 +241,6 @@ export function terminalDeliveryForTurn(
   return r?.id ?? null;
 }
 
-// ════════════════════════════════════════════════════════════════════════════════
-// 1b — "did work close WITHOUT a delivery": a JOIN.
-// ════════════════════════════════════════════════════════════════════════════════
 
 export interface ClosedWithoutDelivery {
   workId: string;
@@ -499,13 +251,7 @@ export interface ClosedWithoutDelivery {
   conversationId: string | null;
 }
 
-/**
- * Requirement 1b. Work that reached a terminal state inside the window with nothing
- * delivered for it. `done` cannot appear here — the DDL's own CHECK forbids `done` without
- * `result_delivery_id`, which is the point: the only way to close silently is to close
- * `failed` or `abandoned`, and that is a fact the engine should say out loud rather than a
- * pattern it should detect in prose.
- */
+/** Nothing delivered for it: only `failed`/`abandoned` close silently (DDL CHECK). */
 export function closedWithoutDelivery(
   agentId: string, sinceMs: number, limit = 5,
 ): ClosedWithoutDelivery[] {
@@ -518,9 +264,6 @@ export function closedWithoutDelivery(
   ).all(agentId, sinceMs, limit) as ClosedWithoutDelivery[];
 }
 
-// ════════════════════════════════════════════════════════════════════════════════
-// 1c — turn end enumerates still-claimed work, WITH the identity to escalate.
-// ════════════════════════════════════════════════════════════════════════════════
 
 export interface ClaimedWork {
   workId: string;
@@ -531,11 +274,7 @@ export interface ClaimedWork {
   rootId: string;
 }
 
-/**
- * Requirement 1c. The escalation used to enumerate `legacy_tasks.status='in_progress'` and
- * then hunt for who to tell; a claim is a state on the spine now and it carries the
- * conversation it belongs to, so the identity comes back with the row.
- */
+/** Claimed work, each row carrying its conversation: the identity to escalate comes back with it. */
 export function stillClaimedWork(
   agentId: string, opts?: { turnNumber?: number | null; limit?: number },
 ): ClaimedWork[] {
@@ -555,28 +294,10 @@ export function stillClaimedWork(
   ).all(...params) as ClaimedWork[];
 }
 
-// ════════════════════════════════════════════════════════════════════════════════
-// 1e — "settled" is ONE query.
-// ════════════════════════════════════════════════════════════════════════════════
 
-/**
- * Requirement 1e: "any work open for a human counterparty right now?"
- *
- * The consumers are the proactive-send budget and the settled-context channel hold. Both
- * used `!hasUnansweredUser`, which required BUILDING the waiting set — fifty rows, a
- * per-row origin re-derivation and a Map — to learn a single boolean.
- *
- * SCOPE, stated because it is a decision and not an accident: `kind='ask'`. An open TASK is
- * work the agent owes ITSELF; an open ASK is a person waiting on a reply, which is what
- * "settled" has always meant here and what the proactive budget is calibrated against.
- * Widening it to every open row would silence the settled-context hint on any box carrying
- * an open backlog, which is a behaviour change nobody asked for.
- *
- * The join to `messages` is the identity half and it is load-bearing: an ask whose root row
- * is gone (a cleared history, a terminated agent) can never be served, and counting it would
- * leave the agent permanently un-settled. It is the same join the waiting set makes, so the
- * two cannot drift apart.
- */
+/** Scope `kind='ask'` deliberately: an ask is a person waiting, a task is work owed to self,
+ *  and widening to every open row would silence the settled-context hint on any box with a
+ *  backlog. The `messages` JOIN is load-bearing: an ask whose root row is gone can never serve. */
 export function hasOpenHumanWork(agentId: string): boolean {
   const hit = getDb().prepare(
     `SELECT 1 AS ok
@@ -587,11 +308,6 @@ export function hasOpenHumanWork(agentId: string): boolean {
   return hit !== undefined;
 }
 
-// ════════════════════════════════════════════════════════════════════════════════
-// The turn-outcome reader (PHASE-2 T2 adjudication #3 — the orphan-gate debt on
-// `turns.exit_reason`). R-0's finding was that `finalizeTurn` writes the true outcome and
-// nothing reads it. This is the reader, and the disposition below is its consumer.
-// ════════════════════════════════════════════════════════════════════════════════
 
 export interface TurnOutcome {
   exitReason: TurnExitReason | null;
@@ -624,65 +340,13 @@ export function turnOutcome(agentId: string, turnNumber: number | null | undefin
   };
 }
 
-// ════════════════════════════════════════════════════════════════════════════════
-// THE DISPOSITION — the two writers in this file.
-//
-// PHASE-2 progress.md, T1 adjudication #2, ruled under standing authority: the plan clause
-// "going idle reconciles to PAUSED, never complete" STANDS, and it is reconciled with the
-// P2 drive boundary ("an in_progress task does not EVER just get ignored") by three riders,
-// all three of which are implemented here and tested beside them:
-//
-//   (a) the transition keys on the ENGINE's own RECORD of the turn — `turns.exit_reason` +
-//       `turns.answered` + `turns.effectful_calls`, plus the delivery ledger — and NEVER on
-//       the shape of the model's prose. There is no regex in this file and no text is read;
-//   (b) the REOPEN edge is part of the same requirement: the owner's next ask resumes the
-//       work to the exact state it was paused from;
-//   (c) paused work stays visible: a paused hold is a tag the owner sees on the board
-//       and the daily brief reads, NOT the hidden `deliverable_shown` flag whose
-//       invisibility was the actual complaint behind P2.
-//
-// WHY THE DIFFERENCE FROM `deliverable_shown` IS STRUCTURAL, not a matter of degree. The
-// deleted stamp inferred DELIVERY from the coexistence of a non-empty reply and open tasks,
-// applied to EVERY in_progress task, was invisible, and stood the ladder down silently.
-// This pauses only when the engine holds a DELIVERY RECEIPT for the turn, only when the
-// turn performed ZERO effectful calls (a turn that acted is still working — the yacht
-// research hour had exec and web calls in it and would not pause here), records itself in
-// `task_log`, and is undone by the owner's next word.
-//
-// WHERE THESE TWO WRITE (PHASE-2 T8b, the conversion T6 declared and dated): both go
-// through `transition()` on the `work` spine now. The pause carries the delivery receipt it
-// already held as its evidence_ref, which is what lets it be `by: 'engine'` at all (G6: the
-// engine may only assert what it can point at); the reopen is the OWNER's word and says so.
-// ════════════════════════════════════════════════════════════════════════════════
+// THE DISPOSITION, the only writer here: keys on the ENGINE's own records, NEVER on the shape
+// of prose. A pause is a VISIBLE hold on the board, recorded on the task's trail, reopened explicitly.
 
 export interface PauseResult { paused: number; ids: string[] }
 
-/**
- * The turn spoke to the owner, performed nothing, and closed nothing: the ball is with the
- * person, so the work stops being driven and starts waiting — visibly.
- *
- * Returns 0 without touching anything unless ALL of these hold, each a recorded fact:
- *   * the turn record says `answered` (the truthful-answer key, not "some text existed");
- *   * a real delivery for that turn is on the ledger (the receipt);
- *   * the turn recorded ZERO effectful calls (it did not DO anything, it TALKED);
- *   * the caller did not itself transition a ticket this turn.
- * Recurring schedules are carved out: a schedule is never paused by a missed close-out
- * (janitorial, not forgery — the carve-out is carried verbatim from the going-idle
- * reconciliation this replaces).
- *
- * `touchedSince` IS THE SCOPE, and it is the difference between this and the stamp P2
- * deleted. That one marked EVERY in_progress task delivered; this one may only dispose of
- * work THIS TURN ACTUALLY TOUCHED — `updated_at` inside the turn's own window. A backlog
- * item nobody moved is not this turn's to park, it is the poke ladder's to drive, and the
- * "idle in_progress task gets driven, always" invariant survives untouched because the rows
- * it guards are exactly the rows this window excludes.
- */
-/** The request a continuation chain is serving. A continuation's turn record carries no root
- *  (subject `conv` with the restored conversation key, or `continuation` when it has none), and
- *  the turn before it is, by construction, the one that stashed it — `continuationContext` is
- *  consumed by the very next preflight. So: walk back over rootless turns of the SAME
- *  conversation to the turn that served a row, and return that row. Bounded; null when the chain
- *  does not start on a served request. */
+/** The request a continuation chain serves: a continuation's turn record carries no root, so
+ *  walk back over rootless same-conversation turns to the one that served a row. Bounded. */
 function servedRequestOfContinuation(agentId: string, turnNumber: number | null | undefined): string | null {
   if (turnNumber == null) return null;
   const stmt = getDb().prepare(
@@ -700,6 +364,9 @@ function servedRequestOfContinuation(agentId: string, turnNumber: number | null 
   return null;
 }
 
+/** Returns 0 unless ALL hold, each a recorded fact: the turn record says `answered`; a real
+ *  delivery for that turn is on the ledger; ZERO effectful calls; the caller transitioned
+ *  nothing; recurring schedules never pause. `touchedSince` IS THE SCOPE: only touched work. */
 export function pauseDriveWorkWaitingOnOwner(
   agentId: string, turnNumber: number | null | undefined,
   opts?: {
@@ -707,59 +374,23 @@ export function pauseDriveWorkWaitingOnOwner(
     conversationId?: string | null;
     /** SQLite datetime text ('YYYY-MM-DD HH:MM:SS'). Omitted only in unit tests. */
     touchedSince?: string | null;
-    /** SWEEP-A TB2: did this turn DELEGATE the ask it was serving (a join under the trigger
-     *  work row)? See the refusal below. */
     delegatedThisTurn?: boolean;
-    /** t137: the engine queued this turn's own continuation (engine state, never prose). */
     queuedOwnContinuation?: boolean;
-    /** t139 round 2, I4: the engine itself judged this turn's request multi-step work and the
-     *  turn made no effectful call — its bubble was the START LINE (engine state, never prose). */
     startLineOnly?: boolean;
-    /** t139 round 2: the agent wrote to the tracker this turn (a note, an edit, an open). */
     trackerWriteThisTurn?: boolean;
-    /** t139 round 2: the message row this turn SERVED (`turnCtx.root.sourceMessageId`). Only
-     *  work linked to that request can be waiting on its sender's answer. Omitted only in the
-     *  unit tests that predate the link. */
+    /** The message row this turn SERVED; only work linked to it can await its sender's answer. */
     servedSourceMessageId?: string | null;
   },
 ): PauseResult {
   const none: PauseResult = { paused: 0, ids: [] };
   if (opts?.transitionedThisTurn) return none;
-  // ⚠ SWEEP-A TB2 — A DELEGATING TURN IS NOT A TURN THAT HANDED THE BALL BACK.
-  //
-  // This disposition's whole premise is "the turn TALKED and did not ACT, so the work is now
-  // waiting on the person". A turn that opened a delegation join did act: the work is waiting
-  // on the PIECES, not on the owner, and pausing the compile self-task at that moment is the
-  // same error as closing the owner's ticket on the status line — a job marked parked because
-  // somebody said they had started it.
-  //
-  // MEASURED (run bmsfy5txir3, `delegation-longhorizon` attempt 1): the mid-delegation
-  // snapshot read `"Compile final report" -> SELF status=paused`, which is clause (a)'s red
-  // and, through `synthesisHonestlyOpen`, half of clause (d)'s. The delegating turn delivers
-  // one status line and executes no NON-IDEMPOTENT call, so every gate below passed and the
-  // engine paused the very task the owner had just told the agent to keep in progress.
-  //
-  // requirement preserved: the disposition still fires for a turn that genuinely answered and
-  // performed nothing — that is unchanged and is what every other caller sees. This refuses
-  // exactly one shape, and the shape is a ROW (`joinState(triggerWorkId) !== null`), never a
-  // reading of what the turn said.
+  // A DELEGATING TURN did ACT (opened a delegation join): work waits on the PIECES, not the owner.
   if (opts?.delegatedThisTurn) return none;
-  // ⚠ t137 (OR-LONG-JOBS): a turn that queued its own continuation (15-minute park, tool-loop
-  // cap, context rebuild) is still WORKING; pausing it "waiting on the owner" is the pause the PM
-  // rejected as vague (#9). requirement preserved: adjudication #2 still fires for a turn that
-  // answered, did nothing and STOPPED — narrowed for working turns, never removed.
+  // A turn that queued its own continuation is still WORKING, not waiting on a person.
   if (opts?.queuedOwnContinuation) return none;
-  // ⚠ t139 round 2 (I4): a turn whose request the ENGINE judged to be multi-step work, and which
-  // then only said it was starting, did not hand the ball to the owner — the next move is the
-  // agent's, and its ask goes back OWED in the same finalize (`work/ask-settlement.ts`
-  // `startLineOnly`). Parking the task "waiting on the owner" took the owner's request off the
-  // live list while the work had not begun. requirement preserved: a turn that answered, did
-  // nothing, and was NOT judged work by the engine is paused exactly as before.
+  // A turn judged multi-step work that only said it was starting: the next move is the AGENT's.
   if (opts?.startLineOnly) return none;
-  // ⚠ t139 round 2: the same refusal `transitionedThisTurn` makes for a status change, widened
-  // to every tracker write — a turn that recorded a note or an edit on its work ACTED on it by
-  // its own record (driven: an owner's change of plan, recorded as an edit and acknowledged,
-  // parked the task "waiting on the owner" and took his words off the live list).
+  // A tracker write (a note, an edit, an open) means the turn ACTED on its own record.
   if (opts?.trackerWriteThisTurn) return none;
   const outcome = turnOutcome(agentId, turnNumber);
   if (!outcome || !outcome.answered) return none;
@@ -769,28 +400,13 @@ export function pauseDriveWorkWaitingOnOwner(
   const db = getDb();
   const since = opts?.touchedSince ?? null;
   const sinceMs = since == null ? null : tsToMs(since);
-  // ⚠ t139 round 2: a turn that SERVED NOTHING (its record's subject is 'none' — e.g. the wake a
-  // delegate's reply causes) answered no one's message, so it cannot have handed the ball back
-  // to a person. And a task THIS turn OPENED is the agent's own record that it took the work on;
-  // parking it "waiting on the owner" in the same breath contradicts that record. Both are
-  // recorded facts (the turn row, `work.origin_turn`), never a reading of the reply. Both matter
-  // now that a waiting task carries a pointer instead of the owner's words on the task list.
-  // requirement preserved: work an earlier turn opened, touched by a turn that answered a
-  // person and performed nothing, is paused exactly as before.
+  // A turn that served nothing answered no person, so it cannot have handed the ball back; and
+  // a task THIS turn OPENED is contradicted by parking it in the same breath. Both are rows.
   const served = db.prepare('SELECT subject_kind FROM turns WHERE agent_id = ? AND turn_number = ?')
     .get(agentId, turnNumber) as { subject_kind: string | null } | undefined;
   if (served && served.subject_kind === 'none') return none;
-  // ⚠ t139 round 2 — ONLY WORK LINKED TO THE REQUEST THIS TURN ANSWERED. With the automatic
-  // reopen edge deleted (R-V333-5), a pause is undone only by the agent, so a pause that misfires
-  // now STRANDS work. Driven: "What are you working on?" answered in words parked the very job it
-  // asked about, and a change of plan recorded and acknowledged parked it too. The candidate set
-  // was "everything this turn touched"; it is now the work whose `source_message_id` is the row
-  // this turn served — the one request whose sender the reply could be waiting on. `undefined`
-  // keeps the pre-link behaviour for the unit tests that call this directly.
-  // A CONTINUATION serves the request its chain started on: the turn record of a continuation
-  // carries no root, and the turn before it is, by construction, the one that stashed it
-  // (`continuationContext` is consumed by the very next preflight), so the walk is over recorded
-  // turns, never a guess.
+  // ONLY WORK LINKED TO THE ROW THIS TURN SERVED: its sender is the one a reply could await.
+  // No automatic reopen exists, so a misfiring pause STRANDS work; `null` walks the chain.
   const servedId = opts?.servedSourceMessageId === null
     ? servedRequestOfContinuation(agentId, turnNumber)
     : opts?.servedSourceMessageId;
@@ -819,12 +435,5 @@ export function pauseDriveWorkWaitingOnOwner(
   return { paused: ids.length, ids };
 }
 
-// ── R-V333-5 (t139): THE AUTOMATIC REOPEN EDGE IS DELETED ──────────────────────────────────
-// `resumeWorkOnOwnerAsk` lived here. On ANY owner message — "You there?" included — it flipped
-// up to ten engine-paused tasks of any age and any conversation back to their pre-pause state,
-// so a month-old job became "what you should be working on" on a presence ping: the #7 shape,
-// and the platform doing something nobody asked for (OR-NOTHING-UNASKED). Driven in
-// `work/__tests__/t139-every-request-lands-on-the-task-list.test.ts` (R-V333-5).
-// requirement preserved: a task waiting on the owner never vanishes — it stays on the agent's
-// task list (`memory/work-board-lane.ts`), labelled as waiting and not current; when the
-// owner's message IS the answer, the AGENT resumes it with `work_update(action="status")`.
+// A pause is reopened ONLY by an explicit status change; a task waiting on the owner stays on the list
+// labelled waiting, and when the owner's message is the answer the AGENT resumes it with `work_update`.

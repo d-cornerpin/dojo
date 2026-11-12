@@ -1,19 +1,7 @@
-// ════════════════════════════════════════
-// Cross-turn attempt record (remediation Phase 2, Invariant II).
-//
-// The in-memory loop detector catches circling WITHIN a turn; its state dies
-// with the turn, so "tries the same broken thing once per wakeup, forever"
-// was invisible. This records FAILING tool calls by canonical signature in
-// the DB (durable means the DB; shared-state is process memory) and lets the
-// loop surface a note when the same call keeps failing across turns.
-//
-// Only failures are recorded: an identical SUCCEEDING call across turns is
-// routine (a daily email check has the same signature every day), not
-// circling. A success clears the record for that signature.
-//
-// This table is the CIRCLING record and nothing else. "Is this tool healthy" is answered by the
-// per-(agent, tool) record in `tool-outcomes.ts`, which this function also feeds (t190).
-// ════════════════════════════════════════
+// Cross-turn attempt record: FAILING tool calls by canonical signature, in the DB, because the
+// in-memory loop detector sees only within one turn and dies with it. Only failures are
+// recorded (a SUCCEEDING repeat is routine, and a success clears the record); tool health
+// itself is `tool-outcomes.ts`, which this function also feeds.
 
 import { getDb } from '../../db/connection.js';
 import { remedyNote } from '../../tools/error-remedies.js';
@@ -24,11 +12,7 @@ const CROSS_TURN_FAILURE_NOTE_THRESHOLD = 3;
 // A failure streak older than this is stale history, not live circling.
 const FAILURE_WINDOW_HOURS = 48;
 
-/**
- * Record a tool call's outcome. Returns the cross-turn failure count for
- * this signature (0 on success or if recording failed). Best-effort: never
- * throws into the turn.
- */
+/** Record a tool call's outcome; returns the cross-turn failure count (0 on success). Never throws. */
 export function recordToolOutcome(
   agentId: string,
   toolName: string,
@@ -65,12 +49,8 @@ export function recordToolOutcome(
   }
 }
 
-/**
- * Advisory note appended to a failing tool result once the cross-turn streak
- * crosses the threshold. Advisory, not a hard block: cross-turn identity has
- * a higher false-positive risk than within-turn, so the engine informs and
- * the within-turn detector still owns hard blocking.
- */
+/** Advisory note once the cross-turn streak crosses the threshold, not a hard block:
+ *  cross-turn identity has a higher false-positive risk than within-turn. */
 export function crossTurnFailureNote(toolName: string, hitCount: number): string | null {
   if (hitCount < CROSS_TURN_FAILURE_NOTE_THRESHOLD) return null;
   return (
@@ -80,11 +60,7 @@ export function crossTurnFailureNote(toolName: string, hitCount: number): string
   );
 }
 
-/**
- * Everything the engine appends to a FAILING result: the registered remedy for this error (K37),
- * then the cross-turn "do not retry as-is" note once the streak crosses its threshold. `null`
- * when there is nothing to add.
- */
+/** A FAILING result's additions: the registered remedy, then the cross-turn note; else null. */
 export function failureNotes(toolName: string, hitCount: number, errorText: string): string | null {
   return (remedyNote(toolName, errorText) + (crossTurnFailureNote(toolName, hitCount) ?? '')) || null;
 }
