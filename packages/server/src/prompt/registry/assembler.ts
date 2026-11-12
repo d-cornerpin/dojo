@@ -1,11 +1,5 @@
-// Prompt-assembly registry — the walker + context builder (R3+).
-//
-// assembleSystemFromRegistry walks the canonical slot order, preferring a
-// registered entry for each slot and falling back to the legacy per-slot text
-// for everything not yet migrated. It returns the joined system prompt plus the
-// entry id that produced each part (for the receipt). The legacy parts producer
-// (assembleSystemPromptParts) stays the source of truth for unmigrated slots
-// until R7 deletes it. See DOJO-PROMPT-REGISTRY-PLAN.md §2.2.
+// Prompt-assembly registry walker and context builder: walks the canonical slot order and returns the
+// joined system prompt plus the entry id that produced each part (for the receipt).
 
 import { getDb } from '../../db/connection.js';
 import { isPrimaryAgent, isPMAgent, getOwnerName } from '../../config/platform.js';
@@ -29,13 +23,7 @@ const logger = createLogger('prompt-registry');
 // entry id per process is the one line worth having; the rest would be spam.
 const warnedRenderFailures = new Set<string>();
 
-/**
- * Build the single context bundle threaded to every entry. Computes the cheap,
- * shared identity/capability values once. Inbound-channel resolution and the
- * full TTS-engine resolution are populated as the slots that need them migrate
- * (R4); message-side turn state comes from the loop via `turnState` (R5). Until
- * then those fields carry safe defaults that no migrated entry reads.
- */
+/** Build the context bundle threaded to every entry; shared values are computed once. */
 export function buildAssemblyContext(
   agentId: string,
   modelId: string,
@@ -49,15 +37,12 @@ export function buildAssemblyContext(
     capabilities = [];
   }
   const isPrimary = isPrimaryAgent(agentId);
-  // Inbound-channel resolution runs once, primary only (matches the legacy front
-  // block's `if (isPrimaryAgent)` gate). Non-primary agents have no front-three.
+  // Inbound-channel resolution runs once, primary only; non-primary agents have no front-three.
   const inbound: InboundContext = isPrimary
     ? resolveInboundContext(agentId)
     : { inboundChannel: null, smsFromNumber: null, phoneFromNumber: null, replyDestination: null, lastContent: '' };
-  // 3.5: the route this turn's reply takes comes from the turn's ADDRESS (computed once in
-  // preflight from the trigger's counterparty), never from the newest row of whichever
-  // conversation wrote last. No address (a non-turn caller) or a non-person address
-  // (A2A, engine, notification) means there is no human reply tag.
+  // The reply route comes from the turn ADDRESS (set once in preflight), never from the newest row of
+  // whichever conversation wrote last; a non-person address (A2A, engine, notification) has no reply tag.
   const address = turnContext?.address;
   if (isPrimary && address) {
     const person = address.kind === 'person';
@@ -76,8 +61,7 @@ export function buildAssemblyContext(
     capabilities,
     contextWindow: agentTurnWindow(agentId, modelId),
     ownerName: getOwnerName(),
-    // The reply goes to THIS turn's counterparty (the actual inbound sender),
-    // not always the owner. Falls back to the owner for proactive/dashboard turns.
+    // The reply goes to THIS turn's counterparty, falling back to the owner for proactive/dashboard turns.
     replyRecipientName: turnContext?.counterparty?.name ?? getOwnerName(),
     ttsEngine: resolveTtsEngine(turnContext),
     lastUserContent: inbound.lastContent,
@@ -85,7 +69,6 @@ export function buildAssemblyContext(
     smsFromNumber: inbound.smsFromNumber,
     phoneFromNumber: inbound.phoneFromNumber,
     replyDestination: inbound.replyDestination,
-    // Message-side turn state (R5 threads the real values from the loop).
     loopCount: turnState?.loopCount ?? 1,
     turnNumber: turnState?.turnNumber ?? 0,
     lastUserMessageContent: turnState?.lastUserMessageContent ?? '',
@@ -95,19 +78,10 @@ export function buildAssemblyContext(
 
 export interface RegistrySystemResult {
   text: string;
-  /** Entry id per emitted part (null = produced by the legacy fallback). */
   entryIds: (string | null)[];
 }
 
-/**
- * Produce the system prompt from the registry. Entry-only walk: every system
- * slot is a registered entry, so there is no legacy fallback. getSystemEntries()
- * returns them slot-sorted (canonical order). A render that throws is contained
- * (skipped) so one bad entry can't fail the whole assembly, matching the legacy
- * per-block try/catch. (FA-PT3: the raw-append weak-hint path was deleted; the
- * weak technique hint is a message entry, msg.technique-weak, not a system
- * append, so there is no longer a rawAppend branch to skip.)
- */
+/** Build the system prompt from slot-sorted entries; a render that throws is skipped, not fatal. */
 export function assembleSystemFromRegistry(ctx: AssemblyContext): RegistrySystemResult {
   const outParts: string[] = [];
   const outIds: (string | null)[] = [];
@@ -117,8 +91,8 @@ export function assembleSystemFromRegistry(ctx: AssemblyContext): RegistrySystem
       r = (entry.when?.(ctx) ?? true) ? entry.render(ctx) : null;
     } catch (err) {
       r = null;
-      // Contained, but not silent: an entry missing from the prompt with no
-      // trace looks like an agent that lost an instruction. Warn once per id.
+      // Contained but not silent: an entry missing from the prompt with no trace looks like a lost
+      // instruction. Warn once per id.
       if (!warnedRenderFailures.has(entry.id)) {
         warnedRenderFailures.add(entry.id);
         logger.warn('a system prompt section failed to render and was left out of the prompt', {
@@ -138,7 +112,6 @@ export function assembleSystemFromRegistry(ctx: AssemblyContext): RegistrySystem
   return { text: outParts.join(PART_JOINER), entryIds: outIds };
 }
 
-/** Render a single message-side entry against a prebuilt context. */
 export function renderMessageEntry(id: string, ctx: AssemblyContext): EngineMessage | null {
   const entry = getMessageEntries().find((e) => e.id === id);
   if (!entry) return null;
@@ -148,17 +121,10 @@ export function renderMessageEntry(id: string, ctx: AssemblyContext): EngineMess
   return Array.isArray(r) ? (r[0] ?? null) : r;
 }
 
-/**
- * Render a message entry by id and inject it into `messages` via the single
- * engine-message channel — the registry-owned injection path. The loop calls
- * THIS instead of pushEngineMessage at each §3c site, so once the legacy inline
- * branches are deleted (R7) no raw injection remains in loop.ts (R8 guard).
- * Returns whether a message was injected.
- */
+/** Render a message entry by id and inject it via the single engine-message channel. */
 export function injectRegistryMessage(id: string, messages: EngineMessage[], ctx: AssemblyContext): boolean {
   const msg = renderMessageEntry(id, ctx);
   if (!msg || typeof msg.content !== 'string') return false;
-  // F23: the registry path already knows the entry id, so every registered injection is
-  // tagged with its REAL id (`msg.turn-context`, `msg.tool-note`, …) for free.
+  // The entry id is known here, so every registered injection is tagged with its real id.
   return pushEngineMessage(messages, msg.content, id);
 }

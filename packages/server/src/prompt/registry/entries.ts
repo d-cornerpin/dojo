@@ -1,10 +1,5 @@
-// Registered prompt-injection entries.
-//
-// Each entry's `render` calls the SAME function the legacy parts producer calls,
-// so the registry output is byte-identical to legacy for that slot by
-// construction. Slots are migrated incrementally (R3 → R7); this file grows one
-// entry at a time and the matching legacy block is deleted only at R7, after the
-// registry has been byte-proven on the dev server.
+// Registered prompt-injection entries. Each `render` delegates to its section's renderer, most of them
+// in prompt/assembler.ts, so one function owns each section's text.
 
 import { isPresenceCheck, PRESENCE_HINT } from '../presence-check.js';
 import { register } from './registry.js';
@@ -40,7 +35,7 @@ import { generateTechniqueIndex, generateDraftTechniqueContext } from '../../tec
 import { detectContextGap } from '../../agent/v2/classifiers/context-gap.js';
 import { userWords } from '../../agent/v2/turn-address.js';
 
-// ── System-prompt entries (R3 proof-of-concept: one static, one computed) ──
+// System-prompt entries
 const SYSTEM_ENTRIES: SystemInjection[] = [
   {
     id: 'sys.time',
@@ -268,26 +263,16 @@ const SYSTEM_ENTRIES: SystemInjection[] = [
   },
 ];
 
-// ── Message-side entries (R3 PoC: one conditional, standalone injection) ──
-// Note: msg.technique-strong was the plan's named PoC, but it is conjoined with
-// the weak hint (shared async matcher + a once-only recordTechniqueUsage) and
-// the weak hint does a raw `systemPrompt +=`, so it can't migrate cleanly in
-// isolation, it migrates as a GROUP in R5. msg.context-gap is the clean
-// representative: sync, standalone, conditional, message-side.
+// Message-side entries
 const TOOL_NOTE_TEXT =
   `[System note: Your current model does not support tool calling. You can only respond with text. ` +
   `If the person you are talking to asks you to do something that requires tools (file access, web search, tracker, etc.), ` +
   `explain that your model doesn't support it and suggest they switch to a tool-capable model in Settings.]`;
 
-// C28 Part 1: the per-turn volatile routing/presence context, rendered as ONE
-// near-tail engine message instead of scattered across the cached system prefix.
-// Combines (in fixed order): counterparty header, the [Reply destination] routing
-// tag (built from the turn's address, `agent/v2/turn-address.ts`), channel landscape,
-// phone conduct (phone turns), the live iMessage bridge state (P-5), and the
-// othersWaiting / conversational-turn just-in-time hints (moved from the system
-// string, memory/assembler.ts). Everything here changes turn-to-turn, so keeping
-// it OUT of the system prefix is what makes the prefix cache across channel /
-// presence / waiting-count changes (all-provider fix, P-1).
+// The per-turn volatile routing/presence context as ONE near-tail engine message: counterparty header,
+// reply-destination tag (from the turn's address), channel landscape, phone and voice conduct,
+// integration-reconnect lines, iMessage bridge state and the waiting/conversational hints. It changes
+// turn to turn, so keeping it out of the system prefix lets the prefix cache across those changes.
 function renderTurnContext(ctx: AssemblyContext): EngineMessage | null {
   const tc = ctx.turnContext;
   const parts: string[] = [];
@@ -299,40 +284,30 @@ function renderTurnContext(ctx: AssemblyContext): EngineMessage | null {
       address: tc.address,
     }));
   }
-  if (tc?.counterparty && tc.counterparty.kind !== 'agent' && !tc.isEngineTurn && !tc.isNotificationTurn && isPresenceCheck(ctx.lastUserMessageContent)) parts.push(PRESENCE_HINT);   // t182
+  if (tc?.counterparty && tc.counterparty.kind !== 'agent' && !tc.isEngineTurn && !tc.isNotificationTurn && isPresenceCheck(ctx.lastUserMessageContent)) parts.push(PRESENCE_HINT);
   const rd = renderReplyDestination(ctx.replyDestination, ctx.smsFromNumber, ctx.phoneFromNumber, ctx.replyRecipientName);
   if (rd) parts.push(rd);
   const cl = renderChannelLandscape(ctx.inboundChannel);
   if (cl) parts.push(cl);
   const pc = renderPhoneConduct(ctx.inboundChannel, ctx.lastUserContent, ctx.turnContext);
   if (pc) parts.push(pc);
-  // FA-PT1: generic voice-mode conduct (C6), mutually exclusive with phone conduct.
-  // Moved here from the cached system prefix (slot 2300) so a voice/text modality
-  // switch (or a non-voice turn interleaved into a live voice conversation) no
-  // longer busts the primary's whole system cache. Present only on voice turns, so
-  // it lives on the volatile tail exactly like phone conduct (C28).
+  // Voice-mode conduct; renderVoiceConduct returns null on phone turns, so it never doubles phone conduct.
   const vc = renderVoiceConduct(ctx.inboundChannel, ctx.turnContext);
   if (vc) parts.push(vc);
-  // FA-PT1: integration-reconnect honesty breadcrumb(s) (Inv I), 0+ parts. Moved
-  // here from the system prefix (slot 1700): they flip in/out of the prefix on live
-  // connection health (the same cache-busting class), so they ride the volatile tail
-  // instead. Content identical; renderIntegrationReconnect keeps its own non-PM gate
-  // and name-sorted determinism.
+  // Integration-reconnect breadcrumbs (0+ parts); renderIntegrationReconnect keeps its own non-PM gate.
   for (const ir of renderIntegrationReconnect(ctx.agentId)) parts.push(ir);
-  // P-5: live iMessage bridge state (the slot-700 tool guidance now carries only a
-  // stable union sentence and points here). Primary only, matching where the tool
-  // guidance describes the bridge.
+  // Live iMessage bridge state; primary only, matching where the tool guidance describes the bridge.
   if (ctx.isPrimary) {
     let bridgeOn = false;
     try { bridgeOn = isIMBridgeRunning(); } catch { /* default off */ }
     parts.push(`iMessage bridge: ${bridgeOn ? 'on' : 'off'}`);
   }
-  // othersWaiting head-of-line hint (moved verbatim from memory/assembler.ts).
+  // othersWaiting head-of-line hint.
   if (tc?.counterparty?.kind === 'user' && (tc.othersWaiting ?? 0) > 0) {
     const n = tc.othersWaiting!;
     parts.push(`[Engine hint: ${n} other conversation${n === 1 ? ' is' : 's are'} waiting for you right now. If THIS request is quick, just answer it. If it's a large or multi-step task (research, a plan, a project), don't do all the deep work now while the others wait, send a brief acknowledgment, capture it with work_open(kind="project") / a tracker task, and end the turn so you can serve the others; then work the project across later turns. ${tc.address?.kind === 'person' ? `Your written reply goes to ${tc.address.name} by ${deliveryLabel(tc.address.deliveryChannel)}, as usual.` : 'Reply as usual.'} Speak only to the person this turn is for: your text output IS the message they receive, so write the reply itself, don't narrate your triage ("I have two things to handle, let me reply to X and check Y's thread") and don't mention other people's or other agents' threads to them. Deciding what order to work things in is yours to do silently; the engine will bring you back for the others.]`);
   }
-  // conversational-turn hint (moved verbatim; suppressed when othersWaiting covers it).
+  // conversational-turn hint, suppressed when othersWaiting covers it.
   if (tc?.conversationalTurn && !(tc?.othersWaiting && tc.othersWaiting > 0)) {
     parts.push(`[Engine hint: this is a quick conversational request, not a multi-step project. Handle it directly, answer it, do the small thing (set the reminder, move the event), or ask ONE clarifying question and then stop. Do NOT create a tracked project/task or loop in the PM for something this small. If you're missing a detail, just ask ${userWords(tc?.address)} once and wait, the conversation holds until they reply, so don't re-ask it later or keep working it in the background.]`);
   }
@@ -375,29 +350,8 @@ const MESSAGE_ENTRIES: MessageInjection[] = [
       return hint ? { role: 'user', content: hint } : null;
     },
   },
-  // ── STRIP (PHASE-3 T3, RULING P3-R1 item 2): `msg.tracker-notif` (slot 1500). ──
-  //
-  // requirement preserved: "an agent that has just been ASSIGNED work learns it was
-  // assigned, and how to close it" — owned end to end by
-  // `tracker/notify.ts:injectTaskAssignmentNotification`, which PERSISTS a
-  // `[SOURCE: TRACKER TASK ASSIGNMENT]` engine-event row into the assignee's conversation,
-  // broadcasts it to the dashboard, and WAKES the assignee. The entry was never that
-  // mechanism: it was the SAME content pushed a second time into the in-flight array, for
-  // the one case where the assignee was the agent already running (`skipWake: true`).
-  //
-  // Re-derived at `8f36cdb` before deciding, not inferred from the absence (#15):
-  //   • its only injection site was the multistep classifier's auto-create block, deleted
-  //     whole by `d00f270` (PHASE-2 T8c item 3 — 1,135 of 1,183 auto-created projects were
-  //     empty; the classifier no longer creates anything);
-  //   • `injectTaskAssignmentNotification` is ALIVE with two live callers,
-  //     `tracker/tools.ts:891` and `:1214`, both agent-driven;
-  //   • `skipWake: true` now has ZERO callers whole-tree (`git grep -n skipWake` →
-  //     `notify.ts:42/:103/:193` and nothing else), so in every surviving path the assignee
-  //     is a DIFFERENT agent, is woken, and reads the notice as a persisted row on its own
-  //     next assembly. The same-turn duplicate is not merely unused; it is unreachable.
-  // A registered entry with no injection site is exactly what the lane table makes
-  // impossible, so it is removed rather than left registered and never rendered.
-  // (`AssemblyContext.trackerNotif` went with it; `skipWake` was T9's, and T9 STRIPPED it.)
+  // msg.tracker-notif (slot 1500) is deliberately not registered: a task-assignment notice is a persisted
+  // row written by tracker/notify.ts (injectTaskAssignmentNotification), never an in-flight injection.
   {
     id: 'msg.delegation-hint',
     target: 'messages',
@@ -487,11 +441,8 @@ const MESSAGE_ENTRIES: MessageInjection[] = [
       'most-stable-first and a peer status flip is rarer than a new ask.',
     render: (ctx) => (ctx.recallLane ? { role: 'user', content: ctx.recallLane } : null),
   },
-  // ── W81: THE FOUR LANES THE OWNER'S DS4 FINDING 2 MOVED BELOW THE CONVERSATION ─────────
-  // One rule, four applications: whatever a tool can mutate must render BELOW the
-  // conversation, because a block ahead of it re-bills every token behind it whenever it
-  // moves. Six occurrences on the owner's production box, 2026-09-12, 15-50K tokens each.
-  // Emitted most-stable-first (1810 -> 1840), all four ahead of `msg.turn-context` at 1850.
+  // Lanes that must render below the conversation: whatever a tool can mutate would otherwise re-bill
+  // every token behind it when it moves. Emitted most-stable-first (1810 to 1840), ahead of turn-context.
   {
     id: 'msg.attempt-ledger',
     target: 'messages',
@@ -605,10 +556,8 @@ const MESSAGE_ENTRIES: MessageInjection[] = [
       'carries date-only (stable, cacheable); the per-minute clock time lives here ' +
       'so its per-call churn falls after the entire cached prefix (system + tools + ' +
       'conversation history) instead of breaking it. Always rendered.',
-    // 3.5: on a routed channel, the clock message also restates who the written reply goes to.
-    // The clock changes on every call, so it is re-sent on every call, below every newer tool
-    // result and steer, and a one-line addition here costs no extra cache (it is already past
-    // the breakpoint).
+    // On a routed channel the clock message also restates who the written reply goes to; it is
+    // re-sent every call, already past the cache breakpoint, so the addition costs no extra cache.
     render: (ctx) => {
       const restated = renderTailRestatement(ctx.turnContext?.address);
       return { role: 'user', content: restated ? `${renderCurrentTimeMessage()}\n${restated}` : renderCurrentTimeMessage() };

@@ -1,15 +1,10 @@
-// Prompt-assembly registry — the container the assembler walks to produce the
-// system prompt + message array. Every PromptInjection entry registers here at
-// module load; the declarative assembler (memory/assembler.ts) is the sole path.
-// See DOJO-PROMPT-REGISTRY-PLAN.md.
+// Prompt-assembly registry: the container the declarative assembler (memory/assembler.ts) walks to
+// produce the system prompt and message array. Entries register here at module load.
 
 import type { PromptInjection, SystemInjection, MessageInjection } from './types.js';
 
-// ── The registry ────────────────────────────────────────────────────────────
-// One array; accessors filter by target and return slot-sorted views. Entries
-// register at module load (R3+ register their blocks). Duplicate ids THROW — an
-// id is the receipt's handle and the R8 enforcement guard's key, so a collision
-// must surface at startup, not silently.
+// One array; accessors filter by target and return slot-sorted views. Duplicate ids throw: an id is the
+// receipt's handle and the enforcement guard's key, so a collision must surface at startup.
 
 const REGISTRY: PromptInjection[] = [];
 const seenIds = new Set<string>();
@@ -28,22 +23,19 @@ function bySlotThenOrder(a: PromptInjection, b: PromptInjection): number {
   return (a.order ?? 0) - (b.order ?? 0);
 }
 
-/** System entries, slot-sorted (canonical assembly order). */
 export function getSystemEntries(): SystemInjection[] {
   return REGISTRY.filter((e): e is SystemInjection => e.target === 'system').sort(bySlotThenOrder);
 }
 
-/** Message entries, slot-sorted (canonical build order). */
 export function getMessageEntries(): MessageInjection[] {
   return REGISTRY.filter((e): e is MessageInjection => e.target === 'messages').sort(bySlotThenOrder);
 }
 
-/** All registered ids — the R8 enforcement guard + R9 inventory test consume this. */
+/** All registered ids, consumed by the enforcement guard and the inventory test. */
 export function registeredIds(): string[] {
   return REGISTRY.map((e) => e.id);
 }
 
-/** Test-only: clear the registry so a suite can register a controlled set. */
 export function __resetRegistryForTests(): void {
   REGISTRY.length = 0;
   seenIds.clear();
