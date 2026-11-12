@@ -1,26 +1,6 @@
-// ════════════════════════════════════════
-// RC-12: engine-verified outbound ledger (delivery-claim grounding)
-// ════════════════════════════════════════
-//
-// The delivery-claim guard used to read one turn's tool activity, only in the
-// positive direction, and its correction never reached the model. This module is
-// the durable, cross-turn fact source that fixes both directions:
-//
-//   findRecentDeliveries(agentId, recipientHint, windowHours)
-//     "did I actually send anything to <recipient> in the last N hours?" Resolves
-//     the hint name<->address via the contacts store, then matches tool_receipts
-//     by recipient (any resolved handle OR a name substring). Used by BOTH guard
-//     directions: the POSITIVE guard consults it before firing (a real prior send
-//     grounds a "sent it" claim, so it does not false-fire into a duplicate send),
-//     and the DENIAL guard consults it to catch "not yet / sending now" said after
-//     a receipted send.
-//
-//   getRecentOutbound(agentId, windowHours, limit)
-//     the last N sends, recipient-agnostic, for the RECENT OUTBOUND block the loop
-//     injects on human turns (an engine fact that survives conversation scoping).
-//
-// Receipts are ENGINE-written (receipts/store.ts); nothing here trusts model text.
-// Reads only, no side effects.
+// The engine-verified outbound ledger: what the agent actually sent, and to whom, read from engine-written
+// receipts (receipts/store.ts) and deliveries rows, never from model text. It grounds the delivery-claim
+// guards in both directions and feeds the RECENT OUTBOUND block. Reads only.
 
 import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
@@ -32,13 +12,8 @@ import { recordedInstant } from '../../memory/message-stamp.js';
 
 const logger = createLogger('outbound-ledger');
 
-// tool_receipts is the receipt ledger for ALL side-effecting tools (store.ts
-// RECEIPT_TOOLS), including calendar_create/calendar_update — writes to a
-// calendar, not sends to a person. Both receipt-lane readers below answer
-// "what did the agent send, to whom", so they exclude the calendar tools: a
-// calendar row (recipient null, channel fallback 'a2a') rendered as
-// `agent -> unknown` in the RECENT OUTBOUND block and could ground a
-// delivery-denial correction on a message that was never sent.
+// Calendar writes are receipted but are not sends to a person: both receipt-lane readers exclude them, or a
+// calendar row would render as `agent -> unknown` and could ground a delivery-denial correction.
 const NON_SEND_RECEIPT_TOOLS = ['calendar_create', 'calendar_update'] as const;
 
 export interface OutboundDelivery {
@@ -72,12 +47,8 @@ function rowToDelivery(r: ToolReceiptRow): OutboundDelivery {
   };
 }
 
-/**
- * Every address / handle / name a recipient hint could match, lower-cased. Resolves
- * a bare name to its stored emails/phones/iMessage handles (and vice-versa) via the
- * contacts store so a receipt recorded under a phone number still matches a claim
- * that named the person, and the reverse. Always includes the raw hint itself.
- */
+/** Every address, handle or name a recipient hint could match, lower-cased and resolved both ways through the
+ *  contacts store, so a receipt under a phone number matches a claim that named the person. Includes the hint. */
 function resolveRecipientAliases(recipientHint: string): string[] {
   const hint = recipientHint.trim();
   const aliases = new Set<string>();
@@ -102,11 +73,8 @@ function resolveRecipientAliases(recipientHint: string): string[] {
   return [...aliases].filter(Boolean);
 }
 
-/** True when a receipt's recipient matches ANY of the resolved aliases. Substring
- *  both ways so "the owner" matches a recipient stored as "the owner <+1555…>" and a raw
- *  phone alias matches a receipt recipient that carries only the number. Exported for
- *  the RC-1 gate-(c) test: the pending-question header only ever quotes sends TO the
- *  current counterparty, which this recipient filter is what guarantees. */
+/** True when a receipt's recipient matches any alias, by substring both ways. This filter is what keeps the
+ *  pending-question header quoting only sends to the current counterparty. */
 export function recipientMatchesAliases(recipient: string | null, aliases: string[]): boolean {
   if (!recipient) return false;
   const r = recipient.trim().toLowerCase();
@@ -114,11 +82,8 @@ export function recipientMatchesAliases(recipient: string | null, aliases: strin
   return aliases.some((a) => a.length >= 3 && (r.includes(a) || a.includes(r)));
 }
 
-/**
- * Recent engine-verified deliveries to `recipientHint` within the window, newest
- * first. `recipientHint` null/empty returns ALL recent deliveries (the
- * recipient-agnostic case the denial guard uses for a bare "not yet" with no name).
- */
+/** Engine-verified deliveries to `recipientHint` in the window, newest first; an empty hint returns all of them
+ *  (the denial guard's bare "not yet" with no name). */
 export function findRecentDeliveries(
   agentId: string,
   recipientHint: string | null | undefined,
@@ -148,10 +113,7 @@ export function findRecentDeliveries(
   }
 }
 
-/**
- * The last `limit` engine-verified deliveries within the window, newest first,
- * recipient-agnostic. Used by the RECENT OUTBOUND volatile block.
- */
+/** The last `limit` deliveries in the window, newest first, any recipient: the RECENT OUTBOUND block. */
 export function getRecentOutbound(
   agentId: string,
   windowHours: number,
@@ -178,10 +140,7 @@ export function getRecentOutbound(
   }
 }
 
-/**
- * The most recent delivery TO `recipientHint` within the window (or null). Small
- * wrapper the pending-question header uses to quote the agent's own last message.
- */
+/** The newest delivery to `recipientHint` in the window, or null; the pending-question header quotes it. */
 export function mostRecentDeliveryTo(
   agentId: string,
   recipientHint: string,
@@ -190,27 +149,10 @@ export function mostRecentDeliveryTo(
   return findRecentDeliveries(agentId, recipientHint, windowHours)[0] ?? null;
 }
 
-/**
- * ROUND-11 T46 — DID THIS AGENT ALREADY REPLY ON THIS A2A THREAD, per the receipt ledger?
- *
- * The missed-reply enforcer's "you already replied" evidence was `a2a_replies` alone, and
- * `recordA2AReply` writes a row ONLY when the reply BINDS to an inbound assign message
- * (`findInboundAssignByThread`) — a binding that needs a `thread_id` the sender may omit. On
- * 2026-08-15 the primary agent's ANSWER to the harness bot was DELIVERED and left no `a2a_replies` row, so the
- * enforcer told him the peer "got nothing" five seconds later and he re-sent the same answer.
- *
- * The fact was already here, in the ledger this module exists to read: a VERIFIED,
- * engine-written `send_to_agent` receipt carrying the thread id. Nothing about the predicate
- * changes — it is still "has this agent already replied on this thread" — only its evidence
- * widens to the source the platform already trusts on the other side of the same exchange
- * (`reply-floors.ts` floor 11 answers a denial from these very rows).
- *
- * FA-C2 discipline, carried over verbatim from `hasPriorReplyOnThread`: the EXACT full-id
- * match is authoritative, a genuinely-short legacy row (`length = 8`) is accepted exactly and
- * only when no full-id row exists, and the leading-8 prefix match is reachable ONLY on the
- * legacy caller path that has no full id — `makeThreadId` ids are almost all shared prefix, so
- * a prefix match over full ids would let an unrelated thread silence THIS thread's note.
- */
+/** Did this agent already reply on this A2A thread, per a verified `send_to_agent` receipt? `a2a_replies` alone
+ *  misses a delivered reply that never bound to an inbound assign message. Matching mirrors
+ *  `hasPriorReplyOnThread` (a2a-replies.ts): an exact full id wins, else a length-8 legacy row counts; the
+ *  prefix match is only for callers without a full id, since `makeThreadId` ids share prefixes. */
 export function hasVerifiedA2ASendOnThread(
   agentId: string,
   threadShort: string,
@@ -236,9 +178,7 @@ export function hasVerifiedA2ASendOnThread(
       ).get(agentId, threadShort);
       return !!legacy;
     }
-    // t113 A2: BOTH eras' spellings, from the one home — the same fix as
-    // `hasPriorReplyOnThread`'s legacy path, which this function's header already says it
-    // carries verbatim. The bare front slice matched nothing for a post-t109 marker.
+    // Both thread-id spellings, matched by the one shared SQL helper, as in `hasPriorReplyOnThread`.
     const row = db.prepare(
       `SELECT 1 FROM tool_receipts
         WHERE agent_id = ? AND tool = 'send_to_agent' AND verified = 1
@@ -247,8 +187,7 @@ export function hasVerifiedA2ASendOnThread(
     ).get(agentId, threadShort, threadShort);
     return !!row;
   } catch (err) {
-    // Best effort, and the failure direction is the SAFE one: with no evidence the enforcer
-    // keeps today's behaviour and still nudges.
+    // The safe failure direction: with no evidence the enforcer still nudges.
     logger.warn('hasVerifiedA2ASendOnThread failed (non-fatal)', {
       agentId, error: err instanceof Error ? err.message : String(err),
     }, agentId);
@@ -269,24 +208,9 @@ interface DeliveryJoinRow {
 
 interface ReceiptFacts { sent_text: string | null; conv_key: string | null; verified: number }
 
-/**
- * The receipt behind a delivery — THE READER for `deliveries.receipt_id` (PHASE-2 T5, the
- * Phase-1 §7 debt).
- *
- * This is load-bearing, not decorative: `sentText` is what the pending-question header quotes
- * back to the model as its own last message, and `verified` is what the delivery-claim guard
- * consults in BOTH directions before it fires. Reading the wrong receipt makes the engine
- * quote the wrong message at the owner.
- *
- * The link is now recorded when it is KNOWN — `writeToolReceipt` stamps it inside the send's
- * own outbound scope. What it replaces is a three-column guess: agent + turn + tool, newest
- * first. A turn that sent two emails to two people wrote two receipts under one tool name, and
- * the guess handed BOTH deliveries the later one's text.
- *
- * The guess survives ONLY as a fallback for rows written before T5 (44 of them on this box).
- * A row that HAS a link never falls back: if the receipt it names is gone, the honest answer
- * is "no text", not the next-best receipt.
- */
+/** The receipt behind a delivery: its sent text is quoted back to the model and `verified` grounds the
+ *  delivery-claim guard. A row with a `receipt_id` never falls back, even when that receipt is gone; only
+ *  unlinked rows use the agent + turn + tool guess, which gives two same-tool sends in a turn the later text. */
 function joinSentText(db: ReturnType<typeof getDb>, agentId: string, d: DeliveryJoinRow): { sentText: string | null; convKey: string | null; verified: boolean } {
   if (d.receipt_id !== null) {
     const r = db.prepare(
@@ -319,22 +243,9 @@ function deliveryJoinToOutbound(db: ReturnType<typeof getDb>, agentId: string, d
   };
 }
 
-/**
- * P6b-2: the ID-keyed selection the DELIVERIES LANE reads. The most recent
- * DELIVERED outbounds INTO a conversation, newest first, from the deliveries
- * rows (mig 121), each joined to its receipt for the verbatim sent text. No
- * recipient fuzz: the conversation id IS the identity. Returns [] when the
- * conversation has no delivery rows (the caller falls back to the legacy hint
- * path while pre-121 history ages out).
- *
- * PHASE-3 T7: this was `mostRecentDeliveryToConversation`, LIMIT 1, because its
- * one consumer (the pending-question header) quoted a single message and the
- * cross-conversation ECHO ROW carried everything older. The lane that replaces
- * those duplicated rows has to cover what they covered — a recipient's
- * conversation accumulates every question the agent asked it — so the limit is
- * the lane's own declared row cap (`LANE_LIMITS['lane.deliveries'].rows`),
- * passed in rather than hardcoded here.
- */
+/** The latest delivered outbounds into a conversation, newest first, from deliveries rows joined to their
+ *  receipts; the conversation id is the identity, no recipient fuzz. `limit` is the deliveries lane's row cap
+ *  (`LANE_LIMITS['lane.deliveries'].rows`). An empty result sends the caller to the hint path for older rows. */
 export function recentDeliveriesToConversation(
   agentId: string,
   conversationId: string,
@@ -362,13 +273,8 @@ export function recentDeliveriesToConversation(
   }
 }
 
-/**
- * P6b-2: ID-keyed variant of findRecentDeliveries for the grounding/denial
- * guards: matches the hint against deliveries rows via CANONICAL recipient
- * identity (contacts + safe-sender stores), not substring fuzz. Returns []
- * when no delivery rows match, letting callers fall back to the legacy
- * receipts-alias path while pre-121 history ages out.
- */
+/** findRecentDeliveries keyed on deliveries rows by canonical recipient identity (recipientIdsMatch), not
+ *  substring; an empty result lets callers fall back to the receipts-alias path for older history. */
 export function findRecentDeliveriesKeyed(
   agentId: string,
   recipientHint: string | null | undefined,
@@ -403,19 +309,8 @@ export function findRecentDeliveriesKeyed(
 /** Compact "N minutes/hours ago" for a SQLite UTC timestamp ("YYYY-MM-DD HH:MM:SS"). */
 export function relativeTimeAgo(at: string | number): string {
   const nowMs = Date.now();
-  // ⚠ SWEEP CORE-2 item 4. This took a SQLite datetime STRING only, and `messages.created_at`
-  // became an epoch-ms INTEGER at migration 131. Every caller that passed a `messages` row's
-  // timestamp threw `sqliteUtc.replace is not a function` — `engine.recently-answered` did
-  // exactly that, inside a swallowing catch, on every turn since 131 (see the note in
-  // `answered-edge.ts`). `deliveries.created_at` is still TEXT, so BOTH shapes are real and
-  // the conversion belongs here, once, rather than at each site guessing its column's type.
-  //
-  // T69b: `nowMs` WAS a parameter (T67b), and the HL5 snapshot was its only non-default
-  // caller. That block no longer measures ages at all — it states recorded instants, like
-  // every other time term in the tail — so the parameter went with the caller rather than
-  // staying as a hook nothing pulls. The ONE surviving caller of this function is
-  // `steps/post-call-classify/reply-floors.ts`, which builds a one-shot engine receipt AFTER
-  // the model call: it is not in any assembled context, so no cache is behind it.
+  // Accepts both shapes: `messages.created_at` is epoch-ms while `deliveries.created_at` is still TEXT.
+  // Its caller builds a one-shot engine receipt after the model call, outside any cached context.
   const ms = typeof at === 'number' ? at : Date.parse(at.replace(' ', 'T') + 'Z');
   if (!Number.isFinite(ms)) return 'recently';
   const deltaSec = Math.max(0, Math.floor((nowMs - ms) / 1000));
@@ -428,27 +323,9 @@ export function relativeTimeAgo(at: string | number): string {
   return `${days} day${days === 1 ? '' : 's'} ago`;
 }
 
-// ════════════════════════════════════════════════════════════════════════════════════════
-// T69b — THE RECENT-OUTBOUND BLOCK, A PURE FUNCTION OF ITS ROWS.
-//
-// It was five lines of `.map()` inline in `steps/call-llm/pre-call-injections.ts`, which is
-// why nothing could test it and why its clock read went unnoticed: `relativeTimeAgo(...)`
-// off `Date.now()`, so an IDENTICAL set of receipts emitted different bytes once a minute
-// and re-billed every token behind it in the tail. The render moves to the module that owns
-// the read, states the RECORDED INSTANT instead of an age, and takes its rows as an
-// argument — so the property "identical rows ⇒ identical bytes" is expressible.
-//
-// The rows arrive newest-first from `getRecentOutbound`'s own `ORDER BY created_at DESC`;
-// the order is the query's, not this function's, and it is deterministic.
-//
-// ⚠ THE SCROLLING WINDOW STAYS, AND IT IS DECLARED RATHER THAN FIXED. `getRecentOutbound`
-// selects `created_at >= datetime('now','-24 hours')`, so a receipt leaves this block when
-// the wall clock passes its 24-hour mark with nothing having changed. That is a real change
-// of CONTENT — the block's own header claims a 24-hour window — and pinning the window edge
-// to a fixed instant would make the claim false. It is bounded, one-way and at most ONCE PER
-// ROW, which is the same disposition T67b gave `lane.continuity`'s horizon; the defect this
-// function removes fired every minute, for every row, forever.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// The RECENT OUTBOUND block as a pure function of its rows: it states recorded instants, never ages, so identical
+// rows render identical bytes and keep the prompt cache. Rows arrive newest-first from getRecentOutbound.
+// The 24-hour window still scrolls: a row leaves once, when it passes the edge the block's header declares.
 
 export const RECENT_OUTBOUND_HEAD = 'RECENT OUTBOUND (engine-verified):';
 

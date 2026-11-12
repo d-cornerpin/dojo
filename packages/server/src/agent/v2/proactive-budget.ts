@@ -1,31 +1,12 @@
-// ════════════════════════════════════════
-// RC-5.3: proactive-send budget (backoff on unanswered background chatter)
-// ════════════════════════════════════════
-//
-// Mailbox events wake the agent, and the floor model treats each wake as a social
-// opening: over 24h of production it fired ~10 unprompted dashboard pings at a silent
-// owner, several of them pure greeting filler, with no backoff (F-10). All the
-// discouragement in the tree is prompt-level; NO counter persisted "N proactive sends
-// since the owner last replied," so backoff was structurally impossible.
-//
-// This is that counter: consecutive user-facing deliveries on settled-context wake
-// turns (settledContextWakeTurn && !deliberateSurfaceTurn), reset on any authorized
-// owner inbound. At the threshold the terminal delivery block DEMOTES the outbound to a
-// quiet notices-lane row (the working-note demote pattern) instead of sending, so the
-// commentary is still visible in the dashboard but never pings. Deliberate surfaces
-// (scheduler digests, reminders, completion reports) are exempt and never counted.
-//
-// Persisted in the config table (per agent) so the streak survives a restart. Direct
-// SQL bypasses the cached platform-config reader (these keys are never in its key set).
-
+// Consecutive proactive deliveries on settled-context wake turns, reset by an authorized owner inbound. At the
+// threshold the closeout floor demotes the outbound to a quiet notices-lane row instead of pinging the owner.
+// Kept in the config table so the streak survives a restart; these keys are outside the cached config reader.
 import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
 
 const logger = createLogger('proactive-budget');
 
-// Demote once the agent has already made this many consecutive proactive deliveries on
-// settled-context wakes with no owner reply in between. 2 = the third such ping in a row
-// lands in the notices lane instead of pinging.
+// 2 = the third consecutive proactive ping lands in the notices lane instead.
 export const PROACTIVE_SEND_DEMOTE_THRESHOLD = 2;
 
 function streakKey(agentId: string): string {
@@ -46,7 +27,6 @@ export function getProactiveSendStreak(agentId: string): number {
   }
 }
 
-/** Increment the streak (a proactive settled-context delivery just happened); returns the new total. */
 export function bumpProactiveSendStreak(agentId: string): number {
   const next = getProactiveSendStreak(agentId) + 1;
   try {

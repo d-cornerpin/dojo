@@ -1,41 +1,15 @@
-// ════════════════════════════════════════
-// Inbound Channel Resolver (v3.0.9)
-//
-// The ONE place the engine decides which channel a turn was triggered from
-// and how to address the reply. The reply-destination resolver then routes
-// the model's terminal text back to that channel.
-//
-// Three sources, in priority order:
-//
-//  1. VOICE — a dashboard turn whose message row carries source='voice' is
-//     in-person speech. It is its own first-class channel: the reply is
-//     spoken back via TTS and is NEVER diverted to iMessage by the away
-//     override (a person talking to you out loud doesn't get a text back).
-//
-//  2. STRUCTURED METADATA — messages.inbound_meta (JSON, @dojo/shared
-//     InboundMeta) stamped by the channel producer at injection time. This
-//     is the reliable path: routing reads structured fields, not prose, so
-//     re-wording a notification can't break it. `authorized === false` means
-//     the producer judged this not an auto-reply (unknown sender, or a
-//     user-owned account) → treat as a dashboard notification.
-//
-//  3. PROSE FALLBACK — for messages with no metadata (older rows, or a
-//     producer not yet migrated), parse the [SOURCE: ...] marker the way the
-//     engine always did. Behavior-preserving safety net; authorization runs
-//     through the same shared isSenderAuthorized check as everything else.
-// ════════════════════════════════════════
+// The one place the engine decides which channel triggered a turn and how to address the reply. Priority:
+// voice (spoken back, never diverted to iMessage), structured inbound_meta (routing reads fields, not prose),
+// then the [SOURCE: ...] prose marker for rows without metadata. SMS, Teams and email senders are rechecked
+// with isSenderAuthorized at resolve time; iMessage re-validates at send instead.
 import type { InboundMeta } from '@dojo/shared';
 import type { ChannelInboundContext } from './state.js';
 import { isSenderAuthorized } from './channel-auth.js';
 import { stampInboundMeta } from '../../memory/message-store.js';
 import { ownerMailboxes } from '../../services/owner-mailboxes.js';
 
-/**
- * Stamp structured routing metadata onto an inbound message row. Channel
- * producers call this right after inserting the user message (they already
- * hold its id). Non-fatal on failure: the engine falls back to prose
- * parsing, so a stamp failure degrades to the old behavior, never a crash.
- */
+/** Stamp structured routing metadata on an inbound row; producers call it right after inserting the message.
+ *  Best-effort: on failure the engine falls back to prose parsing. */
 export function recordInboundMeta(messageId: string, meta: InboundMeta): void {
   try {
     stampInboundMeta(messageId, JSON.stringify(meta));
@@ -61,37 +35,28 @@ export interface ResolvedInbound {
 
 export interface ResolveInboundArgs {
   agentId: string;
-  /** The triggering user message content (may be null when there is none). */
   content: string | null;
-  /** The triggering message row's stamped `channel` ('voice' | 'imessage' | … | null).
-   *  T6: this was the `source` compat column, which carried the voice half of the same
-   *  fact in a nullable free-text field (PHASE-1.md T3-0b §3). */
+  /** The triggering message row's stamped `channel` ('voice' | 'imessage' | ... | null). */
   channel: string | null;
-  /** The triggering message row's `inbound_meta` column (raw JSON or null). */
   inboundMeta: string | null;
 }
 
 export function resolveInbound(args: ResolveInboundArgs): ResolvedInbound {
   const { agentId, content, channel, inboundMeta } = args;
 
-  // ── 1. Voice: in-person speech is its own channel. ──
   if (channel === 'voice') {
     return { inboundChannel: 'voice', inboundContext: null };
   }
 
-  // ── 2. Structured metadata: the reliable path. ──
   if (inboundMeta) {
     const fromMeta = resolveFromMeta(inboundMeta);
     if (fromMeta) return fromMeta;
-    // Malformed metadata → fall through to prose parsing rather than dropping
-    // the turn to dashboard silently.
+    // Malformed metadata falls through to prose parsing rather than silently dropping to dashboard.
   }
 
-  // ── 3. Prose fallback: parse the [SOURCE: ...] marker. ──
   return resolveFromProse(agentId, content);
 }
 
-// ── Structured-metadata path ──
 function resolveFromMeta(raw: string): ResolvedInbound | null {
   let meta: InboundMeta;
   try {
@@ -105,36 +70,24 @@ function resolveFromMeta(raw: string): ResolvedInbound | null {
   if (meta.channel === 'voice') return { inboundChannel: 'voice', inboundContext: null };
   if (meta.channel === 'dashboard') return { inboundChannel: 'dashboard', inboundContext: null };
 
-  // Unauthorized (unknown sender, or a user-owned account) → notification
-  // flow. The agent still reads the message; no auto-route fires.
+  // Unauthorized (unknown sender, or a user-owned account): a notification the agent reads, no auto-route.
   if (meta.authorized === false) {
     return { inboundChannel: 'dashboard', inboundContext: null };
   }
 
-  // A-3 (comms-audit): a Teams GROUP message must NOT earn an auto-reply into the
-  // group. Group replies are explicit-tool-only (the agent decides to call
-  // teams_send_message). Downgrade to a dashboard notice so the agent reads it but
-  // the engine never auto-routes a reply to every group ping. This was documented in
-  // three comments (channel-auth header, state.ts, loop.ts) but enforced NOWHERE.
-  // DM Teams chats keep their routed reply context below.
+  // A Teams group message never earns an auto-reply into the group (replies there are explicit-tool-only):
+  // downgrade to a dashboard notice. Teams DMs keep their routed reply context.
   if (meta.channel === 'teams' && meta.chatType === 'group') {
     return { inboundChannel: 'dashboard', inboundContext: null };
   }
 
-  // C10: re-validate the sender at RESOLVE time for the auto-reply channels, mirroring
-  // the prose branches (which DO recheck). resolveFromMeta previously trusted only the
-  // persisted `meta.authorized` flag — but every modern producer stamps inbound_meta, so
-  // the prose fallbacks that recheck are dead in practice, and a row stamped
-  // authorized:true whose sender was LATER removed from the safe list still earned an
-  // auto-reply on SMS/Teams-DM/email (only iMessage re-validates at send). Downgrade to a
-  // dashboard notice on failure so the agent still reads it but the engine never
-  // auto-routes a reply to an unauthorized/removed sender (inv 5). (iMessage stays as-is —
-  // it re-validates at send in sendResponseViaIMessage.)
+  // Recheck the sender at resolve time, so a sender removed from the safe list after the row was stamped
+  // gets a dashboard notice, not an auto-reply. iMessage re-validates at send in sendResponseViaIMessage.
   if (meta.channel === 'sms' || meta.channel === 'teams' || meta.channel === 'email') {
     const slot = meta.accountKind === 'user' ? 'user' : 'agent';
     const senderKey = meta.smsFromNumber ?? meta.sender ?? meta.recipientAddress ?? '';
-    // P44: the owner's provider-confirmed email (the watcher's `relation: 'owner'` stamp, agent mailbox only) is answered while
-    // its sender is still one of the owner's connected mailboxes; the owner is not on a safe-sender list.
+    // The owner's provider-confirmed email (`relation: 'owner'`, agent mailbox only) is answered while its sender
+    // is still one of the owner's connected mailboxes; the owner is not on a safe-sender list.
     const ownerEmailStillTheirs = meta.channel === 'email' && slot === 'agent' && meta.relation === 'owner'
       && ownerMailboxes().some((mb) => mb.address === senderKey.trim().toLowerCase());
     if (!ownerEmailStillTheirs && !isSenderAuthorized(meta.channel, senderKey, slot, meta.emailService ? { emailService: meta.emailService } : undefined)) {
@@ -143,13 +96,12 @@ function resolveFromMeta(raw: string): ResolvedInbound | null {
   }
 
   const context: ChannelInboundContext = {
-    // An email's watcher stamps WHO WROTE as `sender` and no separate reply address, so the reply's
-    // recipient (the ledger row, the dashboard badge) is that sender; without it the row named nobody.
+    // An email's watcher stamps the writer as `sender` with no separate reply address, so the reply goes to it.
     recipientAddress: meta.recipientAddress ?? (meta.channel === 'email' ? (meta.sender ?? undefined) : undefined),
     emailMessageId: meta.emailMessageId,
     emailService: meta.emailService,
     emailSubject: meta.emailSubject,
-    emailAccount: meta.emailAccount, // B-1: reply from the SAME mailbox
+    emailAccount: meta.emailAccount, // reply from the same mailbox
     chatId: meta.chatId,
     chatType: meta.chatType,
     smsFromNumber: meta.smsFromNumber,
@@ -160,16 +112,12 @@ function resolveFromMeta(raw: string): ResolvedInbound | null {
   return { inboundChannel: meta.channel, inboundContext: context };
 }
 
-// ── Prose fallback (behavior-preserving move of the legacy engine logic) ──
 function resolveFromProse(agentId: string, content: string | null): ResolvedInbound {
   const triggeredByIMessage = content?.includes('[SOURCE: IMESSAGE FROM') ?? false;
 
   if (triggeredByIMessage) {
-    // P5c: no recipient guess on the prose path. A row without inbound_meta
-    // has no structural sender identity; the old fallback read a racy
-    // last-inbound global. recipientAddress has no iMessage consumer anyway
-    // (the auto-route addresses the turn counterparty; only email reads it),
-    // and an unresolvable reply falls to the owner default at the bridge.
+    // No recipient guess on the prose path: a row without inbound_meta has no structural sender identity, and
+    // an unresolvable reply falls to the owner default at the bridge.
     return {
       inboundChannel: 'imessage',
       inboundContext: { chatType: 'dm' },
@@ -186,11 +134,7 @@ function resolveFromProse(agentId: string, content: string | null): ResolvedInbo
     const emailMatch =
       senderRaw.match(/<([^>]+)>/) ?? senderRaw.match(/\(([^)]+)\)/) ?? senderRaw.match(/(\S+@\S+)/);
     const senderAddress = emailMatch?.[1]?.toLowerCase() ?? '';
-    // Teams is an agent-kind channel today (the watcher is agent-only); the
-    // shared check applies the agent-kind gate so it stays correct if a
-    // user-Teams watcher is ever added.
-    // A-3 (comms-audit): authorized DM Teams chats auto-route; GROUP chats do NOT
-    // (no auto-reply into the group) — they fall through to the dashboard notice.
+    // Teams is agent-kind (the watcher is agent-only); only authorized DM chats auto-route, groups get a notice.
     if (isSenderAuthorized('teams', senderAddress, 'agent') && chatIdMatch?.[1] && !isGroup) {
       return {
         inboundChannel: 'teams',
@@ -208,10 +152,8 @@ function resolveFromProse(agentId: string, content: string | null): ResolvedInbo
     content?.includes('[SOURCE: OUTLOOK NOTIFICATION') ||
     content?.includes('[SOURCE: GMAIL NOTIFICATION')
   ) {
-    // Auto-route the reply back via email ONLY when mail came to the AGENT's
-    // own mailbox from a known contact, and we have a Message ID to reply
-    // against. No "Re:" requirement — a safe sender writing to the agent
-    // (new thread or reply) is a direct message and gets a reply.
+    // Auto-route by email only for mail to the agent's own mailbox from a known contact with a Message ID; a
+    // safe sender writing to the agent, new thread or reply, gets a reply.
     const subjectMatch = content.match(/^Subject:\s*(.+)$/im);
     const fromMatch = content.match(/^From:\s*(.+)$/im);
     const messageIdMatch = content.match(/^Message ID:\s*(\S+)/im);
@@ -244,9 +186,7 @@ function resolveFromProse(agentId: string, content: string | null): ResolvedInbo
   }
 
   if (content?.includes('[SOURCE: PHONE CALL FROM')) {
-    // Live phone call utterance. The agent is already on the call, so the
-    // reply is spoken back via TTS to whoever is on the line — no
-    // safe-sender gate (you answered the phone).
+    // Live phone call: the reply is spoken back to whoever is on the line, so no safe-sender gate.
     const fromMatch = content.match(/\[SOURCE: PHONE CALL FROM ([^\]]+)\]/);
     const callSidMatch = content.match(/Call SID:\s*(\S+)/);
     if (fromMatch?.[1] && callSidMatch?.[1]) {
@@ -263,17 +203,8 @@ function resolveFromProse(agentId: string, content: string | null): ResolvedInbo
   }
 
   if (content?.includes('[SOURCE: SMS FROM')) {
-    // sms-inbound.ts gates on the safe-sender list before emitting the
-    // `[SOURCE: SMS FROM` tag (unknown senders get `[SOURCE: SMS NOTIFICATION`
-    // and fall through to dashboard), so anything tagged here was authorized AT
-    // TAG TIME.
-    // N-5 (comms-audit): re-run the safe-sender check at RESOLVE time anyway, the
-    // same way the Teams (above) and email paths do. The tag is durable prose; a
-    // number removed from the SMS safe-list after the row was written (or an old/
-    // replayed row) would otherwise still resolve as an authorized SMS reply target
-    // and the agent would auto-reply to a sender it's no longer allowed to. If the
-    // recheck fails, route to dashboard as a notification instead (inv 5: never act
-    // on an unauthorized sender's behalf).
+    // sms-inbound.ts tags only safe senders as SMS FROM, but the sender is rechecked here so a number removed
+    // from the safe list after the row was written gets a dashboard notice, not an auto-reply.
     const fromMatch = content.match(/\[SOURCE: SMS FROM ([^\]]+)\]/);
     const toMatch = content.match(/^To:\s*(\S+)/im);
     if (fromMatch?.[1] && isSenderAuthorized('sms', fromMatch[1].trim(), 'agent')) {

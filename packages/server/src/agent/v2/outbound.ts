@@ -1,35 +1,7 @@
-// ════════════════════════════════════════════════════════════════════════════════
-// THE OUTBOUND SCOPE (PHASE-2 T5, research 03 §"Structural")
-//
-// Before this module, `deliveries` had ONE caller — `persistRoutingMarker` in the engine
-// loop — and 44 rows of a single tool. Dashboard bubbles (the most common delivery in the
-// product), spoken replies, alerts, A2A relays, engine acks and ten named send paths
-// recorded nothing at all, and because every record was written by a caller who had already
-// decided the send worked (`!isError`), a THROWN send could not produce `outcome='failed'`.
-// `work.done` requires a delivery, so on the dashboard path an answered ask rested at
-// `claimed` forever.
-//
-// Research 03's own conclusion: the bridge, the Twilio client and the websocket "write
-// nothing themselves — move the record DOWN into the transports". This is that move, and it
-// is a split of responsibility rather than a relocation of the same call:
-//
-//   the CALLER declares IDENTITY   — who is sending, on whose behalf, over which channel,
-//                                    into which conversation. It opens a SCOPE.
-//   the DOOR records the OUTCOME   — from what it actually observed. `recordAtDoor`.
-//
-// A caller can no longer claim a delivery that did not happen, because it no longer writes
-// the row; and a door can no longer be crossed silently, because an unscoped crossing still
-// records (attributed to `PLATFORM_SENDER`, which is honest: nobody's agent sent it).
-//
-// ONE SCOPE = ONE ROW. A send that crosses a door more than once — the attachment sibling
-// that sends the file and then calls `sendIMessage` for the caption, a phone reply spoken as
-// several utterances — is ONE thing the person received, so the first crossing writes the
-// row and later crossings UPDATE it. Failure wins: a partially failed send is a failed send.
-//
-// The scope rides `AsyncLocalStorage`, the same primitive and for the same reason as
-// `runWithToolCallId` (turn-state.ts): a per-agent slot is overwritten by a concurrent batch,
-// while an ALS store travels with the async work that created it.
-// ════════════════════════════════════════════════════════════════════════════════
+// The outbound scope: a caller opens a scope declaring identity (who sends, for whom, on which channel, into which
+// conversation); the transport door records the outcome it observed (`recordAtDoor`). An unscoped crossing still
+// records, as `PLATFORM_SENDER`. One scope is one row: later crossings update it, and failure wins. The scope rides
+// AsyncLocalStorage (as `runWithToolCallId` does) because a per-agent slot is overwritten by a concurrent batch.
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { channelOfSendTool, PLATFORM_SENDER, type WsEvent } from '@dojo/shared';
 import { getDb } from '../../db/connection.js';
@@ -51,24 +23,21 @@ export { PLATFORM_SENDER };
 /** What a caller declares before a send. Everything here is identity; nothing is evidence. */
 export interface OutboundIntent {
   agentId: string;
-  /** The tool or engine lane performing the send (`imessage_send`, `auto-route`,
-   *  `engine-ack`, `alert`, ...). */
+  /** The tool or engine lane performing the send (`imessage_send`, `auto-route`, `engine-ack`, ...). */
   tool: string;
   channel: DeliveryChannel;
   recipientId?: string | null;
   recipientDisplay?: string | null;
   provider?: string | null;
   threadRoot?: string | null;
-  /** Explicit conversation identity. Omit and `recordDelivery` resolves it from the channel
-   *  and recipient exactly as it always has. */
+  /** Explicit conversation identity; omitted, `recordDelivery` resolves it from the channel and recipient. */
   conversationId?: string | null;
   messageId?: string | null;
-  /** What is being sent, as the person would read it — kept on an outside send's intent row. */
+  /** What is being sent, as the person would read it; kept on an outside send's intent row. */
   text?: string | null;
 }
 
-/** What a door observed. The door owns the outcome; everything else is a fallback used only
- *  when the crossing happens OUTSIDE any scope. */
+/** What a door observed. The door owns the outcome; the rest are fallbacks for a crossing outside any scope. */
 export interface DoorObservation {
   outcome: DeliveryOutcome;
   channel: DeliveryChannel;
@@ -81,51 +50,34 @@ export interface DoorObservation {
   provider?: string | null;
   threadRoot?: string | null;
   messageId?: string | null;
-  /** C6: the receipt the door's executor wrote for this send, for an unscoped crossing (a scope links its
-   *  own, `noteReceiptForOutbound`). The link is how a ledger send names the message it delivered. */
+  /** The receipt the door's executor wrote, for an unscoped crossing (a scope links its own through
+   *  `noteReceiptForOutbound`); it is how a ledger send names the message it delivered. */
   receiptId?: string | null;
 }
 
 interface OutboundScope {
   intent: OutboundIntent;
-  /** The row this scope owns, once a door has written it. */
   deliveryId: string | null;
-  /** A receipt seen inside this scope, held until there is a row to stamp it on. */
   receiptId: string | null;
-  /** Any door in this scope reported a failure. */
   failed: boolean;
   /** `deliveryId` is still the INTENT row: no door has said what happened yet. */
   pending: boolean;
   details: string[];
 }
 
-// ── What a send tool declares: its channel, recipient and text, the intent its scope opens with ──
-
-/**
- * The channel a send TOOL delivers on, or null when the tool reaches nobody.
- *
- * The engine opens every send tool's scope at the one tool-dispatch door from this, derived from
- * the shared `channelOfSendTool` map rather than a second hand-maintained list.
- *
- * `user_` twins run the BASE tool's executor (the same reasoning `RECEIPT_EXEMPT` records),
- * so they resolve to the base name's channel.
- *
- * `send_to_agent` / `broadcast_to_group` deliberately return null: their rows are written
- * inside the A2A transport, one per PEER. A scope here would
- * fold a fan-out to five agents into one row, which is a worse answer than no scope.
- */
+/** The channel a send tool delivers on (from the shared `channelOfSendTool` map), or null when it reaches nobody.
+ *  `user_` twins run the base tool's executor, so they take its channel. `send_to_agent` and `broadcast_to_group`
+ *  return null: the A2A transport writes one row per peer, and a scope would fold a fan-out into one row. */
 export function outboundChannelForTool(name: string): DeliveryChannel | null {
   const base = name.startsWith('user_') ? name.slice('user_'.length) : name;
   if (base === 'teams_send_channel_message') return 'teams';
   const ch = channelOfSendTool(base);
   if (ch === null) return null;
-  // ChannelKind and the deliveries channel union agree on every send channel; the extra
-  // members of the delivery union (dashboard, voice, a2a) have no send tool.
+  // The delivery union's extra members (dashboard, voice, a2a) have no send tool, so the cast is exact.
   return ch as DeliveryChannel;
 }
 
-/** The recipient a send tool named, for the ledger's `recipient_id`. Best-effort: a missing
- *  or reply-shaped argument leaves the column null. */
+/** The recipient a send tool named, for `recipient_id`; a missing or reply-shaped argument leaves it null. */
 export function outboundRecipientForTool(
   name: string, args: Record<string, unknown> | undefined,
 ): string | null {
@@ -176,7 +128,6 @@ function newScope(intent: OutboundIntent): OutboundScope {
   return scope;
 }
 
-/** The caller's declared identity, as `recordDelivery` takes it. */
 function declared(i: OutboundIntent): Omit<DeliveryInput, 'outcome'> {
   return {
     agentId: i.agentId, tool: i.tool, channel: i.channel, recipientId: i.recipientId ?? null,
@@ -190,16 +141,11 @@ function mergedDetail(scope: OutboundScope): string | null {
   return scope.details.join('; ').slice(0, 500);
 }
 
-/**
- * Push the scope's accumulated verdict onto the row it owns.
- *
- * Only ever DOWNGRADES: a failure anywhere in the scope makes the row `failed`, and an
- * outcome the door already chose (`held`, `delivered`) is otherwise left exactly as the door
- * recorded it. Settle must never be able to talk a failed send back up into a delivered one.
- */
+/** Push the scope's verdict onto its row. Only ever downgrades: a failure makes it `failed`, otherwise the
+ *  door's own outcome stands, so settle can never turn a failed send back into a delivered one. */
 function settle(scope: OutboundScope): void {
   if (!scope.deliveryId) return;
-  // The scope ended and no door ever crossed: nothing was sent, so the intent goes (as before intents).
+  // The scope ended with no door crossed: nothing was sent, so the intent row is dropped.
   if (scope.pending) { dropPendingDelivery(scope.deliveryId); scope.deliveryId = null; scope.pending = false; return; }
   try {
     getDb().prepare(
@@ -218,7 +164,6 @@ function settle(scope: OutboundScope): void {
   }
 }
 
-/** Mark the scope failed and record why. Used by the throw handlers below. */
 function markFailed(scope: OutboundScope, reason: string): void {
   scope.failed = true;
   if (reason) scope.details.push(reason);
@@ -235,9 +180,8 @@ function markFailed(scope: OutboundScope, reason: string): void {
       }, scope.intent.agentId);
     }
   } else {
-    // The send threw BEFORE reaching any transport. There is still an outbound the platform
-    // attempted and did not complete, and a ledger that only records the sends that worked
-    // is the exact dishonesty this task exists to remove.
+    // The send threw before reaching any transport: still an attempted outbound, recorded as failed so the
+    // ledger never holds only the sends that worked.
     scope.deliveryId = deliveryIdOf(recordDelivery({
       ...declared(scope.intent), receiptId: scope.receiptId, outcome: 'failed', detail: mergedDetail(scope),
     }));
@@ -259,18 +203,8 @@ export function withOutbound<T>(intent: OutboundIntent, fn: () => T): T {
   });
 }
 
-/**
- * Run a send under a declared identity ONLY if no identity is already declared.
- *
- * The transport doors that call other transport doors (`sendIMessageWithAttachment` sends the
- * file and then calls `sendIMessage` for the caption) need a scope so their own crossings
- * fold into one row — but when the caller ALREADY declared who is sending, that identity is
- * the true one and must not be shadowed by the door's generic fallback. One send, one row,
- * attributed to whoever really sent it. The tool-dispatch door uses it the same way: it declares
- * an identity only when the engine lane above it (an auto-route reply, a join relay) has not
- * already declared a truer one. (v3.5 E19b: every iMessage send is asynchronous now, so the
- * synchronous twin of this function had no caller left and is gone.)
- */
+/** Run a send under a declared identity only if none is declared yet, so nested doors fold into one row and a
+ *  caller's (or engine lane's) truer identity is never shadowed by a door's generic fallback. */
 export function withOutboundAsyncIfAbsent<T>(intent: OutboundIntent, fn: () => Promise<T>): Promise<T> {
   if (outboundContext.getStore()) return fn();
   return withOutboundAsync(intent, fn);
@@ -291,14 +225,8 @@ export function withOutboundAsync<T>(intent: OutboundIntent, fn: () => Promise<T
   });
 }
 
-/**
- * A transport door reports what it observed. Returns the row id for this send.
- *
- * Inside a scope: the FIRST crossing writes the row; later crossings fold into it (one send,
- * one row) and a failure anywhere makes the row `failed`.
- * Outside a scope: writes a standalone row from the door's own facts, attributed to
- * `PLATFORM_SENDER` unless the door knows the agent.
- */
+/** A transport door reports what it observed. In a scope the first crossing writes the row and later ones
+ *  fold into it; outside one it writes a standalone row, as `PLATFORM_SENDER` unless the door knows the agent. */
 export function recordAtDoor(observed: DoorObservation): LedgerOutcome {
   const scope = outboundContext.getStore();
   if (!scope) {
@@ -332,9 +260,7 @@ export function recordAtDoor(observed: DoorObservation): LedgerOutcome {
   }
 
   if (scope.deliveryId) {
-    // A later crossing of the same send may know MORE than the first did (which message row
-    // carried it, which address it actually resolved to). Fill the blanks; never overwrite a
-    // fact the first crossing already established.
+    // A later crossing may know more (message row, resolved address): fill blanks, never overwrite a fact.
     if (observed.messageId || observed.recipientId || observed.recipientDisplay) {
       try {
         getDb().prepare(
@@ -351,16 +277,14 @@ export function recordAtDoor(observed: DoorObservation): LedgerOutcome {
       } catch { /* enrichment is best-effort; the row and its outcome already stand */ }
     }
     settle(scope);
-    // ONE SEND, ONE ROW: this crossing enriched the row the first wrote. Nothing new
-    // was recorded and nothing is wrong — the fact `string | null` could not carry.
+    // One send, one row: this crossing enriched the row the first wrote, so nothing new was recorded.
     return { kind: 'no_change', reason: 'folded-into-open-scope', deliveryId: scope.deliveryId, detail: 'a later crossing of a send already recorded by this scope' };
   }
 
   const written = recordDelivery({
     agentId: scope.intent.agentId,
     tool: scope.intent.tool,
-    // The scope names the channel it declared; a door that crosses on another channel
-    // (an iMessage caption riding an attachment send) does not rewrite that identity.
+    // The scope's declared channel stands even when a door crosses on another (a caption riding an attachment).
     channel: scope.intent.channel,
     recipientId: scope.intent.recipientId ?? observed.recipientId ?? null,
     recipientDisplay: scope.intent.recipientDisplay ?? observed.recipientDisplay ?? null,
@@ -376,12 +300,8 @@ export function recordAtDoor(observed: DoorObservation): LedgerOutcome {
   return written;
 }
 
-/**
- * A `held` outcome has no door to observe it: the whole content of the event is that no
- * transport was reached (the settled-context hold — the 3:32 AM class). It is recorded
- * directly, which is why this is a separate, named entry point rather than a caller
- * pretending to be a door.
- */
+/** A `held` outcome has no door to observe it (no transport was reached: the settled-context hold), so it is
+ *  recorded directly through this named entry point. */
 export function recordHeld(intent: OutboundIntent, reason: string): LedgerOutcome {
   return recordDelivery({
     agentId: intent.agentId,
@@ -395,15 +315,8 @@ export function recordHeld(intent: OutboundIntent, reason: string): LedgerOutcom
   });
 }
 
-/**
- * The engine wrote a receipt for the send this scope is performing. Called by
- * `writeToolReceipt` (receipts/store.ts), the SOLE writer of `tool_receipts`, so the link
- * between a delivery and its provider-issued proof is established by the two writers
- * themselves rather than reconstructed later by a three-column guess.
- *
- * Order-independent: a receipt seen before the door crossing is held on the scope and lands
- * on the row when it is written.
- */
+/** Links the receipt `writeToolReceipt` (receipts/store.ts, sole writer of `tool_receipts`) wrote for this
+ *  scope's send. Order-independent: a receipt seen before the door crossing is held and lands on the row later. */
 export function noteReceiptForOutbound(receiptId: string): void {
   const scope = outboundContext.getStore();
   if (!scope) return;
@@ -432,29 +345,10 @@ export function inOutboundScope(): boolean {
   return outboundContext.getStore() !== undefined;
 }
 
-// ════════════════════════════════════════════════════════════════════════════════
-// THE DASHBOARD DOOR
-//
-// `broadcast()` is the transport for the most common delivery in the product and the one
-// research 03 found recording nothing: the assistant bubble. It is also the seam PHASE-1 T9
-// stamps (`stampPersistedRow`, carrying the BROADCAST_EQUALS_ROW invariant), so this runs
-// AFTER that seam and reads only what it already attached — it adds no lookup of its own and
-// changes nothing the seam does.
-//
-// The predicate is deliberately narrow, and every clause has a negative control in
-// __tests__/universal-deliveries.test.ts:
-//   · `chat:message` only            — a chunk, a status, a retraction is not a delivery;
-//   · role `assistant` only          — a routing marker, a working note, the user's own
-//                                      echoed message are not the agent answering;
-//   · a PERSISTED row only           — an emission with no row is already reported as an
-//                                      orphan by the seam; claiming a delivery for something
-//                                      that was never stored is the dishonest half of that
-//                                      same defect;
-//   · lane `owner` only              — peer traffic on the Threads lane is not owner-facing
-//                                      (OR4: agent traffic never masquerades as owner chat).
-//
-// Idempotent by message id: a re-emitted bubble is not a second delivery.
-// ════════════════════════════════════════════════════════════════════════════════
+// The dashboard door: an owner-lane assistant `chat:message` is the product's most common delivery. It runs
+// after the broadcast seam stamps the persisted row and reads only what that seam attached; a chunk, a marker, an
+// unpersisted emission or peer traffic is not a delivery (each clause has a negative control in
+// __tests__/universal-deliveries.test.ts). Idempotent by message id: a re-emitted bubble is not a second delivery.
 export function recordDashboardDelivery(event: WsEvent): string | null {
   try {
     if (event.type !== 'chat:message') return null;
@@ -463,8 +357,7 @@ export function recordDashboardDelivery(event: WsEvent): string | null {
     const agentId = event.agentId;
     if (!agentId) return null;
 
-    // The seam already looked the row up and stamped what it found; `row` present means
-    // persisted, and it carries the lane.
+    // The seam already looked the row up: `row` present means persisted, and it carries the lane.
     const row = event.row;
     if (!row || row.lane !== 'owner') return null;
 
@@ -474,16 +367,14 @@ export function recordDashboardDelivery(event: WsEvent): string | null {
     ).get(agentId, msg.id) as { id: string } | undefined;
     if (already) return already.id;
 
-    // ENUMERATED REMAINDER (T1): keeps `string | null` — its three early returns answer
-    // "is this ws event a delivery at all?", not "did the ledger record it".
+    // Returns `string | null`: the early returns answer "is this event a delivery at all?", not "was it recorded".
     const deliveryId = deliveryIdOf(recordDelivery({
       agentId,
       tool: 'dashboard',
       channel: 'dashboard',
       recipientId: 'owner',
       messageId: msg.id,
-      // The turn's own conversation, exactly as the auto-route sites pass it. Falling back
-      // to the resolver keeps a bubble outside a turn (a boot notice) recordable.
+      // The turn's own conversation; outside a turn (a boot notice) the resolver supplies it.
       conversationId: turnContext(agentId)?.root?.conversationId ?? null,
       outcome: 'delivered',
     }));
