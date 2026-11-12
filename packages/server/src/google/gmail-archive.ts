@@ -1,19 +1,8 @@
-// ════════════════════════════════════════
-// Which Gmail object a `gmail_label` call acts on (t190, C2; owner ruling: archive acts on the
-// WHOLE conversation by default).
-//
-// Gmail's inbox is per-conversation: a thread stays in the inbox while ANY message in it
-// carries INBOX. Removing INBOX from one message ("archive") therefore left the conversation
-// where it was, and the junk reappeared. `threads/<id>/modify` is covered by the existing
-// `gmail.modify` scope, so no reconnect is needed.
-//
-//   thread_id              -> that conversation, directly.
-//   message_id + INBOX removal (archive), no `this_message_only`
-//                          -> the message's WHOLE conversation (its thread id is looked up;
-//                             a failed lookup is an error, never a silent one-message change).
-//   message_id, any other label change, or `this_message_only`
-//                          -> that one message, exactly as before.
-// ════════════════════════════════════════
+// Which Gmail object a `gmail_label` call acts on. thread_id acts on that conversation. Archiving
+// (removing INBOX) from a message_id acts on the message's WHOLE conversation, because a thread stays
+// in the inbox while any message in it carries INBOX; its thread id is looked up, and a failed lookup
+// is an error, never a silent one-message change. Any other label change, or this_message_only, acts
+// on that one message.
 
 import { googleRead } from './client.js';
 

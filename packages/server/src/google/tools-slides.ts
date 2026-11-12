@@ -1,5 +1,5 @@
 // ════════════════════════════════════════
-// Google Slides Toolkit — Native REST API
+// Google Slides toolkit (native REST API)
 // Available to: primary agent ONLY (all write tools)
 //
 // Adds comprehensive deck-building tools: DeckStyle presets, slide CRUD,
@@ -217,9 +217,8 @@ function readStyleStore(): StyleStore {
 }
 
 function writeStyleStore(store: StyleStore): void {
-  // The mkdir -p, the `<target>.tmp` sibling and the rename moved WHOLE into the
-  // carrying layer (PHASE-5 T8 Step 3, on mechanic 6's principle). Same shape,
-  // same naming; the declared resource is the store itself.
+  // The mkdir -p, the `<target>.tmp` sibling and the rename live in the carrying layer; the declared
+  // resource is the store itself.
   effectFs.writeFileViaTmpSiblingSync(STYLE_STORE_PATH, JSON.stringify(store, null, 2), 'utf-8');
 }
 
@@ -281,14 +280,14 @@ const TEXT_STYLE_FIELDS = 'fontFamily,fontSize,foregroundColor,bold';
 // ─────────────────────────────────────────
 //
 // Problem: the Slides API `createImage` request fetches its URL anonymously.
-// Private Drive files can't be embedded by passing a Drive URL directly —
+// Private Drive files can't be embedded by passing a Drive URL directly:
 // the Slides fetcher isn't authenticated as the caller.
 //
 // Solution: before embedding, check if the file already has a public/link
 // permission. If not, temporarily grant `anyone-with-link` reader access,
 // let Slides fetch and cache the image, then revoke the permission in a
 // finally block. Presentations store a durable copy of the image, so
-// revocation after embedding is safe — the deck keeps working.
+// revocation after embedding is safe (the deck keeps working).
 //
 // Returns a prep object with the image URL to pass to createImage and a
 // cleanup function the caller MUST invoke in finally.
@@ -308,7 +307,7 @@ async function prepareDriveImageUrl(
 ): Promise<DriveImagePrep> {
   const noop = async () => { /* nothing to clean up */ };
 
-  // Step 1: inspect existing permissions to see if the file is already
+  // Inspect existing permissions to see if the file is already
   // accessible via link (in which case we don't need to touch anything).
   const permsUrl = `${DRIVE_BASE}/files/${encodeURIComponent(driveFileId)}/permissions?fields=permissions(id,type,role)&supportsAllDrives=true`;
   const permsResult = await googleRead(permsUrl, agentId, agentName, `${action}_check_perms`, { driveFileId });
@@ -333,7 +332,7 @@ async function prepareDriveImageUrl(
     return { ok: true, url, cleanup: noop };
   }
 
-  // Step 2: grant a temporary anyone-with-link reader permission.
+  // Grant a temporary anyone-with-link reader permission.
   const grantUrl = `${DRIVE_BASE}/files/${encodeURIComponent(driveFileId)}/permissions?supportsAllDrives=true&sendNotificationEmail=false`;
   const grant = await googleWrite(
     'POST',
@@ -359,7 +358,7 @@ async function prepareDriveImageUrl(
     };
   }
 
-  // Brief propagation wait — permission changes are usually instant but
+  // Brief propagation wait: permission changes are usually instant but
   // Slides' URL fetcher can race against the grant otherwise.
   await new Promise(resolve => setTimeout(resolve, 600));
 
@@ -372,7 +371,7 @@ async function prepareDriveImageUrl(
         agentId, agentName, `${action}_revoke_temp_link`, { driveFileId, permissionId },
       );
     } catch {
-      // Best effort — if revocation fails the file is still only
+      // Best effort: if revocation fails the file is still only
       // link-visible (not discoverable), so leaked access is bounded.
     }
   };
@@ -857,7 +856,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
     name: 'slides_build_slide',
     description: 'Build an entire slide from a freeform list of elements in ONE Slides API call. Much faster than chaining slides_add_text_box / slides_add_shape / slides_add_image / etc., because every element creation, styling, text insert, and the slide background are bundled into a single batchUpdate (one HTTP round trip instead of N). Use this when designing a custom slide that doesn\'t match a layout helper. Omit slide_id to create a new slide; pass slide_id to add elements to an existing slide. Each element kind is fully optional — leave kinds out if you don\'t need them. Returns { slide_id, element_ids: [...] } where element_ids is in the same order as the elements you supplied.',
     effects: [{ kind: 'fs_read', from: 'fixed:~/.dojo/data/slides_styles.json' }, { kind: 'fs_read', from: 'args.elements[].file_path' }],
-    // PHASE-6 T0C: `kind` is a key of the ELEMENT OBJECT described in prose
+    // `kind` is a key of the ELEMENT OBJECT described in prose
     // inside `elements[]` (the array's items are free-form by design), not a
     // top-level parameter of this tool.
     advertisedNotDeclared: {
@@ -1560,10 +1559,8 @@ export async function executeGoogleSlidesTool(
           Buffer.from(`\r\n--${boundary}--`),
         ]);
 
-        // Pass the multipart body as a raw Buffer (NOT base64). Pre-2026-04-30
-        // this called .toString('base64') here, which made Google 400 every
-        // upload — the receiving side expects raw bytes for the multipart
-        // payload, not a base64 wrapper.
+        // Pass the multipart body as a raw Buffer (NOT base64): the receiving side expects raw bytes for the
+        // multipart payload, and a base64 wrapper makes Google answer 400.
         const uploadResult = await googleWrite(
           'POST',
           `${UPLOAD_BASE}/files?uploadType=multipart`,
@@ -2369,7 +2366,7 @@ export async function executeGoogleSlidesTool(
           if (bgReq) allReqs.push(bgReq);
         }
 
-        // ── Phase 1: upload local files to Drive in parallel ──
+        // ── Upload local files to Drive in parallel ──
         // Each image_local element is replaced (in our local copy) with a
         // resolved drive_file_id so the same code path then handles both.
         const UPLOAD_BASE = 'https://www.googleapis.com/upload/drive/v3';
@@ -2432,7 +2429,7 @@ export async function executeGoogleSlidesTool(
           }
         }
 
-        // ── Phase 2: prepare share-link URLs for all Drive images (parallel) ──
+        // ── Prepare share-link URLs for all Drive images (parallel) ──
         const drivePrepPromises: Array<Promise<{ index: number; prep: DriveImagePrep }>> = [];
         for (let i = 0; i < elements.length; i++) {
           const el = elements[i];
@@ -2460,7 +2457,7 @@ export async function executeGoogleSlidesTool(
           }
         }
 
-        // ── Phase 3: build per-element request ops ──
+        // ── Build per-element request ops ──
         return await runWithCleanups(cleanups, async () => {
           for (let i = 0; i < elements.length; i++) {
             const el = elements[i];
@@ -2564,7 +2561,7 @@ export async function executeGoogleSlidesTool(
               );
               allReqs.push(...requests);
 
-              // Apply italic/underline as a separate updateTextStyle pass —
+              // Apply italic/underline as a separate updateTextStyle pass,
               // buildTextBoxRequests only sets the role-default fields.
               if (typeof el.italic === 'boolean' || typeof el.underline === 'boolean') {
                 const extraStyle: Record<string, unknown> = {};
@@ -2657,7 +2654,7 @@ export async function executeGoogleSlidesTool(
             }
           }
 
-          // ── Phase 4: ONE batchUpdate ──
+          // ── ONE batchUpdate ──
           const r = await batchUpdate(
             presentationId, allReqs, agentId, agentName, 'slides_build_slide',
             { slideId, createdNewSlide, elementCount: elements.length, requestCount: allReqs.length },
@@ -2732,7 +2729,7 @@ export async function executeGoogleSlidesTool(
         // ── Vision preflight ──
         // The whole point of this tool is to let the agent file_read each
         // PNG into vision context. If the agent's current model can't see
-        // images, the export work + Drive thumbnail bytes are wasted —
+        // images, the export work + Drive thumbnail bytes are wasted:
         // enforceModelCapabilities strips the image blocks before the
         // model call, and the agent doesn't actually look at anything.
         // Bail early with a clear message so the agent either gives up
@@ -2748,7 +2745,7 @@ export async function executeGoogleSlidesTool(
           // we KNOW the model can't see.
           if (modelId && modelId !== 'auto') {
             const caps = getModelCapabilities(modelId);
-            // caps.length === 0 means "unknown — never probed" — don't block,
+            // caps.length === 0 means "unknown (never probed)": don't block,
             // just like enforceModelCapabilities. We only block when we have
             // a known cap list AND vision isn't in it.
             if (caps.length > 0 && !caps.includes('vision')) {
@@ -2758,7 +2755,7 @@ export async function executeGoogleSlidesTool(
               );
             }
           }
-        } catch { /* preflight is best-effort — don't fail the tool on lookup hiccups */ }
+        } catch { /* preflight is best-effort: don't fail the tool on lookup hiccups */ }
 
         // 1. Enumerate slides in the deck
         const pres = await getPresentation(presentationId, agentId, agentName, 'slides_export_pngs');
@@ -2789,7 +2786,7 @@ export async function executeGoogleSlidesTool(
         // 4. For each slide, request a thumbnail URL then download the PNG bytes.
         // The Slides thumbnail endpoint returns a temporary signed contentUrl
         // (no auth header needed for the actual image fetch). Run sequentially
-        // — Google rate-limits parallel requests on the same presentation.
+        // because Google rate-limits parallel requests on the same presentation.
         interface ExportedSlide {
           slide_index: number;
           page_id: string;
@@ -2823,7 +2820,7 @@ export async function executeGoogleSlidesTool(
           }
 
           // Fetch the actual PNG bytes from the signed contentUrl.
-          // No auth header — the URL is pre-signed and short-lived.
+          // No auth header: the URL is pre-signed and short-lived.
           try {
             const imgResp = await fetch(thumbData.contentUrl, { signal: AbortSignal.timeout(30_000) });
             if (!imgResp.ok) {

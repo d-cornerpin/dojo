@@ -44,10 +44,8 @@ function collectOwnLeaves(part: GmailBodyPart, out: GmailBodyPart[]): void {
   if (!part.filename && !part.body?.attachmentId && part.body?.data) out.push(part);
 }
 
-// ── Where the mail program put its quote ────────────────────────────────────────────────────────────────────────────
-// The mail program marks its quote in the html with language-free markup, so the cut needs no word lists (unlike the
-// one in mail-quoted-text.ts). The tags are read with an attribute-aware scan (a quoted value may hold `>`; values
-// may be double-quoted, single-quoted or bare; `class` is a list), never by matching text inside a raw tag.
+// The mail program marks its quote in the html with language-free markup, so no word lists are needed (unlike
+// mail-quoted-text.ts). Tags are read with an attribute-aware scan (values may hold `>`), never by text match.
 //   'wrap'   the element holds the whole quoted thread (Gmail, Yahoo, a blockquote): what follows its end is NOT quote.
 //   'header' only the "who wrote this" block: what follows may be the quoted thread itself, so nothing after it is
 //            trusted (except a blockquote that directly follows a Thunderbird citation line, which is its thread).
@@ -77,7 +75,6 @@ function quoteKind(t: HtmlTag): QuoteKind | null {
   return id === 'divrplyfwdmsg' || id === 'appendonsend' ? 'header' : null;
 }
 
-/** The index just past the closing tag of the element opened by tags[i], or -1 when it never closes. */
 function elementEnd(tags: HtmlTag[], i: number): number {
   if (tags[i].selfClosing) return tags[i].end;
   let depth = 0;
@@ -134,13 +131,10 @@ function plainBottomPost(plain: string): string | null {
   return tail === '' ? null : tail;
 }
 
-/** P44: the text the sender newly wrote in the message's own body part, and never the text of an attached or
- *  forwarded-as-attachment message. '' when there is none.
- *  When the html carries a quote container the mail program itself wrote, the owner's text is cut there: what is above
- *  it, or (a bottom-posted reply, nothing above) what is below the quoted block when the block's end is known. The result
- *  is accepted only when it is also present in the plain part, the part the owner reads (compared after normalising
- *  whitespace and entities); otherwise the plain part is returned and the caller's English cut applies. A quote the scan
- *  could not read gives '' (the owner door refuses empty words), never a fall back to text that carries the quote. */
+/** The text the sender newly wrote in the message's own body part, never that of an attached message. '' when none.
+ *  When the html carries a quote container the mail program wrote, the text is cut there: above it, or (bottom-posted)
+ *  below the block when its end is known. It is accepted only if it is also in the plain part (compared after
+ *  whitespace and entities); else the plain part is returned. An unreadable quote gives '' (never quote text). */
 export function extractOwnGmailText(payload: GmailBodyPart | null | undefined): string {
   if (!payload) return '';
   const leaves: GmailBodyPart[] = [];

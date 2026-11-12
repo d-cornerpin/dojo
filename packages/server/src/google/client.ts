@@ -1,8 +1,4 @@
-// ════════════════════════════════════════
-// Google API Client — Native REST with auto-refresh
-// All Google API calls go through here. No CLI dependency.
-// Mirrors the Microsoft client.ts pattern.
-// ════════════════════════════════════════
+// Google API client: native REST with auto-refresh. All Google API calls go through here.
 
 import { createLogger } from '../logger.js';
 import { openAgentCall, STOPPED_BY_USER } from '../agent/abortable-call.js';
@@ -17,9 +13,7 @@ const logger = createLogger('google-client');
 const BASE_TIMEOUT_MS = 30_000;
 const MAX_TIMEOUT_MS = 5 * 60_000; // 5 min hard ceiling
 
-// Scale fetch timeout with body size so multi-MB uploads (e.g. gmail_send
-// with attachments, drive_upload multipart bodies) don't get killed by the
-// default 30s ceiling. 30s baseline plus 30s per MB; capped at 5 min.
+// Fetch timeout scales with body size (30s plus 30s per MB, capped at 5 min) so big uploads are not killed.
 function timeoutForBody(body: string | Uint8Array | undefined): number {
   if (!body) return BASE_TIMEOUT_MS;
   const size = typeof body === 'string' ? body.length : body.byteLength;
@@ -39,15 +33,12 @@ async function googleFetch(
   url: string,
   body?: unknown,
   contentType?: string,
-  // The account whose token to use. 'agent'/'user' are the ids of the
-  // position-1 rows, so callers that still pass a kind keep working; the
-  // tool executors pass a specific resolved account id for multi-account.
+  // The account whose token to use: 'agent'/'user' are the position-1 row ids, and multi-account tool
+  // executors pass a specific resolved account id.
   accountId: string = 'agent',
-  // ── A-6: WHOSE STOP THIS CALL ANSWERS TO ──
-  // Optional and LAST on purpose: every existing call site keeps compiling, and the public
-  // wrappers below — which are the only doors an agent's tool reaches this through — pass it.
-  // A call with no agentId is platform plumbing (a token refresh, a boot probe) and has no
-  // agent to be stopped by; it dials exactly as before rather than inventing an owner.
+  // Whose stop this call answers to. Optional and last so every call site compiles; the public wrappers
+  // (the only doors an agent's tool reaches this through) pass it. No agentId means platform plumbing
+  // (token refresh, boot probe) with no agent to be stopped by.
   agentId?: string,
 ): Promise<GoogleApiResult> {
   const token = await getValidAccessTokenForAccount(accountId);
@@ -68,14 +59,9 @@ async function googleFetch(
     headers['Content-Type'] = 'application/json';
   }
 
-  // Body handling — keep raw binary intact for multipart uploads.
-  // Pre-2026-04-30 this branched only on string-vs-other, JSON.stringify()-ing
-  // any Buffer or Uint8Array passed in. drive_upload's multipart body got
-  // mangled into a JSON object string, Google rejected with 400, and the
-  // caller pre-emptively base64-encoded its body to dodge that — which made
-  // things worse (multipart/related with a base64 string body always 400s).
-  // Now: strings pass through, Buffer/Uint8Array pass through as binary,
-  // everything else gets JSON.stringify'd as before.
+  // Keep raw binary intact for multipart uploads: strings and Buffer/Uint8Array pass through as they
+  // are (JSON.stringify or base64 of a multipart/related body makes Google answer 400); anything else
+  // is JSON.stringify'd.
   let fetchBody: string | Uint8Array | undefined;
   if (body === undefined || body === null) {
     fetchBody = undefined;
@@ -88,8 +74,8 @@ async function googleFetch(
     fetchBody = JSON.stringify(body);
   }
 
-  // The caller's own clock is COMPOSED with this agent's stop, never replaced: a slow upload
-  // still times out as an upload. `turn` scope — a tool executor is holding the turn open on it.
+  // The caller's own clock is COMPOSED with this agent's stop, never replaced: a slow upload still times out
+  // as an upload. Scope 'turn': a tool executor holds the turn open on this call.
   const slot = agentId === undefined
     ? null
     : openAgentCall(agentId, 'turn', AbortSignal.timeout(timeoutForBody(fetchBody)));
@@ -121,21 +107,16 @@ async function googleFetch(
       return { ok: true, data: null, apiEndpoint: url };
     }
 
-    // Content-aware parse. Most Google endpoints return JSON, but alt=media
-    // downloads (drive_read of a plain-text/markdown/binary file) return the
-    // raw file bytes. Blindly calling resp.json() on those throws
-    // "Unexpected token ... is not valid JSON" and fails the read on every
-    // non-JSON file. Parse JSON only when the server says it's JSON; hand
-    // everything else back as a string. GoogleApiResult.data is unknown and
-    // downstream callers (e.g. drive_read) already branch on typeof data.
+    // Parse JSON only when the server says it is JSON: alt=media downloads return raw file bytes and
+    // resp.json() would throw. Everything else is handed back as a string (callers branch on typeof data).
     const responseContentType = resp.headers.get('content-type') ?? '';
     const data = responseContentType.includes('application/json')
       ? await resp.json()
       : await resp.text();
     return { ok: true, data, apiEndpoint: url };
   } catch (err) {
-    // A stop is named as a stop before the transport gets to call it a failure. Read off this
-    // call's OWN controller, so the composed deadline can never answer yes.
+    // A stop is named as a stop before the transport calls it a failure. Read off this call's OWN
+    // controller, so the composed deadline can never answer yes.
     if (slot?.cutByStop()) {
       return { ok: false, data: null, error: STOPPED_BY_USER, apiEndpoint: url };
     }
@@ -147,7 +128,6 @@ async function googleFetch(
   }
 }
 
-// ── Public API ──
 
 export function googleRead(
   url: string,
@@ -194,11 +174,9 @@ export function googleWrite(
       data: { agentId, agentName, action, actionType: 'write', details: { ...details, account: accountId } },
     });
 
-    // PHASE-2 T5: THE DOOR RECORDS — but only for a send. This one function carries both
-    // `gmail_send/reply/forward` (a person receives something) and calendar/drive/docs/sheets
-    // writes (nobody does), so the discriminator is the OUTBOUND SCOPE the send tool opened.
-    // A data write is outside any scope and correctly produces no delivery row; inventing a
-    // per-action allow-list here would be a second registry drifting against the first.
+    // The door records only a send. This one function carries gmail_send/reply/forward (a person
+    // receives something) and data writes (nobody does), so the discriminator is the outbound scope the
+    // send tool opened; a per-action allow-list here would be a second registry drifting against it.
     if (inOutboundScope()) {
       recordedId(recordAtDoor({
         outcome: result.ok ? 'delivered' : 'failed',
@@ -214,12 +192,8 @@ export function googleWrite(
 }
 
 /**
- * v2.5.5 — Internal Google API call that does NOT log to the activity feed.
- * Use for plumbing/lookup calls that are part of a higher-level user-visible
- * action (e.g. forms_add_*_question internally calls forms.get to find the
- * append index — that lookup shouldn't show up as a separate activity row).
- *
- * The user-visible parent call still logs through googleRead/googleWrite.
+ * Internal Google API call that does NOT log to the activity feed, for lookups that are part of a
+ * higher-level call (e.g. forms.get to find an append index); the parent call still logs.
  */
 export function googleSilentFetch(
   method: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE',
@@ -227,9 +201,8 @@ export function googleSilentFetch(
   body?: unknown,
   contentType?: string,
   accountId: string = 'agent',
-  // A-6: a SILENT call is still an agent's call. It is hidden from the ACTIVITY FEED, which is a
-  // decision about noise, not about ownership — a lookup the agent is waiting on is work its stop
-  // must reach. Optional because some plumbing callers genuinely have no agent.
+  // A silent call is still an agent's call: hidden from the activity feed (a noise decision), but
+  // its stop must still reach it. Optional because some plumbing callers have no agent.
   agentId?: string,
 ): Promise<GoogleApiResult> {
   return googleFetch(method, url, body, contentType, accountId, agentId);

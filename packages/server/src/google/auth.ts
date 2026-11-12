@@ -1,21 +1,6 @@
-// ════════════════════════════════════════
-// Google Workspace Auth — Native OAuth 2.0
-// No gws CLI dependency. Direct REST API with auto-refresh.
-// Mirrors the Microsoft auth.ts pattern.
-//
-// v2.7.0 — multi-account support. A dojo can connect TWO Google
-// accounts: the "agent" slot (the agent's own identity, default) and
-// the "user" slot (the human user's account, used for reads on their
-// behalf). All public functions accept an optional `slot` parameter
-// that defaults to 'agent' — every existing caller keeps working
-// unchanged.
-//
-// Storage strategy: the agent slot uses the legacy unprefixed config
-// keys (gws_access_token, etc.) — no migration needed for existing
-// installs. The user slot uses '_user_' infixed keys
-// (gws_user_access_token). New installs get the user slot only if
-// they explicitly connect a second account.
-// ════════════════════════════════════════
+// Google Workspace auth: native OAuth 2.0 with auto-refresh, mirroring the Microsoft auth.ts. Two slots:
+// 'agent' (the agent's own identity, the default) and 'user' (the human's account); each resolves to its
+// kind's lowest-position row in google_accounts (accounts.ts).
 
 import crypto from 'node:crypto';
 import { widestIntegrationLevel } from '../agent/access/read.js';
@@ -36,20 +21,13 @@ import { classifyTokenRefreshFailure } from '../services/oauth-refresh-classify.
 
 const logger = createLogger('google-auth');
 
-// ── Shared OAuth client + token broker (Cornerpin-hosted) ──
-// Google requires a client secret in the token exchange for every client type
-// usable by a self-hosted app (Web and Desktop both), so there is no secretless
-// flow like Microsoft's. To avoid shipping the secret to any install or the
-// public repo, the two secret-requiring calls (code exchange + refresh) go
-// through a Cornerpin broker: a tiny Cloudflare Worker that holds the secret and
-// injects it. The app never sees the secret. PKCE is still used end to end as
-// defense in depth. Both constants below are public product values, identical on
-// every install — users connect with one click and configure nothing.
+// Google requires a client secret on code exchange and refresh for every client type a self-hosted app can
+// use, so those two calls go through a Cornerpin broker (a Cloudflare Worker) that injects the secret and the
+// app never holds it. PKCE is still used end to end. Both constants below are public, identical on every install.
 const CLIENT_ID = '910593387780-mhtqug66aa0bf2m2bojknskvgolnqefe.apps.googleusercontent.com';
 
 const AUTH_BASE = 'https://accounts.google.com/o/oauth2/v2/auth';
-// Token endpoint = the broker (NOT Google directly). The broker adds the secret
-// and forwards to https://oauth2.googleapis.com/token.
+// Token endpoint is the broker (not Google); it adds the secret and forwards to oauth2.googleapis.com/token.
 const TOKEN_URL = 'https://googleconnect.theagentdojo.com/';
 
 const SCOPES = [
@@ -64,31 +42,24 @@ const SCOPES = [
   'https://www.googleapis.com/auth/documents',
   'https://www.googleapis.com/auth/spreadsheets',
   'https://www.googleapis.com/auth/presentations',
-  // v2.5.5 — Forms create/edit + read responses
+  // Forms create/edit and read responses
   'https://www.googleapis.com/auth/forms.body',
   'https://www.googleapis.com/auth/forms.responses.readonly',
 ].join(' ');
 
-// Exported as an array for downstream code that needs to compare against a
-// token's granted scopes (e.g. detecting "user is connected but missing the
-// new Forms scopes — needs to reconnect").
+// Exported as an array so callers can compare it against a token's granted scopes.
 export const REQUIRED_SCOPES: readonly string[] = SCOPES.split(' ');
 
-// ── Slot abstraction ──
 
 export type AccountSlot = 'agent' | 'user';
 export const ACCOUNT_SLOTS: readonly AccountSlot[] = ['agent', 'user'];
 
-// The legacy slot ('agent'/'user') now resolves to that KIND's position-1
-// account row (Path B, layer 2). The kind is the permission boundary and is
-// identical to the slot value, so a slot is passed straight through as a kind.
+// The legacy slot ('agent'/'user') resolves to that kind's position-1 account row; slot and kind are
+// identical, so a slot is passed straight through as a kind.
 
 /**
- * v2.5.5 — Normalize scope IDs to a canonical form for set comparison.
- * Google's auth flow accepts shorthand ("email", "profile") but tokeninfo
- * reports them back as full URLs ("https://www.googleapis.com/auth/userinfo.email").
- * Without this normalization, the missing-scopes diff thinks "email" is
- * missing even when "userinfo.email" is granted.
+ * Normalize scope ids to full URLs for set comparison: Google accepts "email" but tokeninfo reports
+ * "https://www.googleapis.com/auth/userinfo.email", which a plain diff would show as missing.
  */
 function canonicalizeScope(scope: string): string {
   if (scope === 'email') return 'https://www.googleapis.com/auth/userinfo.email';
@@ -122,7 +93,6 @@ const DEFAULT_SERVICES = {
   forms: true,
 };
 
-// ── Slot → account resolution ──
 
 /** The kind's position-1 account row, or null on a fresh (unconnected) install. */
 function slotAccount(slot: AccountSlot): GoogleAccount | null {
@@ -130,9 +100,8 @@ function slotAccount(slot: AccountSlot): GoogleAccount | null {
 }
 
 /**
- * The kind's position-1 row, created on demand for setters. A brand-new
- * primary account preserves the historical kind defaults (agent watch/send
- * default ON, user OFF); id == kind keeps it addressable as the legacy slot.
+ * The kind's position-1 row, created on demand for setters with the kind defaults (agent watch/send ON,
+ * user OFF); id == kind keeps it addressable as the legacy slot.
  */
 function ensureSlotAccount(slot: AccountSlot): GoogleAccount {
   const existing = getPrimaryGoogleAccount(slot);
@@ -154,7 +123,6 @@ function parseServices(json: string | null): GoogleWorkspaceConfig['enabledServi
   return services;
 }
 
-// ── Config Getters ──
 
 export function getGoogleWorkspaceConfig(slot: AccountSlot = 'agent'): GoogleWorkspaceConfig {
   const acc = slotAccount(slot);
@@ -179,10 +147,7 @@ export function getEnabledServices(slot: AccountSlot = 'agent'): GoogleWorkspace
   return getGoogleWorkspaceConfig(slot).enabledServices;
 }
 
-// ── Kind-level aggregation (multi-account aware) ──
-// A kind's tools should be offered if ANY of that kind's connected accounts
-// has the service enabled — not just the position-1 row. Used by tool
-// filtering so adding a second account widens the available surface.
+// A kind's tools are offered if ANY of its connected accounts has the service enabled, not just position 1.
 
 export function isAnyGoogleAccountConnected(slot: AccountSlot): boolean {
   return listGoogleAccounts(slot).some(a => a.connected);
@@ -196,11 +161,8 @@ export function isGoogleServiceEnabledForKind(
 }
 
 /**
- * FA-TS1: every service-enabled flag for a kind, computed from ONE account-list
- * read. Equivalent to calling isGoogleServiceEnabledForKind(slot, service) for
- * each service, but reads google_accounts once instead of once per service/tool
- * (getFilteredTools consulted it ~109 times per call). Same fact door
- * (listGoogleAccounts + parseServices), so the results are byte-identical.
+ * Every service-enabled flag for a kind from ONE account-list read (getFilteredTools asks per tool). Same
+ * fact door as isGoogleServiceEnabledForKind (listGoogleAccounts + parseServices), so results are identical.
  */
 export function getGoogleServiceFlagsForKind(
   slot: AccountSlot,
@@ -213,7 +175,6 @@ export function getGoogleServiceFlagsForKind(
   return flags;
 }
 
-// ── Per-account setters (dashboard manages individual accounts by id) ──
 
 export function setEnabledServicesForAccount(
   accountId: string,
@@ -235,7 +196,7 @@ export function setEmailSendingEnabledForAccount(accountId: string, enabled: boo
   updateGoogleAccount(accountId, { sendEmail: enabled });
 }
 
-/** Sanitized per-account view for the dashboard — never includes tokens. */
+/** Sanitized per-account view for the dashboard, never includes tokens. */
 export interface GoogleAccountView {
   id: string;
   kind: AccountSlot;
@@ -265,12 +226,8 @@ export function listGoogleAccountViews(): GoogleAccountView[] {
 }
 
 /**
- * Whether the Gmail watcher should poll this slot's inbox for new mail and
- * forward notifications to the primary agent. Defaults true for the agent
- * slot (preserves single-account v2.6 behavior) and false for the user slot
- * (a personal inbox connected as "user" shouldn't auto-forward without an
- * explicit opt-in). Migration in seedDefaultEmailMonitoring() sets the agent
- * key on first boot for installs upgrading from v2.6.
+ * Whether the Gmail watcher polls this slot's inbox and forwards notifications to the primary agent.
+ * Defaults true for the agent slot, false for the user slot (a personal inbox needs an explicit opt-in).
  */
 export function isEmailMonitoringEnabled(slot: AccountSlot = 'agent'): boolean {
   const acc = slotAccount(slot);
@@ -283,12 +240,8 @@ export function setEmailMonitoringEnabled(enabled: boolean, slot: AccountSlot = 
 }
 
 /**
- * Whether the agent is allowed to send/reply/forward email from this slot.
- * Defaults true for the agent slot (preserves v2.6/v2.7.0 behavior where
- * the agent's own account could send) and false for the user slot (a
- * personal account shouldn't grant outbound permission just by connecting —
- * the user opts in explicitly). Send tools refuse with a structured message
- * naming the toggle when this is off.
+ * Whether the agent may send/reply/forward email from this slot. Defaults true for the agent slot, false
+ * for the user slot (connecting must not grant outbound permission). Send tools refuse naming the toggle.
  */
 export function isEmailSendingEnabled(slot: AccountSlot = 'agent'): boolean {
   const acc = slotAccount(slot);
@@ -300,7 +253,6 @@ export function setEmailSendingEnabled(enabled: boolean, slot: AccountSlot = 'ag
   updateGoogleAccount(ensureSlotAccount(slot).id, { sendEmail: enabled });
 }
 
-// ── Config Setters ──
 
 export function setGoogleEnabled(enabled: boolean, slot: AccountSlot = 'agent'): void {
   updateGoogleAccount(ensureSlotAccount(slot).id, { enabled });
@@ -323,14 +275,10 @@ export function setEnabledServices(services: Partial<GoogleWorkspaceConfig['enab
   updateGoogleAccount(ensureSlotAccount(slot).id, { enabledServices: JSON.stringify({ ...current, ...services }) });
 }
 
-// ── Token Management ──
 
 /**
- * v2.5.5 — Returns scopes from REQUIRED_SCOPES that the connected user has
- * NOT granted. Empty array means everything is fine. Non-empty means the
- * user connected before the scope list was extended and needs to re-consent.
- *
- * Returns empty array if the user is not connected at all (different problem).
+ * Scopes from REQUIRED_SCOPES the connected user has NOT granted (they connected before the list grew and
+ * must re-consent). Empty when fully granted, or when the user is not connected at all.
  */
 export function getMissingScopes(slot: AccountSlot = 'agent'): string[] {
   if (!isGoogleConnected(slot)) return [];
@@ -342,10 +290,7 @@ export function getMissingScopes(slot: AccountSlot = 'agent'): string[] {
   return REQUIRED_SCOPES.filter((s) => !grantedSet.has(canonicalizeScope(s)));
 }
 
-/**
- * v2.5.5 — Probe Google's tokeninfo endpoint with the current access token
- * to learn which scopes were actually granted, then persist them.
- */
+/** Learn the granted scopes from Google's tokeninfo endpoint with the current access token, then persist them. */
 export async function discoverGrantedScopes(slot: AccountSlot = 'agent'): Promise<void> {
   if (!isGoogleConnected(slot)) return;
   if (slotAccount(slot)?.grantedScopes) return; // already known
@@ -366,15 +311,10 @@ export async function discoverGrantedScopes(slot: AccountSlot = 'agent'): Promis
   }
 }
 
-// Per-ACCOUNT refresh mutex (keyed by account id, not kind — each connected
-// account refreshes independently).
+// Per-ACCOUNT refresh mutex (keyed by account id): each connected account refreshes independently.
 const refreshPromises: Map<string, Promise<string | null> | null> = new Map();
 
-/**
- * Valid access token for a SPECIFIC account (by id), refreshing if needed.
- * This is the account-aware primitive; the slot wrapper below resolves a
- * kind to its position-1 account and delegates here.
- */
+/** Valid access token for a specific account id, refreshing if needed (the slot wrapper delegates here). */
 export async function getValidAccessTokenForAccount(accountId: string): Promise<string | null> {
   const acc = getGoogleAccount(accountId);
   if (!acc) return null;
@@ -395,25 +335,21 @@ export async function getValidAccessToken(slot: AccountSlot = 'agent'): Promise<
 }
 
 /**
- * Bench an account: mark it disconnected and, ONLY on the transition from
- * connected → benched, broadcast the disconnect and send the one critical
- * "re-authenticate" alert (v2.3.19 — OAuth expiry is a true blocker). Gating on
- * the prior connected state is what stops the recovery probe (which calls
- * refresh on already-benched accounts) from re-alerting the owner every cycle:
- * the alert fires exactly once, when a working account first goes down.
+ * Bench an account: mark it disconnected and, only on the connected -> benched transition, broadcast the
+ * disconnect and note the expired sign-in. Gating on the prior state stops the recovery probe (which
+ * refreshes already-benched accounts) from repeating it every cycle.
  */
 function benchGoogleAccount(acc: GoogleAccount | null, accountId: string): void {
   const wasConnected = acc?.connected ?? false;
   updateGoogleAccount(accountId, { connected: false });
-  if (!wasConnected) return; // already benched — no re-broadcast, no re-alert
+  if (!wasConnected) return; // already benched, nothing to repeat
   broadcast({ type: 'google:disconnected', data: { slot: acc?.kind ?? 'agent' } });
-  // OR-AUDIT-ANSWERS (d): a sign-in that expired is no platform text (the owner's set: offline and back online, budget,
-  // broken agent, Mac critical). The dashboard card stays; the agent sees the disconnected integration in its prompt and
-  // tells him (OR-ENGINE-LABELLED: the agent's job).
+  // No platform text for an expired sign-in: the dashboard card stays and the agent sees the disconnected
+  // integration in its prompt.
   noteGoogleSignInExpired(accountId, expiredWords(acc));
 }
 
-const expiredWords = (acc: { kind?: string; email?: string | null } | null): string => `Google Workspace ${acc?.kind === 'user' ? "user's" : "agent's"} account${acc?.email ? ` (${acc.email})` : ''} connection expired. Re-authenticate in Settings → Channels (the Google cards).`; // the owner's card carries these words (t138 r3-4)
+const expiredWords = (acc: { kind?: string; email?: string | null } | null): string => `Google Workspace ${acc?.kind === 'user' ? "user's" : "agent's"} account${acc?.email ? ` (${acc.email})` : ''} connection expired. Re-authenticate in Settings → Channels (the Google cards).`; // the owner's card carries these words
 
 async function refreshAccessTokenForAccount(accountId: string): Promise<string | null> {
   const acc = getGoogleAccount(accountId);
@@ -428,8 +364,7 @@ async function refreshAccessTokenForAccount(accountId: string): Promise<string |
     grant_type: 'refresh_token',
     refresh_token: refreshToken,
   });
-  // No client secret here: the broker injects it server-side before forwarding
-  // to Google. The app never holds a secret.
+  // No client secret here: the broker injects it server-side.
 
   try {
     const resp = await fetch(TOKEN_URL, {
@@ -443,16 +378,13 @@ async function refreshAccessTokenForAccount(accountId: string): Promise<string |
       const err = await resp.text();
       const verdict = classifyTokenRefreshFailure(resp.status, err);
       if (verdict === 'terminal') {
-        // Genuine dead-account signal (invalid_grant / interaction_required /
-        // consent_required / login_required): bench + one critical alert
-        // (v2.3.19 — OAuth expiry is a true blocker).
+        // Genuine dead-account signal (invalid_grant / interaction_required / consent_required /
+        // login_required): bench the account.
         logger.error('Google token refresh failed (terminal, benching account)', { accountId, status: resp.status, error: err });
         benchGoogleAccount(acc, accountId);
       } else {
-        // TRANSIENT (5xx, throttling, clock skew, an unrecognized 400). Benching
-        // a healthy account on a passing hiccup is the one-way trap this fix
-        // removes: keep connected=1, log the parsed failure, let the caller's
-        // null-return handle just this call. The recovery probe re-tests later.
+        // TRANSIENT (5xx, throttling, clock skew, an unrecognized 400): never bench a healthy account on a
+        // passing hiccup. Keep connected=1; the caller's null return covers this call and the probe re-tests.
         logger.warn('Google token refresh failed (transient, leaving account connected)', { accountId, status: resp.status, error: err });
       }
       return null;
@@ -469,35 +401,26 @@ async function refreshAccessTokenForAccount(accountId: string): Promise<string |
     logger.debug('Google access token refreshed', { accountId });
     return data.access_token;
   } catch (err) {
-    // A network throw never produced an HTTP response, so it is transient by
-    // definition. Never bench here: log and return null so the caller degrades
-    // for this call only; the recovery probe re-tests on its next cycle.
+    // A network throw produced no HTTP response, so it is transient: never bench; return null for this call.
     logger.warn('Google token refresh error (transient, leaving account connected)', { accountId, error: err instanceof Error ? err.message : String(err) });
     return null;
   }
 }
 
-// ── Recovery probe (the way back through the one-way door) ──
 
 /**
- * Benched accounts that still hold a refresh token — the recovery probe's
- * candidate set. An account with no refresh token can only be fixed by a
- * Settings re-auth, so the probe leaves it alone.
+ * Benched accounts that still hold a refresh token, the recovery probe's candidates (without one only a
+ * Settings re-auth can fix it).
  */
 export function listReconnectableGoogleAccounts(): GoogleAccount[] {
   return listGoogleAccounts().filter(a => !a.connected && !!a.refreshToken);
 }
 
 /**
- * Recovery-probe step for ONE benched account. Force a real token refresh: if
- * the refresh token still works, un-bench the account (connected=1 +
- * lastVerifiedAt) and broadcast the reconnect so the dashboard clears its
- * "disconnected" state. One plain info log, no owner ping — we already pinged
- * when it went down, and a silent self-heal should not celebrate. If the
- * refresh fails, refreshAccessTokenForAccount already handled it: a terminal
- * failure re-benched silently (the account was already connected=0, so the
- * transition-gated alert stayed quiet); a transient failure just leaves it for
- * the next cycle.
+ * Recovery-probe step for ONE benched account: force a real token refresh and, if it works, un-bench it
+ * (connected=1, lastVerifiedAt) and broadcast the reconnect. No owner ping for a silent self-heal. A failed
+ * refresh was already handled by refreshAccessTokenForAccount (terminal: stays benched with no repeat
+ * note; transient: left for the next cycle).
  */
 export async function attemptGoogleReconnect(accountId: string): Promise<'reconnected' | 'still-down'> {
   const acc = getGoogleAccount(accountId);
@@ -507,33 +430,25 @@ export async function attemptGoogleReconnect(accountId: string): Promise<'reconn
   updateGoogleAccount(accountId, { connected: true, lastVerifiedAt: new Date().toISOString() });
   broadcast({ type: 'google:connected', data: { email: acc.email ?? '', slot: acc.kind } });
   logger.info('Google account reconnected on recovery probe', { accountId, slot: acc.kind, email: acc.email ?? null });
-  // Its card left when the sign-in was restored (t138 r4). OR-AUDIT-ANSWERS (d): no all-clear text (the bench sent none).
   return 'reconnected';
 }
 
-// ── OAuth Flow ──
 
 /**
- * What an OAuth flow is connecting into (Path B). Either a specific existing
- * account (reconnect, by id) or "add a new account to this kind" (accountId
- * undefined → after the exchange we dedupe by email and otherwise create a new
- * row, subject to the per-kind cap).
+ * What an OAuth flow connects into: a specific existing account (reconnect, by id) or, with accountId
+ * undefined, a new account (deduped by email after the exchange, subject to the per-kind cap).
  */
 export interface OAuthTarget { kind: AccountSlot; accountId?: string }
 
-// PKCE (RFC 7636): proves possession of the authorization request via a
-// per-flow verifier, layered on top of the broker as defense in depth, exactly
-// like the Microsoft side. S256 challenge.
+// PKCE (RFC 7636, S256): proves possession of the authorization request via a per-flow verifier.
 function generatePKCE(): { verifier: string; challenge: string } {
   const verifier = crypto.randomBytes(32).toString('base64url');
   const challenge = crypto.createHash('sha256').update(verifier).digest('base64url');
   return { verifier, challenge };
 }
 
-// In-flight OAuth flows, keyed by the state token (the authoritative identity
-// for "which flow is this callback completing"). Each click of "Connect" /
-// "Add another" starts an independent flow. The PKCE verifier is held here
-// across the redirect and consumed at code exchange.
+// In-flight OAuth flows keyed by the state token, which identifies the flow a callback completes. The PKCE
+// verifier is held here across the redirect and consumed at code exchange.
 interface OAuthFlow { verifier: string; redirectUri: string; target: OAuthTarget; createdAt: number }
 const oauthFlows = new Map<string, OAuthFlow>();
 const OAUTH_FLOW_TTL_MS = 10 * 60 * 1000;
@@ -587,8 +502,7 @@ export async function exchangeCodeForTokens(code: string, redirectUri: string, c
     redirect_uri: redirectUri,
     code_verifier: codeVerifier,
   });
-  // No client secret here: the broker injects it server-side. PKCE
-  // (code_verifier) secures the exchange from the app's side.
+  // No client secret here: the broker injects it server-side; PKCE secures the exchange.
 
   try {
     const resp = await fetch(TOKEN_URL, {
@@ -604,7 +518,6 @@ export async function exchangeCodeForTokens(code: string, redirectUri: string, c
 
     const data = await resp.json() as { access_token: string; refresh_token?: string; expires_in: number; id_token?: string; scope?: string };
 
-    // Get email from userinfo (needed to dedupe / label the account).
     let email = '';
     try {
       const userResp = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
@@ -619,13 +532,11 @@ export async function exchangeCodeForTokens(code: string, redirectUri: string, c
     // Resolve which account row receives these tokens.
     let accountId: string;
     if (target.accountId) {
-      // Reconnect a specific existing account.
       const acc = getGoogleAccount(target.accountId);
       if (!acc) return { success: false, error: 'That account no longer exists. Refresh Settings and try again.' };
       accountId = acc.id;
     } else {
-      // "Add to kind": if this email is already an account of the kind, reconnect
-      // it instead of duplicating; otherwise create a new row, subject to the cap.
+      // Same email already an account of the kind: reconnect it; otherwise create a row (subject to the cap).
       const existing = email
         ? listGoogleAccounts(slot).find(a => (a.email ?? '').toLowerCase() === email.toLowerCase())
         : null;
@@ -657,9 +568,8 @@ export async function exchangeCodeForTokens(code: string, redirectUri: string, c
     });
     broadcast({ type: 'google:connected', data: { email, slot } });
 
-    // Soft warning if the same email is connected as both an agent and a user
-    // account. Not a hard refusal — legitimate reasons exist (testing, recovery)
-    // — but log it as a breadcrumb for "why are agent and user the same" support.
+    // Soft warning if the same email is connected as both an agent and a user account (not a refusal:
+    // testing and recovery are legitimate); logged as a breadcrumb for support.
     if (email) {
       const otherSlot: AccountSlot = slot === 'agent' ? 'user' : 'agent';
       const otherMatch = listGoogleAccounts(otherSlot).some(
@@ -677,7 +587,6 @@ export async function exchangeCodeForTokens(code: string, redirectUri: string, c
   }
 }
 
-// ── Auth Verification ──
 
 export async function testGoogleAuth(slot: AccountSlot = 'agent'): Promise<{ authenticated: boolean; email: string | null }> {
   const token = await getValidAccessToken(slot);
@@ -698,8 +607,7 @@ export async function testGoogleAuth(slot: AccountSlot = 'agent'): Promise<{ aut
 }
 
 export async function checkGoogleOnStartup(): Promise<void> {
-  // Check both slots on startup. Each runs independently — failure on
-  // one slot doesn't disable the other.
+  // Check both slots on startup; each runs independently, so one failing does not disable the other.
   for (const slot of ACCOUNT_SLOTS) {
     if (!isGoogleConnected(slot)) continue;
     const auth = await testGoogleAuth(slot);
@@ -712,13 +620,11 @@ export async function checkGoogleOnStartup(): Promise<void> {
   }
 }
 
-// ── Disconnect ──
 
 export function disconnectGoogle(slot: AccountSlot = 'agent'): void {
   const acc = slotAccount(slot);
   if (acc) {
-    // Clear connection, tokens, and per-account prefs but preserve the
-    // watch/send toggles — the legacy disconnect never reset those.
+    // Clear connection, tokens and per-account prefs but preserve the watch/send toggles.
     updateGoogleAccount(acc.id, {
       enabled: false,
       connected: false,
@@ -736,9 +642,8 @@ export function disconnectGoogle(slot: AccountSlot = 'agent'): void {
 }
 
 /**
- * Disconnect a SPECIFIC account by id. A non-primary account (position > 1) is
- * removed entirely so its slot frees up; the position-1 row is reset in place
- * (preserving watch/send) so the legacy slot mapping survives a reconnect.
+ * Disconnect a SPECIFIC account by id. A non-primary account (position > 1) is removed so its slot frees
+ * up; the position-1 row is reset in place (keeping watch/send) so the legacy slot mapping survives.
  */
 export function disconnectGoogleAccount(accountId: string): void {
   const acc = getGoogleAccount(accountId);
@@ -756,18 +661,10 @@ export function disconnectGoogleAccount(accountId: string): void {
   logger.info('Google account disconnected', { accountId, kind: acc.kind, position: acc.position });
 }
 
-// ── Access Level ──
 
 export function getAgentGoogleAccessLevel(agentId: string, _isPrimary: boolean, _isPM: boolean): 'full' | 'read' | 'none' {
-  // UX-ACCESS A1 — THE UNDERSCORE MOVED, AND THAT IS THE WHOLE CHANGE.
-  // Census C4 read this signature as "the code admitting it": the agent id was
-  // unused and the tier came from a role ladder (`isPM → none`, `isPrimary →
-  // full`, else `read`). The ladder is now the agent's own grant, which the
-  // migration seeded with exactly those three answers — so every box answers
-  // what it answered before, and "read work mail but not personal mail" finally
-  // has a place to be written. CONNECTIVITY still wins: an account that is not
-  // connected or a provider that is disabled is `none` whatever the grant says,
-  // because that is a fact about the box and not a permission.
+  // The tier is the agent's own grant. CONNECTIVITY still wins: an account that is not connected or a
+  // provider that is disabled is `none` whatever the grant says, a fact about the box and not a permission.
   const anyEnabled = isGoogleEnabled('agent') || isGoogleEnabled('user');
   const anyConnected = isGoogleConnected('agent') || isGoogleConnected('user');
   if (!anyEnabled || !anyConnected) return 'none';

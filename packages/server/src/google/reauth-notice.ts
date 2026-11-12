@@ -1,24 +1,9 @@
-// ════════════════════════════════════════
-// One-time Google re-auth notice (broker migration)
-//
-// When an install first boots on the broker-based Google OAuth, any Google
-// account that was connected under the previous OAuth client needs a ONE-TIME
-// reconnect — its refresh token is bound to the old client and no longer works.
-// This surfaces that clearly, exactly once, three ways:
-//   1. a persistent dashboard toast (chat:error severity 'error' stays until the
-//      user dismisses it),
-//   2. a user-visible divider notice in the dojo chat, and
-//   3. an agent-only [Engine hint: ...] so the agent can guide the user if asked.
-//
-// Google-only: the Microsoft client is unchanged, so MS accounts are unaffected.
-// We deliberately do NOT add a separate migration iMessage — the existing
-// per-account "connection expired" iMessage alerts fire naturally on the first
-// failed refresh and reinforce this without piling on a duplicate.
-//
-// Guarded by a config flag so it runs once. The flag is set on the first boot of
-// this version regardless of whether a notice was shown, so accounts connected
-// LATER (already on the new client, perfectly healthy) never re-trigger it.
-// ════════════════════════════════════════
+// One-time notice that Google accounts connected under the previous OAuth client must reconnect (their
+// refresh tokens no longer work). Shown exactly once: a persistent toast, a chat divider, and an
+// [Engine hint] row meant for the agent (it sits on the owner lane, so the owner sees it too).
+// Google-only (Microsoft is unaffected). No extra message: each account's expired-sign-in card follows.
+// A config flag makes it run once; it is set on first boot whether or not a notice was shown, so
+// accounts connected later never re-trigger it.
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { insertMessage } from '../memory/message-store.js';
@@ -30,11 +15,8 @@ import { formatDivider, settingsPath } from '@dojo/shared';
 
 const logger = createLogger('google-reauth-notice');
 const FLAG_KEY = 'google_broker_reauth_notified';
-// The toast is a transient broadcast, so firing it at boot (before any dashboard
-// is open — the common case right after an update restarts the server) would lose
-// it. Instead we set this flag at boot and flush the toast on the next dashboard
-// WS connect, then clear it. The divider + agent hint persist in the DB, so they
-// survive regardless of connection timing.
+// The toast is a transient broadcast, so at boot (no dashboard open yet) it is queued with this flag and
+// flushed on the next dashboard WS connect. The divider and hint persist in the DB regardless.
 const TOAST_PENDING_KEY = 'google_broker_reauth_toast_pending';
 
 const TOAST_MESSAGE =
@@ -50,20 +32,17 @@ export function notifyGoogleReauthOnce(): void {
       | undefined;
     if (flag?.value) return; // this migration moment was already handled
 
-    // Only previously-connected accounts (those carrying a refresh token) need a
-    // reconnect; a fresh install with none needs no notice.
+    // Only previously-connected accounts (carrying a refresh token) need a reconnect.
     const needsReconnect = listGoogleAccounts().some(a => !!a.refreshToken);
 
     if (needsReconnect) {
       const primaryId = getPrimaryAgentId();
-      // Primary agent not ready yet — bail WITHOUT setting the flag so we retry
-      // on the next boot.
+      // Primary agent not ready: return WITHOUT setting the flag so the next boot retries.
       if (!primaryId) return;
 
       const now = new Date().toISOString();
 
-      // 1. User-visible divider in the dojo chat (── label ── renders as a
-      //    centered system notice in regular mode).
+      // 1. User-visible divider in the dojo chat.
       const dividerId = uuidv4();
       const divider = formatDivider(`Google reconnect needed (do it on the DOJO computer): ${settingsPath('channels')}`);
       insertMessage({ id: dividerId, agentId: primaryId, role: 'system', content: divider });
@@ -83,7 +62,7 @@ export function notifyGoogleReauthOnce(): void {
         },
       });
 
-      // 2. Agent-only guidance so the agent can help if the user asks.
+      // 2. Hint so the agent can help if the user asks.
       const hintId = uuidv4();
       const hint =
         '[Engine hint: A security update changed how DOJO connects to Google ' +
@@ -96,17 +75,8 @@ export function notifyGoogleReauthOnce(): void {
         'or a remote/tunneled browser, or Google will reject the sign-in. Nothing else is ' +
         'affected: Microsoft, iMessage, SMS, and phone are unchanged.]';
       insertMessage({ id: hintId, agentId: primaryId, role: 'user', content: hint });
-      // T9 (research 17 D4): this row was persisted and never broadcast. It is an
-      // owner-lane row, so the chat history route has always served it on reload — the
-      // divider above appeared live, this one only after a refresh. Broadcasting shows
-      // nothing new; it shows the same two rows at the same time.
-      //
-      // ⚠ Recorded, not repaired: the row's own comment calls it "agent-only guidance",
-      // but it is written with the writer module's DEFAULT lane (`owner`), so it is not
-      // agent-only at all. Moving it to `lane:'events'` is the honest fix and it is not
-      // T9's: an events-lane row with a NULL conv_key becomes a PENDING ENGINE EVENT and
-      // drives a spurious turn (see the 'engine-notice' sentinel in agent-notice.ts), so
-      // the change is a lane AND a sentinel, i.e. a behaviour decision. Sweep A/E.
+      // Broadcast so the hint appears live with the divider (history serves this owner-lane row on reload).
+      // Moving it to lane 'events' with a NULL conv_key would make it a pending engine event (a spurious turn).
       broadcast({
         type: 'chat:message',
         agentId: primaryId,
@@ -123,9 +93,7 @@ export function notifyGoogleReauthOnce(): void {
         },
       });
 
-      // 3. Queue the persistent toast for the next dashboard connect (so it
-      //    isn't lost when no dashboard is open at boot). Flushed by
-      //    flushPendingGoogleReauthToast() from the WS connect handler.
+      // 3. Queue the toast for the next dashboard connect (see flushPendingGoogleReauthToast).
       db.prepare(
         `INSERT INTO config (key, value, updated_at) VALUES (?, '1', datetime('now'))
          ON CONFLICT(key) DO UPDATE SET value = '1', updated_at = datetime('now')`,
@@ -134,8 +102,7 @@ export function notifyGoogleReauthOnce(): void {
       logger.info('Queued one-time Google re-auth notice (chat divider + agent hint persisted, toast pending)');
     }
 
-    // Set the flag on the first boot of this version whether or not a notice was
-    // shown, so future (new-client) connects never re-trigger this.
+    // Set the flag whether or not a notice was shown, so later connects never re-trigger this.
     const stamp = new Date().toISOString();
     db.prepare(
       `INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
@@ -148,12 +115,7 @@ export function notifyGoogleReauthOnce(): void {
   }
 }
 
-/**
- * Flush the queued re-auth toast when a dashboard connects. Called from the WS
- * connect handler. Fires once (clears the pending flag), so the first dashboard
- * to open after the migration shows the persistent toast; later opens rely on
- * the persisted chat divider.
- */
+/** Flush the queued re-auth toast on dashboard connect (called from the WS connect handler); fires once. */
 export function flushPendingGoogleReauthToast(): void {
   try {
     const db = getDb();
@@ -165,14 +127,14 @@ export function flushPendingGoogleReauthToast(): void {
     const primaryId = getPrimaryAgentId();
     if (!primaryId) return;
 
-    // Persistent toast — severity 'error' stays until the user dismisses it.
+    // Persistent toast: severity 'error' stays until the user dismisses it.
     broadcast({
       type: 'chat:error',
       agentId: primaryId,
       error: TOAST_MESSAGE,
       code: 'AUTH_INVALID',
       severity: 'error',
-      cardClass: 'action',   // he reconnects the account
+      cardClass: 'action',
     });
 
     db.prepare(

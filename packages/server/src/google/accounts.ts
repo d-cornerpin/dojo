@@ -1,20 +1,8 @@
-// ════════════════════════════════════════
-// Google account registry (Path B, layer 1)
-//
-// The data layer for multi-account Google Workspace. Up to five accounts per
-// KIND ('agent' = the agent's own identities; 'user' = the human's accounts),
-// stored in the google_accounts table. KIND is the permission boundary: write
-// tools are primary-only, and user-kind send/watch is opt-in per account.
-//
-// This module is pure storage — no OAuth, no token refresh, no tool wiring.
-// auth.ts layers token refresh and the slot API on top of it (layer 2).
-//
-// seedGoogleAccountsFromConfig() is the one-time, idempotent bridge from the
-// legacy per-key config storage (gws_* / gws_user_*) to position-1 rows. It
-// reproduces the exact boolean-default rules the old getters used so a
-// migrating install sees no behavior change: agent watch/send default ON,
-// user watch/send default OFF, services default all-on.
-// ════════════════════════════════════════
+// Google account registry: up to five accounts per KIND ('agent' = the agent's own identities, 'user' =
+// the human's), stored in google_accounts. KIND is the permission boundary: write tools are primary-only
+// and user-kind send/watch is opt-in per account. Pure storage (no OAuth, refresh or tool wiring);
+// auth.ts layers those on top. seedGoogleAccountsFromConfig() is the idempotent one-time bridge from the
+// legacy gws_* / gws_user_* config keys, reproducing their defaults (agent watch/send ON, user OFF).
 
 import crypto from 'node:crypto';
 import { getDb } from '../db/connection.js';
@@ -74,7 +62,7 @@ function rowToAccount(r: GoogleAccountRow): GoogleAccount {
     email: r.email,
     enabled: r.enabled === 1,
     connected: r.connected === 1,
-    // D1 (PHASE-5 T10): the ONE decode point for this table's OAuth material.
+    // The ONE decode point for this table's OAuth material.
     accessToken: openSecretColumn(r.access_token, 'google_accounts.access_token'),
     refreshToken: openSecretColumn(r.refresh_token, 'google_accounts.refresh_token'),
     tokenExpiresAt: r.token_expires_at,
@@ -86,7 +74,6 @@ function rowToAccount(r: GoogleAccountRow): GoogleAccount {
   };
 }
 
-// ── Reads ──
 
 export function listGoogleAccounts(kind?: GoogleAccountKind): GoogleAccount[] {
   const db = getDb();
@@ -102,8 +89,7 @@ export function getGoogleAccount(id: string): GoogleAccount | null {
   return row ? rowToAccount(row) : null;
 }
 
-/** The position-1 account for a kind — the back-compat target for the legacy
- *  slot API, where slot 'agent'/'user' resolves to that kind's first account. */
+/** The position-1 account for a kind (what slot 'agent'/'user' of the legacy slot API resolves to). */
 export function getPrimaryGoogleAccount(kind: GoogleAccountKind): GoogleAccount | null {
   const row = getDb()
     .prepare('SELECT * FROM google_accounts WHERE kind = ? ORDER BY position LIMIT 1')
@@ -111,8 +97,7 @@ export function getPrimaryGoogleAccount(kind: GoogleAccountKind): GoogleAccount 
   return row ? rowToAccount(row) : null;
 }
 
-/** Resolve a kind's account by email (the tool `account` param). When no email
- *  is given, defaults to the sole connected account; null if none or ambiguous. */
+/** Resolve a kind's account by email; with no email, the sole connected account; null if none or ambiguous. */
 export function resolveGoogleAccount(kind: GoogleAccountKind, email?: string | null): GoogleAccount | null {
   const accounts = listGoogleAccounts(kind);
   if (email) {
@@ -122,29 +107,21 @@ export function resolveGoogleAccount(kind: GoogleAccountKind, email?: string | n
   const connected = accounts.filter(a => a.connected);
   if (connected.length === 1) return connected[0];
   if (connected.length === 0 && accounts.length === 1) return accounts[0];
-  return null; // none connected, or more than one — caller must disambiguate
+  return null; // none connected, or more than one: the caller must disambiguate
 }
 
-/** Tool-facing resolver: returns the chosen account or a ready-to-surface error
- *  string naming the connected accounts of this kind. */
+/** Tool-facing resolver: the chosen account, or a ready-to-surface error naming the connected accounts. */
 export function resolveGoogleAccountForTool(
   kind: GoogleAccountKind,
   email?: string | null,
 ): { account: GoogleAccount } | { error: string } {
   const account = resolveGoogleAccount(kind, email);
-  // FA-TS5: resolveGoogleAccount hands back a lone DISCONNECTED account via its
-  // single-account back-compat branch. Running a tool against it dead-ends in a
-  // confusing auth failure or, worse, succeeds against a stale refresh_token that
-  // disconnect-on-refresh-failure cleared `connected` on but never wiped. The
-  // tool-facing resolver is authoritative on `.connected`: only a genuinely
-  // connected account counts as resolved.
+  // Authoritative on `.connected`: resolveGoogleAccount can return a lone disconnected account, whose
+  // stale refresh_token must not let a tool run.
   if (account && account.connected) return { account };
   const connected = listGoogleAccounts(kind).filter(a => a.connected);
   if (connected.length === 0) {
-    // UX-REPAIR T39: name the SIBLING slot when it is the one that is connected.
-    // The tool docs already say which slot each variant reads; a refusal that
-    // repeats only "connect one" leaves a model holding a connected mailbox it
-    // does not know it can reach, which is the confusion this task exists to end.
+    // Name the sibling slot when it is the connected one, so the model knows it can reach that mailbox.
     const sibling = kind === 'agent' ? 'user' : 'agent';
     const siblingConnected = listGoogleAccounts(sibling).some(a => a.connected);
     const pointer = siblingConnected
@@ -162,25 +139,14 @@ export function resolveGoogleAccountForTool(
 /** Read-side resolution of a slot's account. */
 export interface GoogleReadResolution {
   account: GoogleAccount;
-  /** True when this slot has more than one CONNECTED account, so a narrow read
-   *  result should name the account it read (self-describing header). */
+  /** True when the slot has more than one CONNECTED account, so a narrow read names the account it read. */
   labelAccount: boolean;
 }
 
 /**
- * READ-only account resolver. Diverges from resolveGoogleAccountForTool on ONE
- * case, by owner decision (2026-07-08, correctness-floor): when a slot has more
- * than one connected account and the caller named none, a READ must NOT bounce
- * with an ask-which-account error (a wasted round trip for a pure lookup).
- * Instead it defaults to the slot's PRIMARY (lowest-position) connected account
- * and flags `labelAccount` so the caller labels the result with that account's
- * address. Partial coverage is then honest (self-describing header) and the
- * F4 coverage floor carries the rest (the other accounts show up in the
- * "also checked" block).
- *
- * The WRITE side deliberately keeps the ambiguity error (resolveGoogleAccountForTool):
- * ask-which-account before mutating the wrong mailbox/calendar is intentional and
- * is the subject of a separate open owner decision. Do NOT fold the two.
+ * READ-only resolver. Unlike resolveGoogleAccountForTool, a read with several connected accounts and none
+ * named defaults to the lowest-position one and sets `labelAccount` (the coverage block lists the others).
+ * Writes keep the ambiguity error (ask which account before mutating the wrong one): do NOT fold the two.
  */
 export function resolveGoogleAccountForRead(
   kind: GoogleAccountKind,
@@ -194,14 +160,13 @@ export function resolveGoogleAccountForRead(
     return { account: strict.account, labelAccount: connected.length > 1 };
   }
   if (connected.length === 0) {
-    // No connected account — reuse the strict resolver's not-connected error.
+    // No connected account: reuse the strict resolver's not-connected error.
     return resolveGoogleAccountForTool(kind, email) as { error: string };
   }
   if (connected.length === 1) {
     return { account: connected[0], labelAccount: false };
   }
-  // >1 connected, none named: default to the lowest-position connected account
-  // (= position-1/primary when it is connected) and label it.
+  // More than one connected, none named: default to the lowest-position one and label it.
   return { account: connected[0], labelAccount: true };
 }
 
@@ -210,7 +175,6 @@ export function countGoogleAccounts(kind: GoogleAccountKind): number {
   return r.n;
 }
 
-// ── Writes ──
 
 export interface NewGoogleAccount {
   kind: GoogleAccountKind;
@@ -225,10 +189,9 @@ export interface NewGoogleAccount {
   watchEmail?: boolean;
   sendEmail?: boolean;
   lastVerifiedAt?: string | null;
-  /** Override the generated id — used by the seed to set the position-1 row id
-   *  to the kind name ('agent'/'user') so the legacy slot maps by identity. */
+  /** Override the generated id; the seed sets the position-1 row id to the kind name. */
   id?: string;
-  /** Override position — defaults to next free slot for the kind. */
+  /** Override position; defaults to the next free slot for the kind. */
   position?: number;
 }
 
@@ -249,13 +212,13 @@ export function insertGoogleAccount(acc: NewGoogleAccount): GoogleAccount {
     id, acc.kind, position, acc.email ?? null,
     acc.enabled === false ? 0 : 1,
     acc.connected ? 1 : 0,
-    // D1: encode point 1 of 2 — the INSERT column list.
+    // Encode point 1 of 2: the INSERT column list.
     sealSecretColumn(acc.accessToken ?? null), sealSecretColumn(acc.refreshToken ?? null),
     acc.tokenExpiresAt ?? null,
     acc.grantedScopes ?? null, acc.enabledServices ?? null,
     acc.watchEmail ? 1 : 0, acc.sendEmail ? 1 : 0, acc.lastVerifiedAt ?? null,
   );
-  bumpToolConfigGeneration(); // FA-TS1: connect/add widens the tool surface
+  bumpToolConfigGeneration(); // connect/add widens the tool surface
   return getGoogleAccount(id)!;
 }
 
@@ -266,25 +229,14 @@ function nextPosition(kind: GoogleAccountKind): number {
   return r.m + 1;
 }
 
-/** Column map for partial updates — keeps updateGoogleAccount honest against
- *  the schema and applies the same boolean encoding everywhere.
- *
- *  M7 (PHASE-4 T5): the eight text encoders used to read `v => v ?? null`, and THAT was
- *  P495 — a reconnect whose userinfo lookup blipped passes `email: email || undefined`
- *  meaning "leave the stored address alone", and `?? null` wrote SQL NULL over it. The
- *  undefined-dropping now happens in `db/patch.ts` BEFORE any encoder runs, so these
- *  functions are never called with `undefined` and the `?? null` defence is gone rather
- *  than carried: it can no longer fire, and a defence that cannot fire teaches the next
- *  writer a rule that is not true. */
+/** Column map for partial updates, so every write path applies the same encoding. Undefined values are
+ *  dropped in db/patch.ts before any encoder runs, so no encoder sees `undefined` (a reconnect passing
+ *  `email: undefined` must not write NULL over the stored address). */
 const UPDATABLE: Record<string, (v: unknown) => unknown> = {
   email: v => v,
   enabled: v => (v ? 1 : 0),
   connected: v => (v ? 1 : 0),
-  // D1: encode point 2 of 2 — the partial-update encoder map. This slot was
-  // already an encoder hook (`v => v`); it now seals, so every write path in the
-  // module encrypts without any caller knowing it happened.
-  // (No `?? null` here, deliberately — M7 above: `undefined` is dropped in
-  // db/patch.ts before any encoder runs, so a defence against it cannot fire.)
+  // Encode point 2 of 2: the partial-update encoder map; OAuth columns are sealed here.
   accessToken: v => sealSecretColumn(v as string | null),
   refreshToken: v => sealSecretColumn(v as string | null),
   tokenExpiresAt: v => v,
@@ -312,23 +264,22 @@ export function updateGoogleAccount(id: string, patch: Partial<Omit<GoogleAccoun
   sets.push("updated_at = datetime('now')");
   values.push(id);
   getDb().prepare(`UPDATE google_accounts SET ${sets.join(', ')} WHERE id = ?`).run(...values);
-  bumpToolConfigGeneration(); // FA-TS1: connected flag / enabledServices edits change the surface
-  // t138 r4: a restored sign-in (probe or Settings) ends the owner's "connection expired" card.
+  bumpToolConfigGeneration(); // connected flag / enabledServices edits change the surface
+  // A restored sign-in (probe or Settings) ends the owner's "connection expired" card.
   if (patch.connected === true) signInRestored('google_accounts', id);
-  reconcileWatcherCards(); // r6: an unwatched account's watcher card ends
+  reconcileWatcherCards(); // an unwatched account's watcher card ends
 }
 
-/** t138 r4: the owner is told this account's sign-in expired; keep the words for his card. */
+/** Records that this account's sign-in expired, keeping the words for the owner's card. */
 export const noteGoogleSignInExpired = (id: string, words: string): void => noteSignInExpired('google_accounts', id, words);
 
 export function deleteGoogleAccount(id: string): void {
-  accountRemoved('google_accounts', id); // r6: the cards it is the subject of end, live
+  accountRemoved('google_accounts', id); // the cards it is the subject of end, live
   getDb().prepare('DELETE FROM google_accounts WHERE id = ?').run(id);
   reconcileWatcherCards();
-  bumpToolConfigGeneration(); // FA-TS1: removing an account narrows the surface
+  bumpToolConfigGeneration(); // removing an account narrows the surface
 }
 
-// ── One-time seed from legacy config keys ──
 
 /** Read a legacy config value (raw string) or null. */
 function cfg(key: string): string | null {
@@ -350,7 +301,7 @@ export function seedGoogleAccountsFromConfig(): void {
     const refreshToken = cfg(`${p}refresh_token`);
     const connected = cfg(`${p}connected`) === 'true';
     const email = cfg(`${p}account_email`);
-    // Evidence of a prior connection — otherwise skip (nothing to migrate).
+    // Evidence of a prior connection, otherwise skip (nothing to migrate).
     if (!accessToken && !refreshToken && !connected && !email) continue;
 
     const watchRaw = cfg(`${p}watch_email`);

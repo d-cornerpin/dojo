@@ -89,13 +89,10 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
     },
   },
   {
-    // T77b — A DRAFT IS NOT A SEND, and this definition is where that starts.
-    // No `reachesPeople`: this tool reaches nobody. It writes a message into the
-    // account's own Drafts folder and stops, so it passes the integration WRITE
-    // grant and consults no channel grant (`agent/access/channels.ts` answers
-    // `null` for any name outside `SEND_TO_PEOPLE`). An agent with a full account
-    // grant and "Can talk to people" off can draft all day and send nothing —
-    // which is the whole point of the tool.
+    // A DRAFT IS NOT A SEND. No `reachesPeople`: this tool reaches nobody. It writes into the account's own
+    // Drafts folder, so it passes the integration WRITE grant and consults no channel grant
+    // (`agent/access/channels.ts` answers `null` for any name outside `SEND_TO_PEOPLE`). An agent with a
+    // full account grant and "Can talk to people" off can draft all day and send nothing.
     name: 'gmail_draft',
     description: 'Create a DRAFT email in the connected Google account\'s Drafts folder. This sends nothing: the draft sits in Drafts until a person opens it and presses Send themselves. Use it to prepare a message for the user to review and send, and whenever you want a mail written but the decision to send it left with them. For a NEW message pass `to` and `subject`. To draft a REPLY on an existing thread pass `reply_to_message_id` instead — the recipient, the "Re:" subject and the threading are taken from that message, so the draft opens inside the conversation. Supports attachments on the same rules as gmail_send (25MB inline cap, overflow auto-uploads to Drive and appends a link).',
     effects: [{ kind: 'fs_read', from: 'args.attachments[]' }],
@@ -523,13 +520,11 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
   // See packages/server/src/google/tools-slides.ts for the full slides toolkit.
 ];
 
-// ── v2.7.1 multi-account: user_* send tool variants ──
+// ── user_* send tool variants ──
 //
-// Mirror of the read-side USER_SLOT_READ_TOOLS pattern. Send/reply/forward
-// from the user slot is gated by isEmailSendingEnabled('user'), see the
-// executor for the refusal path. The toggle defaults OFF so connecting a
-// personal Gmail doesn't silently grant the agent permission to send mail
-// from it; the user has to flip the switch in Settings → Google → User.
+// Mirror of the read-side USER_SLOT_READ_TOOLS pattern. Send/reply/forward from the user slot is gated by
+// isEmailSendingEnabled('user'), see the executor for the refusal path. The toggle defaults OFF so
+// connecting a personal Gmail doesn't silently grant the agent permission to send mail from it.
 const USER_SLOT_SEND_TOOLS: readonly string[] = ['gmail_send', 'gmail_reply', 'gmail_forward'];
 for (const canonical of USER_SLOT_SEND_TOOLS) {
   const baseDef = googleWriteToolDefinitions.find(d => d.name === canonical);
@@ -541,7 +536,7 @@ for (const canonical of USER_SLOT_SEND_TOOLS) {
   });
 }
 
-// ── Full-parity (2026-06-17): user_* variants for ALL remaining write tools ──
+// ── user_* variants for ALL remaining write tools ──
 //
 // The send tools above carry a bespoke description (email-send toggle). Every
 // OTHER write tool (calendar/drive/docs/sheets writes) gets a generic user_
@@ -609,7 +604,7 @@ function buildRfc2822Email(
   },
 ): string {
   const headers: string[] = [];
-  headers.push(`To: ${encodeAddressHeader(to)}`, ...platformSendHeaderLines());   // P44: every send carries a recorded id
+  headers.push(`To: ${encodeAddressHeader(to)}`, ...platformSendHeaderLines());   // every send carries a recorded id
   headers.push(`Subject: ${encodeHeaderValue(subject)}`);
   if (options?.cc) headers.push(`Cc: ${encodeAddressHeader(options.cc)}`);
   if (options?.bcc) headers.push(`Bcc: ${encodeAddressHeader(options.bcc)}`);
@@ -653,15 +648,13 @@ function buildRfc2822Email(
   return Buffer.from(headers.join('\r\n') + '\r\n' + parts.join('\r\n')).toString('base64url');
 }
 
-// ── T77b: THE REPLY THREADING, IN ONE PLACE ──
+// ── THE REPLY THREADING, IN ONE PLACE ──
 //
-// `gmail_reply` and `gmail_draft` put the SAME message on the SAME thread; the only
-// difference between them is which Gmail endpoint receives it (`messages/send` versus
-// `drafts`). So everything that makes it a reply — the original's thread id, its
-// `Message-ID` for the `In-Reply-To` / `References` pair, the recipient set under
-// `reply_all`, and the `Re:` subject — is read HERE, once, and both callers thread their
-// result identically. A second copy would be two threading rules free to drift, and a
-// draft that lands off-thread is invisible until the owner opens it.
+// `gmail_reply` and `gmail_draft` put the SAME message on the SAME thread; they differ only in the Gmail
+// endpoint (`messages/send` versus `drafts`). Everything that makes it a reply (the original's thread id,
+// its `Message-ID` for `In-Reply-To` / `References`, the recipient set under `reply_all`, the `Re:`
+// subject) is read HERE, once, so both callers thread identically. A second copy would be two threading
+// rules free to drift, and a draft that lands off-thread is invisible until the owner opens it.
 interface GmailReplyContext {
   threadId: string;
   replyTo: string;
@@ -771,13 +764,11 @@ export async function gmailReplyContext(
   };
 }
 
-// ── T77b: AND THE ATTACHMENT LADDER, ALSO IN ONE PLACE ──
+// ── THE ATTACHMENT LADDER, ALSO IN ONE PLACE ──
 //
-// Load, split at Gmail's 25MB inline ceiling, push the overflow to Drive, and append the
-// share links to the body. `gmail_send`, `gmail_reply` and `gmail_draft` all need exactly
-// this and had two identical copies of it before the third was needed. (`gmail_forward` is
-// NOT a caller: it merges the ORIGINAL message's attachments in as well, which is a
-// different ladder, and it keeps its own.)
+// Load, split at Gmail's 25MB inline ceiling, push the overflow to Drive, and append the share links to
+// the body. `gmail_send`, `gmail_reply` and `gmail_draft` all use it. (`gmail_forward` is NOT a caller: it
+// also merges the ORIGINAL message's attachments, a different ladder, and keeps its own.)
 async function gmailAttachmentsWithOverflow(
   paths: readonly string[] | undefined,
   body: string,
@@ -988,10 +979,8 @@ function loadUserAttachmentsForGmail(
   return readLocalAttachments(paths);
 }
 
-// Path B (layer 3): every Google write tool can target a specific connected
-// account of its kind via an `account` param (the account's email). Optional, 
-// omit to use the only connected account. Injected once across base + user_
-// variants (which share the same input_schema object), so it stays in sync.
+// Every Google write tool can target a connected account of its kind via an `account` param (its email);
+// omit it to use the only connected one. Injected once: base and user_ variants share one input_schema.
 for (const def of googleWriteToolDefinitions) {
   const schema = def.input_schema as { properties?: Record<string, unknown> };
   if (schema.properties && !schema.properties.account) {
@@ -1086,8 +1075,8 @@ function buildCalendarTimes(
     } else {
       // Offset-less start is a wall-clock time in `tz` (it went out as-is with
       // timeZone: tz), so the end is that same wall clock +1h. Do the math on the
-      // text itself — parse as if UTC, add an hour, read the UTC fields back as an
-      // offset-less string — so the end never depends on the host zone or a host
+      // text itself (parse as if UTC, add an hour, read the UTC fields back as an
+      // offset-less string) so the end never depends on the host zone or a host
       // DST change, and still carries `tz` like the start.
       const wallMs = Date.parse(`${startTrim}Z`);
       if (!isNaN(wallMs)) {
@@ -1203,11 +1192,10 @@ export async function executeGoogleWriteTool(
       const result = await googleWrite('POST', `${GMAIL_BASE}/messages/send`, { raw }, agentId, agentName, 'gmail_send', { to, subject, slot, inlineAttachments: inline.length, driveAttachments: overflow.length }, undefined, slot);
       if (!result.ok) return `Error sending email: ${result.error}`;
 
-      // C26: capture the provider id the Gmail API already returned (was
-      // discarded). A 2xx with no message id means we cannot confirm the send;
-      // fail the turn and write an unverified receipt so the gate blocks close.
+      // Capture the provider id the Gmail API returned. A 2xx with no message id means we cannot confirm the
+      // send; fail the turn and write an unverified receipt so the gate blocks close.
       const sendData = result.data as { id?: string; threadId?: string } | null;
-      // RC-12: sent_text = subject + first 300 chars of body (bounded further in the store).
+      // sent_text = subject + first 300 chars of body (bounded further in the store).
       const gmailSentText = `${subject}: ${(body ?? '').slice(0, 300)}`;
       if (!sendData?.id) {
         writeToolReceipt({ agentId, tool: 'gmail_send', tier: 1, verified: false, basis: 'http-status', recipient: to, sentText: gmailSentText, detail: { anomaly: 'gmail send 2xx but no message id', threadId: sendData?.threadId ?? null } });
@@ -1241,7 +1229,7 @@ export async function executeGoogleWriteTool(
       const result = await googleWrite('POST', `${GMAIL_BASE}/messages/send`, { raw, threadId }, agentId, agentName, 'gmail_reply', { messageId, replyAll, slot, inlineAttachments: inline.length, driveAttachments: overflow.length }, undefined, slot);
       if (!result.ok) return `Error replying to email: ${result.error}`;
 
-      // C26: capture the provider id (was discarded); missing id fails the turn.
+      // Capture the provider id; a missing id fails the turn.
       const replyData = result.data as { id?: string; threadId?: string } | null;
       if (!replyData?.id) {
         writeToolReceipt({ agentId, tool: 'gmail_reply', tier: 1, verified: false, basis: 'http-status', recipient: replyTo, detail: { anomaly: 'gmail reply 2xx but no message id', threadId: replyData?.threadId ?? threadId ?? null } });
@@ -1252,7 +1240,7 @@ export async function executeGoogleWriteTool(
       return `Reply sent${replyAll ? ' (to all)' : ''} to message ${messageId}. To: ${replyTo}${replyCc ? `; Cc: ${replyCc}` : ''}${gmailAttachSummary(inline.length, overflow.length)}`;
     }
 
-    // ── T77b — THE DRAFT. Same message, same thread, a different endpoint. ──
+    // ── THE DRAFT. Same message, same thread, a different endpoint. ──
     //
     // Three things this case deliberately does NOT do, each of them the reason the tool
     // exists rather than an oversight:
@@ -1263,7 +1251,7 @@ export async function executeGoogleWriteTool(
     //     a draft delivers to nobody, and a receipt claiming otherwise would be a lie
     //     in the one ledger the close-gate reads.
     //   • It opens no outbound scope and writes no delivery row, because
-    //     `channelOfSendTool('gmail_draft')` is null. Nothing to switch off — the
+    //     `channelOfSendTool('gmail_draft')` is null. Nothing to switch off: the
     //     machinery is keyed on the send surface this tool is not on.
     case 'gmail_draft': {
       const replyToId = args.reply_to_message_id as string | undefined;
@@ -1361,7 +1349,7 @@ export async function executeGoogleWriteTool(
       const result = await googleWrite('POST', `${GMAIL_BASE}/messages/send`, { raw }, agentId, agentName, 'gmail_forward', { messageId, to, slot, inlineAttachments: inline.length, driveAttachments: overflow.length, preservedFromOriginal: origAttachments.length }, undefined, slot);
       if (!result.ok) return `Error forwarding email: ${result.error}`;
 
-      // C26: capture the provider id (was discarded); missing id fails the turn.
+      // Capture the provider id; a missing id fails the turn.
       const fwdData = result.data as { id?: string; threadId?: string } | null;
       if (!fwdData?.id) {
         writeToolReceipt({ agentId, tool: 'gmail_forward', tier: 1, verified: false, basis: 'http-status', recipient: to, detail: { anomaly: 'gmail forward 2xx but no message id', threadId: fwdData?.threadId ?? null } });
@@ -1474,7 +1462,7 @@ export async function executeGoogleWriteTool(
       if (!result.ok) return `Error creating event: ${result.error}`;
 
       const data = result.data as { id?: string; htmlLink?: string };
-      // C26: the event id confirms the create landed. A 2xx with no id fails the turn.
+      // The event id confirms the create landed. A 2xx with no id fails the turn.
       if (!data?.id) {
         writeToolReceipt({ agentId, tool: 'calendar_create', tier: 1, verified: false, basis: 'http-status', detail: { anomaly: 'calendar create 2xx but no event id', calendarId } });
         return `Error: the Calendar API accepted the request but returned no event id, so the event "${resolvedTitle}" could not be verified as created. It may still exist: check the calendar FIRST, and re-create only if it is not there.`;
@@ -1499,13 +1487,13 @@ export async function executeGoogleWriteTool(
       if (times.start) patch.start = times.start;
       if (times.end) patch.end = times.end;
       if (args.description) patch.description = args.description;
-      if (Object.keys(patch).length === 0) return CALENDAR_NOTHING_TO_CHANGE;   // B11
+      if (Object.keys(patch).length === 0) return CALENDAR_NOTHING_TO_CHANGE;
 
       const url = `${CALENDAR_BASE}/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`;
       const result = await googleWrite('PATCH', url, patch, agentId, agentName, 'calendar_update', { eventId, calendarId, ...patch }, undefined, slot);
       if (!result.ok) return `Error updating event: ${result.error}`;
 
-      // C26: Google returns the patched event with its id; confirm it echoes back.
+      // Google returns the patched event with its id; confirm it echoes back.
       const updData = result.data as { id?: string; htmlLink?: string } | null;
       if (!updData?.id) {
         writeToolReceipt({ agentId, tool: 'calendar_update', tier: 1, verified: false, basis: 'http-status', detail: { anomaly: 'calendar update 2xx but no event id', eventId, calendarId } });
@@ -1607,11 +1595,8 @@ export async function executeGoogleWriteTool(
         Buffer.from(`\r\n--${boundary}--`),
       ]);
 
-      // Pass the multipart body as a raw Buffer. Pre-2026-04-30 this called
-      // .toString('base64') here, sending a base64 string with content-type
-      // multipart/related, which Google rejects with 400 because it expects
-      // raw bytes for the multipart payload, not a base64 wrapper. The
-      // Google client now passes Uint8Array/Buffer through to fetch as-is.
+      // Pass the multipart body as a raw Buffer: Google rejects a base64 string under multipart/related
+      // with 400 because it expects raw bytes. The Google client passes Uint8Array/Buffer to fetch as-is.
       // Ask Drive for the shareable webViewLink in the response (same fields
       // trick uploadAttachmentToDrive uses) so we can hand the user a link
       // instead of a bare file ID they cannot open.
@@ -1687,10 +1672,7 @@ export async function executeGoogleWriteTool(
       const url = `${DRIVE_BASE}/files/${encodeURIComponent(fileId)}/permissions?supportsAllDrives=true&sendNotificationEmail=false`;
 
       if (audience === 'anyone') {
-        // "Anyone with the link" public share. Pre-2026-04-30 drive_share
-        // only supported per-email sharing, which forced agents to punt
-        // back to the user when delivering decks to clients whose email
-        // wasn't known. Now they can just enable link-share and send the URL.
+        // "Anyone with the link" public share, so a deck can be delivered when no recipient email is known.
         const discoverable = args.discoverable === true;
         const result = await googleWrite(
           'POST', url,

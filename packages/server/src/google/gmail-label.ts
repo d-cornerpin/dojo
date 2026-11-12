@@ -1,19 +1,9 @@
-// ════════════════════════════════════════
-// The `gmail_label` executor (moved out of tools-write.ts so that file only shrinks).
-//
-//   - A call that changes nothing is refused (GitHub #21): it used to POST an empty modify and
-//     report success, so a worker that mis-named its arguments believed the job was done.
-//   - One message / one conversation: resolved by gmail-archive.ts (t190), exactly as before.
-//   - Many (v3.5, B3): `message_ids` go through Gmail's batchModify in chunks of 1,000 (its documented
-//     maximum); `thread_ids` go one threads.modify each (Gmail has no thread batch). A chunk that fails
-//     does not stop the others, and the Error names the ids that were NOT changed.
-//   - v3.5 field fix 3, audit W18 (owner card: "Whole conversation"): a batch ARCHIVE (INBOX removed,
-//     no `this_message_only`) takes each named message's WHOLE conversation, exactly as the single
-//     archive does (gmail-archive.ts): each message's thread is looked up and each distinct
-//     conversation gets one threads.modify. A message whose conversation cannot be found is named as
-//     NOT changed, never silently archived on its own. Any other label change, or this_message_only,
-//     labels the messages named, one by one, as before.
-// ════════════════════════════════════════
+// The `gmail_label` executor. A call that changes nothing is refused. One message or conversation is
+// resolved by gmail-archive.ts. `message_ids` go through batchModify in chunks of 1,000 (its maximum);
+// `thread_ids` go one threads.modify each (no thread batch). A failed chunk does not stop the others, and
+// the Error names the ids NOT changed. A batch archive (INBOX removed, no this_message_only) takes each
+// message's whole conversation (one threads.modify per distinct thread); a message whose conversation
+// cannot be found is named as NOT changed, never archived on its own.
 
 import { googleRead, googleWrite } from './client.js';
 import { resolveGmailLabelTarget } from './gmail-archive.js';
@@ -25,11 +15,8 @@ export const NOTHING_TO_CHANGE =
   'Target one message with message_id, several with message_ids, a conversation with thread_id, several with thread_ids. ' +
   'Any other argument name is not read by this tool.';
 
-/**
- * The plain failure text. A bare Gmail 400 ("Invalid label: Junk E-mail") gets its remedy from
- * `tools/error-remedies.ts`, which the engine appends to the failing result (same-prefix lister and
- * creator for a `user_` call included).
- */
+/** The plain failure text; a bare Gmail 400 gets its remedy from `tools/error-remedies.ts`, which the
+ *  engine appends to the failing result. */
 export function labelFailureText(error: string | undefined, _toolName: string): string {
   // The remedy for an invalid label lives in tools/error-remedies.ts; the engine appends it to the failing result.
   return `Error modifying labels: ${error}`;
@@ -115,7 +102,7 @@ async function executeBatch(
   const failedThreads: string[] = [];
   const errors: string[] = [];
 
-  // W18: an archive widens each named message to its whole conversation.
+  // An archive widens each named message to its whole conversation.
   const archives = removeLabels.some((l) => String(l).toUpperCase() === 'INBOX');
   const widened = archives && args.this_message_only !== true && messages.length > 0;
   if (widened) {

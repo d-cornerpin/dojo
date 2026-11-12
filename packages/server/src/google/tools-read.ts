@@ -1,8 +1,5 @@
-// ════════════════════════════════════════
-// Google Workspace READ Tools — Native REST API
-// Available to: primary, trainer, ronin, apprentice
-// NOT available to: PM agent
-// ════════════════════════════════════════
+// Google Workspace READ tools (native REST API). Available to: primary, trainer, ronin, apprentice.
+// Not available to: PM agent.
 
 import { docBlocksToText, type DocBlock } from './docs-text.js';
 import type { ToolDefinition } from '../agent/tools/types.js';
@@ -33,7 +30,7 @@ function eventTitle(summary: string | undefined | null): string {
 
 // With `includeTabsContent=true` every tab's content sits at tabs[].documentTab.body.content, and a
 // tab may nest childTabs (same shape). Depth-first: a tab, then its children. A document with a
-// single tab keeps today's bare output; with more, each tab's text is introduced by its title so a
+// single tab keeps the bare output; with more, each tab's text is introduced by its title so a
 // multi-tab document never reads as only its first tab. Returns undefined when the response has no
 // tabs, so the caller falls back to the legacy `body`.
 interface DocTab {
@@ -60,7 +57,7 @@ function docTabsToText(tabs: DocTab[] | undefined): string | undefined {
   }).join('');
 }
 
-// ── Tool Definitions (unchanged) ──
+// ── Tool definitions ──
 
 export const googleReadToolDefinitions: ToolDefinition[] = [
   {
@@ -282,24 +279,12 @@ export const googleReadToolDefinitions: ToolDefinition[] = [
   },
 ];
 
-// ── v2.7.0 multi-account: user_* tool variants ──
-//
-// For each tool name in USER_SLOT_READ_TOOLS, generate a `user_*`
-// counterpart that points at the same executor with slot='user'. The
-// agent gets BOTH `gmail_inbox` (agent's mailbox) and `user_gmail_inbox`
-// (user's mailbox) in their tool index so the choice is explicit at
-// tool-selection time rather than parameter-fill time.
-//
-// Always emitted — even if the user slot isn't connected — because the
-// exported array is consumed statically at startup. If the agent calls
-// a user_* tool while the slot isn't connected, the client returns a
-// clean "Not authenticated" message naming the slot.
-// Full-parity (2026-06-17): every Google read tool gets a user-slot variant.
-// All read tools target a per-slot-toggled service (gmail/calendar/drive/docs/
-// sheets) and every read case threads the resolved `slot` into googleRead, so
-// the variant is safe and gated by isToolEnabledByService (User slot connected
-// AND service enabled). Snapshot the base list first so we don't iterate over
-// the variants we're appending.
+// For each tool in USER_SLOT_READ_TOOLS, a `user_*` counterpart with the same executor and slot='user', so
+// the agent picks the mailbox at tool-selection time. Always emitted, even with the user slot unconnected,
+// because the exported array is consumed statically at startup; an unconnected call gets a clean
+// "Not authenticated" naming the slot. Every read tool targets a per-slot-toggled service and threads the
+// resolved `slot` into googleRead, so a variant is gated by isToolEnabledByService. The base list is
+// snapshotted first so the appended variants are not iterated.
 const googleReadBaseTools = [...googleReadToolDefinitions];
 for (const baseDef of googleReadBaseTools) {
   const canonical = baseDef.name;
@@ -310,9 +295,8 @@ for (const baseDef of googleReadBaseTools) {
   });
 }
 
-// Phase 3.5 (2026-05-04) — register concurrency + maxResultTokens overrides
-// with the v2 partitioner / cap registry. Defs without these fields fall
-// through to the hardcoded TOOL_CATEGORY map (concurrency) or get no cap.
+// Register concurrency + maxResultTokens overrides with the partitioner / cap registry. Defs without them
+// fall through to the hardcoded TOOL_CATEGORY map (concurrency) or get no cap.
 import { registerConcurrency, registerMaxResultTokens } from '../agent/v2/classifiers/concurrency.js';
 import { compactCountNote } from '../agent/tool-helpers.js';
 for (const def of googleReadToolDefinitions) {
@@ -320,9 +304,8 @@ for (const def of googleReadToolDefinitions) {
   if (def.maxResultTokens) registerMaxResultTokens(def.name, def.maxResultTokens);
 }
 
-// Path B (layer 3): every Google read tool can target a specific connected
-// account of its kind via an `account` param (the account's email). Optional —
-// omit to use the only connected account.
+// Every Google read tool can target a connected account of its kind via an `account` param (its email).
+// Omitted: the read resolver picks the lowest-position connected account and labels it when several exist.
 for (const def of googleReadToolDefinitions) {
   const schema = def.input_schema as { properties?: Record<string, unknown> };
   if (schema.properties && !schema.properties.account) {
@@ -333,10 +316,9 @@ for (const def of googleReadToolDefinitions) {
   }
 }
 
-// F4: `user_calendar_agenda` reads ONLY the owner's Google calendar. The base
-// `calendar_agenda` is now the merged cross-account view (dispatch routes it to
-// the unified executor), so the user_* generator's inherited "merged" wording
-// would mislead here. Restate the true, narrow scope.
+// `user_calendar_agenda` reads ONLY the owner's Google calendar. The base `calendar_agenda` is the merged
+// cross-account view (dispatch routes it to the unified executor), so the user_* generator's inherited
+// "merged" wording would mislead here. Restate the true, narrow scope.
 {
   const userCalAgenda = googleReadToolDefinitions.find(t => t.name === 'user_calendar_agenda');
   if (userCalAgenda) {
@@ -347,16 +329,10 @@ for (const def of googleReadToolDefinitions) {
 
 // ── Tool Execution ──
 
-// ════════════════════════════════════════
-// F4: shared per-account FETCH helpers.
-//
-// The narrow `calendar_agenda` / `gmail_search` cases below and the merged
-// tools/unified-read.ts executors both call these, so the provider-specific
-// fetch + normalize logic lives in exactly one place ("one fetch path, two
-// renderers"). The helpers return STRUCTURED items; each renderer formats them.
-// The narrow-case rendering downstream is byte-for-byte what it was before the
-// extraction. Import direction stays one-way (unified-read -> here, never back).
-// ════════════════════════════════════════
+// Shared per-account FETCH helpers. The narrow `calendar_agenda` / `gmail_search` cases below and the merged
+// tools/unified-read.ts executors both call these, so provider-specific fetch + normalize logic lives in
+// one place; they return STRUCTURED items and each renderer formats them. Import direction stays one-way
+// (unified-read -> here, never back).
 
 /** Normalized calendar event, provider-agnostic once times are parsed to Dates. */
 export interface GoogleAgendaFetchItem {
@@ -438,12 +414,8 @@ export async function fetchAgendaItemsForAccount(
   return { ok: true, items };
 }
 
-// F4 data floor: the narrow read cases below no longer nudge with an advice
-// note (a weak model ignored it and answered from one surface). They now append
-// the ACTUAL other-surface data via otherCalendarsAgendaSection /
-// otherMailboxesCountSection (tools/unified-read.ts). The requirement the old
-// unifiedCoverageNote encoded — a narrow result must never read as the whole
-// picture — is preserved, strictly better, by carrying the data itself.
+// The narrow read cases append the ACTUAL other-surface data (otherCalendarsAgendaSection /
+// otherMailboxesCountSection in tools/unified-read.ts), so a narrow result never reads as the whole picture.
 
 export async function executeGoogleReadTool(
   name: string,
@@ -462,12 +434,9 @@ export async function executeGoogleReadTool(
   }
 
 
-  // READ resolver (Issue 2, 2026-07-08): a narrow read on a multi-account slot
-  // defaults to the primary connected account instead of bouncing with an
-  // ask-which-account error (that stays on the WRITE side, deliberately). When the
-  // slot has >1 connected account, `labelAccount` is set so the result names the
-  // account it read (self-describing header), and the F4 "also checked" block
-  // surfaces the other accounts.
+  // READ resolver: a narrow read on a multi-account slot defaults to the primary connected account (the
+  // ask-which-account error stays on the WRITE side). With >1 connected, `labelAccount` makes the result
+  // name the account it read, and the "also checked" block surfaces the others.
   const { resolveGoogleAccountForRead } = await import('./accounts.js');
   const resolved = resolveGoogleAccountForRead(kind, args.account as string | undefined);
   if ('error' in resolved) return `Error: ${resolved.error}`;
@@ -500,9 +469,7 @@ export async function executeGoogleReadTool(
 
       const body = extractGmailBodyText(data?.payload);
 
-      // Phase 3.5 fix — surface attachment IDs so the agent can pass them to
-      // gmail_read_attachment. Without this, gmail_read's "Attachments: 3 files"
-      // text was a dead-end — no path back to actual files.
+      // Surface attachment IDs so the agent can pass them to gmail_read_attachment.
       const attachments = downloadableAttachments(data?.payload);
 
       // Headers are always included in full; pagination only affects the body.
@@ -514,7 +481,7 @@ export async function executeGoogleReadTool(
         12_000,
       );
 
-      // v3.5 K33: the headers and the body are the sender's; the paging trailer and the attachment list's call are the platform's.
+      // The headers and the body are the sender's; the paging trailer and the attachment list's call are the platform's.
       let output = `${outsideSpan(`From: ${from}\nTo: ${to}${cc ? `\nCc: ${cc}` : ''}${replyToHeader ? `\nReply-To: ${replyToHeader}` : ''}\nSubject: ${subject}\nDate: ${fmtEmailDate(date)}`)}\n\n${pagedBody}`;
       if (attachments.length > 0) {
         const lines = attachments.map(a => {
@@ -522,7 +489,7 @@ export async function executeGoogleReadTool(
           const size = a.body?.size ? ` ${Math.round(a.body.size / 1024)}KB` : '';
           return `- ${name} (${a.mimeType}${size})\n  attachment_id: ${a.body?.attachmentId}`;
         });
-        output += `\n\nAttachments (${attachments.length}):\n${lines.map((item) => outsideSpan(item)).join('\n')}\n\nUse gmail_read_attachment(message_id, attachment_id) to download.`;   // v3.5 K33: a filename is the sender's
+        output += `\n\nAttachments (${attachments.length}):\n${lines.map((item) => outsideSpan(item)).join('\n')}\n\nUse gmail_read_attachment(message_id, attachment_id) to download.`;   // a filename is the sender's
       }
       return output;
     }
@@ -582,10 +549,8 @@ export async function executeGoogleReadTool(
     }
 
     case 'calendar_agenda': {
-      // Base `calendar_agenda` is the MERGED cross-account view (dispatched to
-      // tools/unified-read.ts). This case now serves user_calendar_agenda (owner
-      // Google) and any internal single-account reuse; it fetches through the
-      // shared helper and renders exactly as before.
+      // Base `calendar_agenda` is the merged cross-account view (tools/unified-read.ts); this case serves
+      // user_calendar_agenda and internal single-account reuse.
       const days = (args.days as number) ?? 1;
       const tz = (args.timezone as string | undefined) ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
       const startDate = args.start_date as string | undefined;
@@ -596,9 +561,8 @@ export async function executeGoogleReadTool(
       const fetched = await fetchAgendaItemsForAccount(slot, window, tz, agentId, agentName, { calendarId, days });
       if (!fetched.ok) return `Error fetching calendar: ${fetched.error}`;
 
-      // F4 data floor: the SAME window fetched from every OTHER connected
-      // calendar surface, compact + labeled, so a single-calendar agenda never
-      // reads as the whole day (advice notes were ignored by the floor model).
+      // The SAME window fetched from every OTHER connected calendar surface, compact and labeled, so a
+      // single-calendar agenda never reads as the whole day.
       const { otherCalendarsAgendaSection } = await import('../tools/unified-read.js');
       const others = await otherCalendarsAgendaSection({ provider: 'google', accountId: slot }, window, tz, days, agentId, agentName);
 
@@ -723,7 +687,7 @@ export async function executeGoogleReadTool(
         if (verbose) {
           return `- ${f.name}${size}\n  ID: ${f.id}\n  Type: ${f.mimeType}\n  Modified: ${f.modifiedTime}`;
         }
-        // Compact: one line per file — name + id + short type + modified date.
+        // Compact: one line per file (name, id, short type, modified date).
         // Drop the full mime type for known types; just say "doc" / "sheet" / etc.
         const shortType = f.mimeType.includes('document') ? 'doc'
           : f.mimeType.includes('spreadsheet') ? 'sheet'

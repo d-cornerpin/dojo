@@ -1,11 +1,5 @@
-// ════════════════════════════════════════
-// Gmail search: one page of results, with the token for the next (v3.5, B3).
-//
-// `messages.list` returns at most 500 ids a page and a `nextPageToken` when more exist. A worker
-// sweeping a mailbox needs to walk past the first page, so `page_token` goes in and the next one
-// comes out as a line the model can copy. The per-message metadata fetch is unchanged.
-// (Moved out of tools-read.ts, which is size-pinned; tools-read re-exports what others import.)
-// ════════════════════════════════════════
+// Gmail search: one page of results plus the next page's token. `messages.list` returns at most 500 ids a
+// page, so `page_token` goes in and the next one comes out as a line the model can copy.
 
 import { googleRead } from './client.js';
 import { formatTimeForAgent, parseFlexibleTime } from '../services/format-time.js';
@@ -15,20 +9,13 @@ import { compactCountNote } from '../agent/tool-helpers.js';
 
 export const GMAIL_BASE = 'https://gmail.googleapis.com/gmail/v1/users/me';
 
-/**
- * Format an email Date header for agent consumption. RFC 2822 headers
- * like "Wed, 20 May 2026 19:00:00 +0000" have an offset, so parsing is
- * unambiguous — but the format differs from every other tool. Route
- * through formatTimeForAgent so the agent sees the same dual-format
- * string everywhere. Empty input passes through as empty.
- */
+/** An email Date header formatted through formatTimeForAgent, so every tool shows the same dual-format string. */
 export function fmtEmailDate(rfc2822: string): string {
   if (!rfc2822) return '';
   const parsed = parseFlexibleTime(rfc2822);
   return parsed ? formatTimeForAgent(parsed) : rfc2822;
 }
 
-/** Normalized email row (metadata only) for search rendering. */
 export interface GoogleMailFetchItem {
   id: string;
   from: string;
@@ -43,7 +30,7 @@ export interface GoogleMailFetchItem {
 
 /**
  * Search one account's Gmail. `total` is the raw match count on THIS page (pre-detail-fetch).
- * `unfetched` lists the ids whose per-message detail fetch failed — they are NOT in `items`.
+ * `unfetched` lists the ids whose per-message detail fetch failed; they are NOT in `items`.
  */
 export async function searchMailForAccount(
   accountId: string,
@@ -84,7 +71,6 @@ export async function searchMailForAccount(
   return { ok: true, total: data.messages.length, items, unfetched, nextPageToken: data.nextPageToken || undefined };
 }
 
-/** The `gmail_search` tool body. */
 export async function executeGmailSearch(
   args: Record<string, unknown>,
   slot: string,
@@ -100,7 +86,7 @@ export async function executeGmailSearch(
   const fetched = await searchMailForAccount(slot, query, maxResults, agentId, agentName, pageToken);
   if (!fetched.ok) return `Error searching Gmail: ${fetched.error}`;
 
-  // F4 data floor: the SAME query run against every OTHER connected mailbox,
+  // The SAME query run against every OTHER connected mailbox,
   // counts only, so a single-mailbox search never reads as the whole picture.
   const { otherMailboxesCountSection } = await import('../tools/unified-read.js');
   const others = await otherMailboxesCountSection({ provider: 'google', accountId: slot }, query, 0, agentId, agentName);
@@ -119,13 +105,13 @@ export async function executeGmailSearch(
     if (verbose) {
       return `ID: ${it.id}\nFrom: ${it.from}\nTo: ${it.to}\nSubject: ${it.subject}\nDate: ${it.dateDisplay}\nSnippet: ${it.snippet}\n`;
     }
-    // Compact: one line per email — drop To, keep snippet capped to 200ch.
+    // Compact: one line per email, To dropped, snippet capped to 200 chars.
     const shortSnippet = it.snippet.length > 200 ? it.snippet.slice(0, 200) + '…' : it.snippet;
     return `- ${it.dateDisplay} | ${it.from} — ${it.subject}\n  ID: ${it.id} | ${shortSnippet}`;
   });
 
   if (details.length === 0) return `Found ${fetched.total} email(s)${inAcct} but could not fetch details.${note}` + others;
-  // v3.5 K33: only the emails are outside text; the paging line, the missing-ids note, the other-mailbox counts and the re-call hints are the platform's.
+  // Only the emails are outside text; the paging line, notes, counts and re-call hints are the platform's.
   const header = `Found ${fetched.total} email(s)${inAcct}:\n\n${details.map((item) => outsideSpan(item)).join(verbose ? '\n---\n' : '\n')}${paging}${note}`;
   if (verbose) return header + others;
   return `${header}\n\n${compactCountNote(details.length)}. For full body of one: gmail_read(message_id=<id>). For To/CC + full snippet on every result: re-call gmail_search with verbose=true.${others}`;
