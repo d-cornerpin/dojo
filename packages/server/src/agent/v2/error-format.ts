@@ -1,18 +1,7 @@
-// ════════════════════════════════════════
-// Error Format — single source of truth for user-facing and
-// agent-facing error language.
-//
-// Two surfaces:
-//   - formatErrorForHuman(kind, context): plain-English message for
-//     iMessage / dashboard banner / chat:error toast / Vitals proposals.
-//     Strictly no JSON, no provider error fields, no tracebacks. End with
-//     a concrete next action.
-//   - formatTierBNoteForAgent(kind, context): `[System: …]` template
-//     persisted into the agent's chat history so the agent has explicit
-//     context on its next turn.
-//
+// One source of truth for error words aimed at a human or at the agent, both from one ErrorKind.
+// formatErrorForHuman: plain English for iMessage, dashboard, toast, Vitals proposals;
+// formatTierBNoteForAgent: a `[System: ...]` note persisted into history so the agent reads it next turn.
 // Spec: docs/error-handling-spec.md.
-// ════════════════════════════════════════
 
 export type ErrorKind =
   // Tier B (agent-actionable)
@@ -56,12 +45,8 @@ export interface ErrorContext {
   attemptedAlternatives?: number;
 }
 
-/**
- * Tier B — agent-facing `[System: …]` note content. Caller wraps in the
- * `[System: …]` shell when persisting. Templates assume the agent will
- * read this on its next turn and produce a normal text reply to the user
- * (or adapt its approach for tool errors).
- */
+/** Tier B, agent-facing: the `[System: ...]` note content; the caller wraps it in the shell.
+ *  The agent reads this on its next turn and answers the user or adapts its tool approach. */
 export function formatTierBNoteForAgent(kind: ErrorKind, ctx: ErrorContext = {}): string {
   switch (kind) {
     case 'image_too_large_post_sips':
@@ -118,8 +103,7 @@ export function formatTierBNoteForAgent(kind: ErrorKind, ctx: ErrorContext = {})
     case 'provider_garbage':
       return `The provider sent a malformed response. Apologize to the person you are talking to and ask them to try again.`;
 
-    // Tier D kinds shouldn't reach this function — caller routes Tier D to
-    // formatErrorForHuman instead. Defensive default for completeness.
+    // Tier D kinds must not reach this: the caller routes them to formatErrorForHuman; defensive default.
     case 'auth_invalid':
     case 'access_denied':
     case 'quota_exhausted':
@@ -133,14 +117,8 @@ export function formatTierBNoteForAgent(kind: ErrorKind, ctx: ErrorContext = {})
   }
 }
 
-/**
- * Tier D — user-facing plain-English message. Used for iMessage alerts,
- * dashboard banners, and chat:error toasts when the platform genuinely
- * can't proceed without user action.
- *
- * Hard rule: zero JSON, zero provider error fields, zero tracebacks.
- * Always end with a concrete next action.
- */
+/** Tier D, user-facing: plain English for iMessage alerts, dashboard banners, chat:error toasts.
+ *  Hard rule: zero JSON, zero provider fields, zero tracebacks; always end with a concrete next action. */
 export function formatErrorForHuman(kind: ErrorKind, ctx: ErrorContext = {}): string {
   const provider = ctx.providerName ?? null;
   const agent = ctx.agentName ?? 'your agent';
@@ -179,37 +157,25 @@ export function formatErrorForHuman(kind: ErrorKind, ctx: ErrorContext = {}): st
     case 'oom_restart':
       return `The platform restarted because it ran out of memory.`;
 
-    // Tier B kinds shouldn't reach this surface — caller routes them via
-    // formatTierBNoteForAgent instead. Defensive default.
+    // Tier B kinds must not reach this surface: the caller routes them via formatTierBNoteForAgent.
     default:
       return `${agent} hit a problem with its last request. It'll explain in chat when you check.`;
   }
 }
 
-/**
- * Strip anything that smells like raw provider JSON or stack-trace noise
- * from a string. Used as a defense-in-depth net for any code path that
- * might accidentally pass technical detail to a user-facing surface.
- *
- * NOT a replacement for going through formatErrorForHuman — this is a
- * last-line scrub so callers that bypass the helper still produce
- * readable output.
- */
+/** Last-line net that strips raw provider JSON and stack-trace noise from any string about to reach
+ *  a user surface. NOT a replacement for formatErrorForHuman: a scrub so bypassers stay readable. */
 export function scrubTechnicalDetail(s: string): string {
   let out = s;
-  // Drop anything that looks like JSON object or array literal. Iterate
-  // until stable so nested JSON gets stripped (one non-greedy pass leaves
-  // outer braces behind when the inner literal is removed first).
+  // Strip JSON literals; iterate until stable, since one non-greedy pass leaves outer braces behind.
   for (let i = 0; i < 8; i++) {
     const before = out;
     out = out.replace(/\{[\s\S]*?\}/g, '').replace(/\[[\s\S]*?\]/g, '');
     if (out === before) break;
   }
-  // Catch-all sweep for orphan braces and stray bracket fragments that
-  // survive non-greedy matching against malformed input.
+  // Sweep orphan braces and bracket fragments that survive non-greedy matching on malformed input.
   out = out.replace(/[{}\[\]]+/g, '');
-  // Drop common error envelope phrases AND the source field-path / size
-  // markers Anthropic emits, plus stack frame patterns.
+  // Drop error envelope phrases, Anthropic field-path/size markers, and stack frame patterns.
   out = out.replace(
     /(?:Model call failed:|invalid_request_error|messages\.\d+\.content[\w.]*|\.source\.base64|\bbytes maximum\b|\bstack trace\b:?|\bat\s+[\w./]+:\d+:\d+)/gi,
     '',
@@ -219,9 +185,9 @@ export function scrubTechnicalDetail(s: string): string {
   return out;
 }
 
-// ── t148: an honest stop (the spending limit, or no model that fits) ──
-// Not faults, and the Healer cannot change either: the owner reads the TRUE cause, what happens
-// to his message, and the one thing that lifts it. Plain words, no codes, no "the Healer is looking".
+// An honest stop (spending limit reached, or no model that fits): not a fault, and the Healer cannot
+// fix either; plain words, no codes, never "the Healer is looking". The owner reads the true cause,
+// what becomes of the message, and the one action.
 export type HonestStopKind = 'budget_stop' | 'no_model_fits';
 export interface HonestStopContext { scope?: 'global' | 'agent'; period?: string; spendUsd?: number; limitUsd?: number; freeDown?: boolean }
 
