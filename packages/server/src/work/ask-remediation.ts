@@ -1,39 +1,7 @@
-// ════════════════════════════════════════════════════════════════════════════════
-// THE REMEDIATION PASS — SWEEP-A TB3 (`DESIGN-2BUGS/DESIGN.md` §5).
-//
-// TB1 and TB2 stopped the ask ledger telling lies. This pass corrects the ones already
-// written down. It runs ONCE per box, armed by migration `158` and disarmed by its own
-// completion row, so a lived-in database crossing this build gets the same correction the
-// dev box got (roadmap non-negotiable #5; `STABLE-BRIDGE.md` Entry 39).
-//
-// ── IT OWNS NO RULE ──
-// Every settlement decision here is `settleAsk`'s and every evidence read is the authority's
-// own exported predicate (`askAnswerEvidence`). This file supplies SCOPE — which rows to ask
-// about — and nothing else. A remediation with its own predicate would be a second decider,
-// and then the past and the future could disagree about the same ask.
-//
-// ── THE GOVERNING PRIORITY (owner ruling, 2026-08-05) ──
-// "The user asks the agent to do something and it does it. Period." Ambiguous evidence errs
-// toward SERVING THE ASK AGAIN. Worst case the owner hears an answer twice; it never errs
-// toward silence, a parked ticket or a quiet close. That is why a stuck `claimed` ask with no
-// receipt is handed BACK rather than tidied away, and why a `done` that turns out to point at
-// a tool-call chip and nothing else is re-opened rather than left looking finished.
-//
-// ── THE RECORD IS NEVER FALSIFIED ──
-// Every correction is a recorded move with its reason. The write-off transitions stay in the
-// history; the chip receipts stay on the delivery ledger; nothing is deleted or back-dated.
-// A reader of `work_events` can always see what the row said before this pass ran and why it
-// says something else now.
-//
-// ── INTERACTION WITH THE REBOOT-SWARM GUARD (DESIGN §5, and it is handled rather than
-//    discovered) ──
-// Every ask this pass hands back is by definition older than thirty minutes, so a later boot
-// would meet `work-reaper.ts`'s staleness sweep. The guard is UNTOUCHED. The pass is invoked
-// AFTER that sweep has already run for this boot and BEFORE the re-drain, so (a) this boot's
-// guard never sees the rows the pass creates, and (b) the re-drain that follows is what
-// drives them to settlement in the same sitting. The caller records what did not settle;
-// nothing is left for a reboot to meet by accident.
-// ════════════════════════════════════════════════════════════════════════════════
+// Remediation pass: corrects old ask-ledger rows. It owns no rule: `settleAsk` decides and
+// `askAnswerEvidence` reads evidence. Ambiguous evidence errs toward serving the ask again.
+// Every correction is a recorded move with its reason; nothing is deleted or back-dated.
+// Run after the boot staleness sweep (work-reaper.ts) and before the re-drain that serves its rows.
 
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
@@ -42,13 +10,11 @@ import { appendWorkEvent, claimingTurnOf, clearJoinCompilePending, transition } 
 
 const logger = createLogger('ask-remediation');
 
-/** The actor recorded on every row this pass moves, so the corrections are findable as a set
- *  and can never be mistaken for a turn's own work. */
+/** The actor recorded on every row this pass moves, so the corrections are findable as a set. */
 export const REMEDIATION_ACTOR = 'ask-remediation-tb3';
 
-/** The `config` key migration `158` writes to arm the pass, and this module clears when it
- *  has run. One row, so a restart cannot run the pass twice and a half-finished pass is
- *  simply re-run (every branch below is idempotent by predicate, not by bookkeeping). */
+/** The `config` key that arms the pass; overwritten with the report only after it ran, so a crash
+ *  mid-pass re-runs it: every branch must stay idempotent by its own predicate. */
 export const REMEDIATION_ARMED_KEY = 'ask_ledger_remediation_158';
 
 export interface AskRemediationReport {
@@ -56,8 +22,7 @@ export interface AskRemediationReport {
   answeredThenAbandoned: { candidates: number; corrected: number; refused: number };
   compilePendingOrphans: { candidates: number; cleared: number };
   chipReceipts: { candidates: number; repointed: number; reopened: number; handedUp: number };
-  /** Rows handed back `open` by this pass — the set the caller must drive to settlement in
-   *  the same sitting (DESIGN §5). */
+  /** Rows handed back `open`; the caller must drive them to settlement in the same boot. */
   reopenedIds: string[];
 }
 
@@ -69,56 +34,30 @@ const emptyReport = (): AskRemediationReport => ({
   reopenedIds: [],
 });
 
-/** The turn that picked the ask up, from the row's own event — `work.claimed_by_turn` is
- *  CLEARED by any terminal move, so a row that was closed or written off no longer carries
- *  it, and the evidence read needs it. T64: this file's private copy of that SELECT is gone;
- *  the read has ONE owner beside the event's writer, and this comment is why it must be the
- *  event and never the column. */
+/** The turn that picked the ask up, read from the row's claim event: a terminal move clears
+ *  `work.claimed_by_turn`, so the column cannot be used for a closed or written-off row. */
 const claimingTurn = claimingTurnOf;
 
 /**
- * A TRIAGE READ, and it is deliberately NOT a settlement rule.
- *
- * It answers one question about a `done` ask whose receipt is a tool-call chip: did ANY real
- * answer ever go out in that conversation afterwards? It never closes, re-points or re-opens
- * anything on its own — `settleAsk` and `askAnswerEvidence` still own every decision. What it
- * decides is whether the row is unambiguous enough for this pass to act on at all:
- *
- *   * a real answer landed on the SERVING TURN      -> the authority endorses it; re-point;
- *   * no answer of any kind ever followed           -> nothing was ever delivered for this
- *                                                     ask, so it is handed back (priority one);
- *   * an answer landed, but on a DIFFERENT TURN     -> the authority cannot endorse it as this
- *                                                     ask's answer (that narrowing is exactly
- *                                                     what TB2 added to stop a status line
- *                                                     being read as a compiled report), and
- *                                                     re-opening it would re-serve a question
- *                                                     the person may well have had answered.
- *                                                     AMBIGUOUS: counted, handed up, untouched.
+ * Triage read, not a settlement rule: did a real answer go out after a tool-call chip receipt?
+ *   * on the serving turn  -> the authority endorses it; re-point the receipt;
+ *   * none at all          -> nothing was delivered; hand the ask back;
+ *   * on a different turn  -> not endorsed for this ask and a re-open could re-serve it; left alone.
  */
 function anyLaterRealDelivery(
   agentId: string, conversationId: string | null, notBefore: string,
 ): boolean {
-  // The authority's own conversation-scoped read (shared with the inherited-ask close), never a private copy.
+  // The authority's own conversation-scoped read, never a private copy.
   return realAnswerInConversationSince(agentId, conversationId, notBefore) !== null;
 }
 
-/**
- * THE PASS.
- *
- * `dryRun` counts every branch without writing — the rehearsal mode #16 requires, and the
- * mode the Bridge entry's branch-coverage table is produced from. A branch that touches zero
- * rows in a rehearsal is untested, so the count is per BRANCH rather than per class.
- */
+/** Runs the pass; `dryRun` counts every branch without writing. */
 export function remediateAskLedger(opts: { dryRun?: boolean } = {}): AskRemediationReport {
   const dry = opts.dryRun === true;
   const db = getDb();
   const r = emptyReport();
 
-  // ══ CLASS 1 — STUCK `claimed` ═════════════════════════════════════════════════
-  // An ask whose claiming turn has FINALIZED (or whose turn row never existed) and which is
-  // still `claimed`. That is the fossil the finalize invariant now makes unrepresentable
-  // going forward; these are the rows written before it existed. A turn still in flight is
-  // deliberately excluded — the pass adjudicates fossils, never work in progress.
+  // Class 1: asks still `claimed` whose claiming turn finalized or has no turn row; in-flight turns excluded.
   const stuck = db.prepare(
     `SELECT w.id AS id, w.agent_id AS agent_id, w.claimed_by_turn AS turn_number
        FROM work w
@@ -143,13 +82,8 @@ export function remediateAskLedger(opts: { dryRun?: boolean } = {}): AskRemediat
     else r.stuckClaimed.unchanged++;
   }
 
-  // ══ CLASS 2 — ANSWERED, THEN WRITTEN OFF `abandoned` ══════════════════════════
-  // The write-off crew (unservable-ask reaper, conversation quarantine, the boot swarm guard)
-  // is UNTOUCHED and stays untouched: it closes UNANSWERED asks for named structural reasons.
-  // What is corrected is the subset it mislabelled — rows the ledger can prove were answered
-  // before they were written off. Two recorded moves, never one silent overwrite: the row is
-  // re-opened by the ENGINE pointing at the delivery it is acting on (G8's reopen-requires-
-  // authority gate), and the authority then closes it against that same evidence.
+  // Class 2: asks answered then written off `abandoned`. Two recorded moves: the engine re-opens
+  // the row pointing at the answering delivery, then the authority closes it against it.
   const abandoned = db.prepare(
     `SELECT id, agent_id FROM work WHERE kind = 'ask' AND state = 'abandoned' ORDER BY opened_at`,
   ).all() as Array<{ id: string; agent_id: string }>;
@@ -173,22 +107,8 @@ export function remediateAskLedger(opts: { dryRun?: boolean } = {}): AskRemediat
     else { r.answeredThenAbandoned.refused++; if (v.verdict === 'reopened') r.reopenedIds.push(row.id); }
   }
 
-  // ══ CLASS 3 — `compile_pending` ORPHANS ═══════════════════════════════════════
-  // `done`, every child settled, and the compile flag never cleared: the flag's only writer of
-  // record was an answered-edge gate that read TRUE the instant the delegating turn stamped
-  // its answer, so the resolution was never recorded and `compile_resolved` had been written
-  // ZERO times against seventy-odd flag rows.
-  //
-  // ⚠ THE BACKLOG IS CLEARED, NOT STORMED, AND THE JOIN ARM IS DELIBERATELY NOT INVOKED HERE.
-  // The authority's join arm picks the LATEST qualifying delivery in the conversation after
-  // `join_complete` — correct at compile time, when the relay has just delivered. Measured on
-  // the dev body at TB3 Step 1, the newest such delivery for these rows is up to 643,988
-  // SECONDS (7.5 days) after their `join_complete`, because the conversation carried on.
-  // Re-opening seventy closed asks to re-point them at whatever was said in that conversation
-  // a week later would be the forgery this spine exists to refuse, and driving seventy ancient
-  // compiles would be the storm the swarm guard exists to prevent. So the row KEEPS its state
-  // and its receipt, and only the stale flag is cleared — through `clearJoinCompilePending`,
-  // the product's own function, which records `compile_resolved` with the reason.
+  // Class 3: `done` asks, all children settled, compile flag never cleared. Only the flag is
+  // cleared; the join arm would re-point old rows at a much later delivery.
   const orphans = db.prepare(
     `SELECT id FROM work
       WHERE kind = 'ask' AND state = 'done' AND compile_pending = 1 AND remaining_children = 0
@@ -205,10 +125,7 @@ export function remediateAskLedger(opts: { dryRun?: boolean } = {}): AskRemediat
     ) === 1) r.compilePendingOrphans.cleared++;
   }
 
-  // ══ CLASS 4/5 — A RECEIPT THAT IS A TOOL-CALL CHIP ════════════════════════════
-  // `messages.display_kind = 'tool-turn'` is the model's own `tool_use` block rendered as a
-  // chip. It is not an answer to anybody, and TB2 made that a narrowing of the evidence going
-  // forward. These are the rows closed on one before that landed.
+  // Classes 4/5: `done` asks whose receipt is a tool-call chip, which answers nobody.
   const chips = NON_ANSWERING_DISPLAY_KINDS.map((k) => `'${k}'`).join(', ');
   const chipRows = db.prepare(
     `SELECT w.id AS id, w.agent_id AS agent_id, w.conversation_id AS conversation_id,
@@ -231,8 +148,7 @@ export function remediateAskLedger(opts: { dryRun?: boolean } = {}): AskRemediat
   for (const row of chipRows) {
     const ev = askAnswerEvidence(row.id, row.turn_number);
     if (ev) {
-      // The serving turn DID answer — in prose, after the chip. The receipt moves to the
-      // delivery that carried the answer. State is untouched: the ask really is done.
+      // The serving turn answered after the chip: move the receipt; the ask stays done.
       r.chipReceipts.repointed++;
       if (dry) continue;
       db.prepare('UPDATE work SET result_delivery_id = ?, updated_at = ? WHERE id = ?')
@@ -248,14 +164,11 @@ export function remediateAskLedger(opts: { dryRun?: boolean } = {}): AskRemediat
       continue;
     }
     if (anyLaterRealDelivery(row.agent_id, row.conversation_id, row.chip_at)) {
-      // AMBIGUOUS — an answer went out, but not on the turn that closed this ask. Counted and
-      // handed up rather than acted on: the authority will not endorse it, and re-serving a
-      // question the person may have had answered is a decision above this pass's pay grade.
+      // Ambiguous: an answer went out on another turn; counted and handed up, not acted on.
       r.chipReceipts.handedUp++;
       continue;
     }
-    // Nothing was ever delivered for this ask but a chip. It is not answered, so it is not
-    // done — priority one, and it goes back visible.
+    // Nothing but a chip was ever delivered, so the ask is not answered: it goes back visible.
     r.chipReceipts.reopened++;
     if (dry) continue;
     const undo = transition(row.id, {
@@ -279,14 +192,7 @@ export function remediateAskLedger(opts: { dryRun?: boolean } = {}): AskRemediat
   return r;
 }
 
-/**
- * THE ONE-SHOT DOOR — armed by migration `158`, disarmed by its own completion.
- *
- * Returns `null` when the pass is not armed, so a boot on a box that has already crossed this
- * build does nothing at all and says nothing. The armed row is the migration's; the completion
- * row is written here with the counts, so "did this box get the correction, and what did it
- * find?" is answerable from the database months later.
- */
+/** One-shot entry: `null` unless armed; a run leaves its counts in the `config` row for later reading. */
 export function runArmedAskRemediation(): AskRemediationReport | null {
   const db = getDb();
   const armed = db.prepare('SELECT value FROM config WHERE key = ?').get(REMEDIATION_ARMED_KEY) as

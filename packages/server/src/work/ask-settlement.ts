@@ -1,54 +1,10 @@
-// ════════════════════════════════════════════════════════════════════════════════
-// THE SETTLEMENT AUTHORITY FOR OWNER ASKS — SWEEP-A TB1 (`DESIGN-2BUGS/DESIGN.md` §1).
-//
-// ONE function decides whether an owner's ask is settled. Before this file, FOUR did
-// (verify report M2, measured at `3439240`): the delivery-transaction closer, the boot
-// reconciler's answered arm, the model's own `work_close_request` tool, and the join relay —
-// each at a different moment, each with partial evidence, none aware of the others. The
-// teardown batch-claim then wrote `claimed` AFTER the only closer scoped to that turn had
-// already swept, so a whole class of answered asks was stranded `claimed` for ever: 36
-// historical rows on the dev box, reproduced 4/4 by the kit scenario `ask-burst-always-settles`.
-//
-// ── THE RULE, STATED ONCE ──
-// An ask closes only against a recorded DELIVERED delivery in the ask's own conversation
-// that the ask entered the model's context BEFORE — and only if the ask row carries no
-// unresolved delegation (`remaining_children > 0` or `compile_pending = 1` HOLDS it). An ask
-// that got no qualifying delivery is returned to `open` — visible again — never left
-// `claimed`, never closed.
-//
-// ── THE GOVERNING PRIORITY (owner ruling, 2026-08-05) ──
-// "The user asks the agent to do something and it does it. Period." Every ambiguous-evidence
-// tie-break in this file errs toward SERVING THE ASK AGAIN. Worst case the owner hears an
-// answer twice; it never errs toward silence, a parked ticket or a quiet close. The
-// no-double-answer protection the teardown batch-claim was built for (F9) survives strictly
-// SUBORDINATE to that, and it survives as a PROPERTY rather than a mechanism: an answer
-// delivered closes every ask it settled, with the receipt on the row, so the drain has
-// nothing left to re-serve. Dedup is the record being correct.
-//
-// ⚠ WHAT THIS REVERSES, AND WHO REVERSED IT. `closeAsksForDelivery`'s own header recorded the
-// opposite trade-off — an ask left `claimed` is "visible and inert … nobody is re-answered" —
-// and P6b's revert refusal records the same direction ("a duplicate send is worse than a
-// stranded ask"). The owner overruled that direction on 2026-08-05, in those words. The
-// residual it buys is stated rather than hidden: a turn that executed a non-idempotent tool
-// call and then delivered NOTHING hands its ask back, so the re-serve can repeat that call.
-// The transition reason names the turn so the repeat is findable. P6b's own function
-// (`revertAskClaimOnAbort`) is untouched and still refuses on the ABORT path; this is the
-// turn-boundary adjudication, and at the boundary the owner's ruling governs.
-//
-// ── WHAT LIVES HERE AND WHAT DOES NOT ──
-// The evidence predicate lives in `settleAsk` and nowhere else. The three invocation
-// wrappers below carry SCOPE (which rows to ask about) and no decision of their own:
-//   (a) `settleAsksForDelivery` — inside `recordDelivery`'s existing transaction, so the
-//       delivery row and the close it causes still commit together (PHASE-4 T2's unit);
-//   (b) `settleAsksAtTurnFinalize` — the final adjudicator, over every ask the turn CLAIMED
-//       or that entered its ASSEMBLED CONTEXT. Structural invariant: no ask remains
-//       `claimed` by a finalized turn;
-//   (c) `reconcileOrphanedClaims` — `work/orphaned-claims.ts`: the boot and the stuck-run
-//       reaper, over asks whose serving turn died with its process.
-// The join arm (`settleJoinDelivered`) is the same rule invoked from the relay and is folded
-// in by SWEEP-A TB2, which also owns the join DRIVING, the escalation ladder and everything
-// `blocked` beyond the hold written here.
-// ════════════════════════════════════════════════════════════════════════════════
+// Settlement authority for owner asks: ONE function (`settleAsk`) decides whether an ask is settled. An ask
+// closes only against a DELIVERED delivery in its own conversation that the ask entered the model's context
+// before, and only if the row has no unresolved delegation. With no qualifying delivery it goes `open`,
+// never left `claimed`. Ambiguous evidence errs toward serving the ask again, never toward silence. A turn
+// that ran a non-idempotent tool and delivered nothing still hands its ask back, so the re-serve may repeat
+// that call (the reason names the turn); `revertAskClaimOnAbort` still refuses on abort.
+// The wrappers below carry scope only; the join and async arms are the same rule.
 
 import { getDb } from '../db/connection.js';
 import { engineCutHandBackReason, turnWasEngineCut } from './exit-attribution.js';
@@ -60,12 +16,8 @@ import { handedInExpr } from './tracker-view.js';
 import { jobCarriedAsks } from './task-freshness.js';
 import { delegatedRelayEvidence } from './delegated-relay-evidence.js';
 import { recordServingTurnByRowid } from '../memory/message-store.js';
-// FROM THE LEAF (t117). `NOT_A_START_ACK` below reads this constant at MODULE SCOPE, and
-// `message-store` reaches this file again through its own dependency graph — so while the
-// constant was DECLARED in `message-store`, this read was a temporal dead zone for any process
-// that entered `message-store` first. `origin-intents.ts` imports nothing, so it is always
-// fully initialized. (`message-store` re-exports it and reading it from there would also be
-// safe, because a re-export binds to the leaf; naming the leaf just says so out loud.)
+// Imported from the leaf: `NOT_A_START_ACK` reads it at module scope, and `message-store` reaches this
+// file through its own graph, so importing it from there could read it before it is initialized.
 import { START_ACK_ORIGIN_INTENT } from '../memory/origin-intents.js';
 import {
   appendWorkEvent, askIdForMessage, claimFailedJoinForLateAnswer, claimingTurnOf, isTerminal,
@@ -75,86 +27,20 @@ import {
 
 const logger = createLogger('ask-settlement');
 
-/** Tools whose delivery is NOT an answer to the ask that is open.
- *
- *  ⚠ OR2-PROVISIONAL: CLOSED, PHASE-4 T4 (2026-08-02). The marker said T4 would remove the
- *  `engine-ack` lane entirely. It removed the ENGINE'S PROSE from it instead: the lane's one
- *  surviving caller delivers the model's own opening line early, which is the shape OR2
- *  wants. The exclusion stands for the reason it always really had — A START-ACK IS NOT AN
- *  ANSWER — and closing an ask on one would mark a question answered before anybody looked
- *  at it. Kept in step with `agent/v2/answered-edge.ts`'s `NON_ANSWERING_TOOLS`.
- *
- *  Carried here VERBATIM from `work/store.ts` with the closer it belonged to. */
+/** Tools whose delivery is not an answer. Twin: `NON_ANSWERING_TOOLS` in `agent/v2/answered-edge.ts`. */
 export const NON_ANSWERING_DELIVERY_TOOLS = new Set(['engine-ack']);
 
-/**
- * ⚠ SWEEP-A TB2 — AND NEITHER IS A TOOL-CALL CHIP. The same doctrine, one row deeper.
- *
- * `messages.display_kind = 'tool-turn'` is an assistant row whose CONTENT is the model's
- * `tool_use` blocks; the dashboard renders it as a chip. It is `user-visible` (the person can
- * see that a tool ran) but it is not a REPLY, and the dashboard door records a `deliveries`
- * row for it exactly as it does for prose.
- *
- * MEASURED, not reasoned about — the premature close the kit scenario `delegation-longhorizon`
- * clause (e) reproduced 2 of 2 at `3439240` pointed at a chip on BOTH attempts (read from the
- * live body at TB2 Step 0):
- *
- *   ask:3857ef59  done 10:34:39  receipt 3da6365b -> message a03a5ac9  display_kind=tool-turn
- *   ask:b72e81ad  done 10:40:49  receipt 49c963a2 -> message 98ffe54b  display_kind=tool-turn
- *
- * …and on both attempts the model's real prose reply landed AFTER the delegation join opened,
- * so with the chip excluded the HOLD arm below fires on the real reply and the ask is never
- * terminal at all. That is why this is a NARROWING of the evidence rather than a re-open at
- * the turn boundary: the record is read as HISTORY, and a `done` that is later undone is
- * still a job that was marked finished before it happened.
- *
- * The exclusion is keyed on the delivery's OWN message row, so a channel send that records no
- * message id (email, iMessage, SMS) is untouched — it is excluded only when the row it
- * carried is provably a chip.
- */
-/*
- * SWEEP CORE-2 item 7 ADDS `working-note`, and it is the same argument one step later rather
- * than a new one. A working note is a bubble the PLATFORM ITSELF has already declared not to
- * be the answer — mid-turn when the narration rode with a tool call
- * (`post-call-classify/terminal-text.ts`, 2026-07-10), or at the turn boundary when the
- * ledger key named a different bubble (`steps/teardown/draft-reclassify.ts`). Every one of
- * those bubbles STREAMED, so `deliveries` holds a dashboard receipt for it (PHASE-2 T5), and
- * without this entry an ask could be closed on a receipt pointing at a row the platform has
- * on record as drafting. That is CT0's defect class — `done` on the opening status line — in
- * a new spelling, and it is excluded here for the reason the chip is: it is a NARROWING of
- * what may count as an answer, never a widening.
- */
+/** `display_kind`s whose delivery is not a reply: a tool-call chip (`tool-turn`) and a `working-note`.
+ *  Keyed on the delivery's own message row, so a send with no message id is untouched. */
 export const NON_ANSWERING_DISPLAY_KINDS = ['tool-turn', 'working-note'] as const;
 
-// ⚠ DECLARED HERE, ABOVE THE PREDICATES, rather than beside the join arm that reads it:
-// SWEEP CORE-1 CT0's `NOT_A_SUPERSEDED_BUBBLE` is a module-level SQL fragment and needs
-// this set at module-evaluation time. It moved WHOLE — comment, name and value unchanged.
-/**
- * ⚠ SWEEP-A TB13 — THE ENGINE'S OWN RELAY, NAMED ON THE LEDGER RATHER THAN INFERRED.
- *
- * `a2a-join-relay` is the tool the engine records when IT hands a delegated answer to the
- * owner (`agent/a2a-transport.ts`, both the one-piece deterministic relay and the compile
- * ladder's last rung). No model can call it: it is written by the platform, from the pieces
- * the peers actually returned, and it is by construction the compiled answer to the join it
- * names. That is why it is exempt from the delegating-turn narrowing below and why it is what
- * the ladder asks about before it speaks a second time.
- *
- * `a2a-join-failed` and `a2a-join-late` are deliberately NOT here: the first is a notice that
- * there is no answer, and the second has its own arm with its own boundary.
- */
+/** The tool the engine records when it relays a delegated answer to the owner; no model can call it.
+ *  Declared above the predicates because `NOT_A_SUPERSEDED_BUBBLE` reads it at module scope.
+ *  `a2a-join-failed` (a no-answer notice) and `a2a-join-late` (it has its own arm) are absent on purpose. */
 export const ENGINE_JOIN_RELAY_TOOLS = new Set(['a2a-join-relay']);
 
-/** Where in the lifecycle the question is being asked. It selects the TIE-BREAK when there
- *  is no evidence — never the evidence itself, which is identical at all three.
- *
- *  `join` (SWEEP-A TB2) is the fourth, and it is the one moment whose EVIDENCE differs, for a
- *  stated reason: a compiled answer to a delegated job arrives on a LATER turn than the one
- *  that opened the join, so "this turn's delivery" cannot be the test. What replaces it is
- *  strictly narrower, never wider — the delivery must postdate the join's own `join_complete`
- *  event, so nothing the delegating turn said about STARTING the work can ever be read as the
- *  answer to it.
- *
- *  `async` (t152): a background job's result, delivered after the turn that started it (no turn). */
+/** Where in the lifecycle the question is asked; it selects the no-evidence tie-break. `join` and `async`
+ *  differ in evidence: the delivery must postdate `join_complete`, or be a background job's result. */
 export type SettlementMoment = 'delivery' | 'finalize' | 'boot' | 'join' | 'async';
 
 export type AskSettlementVerdict = 'closed' | 'held' | 'reopened' | 'unchanged';
@@ -162,58 +48,27 @@ export type AskSettlementVerdict = 'closed' | 'held' | 'reopened' | 'unchanged';
 export interface AskSettlementOutcome {
   workId: string;
   verdict: AskSettlementVerdict;
-  /** The delivery the close points at, when one was found. */
   deliveryId: string | null;
-  /** Why, in one line, for the log and for the caller that wants to say something. */
   detail: string;
 }
 
 export interface SettlementContext {
   agentId: string;
-  /** The turn whose record is the evidence. */
   turnNumber: number | null;
   at: SettlementMoment;
-  /** The ask's own message row, when the caller holds it. A settlement stamps
-   *  `messages.served_by_turn` as PART of closing — the fact the teardown batch-claim used
-   *  to write on its own, so the "this turn answered this row" record and the "this ask is
-   *  closed" record can never disagree. `setAnswerMessageId` keys on exactly this column. */
+  /** The ask's own message row; settling stamps `messages.served_by_turn` with it as part of closing. */
   rowid?: number | null;
   actorId?: string | null;
-  /** The agent NAMED this inherited ask answered (`kept` through the tracker door); the engine checks the receipt. */
+  /** The agent NAMED this inherited ask answered (`kept` through the tracker door); the engine checks it. */
   inheritedKept?: true;
-  /** JOIN MOMENT ONLY: the delivery the relay just recorded, when the caller holds one. It is
-   *  still CHECKED here (delivered, this agent, not a chip, postdating `join_complete`) — the
-   *  caller narrows the scope, the authority decides. */
+  /** JOIN MOMENT ONLY: the delivery the relay just recorded; it is still checked against the evidence. */
   deliveryId?: string | null;
-  /** JOIN MOMENT ONLY: the sentence recorded on the transition. */
   reason?: string;
-  /** JOIN MOMENT ONLY: WHICH join fact this settlement is made of. It selects the boundary
-   *  the delivery must postdate and nothing else — the evidence read is one query either way.
-   *   * `compiled`    — the countdown reached zero and the combined answer went out. The
-   *                     children must ALL have settled and the delivery must postdate the
-   *                     row's own `join_complete`. This is the arm bug 2 is about.
-   *   * `late-answer` — the join already FAILED CLOSED (the owner has been told no answer was
-   *                     coming) and a real answer arrived afterwards. There is no completed
-   *                     countdown to postdate — that is the whole situation — so the boundary
-   *                     is the ask's own arrival, exactly as the delivery arm uses it.
-   *                     requirement preserved (PHASE-2 AUDIT-FIX): a late answer still reaches
-   *                     the owner, ONCE, and the exactly-once guard is the `failed -> open`
-   *                     transition that precedes this call.
-   *   * `engine-relay` — UX-REPAIR ROUND 12 T48. The same SHAPE as `compiled` in every respect
-   *                     that decides anything (the children must all have settled, the delivery
-   *                     must postdate `join_complete`, the delegating turn's own bubbles are
-   *                     still not the receipt) — it is a distinct WORD so the `compile_resolved`
-   *                     row says which hand composed the answer the ask closed on: the model's,
-   *                     or the ladder's relay of the peers' own text. The rule is shared below
-   *                     rather than copied, so the two cannot drift. */
+  /** JOIN MOMENT ONLY: selects the delivery boundary. `compiled` and `engine-relay` (named apart for the
+   *  `compile_resolved` record): children settled, delivery postdates `join_complete`. `late-answer`: the
+   *  join failed closed, so the boundary is the ask's arrival; `failed -> open` guards exactly-once. */
   basis?: 'compiled' | 'engine-relay' | 'late-answer';
-  /**
-   * FINALIZE ONLY (t139 round 3, R-V333-8): the finished turn ended with the engine CONTINUING
-   * the same work — a queued self-continuation (the turn-budget park, the tool-loop cap, a
-   * context rebuild), the same recorded exit fact the engine pause reads. On such a turn the
-   * line the model held back with its tool call ("On it.") and the finalize recovery delivered is
-   * the job's opening, not its answer. Keyed on the exit, never a classifier or the prose.
-   */
+  /** FINALIZE ONLY: the engine continued the same work, so the held-back opening line is not the answer. */
   continuing?: boolean;
 }
 
@@ -239,27 +94,8 @@ function readAsk(workId: string): AskRow | undefined {
   ).get(workId) as AskRow | undefined;
 }
 
-/**
- * THE EVIDENCE. One query, asked the same way at all three moments.
- *
- * Four narrowings, each of which is a negative control in `__tests__/ask-settlement.test.ts`:
- *   * the send must have SUCCEEDED (`outcome = 'delivered'`);
- *   * it must belong to the TURN being adjudicated;
- *   * it must have gone to the ask's OWN conversation (an email to a third party sent while
- *     working on the owner's question is not its answer);
- *   * it must POSTDATE the ask's arrival — a delivery recorded before the ask existed cannot
- *     be its answer, which is the shape the fresh probe pair produced and the shape a
- *     remediation keyed only on `answer_message_id` would have mis-read (verify report §5.6).
- * Plus the `engine-ack` exclusion, carried verbatim, and (T25) the eighth narrowing: a
- * delivery the owed-interrupt path already recorded this ask as still owed PAST.
- *
- * THE COMPARISON IS AT THE LEDGER'S OWN RESOLUTION, and that is a decision rather than a
- * rounding accident: `deliveries.created_at` is `datetime('now')`, i.e. whole seconds, while
- * `work.opened_at` is epoch-ms. Comparing at millisecond precision against a column that
- * does not carry milliseconds would manufacture false negatives inside the same second. Both
- * sides are therefore floored to the second; the arm still bites on any delivery recorded in
- * an EARLIER second than the ask arrived, which is what "predates" means on this ledger.
- */
+/** The evidence: a delivered send in the ask's own conversation, on the adjudicated turn, postdating the
+ *  ask's arrival (whole seconds: `deliveries.created_at` is seconds, `work.opened_at` is epoch-ms). */
 function qualifyingDelivery(
   ask: AskRow, turnNumber: number | null,
 ): { id: string; tool: string } | null {
@@ -281,20 +117,7 @@ function qualifyingDelivery(
     { id: string; tool: string } | undefined) ?? null;
 }
 
-/**
- * THE SAME EVIDENCE READ, EXPOSED — SWEEP-A TB3.
- *
- * The remediation pass has to know whether an ask was answered before it can dispose of a row
- * that is already TERMINAL (`abandoned`, or `done` on a receipt that turns out to be a chip),
- * and `settleAsk` refuses terminal rows by design. Rather than let the pass re-state the rule
- * — a second decider, which is the disease this arc exists to cure — the authority's OWN
- * predicate is exported and the pass asks it.
- *
- * It is a READ. It decides nothing and writes nothing: the state change still goes through
- * `settleAsk`, and the pass supplies only SCOPE (which row, which turn). DESIGN §5 states the
- * requirement in the same words — *"the split uses the same evidence predicate as the
- * authority itself, so remediation and forward behaviour cannot disagree."*
- */
+/** The same evidence read, exported for `ask-remediation.ts` (terminal rows `settleAsk` refuses). */
 export function askAnswerEvidence(
   workId: string, turnNumber: number | null,
 ): { id: string; tool: string } | null {
@@ -303,58 +126,14 @@ export function askAnswerEvidence(
   return qualifyingDelivery(ask, turnNumber);
 }
 
-/** The fifth narrowing, as a SQL fragment so the delivery arm and the join arm cannot drift
- *  apart. Literal by construction (the list is a frozen tuple of lowercase identifiers), so
- *  the statement still prepares under the schema-conformance walk. */
+/** SQL fragment shared by the delivery and join arms; literal so it prepares under the conformance walk. */
 const NOT_A_TOOL_CHIP =
   `NOT EXISTS (SELECT 1 FROM messages m WHERE m.id = d.message_id AND m.display_kind IN (${
     NON_ANSWERING_DISPLAY_KINDS.map((k) => `'${k}'`).join(', ')}))`;
 
-/**
- * ⚠ SWEEP CORE-1 CT0 — THE SIXTH NARROWING, AND IT IS THE SAME SENTENCE A THIRD TIME.
- *
- * "A START-ACK IS NOT AN ANSWER" was written for the `engine-ack` LANE; TB2 wrote it again
- * one row deeper for the tool-call CHIP. Neither reaches the third form: **the model's own
- * opening line, delivered under the ordinary dashboard door, while the turn is still
- * working.** It is an `agent-text` bubble, it is `user-visible`, it is `delivered`, it is in
- * the ask's own conversation and it postdates the ask's arrival — it passes all five — and
- * mid-turn it is the ONLY delivery in existence, so the delivery arm closes the ask on it.
- *
- * MEASURED, not reasoned about — three investigate-shaped asks driven through the real door
- * (`POST /api/chat/:agentId/messages`, the primary) at the SHIPPED build `587693e`, 2026-08-09, all three
- * marked `done` on the ack, seconds after the question arrived and tens of seconds before
- * the answer existed:
- *
- *   ask:d8cf8457  done 09:36:02 (+9 s)  receipt -> "On it — checking the folder now."
- *                                        answer  09:36:09  "16 .ts files … store.ts, 1,667 lines"
- *   ask:1f5911cc  done 09:38:39 (+4 s)  receipt -> "On it — checking each part separately."
- *                                        answer  09:39:16  "All four parts checked…"
- *   ask:ed356166  done 09:41:26 (+4 s)  receipt -> "On it — checking the folder now."
- *                                        answer  09:41:41  "29 .ts files directly in that folder…"
- *
- * THE PLATFORM ALREADY KNEW. `turns.answer_message_id` — the truthful-answer key, whose ONE
- * setter is `noteTerminalAnswer` — named the REAL answer on all three while
- * `work.result_delivery_id` named the ack. Two halves of one edge, disagreeing. Box-wide at
- * that instant: 2,632 `done` asks carry a dashboard receipt, 2,053 of which ARE the turn's
- * answer key; 324 name a different bubble of a turn that DID record an answer, and 255 name
- * a bubble of a turn that recorded no answer at all.
- *
- * SO THE RULE IS TIME-SHAPED, and that is the whole design: mid-turn the authority cannot
- * know which bubble was the answer — nobody can, the turn has not finished speaking — so the
- * delivery moment is left EXACTLY as TB1 built it and a quick answer still closes instantly.
- * ONCE THE TURN HAS ENDED the record says which bubble was the answer, and from that moment
- * the only model bubble that can be an ask's receipt is that one.
- *
- * WHAT IT DELIBERATELY CANNOT REACH, each excluded by MEASUREMENT on the live body:
- *   * a delivery with no message row at all — every `auto-route` channel send (28 of 28 on
- *     this box carry `message_id IS NULL`), exactly as the chip narrowing is keyed;
- *   * the ENGINE'S OWN JOIN RELAY (`ENGINE_JOIN_RELAY_TOOLS`), which IS persisted as an
- *     `assistant`/`agent-text` row (28 of 28) but is written by the platform under a tool no
- *     model can call, out of the pieces the peers returned — TB13's correction, kept whole:
- *     25 of those 28 sit on turns that recorded no answer key and would have been refused;
- *   * a turn still running (`ended_at IS NULL`) or cut off by a dead process (`terminated`, never finalized, so
- *     no answer key) — every delivery-moment close and the whole of the boot crash arm.
- */
+/** After the serving turn ends, the only model bubble that can be the receipt is the one the turn names its
+ *  answer (`turns.answer_message_id`). Not reached: sends with no message row, the engine's join relay, and
+ *  turns still running or `terminated`. */
 const NOT_A_SUPERSEDED_BUBBLE =
   `NOT EXISTS (
      SELECT 1 FROM messages mb
@@ -365,65 +144,25 @@ const NOT_A_SUPERSEDED_BUBBLE =
         AND tb.ended_at IS NOT NULL AND tb.exit_reason IS NOT 'terminated'
         AND (tb.answer_message_id IS NULL OR tb.answer_message_id <> d.message_id))`;
 
-/**
- * ⚠ UX-REPAIR T2 — THE SEVENTH NARROWING, AND IT IS THE DOCTRINE AT THE ONE MOMENT THE
- * ENGINE COULD ALWAYS HAVE ENFORCED IT.
- *
- * A START-ACK IS NOT AN ANSWER. Three narrowings already say it — the `engine-ack` LANE, the
- * tool-call CHIP, and the sixth's superseded bubble. The sixth is the closest, and it is
- * deliberately TIME-SHAPED: it needs `turns.ended_at`, because mid-turn nobody can know which
- * bubble was the answer. That argument is sound, and it does not apply here.
- *
- * FOR THIS ONE CLASS THE ENGINE KNOWS AT THE INSTANT. The promoted start line is not inferred
- * from prose or from a missing `model_id`; the engine DECIDES to promote it
- * (`post-call-classify/terminal-text.ts` sets `engineStartAckDeliveredThisTurn` two statements
- * before it triggers the delivery) and now says so on the row, in the column built for saying
- * it. So this narrowing asks a fact that is already true when the delivery lands, and it needs
- * no turn record at all.
- *
- * MEASURED THROUGH THE REAL DOOR at `ba49131`, one request, floor model, the harness bot:
- *   turn 4526, ask:9eaab2ba — `done` at +4.2 s on delivery a6c01865, whose message was
- *   "On it — reading both files now."; `ct0_receipt_repointed` at +12.0 s. A 7.754 s window in
- *   which `openObligations` told the MODEL, mid-turn, that it owed the person nothing.
- * And the crash shape, turn 4527: killed between the ack and the answer, the ask stayed `done`
- * on that same "On it" across the reboot — nobody was ever answered.
- *
- * WHAT IT DOES NOT WIDEN, and each of these has a control in
- * `__tests__/an-ask-never-reads-done-on-a-start-ack.test.ts`:
- *   * an UNSTAMPED bubble is untouched — TB1's instant close for a genuine quick answer is
- *     exactly as it was, and CT0's boundary arm remains the backstop for it;
- *   * a DIFFERENT `origin_intent` is untouched — the rule names one value, never the column;
- *   * a delivery with no message row (every channel send) cannot be reached, keyed the same
- *     way the chip and bubble narrowings are.
- *
- * THE OWNER-PRIORITY CHECK (`:19-26`): refusing the ack cannot park the ask. It stays
- * `claimed`, the real answer's own delivery closes it, and if the turn dies the boot arms find
- * a live claim on a dead turn and hand it back OPEN with a named cause — which is the outcome
- * that priority asks for, and the one the close-on-the-ack was preventing.
- */
+/** A start-ack is not an answer. The engine marks it with `origin_intent` (`START_ACK_ORIGIN_INTENT`), so
+ *  this holds at delivery time with no turn record. Refusing it cannot park the ask: it stays `claimed`
+ *  until the real answer closes it, or the boot arms hand it back open. */
 const NOT_A_START_ACK =
   `NOT EXISTS (SELECT 1 FROM messages ma WHERE ma.id = d.message_id
                  AND ma.origin_intent = '${START_ACK_ORIGIN_INTENT}')`;
 
-/**
- * EVERY delivery tool the ENGINE writes rather than the agent (review R4-1), re-derived from the outbound tool names:
- * the start-ack, the join relay and its failed/late notices, the Dojo alert, the owner card and the owner's own close,
- * the first-run welcome, the healer's approval prompt and the busy auto-reply. An unscoped door crossing is written as
- * `<channel>-door` and is excluded by pattern in the read. None of them is the agent answering a person.
- */
+/** Every delivery tool the engine writes rather than the agent. An unscoped door crossing is written as
+ *  `<channel>-door` and excluded by pattern in the read. */
 export const ENGINE_SENT_TOOLS: ReadonlySet<string> = new Set([
   ...NON_ANSWERING_DELIVERY_TOOLS, ...ENGINE_JOIN_RELAY_TOOLS, 'a2a-join-failed', 'a2a-join-late',
   'alert', 'owner-card', 'owner-close', 'oobe-welcome', 'healer-approval', 'busy-ack',
 ]);
 
-/** The `audit` marker the inherited-backlog park writes (`work/inherited-backlog.ts`). Declared here: the authority reads it. */
+/** The `audit` marker the inherited-backlog park writes (`work/inherited-backlog.ts`); read here. */
 export const INHERITED_BACKLOG_MARKER = 'inherited_backlog';
 
-/**
- * A REAL answer delivered in `conversationId` since `notBefore` (`deliveries.created_at` form), with NO turn match:
- * the agent's own delivery, never an engine-sent row, a tool-call chip or a start-ack. ONE read, shared: the ledger
- * remediation's triage asks it (`ask-remediation.ts anyLaterRealDelivery`) and so does the agent-named inherited close.
- */
+/** A real answer the agent delivered in `conversationId` since `notBefore` (no turn match): never an
+ *  engine-sent row, a chip or a start-ack. Shared by the remediation triage and the inherited-ask close. */
 export function realAnswerInConversationSince(
   agentId: string, conversationId: string | null, notBefore: string,
 ): { id: string; tool: string } | null {
@@ -439,7 +178,6 @@ export function realAnswerInConversationSince(
   ).get(agentId, conversationId, ...excluded, notBefore) as { id: string; tool: string } | undefined) ?? null;
 }
 
-/** When an ask was parked as inherited (the marker's instant, in `deliveries.created_at` form), or null. */
 function inheritedParkedAt(workId: string): string | null {
   const r = getDb().prepare(
     `SELECT created_at AS at FROM work_events WHERE work_id = ? AND kind = 'audit'
@@ -448,64 +186,18 @@ function inheritedParkedAt(workId: string): string | null {
   return r ? new Date(r.at).toISOString().replace('T', ' ').slice(0, 19) : null;
 }
 
-/**
- * ⚠ UX-REPAIR ROUND 6 T25 — THE EIGHTH NARROWING: A DELIVERY THE ENGINE ALREADY SAID DID NOT
- * ANSWER THIS ASK.
- *
- * THE LEDGER, a harness agent, 2026-08-10, one turn:
- *   23:00:35  "Compare the three best e-ink tablets under $400…"      → turn 4655's subject
- *   23:00:43  "quick one — what's 15% of $240?"          arrived 8 s INTO the running turn
- *   23:01:15  the RESEARCH bubble lands (delivery 6a20d864) — no math in it
- *   23:01:15  the owed-interrupt path writes its re-prompt: "While you were working, the user
- *             also sent: 'quick one — what's 15% of $240?'. Reply ONLY to it"
- *   23:01:18  settlement closes that ask, open→done, ON delivery 6a20d864
- *   23:03:25  the next turn actually answers the math
- * Two engine mechanisms, three seconds apart, opposite verdicts. Had turn 4656 died, the board
- * would read `done` on an ask whose answer never existed.
- *
- * THE DISCRIMINATOR IS THE MECHANISM'S OWN RECORD. Not arrival timing (a burst the model
- * answers in one composite reply is the same timing and must still close — ARM 2's control),
- * and never the re-prompt's quoted TEXT, which is the prose-as-authority shape this tree
- * removes on sight. So the owed-interrupt path now records its subjects BY ID
- * (`recordOwedInterruptSubjects`, migration 159) with the delivery ROWID HIGH-WATER at the
- * instant it fired, and this narrowing reads that receipt: a delivery at or below that water
- * existed BEFORE anything told the model this ask was still owed, so by the engine's own
- * record it is not the ask's answer.
- *
- * ROWID, not the clock, and that is the same choice migration 088 made for the archive
- * high-water: `deliveries.created_at` is `datetime('now')` — whole seconds — and the incident's
- * bubble and record share a second exactly. A tie-free monotonic key decides it; a truncated
- * timestamp would have to guess.
- *
- * WHAT IT DOES NOT WIDEN, each a control in
- * `__tests__/a-waiting-ask-closes-only-on-its-own-answer.test.ts`:
- *   * an ask with NO owed-interrupt record is untouched — the rule names the record, not
- *     mid-turn arrival;
- *   * a record from a DIFFERENT turn does not narrow this turn's evidence;
- *   * the extra round the interrupt itself buys still closes the ask: that delivery is ABOVE
- *     the water, in the same turn, and remains qualifying evidence.
- *
- * THE OWNER-PRIORITY CHECK (`:19-26`): refusing this delivery cannot park the ask. With no
- * qualifying delivery the finalize arm hands it back OPEN — visible, on the re-serve ladder —
- * which is the "answer again rather than fall silent" direction the ruling asks for, and the
- * opposite of what closing it on someone else's receipt did.
- */
+/** A delivery at or below the rowid high-water `recordOwedInterruptSubjects` stored for this ask predates
+ *  the re-prompt that told the model it was still owed. Rowid, not the clock: `created_at` is whole seconds
+ *  and can tie. Refusing it cannot park the ask: finalize hands it back open. */
 const NOT_OWED_PAST_THIS_DELIVERY =
   `NOT EXISTS (SELECT 1 FROM work_events oi
                 WHERE oi.work_id = ? AND oi.kind = 'owed_interrupt'
                   AND json_extract(oi.payload, '$.turnNumber') = ?
                   AND d.rowid <= json_extract(oi.payload, '$.deliveryHighWater'))`;
 
-/**
- * THE OWED-INTERRUPT PATH'S RECEIPT — written here because `work/` is the spine's single
- * writer (PART A of `__tests__/single-writer-conformance.test.ts`), read by the narrowing
- * above so the writer and the reader cannot drift.
- *
- * Called from the engine step that composes the re-prompt, with the message ids it is about to
- * quote. Everything it needs is already in that step's hands; what was missing was anywhere to
- * put it. Best-effort by construction: an owed message with no ask row (a burst sibling the
- * ledger never ticketed) is skipped, and a failure here must never cost the re-prompt itself.
- */
+/** The owed-interrupt receipt, written here because `work/` is the spine's single writer and read by the
+ *  narrowing above. Best-effort: an owed message with no ask row is skipped; a failure must not cost
+ *  the re-prompt. */
 export function recordOwedInterruptSubjects(
   agentId: string, owedMessageIds: readonly string[], turnNumber: number,
 ): void {
@@ -525,22 +217,8 @@ export function recordOwedInterruptSubjects(
   }
 }
 
-/**
- * SWEEP CORE-1 CT0 — is the receipt this row is settled on a bubble THIS FINISHED TURN does
- * not call its answer? One read, asked with the SAME fragment the evidence predicate uses,
- * so the arm that corrects the row and the predicate that judges it can never disagree about
- * what a superseded bubble is.
- *
- * Scoped to the turn being adjudicated: an ask another turn settled is that turn's business
- * and is not re-opened by this boundary.
- */
-/**
- * R-V333-8: the ask's receipt is the HELD-BACK OPENING LINE of this turn — the model bubble the
- * turn's record names as its answer (`turns.answer_message_id`, which the finalize recovery sets
- * when it delivers the text that rode with a tool call) with no tool result of the turn after it.
- * Row order and the turn record only. A live-ask answer delivered mid-turn is followed by its own
- * tool results, so it is never this.
- */
+/** The ask's receipt is the held-back opening line of this turn: the bubble the turn records as its answer
+ *  (`turns.answer_message_id`) with no tool result after it (a live-ask answer has tool results after). */
 function receiptIsHeldOpeningLine(ask: AskRow, turnNumber: number | null): boolean {
   if (turnNumber == null || ask.result_delivery_id == null) return false;
   return getDb().prepare(
@@ -556,6 +234,7 @@ function receiptIsHeldOpeningLine(ask: AskRow, turnNumber: number | null): boole
   ).get(ask.result_delivery_id, ask.agent_id, turnNumber) !== undefined;
 }
 
+/** Is the receipt a bubble the finished turn does not call its answer? Same fragment as the evidence. */
 function receiptIsASupersededBubble(ask: AskRow, turnNumber: number | null): boolean {
   if (turnNumber == null || ask.result_delivery_id == null) return false;
   return getDb().prepare(
@@ -565,49 +244,15 @@ function receiptIsASupersededBubble(ask: AskRow, turnNumber: number | null): boo
   ).get(ask.result_delivery_id, ask.agent_id, turnNumber) !== undefined;
 }
 
-// ════════════════════════════════════════════════════════════════════════════════
-// THE RE-SERVE LADDER — SWEEP CORE-1 CT0, closing SWEEP-A TB3 §8.3
-//
-// TB3 recorded the hole and could not close it inside its own scope: *"the settlement
-// authority's no-evidence arm has NO BOUND OF ITS OWN: it will hand an ask back forever, and
-// the only thing between that and a spin is a counter owned by a different subsystem for a
-// different reason."* That counter is `MAX_DRAIN_STUCK = 4` (`agent/turn-state.ts`), the
-// HUMAN DRAIN'S per-CONVERSATION ladder. It is real, durable and it did its job — but it is
-// not this arm's bound, it counts a different thing, and when it trips it writes the whole
-// conversation off.
-//
-// MEASURED ON THE LIVE BODY, both shapes:
-//   ask:3bba2728  handed back on turns 452, 457, 458, 459, 460, 461 — SIX serves, three
-//                 minutes, every turn exiting `no_reply_intended`, ending `abandoned` by the
-//                 drain's write-off;
-//   ask:ec6392a5  handed back on 4285 and 4286 and served a third time on 4287 (45 seconds).
-//
-// THE LADDER, on OR2's shape (steer → tell the owner) and bounded PER ROW:
-//   serves 1..MAX_ASK_RE_SERVES+1  the ask goes back OPEN and the drain re-serves it. The count rides
-//                                  on the transition reason, so the record says "serve 3 of 4".
-//   beyond that                    THE RE-SERVE STANDS DOWN — for a MODEL silence only (C2:
-//                                  `work/exit-attribution.ts`; an engine cut never gets here).
-//                                  The ask is not closed, not abandoned and not forgotten: it is
-//                                  HELD `blocked`, an OWED state the OPEN WORK surface renders, so
-//                                  the model keeps being reminded while the drain — whose queue is
-//                                  `state = 'open'` — stops picking it up.
-//
-// The counter is a COUNT over the row's own durable log, never a maintained integer — the same
-// discipline `join-drive.ts` uses for its ladder, and for the same reason.
-//
-// ⚠ HANDED UP, stated rather than left to be discovered: OR2's LAST rung — the platform
-// telling the OWNER in its own voice — is not wired here. `recordFloorGhost` is the surface
-// for it and it needs a new declared `OUT_OF_BAND_GHOST_SUBJECTS` value, which the ghost
-// census and the dashboard's owner-alert allowlist both judge. That is a surface change with
-// its own review, and it is named in the CT0 report rather than slipped in beside this one.
-// ════════════════════════════════════════════════════════════════════════════════
+// Re-serve ladder: a COUNT over the row's own `audit` events bounds how often one ask is handed back
+// (separate from the drain's `MAX_DRAIN_STUCK`, `agent/turn-state.ts`). Past `MAX_ASK_RE_SERVES`, for a
+// model silence only (an engine cut never gets here, `work/exit-attribution.ts`), the ask is held
+// `blocked`: owed and visible, but out of the drain's `state = 'open'` queue. The owner is not told
+// here (that needs an `OUT_OF_BAND_GHOST_SUBJECTS` value).
 
-/** How many times the authority will hand ONE ask back before it stands the re-serve down.
- *  Three, on the same orchestrator judgment (Phase-0 standing authority) that set the join
- *  ladder's N — and beside it on purpose, so the two bounds are read together. */
 export const MAX_ASK_RE_SERVES = 3;
 
-/** The marker the ladder spends against, inside the `audit` payload — see `join-drive.ts`. */
+/** The `audit` marker the ladder counts (see `join-drive.ts`). */
 export const RE_SERVE_MARKER = 'ct0_ask_re_served';
 
 /** How many hand-backs this row has already spent. A COUNT over the log. */
@@ -618,9 +263,7 @@ function reServesSpent(workId: string): number {
         WHERE work_id = ? AND kind = 'audit' AND json_extract(payload, '$.marker') = ?`,
     ).get(workId, RE_SERVE_MARKER) as { n: number } | undefined)?.n ?? 0;
   } catch (err) {
-    // A ladder that cannot read its own counter must not spend an unbounded number of serves.
-    // Reporting it as already spent is the safe direction: the ask is HELD and visible rather
-    // than re-served for ever, which is the failure this bound exists to refuse.
+    // A counter that cannot be read counts as spent: hold the ask rather than re-serve it for ever.
     logger.warn('ask re-serve ladder: could not read its own counter; treating it as spent', {
       workId, error: err instanceof Error ? err.message : String(err),
     });
@@ -628,7 +271,6 @@ function reServesSpent(workId: string): number {
   }
 }
 
-/** Record one rung's spend on the row's own history. */
 function recordReServe(workId: string, attempt: number, why: string): void {
   appendWorkEvent(workId, 'audit', 'ask-settlement', {
     marker: RE_SERVE_MARKER, attempt, bound: MAX_ASK_RE_SERVES + 1,
@@ -636,7 +278,6 @@ function recordReServe(workId: string, attempt: number, why: string): void {
   });
 }
 
-/** The ladder's top rung: stop re-serving, keep the ask OWED and in front of the model. */
 function standDownReServe(
   ask: AskRow, ctx: SettlementContext, actorId: string, spent: number,
   out: (v: AskSettlementVerdict, d: string, id?: string | null) => AskSettlementOutcome,
@@ -650,16 +291,8 @@ function standDownReServe(
     to: 'blocked', by: 'agent', actorId, expectedState: ask.state, reason,
   });
   if (r.kind !== 'applied') return out('unchanged', `stand-down refused: ${r.kind}`);
-  // ── `warn`, AND IT WAS `error` UNTIL t131. THIS RUNG IS THE BOUND WORKING, NOT A FAULT:
-  // designed, upheld, fires on every ask that reaches it, and nothing for an operator to do
-  // — the ask is HELD, OWED and on the open-work surface, as the docstring above says. A
-  // designed behaviour that cries `error` every time is the quieted-boot-divergence
-  // dishonesty class: an error nobody can act on teaches readers to skip the tier, which is
-  // how a real one goes unseen. The words moved for the same reason. `warn` not `info`,
-  // because a person asked and is not getting an answer — and the module's one genuine fault
-  // path (`reServesSpent`'s unreadable counter) is `warn` too, so a fault is never QUIETER
-  // than the bound working. Both halves pinned by
-  // `work/__tests__/the-stand-down-is-the-bound-working-not-a-fault.test.ts`.
+  // `warn`: the bound working, not a fault, but a person is unanswered; `reServesSpent`'s fault path must
+  // never log quieter. Pinned by `work/__tests__/the-stand-down-is-the-bound-working-not-a-fault.test.ts`.
   logger.warn('ask re-serve bound reached: the agent did not answer within its serve budget, so the ask is now HELD owed and will stop being re-served', {
     agentId: ask.agent_id, workId: ask.id, serves: spent + 1, bound: MAX_ASK_RE_SERVES + 1,
     turnNumber: ctx.turnNumber,
@@ -667,15 +300,11 @@ function standDownReServe(
   return out('held', reason);
 }
 
-/** Is there delegated work under this ask that has not come back and been compiled yet? */
 function joinOutstanding(ask: AskRow): boolean {
   return (ask.remaining_children ?? 0) > 0 || ask.compile_pending === 1;
 }
 
-/**
- * THE AUTHORITY. Every transition of a `kind='ask'` row into `done` goes through here, and
- * so does every decision NOT to.
- */
+/** The authority: every ask transition into `done`, and every decision not to, goes through here. */
 export function settleAsk(workId: string, ctx: SettlementContext): AskSettlementOutcome {
   const actorId = ctx.actorId ?? ctx.agentId;
   const out = (verdict: AskSettlementVerdict, detail: string, deliveryId: string | null = null):
@@ -685,12 +314,8 @@ export function settleAsk(workId: string, ctx: SettlementContext): AskSettlement
   if (!ask) return out('unchanged', 'no such work row');
   if (ask.kind !== 'ask') return out('unchanged', `not an ask (kind=${ask.kind})`);
 
-  // ── proof-fix-f R3-1(a), R4-1: AN INHERITED ASK CLOSES ONLY WHEN THE AGENT NAMES IT. ──
-  // Parked `blocked` on the version boundary (owed, not auto-served), its claiming turn is dead, so the turn-bound
-  // evidence below can never match. A conversation-wide close let ANY later reply — the notice turn's own bubble,
-  // an answer to a newer question — mark it answered. So nothing closes it on its own: the agent says `kept`
-  // (`work/inherited-backlog.ts inheritedAskDoor`), and the engine closes it only on a real delivery it can point
-  // at, in that ask's conversation, since the park (G6: assert only what the record shows).
+  // An inherited ask (parked `blocked` at the version boundary, its claiming turn dead) closes only when the
+  // agent names it `kept` (`inheritedAskDoor`) and a real delivery exists in its conversation since then.
   const parkedAt = ask.state === 'blocked' && ctx.inheritedKept === true ? inheritedParkedAt(workId) : null;
   if (ctx.inheritedKept === true) {
     if (parkedAt === null) return out('unchanged', 'not an inherited owed ask');
@@ -703,46 +328,12 @@ export function settleAsk(workId: string, ctx: SettlementContext): AskSettlement
     return r.kind === 'applied' ? out('closed', `answered late via ${late.tool}`, late.id) : out('unchanged', `close refused: ${r.kind}`);
   }
 
-  // ── THE ORDERING ARM (SWEEP-A TB2). A turn that ANSWERED and then DELEGATED. ──
-  //
-  // The chip narrowing above kills the premature close whenever the model delegates before it
-  // speaks — the join is open by the time the real reply lands, so the hold arm fires and the
-  // row is never terminal. It cannot help the other ordering. MEASURED, run `bmsg2ufve1q`
-  // `ask:b66cbb75`: the model wrote a genuine prose status line at +19 s and only issued its
-  // `send_to_agent` calls at +40 s, so at the instant of the close there was no delegated work
-  // in existence and no evidence any was coming.
-  //
-  // At the TURN BOUNDARY there is. The join is on the row, and the ticket says `done` on a
-  // delivery that answered nothing — the exact state every safety net downstream is blind to.
-  // So the boundary hands it back: two recorded moves, `done -> open` (the only legal exit
-  // from `done`, and it needs the engine actor pointing at the receipt it is undoing) and then
-  // the ordinary HOLD. The person's ask is OWED again and the ladder can drive it.
-  //
-  // ⚠ WHAT THIS DOES NOT DO, stated rather than left to be discovered: the `done` transition
-  // already happened and stays in the history. A judge that reads the event log will still see
-  // it. The row is honest from the turn boundary onward, not retroactively — undoing the
-  // RECORD would be the forgery this spine exists to refuse.
-  //
-  // ⚠ SWEEP-A TB3 — AND AT BOOT, FOR THE SAME SHAPE THE SAME TURN LEFT BEHIND. Finalize is
-  // where this arm belongs, and a process killed between the delegation and the finalize
-  // never reaches it: the row survives the crash `done` with its join unresolved, which is
-  // bug 2's own state with nobody left to correct it. The orphaned-claim reconcile already exists
-  // for turns that died mid-lifecycle and its signal is the dead turn (no window since proof-fix-f),
-  // so the crash window is that arm's scope widened by one shape, never a second mechanism.
+  // Ordering arm: a turn that answered and THEN delegated. At finalize (and at boot, for a process killed
+  // before it) a `done` row with an unresolved join is handed back: `done -> open` by the engine pointing at
+  // the receipt it undoes, then the ordinary hold. The `done` event stays in the history.
   if (ask.state === 'done' && (ctx.at === 'finalize' || ctx.at === 'boot') && joinOutstanding(ask)) {
-    // ⚠ SWEEP-A TB6 — AND IT DROPS THE RECEIPT IT IS UNDOING. `evidenceRef` names the
-    // delivery so the undo can be audited (and G6 requires the engine to point at something);
-    // `clearResultDelivery` takes the row off it. Those are two different jobs: the event is
-    // the RECORD of what was undone and stays, the column is CURRENT STATE — "the delivery
-    // this row is settled on" — and a row that has just been handed back is settled on
-    // nothing. Without the clear the row went back to `open`/`blocked` still pointing at a
-    // superseded receipt (TB5 §Q5, `ask:fa74a65f`: 4 m 55 s of it, and the correct settlement
-    // landed 114 s after the window). Two readers were measurably wrong for that whole time:
-    // the kit's (e2) clause read the stale pointer as the ask's receipt, and
-    // `owedSendObligations` — the claimed-delivery floor's "is this person still owed an
-    // answer" query — EXCLUDED the row, because it filters `result_delivery_id IS NULL` on the
-    // belief (stated in its own comment) that a non-`done` row cannot carry one. It can, and
-    // this was how.
+    // `evidenceRef` names the undone delivery for the audit; `clearResultDelivery` drops the column, which
+    // is current state: a handed-back row is settled on nothing (`owedSendObligations` needs it NULL).
     const undo = transition(workId, {
       to: 'open', by: 'engine', actorId: 'ask-settlement', expectedState: 'done',
       evidenceRef: ask.result_delivery_id ?? undefined,
@@ -762,13 +353,8 @@ export function settleAsk(workId: string, ctx: SettlementContext): AskSettlement
     }
   }
 
-  // ── R-V333-8 (t139 round 3): THE HELD-BACK OPENING LINE OF A CONTINUING TURN IS NOT AN ANSWER.
-  // The turn did not finish — the engine queued its continuation — and the ask was closed on the
-  // bubble the finalize recovery made of the text that rode with a tool call. The ask goes back
-  // OWED for the continuation, which closes it when it delivers. No rung is spent: the engine,
-  // not the model, ended the turn. A turn that genuinely ends (no continuation) never reaches here
-  // and settles exactly as before; a live-ask answer delivered mid-turn is not touched (tool
-  // results follow it, see `receiptIsHeldOpeningLine`).
+  // A continuing turn's held-back opening line is not an answer: the ask goes back owed and closes when the
+  // continuation delivers. No rung is spent, because the engine, not the model, ended the turn.
   if (ask.state === 'done' && ctx.at === 'finalize' && ctx.continuing === true
       && receiptIsHeldOpeningLine(ask, ctx.turnNumber)) {
     const reason = `handed back: turn ${ctx.turnNumber ?? '?'} ended with the engine continuing the same work, `
@@ -786,25 +372,8 @@ export function settleAsk(workId: string, ctx: SettlementContext): AskSettlement
     }
   }
 
-  // ── THE RECEIPT-TRUTH ARM (SWEEP CORE-1 CT0). A turn that ACKED, and then either answered
-  //    or said nothing more. ──
-  //
-  // The sixth narrowing above makes the EVIDENCE honest from the turn boundary onward. This
-  // arm is what it is for: a row already closed mid-turn on a bubble the finished turn does
-  // not call its answer is re-adjudicated once, here, and the two outcomes are the two
-  // TB3's remediation pass used for the identical shape one row up (a chip receipt):
-  //
-  //   * THE TURN REALLY ANSWERED — the receipt MOVES to the delivery that carried the
-  //     answer. State is untouched, because the ask really is done: the person has their
-  //     result. Nothing is re-served, nothing is asked twice, and no second answer is
-  //     provoked. What changes is only that the record now names the thing that answered.
-  //   * THE TURN NEVER ANSWERED — it said "On it" and stopped. Nobody was answered, so the
-  //     ask is NOT done: it goes back OWED and visible, with the cause NAMED on the
-  //     transition, exactly as the ordering arm hands back a close-then-delegate turn.
-  //
-  // ⚠ The same rider the ordering arm carries applies here: the `done` transition already
-  // happened and STAYS in the history. The row is honest from the boundary onward, never
-  // retroactively — undoing the RECORD would be the forgery this spine exists to refuse.
+  // Receipt-truth arm: a row closed mid-turn on a bubble the finished turn does not call its answer is
+  // re-adjudicated once: the receipt moves to the real answer, or the ask goes back owed with the cause.
   if (ask.state === 'done' && (ctx.at === 'finalize' || ctx.at === 'boot')
       && receiptIsASupersededBubble(ask, ctx.turnNumber)) {
     const answer = qualifyingDelivery(ask, ctx.turnNumber);
@@ -834,8 +403,6 @@ export function settleAsk(workId: string, ctx: SettlementContext): AskSettlement
         + 'still waiting and the ask is owed again rather than left looking finished',
     });
     if (undo.kind === 'applied') {
-      // The hand-back spends a rung of the re-serve ladder like every other one: a question
-      // served into "On it" four times over is the same spin the bound exists to refuse.
       recordReServe(workId, reServesSpent(workId), 'the turn acked and then finished without answering');
       logger.warn('ask handed back at the turn boundary: it was closed on a start-ack that nothing followed', {
         agentId: ask.agent_id, workId, receipt: ask.result_delivery_id, turnNumber: ctx.turnNumber,
@@ -849,19 +416,14 @@ export function settleAsk(workId: string, ctx: SettlementContext): AskSettlement
 
   if (isTerminal(ask.state)) return out('unchanged', `already ${ask.state}`);
 
-  // ── THE ASYNC ARM (t152). A background job's result reached the owner, after the turn that started it. ──
+  // Async arm: a background job's result reached the owner after the turn that started it.
   if (ctx.at === 'async') return settleOnAsyncResult(ask, ctx, actorId, out);
 
-  // ── THE JOIN ARM (SWEEP-A TB2). The delegated job's own settlement, on the same rule. ──
-  //    It is ABOVE the hold arm deliberately: at this moment `compile_pending` is still 1 —
-  //    it is `transition()` that clears it on a terminal move — so a hold tested first would
-  //    hold the very row whose answer has just landed, for ever.
+  // Join arm, above the hold arm: `compile_pending` is still 1 here (`transition()` clears it on a terminal
+  // move), so a hold tested first would hold the very row whose answer just landed.
   if (ctx.at === 'join') return settleOnJoin(ask, ctx, actorId, out);
 
-  // ── HOLD. The owner asked for something the agent delegated: it is NOT answered because a
-  //    turn spoke, and it must stay OWED and visible until the delegated work settles and its
-  //    compiled answer actually lands. `blocked` is an existing OWED state — the OPEN WORK
-  //    surface renders it, so the model keeps being reminded the job is still owed. ──
+  // Hold: delegated work is outstanding, so the ask stays owed (`blocked`) until the compiled answer lands.
   if (joinOutstanding(ask)) {
     if (ask.state === 'blocked') return out('held', 'already held on the delegation');
     const reason = 'held: delegated work is still outstanding '
@@ -878,8 +440,6 @@ export function settleAsk(workId: string, ctx: SettlementContext): AskSettlement
     return out('held', reason);
   }
 
-  // ── CLOSE. Something was DELIVERED for it — never because a model said so. ──
-  // t163: …or, at finalize, the engine's relay of a delegated answer when the serving turn deliberately added nothing.
   const evidence = qualifyingDelivery(ask, ctx.turnNumber)
     ?? (ctx.at === 'finalize' ? delegatedRelayEvidence(ask, ctx.turnNumber, [...ENGINE_JOIN_RELAY_TOOLS], joinDeliveryDetail) : null);
   if (evidence) {
@@ -888,39 +448,32 @@ export function settleAsk(workId: string, ctx: SettlementContext): AskSettlement
       expectedState: ask.state, reason: `delivered via ${evidence.tool}`,
     });
     if (r.kind !== 'applied') return out('unchanged', `close refused: ${r.kind}`, evidence.id);
-    // The serve edge, written as part of the settlement rather than by a second owner.
     if (ctx.rowid != null && ctx.turnNumber != null) {
       recordServingTurnByRowid({ agentId: ask.agent_id, rowid: ctx.rowid, servedByTurn: ctx.turnNumber });
     }
     return out('closed', `delivered via ${evidence.tool}`, evidence.id);
   }
 
-  // ── t152: NO TURN-BOUND EVIDENCE, BUT THE REQUEST WAS BACKGROUND JOBS whose result already reached the owner
-  //    and nothing else is owed: that result is the evidence (the finalize of the turn that was still serving it). ──
+  // No turn-bound evidence, but its background jobs' results already reached the owner and nothing is owed.
   if (ctx.at === 'finalize') {
     const late = settleOnAsyncResult(ask, { ...ctx, deliveryId: null }, actorId, out);
     if (late.verdict === 'closed') return late;
   }
 
-  // ── NO EVIDENCE. ──
-  // Mid-turn this means nothing yet: the turn may be about to answer, and re-opening a live
-  // claim would race the turn that holds it.
+  // No evidence. Mid-turn this means nothing yet: re-opening a live claim would race the turn.
   if (ctx.at === 'delivery') return out('unchanged', 'no qualifying delivery yet; the turn is still live');
-  // At boot the second arm below (`reconcileOrphanedClaims`) owns the no-evidence case,
-  // because a crashed turn's disposition is P6b's counted question, not this one.
+  // At boot the crash arm (`reconcileOrphanedClaims`) owns the no-evidence case.
   if (ctx.at === 'boot') return out('unchanged', 'no qualifying delivery; the crash arm decides');
-  // t152: a request whose background jobs are still out is HELD, not re-served — the answer is on its way, and
-  // serving the question again is what lets a model start the same work twice. No rung is spent.
+  // A request whose background jobs are still out is held, not re-served (a re-serve lets a model start
+  // the same work twice). No rung is spent.
   if (mediaJobs(ask.root_id).out > 0) {
     if (ask.state === 'blocked') return out('held', 'already held on its background jobs');
     const why = 'held: the background jobs this request started are still out; their result is the answer';
     const h = transition(workId, { to: 'blocked', by: 'agent', actorId, expectedState: ask.state, reason: why });
     return h.kind === 'applied' ? out('held', why) : out('unchanged', `hold refused: ${h.kind}`);
   }
-  // At turn finalize the question is settled: this turn is over, nothing was delivered for
-  // this ask, and the person is still waiting. It goes back — visible.
   if (ask.state === 'open') return out('unchanged', 'already open and waiting');
-  // C2: WHO ended the turn decides whether the ladder moves (`work/exit-attribution.ts`): a cut is handed back on this same path, spends nothing, and can never reach the stand-down.
+  // Who ended the turn decides whether the ladder moves: an engine cut spends nothing, never stands down.
   const engineCut = turnWasEngineCut(ask.agent_id, ctx.turnNumber);
   const spent = reServesSpent(workId);
   if (!engineCut && spent >= MAX_ASK_RE_SERVES) return standDownReServe(ask, ctx, actorId, spent, out);
@@ -940,86 +493,26 @@ export function settleAsk(workId: string, ctx: SettlementContext): AskSettlement
   return out('reopened', reason);
 }
 
-// ════════════════════════════════════════════════════════════════════════════════
-// THE JOIN ARM — SWEEP-A TB2, folding `settleJoinDelivered` in (DESIGN §1b, row 5)
-//
-// requirement preserved: *"close the join-ask when the compiled result is actually delivered
-// — already evidence-backed"*, and `compile_resolved` is finally written on it. What the old
-// function could not do is refuse: it took whatever delivery id the relay handed it and moved
-// the row, so the delegating turn's own status line was an acceptable receipt. The rule here
-// is the authority's, stated once and not weakened:
-//
-//   * the CHILDREN must actually have settled — `remaining_children = 0`, no exception. This
-//     is the "settled is not widened" refusal in code: a job with a piece still out is not a
-//     job whose answer can be pointed at.
-//   * the DELIVERY must actually have landed AFTER the join completed. `join_complete` is the
-//     row's own event, written inside the same transaction as the decrement that reached zero,
-//     so it is the honest boundary between "talking about starting it" and "answering it".
-//   * and it must be an answer at all — delivered, this agent's, not a tool-call chip, not an
-//     `engine-ack`.
-//
-// WHAT THIS REPLACED, AND WHY THE REPLACEMENT IS STRICTLY NARROWER. The compile driver used
-// to ask `answerReceiptForAsk(join.rootId)` — "does the ask record an answer?" — which is TRUE
-// the moment `messages.answer_message_id` is stamped at the delegating turn's finalize. On
-// every recorded red run that was true within seconds of the delegation, so the driver
-// cleared `compile_pending` and the compile was never driven. That is the same status-line
-// error one layer up, and it is why `compile_resolved` had been written 0 times ever.
-// ════════════════════════════════════════════════════════════════════════════════
+// Join arm: the delegated job's own settlement, on the same rule. All children must have settled, the
+// delivery must land after the row's `join_complete` event, and it must be an answer at all. The delegating
+// turn's own status line is never the compiled report.
 
 /**
- * THE TURN THAT DELEGATED, from the row's own `claim_turn` event. `null` when the ask was
- * never claimed (the B3 shape), in which case this narrowing simply does not apply.
- *
- * ⚠ WHY THE COMPILED ANSWER MUST COME FROM A LATER TURN, and it is a MEASUREMENT, not a
- * theory. Run `bmsg278e0k2`, `ask:de4b50c5` (2026-08-05 12:25): the tool-chip narrowing worked
- * and the hold fired on the status line at 12:25:36 — but the two toy workers came back one
- * second later (12:25:37), and the delegating turn's SECOND status line at 12:25:40 postdated
- * `join_complete`, so the join arm read *"I'll compile the final report once they're back"* as
- * the compiled report and closed the ask. The timing clause passed and the system stopped
- * driving — which is Bug 2 wearing a slightly later hat.
- *
- * A turn cannot compile an answer out of pieces that had not come back when it started. The
- * delegation exit ENDS the turn that opened the join (`steps/execute/delegation-exit.ts`), so
- * the compile is always a later turn's work; and the engine's own relay records
- * `turn_number = NULL` (verified on delivery `42559251`), which is why NULL qualifies.
- *
- * ⚠ SWEEP-A TB13 — THAT LAST CLAUSE WAS A FALSE PROXY, AND IT COST AN OWNER A DUPLICATE
- * ANSWER. The relay does NOT always record no turn: `recordDelivery` stamps `turn_number` from
- * the AMBIENT turn context (`agent/v2/deliveries.ts`), so whenever the peer's reply lands while
- * the delegating turn is still open, the engine's own relay carries THAT turn's number and this
- * narrowing excluded it. Measured on the dev body: **21 of 65** recorded `a2a-join-relay`
- * deliveries carry a turn number, and **5 of 5** recorded since this narrowing landed were
- * refused as the receipt. Four were rescued by the model's own later compiled answer; the
- * fifth — battery `bmshcidpw8d`, `ask:f8da81b2`, relay `bc839833` on turn 4039 — stayed
- * `compile_pending`, ran the whole ladder, and its LAST rung relayed the same single piece to
- * the owner a second time 52 s later (`2fc0347e`). That is the duplicate answer
- * `delegation-duplicate-reconciled` clause (c) exists to refuse.
- *
- * The rule is unchanged and the proxy is corrected: what must never count is THE MODEL'S OWN
- * BUBBLES on the delegating turn, and the engine's relay is not one — it is written by the
- * platform, under a tool no model can call, out of the pieces the peers returned
- * (`ENGINE_JOIN_RELAY_TOOLS`). Every other narrowing still applies to it: it must be
- * `delivered`, this agent's, not a tool-call chip, and it must postdate `join_complete`. The
- * negative control this clause was built for (`bmsg278e0k2`'s late status line) is re-driven
- * beside the new positive in `work/__tests__/join-settlement.test.ts` §(ii-b).
+ * The turn that delegated, via `claimingTurnOf` (`store.ts`); `null` when never claimed. The compiled answer
+ * must come from a later turn, so the delegating turn's own status line never counts. A delivery with no
+ * turn qualifies, and so does the engine's relay of this join even when `recordDelivery` stamped the
+ * ambient turn.
  */
-// T64: the read itself now has ONE owner, beside the event's writer (`store.ts`
-// `claimingTurnOf`) — this file, `ask-remediation.ts` and the T61(b) marker had three copies
-// of the same SELECT, and the one that instead asked `work.claimed_by_turn` was wrong for the
-// reason all three comments already knew. The rule this doc states is unchanged.
 const delegatingTurn = claimingTurnOf;
 
 
-/** The `detail` the join relay stamps on its delivery row — ONE derivation, imported by the
- *  writer (`deliverJoinResultToOwner`) and by every reader, so "which join was this?" cannot
- *  drift between them. The outbound scope MERGES the details of every door a send crosses
- *  (`a; b`), so readers must match on containment, not equality. */
+/** The `detail` the join relay stamps on its delivery row: one derivation for the writer and every reader.
+ *  The outbound scope merges the details of every door a send crosses (`a; b`): match on containment. */
 export function joinDeliveryDetail(joinId: string): string {
   return `join ${joinId}`;
 }
 
-/** When the join's countdown reached zero, from the row's own event. `null` when it never
- *  did — in which case there is no compiled anything and nothing can qualify. */
+/** When the join's countdown reached zero, from the row's own event; `null` when it never did. */
 function joinCompletedAt(workId: string): number | null {
   const r = getDb().prepare(
     `SELECT MAX(created_at) AS at FROM work_events WHERE work_id = ? AND kind = 'join_complete'`,
@@ -1027,8 +520,7 @@ function joinCompletedAt(workId: string): number | null {
   return r?.at ?? null;
 }
 
-/** The compiled answer's receipt, or null. One statement, whether the caller named a delivery
- *  or not — a named one is CHECKED against the same predicate, never trusted. */
+/** The compiled answer's receipt, or null. A named delivery is checked by the same predicate. */
 function compiledDelivery(
   ask: AskRow, completedAtMs: number, named: string | null | undefined, afterTurn: number | null,
 ): { id: string; tool: string } | null {
@@ -1036,16 +528,9 @@ function compiledDelivery(
   const excluded = [...NON_ANSWERING_DELIVERY_TOOLS];
   const relayTools = [...ENGINE_JOIN_RELAY_TOOLS];
   const floorSec = Math.floor(completedAtMs / 1000);
-  // The delegating turn's own bubbles are not the compiled answer. Two things are not those
-  // bubbles: a delivery from a LATER turn, and a delivery from NO turn — and (TB13) the
-  // ENGINE'S OWN RELAY OF THIS JOIN whatever turn it happens to be stamped with, because the
-  // platform wrote it out of the pieces the peers returned and no model can call that tool.
-  //
-  // The exemption is keyed to THIS ROW's relay (`joinDeliveryDetail`), not to the tool alone.
-  // Driven, not assumed: with the tool alone, one join's relay settled a DIFFERENT ask that
-  // shared the conversation — the conversation-scoped read has no join identity of its own, so
-  // widening by tool would have widened it across rows. The negative control is in
-  // `work/__tests__/join-settlement.test.ts` §(ii-b).
+  // The delegating turn's own bubbles are not the compiled answer: a later turn, no turn, or the engine's
+  // relay of THIS join qualifies. Keyed to this row's relay (`joinDeliveryDetail`), not the tool alone, or
+  // one join's relay would settle another ask in the same conversation.
   const relaySql = relayTools.map((_, i) => `@r${i}`).join(', ');
   const laterTurn = afterTurn == null ? ''
     : `AND (d.turn_number IS NULL OR d.turn_number > @afterTurn
@@ -1085,21 +570,9 @@ function compiledDelivery(
     { id: string; tool: string } | undefined) ?? null;
 }
 
-/**
- * SWEEP-A TB13 — HAS THE ENGINE ALREADY TOLD THE OWNER THIS JOIN'S ANSWER?
- *
- * The exactly-once discipline the relay's own header claims ("the caller has already won the
- * right to deliver — the exactly-once guard is the `work` transition that precedes this call")
- * has one hole, and battery `bmshcidpw8d` drove through it: when the settlement that follows a
- * relay is REFUSED, no transition happens, the row stays `compile_pending`, and the ladder's
- * last rung relays the same pieces again 52 s later. A guard that only exists when the row
- * moves is not a guard for the case where the row does not move.
- *
- * This is the durable answer to the only question that matters before speaking again: is there
- * already a DELIVERED engine relay for THIS join that postdates its own `join_complete`? It
- * reads the delivery ledger — never a flag, never a counter, so a restart, a re-drive and a
- * reaper pass all read the same fact.
- */
+/** Has the engine already delivered this join's answer? A delivered relay of this join after its
+ *  `join_complete` means the ladder's last rung must not relay again, even if the settlement after the
+ *  first relay was refused. Reads the delivery ledger, never a flag. */
 export function priorEngineJoinRelay(workId: string): { id: string; tool: string } | null {
   const ask = readAsk(workId);
   if (!ask) return null;
@@ -1129,11 +602,8 @@ function settleOnJoin(
   out: (v: AskSettlementVerdict, detail: string, deliveryId?: string | null) => AskSettlementOutcome,
 ): AskSettlementOutcome {
   const basis = ctx.basis ?? 'compiled';
-  // ONE completed-countdown rule, asked as "is this the late-answer arm?" rather than as a list
-  // of the arms that are not. T48 added a third basis, and a third `basis === 'compiled'` test
-  // at each of the three sites below would have silently routed it down the late-answer arm —
-  // boundary at the ask's own arrival, no delegating-turn constraint — which is a different
-  // rule wearing the same name.
+  // One completed-countdown rule, asked as "is this the late-answer arm?": testing each other basis
+  // separately would route a new basis down the late-answer arm, which is a different rule.
   const lateAnswer = basis === 'late-answer';
   let boundaryMs: number;
   if (!lateAnswer) {
@@ -1147,8 +617,7 @@ function settleOnJoin(
   } else {
     boundaryMs = ask.opened_at;
   }
-  // The late-answer arm has no delegating-turn constraint: its whole situation is that the
-  // countdown never completed and an answer arrived out of band, on whatever turn carried it.
+  // The late-answer arm has no delegating-turn constraint: its answer arrived out of band.
   const evidence = compiledDelivery(
     ask, boundaryMs, ctx.deliveryId, lateAnswer ? null : delegatingTurn(ask.id),
   );
@@ -1163,19 +632,12 @@ function settleOnJoin(
     evidenceRef: evidence.id, resultDeliveryId: evidence.id,
   });
   if (r.kind !== 'applied') return out('unchanged', `join close refused: ${r.kind}`, evidence.id);
-  // The fact `compile_pending` existed to record, finally written on a real completion. The
-  // flag itself is cleared by `transition()`'s terminal arm, so this event is the HISTORY of
-  // the resolution rather than a second owner of the column.
+  // `compile_resolved` is the history of the resolution; `transition()`'s terminal arm clears the flag.
   appendWorkEvent(ask.id, 'compile_resolved', actorId, {
     reason, basis, delivery_id: evidence.id, tool: evidence.tool, boundary_at: boundaryMs,
   });
-  // UX-REPAIR round 2 T11 — THE DELIVERY LEARNS WHAT IT ANSWERED, from the authority that just
-  // decided it. A compiled answer usually lands on a BARE WAKE (S4 turn 4555: `turns.kind`
-  // NULL, `subject_kind='none'`), so the delivery is written with `root_kind=''`/`root_id=''`
-  // and no reverse lookup can find it — while the delegating turn's ACK, which does carry
-  // `root_kind='ask'`, is the only row that answers "which delivery belongs to this ask".
-  // This is RECORDED, not inferred: at this instant the settlement authority holds both ids.
-  // Only ever fills a blank — an already-attributed delivery is never re-pointed.
+  // Record on the delivery which ask it answered: a compiled answer on a bare wake carries no
+  // `root_kind`/`root_id`. Only ever fills a blank; an attributed delivery is never re-pointed.
   try {
     getDb().prepare(
       `UPDATE deliveries SET root_kind = 'ask', root_id = ?
@@ -1192,15 +654,11 @@ function settleOnJoin(
   return out('closed', reason, evidence.id);
 }
 
-// THE ASYNC ARM (t152). The result of a background job (image, music, speech, video) is posted by the
-// job's worker after the turn that started it, with no turn, so no turn-bound delivery ever closed the
-// ask: seven images reached the owner and the ask stayed `blocked`. The ask settles on a DELIVERED
-// result (the join arm's evidence checks) once nothing is owed on the request: no job out, no delegated
-// work, no open tracker task linked to it, no turn or parked job serving it. Whichever of those ends
-// last re-asks: a result (delivery), a turn's finalize, a linked task's close (`transition`), a job's end.
-// A request whose jobs were ALL cancelled and delivered nothing is the owner's own call-off: abandoned.
+// Async arm: a background job's result (image, music, speech, video) is posted by the worker after the turn
+// that started it, with no turn. The ask settles on a DELIVERED result once nothing is owed: no job out, no
+// delegated work, no open linked tracker task, no turn or parked job serving it; whichever ends last
+// re-asks. A request whose jobs were all cancelled and delivered nothing is the owner's call-off: abandoned.
 
-/** The background media jobs started for this request (its message id is their lineage). */
 function mediaJobs(askRootId: string): { all: number; out: number; cancelled: number } {
   const db = getDb();
   const t = { all: 0, out: 0, cancelled: 0 };
@@ -1213,7 +671,6 @@ function mediaJobs(askRootId: string): { all: number; out: number; cancelled: nu
   return t;
 }
 
-/** Why the agent still owes work on this request (so a landed result must not settle it yet), or null. */
 function stillOwed(ask: AskRow, ignoreTurn: number | null): string | null {
   if (getDb().prepare(
     `SELECT 1 FROM work t WHERE t.kind = 'task' AND t.agent_id = ? AND t.source_message_id = ?
@@ -1264,7 +721,6 @@ function settleOnAsyncResult(
   return out('closed', reason, evidence.id);
 }
 
-/** Re-ask `settleAsk` for the request `askMessageId` labels, at the async moment. Never throws. */
 function reaskAsync(agentId: string, askMessageId: string | null | undefined, deliveryId: string | null): AskSettlementOutcome | null {
   if (!askMessageId) return null;
   try {
@@ -1277,11 +733,6 @@ function reaskAsync(agentId: string, askMessageId: string | null | undefined, de
   }
 }
 
-/**
- * INVOCATION (e) — A BACKGROUND JOB'S RESULT WAS DELIVERED (t152). Scope only; the decision is
- * `settleAsk`'s. `askMessageId` is the request the result is labelled with (`deliveredResult`),
- * `resultMessageId` the bubble the owner was given.
- */
 export function settleAskOnAsyncResult(
   p: { agentId: string; askMessageId: string | null | undefined; resultMessageId: string },
 ): AskSettlementOutcome | null {
@@ -1301,19 +752,12 @@ export function settleAskOnJobEnded(agentId: string, jobId: string): AskSettleme
   return null;
 }
 
-/** A tracker task linked to a request ended: whatever it was holding back may settle now. */
 export function settleAskOnTaskEnded(agentId: string, askMessageId: string | null | undefined): void {
   reaskAsync(agentId, askMessageId, null);
 }
 onTaskEnded(settleAskOnTaskEnded);
 
-/**
- * INVOCATION (d) — THE JOIN RELAY. Scope only; the decision is `settleAsk`'s.
- *
- * `deliveryId` is what the caller just recorded, when it holds one; omit it and the authority
- * looks for the compiled answer itself, which is what the turn-end compile drain needs (the
- * MODEL delivered it, so no relay holds an id).
- */
+/** The join relay: scope only. Without `deliveryId` the authority finds the compiled answer itself. */
 export function settleAskOnJoin(
   parentWorkId: string,
   p: {
@@ -1321,8 +765,7 @@ export function settleAskOnJoin(
     basis?: 'compiled' | 'engine-relay' | 'late-answer';
   },
 ): AskSettlementOutcome {
-  // `agentId` is SCOPE the join arm does not need — it reads the agent off the row it is
-  // about — so it is optional here and the actor defaults to the relay's own name.
+  // `agentId` is scope the join arm does not need; it is optional and the actor defaults to the relay.
   return settleAsk(parentWorkId, {
     agentId: p.agentId ?? 'a2a-join', turnNumber: null, at: 'join',
     deliveryId: p.deliveryId ?? null, reason: p.reason, basis: p.basis,
@@ -1330,18 +773,8 @@ export function settleAskOnJoin(
   });
 }
 
-/**
- * An answer arrived AFTER the join failed closed. It still reaches the owner, once.
- *
- * RELOCATED from `work/store.ts` with the settle it composes (SWEEP-A TB2). Two recorded moves
- * rather than one silent overwrite: `failed -> open` (the join is live again) then the
- * authority's join close against the delivery that carried the update. The transport performs
- * exactly these two calls with the send in between, unchanged.
- *
- * requirement preserved: the exactly-once guard is the `failed -> open` transition — one
- * caller wins it, everyone else gets `conflict`, and that is what stops the owner being told
- * twice. `claimFailedJoinForLateAnswer` still owns that half and is untouched.
- */
+/** An answer arrived after the join failed closed; it still reaches the owner once. `failed -> open` is the
+ *  exactly-once guard (`claimFailedJoinForLateAnswer` owns it: one caller wins, the rest `conflict`). */
 export function reopenJoinForLateAnswer(
   parentWorkId: string, deliveryId: string, reason: string,
 ): AskSettlementOutcome | { kind: 'refused'; reason: string } {
@@ -1352,9 +785,6 @@ export function reopenJoinForLateAnswer(
   return settleAskOnJoin(parentWorkId, { deliveryId, reason, basis: 'late-answer' });
 }
 
-// ════════════════════════════════════════════════════════════════════════════════
-// INVOCATION (a) — AT EACH DELIVERY, INSIDE THE DELIVERY TRANSACTION
-// ════════════════════════════════════════════════════════════════════════════════
 
 export interface DeliveryCloseInput {
   agentId: string;
@@ -1365,18 +795,8 @@ export interface DeliveryCloseInput {
   outcome: string;
 }
 
-/**
- * A quick ask is done when something was DELIVERED for it — never because a model said so.
- *
- * This is the shape the solo lifecycle has always had and it is deliberately unchanged:
- * opened -> pickup -> done-with-receipt AT SEND TIME. Moving the close to finalize would have
- * made every quick answer wait for the turn boundary, which is a behaviour change nobody
- * asked for.
- *
- * The arguments narrow the SCOPE (which rows this delivery could possibly answer); the
- * decision is `settleAsk`'s, and it re-reads the ledger row this call just inserted rather
- * than trusting the arguments — one evidence read, in one place, at all three moments.
- */
+/** A quick ask is done when something was delivered for it, at send time (closing at finalize would make
+ *  every quick answer wait for the turn boundary). The arguments narrow scope; `settleAsk` re-reads. */
 export function settleAsksForDelivery(p: DeliveryCloseInput): number {
   if (p.outcome !== 'delivered') return 0;
   if (p.turnNumber == null || p.conversationId == null) return 0;
@@ -1394,40 +814,24 @@ export function settleAsksForDelivery(p: DeliveryCloseInput): number {
   return closed;
 }
 
-// ════════════════════════════════════════════════════════════════════════════════
-// INVOCATION (b) — TURN FINALIZE, THE FINAL ADJUDICATOR
-// ════════════════════════════════════════════════════════════════════════════════
 
-/** One row of the assembled-context set: the ask, and the message row to stamp when it
- *  settles. Produced by `agent/v2/counterparty.ts:assembledContextAsks`, which READS and
- *  writes nothing — the state change is the authority's alone. */
+/** An ask in the assembled-context set and the message row to stamp when it settles, from
+ *  `assembledContextAsks` (`agent/v2/counterparty.ts`), which only reads. */
 export interface AssembledAsk { workId: string; rowid: number }
 
 export interface FinalizeSettlementInput {
   agentId: string;
   turnNumber: number;
-  /** Every ask that entered this turn's context: the same-conversation rows that were inside
-   *  the final assembly. Rows arriving AFTER it are deliberately absent (OPEN-12: a genuinely
-   *  newer message gets its own turn) — that exclusion lives in the read, not here. */
+  /** Every ask that entered this turn's context; rows arriving after the final assembly are absent. */
   assembled?: AssembledAsk[];
-  /** t139 round 3 (R-V333-8) — see `SettlementContext.continuing`. */
   continuing?: boolean;
 }
 
 export interface FinalizeSettlementResult { closed: number; held: number; reopened: number }
 
-/**
- * The turn is over. Every ask it CLAIMED, and every ask that entered its ASSEMBLED CONTEXT,
- * gets its verdict now: closed with the receipt, held on an unresolved delegation, or handed
- * back open.
- *
- * ── THE STRUCTURAL INVARIANT ── no ask remains `claimed` by a finalized turn. That is the
- * line that makes the fossil class unrepresentable, and `__tests__/ask-done-census.test.ts`
- * PART B is the census that keeps it true.
- *
- * The claimed set is scoped by TURN and not by conversation: an ask this turn picked up and
- * then answered somewhere else is still this turn's to dispose of.
- */
+/** The turn is over: every ask it claimed or assembled gets its verdict. No ask stays `claimed` by a
+ *  finalized turn (`work/__tests__/ask-done-census.test.ts`). The claimed set is scoped by turn, not
+ *  conversation: an ask picked up and answered elsewhere is still this turn's to dispose of. */
 export function settleAsksAtTurnFinalize(p: FinalizeSettlementInput): FinalizeSettlementResult {
   const result: FinalizeSettlementResult = { closed: 0, held: 0, reopened: 0 };
   const db = getDb();
@@ -1435,16 +839,8 @@ export function settleAsksAtTurnFinalize(p: FinalizeSettlementInput): FinalizeSe
     `SELECT id FROM work
       WHERE agent_id = ? AND kind = 'ask' AND state = 'claimed' AND claimed_by_turn = ?`,
   ).all(p.agentId, p.turnNumber) as Array<{ id: string }>;
-  // SWEEP-A TB2 — the third scope: an ask THIS TURN CLOSED. `claimed_by_turn` is nulled by
-  // the close, so the turn is re-identified through the receipt the close points at. Narrow
-  // by construction: it can only ever match a row this turn's own delivery closed.
-  //
-  // ⚠ SWEEP CORE-1 CT0 — the `remaining_children > 0 OR compile_pending = 1` filter came OFF.
-  // It was the ordering arm's own question ("did this turn close it and THEN delegate?"), and
-  // asking it HERE made the scope answer a question only one of the arms cares about. The
-  // receipt-truth arm needs the same set without a delegation on it — a turn that acked, then
-  // answered, and delegated nothing is the ordinary investigate shape and was invisible. The
-  // arms ask their own questions; the scope only says WHICH ROWS this turn is responsible for.
+  // Third scope: an ask THIS TURN CLOSED (`claimed_by_turn` is cleared by the close, so the turn is found
+  // through the receipt). The arms ask their own questions; the scope only says which rows the turn owns.
   const closedByThisTurn = db.prepare(
     `SELECT w.id AS id FROM work w
       WHERE w.agent_id = ? AND w.kind = 'ask' AND w.state = 'done'
