@@ -1,8 +1,5 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// EVERY TABLE AND ITS COLUMNS, read live from the read-only connection (so always the box's own).
-// A credential table is listed as not readable through dojo_inspect, with no row count; a
-// credential column of an allowed table is marked the same way.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// Every table and its columns, read live from the read-only connection. A credential table is listed as not
+// readable (no row count); a credential column of an allowed table is marked the same way.
 
 import type Database from 'better-sqlite3';
 import { getReadOnlyDb } from '../db/connection.js';

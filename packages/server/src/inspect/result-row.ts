@@ -1,11 +1,7 @@
-// t285 F1 — one dojo_inspect sql result row, redacted. The config table's credential values are
-// already blanked at the source (the child shows `config` through a TEMP VIEW, `sql-child.ts`),
-// so only the column rules remain: a cell is blanked under the SOURCE column it was read from
-// (never only its alias), then every string cell is scrubbed.
+// Blanks by SOURCE column, never only alias; no key/value rule: sql-child.ts already blanks config's values.
 
 import { columnNamesCredential, redactCell, rowAgents } from './redact.js';
 
-/** An output column as the statement reports it: its name, and the table column it comes from. */
 export interface ResultColumn { name: string; column: string | null; table: string | null }
 
 export function redactResultRow(columns: readonly ResultColumn[], raw: readonly unknown[], agentIds: readonly string[] = []): unknown[] {

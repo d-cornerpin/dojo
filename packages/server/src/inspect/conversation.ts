@@ -1,16 +1,6 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// v3.5 inspect B1 — ANY AGENT'S CONVERSATION.
-//
-// The main agent's own history tools are scoped to itself; this reads any agent's messages,
-// whole, each tagged the way the summaries tag them (ROLE · PARTY, from `summaryPartyTag`)
-// plus the channel, the message id and the turn, so `timeline` and `sql` can follow a line up.
-// A2A rows name the thread and the intent; tool rows name the tool and its outcome.
-//
-// The window is the shared one (`scope.ts`): since/until, or around a message or a time (the
-// turn it falls in). With neither and no pattern it is the agent's latest turn. The result
-// ends with the anchors of the messages just before and after what it shows, so paging is one
-// call each way. A deleted agent is still answered from the rows that remain.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// Any agent's messages, whole, each tagged ROLE · PARTY (as the summaries tag them) plus channel, id and turn.
+// The window is scope.ts's; with no window and no pattern it is the agent's latest turn. The result ends
+// with the ids of the messages just before and after, so paging is one call each way.
 
 import type Database from 'better-sqlite3';
 import { getReadOnlyDb } from '../db/connection.js';

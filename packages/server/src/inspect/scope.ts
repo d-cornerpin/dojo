@@ -1,19 +1,9 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// v3.5 inspect B1 — WHO and WHEN, shared by every view that reads records.
-//
-// TIME. The records keep time two ways: epoch milliseconds (`messages`, `work_events`) and
-// SQLite's `datetime('now')` text in UTC (`audit_log`, `tool_receipts`, `deliveries`, `turns`).
-// Every view prints one form, `2026-10-19 09:23:07 UTC`, so lines from different tables and the
-// log sort and read as one story.
-//
-// AROUND. "Around a moment" is the TURN that moment falls in, never a fixed number of minutes:
-// around a message is that message's turn; around a time is from the start of the latest turn
-// that began at or before it to the end of the earliest turn that ended at or after it. That is
-// the span in which something was happening, measured, not guessed.
-//
-// AGENTS. An agent is named by id or name. One that no longer exists is still answered from the
-// records that remain, labelled "(agent deleted)".
-// ════════════════════════════════════════════════════════════════════════════════════════
+// Who and when, shared by every view that reads records. Time is kept two ways: epoch ms (messages, work_events)
+// and SQLite's UTC `datetime('now')` text (audit_log, tool_receipts, deliveries, turns); every view prints one form
+// (`YYYY-MM-DD HH:MM:SS UTC`) so lines from different tables and the log read as one story.
+// "Around a moment" is the TURN it falls in, never a fixed number of minutes: around a message is its turn; around
+// a time runs from the latest turn start at or before it to the earliest turn end at or after it.
+// An agent is named by id or name; one that no longer exists is still answered from its remaining records.
 
 import type Database from 'better-sqlite3';
 
@@ -28,12 +18,10 @@ export function toMs(v: string | number | null | undefined): number | null {
   return Number.isNaN(ms) ? null : ms;
 }
 
-/** `2026-10-19 09:23:07 UTC`. */
 export function utc(ms: number): string {
   return `${new Date(ms).toISOString().slice(0, 19).replace('T', ' ')} UTC`;
 }
 
-/** The SQL expression that reads a time column as epoch ms. */
 export function msExpr(column: string, stored: 'ms' | 'text'): string {
   return stored === 'ms' ? column : `(CAST(strftime('%s', ${column}) AS INTEGER) * 1000)`;
 }
@@ -44,7 +32,6 @@ export const short = (id: string | null | undefined): string => (id ? String(id)
 
 export interface AgentRef { id: string; name: string | null; label: string; deleted: boolean }
 
-/** id → name of every agent that still exists. */
 export function agentNames(db: Database.Database): Map<string, string> {
   return new Map((db.prepare('SELECT id, name FROM agents').all() as Array<{ id: string; name: string }>).map((r) => [r.id, r.name]));
 }
@@ -69,9 +56,8 @@ export interface Window { from: number | null; to: number | null; note: string }
 interface TurnSpan { start: number; end: number | null }
 
 /**
- * When a turn ended: its own end; or, for a turn that never closed (a crash, a restart — 85 of
- * them on the dev box), its last record; or the agent's next turn's start; or null, meaning it
- * is still running. A turn left open months ago must not stretch every window to now.
+ * When a turn ended: its own end; else (a crash or restart) its last record; else the agent's next turn's start;
+ * else null (still running). A turn left open long ago must not stretch every window to now.
  */
 function endOf(db: Database.Database, agentId: string, turn: number, start: number, ended: string | null): number | null {
   const own = toMs(ended);
@@ -84,7 +70,6 @@ function endOf(db: Database.Database, agentId: string, turn: number, start: numb
   return next ?? null;
 }
 
-/** The span of one turn, or null when no such turn row exists. */
 function turnSpan(db: Database.Database, agentId: string, turn: number): TurnSpan | null {
   const r = db.prepare('SELECT started_at, ended_at FROM turns WHERE agent_id = ? AND turn_number = ?').get(agentId, turn) as
     { started_at: string; ended_at: string | null } | undefined;
@@ -107,7 +92,6 @@ function bracket(db: Database.Database, at: number, agentId: string | null): Tur
   return { start: started ?? at, end };
 }
 
-/** A message by id (or the first characters of one), with its agent, turn and time. */
 export function findMessage(db: Database.Database, id: string): { id: string; agent_id: string; turn_number: number | null; created_at: number; seq: number } | null {
   const row = db.prepare(`SELECT id, agent_id, turn_number, created_at, seq FROM messages WHERE id = ? OR (length(?) >= ${SHORT_ID_CHARS} AND id LIKE ? || '%') ORDER BY seq LIMIT 1`)
     .get(id, id, id) as { id: string; agent_id: string; turn_number: number | null; created_at: number; seq: number } | undefined;

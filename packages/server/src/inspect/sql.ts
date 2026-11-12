@@ -1,22 +1,7 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// v3.5 inspect B2 — A READ-ONLY QUERY.
-//
-// Three refusals stand between a statement and the data, and the last is SQLite's own:
-//   1. only a statement that starts with SELECT, WITH or EXPLAIN is accepted, and one that
-//      SQLite compiles as anything but a read (a WITH … DELETE) is refused before it runs;
-//   2. `refuseDeniedSql` refuses a statement that reaches a credential table or reads a
-//      credential column, by what the compiled program reads;
-//   3. the connection is `readonly` with `query_only` set, so a write cannot happen at all.
-// Every cell then passes the redaction. The result is an aligned table with its row count at
-// both ends, whole: a result too long for one view is kept whole by the tool layer (t200), which
-// shows its head and tail and the `tool_result_read` call that reads the rest.
-//
-// NOTHING IS HELD. The query runs in its own child process on its own read-only connection
-// (`sql-child.ts`), so the engine's thread keeps serving while it runs, and in WAL mode the
-// engine's writer appends beside the reader's snapshot. The agent's stop KILLS a runaway query,
-// which is what releases its CPU and its snapshot (a thread could not be stopped inside SQLite).
-// Every cell is redacted under the SOURCE column it was read from, never only its alias.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// A read-only query, refused three ways: only SELECT, WITH, VALUES or an EXPLAIN SQLite compiles as a read;
+// `refuseDeniedSql` for credential tables and columns; the connection is readonly with query_only set.
+// It runs in its own child process (sql-child.ts), so the engine's thread is never held and the agent's stop
+// can kill a runaway query (a thread could not be stopped inside SQLite). Cells are redacted by SOURCE column.
 
 import type Database from 'better-sqlite3';
 import { getReadOnlyDb } from '../db/connection.js';
@@ -32,11 +17,7 @@ function show(v: unknown): string {
   return String(v).replace(/\r?\n/g, '\\n');
 }
 
-/**
- * Run one read and render its rows. The checks and the compile run here, on the same database
- * the query runs on; the query itself runs in a child process (`sql-child.ts`) inside the
- * current dojo_inspect call, so the engine's thread is never held and the agent's stop kills it.
- */
+/** Run one read and render its rows: checks run here, the query itself in a child process (`sql-child.ts`). */
 export async function sql(args: { query: string }): Promise<string> {
   const db: Database.Database = getReadOnlyDb();
   const query = (args.query ?? '').trim().replace(/;\s*$/, '');

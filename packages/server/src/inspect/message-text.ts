@@ -1,9 +1,5 @@
-// v3.5 inspect B1 — a stored message's content as a person would read it.
-//
-// A `messages.content` cell is either plain text or the provider-shaped JSON block array the
-// loop stores for tool work. A tool call reads as "calls <tool> <input>", a tool result as
-// "<tool> (ok|error): <text>" — the tool's name comes from the call that the result answers,
-// which the caller collects from the rows it has (`toolNamesIn`).
+// A stored message's content as a person would read it: plain text, or the provider-shaped JSON block array
+// stored for tool work (a result's tool name comes from the call it answers, collected by `toolNamesIn`).
 
 interface Block { type?: string; text?: unknown; id?: unknown; name?: unknown; input?: unknown; tool_use_id?: unknown; content?: unknown; is_error?: unknown }
 
@@ -45,8 +41,7 @@ export function messageText(content: string, toolNames: Map<string, string> = ne
   }).filter(Boolean).join('\n');
 }
 
-/** The tool name and text of every FAILED tool result in one stored message (K37: the timeline
- *  prints each one's error fingerprint). Empty for plain text and for results that succeeded. */
+/** The tool name and text of every failed tool result in one stored message; empty for plain text and successes. */
 export function failedResults(content: string, toolNames: Map<string, string> = new Map()): Array<{ tool: string; text: string }> {
   return (blocksOf(content) ?? [])
     .filter((b) => b.type === 'tool_result' && b.is_error)

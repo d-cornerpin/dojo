@@ -1,41 +1,13 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// v3.5 inspect (fix round 2) — A QUERY RUNS IN ITS OWN PROCESS, AND THE STOP BUTTON KILLS IT.
-//
-// better-sqlite3 is synchronous. On the engine's thread a long query froze the platform; in a
-// worker THREAD the platform stayed live, but a stop could not end the query: `terminate()`
-// does not interrupt a thread inside SQLite's native loop. Measured by the re-review: a
-// stopped recursive query kept a core at ~100% for seconds, and a stopped cross join kept its
-// read snapshot, so `wal_checkpoint(TRUNCATE)` stayed busy and the WAL grew 20 → 55 MB.
-// better-sqlite3 exposes no `sqlite3_interrupt` and no progress handler; only killing the
-// process frees the loop and the snapshot.
-//
-// So each query runs in a CHILD PROCESS on its own read-only connection, started through the
-// toolbox's one process door (`spawnAuthorized`, the door `shell`/`exec` use). That door ties
-// the child to the agent's stop (`endsWithTheStop`): Stop ends its process group, and the
-// snapshot goes with it. NO DEADLINE, by the owner's law: the stop is the signal. The door needs
-// the call's capability to name the node executable (`process.execPath`), so `dojo_inspect`'s
-// declaration must declare that program (Part C).
-//
-// The child's program is an inline source string (the reason `memory/reader-pool.ts` gives: a
-// file resolves differently under tsx, node and vitest). It applies the read-only door's rules
-// itself, whatever the parent sent: only SELECT/WITH/VALUES (or EXPLAIN of one), a reader SQLite
-// calls read-only, on a `readonly` handle with `query_only` set.
-//
-// t278 — THE QUERY DIES WITH THE PROCESS THAT STARTED IT. Its own process group is what lets the
-// stop end it, and also what kept it alive when the server did not: a server that crashed, was
-// SIGKILLed or restarted mid-query left the query running forever at full CPU, holding its read
-// snapshot, with nobody left who could stop it (seen on a build box: orphans, parent pid 1, at
-// ~40% CPU for half an hour). The signal is the parent's absence itself, not a deadline:
-//   • the parent writes the request as ONE line and keeps the child's stdin OPEN until the child
-//     has closed. The parent holds the only write end, so the kernel closes it the moment the
-//     parent dies, however it dies;
-//   • the query runs on a worker THREAD of the child, so the child's main thread is idle and its
-//     event loop sees that stdin 'end' even while SQLite is inside a native loop (a timer on the
-//     query's own thread could never fire there);
-//   • the main thread then SIGKILLs its own process, which a native loop cannot ignore (a
-//     `process.exit()` would JOIN the busy thread and wait on it).
-// Stop is unchanged: SIGTERM to the group ends the process at once (no handler), then SIGKILL.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// A query runs in its own child process so the agent's stop can kill it: better-sqlite3 is synchronous, and
+// a worker thread cannot be interrupted in SQLite's native loop (terminate() leaves CPU and snapshot held).
+// It starts through the one process door (`spawnAuthorized`), tied to the agent's stop with no deadline; the
+// door needs the call's capability to name `process.execPath`, so definition.ts must declare that program.
+// The program is an inline source string (as `memory/reader-pool.ts` does: a file resolves differently
+// under tsx, node and vitest) and applies the read-only door's rules itself, whatever the parent sent.
+// The query dies with the process that started it: the parent writes the request as ONE line (JSON escapes
+// its newlines) and keeps stdin OPEN, the only write end, so the kernel closes it when the parent dies.
+// The query runs on a worker thread so the main thread stays idle and sees that 'end' even inside a native
+// SQLite loop, then SIGKILLs itself (process.exit() would join it). No SIGTERM handler: the stop ends it.
 
 import { createRequire } from 'node:module';
 import { DENIED_COLUMN_PATTERNS } from './redact.js';
@@ -45,7 +17,6 @@ import { currentCapability } from '../agent/effects/capability.js';
 import { isStopFenced } from '../agent/shared-state.js';
 import { STOPPED_BY_USER } from '../agent/abortable-call.js';
 
-/** One output column: its name as written, and the table column it comes from (null for an expression). */
 export interface OutColumn { name: string; column: string | null; table: string | null }
 export type ReadOutcome = { columns: OutColumn[]; rows: unknown[][] } | { error: string } | { ended: string };
 
@@ -132,10 +103,7 @@ const CHILD_SOURCE = `
   });
 `;
 
-/**
- * Run one already-checked read in a child process, inside the current dojo_inspect call.
- * `onSpawn` hands the child's pid to a test; production passes nothing.
- */
+/** Run one already-checked read in a child process; `onSpawn` hands its pid to a test. */
 export function readInChild(sql: string, onSpawn?: (pid: number) => void): Promise<ReadOutcome> {
   const agentId = currentCapability()?.agentId;
   let child: ReturnType<typeof spawnAuthorized>;
@@ -151,7 +119,7 @@ export function readInChild(sql: string, onSpawn?: (pid: number) => void): Promi
     child.stderr.on('data', (d: Buffer) => err.push(d));
     child.once('error', (e) => { child.stdin.destroy(); resolve({ error: e.message }); });
     child.once('close', (_code, signal) => {
-      child.stdin.destroy(); // held open until now: its end is how the child knows this process is gone (t278)
+      child.stdin.destroy();
       if (signal) {
         resolve({ ended: agentId && isStopFenced(agentId) ? STOPPED_BY_USER : `The query was ended before it finished (${signal}).` });
         return;
@@ -161,7 +129,6 @@ export function readInChild(sql: string, onSpawn?: (pid: number) => void): Promi
       }
     });
     child.stdin.on('error', () => undefined);
-    // ONE line (JSON escapes every newline inside it), and stdin stays open: see t278 above.
     child.stdin.write(`${JSON.stringify({ sql, dbPath: getDbPath(), betterSqlitePath: createRequire(import.meta.url).resolve('better-sqlite3'), credentialKeyPatterns: DENIED_COLUMN_PATTERNS.map((r) => r.source) })}\n`);
   });
 }

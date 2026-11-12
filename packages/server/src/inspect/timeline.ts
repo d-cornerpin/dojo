@@ -1,19 +1,10 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// v3.5 inspect B1 — THE TIMELINE OF ANYTHING.
-//
-// Everything that happened to an agent, a task, a project, a turn, a conversation or a time
-// window, merged from every record into one ordered story (`records.ts` reads the tables;
-// `logs.ts` adds the platform log's warn and error lines of the same scope).
-//
-// SCOPE RULES (the plan's):
-//   task_id     the task's own events, plus everything its assignee did in the turns that
-//               worked it (`claim_turn`, `work/task-turns.ts`; a task from before that record says so), plus every row anywhere that names it (the PM's pokes and checks).
-//   project_id  every descendant task's timeline, interleaved, plus the project's own events.
-//   turn        that agent's turn row and the calls, deliveries and messages of that turn.
-//   conversation, agent  every record of it in the window.
-// No time and no narrower scope means the latest turn (the agent's, or anyone's): the result
-// says so and how to ask for more. Nothing is cut; a long result is kept whole by the tool layer.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// The timeline of anything: every record of an agent, task, project, turn, conversation or time window merged
+// into one ordered story (`records.ts` reads the tables; `logs.ts` adds the log's warn and error lines of the scope).
+// task_id: the task's own events, plus what its assignee did in the turns that worked it (`claim_turn`,
+// `work/task-turns.ts`), plus every row anywhere that names it. project_id: every descendant task's timeline plus
+// the project's own events. turn: that agent's turn row and its calls, deliveries and messages.
+// conversation, agent: every record of it in the window.
+// No time and no narrower scope means the latest turn (the agent's, or anyone's); the result says so.
 
 import type Database from 'better-sqlite3';
 import { getReadOnlyDb } from '../db/connection.js';
@@ -52,8 +43,8 @@ function resolve(db: Database.Database, a: TimelineArgs, names: Map<string, stri
     if (tree.length === 0) return `No task or project with id ${root}. Find ids with sql, e.g. select id, kind, title, state from work order by opened_at desc.`;
     const found = tree.map((w) => ({ w, ...claimedTurns(db, w.id) }));
     const turnsOf = found.map((f) => ({ agent: f.w.owner, turns: f.turns }));
-    // No silent gaps: a task that was worked before the per-turn record existed shows only its own
-    // events and the calls that name it, and the result says so.
+    // No silent gaps: a task with no per-turn record shows only its own events and the calls that name it,
+    // and the result says so.
     const unrecorded = found.filter((f) => !f.recorded && f.w.kind === 'task');
     const ids = unrecorded.map((f) => short(f.w.id)).join(', ');
     const one = unrecorded.length === 1;
@@ -75,7 +66,6 @@ function resolve(db: Database.Database, a: TimelineArgs, names: Map<string, stri
   return { scope: {}, title: 'the whole platform', agents: [], narrow: false };
 }
 
-/** The ordered story of whatever the arguments name. */
 export function timeline(a: TimelineArgs, db: Database.Database = getReadOnlyDb()): string {
   const names = agentNames(db);
   const r = resolve(db, a, names);

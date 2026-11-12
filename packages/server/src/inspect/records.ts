@@ -1,16 +1,8 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// v3.5 inspect B1 — EVERY RECORD THE PLATFORM KEEPS, AS ONE KIND OF LINE.
-//
-// Six tables say what happened: `work_events` (the tracker's story), `audit_log` (every tool
-// call), `tool_receipts` (what a provider confirmed), `deliveries` (what reached a person),
-// `turns` (each turn's start, end and exit) and `messages`. Each source is read on the
-// read-only connection, filtered by one shared scope, passed through `redactRows`, and rendered
-// to one line naming its table and a short id, so `sql` can follow any line up.
-//
-// A row matches the scope when it matches ANY identity clause given (an agent, an agent's
-// turns, a work id, a conversation) and falls in the time window. No identity clause means
-// every row in the window.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// Every record the platform keeps, as one kind of line: work_events, audit_log, tool_receipts, deliveries, turns
+// and messages are read on the read-only connection, filtered by one shared scope, passed through redactRows, and
+// rendered to one line naming its table and a short id, so `sql` can follow any line up. A row matches the scope
+// when it matches ANY identity clause given (agent, agent's turns, work id, conversation) and falls in the window;
+// no identity clause means every row in the window.
 
 import type Database from 'better-sqlite3';
 import { redactRows } from './redact.js';
@@ -36,7 +28,7 @@ export interface RecordScope {
 
 export interface Rec { at: number; source: Source | 'logs'; text: string }
 
-/** The plan's figure for one timeline line's own text: a line is an index, the row is one `sql` away. */
+/** Max characters of one timeline line's own text: a line is an index, the row is one `sql` away. */
 export const LINE_TEXT_CHARS = 200;
 const clip = (s: unknown): string => {
   const t = String(s ?? '').replace(/\s+/g, ' ').trim();
@@ -65,13 +57,13 @@ const join = (...cs: Clause[]): Clause => {
 
 const turnTag = (r: Row): string => (r.turn_number !== null && r.turn_number !== undefined ? ` · turn ${r.turn_number}` : '');
 const rootTag = (r: Row): string => (r.root_id ? ` · ${r.root_kind ?? 'root'} ${short(String(r.root_id))}` : '');
-/** K37: beside a failed call, the fingerprint the cross-agent tool-error ledger counts it under. The ledger
+/** Beside a failed call, the fingerprint the cross-agent tool-error ledger counts it under. The ledger
  *  fingerprints the error BEFORE the engine appends its remedy and streak notes, so they are taken off here.
- *  An audit line's detail is the error text only where its writer put it there (the thrown-exception writer does). */
+ *  An audit line's detail is the error text only where its writer put it there (thrown exceptions). */
 const fpNote = (fps: Array<[string, string]>): string => fps.map(([tool, text]) => `  [error fingerprint: ${fingerprint(tool, stripEngineNotes(text))}]`).join('');
 const who = (r: Row, names: Map<string, string>): string => `agent ${agentLabel(names, r.agent_id as string)}`;
 
-/** K35: a verdict's note, and what the PM looked at when the note does not already say it (an uphold's does). */
+/** A verdict's note, and what the PM looked at when the note does not already say it (an uphold's does). */
 function verdictSummary(p: Record<string, unknown>): string {
   const said = clip(p.note ?? '');
   const seen = (p.looked_at as { summary?: unknown } | undefined)?.summary;

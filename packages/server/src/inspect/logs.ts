@@ -1,17 +1,7 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// v3.5 inspect B3 — THE PLATFORM LOG, ACROSS ITS ROTATION.
-//
-// The log is JSON lines `{timestamp, level, component, message, agentId?, meta?}`, rotated at
-// ~10 MB into exactly one backup (`log-rotation.ts`). `logger.readLogFiles()` hands both files
-// over, oldest first; this parses them, puts every line in time order (a question about one
-// minute can straddle the rotation), filters, scrubs and prints one line per entry:
-//   [2026-10-19 09:03:00 UTC] warn gmail · label refused · {"status":403}
-//
-// FILTERS. level keeps that level and above; component is exact; agent matches the entry's
-// agent id or the agent's id or name in its text; pattern is matched on the SCRUBBED line, so a
-// search cannot probe a secret by which lines come back; tail keeps the last N that match.
-// The window is the shared one (`scope.ts`); with no window and no filter it is the latest turn.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// The platform log across its rotation: readLogFiles() hands over both files; this parses them, orders every
+// line by time (a question about one minute can straddle the rotation), filters, scrubs, one line per entry.
+// pattern is matched on the SCRUBBED line, so a search cannot probe a secret by which lines come back.
+// The window is scope.ts's; with no window and no filter it is the latest turn.
 
 import type Database from 'better-sqlite3';
 import { getReadOnlyDb } from '../db/connection.js';
@@ -25,9 +15,8 @@ const RANK: Record<string, number> = { debug: 0, info: 1, warn: 2, error: 3 };
 
 interface Entry { at: number; level: string; component: string; agentId: string | null; line: string }
 
-/** Every readable line of the log, oldest first, parsed but NOT yet scrubbed: the filters on
- *  time, level and component run on the parsed fields first, and only the lines that survive
- *  are scrubbed (`scrubbed`), so a view pays for what it returns, not for the whole log. */
+/** Every readable line of the log, oldest first, parsed but NOT yet scrubbed: filters on time, level
+ *  and component run first, so only the survivors are scrubbed (`scrubbed`). */
 function logEntries(): { entries: Entry[]; unreadable: number } {
   const entries: Entry[] = []; let unreadable = 0;
   for (const file of readLogFiles()) {

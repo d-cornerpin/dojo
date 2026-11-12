@@ -1,21 +1,10 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// v3.5 inspect A2 — THE DOJO'S SOURCE, READ FROM GITHUB AT THE COMMIT THIS BOX RUNS.
-//
-// OWNER RULING 2026-10-20: "We don't need the source code on the box. Instead, the tool can
-// point the agent to the repo on GitHub." The repository is public, so a file the agent can
-// name is one unauthenticated raw read away, at the exact commit the running code was built
-// from. Search is GitHub's code search, which needs the owner's GitHub connection; without one
-// the agent is told so and still gets the link and the raw-read form.
-//
-// WHICH COMMIT. The same resolver the boot stamp uses (`boot-stamp.ts`: an explicit override,
-// then the packaged `build-info.json`, then the dev checkout's HEAD), and the version from the
-// tree's one version authority. No second answer to "what code is this".
-//
-// NEVER A THROW, NEVER A WRITE. Every failure (no connection, GitHub down, a refusal, a file
-// not in that commit) is a plain sentence plus the link, so the agent never has to interpret an
-// error. A refusal is GitHub's own words; nothing is recorded on the connection ledger, because
-// dojo_inspect never writes. Every result passes the scrubber and ends with the pointer line.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// The Dojo's source, read from GitHub at the commit this box runs (the repository is public, so a named file is
+// one unauthenticated raw read away). Search is GitHub's code search and needs the owner's GitHub connection;
+// without one the agent is told so and still gets the link and the raw-read form.
+// The commit comes from the same resolver as the boot stamp (`boot-stamp.ts`), the version from the tree's one
+// version authority: no second answer to "what code is this".
+// Never a throw, never a write: every failure is a plain sentence plus the link, a refusal is GitHub's own words,
+// and nothing is recorded on the connection ledger. Every result passes the scrubber and ends with the pointer line.
 
 import { resolveSha } from '../boot-stamp.js';
 import { getCurrentVersion } from '../gateway/routes/update.js';
@@ -92,7 +81,6 @@ async function get(url: string, agentId: string | undefined, headers: Record<str
   }
 }
 
-/** Number lines `from..to` (1-based, inclusive) of `lines`, right-aligned to the widest number. */
 function numbered(lines: string[], from: number, to: number): string {
   const width = String(to).length;
   return lines.slice(from - 1, to).map((l, i) => `${String(from + i).padStart(width)}  ${l}`).join('\n');
@@ -104,7 +92,6 @@ function splitLines(body: string): string[] {
   return lines;
 }
 
-/** One file at the running commit, numbered; the asked range, or the whole file. */
 export async function readSourceFile(path: string, from?: number, to?: number, agentId?: string): Promise<string> {
   const ref = sourceRef();
   const p = repoPath(path);
@@ -124,7 +111,6 @@ export async function readSourceFile(path: string, from?: number, to?: number, a
   return `${p} — ${range}\n\n${numbered(lines, a, b)}\n\n${pointerLine(ref)}`;
 }
 
-/** One searched file at the running commit: its matching lines, numbered, or why there are none. */
 function hitLines(p: string, got: Got, terms: string[]): string {
   if (!got.ok) return `${p}\n  (named by the search; not readable at this commit: ${!got.down && got.status === 404 ? 'the file is not in it' : 'GitHub did not answer'})`;
   const hits = splitLines(redactText(got.body))
@@ -135,9 +121,8 @@ function hitLines(p: string, got: Got, terms: string[]): string {
     : `${p}\n${hits.map(({ l, n }) => `  ${n}: ${l}`).join('\n')}`;
 }
 
-/** t285 R3 — GitHub search qualifiers a model-sent pattern must not carry. The only qualifiers sent
- *  are the ones this code adds (`repo:` and `path:`), so a pattern cannot widen the search to
- *  the owner's other repositories or name private files. */
+/** GitHub search qualifiers a model-sent pattern must not carry. The only qualifiers sent are the ones this code
+ *  adds (`repo:` and `path:`), so a pattern cannot widen the search to other repositories or name private files. */
 const SEARCH_QUALIFIER = /(?:^|\s)-?"?(?:repo|org|user|owner|path|filename|extension|language|lang|in|size|fork|forks|is|symbol|content|enterprise|license|stars|created|pushed|topic|archived|mirror|template|followers|location|sort|order)"?:(?:"[^"]*"|\S*)/gi;
 export function neutraliseQualifiers(pattern: string): string {
   let prev: string; let out = ` ${pattern}`;
@@ -150,11 +135,8 @@ export function neutraliseQualifiers(pattern: string): string {
 /** GitHub's own documented page size ceiling for search results. */
 const SEARCH_PER_PAGE = 100;
 
-/**
- * Search the repository. GitHub's code search indexes the DEFAULT BRANCH, so each file it names
- * is then read at the running commit and the matching lines are shown from THAT copy: the line
- * numbers are the running code's, and a hit that has since moved says so.
- */
+/** Search the repository. GitHub's code search indexes the DEFAULT BRANCH, so each file it names is then read at
+ *  the running commit and the matching lines come from THAT copy: line numbers are the running code's. */
 export async function searchSource(pattern: string, pathPrefix?: string, agentId?: string): Promise<string> {
   const ref = sourceRef();
   const token = getGithubToken();
@@ -197,9 +179,8 @@ export async function searchSource(pattern: string, pathPrefix?: string, agentId
   if (paths.length === 0 && stopped) return `${stopped} Browse the source at ${ref.url}.\n\n${pointerLine(ref)}`;
   if (paths.length === 0) return `No match for "${terms0}"${prefix ? ` under ${prefix}` : ''} in the Dojo's source.\n\n${pointerLine(ref)}`;
   const terms = terms0.toLowerCase().split(/\s+/).filter((t) => t && !t.includes(':'));
-  // One file at a time: no helper in this tree bounds a fan-out, and a broad pattern names up to
-  // a thousand files, which must not become a thousand simultaneous reads. Sequential is the
-  // bound that needs no number, and a stop pressed part-way ends the search there.
+  // One file at a time: a broad pattern names up to a thousand files, which must not become a thousand
+  // simultaneous reads; a stop pressed part-way ends the search there.
   const files: string[] = [];
   for (const p of new Set(paths)) {
     const got = await get(rawUrl(ref, p), agentId);

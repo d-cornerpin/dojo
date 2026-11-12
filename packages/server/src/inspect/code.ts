@@ -1,11 +1,4 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// v3.5 inspect B4 — THE CODE VIEWS: code_search and code_read.
-//
-// Thin on purpose: the reading, the search, the failure sentences and the pointer line are
-// `source-remote.ts`'s (A2), at the commit this box runs. These two check the arguments a
-// model hands over and answer a bad one with a plain sentence before any call is made. The
-// agent id the dispatcher passes puts every GitHub call under that agent's stop button.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// Argument checks only; reading and search are source-remote.ts's, under the calling agent's stop.
 
 import { pointerLine, readSourceFile, searchSource } from './source-remote.js';
 
@@ -18,7 +11,6 @@ export async function codeSearch(args: { pattern: string; path?: string }, agent
   return searchSource(pattern, args.path?.trim() || undefined, agentId);
 }
 
-/** Read one file of the Dojo's source, whole or by line range, numbered. */
 export async function codeRead(args: { path: string; from?: number; to?: number }, agentId?: string): Promise<string> {
   if (!isLine(args.from) || !isLine(args.to)) return `from and to are line numbers, starting at 1.\n\n${pointerLine()}`;
   if (args.from !== undefined && args.to !== undefined && args.from > args.to) {

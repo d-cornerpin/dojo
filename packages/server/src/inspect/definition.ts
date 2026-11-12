@@ -1,21 +1,10 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// v3.5 inspect C1 — THE ONE DEFINITION ON THE WIRE: dojo_inspect.
-//
-// One schema for eight views (the house style that collapsed 17 tracker tools into two verbs:
-// tool definitions are about a third of every prompt's tokens). The long form, every view and
-// every argument with examples, lives in `tools/docs/dojo_inspect.md` behind load_tool_docs.
-//
-// A LEAF: types only. `definitions.ts` spreads this into the platform's list and must not pull
-// the views' import graph (the sql child reaches the process door, which reaches the registry).
-//
-// NO `maxResultTokens`, deliberately: a view returns its whole answer and the tool layer keeps a
-// long one whole and shows its head and tail with the `tool_result_read` call (t200). A cap here
-// would cut a timeline or a query result, which is the defect t200 removed.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// Leaf module, types only: definitions.ts spreads it and must not pull in the views' import graph.
+// The sql child reaches the process door, which reaches the registry.
+// No maxResultTokens: a view returns its whole answer and the tool layer keeps a long one whole
+// (head and tail plus the tool_result_read call); a cap here would cut a timeline or a query result.
 
 import type { ToolDefinition } from '../agent/tools/types.js';
 
-/** The eight views, in the order the description names them. */
 export const INSPECT_VIEWS = ['timeline', 'conversation', 'logs', 'state', 'schema', 'sql', 'code_search', 'code_read'] as const;
 export type InspectView = (typeof INSPECT_VIEWS)[number];
 
@@ -25,10 +14,8 @@ const num = (description: string) => ({ type: 'number', description });
 export const dojoInspectDefinition: ToolDefinition = {
   name: 'dojo_inspect',
   description: "Look at anything that happened in your own Dojo, read-only. what=timeline (the story of an agent, task, project, turn or time window, every record merged in order), conversation (any agent's messages), logs (the platform log), state (the configuration and health page), schema (every table and column), sql (a read-only query), code_search / code_read (the platform's own source and docs). Use this before any shell command about the Dojo; call load_tool_docs('dojo_inspect') for every argument.",
-  // The sql view runs each query in a child process on a read-only connection, through the
-  // process door, so the agent's stop ends a runaway query (`inspect/sql-child.ts`). That door
-  // matches the program the call's capability names, exactly: `process.execPath`, absolute.
-  // `scopes.ts` CARRIED_PROGRAMS carries it with its reason; one call site spawns it.
+  // The sql view runs each query in a child process (sql-child.ts) so the agent's stop ends a runaway query; the
+  // process door matches the capability's program exactly: `process.execPath`, absolute. One call site spawns it.
   effects: [
     { kind: 'proc', from: 'derived:node, running one read-only query of the sql view in its own process', scope: { at: 'program', program: process.execPath } },
   ],

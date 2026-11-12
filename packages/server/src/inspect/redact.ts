@@ -1,26 +1,10 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// v3.5 inspect A1 — THE REDACTION EVERY dojo_inspect VIEW PASSES THROUGH.
-//
-// The main agent may see everything about its platform except a credential. Three doors:
-//
-//   refuseDeniedSql  a statement that reaches a credential table, or reads a credential column
-//                    of any table, is refused with a sentence naming it. The tables are found
-//                    lexically (no schema needed). The columns are found in what SQLite's own
-//                    compiled program READS (`EXPLAIN`), so an alias, a star, a UNION that
-//                    renames every column, or a WHERE that probes a value through an index
-//                    cannot carry a credential out under another name.
-//   redactRows       a credential column is blanked, then every string cell is scrubbed.
-//   redactText       for log lines and code: token-shaped strings (the one shape list,
-//                    `techniques/scrub.ts`) and every value the named agents have handled
-//                    (`redactHandedCredentials`).
-//
-// WHY A SHAPE SCRUB HERE when the persist side deliberately keys on declared values only: the
-// persist side must not rewrite bytes the agent still needs, so it may not guess. A read-only
-// view rewrites nothing that is stored, so over-redaction costs a blank and cannot leak.
-//
-// A count, a rate or a timestamp is never a credential, so a column whose NAME matches a
-// pattern but which holds a number, or ends in `_at`, is not blanked (`token_count` stays).
-// ════════════════════════════════════════════════════════════════════════════════════════
+// The redaction every dojo_inspect view passes through: everything but a credential may be seen.
+// refuseDeniedSql refuses a statement that reaches a credential table (found lexically) or reads a credential
+// column (found in what SQLite's compiled program READS, so an alias, star or renaming UNION cannot hide it).
+// redactRows and redactCell blank a credential column, then scrub every string cell. redactText scrubs log
+// lines and code: token shapes (techniques/scrub.ts) plus the values the named agents handled.
+// A shape scrub is safe here, unlike on the persist side: nothing stored is rewritten, so over-redaction only
+// costs a blank. A count, rate or timestamp is never a credential: numeric columns and `_at` are not blanked.
 
 import type Database from 'better-sqlite3';
 import { isReadStatement, stripExplain } from '../db/read-only-door.js';
@@ -32,8 +16,8 @@ export const DENIED_COLUMN_PATTERNS: readonly RegExp[] = [/token/i, /secret/i, /
 
 const NUMERIC_TYPE = /INT|REAL|FLOA|DOUB|NUM|DEC|BOOL/i;
 
-/** SQLite's own statistics tables. After an ANALYZE, `sqlite_stat4.sample` holds sampled index
- *  keys in cleartext — the primary key of `destructive_approvals` (a token) among them. */
+/** SQLite's own statistics tables: after ANALYZE, `sqlite_stat4.sample` holds sampled index keys in
+ *  cleartext (a destructive_approvals token among them). */
 const STAT_TABLE = /^sqlite_stat/;
 const isDeniedTable = (t: string): boolean => DENIED_TABLES.includes(t) || STAT_TABLE.test(t);
 
@@ -41,31 +25,26 @@ const isDeniedTable = (t: string): boolean => DENIED_TABLES.includes(t) || STAT_
  *  are asked about is not "reached". Their quoted argument is set aside before the name scan. */
 const SCHEMA_PRAGMA = /\bpragma_(table_info|table_xinfo|index_list|index_info|index_xinfo|foreign_key_list)\s*\(\s*'(?:[^']|'')*'\s*\)/gi;
 
-/** t285 F1: the child shows `config` through a TEMP VIEW of the same name whose credential values
- *  are already blanked. A schema-qualified name (`main.config`, `"main"."config"`) would skip it. */
-// Re-review 4: only a SCHEMA name qualifies a table. ATTACH never runs on either read path (the
-// read-only door and the shell door both refuse it), so the schemas are `main` and `temp`; an alias
-// column such as `a.config` (a column named config of the table aliased `a`) is not the config table.
+/** The child shows `config` through a same-named TEMP TABLE copy with credential values blanked; a
+ *  schema-qualified name (`main.config`) would skip it. Only a schema name qualifies (ATTACH never runs on
+ *  either read path, so the schemas are `main` and `temp`): `a.config` is a column of an aliased table. */
 const SCHEMA_QUALIFIED_CONFIG = /(?:"(?:main|temp)"|\[(?:main|temp)\]|`(?:main|temp)`|(?<![\w$])(?:main|temp))\s*\.\s*(?:"config"|\[config\]|`config`|config\b)/i;
 const CONFIG_QUALIFIED = 'Refused: name the config table without a schema (from config, not main.config).';
 const stripLiterals = (sql: string): string => sql.replace(/'(?:[^']|'')*'/g, "''").replace(/--[^\n]*/g, ' ').replace(/\/\*[\s\S]*?\*\//g, ' ');
 
-/** A column name that says credential and is not a time. */
 export const columnNamesCredential = (name: string): boolean => namesCredential(name);
 function namesCredential(name: string): boolean {
   return !/_at$/i.test(name) && DENIED_COLUMN_PATTERNS.some((r) => r.test(name));
 }
 
-/** A schema column that can hold a credential: its name says so and its type is not a number. */
 export function isDeniedColumn(name: string, declaredType: string): boolean {
   return namesCredential(name) && !NUMERIC_TYPE.test(declaredType);
 }
 
 const BARE_ID = /[A-Za-z_][A-Za-z0-9_$]*/y;
 
-/** The identifiers of a statement, lowercased, comments skipped and every quoting form ("x", [x],
- *  `x`) unwrapped. A single-quoted literal is kept too, whole: SQLite accepts `FROM 'name'` as a
- *  table name, so a literal that IS a denied table's name counts as naming it. */
+/** The identifiers of a statement, lowercased, comments skipped, quoting unwrapped. A single-quoted literal is
+ *  kept whole: SQLite accepts `FROM 'name'` as a table name, so a literal naming a denied table counts. */
 function identifiers(sql: string): string[] {
   const out: string[] = [];
   let i = 0;
@@ -100,7 +79,6 @@ const CONTENT_FREE = new Set(['OpenRead', 'ReopenIdx', 'Rewind', 'Next', 'Prev',
 interface Op { opcode: string; p1: number; p2: number; p3: number }
 interface Tree { table: string; columns: Array<{ name: string; type: string }>; isIndex: boolean }
 
-/** root page → the table or index it holds, with its columns in cursor order. */
 function schemaTrees(db: Database.Database): Map<number, Tree> {
   const trees = new Map<number, Tree>();
   const objects = db.prepare(
@@ -118,7 +96,6 @@ function schemaTrees(db: Database.Database): Map<number, Tree> {
   return trees;
 }
 
-/** `table.column` pairs this statement's compiled program reads, plus every table it opens. */
 function reads(sql: string, db: Database.Database): { tables: Set<string>; columns: Set<string> } {
   const tables = new Set<string>(); const columns = new Set<string>();
   const program = db.prepare(`EXPLAIN ${sql}`).all() as Op[];
@@ -145,13 +122,9 @@ function reads(sql: string, db: Database.Database): { tables: Set<string>; colum
   return { tables, columns };
 }
 
-/**
- * The sentence that refuses this statement, or null when it reaches no credential. With a
- * connection, the compiled program is checked as well. An EXPLAIN is checked as the statement
- * it explains (only a read may be explained); nothing else about a statement's words skips the
- * check. A statement SQLite cannot compile returns null here and fails with SQLite's own error
- * where it runs; one it compiles but this check cannot read is refused.
- */
+/** The sentence refusing this statement, or null when it reaches no credential. An EXPLAIN is checked as the
+ *  statement it explains. A statement SQLite cannot compile returns null (SQLite fails it where it runs); one it
+ *  compiles but this check cannot read is refused. */
 export function refuseDeniedSql(sql: string, db?: Database.Database): string | null {
   const ids = new Set(identifiers(sql.replace(SCHEMA_PRAGMA, 'pragma_$1(NULL)')));
   if (SCHEMA_QUALIFIED_CONFIG.test(stripLiterals(sql))) return CONFIG_QUALIFIED;
@@ -178,7 +151,6 @@ function tableRefusal(table: string): string {
   return `Refused: the statement reaches ${table}, which holds credentials (or the owner's private memory) and is not readable through dojo_inspect.`;
 }
 
-/** The scrubber, for log lines, code and any other text: token shapes, then handed values. */
 export function redactText(s: string, agentIds: readonly string[] = []): string {
   if (!s) return s;
   let out = s;
@@ -196,7 +168,6 @@ export function redactText(s: string, agentIds: readonly string[] = []): string 
   return out;
 }
 
-/** The cells of a row that name the agents it belongs to, for the handed-value scrub. */
 const AGENT_CELLS = ['agent_id', 'assignee_agent', 'source_agent_id', 'created_by_agent_id'];
 
 /** One cell, redacted: blanked when its column names a credential (or it is the value of a
@@ -207,16 +178,12 @@ export function redactCell(column: string, v: unknown, agentIds: readonly string
   return typeof v === 'string' ? redactText(v, agentIds) : v;
 }
 
-/** The agents a row belongs to, read from its agent cells, for the handed-value scrub. */
 export function rowAgents(cells: ReadonlyArray<[string, unknown]>, base: readonly string[] = []): string[] {
   return [...base, ...cells.filter(([k, v]) => AGENT_CELLS.includes(k) && typeof v === 'string').map(([, v]) => v as string)];
 }
 
-/** Does a `key` cell name a credential (the config table's shape)? */
 export const keyNamesCredential = (key: unknown): boolean => typeof key === 'string' && namesCredential(key);
 
-/** Blank credential columns (and the value of a key/value row whose key names one), then
- *  scrub every string cell. Returns new rows; the input is not changed. */
 export function redactRows<T extends Record<string, unknown>>(rows: T[], agentIds: readonly string[] = []): T[] {
   return rows.map((row) => {
     const cells = Object.entries(row);

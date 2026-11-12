@@ -1,15 +1,6 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// v3.5 inspect C1 — THE DISPATCHER: `what` → one view, with that view's own arguments.
-//
-// Each view is a plain function with its own tests (Parts A and B); this module only routes.
-// Three rules it carries:
-//   • `sql` is AWAITED: the query runs in a child process inside this call, under its capability
-//     and the agent's stop (`sql-child.ts`).
-//   • the code views get the CALLING agent's id, which puts every GitHub call under that agent's
-//     stop button (`source-remote.ts`).
-//   • a number the model sent as text ("12") is a number; anything else is left out, so the view
-//     answers as if the argument was not given.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// Routes `what` to one view, each a plain function. `sql` is awaited (its child process runs under the
+// agent's stop); the code views get the calling agent's id so their GitHub calls fall under that stop too.
+// A number sent as text ("12") is a number; any other non-number is left out, as if not given.
 
 import { coerceNumberArg } from '../agent/tools/pagination.js';
 import { INSPECT_VIEWS } from './definition.js';
