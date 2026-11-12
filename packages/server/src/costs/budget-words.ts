@@ -1,19 +1,10 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// THE WORDS OF A BUDGET ALERT (t138, t167). Split from budget.ts, which decides WHEN to tell;
-// this decides WHAT the owner reads.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// The words of a budget alert: budget.ts decides when to tell, this decides what the owner reads.
 
 import { getDb } from '../db/connection.js';
 import { windowOf } from './budget-cards.js';
 
-/** The words the owner reads. Budget alerts are one of the two classes the platform may send
- *  him directly (OR-V333-SET (3)), so they say what crossed, by how much, over what window.
- *
- *  THE FIGURES ARE THE REAL ONES (t167). The words come from `currentSpend / limitUsd`, never from
- *  the threshold's label: the thresholds stop at 90%, so a limit set under what was already spent
- *  (200%) used to be texted as "90% ... ($33.08 of $16.54)". Under the limit the words name the true
- *  share (rounded down, so "reached" is never said early); at or over it they say plainly that the
- *  limit is reached, by how much, and what happens now. */
+/** Says what crossed, by how much and over what window, from the real spend and limit, not a threshold label.
+ *  Under the limit it names the true share rounded down (never "reached" early); at or over, it says reached. */
 export function ownerWords(b: { scope: string; period: string }, currentSpend: number, limitUsd: number): string {
   const spent = `$${currentSpend.toFixed(2)}`;
   const line = `$${limitUsd.toFixed(2)}`;

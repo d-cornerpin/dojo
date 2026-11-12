@@ -1,14 +1,11 @@
-// ════════════════════════════════════════════════════════════════════════════
-// WHAT HAS BEEN SPENT, AND WHICH LIMIT IT IS OVER (t268 fix round 4, N-E: moved out of `costs/tracker.ts` and
-// `costs/budget.ts` unchanged). A leaf — it reads the cost ledger and the budget rows and sends nothing — so the
-// router's standing filters (`router/standing-filters.ts`) can judge the budget from below the memory layer:
-// `costs/budget.ts` reaches the iMessage bridge and, through it, the agent runtime.
-// ════════════════════════════════════════════════════════════════════════════
+// What has been spent, and which limit it is over. A leaf: it reads the cost ledger and the budget rows and
+// sends nothing, so router/standing-filters.ts can judge the budget without reaching the iMessage bridge
+// (costs/budget.ts does).
 
 import { getDb } from '../db/connection.js';
 import { windowOf } from './budget-cards.js';
 
-// ── Daily Spend (cached for 5 seconds to avoid redundant SUM queries) ──
+// Daily spend, cached for 5 seconds to avoid redundant SUM queries.
 
 let dailySpendCache: { value: number; cachedAt: number } = { value: 0, cachedAt: 0 };
 const DAILY_SPEND_CACHE_MS = 5000;
@@ -35,7 +32,7 @@ export function invalidateDailySpendCache(): void {
   dailySpendCache.cachedAt = 0;
 }
 
-// The budget table's per-agent spend for its period (t138: one reader, one window per period).
+// The budget table's per-agent spend for its period, over the period's one window.
 export function agentPeriodSpend(agentId: string, period: string): number {
   return (getDb().prepare(`
     SELECT COALESCE(SUM(cost_usd), 0) as total FROM cost_records

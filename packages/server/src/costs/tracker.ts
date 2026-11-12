@@ -1,6 +1,4 @@
-// ════════════════════════════════════════
-// Cost Calculation and Recording
-// ════════════════════════════════════════
+// Cost calculation and recording.
 
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
@@ -13,7 +11,6 @@ import { invalidateDailySpendCache } from './spend.js';
 
 const logger = createLogger('costs');
 
-// ── Record Cost ──
 
 export type PricingUnit = 'token' | 'megapixel' | 'second' | 'character' | 'minute' | 'item';
 
@@ -26,81 +23,53 @@ export interface RecordCostParams {
   latencyMs?: number;
   requestType?: string;
   /**
-   * WHAT THIS CALL WAS, on its own axis (migration 181; BACKLOG lines 61 + 36).
-   *
-   * `requestType` above answers three questions in one column and the `??` chain that feeds it
-   * lets the leftmost answer erase the others: a router-tiered agent turn records `light`, and
-   * that it was a TURN is gone. This column carries the purpose the CALL SITE declared,
-   * whatever the router did, so "how big is a real turn on this box" is one predicate
-   * (`call_purpose = 'agent_turn'`) on every row instead of a size heuristic.
-   *
-   * Undefined — an engine dial that declares nothing — stores NULL, and NULL means "this row
-   * did not say" rather than any value. Never derived from `requestType` here: this module is
-   * the WRITER, and a writer that reconstructs a fact the caller withheld is inventing it.
+   * What this call was, on its own axis: the purpose the call site declared, whatever the router did, so
+   * "how big is a real turn" is one predicate (`call_purpose = 'agent_turn'`). Undefined (an engine dial
+   * that declares nothing) stores NULL, meaning "this row did not say". Never derived from `requestType`
+   * here: a writer must not reconstruct a fact the caller withheld.
    */
   callPurpose?: string;
-  // For megapixel-priced image-gen models. The unit count is derived
-  // from (imageWidth * imageHeight) / 1_000_000 so the caller passes the
-  // raw dimensions and we compute MP here.
+  // Megapixel-priced image models: the caller passes raw dimensions and MP = width * height / 1_000_000.
   imageWidth?: number;
   imageHeight?: number;
-  // Generic per-unit count for every other non-token pricing unit:
-  //   second, duration of generated media (video / audio gen)
-  //   character, characters of input text (TTS)
-  //   minute, minutes of input audio (transcription)
-  //   item, flat per-generated-item (a song, an image, a clip)
-  // The model row's pricing_unit field disambiguates what this number
-  // means. If unset, the recorder falls through to token math. For 'item'
-  // a missing count defaults to 1 (one generation call = one item).
+  // Per-unit count for every other non-token unit (second, character, minute, or a flat 'item'); the model
+  // row's pricing_unit says which. If unset the recorder falls through to token math; for 'item' a missing
+  // count is 1.
   units?: number;
-  // Prompt-cache tokens (token-priced calls only). Passed DISJOINT from
-  // inputTokens per C28 P-7: inputTokens is the UNCACHED input; cache reads
-  // bill at 0.1x the input rate, cache creation at 1.25x. Leave undefined
-  // when the provider does not report cache figures (persists as NULL, which
-  // a hit-ratio reader must not treat as a miss).
+  // Prompt-cache tokens (token-priced calls only), DISJOINT from inputTokens (the UNCACHED input): reads
+  // bill at 0.1x the input rate, creation at 1.25x. Undefined (provider reports none) persists as NULL,
+  // which a hit-ratio reader must not treat as a miss.
   cacheReadTokens?: number;
   cacheCreationTokens?: number;
-  /** PHASE-3 T2 Step 3 (research 06 A2): what the estimator said this call's input would
-   *  cost, beside what the provider charged. Undefined where no estimate is computed
-   *  (ollama, agent-sdk) and stored NULL — never 0, which reads as a perfect prediction. */
+  /** What the estimator said this call's input would cost, beside what the provider charged. Undefined where
+   *  no estimate is computed (ollama, agent-sdk), stored NULL and never 0, which would read as a perfect
+   *  prediction. */
   estimatedInputTokens?: number;
   /**
-   * THE DIVISOR THAT REALLY PRODUCED `estimatedInputTokens` (T108, BACKLOG 56).
-   *
-   * Until the estimate began spending the MEASURED divisors, this was always the asserted
-   * constant and the writer supplied it itself. It no longer is: `estimateRequestTokens` divides
-   * each population by its own measured reading, so the single divisor equivalent to the result
-   * is `totalChars / tokens` and only the caller knows it.
-   *
-   * This column's contract is what makes the whole self-calibration loop work —
-   * `chars = estimated_input_tokens * estimator_chars_per_token` must recover THIS request's
-   * character count, because `costs/ledger-calibration.ts` divides that by the billed tokens to
-   * get the row's true ratio. Recording a flat `4` beside an estimate that did not use 4 would
-   * make every future reading a measurement of our own arithmetic error instead of the
-   * provider's tokeniser — a loop feeding on itself. Omitted (the ollama and agent-sdk paths,
-   * which compute no estimate) falls back to the constant, which is correct there because those
-   * paths do not spend a reading either.
+   * The divisor that really produced `estimatedInputTokens`, which only the caller knows
+   * (`estimateRequestTokens` divides each population by its own reading). `estimated_input_tokens *
+   * estimator_chars_per_token` must recover THIS request's character count, because
+   * costs/ledger-calibration.ts divides that by the billed tokens; recording a flat 4 beside an estimate
+   * that did not use it would make every reading measure our own error. Omitted beside an
+   * estimate it falls back to the constant; with no estimate the stored divisor is NULL.
    */
   estimatorCharsPerToken?: number;
   /**
-   * True when `inputTokens` above is the char-derived fallback rather than a count the provider
-   * billed — the one transport branch that has one (`agent/model.ts`'s no-usage path). NOT
-   * stored: it is read once, here, by the prefill speedometer, which must refuse such a row
-   * because a JSON-inflated numerator tips its quotient ABOVE the true rate and the estimator
-   * is taking a MAXIMUM. Cost accounting is unaffected either way — an estimated count has
-   * always billed as if it were real, and this task does not reopen that.
+   * True when `inputTokens` is the char-derived fallback rather than a provider-billed count (the no-usage
+   * path in agent/model.ts). NOT stored: the prefill speedometer reads it to refuse such a row, since an
+   * inflated numerator tips its quotient above the true rate and the estimator takes a maximum. Cost
+   * accounting is unaffected.
    */
   inputTokensEstimated?: boolean;
 }
 
 interface ModelPricing {
   unit: PricingUnit;
-  inputCostPerM: number;     // token mode; a NULL price bills as $0 (D-H)
-  outputCostPerM: number;    // token mode; a NULL price bills as $0 (D-H)
+  inputCostPerM: number;     // token mode; a NULL price bills as $0
+  outputCostPerM: number;    // token mode; a NULL price bills as $0
   costPerUnit: number | null; // any non-token unit; null when unknown or token-priced
-  // True when the rate that applies to this model is NULL in the DB (not an
-  // explicit 0): a token row missing input/output $/M, or a non-token row
-  // missing cost_per_unit. Billed as $0 per D-H; drives the once-per-model warn.
+  // True when the applicable rate is NULL in the DB (not an explicit 0): a token row missing input/output $/M,
+  // or a non-token row missing cost_per_unit. Billed as $0; drives the once-per-model warn.
   priceUnknown: boolean;
   providerType: string;      // parent provider type; 'ollama'/'local' are unpaid
 }
@@ -131,9 +100,7 @@ function getModelPricing(modelId: string): ModelPricing {
       ? rawUnit
       : 'token';
 
-  // Prefer cost_per_unit (post-migration 061). For megapixel rows added
-  // pre-061, cost_per_unit may still be null but cost_per_megapixel
-  // holds the legacy value, keep the fallback during the compat window.
+  // Prefer cost_per_unit; megapixel rows may carry only the legacy cost_per_megapixel (kept as a fallback).
   const costPerUnit =
     typeof row?.cost_per_unit === 'number'
       ? row.cost_per_unit
@@ -141,11 +108,9 @@ function getModelPricing(modelId: string): ModelPricing {
         ? row.cost_per_megapixel
         : null;
 
-  // D-H: NULL means "price unknown", billed as $0 (both directions), NOT the
-  // old Sonnet premium (3/15). Explicit prices pass through unchanged. The
-  // priceUnknown flag preserves the protection the 3/15 default gave: a paid
-  // row with a missing rate is surfaced (per-model UI flag + once-per-model
-  // warn) rather than silently hidden at $0.
+  // NULL means "price unknown" and bills as $0 in both directions; explicit prices pass through.
+  // priceUnknown flags a paid row with a missing rate (per-model UI flag and once-per-model warn) so it is
+  // never silently hidden at $0.
   const inputNull = row?.input_cost_per_m === null || row?.input_cost_per_m === undefined;
   const outputNull = row?.output_cost_per_m === null || row?.output_cost_per_m === undefined;
   const priceUnknown = unit === 'token' ? (inputNull || outputNull) : costPerUnit === null;
@@ -160,12 +125,8 @@ function getModelPricing(modelId: string): ModelPricing {
   };
 }
 
-// Models we've already warned about billing at $0 due to a NULL (unknown)
-// price on a PAID provider. One warn per model per process keeps the
-// condition visible server-side without flooding the log on every call. Per
-// D-H the old 3/15 premium default is gone; the persistent per-model UI flag
-// (priceUnknown) plus this warn are the replacement protection so a
-// misconfigured paid row is never SILENTLY hidden at $0.
+// Models already warned about for billing at $0 on a NULL price from a PAID provider: one warn per model
+// per process keeps it visible server-side without flooding the log.
 const warnedUnknownPriceModels = new Set<string>();
 
 export function recordCost(params: RecordCostParams): void {
@@ -174,12 +135,8 @@ export function recordCost(params: RecordCostParams): void {
   try {
     const pricing = getModelPricing(modelId);
 
-    // Resolve the unit count for this call based on the model's
-    // pricing_unit. For megapixel we compute from the image dimensions
-    // the caller passed; for every other non-token unit we read the
-    // generic `units` param. If anything is missing (no rate, no count)
-    // we fall through to token math so a misconfigured row still
-    // produces a sensible record rather than silently $0.
+    // Resolve the unit count from the model's pricing_unit (megapixel from the image dimensions, the rest
+    // from `units`). A missing rate or count falls through to token math rather than recording a silent $0.
     let unitCount: number | null = null;
     if (pricing.unit === 'megapixel') {
       if (typeof imageWidth === 'number' && imageWidth > 0 && typeof imageHeight === 'number' && imageHeight > 0) {
@@ -190,8 +147,7 @@ export function recordCost(params: RecordCostParams): void {
         unitCount = units;
       }
     } else if (pricing.unit === 'item') {
-      // Flat per-item pricing (per song / image / clip). One generation
-      // call is one item unless the caller passes an explicit count.
+      // Flat per-item pricing: one generation call is one item unless the caller passes a count.
       unitCount = typeof units === 'number' && units > 0 ? units : 1;
     }
 
@@ -201,10 +157,7 @@ export function recordCost(params: RecordCostParams): void {
       costUsd = unitCount * pricing.costPerUnit;
       costMode = pricing.unit;
     } else {
-      // Token math with prompt-cache tiers (C28 P-7). inputTokens is the
-      // UNCACHED input; cache reads bill at 0.1x the input rate and cache
-      // creation at 1.25x. Absent cache fields fall through as zero cost,
-      // leaving the plain input+output math unchanged.
+      // Token math with prompt-cache tiers: reads bill at 0.1x the input rate, creation at 1.25x; absent fields cost zero.
       const inRate = pricing.inputCostPerM / 1_000_000;
       const inputCost = inputTokens * inRate;
       const cacheReadCost = (cacheReadTokens ?? 0) * 0.1 * inRate;
@@ -213,9 +166,8 @@ export function recordCost(params: RecordCostParams): void {
       costUsd = inputCost + cacheReadCost + cacheCreationCost + outputCost;
     }
 
-    // ONE resolution of the divisor for this row, spent twice below (the stored column and the
-    // calibration sample) so the two can never disagree — a row whose stored divisor differs from
-    // the one the reading was taken under is the exact shape guard 2 exists to refuse.
+    // ONE resolution of the divisor for this row, spent twice below (the stored column and the calibration
+    // sample), so the two can never disagree.
     const divisorUsed = estimatedInputTokens === undefined
       ? null
       : (typeof estimatorCharsPerToken === 'number' && Number.isFinite(estimatorCharsPerToken)
@@ -239,49 +191,29 @@ export function recordCost(params: RecordCostParams): void {
       costUsd,
       latencyMs ?? null,
       requestType ?? null,
-      // NULL when the provider did not report (undefined) vs 0 when it
-      // reported zero: keep the distinction so the reader does not count a
-      // non-reporting provider as a cache miss.
       cacheReadTokens ?? null,
       cacheCreationTokens ?? null,
-      // P6b: joins this spend to the router decision that produced it
-      // (router_log.request_id). NULL for out-of-turn calls by design.
+      // Joins this spend to the router decision (router_log.request_id); NULL for out-of-turn calls by design.
       turnContext(agentId)?.modelRequestId ?? null,
-      // Estimate and divisor travel together: 4-chars/token and 3.5-chars/token rows are
-      // different measurements and a trend that mixes them silently is #14's class. T108 makes
-      // that sentence do MORE work, not less — the divisor is now per-request (the measured
-      // readings, spent per population) rather than one constant, so storing the one that really
-      // produced this estimate is what keeps the pair a self-consistent measurement.
       estimatedInputTokens ?? null,
       divisorUsed,
-      // Migration 181. NULL when the site declared nothing, which is a FACT about the row and
-      // not a missing value: the five deliberately-undeclared engine dials and every row written
-      // before this column existed read the same way, and every reader of it treats NULL as
-      // unknown-and-therefore-conservative.
       callPurpose ?? null,
     );
 
-    // Invalidate daily spend cache so next budget check gets fresh data
+    // Invalidate the daily spend cache so the next budget check gets fresh data.
     invalidateDailySpendCache();
 
-    // SELF-CALIBRATION (owner ruling 2026-09-22: "never ask the user for a number the platform
-    // can observe"). This row is two instrument readings — uncached input over latency bounds
-    // this box's prefill rate from below, and the estimate beside the billed count is the
-    // divisor the estimator SHOULD have used — and this is the one place in the engine holding
-    // every half at the moment it becomes true. A no-op below either sample floor, which is
-    // most rows, and never allowed to fail a recorded cost: accounting owes them nothing.
+    // Self-calibration: this row holds both instrument readings (uncached input over latency bounds the
+    // prefill rate from below; the estimate beside the billed count is the divisor the estimator should
+    // have used). A no-op below either sample floor, and never allowed to fail a recorded cost.
     try {
       recalibrateFromLedgerRow(providerId, { inputTokens, latencyMs, inputTokensEstimated, estimatedInputTokens, cacheReadTokens, cacheCreationTokens, callPurpose, divisorUsed });
     } catch {
       // Best-effort, exactly like the alert check below.
     }
 
-    // D-H visibility: an unknown (NULL) price now bills as $0 rather than the
-    // old Sonnet premium, so a genuinely-paid model whose price lookup failed
-    // would bill silently at $0. Warn once per model per process for a
-    // paid-type provider (ollama/local are legitimately free) so the condition
-    // is visible server-side too. The persistent per-model UI flag carries it
-    // in the dashboard.
+    // An unknown (NULL) price bills as $0, so warn once per model per process for a paid-type provider
+    // (ollama/local are legitimately free); the per-model UI flag carries it in the dashboard.
     const paidProvider = pricing.providerType !== 'ollama' && pricing.providerType !== 'local';
     if (pricing.priceUnknown && paidProvider && !warnedUnknownPriceModels.has(modelId)) {
       warnedUnknownPriceModels.add(modelId);
@@ -314,7 +246,6 @@ export function recordCost(params: RecordCostParams): void {
     try {
       checkAlertsAfterCost(agentId);
     } catch {
-      // Alert check is best-effort
     }
   } catch (err) {
     logger.error('Failed to record cost', {
@@ -325,7 +256,6 @@ export function recordCost(params: RecordCostParams): void {
   }
 }
 
-// ── Cost Summary ──
 
 export interface CostSummary {
   totalSpend: number;
@@ -357,12 +287,10 @@ export function getCostSummary(period: '24h' | '7d' | '30d' | 'all'): CostSummar
   const db = getDb();
   const filter = periodToSql(period);
 
-  // Total spend
   const totalRow = db.prepare(`
     SELECT COALESCE(SUM(cost_usd), 0) as total FROM cost_records cr WHERE 1=1 ${filter.replace(/created_at/g, 'cr.created_at')}
   `).get() as { total: number };
 
-  // Days for average
   let days = periodToDays(period);
   if (period === 'all') {
     const earliest = db.prepare(`
@@ -375,7 +303,6 @@ export function getCostSummary(period: '24h' | '7d' | '30d' | 'all'): CostSummar
     }
   }
 
-  // By model (with name lookup)
   const byModel = db.prepare(`
     SELECT cr.model_id as modelId, COALESCE(m.name, 'Unknown Model (' || substr(cr.model_id, 1, 6) || ')') as modelName,
            COALESCE(SUM(cr.cost_usd), 0) as totalCost, COUNT(*) as requestCount
@@ -385,7 +312,6 @@ export function getCostSummary(period: '24h' | '7d' | '30d' | 'all'): CostSummar
     GROUP BY cr.model_id ORDER BY totalCost DESC
   `).all() as Array<{ modelId: string; modelName: string; totalCost: number; requestCount: number }>;
 
-  // By agent (with name lookup)
   const byAgent = db.prepare(`
     SELECT cr.agent_id as agentId, COALESCE(a.name, 'Deleted Agent (' || substr(cr.agent_id, 1, 6) || ')') as agentName,
            COALESCE(SUM(cr.cost_usd), 0) as totalCost, COUNT(*) as requestCount
@@ -395,11 +321,8 @@ export function getCostSummary(period: '24h' | '7d' | '30d' | 'all'): CostSummar
     GROUP BY cr.agent_id ORDER BY totalCost DESC
   `).all() as Array<{ agentId: string; agentName: string; totalCost: number; requestCount: number }>;
 
-  // By tier, group by the tier the auto-router ACTUALLY chose for each call
-  // (request_type), not a model->tier join. The old join mis-counted badly:
-  // untagged models all fell into 'unknown' (the bulk of records), and a model
-  // assigned to multiple tiers had its cost counted once per tier (identical
-  // phantom totals). request_type is the real per-call routing decision.
+  // By tier: group by the tier the auto-router ACTUALLY chose for each call (request_type), not a
+  // model->tier join, which miscounts untagged models and models assigned to several tiers.
   const byTier = db.prepare(`
     SELECT cr.request_type as tier,
            COALESCE(SUM(cr.cost_usd), 0) as totalCost,
@@ -418,7 +341,6 @@ export function getCostSummary(period: '24h' | '7d' | '30d' | 'all'): CostSummar
   };
 }
 
-// ── Cost Records ──
 
 export interface CostRecord {
   id: string;
@@ -508,7 +430,6 @@ export function getCostRecords(filter?: {
   return { records, total };
 }
 
-// ── Cache Hit Stats (C28 Part 2) ──
 
 export interface CacheProviderStat {
   provider: string;
@@ -517,8 +438,6 @@ export interface CacheProviderStat {
   readTokens: number;     // sum of cache_read_tokens
   creationTokens: number; // sum of cache_creation_tokens
   inputTokens: number;    // sum of uncached input_tokens over reported calls
-  // read / (read + uncached-input) over reported calls; null when no reported
-  // calls (provider does not surface cache figures, e.g. Ollama).
   hitRatio: number | null;
 }
 
@@ -528,11 +447,8 @@ export interface CacheStats {
   overall: { readTokens: number; creationTokens: number; inputTokens: number; hitRatio: number | null };
 }
 
-/**
- * Per-provider prompt-cache stats over the last N cost_records.
- * NULL cache columns (provider did not report) are excluded from the ratio
- * denominator so a non-reporting provider is not counted as a cache miss.
- */
+/** Per-provider prompt-cache stats over the last N cost_records. NULL cache columns (provider did not report)
+ *  are excluded from the ratio denominator so a non-reporting provider is not counted as a cache miss. */
 export function getCacheStats(limit = 200): CacheStats {
   const db = getDb();
   const window = Math.min(Math.max(1, limit), 5000);
@@ -584,5 +500,5 @@ export function getCacheStats(limit = 200): CacheStats {
   };
 }
 
-// ── Daily Spend: `costs/spend.ts` (t268: a leaf, so the router's standing filters can judge the budget) ──
+// Daily spend lives in `costs/spend.ts`, a leaf so the router's standing filters can judge the budget.
 export { getDailySpend, invalidateDailySpendCache } from './spend.js';

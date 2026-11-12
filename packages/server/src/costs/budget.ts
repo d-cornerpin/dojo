@@ -1,11 +1,9 @@
-// ════════════════════════════════════════
-// Budget Enforcement and Alerts
-// ════════════════════════════════════════
+// Budget enforcement and owner alerts.
 
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
-import { getDailySpend, agentPeriodSpend } from './spend.js';   // t268: the spend readers' leaf
+import { getDailySpend, agentPeriodSpend } from './spend.js';   // spend readers live in a leaf module
 export { exceededBudget } from './spend.js';
 import { sendAlert } from '../services/imessage-bridge.js';
 import { windowOf, budgetKey, endBudgetCard, endBudgetCardOnChange, latestToldAt } from './budget-cards.js';
@@ -15,31 +13,14 @@ export { budgetStopToTell } from './budget-cards.js';
 
 const logger = createLogger('budget');
 
-// ── Alert tracking: at most ONE text per threshold per budget window, restart-safe ──
-//
-// FA-PC3: alerts used to reset on every UTC calendar-day boundary via an in-memory date, so
-// at midnight (and on every restart) a still-high rolling spend re-alerted. That fix cleared a
-// threshold's flag when rolling spend fell 2 points below it — a band sized for a dashboard
-// toast. Once budget alerts reached the owner's phone (t138, #8) it was too narrow: a day spent
-// in calls of >=2% of the limit, hovering at a line, re-crossed on every record that aged out
-// of the rolling window — nine texts in nine turns (t138 review I1; witnessed RED).
-//
-// So each `alert_NN_sent` column holds 0 (not told in this window) or the unix second the owner
-// was told. A threshold texts again only when its WINDOW has turned over since then (24 h,
-// 7 d, 30 d — the same window the spend is summed over), or when the owner CHANGES the limit
-// or period (the setters below clear the flags). Small rolling drops never re-arm. The flags
-// live in the budgets row, so a restart never re-alerts.
+// Alerts: at most ONE text per threshold per budget window, restart-safe. Each `alert_NN_sent` column holds 0
+// (not told in this window) or the unix second the owner was told. A threshold texts again only when its window
+// has turned over (24 h, 7 d, 30 d: the window the spend is summed over) or the limit or period is changed (the
+// setters below clear the flags). Small rolling drops never re-arm; the flags live in the budgets row.
 
-// ── One window per budget period ──
-//
-// Every budget is a ROLLING sum, and both readers — the post-cost alert check and the
-// pre-call `checkBudget` — must read the SAME window. They did not: the post-cost check knew
-// only 'daily' and summed ALL TIME for weekly/monthly, while `checkBudget` knew daily and
-// weekly and summed all time for monthly. On a weekly agent budget with older spend, the
-// post-cost check saw a crossing and latched, the next pre-call check saw the week and re-armed
-// it, and every turn alerted again — nine dashboard alerts in three turns at 30% of the week
-// (t138 witness). One reader now, one window per period.
-// The windows, and the budget's owner card, live in ./budget-cards.ts (light: the scheduler tick loads it).
+// One window per budget period: every budget is a rolling sum, and the post-cost alert check and the pre-call
+// `checkBudget` must read the SAME window (`windowOf`). The windows and the budget's owner card live in
+// ./budget-cards.ts (light: the scheduler tick loads it).
 
 
 interface BudgetScope {
@@ -70,8 +51,8 @@ function checkAndSendAlerts(b: BudgetScope, currentSpend: number, limitUsd: numb
   if (nowS - latestToldAt(row) >= windowS) endBudgetCard(b.budgetId);   // the window turned over: that incident is over
 
   for (const { pct, field } of THRESHOLDS) {
-    // At or over the line, and not told within this window -> record when, then tell. Recorded
-    // BEFORE the owner is told, so a crash between the two can never tell him twice.
+    // At or over the line and not told within this window: record when BEFORE telling, so a crash between
+    // the two can never tell the owner twice.
     const toldAt = row[field] ?? 0;
     if (ratio >= pct && (toldAt === 0 || nowS - toldAt >= windowS)) {
       db.prepare(`UPDATE budgets SET ${field} = ?, updated_at = datetime('now') WHERE id = ?`).run(nowS, b.budgetId);
@@ -94,19 +75,17 @@ function checkAndSendAlerts(b: BudgetScope, currentSpend: number, limitUsd: numb
   const words = ownerWords(b, currentSpend, limitUsd);
   ownerConditionCleared(budgetKey(b.budgetId));
   tellOwner(budgetKey(b.budgetId), words);
-  // "The limit is reached" is one fact per budget window, whichever door gets there first: when this text said it, the
-  // honest stop that parks an agent in the same window has nothing to add.
+  // "The limit is reached" is one fact per budget window, whichever door gets there first: when this text said
+  // it, the honest stop that parks an agent in the same window has nothing to add.
   if (currentSpend >= limitUsd) tellLimitReachedWithoutCard(budgetStopKey(b.budgetId), windowOf(b.period).seconds * 1000);
   void sendAlert(words, 'notice', { kind: 'budget' });
 }
 
-// ── Post-Cost Alert Check ──
-// Called AFTER a cost record is inserted to fire alerts immediately when thresholds are crossed
+// Post-cost alert check: called after a cost record is inserted, so alerts fire as soon as a line is crossed.
 
 export function checkAlertsAfterCost(agentId: string): void {
   const db = getDb();
 
-  // Check global daily budget
   const globalBudget = db.prepare(`
     SELECT limit_usd FROM budgets WHERE id = 'global_daily'
   `).get() as { limit_usd: number } | undefined;
@@ -122,7 +101,6 @@ export function checkAlertsAfterCost(agentId: string): void {
     checkAndSendAlerts({ scope: 'global', budgetId: 'global_daily', period: 'daily' }, dailySpend, globalBudget.limit_usd);
   }
 
-  // Check agent-specific budget
   const agentBudget = db.prepare(`
     SELECT limit_usd, period FROM budgets WHERE id = ?
   `).get(`agent_${agentId}`) as { limit_usd: number; period: string } | undefined;
@@ -133,7 +111,6 @@ export function checkAlertsAfterCost(agentId: string): void {
   }
 }
 
-// ── Check Budget ──
 
 export interface BudgetCheckResult {
   allowed: boolean;
@@ -142,32 +119,22 @@ export interface BudgetCheckResult {
   dailySpend?: number;
   dailyLimit?: number;
   freeModelFallback?: FreeModel | null;     // populated when budget exceeded but free models exist: the first
-  /** t149 F6: every free model, in the order they are offered — the wall walks them until one answers. */
+  /** Every free model, in the order they are offered; the wall walks them until one answers. */
   freeModelFallbacks?: FreeModel[];
 }
 
 export interface FreeModel { modelId: string; modelName: string; providerId: string }
 
 /**
- * Find a free model (input AND output cost EXPLICITLY 0) to fall back to when
- * budget is exceeded. Per D-H the price must be a real 0, not NULL: a NULL
- * ("price unknown") row is billed as $0 by the biller, but offering it as the
- * free lifeline would cross the paid boundary without consent when the true
- * rate simply failed to sync. So require `= 0` (NULL fails the comparison and
- * is excluded), NOT COALESCE(...,0)=0.
+ * Find a free model (input AND output cost an explicit 0) to fall back to when the budget is exceeded.
+ * A NULL price ("unknown") is excluded, never COALESCEd to 0: the biller bills it $0, but offering it as the
+ * free lifeline would cross the paid boundary without consent when a true rate merely failed to sync.
  */
 function findFreeModels(): FreeModel[] {
   const db = getDb();
-  // p.id != '__system__': the 'auto' sentinel is a router pointer, not a
-  // callable model; the lifeline must return a genuinely callable $0 model.
-  // Capability filter: media-generation/embedding models can't hold a chat
-  // (empty/unknown capabilities are allowed through, same idiom as the
-  // primary-agent fallback). Per-unit filter: media models list 0/0 TOKEN
-  // prices while their real billing is per-unit (cost_per_unit, plus the
-  // legacy cost_per_megapixel kept from v2.10.4), so the lifeline must be
-  // genuinely $0 on EVERY pricing axis AND able to hold a chat. NULL per-unit
-  // is fine here: that is the normal state for a token-priced chat model,
-  // whose real axis is already required to be an explicit 0 (D-H).
+  // The '__system__' provider is the 'auto' router pointer, not a callable model. Generation and embedding models
+  // can't hold a chat (empty capabilities pass). Media models list 0/0 token prices but bill per unit or
+  // megapixel, so the lifeline must be $0 on every axis (a NULL per-unit price is a chat model's normal state).
   const rows = db.prepare(`
     SELECT m.id, m.name, m.provider_id
     FROM models m
@@ -189,7 +156,6 @@ function findFreeModels(): FreeModel[] {
 export function checkBudget(agentId: string, estimatedCost: number): BudgetCheckResult {
   const db = getDb();
 
-  // Check global daily budget
   const globalBudget = db.prepare(`
     SELECT limit_usd FROM budgets WHERE id = 'global_daily'
   `).get() as { limit_usd: number } | undefined;
@@ -199,7 +165,6 @@ export function checkBudget(agentId: string, estimatedCost: number): BudgetCheck
     checkAndSendAlerts({ scope: 'global', budgetId: 'global_daily', period: 'daily' }, dailySpend, globalBudget.limit_usd);
 
     if (dailySpend + estimatedCost > globalBudget.limit_usd) {
-      // Budget exceeded — check for free model fallback
       const freeModels = findFreeModels();
       return {
         allowed: false,
@@ -213,7 +178,6 @@ export function checkBudget(agentId: string, estimatedCost: number): BudgetCheck
     }
   }
 
-  // Check agent-specific budget
   const agentBudget = db.prepare(`
     SELECT limit_usd, period FROM budgets WHERE id = ?
   `).get(`agent_${agentId}`) as { limit_usd: number; period: string } | undefined;
@@ -234,12 +198,9 @@ export function checkBudget(agentId: string, estimatedCost: number): BudgetCheck
   return { allowed: true };
 }
 
-// ── The limit that is stopping an agent (t148) ──
-//
-// The pure half of `checkBudget`: the same two comparisons, with none of its alerts. An honest
-// stop (agent/v2/honest-stop.ts) asks it twice: "which limit is stopping this agent?" when the
-// turn is stopped, and "does it still?" when a limit is raised or a window turns over, so the
-// lock lifts on the real event and never on a timer.
+// The pure half of `checkBudget` (same two comparisons, no alerts) is `exceededBudget` in ./spend.ts. An honest
+// stop (agent/v2/honest-stop.ts) asks it when a turn is stopped and again when a limit is raised or a window
+// turns over, so the lock lifts on the real event and never on a timer.
 
 export type { ExceededBudget } from './spend.js';
 
@@ -248,7 +209,6 @@ export type { ExceededBudget } from './spend.js';
 export const WALL_ESTIMATE_USD = 0.01;
 
 
-// ── Budget CRUD ──
 
 export interface Budget {
   id: string;

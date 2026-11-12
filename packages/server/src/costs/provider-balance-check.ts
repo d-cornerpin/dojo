@@ -1,27 +1,10 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// THE PROVIDER-BALANCE CHECK — one background check, on the scheduler's clock (t138, #8).
-//
-// Until v3.3.3 the OpenRouter and DeepSeek warning-threshold checks lived INSIDE the two GET
-// routes the Ledger page calls. With the page closed nothing checked; with it open, the alert
-// went out as `'warning'`, which the owner-notice door drops before the phone. The owner asked
-// for the opposite (tracker #8: "The notification needs to be engine generated and sent via
-// imessage"), and ruled that budget alerts are one of the two things the platform may send
-// him directly (OR-V333-SET (3)).
-//
-// So the check lives here, alone. The scheduler's clock kicks it on its 30 s tick; it runs at
-// most once per `BALANCE_CHECK_EVERY_MS`. The Ledger routes read balances through the same
-// readers below and decide nothing. This module is the only writer of the
-// `openrouter_threshold_alerted` / `deepseek_threshold_alerted` latches (pinned by the t138 census).
-//
-// Once per real crossing:
-//   - balance at or below the threshold and not latched → latch, then tell the owner once;
-//   - balance back above the threshold while latched → re-arm silently (a top-up, or the owner
-//     lowered the threshold under the balance);
-//   - the latch is a config row, so a restart never re-alerts;
-//   - a failed provider call changes nothing;
-//   - no provider or no key → nothing is watched, so nothing stays latched: a key added later
-//     on a low account is told once.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// The provider-balance check: one background check, kicked by the scheduler (scheduler/background-checks.ts) and
+// run at most once per `BALANCE_CHECK_EVERY_MS`. The Ledger routes read balances through the readers below and
+// decide nothing. This module is the only writer of the `openrouter_threshold_alerted` and
+// `deepseek_threshold_alerted` latches. Once per real crossing: at or below the threshold and not latched, latch
+// then tell the owner once; back above it while latched, re-arm silently. The latch is a config row, so a restart
+// never re-alerts; a failed provider call changes nothing; no provider or key clears the latch, so a key added
+// later on a low account is told once.
 
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
@@ -31,15 +14,11 @@ import { ownerConditionCleared, tellOwner } from '../healer/owner-notices.js';
 
 const logger = createLogger('provider-balance');
 
-/**
- * How often a provider's balance API is asked. The scheduler ticks every 30 s; asking two
- * provider APIs that often (5,760 calls a day) buys nothing a 10-minute look does not — a
- * balance is drained by paid model calls over hours, and the Ledger page still reads live
- * whenever it is open. Ten minutes is the first tick at or after each mark.
- */
+/** How often a provider's balance API is asked: the first scheduler tick at or after each ten-minute mark.
+ *  A balance drains over hours, and the Ledger page still reads live whenever it is open. */
 export const BALANCE_CHECK_EVERY_MS = 10 * 60_000;
 
-/** The threshold a box gets before the owner sets one — the same $5 the Ledger page shows. */
+/** The threshold a box gets before the owner sets one: the same $5 the Ledger page shows. */
 const DEFAULT_THRESHOLD_USD = 5;
 
 const FETCH_TIMEOUT_MS = 10_000;
@@ -75,11 +54,10 @@ export async function readOpenRouterCredits(credential: string): Promise<Read<Op
 
   const raw = await resp.json() as Record<string, unknown>;
   logger.debug('OpenRouter credits raw response', { raw: JSON.stringify(raw) });
-  // Normalize — the response may be { data: { ... } } or flat, with varying field names.
+  // Normalize: the response may be { data: { ... } } or flat, with varying field names.
   const src = (raw.data ?? raw) as Record<string, unknown>;
-  // A 200 holding no figure at all (empty body, another wrapper, an error sent with status 200)
-  // is not a $0.00 balance — knowing nothing must not latch the threshold alert. The DeepSeek
-  // reader below refuses its no-info case the same way.
+  // A 200 holding no figure at all (empty body, another wrapper, an error sent with status 200) is not a $0.00
+  // balance: knowing nothing must not latch the alert. The DeepSeek reader refuses its no-info case the same way.
   const hasFigure = [src.balance, src.remaining, src.total_credits, src.totalCredits].some((v) => typeof v === 'number');
   if (!hasFigure) return { ok: false, error: 'OpenRouter returned no credit figures' };
   const totalCredits = (src.total_credits ?? src.totalCredits ?? src.limit ?? 0) as number;
@@ -89,8 +67,7 @@ export async function readOpenRouterCredits(credential: string): Promise<Read<Op
   return { ok: true, data: { total_credits: totalCredits, total_usage: totalUsage, balance } };
 }
 
-/** Ask DeepSeek for the account's balance (the USD row, else the first). Throws only if the
- *  request itself fails. */
+/** Ask DeepSeek for the account's balance (the USD row, else the first). Throws only if the request fails. */
 export async function readDeepSeekBalance(credential: string): Promise<Read<DeepSeekBalance>> {
   const resp = await fetch('https://api.deepseek.com/user/balance', {
     headers: { Authorization: `Bearer ${credential}` },
@@ -118,8 +95,8 @@ export async function readDeepSeekBalance(credential: string): Promise<Read<Deep
 }
 
 interface Watched {
-  /** The owner's line (set on the Ledger page) and the once-per-crossing latch; both read in
-   *  `readKeys` below, spelled out in full so the shipped-config-keys census sees the read. */
+  /** The owner's line and the once-per-crossing latch; both are read in `readKeys`, spelled out in full so
+   *  the shipped-config-keys census sees the read. */
   thresholdKey: string;
   latchKey: string;
   label: string;
@@ -158,7 +135,7 @@ function thresholdOf(raw: string | undefined): number | null {
   return Number.isFinite(value) ? value : null;
 }
 
-/** The latch is the crossing told (its card `balance:<latch>` stands while it does); a top-up or a removed key ends both. */
+/** The latch is the crossing told (its card `balance:<latch>` stands while it does); a top-up or no key ends both. */
 function setLatch(latchKey: string, words: string | null): void {
   const db = getDb();
   if (words === null) {
@@ -218,10 +195,8 @@ export async function checkProviderBalances(): Promise<void> {
 let lastStartedAt = Number.NEGATIVE_INFINITY;
 let inFlight: Promise<void> | null = null;
 
-/**
- * The scheduler's entry: run the check if it is due and not already running. Returns the
- * running check (so a caller MAY wait for it), or `null` when it was not due.
- */
+/** The scheduler's entry: run the check if it is due and not already running. Returns the running check
+ *  (a caller MAY wait for it), or `null` when it was not due. */
 export function maybeCheckProviderBalances(now: number = Date.now()): Promise<void> | null {
   if (inFlight) return null;
   if (now - lastStartedAt < BALANCE_CHECK_EVERY_MS) return null;
