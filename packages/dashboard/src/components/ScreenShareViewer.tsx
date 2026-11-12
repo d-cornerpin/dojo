@@ -11,7 +11,7 @@ import { getSavedVncPassword, saveVncPassword, forgetVncPassword } from '../lib/
 //
 // Zoom + pan: noVNC always runs scaleViewport (so it owns the scale and input
 // mapping stays correct). We size the noVNC target to framebuffer × zoom inside
-// our own scroll wrapper — noVNC fits the desktop into that at the zoom scale,
+// our own scroll wrapper; noVNC fits the desktop into that at the zoom scale,
 // and the wrapper scrolls to pan. No fighting noVNC's viewport math.
 
 type ViewerStatus = 'connecting' | 'credential' | 'connected' | 'disconnected' | 'error';

@@ -334,7 +334,7 @@ export const MicrosoftWorkspaceSettings = () => {
                   </div>
                 )}
 
-                {/* Office Document Tools — machine-level install, shown once under the agent kind. */}
+                {/* Office Document Tools: machine-level install, shown once under the agent kind. */}
                 {kind === 'agent' && (
                   <div className="border-t border-ui/[0.06] pt-3">
                     <div className="flex items-center justify-between mb-1">

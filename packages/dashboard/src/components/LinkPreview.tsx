@@ -24,10 +24,8 @@ export const LinkPreview = ({ url }: { url: string }) => {
       return;
     }
 
-    // Through `lib/api`'s door (BACKLOG line 31). This component was the one the
-    // credential-chip clause tripped over: rendering a link mounted it, its bare
-    // `fetch` had no seam, and the suite's tripwire fired. A failed preview still
-    // caches `null` — that is the point of the card, not an error to show.
+    // Goes through `lib/api` (never a bare `fetch`). A failed preview still
+    // caches `null`: that is the point of the card, not an error to show.
     void request<OgData>(`/og-preview?url=${encodeURIComponent(url)}`).then((res) => {
       const ogData = res.ok ? res.data : null;
       previewCache.set(url, ogData);
@@ -36,12 +34,9 @@ export const LinkPreview = ({ url }: { url: string }) => {
     });
   }, [url]);
 
-  // No preview data — don't render anything. The URL is already
-  // rendered inline as a clickable anchor by Markdown.tsx; falling back
-  // to a duplicate <a>{url}</a> here is what produced the "same link
-  // shows up twice in a row" bug (visually: https://x.com/linkhttps://x.com/link).
-  // We only render when we have real preview content (title/desc/image)
-  // that earns its own card.
+  // No preview data renders nothing: Markdown.tsx already shows the URL as an inline
+  // anchor, so a fallback <a>{url}</a> here would print the same link twice in a row.
+  // A card appears only for real preview content (title, description or image).
   if (loading) return null;
   if (!data || (!data.title && !data.description && !data.image)) return null;
 

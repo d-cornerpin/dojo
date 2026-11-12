@@ -4,7 +4,7 @@ import * as api from '../lib/api';
 // Settings → Integrations → Screen Sharing. Disabled by default. Enable detects whether
 // macOS Screen Sharing is already on (and never clobbers it), or runs the dojo-
 // managed setup, which prompts for an admin password ON THE MAC. The dojo stores
-// no password — when connecting, the user enters their Mac login as a second
+// no password; when connecting, the user enters their Mac login as a second
 // factor. Lives next to Remote Access.
 
 export const ScreenShareSettings = () => {

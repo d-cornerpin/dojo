@@ -50,7 +50,7 @@ export const RemoteAccessSettings = () => {
         </div>
       )}
 
-      {/* cloudflared not installed — only claimed when the status actually ARRIVED */}
+      {/* cloudflared not installed; only claimed when the status actually ARRIVED */}
       {status && !status.cloudflaredInstalled && (
         <div className="glass-nested rounded-xl p-3 space-y-2">
           <p className="text-xs text-ui/55">cloudflared is not installed.</p>

@@ -31,7 +31,7 @@ export const MigrationExport = () => {
 
     try {
       // `requestRaw`, not `request`: the body is a ZIP to hand the browser, not an
-      // envelope to parse (BACKLOG line 31).
+      // envelope to parse.
       const sent = await requestRaw('/migration/export', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -79,7 +79,7 @@ export const MigrationExport = () => {
 
       {/* Portaled out of the settings cards: they sit inside a CSS multi-column
           container (.scards), which establishes a stacking context the modal
-          would otherwise be trapped under — landing it behind the Server panel.
+          would otherwise be trapped under, landing it behind the Server panel.
           Target the .dojo3-stage element (not <body>): it escapes .scards while
           staying inside the stage's scope, so the champagne theme overrides
           (.dojo3-stage .fixed.inset-0 .glass-modal-bg) still apply and the modal

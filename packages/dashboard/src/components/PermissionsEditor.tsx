@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import type { PermissionManifest } from '@dojo/shared';
 
 // ════════════════════════════════════════
-// Permissions Editor — Toggle-based UI
+// Permissions Editor: toggle-based UI
 // Maps friendly toggles to PermissionManifest
 // ════════════════════════════════════════
 
@@ -214,16 +214,10 @@ export const PermissionsEditor = ({ permissions, toolsPolicy, shareUserProfile: 
 
   // ── Delegation ──
   //
-  // ⚰ "SEND iMESSAGES" IS DELETED (UX-ACCESS A3). Census §9.1 G1: it wrote
-  // `tools_policy.deny += imessage_send` when off and removed it when on — but
-  // turning it ON GRANTED NOTHING, because the channel door refused every
-  // non-primary agent regardless of any tool policy. It was shown on every
-  // agent's editor and was a no-op on all of them, and the census's own words
-  // are that "the current UI actively misrepresents it". The control that can
-  // actually grant iMessage is the Channels section of the Access panel, which
-  // writes the channel grant the door reads. An agent that already carries the
-  // deny keeps it: the Advanced "Denied Tools (raw)" field is seeded from the
-  // stored policy and still carries it through a save.
+  // There is no "send iMessages" toggle: a tool-policy deny cannot grant it, because the channel door
+  // refuses non-primary agents regardless. Grant it in the Channels section of the Access panel.
+  // An agent that already carries the deny keeps it: the Advanced "Denied Tools (raw)" field is
+  // seeded from the stored policy and carries it through a save.
   const [spawnOn, setSpawnOn] = useState(permissions.can_spawn_agents ?? false);
   const [assignPermsOn, setAssignPermsOn] = useState(permissions.can_assign_permissions ?? false);
   const [shareProfile, setShareProfile] = useState(initialShareProfile ?? false);
@@ -247,7 +241,7 @@ export const PermissionsEditor = ({ permissions, toolsPolicy, shareUserProfile: 
     const exec_allow: string[] = !execOn ? [] : execAll ? ['*'] : execList.split(',').map(s => s.trim()).filter(Boolean);
     const exec_deny: string[] = execDeny.split(',').map(s => s.trim()).filter(Boolean);
 
-    // Network — ON if web search or web browse is on
+    // Network: ON if web search or web browse is on
     const anyWeb = webSearchOn || webBrowseOn;
     const network_domains: string[] | '*' | 'none' = !anyWeb ? 'none' : webDomainsAll ? '*' : webDomainsList.split(',').map(s => s.trim()).filter(Boolean);
 
@@ -272,7 +266,7 @@ export const PermissionsEditor = ({ permissions, toolsPolicy, shareUserProfile: 
       system_control,
     };
 
-    // Tools policy — build deny list from toggles
+    // Tools policy: build deny list from toggles
     const toolsDeny: string[] = [];
     if (!webSearchOn) { toolsDeny.push('web_search', 'web_fetch'); }
     if (!webBrowseOn) { toolsDeny.push('web_browse'); }
@@ -437,11 +431,8 @@ export const DEFAULT_SUBAGENT_PERMISSIONS: Partial<PermissionManifest> = {
   system_control: [],
 };
 
-// The `imessage_send` deny is gone from here for the same reason the toggle is
-// (UX-ACCESS A3): it read as the thing that withheld iMessage from a new
-// sub-agent, and it never was — the channel door refuses an agent that holds no
-// channel grant, and ruling 2's most-restrictive default gives a new agent none.
-// A deny that duplicates a wall is a second authority for one fact.
+// No `imessage_send` deny here: the channel door already refuses an agent that holds no channel
+// grant, and a new agent starts with none. A deny that duplicates a wall is a second authority.
 export const DEFAULT_SUBAGENT_TOOLS_POLICY = {
   allow: [] as string[],
   deny: ['web_browse'] as string[],

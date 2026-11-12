@@ -383,7 +383,7 @@ export const VoiceOpenerModelConfig = () => {
     flash();
   };
 
-  // "Clear" returns to Auto (the Dojo's writer) — the unset default.
+  // "Clear" returns to Auto (the Dojo's writer), the unset default.
   const handleClear = async () => {
     setSaving(true);
     const res = await api.setSetting('voice.opener_model', '');

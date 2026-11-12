@@ -1,6 +1,6 @@
-// ── Settings → The Router tab: the one window every automatic pick runs at (v3.5 N42, GitHub #25).
+// Settings → The Router tab: the one window every automatic pick runs at.
 //
-// The owner's design: ONE slider for the whole router. Its top is the smallest window among the
+// ONE slider for the whole router. Its top is the smallest window among the
 // router's light, standard and heavy models (the server measures it: `router/router-window.ts`), so
 // every model the router picks runs at the same window and a switch between tiers never shrinks what
 // an agent remembers. Its low end is measured too: below it, the named automatic agent's instructions

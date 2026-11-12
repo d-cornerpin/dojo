@@ -27,7 +27,7 @@ export function RightDock({ dock }: { dock: DockSpec }) {
   const [refreshKey, setRefreshKey] = useState(0);
 
   // The canvas is content-aware (renders HTML / Markdown / text / images, with
-  // a download button + auto-refresh) — it owns its own header + body.
+  // a download button + auto-refresh); it owns its own header + body.
   if (dock.kind === 'canvas') {
     return <CanvasView dock={dock} />;
   }
