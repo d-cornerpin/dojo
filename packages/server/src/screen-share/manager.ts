@@ -1,17 +1,8 @@
-// ════════════════════════════════════════
-// Screen Share Manager
-// Detects / enables / disables macOS Screen Sharing (the built-in VNC server)
-// for the remote-screen feature. Disabled by default; the Settings panel drives
-// this. Enabling needs root, so it runs via osascript with admin privileges,
-// which prompts on the Mac itself (the user's one-time approval).
-//
-// The dojo stores NO password. macOS authenticates each connection with the
-// user's own Mac login, which the user types in the viewer (the second factor).
-//
-// No-clobber rule: if Screen Sharing was already on before us, we never turn it
-// off and never change its config. We only manage the service when WE enabled
-// it (screen_share_managed_by_dojo).
-// ════════════════════════════════════════
+// Detects, enables and disables macOS Screen Sharing (the built-in VNC server). Enabling needs root, so it
+// runs via osascript with admin privileges (a prompt on the Mac). No password is stored: macOS
+// authenticates each connection with the user's Mac login.
+// No-clobber: if Screen Sharing was already on, never turn it off or change its config; only manage the
+// service when we enabled it (screen_share_managed_by_dojo).
 
 import net from 'node:net';
 import { execFileSync } from 'node:child_process';
@@ -104,22 +95,15 @@ export function isScreenShareEnabled(): boolean {
   return getFlag('screen_share_enabled');
 }
 
-// ── Saved VNC password (opt-in) ──
-// By default the user types the VNC password every connect (the second factor).
-// They can opt to save it: after a SUCCESSFUL connect, the viewer posts it here
-// and we stash it (AES-256-GCM) in the vault credential store. Future connects
-// auto-fill it. A wrong/stale saved password is forgotten so it can't lock the
-// user out. Stored only on the user's explicit choice; never exported.
+// Opt-in saved VNC password: after a successful connect the viewer posts it and it is kept (AES-256-GCM)
+// in the vault credential store. A wrong or stale saved password is forgotten so it cannot lock the user out.
 
 const VNC_CRED_SERVICE = 'screen_share_vnc';
 
 export function saveVncPassword(password: string): void {
   const value = { password };
   if (getCredentialByService(VNC_CRED_SERVICE, null)) {
-    // T83: `overwrite: true`, declared here rather than exempted in the store. This is the
-    // engine re-saving its OWN private slot after the user typed a password that connected —
-    // the value being replaced is a previous copy of the same thing, there is no third party's
-    // secret at this name, and the user's successful connect is the confirmation.
+    // overwrite: this is the engine re-saving its own private slot after the user's password connected.
     updateCredential(VNC_CRED_SERVICE, value, undefined, null, { overwrite: true });
   } else {
     addCredential(VNC_CRED_SERVICE, value, 'Screen sharing VNC password', null);
@@ -132,25 +116,22 @@ export function getSavedVncPassword(): string | null {
     const pw = cred?.credentials?.password;
     return typeof pw === 'string' && pw.length > 0 ? pw : null;
   } catch {
-    // Undecryptable (e.g. master key rotated) — treat as not saved.
+    // Undecryptable (e.g. master key rotated): treat as not saved.
     return null;
   }
 }
 
 export function clearSavedVncPassword(): void {
   try {
-    // T83 FIX ROUND (review IMPORTANT B-1): `confirm: true` at the site. This is the engine
-    // forgetting its OWN saved VNC password after it failed to authenticate — a stale value
-    // that would otherwise lock the user out. No third party's secret lives at this name.
+    // confirm: the engine forgets its own saved password after it failed to authenticate.
     deleteCredentialByService(VNC_CRED_SERVICE, null, { confirm: true });
   } catch { /* nothing saved */ }
 }
 
 // ── Privileged execution ──
 
-// Run a shell command as root via the native macOS admin prompt (appears on the
-// Mac). Throws on cancel/failure. The command is a fixed path + fixed flags
-// (no interpolated/user data), so there is nothing to escape.
+// Run a shell command as root via the native macOS admin prompt. Throws on cancel/failure. The command is a
+// fixed path plus fixed flags (no interpolated data), so there is nothing to escape.
 function runPrivileged(shellCommand: string): void {
   const appleScript = `do shell script "${shellCommand}" with administrator privileges`;
   execFileSync('osascript', ['-e', appleScript], { timeout: 180_000, encoding: 'utf-8' });
@@ -163,8 +144,7 @@ function friendlyError(err: unknown): string {
   return `Could not change Screen Sharing: ${msg.slice(0, 200)}`;
 }
 
-// Turn on Screen Sharing with access for all local accounts. No VNC password is
-// set — users authenticate with their own Mac login.
+// Turn on Screen Sharing for all local accounts; no VNC password is set.
 function enableCommand(): string {
   return `${KICKSTART} -activate -configure -access -on -allowAccessFor -allUsers -privs -all -restart -agent`;
 }
@@ -175,10 +155,8 @@ function disableCommand(): string {
 
 // ── Actions ──
 
-// Enable the feature. If Screen Sharing is already running we use it and change
-// nothing (managed=false). Otherwise we turn it on (managed=true) via the admin
-// prompt on the Mac. Either way, no password is stored — the user authenticates
-// with their Mac login in the viewer.
+// Enable the feature. If Screen Sharing is already running, use it and change nothing (managed=false);
+// otherwise turn it on (managed=true) via the admin prompt on the Mac.
 export async function enable(): Promise<ActionResult> {
   if (await isScreenSharingRunning()) {
     setFlag('screen_share_managed_by_dojo', false);
