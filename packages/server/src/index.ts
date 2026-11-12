@@ -8,8 +8,6 @@ import { createLogger, setLogBroadcast } from './logger.js';
 import { getDb } from './db/connection.js';
 import { resetWorkingAgentsToIdleAtBoot } from './agent/agent-status.js';
 import { runMigrations } from './db/migrations.js';
-// PHASE-2 T9: `sweepByRowid` and `transition` left this file with the boot staleness sweep,
-// which now lives in `work/work-reaper.ts` beside the other obligation sweeps.
 import { abandonUnservableAsks } from './work/store.js';
 import { reconcileOrphanedClaims } from './work/orphaned-claims.js';
 import { reapToolboxGroupsAtBoot } from './agent/effects/toolbox-ledger.js';
@@ -31,15 +29,10 @@ import { stopBackgroundClocks } from './shutdown-clocks.js';
 const logger = createLogger('main');
 const PORT = parseInt(process.env.DOJO_PORT ?? '3001', 10);
 
-// D-F health-confirm: how long a self-update boot must stay continuously up
-// before we flip its update-state marker to healthy (matches the plan's ~90s).
+// How long a self-update boot must stay continuously up before its update-state marker flips to healthy.
 const HEALTH_CONFIRM_DELAY_MS = 90_000;
 
-// Count applied SQL migrations (the _migrations tracking table). Guarded: on a
-// brand-new box the table may not exist yet, which reads as 0. Used ONLY by the
-// D-F boot sentinel to detect whether a self-update boot changed the schema
-// (owner decision 2026-07-06: if it did, the watchdog escalates instead of
-// trusting a code-only rollback). Reading the count needs no migrations.ts edit.
+// Applied-migration count (`_migrations`, 0 if absent); the boot sentinel uses it to detect a schema change.
 function countAppliedMigrations(): number {
   try {
     const row = getDb().prepare('SELECT COUNT(*) AS c FROM _migrations').get() as { c: number } | undefined;
@@ -49,11 +42,7 @@ function countAppliedMigrations(): number {
   }
 }
 
-// Count the migration SQL files shipped with this build (dist/db/migrations at
-// runtime, src/db/migrations under tsx), resolved the SAME way db/migrations.ts
-// does. Read-only: it only lists the directory to answer "are there unapplied
-// migrations?" without touching the migration runner. Used ONLY by the jump-#1
-// self-update detection below.
+// Count of migration SQL files shipped with this build (same resolution as db/migrations.ts).
 function countAvailableMigrationFiles(): number {
   try {
     const here = path.dirname(fileURLToPath(import.meta.url));
@@ -65,19 +54,9 @@ function countAvailableMigrationFiles(): number {
   }
 }
 
-// D-F health-confirm: when this boot is part of a self-update episode, wait for
-// ~90s of continuous uptime, then re-check the DB is serving (the same
-// db !== 'error' contract /api/health and the watchdog use) and flip the marker
-// to healthy, which clears the episode. If the process crashes before the timer
-// fires, it never confirms and the watchdog's boot-attempt / wall-clock gate
-// takes over. No-op on a normal (non-update) boot.
-//
-// 'failed-permanently' is also armed HERE (not just the in-flight phases): a
-// migration-carrying boot that legitimately finishes AFTER the watchdog's 15-min
-// window has, by listen time, already been escalated to 'failed-permanently'. Its
-// eventual healthy confirmation is exactly the signal confirmHealthy uses to clear
-// that FALSE terminal state (only the 'migration' escalation reason recovers; see
-// confirmHealthy). Without arming this phase the recovery would be unreachable.
+// For a self-update boot, re-check the DB after ~90s of uptime and mark the episode healthy; a crash
+// before then leaves it to the watchdog. 'failed-permanently' is armed too: a slow migration boot
+// confirmed healthy here is what clears that false terminal state (see confirmHealthy).
 function scheduleUpdateHealthConfirm(): void {
   const marker = readMarker();
   if (!marker) return;
@@ -85,7 +64,6 @@ function scheduleUpdateHealthConfirm(): void {
   if (marker.confirmedHealthyAt) return;
   setTimeout(() => {
     try {
-      // Same contract the watchdog trusts: a serving DB (SELECT 1 does not throw).
       getDb().prepare('SELECT 1').get();
     } catch (err) {
       logger.warn('D-F health-confirm: DB self-check failed, leaving the update episode open for the watchdog', {
@@ -99,20 +77,13 @@ function scheduleUpdateHealthConfirm(): void {
   }, HEALTH_CONFIRM_DELAY_MS);
 }
 
-// Surface uncaught crashes to the structured log instead of silently
-// exiting. Without this, a throw inside a third-party WebSocket event
-// listener (Hume SDK, the gateway WS) takes down the process leaving
-// only an opaque stderr dump. We still exit so dev-mode (tsx watch)
-// restarts cleanly, just leave a breadcrumb first.
+// Log uncaught crashes before exiting; still exit so dev-mode (tsx watch) restarts cleanly.
 process.on('uncaughtException', (err) => {
   logger.error('Uncaught exception, process will exit', {
     error: err instanceof Error ? err.message : String(err),
     stack: err instanceof Error ? err.stack : undefined,
   });
-  // Best-effort: don't orphan cloudflared on the way out. This crash path
-  // skips the graceful SIGTERM shutdown (which stops the tunnel), so kill the
-  // child synchronously here. The pidfile reclaim on next boot is the primary
-  // safety net; this must never throw.
+  // Best-effort: this path skips the graceful tunnel shutdown, so kill it here. Must never throw.
   try { killTunnelSync(); } catch { /* never throw from the crash handler */ }
   setTimeout(() => process.exit(1), 100);
 });
@@ -146,7 +117,6 @@ function ensurePrimaryAgent(): void {
   const primaryId = getPrimaryAgentId();
   const primaryName = getPrimaryAgentName();
 
-  // Skip if setup hasn't been completed, OOBE will provision the agent
   const setupDone = db.prepare("SELECT value FROM config WHERE key = 'setup_completed'").get() as { value: string } | undefined;
   if (!setupDone || setupDone.value !== 'true') {
     logger.info('Setup not completed, skipping primary agent creation (OOBE will handle it)');
@@ -159,16 +129,9 @@ function ensurePrimaryAgent(): void {
     return;
   }
 
-  // FA-PC6: prefer the 'auto' sentinel so the smart router picks a working,
-  // chat-capable model at call time (the same recovery the runtime uses when it
-  // finds a broken agent). The old fallback took the first enabled model by
-  // display-name alphabetical order with NO capability filter, so an
-  // embedding/media-generation model (which bills $0 and sorts early) could win
-  // and leave the primary with a dead brain. Only if 'auto' is missing or
-  // disabled do we pin a concrete model, and then we require a chat-capable one:
-  // capabilities NOT LIKE generation/embedding, excluding the '__system__'
-  // sentinel provider, ordered by display name ASC (unchanged tiebreak). This
-  // mirrors the text-capable filter used by the healer and summary writer.
+  // Prefer 'auto' so the router picks a working chat-capable model at call time; else pin the first enabled
+  // chat-capable one (not generation/embedding, not '__system__') by display name; mirrors the text-capable
+  // filters in healer/healer-agent.ts and memory/writer.ts.
   const autoModel = db.prepare(
     "SELECT id FROM models WHERE id = 'auto' AND is_enabled = 1"
   ).get() as { id: string } | undefined;
@@ -186,7 +149,6 @@ function ensurePrimaryAgent(): void {
          LIMIT 1
       `).get() as { id: string } | undefined)?.id ?? null;
 
-  // T11 Step 1b: the primary agent exists because a person installed this platform.
   db.prepare(`
     INSERT INTO agents (id, name, model_id, system_prompt_path, status, config, created_by, created_by_kind,
                         classification, created_at, updated_at)
@@ -200,15 +162,8 @@ function ensurePrimaryAgent(): void {
   logger.info('Created primary agent', { id: primaryId, name: primaryName, modelId: fallbackModelId ?? 'none' });
 }
 
-// D-A household vault-sharing: seed the `household_agent_ids` allow-list with the
-// primary agent id when the config key is absent. Fresh installs get it after
-// OOBE (this runs on every boot); EXISTING boxes, where the key predates the
-// feature, get it on the next boot (the upgrade path). Idempotent: it only seeds
-// when the row is missing, so an onboarded second primary's list is never
-// overwritten. No-op until setup completes (the primary id is not authoritative
-// before then). Even before this runs, getHouseholdAgentIds() falls back to
-// [primary], so recall is correct on the very first boot too; this just persists
-// the row so a future second-primary onboarding has a home to append to.
+// Seed the `household_agent_ids` allow-list with the primary agent id when the key is absent. Only a
+// missing row is seeded (a second primary's list is never overwritten); no-op until setup completes.
 function ensureHouseholdConfig(): void {
   const db = getDb();
 
@@ -227,22 +182,8 @@ function ensureHouseholdConfig(): void {
   logger.info('Seeded household_agent_ids allow-list', { members: [primaryId] });
 }
 
-// PHASE-0 T12c: the port is the mutual exclusion, so it is taken FIRST.
-//
-// Everything main() does after this is a mutation of the real database:
-// directories, migrations, config seeds, timer re-arms, pollers. The listen used
-// to be the LAST thing, so a second instance started against a box that was
-// already running rewrote the RUNNING box's database and only then discovered
-// the port was taken — and then retried the bind forever, leaving a whole second
-// platform (schedulers, sweeps, watchers) alive against the same file.
-//
-// Binding first inverts that: nothing boots until this process owns the port.
-// The old handler's 2s EADDRINUSE retry is kept, because a restart that overlaps
-// its predecessor's shutdown must still come up, but it is now BOUNDED and every
-// attempt happens before the first database write. When the window passes, the
-// duplicate exits instead of living on — launchd/the watchdog restart a process
-// that exits, and a loud restart loop against a healthy box is a far better
-// outcome than a silent second platform writing to it.
+// The port is the mutual exclusion, so it is taken FIRST: everything after it mutates the real database.
+// EADDRINUSE is retried for a bounded window (a restart can overlap its predecessor), then it exits.
 const BIND_RETRY_MS = 2_000;
 const BIND_MAX_ATTEMPTS = 5;
 
@@ -272,9 +213,7 @@ async function bindPortFirst(fetchHandler: (request: Request, env: unknown) => R
 async function main(): Promise<void> {
   logger.info('Starting Dojo Agent Platform...');
 
-  // The real app is built at the end of boot; until then the socket is open and
-  // answers every request 503. The watchdog reads a non-2xx as down exactly like
-  // a refused connection, so "booting" still looks like "not serving yet".
+  // Until the real app is built at the end of boot, every request gets 503 (the watchdog reads it as down).
   let appFetch: ((request: Request, env: unknown) => Response | Promise<Response>) | null = null;
   const server = await bindPortFirst((request, env) =>
     appFetch
@@ -284,8 +223,7 @@ async function main(): Promise<void> {
         headers: { 'content-type': 'application/json' },
       }));
 
-  // Track every in-flight response so shutdown can close its connection when the
-  // response finishes; see gateway/close-servers.ts.
+  // Track in-flight responses so shutdown can close their connections (gateway/close-servers.ts).
   trackRequests(server as unknown as HttpServer);
 
   server.on('error', (err: NodeJS.ErrnoException) => {
@@ -293,12 +231,7 @@ async function main(): Promise<void> {
     process.exit(1);
   });
 
-  // System-dependency check (brew packages like whisper-cpp). Runs in the
-  // background, we don't block server startup on a `brew install` that
-  // could take 30+ seconds. By the time the install completes and the
-  // toast broadcasts, the dashboard has reconnected to the restarted
-  // server and the user sees the "whisper-cpp installed" notification.
-  // Idempotent: a no-op when all deps are already present (~200ms).
+  // System-dependency check (brew packages like whisper-cpp) in the background so it never blocks startup.
   void (async () => {
     try {
       const { ensureSystemDeps } = await import('./services/ensure-system-deps.js');
@@ -310,13 +243,8 @@ async function main(): Promise<void> {
     }
   })();
 
-  // One-shot technique-dependency audit. The first server boot after
-  // this feature ships drops a message in the trainer's chat asking
-  // them to walk every existing technique and (a) verify every file
-  // referenced in TECHNIQUE.md is in the support dir, (b) populate
-  // dependencies.json. Persists a config flag once dispatched so we
-  // only ever message the trainer once. Deferred well past server
-  // boot to give the trainer agent time to fully initialize.
+  // One-shot technique-dependency audit: messages the trainer once (config flag) to verify the files named
+  // in TECHNIQUE.md and populate dependencies.json. Deferred so the trainer is initialized.
   setTimeout(() => {
     void (async () => {
       try {
@@ -327,10 +255,8 @@ async function main(): Promise<void> {
           error: err instanceof Error ? err.message : String(err),
         });
       }
-      // One-time post-update notice: if Google accounts were connected under the
-      // pre-broker OAuth client, they need a reconnect. Runs after migrations,
-      // the Google-account seed, and the primary agent are all ready (all done
-      // synchronously in main() well before this deferred block fires).
+      // One-time notice: Google accounts on the pre-broker OAuth client need a reconnect (after migrations
+      // and seeds).
       try {
         const { notifyGoogleReauthOnce } = await import('./google/reauth-notice.js');
         notifyGoogleReauthOnce();
@@ -342,27 +268,15 @@ async function main(): Promise<void> {
     })();
   }, 30_000);
 
-  // 1. Create required directories
   ensureDirectories();
 
-  // 1b. PHASE-0 T10: MEASURE whether this box folds path case (APFS does, ext4
-  // does not) — every sensitive-path guard reads the flag. See path-guards.ts.
   const fsFolds = probeFsCaseInsensitive(path.join(homeDir(), '.dojo', 'data'), fs);
   setFsCaseInsensitive(fsFolds);
   logger.info('Filesystem case sensitivity probed', { caseInsensitive: fsFolds });
 
-  // 2. Load secrets
   loadSecrets();
 
-  // 2b. Refresh the watchdog from the platform bundle BEFORE migrations run.
-  // The in-app updater only rewrites ~/.dojo/platform, so the new watchdog (with
-  // its auto-rollback + read-only-WAL fixes, and the patience that lets a long
-  // migration boot finish) rides inside platform/watchdog-dist and we self-install
-  // it here. ORDER MATTERS: refresh THEN migrate, so on the very first jump from an
-  // old updater the PATIENT new watchdog is the one supervising the (potentially
-  // long, 30-migration) first-boot window, instead of the old 3.1.9 watchdog that
-  // kickstarts the box after ~10 min of health-down and would kill it mid-
-  // migration. Best-effort, darwin+prod only, never fails the boot.
+  // 2b. Refresh the bundled watchdog BEFORE migrations so it supervises a long first-boot migration.
   {
     try {
       const { refreshBundledWatchdog } = await import('./services/watchdog-refresh.js');
@@ -374,23 +288,15 @@ async function main(): Promise<void> {
   }
 
   // 3. Run database migrations
-  // D-F boot sentinel: if this boot is part of a self-update episode, count the attempt BEFORE
-  // migrations run (a crash mid-migration still increments the tally the watchdog reads). Then, if
-  // a migration APPLIED during the episode, flag it so the watchdog escalates loudly instead of
-  // trusting a code-only rollback (owner decision 2026-07-06): the restored old build could choke
-  // on the new schema. On a normal (non-update) boot, recordBootAttempt returns null and this is
-  // all inert. t197: first settle an install cut off mid-swap, so the record names what is live.
+  // Boot sentinel: for a self-update boot, count the attempt BEFORE migrations (a crash mid-migration
+  // still counts); if a migration applied, flag it so the watchdog escalates rather than trusting a
+  // code-only rollback. First settle an install cut off mid-swap, so the record names what is live.
   const migCountBefore = countAppliedMigrations();
   (await import('./update/install-tree.js')).settlePendingInstall(path.join(homeDir(), '.dojo'));
   let bootEpisode = recordBootAttempt();
-  // Jump-#1: an OLD updater (pre-D-F) may have swapped the platform WITHOUT writing
-  // a marker, so recordBootAttempt sees no episode even though this boot is a real
-  // self-update carrying new migrations. Detect that here and synthesize a
-  // 'booting-new' episode BEFORE migrations run, so the freshly-installed patient
-  // watchdog (step 2b) has a phase to read across the long first-boot window.
-  // Gated tightly so it can only fire on a genuine self-update: some migrations
-  // ALREADY applied (an existing box, never a fresh install, which has 0) AND more
-  // are now pending (the new build brought schema the DB has not applied yet).
+  // An updater predating the sentinel may swap the platform without a marker: migrations already applied
+  // (a fresh install has 0) plus more pending means a real self-update, so synthesize the episode BEFORE
+  // migrations.
   if (!bootEpisode && migCountBefore > 0 && countAvailableMigrationFiles() > migCountBefore) {
     const { getCurrentVersion } = await import('./gateway/routes/update.js');
     bootEpisode = synthesizeMigrationBootEpisode(getCurrentVersion());
@@ -402,13 +308,9 @@ async function main(): Promise<void> {
     logger.warn('D-F: a database migration ran during a self-update boot; a failed boot will escalate, not auto-rollback');
   }
 
-  // 3b. One-shot crash cleanup: agents left in 'working' by a hard stop, and
-  // model pointers left dangling by a provider re-create. Used to run at
-  // runtime.ts's module scope, i.e. during import, which is ahead of the port
-  // bind (PHASE-0 T12c) — a duplicate instance rewrote the running box's agent
-  // rows before it ever learned the port was taken. It runs here instead, after
-  // the bind proved this process owns the box and after the migrations that
-  // create the table it reads.
+  // 3b. One-shot crash cleanup: agents left 'working', dangling model pointers. After the port bind (a
+  // duplicate instance must not rewrite the running box's rows) and after the migrations that create the
+  // table.
   try {
     const { runStartupRecoverySweep } = await import('./agent/runtime.js');
     runStartupRecoverySweep();
@@ -416,12 +318,8 @@ async function main(): Promise<void> {
     logger.warn('Startup recovery sweep failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
   }
 
-  // 3a-. UX-ACCESS A1: every agent's effective access, DECLARED. The snapshot is
-  //      already what `getAccessGrants` answers with for a row that has none, so
-  //      this changes no verdict — it writes the value down so the owner has
-  //      something to edit and the four retired boot rewriters have nothing to
-  //      revert. Idempotent; a second boot writes zero rows. Before the service
-  //      ensures below, so they see rows that already carry grants.
+  // 3a-. Declare every agent's effective access (the snapshot `getAccessGrants` already answers with, so
+  // no verdict changes). Idempotent; before the service ensures below so they see rows that carry grants.
   try {
     const { materializeAccessGrants } = await import('./agent/access/materialize.js');
     materializeAccessGrants();
@@ -431,15 +329,11 @@ async function main(): Promise<void> {
     });
   }
 
-  // 3a-b. Owner decision 33: Dojo-supplied souls are replaced once per version (primary's never).
   await (await import('./prompt/shipped-souls.js')).refreshShippedSoulsAtBoot();
 
-  // 3a-c. One time: an upgraded box keeps the owner the 3.4.1 reader implied (services/owner-star-upgrade.ts).
+  // 3a-c. One time: an upgraded box keeps its owner (services/owner-star-upgrade.ts).
   await (await import('./services/owner-star-upgrade.js')).starTheOwnersAtBoot();
 
-  // 3a0. Seed Workspace account rows from legacy per-key config (Path B,
-  //      layer 1). Idempotent: only copies existing gws_*/gws_user_* into
-  //      position-1 rows once; leaves the legacy keys in place.
   try {
     const { seedGoogleAccountsFromConfig } = await import('./google/accounts.js');
     seedGoogleAccountsFromConfig();
@@ -451,52 +345,35 @@ async function main(): Promise<void> {
     });
   }
 
-  // 3a0b. D1 (PHASE-5 T10): seal any Workspace OAuth token still stored in the
-  //       clear. AFTER the seed, so a row the seed just created from the legacy
-  //       keys is sealed in the same boot. It never throws — it owns that.
+  // 3a0b. Seal any Workspace OAuth token still stored in the clear, AFTER the seed. Never throws.
   const { sealWorkspaceTokensAtRest } = await import('./credentials/seal-existing.js');
   await sealWorkspaceTokensAtRest();
 
-  // 3a. Load saved migration checks (if any from a recent import)
   try {
     const { loadSavedChecks } = await import('./migration/checks.js');
     loadSavedChecks();
   } catch { /* ignore, migration module may not exist yet */ }
 
-  // 3b. Generate tool documentation files for load_tool_docs
-  //
-  // INSTALLED-BOX AUDIT — THIS STEP USED TO FAIL OPEN IN BOTH DIRECTIONS.
-  // The success arm logged `count` at INFO without ever asking how many manuals were OWED, so
-  // `count: 0` on an unwritable `~/.dojo/tools` read as success; the catch arm logged one
-  // `warn` and left `/health` with nothing to report. The comparison and the level now belong
-  // to `tools/doc-freshness.ts`, which the generator calls on its way past — so neither arm
-  // here can forget it, and the answer survives boot for the Vitals card to read.
+  // 3b. Generate tool docs for load_tool_docs; the generator records doc freshness (tools/doc-freshness.ts).
   try {
     const { generateToolDocs } = await import('./tools/index-generator.js');
     await generateToolDocs();
   } catch (err) {
-    // A throw means nothing was written and the generator never reached its own recorder, so
-    // the failure is recorded HERE or it is invisible. `recordToolDocsFailure` logs it at
-    // ERROR through the same shared rule the shortfall path uses.
+    // A throw means the generator never reached its own recorder, so record the failure here.
     const { recordToolDocsFailure } = await import('./tools/doc-freshness.js');
     const { getToolsDir } = await import('./tools/tool-doc-read.js');
     recordToolDocsFailure(getToolsDir(), err);
   }
 
-  // 4. Ensure primary agent exists (skips if OOBE hasn't completed yet)
   ensurePrimaryAgent();
 
-  // 4'. Seed the D-A household vault-sharing allow-list (upgrade + fresh path).
   ensureHouseholdConfig();
 
-  // 4a. Ensure system group exists and permanent agents are assigned
   try {
     const { ensureSystemGroup } = await import('./agent/groups.js');
     ensureSystemGroup();
   } catch { /* groups table may not exist yet on first boot */ }
 
-  // 4b. Reset stuck agents — through the ONE status writer (PHASE-6 T10; the statement is
-  // unchanged, `updated_at` deliberately untouched — see the writer).
   {
     const repaired = resetWorkingAgentsToIdleAtBoot();
     if (repaired > 0) {
@@ -504,12 +381,6 @@ async function main(): Promise<void> {
     }
   }
 
-  // 4b1. Boot staleness sweep (incident 2026-07-02) — MOVED, WHOLE, TO THE ONE REAPER
-  // (PHASE-2 T9). The function is `sweepBootStaleness()` in `work/work-reaper.ts`, where it
-  // sits beside the thirteen-cliff deadline table and the four periodic kinds instead of
-  // three hundred lines away from the timers that repeat its siblings. Its SQL, its
-  // thirty-minute floor, its per-agent hold limit and its `requirement preserved:` notes went
-  // across byte-for-byte; only the owner changed.
   try {
     const { sweepBootStaleness } = await import('./work/work-reaper.js');
     sweepBootStaleness();
@@ -517,33 +388,18 @@ async function main(): Promise<void> {
     logger.warn('Boot staleness sweep failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
   }
 
-  // 4b1. D19: boot crash-reconciliation — CRASH TEST B's durable half.
-  // A kill AFTER the pickup claimed a human ask but BEFORE the reply was produced leaves
-  // the ask reading SERVED forever: the in-process revert (loop.ts
-  // revertTriggerStampOnAbort) never ran, and the re-drain below sees nothing waiting.
-  //
-  // PHASE-2 T3 — THE INFERENCE IS GONE. This used to decide "genuinely answered" by asking
-  // whether a later assistant/tool row happened to carry the same conv_key string: a guess
-  // about prose lineage that could not tell an answered turn from a turn that merely
-  // narrated. It now reads the two facts that were recorded when they were known — did the
-  // claiming TURN finish (`turns.ended_at`; 4b's `terminated` = died), did it already DO anything
-  // (`turns.effectful_calls`, and the effects named from its own tool rows):
-  //   * the turn died and did nothing -> hand the ask back (no orphan claims);
-  //   * the turn died but already acted -> hand it back NAMING those effects (no duplicates).
-  // No window (3.5 O2 rulings): the dead turn is the signal, and the hand-back carries the
-  // message's real age so the agent judges it. Never held for ever, never dropped.
-  // PHASE-2 T5 CLOSED THE REMAINING HALF. Deliveries are universal now, so "answered" is a
-  // recorded edge rather than an inference, and it is a THIRD outcome: a kill between the send
-  // and the close leaves an ask that WAS answered at `claimed`, and it is closed pointing at
-  // the delivery that answered it instead of being re-answered or stranded.
+  // 4b1. Boot crash-reconciliation. A kill after the pickup claimed a human ask but before the reply was
+  // produced leaves the ask reading SERVED forever. Recorded facts decide: did the claiming turn finish
+  // (`turns.ended_at`), did it act (`turns.effectful_calls`, effects named from its tool rows)? Died and
+  // did nothing: hand the ask back. Died but acted: hand it back naming those effects (no duplicates).
+  // Killed between send and close: the ask was answered at `claimed`, so close it pointing at that
+  // delivery. No age window: the hand-back carries the real age.
   {
-    reapToolboxGroupsAtBoot();   // v3.5 P6c: a hard kill left no exit hook to end what agents backgrounded
-    // Field fix 3 re-review 3 (M2): a command handed to the background was ended by this restart, and the
-    // result it promised its agent cannot come; the agent is told so on its next turn.
+    reapToolboxGroupsAtBoot();   // a hard kill left no exit hook to end what agents backgrounded
+    // A command handed to the background was ended by this restart; its agent is told on its next turn.
     void import('./agent/background-commands.js').then((m) => m.tellAgentsOfCommandsCutByRestart()).catch(() => { /* best effort */ });
-    // PHASE-2 T6 (C7, requirement 2b, cause 3): tickets that can NEVER be served or closed — no conversation identity,
-    // or a root message that no longer exists — get an honest terminal state instead of sitting `open` forever, telling
-    // every settled read a person is waiting (`transition()`'s CAS). BEFORE the hand-back (review M3).
+    // Asks that can never be served or closed (no conversation identity, or a root message that is gone)
+    // get a terminal state instead of sitting `open` forever. BEFORE the hand-back below.
     try {
       const { abandoned } = abandonUnservableAsks();
       if (abandoned > 0) {
@@ -553,7 +409,7 @@ async function main(): Promise<void> {
       logger.warn('Boot unservable-ask sweep failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
     }
     try {
-      const { releaseStepOwed } = await import('./release/release-steps.js');   // proof-fix-f B2: the version boundary
+      const { releaseStepOwed } = await import('./release/release-steps.js');   // the version boundary
       const { reArmed, closed } = reconcileOrphanedClaims({ inheritedBacklog: releaseStepOwed('orphaned-ask-backlog') });
       if (reArmed > 0 || closed > 0) {
         logger.warn(`Boot crash-reconciliation: closed ${closed} ask(s) whose claiming turn had already DELIVERED (the answered-by edge, never string inference); handed ${reArmed} orphaned ask(s) back for the re-drain, each carrying its age and any effects the dead turn already made for the turn that serves it (tracker untouched)`);
@@ -561,17 +417,9 @@ async function main(): Promise<void> {
     } catch (err) {
       logger.warn('Boot crash-reconciliation failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
     }
-    // 4b1c. SWEEP-A TB3 — THE ONE-SHOT ASK-LEDGER REMEDIATION (migration `158`,
-    // `STABLE-BRIDGE.md` Entry 39). TB1 and TB2 stopped the ledger writing bad rows; this
-    // corrects the ones already written, on every box that crosses this build.
-    //
-    // ⚠ THE POSITION IS LOAD-BEARING and it is DESIGN §5's requirement, not a convenience:
-    //   * AFTER the staleness sweep above, so the rows this pass hands back are never met by
-    //     the reboot-swarm guard on the boot that created them (the guard is untouched);
-    //   * BEFORE the re-drain below, so the same boot that hands an ask back is the boot that
-    //     serves it — nothing stale is left for a later reboot to meet.
-    // It is a no-op on a box that has already run it (the `config` row disarms itself), and
-    // it never runs twice.
+    // 4b1c. One-shot ask-ledger remediation (a `config` row disarms it). Position is load-bearing: AFTER
+    // the staleness sweep (its handed-back rows are never met by the reboot-swarm guard) and BEFORE the
+    // re-drain below (the same boot that hands an ask back serves it).
     try {
       const { runArmedAskRemediation } = await import('./work/ask-remediation.js');
       const remediation = runArmedAskRemediation();
@@ -590,50 +438,27 @@ async function main(): Promise<void> {
     }
   }
 
-  // 4b2. Re-drain unanswered conversations after restart (comms-audit D-1).
-  // An inbound that arrived before a restart is durably persisted with conv_key
-  // NULL (unanswered), but the in-memory wakeup that would trigger its turn is
-  // lost on restart, so it would sit unanswered until the NEXT inbound happens
-  // to poke the runtime. Nothing else re-reads it: the waiting SET is durable,
-  // the TRIGGER to read it was not. Sweep every agent for waiting human
-  // conversations and kick a drain, so a message the user sent is never silently
-  // forgotten across a restart (invariant 2, never forgets to answer).
-  // handleMessage('') re-reads the DB and the normal serving path takes over;
-  // it is idempotent (an already-served row has a conv_key and is skipped), and
-  // sends are staggered so a fleet of agents doesn't fire all at once.
+  // 4b2. Re-drain unanswered conversations after restart: an inbound persisted with conv_key NULL lost its
+  // in-memory wakeup and nothing else re-reads it. handleMessage('') re-reads the DB and normal serving
+  // takes over; it is idempotent, and sends are staggered so a fleet of agents does not fire at once.
   try {
     const db = getDb();
     const { getWaitingHumanConversations, getPendingEngineEvent } = await import('./agent/v2/counterparty.js');
     const { findUnrepliedAssignForAgent } = await import('./agent/a2a-replies.js');
     const { getAgentRuntime } = await import('./agent/runtime.js');
-    // C20: exclude terminated agents, the re-drain must never resurrect a dead agent.
-    // findUnrepliedAssignForAgent has no status filter, so a terminated agent with an
-    // unreplied A2A ASSIGN would otherwise be kicked, run a turn (status flipped to
-    // 'working'), and emit a zombie A2A reply.
+    // Exclude terminated agents: findUnrepliedAssignForAgent has no status filter.
     const agentRows = db.prepare("SELECT id FROM agents WHERE status != 'terminated'").all() as Array<{ id: string }>;
     let redrained = 0;
     for (const { id } of agentRows) {
       try {
-        // T-3 (comms-audit): re-drain BOTH unanswered human conversations AND an
-        // unreplied A2A ASSIGN/QUESTION. The earlier D-1 swept only human
-        // conversations, so an inter-agent request that arrived just before a
-        // restart was lost forever (its wakeup was in-memory; nothing re-reads it
-        // and findUnrepliedAssignForAgent only runs inside a turn). One kick covers
-        // both, runV2Turn re-classifies and serves whichever is owed.
+        // One kick covers an unanswered human conversation AND an unreplied A2A ASSIGN/QUESTION.
         const owesHuman = getWaitingHumanConversations(id).length > 0;
-        // Boot staleness (incident 2026-07-02): only re-drain an A2A assign from the last 30
-        // minutes, a genuine just-before-restart request. An older unreplied assign is stale
-        // backlog and must not force-wake the agent (matches the message sweep in 4b1). The
-        // human side is already covered because 4b1 stamped stale human rows out of the
-        // waiting set.
+        // Only an A2A assign from the last 30 minutes is re-drained: older ones are stale backlog (matches
+        // the sweep in 4b1), and stale human rows were already stamped out of the waiting set there.
         const owesA2A = !owesHuman && findUnrepliedAssignForAgent(id, 20, 30) !== null;
-        // D8: also re-drain a pending-ELIGIBLE engine event (a reminder mid-delivery
-        // when the box restarted). Eligibility, not raw age: getPendingEngineEvent
-        // gates on the migration-084 lifecycle (unclaimed + unswept + attempts < 5 +
-        // backoff passed + created_at within the 6-hour expiry horizon), and the 4b1
-        // sweep above has already suppressed stale attempts=0 backlog, so a restart
-        // rescues an in-flight reminder without re-running weeks-old history. The
-        // call also expires exhausted events loudly (owner notice, no wake).
+        // Also a pending-eligible engine event (a reminder mid-delivery at restart): getPendingEngineEvent
+        // gates on its lifecycle (unclaimed, unswept, attempts < 5, backoff passed, within the 6-hour
+        // expiry) and expires exhausted ones.
         const owesEngine = !owesHuman && !owesA2A && getPendingEngineEvent(id) !== null;
         if (owesHuman || owesA2A || owesEngine) {
           redrained++;
@@ -652,18 +477,10 @@ async function main(): Promise<void> {
     logger.warn('Boot re-drain failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
   }
 
-  // 4b3. D13: boot re-drain of DELEGATED owner questions (fail-closed backstop).
-  // A delegated owner question whose reply never came, or whose reply arrived but crashed
-  // before the relay, previously sat open FOREVER: nothing re-read the join after a restart
-  // (the 4b2 re-drain only covers waiting conversations and asks under 30 minutes), so "ask X
-  // and get back to me" ended in permanent silence with everything looking healthy.
-  // resolveJoinsAtBoot scans ALL unsettled joins (`work`, bounded + age-capped so boot stays
-  // fast): it lands any reply that already arrived, fails closed (deterministic owner notice
-  // on the join's own channel) when the asked agent is terminated or the join is past its
-  // ttl_at, and leaves fresh joins for the periodic reaper. It only relays or settles rows, it
-  // NEVER wakes an agent, so it cannot start a boot storm and needs no wake-budget accounting.
-  // Delayed so the channel bridges (iMessage/Twilio) are up before any notice goes out; a
-  // bridge that is still down just means the notice takes the guaranteed dashboard fallback.
+  // 4b3. Boot re-drain of delegated owner questions (fail-closed backstop). resolveJoinsAtBoot lands a
+  // reply that already arrived and fails closed (owner notice) when the asked agent is terminated or the
+  // join is past its ttl_at; fresh joins are left to the reaper. It only relays or settles rows, never
+  // wakes an agent. Delayed so the channel bridges are up (a down bridge falls back to the dashboard).
   setTimeout(() => {
     void (async () => {
       try {
@@ -678,7 +495,6 @@ async function main(): Promise<void> {
     })();
   }, 20_000);
 
-  // 4c. Ensure the PM agent exists (once setup is complete)
   {
     const { isSetupCompleted } = await import('./config/platform.js');
     if (isSetupCompleted()) {
@@ -694,12 +510,7 @@ async function main(): Promise<void> {
     }
   }
 
-  // 4c1. SWEEP CORE-2 item 3 (SWEEP-F T2) — THE SCHEDULER'S OWN CLOCK.
-  //
-  // The scheduler's clock starts on its own terms, never with the project manager.
-  //
-  // The gate is `isSetupCompleted()`: before OOBE finishes there is no owner, no
-  // primary agent to fire toward, and no schedules to fire.
+  // 4c1. Start the scheduler clock (independent of the project manager), gated on setup completion.
   {
     const { isSetupCompleted: isSetupDone } = await import('./config/platform.js');
     if (isSetupDone()) {
@@ -714,7 +525,6 @@ async function main(): Promise<void> {
     }
   }
 
-  // 4c2. Ensure Trainer agent exists (once setup is complete)
   {
     const { isSetupCompleted: isSetupDone } = await import('./config/platform.js');
     if (isSetupDone()) {
@@ -730,14 +540,7 @@ async function main(): Promise<void> {
     }
   }
 
-  // v2.10.3, Imaginer agent retired. Image generation is now a
-  // platform-config model picker (Settings → Models → Image Generation
-  // Model) and the `image_create` tool calls that model directly.
-  // Migration 059 terminates the legacy Imaginer agent row. This
-  // step intentionally left empty for the gap.
-  // 4c3. (Removed, Imaginer agent no longer auto-spawned)
 
-  // 4c4. Ensure Healer agent exists (permanent resident)
   {
     const { isSetupCompleted: isSetupDone } = await import('./config/platform.js');
     if (isSetupDone()) {
@@ -753,9 +556,7 @@ async function main(): Promise<void> {
     }
   }
 
-  // 4c6. Router background tasks: embedder keep-warm + the sparse self-training
-  //      maintenance loop. Both internally gate on an agent actually being on
-  //      auto-router (see router/gating.ts), so they are cheap no-ops otherwise.
+  // 4c6. Router background tasks (embedder keep-warm, self-training); no-ops unless an agent uses auto.
   {
     const { isSetupCompleted: isSetupDone } = await import('./config/platform.js');
     if (isSetupDone()) {
@@ -773,7 +574,6 @@ async function main(): Promise<void> {
     }
   }
 
-  // 4c5. Ensure Dreamer agent exists (permanent resident)
   {
     const { isSetupCompleted: isSetupDone } = await import('./config/platform.js');
     if (isSetupDone()) {
@@ -787,9 +587,7 @@ async function main(): Promise<void> {
         });
       }
 
-      // One-shot purge of service-agent archives still sitting in the
-      // backlog from before service agents were excluded from archiving.
-      // Idempotent, runs on every boot but is a no-op once clean.
+      // Purge service-agent archives still in the backlog (idempotent; a no-op once clean).
       try {
         const { purgeServiceAgentArchives } = await import('./vault/archive.js');
         purgeServiceAgentArchives();
@@ -799,21 +597,13 @@ async function main(): Promise<void> {
         });
       }
 
-      // PHASE-6 T0A Step 4 — the compensated-anchor scan. This is the boot that
-      // makes `anchor_time` reach the row again, which is exactly the boot on
-      // which a timezone workaround entered while the door was dropping it stops
-      // being a correction and becomes an error of the same size. One-shot, with
-      // its own denominator and its own reporting; it never rewrites a schedule.
+      // One-shot scan of timezone workarounds for a dropped `anchor_time`; never rewrites a schedule.
       const { runAnchorCompensationPass } = await import('./scheduler/anchor-compensation.js');
       runAnchorCompensationPass();
 
-      // SWEEP CORE-2 item 3 — PER-RELEASE BOOT STEPS, the facility the pass above had to be
-      // hand-rolled without. The gap between the version this box last ran steps at and the one
-      // it is on now decides which steps run; every step is idempotent, so a lost marker costs a
-      // wasted pass and never a double repair. `work/release-steps.ts` says why the marker is a
-      // NEW key and not `config.platform_version` (which has three readers and no writer).
-      // Awaited: the first of these is the owner's stale-project checker, and its ONE plain line
-      // should be waiting for the primary's first turn, not racing it.
+      // Per-release boot steps: the gap from the last-run version decides which run; every step is
+      // idempotent, so a lost marker costs a wasted pass, never a double repair (release/release-steps.ts).
+      // Awaited so the first step's line is waiting for the primary's first turn.
       try {
         const { runReleaseSteps } = await import('./release/release-steps.js');
         const steps = await runReleaseSteps();
@@ -826,7 +616,6 @@ async function main(): Promise<void> {
     }
   }
 
-  // 4d. Start iMessage bridge if enabled
   {
     const db = getDb();
     const imEnabled = db.prepare("SELECT value FROM config WHERE key = 'imessage_enabled'").get() as { value: string } | undefined;
@@ -849,7 +638,6 @@ async function main(): Promise<void> {
     }
   }
 
-  // 4e. Check Google Workspace CLI status on startup
   {
     try {
       const { checkGoogleOnStartup } = await import('./google/auth.js');
@@ -861,7 +649,6 @@ async function main(): Promise<void> {
     }
   }
 
-  // 4f. Check Microsoft 365 auth on startup
   {
     try {
       const { checkMicrosoftOnStartup } = await import('./microsoft/auth.js');
@@ -873,7 +660,6 @@ async function main(): Promise<void> {
     }
   }
 
-  // 4g. Start Gmail watcher if Google Workspace is connected
   {
     try {
       const { startGmailWatcher } = await import('./services/gmail-watcher.js');
@@ -885,7 +671,6 @@ async function main(): Promise<void> {
     }
   }
 
-  // 4h. Start Outlook watcher if Microsoft 365 is connected
   {
     try {
       const { startOutlookWatcher } = await import('./services/outlook-watcher.js');
@@ -897,7 +682,6 @@ async function main(): Promise<void> {
     }
   }
 
-  // 4i. Start Teams watcher if Microsoft 365 is connected
   {
     try {
       const { startTeamsWatcher } = await import('./services/teams-watcher.js');
@@ -909,13 +693,9 @@ async function main(): Promise<void> {
     }
   }
 
-  // 4i-1. Start the workspace reconnect probe. A benched Google/Microsoft
-  // account (connected=0) has no automatic way back on its own: before this,
-  // a single bad token-refresh response permanently removed a healthy account
-  // from every sweep until a human re-authenticated in Settings (incident
-  // 2026-07-08). Every ~30 min this re-tests benched accounts that still hold a
-  // refresh token and un-benches any whose refresh token still works. Cheap:
-  // no network work unless something is actually benched.
+  // 4i-1. Workspace reconnect probe: every ~30 min re-tests benched (connected=0) Google/Microsoft
+  // accounts that hold a refresh token and un-benches those that work. No network work unless something is
+  // benched.
   {
     try {
       const { startWorkspaceReconnectProbe } = await import('./services/workspace-reconnect-probe.js');
@@ -927,9 +707,8 @@ async function main(): Promise<void> {
     }
   }
 
-  // 4i-2. Start the daily update checker, refreshes a DB cache of the latest
-  // release once a day (model-free). The agent reads it on demand via
-  // check_for_update; the owner decides whether to check on a schedule.
+  // 4i-2. Daily update checker: refreshes a DB cache of the latest release (model-free) that
+  // check_for_update reads on demand.
   {
     try {
       const { startUpdateChecker } = await import('./services/update-checker.js');
@@ -941,12 +720,8 @@ async function main(): Promise<void> {
     }
   }
 
-  // 4i-3. Sweep a killed update's leftovers, then prune old platform backups + set-aside
-  // failed builds at boot (FA-D5). The post-update/rollback prune is fire-and-forget and
-  // can be cut short by the scheduled process.exit that restarts us, so a next-boot sweep
-  // is the durable guarantee that both pools stay bounded (each capped to the newest
-  // few, keeping at least one real rollback target). Best-effort: a failure here must
-  // never block boot.
+  // 4i-3. Sweep a killed update's leftovers, then prune old platform backups and set-aside failed builds
+  // (the post-update prune can be cut short by the restart's process.exit). Never blocks boot.
   {
     void (async () => {
       try {
@@ -960,31 +735,22 @@ async function main(): Promise<void> {
     })();
   }
 
-  // 4j. Backfill model capabilities for any model whose capabilities array is
-  // empty. Runs in the background so HTTP boot isn't blocked by Ollama
-  // /api/show latency or OpenRouter catalog fetches.
+  // 4j. Backfill model capabilities for models with an empty array, in the background (the fetches are
+  // slow).
   {
     void (async () => {
       try {
         const { backfillEmptyCapabilities } = await import('./services/capabilities.js');
         await backfillEmptyCapabilities();
-        // Seed generation parameter specs for video models now that
-        // capabilities are populated (the seed keys off video_generation).
-        // No-op for models that already carry a spec.
+        // Seed generation parameter specs for video models once capabilities exist (no-op if a spec exists).
         const { backfillGenerationParams } = await import('./services/generation-params.js');
         backfillGenerationParams();
-        // Seed TTS voice catalogs for audio-generation models now that
-        // capabilities are populated. No-op for models that already carry a
-        // catalog or have no family seed.
+        // Seed TTS voice catalogs for audio-generation models (no-op if one exists or there is no family
+        // seed).
         const { backfillVoiceCatalog } = await import('./services/voice-catalog.js');
         backfillVoiceCatalog();
-        // Once the backfill finishes, a previously-unprobed model might
-        // now be known to be vision-capable. Re-run the obvious-fallback
-        // helper so the platform fallback gets set without the user
-        // having to visit Settings → Models manually. The earlier startup
-        // call (below, before the healer scheduler) handles the case
-        // where caps were already populated; this handles the
-        // background-probe-completed case.
+        // A newly probed model may be vision-capable now; the startup call below covers populated
+        // capabilities.
         const { autoConfigureFallbackVisionModelIfObvious } = await import('./services/vision-model.js');
         autoConfigureFallbackVisionModelIfObvious();
       } catch (err) {
@@ -995,8 +761,7 @@ async function main(): Promise<void> {
     })();
   }
 
-  // 4j. The Ollama upkeep (Ollama current, its model limit, the Dojo's two standard models), beside RAM-aware num_ctx
-  // recommendations for Ollama models without one. Never blocks boot.
+  // 4j. Ollama upkeep (current version, model limit, standard models) and RAM-aware num_ctx recommendations.
   {
     void (async () => {
       try {
@@ -1011,13 +776,9 @@ async function main(): Promise<void> {
     })();
   }
 
-  // 4j-bis. Every-boot reconcile: mirror the safe-sender lists (all channels)
-  // into the contacts store so every trusted sender has a contact record the
-  // agent can resolve by name. Self-healing safety net for senders added before
-  // live mirroring existed (the live config/append/agent write paths keep new
-  // adds in sync). Idempotent + additive + fast (small lists), so it runs inline
-  // rather than as a background task. See backfillSafeSenderContacts for the
-  // dropped-flag tradeoff.
+  // 4j-bis. Mirror the safe-sender lists (all channels) into the contacts store so every trusted sender
+  // resolves by name. Idempotent, additive and fast, so inline (see backfillSafeSenderContacts for the
+  // dropped-flag tradeoff).
   try {
     const { backfillSafeSenderContacts } = await import('./services/channel-safe-senders.js');
     const r = backfillSafeSenderContacts();
@@ -1030,9 +791,8 @@ async function main(): Promise<void> {
     });
   }
 
-  // 4k. Refresh model pricing for providers whose live API exposes it
-  // (primarily OpenRouter). Background so it doesn't block HTTP boot.
-  // COALESCE semantics: missing API prices preserve what we already have.
+  // 4k. Refresh model pricing in the background from providers whose API exposes it (mainly OpenRouter);
+  // prices the API omits keep their stored values.
   {
     void (async () => {
       try {
@@ -1046,11 +806,7 @@ async function main(): Promise<void> {
     })();
   }
 
-  // 4l. Refresh Anthropic / OpenAI / DeepSeek pricing from the LiteLLM
-  // community price index. Their own APIs don't return pricing, so this
-  // is how we stay current as providers re-price. Background, COALESCE
-  // semantics. Status (success/failure + timestamp) is persisted into
-  // the config table and surfaced on the Costs page.
+  // 4l. Refresh Anthropic/OpenAI/DeepSeek pricing from the LiteLLM price index; status persists in config.
   {
     void (async () => {
       try {
@@ -1064,14 +820,9 @@ async function main(): Promise<void> {
     })();
   }
 
-  // 4m-0 (t122). THE MEDIA JOB ROWS NOBODY OWNS ARE CLOSED, FIRST. A box that has run for
-  // months carries non-terminal job rows left by crashes and by versions that predate the stop
-  // predicate reading them, and each one offered a permanent stop control on an idle agent.
-  // `services/job-orphans.ts` holds the argument; it marks them failed with a reason and never
-  // deletes. Its position BEFORE the video resume below is that argument's premise, not a
-  // preference: only here can no row belong to a process in THIS one, which is what makes
-  // "non-terminal and unadopted" decidable without guessing from a timestamp. The notice is the
-  // one thing a closed row cannot do for itself, so it rides along with what the sweep moved.
+  // 4m-0. Close media job rows nobody owns: failed with a reason, never deleted (services/job-orphans.ts).
+  // BEFORE the video resume below: only here can no row belong to a process in THIS one. The notice rides
+  // along because a closed row cannot announce itself.
   {
     try {
       const { reconcileOrphanedJobsAtBoot } = await import('./services/job-orphans.js');
@@ -1085,12 +836,8 @@ async function main(): Promise<void> {
     }
   }
 
-  // 4m-1. Resume in-flight video generation jobs. Video is async (1 to 10
-  // min); a job submitted before a restart still has a live provider job
-  // we need to keep polling. The poller picks up every row still in
-  // 'queued'/'polling' and drives it to delivery. Synchronous scan, async
-  // poll loops, doesn't block boot. (4m-0 above deliberately leaves these
-  // rows alone — the provider's render is their owner.)
+  // 4m-1. Resume in-flight video jobs: the poller drives every 'queued'/'polling' row to delivery.
+  // 4m-0 leaves these rows to the provider's render.
   {
     try {
       const { startVideoJobPoller } = await import('./services/video-job-poller.js');
@@ -1102,48 +849,33 @@ async function main(): Promise<void> {
     }
   }
 
-  // 5. Set up log broadcast
   setLogBroadcast((entry) => {
     broadcast({ type: 'log:entry', entry });
   });
 
-  // 6. Boot is done: hand the already-listening socket its real handler. Up to
-  // here it answered 503 (see bindPortFirst at the top of main).
+  // 6. Boot is done: hand the already-listening socket its real handler (it answered 503 until now).
   const { app, injectWebSocket, wss } = createServer();
   appFetch = app.fetch;
   injectWebSocket(server);
   logger.info('Dojo Agent Platform is serving');
 
-  // D-F health-confirm: the server is now listening. If this boot is part of a
-  // self-update episode, arm the ~90s uptime timer that flips the update-state
-  // marker to healthy once the DB is confirmed serving. No-op otherwise.
+  // The server is listening: for a self-update boot, arm the ~90s timer that flips the marker to healthy.
   scheduleUpdateHealthConfirm();
 
-  // Clean up old uploads every 24 hours
   const { cleanupOldUploads } = await import('./gateway/routes/upload.js');
   setInterval(cleanupOldUploads, 24 * 60 * 60 * 1000);
 
-  // ⚠ THE STALL SENTINEL (t89 deliverable 4), started here with the platform's other timers because it
-  // has to be running BEFORE the first freeze, not after somebody goes looking. One interval, one
-  // subtraction, `unref`'d — see `observability/stall-sentinel.ts` for why drift is the only signal a
-  // pinned process can report about itself.
   startStallSentinel();
 
-  // ⚠ WARM THE READER POOL AT BOOT (t89-1). The spawn costs the calling thread a few milliseconds once
-  // per process; paying it here means no user's first search pays it, and a pool that fails to spawn
-  // says so now rather than inside somebody's query. Best-effort by construction: a box without worker
-  // threads keeps working, with searches on the serving thread exactly as before.
+  // Warm the reader pool now so no user's first search pays the spawn; best-effort, since a box without
+  // worker threads runs searches on the serving thread.
   void warmReaderPool();
 
-  // ⚠ FTS HEALTH (t89 deliverable 3). One line, and the deferral is NOT here on purpose: the "never
-  // boot-blocking" property lives inside `scheduleFtsHealthCheck`, which returns immediately and
-  // touches no database, so a caller cannot get it wrong by forgetting to wrap it. A broken message
-  // index is why a database born in April LIKE-scans for ever; the repair runs on its own thread
-  // once the box is serving, and until it finishes search takes the bounded fallback.
+  // FTS health check: never boot-blocking, because scheduleFtsHealthCheck returns immediately and touches
+  // no database; the repair runs on its own thread and search uses the bounded fallback until it finishes.
   scheduleFtsHealthCheck();
   cleanupOldUploads(); // Run once on startup
 
-  // Auto-start tunnel if enabled (delay to ensure HTTP server is fully ready)
   setTimeout(async () => {
     try {
       const { autoStartTunnel } = await import('./services/tunnel.js');
@@ -1153,7 +885,6 @@ async function main(): Promise<void> {
     }
   }, 3000);
 
-  // Schedule the nightly dreaming cycle for the vault
   try {
     (await import('./vault/maintenance.js')).scheduleDreamingCycle();
     (await import('./memory/legacy-rebuild-boot.js')).scheduleLegacyRebuildAtBoot();   // the memory start: waiting writers asked again, the older-notes rebuild once
@@ -1161,14 +892,9 @@ async function main(): Promise<void> {
     logger.warn('Failed to schedule dreaming cycle or the older-notes rebuild', { error: err instanceof Error ? err.message : String(err) });
   }
 
-  // D4: schedule the incremental embedding-backfill drain. Channel inbound
-  // (iMessage / SMS / email / Teams) is persisted at ~80 scattered sites and
-  // none embed at write, so before this drain July had 0 embedded messages
-  // across all channels, anything told to the agent over a channel was
-  // invisible to vector recall. runBackfill only touches rows missing an
-  // embedding (LEFT JOIN filter) and guards against overlapping runs, so it
-  // self-limits once caught up. First pass is delayed so boot isn't slowed; the
-  // big one-time history catch-up runs in the background, later passes are light.
+  // Schedule the incremental embedding-backfill drain: channel inbound is persisted at many sites and none
+  // embed at write. runBackfill touches only rows missing an embedding and guards against overlapping
+  // runs; the first pass is delayed so boot is not slowed.
   const scheduleEmbeddingBackfill = async () => {
     try {
       const { runBackfill, isBackfillRunning } = await import('./memory/backfill.js');
@@ -1183,24 +909,10 @@ async function main(): Promise<void> {
   setTimeout(() => { void scheduleEmbeddingBackfill(); }, 60_000);
   setInterval(() => { void scheduleEmbeddingBackfill(); }, 10 * 60_000);
 
-  // D13: the TTL reaper for delegated owner questions, the "no reply EVER comes" backstop.
-  // Every 10 minutes, any join past its `work.ttl_at` is failed CLOSED: the engine relays a
-  // deterministic "could not get an answer" notice to the owner on the join's own channel (the
-  // same delivery path a real reply uses) and the join goes terminal, so it fires exactly once
-  // — the `transition()` compare-and-swap IS that guard, not a string rewrite. If the reply
-  // actually arrived but never landed, the reaper lands it and relays the REAL answer instead.
-  // Engine-enforced and model-independent: the owner is never left in silence because the
-  // asked agent died, was terminated, or dropped the ask.
-  // PHASE-2 T9 FOLDED THIS INTO THE ONE REAPER. The sweep is unchanged; what moved is the
-  // CLOCK. It is now `REAPER_KINDS['join-ttl']` in `work/work-reaper.ts`, still every ten
-  // minutes (the period is carried from this timer, not re-chosen), alongside the other
-  // three obligation sweeps and the thirteen-row deadline table that names the age it
-  // enforces (`join_ttl` = 60 min, `join_max_age` = 7 days).
+  // Delegated-question TTL expiry is `REAPER_KINDS['join-ttl']` in `work/work-reaper.ts`, not a timer here.
 
-  // D17: one-time re-embed of vault entries left with a NULL embedding (pre-C12
-  // Ollama drops). Without an embedding they can never match a semantic
-  // vault_search, only an exact LIKE, so a fact stored there is effectively
-  // unfindable by meaning. Best-effort, delayed so it doesn't compete with boot.
+  // One-time re-embed of vault entries with a NULL embedding (they match only an exact LIKE); delayed,
+  // best-effort.
   setTimeout(() => {
     void (async () => {
       try {
@@ -1214,12 +926,8 @@ async function main(): Promise<void> {
     })();
   }, 90_000);
 
-  // One-shot migration: if the platform has exactly one enabled
-  // vision-capable model and no fallback vision model is configured,
-  // silently set that single model as the fallback. Preserves working
-  // setups for users upgrading from the era when each tool auto-picked
-  // its own vision model. Multi-vision-model installs leave the config
-  // unset so the Settings → Models UI can prompt for an explicit choice.
+  // One-shot: if exactly one enabled vision-capable model exists and no fallback is configured, set it as
+  // the fallback; multi-vision installs stay unset so Settings -> Models can prompt for a choice.
   try {
     const { autoConfigureFallbackVisionModelIfObvious } = await import('./services/vision-model.js');
     autoConfigureFallbackVisionModelIfObvious();
@@ -1229,21 +937,14 @@ async function main(): Promise<void> {
     });
   }
 
-  // The v2.9.13 boot-time recovery for engine-paused recurring tasks was
-  // retired 2026-07-21: the auto-pause writer it healed was demolished in the
-  // two-key wave, so the victim set is fixed and migration 110 releases it
-  // once, as data, instead of a prose-signature scan on every boot.
+  // Engine-paused recurring tasks are released once as data by a migration, not scanned for on every boot.
 
-  // Schedule the healer cycle (agent spawns on-demand when the cycle fires)
   try {
     const { scheduleHealingCycle, startHealerSelfWatchdog } = await import('./healer/healer-agent.js');
     scheduleHealingCycle();
-    // v2.3.19 (error-handling-spec Phase 3), engine-level safety net so
-    // the Healer can't get permanently stuck. Runs every 5 min.
+    // Engine-level safety net so the Healer cannot get permanently stuck (every 5 min).
     startHealerSelfWatchdog();
-    // v2.3.19 (error-handling-spec Phase 4), frequent auto-fix sweep for
-    // status recovery (stuck/paused/errored agents past their cooldown).
-    // Replaces the "wait until 04:00 to unstick a paused agent" behavior.
+    // Frequent auto-fix sweep that recovers stuck/paused/errored agents past their cooldown.
     const { startFrequentAutoFixes } = await import('./healer/auto-fix.js');
     startFrequentAutoFixes();
     logger.info('Healer cycle scheduled + self-watchdog + frequent auto-fix started');
@@ -1251,11 +952,8 @@ async function main(): Promise<void> {
     logger.warn('Failed to schedule healing cycle', { error: err instanceof Error ? err.message : String(err) });
   }
 
-  // Injury recovery is event-driven, when an agent enters 'error' status,
-  // runtime.ts calls onAgentInjured() which schedules a 5-minute grace
-  // period, then notifies the Healer agent if the agent hasn't recovered.
-  // On startup, rehydrate any agents that were injured before a restart
-  // (in-memory timers are lost on restart).
+  // Injury recovery is event-driven (runtime.ts calls onAgentInjured() when an agent enters 'error');
+  // rehydrate the agents injured before a restart, since the grace-period timers are in-memory.
   try {
     const { rehydrateInjuredAgents } = await import('./healer/injury-recovery.js');
     rehydrateInjuredAgents();
@@ -1263,11 +961,8 @@ async function main(): Promise<void> {
     logger.warn('Failed to rehydrate injured agents', { error: err instanceof Error ? err.message : String(err) });
   }
 
-  // PHASE-2 T9: the destructive-approval boot sweep is the reaper's FIRST TICK, not a
-  // separate call. `runReaperTick()` runs every kind whose period divides tick 0, which is
-  // all of them, so boot gets one pass of every obligation sweep from the one place that
-  // knows what they are — instead of four boot calls that had drifted out of step with the
-  // four timers that repeated them.
+  // The destructive-approval boot sweep is the reaper's first tick: runReaperTick() runs every obligation
+  // sweep once.
   try {
     const { runReaperTick } = await import('./work/work-reaper.js');
     const first = await runReaperTick();
@@ -1276,19 +971,15 @@ async function main(): Promise<void> {
     logger.warn('Reaper boot pass failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
   }
 
-  // P3 boot re-arm: spawn timeout timers are in-memory and vanish on restart.
-  // Rebuild them from agents.timeout_at so a pending creator decision survives a
-  // reboot (overdue-at-boot fires the decision notice immediately). Idempotent
-  // with the 30s checkTimeouts sweep below.
+  // Spawn timeout timers are in-memory: rebuild them from agents.timeout_at so a pending decision survives
+  // a reboot.
   try { reArmSpawnTimeouts(); } catch (err) {
     logger.warn('Spawn timeout boot re-arm failed', { error: err instanceof Error ? err.message : String(err) });
   }
 
-  // PHASE-2 T9: ONE CLOCK for every obligation sweep. `startReaper` installs the single
-  // 30-second tick that drives all four kinds at their own carried periods (see
-  // `work/work-reaper.ts`); this interval keeps ONLY `checkTimeouts`, which is the SPAWN
-  // decision timer — an agent-lifecycle deadline, not one of the thirteen obligation cliffs
-  // — and is left where it is rather than folded in on a resemblance.
+  // startReaper installs the single 30-second tick for every obligation sweep (work/work-reaper.ts). This
+  // interval keeps only checkTimeouts, the spawn decision timer (an agent-lifecycle deadline, not an
+  // obligation sweep).
   const { startReaper } = await import('./work/work-reaper.js');
   startReaper();
 
@@ -1305,37 +996,22 @@ async function main(): Promise<void> {
     shuttingDown = true;
     logger.info('Shutting down...');
     clearInterval(timeoutInterval);
-    // STEP 1 — STOP THE WORK CLOCKS FIRST. `server.close` waits for open connections, so the
-    // window between SIGTERM and exit can be long, and during it the three boot clocks (the work
-    // reaper, the scheduler, the PM poke loop) keep waking agents, sending owner notices and
-    // writing rows. Each stop is idempotent and safe if never started; each is guarded so one
-    // failure cannot skip the others.
+    // STEP 1: stop the work clocks first: during server.close's wait for connections the reaper and
+    // scheduler would keep waking agents and writing rows. Each stop is idempotent and guarded.
     stopBackgroundClocks();
-    // STEP 2 — THE TWO WORKER THREADS GO NEXT (t89 I1). `process.exit()` JOINS a worker, and nothing in
-    // JavaScript preempts a native sqlite call — measured: an `unref`'d worker inside a 4.65s
-    // statement held the exit to 5.6s. An FTS repair is minutes, so a SIGTERM during the
-    // once-per-box rebuild hung until launchd SIGKILLed the process and the transaction rolled
-    // back. `stopFtsRepair` asks the repair to stop at its next chunk boundary (a few thousand
-    // rows); `terminateReaderPool` ends the read side. Both are no-ops when nothing is running.
+    // STEP 2: stop the worker threads: process.exit() joins a worker and nothing preempts a native sqlite
+    // call, so an FTS rebuild would hang the exit until SIGKILL. stopFtsRepair stops at the next chunk
+    // boundary; both no-op when idle.
     if (stopFtsRepair()) logger.info('asked the background FTS repair to stop; it will be redone on the next boot');
     void terminateReaderPool();
-    // t126: the video poll loops are `void`-ed and live for up to thirty minutes, asleep for
-    // nearly all of them. `closeDb()` is four lines below; a loop that woke after it reached a
-    // closed handle and rejected with nobody listening. Asking them to stand down FIRST means
-    // each exits at its next wake without writing anything — the rows stay open and the next
-    // boot's resume adopts them, which is the honest outcome for a render still running at the
-    // provider.
+    // Tell the video poll loops (up to thirty minutes, mostly asleep) to stand down BEFORE closeDb, so
+    // none wakes on a closed handle. Rows stay open and the next boot's resume adopts them.
     import('./services/video-poller-lifetime.js').then(m => m.stopVideoJobPoller()).catch(() => {});
-    // Stop tunnel gracefully
     import('./services/tunnel.js').then(m => m.stopTunnel()).catch(() => {});
-    // STEP 3 — close the gateway, in the order that lets `server.close()` finish. The
-    // ws server owns its clients, and an upgraded socket is an open connection to
-    // the http server, so if either stays up the close callback below never runs
-    // and the supervisor SIGKILLs the process before closeDb/process.exit — the
-    // cleanup inside it is skipped. See gateway/close-servers.ts.
-    // `serve()` is always HTTP/1 here (no http2 options), so the cast is sound.
-    // process.exit(0) is reached on EVERY path: a closeServers rejection or a closeDb throw is logged,
-    // never left as an unhandled rejection with the process hanging.
+    // STEP 3: close the gateway so server.close() can finish: the ws server owns its clients and an
+    // upgraded socket keeps the http server open, which would stall until the supervisor SIGKILLs before
+    // closeDb (gateway/close-servers.ts). `serve()` is always HTTP/1 here, so the cast is sound.
+    // process.exit(0) is reached on EVERY path.
     void closeServers(server as unknown as HttpServer, wss)
       .catch((err) => {
         logger.error('Closing the gateway failed during shutdown', { error: err instanceof Error ? err.message : String(err) });
