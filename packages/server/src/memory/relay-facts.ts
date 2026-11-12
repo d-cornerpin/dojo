@@ -1,5 +1,4 @@
-// t196: the stored facts a row label and the wake footer state about a relayed answer. Plain reads, no wording: the
-// words (and their neutralising) live in `row-label.ts`. Every read is best-effort: no record, no claim.
+// Relayed-answer facts for row labels and the wake footer: no wording, best-effort (no record, no claim).
 import { getDb } from '../db/connection.js';
 import { getOwnerName } from '../config/platform.js';
 import { ENGINE_JOIN_RELAY_TOOLS } from '../work/ask-settlement.js';

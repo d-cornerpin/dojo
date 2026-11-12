@@ -1,32 +1,9 @@
-// ════════════════════════════════════════
-// recall_recent_thread, agent-callable transcript recall
-// ════════════════════════════════════════
-//
-// Returns a clean transcript of the agent's recent user/assistant
-// exchanges, read directly from the messages table. Respects
-// session_started_at so a recent reset doesn't leak pre-reset content
-// into the recall.
-//
-// SCOPE (PHASE-1 T5): this is an AGENT surface, and it spans every lane the agent owns —
-// the owner conversation, agent-to-agent coordination and engine events alike. That is
-// deliberate and it is the defect this phase closes: coordination history used to live in a
-// separate table with no FTS index, so an agent could hold thousands of rows it was
-// structurally unable to recall. What a PERSON sees is the `chat_messages` view
-// (`lane='owner'`), which these queries never read and never feed.
-//
-// v2.5.11, Expanded for memory-recovery use cases:
-//   - include_tool_results=true ("wordy mode") includes tool RESULTS,
-//     truncated per result with a history_get pointer for the full
-//     body. Used when the agent needs to recover actual content
-//     (file_read output, web_fetch body, etc.) after compaction or
-//     a model switch.
-//   - before_id paginates: "give me the N turns BEFORE message X."
-//   - since filters by ISO timestamp.
-//   - Footer always tells the agent how to get older slices or full
-//     bodies, impossible to misread as "you have all the data."
-//
-// Use case: post-compaction reorientation, post-sanitizer recovery,
-// or any time the agent has lost the thread.
+// recall_recent_thread: agent-callable transcript recall. It returns a clean transcript of the agent's recent
+// user/assistant exchanges from the messages table, respecting session_started_at so a reset does not leak
+// pre-reset content. It spans every lane the agent owns (owner, agent-to-agent, engine events); what a PERSON
+// sees is the `chat_messages` view (lane='owner'), which these queries never read or feed.
+// include_tool_results ("wordy mode") adds tool results truncated per result with a history_get pointer,
+// before_id paginates, since filters by ISO timestamp, and the footer always says how to get older slices.
 
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
@@ -44,13 +21,11 @@ interface MessageRow {
   attachments: string | null;
 }
 
-// SQLite stores timestamps as "YYYY-MM-DD HH:MM:SS" (no T, no Z). Agents
-// will reasonably pass ISO-8601 ("2026-05-12T00:33:00Z" or with offset), 
-// normalize to the SQLite shape so string comparison works correctly.
+// SQLite stores timestamps as "YYYY-MM-DD HH:MM:SS" (no T, no Z); normalize ISO-8601 input to that shape so
+// string comparison works.
 export function normalizeTimestampForSqlite(input: string): string {
-  // An explicit zone (Z or a +hh:mm / -hh:mm offset) names an INSTANT: read it and keep the
-  // UTC clock time, not the local one — a dropped "+07:00" shifts the unixepoch boundary by the
-  // offset. A bare clock time has no zone to honor and falls through unchanged.
+  // An explicit zone (Z or +hh:mm) names an instant: read it and keep the UTC clock time, since dropping
+  // "+07:00" shifts the boundary. A bare clock time has no zone and falls through unchanged.
   const trimmed = input.trim();
   const zoned = /^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}(?::\d{2})?)(?:\.\d+)?(Z|[+-]\d{2}:?\d{2})$/i.exec(trimmed);
   if (zoned) {
@@ -61,13 +36,9 @@ export function normalizeTimestampForSqlite(input: string): string {
     if (!Number.isNaN(d.getTime())) return d.toISOString().slice(0, 19).replace('T', ' ');
   }
   let s = trimmed;
-  // Replace the T separator with a space.
   s = s.replace('T', ' ');
-  // Drop a trailing Z.
   if (s.endsWith('Z')) s = s.slice(0, -1);
-  // Drop a trailing timezone offset like "+00:00" or "-07:00".
   s = s.replace(/[+-]\d{2}:?\d{2}$/, '');
-  // Drop fractional seconds.
   s = s.replace(/\.\d+$/, '');
   return s.trim();
 }
@@ -99,20 +70,15 @@ export interface RecallOptions {
   beforeId?: string;
   since?: string;
   /**
-   * Conversation scoping (OPEN-15). Default 'conversation', recall is limited
-   * to the CURRENT conversation (rows carrying this turn's `conversation_id`, plus
-   * untagged current-turn / legacy rows). This stops an unrelated task's output
-   * (e.g. an `apt autoremove` exec from a different conversation) bleeding into
-   * the recall when the agent asks "what was just said." Pass 'all' for the
-   * genuine cross-conversation recovery case ("show me everything recent").
+   * Conversation scoping. Default 'conversation': recall is limited to the CURRENT conversation (rows carrying
+   * this turn's `conversation_id`, plus untagged current-turn and legacy rows). Pass 'all' for cross-conversation
+   * recovery.
    */
   scope?: 'conversation' | 'all';
   /**
-   * E-C1: the `conversations.id` of the conversation THIS turn is serving, threaded from the
-   * live turn state. An id scopes recall to that conversation; explicit null
-   * means an engine/A2A turn (no human conversation) so recall stays on untagged
-   * rows and never latches a prior human conversation; `undefined` (called outside
-   * a turn) falls back to the legacy "most-recently-stamped conversation" heuristic.
+   * The `conversations.id` THIS turn is serving, from the live turn state. An id scopes recall to it; explicit
+   * null means an engine/A2A turn (untagged rows only); `undefined` (outside a turn) falls back to the most
+   * recently stamped conversation.
    */
   turnConversationId?: string | null;
 }
@@ -126,10 +92,8 @@ const ROLE_LABEL: Record<string, string> = {
 
 function clip(text: string, maxChars: number): { text: string; truncated: number } {
   if (text.length <= maxChars) return { text, truncated: 0 };
-  // Cut at a whole character, never between the two halves of an emoji: a UTF-16-unit cut can leave a
-  // lone surrogate in the text the model is shown (malformed; some providers reject it), and the "more
-  // chars" count then reflects a mid-pair position. `charBoundary` (the same fix the compaction view
-  // carries) backs off to a grapheme boundary; count the drop from there.
+  // Cut at a whole character, never between the two halves of an emoji: a lone surrogate is malformed and some
+  // providers reject it. charBoundary backs off to a grapheme boundary; the dropped count is taken from there.
   const cut = charBoundary(text, maxChars, 'back');
   return { text: `${text.slice(0, cut)}…`, truncated: text.length - cut };
 }
@@ -145,8 +109,7 @@ interface AssistantPart {
 }
 
 function parseAssistantContent(content: string): AssistantPart {
-  // Assistant content can be a plain string OR a JSON array of content
-  // blocks (text + tool_use). Reduce to text + a tidy list of tool calls.
+  // Content is a plain string or a JSON array of blocks; reduce to text plus a tidy list of tool calls.
   try {
     const parsed = JSON.parse(content);
     if (Array.isArray(parsed)) {
@@ -229,23 +192,14 @@ function historyScope(agentId: string, opts: Pick<RecallOptions, 'scope' | 'turn
     clauses.push('created_at >= (unixepoch(?) * 1000)');
     params.push(sessionBoundary);
   }
-  // Conversation scoping (OPEN-15). The current turn's trigger inbound carries its `conversation_id` — resolved by
-  // the producer at ingest and re-stamped at pickup if the producer could not (loop.ts) — so the most recently
-  // stamped conversation in this session identifies the conversation we're in. Limit recall to that conversation
-  // plus untagged rows (current-turn, not-yet-stamped work and legacy rows), which keeps the live thread while
-  // dropping OTHER conversations' tagged output, the cross-task bleed that surfaced unrelated `apt`/package output
-  // during a flight-info question.
+  // The current turn's trigger inbound carries its conversation_id (stamped at ingest, or re-stamped at pickup), so
+  // the most recently stamped conversation in this session identifies where we are. Limit recall to it plus
+  // untagged rows (current-turn, not-yet-stamped, legacy), dropping OTHER conversations' tagged output.
   if (opts.scope !== 'all') {
-    // E-C1: prefer the LIVE turn's conversation over re-deriving "most recently stamped", which on an engine/A2A
-    // turn latched the last HUMAN conversation and bled it into the recall. An id = that conversation; explicit
-    // null = engine/A2A turn (untagged rows only, no human-conv bleed); undefined = called outside a turn, use the
-    // legacy heuristic.
-    //
-    // PHASE-2 T10I: the scope is `conversations.id`, not a `conversationKey()` string. The fallback query below
-    // cannot latch a SENTINEL any more, and that was a real hazard in the string form: `engine`, `engine-steer` and
-    // `engine-notice` were valid `conv_key` values on events-lane rows, so "the most recently stamped key in this
-    // session" could scope a human recall to a rider. An events-lane rider has no conversation, so it can no longer
-    // be picked up here at all.
+    // Prefer the LIVE turn's conversation over "most recently stamped" (on an engine/A2A turn that latches the last
+    // human conversation). An id = that conversation; null = engine/A2A turn (untagged rows only); undefined = called
+    // outside a turn, use the heuristic. The scope is conversations.id, never a conv_key string, so an events-lane
+    // rider (which has no conversation) can never be picked up here.
     let scopeConversationId: string | null | undefined;
     if (opts.turnConversationId !== undefined) {
       scopeConversationId = opts.turnConversationId;
@@ -259,9 +213,8 @@ function historyScope(agentId: string, opts: Pick<RecallOptions, 'scope' | 'turn
         .get(...(sessionBoundary ? [agentId, sessionBoundary] : [agentId])) as { conversation_id: string } | undefined;
       scopeConversationId = cur?.conversation_id;
     }
-    // t141 round 2 — the scopers' rule, not a missing stamp: an OWN row stays unless POSITIVELY a person's reply in
-    // another conversation (`subject_kind='conv'`; unlabelled = judged by its stamp); the live turn's rows are the
-    // turn fact. C17 stands: never ANOTHER human's inbound.
+    // An OWN row stays unless it is positively a person's reply in another conversation (subject_kind='conv'; an
+    // unlabelled row is judged by its stamp); the live turn's rows are the turn fact. Never another human's inbound.
     const ownKept = "(role IN ('assistant','tool') AND (turn_number = ? OR IFNULL(subject_kind, "
       + "CASE WHEN conversation_id IS NULL THEN '' ELSE 'conv' END) <> 'conv'))";
     const peerUnfiled = '(source_agent_id IS NOT NULL AND conversation_id IS NULL)';
@@ -283,16 +236,11 @@ export function recallRecentThread(agentId: string, opts: RecallOptions): string
   try {
     const includeToolResults = opts.includeToolResults === true;
     const truncateChars = Math.min(4000, Math.max(200, opts.truncateToolResultChars ?? 1500));
-    // User/assistant message cap. Default 1500 (parity with tool result cap)
-    //, before this it was hardcoded to 600 with no escape hatch and no
-    // truncation marker, so messages got silently cut and the agent had no
-    // way to know or fetch the rest. Max 8000.
+    // User/assistant message cap: default 1500 (parity with the tool result cap), max 8000.
     const messageChars = Math.min(8000, Math.max(200, opts.truncateMessageChars ?? 1500));
 
-    // Resolve before_id → insertion-key cursor. If invalid, fall back to "newest first".
-    // T5: the cursor is `seq`, not `created_at`. Pagination has to be strictly monotonic or
-    // a page boundary that lands inside one second either repeats rows or skips them, and
-    // `created_at` is second-granular TEXT. `seq` is the insertion key and cannot tie.
+    // Resolve before_id to an insertion-key cursor; if invalid, fall back to newest first. The cursor is `seq` (the
+    // insertion key, cannot tie), not second-granular created_at, so a page boundary never repeats or skips rows.
     let beforeSeq: number | null = null;
     if (opts.beforeId) {
       const cursorRow = db
@@ -320,14 +268,8 @@ export function recallRecentThread(agentId: string, opts: RecallOptions): string
       clauses.push('seq < ?');
       params.push(beforeSeq);
     }
-    // T5: ONE query over ONE table. This used to UNION `messages` with
-    // `inter_agent_messages`, NULL-pad the columns the second table lacked and dedup the
-    // double-homed ids with an anti-join, because peer A2A traffic had its own home. It no
-    // longer does: agent-to-agent rows are `lane='a2a'` in this table, so the scope clauses
-    // above reach them by reading columns instead of by reaching into a second store — and,
-    // for the first time, so do FTS and the summaries. Recall deliberately spans every lane
-    // the agent owns; the `chat_messages` view is what a PERSON sees.
-    // STRIP; requirement preserved: recall covers agent-to-agent history.
+    // ONE query over ONE table: agent-to-agent rows are lane='a2a' in messages, so the scope clauses above reach
+    // them, and recall deliberately spans every lane the agent owns (chat_messages is what a PERSON sees).
     const whereSql = `${clauses.join(' AND ')} AND ${rolesClause}`;
     const sql = `
       SELECT id, role, content, datetime(created_at/1000,'unixepoch') AS created_at, attachments
@@ -379,13 +321,9 @@ export function recallRecentThread(agentId: string, opts: RecallOptions): string
     }
 
     const lines: string[] = [];
-    // RC-3 item 3: label the UNSCOPED view. Live context is conv-scoped, but
-    // scope:'all' recall is the raw merged multi-conversation soup; without this
-    // label the agent flips between two inconsistent views of "what just happened"
-    // and misreads the extra rows as its live context being corrupt (the "I see you
-    // in the recall but not your actual message text" panic). Explain the difference
-    // at the source instead. (The counterparty name is not resolved at this layer, so
-    // the label says "the current conversation" rather than naming it.)
+    // Label the UNSCOPED view: live context is conversation-scoped but scope:'all' is the merged multi-conversation
+    // view, and without the label the agent misreads the extra rows as its live context being corrupt. The
+    // counterparty is not resolved at this layer, so the label says "the current conversation".
     if (opts.scope === 'all') {
       lines.push(
         `[UNSCOPED view: includes ALL conversations and background lanes; your live ` +
@@ -403,19 +341,15 @@ export function recallRecentThread(agentId: string, opts: RecallOptions): string
     lines.push(`[Recent thread, ${headerParts.join(', ')}. Raw from messages table.]`);
     lines.push('');
 
-    const elsewhere = requestForAnotherTurn(agentId);   // t165: a peer's request awaiting ITS OWN turn says so
+    const elsewhere = requestForAnotherTurn(agentId);   // a peer's request awaiting ITS OWN turn says so
     let truncatedResultCount = 0;
     let oldestIncludedId: string | null = null;
     let messagesShown = 0;
 
     for (const msg of slice) {
       if (!oldestIncludedId) oldestIncludedId = msg.id;
-      // RC-3 item 1: count a row as "shown" ONLY if it actually emits at least one
-      // line. The old `messagesShown += 1` counted every FETCHED row, so a body-less
-      // response (an assistant row that is pure tool_use with include_tool_calls=false,
-      // or a system row > 200 chars) footed "Showed 5 messages" with nothing visible,
-      // which the agent read as corruption ("I see you in the recall but not your
-      // message text"). Comparing lines.length before/after makes the count truthful.
+      // Count a row as "shown" only if it emits at least one line, so a body-less row (a pure tool_use with
+      // include_tool_calls=false, or a long system row) never inflates the "Showed N messages" footer.
       const linesBefore = lines.length;
 
       const role = ROLE_LABEL[msg.role] ?? msg.role.toUpperCase();
@@ -433,11 +367,8 @@ export function recallRecentThread(agentId: string, opts: RecallOptions): string
           );
         }
       } else if (msg.role === 'tool') {
-        // Only emitted when includeToolResults=true; otherwise tool rows
-        // were filtered out by the SQL. Render with truncation.
-        // Note: tool results emitted next to their tool_use (in the assistant
-        // branch below) are consumed from toolResultsByUseId and won't appear
-        // here. This branch is the fallback for orphaned tool rows.
+        // Only reached when includeToolResults=true (otherwise the SQL filtered tool rows out). Results emitted next to
+        // their tool_use are consumed from toolResultsByUseId; this branch is the fallback for orphaned tool rows.
         const tuid = extractToolUseId(msg.content);
         if (!tuid || toolResultsByUseId.has(tuid)) { // not already emitted next to a tool_use
           const resultText = parseToolContent(msg.content);
@@ -489,15 +420,12 @@ export function recallRecentThread(agentId: string, opts: RecallOptions): string
       if (lines.length > linesBefore) messagesShown += 1;
     }
 
-    // Footer, impossible to misread. Always tells the agent how to get
-    // older slices, where the truncation cursor is, and how many results
-    // were clipped.
+    // Footer: tells the agent how to get older slices, where the cursor is, and how many results were clipped.
     lines.push('');
     const footerParts: string[] = [];
     footerParts.push(`Showed ${messagesShown} messages from ${slice.length} fetched rows`);
-    // RC-3 item 1: when fetched > emitted, the gap is tool-activity-only rows that
-    // rendered nothing. Say so explicitly so a body-less footer is never misread as
-    // corruption. This single line would have prevented the 7/12 panic.
+    // When fetched > emitted, the gap is tool-activity-only rows that rendered nothing; say so, so a body-less footer
+    // is never misread as corruption.
     if (messagesShown < slice.length) {
       footerParts.push(
         `${slice.length - messagesShown} rows in this window are tool-activity only; pass include_tool_calls=true to see them`,
