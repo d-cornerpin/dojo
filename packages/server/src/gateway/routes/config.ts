@@ -11,7 +11,7 @@ import { CreateProviderSchema, EditProviderSchema, EnableModelsSchema, ProviderP
 import { createLogger } from '../../logger.js';
 import { DEFAULT_SOUL_MD as DEFAULT_SOUL, DEFAULT_USER_MD as DEFAULT_USER } from '../../prompt/templates.js';
 import { getOllamaModelInfo } from '../../services/ollama.js';
-import { STANDARD_DECISION_MODEL } from '../../services/local-standard.js';
+import { STANDARD_DECISION_MODEL, isStandardModelRow } from '../../services/local-standard.js';
 import type { Provider, Model, ThinkingLevel } from '@dojo/shared';
 import { contractForModel } from '../../agent/model-contract.js';
 import { noteRouteFailure, routeFailure } from './route-failure.js';
@@ -109,6 +109,7 @@ function reassignAffectedAgents(modelIds: string[]): number {
 }
 
 const logger = createLogger('config-routes');
+const STANDARD_ROW_STAYS = 'The Dojo itself runs on this model for memory summaries and quick checks, so it stays on.';
 
 // Fallback Anthropic models, used only if the models.list() API call fails
 const ANTHROPIC_MODELS_FALLBACK = [
@@ -1658,6 +1659,7 @@ configRouter.delete('/models/:id', async (c) => {
     | { id: string; name: string; api_model_id: string }
     | undefined;
   if (!model) return c.json({ ok: false, error: 'Model not found' }, 404);
+  if (isStandardModelRow(id)) return c.json({ ok: false, error: STANDARD_ROW_STAYS }, 409);
 
   const agents = db.prepare(
     "SELECT id, name FROM agents WHERE model_id = ? AND status != 'terminated'",
@@ -2141,7 +2143,9 @@ configRouter.post('/models/disable', async (c) => {
   }
 
   const db = getDb();
-  const { modelIds } = parsed.data;
+  // The Dojo's own pair is hard-wired: it leaves the batch, and a batch of only the pair is refused.
+  const modelIds = parsed.data.modelIds.filter((id) => !isStandardModelRow(id));
+  if (modelIds.length === 0) return c.json({ ok: false, error: STANDARD_ROW_STAYS }, 409);
 
   const updateStmt = db.prepare(`
     UPDATE models SET is_enabled = 0, updated_at = datetime('now') WHERE id = ?
