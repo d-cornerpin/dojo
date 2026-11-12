@@ -1,14 +1,5 @@
-// ════════════════════════════════════════
-// PHASE-6 T4 (CUT 6) — the `assemble` step's TWO FIRST-ITERATION HINTS, moved
-// byte-faithfully out of `loop.ts`: the technique matcher and the context-gap
-// nudge. They are one file because they are one shape — both fire on the first
-// iteration of a turn that carries a real user message, both append to the TAIL
-// past the volatile boundary, and both go through the registry rather than
-// touching the array themselves.
-//
-// The split is on a seam the block already had: the two sit adjacent in the span
-// and share their fire condition to the character.
-// ════════════════════════════════════════
+// The assemble step's two first-iteration hints: the technique matcher and the context-gap nudge.
+// One file because one shape: same fire condition, both append past the volatile boundary via the registry.
 
 import { isPMAgent } from '../../../../config/platform.js';
 import { listTechniques } from '../../../../techniques/store.js';
@@ -33,34 +24,16 @@ export interface TechniqueHintsInput {
   readonly roomTokens?: number;   // what the array has left for this injection (`memory/technique-room.ts`)
 }
 
-/** Appends nothing to `state`: neither block writes it. Both mutate `mctx` and the
- *  message array in place, exactly as they did inside the loop body. */
+/** Appends nothing to `state`: neither block writes it; both mutate `mctx` and the messages in place. */
 export async function injectTechniqueAndGapHints(state: AgentTurnState, input: TechniqueHintsInput): Promise<void> {
   const { agentId, turnCtx, lastUserMessageContent, mctx, messages, roomTokens } = input;
 
-  // ── Technique matcher (Part VI #5, Phase 5) ──
-  // Replaces v1's "MANDATORY: Check Techniques Before Starting Work"
-  // prompt instruction with engine-side fuzzy matching: when the user
-  // sends a message, the engine matches their intent against published
-  // techniques and surfaces relevant ones in the system prompt. The
-  // agent doesn't have to remember to check the index.
-  //
-  // Only fires:
-  //   - on the first loop iteration of a turn (not per tool call)
-  //   - when there is a last user message (not on auto-continuations,
-  //     A2A wakes, or PM pokes, those carry their own context)
-  //   - not for the PM agent (situation reports land as role='user',
-  //     don't need technique hints injected on every poke tick).
+  // Engine-side fuzzy matching of the ask against published techniques, not a prompt instruction.
+  // Fires only: first loop iteration, a real user message, never the PM (its reports land as role='user').
   if (state.loopCount === 1 && lastUserMessageContent && !isPMAgent(agentId)) {
     try {
-      // UX-ACCESS A4 — THE CANDIDATE SET IS THE AGENT'S GRANT, NOT THE BOX'S.
-      //
-      // This is the loudest of the four technique seams and the reason the grant
-      // could not be advertisement-only: a STRONG match inlines the whole
-      // TECHNIQUE.md as its own message and calls `recordTechniqueUsage` below —
-      // the agent runs a standing procedure it never asked for and never saw a
-      // door for. Filtering here is the door, and it is the same predicate the
-      // index and `checkTechniqueAccess` ask.
+      // The candidate set is the agent's GRANT, not the box's: a strong match inlines the whole TECHNIQUE.md
+      // and records usage, so this filter is the door, the same `mayUseTechnique` every technique reader asks.
       const techniques = listTechniques({ state: 'published' })
         .filter((t) => mayUseTechnique(agentId, t.id))
         .map((t) => ({
@@ -69,37 +42,14 @@ export async function injectTechniqueAndGapHints(state: AgentTurnState, input: T
           description: t.description ?? undefined,
           tags: t.tags,
         }));
-      // Match the ask against technique-intent embeddings (remediation
-      // Phase 2). Semantic matching went GREEN on the floor model in
-      // S5.4/S5.5 (0.56/0.68/0.72 strong matches on zero-overlap
-      // phrasings; clean on unrelated pings). The token-overlap matcher
-      // survives only as semanticTechniqueMatches' internal fallback for
-      // when the embedding service is down (recall weakens, never zeroes).
+      // Semantic matching against technique-intent embeddings; token overlap remains only as its fallback.
 
-      // Attachment-aware query (remediation Phase 3, S5.1/S5.2): keep the
-      // attachment filename/kind as intent signal, strip pointer
-      // boilerplate so a photo-with-little-text message can still match a
-      // photo technique.
+      // Attachment-aware query: keep filename/kind as intent signal, strip pointer boilerplate.
       const matchQuery = buildTechniqueMatchQuery(lastUserMessageContent);
       const matches = await fitsTheAgentsIntegrations(agentId, await semanticTechniqueMatches(matchQuery, techniques));
       if (matches.length > 0) {
-        // Two modes:
-        //   - STRONG MATCH (score >= 0.5): the engine loads TECHNIQUE.md
-        //     and WRAPS the user's most recent message with the technique
-        //     body, framed as authoritative guidance from the user. The
-        //     wrap is in-message (user-role, adjacent to the ask) rather
-        //     than appended to the system prompt, frontier models weight
-        //     user-role instructions and recent tokens far more than
-        //     buried system-prompt rules. v2.2.8 inlined into the system
-        //     prompt and the model still ignored it; v2.3.2 puts the
-        //     technique where the model actually pays attention.
-        //   - WEAK MATCH (score < 0.5): keep the existing hint behavior
-        //     in the system prompt; agent decides whether to load.
-        //
-        // Cap at one auto-injected technique per turn to keep token cost
-        // bounded. If the technique is too large to inline (>25K chars ≈
-        // 6K tokens), still wrap the user message but with a load-it
-        // instruction instead of the full body.
+        // Strong match (score >= threshold): the technique body as its own message after the ask.
+        // Weak match: a "may be relevant" note, the agent decides. At most one technique inlined per turn.
         const STRONG_MATCH_THRESHOLD = SEMANTIC_STRONG_THRESHOLD;
         const MAX_INLINE_CHARS = 25_000;
         const strongMatch = matches[0].score >= STRONG_MATCH_THRESHOLD ? matches[0] : null;
@@ -115,19 +65,10 @@ export async function injectTechniqueAndGapHints(state: AgentTurnState, input: T
             const detail = getTechniqueDetail(strongMatch.technique.id);
             if (detail?.instructions && detail.instructions.length > 0) {
               const md = detail.instructions;
-              const tooLarge = md.length > MAX_INLINE_CHARS || !techniqueFitsRoom(md.length, roomTokens);   // t29: or more than the room left
-              // Audit C12: the old implementation PREPENDED this text into
-              // the user's own message, so an engine directive borrowed
-              // tier-1 authority and structurally outranked the user's
-              // actual words. The preserved reason (v2.2.8 → v2.3.2
-              // history): adjacency to the ask is what makes the model
-              // follow the technique; system-prompt placement was ignored.
-              // So: keep adjacency by injecting a SEPARATE engine-marked
-              // message right after the ask, framed at its true tier
-              // (task/technique notes, below the live user message).
-              // v3.5 owner test 2, fix rank 5: a FACT, not an order. The old header named the mechanism ("engine-injected"),
-              // asserted a match ("This task matches") and handed the model a decision ("Follow ... unless"); the model
-              // narrated its decision to the owner. The note says what the engine knows, and nothing else.
+              const tooLarge = md.length > MAX_INLINE_CHARS || !techniqueFitsRoom(md.length, roomTokens);   // or more than the room left
+              // A SEPARATE engine-marked message right AFTER the ask: prepending into the user's own
+              // message would outrank their words; adjacency is what makes the model follow the technique.
+              // A FACT, not an order: it says what the engine knows; naming a decision made it narrate.
               const header = `[Engine note: a saved technique, "${strongMatch.technique.name}", may be relevant to this request.`;
               if (tooLarge) {
                 techniqueInjection =
@@ -158,33 +99,25 @@ export async function injectTechniqueAndGapHints(state: AgentTurnState, input: T
           }
         }
 
-        // Inject as its own message AFTER the ask (post-assembly, so the
-        // role-merge mutation cannot fuse it into the user's message or a
-        // tool_result). The DB-stored rows are untouched, only this
-        // in-flight model call sees the injection.
+        // Its own message AFTER the ask (post-assembly): role-merge cannot fuse it; stored rows untouched.
         if (techniqueInjection) {
           mctx.techniqueStrong = techniqueInjection;
           injectRegistryMessage('msg.technique-strong', messages, mctx);
         }
 
-        // Weak matches (and the strong match if its load failed) get the
-        // legacy "consider these" hint.
+        // Weak matches (and a failed strong load) get the "may be relevant" note.
         const hintMatches = injectedTechniqueId === null
           ? matches
           : weakMatches;
         if (hintMatches.length > 0) {
-          // v3.5 owner test 2, fix rank 5: facts, not orders (no "matched", no "load any", no match strength).
           const lines = hintMatches.map((m) => {
             const desc = m.technique.description ? `: ${m.technique.description}` : '';
             return `- "${m.technique.name}"${desc}. use_technique('${m.technique.id}') loads it.`;
           });
           const weakHint = `[Engine note: ${injectedTechniqueId ? 'other saved techniques that' : 'saved techniques that'} may be relevant to this request.]\n` +
             lines.join('\n');
-          // Inject as a post-tail engine message (NOT appended to the
-          // system prompt). The match-strength wording changes per user
-          // message, so keeping it out of the system prefix preserves
-          // prompt-cache warmth across turns. Mirrors the strong-match
-          // injection above (its own message, after the ask).
+          // Post-tail engine message, NOT the system prompt: the match wording changes per message, so
+          // keeping it out of the system prefix preserves prompt-cache warmth across turns.
           mctx.techniqueWeakHint = weakHint;
           injectRegistryMessage('msg.technique-weak', messages, mctx);
         }
@@ -196,10 +129,7 @@ export async function injectTechniqueAndGapHints(state: AgentTurnState, input: T
         }, agentId);
       }
     } catch (err) {
-      // "no such table: techniques" fires during integration test runs
-      // (mocked in-memory DB without the techniques table) and pre-migration
-      // fresh installs. It's not a production failure mode, log at debug,
-      // not warn, so it doesn't pollute the WARN-rate acceptance signal.
+      // "no such table" is tests/fresh-install noise: debug, not warn, keeps the WARN-rate signal clean.
       const msg = err instanceof Error ? err.message : String(err);
       const isMissingTable = /no such table/i.test(msg);
       if (isMissingTable) {
@@ -210,20 +140,10 @@ export async function injectTechniqueAndGapHints(state: AgentTurnState, input: T
     }
   }
 
-  // ── Context-gap detection (2026-06-15, "ask when stuck") ──
-  // The engine nudges the agent to ASK the user when it can SEE the agent
-  // lacks enough to proceed (v1: an attachment with no instruction),
-  // instead of inferring intent or hoping a weak model notices. Advisory
-  // [Engine hint] via the one engine-message channel; the agent uses
-  // judgment (and ignores it when a task/technique/context covers the gap).
-  // Same fire conditions as the technique matcher: first iteration, real
-  // user message, not the PM.
+  // Engine sees a gap (an attachment with no instruction): advisory nudge to ASK; the agent may ignore it.
   if (state.loopCount === 1 && lastUserMessageContent && !isPMAgent(agentId)) {
     try {
-      // Same site, same alternation guard, byte-identical injection. Registry
-      // mode renders msg.context-gap (same detectContextGap call) and injects
-      // through the registry channel; legacy mode inline. The guard is the
-      // loop's (it depends on the live messages tail).
+      // The guard is the loop's: it reads the live messages tail; the registry renders the gap message.
       if (messages.length === 0 || messages[messages.length - 1].role === 'user') {
         injectRegistryMessage('msg.context-gap', messages, mctx);
       }
@@ -231,12 +151,8 @@ export async function injectTechniqueAndGapHints(state: AgentTurnState, input: T
   }
 }
 
-/**
- * v3.5 owner test 2, fix rank 5: AN M365 TECHNIQUE NEVER RIDES A GMAIL ASK. The gate is structural: a technique whose
- * procedure names an integration's tools (`techniqueFamilies`, from the tool-name table, never prose) is offered only when
- * the agent can use that integration now (configured, granted, connected). A technique that names no integration is not
- * gated. Never throws: an unreadable technique is offered as before.
- */
+/** An M365 technique NEVER rides a Gmail ask: one naming an integration's tools (from the tool-name table,
+ *  never prose) is offered only when the agent can use that integration now. Never throws: offer blind. */
 async function fitsTheAgentsIntegrations<M extends { technique: { id: string; tags?: string[] } }>(agentId: string, matches: M[]): Promise<M[]> {
   if (matches.length === 0) return matches;
   const usable = await usableIntegrationFamilies(agentId);

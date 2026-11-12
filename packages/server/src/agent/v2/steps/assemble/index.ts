@@ -1,40 +1,6 @@
-// ════════════════════════════════════════
-// PHASE-6 T4 (CUT 6) — THE `assemble` STEP. RULING P6-R1: a step is a DIRECTORY
-// with one entry point; this is it. CUT 6 in the ordinal order (P6-R3(3)), and
-// the cut whose close is T12's SECOND ORDINAL CHECKPOINT.
-//
-// WHAT MOVED: `loop.ts`'s `assemble` span — build the one shared turn context, choose the
-// model this iteration dials (t212: BEFORE it is built, so an auto-routed turn is built once,
-// for its pick; `call-llm/model-selection.ts`), ask the allocator for that model's window,
-// record the VOLATILE BOUNDARY, then append the
-// loop's own tail entries (technique hints, the context-gap nudge, the multi-step
-// scaffold and its notices, the delegation hint, the user's attachments) and drain
-// one steer onto the tail.
-//
-// WHAT THIS STEP IS ALONE IN OWING, and both are in its contract test:
-//   • SEVEN OUTPUTS — the most of any tranche, against CUT 5's two. They are the
-//     whole of what the model call consumes: the assembled context, its message
-//     array, its system prompt, the volatile boundary, the injection context, the
-//     steer awaiting confirmation and (t212) the model it was all built for. `callLLM`'s own context comment already
-//     said so before this cut existed ("five of its inputs … are produced by
-//     `assemble`, inside this same iteration"), so the outputs are not a new
-//     surface — they are the seam that was already written down.
-//   • THE CACHE-PREFIX LAW'S OWN SPAN (OR7 / roadmap non-negotiable #10).
-//     `volatileFrom` is recorded HERE, at the instant the allocator's work ends
-//     and before the loop appends anything; every injection below lands at or
-//     after it. A pure reorder with byte-identical content is INVISIBLE to the
-//     release-gate prefix check (it reads only system prompt and tools), which is
-//     why the contract test asserts the boundary itself rather than trusting the
-//     golden gates alone — and why both goldens ran before every commit here.
-//
-// WHAT STAYED IN THE DRIVER, DELIBERATELY: the `advance` into this phase, so
-// `validate()` runs on the transition and rule 2 of the shared contract (the phase
-// belongs to the driver) holds; and `STALE_TASK_WINDOW_MINUTES`, which is passed
-// on the context rather than moved or copied — it is declared at module level in
-// `loop.ts`, a guard pins it there BY PATH on purpose (`work-reaper.test.ts`, the
-// narrower and therefore stronger corpus), and `execute` reads it too. One
-// declaration, handed across, is the only shape that keeps all three true.
-// ════════════════════════════════════════
+// THE `assemble` STEP: a step is a directory with one entry point; this is it. It builds the one
+// shared turn context, picks the model before the build, records the volatile boundary, appends the
+// loop's tail entries, and drains one steer onto the tail. The driver owns the advance into this phase.
 
 import { liveAddress } from '../../turn-address-live.js';
 import { assembleContext, type AssembledContext } from '../../../../memory/assembler.js';
@@ -65,12 +31,9 @@ const logger = createLogger('v2-loop');
 /** The phase the driver advances INTO before calling this step. It never writes it. */
 export const ASSEMBLE_PHASE = 'assemble' as const;
 
-/** The array the assembler hands over and the injections append to. */
 type ModelMessage = AssembledContext['messages'][number];
 
-/** Everything the span read from the driver, measured rather than guessed: the binder
- *  census after this tranche's three carrier commits found 22 crossing declarations,
- *  of which `state` rides the step contract and these are the rest. */
+/** Everything the span read from the driver, measured not guessed; `state` rides the step contract. */
 export interface AssembleContext {
   readonly agentId: string;
   readonly turnCtx: TurnContext;
@@ -90,32 +53,20 @@ export interface AssembleContext {
   readonly latestUserSource: 'text' | 'voice' | null;
   readonly mostRecentIsA2A: boolean;
   readonly pendingEngineEvent: { rowid: number; originIntent?: string | null } | null;
-  /**
-   * T83 fix round 2: the newest inbound row, the SAME one `isNotificationTurn`
-   * (`preflight/turn-classification.ts`) tested to classify this turn. Read ONLY to
-   * resolve the notification trigger's own message id for `engineEventKeepFullId` —
-   * never re-classified here, `isNotificationTurn` is the one decision.
-   */
+  /** The newest inbound row, the SAME one `isNotificationTurn` tested; read only to resolve its id. */
   readonly mostRecentInbound: { rowid: number } | null | undefined;
   readonly waitingConvs: ReadonlyArray<unknown>;
-  /** Rides BY VALUE on positive evidence (#15), not on an absence: one write site,
-   *  in `postCallClassify`, straight-line — nothing can write it while the driver is
-   *  suspended awaiting this step. CUT 3's own by-value finding for this same local. */
+  /** Safe BY VALUE: its one write site (post-call terminal text) cannot run while this step is awaited. */
   readonly engineStartAckDeliveredThisTurn: boolean;
-  /** The stale-work window, PASSED rather than moved or copied — see the header. */
   readonly staleTaskWindowMinutes: number;
-  /** Driver CLOSURES and helpers, passed as values so their bindings stay live across
-   *  the boundary (CUT 2's precedent) and so a step never points back at the driver. */
+  /** Driver CLOSURES and helpers, passed as values so bindings stay live and no step points back. */
   readonly startAckRepliedNow: () => boolean;
-  /** t212: the model is chosen here, before the build. An auto-routed turn's `contextModelId` is the
-   *  `'__auto__'` stand-in, never built for; a pinned turn's is its model. */
+  /** Chosen here, before the build; `contextModelId` `'__auto__'` is only a stand-in, never built for. */
   readonly isAutoRouted: boolean;
   readonly revertTriggerStampOnAbort: () => void;
 }
 
-/** The seven values the span DECLARES and the rest of the turn reads. A module cannot
- *  leave a declaration behind for its caller, so they come back on the proceed arm,
- *  where the type puts them out of reach of every other arm. */
+/** A module cannot leave a declaration behind: the span's seven values come back on the proceed arm. */
 export type AssembleOutcome =
   | {
       readonly directive: 'proceed';
@@ -126,15 +77,8 @@ export type AssembleOutcome =
       readonly volatileFrom: number;
       readonly modelContext: AssemblyContext;
       readonly steerAwaitingConfirm: SteerEntry | null;
-      /** t212: the model this was built for, and the router's facts the call step reads. */
       readonly selection: ModelSelection;
-      /**
-       * T82a fix wave — THE EXACT TURN CONTEXT `assembleContext` WAS CALLED WITH. `callLLM`
-       * re-runs `assembleContext` when a FALLBACK pick (or this iteration's own tail) does not
-       * fit, and must call it with the SAME turn context or the re-assembly would silently
-       * diverge in content (a different counterparty header, a different othersWaiting count)
-       * from the one this iteration decided. One object, handed across, not rebuilt.
-       */
+      /** The context `assembleContext` saw: callLLM's fit re-assembly reuses it, or headers and counts diverge. */
       readonly assemblyTurnContext: PromptTurnContext;
     }
   | { readonly directive: 'exit'; readonly state: AgentTurnState; readonly reason: string };
@@ -149,72 +93,11 @@ export async function runAssemble(stateIn: AgentTurnState, ctxIn: AssembleContex
   } = ctxIn;
   let state = stateIn;
 
-  // Intent companion to attribution: a quick conversational ask ("add a reminder",
-  // "move my 10am") must not spin up a tracked, PM-validated task that then churns.
-  // Classify the trigger, a 'simple' ask from a user is conversational, a 'complex'
-  // one is project work, and pass it so the assembler injects guidance to handle
-  // it directly. (Reuses the complexity classifier that was computed but unconsumed.)
+  // Intent companion: a quick conversational ask must not spin up a tracked task that then churns.
   const conversationalTurn = counterparty.kind === 'user'
     && await isConversational(turnCtx, agentId, lastUserMessageContent ?? '');
-  // Content-preservation for THE ROW THAT IS THIS TURN'S OWN TRIGGER.
-  //
-  // T83 (behav-sig:a9ca4fea) — WAS scoped to origin_intent === 'a2a_request' only (Healer
-  // QUESTION, PM escalation, destructive-gate approval — content the receiver must act on,
-  // an approval token, the full escalation). But `isEngineTurn` is ALREADY the general
-  // claim: it is true iff `pendingEngineEvent != null` (`preflight/turn-classification.ts`
-  // `isEngineTurn = !isA2ATurn && !hasUnansweredUser && pendingEngineEvent != null`), and
-  // OPEN-11's own comment on that line says it plainly for every engine turn, not one
-  // intent: "The scheduler payload itself is the directive this turn."
-  // `engine-riders.ts` draws the real line, structurally, upstream of this file: a
-  // **deliverable event** (schedule fire, tracker assignment, reminder, healer action, "a
-  // peer's completion report", an a2a request, a spawn kickoff, a PM review) IS the reason
-  // for a turn, while a **rider** (thrash steer, delegation hint, the fan-out compile order,
-  // …) merely rides one — and `getPendingEngineEvent`'s own query (`DELIVERABLE_ENGINE_EVENT_
-  // WHERE`) excludes every `ENGINE_RIDER_INTENTS` value by construction, so `pendingEngineEvent`
-  // can NEVER be a rider. Narrowing this exemption to one deliverable intent left every OTHER
-  // one — 'completion_report' among them — subject to the EVENTS/awareness lane's truncation
-  // exactly like an ambient notice, even though it is this turn's whole reason for existing.
-  //
-  // MEASURED (the incident this closes): a freshly spawned A2A worker sends its DELIVERABLE
-  // and exits; `close-the-loop.ts` inserts a `completion_report` engine event and the runtime
-  // drain wakes it for a follow-up turn. That turn's ENTIRE live tail is the agent's own
-  // send_to_agent tool_use/tool_result pair (a fresh spawn has nothing else) plus this one
-  // 'user'-role trigger row. The awareness sweep (this exemption's only gate) pulled the
-  // trigger out into the gisted events lane, leaving `freshTail` = [assistant tool_use, an
-  // all-tool_result "user" row] — no leading user message — which `applyIntegrityPass`'s
-  // "must start with role=user" repair then shifts to EMPTY. Assembly's own zero-guard fired
-  // (`memory-assembler: Context assembly produced 0 messages after filtering`) and recovered
-  // via an unscoped "last user message in the DB" query that happened, by luck of recency
-  // ordering, to land back on the very row that had just been filtered out.
-  //
-  // THE FIX IS THE RULE, NOT A SECOND INTENT LITERAL: keep THE PENDING ENGINE EVENT full
-  // whenever it is driving this turn, full stop — `isEngineTurn && pendingEngineEvent` is
-  // already exactly "this row is why this turn exists", by the definition one file over.
-  // Every OTHER engine-origin row in the tail (an ambient notice that is NOT the row
-  // driving this particular turn) is untouched: it is not `pendingEngineEvent` and stays
-  // gisted, per T68b's charter ("every OTHER engine notice ... still gists at 400").
-  //
-  // T83 FIX ROUND 2 (review, behav-sig:a9ca4fea — structural code-read, no live repro) —
-  // THE SAME CLASS HAS A SECOND MEMBER: THE NOTIFICATION TURN.
-  //
-  // `isNotificationTurn` (RC-5.2, `preflight/turn-classification.ts:266-293`) is a wake
-  // whose own trigger is an UNAUTHORIZED human inbound row (a mailbox notice, an unknown
-  // sender) — structurally the exact same shape as an engine turn: one specific row IS
-  // the reason this turn exists, and `scopeToHumanConversation` (`memory/assembler.ts`,
-  // "Unauthorized human inbound ... is NOT a conversation. Keep it so the caller can lift
-  // it into the EVENTS/awareness lane") deliberately keeps it in the scoped tail so the
-  // SAME awareness partition can gist it — the identical door `scopeToEngineTurn`'s kept
-  // engine rows walk through. `isEngineTurn` excludes `isNotificationTurn` by construction
-  // (`isNotificationTurn` requires `!isEngineTurn`), so the gate above never fires for it,
-  // and a history-sparse agent whose whole tail is that one unauthorized row plus its own
-  // prior self-output hits the identical leading-role strip this task already fixed once.
-  //
-  // THE ALTITUDE RULE STANDS: exempt THE TRIGGER ROW BY IDENTITY, never a category. On a
-  // notification turn the trigger is `mostRecentInbound` — the SAME row
-  // `isNotificationTurn`'s own condition just tested — never "every unauthorized row in
-  // the tail" (an older, unrelated unauthorized notice sitting earlier in the session is
-  // NOT this turn's reason for existing and must keep gisting, exactly like an ambient
-  // engine notice that is not `pendingEngineEvent`).
+  // Keep THIS turn's trigger row whole, by row identity, never a category (engine: `pendingEngineEvent`,
+  // notification: `mostRecentInbound`): on a sparse tail gisting it empties the tail. Older notices still gist.
   let engineEventKeepFullId: string | null = null;
   const turnTriggerRowid =
     isEngineTurn && pendingEngineEvent ? pendingEngineEvent.rowid
@@ -227,33 +110,16 @@ export async function runAssemble(stateIn: AgentTurnState, ctxIn: AssembleContex
       engineEventKeepFullId = idRow?.id ?? null;
     } catch { /* best effort, fall back to the truncated awareness gist */ }
   }
-  // C28 Part 1: one shared turn context, threaded into BOTH assembleContext
-  // (system) AND the message-injection mctx, so the msg.turn-context entry can
-  // read counterparty / othersWaiting / conversationalTurn / isEngineTurn (they
-  // are not recomputed).
+  // ONE shared turn context, threaded into BOTH `assembleContext` (system) AND the injection mctx.
   const sharedTurnContext = { latestUserSource, ttsEngine: latestTtsEngine, isA2ATurn, isEngineTurn, isNotificationTurn, counterparty, othersWaiting: Math.max(0, waitingConvs.length - 1), conversationalTurn, engineEventKeepFullId, address: liveAddress(turnCtx.address) };
-  // LIVE = RELOAD, pre-model half (incident 2026-07-06): the persisted-output
-  // visibility keys on the six-way interAgentTurn union (computed post-model,
-  // below), but the dashboard's live suppression needs the turn kind BEFORE the
-  // first chunk/tool frame. Stamp here from the union's PRE-MODEL-knowable
-  // terms: the A2A trigger, an agent counterparty, and the background-A2A
-  // condition (mostRecentIsA2A with no unanswered user, which also subsumes the
-  // exchange term). The spontaneous/pure-background terms depend on what the
-  // model does, so the post-model re-stamp below remains as the catch-up for
-  // later phases of the same turn.
-  // USER TURNS ARE NEVER RECLASSIFIED (owner law 2026-07-09): a turn whose
-  // counterparty is a human stays turnKind 'user' for its whole life, no
-  // matter what it does along the way. Without this guard, the recency terms
-  // below flip a user-facing turn to 'a2a' the moment it delegates via
-  // send_to_agent, which hides the working dots + stop button in regular
-  // (non-wordy) mode and buries the rest of the turn's output as inter-agent
-  // traffic (production transcript 2026-07-09).
+  // Pre-model terms only, stamped now because suppression needs the kind early; the post-call re-stamp adds
+  // the rest. In both places a human-counterparty turn stays 'user' its whole life, never flipped to 'a2a'.
   const preModelInterAgent = counterparty.kind !== 'user' && (isA2ATurn || counterparty.kind === 'agent' || (mostRecentIsA2A && !hasUnansweredUser));
   if (preModelInterAgent && turnCtx.kind !== 'a2a') {
     turnCtx.kind = 'a2a';
     broadcast({ type: 'agent:status', agentId, status: 'working', turnKind: 'a2a', userFacing: !!chosenConvKey });
   }
-  // t212 (v3.4 D11): the model this iteration dials, chosen BEFORE the build, so the one build is for it.
+  // Chosen before the build, so an auto-routed turn is built once, for its pick.
   const routed = await selectModel(state, {
     agentId, isAutoRouted, configuredModelId: contextModelId, lastUserMessageContent, conversationId: turnCtx.conversationId ?? null,
     turnNumber, turnContext: sharedTurnContext, revertTriggerStampOnAbort: ctxIn.revertTriggerStampOnAbort,
@@ -261,69 +127,21 @@ export async function runAssemble(stateIn: AgentTurnState, ctxIn: AssembleContex
   state = routed.state;
   if (routed.said !== undefined) return requestExit(state, routed.said) as Extract<AssembleOutcome, { directive: 'exit' }>;
   const modelId = routed.selection.modelId;
-  const dialWindow = modelId === contextModelId ? contextWindow : agentTurnWindow(agentId, modelId);   // N42: one window for every pick
-  // t140 round 2: the assembly this turn dials never leaves a row out of view without a summary —
-  // rows the trim took are folded (bounded, awaited) and the context assembled again (`out-of-view.ts`).
+  const dialWindow = modelId === contextModelId ? contextWindow : agentTurnWindow(agentId, modelId);   // one window for every pick
+  // The assembly this turn dials never leaves a row out of view without a bounded, awaited summary.
   const ctx = await assembleWithNothingOutOfViewUnsummarised(agentId, dialWindow,
     () => assembleContext(agentId, modelId, sharedTurnContext));
-  // ── S3 (PHASE-3 T3): ASSEMBLY IS A READ; THE TURN OWNS THE WRITE. ──
-  // `memory/assembler.ts` used to `UPDATE agents SET config` from inside its own read
-  // path to clear the one-shot A2A-preempt and Stop markers it had just rendered. That
-  // made any probe, retry or dry-run silently consume a marker the user had earned. The
-  // assembler now REPORTS what it consumed and the turn clears it, once, here.
+  // ASSEMBLY IS A READ; THE TURN OWNS THE WRITE: the assembler REPORTS what it consumed, this clears once.
   clearConsumedOneShotFlags(agentId, ctx.consumedOneShotFlags);
-  // T68b: the assembly's verdict on whether the fan-out compile order arrived WHOLE, carried
-  // to the gate whose refusal text asserts that it did. Re-derived from THIS iteration's
-  // array, never latched — the same discipline `compileOwedGateDecision` states for the owed
-  // list itself. `null` (no compile order in the tail) and `false` (there is one and it was
-  // cut) are the same answer to the only question the gate asks, so both land as `false`.
+  // The compile-order WHOLE verdict for the gate, re-derived from THIS iteration's array, never latched.
   state = advance(state, { compileOrderReachedModel: ctx.compileOrderIntact === true });
-  // PHASE-3 T3: THE VOLATILE BOUNDARY, recorded for the prefix gate. Everything the
-  // ALLOCATOR produced is the cacheable region; everything the LOOP appends below this
-  // point is the tail-append (`lane.loop-tail`) — the technique hints, the context-gap
-  // and delegation hints, the one-shot pending nudge, the tool note, turn-context,
-  // peer-status and the clock. They are volatile BY DESIGN and re-emitted every
-  // iteration, so a gate that judges them as prefix churn reports the prescribed shape
-  // as a defect, which is why `check-message-prefix` could never go green.
+  // THE VOLATILE BOUNDARY for the prefix gate: everything the ALLOCATOR produced is the cacheable region;
+  // everything appended below is the volatile tail, re-emitted every iteration, never prefix churn.
   const volatileFrom = ctx.messages.length;
-  turnCtx.lastAssembledAtIso = new Date().toISOString(); // F9: see assembledContextAsks
+  turnCtx.lastAssembledAtIso = new Date().toISOString(); // see assembledContextAsks
   let systemPrompt = ctx.systemPrompt;
   const messages = ctx.messages;
-  // ── STRIP (PHASE-3 T7 Step 2, 2026-08-01) — the SETTLED_HINT is DELETED, both branches.
-  // It was ~65 tokens of prose on every turn that actually fires (260 chars; 341 / 86
-  // tokens on the rarer settled-wake wording) telling the model not to re-answer the OTHER
-  // conversations visible above it. Scar-tissue ledger, verbatim: "STRIP. Requirement: a
-  // turn acts only on its root; assembly scopes by id, so there is nothing to warn about."
-  // That is the whole argument and it is now literally true rather than aspirational —
-  // when the hint was written (`8bc7d7a`, 2026-07-10) the window really did carry other
-  // conversations, so the prose was the only thing standing between the model and them.
-  //
-  // requirement preserved, three deep and every layer verified alive at this HEAD:
-  //   1. STRUCTURAL — `memory/assembler.ts scopeToHumanConversation` keeps only THIS
-  //      conversation's rows plus the agent's own output for it. There is no other
-  //      conversation in the window to be warned about, so the warning has no referent.
-  //   2. DETERMINISTIC, WIRED, RUNNING — `checks/check-reanswer-ghost.mjs` (54 delivered
-  //      messages in, 54 out, no model call) is on the kit's prompt-gate roster AND the
-  //      dojo REQUIRED list as of this same task, and it is green in-roster. Note what it
-  //      guards and what it does not: it proves the window is never MISSING history, which
-  //      is the cause the hint was compensating for. It was wired FIRST, on purpose —
-  //      RULING P3-R3 exists because the earlier ruling deleted against a guard nobody had
-  //      checked was running.
-  //   3. BEHAVIOURAL — `settled-work-stays-settled` (kit battery) drives a real delivery,
-  //      closes it, wakes the agent on something unrelated, and asserts zero re-answers
-  //      and zero new artifacts. That is the user-facing property the prose asked for,
-  //      asserted on a real model instead of requested from one.
-  //
-  // The `tagMessageLane('engine.settled-hint')` emission goes with it, and with it the
-  // last `registry-exempt` marker in this file's assembly path: the hint needed the
-  // in-flight array, which is why it could never move behind the registry.
-  // Savings: -65 tokens on the fresh tail of every turn, measured (T7 sitting 1; T6's
-  // 234-receipt distribution recorded `engine.settled-hint 65/65`).
-
-  // The assembler's oldest-fresh-tail eviction: it dropped older fresh-tail groups to fit the window.
-  // t207 (owner decision 34): setting old messages aside is routine and nothing is lost (the rows are
-  // saved and folded into a summary), so the owner is told nothing; this log line is for the operator.
-  // Once per turn (the bag carries the latch across iterations).
+  // Older fresh-tail groups dropped to fit: nothing lost, the owner hears nothing; logged once per turn.
   if (!turnCtx.freshTailDropWarned && (ctx.freshTailDropped ?? 0) > 0) {
     turnCtx.freshTailDropWarned = true;
     logger.warn('assembler evicted oldest fresh-tail messages to fit the window (live-view loss)', {
@@ -331,16 +149,11 @@ export async function runAssemble(stateIn: AgentTurnState, ctxIn: AssembleContex
     }, agentId);
   }
 
-  // One message-injection context for this iteration's §3c entries (technique, context-gap,
-  // tracker-notif, nudge, tool-note, turn-context). The loop sets mutable fields (the drained steer,
-  // technique payload) at each site and calls injectRegistryMessage, so injection is registry-owned
-  // (R8). The registry is the only assembler path (R7), so this is always built.
+  // One message-injection context for this iteration's registry entries; the loop sets fields per site.
   const mctx: AssemblyContext = buildAssemblyContext(
     agentId,
     modelId,
     sharedTurnContext,
-    // The steer starts null: which entry (if any) rides this iteration is the DRAIN's
-    // decision, taken below against the declared precedence table.
     { loopCount: state.loopCount, turnNumber, lastUserMessageContent: lastUserMessageContent ?? '', pendingSteer: null },
   );
 
@@ -361,14 +174,13 @@ export async function runAssemble(stateIn: AgentTurnState, ctxIn: AssembleContex
   state = steer.state;
   const steerAwaitingConfirm = steer.steerAwaitingConfirm;
 
-  // Empty-messages guard (preserve v1 behavior at runtime.ts:1014-1020)
+  // A zero-message assembly cannot be dialed: exit clean, and the reason says so.
   if (messages.length === 0) {
     logger.info('v2: assembled context has zero messages, clean exit', {
       agentId,
       loopCount: state.loopCount,
     }, agentId);
-    // T83 FIX ROUND (review IMPORTANT A-3): the idle write that stood here is gone — `teardown`
-    // is the ONE owner now. See `teardown/index.ts`'s `settleStatus`.
+    // The idle write lives with `teardown` (`settleStatus`), its one owner; nothing writes here.
     return requestExit(state, 'empty-assembled-context') as Extract<AssembleOutcome, { directive: 'exit' }>;
   }
 
