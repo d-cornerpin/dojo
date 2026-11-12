@@ -1,16 +1,7 @@
-// ════════════════════════════════════════
-// Gmail Watcher: Polls each connected ACCOUNT's inbox for new emails and
-// notifies the primary agent. Multi-account (Path B) — every connected
-// account of either kind (up to 5 agent + 5 user) is polled independently:
-// its own enable/watch toggle, its own cursor, its own notifiedIds dedup
-// set, and its own failure-tracking state so a flaky account doesn't
-// suppress alerts from the others.
-//
-// The exposed WatcherStatus is an aggregate: `connected` and `enabled` are
-// true if ANY monitored account satisfies them; lastPollAt/lastPollOk reflect
-// the most recent account's poll; counters sum across accounts. The dashboard
-// Health card stays a single row per service. Account-level errors go to logs.
-// ════════════════════════════════════════
+// Gmail watcher: polls each connected ACCOUNT's inbox (up to 5 agent + 5 user) independently and notifies the
+// primary agent; each account has its own watch toggle, cursor, notifiedIds dedup set and failure state, so a flaky
+// account does not suppress the others. WatcherStatus is an aggregate: `connected`/`enabled` are true if ANY
+// monitored account satisfies them, counters sum, and account-level errors go to logs.
 
 import { v4 as uuidv4 } from 'uuid';
 import { resolveOrCreateConversation } from '../memory/conversations.js';
@@ -44,9 +35,8 @@ const LOOKBACK_MARGIN_MS = 15 * 60 * 1000;
 
 // ── Per-account transient state ──
 //
-// One block per connected account so a stuck token on one mailbox doesn't
-// suppress alerting for the others. lastCheckedAt is mirrored from the DB on
-// startup; the in-memory copy is the source of truth during runtime.
+// One block per connected account so a stuck token on one mailbox cannot suppress alerting for the others;
+// lastCheckedAt is mirrored from the DB on startup and the in-memory copy is the truth at runtime.
 interface AccountWatchState {
   lastCheckedAt: string | null;
   lastPollAt: string | null;
@@ -62,8 +52,7 @@ interface AccountWatchState {
   notificationsSinceFailureAlert: number;
 }
 
-// Keyed by account id. Lazily created so accounts added at runtime are picked
-// up on the next poll without a restart.
+// Keyed by account id, created lazily so accounts added at runtime are polled without a restart.
 const accountState = new Map<string, AccountWatchState>();
 
 function stateFor(accountId: string): AccountWatchState {
@@ -158,9 +147,8 @@ function pickEarliest(times: string[]): string | null {
 
 // ── Per-account persistence ──
 //
-// The agent position-1 account keeps the original unprefixed keys (zero data
-// movement for existing installs); every other account is suffixed by its id
-// (the user position-1 row's id is literally 'user', preserving its v2.7 keys).
+// The agent position-1 account keeps the original unprefixed keys (zero data movement for existing installs); every
+// other account is suffixed by its id (the user position-1 row's id is literally 'user').
 
 function lastCheckedKey(accountId: string): string {
   return accountId === 'agent' ? 'gmail_last_checked_at' : `gmail_last_checked_at_${accountId}`;
@@ -257,10 +245,8 @@ async function pollAccount(view: GoogleAccountView): Promise<void> {
   }
 
   try {
-    // First poll of a newly-monitored account: establish the baseline at "now"
-    // and do NOT backfill. "Monitor" means notify on mail that arrives FROM HERE
-    // ON — not flood in everything already sitting in the inbox. Subsequent polls
-    // query `after:` this baseline, so pre-existing mail is never notified.
+    // First poll of a newly-monitored account: set the baseline to "now" and do not backfill; later polls query
+    // `after:` it, so pre-existing mail is never notified.
     if (!s.lastCheckedAt) {
       s.lastCheckedAt = pollStartIso;
       saveLastCheckedAt(accountId, pollStartIso);
@@ -311,18 +297,14 @@ async function pollAccount(view: GoogleAccountView): Promise<void> {
 
     const primaryId = getPrimaryAgentId();
 
-    // The account's own email — used in the notification body so the primary
-    // agent knows which inbox to read from. The tool the agent should use:
-    // agent kind uses gmail_read; user kind uses user_gmail_read. With multiple
-    // accounts per kind the agent also passes the `account` param — surfaced
-    // here so it picks the right mailbox.
+    // The account's own email goes in the notification body, with the read tool (gmail_read or user_gmail_read) and the
+    // `account` param, so the agent picks the right mailbox.
     const accountEmail = view.email;
     const toolHint = kind === 'agent' ? 'gmail_read' : 'user_gmail_read';
     const notifyAccount = accountEmail ?? kind;
     const accountSuffix = kind === 'user' ? "user's Google account" : "agent's Google account";
 
-    // Every agent-mailbox identity across both providers, resolved once per
-    // poll and reused for the self-sent skip below.
+    // Every agent-mailbox identity across both providers, resolved once per poll for the self-sent skip.
     const selfIdentities = listAgentSelfIdentities();
 
     let newCount = 0;
@@ -349,8 +331,8 @@ async function pollAccount(view: GoogleAccountView): Promise<void> {
       };
 
       const headers = msgData?.payload?.headers ?? [];
-      // P44: who the mail went to, where THIS mailbox sits (only its own address: the agent's other mailboxes do not make this copy a
-      // To or Cc one, and the owner-mail "blind copy" check reads this), and the provider's own Authentication-Results.
+      // Who the mail went to, where THIS mailbox sits (only its own address: the agent's other mailboxes do not make
+      // this copy a To or Cc one, which the owner-mail blind-copy check reads), and the provider's Authentication-Results.
       const mailAddressing = gmailAddressingFacts(headers, accountEmail ? [accountEmail] : []);
       const from = headers.find(h => h.name === 'From')?.value ?? 'Unknown sender';
       const subject = headers.find(h => h.name === 'Subject')?.value ?? '(no subject)';
@@ -358,21 +340,13 @@ async function pollAccount(view: GoogleAccountView): Promise<void> {
       const snippet = gmailSnippetText(msgData?.snippet);
       const labelIds = msgData?.labelIds ?? [];
 
-      // Parse the sender address once, up front: it is the decisive signal for
-      // the self-sent skip below and is reused for the direct-message check.
+      // Parse the sender once: it is the decisive signal for the self-sent skip and the direct-message check.
       const fromAddr = (from.match(/<([^>]+)>/) ?? from.match(/(\S+@\S+)/))?.[1]?.toLowerCase() ?? '';
 
-      // Requirement: the agent's own outbound must never wake it (cost plus
-      // reply-loop risk). A label-only test (SENT and not INBOX) can never fire
-      // here: the list query is `in:inbox`, and self-addressed mail carries BOTH
-      // SENT and INBOX. The decisive signal is the SENDER address: it must not be
-      // one of the agent's own mailboxes. That means this watched account AND
-      // every other connected agent-mailbox identity across both providers, so
-      // mail the agent sent from a different one of its own mailboxes into this
-      // one is suppressed too. User-kind mailboxes are excluded from that set:
-      // the owner mailing the agent must still wake it. hasSent stays as a cheap
-      // corroborating signal in the log. The mail remains in the inbox and
-      // searchable; only the wake is suppressed.
+      // The agent's own outbound must never wake it (cost, reply loops). A label test cannot fire (the query is
+      // `in:inbox` and self-addressed mail carries SENT and INBOX), so the decisive signal is the SENDER: not this
+      // watched account nor any other agent-mailbox identity across both providers. User-kind mailboxes are excluded:
+      // the owner mailing the agent must still wake it. The mail stays in the inbox; only the wake is suppressed.
       const hasSent = labelIds.includes('SENT');
       const selfIdentity = !fromAddr
         ? null
@@ -387,8 +361,8 @@ async function pollAccount(view: GoogleAccountView): Promise<void> {
 
       const { getOwnerName } = await import('../config/platform.js');
       const ownerName = getOwnerName();
-      // Direct to the agent: only its own mailbox, from a safe sender (a user mailbox is the human's mail, never answered for them) or
-      // the owner's own email the provider confirmed (`mail-owner-intake.ts` P44: the owner speaking).
+      // Direct to the agent: only its own mailbox, from a safe sender (a user mailbox is the human's mail, never
+      // answered for them) or the owner's own email the provider confirmed (`mail-owner-intake.ts`).
       const ownerMail = await judgeGmailOwnerEmail({ kind, placement: mailAddressing.placement, from, headers, messageId: msg.id, accountId });
       const ownerEmail = ownerMail.state === 'none' ? undefined : ownerMail;
       const isDirectToAgent = ownerMail.state === 'confirmed' || (kind === 'agent' && !!fromAddr
@@ -397,18 +371,15 @@ async function pollAccount(view: GoogleAccountView): Promise<void> {
         messageId: msg.id, directToAgent: isDirectToAgent, toolHint, addressing: mailAddressing, ownerEmail }) + await ownerEmailCommandNote(ownerMail);
 
       const msgId = uuidv4();
-      // P5: email conversation identity = provider + sender + THREAD, so two
-      // threads from one sender (or the same sender across providers) are
-      // different conversations; msg.id kept as the external identity.
+      // Email conversation identity = provider + sender + THREAD, so two threads from one sender are different
+      // conversations; msg.id stays the external identity.
       const conversationId = resolveOrCreateConversation(primaryId, {
         channel: 'email', provider: 'gmail', counterpartyId: fromAddr || from,
         threadRoot: (msg as { threadId?: string | null }).threadId ?? msg.id ?? null,
       });
-      // v3.0.9 — structured routing metadata so the engine auto-routes the
-      // reply off reliable data, not by re-parsing this prose. isDirectToAgent
-      // already encodes the auth verdict (agent-kind mailbox + safe sender);
-      // a user-kind mailbox or unknown sender => authorized:false => the agent
-      // reads it as a notification and never auto-replies on the human's behalf.
+      // Structured routing metadata so the engine auto-routes the reply off reliable data, not re-parsed prose:
+      // isDirectToAgent encodes the auth verdict, and a user-kind mailbox or unknown sender is authorized:false, so the
+      // agent reads it as a notification and never auto-replies for the human.
       const inboundMetaObj = {
         channel: 'email' as const,
         accountKind: kind,
@@ -421,11 +392,8 @@ async function pollAccount(view: GoogleAccountView): Promise<void> {
         mailAddressing,
         ...(ownerMail.state === 'confirmed' ? { relation: 'owner' as const, ownerWords: ownerMail.words, ownerWordsAt: Number((msgData as { internalDate?: string }).internalDate) } : {}),
       };
-      // T4/OR4: channel, sender and the auth verdict are stamped IN the write, from
-      // the meta this watcher just computed — never re-derived. recordInboundMeta
-      // below still records the full blob (account, subject, provider message id).
-      // INSERT OR IGNORE → insertMessageIfAbsent keeps the external_message_id
-      // de-duplication exactly as it was.
+      // Channel, sender and the auth verdict are stamped IN the write, from the meta just computed, never re-derived;
+      // recordInboundMeta below records the full blob. insertMessageIfAbsent keeps the external_message_id dedup.
       const stored = insertInboundMessageIfAbsent({
         id: msgId,
         agentId: primaryId,
@@ -437,7 +405,8 @@ async function pollAccount(view: GoogleAccountView): Promise<void> {
         senderId: inboundMetaObj.sender,
         authorized: inboundMetaObj.authorized,
       });
-      // 801: null = the row landed on a poll whose processed-list save was lost; the live frame is for a first sighting only, or the dashboard shows the same card twice.
+      // null = the row landed on a poll whose processed-list save was lost; the live frame is for a first sighting
+      // only, or the dashboard shows the same card twice.
       if (stored !== null) {
         recordInboundMeta(msgId, inboundMetaObj);
 
@@ -449,14 +418,9 @@ async function pollAccount(view: GoogleAccountView): Promise<void> {
             agentId: primaryId,
             role: 'user' as const,
             content,
-            // Carry the SAME structured inbound_meta into the live broadcast that
-            // the DB row holds, so ws.ts stampChatMessageOrigin derives identical
-            // attribution live and on refetch (mirrors the iMessage OPEN-13 fix).
-            // Without it the live payload fell back to marker-parsing while
-            // refetch used inbound_meta, so a mailbox-notification's visibility
-            // could disagree between the live append and a page refresh.
-            // t106 — the same binding the insert used, on the wire too (R4 reads it live). Why:
-            // `services/__tests__/no-channel-inbound-frame-loses-its-conversation.test.ts`.
+            // Carry the same structured inbound_meta into the live broadcast that the DB row holds, so ws.ts
+            // stampChatMessageOrigin derives identical attribution live and on refetch, and the conversation binding the insert
+            // used is on the wire too.
             conversationId,
             inboundMeta: JSON.stringify(inboundMetaObj),
             tokenCount: null,
@@ -486,9 +450,7 @@ async function pollAccount(view: GoogleAccountView): Promise<void> {
       const runtime = getAgentRuntime();
       const { getOwnerName } = await import('../config/platform.js');
       const ownerName = getOwnerName();
-      // Neutral trigger nudge — the per-email message(s) above carry the real
-      // framing (direct-message-to-agent vs third-party context), so the summary
-      // must not contradict them.
+      // Neutral trigger nudge: the per-email messages above carry the real framing, so this must not contradict them.
       const summary = newCount === 1
         ? `[SOURCE: GMAIL NOTIFICATION] New email in ${notifyAccount}. Details above — act on it as the framing there indicates.`
         : `[SOURCE: GMAIL NOTIFICATION] ${newCount} new emails in ${notifyAccount}. Details above — act on each as the framing there indicates.`;
@@ -526,11 +488,8 @@ async function pollAllAccounts(): Promise<void> {
 // ── Start/Stop ──
 
 /**
- * Reset an account's watch cursor to "now" so monitoring notifies only mail that
- * arrives FROM THIS POINT ON. Called when watch-email is toggled ON (first enable
- * or re-enable) so the watcher never replays the existing inbox or mail that
- * arrived while monitoring was off. The watcher bounce that follows re-hydrates
- * this value from the DB.
+ * Reset an account's watch cursor to "now" so only mail arriving from here on notifies (the inbox is never replayed).
+ * Called when watch-email is toggled ON; the watcher bounce that follows re-hydrates the value from the DB.
  */
 export function markGmailWatchBaselineNow(accountId: string): void {
   saveLastCheckedAt(accountId, new Date().toISOString());
@@ -542,10 +501,8 @@ export function startGmailWatcher(): void {
     return;
   }
 
-  // Hydrate per-account lastCheckedAt from DB. Accounts that have never polled
-  // but are connected + monitored get seeded to "now" so a freshly-connected
-  // mailbox doesn't replay months of history. Others hydrate too so a later
-  // reconnect picks up where the cursor left off.
+  // Hydrate per-account lastCheckedAt from the DB; a connected, monitored account that never polled is seeded to
+  // "now" so a fresh mailbox does not replay history.
   const views = listGoogleAccountViews();
   for (const v of views) {
     const s = stateFor(v.id);

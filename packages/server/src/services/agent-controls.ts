@@ -1,15 +1,6 @@
-// ════════════════════════════════════════
-// services/agent-controls.ts — backs the agent's "control the dojo on the
-// user's behalf" tools. Right now: setting a platform capability model.
-//
-// Kept out of the giant tools.ts so the validation reads clearly and can be
-// unit-tested. Architecture rule #1 (the engine enforces): the agent can
-// only touch the specific, validated settings enumerated here — there is no
-// "write an arbitrary config key" path. Each capability maps to its existing
-// resolver's setter, and we validate the model is enabled and actually has
-// the capability before writing, so a bad pick returns the valid options
-// instead of silently configuring an unusable model.
-// ════════════════════════════════════════
+// Backs the agent's "control the dojo on the user's behalf" tools: only the specific validated settings here can
+// be changed (no arbitrary config-key path), and a model must be enabled and have the capability before it is
+// written, so a bad pick returns the valid options.
 
 import { getDb } from '../db/connection.js';
 import { getModelCapabilities, type Capability } from './capabilities.js';
@@ -88,11 +79,7 @@ export interface SetCapabilityModelResult {
 }
 
 /**
- * Validate, then set the platform-wide model for a capability. Accepts an
- * enabled model id that has the capability, or a recognized local-engine id
- * (transcription only). Returns a user-facing message either way; on failure
- * the message lists the valid options so the agent can self-correct rather
- * than report a dead end.
+ * Validate, then set the platform-wide model for a capability. On failure the message lists the valid options.
  */
 export function setCapabilityModel(slot: CapabilitySlot, modelId: string): SetCapabilityModelResult {
   const target = TARGETS[slot];
@@ -109,11 +96,8 @@ export function setCapabilityModel(slot: CapabilitySlot, modelId: string): SetCa
   }
 
   const db = getDb();
-  // Resolve the model reference forgivingly. The tool description primes model
-  // NAMES ("switch to Flux"), so a weak model often passes a name where a uuid
-  // id is expected and the exact-id lookup misses. Try exact id, then a
-  // case-insensitive name / api_model_id, then a unique name substring; fail
-  // only when nothing matches or a substring is ambiguous.
+  // Resolve the reference forgivingly, since a weak model often passes a name where an id is expected:
+  // exact id, then case-insensitive name / api_model_id, then a unique name substring.
   let row = db.prepare(`SELECT id, name, is_enabled FROM models WHERE id = ?`)
     .get(id) as { id: string; name: string; is_enabled: number } | undefined;
   if (!row) {
@@ -147,12 +131,8 @@ export function setCapabilityModel(slot: CapabilitySlot, modelId: string): SetCa
   return { ok: true, message: `Set the ${target.label} model to "${row.name}" (${row.id}).` };
 }
 
-// ── Voice ───────────────────────────────────────────────────────────────
-// Change the voice the agent speaks with and/or its playback speed. Voice
-// names are matched against the local Kokoro library (built-in + imported)
-// first, then the Hume cloud library if cloud TTS is set up — flipping the
-// TTS engine to match. Voice settings are read fresh when a voice session
-// starts (voice-ws.ts), so a plain config write is all that's needed.
+// Voice: names match the local Kokoro library (built-in + imported) first, then the Hume cloud library,
+// flipping the TTS engine to match. Voice settings are read fresh when a voice session starts (voice-ws.ts).
 
 export interface SetVoiceResult {
   ok: boolean;
@@ -210,8 +190,7 @@ export async function setVoice(opts: { voice?: string; speed?: number }): Promis
     if (!Number.isFinite(s) || s < SPEED_MIN || s > SPEED_MAX) {
       return { ok: false, message: `Speed must be a number between ${SPEED_MIN} and ${SPEED_MAX} (1 = normal).` };
     }
-    // Set both engine speeds so "slow down/speed up your voice" behaves the
-    // same whether the active engine is local or cloud.
+    // Set both engine speeds so slowing down or speeding up behaves the same on local or cloud.
     setConfig('voice.playback_speed', String(s));
     setConfig('voice.cloud_speed', String(s));
     changes.push(`playback speed set to ${s}x`);
@@ -223,11 +202,8 @@ export async function setVoice(opts: { voice?: string; speed?: number }): Promis
   return { ok: true, message: `Done: ${changes.join('; ')}. Takes effect the next time voice mode starts.` };
 }
 
-// ── Channels ────────────────────────────────────────────────────────────
-// Enable/disable communication channels. iMessage needs its bridge process
-// started/stopped in lockstep with the flag (a bare config write does
-// nothing until restart) and a configured recipient; Twilio is a flag the
-// webhooks/senders check at runtime, but enabling it requires credentials.
+// Channels: iMessage needs its bridge process started/stopped in lockstep with the flag (a bare config write
+// does nothing until restart) and a recipient; Twilio is a runtime flag but enabling it needs credentials.
 
 export type ChannelKey = 'imessage' | 'twilio' | 'sms' | 'voice_calls';
 

@@ -1,19 +1,6 @@
-// ════════════════════════════════════════
-// inlineHtmlAssets, make an HTML file self-contained for the canvas.
-//
-// An HTML file written by an agent often references sibling assets by a
-// RELATIVE path, e.g. <img src="marianne-photo.png">. The right-dock canvas
-// serves that HTML from /api/upload/download/<id>?inline=1, so the iframe
-// resolves "marianne-photo.png" against that URL (-> 404) and the image never
-// shows, even though the file is sitting right next to the HTML on disk.
-//
-// This reads the HTML and inlines its LOCAL assets (images, stylesheets,
-// scripts, fonts, url(...) refs) as data: URIs, resolved against the HTML
-// file's own directory. Remote refs (http/https/data/protocol-relative/#) are
-// left untouched. The result renders identically wherever it is served, the
-// canvas iframe AND the headless render canvas_read uses, so what the agent
-// sees in canvas_read matches what the user sees in the dock.
-// ════════════════════════════════════════
+// Make an HTML file self-contained for the canvas: relative sibling assets would 404 once served from
+// /api/upload/download/<id>?inline=1, so local assets are inlined as data: URIs (resolved against the file's own
+// directory) and remote refs are left alone. The dock and the headless render canvas_read uses then match.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -37,8 +24,7 @@ function resolveHome(p: string): string {
   return p;
 }
 
-// True for refs we must NOT touch: real remote URLs, data URIs, in-page
-// anchors, protocol-relative URLs, and special schemes.
+// True for refs we must not touch: remote URLs, data URIs, anchors, protocol-relative URLs, special schemes.
 function isRemote(ref: string): boolean {
   return /^(https?:|data:|blob:|mailto:|tel:|#|javascript:)/i.test(ref) || ref.startsWith('//');
 }
@@ -72,10 +58,8 @@ export function inlineHtmlAssets(htmlAbsPath: string): string {
     ref = ref.replace(/^file:\/\//i, '');          // file:///Users/x.png -> /Users/x.png
     const clean = resolveHome(ref.split(/[?#]/)[0]); // drop ?query / #hash, expand ~
     if (!clean) return null;
-    // HTML refs are URLs, so a file called "my pic.png" is written "my%20pic.png".
-    // Try the percent-DECODED path first, then fall back to the text as written:
-    // a file literally named "a%20b.png" still resolves, and a malformed "%zz"
-    // ref (decodeURIComponent throws) is left alone instead of blowing up.
+    // Refs are URLs ("my%20pic.png"): try the percent-decoded path first, then the text as written; a malformed
+    // "%zz" ref is left alone rather than throwing.
     let decoded = clean;
     try {
       decoded = decodeURIComponent(clean);

@@ -1,11 +1,5 @@
-// ════════════════════════════════════════
-// Email Attachments — shared helpers for Gmail + Outlook send/reply/forward
-// ════════════════════════════════════════
-//
-// Provider-agnostic file-reading, MIME-type detection, and size-partitioning
-// for outgoing email attachments. Provider-specific behavior (RFC 2822
-// multipart for Gmail, Graph fileAttachment array for Outlook, overflow
-// upload to Drive vs. OneDrive) lives in the respective tools-write.ts.
+// Shared helpers for Gmail and Outlook send/reply/forward attachments: file reading, MIME detection and size
+// partitioning. Provider-specific behavior lives in the respective tools-write.ts.
 
 import * as effectFs from '../agent/effects/fs.js';
 import { basename, extname } from 'node:path';
@@ -23,8 +17,7 @@ export interface LocalAttachment {
   content: Buffer;
 }
 
-// Common MIME types. Anything not listed falls back to application/octet-stream,
-// which is safe — recipients' mail clients will sniff the extension.
+// Common MIME types; anything not listed falls back to application/octet-stream (mail clients sniff the extension).
 const MIME_BY_EXT: Record<string, string> = {
   '.pdf': 'application/pdf',
   '.txt': 'text/plain',
@@ -67,10 +60,7 @@ export function guessMimeType(filename: string): string {
   return MIME_BY_EXT[ext] ?? 'application/octet-stream';
 }
 
-/**
- * Read the given absolute paths into LocalAttachment records. Fail-fast on
- * any missing/unreadable file — partial sends are worse than no send.
- */
+/** Read absolute paths into LocalAttachment records; one missing file fails the whole send (no partial sends). */
 export function readLocalAttachments(
   paths: readonly string[],
 ): { ok: true; attachments: LocalAttachment[] } | { ok: false; error: string } {
@@ -112,11 +102,7 @@ export function readLocalAttachments(
   return { ok: true, attachments };
 }
 
-/**
- * Gmail: 25MB total combined inline cap. Pack as many files as possible
- * inline (smallest-first to maximize count). Anything that doesn't fit
- * spills to overflow for Drive upload.
- */
+/** Gmail: 25MB total inline cap, packed smallest-first for the most files; the rest spill to Drive overflow. */
 export function partitionForGmail(
   attachments: readonly LocalAttachment[],
 ): { inline: LocalAttachment[]; overflow: LocalAttachment[] } {
@@ -124,14 +110,13 @@ export function partitionForGmail(
   const inline: LocalAttachment[] = [];
   const overflow: LocalAttachment[] = [];
 
-  // Files larger than the cap can never go inline — spill immediately.
+  // Files over the cap can never go inline: spill them immediately.
   const eligible: LocalAttachment[] = [];
   for (const att of attachments) {
     if (att.size > MAX_TOTAL) overflow.push(att);
     else eligible.push(att);
   }
 
-  // Pack smallest-first to maximize the number of files inline.
   const sorted = [...eligible].sort((a, b) => a.size - b.size);
   let used = 0;
   for (const att of sorted) {
@@ -146,12 +131,8 @@ export function partitionForGmail(
 }
 
 /**
- * Microsoft: per-file 3MB threshold (Graph's `attachments` array is fine up
- * to ~4MB per file but the project policy is 3MB; above that we upload to
- * OneDrive and send a link). Every inline file is base64-encoded into ONE
- * Graph request body, so the inline set is also capped at 3MB in total
- * (~4MB once encoded). Pack smallest-first; anything that doesn't fit
- * spills to OneDrive overflow.
+ * Microsoft: 3MB per file (project policy; Graph allows about 4MB) and 3MB in total, since every inline file is
+ * base64 in ONE request body (about 4MB encoded). Smallest-first; the rest spill to OneDrive overflow.
  */
 export function partitionForOutlook(
   attachments: readonly LocalAttachment[],
@@ -161,14 +142,13 @@ export function partitionForOutlook(
   const inline: LocalAttachment[] = [];
   const overflow: LocalAttachment[] = [];
 
-  // Files larger than the per-file cap can never go inline — spill immediately.
+  // Files over the per-file cap can never go inline: spill them immediately.
   const eligible: LocalAttachment[] = [];
   for (const att of attachments) {
     if (att.size > MAX_PER_FILE) overflow.push(att);
     else eligible.push(att);
   }
 
-  // Pack smallest-first so the request body holds as many files as it can.
   const sorted = [...eligible].sort((a, b) => a.size - b.size);
   let used = 0;
   for (const att of sorted) {

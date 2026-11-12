@@ -1,29 +1,10 @@
-// ════════════════════════════════════════
-// services/generation-jobs.ts — run-once media generation worker
-// (image / audio / music).
-//
-// Video has its own async table + poller (video_jobs, video-job-poller.ts)
-// because it is a 3-legged poll-the-provider flow. Image, audio, and music
-// are "run-once-then-deliver": one provider call returns the finished
-// asset. We still model them as background jobs (generation_jobs table,
-// migration 063) so the dashboard shows the SAME spinning-icon + popup
-// indicator video uses, and so a disobedient model can't retry-storm — the
-// tool fires the job, ends its turn, and this worker delivers the asset as
-// a synthetic assistant message.
-//
-// Lifecycle: queued -> running -> succeeded | failed | cancelled.
-//   audio / music — this module owns the whole run (createGenerationJob +
-//                   enqueueAudioOrMusicJob; runAudioOrMusicJob does the
-//                   generate + deliver + cost).
-//   image         — the image_create dispatcher keeps its own delivery and
-//                   just uses the lifecycle helpers (createGenerationJob,
-//                   setRunning, setSucceeded/setFailed) so it shows in the
-//                   same indicator.
-//
-// Boot behavior: unlike video (which can resume polling), a run-once job
-// interrupted mid-flight can't be resumed — the in-process generate call is
-// gone. So at startup we mark any leftover queued/running rows as failed.
-// ════════════════════════════════════════
+// Run-once media generation worker (image / audio / music). Video has its own async table and poller (video_jobs,
+// video-job-poller.ts) because it is a poll-the-provider flow; these kinds return the finished asset from one
+// call, yet are modelled as `generation_jobs` rows so the dashboard shows the same indicator and a model cannot
+// retry-storm: the tool fires the job, ends its turn, and this worker delivers a synthetic assistant message.
+// Lifecycle: queued -> running -> succeeded | failed | cancelled. Audio and music run entirely here; image_create
+// keeps its own delivery and uses only the lifecycle helpers. A run-once job cannot resume, so job-orphans.ts
+// closes leftover rows at boot.
 
 import * as effectFs from '../agent/effects/fs.js';
 import { turnContext } from '../agent/turn-context.js';
@@ -61,7 +42,7 @@ interface GenerationJobRow {
   cost_usd: number | null;
   error: string | null;
   attempt_count: number;
-  conversation_id?: string | null; source_message_id?: string | null;  // P6a lineage (mig 116)
+  conversation_id?: string | null; source_message_id?: string | null;  // execution lineage
 }
 
 const inFlight = new Set<string>();
@@ -71,8 +52,7 @@ function getJob(jobId: string): GenerationJobRow | undefined {
 }
 
 export function countActiveGenerationJobs(): number {
-  // t122: asked from the TERMINAL end. An enumerated open end is blind to any status word
-  // added later, which is the shape that let abandoned rows rot unseen.
+  // Asked from the TERMINAL end: an enumerated open end is blind to any status word added later.
   const row = getDb().prepare(
     `SELECT COUNT(*) AS n FROM generation_jobs WHERE status NOT IN (${TERMINAL_JOB_STATUS_SQL})`
   ).get() as { n: number };
@@ -91,10 +71,8 @@ function emitUpdate(row: { id: string; agent_id: string; kind: GenerationKind; s
       activeCount: countActiveGenerationJobs(),
     },
   });
-  // A-5b — AND THE PER-AGENT ANSWER. This frame is per-JOB and its count is box-wide, so it
-  // cannot tell a composer whether THIS agent still has anything running. The row is also the
-  // only standing fact during `image_create`'s pre-dial wait, where the abort registry is
-  // empty — so the row's own edges are where that window becomes visible.
+  // The per-agent answer: this frame is per job with a box-wide count, so it cannot say whether THIS agent still has
+  // work running (the row is the only standing fact during image_create's pre-dial wait).
   announceLiveWork(row.agent_id);
 }
 
@@ -124,7 +102,7 @@ export function createGenerationJob(params: CreateGenerationJobParams): string {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, datetime('now'), datetime('now'))
   `).run(id, params.kind, params.agentId, params.modelId, params.providerId, params.prompt,
     params.title ?? null, params.voice ?? null,
-    // P6a execution lineage from the live turn (best-effort; NULL outside a turn).
+    // Execution lineage from the live turn (best-effort; NULL outside a turn).
     turnContext(params.agentId)?.root?.sourceMessageId ?? null,
     turnContext(params.agentId)?.turnNumber ?? null,
     turnContext(params.agentId)?.servedWork?.taskId ?? null,
@@ -135,14 +113,8 @@ export function createGenerationJob(params: CreateGenerationJobParams): string {
 }
 
 /**
- * CAS transition queued -> running.
- *
- * A-5 — THE ANSWER IS RETURNED NOW, and `image_create` reads it. This was `void`, so a caller
- * that had already been cancelled (the user pressed stop while the job sat queued —
- * `cancelAgentGenerationJobs` below) sailed past a no-op UPDATE and dialled the provider
- * anyway. The CAS always knew; nobody was asking it.
- *
- * @returns true if this call moved the row to running; false if it was no longer queued.
+ * CAS transition queued -> running. Returns true if this call moved the row, false if it was no longer queued, so a
+ * caller cancelled while queued (`cancelAgentGenerationJobs`) does not dial the provider.
  */
 export function setRunning(jobId: string): boolean {
   const res = getDb().prepare(
@@ -180,51 +152,34 @@ export function setSucceeded(jobId: string, f: SucceededFields): boolean {
 }
 
 /**
- * A-5 — CAS transition to `cancelled`, the terminal state a USER STOP produces.
- *
- * Separate from `setFailed` on purpose and the distinction is the whole of requirement (b):
- * `failed` writes an `error` column, is rendered as a failure by the dashboard indicator, and
- * makes the caller post *"I wasn't able to finish that audio"* into the chat. None of that is
- * true of a job the owner deliberately stopped, and saying it would be the engine blaming a
- * provider for the owner's own button. `cancelled` is the state the manual cancel routes
- * (`gateway/routes/config.ts`) already write and every worker already honours; a stop is the
- * same event arriving through a different door.
+ * CAS transition to `cancelled`, the terminal state a user stop produces. Separate from `setFailed` on purpose:
+ * `failed` writes an error and makes the caller post a failure message, none of which is true of a job the owner
+ * deliberately stopped. The manual cancel routes (`gateway/routes/config.ts`) write the same state.
  */
 export function setCancelled(jobId: string): boolean {
-  // t122: the fence is "not already finished", not a list of the open words — a stop must be
-  // able to cut ANY open row. It is still a fence: a terminal row can never be re-opened.
+  // Fenced on 'not already finished' so a stop can cut ANY open row, while a terminal row is never re-opened.
   const res = getDb().prepare(`
     UPDATE generation_jobs SET status='cancelled', finished_at=datetime('now'), updated_at=datetime('now')
     WHERE id = ? AND status NOT IN (${TERMINAL_JOB_STATUS_SQL})
   `).run(jobId);
   if (res.changes === 0) return false;
   const row = getJob(jobId);
-  if (row) { emitUpdate(row); settleAskOnJobEnded(row.agent_id, jobId); }   // t152: the last job of a request called off
+  if (row) { emitUpdate(row); settleAskOnJobEnded(row.agent_id, jobId); }   // the last job of a request called off
   return true;
 }
 
 /**
- * A-5 — EVERY RUN-ONCE MEDIA JOB THIS AGENT HAS OPEN, CANCELLED BY ITS STOP. Called from
- * `stopAgent`. Returns how many rows moved.
- *
- * WHY THE ABORT REGISTRY IS NOT ENOUGH ON ITS OWN, which is the measured shape of this arm:
- * `image_create`'s delivery IIFE deliberately WAITS for the requesting agent to go idle before
- * it dials (`tools/cat/media.ts`, the 60s wait loop — it exists so the finished image does not
- * land mid-reply). A stop raises the fence, the run unwinds, teardown writes idle, and the
- * run's own `finally` lowers the fence — and only THEN does the IIFE wake up and dial. There is
- * nothing registered during that wait and no fence standing by the time there could be, so the
- * registry alone cannot refuse that dial. The ROW is the durable fact that survives the run,
- * and `setRunning`'s CAS is the door the IIFE already goes through.
- *
- * Video is NOT handled here: its poll loop registers itself for its whole life
- * (`video-job-poller.ts`), so `abortInFlight` reaches it directly and it writes its own
- * cancelled row — one owner per table, rather than two writers racing the same CAS.
+ * Cancel every run-once media job this agent has open; called from `stopAgent`. Returns how many rows moved.
+ * The abort registry is not enough: `image_create`'s delivery waits for the agent to go idle before it dials
+ * (`tools/cat/media.ts`), so during that wait nothing is registered and no fence stands; the ROW is the durable fact
+ * and `setRunning`'s CAS is the door that wait goes through. Video is not handled here: its poller registers
+ * itself, so `abortInFlight` reaches it and it writes its own cancelled row (one writer per table).
  */
 export function cancelAgentGenerationJobs(agentId: string): number {
   let ids: string[];
   try {
     ids = (getDb().prepare(
-      // t122: every OPEN row of this agent's, however its status is spelled.
+      // Every OPEN row of this agent's, however its status is spelled.
       `SELECT id FROM generation_jobs WHERE agent_id = ? AND status NOT IN (${TERMINAL_JOB_STATUS_SQL})`
     ).all(agentId) as Array<{ id: string }>).map((r) => r.id);
   } catch {
@@ -240,8 +195,7 @@ export function cancelAgentGenerationJobs(agentId: string): number {
 }
 
 export function setFailed(jobId: string, error: string): void {
-  // t122: the fence is "not already finished" rather than a list of the open words — a failure
-  // must be recordable against ANY open row. Still a fence: a terminal row keeps its verdict.
+  // Fenced on 'not already finished' so any open row can record a failure; a terminal row keeps its verdict.
   const res = getDb().prepare(`
     UPDATE generation_jobs SET status='failed', error=?, finished_at=datetime('now'), updated_at=datetime('now')
     WHERE id = ? AND status NOT IN (${TERMINAL_JOB_STATUS_SQL})
@@ -254,10 +208,7 @@ export function setFailed(jobId: string, error: string): void {
 
 // ── Synthetic chat delivery ──
 
-/**
- * Deliver a finished audio/music asset into the agent's chat as a synthetic
- * assistant message (no LLM turn), mirroring the video poller's deliverVideo.
- */
+/** Deliver a finished audio/music asset into the agent's chat as a synthetic assistant message (no LLM turn). */
 function deliverAsset(row: GenerationJobRow, assetPath: string, sizeBytes: number, mime: string): void {
   const recipientDir = path.join(homeDir(), '.dojo', 'uploads', row.agent_id);
   if (!effectFs.existsSync(recipientDir)) effectFs.mkdirSync(recipientDir, { recursive: true });
@@ -285,14 +236,14 @@ function deliverAsset(row: GenerationJobRow, assetPath: string, sizeBytes: numbe
     category: 'audio' as const,
   };
 
-  // R1/P12: the engine writes NO caption in the agent's voice; the agent is told it was delivered and adds its own words.
+  // The engine writes no caption in the agent's voice: the agent is told it was delivered and adds its own words.
   const caption = '';
 
   const msgId = uuidv4();
   insertMessageIfAbsent({
     id: msgId, agentId: row.agent_id, role: 'assistant', content: caption,
     attachments: JSON.stringify([attachment]),
-    ...deliveredResult(row.conversation_id, row.source_message_id) });  // t141: labelled with its request
+    ...deliveredResult(row.conversation_id, row.source_message_id) });  // labelled with its request
   broadcast({
     type: 'chat:message', agentId: row.agent_id,
     message: {
@@ -303,7 +254,7 @@ function deliverAsset(row: GenerationJobRow, assetPath: string, sizeBytes: numbe
     },
   });
   broadcast({ type: 'chat:chunk', agentId: row.agent_id, messageId: msgId, content: '', done: true, modelId: null });
-  settleAskOnAsyncResult({ agentId: row.agent_id, askMessageId: row.source_message_id, resultMessageId: msgId });   // t152: the work the ask waited on reached the owner
+  settleAskOnAsyncResult({ agentId: row.agent_id, askMessageId: row.source_message_id, resultMessageId: msgId });   // the work the ask waited on reached the owner
   postAgentNotice({
     toAgentId: row.agent_id, fromName: 'Media delivery', intent: 'image_delivery_outcome', selfIntro: false,
     brief: `your ${row.kind === 'music' ? 'music' : 'audio'} was delivered in the dashboard with no caption: the Dojo wrote no words around it. If you want to say something about it, say it in your own words.`,
@@ -311,8 +262,8 @@ function deliverAsset(row: GenerationJobRow, assetPath: string, sizeBytes: numbe
 }
 
 function deliverError(row: GenerationJobRow, error: string): void {
-  // R1/OWNER ANSWER 2: the engine writes no failure bubble in the agent's voice. The agent is handed the failure
-  // and WOKEN (agent/wake-with-notice.ts) so it tells the person now; the request is re-asked, not closed on a bubble.
+  // The engine writes no failure bubble in the agent's voice: the agent is handed the failure and WOKEN
+  // (agent/wake-with-notice.ts) to tell the person now.
   void tellAgentAndWake({
     agentId: row.agent_id, from: 'Media generation', inFailureTurn: takeJobStartedInFailureTurn(row.id),
     brief: `the ${row.kind === 'music' ? 'music' : 'audio'} you asked for could not be finished. The provider said: ${error}. Nothing was sent to the person. ` +
@@ -341,8 +292,7 @@ async function runAudioOrMusicJob(jobId: string): Promise<void> {
       return;
     }
 
-    // A-5: the CAS is now READ. A stop that landed between create and here has already moved
-    // this row to `cancelled`; dialling anyway would spend the owner's money on work he stopped.
+    // The CAS result is read: a stop between create and here already cancelled the row, so do not dial for it.
     if (!setRunning(jobId)) {
       logger.info('generation job: not dialling — the row is no longer queued (stopped or cancelled)', { jobId });
       return;
@@ -361,9 +311,8 @@ async function runAudioOrMusicJob(jobId: string): Promise<void> {
     });
 
     if (!result.ok) {
-      // A-5: honest stop identity. A stop is not a failure: no `error` column, no failure
-      // wording, and no *"I wasn't able to finish that audio"* bubble for work the owner
-      // himself called off. `setCancelled` is a no-op when `stopAgent` already wrote the row.
+      // A stop is not a failure: no `error` column and no failure wording; `setCancelled` is a no-op if `stopAgent`
+      // already wrote the row.
       if (result.code === 'STOPPED') {
         setCancelled(jobId);
         logger.info('generation job cancelled: the user stopped this agent mid-generation', { jobId, kind: row.kind });
@@ -375,9 +324,8 @@ async function runAudioOrMusicJob(jobId: string): Promise<void> {
       return;
     }
 
-    // Record cost. Voice (GPT Audio) is token-priced; music (Lyria) is
-    // per-clip, tagged as a single unit. recordCost reads the model's
-    // pricing_unit to pick the math, so we pass both shapes.
+    // Record cost: voice is token-priced and music is per-clip, so both shapes are passed and recordCost picks by the
+    // model's pricing_unit.
     let costUsd: number | null = null;
     try {
       const { recordCost } = await import('../costs/tracker.js');
@@ -410,7 +358,7 @@ async function runAudioOrMusicJob(jobId: string): Promise<void> {
       costUsd,
     });
     if (!delivered) {
-      // A cancel raced us — the asset exists but the user asked to stop.
+      // A cancel raced us: the asset exists but the user asked to stop.
       logger.info('generation job: success raced a cancel, not delivering', { jobId });
       return;
     }
@@ -436,16 +384,8 @@ export function enqueueAudioOrMusicJob(jobId: string): void {
 }
 
 /**
- * t122 — THE BOOT NOTICE, which is now all this does. `services/job-orphans.ts` closes the rows
- * (both tables, before either adopter, each row fenced); this posts what a closed row cannot.
- *
- * It used to be the terminaliser too — scan, write `failed`, deliver — in ONE BARE LOOP, and
- * that is why the owner's box carried rows that read as live work: `deliverError` writes a chat
- * message, so a job belonging to an agent since purged THREW out of the whole loop (boot logged
- * "worker failed to start") and every row behind it stayed open for the rest of that server's
- * uptime — one ghost drained per boot, since `setFailed` ran a line above the delivery (bound
- * measured; `job-orphans.ts` carries it). Hence the fence, and hence closing a row is no
- * longer downstream of a delivery that can fail.
+ * The boot notice: `services/job-orphans.ts` closes leftover rows (both tables, each row fenced) and this posts what
+ * a closed row cannot. Closing a row stays independent of delivery, which can fail (e.g. for a purged agent).
  */
 export function notifyAbandonedGenerationJobs(abandoned: ReadonlyArray<{ id: string }>): void {
   if (abandoned.length === 0) return;

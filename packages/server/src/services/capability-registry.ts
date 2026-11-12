@@ -1,19 +1,6 @@
-// ════════════════════════════════════════
-// Capability registry — single source of truth for "what can this agent
-// reach right now" across channels and integrations.
-//
-// Why this exists (remediation Invariant I, catalog rows 2/19): the per-turn
-// prompt block and the channel_inspect tool used to DERIVE connection state
-// independently (same slot loops, same caps assembly, written twice), so the
-// two descriptions could drift apart. Every describe-path now reads the FACTS
-// from here and only owns its rendering. Twilio already has a single fact
-// getter (getTwilioConfig); it is passed through for one-door convenience.
-//
-// Scope (Phase 1): channels + integration connection status. The tool surface
-// keeps its single source in agent/tools.ts (getAllToolDefinitions /
-// getFilteredTools); model capabilities stay in shared types. Phase 3 folds
-// model selection into this door.
-// ════════════════════════════════════════
+// Capability registry: the single source of truth for what an agent can reach right now (channels and integration
+// connection status). The per-turn prompt block and the channel_inspect tool both read these facts and only own
+// their rendering, so their descriptions cannot drift. The tool surface stays in agent/tools.ts.
 
 import {
   getGoogleWorkspaceConfig,
@@ -121,24 +108,12 @@ export function getChannelCapabilities(): ChannelCapabilities {
   return { mailboxes, imessage: { configured: imessageConfigured }, teams: { available: teamsAvailable }, twilio };
 }
 
-// ── UX-REPAIR ROUND 7 T29 — WHAT A CLOSED CHANNEL DOOR IS ALLOWED TO SAY NEXT ──
-//
-// Round-7 S3: the user asked for a text and no text was sent on any channel. Both agents
-// reached for the DISABLED iMessage bridge, and the engine's own door text then sent them the
-// wrong way — "respond to them in the dashboard chat instead" — while `twilio_config` on that
-// same box had `enabled=1, sms_enabled=1` and Yorvak's number on the approved list. The door
-// was not wrong about iMessage; it was wrong about the alternative, and it was wrong because
-// it never asked.
-//
-// The fact lives HERE, with the rest of "what can this agent reach right now", so the two
-// doors that offer it cannot drift into two different answers. THE WORDING does not live here:
-// each door frames it for the caller it is refusing (one can act on it; the other must
-// escalate), and a shared sentence would have to be vague enough to fit both.
+// What a closed channel door may say next: the SMS fact lives here so the doors that offer it cannot drift,
+// but the wording does not, since each door frames it for the caller it is refusing.
 
 export interface SmsReachability {
-  /** Enabled end to end AND at least one approved recipient — the only state in which
-   *  `sms_send` would actually deliver. Enabled-with-nobody-approved is not an alternative:
-   *  `twilio/sms-outbound.ts` refuses it, so offering it would be the same lie one door over. */
+  /** Enabled end to end AND at least one approved recipient, the only state in which `sms_send` delivers
+   *  (twilio/sms-outbound.ts refuses enabled-with-nobody-approved). */
   live: boolean;
   /** Approved recipients, rendered "Name (+1555…)" where a name exists. */
   approved: string[];
@@ -153,8 +128,7 @@ export function getSmsReachability(): SmsReachability {
       .map((s) => (s.name ? `${s.name} (${s.address})` : s.address));
     return { live: approved.length > 0, approved };
   } catch {
-    // Same posture as every other block in this file: an unreadable config is "not
-    // available", never a promise the sender cannot keep.
+    // An unreadable config is "not available", never a promise the sender cannot keep.
     return { live: false, approved: [] };
   }
 }
@@ -168,32 +142,13 @@ export function describeSmsRecipients(r: SmsReachability, limit = 3): string {
 }
 
 /**
- * A CHANNEL the agent can RECEIVE on, and whether inbound is live right now.
- *
- * ── WHY THIS EXISTS, and it is the owner's 2026-09-24 incident ──────────────────────────────
- * An agent held two conversation silos for the same person, was asked about one from the other,
- * and replied that it had *"no way to see"* the other thread. It had every way: the inbound was
- * live, the rows were in its own database, and `history_search` is unscoped. What it did not have
- * was a STATEMENT. `listIntegrationStatuses` publishes google/microsoft/plaud — the three families
- * whose TOKENS can rot — and channels were never in it, so an agent with a live iMessage thread
- * was told nothing about iMessage either way and inferred incapability from absence. That is the
- * W84 shape exactly: *"a blank where a last use would go … a model that reads it as 'so it has
- * never worked' has been taught the defect by the block meant to cure it."*
- *
- * ⚠ DELIBERATELY NOT AN `IntegrationStatus`, and this is the one design call here. That shape is
- * TOKEN HEALTH: a per-family success ledger, a tool-NAME → family map, an unresolved-failure count.
- * A channel has no token, no tool-name family and no ledger, so a fourth family would leave three
- * of those fields permanently null and add three exceptions to the lane's own "every family has a
- * ledger or a stated reason" census. Its own shape, same lane, same supersession sentence.
- *
- * `configured` is the gate for printing, exactly as it is for the integration families: a channel
- * the owner never set up has no truth to publish, while one that IS set up is precisely what a
- * false memory forms around. A configured-but-down channel is the negative control, not an
- * omission.
+ * A channel the agent can RECEIVE on, and whether inbound is live right now. Published so an agent does not infer
+ * incapability from the absence of a statement about a live channel. Deliberately not an `IntegrationStatus`:
+ * that shape is token health (ledger, tool-name family) and a channel has none of it. `configured` gates
+ * printing: a channel the owner never set up has no truth to publish.
  */
 export interface ChannelStatus {
   name: 'imessage' | 'sms' | 'teams' | 'email';
-  /** What the owner calls it. */
   displayName: string;
   configured: boolean;
   /** Inbound arrives without the agent asking (a poller/webhook is live for it). */
@@ -201,10 +156,8 @@ export interface ChannelStatus {
 }
 
 /**
- * Every channel family, in a fixed order so the block is byte-deterministic.
- *
- * Derived from `getChannelCapabilities()` rather than re-reading config, so this cannot drift from
- * what the doors themselves believe — the C28 P-6 rule the integration lane already follows.
+ * Every channel family in a fixed order (byte-deterministic), derived from `getChannelCapabilities()` so it
+ * cannot drift from what the doors believe.
  */
 export function listChannelStatuses(): ChannelStatus[] {
   const c = getChannelCapabilities();
@@ -240,8 +193,7 @@ export function listIntegrationStatuses(): IntegrationStatus[] {
     const plaud = getPlaudStatus();
     statuses.push({
       name: 'plaud',
-      // A past connection (recorded email/timestamp) is user intent: the
-      // family should leave a reconnect breadcrumb when tokens lapse.
+      // A past connection (recorded email/timestamp) is user intent: leave a reconnect breadcrumb when tokens lapse.
       configured: plaud.connected || plaud.email !== null || plaud.connectedAt !== null,
       connected: plaud.connected,
     });

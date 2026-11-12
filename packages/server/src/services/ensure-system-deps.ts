@@ -1,21 +1,7 @@
-// ════════════════════════════════════════
-// System-dependency installer (runtime)
-// ════════════════════════════════════════
-//
-// Runs the bundled ensure-system-deps.sh script at server startup. The
-// script is the single source of truth for required brew packages —
-// adding a new dep is one line in its REQUIRED_BREW_PACKAGES array.
-//
-// Why this runs at startup (not in the update flow): launchd restarts
-// the server after every self-update, which means the NEW version's
-// startup code runs regardless of which OLD version's update.ts shipped
-// the files. So any brew dep added in a release reaches every user on
-// their next reboot, whatever version they're updating from.
-//
-// User-facing feedback: the script emits "INSTALLED:<pkg>" / "FAILED:<pkg>"
-// markers. We parse them and broadcast `system:dep_installed` so the
-// dashboard pops a toast — users see exactly which deps just got
-// installed without having to read server logs.
+// Runs the bundled ensure-system-deps.sh at server startup; the script is the single source of truth for required
+// brew packages. It runs at startup rather than in the update flow because launchd restarts the server after every
+// update, so the new version's code always runs. Its INSTALLED:/FAILED: markers are broadcast as
+// `system:dep_installed` for a dashboard toast.
 
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -30,18 +16,13 @@ const logger = createLogger('ensure-system-deps');
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// In dev, __dirname is .../packages/server/src/services; script lives at
-// .../packages/server/scripts/ensure-system-deps.sh
-// In prod, __dirname is .../packages/server/dist/services; script lives at
-// .../packages/server/scripts/ensure-system-deps.sh
-// Either way the script is at ../../scripts from this file.
+// The script is at ../../scripts from this file, in dev (src/services) and prod (dist/services).
 function resolveScriptPath(): string | null {
   const candidate = path.join(__dirname, '..', '..', 'scripts', 'ensure-system-deps.sh');
   return fs.existsSync(candidate) ? candidate : null;
 }
 
-// launchd starts processes with a minimal PATH — brew lives in /opt/homebrew
-// (Apple Silicon) or /usr/local (Intel) and won't be discoverable otherwise.
+// launchd starts processes with a minimal PATH; brew lives in /opt/homebrew or /usr/local.
 const EXTENDED_PATH = [
   '/opt/homebrew/bin',
   '/opt/homebrew/sbin',
@@ -62,9 +43,7 @@ function parseMarkers(output: string): { installed: string[]; failed: string[] }
 }
 
 export async function ensureSystemDeps(): Promise<void> {
-  // Escape hatch for non-production boots (e.g. the release-gate smoke boot of
-  // a packaged build): skip the brew dependency check so booting the server
-  // never touches Homebrew, the network, or system state as a side effect.
+  // Escape hatch for non-production boots (e.g. the release-gate smoke boot): never touch Homebrew or the network.
   if (process.env.DOJO_SKIP_SYSTEM_DEPS === '1') {
     logger.info('DOJO_SKIP_SYSTEM_DEPS=1 — skipping system-dependency check');
     return;
@@ -82,15 +61,14 @@ export async function ensureSystemDeps(): Promise<void> {
   let stderr = '';
   try {
     const result = await execFileAsync('bash', [scriptPath], {
-      timeout: 300_000, // 5 min — brew can be slow on first run / cold cache
+      timeout: 300_000, // 5 min: brew can be slow on first run / cold cache
       env: { ...process.env, PATH: EXTENDED_PATH },
       maxBuffer: 1024 * 1024,
     });
     stdout = result.stdout;
     stderr = result.stderr;
   } catch (err) {
-    // execFile rejects on non-zero exit, but our script always exits 0.
-    // If we land here it's a more serious failure (missing bash, timeout).
+    // The script always exits 0, so a rejection is a worse failure (missing bash, timeout).
     logger.warn('System-deps script failed to run', {
       error: err instanceof Error ? err.message : String(err),
     });
@@ -100,9 +78,8 @@ export async function ensureSystemDeps(): Promise<void> {
   if (stdout.trim()) logger.info('System-deps script output', { output: stdout.trim() });
   if (stderr.trim()) logger.warn('System-deps script stderr', { output: stderr.trim() });
 
-  // Toast each freshly-installed (or failed) package so the user sees
-  // what changed. Broadcast emits to anyone currently connected; later
-  // tab opens won't see it, which is fine — this fires once per boot.
+  // Toast each package installed or failed; broadcast reaches only connected tabs, which is fine since
+  // this fires once per boot.
   const { installed, failed } = parseMarkers(stdout);
   for (const pkg of installed) {
     broadcast({ type: 'system:dep_installed', data: { pkg, status: 'installed' } });

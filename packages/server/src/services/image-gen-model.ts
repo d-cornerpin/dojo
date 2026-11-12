@@ -1,12 +1,4 @@
-// ════════════════════════════════════════
-// services/image-gen-model.ts — image-generation model resolver.
-//
-// A thin wrapper around makeCapabilityModelResolver. Image generation
-// is a model capability, not an agent role: a single platform-wide
-// config key points at one image-capable model that the `image_create`
-// tool calls directly. Replaces the original Imaginer agent.
-// ════════════════════════════════════════
-
+// Image generation model resolver: one platform-wide config key names the image-capable model `image_create` calls.
 import { makeCapabilityModelResolver, type CapabilityModelChoice } from './capability-model.js';
 
 export const IMAGE_GEN_MODEL_CONFIG_KEY = 'dojo_image_gen_model_id';

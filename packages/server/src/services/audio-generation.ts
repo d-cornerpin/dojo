@@ -1,28 +1,8 @@
-// ════════════════════════════════════════
-// services/audio-generation.ts — audio + music generation dispatch.
-//
-// This is the AUDIO-GENERATION feature (agents producing audio/music as a
-// deliverable file). It is NOT the voice setup (kokoro/hume/agent-speak,
-// packages/server/src/voice/*) — that is a separate system and is never
-// touched here.
-//
-// The OpenRouter audio/music models (OpenAI GPT Audio / GPT Audio Mini,
-// Google Lyria 3) are text-in/audio-out CHAT-COMPLETIONS models, not
-// /audio/speech TTS-endpoint models. So we drive the chat-completions
-// audio path:
-//   POST {base}/chat/completions
-//   { modalities: ["text","audio"], audio: { voice?, format: "pcm16" },
-//     stream: true, messages: [...] }
-// The provider streams base64 PCM16 chunks in `delta.audio.data`. We
-// reassemble them, wrap the raw PCM16 in a WAV header, and save to
-// ~/.dojo/uploads/generated/ so the existing file-serve path + audio
-// player pick it up like any other attachment.
-//
-// Streaming is mandatory for audio output on OpenRouter, and streamed
-// audio only supports the headerless `pcm16` format — hence the WAV wrap.
-// Voice models (GPT Audio) are 24kHz mono; music models (Lyria) are 48kHz
-// stereo, so sample rate + channels are parameters the caller sets.
-// ════════════════════════════════════════
+// Audio and music generation dispatch for `tts_create` / `music_create` (not the voice setup in voice/*).
+// The OpenRouter audio models are text-in/audio-out chat-completions models: POST {base}/chat/completions with
+// modalities ["text","audio"], format "pcm16", stream true. Streamed audio is headerless pcm16, so the base64
+// chunks in `delta.audio.data` are reassembled, WAV-wrapped and saved to ~/.dojo/uploads/generated/.
+// Voice models are 24kHz mono and music models 48kHz stereo, so sample rate and channels are caller parameters.
 
 import * as effectFs from '../agent/effects/fs.js';
 import path from 'node:path';
@@ -51,17 +31,13 @@ export interface GenerateAudioRequest {
   prompt: string;
   /** Voice id for voice models (alloy/echo/nova/…). Omit for music models. */
   voice?: string;
-  /**
-   * When true (voice models), the prompt is framed as a verbatim read-aloud
-   * instruction so the model speaks the text rather than answering it. When
-   * false (music models), the prompt is passed through as the creative brief.
-   */
+  /** Voice models: frame the prompt as a read-aloud instruction. Music models: pass it as the brief. */
   speak: boolean;
   /** WAV sample rate. GPT Audio = 24000, Lyria = 48000. */
   sampleRate: number;
   /** WAV channel count. GPT Audio = 1 (mono), Lyria = 2 (stereo). */
   channels: number;
-  // A-5: whose stop cuts this call. Required for the reason `GenerateImageRequest.agentId` is.
+  // Whose stop cuts this call, as with `GenerateImageRequest.agentId`.
   agentId: string;
 }
 
@@ -83,7 +59,7 @@ export interface GenerateAudioSuccess {
 export interface GenerateAudioError {
   ok: false;
   error: string;
-  // A-5: `STOPPED` is the user's own button, not a provider failure. See `image-generation.ts`.
+  // `STOPPED` is the user's own button, not a provider failure (see image-generation.ts).
   code: 'MODEL_NOT_FOUND' | 'NO_CREDENTIAL' | 'HTTP_ERROR' | 'EMPTY' | 'WRITE_ERROR' | 'STOPPED' | 'UNKNOWN';
 }
 
@@ -120,16 +96,9 @@ function pcm16ToWav(pcm: Buffer, sampleRate: number, channels: number): Buffer {
 }
 
 /**
- * Some chat-completions audio models honor the requested `pcm16` format and
- * stream headerless PCM; others (notably Google Lyria 3) ignore it and
- * return a fully-formed container file (MP3 with an ID3 tag + C2PA
- * provenance metadata). Wrapping such a payload in a WAV header produces a
- * file the browser decodes as PCM noise / static.
- *
- * Sniff the leading bytes: return the real extension + MIME when the payload
- * is already a self-describing container, or null when it looks like raw
- * PCM16 (in which case the caller WAV-wraps it with the model's sample rate
- * and channel count).
+ * Some models ignore the requested `pcm16` and return a finished container (e.g. Lyria MP3 with ID3 and C2PA
+ * metadata); WAV-wrapping that plays as static. Sniff the leading bytes: the real extension + MIME for a
+ * container, or null for raw PCM16 (the caller then WAV-wraps it).
  */
 function sniffAudioContainer(b: Buffer): { ext: string; mime: string } | null {
   if (b.length < 4) return null;
@@ -141,9 +110,7 @@ function sniffAudioContainer(b: Buffer): { ext: string; mime: string } | null {
   if (b[0] === 0x4f && b[1] === 0x67 && b[2] === 0x67 && b[3] === 0x53) return { ext: '.ogg', mime: 'audio/ogg' };
   // FLAC: "fLaC".
   if (b[0] === 0x66 && b[1] === 0x4c && b[2] === 0x61 && b[3] === 0x43) return { ext: '.flac', mime: 'audio/flac' };
-  // Bare MP3 frame sync (no ID3). A loud PCM sample can also be 0xFFFx, so
-  // validate the rest of the MPEG header (no reserved/invalid fields) before
-  // trusting it — otherwise headerless PCM could be misread as MP3.
+  // Bare MP3 frame sync: a loud PCM sample can also be 0xFFFx, so validate the rest of the header first.
   if (b[0] === 0xff && (b[1] & 0xe0) === 0xe0) {
     const version = (b[1] >> 3) & 0x03;   // 0x01 = reserved
     const layer = (b[1] >> 1) & 0x03;     // 0x00 = reserved
@@ -164,14 +131,11 @@ interface StreamCollect {
   error: string | null;
 }
 
-/** Parse the SSE chat-completions audio stream, collecting base64 PCM16. */
 /**
- * t114 (census U11): `onChunk` is the liveness signal this stream always had and nobody read. It
- * fires for every read that returns bytes, which is what lets the caller bound the GAP between
- * chunks instead of the narration's total length.
+ * Parse the SSE chat-completions audio stream, collecting base64 PCM16. `onChunk` fires on every read that returns
+ * bytes, so the caller can bound the gap between chunks rather than the narration's total length.
  */
-// ── t114 (census U11) — the TTS stream's three bounds, each named for its own job ──
-// The old flat 180s was asked to be all three at once and could only be one of them.
+// The TTS stream's three bounds, each for its own job: first byte, gap between chunks, absolute ceiling.
 const TTS_FIRST_BYTE_TIMEOUT_MS = 180_000;
 const TTS_CHUNK_IDLE_TIMEOUT_MS = 60_000;
 const TTS_CEILING_MS = 60 * 60_000;
@@ -223,11 +187,10 @@ async function collectAudioStream(
   return out;
 }
 
-/** A-5 — the stop door. Same shape as `generateImage`'s: see that function's note. */
+/** The stop door; same shape as `generateImage`'s. */
 export async function generateAudio(req: GenerateAudioRequest): Promise<GenerateAudioResult> {
-  // A-5 FIX ROUND: `background`. `tts_create` fires the job and ends its turn by design (the
-  // tool result says so in as many words), so this dial is always running after its turn is
-  // gone. Only the owner's own stop reaches it.
+  // `background`: `tts_create` ends its turn after firing the job, so this call outlives the turn and only the
+  // owner's stop reaches it.
   const slot = openAgentCall(req.agentId, 'background');
   try {
     if (slot.refused) {
@@ -304,17 +267,8 @@ async function dialAudio(req: GenerateAudioRequest, slot: AgentCallSlot): Promis
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(body),
-      // ── t114 (census U11) — THE BOUND IS THE GAP BETWEEN CHUNKS, NOT THE NARRATION'S LENGTH ──
-      //
-      // THE DEFECT: a flat 180s covering the whole dial INCLUDING the streamed body. A long
-      // narration actively delivering `pcm16` at t=180s was cut and ALL COLLECTED AUDIO
-      // DISCARDED — the collector throws, the catch reports a read failure, and every second of
-      // speech already assembled goes with it. Chunk arrival was never consulted even though
-      // this body is a stream and arrival is the one fact that proves the provider is alive.
-      //
-      // The bound is now armed for the response to START and then re-armed on every chunk, so a
-      // twenty-minute audiobook streams and a provider that goes quiet mid-narration is still
-      // cut. The ceiling behind it does not re-arm.
+      // The deadline covers the streamed body: armed until the response starts, then re-armed on every chunk, so a
+      // long narration streams and a stalled provider is cut. The ceiling never re-arms.
       signal: AbortSignal.any([slot.signal, ttsDeadline.signal]),
     });
   } catch (err) {
@@ -337,12 +291,10 @@ async function dialAudio(req: GenerateAudioRequest, slot: AgentCallSlot): Promis
     return { ok: false, error: 'Audio provider returned no response body.', code: 'EMPTY' };
   }
 
-  // A-5: the signal covers the streamed body, so a stop mid-narration surfaces as a read
-  // failure out of the collector. It is the stop, and it is not "the provider errored".
+  // The signal covers the streamed body, so a stop mid-narration surfaces here as a read failure, not a provider error.
   let collected: Awaited<ReturnType<typeof collectAudioStream>>;
   try {
-    // t114: every chunk re-arms the bound. This is the whole fix — audio arriving is the measured
-    // fact that the provider is alive, and it was being thrown away by a clock that never asked.
+    // Every chunk re-arms the bound: audio arriving proves the provider is alive.
     collected = await collectAudioStream(
       response.body as ReadableStream<Uint8Array>,
       () => ttsDeadline.bump(),

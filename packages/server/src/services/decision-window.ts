@@ -1,18 +1,7 @@
-// ════════════════════════════════════════════════════════════════════════════
-// v3.5 (t268, orchestrator ruling 2) — THE DECISION MODEL'S REAL WINDOW: A DERIVED TAG.
-//
-// MEASURED (B5, `overhaul-plans/v35-writer-measure.md` → "The num_ctx question"): Ollama's `/v1/systemone`
-// ignores `num_ctx` in `options`, at the top level and as `context_length`; the decision model's runner stays
-// at its model file's own 8,192 and Ollama refuses any longer request. A derived tag carrying
-// `PARAMETER num_ctx N` (`FROM` the standard decision model) does start its runner at N, and its weights are
-// the same blobs, so nothing more is downloaded. So at install (`services/ollama-upkeep.ts`) the Dojo makes
-// that tag with N = the window it reserves for the decision model, and `decide()` asks the tag.
-//
-// N is ONE number with one origin: the summary check reads a job's source rows and its summary — the writer's
-// job text (`writerJobWindowTokens`) — but no request may exceed Ollama's 64 KiB body (B5: HTTP 413), so N is
-// the smaller of the two, both counted at this box's density (`token-density.ts`). The memory fit sets aside
-// exactly the window recorded here (`dojo-working-memory.ts decisionWindowTokens`).
-// ════════════════════════════════════════════════════════════════════════════
+// The decision model's real window as a derived tag: Ollama's `/v1/systemone` ignores `num_ctx` in `options`, so a
+// tag made `FROM` the standard decision model with `PARAMETER num_ctx N` (same weights, no download) starts the
+// runner at N. N is the smaller of the writer's job window and what fits Ollama's 64 KiB request body, both at
+// this box's density; the memory fit reserves exactly the window recorded here (dojo-working-memory.ts).
 
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
@@ -24,10 +13,8 @@ import { MAX_DECISION_BODY_BYTES } from '../agent/decide.js';
 
 const logger = createLogger('decision-window');
 
-/** The bound the Dojo gives its other Ollama model reads (`services/ollama.ts getOllamaModelInfo`, `/api/show`). */
 const OLLAMA_MODEL_CALL_MS = 10_000;
 
-/** The window the decision model should run at on this box, in tokens. */
 export async function desiredDecisionWindowTokens(): Promise<number> {
   // A character is at least one byte, so a body Ollama accepts holds at most MAX_DECISION_BODY_BYTES characters.
   const bodyWindow = utilityNumCtx({ inputChars: MAX_DECISION_BODY_BYTES, outputTokens: 0, configuredNumCtx: null, charsPerToken: MEASURED_CHARS_PER_TOKEN });
@@ -42,7 +29,6 @@ async function ollamaPost(baseUrl: string, path: string, body: unknown): Promise
   } catch { return null; }
 }
 
-/** The derived tag's `num_ctx` as Ollama reports it, or null when the tag is not there. */
 async function tagWindow(baseUrl: string): Promise<number | null> {
   const resp = await ollamaPost(baseUrl, '/api/show', { model: STANDARD_DECISION_MODEL.windowTag });
   if (!resp?.ok) return null;
@@ -62,18 +48,15 @@ let inFlight: Promise<number | null> | null = null;
 let toldFailure = false;
 
 /**
- * Create or refresh the derived decision tag at the window this box reserves; idempotent (a tag already at
- * that window is left alone; concurrent callers share one run). Returns the window the tag has, or null when
- * it could not be made — then `decide()` asks the base tag at its built-in window, and the Ollama health
- * check's door (`ollama-upkeep.ts upkeepWhenIncomplete`) tries again. Never throws.
+ * Create or refresh the derived tag at the reserved window (idempotent; concurrent callers share one run). Returns
+ * the window the tag has, or null when it could not be made (decide() then asks the base tag). Never throws.
  */
 export function ensureDecisionWindowTag(baseUrl: string): Promise<number | null> {
   if (!inFlight) inFlight = makeTag(baseUrl).finally(() => { inFlight = null; });
   return inFlight;
 }
 
-/** t268 (I-1): the tag is gone from Ollama (removed by hand, or never made): the recorded window goes at once,
- *  so `decide()` asks the base tag, and the tag is made again from the base tag — locally, never a download. */
+/** The tag is gone from Ollama: clear the recorded window and make the tag again from the base tag, locally. */
 export function repairDecisionWindowTag(baseUrl: string): Promise<number | null> {
   try { recordWindow(null); } catch { /* the make below records what is true */ }
   return ensureDecisionWindowTag(baseUrl);
@@ -88,7 +71,6 @@ async function makeTag(baseUrl: string): Promise<number | null> {
       model: STANDARD_DECISION_MODEL.windowTag, from: STANDARD_DECISION_MODEL.tag, parameters: { num_ctx: want }, stream: false,
     });
     if (!resp?.ok) {
-      // Told once per process: the health check retries it on Ollama's own cadence, and one line says it.
       if (!toldFailure) logger.warn('The decision model\'s window tag could not be made; decide() keeps the built-in window', { status: resp?.status ?? null, want });
       toldFailure = true;
       recordWindow(have);   // what the tag (if any) really is

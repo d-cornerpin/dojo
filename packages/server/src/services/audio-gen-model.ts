@@ -1,12 +1,4 @@
-// ════════════════════════════════════════
-// services/audio-gen-model.ts — TTS model resolver.
-//
-// Platform-wide config key points at one audio-output-capable model
-// that the `tts_create` tool dispatches to. Mirrors image-gen-model.ts.
-// Note: capability is `audio_generation` (TTS-style models). Music /
-// sound-effect models use `music_generation` and have their own
-// resolver (forthcoming).
-// ════════════════════════════════════════
+// TTS model resolver: one platform-wide config key names the audio-output model `tts_create` dispatches to.
 
 import { makeCapabilityModelResolver, type CapabilityModelChoice } from './capability-model.js';
 import { bumpToolConfigGeneration } from '../agent/tool-config-generation.js';
@@ -23,8 +15,7 @@ const resolver = makeCapabilityModelResolver({
 
 export const setConfiguredAudioGenModelId = (modelId: string | null): void => {
   resolver.setConfiguredModelId(modelId);
-  // FA-TS1: the tts_create description embeds the effective audio model's voice
-  // catalog, so changing the model changes the advertised tool surface.
+  // The tts_create description embeds the effective model's voice catalog, so a change alters the tool surface.
   bumpToolConfigGeneration();
 };
 

@@ -1,19 +1,8 @@
-// ════════════════════════════════════════
-// services/generation-params.ts — per-model generation parameter specs.
-//
-// Two layers (see migration 065):
-//   1. Agent → tool: the agent must supply a fixed set of canonical params
-//      (video: duration / aspect_ratio / resolution). The dispatcher calls
-//      validateCanonicalParams() and kicks the call back to the agent when a
-//      param is missing or out of the allowed set for the chosen model.
-//   2. Tool → model: buildWireBody() translates the validated canonical
-//      values into the provider's request-body fields per the model's spec.
-//
-// Specs are seeded from the family registry below on add (and on a boot
-// backfill), stored per model in models.generation_params, and editable by
-// the user on the Settings model card. The registry is only the seed source;
-// we never overwrite a stored spec (it may contain user edits).
-// ════════════════════════════════════════
+// Per-model generation parameter specs, in two layers: (1) agent to tool: the agent supplies a fixed canonical set
+// (video: duration / aspect_ratio / resolution) and `validateCanonicalParams()` kicks the call back when one is
+// missing or outside the model's allowed set; (2) tool to model: `buildWireBody()` translates the validated values
+// into the provider's body fields. Specs are seeded from the family registry on add and on boot backfill, stored in
+// models.generation_params and user-editable; a stored spec is never overwritten (it may hold user edits).
 
 import type { GenerationParamSpec, GenerationParamField } from '@dojo/shared';
 import { getDb } from '../db/connection.js';
@@ -43,9 +32,7 @@ function videoSpec(opts: {
       min: opts.durationMin,
       max: opts.durationMax,
       default: opts.durationDefault,
-      // OpenRouter's normalized /v1/videos body takes `duration` as an
-      // integer (seconds). Sending `seconds` (the OpenAI/Sora spelling) is
-      // silently ignored, so the provider falls back to its own default.
+      // OpenRouter's /v1/videos body takes an integer `duration` (seconds); the OpenAI spelling `seconds` is ignored.
       wireField: 'duration',
       wireType: 'number',
     },
@@ -66,12 +53,9 @@ function videoSpec(opts: {
   };
 }
 
-// These are sensible STARTING points seeded onto the model and then editable
-// on the card. OpenRouter's catalog does not expose video param schemas, so
-// the true accepted ranges per model are confirmed/corrected by the user.
-// Video models accept only a fixed, discrete set of durations (the provider
-// silently clamps anything else to its default). The values below come from
-// OpenRouter's GET /api/v1/videos/models capability report per family.
+// Starting points, editable on the model card: OpenRouter's catalog does not expose video param schemas, so the
+// accepted ranges are confirmed by the user. Providers silently clamp a duration outside the discrete set a model
+// accepts (values from OpenRouter's GET /api/v1/videos/models capability report).
 const GENERIC_VIDEO = videoSpec({
   durationValues: [4, 5, 6, 8, 10, 12], durationDefault: 5,
   aspects: ['16:9', '9:16', '1:1'], aspectDefault: '16:9',
@@ -130,9 +114,8 @@ function presenceHint(field: GenerationParamField | undefined): string {
   return '';
 }
 
-// The agent must supply every canonical param regardless of whether this
-// model accepts it on the wire (uniform tool contract). Values are checked
-// against the model's allowed set when the spec defines the param.
+// The agent must supply every canonical param whether or not the model accepts it on the wire (uniform tool
+// contract); values are checked against the model's allowed set when the spec defines the param.
 export function validateCanonicalParams(
   spec: GenerationParamSpec | null,
   canonicalNames: readonly string[],
@@ -166,9 +149,8 @@ export function validateCanonicalParams(
 
 // ── Wire mapping (tool → model boundary) ──
 
-// Compose a WIDTHxHEIGHT size string from aspect ratio + resolution. This is
-// the one composite: video providers take a single `size` field, but the
-// agent thinks in aspect_ratio + resolution.
+// Compose a WIDTHxHEIGHT size from aspect ratio + resolution: video providers take one `size` field, but the agent
+// thinks in aspect_ratio + resolution.
 export function composeSize(aspect: string, resolution: string): string {
   const h = resolution.includes('1080') ? 1080 : resolution.includes('480') ? 480 : 720;
   const long = Math.round((h * 16) / 9);
@@ -183,9 +165,8 @@ export function composeSize(aspect: string, resolution: string): string {
   }
 }
 
-// Translate validated canonical values into the provider request body. Only
-// params marked accepted are emitted; params sharing wireField `size` are
-// composed from aspect_ratio + resolution.
+// Translate validated canonical values into the provider body: only accepted params are emitted, and params sharing
+// wireField `size` are composed from aspect_ratio + resolution.
 export function buildWireBody(
   spec: GenerationParamSpec,
   normalized: Record<string, string | number>,
@@ -233,8 +214,7 @@ export function setModelGenerationParams(modelId: string, spec: GenerationParamS
   );
 }
 
-// Seed a video model's spec from the family registry, but only if it has no
-// stored spec yet (never clobber user edits).
+// Seed a video model's spec from the family registry only if it has none yet (never clobber user edits).
 export function seedGenerationParams(modelId: string): void {
   const db = getDb();
   const row = db

@@ -1,21 +1,8 @@
-// ════════════════════════════════════════
-// Model Capability Probing
-// ════════════════════════════════════════
-//
-// Queries each provider for the true capability set of a given model
-// (tools, vision, thinking, embedding) so the dashboard can render accurate
-// badges and the runtime can eventually gate requests that require
-// unsupported capabilities.
-//
-// Provider strategy:
-//   - ollama            → POST /api/show (returns `capabilities` array natively)
-//   - openai-compatible → if OpenRouter, GET /api/v1/models; otherwise skip
-//   - anthropic         → curated map by model-id family
-//   - openai            → curated map by model-id family
-//   - agent-sdk         → curated Anthropic map (same underlying models)
-//
-// All probes are best-effort: failures return `[]` and log, never overwrite
-// an existing capability set with junk.
+// Model capability probing: asks each provider for a model's true capability set (tools, vision, thinking,
+// embedding, ...) so the dashboard shows accurate badges. Probes are best-effort: a failure returns `[]` and logs,
+// and never overwrites an existing capability set.
+// ollama: POST /api/show. openai-compatible: OpenRouter's GET /api/v1/models, otherwise no probe.
+// anthropic and openai: curated maps by model-id family. agent-sdk: the curated Anthropic map.
 
 import { createLogger } from '../logger.js';
 import { getDb } from '../db/connection.js';
@@ -30,14 +17,9 @@ export type Capability =
   | 'embedding'
   | 'image_generation'
   | 'video_generation'
-  // Speech synthesis — model takes text input and reads it aloud as a
-  // chosen voice. Drives the `tts_create` tool. NOT the same thing as
-  // music_generation, which composes audio from a creative prompt.
+  // Speech synthesis (drives `tts_create`), distinct from music_generation.
   | 'audio_generation'
-  // Music / sound-effect composition — model takes a creative prompt
-  // ("upbeat synthwave with driving bass") and generates original audio.
-  // Different request shape and intent from TTS. Drives a future
-  // `music_create` tool.
+  // Music / sound-effect composition from a creative prompt (a different request shape from TTS).
   | 'music_generation'
   | 'transcription'
   | 'text';
@@ -142,10 +124,7 @@ async function probeOllama(baseUrl: string, apiModelId: string): Promise<Capabil
       if (norm === 'vision' && !caps.includes('vision')) caps.push('vision');
       if (norm === 'thinking' && !caps.includes('thinking')) caps.push('thinking');
       if (norm === 'embedding' && !caps.includes('embedding')) caps.push('embedding');
-      // Forward-compat: if a future Ollama model self-reports image
-      // generation via /api/show, we recognize it. Nothing in today's
-      // Ollama model catalog returns this yet, but the detection is
-      // cheap and consistent with the other capability checks.
+      // Forward-compat: recognize image generation if /api/show ever self-reports it.
       if ((norm === 'image_generation' || norm === 'image-generation' || norm === 'image') &&
           !caps.includes('image_generation')) {
         caps.push('image_generation');
@@ -177,24 +156,16 @@ interface OpenRouterModel {
 let openRouterCache: { at: number; models: Map<string, OpenRouterModel> } | null = null;
 const OPENROUTER_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
 
-// Build the /models endpoint from whatever shape the provider.base_url was
-// saved in. Dojo stores OpenRouter as `https://openrouter.ai/api` (see
-// config.ts:662), but users may type it as the root domain or with `/api/v1`
-// appended. Normalize all three shapes.
-//
-// The output_modalities union is required: OpenRouter's /models defaults to
-// output_modalities=text, which omits video / image / audio-only generators
-// (seedance, flux, lyria). Without it the probe can't find those rows in the
-// catalog and returns empty capabilities. Same param the browse and pricing-
-// sync fetches use (gateway/routes/config.ts, services/pricing-sync.ts).
+// Build the /models endpoint from whatever shape provider.base_url was saved in (root domain, `/api` or `/api/v1`).
+// The output_modalities union is required: the default (text only) omits image, video and audio-only generators,
+// so the probe could not find them. The browse and pricing-sync fetches send the same param.
 function buildOpenRouterModelsEndpoint(baseUrl: string): string {
   const url = baseUrl.replace(/\/+$/, '');
   const lower = url.toLowerCase();
   const modalities = '?output_modalities=text,image,audio,video';
   if (lower.endsWith('/api/v1')) return `${url}/models${modalities}`;
   if (lower.endsWith('/api')) return `${url}/v1/models${modalities}`;
-  // Bare domain (https://openrouter.ai) or anything else — construct the
-  // full path from scratch.
+  // Bare domain or anything else: build the full path.
   return `${url}/api/v1/models${modalities}`;
 }
 
@@ -205,9 +176,8 @@ async function loadOpenRouterCatalog(baseUrl: string, providerId: string): Promi
 
   const endpoint = buildOpenRouterModelsEndpoint(baseUrl);
 
-  // /api/v1/models is publicly readable, but OpenRouter rate-limits anon
-  // requests aggressively and uses Referer for attribution. Send the
-  // credential when we have one and always set the referer.
+  // The endpoint is public but rate-limits anonymous requests and uses Referer for attribution: send the
+  // credential when there is one and always set the referer.
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     'HTTP-Referer': 'https://dojo.dev',
@@ -270,10 +240,8 @@ async function probeOpenRouter(baseUrl: string, providerId: string, apiModelId: 
     caps.push('tools');
   }
 
-  // Vision detection: prefer the structured `input_modalities` array, but
-  // fall back to the free-form `architecture.modality` string (`text->text`,
-  // `text+image->text`, `text+image+video->text`) which OpenRouter has
-  // populated for every model since day one.
+  // Vision: prefer the structured `input_modalities`, else the free-form `architecture.modality` string
+  // (`text+image->text`).
   const inputModalities = Array.isArray(entry.architecture?.input_modalities)
     ? entry.architecture!.input_modalities!
     : [];
@@ -290,10 +258,8 @@ async function probeOpenRouter(baseUrl: string, providerId: string, apiModelId: 
     caps.push('thinking');
   }
 
-  // Output-modality detection. OpenRouter populates `output_modalities`
-  // for media-generating models (image, video, audio). The free-form
-  // `modality` string ("text+image->text", "text->video", etc.) is the
-  // legacy fallback for older catalog entries.
+  // Output modalities: prefer `output_modalities`; the free-form `modality` string is the fallback for older
+  // catalog entries.
   const outputModalities = Array.isArray(entry.architecture?.output_modalities)
     ? entry.architecture!.output_modalities!
     : [];
@@ -312,18 +278,9 @@ async function probeOpenRouter(baseUrl: string, providerId: string, apiModelId: 
     caps.push('video_generation');
   }
 
-  // Audio generation splits into two operationally-different families:
-  //   - TTS / speech: text in, voice out. ("read this aloud as Nova.")
-  //     Drives the `tts_create` tool. Tagged `audio_generation`.
-  //   - Music / sound effect: prompt in, original composition out.
-  //     ("upbeat synthwave with driving bass.") Tagged `music_generation`.
-  //
-  // The modality probe alone can't tell them apart — both surface as
-  // "audio output" on OpenRouter. We use a name-substring allowlist to
-  // route known music models to `music_generation`. Anything else with
-  // audio output defaults to `audio_generation` (TTS), which matches
-  // the platform-default expectation. Users can override via the
-  // ModelRow Edit button if a probe gets the wrong family.
+  // Audio output is TTS (`audio_generation`, drives `tts_create`) or music (`music_generation`). The modality
+  // alone cannot tell them apart, so a name allowlist routes known music models and the rest default to TTS.
+  // The ModelRow Edit button overrides a wrong guess.
   const hasAudioOutput = outputModalities.includes('audio') ||
     /->.*(^|\+|\s)audio/.test(modalityString);
   if (hasAudioOutput) {
@@ -374,7 +331,7 @@ export async function probeModelCapabilities(input: ProbeInput): Promise<Capabil
         if (isOpenRouter(providerBaseUrl)) {
           return await probeOpenRouter(providerBaseUrl!, providerId, apiModelId);
         }
-        // Generic OpenAI-compatible (MiniMax, Together, etc.) — no probe.
+        // Generic OpenAI-compatible (MiniMax, Together, etc.): no probe.
         return [];
       }
       default:
@@ -390,11 +347,8 @@ export async function probeModelCapabilities(input: ProbeInput): Promise<Capabil
   }
 }
 
-// ── DB helper: read the stored capability set for a model ──
-//
-// Returns `[]` if the row is missing, the JSON fails to parse, or the array
-// is literally empty. Callers should treat `[]` as "unknown — don't gate" so
-// a failed probe never locks users out of a working model.
+// Read the stored capability set. `[]` (missing row, empty or unparseable array) means "unknown, don't gate",
+// so a failed probe never locks users out of a working model.
 export function getModelCapabilities(modelId: string): Capability[] {
   const db = getDb();
   const row = db.prepare('SELECT capabilities FROM models WHERE id = ?').get(modelId) as
@@ -422,23 +376,18 @@ export function getModelCapabilities(modelId: string): Capability[] {
     }
     return caps;
   } catch {
-    // JSON is corrupt — the row exists and was probed but the data is bad.
+    // JSON is corrupt: the row exists and was probed but the data is bad.
     // Default to text-only (safe) rather than [] (enable everything).
     return ['text'];
   }
 }
 
-// ── Runtime capability correction ──
-//
-// Called when a provider response definitively proves the model can't do X
-// (e.g., 404 "no endpoints found that support image input" → no vision).
-// Removes the capability from the stored set so the pre-flight gate catches
-// it on every subsequent turn instead of finding out the same way every time.
-// Idempotent — calling with a cap that's already absent is a no-op.
+// Called when a provider response proves the model cannot do `cap` (e.g. a 404 "no endpoints found that support
+// image input"): drop it from the stored set so the pre-flight gate catches it later. An absent cap is a no-op.
 export function removeCapability(modelId: string, cap: Capability): boolean {
   const current = getModelCapabilities(modelId);
   if (current.length === 0) {
-    // Unknown caps — set the row to "everything except this cap" so the gate
+    // Unknown caps: set the row to "everything except this cap" so the gate
     // becomes meaningful. Defaults match what most modern chat models can do.
     const inferred: Capability[] = (['text', 'tools', 'vision', 'thinking'] as Capability[]).filter(c => c !== cap);
     const db = getDb();
@@ -510,24 +459,10 @@ export async function probeAndStoreCapabilities(modelId: string): Promise<Capabi
   return caps;
 }
 
-// ── Boot backfill: probe every model whose capabilities look stale ──
-//
-// A row "looks stale" when EITHER of these is true:
-//   1. Its normalized capability set (what the UI renders) is empty — the
-//      row is literally `[]`, unparseable, or contains only non-modern
-//      strings that the normalizer drops. Example: legacy Ollama rows with
-//      `['chat']`.
-//   2. Its raw JSON contains ANY string that isn't in the modern vocabulary
-//      (`tools`/`vision`/`thinking`/`embedding`). This catches rows like
-//      Anthropic's old hardcoded `['chat','code','analysis','tools']` where
-//      the normalizer *would* keep `tools` — so criterion 1 alone wouldn't
-//      fire — but the row is still stale and missing vision/thinking info
-//      because the heuristic never detected them. One non-modern string in
-//      the raw array is an unambiguous "this was written by the pre-probe
-//      code path" tell.
-//
-// This replaces the earlier length-only check that was passing Anthropic
-// models through unchanged.
+// Boot backfill: probe every model whose capabilities look stale, i.e. (1) the normalized set is empty (`[]`,
+// unparseable, or only non-modern strings such as legacy Ollama `['chat']`), or (2) the raw JSON holds any string
+// outside the modern vocabulary, which marks a row written by the pre-probe code path even when the
+// normalizer would keep `tools`.
 
 const MODERN_CAPABILITY_VOCAB = new Set<string>([
   'tools',

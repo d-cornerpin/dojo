@@ -1,25 +1,9 @@
-// ════════════════════════════════════════
-// Calendar window helpers (v2.3.12)
-//
-// Compute UTC time windows that correspond to "today / this Wednesday /
-// the next 7 days" in a specific local timezone — so a user prompt like
-// "events for Wednesday" doesn't quietly miss late-evening events that
-// have already crossed into Thursday in UTC.
-//
-// Used by calendar_agenda / calendar_search on both Google and Microsoft
-// providers.
-// ════════════════════════════════════════
+// Calendar window helpers: UTC windows for "today / this Wednesday / the next 7 days" in a local timezone, so a
+// day-scoped query keeps late-evening events that crossed midnight in UTC (calendar_agenda, calendar_search).
 
 const DEFAULT_TIMEZONE = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
-/**
- * Minutes that `timezone`'s wall clock is offset from UTC at the instant
- * given by `date`. Returns positive for east-of-UTC, negative for west.
- *
- * Uses Intl.DateTimeFormat.formatToParts to read the wall clock in the
- * target timezone, then interprets those numbers as if they were UTC and
- * compares the difference.
- */
+/** Minutes that `timezone`'s wall clock is offset from UTC at `date` (positive east of UTC). */
 function getTimezoneOffsetMinutes(date: Date, timezone: string): number {
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: timezone,
@@ -41,16 +25,7 @@ function getTimezoneOffsetMinutes(date: Date, timezone: string): number {
   return Math.round((asUTC - date.getTime()) / 60000);
 }
 
-/**
- * Convert a local-clock datetime in `timezone` to its corresponding UTC
- * Date. e.g., localToUTC('2026-05-13', 0, 0, 0, 'America/Los_Angeles')
- * returns the UTC instant of midnight Pacific on that day.
- *
- * Iterates twice to handle DST transitions correctly: a first guess is
- * usually exact, but DST forward/back jumps can shift the offset by an
- * hour in either direction depending on which side of the transition
- * the guess landed on.
- */
+/** Local-clock datetime in `timezone` as a UTC Date; two passes so a DST jump cannot skew the offset. */
 function localToUTC(
   dateStr: string,
   hour: number,
@@ -58,7 +33,6 @@ function localToUTC(
   second: number,
   timezone: string,
 ): Date {
-  // Treat dateStr+time as if it were UTC, then back the offset off.
   const isoLocal = `${dateStr}T${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:${String(second).padStart(2, '0')}Z`;
   let candidate = new Date(isoLocal);
   for (let i = 0; i < 2; i++) {
@@ -68,9 +42,6 @@ function localToUTC(
   return candidate;
 }
 
-/**
- * Get the local YYYY-MM-DD for "today" in the given timezone.
- */
 function todayInTimezone(timezone: string): string {
   const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone: timezone,
@@ -80,13 +51,7 @@ function todayInTimezone(timezone: string): string {
   return `${get('year')}-${get('month')}-${get('day')}`;
 }
 
-/**
- * The UTC instant of local midnight `days` calendar days after `dateStr` in
- * `timezone`. The day arithmetic runs on the bare y-m-d components via
- * Date.UTC so no timezone is involved, then localToUTC maps the resulting
- * local midnight to UTC — which naturally accounts for the 23-hour spring and
- * 25-hour fall DST days instead of assuming every day is 24 hours.
- */
+/** UTC instant of local midnight `days` days after `dateStr` (y-m-d arithmetic, so DST days stay exact). */
 function addDaysLocalMidnight(dateStr: string, days: number, timezone: string): Date {
   const [y, m, d] = dateStr.split('-').map(Number);
   const endDateStr = new Date(Date.UTC(y, m - 1, d + days)).toISOString().slice(0, 10);
@@ -96,16 +61,8 @@ function addDaysLocalMidnight(dateStr: string, days: number, timezone: string): 
 export interface CalendarWindowInput {
   /** Days to span (1 = single day, 7 = week). Default 1. */
   days?: number;
-  /** IANA timezone (e.g. 'America/Los_Angeles'). Default = system. */
   timezone?: string;
-  /**
-   * Anchor date in YYYY-MM-DD (interpreted in `timezone`). When set, the
-   * window starts at local midnight on this date. When omitted and a
-   * `timezone` IS provided, the window starts at local midnight TODAY in
-   * that timezone. When neither is provided, the window starts at "now"
-   * (UTC) for backward compatibility with prompts that don't care about
-   * day boundaries.
-   */
+  /** Anchor date (YYYY-MM-DD in `timezone`); else local today if `timezone` is set, else "now" (UTC). */
   start_date?: string;
 }
 
@@ -114,16 +71,11 @@ export interface CalendarWindow {
   startISO: string;
   /** ISO 8601 UTC instant for the window end (exclusive). */
   endISO: string;
-  /** Effective timezone applied to the window. */
   timezone: string;
-  /** True if the window was anchored to a local date (not "now"). */
   anchored: boolean;
 }
 
-/**
- * Compute a calendar query time window. See CalendarWindowInput for
- * exact semantics.
- */
+/** Compute a calendar query time window; see CalendarWindowInput for the semantics. */
 export function computeCalendarWindow(input: CalendarWindowInput): CalendarWindow {
   const days = Math.max(1, Math.floor(input.days ?? 1));
   const timezone = input.timezone ?? DEFAULT_TIMEZONE;
@@ -135,14 +87,13 @@ export function computeCalendarWindow(input: CalendarWindowInput): CalendarWindo
   }
 
   if (input.timezone) {
-    // Snap to local midnight today in the given timezone.
     const today = todayInTimezone(timezone);
     const start = localToUTC(today, 0, 0, 0, timezone);
     const end = addDaysLocalMidnight(today, days, timezone);
     return { startISO: start.toISOString(), endISO: end.toISOString(), timezone, anchored: true };
   }
 
-  // No timezone, no start_date — preserve original "now → now+days" behavior.
+  // No timezone and no start_date: the window runs from now to now+days.
   const now = new Date();
   const end = new Date(now.getTime() + days * 86400000);
   return { startISO: now.toISOString(), endISO: end.toISOString(), timezone, anchored: false };

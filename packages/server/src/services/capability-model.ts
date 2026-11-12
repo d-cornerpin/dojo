@@ -1,23 +1,6 @@
-// ════════════════════════════════════════
-// services/capability-model.ts — generic platform-capability model
-// resolver factory.
-//
-// Several capabilities (image_generation, vision, video_generation,
-// audio_generation, transcription) all share the same shape: one
-// platform-wide config key points at a model row that has the
-// matching capability flag. Without a factory, each new capability
-// would re-duplicate ~100 lines of identical lookup + validation.
-//
-// Use makeCapabilityModelResolver to get:
-//   getConfiguredModelId() — raw id from config table, no validation
-//   setConfiguredModelId(id) — write (pass null to clear)
-//   getEffectiveModel()    — full resolution, returns null if the
-//                            configured model is missing, disabled,
-//                            or no longer has the capability
-//
-// Per-capability concerns (e.g. transcription's `local:whisper`
-// pseudo-entry) live in their wrapper module, not here.
-// ════════════════════════════════════════
+// Generic platform-capability model resolver factory: one platform-wide config key points at a model row that has
+// the matching capability flag. getEffectiveModel() returns null when the configured model is missing, disabled or
+// has lost the capability. Per-capability concerns (e.g. transcription's `local:whisper`) live in the wrapper module.
 
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
@@ -27,8 +10,7 @@ export interface CapabilityModelChoice {
   modelId: string;
   providerId: string;
   apiModelId: string;
-  /** 'configured' = the user's pick; 'failover' = the pick was unusable and
-   *  an enabled same-capability model stood in. Callers may surface this. */
+  /** 'configured' = the user's pick; 'failover' = an enabled same-capability model stood in for an unusable pick. */
   source: 'configured' | 'failover';
 }
 
@@ -96,9 +78,7 @@ export function makeCapabilityModelResolver(opts: {
     },
     getEffectiveModel(): CapabilityModelChoice | null {
       const configuredId = this.getConfiguredModelId();
-      // Unconfigured stays null: choosing NO model for a capability is a
-      // legitimate user decision; failover only stands in when a configured
-      // pick exists but is unusable (disabled, deleted, capability lost).
+      // Unconfigured stays null (choosing no model is legitimate); failover only covers an unusable pick.
       if (!configuredId) return null;
       const model = loadEnabledModel(configuredId);
       if (model && rowHasCapability(model)) {
@@ -116,11 +96,8 @@ export function makeCapabilityModelResolver(opts: {
         modelId: configuredId,
       });
 
-      // Bounded failover (remediation Phase 3, Invariant III): one pass over
-      // the user's ENABLED models with this capability — enabling a model is
-      // the consent boundary, failover never reaches past it. Same provider
-      // as the configured pick is preferred (least surprise), then name
-      // order for determinism. No retries, no ping-pong: one resolution.
+      // Bounded failover: one pass over the user's ENABLED models with this capability (enabling a model is the
+      // consent boundary), preferring the configured pick's provider, then name order. No retries.
       try {
         const configuredProvider = (getDb()
           .prepare(`SELECT provider_id FROM models WHERE id = ?`)
