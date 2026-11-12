@@ -1,13 +1,8 @@
-// ════════════════════════════════════════
-// Teams Watcher: Polls for new incoming Teams messages and notifies the primary agent
-//
-// Strategy:
-//   - Every 15 seconds, fetch the chat list and filter to chats updated since last poll
-//   - For each active chat, fetch recent messages and filter by timestamp client-side
-//   - Graph delta queries are NOT supported for chatMessage — use timestamp filtering instead
-//   - Per-chat member list is fetched once on first sight (no $select — userId is on the
-//     derived aadUserConversationMember type, not the base conversationMember type)
-// ════════════════════════════════════════
+// Teams watcher: polls for new incoming Teams messages and notifies the primary agent every 15 seconds.
+//   - Fetch the chat list, keep chats updated since the last poll, fetch their recent messages and filter by
+//     timestamp client-side (Graph delta queries are NOT supported for chatMessage).
+//   - Each chat's member list is fetched once on first sight, with no $select: userId lives on the derived
+//     aadUserConversationMember type, not the base conversationMember type.
 
 import { v4 as uuidv4 } from 'uuid';
 import { resolveOrCreateConversation } from '../memory/conversations.js';
@@ -103,12 +98,10 @@ let pollTimer: ReturnType<typeof setInterval> | null = null;
 let firstPollTimer: ReturnType<typeof setTimeout> | null = null;
 let ownUserId: string | null = null;
 
-// chatId → ISO timestamp of the newest message we processed from that chat
-// Used to filter out already-seen messages on the next fetch
+// chatId to the ISO timestamp of the newest message processed from that chat; filters out already-seen messages.
 const chatLastMessageAt = new Map<string, string>();
 
-// When the watcher started — used as the initial baseline for all chats
-// so we don't replay messages that arrived before we were watching
+// When the watcher started: the baseline for chats not yet seen, so earlier messages are not replayed.
 let watcherStartedAt = new Date(0).toISOString();
 
 // userId → email populated from chat member list on first sight of each chat
@@ -131,8 +124,7 @@ async function getOwnUserId(): Promise<string | null> {
 }
 
 // ── Fetch chat members to build userId → email map ──
-// No $select — userId and email are on aadUserConversationMember (derived type),
-// not conversationMember (base type), so $select on base fields rejects them.
+// No $select: userId and email are on the derived aadUserConversationMember type, so base-field $select rejects them.
 
 async function fetchChatMembers(chatId: string): Promise<void> {
   if (membersFetched.has(chatId)) return;
@@ -195,9 +187,7 @@ async function pollForNewMessages(): Promise<void> {
       value?: Array<{ id: string; topic: string | null; chatType: string; lastUpdatedDateTime: string }>;
     };
     if (!chatsData?.value) {
-      // No chats — that's not an error, just nothing to do. Pre-2026-04-30
-      // this returned silently without recording success, leaving the status
-      // panel stale (and potentially making the watcher look "not running").
+      // No chats is not an error; still record success so the status panel does not go stale.
       recordPollSuccess();
       return;
     }
@@ -245,8 +235,7 @@ async function pollForNewMessages(): Promise<void> {
       const msgsData = msgsResult.data as { value?: ChatMessage[] };
       if (!msgsData?.value) continue;
 
-      // For chats we've never processed before, use watcherStartedAt as baseline
-      // so we don't replay messages that existed before the watcher came up
+      // A chat never processed before uses watcherStartedAt as the baseline.
       const lastSeenAt = chatLastMessageAt.get(chat.id) ?? watcherStartedAt;
       let newestMessageAt = lastSeenAt;
 
@@ -275,41 +264,30 @@ async function pollForNewMessages(): Promise<void> {
         const content = teamsInboundContent({ senderEmail, senderName, chatTopic: chat.topic ?? null, chatType: chat.chatType, time: msg.createdDateTime, body, chatId: chat.id });
 
         const msgId = uuidv4();
-        // P5: conversation identity = the Teams chat id (thread-true).
+        // Conversation identity is the Teams chat id.
         const conversationId = resolveOrCreateConversation(primaryId, {
           channel: 'teams', provider: 'teams', counterpartyId: senderEmail ?? senderName ?? null,
           counterpartyName: senderName ?? null, threadRoot: chat.id ?? null,
         });
-        // v3.0.9 — structured routing metadata. Teams is an agent-kind channel
-        // (the watcher is agent-only); the shared auth check applies the
-        // agent-kind gate, so an unknown sender => authorized:false => the
-        // agent reads it as a notification and does not auto-reply.
-        // C19: classify anything that is NOT a 1:1 as 'group' (the old `=== 'group' ?
-        // 'group' : 'dm'` mislabeled Graph 'meeting' chats as 'dm', so multi-party meetings
-        // bypassed the group gate and could earn an auto-reply into the meeting). And make
-        // the group downgrade visible to ORIGIN, not just routing: a group/meeting message
-        // is authorized:false so deriveOrigin classifies it as a non-auto-reply notice and
-        // getWaitingHumanConversations does NOT make it a mandatory waiting turn (previously
-        // deriveOrigin saw authorized:true → forced turn, while A-3 routed it to dashboard —
-        // the schizophrenic counterparty). It still reaches the model via the EVENTS lane;
-        // the agent can choose to reply into the group with an explicit teams_send_message.
-        // A 1:1 (DM) from a safe sender stays authorized → normal routed reply turn.
+        // Structured routing metadata. Teams is an agent-kind channel, so the shared auth check applies the
+        // agent-kind gate: an unknown sender is authorized:false and read as a notification, not auto-replied.
+        // Anything that is NOT a 1:1 is classified 'group' (Graph 'meeting' chats included), so a multi-party
+        // message is authorized:false: deriveOrigin classifies it as a non-auto-reply notice and
+        // getWaitingHumanConversations does not make it a mandatory waiting turn. It still reaches the model
+        // via the EVENTS lane, and the agent may reply into the group with an explicit teams_send_message.
         const isDm = chat.chatType === 'oneOnOne';
         const inboundMetaObj = {
           channel: 'teams' as const,
           accountKind: 'agent' as const,
           authorized: isDm && isSenderAuthorized('teams', senderEmail, 'agent'),
           sender: senderEmail,
-          senderName,   // v3.5 K33: the badge's name; the model reads it inside the fence only
+          senderName,   // the badge's name; the model reads it inside the fence only
           chatId: chat.id,
           chatType: (isDm ? 'dm' : 'group') as 'dm' | 'group',
           recipientAddress: senderEmail ?? undefined,
         };
-        // T4/OR4: channel, sender and the group/DM auth verdict above are stamped IN
-        // the write, from this watcher's own meta — never re-derived. recordInboundMeta
-        // below still records the full blob (chatId, chatType, recipientAddress).
-        // insertMessageIfAbsent keeps the external_message_id de-duplication that the
-        // INSERT OR IGNORE provided.
+        // Channel, sender and the group/DM auth verdict are stamped in the write from this watcher's own meta,
+        // never re-derived; `insertInboundMessageIfAbsent` keeps the external_message_id de-duplication.
         insertInboundMessageIfAbsent({
           id: msgId,
           agentId: primaryId,
@@ -331,14 +309,10 @@ async function pollForNewMessages(): Promise<void> {
             agentId: primaryId,
             role: 'user' as const,
             content,
-            // Carry the SAME structured inbound_meta into the live broadcast
-            // that the DB row holds, so ws.ts stampChatMessageOrigin derives
-            // identical attribution live and on refetch (mirrors iMessage
-            // OPEN-13). Load-bearing here: a group/meeting message is
-            // authorized:false, so without inbound_meta the live payload's
-            // marker-parse fallback would render it while refetch hides it.
-            // t106 — the same binding the insert used, on the wire too (R4 reads it live). Why:
-            // `services/__tests__/no-channel-inbound-frame-loses-its-conversation.test.ts`.
+            // The same structured inbound_meta and conversation binding as the DB row, so ws.ts
+            // stampChatMessageOrigin derives identical attribution live and on refetch. Load-bearing: a
+            // group/meeting message is authorized:false, so without it the live marker-parse fallback would
+            // render it while refetch hides it.
             conversationId,
             inboundMeta: JSON.stringify(inboundMetaObj),
             tokenCount: null,
@@ -364,7 +338,7 @@ async function pollForNewMessages(): Promise<void> {
         });
       }
 
-      // Advance the per-chat message window so we don't re-process these
+      // Advance the per-chat message window so these are not re-processed.
       chatLastMessageAt.set(chat.id, newestMessageAt);
     }
 
@@ -381,7 +355,7 @@ async function pollForNewMessages(): Promise<void> {
         });
       });
 
-      // Persist notified IDs (keep last 200)
+      // Persist notified IDs (last 200)
       const recentIds = [...notifiedIds].slice(-200);
       db.prepare(`
         INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
@@ -427,7 +401,7 @@ export function startTeamsWatcher(): void {
     });
   }, POLL_INTERVAL_MS);
 
-  // Initial poll after 15s — staggers behind Outlook watcher's 10s delay
+  // Initial poll after 15s, staggered behind the Outlook watcher's 10s delay
   firstPollTimer = setTimeout(() => {
     pollForNewMessages().catch(() => {});
   }, 15_000);

@@ -1,17 +1,7 @@
-// ════════════════════════════════════════
-// renderOfficeToHtml, convert Office documents to canvas-renderable HTML.
-//
-// The right-dock canvas (and canvas_read) render HTML in an iframe, but Word /
-// Excel files are binary OOXML the browser can't display. This converts them
-// to a clean, self-contained HTML page:
-//   .docx              -> mammoth (semantic HTML)
-//   .xlsx/.xls/.xlsm   -> SheetJS (one HTML table per sheet)
-// Used by BOTH the /upload/render endpoint (dashboard canvas) and canvas_read
-// (the agent), so what the agent sees matches what the user sees.
-//
-// Not handled: legacy .doc (binary Word) and .pptx, there is no bundled
-// converter; callers fall back to a "download to view" message.
-// ════════════════════════════════════════
+// Converts Office documents to self-contained HTML for the canvas iframe (the dashboard's /upload/render
+// endpoint and the agent's canvas_read both use it, so both see the same page).
+//   .docx -> mammoth (semantic HTML); .xlsx/.xls/.xlsm/.xlsb/.csv -> SheetJS (one table per sheet)
+// Legacy .doc and .pptx have no bundled converter; callers show a "download to view" message.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -30,8 +20,7 @@ function escapeHtml(s: string): string {
   ));
 }
 
-// Clean, neutral document styling that sits comfortably on the canvas's light
-// background (a plain white sheet for Word, tidy bordered tables for Excel).
+// Neutral document styling for the canvas's light background.
 const PAGE_STYLE = `
   *{box-sizing:border-box}
   html,body{margin:0}
@@ -70,12 +59,10 @@ export async function renderOfficeToHtml(filePath: string): Promise<string | nul
       const sheets = wb.SheetNames.map((name) => {
         const ws = wb.Sheets[name];
         const full = XLSX.utils.sheet_to_html(ws, { id: 'sheetjs' });
-        // sheet_to_html may wrap the table in a full document; extract just the
-        // <table> and give it our class.
+        // sheet_to_html may wrap the table in a full document; keep just the <table>.
         const m = full.match(/<table[\s\S]*?<\/table>/i);
         const table = (m ? m[0] : full).replace(/<table/i, '<table class="xtable"');
-        // Only label sheets when there's more than one (a single sheet's name,
-        // e.g. CSV's "Sheet1", is just noise).
+        // Label sheets only when there is more than one (a lone "Sheet1" is noise).
         const label = multi ? `<div class="sheet__name">${escapeHtml(name)}</div>` : '';
         return `<section class="sheet">${label}${table}</section>`;
       }).join('\n');

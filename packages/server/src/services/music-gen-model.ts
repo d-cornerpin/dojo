@@ -1,12 +1,5 @@
-// ════════════════════════════════════════
-// services/music-gen-model.ts — music generation model resolver.
-//
-// Platform-wide config key points at one music-generation-capable model
-// (e.g. Google Lyria 3) that the `music_create` tool dispatches to. Mirrors
-// audio-gen-model.ts / image-gen-model.ts. Capability is `music_generation`
-// (prompt-in, original-composition-out), distinct from `audio_generation`
-// (GPT Audio voice/general).
-// ════════════════════════════════════════
+// Resolves the music-generation model that `music_create` dispatches to (capability `music_generation`,
+// distinct from `audio_generation`). Mirrors audio-gen-model.ts and image-gen-model.ts.
 
 import { makeCapabilityModelResolver, type CapabilityModelChoice } from './capability-model.js';
 

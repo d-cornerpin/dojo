@@ -1,24 +1,11 @@
-// Boot-time + on-demand refresh of model pricing for providers whose
-// upstream API exposes live numbers (currently: OpenRouter and any other
-// /v1/models-compatible endpoint that returns a `pricing` object).
+// Boot-time and on-demand refresh of model pricing for providers whose upstream API exposes live numbers
+// (OpenRouter and any other /v1/models-compatible endpoint that returns a `pricing` object). Without a
+// passive sync the dashboard prices drift from upstream, while the router and cost tracker use the stale values.
 //
-// Why this exists: validate ("Sync Models and Pricing") refreshes prices
-// already, but users rarely click it. Without a passive sync, the prices
-// in the dashboard drift from upstream silently — confusingly, since the
-// router and cost tracker still use the stale values. Boot is a natural
-// cadence: every process restart re-pulls fresh prices.
+// COALESCE-preserve: a price the API returns updates the row; a row the API omits keeps what it had, so a
+// transient gap never wipes known data. Same shape as the validate endpoint in gateway/routes/config.ts.
 //
-// Semantics: COALESCE-preserve. If the API returns a price we update it.
-// If the API doesn't return a price for a row we already know about, we
-// keep what we had — a transient API gap should never wipe known data.
-// Same shape as the validate endpoint at gateway/routes/config.ts.
-//
-// What's NOT synced here:
-//   - Anthropic: prices come from a static name→cost map, not the API.
-//     Refresh adds no information.
-//   - OpenAI: /v1/models doesn't return pricing.
-//   - DeepSeek: API doesn't return pricing; static catalog covers it.
-//   - Ollama: local models, no pricing.
+// Not synced: Anthropic (static name-to-cost map), OpenAI and DeepSeek (/models returns no pricing), Ollama (local).
 
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
@@ -45,28 +32,19 @@ interface OpenAiCompatibleModelResponse {
   }>;
 }
 
-// DeepSeek's API doesn't return pricing on /models, so we skip it. Same
-// detection logic as gateway/routes/config.ts to stay consistent.
+// DeepSeek's /models returns no pricing, so it is skipped; same detection as gateway/routes/config.ts.
 function isDeepSeekBaseUrl(baseUrl: string | null): boolean {
   if (!baseUrl) return false;
   return baseUrl.toLowerCase().includes('deepseek.com');
 }
 
 /**
- * T77b — where this provider's model catalog is, by the ONE rule the model client itself uses
- * (`resolveOpenAIBaseUrl`, `agent/model.ts`): bare-host providers keep their root, everyone
- * else gets `/v1`, and a base URL that ALREADY ends in `/v1` is left alone.
+ * Where this provider's model catalog is, by the one rule the model client uses (`resolveOpenAIBaseUrl`,
+ * `agent/model.ts`): bare-host providers keep their root, everyone else gets `/v1`, and a base URL that
+ * already ends in `/v1` is left alone.
  *
- * This used to be `${baseUrl}/v1/models` built by hand — the third copy of the URL rule, and
- * the one T63 missed when it deleted the other two from `gateway/routes/config.ts`. It is
- * byte-identical for OpenRouter (`…/api` → `…/api/v1/models`) and wrong for exactly the case
- * T63 exists for: the base URL a local server prints for you to paste already ends in `/v1`,
- * so the hand-build asked for `…/v1/v1/models` and the boot refresh took a 404 against a box
- * that validates and chats perfectly well.
- *
- * The modality union still rides OpenRouter alone. OpenRouter's `/models` defaults to
- * `output_modalities=text`, which omits image / video / audio-only generators; without the
- * param a user's flux / seedance rows are invisible here and never get their prices refreshed.
+ * The modality union rides OpenRouter alone: its `/models` defaults to `output_modalities=text`, which omits
+ * image / video / audio-only generators, so without the param those rows never get their prices refreshed.
  * No other provider honours it.
  */
 export function providerModelsUrl(baseUrl: string): string {
@@ -130,9 +108,8 @@ async function syncOpenAiCompatibleProvider(provider: ProviderRow): Promise<{ up
   return { updated, skipped: false };
 }
 
-// Run a price refresh across every validated provider whose type we
-// know how to sync. Errors per-provider are logged and swallowed so one
-// provider's outage never blocks the rest (or boot itself).
+// Refresh prices across every validated provider whose type we can sync. A provider's error is logged and
+// swallowed so one outage never blocks the rest (or boot).
 export async function syncAllProviderPricing(): Promise<void> {
   const db = getDb();
   const providers = db

@@ -1,17 +1,7 @@
-// ════════════════════════════════════════
-// Public file sharing
-// ════════════════════════════════════════
-//
-// Lets agents publish a file (or a small directory tree, e.g. an HTML page
-// with linked assets) to a publicly-accessible URL. Shares live under
-// ~/.dojo/out/<slug>/, where slug is a timestamp + short random tag so URLs
-// are unguessable in practice. The gateway serves /share/<slug>/<file>
-// without auth, so anyone with the URL can fetch.
-//
-// The returned URL prefers the active Cloudflare tunnel if one is up, so
-// the link works from anywhere on the internet. Otherwise it falls back to
-// the localhost URL — only useful from the same machine, but still
-// correct for local-only workflows.
+// Public file sharing: agents publish a file (or a small directory tree) to a public URL. Shares live under
+// ~/.dojo/out/<slug>/, the slug being a timestamp plus a short random tag so URLs are unguessable in
+// practice; the gateway serves /share/<slug>/<file> without auth. The returned URL prefers the active
+// Cloudflare tunnel, else falls back to localhost (same machine only).
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -37,8 +27,7 @@ function makeSlug(): string {
 }
 
 function sanitizeFilename(name: string): string {
-  // Strip path separators and dotfiles to keep the URL tidy and prevent
-  // an agent from naming a file `..` or `/etc/passwd`.
+  // Strip path separators and dotfiles so an agent cannot name a file `..` or `/etc/passwd`.
   const basename = path.basename(name);
   const cleaned = basename.replace(/[^a-zA-Z0-9._-]/g, '_');
   if (!cleaned || cleaned === '.' || cleaned === '..') return 'file';
@@ -51,8 +40,7 @@ function copyDirRecursive(src: string, dest: string): void {
   for (const entry of entries) {
     const srcPath = path.join(src, entry.name);
     const destPath = path.join(dest, entry.name);
-    // PHASE-0 T10: a directory share must not sweep a secret in as a passenger.
-    // The tool-level gate only ever sees the directory the agent named.
+    // A directory share must not sweep a secret in as a passenger; the tool-level gate only sees the named directory.
     if (isSensitivePath(srcPath)) {
       logger.warn('Public share: skipped a sensitive file inside the shared directory', { file: entry.name });
       continue;
@@ -65,29 +53,15 @@ function copyDirRecursive(src: string, dest: string): void {
 
 // ── HTML asset inlining ──
 //
-// When sharing a single .html file, scan it for linked local assets
-// (<img src=…>, <link href=…>, <script src=…>, url(…) in inline CSS) and
-// copy each one into the share directory so the rendered page actually
-// works at the public URL. Without this, every relative <img>/<link>
-// 404s when fetched through /share/<slug>/<file>.
-//
-// Rules:
-//   - URLs starting with http(s)://, data:, mailto:, tel:, sms:, #, //,
-//     or javascript: are external — left untouched.
-//   - Relative refs ("hero.png", "assets/style.css") preserve their
-//     subdirectory structure under shareDir; HTML keeps its existing href.
-//   - Absolute filesystem refs ("/Users/…/photo.png") get flattened to
-//     a sanitized basename in shareDir, and the HTML is rewritten to use
-//     that name as a relative path.
-//   - Path traversal attempts ("../../../etc/passwd") and refs that
-//     resolve outside shareDir are skipped with a warning.
-//   - An asset on the sensitive-files block list is REFUSED (PHASE-5 T9B, the
-//     owner's decision): a page may not pull a secret in as an asset and put it
-//     at an unauthenticated URL. Held by
-//     `__tests__/public-share-assets-sensitive.test.ts`, which carries the
-//     negative controls with equal weight.
-//   - Bounded: at most 200 assets, 50MB total. Anything past the cap is
-//     skipped with a warning.
+// Sharing a single .html file copies each linked local asset (<img src>, <link href>, <script src>, url() in
+// inline CSS) into the share directory, so relative refs do not 404 at the public URL. Rules:
+//   - http(s)://, data:, mailto:, tel:, sms:, #, //, javascript: are external and left untouched.
+//   - Relative refs keep their subdirectory structure under shareDir; the HTML keeps its href.
+//   - Absolute filesystem refs are flattened to a sanitized basename in shareDir and the HTML rewritten.
+//   - Path traversal and refs resolving outside shareDir are skipped with a warning.
+//   - An asset on the sensitive-files block list is REFUSED: a page may not put a secret at an
+//     unauthenticated URL (`__tests__/public-share-assets-sensitive.test.ts` holds this).
+//   - Bounded: at most 200 assets, 50MB total; anything past the cap is skipped with a warning.
 
 const MAX_INLINED_ASSETS = 200;
 const MAX_INLINED_TOTAL_BYTES = 50 * 1024 * 1024;
@@ -103,22 +77,19 @@ interface AssetInlineResult {
 
 function isExternalRef(ref: string): boolean {
   if (ref.length === 0) return true;
-  // Note: `file:` is intentionally NOT in this list. file:// URLs ARE local
-  // filesystem refs that browsers render — Maddy embeds keyframes as
-  // `<img src="file:///Users/.../foo.png">`, and we want to inline those
-  // exactly like absolute filesystem paths. tryCopyAsset strips the scheme.
+  // `file:` is intentionally NOT in this list: file:// URLs are local filesystem refs that browsers render
+  // (`<img src="file:///Users/.../foo.png">`), inlined like absolute paths; tryCopyAsset strips the scheme.
   return /^(?:https?:|data:|mailto:|tel:|sms:|#|\/\/|javascript:)/i.test(ref);
 }
 
-/** Strip a `file://` (or `file://localhost`) scheme prefix to get the raw
- *  filesystem path. URL-decoded. Returns null when the input isn't a file:// URL. */
+/** Strip a `file://` (or `file://localhost`) scheme prefix to get the URL-decoded filesystem path, or null. */
 function stripFileScheme(ref: string): string | null {
   const m = ref.match(/^file:\/\/(?:localhost)?(\/.*)$/i);
   if (!m) return null;
   try {
     return decodeURIComponent(m[1]);
   } catch {
-    return m[1]; // malformed encoding — best effort
+    return m[1]; // malformed encoding: best effort
   }
 }
 
@@ -130,16 +101,14 @@ function rewriteHtmlWithInlinedAssets(htmlPath: string, shareDir: string): Asset
   let skippedCount = 0;
   let notFoundCount = 0;
   let totalBytes = 0;
-  // Cache: source path → dest relative path. Same source referenced multiple
-  // times is copied once and rewritten consistently.
+  // Cache: source path to dest relative path, so a source referenced twice is copied once and rewritten consistently.
   const copied = new Map<string, string>();
   const reportedMissing = new Set<string>();
 
   const tryCopyAsset = (ref: string): string | null => {
     if (isExternalRef(ref)) return null;
 
-    // Strip URL query/fragment ("style.css?v=2" → "style.css") for the
-    // filesystem lookup; preserve the original suffix in the rewritten ref.
+    // Strip query/fragment ("style.css?v=2") for the filesystem lookup; the rewritten ref keeps the suffix.
     const queryIdx = Math.min(
       ref.indexOf('?') === -1 ? Infinity : ref.indexOf('?'),
       ref.indexOf('#') === -1 ? Infinity : ref.indexOf('#'),
@@ -147,8 +116,7 @@ function rewriteHtmlWithInlinedAssets(htmlPath: string, shareDir: string): Asset
     const refPathOnly = queryIdx === Infinity ? ref : ref.slice(0, queryIdx);
     const refSuffix = queryIdx === Infinity ? '' : ref.slice(queryIdx);
 
-    // file:// URLs are filesystem refs in URL form (Maddy's keyframe pattern).
-    // Treat the stripped path as absolute.
+    // file:// URLs are filesystem refs in URL form: treat the stripped path as absolute.
     const fileSchemePath = stripFileScheme(refPathOnly);
     const treatAsAbsolute = fileSchemePath !== null || path.isAbsolute(refPathOnly);
     const absoluteRefPath = fileSchemePath ?? refPathOnly;
@@ -170,17 +138,13 @@ function rewriteHtmlWithInlinedAssets(htmlPath: string, shareDir: string): Asset
       }
     }
 
-    // PHASE-5 T9B — the third population at this door (owner-decided 2026-08-03).
-    // An asset the page NAMES is published exactly like a file the directory walk
-    // sweeps in (:56) and like the entry file itself (:318): its bytes land under
-    // OUT_DIR and the gateway serves them with no sign-in. Same sanctioned check,
-    // same order — asked on the RESOLVED path before anything stats, reads or
-    // copies it. Both spellings are asked because the publish family's own door
-    // (`brokers/fs.ts:shareDeny`) has asked both since PHASE-5 T2: a `..` segment
-    // and a symlink are two ways of writing the same filename.
+    // An asset the page names is published like a directory-walk file or the entry file: its bytes land under
+    // OUT_DIR and are served with no sign-in. Same sanctioned check, asked on the RESOLVED path before
+    // anything stats, reads or copies it, in both spellings (`brokers/fs.ts:shareDeny` asks both): a `..`
+    // segment and a symlink are two ways of writing the same filename.
     const lexicalSource = path.resolve(absSource);
     let realSource = lexicalSource;
-    try { realSource = fs.realpathSync(lexicalSource); } catch { /* missing or unresolvable — the lexical answer stands */ }
+    try { realSource = fs.realpathSync(lexicalSource); } catch { /* missing or unresolvable: the lexical answer stands */ }
     if (isSensitivePath(lexicalSource) || (realSource !== lexicalSource && isSensitivePath(realSource))) {
       logger.warn('Public share: skipped a sensitive asset named by the shared page', { ref });
       warnings.push(`Skipped asset on the sensitive-files block list: ${ref}`);
@@ -201,12 +165,8 @@ function rewriteHtmlWithInlinedAssets(htmlPath: string, shareDir: string): Asset
     try {
       stat = fs.statSync(absSource);
     } catch {
-      // Asset doesn't exist on disk. Could be intentional (template
-      // placeholder) OR a real bug (HTML references a file that should
-      // have been there but isn't). Track and surface in the result so
-      // the user sees "8 missing" instead of silent zero feedback —
-      // pre-2026-05-06 behavior was to skip silently which made it look
-      // like the inliner didn't run at all.
+      // Asset missing on disk: a template placeholder or a real bug. Tracked and surfaced in the result so the
+      // user sees "8 missing" instead of silence.
       if (!reportedMissing.has(absSource)) {
         reportedMissing.add(absSource);
         notFoundCount++;
@@ -250,8 +210,7 @@ function rewriteHtmlWithInlinedAssets(htmlPath: string, shareDir: string): Asset
     }
   };
 
-  // Apply patterns one by one. html attribute refs (src/href) capture both
-  // the attribute name and the URL; CSS url(...) captures only the URL.
+  // html attribute refs (src/href) capture the attribute name and the URL; CSS url(...) captures only the URL.
   let rewritten = html;
 
   rewritten = rewritten.replace(/\b(src|href)\s*=\s*"([^"]*)"/gi, (match, _attr, ref: string) => {
@@ -283,10 +242,7 @@ export interface PublicShareResult {
   slug: string;
   publicPath: string;       // absolute path to the entry file under OUT_DIR
   baseSource: 'tunnel' | 'localhost';
-  /** When sharing a single HTML file, the count of linked local assets
-   *  (img/script/link/url(…)) that were detected, copied, missing on disk,
-   *  or skipped for safety reasons. Undefined for non-HTML or directory
-   *  shares. */
+  /** For a single HTML file: counts of linked local assets detected, copied, missing on disk or skipped for safety. */
   inlinedAssets?: {
     copied: number;
     skipped: number;
@@ -310,11 +266,8 @@ export function createPublicShare(input: CreatePublicShareInput): PublicShareRes
   if (!fs.existsSync(src)) {
     throw new Error(`Source does not exist: ${src}`);
   }
-  // PHASE-0 T10 — layered, not duplicated: the share_publicly tool case gates
-  // the agent's request with isSensitivePath + checkPermission and reports the
-  // standard [BLOCKED] string. This second check belongs to the FUNCTION, so no
-  // future caller (route, service, scheduled job) can publish a secret to an
-  // unauthenticated URL by simply not knowing about the tool-level gate.
+  // Layered on purpose: the share_publicly tool gates the agent's request, and this second check belongs to
+  // the FUNCTION, so no future caller (route, job) can publish a secret by not knowing about the tool-level gate.
   if (isSensitivePath(src)) {
     throw new Error(`${src} is on the sensitive-files block list and can never be published to a public URL`);
   }
@@ -332,9 +285,7 @@ export function createPublicShare(input: CreatePublicShareInput): PublicShareRes
     entry = sanitizeFilename(path.basename(src));
     const ext = path.extname(src).toLowerCase();
     if (ext === '.html' || ext === '.htm') {
-      // For HTML, walk the file's linked assets and copy them in too. Without
-      // this, every relative <img>/<link>/<script>/url() in the page 404s when
-      // fetched through the share URL because only the .html is in shareDir.
+      // For HTML, copy the linked assets in too: only the .html is in shareDir, so relative refs would 404.
       const result = rewriteHtmlWithInlinedAssets(src, shareDir);
       fs.writeFileSync(path.join(shareDir, entry), result.rewritten, 'utf-8');
       inlinedAssets = {
@@ -353,7 +304,7 @@ export function createPublicShare(input: CreatePublicShareInput): PublicShareRes
     } else if (fs.existsSync(path.join(shareDir, 'index.html'))) {
       entry = 'index.html';
     } else {
-      // No obvious entry — point at the directory; user / agent can append a path.
+      // No obvious entry: point at the directory; user / agent can append a path.
       entry = '';
     }
   } else {

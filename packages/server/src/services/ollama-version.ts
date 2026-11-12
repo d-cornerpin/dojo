@@ -1,5 +1,4 @@
-// What Ollama version the Dojo's own models need, what this box runs, and the upkeep's one record.
-// A model's minimum is declared next to its tag (`local-standard.ts`, `minOllama`); no other file compares versions.
+// Ollama version checks: no other file compares versions (minimums sit beside the model tag in `local-standard.ts`).
 
 import { getDb } from '../db/connection.js';
 
@@ -9,12 +8,11 @@ export function parseOllamaVersion(v: string | null | undefined): number[] | nul
   return m ? [Number(m[1]), Number(m[2]), Number(m[3] ?? 0)] : null;
 }
 
-/** `0.36.0-rc2`: a pre-release ranks BELOW the release it leads up to. */
+/** A pre-release (`0.36.0-rc2`) ranks BELOW the release it leads up to. */
 const isPrerelease = (v: string | null): boolean => /^v?\d+\.\d+(?:\.\d+)?-/.test((v ?? '').trim());
-/** A source build reports 0.0.0: its version says nothing, so it is neither old nor new. */
+/** A source build reports 0.0.0: neither old nor new. */
 export const isUnknownBuild = (v: string | null): boolean => (parseOllamaVersion(v) ?? [1]).every((n) => n === 0);
 
-/** Is `have` at least `need`? An unreadable version is not "at least" anything. */
 export function ollamaAtLeast(have: string | null, need: string): boolean {
   const h = parseOllamaVersion(have);
   const n = parseOllamaVersion(need);
@@ -23,14 +21,12 @@ export function ollamaAtLeast(have: string | null, need: string): boolean {
   return !isPrerelease(have) || isPrerelease(need);
 }
 
-/** The highest minimum among `models` that declare one, or null when none does. */
 export function requiredOllamaVersion(models: ReadonlyArray<{ minOllama: string | null }>): string | null {
   let need: string | null = null;
   for (const m of models) if (m.minOllama && (need === null || !ollamaAtLeast(need, m.minOllama))) need = m.minOllama;
   return need;
 }
 
-/** The running Ollama's version, or null when it does not answer or does not say. */
 export async function readOllamaVersion(baseUrl: string): Promise<string | null> {
   try {
     const resp = await fetch(`${baseUrl.replace(/\/+$/, '')}/api/version`, { signal: AbortSignal.timeout(5000) });
@@ -42,18 +38,12 @@ export async function readOllamaVersion(baseUrl: string): Promise<string | null>
   }
 }
 
-/** The registry's refusal of a model the running Ollama is too old for (the owner's field text: "412: The model you
- *  are attempting to pull requires a newer version of Ollama"). */
 export const isVersionRefusal = (error: string): boolean => /newer version of ollama/i.test(error);
 
-/** A manual pull's failure in the words the setup screen shows: the registry's version refusal becomes plain (its own
- *  text stays in the log); any other failure is the model name's or the network's and is shown as it came. */
 export const plainPullError = (error: string, why?: string | null): string =>
   (isVersionRefusal(error) ? `This model needs a newer Ollama than this Mac runs. ${why ?? 'The Dojo could not update it by itself.'}` : error);
 
-/** The upkeep's one record (`ollama-upkeep.ts`), a JSON config row: the version it could not update (`held`), a start that
- *  has not answered yet, a limit restart still owed, a listener settled for good, and when the last attempt that did not
- *  finish the pair was made. */
+/** The upkeep's one record (`ollama-upkeep.ts`), a JSON config row of what it could not finish. */
 export interface UpkeepRecord {
   held?: string; starting?: 'app' | 'service' | 'serve'; limitOwed?: boolean; settled?: { pid: number; path: string }; triedAt?: number;
 }

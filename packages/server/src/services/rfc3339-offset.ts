@@ -1,8 +1,6 @@
-// Google's freeBusy timeMin/timeMax require an RFC3339 timestamp WITH a UTC
-// offset. Offset-less strings (the format the schema example used to teach) and
-// date-only strings 400. Default any offset-less value to the host timezone by
-// parsing it as local time and re-emitting UTC, matching the calendar write
-// tools' host-timezone convention (Intl.DateTimeFormat().resolvedOptions()).
+// Google's freeBusy timeMin/timeMax require an RFC3339 timestamp WITH a UTC offset; offset-less and date-only
+// strings 400. An offset-less value is parsed as host-local time and re-emitted as UTC, matching the calendar
+// write tools' host-timezone convention (Intl.DateTimeFormat().resolvedOptions()).
 export function toRfc3339WithOffset(value: string): string {
   const t = value.trim();
   if (/(?:Z|[+-]\d{2}:?\d{2})$/.test(t)) return t; // already carries an offset

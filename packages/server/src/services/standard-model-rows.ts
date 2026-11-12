@@ -1,7 +1,4 @@
-// ════════════════════════════════════════════════════════════════════════════
-// The database rows the Dojo's two standard models carry; `ollama-upkeep.ts` writes them after each look at what
-// Ollama lists.
-// ════════════════════════════════════════════════════════════════════════════
+// The database rows the Dojo's two standard models carry, written after each look at what Ollama lists.
 
 import { getDb } from '../db/connection.js';
 
@@ -10,8 +7,7 @@ export function registerStandardRow(providerId: string, tag: string, capabilitie
   const db = getDb();
   const existing = db.prepare('SELECT id FROM models WHERE provider_id = ? AND api_model_id = ?').get(providerId, tag) as { id: string } | undefined;
   if (existing) {
-    // A row discovery made first carries no `decision` capability; the pair is hard-wired, so
-    // its capability is repaired and it is re-enabled even if a person disabled it.
+    // A row discovery made first lacks the `decision` capability: repair it, and re-enable it even if disabled.
     db.prepare("UPDATE models SET is_enabled = 1, capabilities = ?, updated_at = datetime('now') WHERE id = ?").run(JSON.stringify(capabilities), existing.id);
     return existing.id;
   }
@@ -19,12 +15,11 @@ export function registerStandardRow(providerId: string, tag: string, capabilitie
   db.prepare(`
     INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, max_output_tokens, input_cost_per_m, output_cost_per_m, is_enabled, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 1, datetime('now'), datetime('now'))
-  `).run(id, providerId, tag, tag, JSON.stringify(capabilities), info?.contextWindow ?? null, info?.maxOutputTokens ?? null);   // M41: what Ollama did not report is stored as not set
+  `).run(id, providerId, tag, tag, JSON.stringify(capabilities), info?.contextWindow ?? null, info?.maxOutputTokens ?? null);   // what Ollama did not report is stored as not set
   return id;
 }
 
-/** The assignments the pair carries. The writer owns the `system` tier outright. The summary writer is never
- *  set here: each agent's own model writes its summaries. */
+/** The writer owns the `system` tier outright; the summary writer is never set here (each agent's own model does). */
 export function assignStandard(writerId: string | null, decisionId: string | null): void {
   const db = getDb();
   const upsert = db.prepare(`INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
@@ -38,9 +33,8 @@ export function assignStandard(writerId: string | null, decisionId: string | nul
   })();
 }
 
-/** The DECISION model is not installed: a row registered for it without the model is disabled (it then reads as absent and
- *  every judgment keeps its rule), and so is `decision_model_id`; the next upkeep that pulls it re-enables the row. Only the
- *  decision row: the writer's row may be an agent's model, and a failed download of it says nothing about that. */
+/** The DECISION model is not installed: disable its row (it reads as absent) and `decision_model_id`.
+ *  Decision row only: the writer's row may be an agent's model, which a failed download says nothing about. */
 export function unregisterStandardRow(providerId: string, tag: string): void {
   const db = getDb();
   const row = db.prepare(`SELECT id FROM models WHERE provider_id = ? AND api_model_id = ? AND is_enabled = 1 AND capabilities LIKE '%"decision"%'`).get(providerId, tag) as { id: string } | undefined;

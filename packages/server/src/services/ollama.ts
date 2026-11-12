@@ -1,6 +1,4 @@
-// ════════════════════════════════════════
-// Ollama Provider Integration
-// ════════════════════════════════════════
+// Ollama provider integration: health, model listing and per-model detail.
 
 import { createLogger } from '../logger.js';
 import { upkeepWhenIncomplete } from './ollama-upkeep.js';
@@ -44,7 +42,7 @@ export async function checkOllamaHealth(baseUrl?: string): Promise<boolean> {
       const data = await response.json() as { models?: Array<{ name: string }> };
       cachedStatus.models = (data.models ?? []).map(m => m.name);
       upkeepWhenIncomplete(cachedStatus.models, url);   // Ollama answering is the signal to finish the pair
-      ollamaAnswered(url);   // t268 breaker fix: a waiting summary writer on this Ollama is re-tested
+      ollamaAnswered(url);   // a waiting summary writer on this Ollama is re-tested
     }
 
     return healthy;
@@ -102,9 +100,7 @@ export async function listOllamaModels(baseUrl?: string): Promise<OllamaModel[]>
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    // Ollama is optional; not running is the normal case and the sibling health
-    // check logs that at debug. Match it: a connection failure is debug, an
-    // unexpected error keeps warn/error. Either way we return [].
+    // Ollama is optional: a connection failure is debug (as in the health check), anything else is an error.
     const notRunning = /ECONNREFUSED|fetch failed|aborted|timeout|ENOTFOUND|network/i.test(msg);
     if (notRunning) logger.debug('Ollama not reachable while listing models', { error: msg });
     else logger.error('Failed to list Ollama models', { error: msg });
@@ -112,18 +108,9 @@ export async function listOllamaModels(baseUrl?: string): Promise<OllamaModel[]>
   }
 }
 
-// The installed model NAMES, in the `name:tag` form `ollama list` prints and the
-// export manifest records.
-//
-// THIS EXISTS TO REPLACE `execSync('ollama list')`. The migration manifest and
-// the post-migration checks both shelled out to the CLI to answer "which models
-// does this box have?" — and on macOS the `ollama` CLI AUTO-LAUNCHES Ollama.app
-// when no daemon is listening. A probe whose whole job is to ASK whether the
-// backend is there was therefore capable of STARTING it, inheriting whatever
-// environment the caller had: a vitest worker running under a sandboxed HOME
-// started a daemon that then served an empty model store to the real box until
-// it was restarted by hand (ritual round 9, run-53015 w17). An HTTP GET cannot
-// launch anything, so daemon-down answers the honest [] instead.
+// The installed model names in the `name:tag` form `ollama list` prints. Over HTTP, never the CLI: on macOS
+// the `ollama` CLI auto-launches Ollama.app when no daemon listens, so a probe could start a daemon with
+// the caller's environment. An HTTP GET cannot launch anything, so daemon-down answers [].
 export async function listOllamaModelNames(baseUrl?: string): Promise<string[]> {
   return (await listOllamaModels(baseUrl)).map(m => m.name);
 }
@@ -150,20 +137,15 @@ export async function getOllamaModelInfo(modelName: string, baseUrl?: string): P
     };
 
     // Extract context length from model_info or parameters.
-    // M41: NULL means "the server did not say". There is no stand-in figure here: a guessed window or
-    // cap written to a model row looks exactly like a real one and then overwrites the real one.
+    // NULL means the server did not say: a guessed window or cap written to a model row looks real.
     let contextWindow: number | null = null;
     let maxOutputTokens: number | null = null;
-    // FA-PC7: track whether num_predict was actually parsed so the ctx/4
-    // heuristic below applies ONLY to genuinely-unset models. Without this, a
-    // model whose real num_predict is 8192 was indistinguishable from the unset
-    // default and got its cap silently overwritten by the heuristic.
+    // Whether num_predict was actually parsed, so the ctx/4 heuristic below applies only to unset models.
     let maxOutputExplicit = false;
 
-    // model_info often has context_length or num_ctx. The model's own window is the exact
-    // `<arch>.context_length` key — the one num-ctx-calculator reads. A loose walk over all
-    // keys is only the fallback when that key is absent, and it must skip rope-scaling figures
-    // (`*.rope.scaling.original_context_length`), which sort after the real key and used to win.
+    // The model's own window is the exact `<arch>.context_length` key (the one num-ctx-calculator reads). A
+    // loose walk over all keys is only the fallback when it is absent, and it must skip rope-scaling figures
+    // (`*.rope.scaling.original_context_length`), which sort after the real key.
     if (data.model_info) {
       const arch = data.model_info['general.architecture'];
       const ownWindow = typeof arch === 'string' ? data.model_info[`${arch}.context_length`] : undefined;
@@ -192,10 +174,8 @@ export async function getOllamaModelInfo(modelName: string, baseUrl?: string): P
       }
     }
 
-    // max output is typically a fraction of context window if not explicitly set, derived ONLY from a
-    // window the server actually reported (M41).
-    // FA-PC7: gate on the parsed flag, not on a sentinel value, so a real
-    // num_predict of 8192 (with a large ctx) is respected rather than overwritten.
+    // Max output is a fraction of the window, derived only from a window the server reported, and gated on
+    // the parsed flag so an explicit num_predict is respected.
     if (!maxOutputExplicit && contextWindow !== null && contextWindow > 32000) {
       maxOutputTokens = Math.min(Math.floor(contextWindow / 4), 32768);
     }

@@ -23,10 +23,9 @@ export type OllamaKind = 'app' | 'brew-service' | 'formula' | 'other' | 'not-oll
 export const isOllamaProgram = (path: string): boolean => APP_PATH.test(path) || /(^|\/)ollama$/.test(path);
 
 
-/** The local Ollama's port (Ollama's default, 11434, when its URL names none). */
 export const portOf = (baseUrl: string): number => Number(new URL(baseUrl.includes('://') ? baseUrl : `http://${baseUrl}`).port || 11434);
 
-/** The limit the Dojo needs: the embedder + the Dojo's resident models + the Ollama lock's agent slots. */
+/** The loaded-model limit the Dojo needs: the embedder, its resident models and the lock's agent slots. */
 export function desiredLoaded(residentCount: number): number {
   getOllamaLock().reloadConfig();
   return 1 + residentCount + getOllamaMaxConcurrent();
@@ -84,7 +83,6 @@ export async function stopApp(host: OllamaHost, serverPid?: number): Promise<voi
   if (!await waitUntil(host, () => pids.every((pid) => !host.alive(pid)))) throw new Error('the Ollama app did not quit');
 }
 
-/** Open the Ollama app; how its start ended. */
 export async function startApp(host: OllamaHost, baseUrl: string): Promise<Start> {
   await host.launchApp();
   return waitForStart(host, baseUrl, appAlive(host));
@@ -188,7 +186,6 @@ export async function endStuckStart(host: OllamaHost, baseUrl: string, residentC
   return started === 'dead' ? 'dead' : null;
 }
 
-/** A step of an update failed: which one says the plain reason. */
 export class StepFailed extends Error {
   constructor(readonly step: 'install' | 'stop' | 'again' | 'start', cause: unknown) { super(childFailureText(cause)); }
 }

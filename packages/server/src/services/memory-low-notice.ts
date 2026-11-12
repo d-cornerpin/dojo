@@ -5,9 +5,8 @@ import { ownerConditionCleared, tellOwner } from '../healer/owner-notices.js';
 
 const logger = createLogger('memory-low-notice');
 
-// MEMORY BELOW 512MB: TOLD ONCE PER LOW STRETCH. It texts when memory FALLS below the line and again only after it was
-// seen back above it. The latch is a config row, so a restart in the middle of a low stretch does not text again; its
-// card (`memory-low`) stands while the latch does.
+// Told once per low stretch: texts when memory falls below the line, again only after it was seen back above.
+// The latch is a config row, so a restart mid-stretch does not text again; card `memory-low` stands with it.
 const CRITICAL_FREE_MB = 512;
 const MEMORY_LOW_WORDS = 'Critical: System memory below 512MB. Terminate idle sub-agents.';
 
@@ -41,9 +40,7 @@ export function noteCriticalMemory(freeMb: number): void {
   }
 }
 
-/** True while the owner has been told memory is low and it has not been seen recover: the
- *  scheduler's existing tick then re-measures it (round 4), so recovery is noticed without
- *  waiting for the next spawn attempt. */
+/** True while the owner was told memory is low and it has not recovered; the scheduler tick re-measures. */
 export function memoryLowStanding(): boolean {
   try { return readMemoryLow() !== null; } catch { return false; }
 }

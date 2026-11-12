@@ -1,12 +1,5 @@
-// ════════════════════════════════════════
-// The owner's command words (status / kill / pause / resume, and "yes <id>" / "no <id>"): ONE grammar, light enough to
-// import anywhere, shared by the iMessage lane and a confirmed owner email (R24).
-// ════════════════════════════════════════
-
-// ── Parsed command grammar ──────────────────────────────────────────────────
-// Strict commands are unambiguous keywords. Approve/deny are ambiguous with
-// ordinary chat ("ok", "no"), so they are parsed separately and only treated as
-// a command when they actually resolve a pending imessage-surface proposal.
+// The owner's command words, one grammar shared by the iMessage lane and a confirmed owner email. Approve/deny
+// is ambiguous with chat, so it only counts when it resolves a pending imessage-surface proposal.
 export type StrictCommand =
   | { kind: 'status' }
   | { kind: 'kill-all' }
@@ -26,12 +19,8 @@ export function parseStrictCommand(trimmed: string): StrictCommand | null {
   return null;
 }
 
-// B2: approve/deny of a proposal REQUIRES the hex short id (the outbound text
-// instructs exactly that: Reply "yes 1a2b3c"). The id is the first 8 chars of a
-// uuid, so it is hex-only, which means ordinary chatter can never parse as a
-// command. A bare "yes"/"ok"/"no" (no id) is NEVER an approval: it returns null
-// here and flows through as ordinary chat, so an unrelated "ok" cannot resolve a
-// live destructive proposal that happens to be pending.
+// Approve/deny REQUIRES the hex short id ("yes 1a2b3c"), so a bare "ok" returns null and flows through as chat
+// and can never resolve a pending destructive proposal.
 export function parseApproveDeny(trimmed: string): ApproveDenyCommand | null {
   const yes = trimmed.match(/^(?:yes|approve|ok)\s+([0-9a-f]{4,})$/);
   if (yes) return { kind: 'approve', shortId: yes[1] };
@@ -46,7 +35,6 @@ export function firstLineOf(words: string): string {
   return (words.split(/\r?\n/).find((l) => l.trim() !== '') ?? '').trim().toLowerCase();
 }
 
-/** Are these words a command or an approval at all? */
 export function isOwnerCommandText(words: string): boolean {
   const t = firstLineOf(words);
   return parseStrictCommand(t) !== null || parseApproveDeny(t) !== null;

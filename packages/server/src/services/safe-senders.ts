@@ -1,46 +1,16 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// THE SAFE-SENDER RECORDS, AND THE ONE ANSWER TO "WHO IS THE OWNER ON IMESSAGE" (t146).
-//
-// The safe-sender records and the owner rule, apart from `services/imessage-bridge.ts` (which re-exports
-// every name): this module imports only the database, the logger and the recipient comparison, so a
-// reader the bridge's graph would cycle with can share it.
-//
-// TWO QUESTIONS, TWO ANSWERS. "Which address do I send to?" (`ownerIMessageRecord`): the starred record — `parseSafeSenders` guarantees exactly
-// one in any non-empty list (none starred → the record matching the legacy key, else the first;
-// a legacy bare-string list → its first entry) — and, only when there are no records at all,
-// the legacy `imessage_default_sender` key; the bridge's `getDefaultSender` (where every owner
-// notice goes) reads it. "Is this address the owner?" (`isOwnerIMessageRecipient`): EVERY record
-// flagged as the owner, and the legacy key only when no records are saved; the refusal gate and
-// the told record read it.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// The safe-sender records and the one answer to "who is the owner on iMessage", apart from
+// `services/imessage-bridge.ts` (which re-exports every name); importing only the database, logger and
+// recipient comparison lets a reader the bridge's graph would cycle with share it. "Which address do I send
+// to?" (`ownerIMessageRecord`) is the starred record, else the legacy key. "Is this address the owner?"
+// (`isOwnerIMessageRecipient`) is EVERY flagged record, and the legacy key only when no records are saved.
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { recipientIdsMatch } from '../agent/recipient-identity.js';
 
 const logger = createLogger('imessage');
 
-// ── Safe-sender records ──────────────────────────────────────────────────
-//
-// The `imessage_approved_senders` config value used to be a bare JSON array
-// of phone/Apple-ID strings, with the "primary user" tracked separately in
-// `imessage_default_sender`. That made the agent unable to tell who actually
-// sent an inbound message (the framing always said "FROM <owner>") and made
-// the outbound tool's allowlist trivially bypassable.
-//
-// New shape, stored under the same config key for continuity:
-//   [
-//     { address: "+15551234567", name: "Alex", description: "Owner",
-//       is_primary: true, sharing_level: "open_book" },
-//     { address: "jordan@example.com", name: "Jordan", description:
-//       "project collaborator", is_primary: false,
-//       sharing_level: "project_only" },
-//     ...
-//   ]
-//
-// `parseSafeSenders` accepts BOTH the legacy (string[]) and new shapes,
-// so existing installs keep working until the next Settings save migrates
-// the value to the new shape on disk. Reads always go through this parser
-// so callers never see the legacy form.
+// `imessage_approved_senders` holds a JSON array of records; `parseSafeSenders` also accepts the legacy bare
+// string[] (first entry becomes primary), and every read goes through it.
 
 export type SharingLevel = 'open_book' | 'dont_overshare' | 'cautious' | 'project_only';
 
@@ -52,13 +22,7 @@ export interface SafeSender {
   description?: string;
   is_primary: boolean;
   sharing_level: SharingLevel;
-  /**
-   * RC-4/RC-8: true when this safe-sender is another Dojo agent (not a human).
-   * Lets the engine gate machine-to-machine behavior (skip start-acks, damp
-   * content-free courtesy volleys) on structured data instead of free-text in
-   * `description`. Optional + defaults false in parseSafeSenders so legacy
-   * records and the config JSON need no migration.
-   */
+  /** True for another Dojo agent (not a human); gates machine-to-machine behavior instead of `description`. */
   is_agent?: boolean;
 }
 
@@ -73,12 +37,7 @@ function normalizeSharingLevel(raw: unknown, isPrimary: boolean): SharingLevel {
   return defaultSharingLevelFor(isPrimary);
 }
 
-/**
- * Scrub characters that would break the [SOURCE: IMESSAGE FROM ...] framing
- * envelope: square brackets (close the envelope early), CR/LF (split lines),
- * and other control chars. Result is collapsed-whitespace-trimmed. Returns
- * an empty string if everything was stripped (caller can fall back).
- */
+/** Scrub characters that would break the [SOURCE: IMESSAGE FROM ...] envelope (brackets, CR/LF, control chars). */
 function sanitizeFramingField(value: string): string {
   return value
     .replace(/[\[\]\r\n\t\v\f\x00-\x1f\x7f]/g, ' ')
@@ -86,14 +45,10 @@ function sanitizeFramingField(value: string): string {
     .trim();
 }
 
-// RC-4/RC-8 one-time backfill: safe-sender records saved before the structured
-// `is_agent` flag existed only say "AI agent" in their free-text description.
-// When the flag is ABSENT (not merely false) and the description matches this,
-// treat the sender as an agent so the machine-to-machine gates apply without a
-// manual re-save. Explicit `is_agent: false` always wins (never re-promoted).
+// A record saved before the `is_agent` flag only says "AI agent" in its description: when the flag is ABSENT
+// (not merely false) and the description matches, treat it as an agent. An explicit `is_agent: false` wins.
 const IS_AGENT_DESCRIPTION_RE = /\bAI agent\b/i;
-// Log the heuristic firing once per address (parseSafeSenders runs on every
-// poll) so the info line is a one-time signal, not per-tick noise.
+// Logged once per address (parseSafeSenders runs on every poll).
 const backfillHeuristicLogged = new Set<string>();
 
 export function parseSafeSenders(raw: string | null | undefined): SafeSender[] {
@@ -128,9 +83,8 @@ export function parseSafeSenders(raw: string | null | undefined): SafeSender[] {
       const obj = item as Record<string, unknown>;
       const address = typeof obj.address === 'string' ? obj.address.trim() : '';
       if (!address) continue;
-      // Strip brackets and control chars from name/description so a
-      // crafted entry can't break the [SOURCE: IMESSAGE FROM ...] envelope
-      // the agent parses out of inbound message text.
+      // Strip brackets and control chars from name/description so a crafted entry cannot break the
+      // [SOURCE: IMESSAGE FROM ...] envelope the agent parses out of inbound message text.
       const rawName = typeof obj.name === 'string' ? obj.name.trim() : '';
       const name = rawName ? (sanitizeFramingField(rawName) || address) : address;
       const rawDescription = typeof obj.description === 'string' ? obj.description.trim() : '';
@@ -138,8 +92,6 @@ export function parseSafeSenders(raw: string | null | undefined): SafeSender[] {
       const description = cleanedDescription || undefined;
       const is_primary = obj.is_primary === true;
       const sharing_level = normalizeSharingLevel(obj.sharing_level, is_primary);
-      // is_agent: honor an explicit boolean; when the field is absent, apply
-      // the one-time description heuristic (defaults false otherwise).
       let is_agent: boolean;
       if (typeof obj.is_agent === 'boolean') {
         is_agent = obj.is_agent;
@@ -158,10 +110,9 @@ export function parseSafeSenders(raw: string | null | undefined): SafeSender[] {
     }
   }
 
-  // At most one primary. The star is never handed to another entry on its own (owner ruling): a list with no
-  // starred entry has an owner only if the owner's own legacy key (`imessage_default_sender`, which the
-  // dashboard clears when the owner entry is removed on purpose) names one of its entries. It is never
-  // "the first entry". If several are marked, keep the first.
+  // At most one primary, never chosen by position: an unstarred list's owner is the entry the legacy key
+  // names, if any (the dashboard clears that key when the owner entry is removed). If several are starred,
+  // keep the first.
   const primaries = normalized.filter(s => s.is_primary);
   if (primaries.length === 0 && normalized.length > 0) {
     const legacyDefault = readLegacyDefaultSender();
@@ -192,13 +143,7 @@ export function readLegacyDefaultSender(): string | null {
   }
 }
 
-/**
- * Tolerant address comparison. Phone numbers may come in as `+15551234567`,
- * `15551234567`, `(555) 123-4567`, etc; Apple IDs come in lowercase. Match
- * if the normalized forms are equal OR one contains the other (substring),
- * which handles country-code prefixes and formatting variations without
- * false-matching completely different addresses.
- */
+/** Tolerant address comparison: normalized forms equal, or one contains the other (country-code prefixes). */
 export function addressesMatch(a: string, b: string): boolean {
   const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9@.]/g, '');
   const na = norm(a);
@@ -218,7 +163,6 @@ export function findSafeSenderByAddress(records: readonly SafeSender[], query: s
   return null;
 }
 
-/** The records as stored (the bridge holds a running copy of the same config row). */
 function storedSafeSenders(): SafeSender[] {
   try {
     const row = getDb().prepare("SELECT value FROM config WHERE key = 'imessage_approved_senders'").get() as { value: string } | undefined;
@@ -228,11 +172,7 @@ function storedSafeSenders(): SafeSender[] {
   }
 }
 
-/**
- * THE owner on iMessage: the starred record, or — only when there are no records — the legacy
- * key. Pass `records` when you hold a copy (the bridge's running list); otherwise the stored
- * records are read. Null when nothing names an owner.
- */
+/** The owner on iMessage: the starred record, else the legacy key. Pass `records` when you hold a copy. */
 export function ownerIMessageRecord(records: readonly SafeSender[] = storedSafeSenders()): { address: string; name: string } | null {
   const starred = records.find((s) => s.is_primary);
   if (starred) return { address: starred.address, name: starred.name };
@@ -241,11 +181,9 @@ export function ownerIMessageRecord(records: readonly SafeSender[] = storedSafeS
 }
 
 /**
- * Every address that IS the owner on iMessage — a different question from "which address do I
- * send to" (`ownerIMessageRecord`, one answer). Every record flagged `is_primary` counts (an
- * owner may flag his phone and his Apple ID), plus the first address of a pre-2.7.12 bare-address
- * list. When nobody is flagged, the older `imessage_default_sender` key is the owner. No object
- * record is ever promoted to owner by position.
+ * Every address that IS the owner on iMessage (`ownerIMessageRecord` is the one to send to): every record
+ * flagged `is_primary`, plus a legacy bare-address list's first address, else the legacy key. No object
+ * record is ever made owner by position.
  */
 export function ownerIMessageRecords(): Array<{ address: string; name: string }> {
   const out: Array<{ address: string; name: string }> = [];
@@ -274,9 +212,7 @@ export function ownerIMessageRecords(): Array<{ address: string; name: string }>
   return out;
 }
 
-/** Is `recipient` (an address, or an owner record's name) the owner on iMessage? Any of
- *  `ownerIMessageRecords`. Unknown means NOT the owner: phone- and case-tolerant through the
- *  canonical recipient comparison. */
+/** Is `recipient` (an address, or an owner record's name) an owner? Unknown means NOT the owner. */
 export function isOwnerIMessageRecipient(recipient: string | null | undefined): boolean {
   if (!recipient) return false;
   try {

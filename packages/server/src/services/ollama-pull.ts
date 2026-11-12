@@ -1,20 +1,11 @@
-// ════════════════════════════════════════════════════════════════════════════
-// ONE BOUNDED OLLAMA PULL (t114, census U8), shared by the setup route and the standard-models
-// install (`services/local-standard.ts`, v3.5). Moved out of `gateway/routes/setup-deps.ts`
-// unchanged so the Dojo's own install and a person's manual pull are the same pull.
-//
-// THE DEFECT t114 fixed: a flat 30 minutes covering the whole streamed pull. A 70 GB model on a
-// home line takes longer than that, so the download was aborted mid-transfer while the progress
-// lines were actively tracking real bytes arriving. Ollama streams a JSON progress line per chunk,
-// so arrival is the measured fact of liveness: the bound re-arms on each line, a registry that goes
-// quiet is still cut, and a ceiling that does not re-arm keeps a pull that dribbles for ever bounded.
-// ════════════════════════════════════════════════════════════════════════════
+// One bounded Ollama pull, shared by the setup route (`gateway/routes/setup-deps.ts`) and `ollama-upkeep.ts`.
+// Ollama streams a JSON progress line per chunk, so arrival is the proof of liveness: the idle bound re-arms
+// on each line, a registry that goes quiet is cut, and a non-re-arming ceiling bounds a pull that dribbles.
 
 import { idleStreamDeadline } from './idle-stream-deadline.js';
 import { localWorkBegins } from './ollama-lock.js';
 
-// The pull's three bounds, each named for its own job. A registry that never answers is a different
-// failure from one that stops mid-download, and neither is "this model is too big".
+// The pull's three bounds: a registry that never answers differs from one that stops mid-download.
 const OLLAMA_PULL_FIRST_BYTE_MS = 60_000;
 export const OLLAMA_PULL_IDLE_MS = 2 * 60_000;
 const OLLAMA_PULL_CEILING_MS = 6 * 60 * 60_000;
@@ -93,7 +84,7 @@ export async function pullOllamaModel(
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      // t114 (U8): a progress line IS the proof the pull is moving. This is the whole fix.
+      // A progress line is the proof the pull is moving.
       pullDeadline.bump();
       pending += decoder.decode(value, { stream: true });
       const lines = pending.split('\n');
@@ -111,8 +102,7 @@ export async function pullOllamaModel(
     }
     return { ok: true, status: lastStatus };
   } catch (err) {
-    // t114 (U8): say which bound ended it. "the registry went quiet" is a different problem from
-    // "this model is too big to pull", and the old flat wall could not tell them apart.
+    // Say which bound ended it: a quiet registry is a different problem from a model too big to pull.
     if (pullDeadline.fired()) {
       const error = `the pull stopped making progress for ${Math.round(OLLAMA_PULL_IDLE_MS / 1000)}s and was stopped`;
       report({ model, status: 'error', completed: 0, total: 0, layers: 0, error });

@@ -1,8 +1,5 @@
-// ════════════════════════════════════════
-// Outlook Watcher: Polls each connected ACCOUNT's inbox for new emails and
-// notifies the primary agent. Multi-account (Path B) — mirror of
-// gmail-watcher.ts; see that file for the per-account rationale.
-// ════════════════════════════════════════
+// Outlook watcher: polls each connected account's inbox for new email and notifies the primary agent.
+// Mirror of gmail-watcher.ts; see that file for the per-account rationale.
 
 import { v4 as uuidv4 } from 'uuid';
 import { resolveOrCreateConversation } from '../memory/conversations.js';
@@ -243,12 +240,8 @@ async function pollAccount(view: MicrosoftAccountView): Promise<void> {
   }
 
   try {
-    // First poll of a newly-monitored account: establish the baseline at "now"
-    // and do NOT backfill. "Monitor" means notify on mail that arrives FROM HERE
-    // ON, not flood in the existing inbox. Subsequent polls filter on
-    // receivedDateTime gt this baseline, so pre-existing mail is never notified.
-    // (Belt-and-suspenders with the startup seed below — this also covers an
-    // account added mid-session or toggled to watch after boot.)
+    // First poll of a newly-monitored account: set the baseline at "now" and do NOT backfill, so only mail
+    // arriving from here on is notified. Covers an account added mid-session or toggled to watch after boot.
     if (!s.lastCheckedAt) {
       s.lastCheckedAt = pollStartIso;
       saveLastCheckedAt(accountId, pollStartIso);
@@ -310,11 +303,11 @@ async function pollAccount(view: MicrosoftAccountView): Promise<void> {
 
       const { getOwnerName } = await import('../config/platform.js');
       const ownerName = getOwnerName();
-      // Direct message TO the agent? Only the agent's own mailbox + a known safe
-      // sender. User mailboxes are the human's mail — surface, never reply for them.
+      // Direct message TO the agent: only the agent's own mailbox plus a known safe sender. User mailboxes
+      // are the human's mail, surfaced and never replied for.
       const fromAddr = fromAddress.includes('@') ? fromAddress.toLowerCase() : '';
 
-      // P44: the email's To/Cc facts (which list this mailbox sits on); the Graph poll carries no Authentication-Results, see below.
+      // The email's To/Cc facts (which list this mailbox sits on); the Graph poll has no Authentication-Results.
       const mailAddressing = outlookAddressingFacts(msg, view.email ? [view.email] : []);   // only THIS mailbox's address: the agent's other mailboxes do not make this copy a To or Cc one
 
       // Requirement: the agent's own outbound must never wake it (cost plus reply-loop risk). Outlook polls the inbox, so
@@ -330,7 +323,7 @@ async function pollAccount(view: MicrosoftAccountView): Promise<void> {
         notifiedIds.add(msg.id);
         continue;
       }
-      // P44: the owner's own email, confirmed by the provider (`mail-owner-intake.ts`), is the owner speaking and may be answered.
+      // The owner's email, confirmed by the provider (`mail-owner-intake.ts`), is the owner speaking: may be answered.
       const ownerMail = await judgeOutlookOwnerEmail({ kind, placement: mailAddressing.placement, fromAddress, messageId: msg.id, accountId });
       const ownerEmail = ownerMail.state === 'none' ? undefined : ownerMail;
       const isDirectToAgent = ownerMail.state === 'confirmed' || (kind === 'agent' && !!fromAddr
@@ -339,14 +332,13 @@ async function pollAccount(view: MicrosoftAccountView): Promise<void> {
         messageId: msg.id, directToAgent: isDirectToAgent, toolHint, addressing: mailAddressing, ownerEmail }) + await ownerEmailCommandNote(ownerMail);
 
       const msgId = uuidv4();
-      // P5: email conversation identity = provider + sender + THREAD, so two
-      // threads from one sender (or the same sender across providers) are
-      // different conversations; msg.id kept as the external identity.
+      // Email conversation identity is provider + sender + thread, so two threads from one sender (or one
+      // sender across providers) are different conversations; msg.id stays the external identity.
       const conversationId = resolveOrCreateConversation(primaryId, {
         channel: 'email', provider: 'outlook', counterpartyId: fromAddr || from,
         threadRoot: (msg as { conversationId?: string | null }).conversationId ?? msg.id ?? null,
       });
-      // v3.0.9 — structured routing metadata (see gmail-watcher for rationale).
+      // Structured routing metadata (see gmail-watcher for rationale).
       const inboundMetaObj = {
         channel: 'email' as const,
         accountKind: kind,
@@ -359,10 +351,8 @@ async function pollAccount(view: MicrosoftAccountView): Promise<void> {
         mailAddressing,
         ...(ownerMail.state === 'confirmed' ? { relation: 'owner' as const, ownerWords: ownerMail.words, ownerWordsAt: Date.parse(date) } : {}),
       };
-      // T4/OR4: channel, sender and the auth verdict are stamped IN the write, from
-      // the meta this watcher just computed — never re-derived. recordInboundMeta
-      // below still records the full blob. insertMessageIfAbsent keeps the
-      // external_message_id de-duplication the INSERT OR IGNORE relied on.
+      // Channel, sender and the auth verdict are stamped in the write from the meta just computed, never
+      // re-derived. `insertInboundMessageIfAbsent` keeps the external_message_id de-duplication.
       const stored = insertInboundMessageIfAbsent({
         id: msgId,
         agentId: primaryId,
@@ -374,7 +364,8 @@ async function pollAccount(view: MicrosoftAccountView): Promise<void> {
         senderId: inboundMetaObj.sender,
         authorized: inboundMetaObj.authorized,
       });
-      // 801: null = the row landed on a poll whose processed-list save was lost; the live frame is for a first sighting only, or the dashboard shows the same card twice.
+      // null: a poll re-saw a stored row (its processed-list save was lost); no live frame, or the card
+      // shows twice.
       if (stored !== null) {
         recordInboundMeta(msgId, inboundMetaObj);
 
@@ -386,11 +377,8 @@ async function pollAccount(view: MicrosoftAccountView): Promise<void> {
             agentId: primaryId,
             role: 'user' as const,
             content,
-            // Carry the SAME structured inbound_meta into the live broadcast that
-            // the DB row holds, so ws.ts stampChatMessageOrigin derives identical
-            // attribution live and on refetch (mirrors the iMessage OPEN-13 fix).
-            // t106 — the same binding the insert used, on the wire too (R4 reads it live). Why:
-            // `services/__tests__/no-channel-inbound-frame-loses-its-conversation.test.ts`.
+            // The same structured inbound_meta and conversation binding as the DB row, so ws.ts
+            // stampChatMessageOrigin derives identical attribution live and on refetch.
             conversationId,
             inboundMeta: JSON.stringify(inboundMetaObj),
             tokenCount: null,
@@ -423,8 +411,7 @@ async function pollAccount(view: MicrosoftAccountView): Promise<void> {
       const runtime = getAgentRuntime();
       const { getOwnerName } = await import('../config/platform.js');
       const ownerName = getOwnerName();
-      // Neutral trigger nudge — the per-email message(s) above carry the real
-      // framing (direct-message-to-agent vs third-party context).
+      // Neutral trigger nudge: the per-email messages above carry the real framing.
       const summary = newCount === 1
         ? `[SOURCE: OUTLOOK NOTIFICATION] New email in ${notifyAccount}. Details above — act on it as the framing there indicates.`
         : `[SOURCE: OUTLOOK NOTIFICATION] ${newCount} new emails in ${notifyAccount}. Details above — act on each as the framing there indicates.`;

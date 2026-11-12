@@ -1,23 +1,7 @@
-// ════════════════════════════════════════
-// Ollama Concurrency Manager (per-provider)
-// ════════════════════════════════════════
-//
-// Prevents RAM thrashing on memory-constrained Ollama hosts by limiting
-// how many distinct models can be loaded simultaneously on EACH provider.
-// Multiple agents using the SAME model can run concurrently; agents
-// needing a DIFFERENT model on the same provider queue until the current
-// one drains.
-//
-// Per-provider scoping is important once the user adds more than one
-// Ollama provider (e.g. a 16 GB Mac Mini running the dojo itself, plus
-// a 128 GB Mac Studio reached over the LAN). Each machine has its own
-// RAM and its own KV-cache budget, so the 1-concurrent-model rule
-// applies independently to each host. A model swap on the Mac Mini has
-// no effect on the Mac Studio and vice-versa.
-//
-// The current implementation uses the same `ollama_max_concurrent_models`
-// setting for every provider — if you later want distinct limits per
-// machine that'd be a follow-up (add a column on `providers`).
+// Ollama concurrency manager, per provider: limits how many distinct models are loaded at once on EACH
+// provider (`ollama_max_concurrent_models`, the same limit for every provider, each host counted alone).
+// A second call for the SAME model queues behind the running one; a DIFFERENT model takes a free slot
+// or queues until a slot idles.
 
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
@@ -41,45 +25,23 @@ interface ModelSlot {
   providerId: string;
   modelName: string;
   activeRequests: number;
-  // T81c (NO-DOOMED-DIALS, census row 8) — GPU livelock incident, Leg B: requests for THIS
-  // SAME model, queued behind the one already running. Before this, a second request just did
-  // `activeRequests++` and dialed immediately alongside the first — the exact "N concurrent
-  // 110K-token prefills stack on the same GPU" the census names. At most one waiter is ever
-  // let through at a time (see `release`), so this can hold more than one entry when several
-  // callers pile up behind a single slow prefill.
+  // Requests for THIS SAME model queued behind the one already running; `release` lets at most one through.
   waiters: QueuedRequest[];
 }
 
 /**
  * How long a request may wait BEHIND a same-model call already running before giving up.
  *
- * `declaredFirstChunkMs` is the QUEUING CALLER's own resolved first-chunk patience for the
- * model it is asking for — `agent/model.ts` already computes this via `resolveStreamPatience`
- * immediately before calling `acquire`, so passing it here costs nothing new, no second DB
- * read, no parallel derivation. It is NOT read off the request currently occupying the slot
- * (this lock tracks nothing about that call beyond a bare count, see `ModelSlot.activeRequests`)
- * — but since both callers are asking for the SAME model on the SAME provider, they resolve the
- * identical declared bound, so the number is correct in practice by construction, not by
- * inspecting the other request. Without it, the flat cross-model `QUEUE_TIMEOUT_MS` (60s) would
- * starve a request queued behind a legitimately long prefill: a provider declaring 600s of
- * patience is entitled to take up to 600s before its FIRST token, and a queued sibling call
- * must not be told to give up at 60s while that entirely healthy call is still inside its own
- * declared bound.
+ * `declaredFirstChunkMs` is the queuing caller's own first-chunk patience for the model it asks for. Both
+ * callers ask for the same model on the same provider, so it is the bound the running call declared too.
+ * Without it the flat `QUEUE_TIMEOUT_MS` would starve a request queued behind a legitimately long prefill.
  *
- * THIS IS A FLOOR, NOT A GUARANTEE, documented rather than hidden: `declaredFirstChunkMs` bounds
- * the OCCUPYING call's PREFILL (time to first token) only. Once it starts streaming, that call
- * can legitimately hold the slot far longer (its OWN idle bound re-arms per chunk with no
- * overall completion cap) — the same open edge the model layer's own watchdog leaves. A queued
- * waiter can still time out behind a slow-but-healthy completion; when it does, the error names
- * the real cause so nobody mistakes it for a hung slot.
+ * A floor, not a guarantee: it bounds the occupying call's prefill only. Once streaming, that call can hold
+ * the slot far longer (its idle bound re-arms per chunk), so a waiter can still time out behind a slow but
+ * healthy completion; the error names that cause.
  *
- * Minor 2, named rather than fixed (no mechanism change): under SUSTAINED same-model pressure —
- * a steady stream of same-model requests each queuing behind the last — a DIFFERENT model
- * queued for a cross-model swap on this provider can starve indefinitely, because the slot
- * never goes idle long enough for `processQueueForProvider` to run. That is a real tradeoff of
- * "same-model requests always win the slot back first," not an oversight; the incident this
- * task closes is same-model stacking, and cross-model fairness under sustained same-model load
- * is a follow-up if it is ever observed in practice.
+ * Deliberate tradeoff: under sustained same-model pressure a DIFFERENT model queued for a swap can starve,
+ * because the slot never idles long enough for `processQueueForProvider` to run.
  */
 function sameModelQueueTimeoutMs(declaredFirstChunkMs?: number): number {
   if (typeof declaredFirstChunkMs === 'number' && Number.isFinite(declaredFirstChunkMs) && declaredFirstChunkMs > 0) {
@@ -89,8 +51,7 @@ function sameModelQueueTimeoutMs(declaredFirstChunkMs?: number): number {
 }
 
 class OllamaModelLock {
-  // Every slot is tagged with the providerId it belongs to. All search
-  // and accounting operations filter by providerId before anything else.
+  // Every slot carries its providerId; all search and accounting filter by it first.
   private slots: ModelSlot[] = [];
   private queue: QueuedRequest[] = [];
   private maxConcurrentModels: number = 1;
@@ -108,11 +69,10 @@ class OllamaModelLock {
         if (val > 0) this.maxConcurrentModels = val;
       }
     } catch {
-      // Config not loaded yet at startup — use default
     }
   }
 
-  /** Reload config (called when settings change) */
+  /** Reload config when settings change. */
   reloadConfig(): void {
     this.loadConfig();
     logger.info('Ollama lock config reloaded', { maxConcurrentModels: this.maxConcurrentModels });
@@ -125,12 +85,8 @@ class OllamaModelLock {
   /**
    * Acquire a slot for the given provider+model. Resolves when the caller may proceed.
    *
-   * `declaredFirstChunkMs`, T81c: the CALLER's own declared first-chunk patience for THIS
-   * request — bounds how long a queued request may wait, on BOTH queueing paths (t114 brought the
-   * cross-model swap arm onto the same resolver; it was a flat 60s before). `agent/model.ts`
-   * passes the LIFTED `bounds.firstChunkMs`, which is the same number its watchdog arms — t114
-   * census row 8's first clause was that it passed the raw one, so a waiter gave up at 90s on a
-   * call entitled to 300. See `sameModelQueueTimeoutMs`'s own doc.
+   * `declaredFirstChunkMs` is the caller's declared first-chunk patience (`agent/model.ts` passes the same
+   * lifted `bounds.firstChunkMs` its watchdog arms); it bounds the wait on BOTH queueing paths.
    */
   async acquire(providerId: string, modelName: string, declaredFirstChunkMs?: number, pinned = false): Promise<void> {
     // An ENGINE call on the Dojo's own resident pair (`pinned`, decided by the caller from the call and the
@@ -139,22 +95,18 @@ class OllamaModelLock {
     if (pinned) { unslotted++; return; }
     this.loadConfig();   // re-read config on each acquire (single DB read, ~0.1ms)
 
-    // Is this model already loaded on this provider?
     const existingSlot = this.slots.find(s => s.providerId === providerId && s.modelName === modelName);
     if (existingSlot) {
       if (existingSlot.activeRequests === 0) {
-        // Slot exists (from an earlier call) but nothing is running on it right now — take it.
+        // Slot exists from an earlier call with nothing running on it: take it.
         existingSlot.activeRequests = 1;
         logger.debug('Ollama lock acquired (existing idle slot)', { providerId, modelName });
         this.broadcastStatus();
         return;
       }
 
-      // T81c (NO-DOOMED-DIALS, census row 8): a call for this SAME model is already running.
-      // This used to be `activeRequests++` and dial immediately, sharing the slot unbounded —
-      // the exact mechanism that let a fast cold-redial loop (Leg B) stack a fresh 110K-token
-      // prefill on the GPU on top of one already in flight. Cap it: this caller queues, and at
-      // most one waiter is ever let through per release (see `release`).
+      // A call for this SAME model is already running: queue behind it instead of dialing alongside, so
+      // concurrent long prefills never stack on one GPU. `release` lets at most one waiter through.
       logger.info('Ollama request queuing behind a same-model call already in flight', {
         providerId, modelName, activeRequests: existingSlot.activeRequests,
       });
@@ -176,7 +128,6 @@ class OllamaModelLock {
       });
     }
 
-    // Room for a new model slot on this provider?
     const providerSlots = this.slotsForProvider(providerId);
     if (providerSlots.length < this.maxConcurrentModels) {
       this.slots.push({ providerId, modelName, activeRequests: 1, waiters: [] });
@@ -189,7 +140,6 @@ class OllamaModelLock {
       return;
     }
 
-    // Any idle slot on this provider we can swap into?
     const idleSlot = providerSlots.find(s => s.activeRequests === 0);
     if (idleSlot) {
       logger.info('Ollama model swap', { providerId, from: idleSlot.modelName, to: modelName });
@@ -200,7 +150,7 @@ class OllamaModelLock {
       return;
     }
 
-    // All this provider's slots are busy with different models — queue.
+    // Every slot on this provider is busy with a different model: queue.
     const queueLength = this.queue.filter(q => q.providerId === providerId && q.modelName === modelName).length + 1;
     const currentModels = providerSlots.map(s => s.modelName).join(', ');
     logger.info(`Waiting for Ollama model swap on provider ${providerId}: [${currentModels}] → ${modelName} (${queueLength} requests queued)`, {
@@ -220,15 +170,6 @@ class OllamaModelLock {
           `on provider ${providerId} — other model(s) (${currentModels}) still in use. ` +
           `Try again, switch this agent to the same model, or raise this provider's declared patience.`
         ));
-        // ── t114 (CENSUS ROW 8, second clause) — THE CROSS-MODEL QUEUE HONOURS PATIENCE TOO ──
-        //
-        // This bound was a flat `QUEUE_TIMEOUT_MS` (60s) with no declared-patience input at all,
-        // while the same-model arm above has taken the caller's own bound since T81c. The two
-        // waits are the same kind of wait — "another call has the GPU and I am next" — so a
-        // provider that declares long patience was honoured on one path and ignored on the other,
-        // and a healthy turn on a slow box was rejected at 60s for queueing behind a model swap
-        // it was entitled to wait out. Same resolver as the same-model arm, so the two cannot
-        // disagree: a declared row gets its number, an undeclared row keeps today's 60s exactly.
       }, sameModelQueueTimeoutMs(declaredFirstChunkMs));
 
       this.queue.push({ providerId, modelName, resolve, reject, queuedAt: Date.now(), timer });
@@ -236,7 +177,7 @@ class OllamaModelLock {
     });
   }
 
-  /** Release a slot after an Ollama call completes (success or error). */
+  /** Release a slot after a call completes, success or error. */
   release(providerId: string, modelName: string, pinned = false): void {
     if (pinned) { unslotted = Math.max(0, unslotted - 1); return; }   // it took no slot (see `acquire`)
     const slot = this.slots.find(s => s.providerId === providerId && s.modelName === modelName);
@@ -249,11 +190,8 @@ class OllamaModelLock {
     logger.debug('Ollama lock released', { providerId, modelName, activeRequests: slot.activeRequests });
 
     if (slot.activeRequests === 0) {
-      // T81c: a caller QUEUED behind this same model (see `acquire`) gets the slot next,
-      // ahead of any cross-model swap — from that model's perspective the slot never actually
-      // went idle, a sibling request for the SAME model was simply waiting its turn. Exactly
-      // one waiter proceeds per release, preserving the "at most one active request per model"
-      // cap this task exists to add.
+      // A caller queued behind this same model gets the slot next, ahead of any cross-model swap. Exactly
+      // one waiter proceeds per release, keeping at most one active request per model.
       const nextWaiter = slot.waiters.shift();
       if (nextWaiter) {
         clearTimeout(nextWaiter.timer);
@@ -263,7 +201,7 @@ class OllamaModelLock {
         });
         nextWaiter.resolve();
       } else {
-        // Genuinely idle — see if a DIFFERENT model queued for this provider can swap in.
+        // Idle: a different model queued for this provider can swap in.
         this.processQueueForProvider(providerId);
       }
     }
@@ -276,14 +214,13 @@ class OllamaModelLock {
     return this.slotsForProvider(providerId).reduce((n, s) => n + s.activeRequests, 0) + unslotted;
   }
 
-  /** Process queued requests for one provider after a slot becomes idle. */
+  /** Serve queued requests for one provider after a slot becomes idle. */
   private processQueueForProvider(providerId: string): void {
     if (this.queue.length === 0) return;
 
     const idleSlot = this.slots.find(s => s.providerId === providerId && s.activeRequests === 0);
     if (!idleSlot) return;
 
-    // First queued request for this specific provider.
     const nextRequest = this.queue.find(q => q.providerId === providerId);
     if (!nextRequest) return;
     const nextModelName = nextRequest.modelName;
@@ -293,7 +230,6 @@ class OllamaModelLock {
     });
     idleSlot.modelName = nextModelName;
 
-    // Release ALL queued requests for this provider+model combo (they share the slot).
     const toRelease = this.queue.filter(q => q.providerId === providerId && q.modelName === nextModelName);
     this.queue = this.queue.filter(q => !(q.providerId === providerId && q.modelName === nextModelName));
 
@@ -317,12 +253,8 @@ class OllamaModelLock {
     slots: Array<{ providerId: string; modelName: string; activeRequests: number }>;
     queuedRequests: number;
     queuedModels: Array<{ providerId: string; modelName: string }>;
-    // T81c Fix Round 1, Minor 1: the SAME-MODEL queue this task adds (`ModelSlot.waiters`) is a
-    // DIFFERENT condition from `queuedRequests`/`queuedModels` above — those mean two DIFFERENT
-    // models are contending for one provider slot; these mean the GPU is being asked for MORE
-    // of the IDENTICAL model than it can run at once, which is exactly the contention this task
-    // exists to govern. Surfaced separately so the Health page can tell the two apart rather
-    // than folding a same-model pileup into a number that reads as a model-swap wait.
+    // Same-model waiters are a different condition from `queuedRequests`: the GPU is asked for more of
+    // one model than it can run at once, not two models contending for a slot. Reported separately.
     sameModelWaiters: number;
     sameModelWaitingModels: Array<{ providerId: string; modelName: string; count: number }>;
   } {
@@ -345,8 +277,7 @@ class OllamaModelLock {
     };
   }
 
-  // Last-known "offending providers" set, used to dedupe warnings so we
-  // log only when the set changes.
+  // Last-known offending providers, so the warning logs only when the set changes.
   private lastWarningKey = '';
 
   private broadcastStatus(): void {
@@ -360,8 +291,6 @@ class OllamaModelLock {
       });
     }
 
-    // T81c Fix Round 1, Minor 1: a DIFFERENT warning from the one above — this is same-model
-    // pileup (the GPU-livelock incident's own shape), not a cross-model swap wait.
     if (status.sameModelWaiters > 0) {
       logger.warn(`Ollama requests queuing behind a same-model call: ${status.sameModelWaiters} waiting`, {
         sameModelWaiters: status.sameModelWaiters,
@@ -403,7 +332,6 @@ class OllamaModelLock {
 }
 
 let unslotted = 0;
-// Singleton
 const ollamaLock = new OllamaModelLock();
 
 /** Work on this box's Ollama that takes no slot (decide(), the embedder, a pull) begins; the returned function
@@ -419,7 +347,6 @@ export function getOllamaLock(): OllamaModelLock {
   return ollamaLock;
 }
 
-// ── Per-provider active model accounting ────────────────────────────
 
 export interface OllamaProviderActiveModels {
   providerId: string;
@@ -428,12 +355,7 @@ export interface OllamaProviderActiveModels {
   models: string[];
 }
 
-/**
- * Return one record per Ollama provider describing how many distinct
- * active-agent models are currently assigned to it. Used by the warning
- * banner to flag over-limit providers individually instead of lumping
- * every Ollama provider into one global count.
- */
+/** One record per Ollama provider: how many distinct active-agent models are assigned to it. */
 export function getActiveOllamaModelsByProvider(): OllamaProviderActiveModels[] {
   try {
     const db = getDb();
@@ -474,7 +396,6 @@ export function getActiveOllamaModelsByProvider(): OllamaProviderActiveModels[] 
   }
 }
 
-/** Get the max concurrent models setting. */
 export function getOllamaMaxConcurrent(): number {
   return ollamaLock.getStatus().maxConcurrentModels;
 }

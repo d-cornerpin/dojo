@@ -1,35 +1,19 @@
-// ════════════════════════════════════════
-// Self-identities: the email addresses that belong to THIS platform's own
-// agent mailboxes, across every connected provider (Google + Microsoft).
-//
-// The mailbox watchers use this to suppress waking the agent on its own
-// outbound mail. The common case (sender == the watched account) is easy, but
-// the agent can also send from one of its OTHER agent mailboxes (a different
-// provider or slot) into a mailbox it ALSO watches; that mail is equally
-// self-authored and must not wake it. Matching the sender against the full
-// set of agent-mailbox identities catches both.
-//
-// Only kind === 'agent' accounts are included. A kind === 'user' account is
-// the human's own mailbox: the owner mailing the agent MUST still wake it, so
-// user addresses are deliberately excluded from this set.
-// ════════════════════════════════════════
+// The email addresses of THIS platform's own agent mailboxes, so the watchers never wake the agent on its own
+// outbound mail, even from one of its OTHER agent mailboxes. Only 'agent' accounts count: a 'user' account
+// is the human's mailbox, and the owner mailing the agent must still wake it.
 
 import { listGoogleAccountViews } from '../google/auth.js';
 import { listMicrosoftAccountViews } from '../microsoft/auth.js';
 import { addressesMatch } from './imessage-bridge.js';
 
-// Provider-neutral shape shared by GoogleAccountView and MicrosoftAccountView.
+// Provider-neutral view shared by the Google and Microsoft account views.
 interface MailboxIdentityView {
   kind: 'agent' | 'user';
   connected: boolean;
   email: string | null;
 }
 
-/**
- * Every connected agent-mailbox email across both providers, deduped
- * case-insensitively. Non-agent accounts, disconnected accounts, and null/empty
- * emails are excluded. Cheap to call per poll cycle; not per message.
- */
+/** Every connected agent-mailbox email across both providers, deduped case-insensitively. */
 export function listAgentSelfIdentities(): string[] {
   const views: MailboxIdentityView[] = [
     ...listGoogleAccountViews(),
@@ -47,11 +31,7 @@ export function listAgentSelfIdentities(): string[] {
   return emails;
 }
 
-/**
- * If `address` matches any of `identities` (tolerant compare via the shared
- * addressesMatch), return the matched identity email; otherwise null. Callers
- * log the matched identity so it is clear WHICH mailbox the outbound came from.
- */
+/** The identity email matching `address` (tolerant compare via addressesMatch), else null. */
 export function matchSelfIdentity(address: string, identities: string[]): string | null {
   if (!address) return null;
   for (const identity of identities) {

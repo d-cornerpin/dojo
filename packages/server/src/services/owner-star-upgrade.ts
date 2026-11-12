@@ -1,17 +1,10 @@
-// ONE-TIME UPGRADE: write down the owner the 3.4.1 reader implied.
-//
-// 3.4.1's `parseSafeSenders` (v3.4.1:packages/server/src/services/safe-senders.ts, "Guarantee exactly one
-// primary") gave every safe-sender list an owner on read: a list with no starred entry made the entry matching
-// the legacy `imessage_default_sender` key the owner, else the FIRST entry (a bare-address list's first entry
-// was always the owner). The reader no longer promotes anyone (owner ruling: the star never moves on its own),
-// so a box upgraded from 3.4.1 would lose the owner it had - and the main agent would stop being able to text
-// him (ruling #27). This step stars, once, exactly the entry the old reader treated as the owner.
-//
-//   * only a list with NO starred entry is touched; a list that has a star is left byte-for-byte alone;
-//   * a bare-address list (first entry is the owner by its own documented format) is left alone;
-//   * it runs ONCE: the done-marker `owner_star_conversion_done` is written at the end, so nothing added after
-//     the upgrade (an agent's `add_safe_sender`, a list the owner left ownerless on purpose) is ever starred by it.
-// Boot step: index.ts, beside the other idempotent config upgrades (`seedGoogleAccountsFromConfig`).
+// One-time upgrade: write down the owner the previous safe-sender reader implied. That reader gave every
+// list an owner on read (the entry matching the legacy `imessage_default_sender` key, else the first entry).
+// The reader no longer promotes anyone, so an upgraded box would lose its owner and the main agent could not
+// text them. This stars, once, exactly the entry the old reader treated as the owner:
+//   * only a list with NO starred entry is touched; a bare-address list (first entry is the owner) is left alone;
+//   * it runs ONCE (the marker `owner_star_conversion_done` is written last), so nothing added later is starred.
+// Boot step: index.ts, beside the other idempotent config upgrades.
 
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
@@ -26,7 +19,7 @@ export function starTheOwnersTheOldReaderImplied(): { converted: string[]; skipp
   const done = db.prepare('SELECT value FROM config WHERE key = ?').get(DONE_KEY) as { value: string } | undefined;
   if (done) return { converted: [], skipped: true };
 
-  const legacy = readLegacyDefaultSender() || null;   // the one reader of the legacy key (t146)
+  const legacy = readLegacyDefaultSender() || null;   // the one reader of the legacy key
   const converted: string[] = [];
 
   const rows = db

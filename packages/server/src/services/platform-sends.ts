@@ -1,18 +1,7 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// services/platform-sends.ts — the record of every email the platform itself sends (P44, review C2).
-//
-// An email the platform sends from the owner's own connected mailbox (send-as, once the owner allows it)
-// to the agent's mailbox arrives with a genuine DMARC pass from an owner address. It is still the agent's
-// own mail, never the owner speaking. So every send path stamps its message with a send id BEFORE it goes
-// out, records that id here, and the mail intake (`mail-owner-intake.ts`) refuses owner status to any
-// inbound mail carrying a recorded id. The record is the engine's, written at send time — never the text
-// of a message and never a time window.
-//
-//   Gmail:   we write our own `Message-ID` and an `X-Platform-Send-Id` header into the raw message.
-//   Outlook: `sendMail`, and reply / reply-all / forward (created as drafts, `microsoft/send-as-draft.ts`) carry an `x-platform-send-id`
-//            header set at creation; the Sent Items copy's Message-ID is a second key. (Older note, kept for the second key: after
-//            the send the Sent Items copy is found and its `internetMessageId` is recorded (tools-write).
-// ════════════════════════════════════════════════════════════════════════════════════════
+// The record of every email the platform itself sends. Mail from the owner's own mailbox to the agent passes
+// DMARC as an owner address yet is the agent's own, so every send stamps an id BEFORE it goes out and
+// `mail-owner-intake.ts` refuses owner status to inbound mail carrying a recorded id. Gmail: our Message-ID
+// plus an X-Platform-Send-Id header. Outlook: that header; the Sent Items Message-ID is a second key.
 
 import { randomUUID } from 'node:crypto';
 import { getDb } from '../db/connection.js';
@@ -20,11 +9,9 @@ import { getDb } from '../db/connection.js';
 const KEY = 'platform_send:';
 export const SEND_ID_HEADER = 'X-Platform-Send-Id';
 
-/** The canonical form an id is recorded and looked up in: no angle brackets, lower-cased, trimmed. */
 const norm = (id: string): string => id.trim().replace(/^<|>$/g, '').toLowerCase();
 
-/** Record ids as sent by the platform and THROW if they cannot be written: a message that went out unrecorded could later be
- *  read as the owner speaking (it can leave the owner's own account), so a send whose record is not saved is not made. */
+/** THROWS if unwritable: an unrecorded send could later be read as the owner speaking, so none is made. */
 function mustRecord(ids: string[]): void {
   try {
     const put = getDb().prepare(`INSERT OR IGNORE INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))`);
@@ -34,7 +21,7 @@ function mustRecord(ids: string[]): void {
   }
 }
 
-/** A second key (a provider-issued Message-ID) recorded when it is known. Best effort: the send id, written first, is the key that must hold. */
+/** A provider-issued Message-ID, recorded as a second key when known; best effort. */
 export function recordPlatformSend(...ids: Array<string | null | undefined>): void {
   try {
     const put = getDb().prepare(`INSERT OR IGNORE INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))`);
@@ -42,7 +29,6 @@ export function recordPlatformSend(...ids: Array<string | null | undefined>): vo
   } catch { /* the send itself is not the place to fail */ }
 }
 
-/** Mint and record a send id before a message goes out; the Message-ID is derived from it. Throws when the record cannot be saved. */
 export function newPlatformSend(): { sendId: string; messageId: string } {
   const sendId = randomUUID();
   const messageId = `<${sendId}@send.invalid>`;
@@ -50,13 +36,11 @@ export function newPlatformSend(): { sendId: string; messageId: string } {
   return { sendId, messageId };
 }
 
-/** The raw header lines every Gmail send carries. */
 export function platformSendHeaderLines(): string[] {
   const { sendId, messageId } = newPlatformSend();
   return [`Message-ID: ${messageId}`, `${SEND_ID_HEADER}: ${sendId}`];
 }
 
-/** Did the platform send the message these headers belong to? Reads only the id headers (Message-ID, X-Platform-Send-Id) — never the body. */
 export function isPlatformSent(headers: ReadonlyArray<{ name: string; value: string }>): boolean {
   const ids = headers.filter((h) => ['message-id', SEND_ID_HEADER.toLowerCase()].includes(h.name.toLowerCase())).map((h) => norm(h.value)).filter(Boolean);
   if (ids.length === 0) return false;
@@ -66,7 +50,7 @@ export function isPlatformSent(headers: ReadonlyArray<{ name: string; value: str
   } catch { return false; }
 }
 
-/** The header Graph's `sendMail` message carries (`x-` names are the only custom ones Graph accepts); the send id is recorded first. */
+/** Graph accepts only `x-` custom header names; the send id is recorded before the message goes out. */
 export function graphSendHeaders(): Array<{ name: string; value: string }> {
   return [{ name: SEND_ID_HEADER.toLowerCase(), value: newPlatformSend().sendId }];
 }

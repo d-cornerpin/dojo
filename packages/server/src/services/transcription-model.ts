@@ -1,19 +1,8 @@
-// ════════════════════════════════════════
-// services/transcription-model.ts — transcription (STT) model resolver.
-//
-// Unlike the other capability resolvers, transcription has two
-// "providers" that aren't models in the DB: the local Whisper and
-// Moonshine engines that already power phone-mode STT. They surface
-// here as magic ids `local:whisper` and `local:moonshine`. When the
-// configured value matches one of those, we return a synthetic
-// TranscriptionModelChoice with `kind: 'local'` and a `localEngine`
-// string; the transcription service dispatches accordingly without
-// any cloud HTTP call.
-//
-// Any other configured value goes through the standard
-// capability-model factory: lookup by id, validate the row is enabled
-// and has the `transcription` capability, return a normal choice.
-// ════════════════════════════════════════
+// Transcription (STT) model resolver. Unlike the other capability resolvers, two of its "providers" are not
+// models in the DB: the local Whisper and Moonshine engines behind phone-mode STT, surfaced as the ids
+// `local:whisper` and `local:moonshine`. Those return a synthetic choice with `kind: 'local'` and a
+// `localEngine`, dispatched with no cloud call; any other value goes through the capability-model factory
+// (the row must be enabled and have the `transcription` capability).
 
 import { makeCapabilityModelResolver, type CapabilityModelChoice } from './capability-model.js';
 

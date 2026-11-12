@@ -1,10 +1,5 @@
-// ════════════════════════════════════════════════════════════════════════════
-// THE COMMANDS THE DOJO RUNS ON THIS MAC TO LOOK AFTER ITS OLLAMA: who listens on Ollama's port, which program
-// that really is, launchd's environment,
-// the Ollama app's processes, and Homebrew and its service. Every command is behind the
-// `OllamaHost` seam so a test reads the argv of the real ones and runs fakes for the rest (the test setup fakes
-// `getOllamaHost`).
-// ════════════════════════════════════════════════════════════════════════════
+// The commands the Dojo runs on this Mac to look after its Ollama, behind the `OllamaHost` seam so a test
+// reads the argv of the real ones and runs fakes for the rest (test setup fakes `getOllamaHost`).
 
 import { execFile, spawn } from 'node:child_process';
 import { join } from 'node:path';
@@ -12,17 +7,16 @@ import { promisify } from 'node:util';
 import { homeDir } from '../home.js';
 import { attachIdleBound, type WatchableChild } from '../child-idle-bound.js';
 
-/** How Ollama's own CLI waits after it opens the Mac app (`cmd/start.go waitForServer`: a heartbeat every
- *  500 ms, given up after 5 s). The Dojo waits the same way for the app to quit and to answer again. */
+/** How Ollama's own CLI waits after opening the Mac app (a 500 ms heartbeat, given up after 5 s). */
 export const TICK_MS = 500;
 export const WAIT_MS = 5_000;
-/** An installer is idle-bounded like setup's (`gateway/routes/setup-deps.ts`, t114): talking keeps it going. */
+/** An installer is idle-bounded like setup's (`gateway/routes/setup-deps.ts`): talking keeps it going. */
 const BREW_IDLE_MS = 90_000;
 const BREW_CEILING_MS = 60 * 60_000;
 const BREW_SERVICE = 'homebrew.mxcl.ollama';
 
 export interface OllamaHost {
-  /** The launchd value, or null when unset (an unset variable reads as unset however launchctl reports it). */
+  /** The launchd value, or null when unset. */
   getenv(name: string): Promise<string | null>;
   setenv(name: string, value: string): Promise<void>;
   /** The process listening on the local Ollama's port, with the REAL executable it runs (links resolved), or null. */
@@ -35,27 +29,23 @@ export interface OllamaHost {
   launchApp(): Promise<void>;
   answers(baseUrl: string): Promise<boolean>;
   sleep(ms: number): Promise<void>;
-  /** The pid of Homebrew's launchd job for Ollama when it is loaded and running, else null. */
   brewServicePid(): Promise<number | null>;
   hasBrew(): Promise<boolean>;
-  /** The cask token Homebrew installed the Ollama app under on this box (`ollama-app`, or `ollama` before the rename), read from
-   *  Homebrew's local list (`brew list --cask`, no network); null when Homebrew does not own the app — an app installed any other way
-   *  is not Homebrew's to replace. */
+  /** The cask token Homebrew installed the Ollama app under (`ollama-app`, or `ollama` before the rename),
+   *  read locally with `brew list --cask`; null when Homebrew does not own the app (not its to replace). */
   brewCaskToken(): Promise<string | null>;
   /** Does the `ollama` program on the Dojo's PATH run (`ollama --version`)? A serve is never stopped before this says yes. */
   cliRuns(): Promise<boolean>;
-  /** `brew <args>`, under the installer idle bound; rejects when brew fails. */
   brew(args: string[]): Promise<void>;
-  /** `brew services restart ollama`: launchd starts the job again (or for the first time), with launchd's environment. */
+  /** `brew services restart ollama`: launchd starts the job with launchd's environment. */
   restartBrewService(): Promise<void>;
   /** `brew services stop ollama`: Homebrew's job is unloaded, so it never contends with another serve for the port. */
   stopBrewService(): Promise<void>;
-  /** Is Homebrew's `ollama` formula installed (`brew list --formula --versions ollama`, local, no network)? */
   brewFormulaInstalled(): Promise<boolean>;
   /** The macOS major version (`sw_vers -productVersion`), or null when unreadable. The Ollama app's cask needs 14 (Sonoma). */
   macosMajor(): Promise<number | null>;
-  /** `ollama serve` from the program on the PATH, DETACHED in its own process group (so it outlives a Dojo restart), with `env`
-   *  added: the fallback when Homebrew's service cannot start, and a plain binary's only way to run. Its pid, or null. */
+  /** `ollama serve` from the PATH program, DETACHED in its own process group (outlives a Dojo restart), with
+   *  `env` added: the fallback when Homebrew's service cannot start. Its pid, or null. */
   startServe(env: Record<string, string>): number | null;
 }
 
@@ -66,7 +56,6 @@ const BREW_PATHS = ['/opt/homebrew/bin/brew', '/usr/local/bin/brew'];
 /** launchd has a minimal PATH: the Homebrew locations first (the same list setup's installer uses). */
 const EXTENDED_PATH = `/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:${process.env.PATH ?? '/usr/bin:/bin:/usr/sbin:/sbin'}`;
 
-/** The real commands, built over `run`/`kill`/`spawnChild` so a test can read their argv without running any. */
 export function makeRealDeps(
   run: Run, kill: Kill, spawnChild: (cmd: string, args: string[]) => WatchableChild, serve: (env: Record<string, string>) => number | null = () => null,
 ): OllamaHost {
@@ -82,9 +71,8 @@ export function makeRealDeps(
       try {
         const [pid] = pids((await run('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-t'])).stdout);
         if (!pid) return null;
-        // The program the process really runs: its first text mapping (`-d txt`), which lsof reports as the file on
-        // disk, links resolved. `ps -o comm=` reports the path it was STARTED by, so a `serve` started through the
-        // CLI link into the app would read as not the app.
+        // The program the process really runs: its first text mapping, which lsof reports with links resolved
+        // (`ps -o comm=` gives the path it was started by, so a `serve` started via the CLI link misreads).
         const fields = (await run('lsof', ['-nP', '-a', '-p', String(pid), '-d', 'txt', '-Fn'])).stdout.split('\n');   // `f<fd>` then `n<path>`, per mapping
         const mapped = fields.slice(fields.indexOf('ftxt') + 1).find((l) => l.startsWith('n/'))?.slice(1);
         return { pid, path: mapped ?? (await run('ps', ['-o', 'comm=', '-p', String(pid)])).stdout.trim() };
@@ -98,8 +86,7 @@ export function makeRealDeps(
     },
     terminate: (pid) => { try { kill(pid, 'SIGTERM'); } catch { /* already gone */ } },
     alive: (pid) => { try { return kill(pid, 0); } catch (e) { return (e as NodeJS.ErrnoException).code === 'EPERM'; } },
-    // Exactly how Ollama's CLI starts the Mac app (`cmd/start_darwin.go`): hidden, fast start-up. Run under the
-    // platform's child-process bound (`child-idle-bound.ts`) at the app-start patience below.
+    // Exactly how Ollama's CLI starts the Mac app: hidden, fast start-up, under the child-process bound.
     launchApp: async () => {
       await attachIdleBound(spawnChild('/usr/bin/open', ['-j', '-a', 'Ollama', '--args', '--fast-startup']), { idleMs: WAIT_MS, ceilingMs: WAIT_MS });
     },
@@ -156,5 +143,4 @@ const REAL = makeRealDeps(
   },
 );
 
-/** The host the platform uses, or null off a Mac. */
 export function getOllamaHost(): OllamaHost | null { return process.platform !== 'darwin' ? null : REAL; }
