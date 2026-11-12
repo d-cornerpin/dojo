@@ -1,7 +1,4 @@
-// ════════════════════════════════════════
-// Vault Store: CRUD for vault_entries + vault_conversations
-// Embedding generation, deduplication, semantic search
-// ════════════════════════════════════════
+// Vault store: CRUD for vault_entries and vault_conversations, embeddings, dedup and semantic search.
 
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
@@ -20,32 +17,15 @@ import {
 
 const logger = createLogger('vault-store');
 
-// W3-4: agent_id used by the dashboard vault API (gateway/routes/vault.ts)
-// for owner-authored entries. These form a deliberate OWNER scope: visible to
-// every agent's recall (the owner writes facts FOR their agents), while
-// agent-authored personal entries stay private per agent. The cross-agent
-// privacy scoping must never hide the owner's own hand-written entries.
+// agent_id for owner-authored entries (written via the dashboard vault API). They form an OWNER scope
+// visible to every agent's recall; per-agent privacy scoping must never hide them.
 export const OWNER_VAULT_AGENT_ID = 'manual';
 
-// ── D-A: household recall scope (the single choke point) ──
-//
-// Decision D-A: distilled vault memory is SHARED across the household's agents;
-// the original W3-4 harness-peer leak is re-solved by EXCLUSION, not by
-// author-scoping every recall. This resolves the set of author ids a given
-// caller may recall from:
-//   - A household MEMBER (its id is in getHouseholdAgentIds(): the primaries +
-//     the Dreamer) recalls the full household set PLUS the owner, so distilled
-//     memory reaches the humans and a member can cite what the Dreamer filed.
-//   - A NON-member (a spawned worker, a harness probe, a legacy duplicate service
-//     agent) keeps today's own-plus-owner scope [self, OWNER]. This is
-//     byte-identical to the prior two-id OR, so an excluded agent's injected
-//     recall context is unchanged (the DeepSeek V4 Flash floor protection: only
-//     the IN-list membership moves, never the SQL shape around it).
-//
-// OWNER_VAULT_AGENT_ID is ALWAYS included: owner hand-written entries are meant
-// for every agent. The write path is untouched (entries keep their author id);
-// exclusion is structural on both sides, a non-member's id is in no member's
-// scope, and no member's id is in a non-member's scope.
+// ── Household recall scope (the single choke point) ──
+// Distilled memory is shared across the household: a MEMBER (an id in getHouseholdAgentIds(): the
+// primaries and the Dreamer) recalls the full household set plus the owner. A NON-member (spawned worker,
+// harness probe) keeps [self, OWNER], so no member's id is in its scope and its id is in no member's.
+// OWNER_VAULT_AGENT_ID is always included; writes keep their author id.
 export function resolveRecallScope(callerAgentId: string): string[] {
   const ids = new Set<string>([callerAgentId, OWNER_VAULT_AGENT_ID]);
   try {
@@ -53,25 +33,17 @@ export function resolveRecallScope(callerAgentId: string): string[] {
     if (household.includes(callerAgentId)) {
       for (const id of household) ids.add(id);
     } else if (isPMAgent(callerAgentId) || isHealerAgent(callerAgentId)) {
-      // RC-15: the PM audits deliverables whose content IS vault entries (an
-      // extract-memories task's output is household-authored evidence), so it
-      // must be able to READ the full household scope to verify them. The
-      // Healer's diagnostics likewise reference vault_search/vault_get (its
-      // SOUL directs it to dereference evidence), so it gets the same read
-      // extension (owner ruled 2026-07-16). This is READ-for-validation ONLY:
-      // mutation (vault_update / vault_forget) stays author-gated at the tool
-      // layer, and neither overseer is added to a household MEMBER's scope, so
-      // the W3-4 harness-peer exclusion for spawned workers is untouched (a
-      // non-member's id is still in no member's scope).
+      // The PM audits deliverables made of vault entries and the Healer dereferences vault evidence, so
+      // both read the full household scope. Read-only: vault_update / vault_forget stay author-gated at
+      // the tool layer, and neither is added to a member's scope.
       for (const id of household) ids.add(id);
     }
   } catch {
-    /* config not ready: fall back to [self, OWNER], the pre-D-A behavior */
+    /* config not ready: fall back to [self, OWNER] */
   }
   return [...ids];
 }
 
-// ── Types ──
 
 export interface VaultEntry {
   id: string;
@@ -91,19 +63,12 @@ export interface VaultEntry {
   sourceConversationId: string | null;
   source: string;
   /**
-   * FU-2: compact JSON citation of the ORIGINAL source of this fact, so an agent
-   * can cite it and re-open it later. Shape (only known fields present):
-   *   { "kind": "url" | "file", "ref": "<url-or-path>", "page": 3, "section": "..." }
-   * NULL = no citation (entries without one behave exactly as before). Metadata
-   * only: not embedded, not counted against the vault_remember caps, never used
-   * in dedup/supersede similarity. See formatCitationSuffix for rendering.
+   * Compact JSON citation of the original source: { "kind": "url" | "file", "ref", "page"?, "section"? }.
+   * NULL = none. Metadata only: not embedded, not counted against the vault_remember caps, not used in dedup.
    */
   citation: string | null;
   embedding: Buffer | null;
-  /**
-   * Namespace scope. NULL = personal vault (legacy semantics). 'squad:<group_id>' =
-   * shared between members of that squad. Phase 7 / Part X.
-   */
+  /** Namespace scope. NULL = personal vault; 'squad:<group_id>' = shared between that squad's members. */
   namespace: string | null;
   createdAt: string;
   updatedAt: string;
@@ -120,7 +85,7 @@ export interface VaultConversation {
   latestAt: string;
   isProcessed: boolean;
   processedAt: string | null;
-  // FA-V4: bounded Dreamer retry + poison escalation (migration 091).
+  // Bounded Dreamer retry and poison escalation.
   attempts: number;
   poisoned: boolean;
   createdAt: string;
@@ -145,7 +110,6 @@ export interface DreamReport {
   createdAt: string;
 }
 
-// ── Row Mappers ──
 
 interface VaultEntryRow {
   id: string;
@@ -182,8 +146,7 @@ interface VaultConversationRow {
   latest_at: string;
   is_processed: number;
   processed_at: string | null;
-  // FA-V4 (migration 091). Older rows predate the columns; COALESCE in the
-  // mapper defaults them so a NULL never surfaces as NaN / undefined.
+  // Older rows predate these columns; the mapper defaults them so NULL never surfaces as NaN.
   attempts: number | null;
   poisoned: number | null;
   created_at: string;
@@ -275,12 +238,8 @@ function rowToReport(row: DreamReportRow): DreamReport {
   };
 }
 
-// ── Citations (FU-2) ──
 
-/**
- * Parsed shape of the vault_entries.citation JSON column. Only `kind` + `ref`
- * are guaranteed; `page`/`section` appear only when the source named them.
- */
+/** Parsed vault_entries.citation JSON: only `kind` and `ref` are guaranteed; page/section when named. */
 export interface VaultCitation {
   kind: 'url' | 'file';
   ref: string;
@@ -289,12 +248,8 @@ export interface VaultCitation {
 }
 
 /**
- * Render a stored citation as a compact recall suffix, e.g.
- *   [source: doctor-report-2026.pdf p.3]
- * Returns '' for a NULL/blank/unparseable citation so callers can append
- * unconditionally. File paths collapse to the last segment to stay short (the
- * full path lives in the stored citation, surfaced verbatim by vault_get, so
- * the source is still re-openable). URLs are shown as-is.
+ * Renders a stored citation as a compact recall suffix, e.g. [source: report.pdf p.3]; '' when NULL or
+ * unparseable. File paths collapse to the last segment (vault_get shows the full path); URLs stay as-is.
  */
 export function formatCitationSuffix(citation: string | null | undefined): string {
   if (!citation) return '';
@@ -312,14 +267,8 @@ export function formatCitationSuffix(citation: string | null | undefined): strin
   return ` [source: ${s}]`;
 }
 
-// ── Cosine Similarity ──
-//
-// It lives in `vault/bounded-reads.ts` now, beside the candidate scan that is its only caller: all
-// three of this file's scoring loops moved there, so a copy here would be a second spelling of one
-// formula. `memory/vector-search.ts` still carries its own over a different table — out of this
-// change's fence, and named in the report.
+// Cosine similarity lives in `vault/bounded-reads.ts`, beside the candidate scan that scores with it.
 
-// ── Vault Entry CRUD ──
 
 export async function createEntry(params: {
   agentId: string;
@@ -333,32 +282,20 @@ export async function createEntry(params: {
   isPinned?: boolean;
   sourceConversationId?: string;
   source?: string;
-  /**
-   * FU-2: pre-serialized compact JSON citation of the fact's original source
-   * (built by the vault_remember tool layer). Persisted as-is; NULL/undefined =
-   * no citation. Never embedded, never counted against the entry-length caps.
-   */
+  /** Pre-serialized citation JSON from the vault_remember tool layer, stored as-is; NULL = none. */
   citation?: string | null;
-  /**
-   * Optional namespace. NULL/undefined = personal vault. 'squad:<group_id>' =
-   * shared with squad members (Phase 7).
-   */
+  /** NULL/undefined = personal vault; 'squad:<group_id>' = shared with that squad. */
   namespace?: string | null;
-  /**
-   * The writer says this fact is genuinely DIFFERENT from a near-identical older one
-   * (the agent's "distinct: true"). Both are kept; the older entry is never superseded.
-   */
+  /** The writer says this fact differs from a near-identical older one: keep both, never supersede. */
   distinct?: boolean;
 }): Promise<VaultEntry> {
   const db = getDb();
   const id = uuidv4();
 
-  // Enforce 500 token max
   const content = capEntryContent(params.content);
 
-  // Generate embedding
   let embeddingBuf: Buffer | null = null;
-  const embeddingModel = embeddingModelKey();   // read before the call: the label of the model that makes this vector
+  const embeddingModel = embeddingModelKey();   // read first: labels the model that makes this vector
   try {
     const embedding = await generateEmbedding(content);
     embeddingBuf = Buffer.from(embedding.buffer);
@@ -368,30 +305,21 @@ export async function createEntry(params: {
     else logger.warn('Failed to generate embedding for vault entry', { error: m });
   }
 
-  // Check for semantic duplicates
+  // Near-duplicates (>= 0.92 similarity) are either a re-save or a correction.
   if (embeddingBuf) {
     const duplicate = await findSemanticDuplicate(content, embeddingBuf, 0.92, params.agentId, params.namespace ?? null);
     if (duplicate) {
-      // Compare the substance (date prefix + whitespace/case normalized away).
       const norm = (s: string) =>
         s.replace(/^\[\d{4}-\d{2}-\d{2}\]\s*/, '').replace(/\s+/g, ' ').trim().toLowerCase();
       if (norm(content) === norm(duplicate.content)) {
-        // Same statement re-saved -- keep the existing entry.
         logger.debug('Skipping duplicate vault entry', { existingId: duplicate.id, similarity: 'high' });
         return rowToEntry(db.prepare('SELECT * FROM vault_entries WHERE id = ?').get(duplicate.id) as VaultEntryRow);
       }
       if (params.distinct) {
-        // "This is different": keep BOTH. The refusal text promised the older entry stays.
         logger.debug('Distinct fact kept beside its near-copy', { existingId: duplicate.id });
       } else {
-      // 2026-07-03: >= 0.92 similarity with DIFFERENT substance is a
-      // correction/update of the same fact, and the NEW statement is the more
-      // recent one -- it must win. The old "keep whichever is longer" heuristic
-      // silently discarded equal-length corrections (observed live: a
-      // membership code correction deduped INTO the stale entry, and the tool
-      // reported the OLD content as 'Remembered'; the update was lost unless
-      // the agent noticed and manually ran vault_update). Recency is user
-      // authority; the superseded entry stays recoverable via superseded_by.
+      // Different substance at >= 0.92 is a correction of the same fact: the newer statement wins, and the
+      // superseded entry stays recoverable via superseded_by.
       db.prepare('UPDATE vault_entries SET is_obsolete = 1, superseded_by = ?, updated_at = datetime(\'now\') WHERE id = ?')
         .run(id, duplicate.id);
       logger.info('Superseding older vault entry', { oldId: duplicate.id, newId: id });
@@ -467,7 +395,6 @@ export function updateEntry(id: string, updates: {
   params.push(id);
   db.prepare(`UPDATE vault_entries SET ${sets.join(', ')} WHERE id = ?`).run(...params);
 
-  // Re-generate embedding if content changed
   if (updates.content !== undefined) {
     const model = embeddingModelKey();
     generateEmbedding(updates.content).then(emb => {
@@ -499,23 +426,18 @@ export interface ListEntriesOptions {
   limit?: number;
   includeObsolete?: boolean;
   /**
-   * Phase 7: filter by namespace. Pass `null` (or omit) to default to
-   * personal vault (`namespace IS NULL`). Pass a string like
-   * `'squad:<group_id>'` to scope to that namespace. The two scopes never
-   * overlap, personal-vault searches never see squad entries and vice versa.
+   * Namespace filter. null/omitted = personal vault (`namespace IS NULL`); 'squad:<group_id>' = that
+   * namespace. The scopes never overlap.
    */
   namespace?: string | null;
   /**
-   * W3-4: with agentId set, ALSO include owner-authored entries
-   * (agent_id = OWNER_VAULT_AGENT_ID, written via the dashboard vault API).
-   * Agent-recall paths pass true: the owner's hand-written facts are meant
-   * for their agents; the cross-agent privacy fix must not hide them.
-   * Owner-facing dashboard listing keeps strict equality (omit / false).
+   * With agentId set, widen to the caller's recall scope (`resolveRecallScope`: the owner scope, plus the
+   * household for members, the PM and the Healer). Agent recall passes true; the dashboard omits it.
    */
   includeOwnerScope?: boolean;
 }
 
-/** The listing's WHERE, split into SCOPE and MATCH — `VaultLikeScanQuery` argues why. */
+/** The listing's WHERE, split into SCOPE (always bounded) and MATCH (the LIKE, scanned separately). */
 function buildListQuery(options?: ListEntriesOptions): VaultLikeScanQuery & { search: boolean } {
   const conditions: string[] = [];
   const params: unknown[] = [];
@@ -531,15 +453,12 @@ function buildListQuery(options?: ListEntriesOptions): VaultLikeScanQuery & { se
   }
   if (options?.agentId) {
     if (options.includeOwnerScope) {
-      // D-A: household recall scope. Members see the whole household + Dreamer +
-      // owner; non-members resolve to [self, OWNER], byte-identical rows to the
-      // prior two-id OR. resolveRecallScope already appends OWNER.
+      // Household recall scope; resolveRecallScope already appends OWNER.
       const scope = resolveRecallScope(options.agentId);
       conditions.push(`agent_id IN (${scope.map(() => '?').join(', ')})`);
       params.push(...scope);
     } else {
-      // Strict single-agent equality (owner-facing dashboard listing). No recall
-      // expansion here: this path is not agent recall.
+      // Strict single-agent equality (owner-facing dashboard listing): no recall expansion.
       conditions.push('agent_id = ?');
       params.push(options.agentId);
     }
@@ -558,9 +477,7 @@ function buildListQuery(options?: ListEntriesOptions): VaultLikeScanQuery & { se
     match.push('content LIKE ?');
     matchParams.push(`%${options.search}%`);
   }
-  // Namespace scoping (Phase 7): default to personal vault, opt into squad
-  // namespaces explicitly. Calling listEntries without `namespace` keeps the
-  // existing behavior for legacy callers (vault_search, retrieval, etc.).
+  // Default to the personal vault; squad namespaces are opt-in.
   if (options && Object.prototype.hasOwnProperty.call(options, 'namespace')) {
     if (options.namespace === null || options.namespace === undefined) {
       conditions.push('namespace IS NULL');
@@ -588,17 +505,15 @@ function listUnmatched(q: VaultLikeScanQuery): VaultEntryRow[] {
 
 export function listEntries(options?: ListEntriesOptions): VaultEntry[] {
   const q = buildListQuery(options);
-  // ⚠ THE SEARCH ARM IS THE BOUNDED ONE, AND THE OTHER ARM IS NOT A MISS. Without a `search` there
-  // is no leading-wildcard LIKE, so the `LIMIT` is a real bound on the work as well as the answer
-  // — `ORDER BY created_at DESC` still costs a scan, which is named in the report as the next read
-  // in this family and is NOT what the capture recorded.
+  // Only the search arm has a leading-wildcard LIKE; the unmatched arm's LIMIT bounds the answer, but its
+  // `ORDER BY created_at DESC` still scans the scope (vault_entries has no created_at index).
   const rows = q.search ? vaultLikeScanSync<VaultEntryRow>(q) : listUnmatched(q);
   return rows.map(rowToEntry);
 }
 
 /**
- * `listEntries`, through the reader pool. `vaultLikeScanSync` argues why both doors exist; the
- * caller wired to THIS one is `semanticSearch`'s embed-outage fallback, below.
+ * `listEntries`, through the reader pool, for vault_search exact mode, the recall lane's embed-outage
+ * fallback (`memory/recall-lane.ts`) and `semanticSearch`'s embed-outage fallback.
  */
 export async function listEntriesBounded(
   options?: ListEntriesOptions,
@@ -613,14 +528,9 @@ export async function listEntriesBounded(
 // ── Semantic Search ──
 
 /**
- * ⚠ THE LAST SEMANTIC SEARCH'S WINDOW, FOR THE TOOL LAYER TO TELL THE AGENT ABOUT (fix round 1, I2).
- *
- * `semanticSearch` returns an array, and widening it to an object would reach every caller. The
- * message side solved the same problem by appending a line to the rendered result
- * (`memory/retrieval.ts`'s "searched the newest N messages only"), and the tool layer is where that
- * line belongs — so the fact rides here, set on every semantic search and read immediately by
- * `vault/tools.ts`. ⚠ NOT a cache and not state: it is overwritten by the next search, it is only
- * ever read by the call that just ran, and it holds NO user content — a boolean and two integers.
+ * The last semantic search's window, for `vault/tools.ts` to tell the agent about. `semanticSearch` returns
+ * a bare array, so the window rides here: set on every semantic search and read right after by the same
+ * caller. Not a cache and no user content: overwritten by the next search.
  */
 let lastSemanticWindow: { truncated: boolean; oldestRidConsidered: number; cap: number } = {
   truncated: false, oldestRidConsidered: 0, cap: 0,
@@ -635,24 +545,14 @@ export async function semanticSearch(query: string, options?: {
   limit?: number;
   type?: string;
   minSimilarity?: number;
-  // D4: reuse a pre-computed query embedding (assembler auto-recall embeds the
-  // per-turn recall query once and shares it across message + vault search).
+  // Reuse a pre-computed query embedding (auto-recall embeds the per-turn query once and shares it).
   queryEmbedding?: Float32Array;
-  // AUDIT-FIX: restrict to the personal scope (namespace IS NULL), matching the
-  // exact-mode filter in listEntries. Squad-namespace entries are documented as
-  // never overlapping personal scope and must not leak into personal recall.
+  // Restrict to the personal scope (namespace IS NULL), matching exact mode; squad entries must not leak in.
   personalOnly?: boolean;
-  // W3-4 (behavioral run bmr59ix4lsg): scope to one agent's vault. The
-  // personal vault is per-agent by design (agent_id on every entry; squad
-  // namespaces are the deliberate sharing mechanism), but this search ran
-  // UNSCOPED, so any agent's vault_search / auto-recall surfaced every other
-  // agent's private entries (observed live: a fresh harness peer retrieved
-  // the primary agent's project codename and delivered it as its own work).
-  // Omit only for owner-level callers (dashboard API), never for agent recall.
+  // Scope to one agent's vault (plus owner and household, see resolveRecallScope). Omit only for owner-level
+  // callers such as the dashboard API, never for agent recall.
   agentId?: string;
-  // t98: a stop is REAL on this path for the first time. The candidate scan runs on the reader
-  // pool, so an abort DISCARDS the in-flight read instead of waiting for a synchronous scan that
-  // could not even receive the signal. Optional, so no caller had to change.
+  // Aborting discards the in-flight candidate scan, which runs on the reader pool.
   signal?: AbortSignal;
 }): Promise<Array<VaultEntry & { similarity: number }>> {
   const limit = options?.limit ?? 10;
@@ -668,15 +568,13 @@ export async function semanticSearch(query: string, options?: {
       const m = err instanceof Error ? err.message : String(err);
       if (isEmbeddingBackendUnavailable(err)) warnEmbeddingBackendAbsentOnce({ error: m, site: 'vault.semanticSearch' });
       else logger.warn('Failed to generate query embedding, falling back to text search', { error: m });
-      // Fallback to text search (same agent + owner scoping as the semantic path).
-      // ⚠ THROUGH THE POOLED DOOR. This arm runs on EVERY vault_search while the embedding backend
-      // is down, so it is not a rare path — it is the exact-search SQL, on the serving thread, for
-      // the duration of an outage. `listEntriesBounded` is the same query, bounded and off-thread.
+      // Fallback to text search (same recall scope as the semantic path), through the pooled door: this runs
+      // on every vault_search while the embedding backend is down, so it must not scan on the serving thread.
       const entries = await listEntriesBounded(
         { search: query, limit, agentId: options?.agentId, includeOwnerScope: true },
         options?.signal,
       );
-      // This arm ran no candidate window, so it must not leave the PREVIOUS search's one standing.
+      // No candidate window ran here, so do not leave the previous search's one standing.
       lastSemanticWindow = { truncated: false, oldestRidConsidered: 0, cap: 0 };
       return entries.map(e => ({ ...e, similarity: 0.5 }));
     }
@@ -693,26 +591,19 @@ export async function semanticSearch(query: string, options?: {
     conditions.push('namespace IS NULL');
   }
   if (options?.agentId) {
-    // D-A: household recall scope. Members recall every member + the Dreamer +
-    // the owner; non-members resolve to [self, OWNER], byte-identical rows to the
-    // prior two-id OR (see resolveRecallScope). The embed-fail fallback above
-    // routes through listEntriesBounded(includeOwnerScope), which applies the same scope.
+    // Household recall scope; the embed-fail fallback above applies the same scope.
     const scope = resolveRecallScope(options.agentId);
     conditions.push(`agent_id IN (${scope.map(() => '?').join(', ')})`);
     params.push(...scope);
   }
 
-  // ⚠ THE SITE THE CAPTURE RECORDED: `SELECT * FROM vault_entries WHERE …`, NO LIMIT AT ALL, every
-  // matching row's 3 KB embedding scored in JavaScript in one synchronous call on the serving
-  // thread. `bounded-reads.ts`'s header carries the measurement; the bodies are fetched below, for
-  // the handful of entries that actually won.
+  // The candidate scan is bounded and off-thread (`bounded-reads.ts`); only the winners' bodies are fetched.
   const scan = await scanVaultCandidates({
     label: 'vault_semantic',
     queryEmbedding, conditions, params,
     agentId: options?.agentId, signal: options?.signal,
-    // ⚠ THE WINDOW IS THIS SCOPE'S, NOT THE TABLE'S (fix round 1, I2). Without it, a table whose
-    // newest rowids belong to other agents put the whole recency window above this caller's newest
-    // row and the search returned nothing at all — measured by the review at a 100,150-rowid span.
+    // The window is this scope's, not the table's: otherwise a table whose newest rowids belong to other
+    // agents pushes the recency window above this caller's rows and the search finds nothing.
     scopeAgentIds: options?.agentId ? resolveRecallScope(options.agentId) : undefined,
   });
 
@@ -722,9 +613,7 @@ export async function semanticSearch(query: string, options?: {
     cap: VAULT_CANDIDATE_ROWS,
   };
 
-  // ⚠ SAME ANSWER AS THE UNBOUNDED SORT, TIE-BREAK INCLUDED — see `byBestSimilarity`. The pre-fix
-  // code sorted a stable array built in rowid order, so an equal-similarity tie went to the older
-  // entry; spelling that out keeps the result independent of the walk's direction.
+  // Ties break to the older entry (see `byBestSimilarity`), independent of the scan's direction.
   const winners = scan.scored
     .filter((c) => c.similarity >= minSim)
     .sort(byBestSimilarity)
@@ -738,20 +627,16 @@ export async function semanticSearch(query: string, options?: {
   const scored: Array<VaultEntry & { similarity: number }> = [];
   for (const w of winners) {
     const row = byId.get(w.id);
-    // An entry deleted between the candidate pass and the body fetch is simply not a result. The
-    // unbounded read could not see this window because it held the bodies already; dropping the row
-    // is the only honest answer, and it is the same answer the caller would have got a tick earlier.
+    // An entry deleted between the candidate pass and the body fetch is simply not a result.
     if (!row) continue;
     scored.push({ ...rowToEntry(row), similarity: w.similarity });
   }
   return scored;
 }
 
-// ── Deduplication Helper ──
 
-// W3-4: dedupe/supersede is scoped to the SAME agent's vault. Unscoped, agent
-// A saving a near-identical statement could mark agent B's entry obsolete
-// (cross-agent data destruction via the 0.92 supersede path).
+// Dedupe and supersede are scoped to the SAME agent's vault, so one agent saving a near-identical
+// statement can never mark another agent's entry obsolete.
 async function findSemanticDuplicate(
   content: string,
   embeddingBuf: Buffer,
@@ -765,9 +650,6 @@ async function findSemanticDuplicate(
     embeddingBuf.length / 4,
   );
 
-  // ⚠ THE WRITE PATH HAD THE SAME UNBOUNDED SHAPE, and it is arguably worse than the search's: every
-  // `vault_remember` paid a full scan of the author's vault, with every row's embedding, before it
-  // was allowed to save anything.
   // A personal entry and a squad share are different memory spaces: each dedupes only within its own.
   const conditions = ['is_obsolete = 0', 'embedding IS NOT NULL', 'agent_id = ?'];
   const dedupParams: unknown[] = [agentId];
@@ -783,18 +665,13 @@ async function findSemanticDuplicate(
     conditions,
     params: dedupParams,
     agentId,
-    // ⚠ AND THIS ONE MATTERS MOST (fix round 1, I2): a global window that sat above this author's
-    // newest row made the duplicate check see NOTHING, so the agent silently accumulated duplicates
-    // of its own older facts. One id, one covering-index seek per end.
+    // The window is the author's own: a global window above their newest row would make the duplicate
+    // check see nothing and let duplicates accumulate.
     scopeAgentIds: [agentId],
   });
 
-  // ⚠ THE OUTCOME IS THE PRE-FIX ONE, ORDER-INDEPENDENTLY. The unbounded read had no `ORDER BY`, so
-  // SQLite walked the author's index rowid-ascending and this function returned the OLDEST entry
-  // above the threshold. The bounded walk arrives newest-first, so "the first one over the line"
-  // would now mean the newest; taking the smallest rowid among the hits reproduces the old answer
-  // whichever way the rows came in. This matters: the entry returned here is the one the caller
-  // SUPERSEDES.
+  // The smallest rowid among the hits (the OLDEST entry over the threshold) is the one the caller
+  // SUPERSEDES, whichever direction the bounded walk arrives in.
   const hit = scan.scored
     .filter((c) => c.similarity >= threshold)
     .sort((a, b) => a.rid - b.rid)[0];
@@ -804,18 +681,11 @@ async function findSemanticDuplicate(
   return rows[0] ? rowToEntry(rows[0]) : null;
 }
 
-// RC-7: pre-save near-duplicate band check for the vault_remember TOOL path.
-// The >=0.92 supersede (findSemanticDuplicate, inside createEntry) already
-// handles "same fact re-saved / corrected"; this reports the best hit in the
-// 0.78-0.92 "same topic, different words" band so executeVaultRemember can
-// BOUNCE before saving and steer the model to vault_update the existing entry
-// (rather than accumulate a near-duplicate). Self-scoped for the same reason as
-// findSemanticDuplicate: the returned entry must be one the caller can actually
-// vault_update (cross-agent edits are author-gated). Returns null when an
-// upper-band (>= high) hit exists (that case is the supersede path's job, not a
-// bounce) or on an embed outage (fail open, never block a save). Computes the
-// embedding once; createEntry recomputes its own for the insert, matching the
-// prior two-embedding cost (this replaces the old post-save FYI search).
+// Pre-save near-duplicate band check for the vault_remember TOOL path: reports the best hit in the
+// low..high band (same topic, different words) so executeVaultRemember can bounce before saving and
+// steer the model to vault_update. Self-scoped because the entry must be one the caller can update
+// (cross-agent edits are author-gated). Returns null on an upper-band hit (the supersede path in
+// createEntry handles that) and on an embed outage (fail open, never block a save).
 export async function findNearDuplicateEntry(
   content: string,
   agentId: string,
@@ -829,7 +699,6 @@ export async function findNearDuplicateEntry(
     return null; // embed outage: fail open, do not block the save
   }
 
-  // The third copy of the same unbounded scan, and the second one a single `vault_remember` paid.
   const scan = await scanVaultCandidates({
     label: 'vault_nearband',
     queryEmbedding: newEmb,
@@ -839,10 +708,8 @@ export async function findNearDuplicateEntry(
     scopeAgentIds: [agentId],
   });
 
-  // ⚠ BOTH RULES ARE THE PRE-FIX RULES, and both are order-independent as written. An upper-band hit
-  // ANYWHERE returned null before (the loop returned on sight, and position could not change that),
-  // and the band's best was tracked with a STRICT `>`, so an equal-similarity tie went to the entry
-  // seen first — the oldest, which is what `byBestSimilarity`'s tie-break names.
+  // An upper-band hit anywhere returns null; the band's best is picked by `byBestSimilarity`, so a tie goes
+  // to the oldest entry.
   if (scan.scored.some((c) => c.similarity >= high)) return null; // supersede-class dup, defer to createEntry
   const best = scan.scored.filter((c) => c.similarity >= low).sort(byBestSimilarity)[0];
   if (!best) return null;
@@ -851,7 +718,6 @@ export async function findNearDuplicateEntry(
   return rows[0] ? { ...rowToEntry(rows[0]), similarity: best.similarity } : null;
 }
 
-// ── Retrieval Tracking ──
 
 export function updateRetrievalStats(entryIds: string[]): void {
   if (entryIds.length === 0) return;
@@ -864,18 +730,14 @@ export function updateRetrievalStats(entryIds: string[]): void {
   }
 }
 
-// ── Pinned Entries ──
 
-// W3-4: optional agentId scoping, same reason as semanticSearch. Pinned
-// entries are injected into EVERY assembled context; unscoped, one agent's
-// pins leaked into every other agent's system context. Owner-authored pins
-// (OWNER_VAULT_AGENT_ID) stay visible to all agents by design.
+// Scoped by agent (plus owner and household) because pinned entries are injected into every assembled
+// context and must not leak across agents.
 export function getPinnedEntries(agentId?: string): VaultEntry[] {
   const db = getDb();
   let rows: VaultEntryRow[];
   if (agentId) {
-    // D-A: household recall scope. Non-members resolve to [self, OWNER],
-    // byte-identical rows to the prior two-id OR (see resolveRecallScope).
+    // Household recall scope (see resolveRecallScope).
     const scope = resolveRecallScope(agentId);
     const inList = scope.map(() => '?').join(', ');
     rows = db.prepare(
@@ -890,22 +752,12 @@ export function getPinnedEntries(agentId?: string): VaultEntry[] {
 }
 
 /**
- * Phase 4 §C, Vault entries tagged 'session_context' get auto-injected at
- * session start (in addition to pinned entries). Mirrors Claude Code's
- * CLAUDE.md: stable, small, always-loaded context the agent expects to see
- * at the top of every fresh session.
- *
- * The tag lives in the existing `tags` JSON array on each entry, no schema
- * change. Users can write `vault_remember(content, tags=['session_context'])`
- * to mark something as session-load-on-start.
+ * Entries tagged 'session_context' are auto-injected at session start, in addition to pinned ones:
+ * stable, small, always-loaded context. Scoped by agent (plus owner and household) like getPinnedEntries.
  */
-// W3-4: optional agentId scoping, same reason as getPinnedEntries above,
-// session-context entries are injected into assembled contexts and must not
-// leak across agents. Owner-authored entries stay visible to all agents.
 export function getSessionContextEntries(agentId?: string): VaultEntry[] {
   const db = getDb();
-  // D-A: household recall scope. Non-members resolve to [self, OWNER],
-  // byte-identical rows to the prior two-id OR (see resolveRecallScope).
+  // Household recall scope (see resolveRecallScope).
   const scope = agentId ? resolveRecallScope(agentId) : [];
   const agentCond = agentId ? `AND agent_id IN (${scope.map(() => '?').join(', ')})` : '';
   const params: unknown[] = scope;
@@ -920,7 +772,6 @@ export function getSessionContextEntries(agentId?: string): VaultEntry[] {
   return rows.map(rowToEntry);
 }
 
-// ── Conversation Archive CRUD ──
 
 export function archiveConversation(params: {
   agentId: string;
@@ -930,18 +781,14 @@ export function archiveConversation(params: {
   tokenCount: number;
   earliestAt: string;
   latestAt: string;
-  // Migration 088: the highest message `seq` in this archive, the tie-free archival
-  // high-water. THE ONLY ONE — migration 100's `latestIaRowid` twin (the second message
-  // table's independent rowid space) is deleted with its column in migration 130. One
-  // question, one column, one keyspace: `latest_rowid` is compared against `messages.seq`
-  // forever after, and a number from anywhere else silently skips real history.
-  // Optional so older callers still compile; null when the batch carried no key.
+  // The highest message `seq` in this archive, the one archival high-water: compared only against
+  // `messages.seq`, since a number from another keyspace would silently skip real history. Null when
+  // the batch carried no key.
   latestRowid?: number | null;
 }): string {
   const db = getDb();
   const id = uuidv4();
 
-  // P5c: the archive carries the dominant conversation of its batch (mig 115).
   const archiveIds = (params.messages as Array<{ id?: unknown }>)
     .map(m => (typeof m?.id === 'string' ? m.id : null))
     .filter((v): v is string => v !== null);
@@ -975,26 +822,18 @@ export function archiveConversation(params: {
 
 export function getUnprocessedConversations(): VaultConversation[] {
   const db = getDb();
-  // FA-V4: poisoned archives (the Dreamer failed to distill them after the
-  // bounded retry) are excluded from the work queue so the engine stops
-  // re-feeding a pathological archive to the model forever. They are surfaced
-  // by the DREAM_POISONED Healer diagnostic instead.
-  //
-  // COST WARNING (2026-07-19): this materializes every archive's FULL messages
-  // JSON (megabytes per row) synchronously. Once the nightly-only cadence let
-  // the queue grow through the day, hot-path callers froze the event loop and
-  // the dashboard took minutes to load. Anything needing counts, ids, or
-  // sizing must use getUnprocessedConversationMeta /
-  // getUnprocessedConversationCount, loading content per row via
-  // getUnprocessedConversationById for only the rows it actually examines.
+  // Poisoned archives (the Dreamer failed to distill them after the bounded retry) are excluded from the
+  // work queue; the DREAM_POISONED Healer diagnostic surfaces them instead.
+  // This loads every archive's FULL messages JSON synchronously: callers needing only counts, ids or
+  // sizes must use getUnprocessedConversationMeta / getUnprocessedConversationCount, and load content
+  // per row via getUnprocessedConversationById.
   const rows = db.prepare(
     'SELECT * FROM vault_conversations WHERE is_processed = 0 AND poisoned = 0 ORDER BY created_at ASC'
   ).all() as VaultConversationRow[];
   return rows.map(rowToConversation);
 }
 
-/** Metadata-only view of the unprocessed queue: everything EXCEPT the
- *  messages blob. Same filter and order as getUnprocessedConversations. */
+/** Metadata-only view of the unprocessed queue (no messages blob); same filter and order as above. */
 export interface VaultConversationMeta {
   id: string;
   agentId: string;
@@ -1024,8 +863,7 @@ export function getUnprocessedConversationCount(): number {
   return row.n;
 }
 
-/** Full single-row load (blob included) for a row the caller is actually
- *  examining. Returns null if the row is gone or no longer unprocessed. */
+/** Full single-row load (blob included); null if the row is gone or no longer unprocessed. */
 export function getUnprocessedConversationById(id: string): VaultConversation | null {
   const db = getDb();
   const row = db.prepare(
@@ -1034,13 +872,10 @@ export function getUnprocessedConversationById(id: string): VaultConversation | 
   return row ? rowToConversation(row) : null;
 }
 
-// ── FA-V4: bounded Dreamer retry + poison escalation ──
 
-// A Dreamer batch that ended in a non-'complete' terminal status was NOT
-// distilled. Bump the per-archive attempt counter so a persistently-failing
-// archive escalates instead of retrying forever. Only touches rows still
-// awaiting processing (never re-counts a distilled or already-poisoned one).
-// Returns the new attempt count so the caller can decide whether to poison.
+// Bumps the per-archive attempt counter after a Dreamer batch ended without distilling it, so a failing
+// archive escalates instead of retrying forever. Touches only rows still awaiting processing; returns
+// the new count so the caller can decide whether to poison.
 export function incrementArchiveAttempt(id: string): number {
   const db = getDb();
   db.prepare(
@@ -1051,12 +886,9 @@ export function incrementArchiveAttempt(id: string): number {
   return row?.attempts ?? 0;
 }
 
-// Mark an archive poisoned after it crossed the attempt cap without a distill.
-// Deliberately does NOT set is_processed=1: the archive was never distilled, so
-// claiming it was processed would be a lie (and would hide it from the backlog
-// view for the wrong reason). poisoned=1 excludes it from the work queue, the
-// backlog count, and the DREAM_STALE age signal, and lights the DREAM_POISONED
-// diagnostic. Guarded on is_processed=0 so a racing 'complete' pass wins.
+// Marks an archive poisoned after it crossed the attempt cap. Deliberately does NOT set is_processed = 1:
+// it was never distilled. poisoned = 1 excludes it from the work queue, backlog count and DREAM_STALE
+// signal, and lights DREAM_POISONED. Guarded on is_processed = 0 so a racing 'complete' pass wins.
 export function markArchivePoisoned(id: string, reason: string): void {
   const db = getDb();
   db.prepare(
@@ -1064,8 +896,7 @@ export function markArchivePoisoned(id: string, reason: string): void {
   ).run(reason, id);
 }
 
-// Summary for the DREAM_POISONED Healer diagnostic: how many archives were
-// parked, plus the most recent reason/time for the plain-language detail.
+// Summary for the DREAM_POISONED Healer diagnostic: parked count plus the latest reason and time.
 export function getPoisonedArchiveStats(): { count: number; latestReason: string | null; latestAt: string | null } {
   const db = getDb();
   const count = (db.prepare('SELECT COUNT(*) as c FROM vault_conversations WHERE poisoned = 1').get() as { c: number }).c;
@@ -1075,19 +906,9 @@ export function getPoisonedArchiveStats(): { count: number; latestReason: string
   return { count, latestReason: latest?.poison_reason ?? null, latestAt: latest?.poisoned_at ?? null };
 }
 
-// FN-1 (behav-sig:wave3-memory-across-reset-race). A session reset archives the
-// just-finished conversation into vault_conversations with is_processed = 0, but
-// nothing files it into vault_entries until the nightly Dreamer cycle (default
-// 03:00). Every vault recall path reads ONLY vault_entries, so a fact told right
-// before a reset is invisible to recall for hours. This helper backs the
-// deterministic bridge that lets recall peek at the newest still-unfiled
-// archives in the meantime. It returns only the columns the bridge needs
-// (lighter than getUnprocessedConversations, which hydrates the full row).
-//
-// W3-4 scoping: filtered by agent_id exactly like every other recall path (the
-// personal vault is per-agent by design). is_processed = 0 is the self-disable
-// gate: the moment the Dreamer marks the archive processed, this stops
-// returning it and vault_entries becomes the sole store again.
+// Backs the unfiled-archive recall bridge (`vault/retrieval.ts`): the newest archives the Dreamer has not
+// filed yet, as only the columns the bridge needs. Only the caller's own archives (agent_id = ?), not the
+// household recall scope; is_processed = 0 ends the bridge once the Dreamer files the archive.
 export function getUnfiledArchivesForAgent(
   agentId: string,
   limit = 3,
@@ -1105,10 +926,8 @@ export function markConversationProcessed(id: string): void {
 }
 
 /**
- * Permanently delete a conversation archive without extracting any vault
- * entries. Used by the Dreamer's vault_discard_archives tool to throw away
- * junk batches the user has decided don't need to be remembered.
- * Returns true if a row was deleted, false if no such archive existed.
+ * Permanently deletes a conversation archive without extracting entries (the Dreamer's
+ * vault_discard_archives tool). Returns true if a row was deleted.
  */
 export function deleteConversation(id: string): boolean {
   const db = getDb();
@@ -1117,17 +936,9 @@ export function deleteConversation(id: string): boolean {
 }
 
 /**
- * Bulk delete unprocessed conversation archives matching the given filter.
- * Surfaces from the dashboard as the "nuke the backlog" button when the
- * Dreamer's queue has gotten out of hand. Only touches is_processed = 0
- * rows so we never accidentally remove archives that have already had
- * their vault entries extracted (that would orphan source-tracking).
- *
- * Filter options:
- *   - agentId: only this agent's archives
- *   - olderThanIso: only archives created before this timestamp
- *   - all: discard every unprocessed archive
- * If no filter is provided, returns 0 (refuses to nuke without intent).
+ * Bulk-deletes unprocessed archives (the dashboard's backlog discard). Only is_processed = 0 rows, so
+ * archives with extracted entries are never orphaned. Filters: agentId, olderThanIso, or `all`;
+ * with none, returns 0 (refuses to delete without intent).
  */
 export function bulkDiscardUnprocessedConversations(filter: {
   agentId?: string;
@@ -1146,7 +957,6 @@ export function bulkDiscardUnprocessedConversations(filter: {
     conds.push('created_at < ?');
     params.push(filter.olderThanIso);
   }
-  // If no narrowing filter is given AND `all` isn't explicitly set, refuse.
   if (!filter.agentId && !filter.olderThanIso && !filter.all) return 0;
 
   const sql = `DELETE FROM vault_conversations WHERE ${conds.join(' AND ')}`;
@@ -1186,7 +996,6 @@ export function listConversations(options?: {
   return rows.map(rowToConversation);
 }
 
-// ── Dream Report CRUD ──
 
 export function createDreamReport(params: {
   archivesProcessed: number;
@@ -1243,9 +1052,8 @@ export function getLatestDreamReport(): DreamReport | null {
   return row ? rowToReport(row) : null;
 }
 
-// ── Stats ──
 
-// Render a Date as the UTC text datetime('now') writes: 'YYYY-MM-DD HH:MM:SS'.
+// Renders a Date as the UTC text datetime('now') writes: 'YYYY-MM-DD HH:MM:SS'.
 export function sqlUtcStamp(d: Date): string {
   return d.toISOString().slice(0, 19).replace('T', ' ');
 }
@@ -1280,9 +1088,7 @@ export function getVaultStats(): {
     'SELECT COUNT(*) as c FROM vault_entries WHERE last_retrieved_at >= ? AND is_obsolete = 0'
   ).get(sqlUtcStamp(todayStart)) as { c: number }).c;
 
-  // FA-V4: poisoned archives are not "waiting to be dreamed", they were tried
-  // and parked. Exclude them so DREAM_BACKLOG stays honest and a parked archive
-  // does not inflate the backlog forever.
+  // Poisoned archives were tried and parked, not waiting: excluded so DREAM_BACKLOG stays honest.
   const unprocessedArchives = (db.prepare('SELECT COUNT(*) as c FROM vault_conversations WHERE is_processed = 0 AND poisoned = 0').get() as { c: number }).c;
 
   const lastDream = db.prepare('SELECT created_at FROM dream_reports ORDER BY created_at DESC LIMIT 1').get() as { created_at: string } | undefined;

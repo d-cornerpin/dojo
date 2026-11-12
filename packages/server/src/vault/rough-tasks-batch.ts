@@ -1,10 +1,7 @@
-// ════════════════════════════════════════
-// The ROUGH TASKS batch (K34): once per dreaming cycle, after the archives, the engine hands the
-// Dreamer the tasks that went badly (vault/friction-census.ts), each with its timeline, and the
-// four-line form to fill: CUE / LESSON / EVIDENCE / CONFIDENCE, or NO_ENTRY. The Dreamer records
-// each lesson through `lesson_record`. The batch is sent as written (`verbatim`), not wrapped in
-// the archive-processing instructions, because it is not an archive.
-// ════════════════════════════════════════
+// The ROUGH TASKS batch: once per dreaming cycle, after the archives, the engine hands the Dreamer the tasks
+// that went badly (vault/friction-census.ts) with their timelines and the CUE / LESSON / EVIDENCE / CONFIDENCE
+// form, or NO_ENTRY; lessons are recorded through `lesson_record`. Sent as written (`verbatim`), not wrapped
+// in the archive-processing instructions.
 
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
@@ -74,9 +71,8 @@ function buildBatch(sinceMs: number, budgetTokens: number): RoughTasksBatch | nu
   return { ids: [], text: `${HEADER}\n\n${sections.join('\n\n')}`, verbatim: true };
 }
 
-// ── Where the last census ended ──
-// The window is "since the last cycle that finished", kept in the config table. The first cycle
-// on a box looks back one nightly cadence (24 hours).
+// Where the last census ended: the window is "since the last cycle that finished", kept in the config table;
+// the first cycle on a box looks back one nightly cadence (24 hours).
 const CURSOR_KEY = 'dreamer.lessons_cursor_ms';
 const NIGHTLY_MS = 24 * 60 * 60 * 1000;
 

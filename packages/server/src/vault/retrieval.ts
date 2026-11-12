@@ -1,7 +1,3 @@
-// ════════════════════════════════════════
-// Vault Retrieval: Semantic retrieval for context injection
-// Retrieves relevant vault entries for each agent turn
-// ════════════════════════════════════════
 
 import { createLogger } from '../logger.js';
 import { estimateTokens } from '../memory/budget.js';
@@ -16,39 +12,23 @@ import {
 
 const logger = createLogger('vault-retrieval');
 
-// Maximum pinned/permanent entries included in every turn.
-// Beyond this cap, entries are sorted by importance and the overflow
-// is unpinned by the Dreamer during its nightly cycle.
+// Maximum pinned/permanent entries included in every turn; the Dreamer unpins the overflow nightly.
 export const MAX_PINNED_ENTRIES = 20;
 
-// ── T67b: `getVaultBudget` IS GONE ──────────────────────────────────────────────────────
-// Its four window tiers rationed the SEMANTIC half of the context pull against the pinned
-// half, inside `retrieveForContext`. That half is `memory/recall-lane.ts`'s now, under that
-// lane's own derived reserve — one budget, one owner — and the pinned half it used to share
-// with is bounded by `MAX_PINNED_ENTRIES`, not by tokens. A tier table with no reader left
-// is a number waiting to be wrong.
 
 
-// ── Format Entries for System Prompt ──
 
 function formatEntryForPrompt(entry: VaultEntry): string {
   let label = entry.type;
   if (entry.isPinned) label = 'pinned';
   if (entry.isPermanent) label = 'permanent';
-  // Include creation date so agents can judge temporal relevance
   const dateStr = entry.createdAt ? entry.createdAt.split('T')[0]?.split(' ')[0] ?? '' : '';
-  // FU-2: append the compact source suffix when the entry carries a citation, so
-  // the agent can cite it in-context. Empty string when there is none.
+  // Source suffix lets the agent cite the entry in-context; empty when there is no citation.
   const cite = formatCitationSuffix(entry.citation);
   return dateStr ? `- [${label}, ${dateStr}] ${entry.content}${cite}` : `- [${label}] ${entry.content}${cite}`;
 }
 
-// ── Retrieve Relevant Vault Entries ──
-
-// Significant-token extractor for vault-vs-task overlap detection.
-// Words ≥ 5 chars, lowercased, common stopwords removed. Yields a
-// fuzzy "topic" set for cheap Jaccard-style overlap comparison without
-// embeddings.
+// Significant tokens (5+ chars, lowercased, stopwords removed) for cheap Jaccard-style topic overlap.
 const VAULT_OVERLAP_STOPWORDS = new Set([
   'the', 'and', 'for', 'that', 'with', 'this', 'from', 'have', 'been',
   'when', 'were', 'will', 'into', 'their', 'about', 'they', 'them', 'these',
@@ -71,34 +51,20 @@ function tokenOverlapRatio(entry: Set<string>, task: Set<string>): number {
   if (entry.size === 0 || task.size === 0) return 0;
   let shared = 0;
   for (const t of entry) if (task.has(t)) shared++;
-  // Coverage of the (smaller) entry by the task — high values mean
-  // the entry is mostly "about" the same thing as the task.
   return shared / entry.size;
 }
 
-// ── FN-1: Unfiled-archive recall bridge ──
-//
-// behav-sig:wave3-memory-across-reset-race. A session reset copies the
-// just-finished conversation into vault_conversations (is_processed = 0) but
-// nothing files it into vault_entries until the nightly Dreamer cycle. Every
-// vault recall path reads ONLY vault_entries, so a fact told right before a
-// reset is invisible for hours. This bridge deterministically peeks at the
-// agent's newest still-unfiled archives so that fact stays recallable in the
-// gap. It never writes entries and self-disables once the Dreamer flips
-// is_processed = 1 (the WHERE clause in getUnfiledArchivesForAgent is the gate),
-// so vault_entries remains the sole distilled store.
+// Unfiled-archive recall bridge: a session reset files the finished conversation into vault_conversations
+// (is_processed = 0), but vault_entries only gain it at the next Dreamer cycle. This read-only peek keeps
+// that conversation recallable meanwhile; the is_processed filter in getUnfiledArchivesForAgent ends it.
 
-// A single unfiled-archive match: a bounded snippet of raw recent conversation
-// plus the archive's latest_at so the caller can date-stamp it.
 export interface UnfiledArchiveSnippet {
   text: string;
   latestAt: string;
 }
 
-// Deliberately small caps: this is a stopgap over recent raw conversation, not
-// a search index. Keeping it tight (and the label explicit at the call sites)
-// is why the active-task suppression that guards stale ENTRIES is not applied
-// to these snippets.
+// Deliberately small caps: a stopgap over recent raw conversation, not a search index. Active-task
+// suppression is therefore not applied to these snippets.
 const UNFILED_MAX_ARCHIVES = 3;      // newest N unfiled archives only
 const UNFILED_MAX_MESSAGES = 400;    // total messages scanned across archives
 const UNFILED_MAX_SNIPPETS = 3;      // returned snippets
@@ -106,15 +72,11 @@ const UNFILED_SNIPPET_CHARS = 300;   // per-snippet char budget
 const UNFILED_OVERLAP_THRESHOLD = 0.4; // min token-overlap to count as a match
 const UNFILED_BRIDGE_MAX_TOKENS = 200; // context-injection subsection cap
 
-// The exact label wording is shared by both bridge consumers (context injection
-// and vault_search) so the surfaced text always reads the same way.
 export const UNFILED_ARCHIVE_LABEL =
   'From the just archived previous session (not yet distilled into vault entries):';
 
-// Pull the plain-text portion out of a stored archive message. Archive content
-// is either a plain string or a JSON content-block array (assistant turns carry
-// tool_use blocks alongside text). We keep only text blocks; a message that is
-// purely tool_use / tool_result collapses to '' and is skipped by the caller.
+// Plain text of a stored archive message: content is a string or a JSON content-block array; only text
+// blocks are kept, and a purely tool_use/tool_result message collapses to '' (the caller skips it).
 function extractArchiveText(content: string): string {
   if (!content) return '';
   const trimmed = content.trim();
@@ -131,8 +93,7 @@ function extractArchiveText(content: string): string {
   return parts.join('\n');
 }
 
-// Earliest position in `text` of any significant query token, used to center the
-// snippet window. -1 when none is found (snippet then starts at the head).
+// Earliest position of any query token in `text`, to center the snippet (-1 when none).
 function firstQueryTokenIndex(text: string, queryTokens: Set<string>): number {
   const lower = text.toLowerCase();
   let best = -1;
@@ -143,8 +104,6 @@ function firstQueryTokenIndex(text: string, queryTokens: Set<string>): number {
   return best;
 }
 
-// Window `text` down to ~maxChars, centered on the match where possible, with
-// ellipses marking elided ends.
 function makeSnippet(text: string, matchIndex: number, maxChars: number): string {
   if (text.length <= maxChars) return text;
   if (matchIndex < 0) return text.slice(0, maxChars) + '…';
@@ -158,15 +117,8 @@ function makeSnippet(text: string, matchIndex: number, maxChars: number): string
 }
 
 /**
- * Deterministic recall over the agent's newest still-unfiled conversation
- * archives (FN-1). No LLM, no embeddings, just token-overlap or substring
- * matching so it holds on the weakest model.
- *
- * @param agentId scope: only this agent's archives (per-agent vault, W3-4).
- * @param query   the recall query (recent-message text, or a vault_search query).
- * @param opts.mode 'token' (default) reuses significantTokensFor/tokenOverlapRatio
- *   for fuzzy conceptual recall; 'substring' does a plain case-insensitive
- *   contains match (backs vault_search exact mode).
+ * Deterministic recall over the agent's newest unfiled archives (no LLM, no embeddings). Mode 'token'
+ * (default) is fuzzy token overlap; 'substring' is a case-insensitive contains match (vault_search exact).
  */
 export function searchUnfiledArchives(
   agentId: string,
@@ -176,9 +128,8 @@ export function searchUnfiledArchives(
   if (!agentId || !query || query.trim().length === 0) return [];
   const mode = opts?.mode ?? 'token';
 
-  // The Dreamer may call vault_search while filing the very archive these
-  // snippets come from; never let it read its own in-flight work as if it were
-  // durable memory. Excluding it here covers both bridge consumers at once.
+  // The Dreamer may call vault_search while filing the archive these snippets come from; it must not
+  // read its own in-flight work as durable memory. Excluding it here covers both bridge consumers.
   try { if (agentId === getDreamerAgentId()) return []; } catch { /* config not ready */ }
 
   let archives: Array<{ id: string; messages: string; latestAt: string }>;
@@ -222,8 +173,6 @@ export function searchUnfiledArchives(
         if (matchIndex === -1) continue;
       } else {
         const msgTokens = significantTokensFor(clean);
-        // Symmetric: a short precise archived line covered by the query, or a
-        // query token fully present in the message, both count.
         const overlap = Math.max(
           tokenOverlapRatio(msgTokens, queryTokens),
           tokenOverlapRatio(queryTokens, msgTokens),
@@ -243,52 +192,12 @@ export function searchUnfiledArchives(
 }
 
 /**
- * ════════════════════════════════════════════════════════════════════════════════════════
- * T67b — THE PREFIX HALF OF THE VAULT PULL. NO QUERY, NO CLOCK, NO WRITE.
- * ════════════════════════════════════════════════════════════════════════════════════════
+ * The prefix half of the vault pull: pinned and permanent entries only. No query, no clock, no write,
+ * so it stays stable in the cached prefix. The query-driven half is in `memory/recall-lane.ts`.
  *
- * `retrieveForContext` was ONE function doing two jobs with two different volatilities, and
- * `lane.vault` rendered both from MessageSlot.VaultPull = 200 — ahead of the entire message
- * prefix. The semantic half re-ranked against a query built from the recent messages, so a
- * new question rewrote history above itself on every turn; and the function ran
- * `updateRetrievalStats` from that same read path, which is a WRITE inside assembly
- * (PHASE-3 S3's own finding, one module over).
- *
- * This is the half that is genuinely session-stable and may therefore stay in the cached
- * prefix: the PINNED and PERMANENT entries, under the same budget, with the same header, and
- * with the SAME active-task topic suppression the old function applied to them. The
- * semantic half and the FN-1 unfiled-archive bridge went to `memory/recall-lane.ts` — the
- * tail lane that already ran the identical `semanticSearch` and already excluded this
- * pinned set so the two could not double-render.
- *
- * PURE. It bumps no retrieval stats: pinned/permanent rows are exempt from every hygiene arm
- * in `vault/maintenance.ts` by construction (`is_pinned = 0 AND is_permanent = 0` is on each
- * of them), so the bookkeeping this drops could never have decided their fate, and
- * `work/obligation-memory.ts` already records auto-recall inflation making rows immune to
- * hygiene as a defect rather than a service.
+ * It does not apply `activeTaskSuppressor`: that reads the tracker, and a task edit would then change
+ * bytes ahead of the whole conversation.
  */
-// ── W81: THE TRACKER READ LEFT THIS FUNCTION ────────────────────────────────────────────
-//
-// `pinnedContextSection` renders `lane.vault` at MessageSlot.VaultPull = 200 — ahead of the
-// entire conversation — and it called `activeTaskSuppressor`, which reads
-// `listTasks({ status: 'in_progress', assignedTo })` and drops pinned procedure/event entries
-// that overlap a task's title+description at >=0.45. So OPENING, CLOSING, RETITLING OR
-// RE-DESCRIBING A TASK silently rewrote slot 200, and the byte that moved was in a block
-// every message in the array sits behind. That is the owner's DS4 FINDING 2 arriving at a
-// lane nobody had connected to the tracker — `work_update` was two of his six occurrences,
-// and this is the second door it reached through, beside `lane.active-tasks` itself.
-//
-// THE SUPPRESSOR IS NOT DELETED. It is still applied by `memory/recall-lane.ts`, in the tail,
-// where the whole block is recomputed every turn anyway and a tracker read costs nothing in
-// cache. What it is no longer allowed to do is decide the bytes of a block ahead of the
-// conversation.
-//
-// WHAT IS GIVEN UP, stated rather than assumed: a PINNED procedure/event entry that restates
-// an in-flight task can now appear at slot 200 as well as in `msg.active-tasks` at 1820. The
-// duplication it was preventing is also much weaker than it was — the task board no longer
-// sits 400 slots away, it sits below the entire conversation — and the rule the suppressor
-// enforces ("the tracker is the source of truth for active state") is stated in the active-
-// tasks block's own header, which the model reads after this one.
 export function pinnedContextSection(
   agentId: string | undefined,
 ): { section: string; entryIds: string[] } {
@@ -309,15 +218,12 @@ export function pinnedContextSection(
     includedIds.push(entry.id);
   }
   if (lines.length === 0) return { section: '', entryIds: [] };
-  // No token budget is applied and that is deliberate, not an omission: the pinned/permanent
-  // set is bounded by `MAX_PINNED_ENTRIES` (20) and the Dreamer unpins the overflow nightly.
-  // `getVaultBudget`'s token ceiling existed to ration the SEMANTIC half against it, and that
-  // half is `memory/recall-lane.ts`'s now, under that lane's own derived reserve.
+  // No token budget: the pinned set is bounded by MAX_PINNED_ENTRIES and the Dreamer unpins the
+  // overflow nightly.
   return { section: `${VAULT_SECTION_HEAD}\n${lines.join('\n')}\n${VAULT_SECTION_TAIL}`, entryIds: includedIds };
 }
 
-/** The vault section's frame, named once so the prefix half and any future reader render
- *  the identical wrapper. Bytes unchanged from the string `retrieveForContext` built. */
+/** The vault section's frame, named once so every renderer emits the identical wrapper. */
 const VAULT_SECTION_HEAD = `## Vault -- What You Remember
 
 The following are facts and knowledge from your long-term memory vault:
@@ -328,14 +234,8 @@ const VAULT_SECTION_TAIL =
   + 'NOW, trust your live tool list, not a memory like "I can\'t do X".)';
 
 /**
- * The active-task topic suppressor, lifted out of `retrieveForContext` unchanged so the
- * prefix half and the tail half apply the SAME rule rather than two copies of it.
- *
- * If the agent has in-progress tracker tasks, drop any vault entries of type 'procedure' or
- * 'event' that substantially overlap a task's topic. Those entries are about work currently
- * in flight — they duplicate the tracker (and often contradict it, since vault entries get
- * written before the work is done). The tracker is the source of truth for active state;
- * vault is for durable past facts.
+ * Drops 'procedure' and 'event' entries whose topic overlaps an in-progress task (overlap >= 0.45):
+ * the tracker, not the vault, is the source of truth for active state. Permanent entries are kept.
  */
 export function activeTaskSuppressor(
   agentId: string | undefined,
@@ -343,8 +243,6 @@ export function activeTaskSuppressor(
   const activeTaskTopics: Array<{ id: string; topic: Set<string> }> = [];
   if (agentId) {
     try {
-      // `listTasks` is a synchronous read; the dynamic import the async caller used is not
-      // available here, so the module is required through the same path the tracker uses.
       const tasks = listTasks({ status: 'in_progress', assignedTo: agentId });
       for (const t of tasks) {
         const topicText = `${t.title} ${t.description ?? ''}`;
@@ -355,7 +253,7 @@ export function activeTaskSuppressor(
   return (entry: VaultEntry) => {
     if (activeTaskTopics.length === 0) return { suppressed: false };
     if (entry.type !== 'procedure' && entry.type !== 'event') return { suppressed: false };
-    if (entry.isPermanent) return { suppressed: false }; // permanent entries are USER.md-grade — never suppress
+    if (entry.isPermanent) return { suppressed: false }; // permanent entries are never suppressed
     const entryTokens = significantTokensFor(entry.content);
     if (entryTokens.size < 4) return { suppressed: false }; // too short to judge
     for (const task of activeTaskTopics) {
@@ -367,11 +265,8 @@ export function activeTaskSuppressor(
 }
 
 /**
- * T67b — THE FN-1 BRIDGE, EXPORTED SO ITS NEW HOME CAN CALL IT.
- *
- * It surfaces the just-archived-but-unfiled session, searched BY THE QUERY, which is why it
- * left the prefix with the rest of the retrieval. `memory/recall-lane.ts` renders it now,
- * under the same 200-token cap it always had, past `volatileFrom`.
+ * Surfaces the just-archived, unfiled session matched against the query, capped at `maxTokens` (and
+ * at most 200). `memory/recall-lane.ts` renders it in the tail lane.
  */
 export function unfiledArchiveBridgeLines(
   agentId: string,
@@ -393,33 +288,11 @@ export function unfiledArchiveBridgeLines(
   return kept;
 }
 
-/** The bridge's own worst case as the LINES it would emit, DERIVED from its caps rather than
- *  guessed beside them: `UNFILED_MAX_SNIPPETS` snippets at `UNFILED_SNIPPET_CHARS`, each in
- *  its `- [<stamp>] ` frame. `memory/recall-lane.ts`'s reserve derivation feeds these through
- *  the real renderer, so the declaration and the render cannot drift.
- *
- *  Note the 200-token `UNFILED_BRIDGE_MAX_TOKENS` cap binds FIRST at runtime; these lines are
- *  the shape the cap is applied to, and the reserve is deliberately derived from the shape so
- *  a future loosening of the token cap cannot silently exceed a reserve derived from it. */
+/** The bridge's worst case as the lines it would emit, derived from its caps: UNFILED_MAX_SNIPPETS
+ *  snippets of UNFILED_SNIPPET_CHARS in their `- [<stamp>] ` frame. `memory/recall-lane.ts` feeds them
+ *  through the real renderer to size its reserve. The 200-token cap binds first at runtime; deriving
+ *  from the shape means loosening that cap cannot overflow the reserve. */
 export function unfiledArchiveWorstCaseLines(): string[] {
   const stampFrame = '- [2026-08-31T12:00:00.000Z] ';
   return Array.from({ length: UNFILED_MAX_SNIPPETS }, () => stampFrame + 'x'.repeat(UNFILED_SNIPPET_CHARS));
 }
-
-// ── T67b — `retrieveForContext` IS GONE, AND BOTH OF ITS HALVES HAVE A HOME ─────────────
-//
-// It was the ONE reader of the vault for context injection, and it mixed two volatilities:
-// a PINNED set that changes when the user pins, and a SEMANTIC SEARCH that changes with
-// every ask — rendered together from `MessageSlot.VaultPull = 200`, ahead of the whole
-// message prefix, with an `updateRetrievalStats` write inside the assembly read path.
-//
-//   the pinned half   -> `pinnedContextSection` above (prefix, pure, no query)
-//   the semantic half -> `memory/recall-lane.ts` (tail, past `volatileFrom`) — which was
-//                        ALREADY running the identical `semanticSearch` with the identical
-//                        scope and already subtracting this pinned set so the two could not
-//                        double-render. Its `includeVault` gate existed only because THIS
-//                        function fired on scaffolding turns; it is always on now.
-//   the FN-1 bridge   -> `unfiledArchiveBridgeLines` above, called from the same tail lane.
-//
-// Deleted rather than left beside its replacements: a second, unreferenced path into the
-// vault is how the double-injection gate it once needed came to exist.
