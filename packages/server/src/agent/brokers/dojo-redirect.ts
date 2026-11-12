@@ -2,8 +2,8 @@
 // text-spotting credential reads inside arbitrary shell text cannot be complete. A
 // line referring to the live database file or the Dojo data folder runs only in the
 // shape shapeSql() accepts, each statement a read that passes refuseDeniedSql; the
-// one other shape is a metadata look (METADATA_PROGRAMS, plain words): file facts,
-// no rows. The main agent and the Healer get the allowlist, a worker every refusal;
+// one other shape is a metadata look (METADATA_PROGRAMS, plain words, not piped onward):
+// file facts, no rows. The main agent and the Healer get the allowlist, a worker every refusal;
 // anything else gets FACT_REFUSAL. The door cannot see inside a script file the
 // agent writes and runs: encryption at rest and the blocked key file guard credentials.
 
@@ -236,9 +236,10 @@ export function dojoDoorVerdict(command: string | readonly string[], role: DoorR
   }
   if (!lexed || lexed.special) return { outcome: 'refused', message: FACT_REFUSAL };
   let result: DoorVerdict = { outcome: 'allowed' };
-  for (const seg of lexed.segments) {
+  for (const [k, seg] of lexed.segments.entries()) {
     if (!refersToDojoDatabase(seg.text) && !refersToDojoDatabase(seg.words.map((w) => w.value).join(' '))) continue;
-    if (!seg.pipedIn && isMetadataLook(seg.words)) continue;   // a look at the file, not its rows
+    // A look at the file, not its rows, and only while its output goes nowhere else.
+    if (!seg.pipedIn && !lexed.segments[k + 1]?.pipedIn && isMetadataLook(seg.words)) continue;
     const sql = seg.pipedIn ? null : shapeSql(seg.words);
     if (sql === null) return { outcome: 'refused', message: FACT_REFUSAL };
     const v = sqlVerdict(sql, role);
