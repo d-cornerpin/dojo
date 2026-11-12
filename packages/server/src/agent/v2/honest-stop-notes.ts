@@ -1,7 +1,4 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// t148 round 5 — A PERSON WHO MESSAGES A PARKED AGENT IS NOT MET WITH SILENCE (see honest-stop.ts for
-// the park). Split out of that file to keep it within its size line.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// A PERSON WHO MESSAGES A PARKED AGENT IS NOT MET WITH SILENCE: each open ask gets the platform's line once.
 
 import { OWNER_ALERT_HEADS_UP_PREFIX } from '@dojo/shared';
 import { getDb } from '../../db/connection.js';
@@ -12,13 +9,8 @@ import { parkedCauseOf } from './honest-stop-lock.js';
 
 const logger = createLogger('honest-stop');
 
-/**
- * The row identity the park's OWN notice takes when it answers a message (t152 step 17): the same
- * `park-note:<message>` id and the message's own conversation, so "this message was answered" is one
- * fact in one place and a later message does not write the first one a second line. Empty (the notice
- * keeps a fresh id) when there is no waiting message to answer, or a line already stands under that id
- * (a fresh park for a message that was already told an earlier park: the new notice must still be written).
- */
+/** The row identity the park's own notice takes when it answers a message: the `park-note:<message>` id
+ *  and its conversation; empty (a fresh id) when no open ask waits or that id already has a line. */
 export function noticeIdentityFor(agentId: string, rootId: string | null | undefined): { id?: string; conversationId?: string | null } {
   if (!rootId) return {};
   try {
@@ -31,16 +23,9 @@ export function noticeIdentityFor(agentId: string, rootId: string | null | undef
   } catch { return {}; }
 }
 
-/**
- * A person who messages a parked agent is not met with silence (t148 round 5). Every owner ask still
- * waiting on a parked agent gets, ONCE, the platform's existing owner-visible system line in ITS OWN
- * conversation: the true cause in plain words, and that the message is kept and answered when it clears.
- * No model call, no text, no card, no toast. Once per message is the row id (`park-note:<message>`), so
- * it answers that message and is not a repeated condition alert. It is the dashboard's chat (a
- * `role='system'` row and a `chat:message` frame): it does not go back out on iMessage. The message itself
- * stays queued and is answered on release with the others. `exceptRootId` is the message the park's own
- * notice already answered.
- */
+/** Every still-open owner ask waiting on a parked agent gets ONCE, in its own conversation, the platform's
+ *  plain-cause system line (row id `park-note:<message>`): dashboard chat only, never iMessage, no card;
+ *  the message stays queued for release. `exceptRootId` is the message the park's own notice answered. */
 export function noteWaitingOfParked(agentId: string, exceptRootId?: string | null): void {
   try {
     const db = getDb();

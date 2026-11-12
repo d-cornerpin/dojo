@@ -1,44 +1,6 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// t168 (v3.3.3 run 9) — A SURRENDER FOR A FULL CONTEXT WAITS FOR THE EVENT THAT CAN CHANGE IT.
-//
-// t211: THE CALLERS NOW ARE THE TWO ERROR-RECOVERY FORCED COMPACTIONS (`recovery.ts`: a provider's context
-// overflow, and the one-shot after a declared-patience exhaustion). The context gate's two surrender arms this
-// was written for were removed with the gauge (t194: a full view is condensed, never surrendered); the recovery
-// pair were the same pre-t168 park (pass, then an immediate wake) and now go through `parkAfterForcedPass`.
-// What follows is the incident, kept because its reasoning is unchanged.
-//
-// The context gate's emergency (96-99%) and block (99%+) arms both end the same way: run one forced
-// compaction pass, park the job, queue a wake, leave the turn. The wake exists so "the next iteration
-// assembles fresh post-compaction context". When the pass reclaimed, that is true. When the pass was
-// SKIPPED by the compaction brake (or ran and won nothing, which arms it), nothing about the next
-// assembly differs: same rows, same summaries, same brake, so the wake ran the same gate half a second
-// later and surrendered again. 1,216 times in twelve minutes on a user's box, until the agent was
-// terminated.
-//
-// So the park's wake is queued by what can change the answer, and by nothing else:
-//   · no brake binds a forced pass (the pass reclaimed, or was cancelled, which arms none): the wake is
-//     queued now, exactly as before;
-//   · the brake binds: the wake is the park's own timer wake, set for the brake's expiry
-//     (`compactionBrakeMsLeft`, the clock the brake already carries; no number of this file's). Any
-//     earlier event reaches the agent through its own door (the owner's message, a reset, a new model),
-//     and each of those gets one surrender of its own, no more.
-//
-// AT THE EXPIRY the brake has let go, so the wake's gate runs a real forced pass. If it reclaims, the
-// agent continues as it always did. If it runs and reclaims nothing, the agent is stuck for a reason the
-// platform cannot repair by itself: the owner is told ONCE, through the door the Healer's stuck cases
-// already use (`stuck:<agent>`: one text, one standing card, same words: "I'll keep trying in the
-// background. You can also send a message or reset its session"), and the waits go on at each expiry,
-// silently. The condition ends when a pass reclaims or the context fits again, and a later incident is
-// told afresh. A park stays invisible housekeeping: nothing is written to the agent's chat.
-//
-// t268 breaker fix: A PASS THAT WAITS FOR A WRITER (none of the agent's summary writers can run, so it arms no brake)
-// is its own condition: the wake is that wait ending (`memory/writer.ts`: a writer of its order answering again,
-// re-tested, or a person writing). Never an immediate wake (the 1,216-wakes shape again), never a clock.
-//
-// requirement preserved: "emergency means first, not infinite, and never terminal" (compaction-brakes.ts,
-// OR-COMPACT-1): the brake still lets go on the clock, a reset, a new model, a shrunken history and the
-// writer answering again; the agent is never parked on a lock that only a click can lift.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// A surrender for a full context waits for the one event that can change it (never a clock of ours, never
+// a click-only park): no immediate wake while a brake binds or a writer is missing (the next assembly is
+// identical); the wake is the brake's expiry or a writer returning.
 
 import { createLogger } from '../../logger.js';
 import { compactionBrakeMsLeft } from '../../memory/compaction-brakes.js';
@@ -50,16 +12,11 @@ import { sendAlert } from '../../services/imessage-bridge.js';
 
 const logger = createLogger('v2-context-wait');
 
-/** Agents whose last surrender was held for the brake's expiry (so the next pass that runs is the one the wait was for). */
+/** Agents whose last surrender was held for the brake's expiry: the next pass that runs is the wait's. */
 const waiting = new Set<string>();
 /** Agents the owner was told are stuck on this incident (so its end clears the record, and only ours). */
 const told = new Set<string>();
 
-/**
- * PARK THE JOB AFTER A FORCED PASS, with the wake that fits what the pass left behind.
- * `brakedBefore`: the brake already bound a forced pass when the gate asked, so the pass was skipped
- * rather than run (asked by the caller before it called `checkAndCompact`).
- */
 export function parkAfterForcedPass(agentId: string, reason: string, brakedBefore: boolean, opts: { quiet?: boolean } = {}): void {
   if (spanWaitsForAWriter(agentId)) {
     logger.info('Context is full and no summary writer can run: the wake waits for one to be back', { reason }, agentId);
@@ -72,25 +29,20 @@ export function parkAfterForcedPass(agentId: string, reason: string, brakedBefor
     parkJob(agentId, reason);
     return;
   }
-  // A pass that RAN in this very gate and left the brake on, after a wait for it, is the expiry's pass failing.
-  // `quiet` (v3.5 D18 r2): the over-budget door, whose failing pass tells the owner through the compaction card.
+  // A pass that RAN here and left the brake on, after a wait, is the expiry's pass failing. `quiet` is
+  // the over-budget door: its failing pass already tells the owner through the compaction card.
   if (!opts.quiet && !brakedBefore && waiting.has(agentId)) tellStuckOnce(agentId);
   waiting.add(agentId);
   logger.info('Context is full and compaction is braked: the wake waits for the brake to let go', { msLeft }, agentId);
   parkJob(agentId, reason, 'timer', msLeft);
 }
 
-/**
- * v3.5 D18 r5 (ruling 3): A TURN NEVER WAITS ON ANOTHER COMPACTION'S LOCK (t140 r6/r7). A turn's forced pass that
- * found the lock held (`lockBusy`) parks the job here, and its one wake is that pass landing (`whenLockFree`; no
- * clock of ours): the woken turn re-assembles once. Never an immediate wake, so never a dial into the same wall.
- */
+/** A TURN NEVER WAITS ON ANOTHER COMPACTION'S LOCK: a pass that found it held parks here until it lands. */
 export function parkUntilCompactionLands(agentId: string, reason: string): void {
   logger.info('Another compaction holds the lock: the turn does not wait on it; the wake is that pass landing', { reason }, agentId);
   parkJob(agentId, reason, 'timer', undefined, whenLockFree(`compact:${agentId}`));
 }
 
-/** The wait is over: a pass reclaimed, or the context fits again. Ends the owner's condition if we raised it. */
 export function endFullContextWait(agentId: string): void {
   waiting.delete(agentId);
   if (told.delete(agentId)) ownerConditionCleared(`stuck:${agentId}`);
@@ -107,7 +59,6 @@ function tellStuckOnce(agentId: string): void {
   }
 }
 
-/** Test-only reset; both sets are per-process. */
 export function __resetFullContextWaitForTests(): void {
   waiting.clear();
   told.clear();

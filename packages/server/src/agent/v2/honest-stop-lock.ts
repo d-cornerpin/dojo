@@ -1,12 +1,5 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// t148 — THE LIGHT HALF OF THE HONEST STOP: "is anything parked?", and the calls the doors make.
-//
-// The doors that lift an honest stop (the limit route, the models/tier/agent routes, the scheduler
-// tick that runs every 30 seconds) ask here first. This file touches only the database, so a door
-// with nothing parked pays one indexed read and loads nothing of the engine; the engine half
-// (`honest-stop.ts`) is loaded only when an agent is actually parked. The tag in `last_error` is
-// the lock's whole record (see `honest-stop.ts` for what it means and how it is released).
-// ════════════════════════════════════════════════════════════════════════════════════════
+// THE LIGHT HALF OF THE HONEST STOP: "is anything parked?", and the calls the doors make.
+// Nothing parked costs one indexed read; the engine (`honest-stop.ts`) loads only via dynamic import.
 
 import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
@@ -16,25 +9,23 @@ import { clearOn } from '../../memory/writer.js';
 
 const logger = createLogger('honest-stop');
 
-/** Thrown by the t140 no-pick exit, which has already named the cause. */
+/** Thrown by the no-pick exit, which has already named the cause. */
 export const BUDGET_STOP_CODE = 'BUDGET_STOP';
 export const NO_MODEL_FITS_CODE = 'NO_MODEL_FITS';
-/** t149 round 3: the limit is reached AND no free model answered (the wall's redirect, or the router's own free picks). */
+/** The limit is reached AND no free model answered (the wall's redirect, or the router's own free picks). */
 export const FREE_FALLBACK_DOWN_CODE = 'BUDGET_FREE_FALLBACK_DOWN';
-/** The park's record of WHY, right after its tag: the free fallback did not answer (a free model existing is not enough to release it). */
+/** The park's record of WHY after its tag: a free model existing is not enough to release this park. */
 export const FREE_DOWN_TAG = '[free_down]';
 
 export const lockTag = (kind: HonestStopKind): string => `[${kind}]`;
 
-/** The owner-facing cause of a park, for the dashboard: the words after the tag, neutralised (control
- *  characters and angle brackets out, one line, capped). null for anything that is not a park. */
+/** The owner-facing cause of a park: the words after the tag, neutralised to one line; else null. */
 export function parkedCauseOf(status: unknown, lastError: unknown): string | null {
   if (status !== 'paused' || typeof lastError !== 'string') return null;
   const m = /^\[(?:budget_stop|no_model_fits)\]\s*(?:\[free_down\]\s*)?(.+)$/s.exec(lastError);
   return m ? m[1].replace(/[\u0000-\u001f\u007f<>]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 400) : null;
 }
 
-/** The agents the lock holds for `kind` (optionally just one). */
 export function parkedAgents(kind: HonestStopKind, agentId?: string): string[] {
   const tag = lockTag(kind);
   try {
@@ -44,7 +35,6 @@ export function parkedAgents(kind: HonestStopKind, agentId?: string): string[] {
   } catch { return []; }
 }
 
-/** Is this agent's budget park the "free fallback did not answer" kind? */
 export function parkedForFreeDown(agentId: string): boolean {
   try {
     const row = getDb().prepare('SELECT status, last_error FROM agents WHERE id = ?').get(agentId) as { status: string; last_error: string | null } | undefined;
@@ -56,7 +46,7 @@ async function releaseIfParked(kind: HonestStopKind, opts: { agentId?: string; o
   if (parkedAgents(kind, opts.agentId).length === 0) return [];
   try {
     const released = await (await import('./honest-stop.js')).releaseHonestStops(kind, opts);
-    if (kind === 'budget_stop' && released.length > 0 && parkedAgents(kind).length === 0) budgetStopCardsLifted();   // t167: the last one is out, so the window's card leaves
+    if (kind === 'budget_stop' && released.length > 0 && parkedAgents(kind).length === 0) budgetStopCardsLifted();   // the last one is out, so the window's card leaves
     return released;
   } catch (err) {
     // The change that called this is already saved; a failed release is logged, never a failed save.
@@ -68,10 +58,8 @@ async function releaseIfParked(kind: HonestStopKind, opts: { agentId?: string; o
 /** A limit was raised or a window turned over: release the agents it no longer stops. */
 export const releaseClearedBudgetStops = (): Promise<string[]> => releaseIfParked('budget_stop', {});
 
-/** A model, tier, window or tool list changed: every no-fit lock (or one agent's) gets another look — and (t268
- *  breaker fix) every summary span waiting for a writer whose writer can now run ends its wait, once. */
 export const noteModelsChanged = async (agentId?: string): Promise<void> => {
   clearOn({ kind: 'own-model-changed', agentId });
   await releaseIfParked('no_model_fits', { agentId });
-  await releaseIfParked('budget_stop', { agentId, onModelsChange: true });   // t149: only a "free fallback did not answer" park listens to this
+  await releaseIfParked('budget_stop', { agentId, onModelsChange: true });   // only a "free fallback did not answer" park listens to this
 };
