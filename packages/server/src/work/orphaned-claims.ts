@@ -1,30 +1,10 @@
-// ════════════════════════════════════════════════════════════════════════════════
-// ORPHANED CLAIMS — an ask whose serving turn died with its process
-//
-// Invocation (c) of the settlement authority (`work/ask-settlement.ts`), split out of that
-// file whole when it stopped being boot-only: the boot and the stuck-run reaper are its two
-// callers, and they share this one function rather than two copies of its scope.
-//
-// THE SIGNAL IS THE DEAD TURN, NEVER THE CLOCK. A claiming turn is dead when it is still open
-// at boot (the process that ran it is gone) or when the dead-run verdict closed it as
-// `terminated` (`agent/v2/turn-record.ts markTurnsTerminated`, the only writer of that exit).
-// This used to be bounded by a 30-minute window on the claim's age, so a turn that ran longer
-// than that and was then cut off left its owner's message `claimed` for ever. The window is
-// gone; the message's real age travels in the hand-back instead, and the agent judges whether
-// it still matters (3.5 proof run O2 and its follow-up rulings).
-//
-// Outcomes, and no fourth:
-//   * the dead turn DELIVERED -> the authority closes the ask against that delivery;
-//   * it did not answer -> the ask goes back to the agent. What the dead turn left behind is
-//     recorded ON THE ASK (`work/hand-back-facts.ts`) and given whole to the one turn that serves
-//     it again: every effect it had already made, so the agent does not repeat it. P6b's boot HOLD is retired here: it left the message `claimed` for
-//     ever, and the agent can act (coordinator ruling on proof-fix-f, under OR-ENGINE-LABELLED).
-//     A send it had begun on an outside channel with no door verdict (a `pending` intent row)
-//     is named as "may already have reached the person", so the agent checks, never re-sends blind;
-//   * it closed the ask and then DELEGATED under it (SWEEP-A TB3's crash window) -> handed back
-//     through the authority so the join's nets have something to catch.
-// Each row is adjudicated once: the first look moves it out of the state the queries select.
-// ════════════════════════════════════════════════════════════════════════════════
+// An ask whose serving turn died with its process: invocation (c) of the settlement authority
+// (`work/ask-settlement.ts`), shared by the boot and the stuck-run reaper. The signal is the dead
+// turn, never the clock: still open at boot, or closed `terminated` by the dead-run verdict
+// (`agent/v2/turn-record.ts markTurnsTerminated`). Outcomes, and no fourth: the dead turn delivered
+// -> the authority closes the ask; it did not answer -> the ask goes back to the agent with the
+// facts recorded on it (`work/hand-back-facts.ts`), a begun outside send named "may already have
+// reached the person"; it closed and then delegated under it -> handed back through the authority.
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { settleAsk } from './ask-settlement.js';
@@ -40,8 +20,7 @@ const DEAD_TURN = `(t.ended_at IS NULL OR t.exit_reason = 'terminated')`;
 
 interface Orphan { id: string; agent_id: string; turn_number: number | null; effectful_calls: number }
 
-/** Hand one orphan back to its agent. Never held: an agent can act, so it finishes the job (no duplicate effects —
- *  the facts recorded on the ask name them, and the turn that serves it is given them whole). */
+/** Hand one orphan back to its agent, never held: the facts recorded on the ask name its effects. */
 function reArm(o: Orphan, by: string): boolean {
   const res = transition(o.id, {
     to: 'open', by: 'agent', actorId: 'engine', expectedState: 'claimed',
@@ -53,13 +32,8 @@ function reArm(o: Orphan, by: string): boolean {
   return true;
 }
 
-/**
- * Adjudicate every ask whose serving turn is dead. `agentId` narrows it to one agent — the
- * stuck-run reaper's scope, where only that agent's run has been judged dead; the boot passes
- * nothing, because at boot every turn of the previous process is dead. `inheritedBacklog` is the
- * boot on the version boundary (`work/inherited-backlog.ts`): what an older version stranded is
- * parked owed, after the answered arm and before anything is handed back.
- */
+/** Adjudicate every ask whose serving turn is dead; `agentId` narrows to one agent (the stuck-run reaper).
+ *  `inheritedBacklog` parks what an older version stranded, after the answered arm, before any hand-back. */
 export function reconcileOrphanedClaims(scope: { agentId?: string; inheritedBacklog?: boolean } = {}):
 { reArmed: number; closed: number; handedBack: number; parked: number } {
   const db = getDb();
@@ -92,10 +66,8 @@ export function reconcileOrphanedClaims(scope: { agentId?: string; inheritedBack
   `).all(agent, agent, backlog ? 1 : 0, PROCESS_STARTED_AT) as Orphan[];
   let reArmed = 0;
   for (const r of rows) if (reArm(r, agent === null ? 'boot reconciliation' : 'stuck-run reconciliation')) reArmed++;
-  // ── THE CRASH WINDOW (SWEEP-A TB3) ──
-  // `claimed_by_turn` was NULLed by the close, so the serving turn is re-identified through
-  // the receipt the close points at — the same re-identification `settleAsksAtTurnFinalize`
-  // performs for the same shape, written the same way on purpose.
+  // The close clears `claimed_by_turn`, so the serving turn is re-identified through the receipt,
+  // exactly as `settleAsksAtTurnFinalize` does for the same shape.
   const crashed = db.prepare(`
     SELECT w.id AS id, w.agent_id AS agent_id, d.turn_number AS turn_number
       FROM work w
@@ -119,15 +91,12 @@ export function reconcileOrphanedClaims(scope: { agentId?: string; inheritedBack
   return { reArmed, closed, handedBack, parked };
 }
 
-/**
- * The stuck-run reaper's call (`agent/runtime.ts`), WHILE THE SERVER STAYS UP: each agent it just
- * judged dead gets its orphaned asks back through the same reconcile the boot runs, and is woken
- * to serve them. At boot the reaper leaves this to index.ts step 4b1, after the staleness sweep.
- */
+/** The stuck-run reaper's call (`agent/runtime.ts`) while the server stays up: reconcile, then
+ *  wake. At boot the reaper leaves this to index.ts step 4b1, after the staleness sweep. */
 export function handBackOrphansOf(agentIds: string[], wake: (agentId: string) => Promise<unknown>): void {
   for (const id of agentIds) {
     try {
-      abandonUnservableAsks(id);   // the boot's own servability sweep first (review M3), never a second rule
+      abandonUnservableAsks(id);   // the boot's own servability sweep first, never a second rule
       if (reconcileOrphanedClaims({ agentId: id }).reArmed === 0) continue;
       wake(id).catch((err) => {
         logger.error('orphaned-claim wake failed', { agentId: id, error: err instanceof Error ? err.message : String(err) }, id);

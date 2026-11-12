@@ -1,40 +1,15 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// t193 — THE ROW-AUTHORITY GATE: who may move, edit, cancel or close a task, and why.
-// ════════════════════════════════════════════════════════════════════════════════════════
-//
-// Before this module a task id was a global capability. Any agent could move a task's
-// assignee through three doors (the reassign verb, the status door's `assigned_to` side
-// path, and `spawn_agent(task_id)`, which transferred by DEFAULT), cancel or reopen another
-// live agent's work, edit any row, and bulk-close a project over other agents' live tasks.
-// Only prompt text and t129's blocked-row fence stood in the way. This is the one rule,
-// stated once and called by every model-reachable door.
-//
-// ── THE OWNER'S RULINGS IT ENCODES (v34-owner-decisions.md) ──
-//   dec 1  The PM NEVER moves a task. It keeps agents working and escalates.
-//   dec 2  No agent takes, cancels or reopens a task held by ANOTHER LIVE agent unless the
-//          owner asked. Close-outs (`complete` files a Key-1 request) and escalation stay
-//          open. Stated for the main agent; applied to every agent, since the main agent is
-//          the most privileged non-owner actor there is.
-//   dec 3  Editors of a row: its holder, its creator, the PM, and the main agent.
-//   dec 4  spawn_agent(task_id) must say keep or transfer (`planSpawnTask` below).
-//   dec 29 close_project over another live agent's open work is refused and escalated.
-//
-// ── THE MOVE RULE (a closed cause vocabulary; there is no "pace") ──
-//   assignee_gone   the holder's agent row is gone or `terminated`, read from the DB, never
-//                   taken from the model. An editor of the row may re-home it.
-//   coordination    the HOLDER hands its own task to a peer. Nobody else may claim it.
-//   user_requested  the owner asked, proven STRUCTURALLY (`ownerAskedInThisTurn`).
-//   Blocked work, and work that has come back failed or declined, is never moved on an
-//   agent's own say-so: it escalates to the owner (OR-PM-1v2). The owner's word unlocks it.
-//
-// ── NOT THIS GATE'S BUSINESS ──
-//   The owner's dashboard routes (`by: 'owner'`) and the engine's subsystems (scheduler,
-//   healer, engine), which have their own fences. The PM's adjudication verbs are PM-only
-//   doors fenced by `PM_ONLY_WORK_OPS` and t129/t130; retask keeps the assignee.
-//
-// ── THE CENSUS ── `work/__tests__/t193-row-authority-census.test.ts`: every writer of the
-//   assignee columns is this module or a named, reasoned exception, and every
-//   model-reachable tracker door calls into this module.
+// The row-authority gate: who may move, edit, cancel or close a task. A task id is not a global
+// capability; this is the one rule. `work/__tests__/row-authority-census.test.ts` holds every
+// model-reachable door and assignee-column writer to calling it or being a named exception.
+//   * The PM never moves a task: it keeps agents working and escalates.
+//   * No agent takes, cancels or reopens a task held by ANOTHER LIVE agent unless the owner asked
+//     (close-outs and escalation stay open; applied to every agent, the main agent included).
+//   * Editors of a row: its holder, its creator, the PM, and the main agent.
+// Move causes are a closed vocabulary (`MOVE_CAUSES`): assignee_gone (the holder's agent row is gone or
+// terminated, read from the DB), coordination (the HOLDER hands its own task to a peer) and user_requested
+// (the owner asked, proven structurally by `ownerAskedInThisTurn`). Blocked or declined work escalates.
+// Not this gate's business: the owner's dashboard routes (`by: 'owner'`) and engine subsystems, which have
+// their own fences; the PM's verbs are PM-only doors fenced by `PM_ONLY_WORK_OPS`.
 
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
@@ -64,8 +39,7 @@ export interface RowFacts {
   holderLive: boolean;
 }
 
-/** A live agent: its row exists and it is not terminated. A parked (`paused`/`error`) agent
- *  is still live — it recovers and the owner is told; it is not gone. */
+/** A live agent: its row exists and it is not terminated (a parked `paused`/`error` agent is still live). */
 export function isLiveAgent(agentId: string | null | undefined): boolean {
   if (!agentId) return false;
   try {
@@ -94,8 +68,7 @@ export function rowFacts(id: string): RowFacts | null {
   };
 }
 
-/** The work is the actor's own: it holds it, or it was spawned to work on exactly this row
- *  (`spawn_agent(task_id, task_handling="keep")` links a helper without moving the task). */
+/** The work is the actor's own: it holds it, or was spawned to work on exactly this row (`task_handling="keep"`). */
 function isOwn(f: RowFacts, actorId: string): boolean {
   if (actorId === f.holder) return true;
   try {
@@ -125,21 +98,13 @@ function wasDeclined(id: string): boolean {
   }
 }
 
-/** dec 3: holder (or its spawned helper), creator, PM, main agent. */
+/** Editors of a row: its holder (or spawned helper), its creator, the PM, and the main agent. */
 const isEditor = (f: RowFacts, actorId: string): boolean =>
   isOwn(f, actorId) || actorId === f.creator || isPMAgent(actorId) || isPrimaryAgent(actorId);
 
-// ── "THE USER ASKED", STRUCTURALLY ─────────────────────────────────────────────────────────
-// A model saying "the owner asked me to" is a claim. What the platform KNOWS:
-//   1. the turn in flight is serving an inbound ask (`TurnContext.root.kind === 'ask'`), set
-//      by the engine at trigger claim, never by the model;
-//   2. that message opened an ASK TICKET for this agent (`work.kind = 'ask'`, `root_id` = the
-//      message id). The ticket is written only when the ingest stamp says an authorized person
-//      on the owner lane asked (`memory/message-store.ts:isOwnerAsk`) — the platform's own
-//      verdict, not a reading of the text;
-//   3. the words the agent cites (`user_quote`) appear VERBATIM (case and spacing aside) in
-//      that message, or in a later owner ask in the same conversation this turn serves.
-// All three, or it is not the owner asking.
+// "The user asked", structurally: the turn serves an inbound ask (set by the engine at trigger claim), that
+// message opened an ASK row for this agent (only when the ingest stamp says the owner lane asked,
+// `memory/message-store.ts`), and the cited `user_quote` appears verbatim in it or a later owner ask there.
 
 export function normalizeQuote(s: string): string {
   return s.toLowerCase().replace(/[‘’]/g, "'").replace(/[“”]/g, '"')
@@ -179,9 +144,8 @@ function escalationPointer(actorId: string): string {
   if (!isPrimaryAgent(actorId)) {
     return `If it should happen anyway, tell the main agent (send_to_agent) so it can put the decision to ${getOwnerName()}.`;
   }
-  // Whose turn this is decides who the pointer can send the decision to. On a contact's turn,
-  // "ask the owner in your conversation" means ASK THE CONTACT — and their words can never
-  // clear ownerAskedInThisTurn (line 144), which proves the quote is in the OWNER's ask.
+  // On a contact's turn "ask the owner in your conversation" would mean asking the contact, whose
+  // words can never clear `ownerAskedInThisTurn`.
   const addr = currentAddress(actorId);
   if (addr && addr.kind === 'person' && !addr.isOwner) {
     return `If it should happen anyway: this turn is with ${addr.name}, not ${getOwnerName()}, so do not put it to ${addr.name}. `
@@ -191,10 +155,8 @@ function escalationPointer(actorId: string): string {
   return `If it should happen anyway, ask ${getOwnerName()} in your conversation and, if they say so, call again with user_quote set to their exact words.`;
 }
 
-// ── 1. EDIT RIGHTS (dec 3) ──────────────────────────────────────────────────────────────
 
-/** The door check for any write to a task or project row by a MODEL actor: edits, status,
- *  step completion, schedule changes, override requests. `null` = allowed. */
+/** The door check for any write to a task or project row by a MODEL actor. `null` = allowed. */
 export function taskWriteRefusal(actorId: string, workId: string, what: string): string | null {
   const f = rowFacts(workId);
   if (!f || isEditor(f, actorId)) return null;   // a missing row: the door's own branch says it better
@@ -204,17 +166,11 @@ export function taskWriteRefusal(actorId: string, workId: string, what: string):
     + 'Tell its holder what you need with send_to_agent, or leave a note with work_note.';
 }
 
-// ── 2. TAKEOVER: CANCEL OR REOPEN ANOTHER LIVE AGENT'S WORK (dec 2) ───────────────────────
 
 const DISPOSALS: ReadonlySet<WorkState> = new Set<WorkState>(['failed', 'abandoned']);
 
-/**
- * Cancel/fail, or reopen a terminal row, by a model-driven `agent` actor, on work ANOTHER LIVE
- * agent holds. Called from `setTrackerStatus` — the tracker's one status writer — so no door
- * can step around it, and from the override-request door, so it cannot be laundered through
- * the PM's override verb. The PM has no status door (`PM_ALLOWED_WORK_OPS`); its authoritative
- * verbs are fenced by t129/t130. Engine actors are not model-driven.
- */
+/** Cancel/fail, or reopen a terminal row, by a model-driven `agent` actor, on work ANOTHER LIVE agent holds.
+ *  Called from `setTrackerStatus`, the tracker's one status writer. Engine actors are not model-driven. */
 export function takeoverRefusal(
   workId: string, to: WorkState, input: { by: Actor; actorId?: string | null; userQuote?: string | null },
 ): { kind: 'refused'; workId: string; reason: 'takeover-needs-the-owner'; detail: string } | null {
@@ -234,7 +190,6 @@ export function takeoverRefusal(
   };
 }
 
-// ── 3. MOVING THE ASSIGNEE ──────────────────────────────────────────────────────────────
 
 export type MoveTarget = { agentId: string } | { groupId: string };
 
@@ -291,7 +246,7 @@ export function checkMove(req: MoveRequest): MoveCheck {
     if (!owner.ok) return { ok: false, text: `Error: "user_requested" could not be confirmed: ${owner.why}. ${escalationPointer(req.actorId)}` };
     return { ok: true, facts: f, cause };
   }
-  // OR-PM-1v2: blocked or declined work escalates to the owner; only the owner's word moves it.
+  // Blocked or declined work escalates to the owner; only the owner's word moves it.
   const blocked = holdOf(f.id)?.kind === 'blocked';
   if (blocked || wasDeclined(f.id)) {
     return {
@@ -314,10 +269,9 @@ export function checkMove(req: MoveRequest): MoveCheck {
 }
 
 /**
- * THE assignee-column writer for a task or project row. Every move, the owner's included,
- * writes through here (the census holds that no other writer names these columns outside its
- * named exceptions). M7 / P706: `agent_id` is NOT NULL and is the holder; "nobody in
- * particular" lives in `assignee_agent` alone. t129 / S5: a move writes BOTH columns.
+ * THE assignee-column writer for a task or project row: every move, the owner's included, writes
+ * through here. `agent_id` is NOT NULL and is the holder, so "nobody in particular" lives in
+ * `assignee_agent` alone; a move writes BOTH columns.
  */
 export function writeAssignee(workId: string, to: MoveTarget | { clear: true }): number {
   const db = getDb();
@@ -342,15 +296,13 @@ export function moveAssignee(req: MoveRequest & { to: MoveTarget; door: string }
   return { ok: true, from: c.facts.holder, to: req.to, cause: c.cause };
 }
 
-// ── 4. SPAWNING WITH A TASK (dec 4) ─────────────────────────────────────────────────────
 
 export type SpawnTaskPlan = { taskId: string; handling: 'keep' | 'transfer'; cause: MoveCause };
 
 /**
- * Decided BEFORE the agent exists, so a refusal creates nothing. `keep` links a helper and
- * leaves the task where it is (editors only); `transfer` is a move, allowed when the caller
- * holds the task (a hand-off, "coordination") or its holder is gone ("assignee_gone"). No
- * default: the old silent transfer is gone.
+ * Decided BEFORE the agent exists, so a refusal creates nothing. `keep` links a helper and leaves the
+ * task where it is (editors only); `transfer` is a move, allowed when the caller holds the task
+ * ("coordination") or its holder is gone ("assignee_gone"). There is no default.
  */
 export function planSpawnTask(actorId: string, taskId: string, handling: unknown): { ok: true; plan: SpawnTaskPlan } | { ok: false; text: string } {
   if (handling !== 'transfer' && handling !== 'keep') {
@@ -372,6 +324,3 @@ export function planSpawnTask(actorId: string, taskId: string, handling: unknown
   }
   return { ok: true, plan: { taskId, handling, cause } };
 }
-
-// ── 5. CLOSING A WHOLE PROJECT (dec 29) ─────────────────────────────────────────────────
-

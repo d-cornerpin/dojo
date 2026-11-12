@@ -1,10 +1,5 @@
-// v3.5 PLAN BEFORE PROJECT: the plan an agent writes into a project when it opens one.
-//
-// The agent writes its own plan (approach, then steps: what, how at scale, how it will know the
-// step is done); the engine only checks that the parts are there and stores them. No arithmetic,
-// no refusal on content, no review: "I just want an agent to think before they do" (owner).
-//
-// Pure: no database here. `tracker-store.ts` writes `work.plan_json` (migration 203) and
+// The plan an agent writes into a project when it opens one: the engine only checks the parts are there
+// and stores them (no refusal on content). Pure: `tracker-store.ts` writes `work.plan_json`,
 // `plan-store.ts` reads it back.
 import { parseMeasure, type Measure } from './measure.js';
 export { planJson } from './plan-json.js';
@@ -58,7 +53,6 @@ export function renderPlan(plan: Plan): string {
   return `Plan: ${plan.approach}\n${steps.join('\n')}`;
 }
 
-/** The one line of the plan a task's board carries: the step it is on. */
 export function planStepLine(plan: Plan, stepNumber: number): string {
   const s = plan.steps[stepNumber - 1];
   return s ? `Plan step ${stepNumber} of ${plan.steps.length} — ${s.title}: ${s.how} (done when: ${s.done})` : '';

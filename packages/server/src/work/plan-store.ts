@@ -1,15 +1,13 @@
-// v3.5 PLAN BEFORE PROJECT: reading a project's stored plan back (`work.plan_json`, migration 203).
-// The write is `tracker-store.ts openTrackerProject`, the one door that inserts a project row.
+// Reads a project's stored plan (`work.plan_json`); `tracker-store.ts openTrackerProject` is the one writer.
 import { getDb } from '../db/connection.js';
 import { parsePlanJson, planStepLine, type Plan } from './plan.js';
 
-/** The plan stored on a project row, or null (a dashboard project, or one opened before the plan existed). */
 export function planOfProject(projectId: string): Plan | null {
   const row = getDb().prepare('SELECT plan_json FROM work WHERE id = ?').get(projectId) as { plan_json: string | null } | undefined;
   return parsePlanJson(row?.plan_json);
 }
 
-/** The line of its project's plan a task is on ("Plan step 2 of 4 — …"), or null: no project, no plan, or no step number. */
+/** The plan line of the step a task is on, or null when there is no project, plan or step number. */
 export function planStepLineOf(taskId: string): string | null {
   const row = getDb().prepare(
     'SELECT p.plan_json AS plan_json, t.step_number AS step FROM work t JOIN work p ON p.id = t.parent_id WHERE t.id = ?',

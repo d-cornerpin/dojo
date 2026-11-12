@@ -1,70 +1,22 @@
-// ── PHASE-2 T7: the two surfaces the deleted open-loops module owned, on the spine ──
-//
-// `memory/open-loops.ts` was 623 lines, and roughly a third of them were the two RENDERERS
-// below. The rest was the machinery that had to exist because the rows were recovered from
-// prose: a fenced-section walker, a RESOLVED/CLOSED regex, a Jaccard/coverage similarity
-// function used for both dedup and resolution, a party-label attribution map, and a regex
-// guard defending the whole arrangement against one known false belief.
-//
-// None of that survives, because none of it is needed once the row is created when the
-// obligation is made (requirement 4a). What IS needed is what the model and the owner
-// actually saw, and both are carried across property for property:
-//
-//   * the per-turn OPEN WORK block — current conversation first, a capped cross-conversation
-//     overflow labelled by party, a character budget so a backlog cannot eat the volatile
-//     lane on a floor model, and the id the model needs to close a row;
-//   * the daily-brief section for AGED obligations — which is where an aged row goes instead
-//     of the per-turn lane (4b: ageing demotes, it never closes).
-//
-// THIS FILE ONLY READS. `work` has exactly one writer, `work/store.ts`, and its conformance
-// allowlist is EMPTY (`work/__tests__/single-writer-conformance.test.ts` PART A). The deleted
-// module's daily-brief path violated the equivalent rule by design: `markStaleLoops` was an
-// UPDATE fired from inside a report generator.
+// Read-only renderers over the work spine: the per-turn OPEN WORK block and the daily-brief
+// section for aged obligations. Nothing here writes; `work.state` moves only in work/store.ts.
 
 import { getOwnerName } from '../config/platform.js';
 import { agedObligations, openObligations, type Obligation } from './store.js';
 import { recordedInstant } from '../memory/message-stamp.js';
 
-/** Injection budget: cap the whole block so it never crowds the volatile lane on a floor
- *  model. Carried verbatim from the deleted `INJECTION_MAX_CHARS = 600`. */
+/** Character budget for the whole block, so a backlog cannot crowd the volatile lane. */
 const INJECTION_MAX_CHARS = 600;
 
-/** Cross-conversation overflow shown on a turn, beyond the current conversation's own rows.
- *  Carried verbatim from the deleted `CROSS_CONV_OVERFLOW_MAX = 3`. */
 const CROSS_CONV_OVERFLOW_MAX = 3;
 
-// ── T69b: THE CLOCK LEAVES THE OPEN-WORK BLOCK ──────────────────────────────────────────
-// `relativeAge` was `Date.now() - openedAt` bucketed to minutes/hours/days, so an IDENTICAL
-// set of open obligations rendered different bytes at every bucket boundary — and this block
-// rides the tail AHEAD of the per-ask material, so each tick re-billed every token behind it
-// for no content reason. It states the row's RECORDED INSTANT now, in the one stamp format
-// the fresh tail already uses and `msg.current-time` already explains ("Bracketed times …
-// subtract from the current time"). The block becomes a pure function of its rows: it moves
-// when an obligation is opened, closed or re-titled, and never otherwise.
-//
-// The lengths are close (`3 hours ago` = 11 chars, `[Sep 1, 2026, 07:09 AM]` = 23), so the
-// 600-char `INJECTION_MAX_CHARS` budget binds very slightly earlier. That is the budget doing
-// its declared job on real content, not a new cap, and the elision line already SAYS how many
-// rows it did not show (SWEEP-A TB4).
-//
-// ⚠ THE AGEING WINDOW STAYS, AND IT IS DECLARED RATHER THAN FIXED. `openObligations` filters
-// on `agingCutoff()` = `Date.now() - COMMITMENT_AGING_DAYS`, so a row leaves this block when
-// the clock passes its horizon with nothing having changed. That is 4b's ageing rule — the
-// row DEMOTES to the daily brief — and pinning the cutoff to a fixed instant would break it.
-// Bounded, one-way, at most ONCE PER ROW; the defect removed above fired every minute, for
-// every row, forever. Same disposition T67b gave `lane.continuity`'s horizon.
+// Rows are stamped with their recorded instant, not a relative age, so identical rows render
+// identical bytes. Rows still leave the block at the ageing cutoff and demote to the daily brief.
 function openedStamp(openedAtMs: number): string {
   return recordedInstant(openedAtMs);
 }
 
-/**
- * Who the obligation belongs to, for the block's party tag.
- *
- * Read from the CONVERSATION ROW's identity columns, not by string-parsing a `conv_key`. The
- * deleted module parsed the key, which is the same column that carried the claim token and the
- * park sigils — so a parked row silently changed the party its loops were attributed to. This
- * is the same information, taken from the place Phase 1 built to hold it.
- */
+/** Who the obligation belongs to, from the conversation row, never by parsing `conv_key`. */
 function party(o: Obligation): string {
   if (!o.conversationId || !o.channel) return 'unattributed';
   if (o.channel === 'a2a') return o.counterpartyName ?? 'an agent thread';
@@ -86,41 +38,9 @@ function split(agentId: string, currentConversationId: string | null): { current
 
 const HEADER = 'OPEN WORK (still owed; close each one when it is delivered):';
 
-/**
- * The compact numbered OPEN WORK block for the volatile lane, or null when nothing is owed.
- *
- * Keyed on `conversation_id` rather than on a `conv_key` string — the deleted block compared
- * conv_key values, which is the column that also carried the claim/park sigils, so a parked
- * row silently changed which conversation its loops belonged to.
- *
- * ── WHAT A BOUND BUDGET IS ALLOWED TO DROP (SWEEP-A TB4) ────────────────────────────────
- *
- * THE DEFECT. This block used to fill the budget in `opened_at ASC` order and `break` on the
- * first line that did not fit, replacing everything after it with a bare `…`. A commitment made
- * during the turn that is running has the LARGEST `opened_at` in its conversation, so it always
- * sorted LAST and was always the FIRST line discarded. The surface whose entire job is to carry
- * an obligation into the next turn was structurally guaranteed to drop the freshest one.
- *
- * MEASURED, not argued: full battery `bmsgc3l0cnb` scored `promise-survives-the-turn` at 1 of 3
- * — the platform RECORDED the promise on all three attempts and the model saw it on turn 2 only
- * on the attempt with the shortest queue. `work/__tests__/open-work-budget.test.ts` replays all
- * three attempts from the box's own rows and reproduces PASS/FAIL/FAIL exactly.
- *
- * It also inverted this budget's own stated reason. The cap exists so a BACKLOG cannot eat the
- * volatile lane; what actually happened is that the backlog ate the block.
- *
- * THE RULE NOW, and its price stated rather than hidden. The budget is unchanged (600 chars) and
- * the cross-conversation cap is unchanged (3 rows) — no threshold is invented and the lane does
- * not grow. When the budget binds, rows give way in a DECLARED order instead of by accident:
- * the cross-conversation overflow first (it is overflow, and it is labelled as such), then the
- * OLDEST rows of the current conversation. An obligation past the ageing horizon already has its
- * own surface (`buildAgedWorkBriefSection`, requirement 4b: ageing demotes, it never closes);
- * the row the running turn just created has no other way into the next turn at all.
- * And an elision is never silent again: it SAYS how many rows it did not show.
- *
- * This rides the TAIL (`agent/v2/steps/call-llm/pre-call-injections.ts`, lane `engine.open-work`
- * inside the protected `lane.loop-tail`), so nothing here touches the cached prompt prefix.
- */
+// When the budget binds, rows give way in a declared order (cross-conversation overflow, then the oldest
+// current rows) so the row the running turn just made survives. It rides the volatile tail
+// (`engine.open-work`), never the cached prompt prefix.
 export function buildOpenWorkInjection(agentId: string, currentConversationId: string | null): string | null {
   const { current, other } = split(agentId, currentConversationId);
   if (current.length === 0 && other.length === 0) return null;
@@ -129,8 +49,6 @@ export function buildOpenWorkInjection(agentId: string, currentConversationId: s
   const body = (o: Obligation, crossConv: boolean): string =>
     `[${o.id}] ${what(o)}: ${o.title ?? '(no description)'} (${party(o)}, opened ${openedStamp(o.openedAt)})${crossConv ? ' [other conversation]' : ''}`;
 
-  // Candidates in DISPLAY order (current conversation first, each oldest→newest), paired with
-  // the order they GIVE WAY in: cross-conversation overflow first, then the oldest current rows.
   const shown = [
     ...current.map((o) => ({ o, crossConv: false })),
     ...other.map((o) => ({ o, crossConv: true })),
@@ -148,8 +66,7 @@ export function buildOpenWorkInjection(agentId: string, currentConversationId: s
   let dropped = 0;
   for (const e of dropOrder) {
     if (lengthOf(shown.filter((x) => kept.has(x))) <= INJECTION_MAX_CHARS) break;
-    // The newest row of the current conversation is never given away: it is the one the running
-    // turn just made, and dropping it is the defect this rule exists to stop.
+    // The newest current row is the one the running turn just made, so it is never given away.
     if (kept.size === 1) break;
     kept.delete(byRow.get(e.o)!);
     dropped += 1;
@@ -159,8 +76,7 @@ export function buildOpenWorkInjection(agentId: string, currentConversationId: s
   const lines = shown.filter((e) => kept.has(e)).map((e) => {
     const prefix = `${n++}. `;
     const text = body(e.o, e.crossConv);
-    // A single row longer than the whole budget is shown ABBREVIATED, never dropped: the id the
-    // model needs to close it is at the front, and an abbreviated obligation beats a lost one.
+    // An over-budget row is abbreviated, never dropped: the id needed to close it comes first.
     const room = INJECTION_MAX_CHARS - HEADER.length - 1 - prefix.length;
     return prefix + (text.length > room && room > 1 ? `${text.slice(0, room - 1)}…` : text);
   });
@@ -169,13 +85,7 @@ export function buildOpenWorkInjection(agentId: string, currentConversationId: s
   return `${HEADER}\n${lines.join('\n')}${tail}`;
 }
 
-/**
- * One line per aged obligation for the daily brief, or null when none have aged.
- *
- * This is a pure read. The mechanism it replaces flipped rows to `status='stale'` from inside
- * the brief generator and then listed what it had just written — so the report decided the
- * data. Here the report reads `opened_at` and changes nothing.
- */
+/** One line per aged obligation for the daily brief, or null; a pure read, it never flips rows. */
 export function buildAgedWorkBriefSection(agentId: string): string | null {
   const aged = agedObligations(agentId);
   if (aged.length === 0) return null;

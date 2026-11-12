@@ -1,48 +1,24 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// PHASE-2 T10F — WHAT `task_runs` HELD, PROJECTED OFF THE ROWS THAT REPLACED IT.
-//
-// verdict: STRIP. requirement preserved: the owner's run history for a scheduled task — run
-// number, the instant it was for, when it started and finished, its status, who ran it and
-// what it said. Every field is a clause in `__tests__/occurrence-runs.test.ts`.
-//
-// The table was not dead, and the drop needed this file before it was safe:
-// `/api/tasks/:taskId/runs` is mounted at `gateway/server.ts:280` and
-// `dashboard/src/components/TaskRunHistory.tsx` renders it from `pages/Tracker.tsx:278`. Two
-// rows on the dev box is a fact about the dev box and NOT evidence (#15 — `task_runs` is that
-// rule's own worked example: "0 rows -> the feature is dead" is listed there as a false
-// verdict this project already made once).
-//
-// WHY ITS OWN MODULE, since `occurrences.ts` is the writer that owns these rows. Because it
-// answers a DIFFERENT QUESTION: `occurrences.ts` claims and settles ONE occurrence;
-// this file reads WHAT HAPPENED across a schedule's runs. The growth detector refused the
-// merged file and it was right.
-//
-// READER-ONLY. Nothing here writes; every state change still goes through `transition()` via
-// `settleOccurrence` (single-writer clause (b)).
-// ════════════════════════════════════════════════════════════════════════════════════════
+// Reader-only projection of a schedule's run history from its occurrence rows, served at
+// `/api/tasks/:taskId/runs`. `occurrences.ts` claims and settles ONE occurrence; this file reads
+// across a schedule's runs. State changes go through `transition()` via `settleOccurrence`.
 
 import { getDb } from '../db/connection.js';
 import { OCCURRENCE_KIND, OCCURRENCE_EVENT } from './occurrences.js';
 import { RUN_STATUS_INCOMPLETE, countOf } from './measure-close-gate.js';
 
-/** The status vocabulary the run history renders, unchanged from `task_runs.status`. The
- *  dashboard's own `statusColors` map is the enumeration: complete / running / skipped, with
- *  `failed` falling through to the neutral badge exactly as it does today. */
 export type RunStatus = 'running' | 'complete' | 'failed' | 'skipped' | 'incomplete';
 
 export interface OccurrenceRun {
   id: string;
   taskId: string;
   runNumber: number;
-  /** Second-resolution text, the shape `task_runs.scheduled_for` carried and the dashboard
-   *  parses with `parseUtc`. NEVER an input to a comparison — see `occurrenceOf`. */
+  /** Second-resolution text the dashboard parses with `parseUtc`. NEVER an input to a
+   *  comparison, see `occurrenceOf`. */
   scheduledFor: string | null;
-  /** ISO, the shape the old `started_at` / `completed_at` carried. */
   startedAt: string | null;
   completedAt: string | null;
   status: RunStatus;
-  /** v3.5: the words the owner reads for a run that ran and ended with its task's measure still
-   *  listing items ("Incomplete — 5 messages left"); null for every other run. */
+  /** The words the owner reads for a run that ended with its measure still listing items. */
   statusLabel: string | null;
   assignedTo: string | null;
   agentName: string | null;
@@ -54,8 +30,7 @@ export interface OccurrenceRun {
 const iso = (ms: number | null | undefined): string | null =>
   typeof ms === 'number' ? new Date(ms).toISOString() : null;
 
-/** `'%Y-%m-%d %H:%M:%S'` in UTC — `tracker-view.ts:msToText`'s shape, computed in JS because
- *  this projection already has the row in hand. */
+/** UTC `'%Y-%m-%d %H:%M:%S'`, the shape `tracker-view.ts:msToText` produces. */
 const secondsText = (ms: number | null | undefined): string | null =>
   typeof ms === 'number' ? new Date(ms).toISOString().slice(0, 19).replace('T', ' ') : null;
 
@@ -66,14 +41,13 @@ interface OccurrenceRunRow {
   run_status: string | null; items_left: number | null; unit: string | null;
 }
 
-/** `abandoned` means two things; the settle event says which. A row with no settle event —
- *  one closed by a path older than this projection — reads as `skipped`, which is what
- *  `task_runs` said for every run closed without an outcome of its own. */
+/** `abandoned` means two things; the settle event says which. With no settle event it reads as
+ *  `skipped`. */
 function runStatusOf(state: string, runStatusEvent: string | null): RunStatus {
   if (state === 'open' || state === 'claimed') return 'running';
   if (state === 'done') return 'complete';
   if (state === 'failed') return 'failed';
-  if (runStatusEvent === RUN_STATUS_INCOMPLETE) return 'incomplete';   // v3.5: it ran; it is not "skipped"
+  if (runStatusEvent === RUN_STATUS_INCOMPLETE) return 'incomplete';
   return runStatusEvent === 'complete' ? 'complete' : 'skipped';
 }
 
@@ -109,15 +83,13 @@ function mapRun(r: OccurrenceRunRow): OccurrenceRun {
     assignedTo: r.agent_id,
     agentName: r.agent_name,
     resultSummary: r.notes,
-    // `task_runs.error` was only ever written by the no-agent skip, and its text was the same
-    // sentence the summary now carries. One field, one fact: the dashboard reads `error` only
-    // to decide whether to expand a row, and `resultSummary` already answers that.
+    // A skipped run's reason doubles as its error; the dashboard shows both when the row expands.
     error: status === 'skipped' ? r.notes : null,
     createdAt: iso(r.opened_at),
   };
 }
 
-/** The run history for one schedule, newest run first — `routes/task-runs.ts`'s whole body. */
+/** The run history for one schedule, newest run first. */
 export function listOccurrenceRuns(workId: string): OccurrenceRun[] {
   const rows = getDb().prepare(
     `${RUN_SELECT} AND w.parent_id = ? ORDER BY w.sequence DESC`,
@@ -125,13 +97,11 @@ export function listOccurrenceRuns(workId: string): OccurrenceRun[] {
   return rows.map(mapRun);
 }
 
-/** One run's status by its own id. The serve boundary asks this of a trigger's `run_id` to
- *  decide whether the trigger is spent; `null` means "no such run", which it already treated
- *  as spent. A SCHEDULE id must not answer — it is not a run. */
+/** One run's status by its own id, or null when no such run (the serve boundary treats that as
+ *  spent). A SCHEDULE id must not answer: it is not a run. */
 export function occurrenceRunStatus(occurrenceId: string): RunStatus | null {
-  // Deliberately NOT `RUN_SELECT`: a status read must not depend on the `agents` join the
-  // history projection needs for a display name. One question, the narrowest query that
-  // answers it.
+  // Deliberately NOT `RUN_SELECT`: a status read must not depend on the `agents` join that only
+  // the history projection needs for a display name.
   const r = getDb().prepare(
     `SELECT w.state,
             (SELECT json_extract(e.payload, '$.run_status') FROM work_events e
