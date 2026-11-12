@@ -1,24 +1,7 @@
-// ════════════════════════════════════════
-// PHASE-6 T3 — preCallGates, part 1 of 3: THE THRASH LADDER.
-//
-// The drift ladder, the terminal auto-block, and the per-signature thrash gate.
-// Relocated verbatim from `agent/v2/loop.ts` (`:2583`–`:2910` at `c1ad4d5`).
-//
-// ⚠ THE LADDER'S SHAPE IS THE GUARD AND ITS NUMBERS ARE COPIED, NOT RE-DERIVED.
-// Soft drift (8) NUDGES ONCE and never blocks — legitimate progress varies its
-// call signatures too, so blocking there is the "engine stops genuine work"
-// failure the owner forbids — and the drift window is deliberately NOT reset by
-// the nudge, because an earlier version that reset it let a signature-varying
-// spiral loop forever. Hard drift (24) and the refusal breaker (6) are the two
-// terminal arms, and the gap between 8 and 24 is the room a genuinely-working
-// task gets after the nudge. The PM agent is exempt from all of it.
-//
-// The engine does NOT speak as the agent here (OR2): the terminal block tells the
-// AGENT on the events lane and lets it decide what the person hears, and tells the
-// PERSON as the PLATFORM in a `role='system'` owner-alert row beside the toast.
-// The first-person paragraph that used to sit here is gone, and the note at the
-// site records why this one site cannot steer-and-re-enter like the other four.
-// ════════════════════════════════════════
+// The thrash ladder, run before each model call. Soft drift (8 iterations under the gate) nudges once
+// and never blocks, because real progress varies signatures too; the nudge does NOT reset the drift
+// window, so a signature-varying spiral still reaches the hard limit (24). Hard drift and the refusal
+// breaker (6) are terminal. The PM agent is exempt. The engine never speaks as the agent here.
 
 import { v4 as uuidv4 } from 'uuid';
 import { OWNER_ALERT_HEADS_UP_PREFIX } from '@dojo/shared';
@@ -30,9 +13,6 @@ import { taskScope, ENGINE_SCAFFOLD_ROOT_KIND } from '../../../../work/tracker-v
 import { setHold, heldExpr, workingExpr } from '../../../../work/done/hold.js';
 import { advance, type AgentTurnState } from '../../state.js';
 import { persistEngineSteer } from '../../engine-steer.js';
-// T53: `enqueueSteer` is no longer imported here. Both of this file's steers go through
-// `persistEngineSteer`, which owns the enqueue — the ladder cannot file a steer without
-// leaving a durable row again.
 import { steerFired } from '../../steer-queue.js';
 import { proceed, requestExit, type StepOutcome } from '../step-outcome.js';
 import type { PreCallGatesContext, PreCallGatesExitReason } from './index.js';
@@ -40,39 +20,19 @@ import { currentAddress, userWords } from '../../turn-address.js';
 
 const logger = createLogger('v2-loop');
 
-// ── The ladder's numbers, moved with the code they bound ──
-// Every one of these had its only reader inside this span; they are the same
-// values, with the same reasoning, in the file that now owns them.
-
 /** Refusals the per-signature gate will absorb before the engine blocks the task. */
 const THRASH_GATE_BREAKER_LIMIT = 6;
-// Soft drift threshold: the engine NUDGES the agent once (no block), legitimate
-// progress also varies signatures, so a block here would false-positive.
+// Soft drift: the engine nudges once and never blocks.
 const THRASH_GATE_DRIFT_LIMIT = 8;
-// Hard drift threshold: well above the soft one. If the agent keeps varying call
-// signatures to dodge the gate for THIS many iterations DESPITE the nudge, it is a
-// genuine signature-varying spiral (which never increments the refusal count, so the
-// refusal-breaker never catches it), terminally block so it can't loop unbounded
-// across auto-continued turns (comms-audit REG-1). The gap between 8 and 24 gives a
-// genuinely-working task ample room past the nudge before any block.
+// Hard drift: a signature-varying spiral never raises the refusal count, so this is its terminal stop.
 const THRASH_GATE_DRIFT_HARD_LIMIT = 24;
 
-/**
- * The thrash ladder. Returns `proceed` unless the terminal block fired, in which
- * case the turn is over and the driver is told why.
- */
+/** The thrash ladder. Returns `proceed` unless the terminal block fired and the turn is over. */
 export function runThrashGate(state: AgentTurnState, ctx: PreCallGatesContext): StepOutcome {
   const { agentId, turnNumber, counterparty, broadcast, detectTaskThrashing } = ctx;
 
-  // Last-resort auto-block. Two conditions trip it:
-  //   (1) Refusal count exceeded, agent kept calling gated sigs and
-  //       ignored the refusals.
-  //   (2) Drift exceeded, gate has been on for THRASH_GATE_DRIFT_LIMIT
-  //       iterations and the agent kept dodging the gate by varying
-  //       its calls (different ids, get_current_time, work_update(action="get"))
-  //       without ever calling work_update(action="status") to wrap up. This
-  //       is the "look around to avoid finishing" failure mode.
-  // We block (not pause) so the task hits a real terminal state.
+  // Drift counts iterations since the gate activated; a closing tracker transition clears the gate
+  // (`execute/dispatch-bookkeeping.ts`).
   const drift =
     state.thrashGateActivatedAtLoopCount !== null
       ? state.loopCount - state.thrashGateActivatedAtLoopCount
@@ -80,17 +40,6 @@ export function runThrashGate(state: AgentTurnState, ctx: PreCallGatesContext): 
   const refusalTrip = state.thrashGateRefusalCount >= THRASH_GATE_BREAKER_LIMIT;
   const driftSoftTrip = drift >= THRASH_GATE_DRIFT_LIMIT;
   const driftHardTrip = drift >= THRASH_GATE_DRIFT_HARD_LIMIT;
-  // ── DRIFT-SOFT path (comms-audit G-BLK-1 + REG-1): NUDGE once, never block ──
-  // Drift (gate on while the agent varies its call signatures) is a
-  // false-positive-prone signal: legitimate progress varies signatures too, so a
-  // block at the soft threshold is exactly the "engine stops genuine work" failure
-  // the owner forbids. Inject ONE visible nudge and let the
-  // agent continue. CRITICAL: do NOT reset the drift window here, the earlier
-  // version did, which let a signature-varying spiral loop forever (it never
-  // increments the refusal count, so the refusal-breaker never caught it, and on
-  // MAX_TOOL_LOOPS the turn just auto-continued with drift reset to 0). Letting
-  // drift keep accumulating means a genuine spiral eventually hits the HARD limit
-  // below and terminates deterministically.
   if (!isPMAgent(agentId) && driftSoftTrip && !driftHardTrip && !refusalTrip) {
     if (!steerFired(state.steerQueue, 'thrash-drift')) {
       const driftNudge =
@@ -98,27 +47,7 @@ export function runThrashGate(state: AgentTurnState, ctx: PreCallGatesContext): 
         `varying your tool calls without recording progress. If you ARE making progress, record it with ` +
         `work_update(action="status") (or work_note), then continue. If you are stuck, tell ${userWords(currentAddress(agentId))} ` +
         `where things stand and what you need.`;
-      // ── T53 (owner ruling 5) — ONE MODEL-FACING CHANNEL, AND IT IS THE QUEUE ──
-      // This rung used to write the nudge TWICE: an events-lane row (lifted into
-      // `lane.events` on a LATER turn) beside the queue entry. The paragraph that
-      // stood here argued the events row was the model-visible half; measured
-      // against the real assembler it is neither the same shape nor the same turn.
-      //   * The tail query drops `role='user'` rows created after the turn boundary
-      //     (`memory/store.ts`), so the row is INVISIBLE on the turn this rung fires —
-      //     the one turn the nudge is about.
-      //   * On a later turn `lane.events` renders it as a ≤400-char gist with the
-      //     leading bracket stripped, under a header that frames it as something the
-      //     agent is merely AWARE of. The queue delivers the nudge verbatim, now.
-      // So the queue was always the carrier and the row was a delayed partial copy of
-      // it. `persistEngineSteer` is the RC-19 door the other steer sites already use:
-      // the SAME queue entry, plus a durable `role='system'` row carrying the same
-      // bytes — which `packages/shared/src/visibility.ts` classifies exactly as the
-      // events row was (`{ tier: 'agent-only', kind: 'engine-note' }`), so the
-      // dashboard record does not move. Driven before/after in
-      // `agent/v2/__tests__/the-second-channel-stops-double-writing.test.ts`.
-      //
-      // One-shot nudge only, the drift window is deliberately NOT reset (a
-      // signature-varying spiral must keep accruing drift to the hard limit).
+      // One model-facing channel: `persistEngineSteer` enqueues the steer and writes its durable row.
       state = persistEngineSteer(
         state,
         { agentId, content: driftNudge, turnNumber, floor: 'thrash-drift', atLoop: state.loopCount },
@@ -130,28 +59,16 @@ export function runThrashGate(state: AgentTurnState, ctx: PreCallGatesContext): 
     }
     // fall through, soft drift never blocks; the hard limit below is the stop
   } else if (!isPMAgent(agentId) && (refusalTrip || driftHardTrip)) {
-    // ── TERMINAL BLOCK: the agent either IGNORED explicit gate refusals
-    // (refusalTrip), OR kept varying call signatures to DODGE the gate past the
-    // HARD drift limit despite the nudge (driftHardTrip), a genuine spiral that
-    // the refusal counter can't see. The task hits a real terminal state. The
-    // AGENT is told on the model-visible steer channel (below), the USER is told
-    // in plain language if the work is theirs (F1), and a dashboard toast fires,
-    // so the block is VISIBLE and recoverable, not a mute dead-end.
-    // Third-person reason for the task-log line and the dashboard toast.
+    // TERMINAL BLOCK: the task is held blocked, the agent is told on the events lane, the person by a
+    // platform owner-alert row if the work is theirs, and a toast fires.
     const breakerReason = refusalTrip
       ? `agent repeated refused calls ${state.thrashGateRefusalCount}× without changing course`
       : `agent kept varying call signatures for ${drift} iterations around the thrash gate without recording progress`;
-    // Second-person reason for the agent-facing note. Fixes the old
-    // "because you agent ..." double-subject bug: the note prepends "because",
-    // and BOTH branches of breakerReason start with "agent ...", so it read
-    // "because you agent ...". This string starts with "you ...".
+    // Second person for the agent's note, which prepends "because".
     const breakerReasonSecondPerson = refusalTrip
       ? `you repeated refused calls ${state.thrashGateRefusalCount}× without changing course`
       : `you kept varying call signatures for ${drift} iterations around the thrash gate without recording progress`;
-    // F1: does this blocked work trace to a user request? A user ask can be
-    // continuing on a background (non-user) turn, so the engine-auto marker on
-    // the project also counts as user-origin. If so, the engine tells the person
-    // directly (below) rather than leaving the whole escalation ladder mute.
+    // Does the blocked work trace to a user request? An engine-scaffold project also counts.
     let blockedWorkIsUserOrigin = counterparty.kind === 'user';
     try {
       const db2 = getDb();
@@ -162,8 +79,6 @@ export function runThrashGate(state: AgentTurnState, ctx: PreCallGatesContext): 
         ORDER BY w.updated_at DESC LIMIT 1
       `).get(agentId) as { id: string; title: string; project_id: string | null; root_kind: string } | undefined;
       if (task) {
-        // T8c item 3: the marker is the row's own `root_kind`, so this no longer needs a
-        // second query against the parent project's description text.
         if (!blockedWorkIsUserOrigin && task.root_kind === ENGINE_SCAFFOLD_ROOT_KIND) {
           blockedWorkIsUserOrigin = true;
         }
@@ -177,18 +92,8 @@ export function runThrashGate(state: AgentTurnState, ctx: PreCallGatesContext): 
           taskId: task.id, refusalCount: state.thrashGateRefusalCount, loopCount: state.loopCount,
         }, agentId);
       }
-      // F1.3: agent-facing block note on the model-visible steer channel. A
-      // role='system' row is stripped by the assembler (dashboard-only theater),
-      // so the block would never reach the model. No steer: the turn is
-      // ending here (break below), so the next turn's EVENTS lane surfaces it.
-      // conv_key sentinel keeps it un-selectable as a pending event.
-      //
-      // PHASE-4 T4 (OR2): this note is now the WHOLE of what is said to the person,
-      // through the agent — the engine's own first-person paragraph below it is deleted —
-      // so it carries the 2026-07-30 owner ruling's nudge explicitly: the agent is TOLD,
-      // and the agent decides whether the user should hear it and says it in its own
-      // words. The wording below already asked for that; it now says so as an
-      // instruction rather than as an aside.
+      // The agent's note rides the events lane on its next turn: no steer, since the turn ends here, and
+      // a role='system' row never reaches the model. The agent decides what the person hears.
       const agentNoteId = uuidv4();
       insertEngineEventIfAbsent({
         work: null,
@@ -207,43 +112,8 @@ export function runThrashGate(state: AgentTurnState, ctx: PreCallGatesContext): 
     } catch (err) {
       logger.warn('v2: thrash auto-block failed', { error: err instanceof Error ? err.message : String(err) }, agentId);
     }
-    // ── F1.1, CONVERTED — PHASE-4 T4 (§T0-PINS E3, the line the plan had never listed) ──
-    //
-    // WHAT WAS HERE. A hard-coded first-person paragraph — *"I hit a wall on this: I kept
-    // retrying without making progress, so I've stopped…"* — delivered through
-    // `deliverEngineUserAck` with `originIntent: null`, i.e. an assistant message on the
-    // owner's lane carrying NO stamp of any kind. T4S1 measured that and named it the
-    // blind spot: it is byte-indistinguishable from agent speech on every structural
-    // column the kit's judge can read. The engine wrote "I", and nothing anywhere could
-    // tell it was not the agent.
-    //
-    // WHY THE LADDER IS SHAPED DIFFERENTLY HERE, stated rather than quietly skipped. The
-    // other four conversions steer, re-enter, and give the model a real chance to speak.
-    // THIS site cannot: the loop `break`s three statements below, so there is no further
-    // model call this turn, and a steer enqueued here would be exactly the shape T3
-    // deleted — written, never seen. Two honest halves replace one dishonest sentence:
-    //   * THE AGENT IS TOLD, and decides. The `thrash_block` events-lane note above is
-    //     delivered on its next turn and now carries the 2026-07-30 ruling's own nudge.
-    //   * THE PLATFORM TELLS THE USER, AS THE PLATFORM. A `role='system'` owner-alert
-    //     note (durable, allowlisted into the owner's chat) beside the toast, which was
-    //     always here and was never enough on its own: a toast is a frame, and a frame a
-    //     person did not have the window open for is not a record.
-    //
-    // NO `floor_ghosted` ROW, DELIBERATELY. Its declared meaning is "a floor's steer was
-    // refused twice and the agent truly ghosted". No steer was written here, so a row
-    // would be a receipt for something that did not happen — the forged-completion class
-    // this whole phase exists to remove.
-    //
-    // …AND IT IS ANNOUNCED (SWEEP-A TB4). The note above used to be written and put on no wire
-    // at all — the same silent-insert defect the battery caught on `floor-ghost.ts`, on the same
-    // class of row, and it had simply never fired inside an observation window. The paragraph
-    // above already says a toast is a frame and a frame nobody had the window open for is not a
-    // record; the mirror of that is just as true — a record nobody was told about is not a
-    // notice. It rides the ONE announce door (`gateway/ws.ts:broadcast`, whose T9 seam stamps
-    // content and `createdAt` off the row), beside the write, exactly as every other owner-lane
-    // system row does. The `chat:error` toast below is a different surface and stays as it is.
-    // A frame goes out only if a row was written: an announcement with no row behind it is the
-    // other half of the same defect.
+    // The platform tells the person as the platform: a role='system' owner-alert row, announced only if
+    // it was written. No `floor_ghosted` row: no steer was written, so nothing was ghosted.
     if (blockedWorkIsUserOrigin) {
       try {
         const noteId = uuidv4();
@@ -274,48 +144,21 @@ export function runThrashGate(state: AgentTurnState, ctx: PreCallGatesContext): 
         retryable: true,
       });
     } catch { /* best effort */ }
-    // T83 FIX ROUND (review IMPORTANT A-3): the idle write that stood here is gone — `teardown`
-    // is the ONE owner now. See `teardown/index.ts`'s `settleStatus`.
+    // No idle status write here: teardown owns it.
     return requestExit(state, 'thrash-auto-block' satisfies PreCallGatesExitReason);
   }
 
-  // Task-thrash detector, steer + per-signature gate (not pause).
-  //
-  // When the model re-runs the SAME canonical signature 4+ times in 2
-  // minutes without calling work_update(action="status"), inject a specific
-  // steer message that names the exact tool + args + count + window
-  // and gate further calls to that one signature. The agent can keep
-  // calling the same tool with DIFFERENT args (legitimate iteration
-  // over a list of N items stays unblocked). Last resort: if the gate
-  // has refused THRASH_GATE_BREAKER_LIMIT+ calls without a
-  // work_update(action="status") transition, the engine auto-blocks the task
-  // so it reaches a clean terminal state instead of looping forever.
+  // Per-signature gate: the same canonical signature 4+ times across this turn and the one before
+  // gets a steer naming the exact call, and from then on only that signature is refused.
   if (!isPMAgent(agentId) && state.loopCount >= 4) {
     const thrash = detectTaskThrashing(agentId);
     if (thrash.thrashing && thrash.signature && !state.thrashGatedSignatures.includes(thrash.signature)) {
-      // Pull the recent canonical sig back into a human-readable form
-      // for the steer message. The signature itself is `name:{...json}`
-      //, we extract the JSON tail to show args verbatim.
+      // The signature is `name:{json}`; the JSON tail shows the args verbatim.
       const argsPart = thrash.signature.includes(':')
         ? thrash.signature.slice(thrash.signature.indexOf(':') + 1)
         : '{}';
-      // The steer MUST reach the model. assembler.ts strips role='system'
-      // messages from history, so writing one as `system` would be
-      // invisible to the model (dashboard-only theater). The queue entry
-      // gets injected at the top of the next model call as a synthetic
-      // `role: 'user'` message, that's the engine's waking-style
-      // delivery channel. We also persist as `role: 'user'` so the
-      // dashboard renders it AND any next assemble cycle keeps seeing
-      // it (the floor's queue latch is one-shot per turn).
-      // ⚠ WHAT THIS SENTENCE MAY CLAIM IS BOUNDED BY WHAT THE SIGNATURE MEASURES
-      // (owner ruling, 2026-09-22). It used to say "You already have the result
-      // from the first call" off a signature that dropped a prose-field allow-list
-      // — so five `user_gmail_search` calls with FIVE DIFFERENT date ranges matched
-      // one signature and the engine asserted something false about work it had not
-      // done. `canonicalToolSignature` now carries every argument, so a match IS
-      // "the model asked for the same work" and the claim is earned. It says
-      // EVERY TIME on what basis, so a future change to the signature that weakens
-      // the identity has to come past this line to leave the sentence standing.
+      // The steer may say the first result is already here only because `canonicalToolSignature` carries
+      // every argument: a match means the model asked for the same work.
       const steerMsg =
         `[Engine thrash gate] You've called \`${thrash.toolName}(${argsPart})\` ${thrash.count}× on this turn (and its continuation), ` +
         `with the SAME arguments every time. The first call's result is already in this conversation; ` +
@@ -331,19 +174,7 @@ export function runThrashGate(state: AgentTurnState, ctx: PreCallGatesContext): 
         toolName: thrash.toolName, signature: thrash.signature,
         count: thrash.count, loopCount: state.loopCount,
       }, agentId);
-      // ── T53 (owner ruling 5) — ONE MODEL-FACING CHANNEL, AND IT IS THE QUEUE ──
-      // Same removal as the drift rung above, and this site is where the old paragraph was
-      // most confident: it said the events row meant "any next assemble cycle keeps seeing
-      // it". Driven against the real assembler, what the next assemble cycle sees is a
-      // 400-CHAR GIST — this steer is 794 characters and the cut lands inside option (b),
-      // so the (c)/(d)/(e) doors and the auto-block warning are exactly what the second
-      // channel loses. The queue delivers all 794 bytes on the very next model call, KEYED
-      // on the signature so a second gated signature is still a second fact.
-      //
-      // C6's requirement is untouched by this: it was that a steer row must never be
-      // pickable as a pending engine event, and it lives on `ENGINE_RIDER_INTENTS` read off
-      // `origin_intent` (`memory/message-store.ts`). A site that writes NO events row cannot
-      // drive a turn with one — the intent stays in that list for the rows already on disk.
+      // Keyed on the signature, so a second gated signature is still its own steer.
       state = persistEngineSteer(
         state,
         { agentId, content: steerMsg, turnNumber, floor: 'thrash-gate', key: thrash.signature, atLoop: state.loopCount },
@@ -363,9 +194,7 @@ export function runThrashGate(state: AgentTurnState, ctx: PreCallGatesContext): 
           retryable: true,
         });
       } catch { /* best effort */ }
-      // Don't break, let the loop continue. The next model turn will
-      // see the system message and pick a wrap-up path. The runOne
-      // path enforces the gate on tool execution.
+      // No exit: the loop continues and `execute/refusal-gates.ts` refuses the gated signature.
     }
   }
   return proceed(state);

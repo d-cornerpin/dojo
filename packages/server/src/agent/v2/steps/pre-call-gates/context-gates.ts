@@ -1,29 +1,6 @@
-// ════════════════════════════════════════
-// PHASE-6 T3 — preCallGates, part 3 of 3: THE CONTEXT GATE.
-//
-// The routine condense of rows leaving the live view. Relocated from `agent/v2/loop.ts` (`:3015`–
-// `:3164` at `c1ad4d5`); the routine arm rewritten at t140, the gate's ladder deleted at t194.
-//
-// t194 (v3.4 D1, owner decision 7, 2026-10-17): THE GAUGE MEASURES EXACTLY WHAT THE AGENT SEES.
-// STRIP: the four decisions that stood here (<90% noop · 90–96% warn + "memory is getting full"
-// toast · 96–99% emergency compact and surrender · ≥99% block and surrender), measured on a private
-// model of the assembly that counted summaries up to 70% of the room and the tail before the trim. A
-// worker on a 65K window surrendered turns at "99–103%" of a number its model was never sent, and its
-// owner's message was then set aside as "poisoned". requirement preserved: "a call never goes out
-// bigger than its window" — owned by the assembler's token trim (it always fits the live tail to the
-// room it has), the engine's assembly door that folds what the trim took (`out-of-view.ts`) and
-// the boundary that refuses an array the window cannot hold (`assembly-validation.ts`). "An over-full
-// view still condenses" (OR-COMPACT-1) — owned by the routine check below, on the gauge itself.
-//
-// The routine condense is fire-and-forget on purpose (v2.5.14): it used to be awaited through a
-// summarizer call whose only bound was an SDK default. It runs in the background, one in flight per
-// agent, with no clock or chunk cap of its own (round 5, owner ruling 2026-10-13).
-//
-// t140: THE ROUTINE CONDENSE MEASURES THE MODEL THIS ITERATION WILL DIAL — a fixed model, or an
-// auto-routed loop's locked one. With nothing locked the router has not decided yet (it decides in
-// the assemble step, after this gate; t212), so the check runs once it names its pick
-// (`condenseForTheDialedModel`, from `call-llm/reassemble-for-fit.ts`), never against a stand-in (round 5).
-// ════════════════════════════════════════
+// The context gate: condenses rows leaving the view, measured for the model this iteration will dial.
+// The condense is never awaited: it has no clock or chunk cap, so awaiting it would stall the turn.
+// The gate never ends the turn; the window is guarded by the trim, out-of-view.ts, assembly-validation.ts.
 
 import { createLogger } from '../../../../logger.js';
 import { checkAndCompact, estimateAssembledTokens, leavingFromView } from '../../../../memory/compaction.js';
@@ -39,29 +16,26 @@ import { clearOn } from '../../../../memory/writer.js';
 
 const logger = createLogger('v2-loop');
 
-/** Round 5: the model each agent's gate last measured the routine check for (absent: left to the call step). */
+/** The model each agent's gate last measured the routine check for (absent: left to the call step). */
 const routineMeasuredAtGate = new Map<string, string>();
 export function routineCheckMeasuredAtGate(agentId: string, modelId: string): boolean {
   return routineMeasuredAtGate.get(agentId) === modelId;
 }
 
-/** The context gate. It never ends the turn: a full view is condensed, never surrendered (t194). */
 export async function runContextGates(
   state: AgentTurnState,
   ctx: PreCallGatesContext,
 ): Promise<StepOutcome> {
   const { agentId, contextWindow: turnWindow, contextModelId, configuredModelId, isAutoRouted, counterparty } = ctx;
-  // Fix round 1 (review I3): every condense below is MEASURED for the dialed model but WRITTEN
-  // by the summary writer resolved from the CONFIGURED model — never by a locked, possibly expensive pick.
+  // Measured for the dialed model, written by the CONFIGURED model's writer (never a locked pick).
   const lockedModelId = isAutoRouted ? state.lockedModelId : null;
   const dialModelId = lockedModelId ?? contextModelId;
   const contextWindow = lockedModelId ? agentTurnWindow(agentId, lockedModelId) : turnWindow;
 
-  // t140 round 7: a person's FRESH message (the turn's trigger row) earns this agent's writers a retry.
   if (state.loopCount === 1 && state.lastUserMessageId) clearOn({ kind: 'person-spoke', agentId });
-  // t140 round 3: placeholders are replaced first, in the background, when a writer is answering.
+  // Placeholders are replaced first, in the background; while that runs the check only measures.
   const replacing = replacePlaceholdersInBackground(agentId);
-  // Round 5: an auto-routed iteration with nothing locked has no dialed model yet (header).
+  // Nothing locked yet on an auto-routed loop: the call step measures once the router picks.
   if (isAutoRouted && !lockedModelId) {
     routineMeasuredAtGate.delete(agentId);
     return proceed(state);
@@ -71,17 +45,11 @@ export async function runContextGates(
     agentId, dialedModelId: dialModelId, contextWindow, writerModelId: configuredModelId, counterparty, measureOnly: replacing,
     aPersonSpoke: state.loopCount === 1 && !!state.lastUserMessageId,
   });
-  // D3: the view's fill — what it wants to show over the room it has — for the anti-hoarding advisory.
   return proceed(fill === null ? state : advance(state, { lastContextRatio: fill }));
 }
 
-// ── v3.5 field fix 3 (#12): A CHECK THAT SAID "CANNOT HELP" IS NOT ASKED AGAIN UNTIL SOMETHING CHANGES ──
-// "Summaries dropped" (the view's lane holds less than the summaries the agent owns) can stay true for ever on a
-// lived-in agent, and the condensation pass then finds, by its own measure, nothing to merge. The gate asked it on
-// every tool round: a writer resolution, a second dry run and a "Compaction check" line each time (field report 3,
-// Problem 5b). The pass's answer (`cannotHelp`) is recorded against the summary set it measured; the gate asks again
-// only when that set changes (a note written or merged, a changed raw size) or a person speaks (which earns the
-// writers a retry, `clearOn`). No clock: the signal is the set itself.
+// A pass that answered "cannot help" for a summary set is not asked again until that set changes
+// (a note written or merged, a changed raw size) or a person speaks. No clock: the set is the signal.
 const cannotHelpFor = new Map<string, string>();
 const summarySetOf = (view: { summaryCount: number; summaryRawTokens: number }): string => `${view.summaryCount}:${view.summaryRawTokens}`;
 
@@ -90,10 +58,10 @@ const summarySetOf = (view: { summaryCount: number; summaryRawTokens: number }):
  *  background. Returns the view's fill (wanted / room), or null when it could not be measured. Never throws. */
 export async function condenseForTheDialedModel(args: {
   agentId: string; dialedModelId: string; contextWindow: number; writerModelId: string;
-  /** Unused since t194: the gauge measures the system prompt itself. Kept for the call step's caller. */
+  /** Unused: the gauge measures the system prompt itself. Kept for the call step's caller. */
   systemPromptTokens?: number;
   counterparty?: TurnCounterparty; measureOnly?: boolean;
-  /** The turn's first iteration on a person's fresh message: a "cannot help" answer is asked again (#12). */
+  /** The turn's first iteration on a person's fresh message: a "cannot help" answer is asked again. */
   aPersonSpoke?: boolean;
 }): Promise<number | null> {
   const { agentId, dialedModelId, contextWindow, writerModelId } = args;
@@ -103,7 +71,7 @@ export async function condenseForTheDialedModel(args: {
       { turnContext: args.counterparty ? { latestUserSource: null, counterparty: args.counterparty } : undefined });
     const leaving = leavingFromView(view);
     const summariesDropped = view.summaryRawTokens > view.summaryTokens
-      && !(leaving === null && cannotHelpFor.get(agentId) === summarySetOf(view));   // #12: it said so for this very set
+      && !(leaving === null && cannotHelpFor.get(agentId) === summarySetOf(view));   // it already said so for this set
     if (!args.measureOnly && (leaving || summariesDropped)) {
       condenseLeavingInBackground({ agentId, writerModelId, dialedModelId, contextWindow, leaving, summarySet: summarySetOf(view) });
     }
@@ -116,16 +84,11 @@ export async function condenseForTheDialedModel(args: {
   }
 }
 
-/**
- * THE ROUTINE CONDENSE, fire-and-forget (v2.5.14): one in flight per agent (`backgroundDrains`),
- * folding exactly `leaving` (header: no clock, no cap). Measured for `dialedModelId`, WRITTEN by the
- * summary writer resolved from `writerModelId` in the background order (fix round 1, review I3;
- * round 5). A PRESSURE fold, ahead of need; rows an assembly already took out of view are folded by
- * the engine's assembly door instead (`out-of-view.ts`). Returns whether one started.
- */
+/** THE ROUTINE CONDENSE, one in flight per agent: folds exactly `leaving`, written by `writerModelId`'s
+ *  writer; rows an assembly already took out of view are `out-of-view.ts`'s. Returns whether one started. */
 function condenseLeavingInBackground(args: {
   agentId: string; writerModelId: string; dialedModelId: string; contextWindow: number; leaving: LeavingView | null;
-  /** The summary set the gate measured (#12): a "cannot help" answer is recorded against it. */
+  /** The summary set the gate measured: a "cannot help" answer is recorded against it. */
   summarySet: string;
 }): boolean {
   const { agentId, writerModelId, dialedModelId, contextWindow, leaving, summarySet } = args;
@@ -153,7 +116,7 @@ function condenseLeavingInBackground(args: {
       }, agentId);
     })
     .finally(() => {
-      releaseBackgroundSlot(agentId);   // field fix Y r3: the slot is handed on to an open catch-up
+      releaseBackgroundSlot(agentId);   // the slot is handed on to an open catch-up
     });
   return true;
 }
