@@ -1,42 +1,11 @@
-// ════════════════════════════════════════════════════════════════════════════
-// THE TELEMETRY BUILDER — THE ONLY PRODUCER OF AN ATTACHMENT (DOJO-REPORT T1)
-//
-// `buildTelemetry` is the single function that turns platform facts into the
-// object that rides along on a public GitHub issue. It is deliberately the
-// dullest module in the feature, and every dull thing about it is load-bearing:
-//
-//  1. IT TAKES NO AGENT INPUT. Its one argument is a `TelemetrySources` record
-//     of platform-measured facts, gathered by `report/gather.ts` from the
-//     platform's own tables. No agent string, no brief, no tool result and no
-//     user message has a way in — not because we filter them, but because there
-//     is no parameter to put one in.
-//
-//  2. ITS OWN IMPORT SURFACE REACHES NOTHING — and that is the exact claim, not
-//     "it can reach nothing" (I4). It imports two modules, the whitelist and the
-//     coercion layer, and the conformance test reads the import list of BOTH
-//     statically and refuses `node:fs`, `/db/`, `/agent/`, `better-sqlite3` and
-//     friends. What it does NOT claim: the whitelist imports the tool registry
-//     (clause (4) requires a LIVE registry, so that reach is forced) and the
-//     registry's own imports pull in the engine. Nothing there is ever CALLED
-//     from here. A further clause pins the whitelist's imports to exactly those
-//     two platform modules, so the transitive surface is measured, not asserted.
-//
-//  3. IT BUILDS BY ITERATING THE WHITELIST, never by iterating its input — that
-//     is what `emit()` is for. A field deleted from the whitelist disappears from
-//     the attachment; a value computed here that the whitelist does not declare
-//     is silently NOT emitted. Construction, never redaction: the failure mode is
-//     a missing field. NOTHING may be spread in around that gate.
-//
-//  4. EVERY VALUE GOES THROUGH A COERCER, and every coercer takes a FIELD PATH or
-//     a number — `telemetry-coerce.ts` owns that boundary and argues it in full.
-//     An off-domain enum or a mis-shaped version/digest becomes `UNRECOGNISED`; a
-//     null source becomes `ABSENT`; a bad number or timestamp becomes `null`.
-// ════════════════════════════════════════════════════════════════════════════
+// The only producer of an attachment, built from platform facts (`TelemetrySources`, gathered by
+// `report/gather.ts`) with no parameter for agent text. It builds by iterating the whitelist through
+// `emit()`, never its input, so nothing may be spread in around that gate; every value goes through
+// a coercer. It imports only the whitelist and the coercion layer, and must stay that way.
 
 import { TELEMETRY_SCHEMA_VERSION } from './telemetry-whitelist.js';
 import { nonNeg, iso, asEnum, asShape, emit } from './telemetry-coerce.js';
 
-// ── What the gather phase hands in. Platform facts only; no agent text. ──
 export interface TurnFacts {
   kind: string | null; subjectKind: string | null; lane: string | null;
   exitReason: string | null; answered: boolean; effectfulCalls: number; durationMs: number | null;
@@ -61,10 +30,7 @@ export interface SettingsFacts {
 
 export interface TelemetrySources {
   readonly reportId: string;
-  // The report row's own `created_at`, as the DATABASE wrote it: `datetime('now')`, i.e. UTC
-  // in the zoneless `YYYY-MM-DD HH:MM:SS` shape. Said plainly because this comment used to
-  // read "ISO" and no production caller ever passed one — `iso()` owns the conversion, and
-  // FR-4 is what it cost to have the comment and the caller disagree.
+  // The report row's `created_at` as the database wrote it (UTC, zoneless); `iso()` converts it.
   readonly createdAt: string;
   readonly signature: string;
   readonly lane: string;
@@ -83,12 +49,8 @@ export interface TelemetrySources {
 
 export interface TelemetryAttachment { readonly [k: string]: unknown }
 
-/**
- * THE ATTACHMENT. Platform facts in, whitelisted telemetry out. `sources.reportId`
- * is deliberately NOT emitted: the id keys the LOCAL bundle (`~/.dojo/reports/<id>/`)
- * and is of no use off the box — `report.signature` is what correlates two
- * reports of the same failure.
- */
+/** Platform facts in, whitelisted telemetry out. `reportId` is not emitted: it keys the local bundle
+ *  and is no use off the box (`report.signature` correlates reports of one failure). */
 export function buildTelemetry(sources: TelemetrySources): TelemetryAttachment {
   const s = sources;
   return {
@@ -135,9 +97,8 @@ export function buildTelemetry(sources: TelemetrySources): TelemetryAttachment {
       name: asEnum('tool.name', t.name),
       action_type: asEnum('tool.action_type', t.actionType),
       result: asEnum('tool.result', t.result),
-      // The argument SHAPE, never an argument value. The key is checked against
-      // THIS tool's own `input_schema.properties`, so a key the tool never declared
-      // — the shape an injected or malformed call takes — comes out as the sentinel.
+      // The argument SHAPE, never a value. The key is checked against THIS tool's own
+      // `input_schema.properties`, so a key the tool never declared comes out as the sentinel.
       arg_shape: t.argShape.map((a) => emit('tool.arg_shape', {
         key: asEnum('tool.arg_shape.key', a.key, t.name),
         type: asEnum('tool.arg_shape.type', a.type),

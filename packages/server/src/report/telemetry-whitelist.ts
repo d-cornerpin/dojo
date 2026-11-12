@@ -1,133 +1,52 @@
-// ════════════════════════════════════════════════════════════════════════════
-// THE TELEMETRY WHITELIST — CONSTRUCTION, NEVER REDACTION (DOJO-REPORT T1)
-//
-// The field list that decides what a problem report is ALLOWED to say about a
-// user's box on a public GitHub issue. The brief is agent-written and human-gated;
-// the attachment is machine-built, and THIS is what it is built from.
-//
-// ── WHY A DECLARATION LIST AND NOT A SCRUBBER (owner ruling D1, amended) ──
-// Gathering a blob and redacting the dangerous parts FAILS OPEN: redaction is
-// subtractive, so an unrecognised shape — a new field, a new error string, a path
-// the pattern missed — survives the scrub and lands on a public page. Construction
-// is additive and FAILS CLOSED: the builder walks THIS list and emits nothing that
-// is not on it, so a mistake is a MISSING field, never a leaked one.
-//
-// ── WHY THE KINDS ARE A CLOSED UNION WITH NO `text` MEMBER ──
-// A whitelist of field NAMES would still let a later edit add `tool.error_message`
-// and nothing would object. So a field here is a typed DECLARATION, and
-// `TelemetryFieldKind` has no member that can carry prose: free text authored by
-// the user or by their content is UNREPRESENTABLE at the type level, because there
-// is no kind to declare it as. `__tests__/the-telemetry-whitelist-admits-no-free
-// -text.test.ts` is that property's enforcement, not its description.
-//
-// ── EVERY FIELD DECLARES ITS OWN DOMAIN. THERE IS NO GENERIC STRING PATH. ──
-// An `'enum'` field names its closed domain exactly once: `members` inline, or a
-// `membersFrom` source that is a PLATFORM-DECLARED closed set (the live tool
-// registry, or a tool's own `input_schema.properties`). `membersFrom` exists so
-// the sets the platform already owns cannot drift into a frozen copy here.
-//
-// The string-shaped kinds — `'version'` and `'digest'` — cannot enumerate their
-// domain, so they declare its STRUCTURE: an anchored, UNFLAGGED, FULLY BOUNDED
-// `pattern` for the exact shape of the artifact that field carries. Unbounded is
-// not a shape: `platform.version` is the only `family` here, and its prerelease
-// tail is capped at short lowercase tokens so `1.2.3-SarahDivorceSettlement` and a
-// 500-character tail are both off-domain (N3). A shared "safe characters" filter
-// was tried first and review killed it: NO COERCER TAKES A STRING WITHOUT A PATH.
-//
-// ── WHAT IS DELIBERATELY ABSENT FROM V1, SO NOBODY "HELPFULLY" ADDS IT ──
-//
-//  • NO model id, NO provider id, NO provider NAME. A provider's name is text the
-//    USER typed ("Dave's Mac Studio") — their content never qualifies.
-//    `call.model_ordinal` carries the correlation a triager actually needs ("these
-//    six calls were the same model") without carrying an identifier at all.
-//
-//  • NO error-message string of ANY kind. D1's example list says
-//    "platform-authored error messages"; D1's MECHANISM ruling — fails closed, a
-//    mistake is a missing field — outranks the example where the two pull apart,
-//    and they pull apart here, because a platform-authored message routinely
-//    interpolates the user's content. `auditLog(agentId,'file_read',filePath,
-//    'error','File not found')` puts the user's path in the row, and
-//    `agent/tools/cat/fs.ts:198-268` is fifteen such rows. Worse:
-//    `agent/tools/util.ts:73-87` records `audit_log.target` MINTING PLAINTEXT
-//    CREDENTIAL COPIES on every `exec` call, on a row with no TTL that rides the
-//    diagnostics export. So this list admits the platform's VERDICTS —
-//    `turns.exit_reason`, `audit_log.result`, `audit_log.action_type`, tool names
-//    checked against the live registry — and no free-form message. The columns
-//    holding the prose are named as forbidden SOURCES in the conformance test, by
-//    name, so a future field cannot quietly cite one.
-//
-//  • NO `provider_error.class` / `.status` / `.basis` — not unsafe (they are closed
-//    enums) but NOTHING PERSISTS THEM at this HEAD; `turn.exit_reason` is the
-//    persisted verdict and carries `provider_error` and `stream_idle` already.
-//
-// Adding any of these later is an additive change here plus a conformance clause —
-// the designed growth path, walked on purpose rather than slipped through.
-//
-// ── WHAT READS THIS ──
-// `telemetry-coerce.ts` (which enforces these declarations), `telemetry-build.ts`
-// (the ONLY producer of an attachment) and the conformance test.
-// ════════════════════════════════════════════════════════════════════════════
+// The telemetry whitelist: construction, never redaction. Redaction fails open (an unrecognised
+// shape survives the scrub); the builder emits nothing that is not on this list, so a mistake is
+// a missing field. `TelemetryFieldKind` has no member that can carry prose, and every field declares
+// its own domain (closed `members`, a platform-declared `membersFrom`, or a bounded `pattern`).
+// Deliberately absent: model, provider and provider-name strings (user-typed text; see
+// `call.model_ordinal`), and any error-message string (platform messages interpolate user paths and
+// exec targets), so only verdicts are admitted. Adding one later needs a conformance clause too.
 
 import { registryToolDefinitions } from '../agent/tools/registry.js';
 import { BEHAVES_LIKE_PROFILES } from '../agent/model-contract.js';
 
-/**
- * EVERY SHAPE A TELEMETRY VALUE MAY TAKE. There is no `'text'` member and there must
- * never be one: this union IS the type-level statement that prose cannot be declared.
- */
+/** Every shape a value may take. There is no 'text' member and there must never be one. */
 export type TelemetryFieldKind =
   | 'enum' | 'count' | 'millis' | 'bytes' | 'timestamp' | 'ordinal' | 'bool' | 'version' | 'digest';
 
 export interface TelemetryField {
   readonly path: string;
   readonly kind: TelemetryFieldKind;
-  /** The platform surface this value is derived from. Prose, for the reader; never emitted. */
   readonly source: string;
-  /** REQUIRED for kind 'enum' unless `membersFrom` is set. */
   readonly members?: readonly string[];
-  /** REQUIRED for kind 'enum' unless `members` is set. A platform-declared closed set. */
   readonly membersFrom?: 'tool-registry' | 'tool-input-schema';
-  /**
-   * REQUIRED for kinds 'version' and 'digest', forbidden on every other kind. The
-   * ANCHORED, FLAGLESS, length-BOUNDED shape of the artifact this field carries.
-   * Flags are refused by test: `/m` turns ^ and $ into LINE anchors (N2).
-   */
+  /** REQUIRED for 'version' and 'digest', forbidden otherwise: an anchored, flagless, bounded shape.
+   *  Flags are refused by test because `/m` turns ^ and $ into line anchors. */
   readonly pattern?: RegExp;
 }
 
-/** Stamped into every attachment so a triager can tell two generations apart. */
 export const TELEMETRY_SCHEMA_VERSION = 'dojo-telemetry-1';
 
-/** What an off-domain value becomes. Never the value; never a silent drop. */
 export const UNRECOGNISED = '<unrecognised>';
 
-/**
- * WHAT A NULL SOURCE BECOMES. Distinct from `UNRECOGNISED`, and never a member:
- * "the platform recorded nothing here" and "the platform recorded something this
- * whitelist does not admit" are different facts. Argued in `telemetry-coerce.ts`.
- */
+/** What a null source becomes: distinct from `UNRECOGNISED`, and never a member of any domain. */
 export const ABSENT = '<absent>';
 
 export const TELEMETRY_WHITELIST: readonly TelemetryField[] = [
-  // ── the report's own identity ──
   { path: 'report.schema',            kind: 'version',   source: 'TELEMETRY_SCHEMA_VERSION',
     pattern: /^dojo-telemetry-1$/ },                 // equality with the constant, anchored
   { path: 'report.created_at',        kind: 'timestamp', source: 'report row created_at' },
   { path: 'report.signature',         kind: 'digest',    source: 'report/signature.ts',
-    pattern: /^ds[12]-[0-9a-f]{12}$/ },               // ds2 is what signature.ts mints; ds1 is a draft from before v3.4
+    pattern: /^ds[12]-[0-9a-f]{12}$/ },               // ds2 is what signature.ts mints; ds1 is an earlier scheme
   { path: 'report.lane',              kind: 'enum',      source: 'agent choice from FAILURE_LANES',
     members: ['tool-error', 'wrong-answer', 'silence', 'permission', 'other'] },
-  // ── the box ──
   { path: 'platform.version',         kind: 'version',   source: 'gateway/routes/update.ts getCurrentVersion()',
-    pattern: /^\d+\.\d+\.\d+(-[a-z0-9]{1,8}(\.[a-z0-9]{1,8}){0,2})?$/ },  // N3: BOUNDED semver
+    pattern: /^\d+\.\d+\.\d+(-[a-z0-9]{1,8}(\.[a-z0-9]{1,8}){0,2})?$/ },  // bounded semver
   { path: 'platform.os',              kind: 'enum',      source: 'process.platform',
     members: ['darwin', 'linux', 'win32', 'other'] },
   { path: 'platform.node_major',      kind: 'count',     source: 'process.versions.node' },
-  // ── the window ──
   { path: 'window.minutes',           kind: 'count',     source: 'report/window.ts' },
   { path: 'window.turns',             kind: 'count',     source: 'report/window.ts' },
   { path: 'window.truncated',         kind: 'bool',      source: 'report/window.ts' },
-  // ── turns (table `turns`) ──
   { path: 'turn.ordinal',             kind: 'ordinal',   source: 'position in window' },
   { path: 'turn.kind',                kind: 'enum',      source: 'turns.kind',
     members: ['user', 'a2a', 'engine', 'none'] },
@@ -135,9 +54,7 @@ export const TELEMETRY_WHITELIST: readonly TelemetryField[] = [
     members: ['conv', 'engine_event', 'a2a_thread', 'continuation', 'none'] },
   { path: 'turn.lane',                kind: 'enum',      source: 'turns.lane',
     members: ['voice', 'phone', 'none'] },
-  // t113 C: FIFTEEN, not seventeen. Two writerless members were retired from `TurnExitReason`
-  // and from the DB CHECK (migration 184) by orchestrator ruling — a telemetry enum that
-  // declares a member nothing can emit tells a reader of the report that the value is possible.
+  // Every member is one `TurnExitReason` can emit; a member nothing writes claims a false possibility.
   { path: 'turn.exit_reason',         kind: 'enum',      source: 'turns.exit_reason (TurnExitReason)',
     members: ['answered', 'no_reply_intended', 'park', 'handoff', 'iteration_cap',
       'brake', 'identical_call', 'stop', 'preempt', 'provider_error', 'stream_idle', 'abort',
@@ -145,28 +62,13 @@ export const TELEMETRY_WHITELIST: readonly TelemetryField[] = [
   { path: 'turn.answered',            kind: 'bool',      source: 'turns.answered' },
   { path: 'turn.effectful_calls',     kind: 'count',     source: 'turns.effectful_calls' },
   { path: 'turn.duration_ms',         kind: 'millis',    source: 'turns.ended_at - turns.started_at' },
-  // ── model calls (table `cost_records`) ──
   { path: 'call.ordinal',             kind: 'ordinal',   source: 'position in window' },
   { path: 'call.provider_kind',       kind: 'enum',      source: 'providers.type',
     members: ['anthropic', 'openai', 'openai-compatible', 'ollama'] },
   { path: 'call.model_ordinal',       kind: 'ordinal',   source: 'per-report ordinal for a distinct model id' },
-  // I5: five of the six members first pinned here (summarize, embedding, router,
-  // healer, other) had ZERO writers, so a healthy call rendered `<unrecognised>` and
-  // trained the reader to ignore the sentinel. This is the MEASURED set; `recordCost`
-  // takes an open `requestType?: string` and the column has NO CHECK.
+  // The measured set of `cost_records.request_type` (open string, no CHECK). `completion` must stay:
+  // `agent/model.ts` records it for a call that declares no purpose.
   { path: 'call.request_type',        kind: 'enum',      source: 'cost_records.request_type (no CHECK; this list is its only domain)',
-    // ⚠ t88 ADDED THE SEVEN UTILITY PURPOSES, and they are a WIDENING of this column's meaning that
-    // belongs in the whitelist rather than in a surprise. Until t88 every engine utility dial left
-    // `purpose` unset and landed here as `completion`, so this column could say "a turn" or "not a
-    // turn" and nothing more — which is the complaint `costs/__tests__/a-utility-dial-is-not-an-agent-
-    // turn.test.ts` opens with. A utility dial now declares WHAT it is so that `utility-dial.ts` can
-    // cap its output and size its window, and the same declaration reaches the ledger for free: a box
-    // can now be asked "what did the engine spend on titling tickets" and answer it.
-    // `completion` stays a member: four dials still declare nothing (the router probe, retrieval, the
-    // technique share-export, vault extraction), and history is full of it.
-    // ⚠ The member list below admits STRING LITERALS ONLY: a comment inside
-    // the array reads as a non-literal element and fails
-    // `__tests__/the-telemetry-whitelist-admits-no-free-text.test.ts`. Hence this note here.
     members: ['light', 'standard', 'heavy', 'budget_fallback', 'ollama', 'agent_turn',
       'agent-sdk', 'completion', 'image_generation', 'transcription', 'music_generation',
       'audio_generation', 'video_generation',
@@ -178,7 +80,6 @@ export const TELEMETRY_WHITELIST: readonly TelemetryField[] = [
   { path: 'call.cache_creation_tokens', kind: 'count',   source: 'cost_records.cache_creation_tokens' },
   { path: 'call.latency_ms',          kind: 'millis',    source: 'cost_records.latency_ms' },
   { path: 'call.input_tokens_estimated', kind: 'bool',   source: 'cost_records.estimated_input_tokens IS NOT NULL' },
-  // ── tool calls (tables `audit_log`, `agent_tool_failures`; shapes from the assistant tool_use blocks) ──
   { path: 'tool.ordinal',             kind: 'ordinal',   source: 'position in window' },
   { path: 'tool.name',                kind: 'enum',      source: 'registryToolDefinitions()', membersFrom: 'tool-registry' },
   { path: 'tool.action_type',         kind: 'enum',      source: 'audit_log.action_type',
@@ -192,14 +93,12 @@ export const TELEMETRY_WHITELIST: readonly TelemetryField[] = [
   { path: 'tool.arg_shape.bytes',     kind: 'bytes',     source: 'JSON.stringify(value).length' },
   { path: 'tool.args_total_bytes',    kind: 'bytes',     source: 'JSON.stringify(args).length' },
   { path: 'tool.failure_hit_count',   kind: 'count',     source: 'agent_tool_failures.hit_count' },
-  // ── work rows (table `work`) ──
   { path: 'work.ordinal',             kind: 'ordinal',   source: 'position in window' },
   { path: 'work.kind',                kind: 'enum',      source: 'work.kind',
     members: ['ask', 'task', 'project', 'occurrence', 'commitment'] },
   { path: 'work.state',               kind: 'enum',      source: 'work.state',
     members: ['open', 'claimed', 'handed_in', 'sent_back', 'done', 'failed', 'abandoned', 'blocked'] },
   { path: 'work.age_minutes',         kind: 'count',     source: 'now - work.created_at' },
-  // ── the settings that shape a turn ──
   { path: 'settings.provider_kind',   kind: 'enum',      source: 'providers.type',
     members: ['anthropic', 'openai', 'openai-compatible', 'ollama'] },
   { path: 'settings.behaves_like',    kind: 'enum',      source: 'providers.behaves_like',
@@ -212,12 +111,8 @@ export const TELEMETRY_WHITELIST: readonly TelemetryField[] = [
     members: ['off', 'meta', 'full'] },
 ];
 
-// I3 — THE DOMAIN IS FROZEN AS WELL AS DECLARED. `readonly string[]` is a
-// compile-time promise only: a member list computed from a DB read would put
-// user-typed strings inside a "declared domain" and satisfy every other clause.
-// Freeze stops mutation; the conformance test reads THIS FILE'S SOURCE and refuses
-// any `members:` element that is not a quoted machine token, which is what closes
-// the computed-list vector. Both halves are needed.
+// `readonly` is compile-time only: freezing stops mutation, and the conformance test admits only short
+// machine-token members, so keep every member list a literal, never computed from user data.
 for (const f of TELEMETRY_WHITELIST) {
   if (f.members) Object.freeze(f.members);
   Object.freeze(f);
@@ -226,14 +121,10 @@ Object.freeze(TELEMETRY_WHITELIST);
 
 const BY_PATH = new Map(TELEMETRY_WHITELIST.map(f => [f.path, f]));
 
-/** The declaration for a path, or `undefined` — which the builder treats as "emit nothing". */
 export function whitelistField(path: string): TelemetryField | undefined { return BY_PATH.get(path); }
 
-/**
- * THE CLOSED DOMAIN OF AN ENUM FIELD, resolved against the LIVE platform. An
- * unresolvable domain returns `[]` and an empty domain matches nothing, so every
- * branch here fails toward `UNRECOGNISED` — the direction this file fails in.
- */
+/** The closed domain of an enum field, resolved against the live platform. An unresolvable domain
+ *  is `[]`, which matches nothing, so every branch fails toward `UNRECOGNISED`. */
 export function enumMembers(f: TelemetryField, toolName?: string): readonly string[] {
   if (f.members) return f.members;
   if (f.membersFrom === 'tool-registry') return registryToolDefinitions().map(d => d.name);

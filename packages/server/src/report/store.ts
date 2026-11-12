@@ -1,31 +1,8 @@
-// ════════════════════════════════════════════════════════════════════════════
-// THE REPORT STORE — ONE DOOR PER TRANSITION, EVERY ONE ATOMIC (DOJO-REPORT T2)
-//
-// `drafting → awaiting_approval → approved → posted`, plus `cancelled`. The state
-// machine IS the privacy model, so every rule below is owner ruling D4 rather than
-// bookkeeping:
-//
-//  1. EVERY TRANSITION IS A CONDITIONAL UPDATE, never a read-then-write. The guard lives
-//     in the `WHERE`, so the DATABASE decides who won; `info.changes` is the verdict and
-//     `null` means "the row was not in the state this door serves". A `SELECT` + `if` is
-//     the whole bug: two Post clicks, two GitHub issues. Same shape
-//     `destructive_approvals` + `consumeApproval` settled on, for the same reason.
-//
-//  2. THE APPROVER SEES THE TEXT THAT POSTS. `attachDraft` is legal only from `drafting`
-//     — before any human has looked — and `editBrief` only from `awaiting_approval`, the
-//     human's own edit door. Neither is legal from `approved`: text that can change
-//     between the click and the post makes the preview decoration. That is D4.
-//
-//  3. POSTED IS TERMINAL, by both doors. `markExported` consumes the approval exactly as
-//     `markPosted` does — D4 binds the export path too. `releaseApproval` (T7) is the one
-//     backwards door: conditional on `approved`, so it can only give back an approval that
-//     delivered nothing.
-//
-//  4. AN UNKNOWN STATUS IS TERMINAL. A hand-edited database, a restored backup or a future
-//     writer can put a value here this release never approved (no CHECK, deliberately —
-//     migration 169 argues why). Such a row reads back as `cancelled`: never listed, named
-//     by no transition, never postable. The safe direction.
-// ════════════════════════════════════════════════════════════════════════════
+// One door per transition, each a conditional UPDATE whose `WHERE` guard lets the database decide
+// who won (`null` means the row was not in the state this door serves), never a read-then-write.
+// The state machine is the privacy model: `attachDraft` only from `drafting` and `editBrief` only
+// from `awaiting_approval`, so the approver sees the text that posts; `posted` is terminal by both
+// `markPosted` and `markExported`; an unknown status (no CHECK, deliberately) reads back `cancelled`.
 
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
@@ -44,12 +21,10 @@ export interface ReportRow {
   bundlePath: string | null; createdAt: string; updatedAt: string;
   approvedAt: string | null; postedAt: string | null;
   issueUrl: string | null; issueNumber: number | null; exportPath: string | null;
-  /** The ask this report was opened to answer — `messages.id`. NULL on rows predating
-   *  migration 183; see `askIdForNow` and `report/withdrawn-claim.ts`. */
+  /** The ask this report answers (`messages.id`); NULL when none was bound. */
   askId: string | null;
 }
 
-/** The five fields a brief has. An edit carries these and nothing else. */
 const BRIEF_KEYS = ['title', 'whatHappened', 'whatShouldHaveHappened', 'whyItWentWrong', 'fixIdeas'] as const;
 const STATUSES: readonly string[] = ['drafting', 'awaiting_approval', 'approved', 'posted', 'cancelled'];
 
@@ -61,7 +36,6 @@ interface DbRow {
   ask_id: string | null;
 }
 
-/** A column this module wrote is valid JSON; a column a human edited may not be. */
 function parseJson<T>(text: string | null): T | null {
   try { return text === null ? null : JSON.parse(text) as T; } catch { return null; }
 }
@@ -69,7 +43,6 @@ function parseJson<T>(text: string | null): T | null {
 function toReport(row: DbRow): ReportRow {
   return {
     id: row.id, agentId: row.agent_id, signature: row.signature,
-    // See header rule 4: anything this release does not recognise reads as terminal.
     status: (STATUSES.includes(row.status) ? row.status : 'cancelled') as ReportStatus,
     lane: (isFailureLane(row.lane) ? row.lane : 'other'),
     brief: parseJson<ReportBrief>(row.brief_json),
@@ -91,13 +64,8 @@ export function getReport(id: string): ReportRow | null {
   return row ? toReport(row) : null;
 }
 
-/**
- * Every transition in this module funnels through here. One statement, one bound `WHERE`, one
- * verdict — so no door can accidentally grow a read-then-write. `id` is a NAMED parameter and
- * not `params[params.length - 1]`, which is what it was: every door happens to bind the id
- * last, so reading it back by position was correct today and silently wrong the first time a
- * door appended a parameter after it — the right UPDATE, the WRONG row handed back.
- */
+/** Every transition funnels here. `id` is passed by name, not read off the end of `params`, so a
+ *  door that appends a parameter cannot hand back the wrong row. */
 function transition(sql: string, params: unknown[], id: string): ReportRow | null {
   const info = getDb().prepare(sql).run(...params as never[]);
   if (info.changes !== 1) return null;
@@ -105,44 +73,10 @@ function transition(sql: string, params: unknown[], id: string): ReportRow | nul
 }
 
 /**
- * THE ASK THIS REPORT IS BEING OPENED TO ANSWER — `messages.id`, or `null` when there is no
- * ask to name (migration 183).
- *
- * ── WHY THE ASK AND NOT THE ANSWER ──
- * This runs inside the `gather` call, which is the agent working on a turn that has not
- * produced its reply yet, so the answer row DOES NOT EXIST. The ask does, and the ask is the
- * end the answered edge already keys on: `messages.answer_message_id` hangs off the ask row,
- * and `answerStillStands` is called once per ask. Binding the same end means the durable
- * binding and the containment it replaces are expressed in ONE vocabulary.
- *
- * ── WHY "THE LATEST USER ROW", AND THE ONE SHAPE IT GETS WRONG ──
- * An agent reaches this line because it is mid-turn, and a turn is opened by the ask it is
- * answering, so the latest `role='user'` row is normally that ask. This is not the proximity
- * reasoning the containment window does: containment looks BACKWARD from an answer that already
- * exists and asks which reports are near it, across turns, over a span, tolerating five measured
- * over-void shapes. This looks at the row the engine is working on, once, at the moment of
- * minting.
- *
- * ⚠ IT IS NOT INFALLIBLE, AND THE EXCEPTION IS REACHABLE (review M2, measured at this head).
- * `gateway/routes/chat.ts` WRITES an inbound message row and only then queues it behind the
- * `activeRuns` guard as a pending wakeup — "let the current turn FINISH" — so a user message
- * arriving mid-turn exists as a `role='user'` row BEFORE the turn that is minting this report
- * ends. Bind then, and the report names the newer ask rather than the one it answers.
- *
- * THE COST IS BOUNDED AND IN THE ACCEPTED DIRECTION, which is why this is a stated residual and
- * not a blocker. The ask the report really answers has no bound row naming it, so it falls to
- * the containment window exactly as a pre-183 row does — it is still voided on withdrawal. The
- * mis-bound neighbour pays one over-void, which is the same currency and the same class as the
- * five shapes `withdrawn-claim.ts` already accepts, and owner ruling 2026-08-05 chooses hearing
- * an answer twice over silence in those words. Closing it properly wants the engine to hand the
- * ask id down to the tool call (the handler context carries no ask today); that is a wider seam
- * than this lane's fence and is recorded rather than guessed at.
- *
- * ── AND WHEN IT CANNOT ANSWER, IT SAYS NULL ──
- * A box with no `messages` row for this agent (the dashboard door, a fixture, a first turn that
- * somehow has no ask) gets `null`, and a `null` here is handled exactly like a pre-183 row: the
- * containment arm still runs. Nothing is invented, because a WRONG binding is worse than no
- * binding — it would void the wrong ask's anti-repetition and look authoritative doing it.
+ * The ask this report answers (`messages.id`) or `null`, bound at mint time because the answer row
+ * does not exist yet. The latest `role='user'` row can be a message that arrived mid-turn (the chat
+ * route writes it before queueing); the ask truly answered then falls to containment in
+ * `withdrawn-claim.ts`. `null` is handled like a row predating the column.
  */
 function askIdForNow(agentId: string): string | null {
   try {
@@ -151,8 +85,7 @@ function askIdForNow(agentId: string): string | null {
     ).get(agentId) as { id: string } | undefined;
     return row?.id ?? null;
   } catch {
-    // No `messages` table (a hand-built fixture) is not a failure to swallow — it is a box with
-    // no asks on it, and `null` is the true answer there.
+    // No `messages` table (a hand-built fixture) means no asks on the box, so `null` is true.
     return null;
   }
 }
@@ -169,12 +102,8 @@ export function createReport(agentId: string, lane: FailureLane, signature: stri
   return row;
 }
 
-/**
- * Rows a human still has to decide. Deliberately `awaiting_approval` ONLY: a
- * `drafting` row has no brief to show and an `approved` one is already decided —
- * listing either puts a card in front of someone with no decision in it, which is
- * how a consent gate becomes a habit.
- */
+/** Only `awaiting_approval`: `drafting` has no brief and `approved` is decided, and a card with no
+ *  decision in it turns the consent gate into a habit. */
 export function listOpenReports(limit = 50): ReportRow[] {
   return (getDb().prepare(
     `SELECT ${COLUMNS} FROM dojo_reports WHERE status = 'awaiting_approval'
@@ -182,52 +111,17 @@ export function listOpenReports(limit = 50): ReportRow[] {
   ).all(limit) as DbRow[]).map(toReport);
 }
 
-/**
- * THE AGENT'S ONE WRITE — and it carries the report's IDENTITY, not only its text.
- *
- * ── WHY THE LANE AND THE SIGNATURE ARE IN HERE (T8 fix round) ──
- * `createReport` writes a PROVISIONAL pair at gather time: the row needs a lane and a signature
- * at INSERT and the agent has not chosen a lane yet, so the lane is hard-coded `'other'` and the
- * digest is keyed on it. The first cut of this door then wrote only the brief, the telemetry and
- * the bundle path — so the provisional pair SURVIVED the agent's choice, and the live T8 run
- * measured exactly what that costs:
- *
- *   row       `ds1-cbf0fd308acc` = sha256("0.0.0|other|tool:exec:denied")
- *   telemetry `ds1-47375b28d43f` = sha256("0.0.0|wrong-answer|tool:exec:denied")
- *
- * One posted issue, two answers. `issue-body.ts` renders `row.lane` in its header and
- * `dojo-sig: row.signature` in its trailer, while the telemetry block inside that SAME body says
- * `wrong-answer` and the other digest — a public page contradicting itself in two of its own
- * fields. And `post.ts` dedupes on `row.signature`, so a digest always keyed on `'other'` drops
- * the lane out of the pinned `sha256(version|lane|dominant)` key and collapses distinct lanes
- * over one dominant failure into a single bucket. The identity is therefore written HERE, at the
- * one seam where the agent's choice is known, and by the same call that writes the telemetry it
- * has to agree with.
- *
- * ── STILL LEGAL ONLY FROM `drafting` (contract C2) ──
- * Unchanged, and the reason is unchanged: the approver sees the text that posts, and now also the
- * lane and the digest that post. `WHERE status = 'drafting'` is the whole guard.
- *
- * ── ONE OBJECT, NOT SIX POSITIONAL ARGUMENTS ──
- * `signature` and `bundlePath` are both bare strings. Positionally adjacent, a transposition
- * typechecks and silently writes a filesystem path into the column a public issue trailer is
- * rendered from. Named fields make that unrepresentable — the same reason `transition` takes `id`
- * by name rather than reading it back off the end of the parameter array.
- */
+/** The agent's one write: its lane and derived digest replace `createReport`'s provisional pair in the same
+ *  call as the telemetry they must agree with. One object, so `signature` and `bundlePath` cannot swap. */
 export interface ReportDraft {
-  /** The lane the AGENT chose. Replaces gather's provisional `'other'`. */
   lane: FailureLane;
-  /** The digest derived from THAT lane — the one the telemetry in this same call carries. */
   signature: string;
   brief: ReportBrief;
   telemetry: Record<string, unknown>;
-  /** A RECORDED STRING, never opened here (contract C6). */
   bundlePath: string;
 }
 
 export function attachDraft(id: string, draft: ReportDraft): ReportRow | null {
-  // Same refusal `createReport` makes, for the same reason: the lane rides onto a public page as
-  // an enum, and a value outside the closed set is a caller's bug, never a lane.
   if (!isFailureLane(draft.lane)) throw new Error(`not a failure lane: ${JSON.stringify(draft.lane)}`);
   return transition(
     `UPDATE dojo_reports
@@ -240,13 +134,8 @@ export function attachDraft(id: string, draft: ReportDraft): ReportRow | null {
 }
 
 /**
- * The HUMAN's edit door. Legal only while the row is awaiting their decision, and it carries
- * the five brief fields only — anything else in the patch lands on the floor rather than in a
- * public issue body. The read and the write share one transaction so the merge sees a
- * CONSISTENT brief; the state guard is still the UPDATE's own `WHERE`. ⚠ It is the one door
- * that can THROW rather than answer: in WAL a deferred transaction writing after another
- * connection committed raises SQLITE_BUSY_SNAPSHOT. A caller needs a catch as well as a null
- * branch (contract line C8 for T6).
+ * The human's edit door, carrying the five brief fields only. The read and write share one
+ * transaction; it is the one door that can THROW (SQLITE_BUSY_SNAPSHOT in WAL), so callers catch.
  */
 export function editBrief(id: string, patch: Partial<ReportBrief>): ReportRow | null {
   const db = getDb();
@@ -269,7 +158,6 @@ export function editBrief(id: string, patch: Partial<ReportBrief>): ReportRow | 
   return changed ? getReport(id) : null;
 }
 
-/** Ask a human. Refused when there is no brief: nobody may be asked to approve nothing. */
 export function submitForApproval(id: string): ReportRow | null {
   return transition(
     `UPDATE dojo_reports
@@ -279,7 +167,6 @@ export function submitForApproval(id: string): ReportRow | null {
   );
 }
 
-/** ONE-SHOT. Flips awaiting_approval → approved. A second call on the same id returns null. */
 export function approveOnce(id: string): ReportRow | null {
   const db = getDb();
   const info = db.prepare(
@@ -291,7 +178,6 @@ export function approveOnce(id: string): ReportRow | null {
   return getReport(id);
 }
 
-/** ONE-SHOT. Flips approved → posted. Returns null unless the row is currently `approved`. */
 export function markPosted(id: string, issueUrl: string, issueNumber: number): ReportRow | null {
   return transition(
     `UPDATE dojo_reports
@@ -303,16 +189,8 @@ export function markPosted(id: string, issueUrl: string, issueNumber: number): R
 }
 
 /**
- * THE DELIVERY DID NOT HAPPEN — HAND THE DECISION BACK (T7). The one transition that runs
- * BACKWARDS, and T6's seam makes it necessary: the route mints the approval and only then sends
- * (C3's consume-then-send order). When the send does not happen — GitHub unreachable, a refused
- * credential, a duplicate the owner has not answered — the row would otherwise sit in
- * `approved` forever, off the card (C1 lists `awaiting_approval` only) and refused by
- * `approveOnce`: a report stranded by its own consent gate, which is the failure D4 exists to
- * prevent. So the approval is RETURNED, `approved_at` with it — nothing was delivered, so no
- * decision was made. ⚠ SAFE BECAUSE IT IS CONDITIONAL, and for no other reason: the `WHERE`
- * binds `status = 'approved'`, so a row `markPosted`/`markExported` already won is `posted` and
- * this changes nothing. One approval is still one delivery.
+ * The delivery did not happen, so hand the decision back (the one backwards transition): otherwise a
+ * failed send leaves the row in `approved` forever. Safe only because the `WHERE` binds `approved`.
  */
 export function releaseApproval(id: string): ReportRow | null {
   return transition(
@@ -323,7 +201,6 @@ export function releaseApproval(id: string): ReportRow | null {
   );
 }
 
-/** ONE-SHOT, the D2 export door. Consumes the approval exactly as `markPosted` does. */
 export function markExported(id: string, exportPath: string): ReportRow | null {
   return transition(
     `UPDATE dojo_reports
