@@ -1,22 +1,6 @@
-// ════════════════════════════════════════
-// PHASE-6 T9 (CUT 4) — THE CHANNEL PUSH
-//
-// Relocated verbatim from `agent/v2/loop.ts` (`:8243`–`:8565` at `0942fd9`): the
-// settled-context hold and the five channel branches, in their original ORDER, which
-// is the contract (`held` first, then iMessage, Teams, email, phone, SMS — an
-// `else if` chain, so exactly one arm can fire). Bounds, wording, both `chat:error`
-// paths and every log line unchanged.
-//
-// WHY IT IS ITS OWN FILE AND NOT PART OF `route-reply.ts`: 597 + 323 lines against
-// the build's 400-line `maxNewFileLines` cap (RULING P6-R1's directory shape is
-// NECESSARY here, not merely permitted), and the seam was already in the block — the
-// resolver decides WHERE the reply goes, this decides how it is SENT there.
-//
-// THE FOUR LAZY IMPORTS STAY WHERE THEY WERE. `isImessageConfigured` and
-// `sendResponseViaIMessage` are resolved by the caller, in the same statement and at
-// the same moment they always were, and arrive here as values — moving the `await
-// import` would change WHEN a module is loaded, which a relocation did not admit to.
-// ════════════════════════════════════════
+// Channel push: sends the terminal reply where the resolver chose, or records it held. The arms are one
+// `else if` chain (held, no grant, iMessage, Teams, email, phone, SMS), so exactly one fires.
+// The caller resolves the lazy iMessage and presence imports and passes them in as values.
 
 import { v4 as uuidv4 } from 'uuid';
 import type { ToolCall } from '@dojo/shared';
@@ -42,101 +26,41 @@ export interface RouteDecision {
   readonly settledContextHold: boolean;
   readonly routeRoot: ReturnType<typeof outboundRoot>;
   readonly presenceNow: PresenceStatus;
-  /** Resolved by the caller's own lazy imports — see the header. */
+  /** Resolved by the caller's own lazy imports. */
   readonly isImessageConfigured: () => boolean;
   readonly getPresence: () => PresenceStatus;
   readonly sendResponseViaIMessage: typeof SendViaIMessage;
 }
 
-/**
- * Sends the turn's terminal reply — or records that it was deliberately HELD. It never
- * advances the state: the span's three `advance` calls are all outside this block, and
- * a walk of the moved range confirms zero here.
- */
+/** Sends the terminal reply, or records that it was held. It never advances the state. */
 export async function pushReplyToChannel(
   stateIn: AgentTurnState,
   ctx: FinalizeContext,
   r: RouteDecision,
 ): Promise<void> {
-  // The caller has ALREADY re-asserted this non-null at run time (`route-reply.ts`,
-  // the block's own `unreachable` throw, moved with it and unchanged). What the module
-  // boundary loses is the NARROWING, not the guarantee — so it is restated as a type
-  // here rather than as a second runtime check, because a duplicated throw would be a
-  // second mechanism for one invariant and every branch below would read one `!` wider.
+  // The caller already asserted this non-null at run time (`link-backstop.ts`); restated as a type only.
   const state = stateIn as AgentTurnState & { lastAssistantTextForIM: string };
   const { agentId, turnNumber, turnCtx, counterparty, persistRoutingMarker } = ctx;
 
-  // ── DESIGN RULING 13 (2026-09-22) — NOTHING WITH A CREDENTIAL IN IT LEAVES THE BOX ──
-  //
-  // Every arm below hands the reply to a bridge, to Twilio, to Outlook/Gmail or into a live
-  // call, and a secret that crosses one of those has left the machine it was encrypted on. So
-  // the outbound copy is scrubbed — including an owner-bound iMessage push, because the
-  // away-override promotes a dashboard turn onto iMessage and the message still leaves the
-  // box. There is no narrower redactor for any surface and no channel-keyed exception: ruling
-  // 13, as the owner corrected it, is that a credential is not typed into a reply AT ALL, and
-  // the vault tab is where he reads one. (An earlier draft of this header described an
-  // owner-dashboard reveal keyed on the channel as if it were live. That reveal was DELETED in
-  // the correction round; nothing in this file is the other side of a key.)
-  //
-  // ⚠ WHAT THIS LINE IS, NOW THAT THE BIRTH POINT IS SCRUBBED. It arrived as a finding: the
-  // outbound copy was reaching the bridges unscrubbed while the dashboard was the only surface
-  // the leak guard covered. It is no longer the only thing standing there. Every setter of
-  // `state.lastAssistantTextForIM` now reads text that was already scrubbed at its birth point
-  // — `persist-assistant.ts:254` and `:288` (`persistedContent`), `terminal-text.ts:263` (the
-  // promoted compile), `deferred-recovery.ts:79` (`deferredUserReplyWithTools`, the same
-  // string) — so for the REPLY this scrub is an idempotent second pass, defence in depth
-  // rather than the wall. Keep it: it is what makes this router's guarantee a property of the
-  // router, not of four setters in three other files continuing to agree.
-  //
-  // IT IS STILL THE ONLY SCRUB for two strings on this path, and those are the reason it
-  // cannot simply be deleted: the phone arm's STREAMED TAIL (`turnCtx.phoneStreamBuffer`,
-  // accumulated RAW at `call-llm/model-call.ts`) takes its own call a few lines down, and
-  // `finalize/stranded-attachments.ts` carries the same call for the sixth arm's caption,
-  // which it sends after this router has already run.
-  //
-  // ONE derivation for the five arms below: a per-arm scrub is five places for the next
-  // channel to be forgotten in. The scrub is a no-op string-identity return for the
-  // overwhelming majority of turns (no handled credential, or none in the text).
+  // Nothing with a credential leaves the box, an owner-bound iMessage included. One scrub for every arm
+  // (a per-arm scrub is a place to forget); the reply setters already scrub at birth, so for the reply
+  // this second pass keeps the guarantee in the router. The phone arm's streamed tail is scrubbed below,
+  // and `stranded-attachments.ts` scrubs its own caption.
   const replyOut = redactHandedCredentials(agentId, state.lastAssistantTextForIM);
   const { destination, settledContextHold, routeRoot, presenceNow, isImessageConfigured, sendResponseViaIMessage, getPresence } = r;
 
-  // Outbound routing markers are written via the hoisted
-  // persistRoutingMarker helper (defined near deliverEngineUserAck), the
-  // single writer shared with the engine-ack channel pushes so the
-  // dashboard's "to <recipient> via <channel>" pill wording cannot drift
-  // between the two paths.
+  // `persistRoutingMarker` is the single writer of the dashboard's "to X via Y" pill.
 
-  // The agent works out details DIRECTLY with whoever it is talking to,
-  // including someone it proactively reached on the owner's behalf (the
-  // owner asked it to reach a contact). Its reply to that person routes
-  // BACK to that person over iMessage; it then brings the result to the
-  // owner separately, when it actually has it. That is the whole point of
-  // having an agent handle this kind of back-and-forth.
-  //
-  // This path used to force such a reply to stay in the dashboard, on the
-  // assumption the agent's text was a report to the owner, but the agent's
-  // reply was addressed to the CONTACT, so a contact-bound message ended up
-  // dropped into the owner's chat (the exact failure observed). Removed:
-  // a reply to a contact always routes to that contact.
+  // A reply to a contact the agent reached for the owner routes back to that contact, not the owner's chat.
   if (settledContextHold && destination !== 'dashboard') {
-    // Held: on this settled wake there is no active conversation to push into,
-    // so the auto-route CHANNEL PUSH is withheld. The reply already lives in the
-    // dashboard chat (persisted + broadcast above); nothing is deleted or
-    // reclassified. Mark it so the dashboard pill reads "held" instead of
-    // claiming a channel delivery that never happened.
-    // PHASE-2 T5: `held` is the one outcome with no door to observe it — the whole
-    // content of the event is that NO transport was reached. It is recorded through a
-    // named entry point rather than by a caller pretending to be a door. This is the
-    // 3:32 AM class the `no-outreach-without-inbound` scenario pins: a user-facing
-    // outbound on a turn with no inbound and no waiting human is HELD, never delivered.
+    // No affirmative root on a settled wake: withhold the push, keep the reply in the dashboard and mark
+    // the pill "held". `recordHeld` is the entry point for an outcome where no transport was reached.
     recordedId(recordHeld(
       {
         agentId, tool: 'auto-route', channel: 'dashboard',
         conversationId: turnCtx.root?.conversationId ?? null,
       },
-      // The held row carries the ROOT READ that produced it, not a restatement of the
-      // symptom: "no affirmative root" is the rule, and a reader of this ledger can now
-      // tell a hold apart from a push that had one.
+      // The held row carries the root read that produced it, so a hold reads apart from a push.
       describeOutboundRoot(routeRoot),
     ), 'v2: settled-context hold', { agentId, turnNumber });
     persistRoutingMarker('held in dashboard: no active conversation');
@@ -145,20 +69,8 @@ export async function pushReplyToChannel(
       outboundRoot: routeRoot.root,
     }, agentId);
   } else if (destination !== 'dashboard' && !engineMayRouteTo(agentId, destination)) {
-    // THE ENGINE'S CHANNEL DOOR (UX-ACCESS A4) — one guard for all five arms
-    // below, placed here because every one of them reaches a human and four of
-    // the five (iMessage, SMS, and both phone-TTS arms) do it through a bridge,
-    // through Twilio or into a live call rather than through `executeTool`,
-    // where `mayUseChannel` would already have been asked.
-    //
-    // AFTER the settled-context hold and not before it, deliberately: a turn
-    // that is already being held is held for its own recorded reason, and
-    // re-labelling those rows would change the ledger for a class this gate is
-    // not about. This arm fires only where a push would otherwise have HAPPENED.
-    //
-    // Recorded as `held`, which is the honest outcome word: no transport was
-    // reached. The reply itself is already persisted and broadcast to the
-    // dashboard above, so the owner loses the channel hop and never the answer.
+    // One channel-grant door for every arm: most reach a human through a bridge, Twilio or a call, not
+    // `executeTool`. After the hold, so held rows keep their reason; the reply stays in the dashboard.
     recordedId(recordHeld(
       {
         agentId, tool: 'auto-route', channel: destination,
@@ -171,25 +83,14 @@ export async function pushReplyToChannel(
       agentId, turnNumber, destination,
     }, agentId);
   } else if (destination === 'imessage' && !state.repliedToCounterpartyThisTurn.imessage && isImessageConfigured()) {
-    // Label the badge with the recipient the bridge ACTUALLY delivered
-    // to, never a hardcoded default. If the send was suppressed (sender
-    // no longer authorized, empty body), skip the marker entirely so we
-    // don't claim a delivery that didn't happen.
-    // Route to THIS turn's counterparty (stable). counterparty.senderId is the
-    // iMessage address for a human iMessage turn; null (proactive/away) lets
-    // the bridge fall back to the owner.
+    // Reply to this turn's iMessage counterparty; undefined (proactive or away) lets the bridge fall back to
+    // the owner. The badge names who the bridge actually delivered to, and is skipped on a suppressed send.
     const imRecipient = counterparty.kind === 'user' && counterparty.channel === 'imessage' ? counterparty.senderId : undefined;
-    // C8: this reply reached iMessage EITHER because the turn's counterparty is an
-    // iMessage contact (imRecipient set → reply to them) OR because the away-override
-    // promoted a dashboard/proactive turn to iMessage to reach the OWNER (imRecipient
-    // undefined). In the latter case the send is owner-bound by definition, flag it
-    // so the bridge routes to the owner, never to a contact (the "owner's reply
-    // texted to a contact" bug class).
+    // No iMessage counterparty means the away override promoted this turn: flag it owner-bound so the
+    // bridge never routes it to a contact.
     const ownerBound = imRecipient === undefined;
     const replyText = replyOut;
-    // PHASE-2 T5: the reply-destination resolver DECLARES who it is answering; the
-    // bridge door records whether the send landed. A suppressed or failed push now
-    // produces an honest row instead of nothing at all.
+    // The resolver declares who it answers; the bridge door records whether the send landed.
     const delivered = await withOutboundAsync(
       {
         agentId, tool: 'auto-route', channel: 'imessage', text: replyText,
@@ -198,17 +99,8 @@ export async function pushReplyToChannel(
       },
       async () => {
         const d = await sendResponseViaIMessage(replyText, agentId, imRecipient, ownerBound);
-        // C26 tier 3: the engine iMessage auto-route is honestly
-        // UNVERIFIABLE (AppleScript/imsg exit code only). Write an
-        // exit-code receipt so PM/the user story never pretend delivery
-        // was confirmed. Tier 3 imposes no new gate requirement.
-        //
-        // PHASE-2 T5: the receipt is written INSIDE the scope, deliberately. It was
-        // one statement below, outside it, and that one statement was the difference
-        // between `deliveries.receipt_id` being populated and being another
-        // written-only column — the exact half-closure the Phase-1 exit named. Caught
-        // by measuring the live ledger after the first targeted run (0 of 119 linked),
-        // not by reading the code.
+        // The engine iMessage auto-route is unverifiable (exit code only) and its receipt says so. Written
+        // inside the scope so `deliveries.receipt_id` links to it.
         if (d) writeToolReceipt({ agentId, tool: 'imessage_send', tier: 3, verified: false, basis: 'exit-code', recipient: d.address, sentText: replyText, detail: { route: 'auto', textLength: replyText.length } });
         return d;
       },
@@ -229,13 +121,8 @@ export async function pushReplyToChannel(
       }, agentId);
     }
   } else if (destination === 'teams' && !state.repliedToCounterpartyThisTurn.teams && state.inboundContext?.chatId) {
-    // v2.7.24, Teams reply routing. Inbound Teams DM → reply
-    // auto-routes back to the same chat_id via teams_send_message.
-    // We invoke executeTool with a synthetic ToolCall so the
-    // existing dispatcher handles auth, retries, audit logging.
-    // Group chats stay 'message_tool' per the resolver (inbound
-    // context populates chatType='group' for those), so this only
-    // fires for DM-style Teams chats.
+    // A Teams DM reply goes back to the same chat through `executeTool` (auth, retries, audit). Group
+    // chats never auto-route: inbound classification keeps them on the dashboard.
     try {
       const tc: ToolCall = {
         id: uuidv4(),
@@ -269,13 +156,7 @@ export async function pushReplyToChannel(
       }, agentId);
     }
   } else if (destination === 'email' && !state.repliedToCounterpartyThisTurn.email && state.inboundContext?.emailMessageId) {
-    // v2.7.24, email reply routing. Only fires when the inbound
-    // was a "Re:" from a known safe-sender (set in preflight). For
-    // those, the model's terminal text is sent as an in-thread
-    // reply via outlook_reply (Outlook) or gmail_reply (Gmail).
-    // Random new-email notifications keep the existing "agent
-    // decides whether to surface" flow, they get inboundChannel=
-    // 'dashboard', not 'email'.
+    // An email inbound with a message id gets the reply in-thread via outlook_reply or gmail_reply.
     const toolName = state.inboundContext.emailService === 'gmail' ? 'gmail_reply' : 'outlook_reply';
     try {
       const tc: ToolCall = {
@@ -284,8 +165,7 @@ export async function pushReplyToChannel(
         arguments: {
           message_id: state.inboundContext.emailMessageId,
           body: replyOut,
-          // B-1 (comms-audit): reply FROM the same mailbox that received it.
-          // Omitted before, so with 2+ agent accounts the reply silently failed.
+          // Reply from the same mailbox that received it; with several agent accounts it fails otherwise.
           ...(state.inboundContext.emailAccount ? { account: state.inboundContext.emailAccount } : {}),
         },
       };
@@ -301,10 +181,7 @@ export async function pushReplyToChannel(
       if (result.kind !== 'applied') {
         logger.warn('v2.7.24: email auto-reply failed', { agentId, tool: toolName, why: result.reason, error: result.result.content }, agentId);
       } else {
-        // Prefer the recipient address (the person we replied to) so the
-        // badge reads "to <addr> via email"; fall back to the thread
-        // subject form when the address isn't known (recipient stays null,
-        // badge falls back to "sent via email reply").
+        // The badge prefers the recipient address, else the thread subject.
         const emailRecipient = state.inboundContext.recipientAddress;
         const subjectPreview = state.inboundContext.emailSubject?.slice(0, 40) ?? '(no subject)';
         persistRoutingMarker(
@@ -325,16 +202,8 @@ export async function pushReplyToChannel(
       }, agentId);
     }
   } else if (destination === 'phone' && !state.repliedToCounterpartyThisTurn.phone && state.inboundContext?.phoneCallSid) {
-    // v2.9.18 - phone call reply routing. The agent just emitted
-    // text in response to a caller utterance during an active
-    // phone call. Push the text into the call's TTS pipeline so
-    // it gets spoken back over the same call.
-    // v2.9.23, if streaming TTS already flushed sentences via
-    // onChunk above, we ONLY queue whatever tail remains in
-    // turnCtx.phoneStreamBuffer. If nothing was streamed (e.g. the
-    // model returned in one shot, or onChunk never fired) we
-    // fall back to the original one-shot push so we never
-    // silently drop the reply.
+    // Speak the reply on the active call. If streaming TTS already spoke the body, queue only the
+    // remaining tail; otherwise push the whole reply, so it is never silently dropped.
     try {
       const { getCallSession } = await import('../../../../twilio/call-session.js');
       const session = getCallSession(state.inboundContext.phoneCallSid);
@@ -347,14 +216,9 @@ export async function pushReplyToChannel(
           agentId, callSid: state.inboundContext.phoneCallSid,
         }, agentId);
       } else if (turnCtx.phoneStreamFlushedAny) {
-        // Streaming path took care of the body. Flush the
-        // remaining tail (final sentence without trailing
-        // punctuation-plus-whitespace) if any.
         const tail = redactHandedCredentials(agentId, turnCtx.phoneStreamBuffer).trim();
         if (tail) {
-          // PHASE-2 T5: the phone door records per UTTERANCE, so the whole reply is
-          // declared as one scope and its sentences fold into one row. A reply spoken
-          // in four sentences is one thing the caller heard.
+          // One reply is one outbound row, however many sentences it is spoken in.
           await withOutboundAsync(
             {
               agentId, tool: 'auto-route', channel: 'phone', text: tail,
@@ -397,11 +261,7 @@ export async function pushReplyToChannel(
       }, agentId);
     }
   } else if (destination === 'sms' && !state.repliedToCounterpartyThisTurn.sms && state.inboundContext?.smsFromNumber) {
-    // v2.9.18 - SMS reply routing. Inbound SMS from a known
-    // sender → agent's terminal text auto-routes back via
-    // Twilio sendSms to the original sender. From-number is
-    // the same Twilio number that received the inbound (so
-    // the thread looks continuous on the recipient's phone).
+    // Reply to the SMS sender from the number that received it, so the thread stays continuous.
     try {
       const { sendSms } = await import('../../../../twilio/client.js');
       const { getDefaultFromNumber } = await import('../../../../twilio/auth.js');
@@ -418,12 +278,8 @@ export async function pushReplyToChannel(
           },
           async () => {
             const res = await sendSms(smsTo, smsText, fromNumber);
-            // C26 (FA-C3): the SMS auto-route was the only durable-channel auto-send
-            // without a receipt, so a PM/user story could not prove it happened. Write a
-            // tier-1 receipt exactly like the sms_send TOOL and the iMessage auto-route:
-            // verified on the Twilio SID (provider-id), else http-status. This cannot block a
-            // completion, the gate only demands receipts for turns that ran a send TOOL.
-            // PHASE-2 T5: inside the scope, so the receipt links to the delivery row.
+            // Tier-1 receipt like the sms_send tool: verified on the Twilio SID, else http-status.
+            // Written inside the scope so it links to the delivery row.
             if (res.ok) {
               const sid = res.data.sid;
               writeToolReceipt({ agentId, tool: 'sms_send', tier: 1, verified: !!sid, basis: sid ? 'provider-id' : 'http-status', providerId: sid ?? null, recipient: smsTo, sentText: smsText, detail: { route: 'auto', textLength: smsText.length } });

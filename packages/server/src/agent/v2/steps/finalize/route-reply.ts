@@ -1,20 +1,5 @@
-// ════════════════════════════════════════
-// PHASE-6 T9 (CUT 4) — THE REPLY-DESTINATION RESOLVER
-//
-// Relocated verbatim from `agent/v2/loop.ts` (`:8026`–`:8241` and `:8566`–`:8572` at
-// `0942fd9`). Bounds, wording and log lines unchanged; the channel branches themselves
-// are `channel-push.ts`, split on the seam the block already had (the resolver decides
-// WHERE, the push does the sending).
-//
-// ⚠ THIS FILE CARRIES THE KIT'S INSTRUMENT ANCHOR (GUARD-AUDIT F2). The harness
-// patches the entry guard below — `if (isPrimaryAgent(agentId) && …)` — so a dedicated
-// test agent is route-eligible in dev sim mode. `dojo-test-kit/server-instruments/
-// manifest.mjs` is re-pointed at this file in the same task, because `install.mjs`
-// pre-checks every anchor and exits 1: a cut that ignored it would strand every
-// subsequent battery run. The anchor TEXT is unchanged except for the two spaces of
-// indentation the new nesting depth forces, and the patch's own lazy import is
-// re-based one directory level, exactly as the executor's anchor move (`e05860f`) did.
-// ════════════════════════════════════════
+// Reply-destination resolver: decides WHERE the terminal reply goes; `channel-push.ts` sends it.
+// The dev test kit's instrument manifest anchors on the entry guard line below; keep its text unchanged.
 
 import { createLogger } from '../../../../logger.js';
 import { isPrimaryAgent } from '../../../../config/platform.js';
@@ -36,62 +21,17 @@ export async function routeTerminalReply(
 ): Promise<AgentTurnState> {
   const { agentId, turnNumber, turnCtx, counterparty, chosenConvKey, settledContextWakeTurn, isEngineTurn } = ctx;
 
-  // ── Reply-destination resolver (v2.7.23, OpenClaw-inspired) ──
-  // The model just writes text; the engine decides which channel to
-  // route it through. The 2.7.22 "model must call imessage_send for
-  // every reply" pattern failed in practice (the model defaults to
-  // streaming text and can't reliably switch to tool mode for short
-  // conversational replies), historical investigation logged
-  // separately in the iMessage-routing fix notes.
-  //
-  // Routing rules (see reply-destination.ts):
-  //   - inbound from channel X → reply auto-routes back to X
-  //   - dashboard inbound / proactive turn → dashboard
-  //   - AWAY OVERRIDE: dashboard destination + presence='away' +
-  //     bridge configured → rewrite to iMessage so the user (who
-  //     isn't at the dashboard) gets the message on their phone
-  //
-  // Dedup: if the agent already called the channel's explicit send
-  // tool this turn (state.explicitSendThisTurn[channel]), skip the
-  // auto-route, they handled it directly.
+  // Route the reply back to the inbound channel, else the dashboard (iMessage if the owner is away).
   if (isPrimaryAgent(agentId) && state.lastAssistantTextForIM) {
     try {
       state = await appendUndeliveredLinks(state, ctx);
-      // Turn continuity: this turn produced a terminal reply for its human
-      // counterparty. Tagging this turn's messages with the conversation's
-      // conv_key (below) is BOTH the durable "served" signal (the next turn
-      // moves on to the next waiting conversation rather than re-answering this
-      // one, and it survives a restart) AND the content-isolation tag. A turn
-      // that ends WITHOUT reaching here (interrupted by a gate/limit mid-task)
-      // tags nothing, so the conversation stays waiting and resumes under the
-      // SAME counterparty, routing correctly.
-      // t141: this turn's own rows were labelled with their conversation AT INSERT
-      // (`memory/message-store.ts ownRowSubject`); the late re-tag that stood here is deleted.
 
       const { getPresence, isImessageConfigured } = await import('../../../../services/presence.js');
       const { sendResponseViaIMessage } = await import('../../../../services/imessage-bridge.js');
 
-      // Invariant #2 (attribution redesign): an A2A turn's reply goes to the
-      // other agent via send_to_agent, its trailing text must NEVER route to
-      // a human channel. Without this guard, resolveReplyDestination falls
-      // through to the dashboard default and the "away" override then promotes
-      // it to iMessage, texting the OWNER an answer meant for another agent
-      // (observed: the PM agent's A2A question answered by texting the owner). Force the
-      // no-auto-route value ('dashboard' matches none of the channel branches
-      // below) when this turn's counterparty is an agent.
       const presenceNow = getPresence();
-      // ── Turn-anchored auto-route (phantom-outreach fix, 2026-07-18) ──
-      // The 3:32 AM phantom: a background wake with NO inbound this turn produced
-      // user-facing text, and this auto-route promoted it to the owner's phone on
-      // channel AFFINITY ALONE (owner's recent channel), inboundChannel null, owner
-      // not away. Affinity is not consent. Refuse the affinity-only promotion here,
-      // at the destination computation (not the send site): downgrade to dashboard.
-      // The two affirmative bases survive untouched inside resolveReplyDestination,
-      // a human iMessage counterparty (Layer 1) and the away-owner promotion (Layer
-      // 2), and the model-initiated imessage_send TOOL path is a separate, explicit
-      // act that never reaches here.
-      // 3.5: the inbound this reply is bound to comes from the turn's ADDRESS (restored on a
-      // continuation, which has no trigger row), not from `state.inboundChannel` alone.
+      // Affinity alone is not consent: an affinity-only promotion with no basis is refused. The bound
+      // inbound comes from the turn's address, since a continuation has no trigger row.
       const boundInbound = turnCtx.address ? turnCtx.address.boundChannel : state.inboundChannel;
       const affinityRefused = affinityPromotionRefusedNoBasis({
         ownerAffinityChannel: turnCtx.ownerAffinityDestination,
@@ -105,9 +45,8 @@ export async function routeTerminalReply(
         }, agentId);
       }
       const effectiveOwnerAffinity = affinityRefused ? null : turnCtx.ownerAffinityDestination;
-      // ONE source for the rule: the same resolver that told the agent where its reply goes.
-      // An agent counterparty never auto-routes to a person (invariant #2 above); the address
-      // already says so, and the fallback (no address) says it from the counterparty.
+      // One source for the rule: the resolver that told the agent where its reply goes. An agent
+      // counterparty never auto-routes to a person; without an address the counterparty says so.
       const routeAddress = turnCtx.address ?? {
         kind: counterparty.kind === 'agent' ? 'agent' as const : 'person' as const,
         isOwner: counterparty.kind === 'user' && counterparty.relation === 'owner',
@@ -116,62 +55,26 @@ export async function routeTerminalReply(
       const destination = resolveDeliveryChannel(routeAddress, {
         presence: presenceNow,
         imessageBridgeConfigured: isImessageConfigured(),
-        // RC-10 affinity (rate limited, resolved at turn start); the resolver nulls an
-        // affinity-only promotion itself (phantom-outreach fix), mirrored in the log above.
         ownerAffinityChannel: turnCtx.ownerAffinityDestination,
       });
-      // RC-10: if the affinity promotion is what put this reply on iMessage (the away
-      // override would have promoted regardless, but affinity is a distinct, rate-
-      // limited mechanism), record it so a background-wake storm can't become a text
-      // storm. Recorded only when the promotion actually resolves to iMessage AND
-      // affinity DROVE it this turn (effectiveOwnerAffinity, so a refused promotion
-      // never starts a cooldown) AND the owner is not away; the per-conversation
-      // cooldown starts now.
+      // Record the promotion only when affinity drove this reply onto iMessage with the owner not
+      // away, so the per-conversation cooldown keeps a wake storm from becoming a text storm.
       if (destination === 'imessage' && effectiveOwnerAffinity === 'imessage' && presenceNow !== 'away') {
         recordAffinityPromotion(agentId, turnCtx.ownerAffinityConversationId);
       }
 
-      // ── Settled-context hold (phantom-outreach fix, 2026-07-18) ──
-      // The single settled-context tripwire implementation (moved here from the
-      // in-loop calibration site so the hold can reach the route decision). This turn
-      // started with every visible user conversation already answered; a user-facing
-      // outbound with NO inbound this turn (inboundChannel null) and no active human
-      // conversation is the phantom shape. For it we withhold the auto-route CHANNEL
-      // PUSH: no iMessage/SMS/etc. push fires. This is channel discipline, NOT reply
-      // suppression, the reply text stays persisted and visible in the dashboard chat
-      // exactly as it already is (design law: never suppress agent replies; only the
-      // outbound PUSH is withheld). Carve-outs keep genuine proactive deliveries
-      // flowing to an away owner: an A2A turn (forced to dashboard anyway), an engine
-      // turn (a scheduler/reminder the agent must deliver), and an engine completion
-      // ack (a real "done" for just-finished work, always-ack hard rule) are never
-      // held.
-      // PHASE-4 T4 — THE CARVE-OUT PILE IS DISSOLVED (scar-tissue ledger :102, verdict
-      // STRIP, precondition "P4 provides the affirmative-basis read"). What stood here was
-      // six booleans ANDed, five of them negations, whose meaning existed only as a
-      // conjunction — and every new exemption was one more `&& !flag`, which is how a pile
-      // becomes a pile. The rule is stated once and positively now: a user-facing CHANNEL
-      // PUSH requires an AFFIRMATIVE ROOT, and each old negation is one named root
-      // (`agent/v2/outbound-root.ts`). No root -> held. The dissolution is EXACT and it is
-      // proven by exhausting all 64 input combinations against the original expression,
-      // transcribed verbatim into `__tests__/outbound-root.test.ts` as the oracle.
-      //
-      // requirement preserved: "user-facing outbound needs an affirmative root; carve-outs
-      // become root kinds, not boolean flags" — the ledger's own line, discharged here.
-      // Design law untouched: only the PUSH is withheld; the reply stays persisted, broadcast
-      // and visible in the dashboard exactly as it already is.
+      // A user-facing CHANNEL PUSH needs an affirmative root (`outbound-root.ts`); with none it is held.
+      // Only the push is withheld: the reply stays persisted and visible in the dashboard.
       const routeRoot = outboundRoot({
         inboundChannel: boundInbound,
         settledContextWakeTurn,
         counterpartyKind: counterparty.kind,
         isEngineTurn,
-        // A steered closeout reply IS the completion ack, in the agent's own
-        // voice (owner ruling 2026-07-22); it keeps the same standing.
+        // A steered closeout reply is the completion ack in the agent's own voice; same standing.
         steeredForSilentCloseout: steerFired(state.steerQueue, 'silent-closeout'),
       });
       const settledContextHold = routeRoot.held;
-      // Calibration log (2026-07-09 re-answer class + the phantom outcome), one line
-      // per settled-wake user-facing outbound, carrying the routing outcome AND the root
-      // that permitted it — "why did this go out" was unanswerable from a conjunction.
+      // One line per settled-wake user-facing outbound, with the outcome and the root that permitted it.
       if (settledContextWakeTurn && counterparty.kind !== 'agent') {
         const heldNow = settledContextHold && destination !== 'dashboard';
         logger.warn('settled-context tripwire: user-facing outbound from a wake turn whose visible conversations were all answered; verify it is a genuine delivery and not a re-answer', {

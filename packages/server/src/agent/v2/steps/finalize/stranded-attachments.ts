@@ -1,16 +1,5 @@
-// ════════════════════════════════════════
-// PHASE-6 T9 (CUT 4) — THE show_to_user END-OF-TURN SAFETY NET
-//
-// Relocated verbatim from `agent/v2/loop.ts` (`:8574`–`:8662` at `0942fd9`). Bounds,
-// wording and log lines unchanged.
-//
-// The incident it exists for is named in its own comment (2026-06-06, JJ's report):
-// the model queued attachments through `show_to_user` and then wrote no terminal text,
-// so the files vanished. And the A-1/A-2 half is the one that is easy to lose in a
-// move: this net runs AFTER the channel router above, so setting the reply text here
-// would never route — the files are sent to an iMessage requester DIRECTLY, right
-// here, or they reach the dashboard only.
-// ════════════════════════════════════════
+// End-of-turn safety net for files queued by `show_to_user` with no terminal text after them.
+// It runs after the channel router, so it sends files to an iMessage requester itself.
 
 import { v4 as uuidv4 } from 'uuid';
 import type { Message } from '@dojo/shared';
@@ -28,29 +17,15 @@ export async function surfaceStrandedAttachments(
   ctx: FinalizeContext,
 ): Promise<AgentTurnState> {
   const { agentId, turnNumber, counterparty, broadcast, noteTerminalAnswer } = ctx;
-  if (turnParkedTheJob(agentId)) return state;   // t159 G: a park is not the job's end; its queued files ride the reply that is
+  if (turnParkedTheJob(agentId)) return state;   // a park is not the job's end; files ride the final reply
 
-  // v2.9.20, show_to_user end-of-turn safety net.
-  //
-  // If the turn ended with attachments still queued from
-  // show_to_user calls (the model didn't write terminal text
-  // after queuing - common failure mode that lost JJ's report on
-  // 2026-06-06), surface them now as a final assistant message
-  // so they reach the user instead of vanishing. Uses any caption
-  // strings the model passed to show_to_user as the bubble text;
-  // falls back to a generic "Here are the files for you." when
-  // no caption was provided.
+  // Surface still-queued attachments as a final assistant message so they reach the user.
   try {
     const { drainPendingAttachmentsWithCaptions } = await import('../../../pending-attachments.js');
     const stranded = drainPendingAttachmentsWithCaptions(agentId);
-    // P6b-2c: the per-session filename dedup died with the durable-rows
-    // rekey. delivered_at on the artifact row IS the once-only guarantee; a
-    // re-generated file in a later turn is a NEW artifact and legitimately
-    // surfaces again (the old filename-history scan suppressed genuine
-    // updated versions along with the spam it targeted).
+    // delivered_at on the artifact row is the once-only guarantee; a regenerated file is a new artifact.
     if (stranded.attachments.length > 0 && counterparty.kind !== 'agent') {
-      // Caption: only the model's own words. The engine writes none (P12/R1): a surfaced file with no
-      // caption goes out bare and the agent is told below so it can add its own words.
+      // Caption: only the model's own words; with none the file goes out bare and the agent is told.
       const captionText = stranded.captions.length > 0
         ? stranded.captions.join('\n\n')
         : '';
@@ -86,18 +61,11 @@ export async function surfaceStrandedAttachments(
         fileCount: stranded.attachments.length,
         captionCount: stranded.captions.length,
       }, agentId);
-      // A-1/A-2 (comms-audit): this safety net runs AFTER the channel router above,
-      // so setting lastAssistantTextForIM here would NEVER route, the stranded
-      // deliverable files reached only the dashboard. If the requester is on
-      // iMessage, send the FILES (with the caption on the first) to them directly so
-      // a file they asked for actually reaches their channel, not just the dashboard.
+      // Setting the reply text here would never route (the router already ran), so send the files
+      // directly to an iMessage requester, caption on the first.
       if (counterparty.kind === 'user' && counterparty.channel === 'imessage' && counterparty.senderId) {
         try {
-          // Design ruling 13: this is the SIXTH outbound arm — the one that does not go
-          // through `channel-push.ts`'s single derivation, because it runs after the
-          // router and carries a caption rather than the reply. It leaves the box all the
-          // same, so it takes the same scrub; leaving it out would make the guard's own
-          // "one derivation for every arm" claim wider than the code.
+          // This outbound arm bypasses `channel-push.ts`, but it leaves the box, so it takes the same scrub.
           const { redactHandedCredentials } = await import('../../../../credentials/secret-fields.js');
           const captionOut = redactHandedCredentials(agentId, captionText);
           // The helper also tells the agent (so its reply does not claim the file arrived).
@@ -106,8 +74,7 @@ export async function surfaceStrandedAttachments(
         } catch (err) {
           logger.warn('A-1/A-2: stranded-file iMessage delivery failed', { agentId, error: err instanceof Error ? err.message : String(err) }, agentId);
         }
-        // A file that did not reach the requester: the AGENT is told by textFilesToRequester and
-        // tells the person itself. The platform does not message the owner (C2, R1/R2).
+        // On failure textFilesToRequester tells the agent, which tells the person; the platform does not.
       }
       state = advance(state, { lastAssistantTextForIM: captionText });
       noteTerminalAnswer(synthId, 'stranded files surfaced');
