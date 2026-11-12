@@ -1,53 +1,5 @@
-// ── The turn record (lanes & lineage P4, 2026-07-21; rebuilt PHASE-2 T2 Step 2) ──
-//
-// Durable answer to "what did turn N serve, and how did it end". Written at turn start
-// (after the trigger claim, when kind/subject/root are known) and finalized on every exit
-// path in the loop's outer finally; the recovery site closes turns that died on an exception.
-//
-// THREE THINGS CHANGED IN PHASE-2 T2, each because the old shape hid a fact:
-//
-//  1. IDENTITY IS ALLOCATED HERE, IN-TRANSACTION, from this table's own MAX — not derived by
-//     the caller from `MAX(messages.turn_number)`. The old derivation is wrong whenever a
-//     turn writes no messages or an agent's history is cleared: `messages` restarts at 1
-//     while `turns` keeps climbing, the derived number COLLIDES with a recorded turn, and the
-//     `ON CONFLICT DO UPDATE` below silently overwrote the older turn's record. Measured on
-//     this box before the change: for all 61 agents with turn history, MAX(turns) >=
-//     MAX(messages) — 8 agents had turn rows and NO messages at all — so moving the source to
-//     `turns` only ever moves the number FORWARD, never back over a used one.
-//
-//  2. THE `ON CONFLICT DO UPDATE` IS DELETED. A collision is now a UNIQUE violation that
-//     throws where it happened. Silently rewriting a turn record is how "537 of 4,260 turn
-//     rows have no kind" happens and nobody notices.
-//
-//  3. `outcome` SPLIT INTO `exit_reason` + `answered`. One column meant both "why did the
-//     turn end" and "has the person heard from us", and the second meaning was then
-//     re-derived at ~29 sites from nine other variables. `exit_reason` is a 15-value enum
-//     (CHECKed in the DB); `answered` is 0/1 NOT NULL with no default, so a writer must say.
-//
-// exit_reason vocabulary (the CHECK in migration 184 is the authority — it SUPERSEDES 135's,
-// which declared seventeen):
-//   answered · no_reply_intended · park · handoff · iteration_cap · brake ·
-//   identical_call · stop · preempt · provider_error · stream_idle · abort · terminated ·
-//   budget · unknown
-//
-// ── TWO WORDS LEFT THIS LIST, AND THE REASON IS THE POINT (t113 C, orchestrator ruling) ──
-//
-// It declared SEVENTEEN. t93 set out to give every declared reason a writer, found TEN unwired
-// rather than the eight its brief named, and wrote eight of them. The last two had no writer
-// and t93 deliberately did not invent one: both are MODEL dispositions and neither is in
-// `ENGINE_IMPOSED_EXITS`, so wiring either changes what the anti-repetition ladder CHARGES and
-// not merely what the record says. The obvious site for the delegation one is a turn that
-// records `park` today — and `park` IS engine-imposed — so the move would have started
-// spending rungs on every delegating turn. A behaviour change nobody ordered.
-//
-// Held for a ruling, and the ruling is RETIRE. A vocabulary that names events which cannot
-// happen is the dishonest-record family: every reader of this type is entitled to assume each
-// member is a thing that occurs, and two of them never did. Either can return the day somebody
-// defines the event that writes it AND rules on what the ladder should charge for it.
-//
-// The census `agent/v2/__tests__/eight-exit-reasons-get-their-writers.test.ts` is what keeps
-// this honest in BOTH directions: it holds the vocabulary and refuses a member with no writer,
-// so re-adding a writerless word reds it.
+// Turn record: what each turn served and how it ended. TurnExitReason must match migration 184's CHECK;
+// the census test eight-exit-reasons-get-their-writers.test.ts refuses a member with no writer.
 import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
 
@@ -58,14 +10,8 @@ export type TurnExitReason =
   | 'iteration_cap' | 'brake' | 'identical_call' | 'stop' | 'preempt' | 'provider_error'
   | 'stream_idle' | 'abort' | 'terminated' | 'budget' | 'unknown';
 
-/**
- * The subset a TURN SITE may latch as "the engine or the owner ended this turn" — t93's
- * carrier (`agent/v2/engine-exit.ts`) is typed on it, so a site cannot latch the model's own
- * disposition (`answered`, `handoff`) or the quarantine value (`unknown`).
- *
- * `brake` and `identical_call` are absent BECAUSE THEY ARE NOT LATCHED: both are derived in
- * the recorder from the tool phase's own state, so a carrier would be a second copy.
- */
+/** Exits a turn site may latch as engine- or owner-imposed (engine-exit.ts); not the model's own exits.
+ * `brake` and `identical_call` are absent: the recorder derives them from the tool phase's state. */
 export type EngineCutReason = Extract<TurnExitReason,
   'stop' | 'preempt' | 'abort' | 'terminated' | 'budget' | 'provider_error' | 'stream_idle'>;
 
@@ -78,19 +24,12 @@ export interface TurnStartParams {
   rootId: string | null;
   sourceMessageId: string | null;
   convKey: string | null;
-  /** P8: the spoken-stream lane, typed on the record ('voice' in-person, 'phone' live call,
-   *  null for text lanes) so consumers stop re-deriving it from source flags and prose. */
+  /** Spoken-stream lane: 'voice' in person, 'phone' on a live call, null for text lanes. */
   lane?: 'voice' | 'phone' | null;
 }
 
-/**
- * Allocate this agent's next turn number AND record what the turn serves, in one statement.
- *
- * Deliberately NOT best-effort: the returned number is the turn's identity, and every message,
- * receipt and delivery this turn writes is stamped with it. A caller that swallowed a failure
- * here would be stamping rows with a number that belongs to a different turn. It throws, and
- * the loop's own injury path records the death honestly.
- */
+/** Allocate the next turn number from `turns` (never `messages`, which restarts on a history clear) and
+ * record the turn in one statement. Throws on failure or collision: this turn's rows all carry it. */
 export function startTurn(params: TurnStartParams): number {
   const row = getDb().prepare(`
     INSERT INTO turns (
@@ -110,32 +49,7 @@ export function startTurn(params: TurnStartParams): number {
   return row.turn_number;
 }
 
-/**
- * THE turn number this agent is on. G24 (research 06 requirement 24), PHASE-3 T5 rider (c).
- *
- * REPLACES four copies of `SELECT MAX(turn_number) FROM messages WHERE agent_id = ?` + 1:
- * three readers in `memory/assembler.ts` (continuity-brief window, post-compaction
- * scaffolding window, tool-result stub age) and the WRITER in `memory/compaction.ts` that
- * set the value the first two compared against. Research 06 §7's three defects — three DB
- * round-trips for one number; a value that "only advances when a row persists, so a turn
- * persisting nothing never advances"; and writer and readers deriving it at different
- * moments, so "a row landing between shifts the window by one". `turns` allocates the
- * number at turn START, so it is not derived, cannot race a write, and does not care
- * whether the turn wrote anything.
- *
- * WHY MAX AND NOT "THE OPEN TURN", measured before choosing: 139 of 3,090 live turn rows
- * have `ended_at IS NULL`, because a turn that dies never reaches `finalizeTurn` — and
- * the PRIMARY agent, the one both prompt goldens are bound to, held an open row at turn 246 while
- * 264 had already been allocated. That reader would have answered eighteen turns stale on
- * the one agent every prompt gate watches.
- *
- * THE SHIFT, measured: on 29 of 48 agents the old expression was exactly one HIGHER; on the
- * other 19 it was LOWER by up to two, those being agents that ran turns persisting nothing.
- * The brief window keeps its shape (writer and readers move together, so `current + 3`
- * compares on one scale); the stub age is absolute and shifts 40 of 2,766 live tool rows
- * (1.4%), all toward keeping content one turn longer — correct, since a result written in
- * turn N is zero turns old in turn N, not minus one.
- */
+/** The turn this agent is on: MAX of `turns`, not the open row (a killed process leaves its turn open). */
 export function currentTurnNumber(agentId: string): number {
   try {
     const row = getDb()
@@ -143,8 +57,7 @@ export function currentTurnNumber(agentId: string): number {
       .get(agentId) as { max_turn: number | null } | undefined;
     return row?.max_turn ?? 0;
   } catch (err) {
-    // Never kill an assembly over the clock. A 0 reads as "no turns yet", which closes the
-    // brief and scaffolding windows rather than opening them — the fail-safe direction.
+    // Never fail a caller over the clock; 0 reads as "no turns yet", the fail-safe direction.
     logger.warn('currentTurnNumber failed; treating as 0', {
       agentId, error: err instanceof Error ? err.message : String(err),
     });
@@ -152,44 +65,11 @@ export function currentTurnNumber(agentId: string): number {
   }
 }
 
-/**
- * The continuity brief's window, in turns. `memory/compaction.ts` writes
- * `continuityBriefValidUntilTurn = currentTurn + this` after a compaction; the two readers in
- * `memory/assembler.ts` compare against it. It lives HERE, beside the clock, because the READ
- * side needs it to bound the value (see `readStoredTurnThreshold`) and a horizon re-declared
- * on the read side is precisely the writer/reader pair research 06 §5 catalogues.
- */
+/** The continuity brief's window, in turns. */
 export const CONTINUITY_BRIEF_HORIZON_TURNS = 3;
 
-/**
- * Read a stored turn threshold, WITH AN UPPER SANITY BOUND. PHASE-3 T6.
- *
- * ── THE CLASS, MEASURED ON THE LIVE DEV BODY (2026-08-01) ────────────────────────────────
- * A threshold is written as `currentTurn + horizon` and read as `currentTurn < threshold`.
- * It had no upper bound, so a value from a DIFFERENT numbering era never expires — it is
- * permanently in the future, and the lane it gates fires on every turn for the rest of the
- * agent's life. Three of five held one (IDs below; the two configurable ones as platform.ts defaults):
- *
- *     agent      stored   current turn   verdict before      verdict after
- *     primary      1598            264   valid for 1,334     expired
- *     healer        122              9   valid for 113       expired
- *     imaginer       19              0   valid for 19        expired
- *     dreamer        24             27   expired             expired
- *     pm             11            730   expired             expired
- *
- * The primary agent is the one both prompt goldens are bound to, so its brief and its whole
- * post-compaction scaffolding block had been permanently admitted.
- *
- * ── WHERE "ABSURD" COMES FROM ───────────────────────────────────────────────────────────
- * NOT invented (#14): from the WRITER'S OWN HORIZON. The writer can only ever store
- * `currentTurn + horizon`, and `currentTurn` never decreases, so at any later read a value
- * above `currentTurn + horizon` is one no writer on this clock could have produced. Equality
- * is deliberately INSIDE the bound: a brief written this instant reads back at exactly
- * `currentTurn + horizon` and must stay valid.
- *
- * Returns `null` — the same answer as "absent" — so both readers treat a fossil as EXPIRED
- * without either of them learning a new branch.
- */
+/** A stored `currentTurn + horizon` threshold, or null (expired) when invalid or above that bound, which
+ * no writer could store. Equality stays valid: a threshold written this instant reads back at the bound. */
 export function readStoredTurnThreshold(
   raw: unknown,
   currentTurn: number,
@@ -205,11 +85,7 @@ export function readStoredTurnThreshold(
   return raw;
 }
 
-/**
- * How the turn ended. `answered` is passed explicitly rather than inferred from the exit
- * reason, because "the turn ended in a way that usually means we replied" and "a reply was
- * delivered" are exactly the two facts this platform kept confusing.
- */
+/** How the turn ended. `answered` is passed, never inferred: an exit reason does not prove a reply. */
 export function finalizeTurn(
   agentId: string,
   turnNumber: number,
@@ -232,21 +108,8 @@ export function finalizeTurn(
   }
 }
 
-/**
- * PHASE-2 T3 — `effectful_calls`, made DURABLE the moment the effect happens.
- *
- * T2 landed the column and persisted the loop's in-memory counter at finalize. That is the
- * right number on every path except the one the counter exists for: a process KILLED
- * between the effect and the end of the turn never reaches finalize, so the column reads 0
- * and the boot reconciliation would hand the ask back and do the effect a second time —
- * which is precisely what P6b forbids ("a duplicate send is worse than a stranded ask").
- * So the count is written HERE, beside the effect, and `finalizeTurn` can only ever raise
- * it (`MAX`), never lower it: two observation points of one fact, and the fail-safe
- * direction is the only one they can disagree in.
- *
- * Deliberately not best-effort-silent: a failure to record an effect is logged, because the
- * consequence of losing this number is a duplicated side effect.
- */
+/** Count an effect when it happens, or a process killed before finalize reads 0 and boot reconciliation
+ * redoes it; `finalizeTurn` only raises the count (MAX). Failures log: a lost count duplicates effects. */
 export function bumpEffectfulCalls(agentId: string, turnNumber: number, by = 1): void {
   if (by <= 0) return;
   try {
@@ -260,23 +123,8 @@ export function bumpEffectfulCalls(agentId: string, turnNumber: number, by = 1):
   }
 }
 
-/**
- * A turn that died on an exception gets an honest terminal state instead of an open-ended row.
- *
- * It takes the `turn_number` its caller already holds (`AgentTurnState.turnNumber`); the old
- * signature closed EVERY open turn for the agent and on a concurrent turn closed the wrong one.
- *
- * The reason DEFAULTS to `'unknown'`, not `'provider_error'`: the injury path does not know
- * whether the cause was the provider, the model or a bug, and 'unknown' is the enum's
- * quarantine value. Naming a cause we did not observe is the failure this project keeps
- * finding, and that refusal is unchanged.
- *
- * t93: WHY IT TAKES THE REASON, AND WHY THAT IS NOT A WEAKENING. This runs on the `catch` arm
- * ~40 statements AHEAD of the `finally` arm's `finalizeTurn`, and both carry `AND ended_at IS
- * NULL` — so on the injury path THIS word lands, and it was `unknown` even for a watchdog cut
- * the engine had already classified. The caller passes what `engine-exit.ts` OBSERVED, never a
- * guess: the classifier answers null for an error it cannot place, so the default stands.
- */
+/** Close a turn that died; 'unknown' unless the caller passes the cut it observed (never a guess).
+ * This and `finalizeTurn` both skip ended rows, so whichever runs first decides the reason. */
 export function markTurnDied(
   agentId: string, turnNumber: number, reason: TurnExitReason = 'unknown',
 ): void {
@@ -288,35 +136,8 @@ export function markTurnDied(
   } catch { /* best effort: an injury record must not raise a second injury */ }
 }
 
-/**
- * Close every still-open turn of ONE agent whose run is over, as `terminated`.
- *
- * ── TWO CALLERS, TWO CASES, AND NEITHER COVERS THE OTHER (review I-1) ────────────────────
- * The first cut had only the reaper and claimed it filled the whole population; it does not.
- * Each caller holds its own verdict, this module holds the statement:
- *   `agent-status.ts`'s BOOT SWEEP — THE COMMON CRASH: killed mid-turn and restarted
- *   inside the hour (the ordinary restart, the update, the crash-loop). It reached NO writer
- *   before, because `index.ts` runs the reaper BEFORE the boot status reset and once that
- *   reset writes `idle` the periodic reaper never visits the row again. That sweep is the site
- *   that KNOWS — "restarting is the only thing that can know that", its own words — and it
- *   selects the `working` ids and calls this per id, the shape `terminateDuplicateAgentsByName`
- *   already uses over there: the statement count stays at one owner.
- *
- *   `runtime.ts`'s PERIODIC REAPER — THE >75-MINUTE-STALE CASE ONLY: a `working` row whose
- *   `updated_at` has not moved past the cliff AND which is not live in `activeRuns`.
- *
- * A process killed mid-turn runs no `finally`, so its row keeps `ended_at IS NULL` for ever —
- * `work/occurrences.ts` measured 22 on one agent and 279 across seven. Those rows belong to
- * agents long since `idle`, so neither caller retro-closes them: together they stop the
- * population GROWING; they do not drain it. Both cases driven, with the narrative, in
- * `agent/__tests__/a-crashed-run-does-not-leave-its-turn-open.test.ts`.
- *
- * SCOPED TO ONE AGENT for the reason `markTurnDied` is scoped to one turn: a sweep over the
- * table would close turns belonging to runs nobody judged. RESIDUAL: a catatonic run that
- * later finalizes finds `ended_at` set and writes nothing — the injury path's own precedence.
- *
- * @returns how many rows were closed, so each caller's log distinguishes nothing from nine.
- */
+/** Close every open turn of ONE agent as `terminated`, returning the count. Callers: the boot sweep
+ * (agent-status.ts) and the stale-row reaper (runtime.ts). One agent only: no unjudged run's turns close. */
 export function markTurnsTerminated(agentId: string): number {
   try {
     const r = getDb().prepare(`

@@ -1,17 +1,6 @@
-// ════════════════════════════════════════
-// The per-(agent, tool) outcome record (t190, C1; migration 195).
-//
-// WHY IT EXISTS. `agent_tool_failures` (attempt-record.ts) is keyed by call SIGNATURE and is
-// cleared only by an identical call, which is right for spotting circling and wrong for
-// "is this tool healthy". One failed gmail_label on one email stayed an "unresolved failure"
-// forever while the tool worked on every other email, and the status line told the agent so,
-// four times, until it blocked itself. This record is keyed by TOOL: a success of the tool
-// supersedes its earlier failure no matter which arguments either call used.
-//
-// WRITTEN on every tool result (`recordToolOutcome` calls `noteToolOutcome`). READ by the live
-// status line (memory/integration-status-lane.ts) and the PM's block review
-// (tracker/block-review-facts.ts). Best-effort: a recording fault never reaches the turn.
-// ════════════════════════════════════════
+// Per-(agent, tool) outcome record. Keyed by TOOL, unlike the per-signature `agent_tool_failures`
+// (attempt-record.ts): any success of a tool supersedes its earlier failure, whatever the arguments.
+// Written by `recordToolOutcome` on every result; read by memory/integration-status-lane.ts. Best-effort.
 
 import { getDb } from '../../db/connection.js';
 

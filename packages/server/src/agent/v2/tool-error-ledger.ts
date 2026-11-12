@@ -1,9 +1,5 @@
-// ════════════════════════════════════════
-// The cross-agent tool-error ledger (K37; migration 206): one row per (tool, fingerprint) with
-// hits, the distinct agents, and a sample. Written on every failing tool result by
-// `recordToolOutcome`; read by the Healer's "recurring tool errors" section. Best-effort: a
-// recording fault never reaches the turn.
-// ════════════════════════════════════════
+// Cross-agent tool-error ledger: one row per (tool, fingerprint) with hits, agents and a masked sample.
+// Written by `recordToolOutcome` on each failed result; read by healer/recurring-tool-errors.ts.
 
 import { getDb } from '../../db/connection.js';
 import { redactHandedCredentials } from '../../credentials/secret-values.js';
@@ -13,8 +9,7 @@ export function noteToolError(agentId: string, toolName: string, errorText: stri
   if (!errorText) return;
   try {
     const db = getDb();
-    // Nothing identifying is stored or printed: a credential this agent handled is redacted first, then
-    // the same masks the fingerprint uses (addresses, paths, ids, numbers) take out the rest.
+    // Nothing identifying is stored: handled credentials are redacted, then the fingerprint masks apply.
     const text = redactHandedCredentials(agentId, errorText);
     const tool = canonicalToolName(toolName);
     const fp = fingerprint(toolName, text);

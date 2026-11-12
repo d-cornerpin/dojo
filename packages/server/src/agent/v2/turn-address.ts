@@ -1,18 +1,5 @@
-// ════════════════════════════════════════
-// THE TURN'S ADDRESS (3.5, "who am I sending to")
-//
-// One value, computed ONCE at preflight, that says who this turn is talking to and where
-// the written reply will really be delivered. Before it, five places each worked that out
-// for themselves (delivery channel, delivery person, the reply tag's channel, the tag's
-// name, the header) and they disagreed when two people were waiting, when a message
-// arrived mid-turn, on a continuation, on an owner-affinity turn, and on A2A/engine turns.
-//
-// Delivery, the notes the agent reads, and every engine text that names a recipient or a
-// reply route read THIS value. None of them recompute it.
-//
-// Pure on purpose: the caller hands in presence, bridge state and affinity, so every state
-// is unit-testable without a database.
-// ════════════════════════════════════════
+// The turn's address: who this turn talks to and where its written reply lands, computed once at preflight.
+// Delivery, the agent's notes and every engine text naming a recipient read this value; none recompute it.
 
 import type { Channel, Relation } from '@dojo/shared';
 import type { TurnCounterparty } from './counterparty.js';
@@ -23,35 +10,25 @@ import { affinityPromotionRefusedNoBasis } from './owner-affinity.js';
 import { turnContext } from '../turn-context.js';
 
 export interface TurnAddress {
-  /** person = a human; agent = another agent over A2A; engine = a scheduler/tracker event;
-   *  notification = a mailbox/channel notice (nobody is on the other end). */
+  /** person = a human; agent = an A2A peer; engine = a scheduler/tracker event; notification = nobody. */
   readonly kind: 'person' | 'agent' | 'engine' | 'notification';
   readonly name: string;
   readonly relation: Relation;
   readonly isOwner: boolean;
-  /** The person's address on the channel (phone number, handle), when the channel has one. */
   readonly senderId: string | null;
   readonly threadId: string | null;
-  /** How the message arrived. */
   readonly inboundChannel: Channel;
-  /** The channel delivery is bound to by the inbound (what `resolveReplyDestination`
-   *  Layer 1 reads). Restored on a continuation, which has no trigger row of its own. */
+  /** The channel the inbound binds delivery to; restored from the original turn on a continuation. */
   readonly boundChannel: InboundChannel;
-  /** The reply-routing context of that inbound (chat id, sms numbers ...), restored on a
-   *  continuation for the same reason. */
+  /** The inbound's reply-routing context (chat id, sms numbers), restored the same way. */
   readonly inboundContext: ChannelInboundContext | null;
-  /** Where the written reply is projected to land. `dashboard` for agent, engine and
-   *  notification turns (nothing is auto-routed to a person on those); an engine turn's
-   *  text is delivered like the owner's, so its channel is the real one. */
+  /** Projected landing: `dashboard` on agent and notification turns; engine turns get the real channel. */
   readonly deliveryChannel: ReplyDestination;
-  /** True when the written reply goes out on a routed channel (iMessage, SMS, email, Teams,
-   *  phone) rather than staying in the dashboard. */
+  /** The reply leaves the dashboard on a routed channel (person turns only). */
   readonly routed: boolean;
-  /** Whether the engine auto-routes THIS agent's written reply to a channel at all. Only the
-   *  primary agent's is; a sub-agent's reply stays in the dashboard whatever presence says. */
+  /** Only the primary agent's reply is auto-routed; a sub-agent's stays in the dashboard. */
   readonly autoRoutes: boolean;
-  /** The owner-affinity promotion resolved at preflight (null = none); kept so the live
-   *  resolver can re-apply the same rule with current presence. */
+  /** The owner-affinity promotion resolved at preflight, kept so the live resolver re-applies it. */
   readonly ownerAffinity: 'imessage' | null;
   /** A settled-context wake with no inbound: the text is held in the dashboard, not pushed. */
   readonly heldWake: boolean;
@@ -61,16 +38,14 @@ export interface ComputeTurnAddressInput {
   counterparty: TurnCounterparty;
   isEngineTurn: boolean;
   isNotificationTurn: boolean;
-  /** This turn's own inbound channel (null on a continuation or a wake with no trigger). */
+  /** Null on a continuation or a wake with no trigger. */
   inboundChannel: InboundChannel;
   inboundContext: ChannelInboundContext | null;
   presence: 'in_dojo' | 'away';
   imessageBridgeConfigured: boolean;
   ownerAffinityChannel: 'imessage' | null;
-  /** `isPrimaryAgent(agentId)`: only the primary agent's written reply is auto-routed to a channel. */
   autoRoutes: boolean;
-  /** True when every visible conversation was already answered at turn start; nothing is
-   *  pushed to a channel on such a wake (it is held), so the agent is not told it will be. */
+  /** Every visible conversation was answered at turn start: such a wake is held, not pushed. */
   settledContextWakeTurn?: boolean;
   /** The address the stashed turn had, when this turn is the continuation of a human turn. */
   restoredFrom?: TurnAddress;
@@ -82,17 +57,12 @@ export interface LiveDeliveryInputs {
   ownerAffinityChannel: 'imessage' | null;
 }
 
-/**
- * Where the written reply goes, from the address plus the live facts that can still change
- * (presence, bridge state, the affinity cooldown). Preflight uses it to tell the agent;
- * finalize uses it to deliver; both read the same address, so they cannot disagree about
- * WHO or about which inbound the reply is bound to.
- */
+/** Where the written reply goes, from the address plus live facts that can still change. Preflight and
+ * finalize read the same address, so they cannot disagree on who or which inbound the reply is bound to. */
 export function resolveDeliveryChannel(
   addr: Pick<TurnAddress, 'kind' | 'isOwner' | 'boundChannel' | 'autoRoutes'>,
   live: LiveDeliveryInputs,
 ): ReplyDestination {
-  // Agent and notification turns never auto-route to a person.
   if (addr.kind === 'agent' || addr.kind === 'notification' || !addr.autoRoutes) return 'dashboard';
   const affinityRefused = affinityPromotionRefusedNoBasis({
     ownerAffinityChannel: live.ownerAffinityChannel,
@@ -126,15 +96,13 @@ export function computeTurnAddress(input: ComputeTurnAddressInput): TurnAddress 
   const inboundContext = input.inboundContext ?? restored?.inboundContext ?? null;
 
   let deliveryChannel: ReplyDestination = 'dashboard';
-  // An engine turn's text is delivered like the owner's (a reminder reaches an away owner's phone),
-  // so its delivery channel is the real one; the agent is simply not told to "reply" on it.
+  // An engine turn's text is delivered like the owner's, so it gets the real channel.
   if (kind === 'person' || kind === 'engine') {
     deliveryChannel = resolveDeliveryChannel(
       { kind, isOwner, boundChannel, autoRoutes: input.autoRoutes },
       { presence: input.presence, imessageBridgeConfigured: input.imessageBridgeConfigured, ownerAffinityChannel: input.ownerAffinityChannel },
     );
-    // Held wake (a person-turn idea): the text stays in the dashboard, so do not promise a channel hop.
-    // Engine turns are never held (outbound-root.ts `engine_occurrence`): the text is delivered.
+    // A held wake keeps its text in the dashboard; engine turns are never held (outbound-root.ts).
     if (kind === 'person' && input.settledContextWakeTurn && boundChannel === null) deliveryChannel = 'dashboard';
   }
 
@@ -156,8 +124,7 @@ export function computeTurnAddress(input: ComputeTurnAddressInput): TurnAddress 
   };
 }
 
-/** Preflight's entry: reads presence and bridge state, then computes the address. A failed
- *  read leaves the dashboard default, the safe reading. */
+/** Preflight's entry: reads presence and bridge state; a failed read keeps the dashboard default. */
 export async function computeTurnAddressLive(
   input: Omit<ComputeTurnAddressInput, 'presence' | 'imessageBridgeConfigured'>,
 ): Promise<TurnAddress> {
@@ -176,7 +143,6 @@ export function withDelivery(addr: TurnAddress, deliveryChannel: ReplyDestinatio
   return { ...addr, deliveryChannel, routed: addr.kind === 'person' && ROUTED.has(deliveryChannel) };
 }
 
-// ── Words about the address: labels, the reply sentence, the tail line, and the readers engine texts use ──
 
 const DELIVERY_LABEL: Record<ReplyDestination, string> = {
   dashboard: 'the dashboard chat',
@@ -202,20 +168,13 @@ export function relationWords(relation: Relation): string {
   }
 }
 
-/**
- * The one sentence both the turn block and the per-step restatement use. Null when there
- * is no human on the other end of the written reply (agent, engine, notification turns).
- */
+/** The reply sentence shared by the turn block and the per-step restatement; null with no human recipient. */
 export function renderReplyGoesTo(addr: TurnAddress): string | null {
   if (addr.kind !== 'person') return null;
   return `Your written reply goes to ${addr.name} (${relationWords(addr.relation)}) by ${deliveryLabel(addr.deliveryChannel)}.`;
 }
 
-/**
- * The short line re-sent at the tail of every model call of a turn. Routed channels only:
- * a reply that stays in the dashboard needs no reminder. One line, after the cache
- * breakpoint.
- */
+/** The line re-sent at the tail of every model call, after the cache breakpoint; routed replies only. */
 export function renderTailRestatement(addr: TurnAddress | null | undefined): string | null {
   if (!addr || !addr.routed) return null;
   return `[Reply goes to ${addr.name} by ${deliveryLabel(addr.deliveryChannel)}.]`;
@@ -233,17 +192,14 @@ export function describeAddressee(addr: TurnAddress | null | undefined): string 
 }
 
 
-// ── Reading the address from an engine text ──
-// Every engine text that names a recipient or a reply route takes the turn's address through
-// these, instead of writing "the dashboard chat" or "the owner" as a literal.
+// Engine texts take recipient and reply-route words from these readers, never as literals.
 
 /** The current turn's address (undefined outside a turn, or before preflight has run). */
 export function currentAddress(agentId: string): TurnAddress | undefined {
   return turnContext(agentId)?.address;
 }
 
-/** Where a written reply on this turn is delivered, in words ("iMessage", "the dashboard
- *  chat"). Falls back to the dashboard wording when there is no address. */
+/** The delivery channel in words; the dashboard wording when there is no address. */
 export function replyChannelWords(addr: TurnAddress | undefined): string {
   return deliveryLabel(addr?.deliveryChannel ?? 'dashboard');
 }
@@ -253,11 +209,7 @@ export function addresseeByChannel(addr: TurnAddress | undefined): string | null
   return addr?.kind === 'person' ? `${addr.name} by ${deliveryLabel(addr.deliveryChannel)}` : null;
 }
 
-/**
- * The noun for "the person this turn is talking to" in an engine text: their name on a person
- * turn, "the user" when no human is on the other end or there is no address. `cap` is for the
- * start of a sentence. Possessive: `${userWords(a)}'s`.
- */
+/** The addressee's name on a person turn, else "the user"; `cap` starts a sentence. */
 export function userWords(addr: TurnAddress | undefined, cap = false): string {
   if (addr?.kind === 'person') return addr.name;
   return cap ? 'The user' : 'the user';
