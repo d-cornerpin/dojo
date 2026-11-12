@@ -1,17 +1,10 @@
-// ════════════════════════════════════════════════════════════════════════
-// DEAD-CHANNEL DOCTRINE (RC-19 / demolition Phase 0): model-directed text from this
-// subsystem rides NOTICE (postAgentNotice, role='user' origin_kind='engine', VISIBLE
-// to the model), never role='system' (STRIPPED by the model-context builder). Bare
-// role='system' rows here may carry only dashboard/owner-only informational notes or
-// an agent's own system prompt, never an imperative the model is expected to ACT on.
-// The RC-19 conformance test (agent/v2/__tests__/engine-steer.test.ts) source-scans
-// this file for bare role='system' INSERTs carrying imperative model-directed text.
-// ════════════════════════════════════════════════════════════════════════
+// Model-directed text from this subsystem rides postAgentNotice (a user-role engine row the model sees),
+// never a bare role='system' row, which the model-context builder strips. Bare system rows here may carry
+// only dashboard/owner-only notes, never an imperative the model is expected to act on.
 import { getDb } from '../db/connection.js';
 import { taskScope, projectScope, msToText, tsToMs, STATE_TO_STATUS_SQL, scheduleRowColumns, type TrackerStatus, stampColumns, engineScaffoldScope } from '../work/tracker-view.js';
 import { workSettled, noteUnsettled, ownerHoldStands, OWNER_HOLD_REFUSAL } from '../work/store.js';
 import { patchWork, setTrackerStatus } from '../work/tracker-store.js';
-// SWEEP CORE-2 item 3 — the schedule's fire time has ONE writing module.
 import { setNextRun } from '../work/next-run.js';
 import { activityScope, PEER_WORK_NOTE } from '../work/peer-origin.js';
 import { commitmentPositionLine } from '../work/obligation-memory.js';
@@ -23,20 +16,17 @@ import { createProject, getProject, createTask, getTask, listTasks, listProjects
 import { ensurePMAgentRunning } from './pm-agent.js';
 import { injectTaskAssignmentNotification } from './notify.js';
 import { writeTaskLog, listTaskLog } from './task-log.js';
-import { checkPlan, planRefusal, renderPlan, tasksFromPlan, explicitTasks, taskPlanMismatch } from '../work/plan.js';   // v3.5 PLAN BEFORE PROJECT
+import { checkPlan, planRefusal, renderPlan, tasksFromPlan, explicitTasks, taskPlanMismatch } from '../work/plan.js';
 import { planOfProject } from '../work/plan-store.js';
-import { applyMeasureToTask, type MeasureReading } from './measure-gate.js';   // v3.5 DONE IS MEASURED
+import { applyMeasureToTask, type MeasureReading } from './measure-gate.js';
 import { normalizeTaskStatus, TERMINAL_STATUS_WORDS } from './task-status-words.js';
 import { finishedScheduleRefusal, setsASchedule } from './finished-task-schedule.js';
 import { taskReadWithNotes } from './task-notes-view.js';
 import { linkLaterInstruction } from './later-instruction.js';
-// SWEEP CORE-1 CT2: the deliverable declaration and the steer-to-deliver ladder.
 import { declareDeliverableOnSchedule, declaredDeliverableShape, findLiveRecurringTwin, DELIVERABLE_OWING_TASK_KINDS } from '../work/deliverable-declaration.js';
 import { calculateNextRun, normalizeDbTimestamp, parseDaysOfWeek, wallToInstant, instantToWall, getBoxTimeZone, type ScheduledTask, type WallClock } from '../scheduler/engine.js';
 import { broadcast } from '../gateway/ws.js';
 import { isPMAgent } from '../config/platform.js';
-// t129 / S5: the ONE reassignment recorder, so the status door's assignee side path leaves
-// the same shape of record the two declared reassignment doors already write.
 import { taskWriteRefusal } from '../work/row-authority.js';
 import { turnContext, getWorkOriginForAgent } from '../agent/turn-context.js';
 import { WORK_EDITABLE_TASK_FIELDS } from '../agent/work-verb-schema.js';
@@ -45,16 +35,11 @@ import { setHold, clearHold, holdOf, workingExpr } from '../work/done/hold.js';
 
 const logger = createLogger('tracker-tools');
 
-// Re-exported from the shared helpers so the trackerCreateTask /
-// trackerUpdateStatus call sites keep working with their existing usage.
-// The canonical implementation lives in agent/tool-helpers.ts.
 import { resolveAgentRef as resolveAgentName, compactCountNote } from '../agent/tool-helpers.js';
 
-// ── Notify primary agent of task/project completion ──
 
-// Ticket stamps (2026-07-22): the tracker read surfaces render the engine's
-// stamp line from the columns; the live delivery-evidence join stays as
-// backfill for rows that predate migration 124.
+// The tracker read surfaces render the engine's stamp line from these columns; the live delivery-evidence
+// join backfills rows that have no stamps.
 function getTaskStampFields(taskId: string): TaskStampFields | null {
   try {
     return getDb().prepare(
@@ -68,14 +53,10 @@ function getTaskStampFields(taskId: string): TaskStampFields | null {
   }
 }
 
-// ── RC-18: local wall-clock schedule input ──
-//
-// The model's single biggest schedule failure is doing timezone math itself
-// (P-2: "9 PM PT" written as a botched UTC offset lands the anchor an hour off).
-// Let the model hand us the wall-clock time it means and convert it engine-side
-// with the SAME wallToInstant the scheduler uses, so the offset is never the
-// model's job. Accepts a tz-less "YYYY-MM-DDTHH:MM[:SS]" (or space separator)
-// plus an optional IANA timezone (defaults to the box timezone).
+// Local wall-clock schedule input. The model hands over the wall-clock time it means and the engine
+// converts it with the scheduler's own wallToInstant, so the UTC offset is never the model's job. Accepts a
+// tz-less "YYYY-MM-DDTHH:MM[:SS]" (or space separator) plus an optional IANA timezone (default: the box
+// timezone).
 const WALL_CLOCK_RE = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?$/;
 export function resolveLocalWallClock(
   localTime: string,
@@ -102,11 +83,8 @@ export function resolveLocalWallClock(
     if (isNaN(instant.getTime())) {
       return { ok: false, error: `Error: local_time="${localTime}" in timezone "${zone}" did not resolve to a valid instant.` };
     }
-    // The regex checks SHAPE, not sense: Feb 31 / month 13 / hour 25 pass it,
-    // and wallToInstant normalises the overflow into a day (or hour) nobody
-    // asked for. Refuse what the calendar does not have. A time inside a
-    // spring-forward gap round-trips to the SAME day (moved forward within
-    // it), so it stays accepted — the day, not the hour, is what must return.
+    // The regex checks shape, not sense: Feb 31 or hour 25 would be normalised into a day nobody asked for.
+    // A time inside a spring-forward gap still round-trips to the same day, so it stays accepted.
     const back = instantToWall(instant.getTime(), zone);
     if (
       wall.hour > 23 || wall.minute > 59 || wall.second > 59 ||
@@ -120,10 +98,8 @@ export function resolveLocalWallClock(
   }
 }
 
-// RC-18: one-line wall-clock echo + re-call nudge for any schedule write, so the
-// wall time the agent (and user) care about is shown next to the canonical UTC
-// instant. formatTimeForAgent already renders BOTH the localized form (with tz
-// abbreviation) and the UTC ISO, so an agent can never misread an unlabeled ISO.
+// One-line wall-clock echo for any schedule write, so the local time sits beside the canonical UTC instant;
+// formatTimeForAgent renders both forms.
 function scheduleEchoLines(scheduledStartIso: string | null, nextRunIso: string | null): string[] {
   const lines: string[] = [];
   if (scheduledStartIso) {
@@ -133,25 +109,18 @@ function scheduleEchoLines(scheduledStartIso: string | null, nextRunIso: string 
     lines.push(`Next run (local): ${formatTimeForAgent(nextRunIso)}`);
   }
   if (scheduledStartIso || nextRunIso) {
-    // PHASE-6 T0C-W: the hint is TRUE again, and this is the line that made it worth
-    // wiring. T0C had to strip the `local_time` alternative from the success echo on
-    // every scheduled create and edit — the most-read line in this file — because the
-    // field was declared on no tool and forwarded by no door, so a model that obeyed got
-    // the unknown-argument warning and a silently dropped field. Both work verbs now
-    // declare it and all three doors forward it, so the cheaper route is offered again.
+    // The cheaper local_time route is offered because both work verbs declare it and all three doors
+    // forward it.
     lines.push('If this local time is NOT what the user asked for, re-call with the corrected time — either as an ISO 8601 UTC instant, or as local_time="YYYY-MM-DDThh:mm" and let the engine do the timezone conversion.');
   }
   return lines;
 }
 
-// A repeat number that cannot step the calendar — zero, negative, fractional,
-// NaN — gives `calculateNextRun` nothing to advance by: it returns no next run,
-// the scheduler completes the schedule, and the "recurring" task or reminder
-// fires once and stops, with no error anywhere. The dashboard route refuses the
-// number the same way (`gateway/routes/tracker.ts` `scheduleInputError`); every
-// agent door that saves one refuses it here, BEFORE its pairing checks.
-// `undefined`/`null` mean "no repeat number set" (or, on an edit, "clear it")
-// and are nobody's error here. Coercion matches the dashboard's: "2" reads as 2.
+// A repeat number that cannot step the calendar (zero, negative, fractional, NaN) makes calculateNextRun
+// return no next run, so the schedule would fire once and stop with no error. Every agent door that saves
+// one refuses it here before its pairing checks, as the dashboard route does (gateway/routes/tracker.ts
+// scheduleInputError). undefined/null mean "not set" (or "clear it" on an edit) and are not errors; "2"
+// coerces to 2.
 export function repeatNumberError(value: unknown): string | null {
   if (value === undefined || value === null) return null;
   const num = typeof value === 'number' ? value : Number(value);
@@ -162,8 +131,7 @@ export function repeatNumberError(value: unknown): string | null {
 
 // ── trackerCreateProject ──
 
-// Stop-words used by the near-duplicate detector. Common low-information
-// words that should not drive a duplicate match by themselves.
+// Low-information words that must not drive a near-duplicate match on their own.
 const STOPWORDS = new Set([
   'the', 'a', 'an', 'and', 'or', 'of', 'for', 'to', 'in', 'on', 'with',
   'by', 'from', 'is', 'as', 'at', 'be', 'this', 'that', 'these', 'those',
@@ -193,21 +161,10 @@ interface DuplicateMatch {
 }
 
 /**
- * Near-duplicate guard with two prongs:
- *
- *   (a) Engine-auto-created override: if the creator has ANY active
- *       engine-opened row (`root_kind='engine_scaffold'` — T8c item 3's
- *       rekey of the prose marker) created in the last 5 minutes,
- *       treat that as a duplicate of whatever
- *       the agent is now trying to create, regardless of title
- *       similarity. The engine just opened a project for this turn;
- *       the agent should edit it, not parallel it. (Without this, the
- *       agent's better name often diverges enough from the engine's
- *       slice-of-prompt name to clear the Jaccard threshold.)
- *
- *   (b) Token-Jaccard fallback for agent-vs-agent dups: ≥ 0.6 overlap,
- *       ≥ 2 shared content tokens, last 60 minutes. Catches the
- *       post-compaction "I forgot I made this project" failure shape.
+ * Near-duplicate guard with two prongs: (a) an engine-opened scaffold row for the same ask (same source
+ * message, else created in the last 5 minutes), which the agent should edit rather than parallel whatever
+ * the title similarity; (b) a token-Jaccard fallback for agent-vs-agent duplicates (>= 0.6 overlap, >= 2
+ * shared content tokens, last 60 minutes).
  */
 function findRecentNearDuplicateProject(
   creatorId: string,
@@ -215,10 +172,8 @@ function findRecentNearDuplicateProject(
 ): DuplicateMatch | null {
   const db = getDb();
 
-  // (a) P3 rekey onto the P1 spine: an engine scaffold born from the SAME ask
-  //     as the creating agent's current turn is THE duplicate, by identity
-  //     (source_message_id equality), no clock guessing. The marker+5-minute
-  //     window survives only as the pre-spine fallback for rootless rows.
+  // (a) An engine scaffold born from the same ask as the creating agent's current turn is the duplicate by
+  //     identity (source_message_id); the 5-minute window below is only the fallback for rootless rows.
   const turnRoot = turnContext(creatorId)?.root ?? null;
   const rootMatch = turnRoot?.sourceMessageId ? db.prepare(`
     SELECT w.id AS id, w.title AS title, ${msToText('w.opened_at')} AS created_at FROM work w
@@ -229,10 +184,8 @@ function findRecentNearDuplicateProject(
     ORDER BY w.opened_at DESC
     LIMIT 1
   `).get(creatorId, turnRoot.sourceMessageId) as { id: string; title: string; created_at: string } | undefined : undefined;
-  // T8c item 3: the fallback arm matched a PROSE PREFIX on the description; it reads the
-  // row's own `root_kind` now. It also stops being project-only — the engine floor opens a
-  // parentless TASK, and a `work_open(kind='project')` moments after that task is exactly the
-  // parallel-work case this prong exists to steer away from.
+  // The fallback reads the row's own root_kind and covers parentless tasks too: the engine floor opens a
+  // task, and a project opened right after it is the parallel work this prong steers away from.
   const engineAuto = rootMatch ?? db.prepare(`
     SELECT w.id AS id, w.title AS title, ${msToText('w.opened_at')} AS created_at FROM work w
     WHERE ${engineScaffoldScope('w')} AND w.requester_id = ?
@@ -312,11 +265,10 @@ export function trackerCreateProject(agentId: string, args: Record<string, unkno
 
     const level = typeof args.level === 'number' ? args.level : 1;
 
-    // v3.5 PLAN BEFORE PROJECT: a project opens with the plan its agent wrote (approach, and steps
-    // saying what, how at scale and how it will know each is done). The engine checks the parts are
-    // there and stores them; it does not judge the content. The tasks are the plan's steps unless the
-    // caller passed its own, so a project always has a task for the PM to poke (the old zero-task
-    // gate is this gate: a valid plan has at least one step).
+    // A project opens with the plan its agent wrote (approach, and steps saying what, how at scale and how
+    // done is known). The engine checks the parts are present and stores them without judging content.
+    // Tasks are the plan's steps unless the caller passed its own, so a project always has a task for the
+    // PM to poke.
     const planned = checkPlan(args.plan);
     const scale = opts.scaleFacts ? `\n\n${opts.scaleFacts}` : '';   // what the agent's tools do in one call, in front of it as it plans
     if (!planned.ok) return planRefusal(planned.error) + scale;
@@ -330,13 +282,9 @@ export function trackerCreateProject(agentId: string, args: Record<string, unkno
       ? given.map((t, i) => ({ ...t, stepNumber: i + 1, description: t.description ?? plan.steps[i].how, goal: t.goal ?? plan.steps[i].done }))
       : tasksFromPlan(plan);
 
-    // Resolve inline task assignees (name / short id -> full agent id) BEFORE
-    // anything is written. tasks.assigned_to carries a FOREIGN KEY to agents(id);
-    // the standalone work_open(kind="task") verb resolves refs (below, ~:790) but
-    // this inline path passed them through raw, so an agent NAME failed the FK
-    // mid-create and stranded an empty project row (2026-07-17 run bmrpkqai2v6:
-    // two orphan projects, raw "FOREIGN KEY constraint failed" to the model).
-    // Same resolver, same teaching error, and nothing is written on a bad ref.
+    // Resolve inline task assignees (name or short id -> full agent id) before anything is written:
+    // assigned_to has a foreign key to agents(id), so a raw name would fail mid-create and strand an empty
+    // project row. Same resolver and teaching error as the standalone work_open(kind="task") verb.
     for (const t of tasksInput) {
       const raw = t as Record<string, unknown>;
       const ref = (typeof raw.assignedTo === 'string' && raw.assignedTo) ||
@@ -348,10 +296,8 @@ export function trackerCreateProject(agentId: string, args: Record<string, unkno
       }
     }
 
-    // Duplicate guard. Catches the most common failure shape: agent gets
-    // compacted mid-task, loses the project it already opened, and creates
-    // a near-identical one. Agents can override by setting allow_duplicate=true
-    // (rare, usually only valid for genuinely independent re-runs).
+    // Duplicate guard for an agent that lost its project to compaction and creates a near-identical one.
+    // allow_duplicate=true overrides it (genuinely independent re-runs).
     const allowDuplicate = args.allow_duplicate === true;
     if (!allowDuplicate) {
       const dup = findRecentNearDuplicateProject(agentId, title);
@@ -361,14 +307,9 @@ export function trackerCreateProject(agentId: string, args: Record<string, unkno
           ? ` First open task: "${dup.firstOpenTask.title}" (id=${dup.firstOpenTask.id.slice(0, 8)}).`
           : '';
         if (dup.engineAutoCreated) {
-          // NEXT-WAVE item 4 (absorb, don't refuse): the engine auto-opened this
-          // project for the CURRENT user turn (the multi-step classifier does this
-          // so the agent doesn't have to remember to call work_open(kind="project")),
-          // so the agent's own create is a duplicate of it. The old "Refused:" wall
-          // burned turns on rediscovery AND reads to the battery as an engine-
-          // refusal signature. Absorb it instead: an OK-shaped no-op that names the
-          // existing project + its first task, so the agent just continues in it
-          // without a scold.
+          // The engine auto-opened this project for the current user turn, so the agent's own create
+          // duplicates it. Answer with an OK-shaped no-op naming the existing project and its first task,
+          // so the agent continues in it instead of being refused.
           return (
             `[OK] Already tracked, no new project created. The engine auto-opened project "${dup.title}" (id=${shortPid}) for this request, so you don't need to create one, keep going in it.${firstTaskHint} ` +
             `Continue inside it: work_update(action="edit", task_id=<id>, title=..., description=...) to refine the first task, ` +
@@ -394,14 +335,9 @@ export function trackerCreateProject(agentId: string, args: Record<string, unkno
       plan,
     });
 
-    // Give every inline task a goal. The tasks[] shape historically carried no
-    // goal field, so createProject left them goal=NULL, which makes them
-    // impossible for PM to validate ("(none recorded)"): PM reverts each
-    // completion and the agent re-submits forever (the validation ping-pong the
-    // user reported). Mirror work_open(kind="task"): default the goal from the
-    // caller-provided goal (if any), else the task's description, else its
-    // title. Only fill when empty, never overwrite a real goal.
-    const measureLines = result.taskIds.map((id, i) => { const m = opts.taskMeasures?.[i]; return m ? applyMeasureToTask(id, m) : null; });   // v3.5
+    // Give every inline task a goal (PM cannot validate a task with none): the caller's goal, else the
+    // task's description, else its title. Only fills when empty, never overwrites a real goal.
+    const measureLines = result.taskIds.map((id, i) => { const m = opts.taskMeasures?.[i]; return m ? applyMeasureToTask(id, m) : null; });
     for (let i = 0; i < result.taskIds.length; i++) {
       const id = result.taskIds[i];
       const t = getTask(id);
@@ -416,7 +352,6 @@ export function trackerCreateProject(agentId: string, args: Record<string, unkno
       }
     }
 
-    // Auto-spawn PM agent if not running
     try {
       ensurePMAgentRunning();
     } catch (err) {
@@ -436,9 +371,7 @@ export function trackerCreateProject(agentId: string, args: Record<string, unkno
       taskSummary = `\nTasks (${result.taskIds.length}):\n${taskLines.join('\n')}`;
     }
 
-    // Notify assignees of nested tasks (skips the creator's own tasks).
-    // Mirrors trackerCreateTask's notification path so tasks created via
-    // create_project don't silently sit waiting for someone to notice.
+    // Notify assignees of nested tasks (skips the creator's own), as trackerCreateTask does.
     for (const taskId of result.taskIds) {
       const t = getTask(taskId);
       if (!t || !t.assignedTo) continue;
@@ -475,23 +408,18 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
 
     const projectId = args.projectId as string | undefined;
     const description = args.description as string | undefined;
-    // Phase B.1: goal is required on every new task (Q6). PM is the supreme
-    // authority on whether the work matches; without a goal there is nothing
-    // to compare result+evidence against. The engine accepts `goal` (camelCase)
-    // or `goal_description` (legacy alias). Empty string is rejected.
+    // Goal is required on every new task: PM compares result and evidence against it. Accepts `goal` or the
+    // legacy alias `goal_description`; an empty string is rejected.
     let goal = typeof args.goal === 'string' ? args.goal.trim() : '';
     if (!goal && typeof description === 'string' && description.trim()) {
-      // Permissive fallback for now: copy description into goal when caller
-      // forgot. Logged so we can see who needs prompt updates. Once every
-      // caller is migrated this fallback can be removed and we hard-reject.
+      // A goal the caller omitted defaults to the description (logged).
       goal = description.trim();
       logger.info('work_open(kind="task"): goal omitted, defaulted from description', { agentId, title }, agentId);
     }
     if (!goal) {
       return 'Error: `goal` is required. One-sentence definition of done that PM will compare result + evidence against. Example: goal="migrate all 12 routes under packages/server/src/gateway/routes/ to the new auth middleware, with each route\'s tests passing".';
     }
-    // Default assigned_to to the calling agent if not specified
-    // Resolve agent name to ID if a name was passed instead of a UUID
+    // Default assigned_to to the calling agent; an agent name is resolved to its id.
     let assignedTo = (args.assignedTo as string | undefined) ?? agentId;
     if (assignedTo) {
       const r = resolveAgentName(assignedTo);
@@ -509,11 +437,9 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
     const dependsOn = args.dependsOn as string[] | undefined;
     const phase = args.phase as number | undefined;
 
-    // RC-18: local wall-clock schedule input. When the caller passes local_time
-    // (a tz-less wall clock) instead of doing the UTC math itself, convert it
-    // engine-side into scheduled_start. Explicit scheduled_start wins if both are
-    // given. Anchor defaults to scheduled_start downstream, so we only set the
-    // start here.
+    // local_time (a tz-less wall clock) is converted engine-side into scheduled_start; an explicit
+    // scheduled_start wins if both are given. The anchor defaults to scheduled_start downstream, so only
+    // the start is set here.
     let resolvedScheduleZone: string | null = null;
     if (args.local_time !== undefined && args.local_time !== null && args.local_time !== '' && !args.scheduled_start) {
       if (typeof args.local_time !== 'string') {
@@ -523,25 +449,14 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
       const resolved = resolveLocalWallClock(args.local_time, typeof tz === 'string' ? tz : undefined);
       if (!resolved.ok) return resolved.error;
       args.scheduled_start = resolved.iso;
-      // UX-REPAIR round 2 T13 — KEEP THE ZONE. `resolveLocalWallClock` has always resolved the
-      // caller's `local_timezone` correctly and then thrown the answer away: the `alongside`
-      // patch below carried scheduled_start / repeat_* / anchor_local and no zone, and
-      // `work.tz` was unwritable anyway. So the per-reminder zone contract the tool advertises
-      // was silently void and every calendar-unit advance resolved against the process
-      // timezone. Recorded here, at the moment the engine knows it.
+      // Keep the resolved zone so the per-reminder zone the tool advertises is recorded with the row;
+      // otherwise calendar-unit advances would resolve against the process timezone.
       resolvedScheduleZone = resolved.zone;
     }
 
-    // 2026-07-03: schedule timestamps must be parseable, checked BEFORE the
-    // row is created. An unparseable scheduled_start used to be kept verbatim
-    // ("keep original if parse fails") and written into scheduled_start AND
-    // next_run_at; the scheduler's `next_run_at <= <now ISO>` string
-    // comparison then never matches, so the task sits schedule_status=
-    // 'waiting' forever and SILENTLY never fires (observed live via the
-    // behavioral harness: work_open(kind="reminder") when="in 2 minutes" produced a
-    // reminder that never fired). The engine rejects it at the boundary with
-    // a corrective hint; resolving relative phrases is the model's job
-    // (get_current_time + offset), per the tool docs it already has.
+    // Schedule timestamps must parse, checked before the row is created: an unparseable value would never
+    // match the scheduler's next_run_at string comparison, so the task would silently never fire. Resolving
+    // relative phrases is the model's job (get_current_time plus offset).
     for (const field of ['scheduled_start', 'anchor_time']) {
       const value = args[field];
       if (value === undefined || value === null || value === '') continue;
@@ -555,13 +470,9 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
       }
     }
 
-    // FA-S4: a specific_days schedule needs at least one weekday. An empty or
-    // invalid repeat_days_of_week allowlist silently degrades the recurrence
-    // into a single fire then complete (calculateNextRun's specific_days walk
-    // makes no progress with no allowed day, so next_run_at resolves once and
-    // then never again). Reject at the boundary, before the row is created,
-    // same fail-loud contract the parseability check above enforces. Only
-    // matters when a schedule is actually being written (scheduled_start set).
+    // A specific_days schedule needs at least one valid weekday: with none, calculateNextRun cannot advance
+    // and the recurrence fires once then completes. Rejected before the row is created, and only when a
+    // schedule is being written (scheduled_start set).
     if (args.scheduled_start && args.repeat_unit === 'specific_days'
         && !parseDaysOfWeek((args.repeat_days_of_week as string | undefined) ?? null)) {
       return (
@@ -572,16 +483,9 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
       );
     }
 
-    // Near-duplicate guard (2026-06-02 bug fix). Without this, a hoarding-
-    // gate error on file_read/exec can put the agent into a loop where
-    // every iteration calls work_open(kind="task") with the same title, 27
-    // duplicates landed in one session before this guard. Two prongs,
-    // both within a 5-minute window because tasks turn over faster than
-    // projects:
-    //   (a) Exact-title-match by the same creator + same assignee.
-    //   (b) Jaccard ≥ 0.6 on normalised content tokens, ≥ 2 shared tokens.
-    // Agent can override with allow_duplicate=true when the dup match is
-    // a false positive (e.g. genuinely separate work that shares keywords).
+    // Near-duplicate guard for tool-error loops that re-create the same task. Both prongs use a 5-minute
+    // window: (a) exact title by the same creator and assignee; (b) Jaccard >= 0.6 on normalised content
+    // tokens with at least 2 shared. allow_duplicate=true overrides a false positive.
     const allowDuplicate = (args.allow_duplicate as boolean) ?? false;
     if (!allowDuplicate) {
       const db = getDb();
@@ -633,45 +537,12 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
       }
     }
 
-    // ════════════════════════════════════════════════════════════════════════════
-    // SWEEP CORE-1 CT2 — THE DUPLICATE **RECURRING** GUARD.
-    //
-    // From the same 2026-08-07 transcript as the run-completion incident: after the timezone
-    // fix the owner recreated his two briefs and never cancelled the old pair, so FOUR
-    // schedules were firing where two should. He was told about the same thing twice, every
-    // morning, from schedules he had no memory of creating.
-    //
-    // ── WHY THE GUARD ABOVE COULD NOT HAVE CAUGHT IT, and this is the whole design ──
-    // Both prongs above are scoped to `opened_at >= now - 5 minutes`. They exist for a
-    // different disease: a tool-error loop minting 27 copies of one task inside one session.
-    // His duplicate was created DAYS after its twin, deliberately, by a person who thought he
-    // was replacing something. A five-minute window cannot see that and never could.
-    //
-    // A LIVE RECURRING SCHEDULE IS DIFFERENT IN KIND FROM A TASK ROW: it is a standing
-    // instruction that fires for ever. Two of them with the same owner, the same cadence and
-    // the same deliverable shape are not "two pieces of work that share a title" — they are one
-    // instruction the platform will carry out twice, indefinitely. So this prong has NO TIME
-    // WINDOW at all. It asks a different question and it gets a different scope.
-    //
-    // ── THE THREE THINGS THAT MUST MATCH, each chosen against his actual case ──
-    //   same owner      — `requester_id`, the creating agent, as both prongs above use.
-    //   same CADENCE    — `repeat_interval` + `repeat_unit` + `repeat_days_of_week`. NOT the
-    //                     anchor instant, and that is the load-bearing exclusion: he recreated
-    //                     the briefs BECAUSE the anchor was wrong, so the twin he was trying to
-    //                     replace has a DIFFERENT anchor by construction. Matching on the
-    //                     anchor would have missed his case exactly.
-    //   same DELIVERABLE SHAPE — the CT2 declaration (`work/deliverable-declaration.ts`),
-    //                     derived from each definition. Two daily `brief` schedules for one
-    //                     owner is the shape; a daily brief beside a daily backup is not.
-    //
-    // Only LIVE schedules count (`schedule_status IN ('waiting','running')`, not paused, not
-    // terminal): a stopped schedule fires nothing and refusing against it would block a
-    // legitimate re-creation, which is precisely what the owner was trying to do.
-    //
-    // `allow_duplicate` is honoured with its EXISTING semantics — the same flag, the same
-    // meaning ("I know, I meant it"), read once at the top for all three prongs. Nothing about
-    // the two prongs above changes.
-    // ════════════════════════════════════════════════════════════════════════════
+    // Duplicate recurring guard. Unlike the prongs above it has NO time window: a live recurring schedule
+    // is a standing instruction, so two with the same owner, cadence and deliverable shape would be carried
+    // out twice indefinitely. Cadence is repeat_interval + repeat_unit + repeat_days_of_week, deliberately
+    // not the anchor (a recreated twin usually has a different one). The deliverable shape comes from the
+    // declaration in work/deliverable-declaration.ts. Only live schedules count, so replacing a stopped one
+    // stays allowed. allow_duplicate overrides it, the same flag as the prongs above.
     if (!allowDuplicate && args.repeat_interval) {
       const shape = declaredDeliverableShape({
         kind: args.kind as string | undefined,
@@ -716,40 +587,29 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
       dependsOn,
       phase,
       kind: args.kind as string | undefined,
-      // T34: the goal rides the INSERT. It used to be patched on immediately after `createTask`
-      // had already broadcast the row, so the announcement frame was stale about the goal on
-      // every creation through this door — the same defect as the schedule columns, one column
-      // over. A row is announced complete, or it is announced twice.
+      // The goal rides the INSERT so the announcement frame is complete rather than patched after the
+      // broadcast.
       goal,
     });
-    const measureSet = opts.measure ? applyMeasureToTask(taskId, opts.measure) : null;   // v3.5: kept on every later return
+    const measureSet = opts.measure ? applyMeasureToTask(taskId, opts.measure) : null;
 
-    // T34: the view `createTask` just put on the wire. Everything below this line — the on_deck
-    // transition, the fire time, the group — changes the row AFTER that frame, so the settle
-    // frame at the end compares against this one and corrects the wire if the row moved.
+    // The view createTask put on the wire. Later writes (on_deck transition, fire time, group) change the
+    // row after it, so the settle frame at the end compares against this one and corrects the wire if the
+    // row moved.
     const announced = getTask(taskId);
 
-    // Status reconciliation. v2.8.x rule: 'on_deck' is reserved for
-    // tasks with a FUTURE scheduled_start (the scheduler owns the
-    // transition to 'in_progress' at fire time). Anything else lands
-    // in 'in_progress' immediately so the assigned agent and the PM
-    // keep seeing it as work to do, sitting in 'on_deck' without a
-    // schedule was the failure mode where agents created multi-task
-    // projects, worked the first one, and never returned to the rest.
-    // The schema default (set in createTask above) is now 'in_progress'
-    // for all rows; we only override to 'on_deck' here when a future
-    // schedule justifies it.
+    // 'on_deck' is reserved for tasks with a future scheduled_start (the scheduler moves them to
+    // in_progress at fire time); everything else lands in_progress so the assignee and PM keep seeing it as
+    // work to do. The schema default is in_progress, overridden to on_deck only when a future schedule
+    // justifies it.
     let scheduledStart = args.scheduled_start as string | undefined;
     if (scheduledStart) {
-      // Parseability was validated before the row was created (above); this
-      // just normalizes to ISO so every downstream comparison is consistent.
+      // Parseability was validated before the row was created; this normalizes to ISO.
       const parsed = new Date(scheduledStart);
       if (!isNaN(parsed.getTime())) scheduledStart = parsed.toISOString();
     }
-    // hasFutureSchedule is true only when scheduled_start is in the
-    // future (past-dated scheduled_start counts as "fire ASAP" and lands
-    // in_progress immediately), OR when repeat_interval is set (recurring
-    // tasks always go through the scheduler).
+    // True only when scheduled_start is in the future (a past one means fire ASAP and lands in_progress) or
+    // repeat_interval is set (recurring tasks always go through the scheduler).
     const scheduledStartIsFuture = !!(
       scheduledStart && new Date(scheduledStart).getTime() > Date.now()
     );
@@ -760,7 +620,6 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
       } catch { /* ignore */ }
     }
 
-    // Auto-spawn PM agent if not running
     try {
       ensurePMAgentRunning();
     } catch (err) {
@@ -769,23 +628,19 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
       }, agentId);
     }
 
-    // Handle scheduling
     if (scheduledStart) {
       const db = getDb();
       const repeatInterval = args.repeat_interval as number | undefined;
       const repeatUnit = args.repeat_unit as string | undefined;
       const repeatEndType = (args.repeat_end_type as string | undefined) ?? 'never';
       const repeatEndValue = args.repeat_end_value as string | undefined;
-      // v2.5.2, specific_days uses an explicit day-of-week allowlist.
-      // Already normalized to CSV-of-ints by the tool dispatcher.
+      // specific_days uses an explicit day-of-week allowlist, already normalized to CSV-of-ints by the
+      // dispatcher.
       const repeatDaysOfWeek = args.repeat_days_of_week as string | undefined;
-      // v2.5.45, anchor_time defaults to scheduled_start, normalizing
-      // wall-clock alignment for all future recurring runs. Caller can
-      // override (e.g. agent setting "anchor at 06:00 even though I'm
-      // creating this at 14:23").
+      // anchor_time defaults to scheduled_start (wall-clock alignment of recurring runs); the caller may
+      // override it, e.g. anchor at 06:00 though the task is created at 14:23.
       let anchorTime = args.anchor_time as string | undefined;
       if (anchorTime) {
-        // Validated parseable at the top of this function; normalize to ISO.
         const parsed = new Date(anchorTime);
         if (!isNaN(parsed.getTime())) anchorTime = parsed.toISOString();
       } else if (repeatInterval) {
@@ -806,7 +661,7 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
         schedule_status: 'waiting',
         repeat_days_of_week: repeatDaysOfWeek ?? null,
         anchor_time: anchorTime ?? null,
-        // T13: the row's own zone reaches the very first advance too, not only later ones.
+        // The row's own zone reaches the very first advance too.
         tz: resolvedScheduleZone,
       };
       const nextRun = calculateNextRun(taskForCalc) ?? scheduledStart;
@@ -819,37 +674,33 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
           repeat_unit: repeatUnit ?? null, repeat_end_type: repeatEndType,
           repeat_end_value: repeatEndValue ?? null, repeat_days_of_week: repeatDaysOfWeek ?? null,
           anchor_local: anchorTime ?? null, schedule_status: 'waiting',
-          // T13: the declared per-reminder zone, persisted. NULL when the caller named none —
-          // and NULL means the box timezone, which is byte-identically today's behaviour.
+          // The declared per-reminder zone, persisted; NULL means the box timezone.
           tz: resolvedScheduleZone,
         },
       }), 'trackerCreateTask: schedule recorded', { taskId });
 
-      // SWEEP CORE-1 CT2 — DECLARE WHAT THIS SCHEDULE OWES A PERSON, ONCE, HERE.
-      // After the schedule columns, because "is this scheduled at all" is one of the inputs.
-      // Idempotent and never overriding a caller who named the kind. Its runs will not be
-      // recordable as complete without a message the person actually received.
+      // Declare what this schedule owes a person, once, after the schedule columns (whether it is scheduled
+      // is an input). Idempotent and never overrides a caller who named the kind. Its runs cannot be
+      // recorded complete without a message the person actually received.
       declareDeliverableOnSchedule(taskId);
     }
 
-    // Handle group assignment (validated: an unknown group id would otherwise
-    // surface as a raw FK error the model cannot act on)
+    // Group assignment is validated first: an unknown group id would otherwise surface as a raw FK error.
     const assignedToGroup = args.assigned_to_group as string | undefined;
     if (assignedToGroup) {
       const groupRow = getDb().prepare('SELECT 1 FROM agent_groups WHERE id = ?').get(assignedToGroup);
       if (!groupRow) {
-        // T34: this path still created and settled a row, so the wire owes the truth about it
-        // before we hand the model its error.
+        // This path created and settled a row, so the wire is told the truth before the model gets its
+        // error.
         broadcastTaskSettled(taskId, announced);
         return `Error: agent group '${assignedToGroup}' does not exist. The task was created assigned to you; use work_update(action="edit") to reassign once you have a valid group id.`;
       }
       noteUnsettled(patchWork(taskId, { assigned_to_group: assignedToGroup, assignee_agent: null }), 'trackerCreateTask: assigned to a group', { taskId });
     }
 
-    // T34: every write to this row is done. If the row moved since it was announced — a future
-    // schedule settles it `on_deck` with a fire time, and the goal lands after the insert — the
-    // wire hears the settled row now, so the LAST frame for this id equals the stored row. A
-    // creation that settled nothing sends nothing (the announcement was already true).
+    // Every write to this row is done: if it moved since it was announced, the wire hears the settled row
+    // now, so the last frame for this id equals the stored row. A creation that settled nothing sends
+    // nothing.
     broadcastTaskSettled(taskId, announced);
 
     const parts = [
@@ -863,9 +714,8 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
     if (assignedToGroup) parts.push(`Assigned to group: ${assignedToGroup}`);
     if (priority) parts.push(`Priority: ${priority}`);
     if (scheduledStart) {
-      // RC-18: echo the wall-clock (with tz + canonical UTC) instead of a raw ISO,
-      // and show the computed next run, so the anchor the user cares about is
-      // visible and any timezone mistake is caught before it fires.
+      // Echo the wall-clock (with tz and canonical UTC) and the computed next run, so a timezone mistake is
+      // caught before it fires.
       const createdTask = getTask(taskId);
       for (const line of scheduleEchoLines(scheduledStart, createdTask?.nextRunAt ?? null)) {
         parts.push(line);
@@ -894,30 +744,21 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
   }
 }
 
-// ── reminderCreate ──
-//
-// Thin wrapper around trackerCreateTask that handles the "user asked for
-// a reminder" intent. The agent calls this with `what` (required) and
-// `when` (optional). If `when` is missing, returns an ASK_USER
-// instruction so the agent loops back, asks the user, and re-fires with
-// the resolved ISO time. Otherwise creates a tracker task with
-// kind='reminder' and the supplied schedule, the scheduler then fires
-// it with the reminder-flavored template (see scheduler/runner.ts).
-
+// Thin wrapper over trackerCreateTask for "the user asked for a reminder". With no `when` it returns an
+// ASK_USER instruction so the agent asks the user and re-fires; otherwise it creates a kind='reminder' task
+// with the supplied schedule, which the scheduler fires with the reminder template (scheduler/runner.ts).
 export function reminderCreate(agentId: string, args: Record<string, unknown>): string {
   const what = (args.what as string | undefined)?.trim();
   if (!what) return 'Error: `what` is required (the reminder text).';
 
   const when = (args.when as string | undefined)?.trim();
-  // RC-18: a local wall-clock (local_time) is an accepted alternative to `when`;
-  // the engine converts it to the anchor instant, so the model never does UTC math.
+  // A local wall-clock (local_time) is accepted in place of `when`; the engine converts it, so the model
+  // never does UTC math.
   const localTime = (args.local_time as string | undefined)?.trim();
   if (!when && !localTime) {
     return (
       'ASK_USER: This reminder needs a time. Ask the person you are talking to when they would like to be ' +
       'reminded ("in 5 minutes", "tomorrow at 8am", "every Monday at 9am"). ' +
-      // PHASE-6 T0C-W: the wall-clock alternative is offered again — declared on
-      // work_open and forwarded by this door since this task. See scheduleEchoLines.
       'Once they answer, call get_current_time to anchor relative times and re-call ' +
       'work_open(kind="reminder") with `when` set to the resolved ISO 8601 datetime, ' +
       'or with local_time="YYYY-MM-DDThh:mm" if they named a plain clock time. ' +
@@ -925,22 +766,18 @@ export function reminderCreate(agentId: string, args: Record<string, unknown>): 
     );
   }
 
-  // 2026-07-03: same boundary validation trackerCreateTask enforces, but with
-  // a `when`-flavored message (that is the arg the caller actually used). An
-  // unparseable `when` used to flow into next_run_at verbatim and the reminder
-  // silently never fired (behavioral harness caught when="in 2 minutes").
+  // Same boundary validation as trackerCreateTask, worded for `when`: an unparseable value would make the
+  // reminder silently never fire.
   if (when && isNaN(new Date(when).getTime())) {
     return (
       `Error: when="${when}" is not a parseable datetime, so this reminder would never fire. ` +
       `Resolve the relative time yourself: call get_current_time, add the offset ` +
       `(e.g. "in 2 minutes" = current UTC + 2 minutes), then re-call work_open(kind="reminder") with an ` +
-      // PHASE-6 T0C-W: the alternative is reachable again — declared and forwarded.
       `ISO 8601 UTC timestamp, e.g. when="2026-07-03T16:38:00Z". ` +
       `Or pass local_time="YYYY-MM-DDThh:mm" and let the engine resolve the zone.`
     );
   }
 
-  // Title is for the kanban, keep short and recognizable.
   const titleSnippet = what.length > 60 ? what.slice(0, 57).trimEnd() + '…' : what;
 
   return trackerCreateTask(agentId, {
@@ -948,13 +785,11 @@ export function reminderCreate(agentId: string, args: Record<string, unknown>): 
     description: what,
     kind: 'reminder',
     scheduled_start: when,
-    // RC-18: forward the wall-clock inputs; trackerCreateTask converts local_time
-    // to scheduled_start engine-side when scheduled_start (`when`) is absent.
+    // Forward the wall-clock inputs; trackerCreateTask converts local_time when scheduled_start (`when`) is
+    // absent.
     local_time: localTime,
     local_timezone: args.local_timezone,
     tz: args.tz,
-    // Caller may pass repeat params through for recurring reminders
-    // ("every Monday at 9am"). Same shape as work_open(kind="task").
     repeat_interval: args.repeat_interval,
     repeat_unit: args.repeat_unit,
     repeat_end_type: args.repeat_end_type,
@@ -986,42 +821,32 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
       }
       status = mapped;
     }
-    // t193: the `assigned_to` side door is GONE (it moved work with no cause or ownership check). Moving
-    // is `:reassign`'s, under the row-authority cause rule. A status call carrying `assigned_to` is now
-    // refused at the tool door by the per-operation argument check (test-2 rank 3, `WORK_OP_READS`),
-    // which replaced the one-off guard that stood here; this writer never reads an assignee.
+    // A status call carries no assignee: moving work is :reassign's, under the row-authority cause rule,
+    // and the tool door refuses an assigned_to here (WORK_OP_READS); this writer never reads one.
     const priority = args.priority as string | undefined;
 
     if (!status && !priority) {
       return 'Error: at least one of status or priority must be provided';
     }
 
-    { const no = taskWriteRefusal(agentId, taskId, 'change the status of'); if (no) return no; }   // t193 (dec 3): only the task's holder, its creator, the PM and the main agent change it.
+    { const no = taskWriteRefusal(agentId, taskId, 'change the status of'); if (no) return no; }   // only the task's holder, its creator, the PM and the main agent change it.
     if (status && ownerHoldStands(taskId, false)) return `Refused: ${OWNER_HOLD_REFUSAL}`;
     // The prior status, for the task_log transition entry below (the row has moved once it is written).
     const db = getDb();
     const taskRow = db.prepare(`SELECT title, ${STATE_TO_STATUS_SQL('state')} as prior_status FROM work WHERE id = ?`).get(taskId) as { title: string; prior_status: string } | undefined;
     const priorStatus = holdOf(taskId)?.kind ?? taskRow?.prior_status ?? null;
 
-    // v2.10.1, idempotency check. When the agent calls
-    // work_update(action="status") with a status that the task is already at,
-    // do nothing and tell the agent clearly. Pre-fix the call still ran
-    // the full update + emitted "[OK] Task updated" + sent the success
-    // notification, which read to the agent as "I did real work" and
-    // encouraged re-closing already-complete tasks based on stale
-    // scheduler triggers still in its context window
-    // (production incident 2026-06-08: agent close-loop on already-
-    // complete recurring emails). Skip only when status is the only
-    // requested change; if the call also changes assignedTo or
-    // priority, fall through to the normal update so those land.
+    // Idempotency: a status call naming the status the task is already at changes nothing and says so, so
+    // it is not read as real work. Only when status is the sole requested change; a call that also changes
+    // priority falls through to the normal update.
     if (
       status &&
       !priority &&
       priorStatus === status
     ) {
-      // t151 (D): the call may still carry a note. The status is unchanged, the words are not nothing:
-      // record them exactly as `work_note` does (an observation by this agent) and say so. A note is a
-      // record on the task, not progress on it (the PM's ladder does not read it as movement).
+      // The status is unchanged but the call may carry a note: record it as work_note does (an observation
+      // by this agent) and say so. A note is a record on the task, not progress (the PM's ladder ignores
+      // it).
       const sameStatusNote = typeof args.notes === 'string' ? args.notes.trim() : '';
       if (sameStatusNote.length > 0) {
         writeTaskLog({
@@ -1043,14 +868,9 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
     if (status) updates.status = status;
     if (priority) updates.priority = priority;
 
-    // v2.8.x rule: 'on_deck' is reserved for tasks with a FUTURE
-    // scheduled_start (the scheduler owns the transition to 'in_progress'
-    // at fire time). Anything else belongs in 'in_progress' so the work
-    // stays visible to the assigned agent and the PM. Refuse explicit
-    // moves to 'on_deck' on tasks without a future schedule so agents
-    // don't accidentally park work in the "waiting for never" bucket, 
-    // the failure mode being addressed is the agent creating tasks,
-    // working one, and forgetting the rest.
+    // 'on_deck' is reserved for tasks with a future scheduled_start (the scheduler owns the move to
+    // in_progress). Explicit moves to 'on_deck' on tasks without one are refused so work is not parked
+    // where nothing wakes it.
     if (status === 'on_deck' && !isPMAgent(agentId)) {
       const sched = db.prepare(
         `SELECT ${msToText('scheduled_start')} AS scheduled_start, repeat_interval, ${msToText('next_run_at')} AS next_run_at FROM work WHERE id = ?`
@@ -1093,10 +913,8 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
       clearHold(taskId, agentId);   // already there: only the hold lifts (a move lifts it in transition())
     }
 
-    // PHASE-2 T8b: the column half and the STATE half are two calls now, because they are
-    // two different things. `updateTask` patches; `setTaskStatusResult` is `transition()`
-    // and hands back the gate's verdict so a refusal can be steered on instead of read as
-    // "the task vanished".
+    // The column patch and the state change are separate calls: setTaskStatusResult is transition() and
+    // returns the gate's verdict, so a refusal can be steered on instead of read as "the task vanished".
     const { status: statusUpdate, ...columnUpdates } = updates as Record<string, unknown>;
 
     let task = Object.keys(columnUpdates).length > 0
@@ -1124,16 +942,12 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
     }
 
     if (!task) {
-      // We already resolved taskId above, so the id existed at resolve time.
-      // A null return from updateTask now means one of two rare things:
-      //   1. Another agent deleted the task between resolve and update
-      //   2. The task was deleted between the UPDATE and the SELECT
-      // Either way, the task genuinely no longer exists, not a prefix mismatch.
+      // taskId resolved above, so a null here means the task was deleted between resolve and update (or
+      // between the UPDATE and the SELECT): it no longer exists, not a prefix mismatch.
       return `Error: Task ${taskId} was deleted before the update completed. It no longer exists.`;
     }
 
-    // Phase B.0: write the transition + any supplied notes to task_log.
-    // tasks.notes is now read-only legacy (Q7), new code does not append to it.
+    // Write the transition and any supplied notes to task_log; tasks.notes is read-only legacy.
     {
       const fromEntity = isPMAgent(agentId)
         ? 'pm'
@@ -1178,11 +992,7 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
   }
 }
 
-// ── trackerAddNotes ──
-//
-// Phase B.0: writes an observation entry to task_log instead of appending to
-// the legacy tasks.notes column. Call signature is unchanged so agents do
-// not need to relearn.
+// Writes an observation entry to task_log (tasks.notes is read-only legacy).
 
 export function trackerAddNotes(agentId: string, args: Record<string, unknown>): string {
   try {
@@ -1213,21 +1023,11 @@ export function trackerAddNotes(agentId: string, args: Record<string, unknown>):
   }
 }
 
-// C27: trackerEditNotes + trackerClearNotes (dead v2.8.0 stubs that always
-// returned an Error directive) were DELETED along with their tool defs; the old
-// tool names are now tombstone aliases (tools/aliases.ts).
 
-// ── trackerEditTask ──
-// Edit any structural field on a task, title, description, dependencies,
-// step ordering, schedule. This is the catch-all editor; status changes still
-// go through trackerUpdateStatus (because completing a task has notification
-// + project-rollup side-effects), and the schedule pause/resume pair stays on
-// trackerPauseSchedule / trackerResumeSchedule (because those write a reason
-// and notify the PM differently).
-//
-// Everything else lives here. If a future field is added to the tasks table,
-// the rule of thumb is: "does setting it have a side-effect beyond the row
-// update?" If no, add it to this tool. If yes, give it its own tool.
+// Edits any structural field on a task: title, description, dependencies, step order, schedule. Status
+// changes stay on trackerUpdateStatus (completion has notification and project-rollup side effects) and
+// schedule pause/resume on trackerPauseSchedule / trackerResumeSchedule (they write a reason and notify the
+// PM). A new tasks-table field belongs here unless setting it has a side effect beyond the row update.
 
 export function trackerEditTask(agentId: string, args: Record<string, unknown>): string {
   try {
@@ -1238,10 +1038,9 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
     if (!resolved.ok) return formatResolveError('task', rawTaskId, resolved);
     const taskId = resolved.id;
 
-    { const no = taskWriteRefusal(agentId, taskId, 'edit'); if (no) return no; }   // t193 (dec 3): editors only — holder, creator, PM, main agent.
-    // RC-18: local wall-clock schedule input on edit too. Convert local_time to
-    // scheduled_start engine-side before the field reads below. Explicit
-    // scheduled_start wins if both are given.
+    { const no = taskWriteRefusal(agentId, taskId, 'edit'); if (no) return no; }   // editors only: holder, creator, PM, main agent.
+    // local_time converts to scheduled_start engine-side before the field reads below; an explicit
+    // scheduled_start wins.
     let editedScheduleZone: string | null = null;
     if (args.local_time !== undefined && args.local_time !== null && args.local_time !== ''
         && args.scheduledStart === undefined && args.scheduled_start === undefined) {
@@ -1271,10 +1070,9 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
     const notes = args.notes as string | undefined;
     const goal = args.goal as string | undefined;
 
-    // PHASE-6 T0A: the supplied-field check and the refusal's `Editable:` list are keyed
-    // by ONE declaration (`WORK_EDITABLE_TASK_FIELDS` — its header carries the defect).
-    // Keys are the advertised names, values are the locals above (the actual reads), so
-    // the map is a join between the two rather than a second copy of either.
+    // The supplied-field check and the refusal's `Editable:` list are keyed by one declaration
+    // (WORK_EDITABLE_TASK_FIELDS): keys are the advertised names, values the locals above, so this map
+    // joins them.
     const editableValues: Record<string, unknown> = {
       title, description, goal, depends_on: dependsOn, step_number: stepNumber, phase,
       scheduled_start: scheduledStart, repeat_interval: repeatInterval, repeat_unit: repeatUnit,
@@ -1287,9 +1085,8 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
     }
 
     if (setsASchedule([scheduledStart, repeatInterval, repeatUnit, repeatEndType, repeatEndValue, repeatDaysOfWeek, anchorTime])) { const no = finishedScheduleRefusal(taskId, getTask(taskId)?.title ?? 'this task', 'changed'); if (no) return no; }
-    // The repeat number must be able to step the calendar (same refusal as
-    // the two work_open doors) — but only when one is being SET: `null` is
-    // the supported way to clear a repeat, and stays allowed through here.
+    // The repeat number must be able to step the calendar (same refusal as the two work_open doors), but
+    // only when one is being set: null is the supported way to clear a repeat and stays allowed.
     if (repeatInterval !== undefined && repeatInterval !== null) {
       const repeatNumErr = repeatNumberError(repeatInterval);
       if (repeatNumErr) return repeatNumErr;
@@ -1321,8 +1118,8 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
         : (repeatUnit ?? null);
       const effHasInterval = effInterval !== null && effInterval !== undefined;
       const effHasUnit = effUnit !== null && effUnit !== undefined && effUnit !== '';
-      // Catch invalid unit first so a typo like "weekly" produces a
-      // corrective hint instead of a misleading missing-interval message.
+      // Check the unit first so a typo like "weekly" gets a corrective hint, not a missing-interval
+      // message.
       if (effHasUnit && !VALID_REPEAT_UNITS.has(effUnit as string)) {
         return `Error: repeat_unit="${effUnit}" is not a valid unit. Valid values: minutes, hours, days, weeks, months, years, weekdays, specific_days. Common mistakes: "weekly" → repeat_unit="weeks"; "daily" → repeat_unit="days".`;
       }
@@ -1337,14 +1134,10 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
       }
     }
 
-    // FA-S4: reject an effective specific_days schedule with an empty
-    // day-of-week allowlist. specific_days + no valid days silently degrades
-    // to a single fire then complete (calculateNextRun's specific_days walk
-    // can't advance without an allowed day). This runs whenever the edit could
-    // change the effective unit OR the day list, including the days-only edit
-    // (repeat_days_of_week -> [] / null) the schedule-integrity gate above does
-    // not cover because it only triggers on scheduled_start/interval/unit
-    // changes. Mirrors the fail-loud creator check in trackerCreateTask.
+    // Reject an effective specific_days schedule with an empty day list (calculateNextRun cannot advance,
+    // so it fires once then completes). Runs when the edit could change the unit or the day list, including
+    // a days-only edit the schedule-integrity gate above does not cover. Mirrors the creator check in
+    // trackerCreateTask.
     if (repeatUnit !== undefined || repeatDaysOfWeek !== undefined) {
       const cur = getDb().prepare(
         'SELECT repeat_unit, repeat_days_of_week FROM work WHERE id = ?',
@@ -1362,9 +1155,8 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
       }
     }
 
-    // Phase B.1: goal edits are special. PM watches for goalpost-narrowing
-    // mid-work. We log both old and new with a diff, so PM can see history
-    // when validating later.
+    // Goal edits are special: PM watches for goalpost-narrowing, so both old and new are logged with a
+    // diff.
     if (goal !== undefined) {
       const goalTrimmed = goal.trim();
       if (!goalTrimmed) {
@@ -1385,24 +1177,17 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
       }
     }
 
-    // ── RC-16: task content (title/description) edits are audited AND guarded ──
-    // Snapshot title/description/original_description BEFORE the update so we can
-    // (a) write a task_log audit entry for content edits, the same discipline
-    // goal edits already get above, and (b) enforce the exact-revert guard. Two
-    // structural defects made P-1 (a silent description revert) possible and
-    // invisible: any agent could rewrite any task's description with no guard,
-    // and description/title edits were NOT task_log-audited (only goal edits).
+    // Snapshot title/description/original_description before the update, to (a) write a task_log audit
+    // entry for content edits, as goal edits get above, and (b) enforce the exact-revert guard.
     const contentSnapshot = (title !== undefined || description !== undefined)
       ? getDb().prepare('SELECT title, description, original_description FROM work WHERE id = ?')
           .get(taskId) as { title: string | null; description: string | null; original_description: string | null } | undefined
       : undefined;
 
-    // Exact-revert guard (RC-16): restoring `description` to a value that is
-    // byte-identical to the immutable `original_description`, while the current
-    // description has already been edited away from it (a later edit exists),
-    // requires an explicit revert_to_original=true. This blocks the silent
-    // "restore the stale original over a legitimate later edit" write (P-1)
-    // without preventing an intentional, acknowledged revert.
+    // Exact-revert guard: restoring description to a value byte-identical to the immutable
+    // original_description, after a later edit moved it away, requires an explicit revert_to_original=true.
+    // This blocks silently restoring a stale original over a legitimate later edit while allowing an
+    // acknowledged revert.
     if (description !== undefined && description !== null && description !== '' && contentSnapshot) {
       const orig = contentSnapshot.original_description;
       const cur = contentSnapshot.description;
@@ -1412,14 +1197,8 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
         return (
           `Error: this edit restores the description to the task's ORIGINAL text byte-for-byte, over a later edit that changed it. ` +
           `That is usually an accidental revert of intended work (a stale copy overwriting the current description). ` +
-          // PHASE-6 T0C-W: the escape hatch is REACHABLE and this line names it again.
-          // T0C had to strike it: the refusal told the model to re-call with
-          // `revert_to_original=true` while the flag was declared on no tool, so a model
-          // that obeyed got the unknown-argument warning, the flag dropped, and the
-          // identical refusal back — a loop the guard itself created. `work_update` now
-          // declares it and the edit door forwards it. The GUARD IS UNCHANGED: without
-          // the flag this refusal still fires, which is the whole point of an
-          // acknowledgement rather than an option.
+          // The escape hatch is named here and is reachable: work_update declares revert_to_original and
+          // the edit door forwards it. Without the flag this refusal still fires.
           `If you really mean to roll the description back, re-call with revert_to_original=true.`
         );
       }
@@ -1477,22 +1256,15 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
     if (priority !== undefined) updates.priority = priority;
     if (notes !== undefined) updates.notes = notes;
 
-    // A goal-only edit has already written its change above (the goal went
-    // through the attribute door with its own observation), so `updates` is
-    // empty here. An empty patch is the door's `no_change`/`empty-patch`, which
-    // updateTask() reports exactly like a vanished row — calling it on this path
-    // would answer "was deleted" about the row we just updated. Read the row
-    // back instead; the deleted answer stays reserved for a row truly gone.
+    // A goal-only edit already wrote its change (through the attribute door, with its own observation), so
+    // `updates` is empty. updateTask() reports an empty patch like a vanished row, so read the row back
+    // instead; "deleted" stays reserved for a row truly gone.
     const task = Object.keys(updates).length === 0 ? getTask(taskId) : updateTask(taskId, updates);
     if (!task) {
       return `Error: Task ${taskId} was deleted before the update completed. It no longer exists.`;
     }
 
-    // RC-16: audit title/description content edits in task_log, the same
-    // discipline goal edits get above. Only logging goal edits is exactly what
-    // made P-1 (a description revert) invisible; content edits now leave the same
-    // before/after trail so a reviewer / PM can see who changed the user-facing
-    // task text and to what.
+    // Audit title/description content edits in task_log with a before/after trail, as goal edits get above.
     if (contentSnapshot) {
       const contentEditor = isPMAgent(agentId) ? 'pm' : `agent:${agentId}`;
       if (title !== undefined && title.trim() !== (contentSnapshot.title ?? '')) {
@@ -1518,10 +1290,8 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
       }
     }
 
-    // v2.5.3, if any schedule field changed, recompute next_run_at so the
-    // scheduler picks up the edit. Without this, agents could change the
-    // recurrence (interval, unit, day-of-week list, end conditions) but the
-    // task would still fire at the old cadence until the next natural run.
+    // If any schedule field changed, recompute next_run_at so the scheduler follows the edit instead of the
+    // old cadence.
     const scheduleChanged = (
       scheduledStart !== undefined ||
       repeatInterval !== undefined ||
@@ -1564,10 +1334,8 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
         } | undefined;
         if (row) {
           const nextRun = calculateNextRun(row);
-          // Only set schedule_status to 'waiting' if there is a future run.
-          // calculateNextRun returns null for completed/non-recurring tasks
-          // that have already fired, in that case leave whatever status was
-          // there (typically 'completed' or 'idle').
+          // Only set schedule_status to 'waiting' when there is a future run: calculateNextRun returns null
+          // for completed or non-recurring tasks that already fired, and their status stays as it was.
           if (nextRun) {
             noteUnsettled(setNextRun(taskId, {
               at: tsToMs(nextRun), alongside: { schedule_status: 'waiting' },
@@ -1582,8 +1350,7 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
           }
         }
       } catch (recalcErr) {
-        // Non-fatal: the row update succeeded; only the recompute failed.
-        // Log it so we notice, but don't fail the edit.
+        // Non-fatal: the row update succeeded and only the recompute failed, so log it and keep the edit.
         logger.warn('trackerEditTask: schedule recompute failed', {
           taskId,
           error: recalcErr instanceof Error ? recalcErr.message : String(recalcErr),
@@ -1593,8 +1360,8 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
 
     const changed: string[] = [];
     for (const k of Object.keys(updates)) changed.push(k);
-    // The goal-only edit changed the goal; `updates` never names it because it
-    // was written above, with its own observation. Name it on the reply.
+    // The goal was written above with its own observation, so `updates` never names it; name it on the
+    // reply.
     if (changed.length === 0 && goal !== undefined) changed.push('goal');
 
     const editParts = [
@@ -1603,8 +1370,8 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
       `Task updated: ${task.title}`,
       `Fields changed: ${changed.join(', ')}`,
     ];
-    // RC-18: if the schedule changed, echo the wall-clock anchor + next run so a
-    // timezone mistake is caught before the next fire.
+    // If the schedule changed, echo the wall-clock anchor and next run so a timezone mistake is caught
+    // before the next fire.
     if (scheduleChanged) {
       const fresh = getTask(taskId);
       for (const line of scheduleEchoLines(fresh?.scheduledStart ?? null, fresh?.nextRunAt ?? null)) {
@@ -1620,25 +1387,12 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
   }
 }
 
-// ══════════════════════════════════════════════════════════════════════════════════════
-// UX-REPAIR T49 — A REJECTION IS VISIBLE WHEREVER THE ROW IS (round-12 S4).
-//
-// The reply told the owner the notes-reorg deliverables "were delivered". The row's ledger
-// had said the opposite for a day: event 24599, `entry_kind='reject'`, complete → blocked,
-// "No summary file was ever delivered …". The agent ACTED on that rejection when it landed;
-// what failed is every LATER turn, because neither surface it reads carried the ruling or the
-// hold reason: `list` rendered held rows title-only and `get` renders a State line
-// with no adjudication at all. With no surface saying otherwise, stale self-narration was the
-// only account of the row on offer.
-//
-// Both halves below print THE ROW'S OWN RECORDED WORDS, truncated. The engine authors no
-// sentence about the work and classifies no prose: it takes the newest ledger entry that has
-// words and quotes a prefix of it. Both are tool-RESULT text, in no prompt surface, so this
-// moves 0 cached prefix bytes.
-// ══════════════════════════════════════════════════════════════════════════════════════
+// A rejection must be visible wherever the row is. `list` and `get` print the row's own recorded words (the
+// hold's reason, the newest send-back ruling), truncated: the engine authors no sentence about the work and
+// classifies no prose. Both are tool-result text, outside any prompt surface, so they move no cached prefix
+// bytes.
 
-/** The row's own words, flattened to one line and cut. The `...` marker is the same one this
- *  file already uses when it truncates a description on a verbose list row. */
+/** The row's own words, flattened to one line and cut with a `...` marker. */
 function recordedClause(text: string | null | undefined, max: number): string | null {
   const flat = (text ?? '').replace(/\s+/g, ' ').trim();
   if (!flat) return null;
@@ -1662,18 +1416,15 @@ function lastPMRulingLine(taskId: string): string | null {
   return clause ? `Last decision: SENT BACK, ${clause}` : null;
 }
 
-// ── trackerGetStatus ──
 
 export function trackerGetStatus(agentId: string, args: Record<string, unknown>): string {
   try {
     const rawTaskId = args.taskId as string | undefined;
     const rawProjectId = args.projectId as string | undefined;
 
-    // The dispatcher in agent/tools.ts passes the same input as BOTH
-    // taskId and projectId to let either side succeed. Try to resolve
-    // the task first; if that fails, fall through and try the project
-    // (but don't surface the task's not_found error if the project
-    // resolves).
+    // The dispatcher in agent/tools/cat/tracker.ts passes the same input as both taskId and projectId so
+    // either side can succeed: resolve the task first, then fall through to the project without surfacing
+    // the task's not_found.
     if (rawTaskId) {
       const taskResolved = resolveTaskId(rawTaskId, agentId);
       if (taskResolved.ok) {
@@ -1692,9 +1443,8 @@ export function trackerGetStatus(agentId: string, args: Record<string, unknown>)
         }
         if (task.assignedTo) parts.push(`Assigned to: ${task.assignedToName ?? task.assignedTo}`);
         if (task.hold) parts.push(`${task.hold === 'paused' ? 'Paused' : 'Blocked'}: ${task.holdReason ?? ''}`);
-        // The origin chain, in the agent's own view (2026-07-22 owner ruling:
-        // the point of the identity work is that the AGENT can discern where a
-        // task came from and connect it to its conversation and prompt).
+        // The origin chain, in the agent's own view, so it can connect a task to its conversation and
+        // prompt.
         {
           const origin = findTaskOriginChain(task.id);
           if (origin) parts.push(`Origin: ${renderTaskOriginChain(origin)}`);
@@ -1708,10 +1458,8 @@ export function trackerGetStatus(agentId: string, args: Record<string, unknown>)
           });
           parts.push(`Depends on: ${depNames.join(', ')}`);
         }
-        // RC-18: surface the schedule so the description's prose time ("9 PM PT")
-        // and the actual anchor are visible side by side (P-2 was invisible
-        // because get_status never showed the schedule). Wall-clock + UTC via
-        // formatTimeForAgent so the time can't be misread.
+        // Surface the schedule so the description's prose time and the actual anchor are visible side by
+        // side (wall-clock plus UTC, so the time cannot be misread).
         if (task.scheduleStatus && task.scheduleStatus !== 'unscheduled') {
           const cadence = task.repeatInterval && task.repeatUnit
             ? `every ${task.repeatInterval} ${task.repeatUnit}`
@@ -1725,10 +1473,8 @@ export function trackerGetStatus(agentId: string, args: Record<string, unknown>)
         parts.push(`Created: ${task.createdAt}`);
         parts.push(`Updated: ${task.updatedAt}`);
         if (task.completedAt) parts.push(`Completed: ${task.completedAt}`);
-        // 2026-07-22 production incident: the status READ is where the re-work
-        // spiral started. The read renders the ticket's STAMPS (engine-observed
-        // state) plus live step facts; the delivery-evidence join backfills
-        // rows that predate the stamp columns.
+        // Render the task's stamps (engine-observed state) plus live step facts; the delivery-evidence
+        // join backfills rows that predate the stamp columns.
         {
           const st = getTaskStampFields(task.id);
           if (st) {
@@ -1736,8 +1482,7 @@ export function trackerGetStatus(agentId: string, args: Record<string, unknown>)
             parts.push(`State: ${renderTaskStamps(st)}${steps ? ` | ${steps}` : ''}`);
           }
         }
-        // T49(b): the adjudication belongs beside the state, because they answer the same
-        // question and the state line alone is what the S4 reply read as permission.
+        // The adjudication belongs beside the state: they answer the same question.
         {
           const ruling = lastPMRulingLine(task.id);
           if (ruling) parts.push(ruling);
@@ -1747,17 +1492,15 @@ export function trackerGetStatus(agentId: string, args: Record<string, unknown>)
           const evLine = engineProofLine(task.id);
           if (evLine) {
             parts.push(
-              // Review round 2: facts, not close-coaching (product law, "Finishing, not closing").
+              // Facts only, no close-coaching.
               `\n[ENGINE RECORD: this task's work appears ALREADY DELIVERED, ${evLine}. ` +
               `Do NOT redo or re-deliver what was already delivered.]`
             );
           }
         }
 
-        return taskReadWithNotes(task.id, agentId, parts.join('\n'), args.offset);   // t169: the task's own notes close the page
+        return taskReadWithNotes(task.id, agentId, parts.join('\n'), args.offset);   // the task's own notes close the page
       }
-      // Task resolution failed, if we also have a projectId (usually the
-      // same string), try the project branch below before reporting.
       if (!rawProjectId) {
         return formatResolveError('task', rawTaskId, taskResolved);
       }
@@ -1807,26 +1550,19 @@ export function trackerGetStatus(agentId: string, args: Record<string, unknown>)
   }
 }
 
-// ── trackerListActive ──
 
 export function trackerListActive(agentId: string, args: Record<string, unknown>): string {
   try {
     const scope = args.scope as 'tasks' | 'projects' | 'all' | undefined ?? 'all';
     const filterAssignedTo = args.assignedTo as string | undefined;
     const filterStatus = args.status as string | undefined;
-    // PHASE-6 T0C-W: the tracker layer takes the DECLARED enum value rather than a new
-    // internal boolean. A private option name here (`overdue: true`) would be a
-    // handler-read parameter no tool declares — the exact class T0C's read census exists
-    // to catch — and it would have needed a ruling to excuse it. Speaking `filter` keeps
-    // one vocabulary from the wire to the query and leaves the census with nothing to
-    // forgive.
+    // The tracker layer takes the declared `filter` enum value rather than a private boolean, so one
+    // vocabulary runs from the wire to the query and no handler reads a parameter no tool declares.
     const overdue = args.filter === 'overdue';
     const verbose = args.verbose as boolean | undefined;
     const parts: string[] = [];
     let totalShown = 0;
 
-    // Helper: format one task row. In verbose mode, append the description
-    // line. In compact mode, just title + assignee + priority.
     const taskRow = (t: { id: string; title: string; assignedTo: string | null; assignedToName: string | null; priority: string; description: string | null }) => {
       const assignee = t.assignedTo ? ` [${t.assignedToName ?? t.assignedTo}]` : ' [unassigned]';
       const head = `  [${t.id.slice(0, 8)}] ${t.title}${assignee} (${t.priority})`;
@@ -1837,9 +1573,8 @@ export function trackerListActive(agentId: string, args: Record<string, unknown>
       return head;
     };
 
-    // T49(a): a STOPPED row states why in its own recorded words. Title-only is how a
-    // rejection and a wait both read as "still on the board, nothing to say" — and the S4
-    // reply, a day after the PM rejected the close, said the work "were delivered".
+    // A stopped row states why in its own recorded words; a title-only row reads as "still on the board,
+    // nothing to say".
     const stoppedRows = (rows: Array<Parameters<typeof taskRow>[0]>): string[] =>
       rows.flatMap((t) => {
         const why = recordedStopReason(t.id);
@@ -1860,12 +1595,9 @@ export function trackerListActive(agentId: string, args: Record<string, unknown>
     }
 
     if (scope === 'tasks' || scope === 'all') {
-      // PHASE-6 T0C-W: `filter:"overdue"` was on `work_update`'s declared enum for months
-      // with no branch behind it — it fell through to the unfiltered list, so an agent
-      // asking for overdue work got the whole board and no sign its filter was ignored.
-      // The set is `dueScope()`'s, the same declaration the scheduler's due query answers
-      // from; the HEADING NAMES THE FILTER so an empty answer reads as "nothing is
-      // overdue" rather than as a filter that did nothing.
+      // filter:"overdue" lists dueScope()'s set (the declaration the scheduler's due query also answers
+      // from); the heading names the filter so an empty answer reads as "nothing is overdue", not as an
+      // ignored filter.
       if (overdue) {
         const late = listTasks({ overdue: true, assignedTo: filterAssignedTo });
         if (late.length > 0) {
@@ -1879,9 +1611,8 @@ export function trackerListActive(agentId: string, args: Record<string, unknown>
         const filtered = listTasks({ status: filterStatus, assignedTo: filterAssignedTo });
         if (filtered.length > 0) {
           parts.push(`${filterStatus.replace('_', ' ')} Tasks (${filtered.length}):`);
-          // T49(a): filtering to blocked/paused renders the SAME rows as the sections below,
-          // so this arm carries the same clause. A door that answers differently depending on
-          // which arm reached it is the blind spot this task closes, one arm over.
+          // Filtering to blocked/paused renders the same rows as the sections below, so it carries the same
+          // clause.
           const rows = filtered as Array<Parameters<typeof taskRow>[0]>;
           parts.push(...(filterStatus === 'blocked' || filterStatus === 'paused'
             ? stoppedRows(rows) : rows.map((t) => taskRow(t))));
@@ -1900,10 +1631,8 @@ export function trackerListActive(agentId: string, args: Record<string, unknown>
           parts.push(`In Progress Tasks (${inProgress.length}):`);
           for (const t of inProgress) {
             parts.push(taskRow(t as Parameters<typeof taskRow>[0]));
-            // 2026-07-22: origin + STAMPS in-band on every list read, so the
-            // agent connects the task to its conversation and knows its state
-            // without guessing (the re-work spiral started at a status read
-            // that repeated the lying in_progress).
+            // Origin and stamps in-band on every list read, so the agent connects the task to its
+            // conversation and knows its state without guessing.
             const tid = (t as { id: string }).id;
             const origin = findTaskOriginChain(tid);
             if (origin) parts.push(`      ^ origin: ${renderTaskOriginChain(origin)}`);
@@ -1950,21 +1679,15 @@ export function trackerListActive(agentId: string, args: Record<string, unknown>
       }
     }
 
-    // ── HARNESS-LEARNINGS HL6 — THE BOARD-READ DOOR ANSWERS THE QUESTION IT WAS ASKED ──
-    // This tool lists tasks and projects. It has never listed commitments, and W8's driven
-    // replay is what that costs: the model asked the board, was told "No active tasks.", and
-    // asserted three dead commitments four seconds later. One line, from the one reader that
-    // owns "what does the spine say is owed" (`work/obligation-memory.ts`), said at the
-    // moment the model is actually checking. It is a return value, so it moves no cached
-    // prefix bytes.
+    // This tool lists tasks and projects, not commitments, so an empty board must not read as "nothing
+    // owed": one line from the reader that owns that question (work/obligation-memory.ts). A return value,
+    // so it moves no cached prefix bytes.
     const commitmentPosition = commitmentPositionLine(agentId);
     if (commitmentPosition) {
       parts.push('');
       parts.push(commitmentPosition);
     }
 
-    // Trailer: always tell the agent how to drill in. In compact mode also
-    // mention verbose=true.
     if (totalShown > 0) {
       parts.push('');
       if (verbose) {
@@ -1974,17 +1697,9 @@ export function trackerListActive(agentId: string, args: Record<string, unknown>
       }
     }
 
-    // ── UX-REPAIR ROUND 13 T60 — THE DECISION-MOMENT POINTER ────────────────────────────
-    // This door answers "what is open RIGHT NOW". Round-13 S4 asked it "what happened
-    // today", read the three open rows it returned, and answered "Quiet day so far …
-    // nothing else changed on the tracker" over 57 rows opened AND closed in that window.
-    // The list was not wrong; it was a different question, and nothing said so at the
-    // moment the model was choosing what to trust.
-    //
-    // It rides HERE, unconditionally — including the empty board, which is precisely the
-    // shape that produces the guess (an empty NOW reads as an empty DAY). Return value, so
-    // it moves no cached prefix byte; it is the same lane and the same reasoning as the HL6
-    // commitment line above.
+    // Decision-moment pointer: this door answers "what is open right now", not "what happened over a
+    // window". It rides here unconditionally, including the empty board (an empty now reads as an empty
+    // day), and as a return value it moves no cached prefix bytes.
     parts.push('');
     parts.push(ACTIVITY_POINTER);
 
@@ -1996,60 +1711,16 @@ export function trackerListActive(agentId: string, args: Record<string, unknown>
   }
 }
 
-// ════════════════════════════════════════════════════════════════════════════════════════
-// ── trackerActivity — UX-REPAIR ROUND 13 T60 ────────────────────────────────────────────
+// trackerActivity: the window's own ledger, a read-only extension of the tracker door. "What is open"
+// (list) and "what changed over a window" are different quantities; this answers the second from
+// timestamped ledgers that already exist (work.opened_at/closed_at, work_events, adjudications,
+// deliveries). It adds no table, column, event kind or write path.
 //
-// ── WHAT WAS MISSING, AND IT WAS NOT DATA ───────────────────────────────────────────────
-// Round-13 S4 (catalog §8.2–8.6): the owner asked what had happened today. The turn made
-// ONE read — `work_update(action="list")` — and wrote "Quiet day so far … nothing else
-// changed on the tracker." The recorder's independent count of the identical window: 57 work
-// rows OPENED and 57 CLOSED, 283 `work_events`, 142 deliveries, a delegated project run end
-// to end and PM-validated. Both sentences are marked UNBACKED.
-//
-// The list door answered its own question correctly (3 rows open now). The finding is that
-// "what is open" and "what changed over a window" are DIFFERENT QUANTITIES and only the
-// first had a door anywhere on the platform. The window's data was never missing:
-// `work.opened_at` / `work.closed_at`, `work_events.created_at`, `adjudications.created_at`
-// and `deliveries.created_at` are all timestamped and all were already on that box. The model
-// guessed because honesty was structurally impossible, which is the class this closes.
-//
-// ── CENSUS ROW, AND THE COLLISION ARGUED (mission rule: no new mechanism without one) ────
-// This is a READ-ONLY EXTENSION of the tracker door — a fifth reader over ledgers that four
-// existing readers already query, no new table, no new column, no new event kind, no write
-// path of any sort (pinned by a test that counts rows before and after).
-//   • vs `action="list"`  — NOW versus a WINDOW. They cannot answer each other, and each
-//     names its own scope in its own output, so a reader can never mistake one for the
-//     other. The list door gains one pointer sentence at the decision moment; this door's
-//     closing line points back. Two surfaces, two jobs, each saying which it is.
-//   • vs `action="get"`   — one row in full versus every row's shape over a window.
-//   • vs the HL5/T44 snapshot lane — that is OPEN COMMITMENTS, complete, injected. This is
-//     history, pulled, and never injected: it costs a prefix byte only if the agent asks.
-//
-// ── THE WINDOW: DEFERRED BY T60, SPENT BY T65 ───────────────────────────────────────────
-// T60 shipped this door with the window as a RENDERER argument and the wire covering the
-// LOCAL DAY only. Its recorded reason: a declared `hours`/`since` property moves the cached
-// tools prefix, and reading one UNDECLARED is worse than not offering it — the engine's own
-// unknown-argument census would tell the model the arg "was silently ignored" while this
-// function acted on it (`agent/tools/index.ts`), and a door that contradicts the engine's
-// warning about itself is not a door. Its own closing words: "widening it to the wire is one
-// declared property on the next affordable prefix re-bless."
-//
-// ROUND-14 S2 PRICED THE DEFERRAL. The owner asked what had happened "since yesterday
-// morning"; the door covered today; 61 ledger rows sat outside it; the reply disclosed none of
-// them. So T65 spends it: `hours` is DECLARED on `work_update` (definitions.ts carries the
-// re-blessing note), the door forwards it through `activityWindowStart` below, and the output
-// goes on stating the window it actually measured — which is what lets a model check its own
-// arithmetic instead of trusting it. The action enum was NOT touched, so the golden delta is
-// exactly one property.
-//
-// ── HONESTY IDIOM ───────────────────────────────────────────────────────────────────────
-// Counts first and complete; notable rows titled; the rest COUNTED behind an elision line
-// that restates the whole number — `memory/recall-lane.ts`'s snapshot rule ("an elision is
-// never silent"), because an activity report that silently truncated would reproduce the
-// exact defect it exists to close. Tool-result lane, engine-authored, agent-facing: it
-// composes nothing for the user and judges no prose (OR2 and the classification ban both
-// untouched — every line below is a COUNT or a stored title).
-// ════════════════════════════════════════════════════════════════════════════════════════
+// Counts come first and complete; notable rows are titled and the rest counted behind an elision line that
+// restates the whole number, so the report never silently truncates. `hours` is declared on work_update and
+// forwarded through activityWindowStart; the output states the window it actually measured. Tool-result
+// lane, engine-authored, agent-facing, never injected into a prompt: every line is a count or a stored
+// title.
 
 /** The list door's decision-moment pointer at the tracker's other read. One sentence,
  *  exported so the test that pins "the list is otherwise byte-identical" can subtract it. */
@@ -2070,8 +1741,7 @@ interface ActivityRow {
   closed_at: number | null;
 }
 
-/** Local midnight in the box's own zone, as epoch ms. The scheduler's zone rules, reused —
- *  a second wall-clock implementation here is exactly the duplicate-mechanism disease. */
+/** Local midnight in the box's own zone, as epoch ms, using the scheduler's zone rules. */
 function localMidnightMs(nowMs: number): number {
   const tz = getBoxTimeZone();
   const w = instantToWall(nowMs, tz);
@@ -2080,23 +1750,18 @@ function localMidnightMs(nowMs: number): number {
 
 const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? '' : 's'}`;
 
-/** The id as something the agent can actually pass back to `action="get"`.
- *  The list door slices 8 characters because every row it shows is a bare UUID. This door
- *  reports the WHOLE board — `ask:<uuid>` and `piece:ask:<uuid>:<uuid>` rows included — and
- *  8 characters of those is `ask:f30b` / `piece:as`, which resolves to nothing. A truncated
- *  id that cannot be looked up is worse than a long one, so namespaced ids print in full. */
+/**
+ * The id as something the agent can pass back to `action="get"`. The list door slices 8 characters, but
+ * this door also reports namespaced rows (`ask:<uuid>`, `piece:ask:...`) whose 8-character prefix resolves
+ * to nothing, so those print in full.
+ */
 const activityRowId = (id: string): string => (id.includes(':') ? id : id.slice(0, 8));
 
 /**
- * T65 — THE WIRE'S `hours` AS THE RENDERER'S WINDOW START, or `undefined` for the default.
- *
- * Every unusable value resolves to the DEFAULT window rather than to a guess, and the caller
- * is not left wondering which it got: the report states the window it measured on its first
- * line, so a refused `hours` is visible in the answer itself.
- *
- * The only bound is a real one, not an invented ceiling (#14): a window cannot begin before
- * time was counted, so an `hours` that reaches back past the epoch is not a window. Nothing
- * here caps how far back a legitimate question may look.
+ * The wire's `hours` as the report's window start, or `undefined` for the default window. Every unusable
+ * value resolves to the default (the report states the window it measured on its first line). The only
+ * bound is that a window cannot begin before the epoch; nothing caps how far back a legitimate question may
+ * look.
  */
 export function activityWindowStart(hours: unknown, nowMs: number = Date.now()): number | undefined {
   if (typeof hours !== 'number' || !Number.isFinite(hours) || hours <= 0) return undefined;
@@ -2105,8 +1770,8 @@ export function activityWindowStart(hours: unknown, nowMs: number = Date.now()):
 }
 
 /**
- * The window's own ledger, rendered. `sinceMs` defaults to local midnight; the wire's own
- * window arrives through `activityWindowStart` (T65).
+ * The window's own ledger, rendered. `sinceMs` defaults to local midnight; the wire's own window arrives
+ * through `activityWindowStart`.
  */
 export function trackerActivity(
   agentId: string,
@@ -2116,7 +1781,7 @@ export function trackerActivity(
   try {
     const db = getDb();
     const nowMs = Date.now();
-    const { forPerson, own } = activityScope(agentId, turnContext(agentId)?.turnNumber);   // t174: see work/peer-origin.ts
+    const { forPerson, own } = activityScope(agentId, turnContext(agentId)?.turnNumber);   // see work/peer-origin.ts
     const since = sinceMs ?? localMidnightMs(nowMs);
     const verbose = args.verbose === true;
     const rowCap = verbose ? ACTIVITY_ROW_CAP * 3 : ACTIVITY_ROW_CAP;
@@ -2142,8 +1807,7 @@ export function trackerActivity(
     ).all(agentId, since, nowMs) as Array<{ state: string; n: number }>;
     const closedTotal = closedRows.reduce((a, r) => a + r.n, 0);
 
-    // ── SCHEDULED RUNS THAT FIRED. The S4 reply asserted "Nothing scheduled fired today"
-    //    from a read that reports no fire history at all; it happened to be true. ──
+    // ── SCHEDULED RUNS THAT FIRED. ──
     const fired = (db.prepare(
       `SELECT COUNT(*) AS n FROM work_events e JOIN work w ON w.id = e.work_id
         WHERE w.agent_id = ? AND e.kind IN ('occurrence_fired','occurrence_released')
@@ -2158,14 +1822,11 @@ export function trackerActivity(
     ).all(agentId, since, nowMs) as Array<{ verdict: string; n: number }>;
 
     // ── WHAT REACHED A PERSON. Three narrowings, each load-bearing:
-    //    • `outcome = 'delivered'` — the ledger also carries `failed`, `suppressed`, `held`
-    //      and `owner_closed` rows. A count that swept those in would report attempts and
-    //      the owner's own close receipt as things that reached him, which is the exact
-    //      class of overclaim this door exists to end. `agent/v2/__tests__/owner-close-
-    //      receipt.test.ts` walks every production reader of this table for this filter.
-    //    • `channel <> 'a2a'` — a peer agent is not a person.
-    //    • `created_at` is a UTC datetime STRING here, not epoch ms, so the bound is
-    //      rendered in that shape. ──
+    //    • `outcome = 'delivered'`: the ledger also carries failed, suppressed, held and owner_closed rows,
+    //      and counting those would report attempts and the owner's own close receipt as reaching him
+    //      (agent/v2/__tests__/owner-close-receipt.test.ts walks every production reader for this filter).
+    //    • `channel <> 'a2a'`: a peer agent is not a person.
+    //    • `created_at` is a UTC datetime string here, not epoch ms, so the bound is rendered that way. ──
     const sinceText = new Date(since).toISOString().replace('T', ' ').slice(0, 19);
     const deliveries = db.prepare(
       `SELECT channel, COUNT(*) AS n FROM deliveries
@@ -2228,8 +1889,8 @@ export function trackerActivity(
       }
       const hidden = touched - rows.length;
       if (hidden > 0) {
-        // The elision is never silent (the HL5 snapshot's rule): the number above is still
-        // the truth, and this says which part of it is on the page.
+        // The elision is never silent: the number above is the complete figure, and this says which part is
+        // listed.
         parts.push(`  … and ${plural(hidden, 'more row')} not listed here — the ${touched} above is the complete number for this window${verbose ? '' : ' (re-call with verbose=true for more rows)'}.`);
       }
     }
@@ -2244,15 +1905,9 @@ export function trackerActivity(
   }
 }
 
-// ── trackerCompleteStep ──
 
-// ── trackerEditProject ──
-//
-// Rename / re-describe a project. Until now, projects literally had no
-// editable title, only status and currentPhase could be changed. Added
-// so the PM agent can rename engine-auto-created projects (the multistep
-// classifier names them with a slice of the user prompt; PM rewrites
-// both project and first task to clean names on its next turn).
+// Renames or re-describes a project, so the PM agent can rename engine-auto-created projects (the multistep
+// classifier names them from a slice of the user prompt).
 
 export function trackerEditProject(agentId: string, args: Record<string, unknown>): string {
   const rawProjectId = (args.project_id ?? args.projectId) as string | undefined;
@@ -2262,7 +1917,7 @@ export function trackerEditProject(agentId: string, args: Record<string, unknown
   if (!resolved.ok) return formatResolveError('project', rawProjectId, resolved);
   const projectId = resolved.id;
 
-  { const no = taskWriteRefusal(agentId, projectId, 'edit'); if (no) return no; }   // t193 (dec 3): the same editors as a task.
+  { const no = taskWriteRefusal(agentId, projectId, 'edit'); if (no) return no; }   // the same editors as a task.
   const title = args.title as string | undefined;
   const description = args.description as string | null | undefined;
 
@@ -2281,14 +1936,8 @@ export function trackerEditProject(agentId: string, args: Record<string, unknown
   }
   if (description !== undefined) {
     const next = description === null || description === '' ? null : String(description);
-    // T8c item 3: the marker-preservation guard is GONE, and it is gone because the thing it
-    // defended no longer lives in editable prose. It existed because on 2026-07-17 a PM
-    // description rewrite stripped the `ENGINE_AUTO_MARKER` prefix and the scaffold stopped
-    // reading as engine-created; the fix was to silently re-prefix every rewrite. The fact is
-    // `root_kind` now — stamped at creation, not on any tool surface, so no edit can reach it.
-    // requirement preserved: an engine-opened row keeps reading as engine-opened however its
-    // description is rewritten. That is now true by construction rather than by a guard that
-    // had to remember to fire.
+    // No marker-preservation guard is needed: the engine-opened fact lives in root_kind, stamped at
+    // creation and on no tool surface, so no description rewrite can strip it.
     updates.description = next;
   }
 
@@ -2303,17 +1952,11 @@ export function trackerEditProject(agentId: string, args: Record<string, unknown
   }
 }
 
-// ── trackerCloseProject ──
-//
-// One call to close a whole project AND every open task on it. The use case
-// is "I abandoned this project / it duplicates something else / scope
-// changed, just close it out cleanly." Without this tool, agents either
-// leave tasks stranded forever in on_deck or have to loop calling
-// work_update(action="status") one task at a time.
+// Closes a whole project and every open task on it in one call (abandoned, duplicate or rescoped project),
+// so agents do not strand tasks in on_deck or loop work_update(action="status") task by task.
 
 const REDRIVE_LATER = ' The directive could not be delivered just now (it is logged); the task is back in play and the PM sweep re-drives it on its schedule.';
 
-// ── trackerRetask ──
 // PM-only: an open task's worker is told to redo it with a directive (at least 30 characters). Refused on a
 // cancelled task, a handed-in one (that is decided instead) and one with no worker. Moves the task to in_progress
 // or on_deck through `transition()`, logs the directive on its trail, and wakes the worker with it, owing no reply.
@@ -2380,9 +2023,8 @@ export async function trackerRetask(
     reason: directive,
   });
 
-  // Deliver the PM's directive to the assigned agent as a system-injected
-  // user turn (same transport as validate_pause's reject path). Fire-
-  // and-forget; PM has already moved the status.
+  // Deliver the PM's directive to the assigned agent as an engine event plus a wake; the PM has already
+  // moved the status, so a failed delivery only adds the re-drive note to the reply.
   let redriven = true;
   try {
     const { redriveWithoutReply } = await import('../agent/agent-notice.js');
@@ -2391,7 +2033,7 @@ export async function trackerRetask(
       `PM directive: ${directive}\n\n` +
       `Task goal: ${task.goal ?? '(none recorded)'}\n\n` +
       `Do the work the directive describes. Don't just acknowledge; do the thing.`;
-    // t143 round 3 (I2): a directive, not a question — it wakes the agent and owes the PM no reply.
+    // A directive, not a question: it wakes the agent and owes the PM no reply.
     redriven = await redriveWithoutReply({ toAgentId: task.assigned_to, fromAgentId: pmAgentId, content: body, taskId });
   } catch (err) {
     redriven = false;
@@ -2408,7 +2050,6 @@ export async function trackerRetask(
   );
 }
 
-// ── trackerPauseSchedule ──
 
 export function trackerPauseSchedule(agentId: string, args: Record<string, unknown>): string {
   const rawTaskId = args.taskId as string;
@@ -2418,7 +2059,7 @@ export function trackerPauseSchedule(agentId: string, args: Record<string, unkno
   if (!resolved.ok) return formatResolveError('task', rawTaskId, resolved);
   const taskId = resolved.id;
 
-  { const no = taskWriteRefusal(agentId, taskId, 'change the schedule of'); if (no) return no; }   // t193 (dec 3): a schedule is part of the task; the task's editors change it.
+  { const no = taskWriteRefusal(agentId, taskId, 'change the schedule of'); if (no) return no; }   // a schedule is part of the task; the task's editors change it.
 
   const db = getDb();
   const task = db.prepare(`SELECT w.id AS id, w.title AS title, w.schedule_status AS schedule_status, w.parent_id AS project_id FROM work w WHERE ${taskScope('w')} AND w.id = ?`).get(taskId) as { id: string; title: string; schedule_status: string; project_id: string } | undefined;
@@ -2439,7 +2080,6 @@ export function trackerPauseSchedule(agentId: string, args: Record<string, unkno
   return `Schedule paused for "${task.title}". It does not fire until it is resumed.`;
 }
 
-// ── trackerResumeSchedule ──
 
 export function trackerResumeSchedule(agentId: string, args: Record<string, unknown>): string {
   const rawTaskId = args.taskId as string;
@@ -2449,7 +2089,7 @@ export function trackerResumeSchedule(agentId: string, args: Record<string, unkn
   if (!resolved.ok) return formatResolveError('task', rawTaskId, resolved);
   const taskId = resolved.id;
 
-  { const no = taskWriteRefusal(agentId, taskId, 'change the schedule of'); if (no) return no; }   // t193 (dec 3): a schedule is part of the task; the task's editors change it.
+  { const no = taskWriteRefusal(agentId, taskId, 'change the schedule of'); if (no) return no; }   // a schedule is part of the task; the task's editors change it.
   const db = getDb();
   const task = db.prepare(`SELECT ${scheduleRowColumns('w')} FROM work w WHERE ${taskScope('w')} AND w.id = ?`).get(taskId) as Record<string, unknown> | undefined;
   if (!task) return `Error: Task ${taskId} was deleted before resume could be applied.`;
@@ -2474,8 +2114,8 @@ export function trackerResumeSchedule(agentId: string, args: Record<string, unkn
   };
 
   const nextRun = calculateNextRun(scheduledTask);
-  // missed_runs_paused_at = NULL: an explicit resume also disarms the D12
-  // engine fallback for a pause the missed-runs detector set.
+  // Clear missed_runs_paused_at: an explicit resume also disarms the engine fallback for a pause the
+  // missed-runs detector set.
   noteUnsettled(setNextRun(taskId, {
     at: tsToMs(nextRun),
     alongside: { is_paused: 0, schedule_status: 'waiting', missed_runs_paused_at: null },
@@ -2488,10 +2128,8 @@ export function trackerResumeSchedule(agentId: string, args: Record<string, unkn
   return `Schedule resumed for "${task.title as string}". Next run: ${nextRun ?? 'none'}`;
 }
 
-// ── trackerResolveMissedRuns (v2.5.45) ──
-// Called by the assigned agent after the scheduler fires a "missed runs"
-// alert. Three actions: run_now, skip, pause. See the alert text in
-// runner.ts / alertMissedRuns for the semantics.
+// Called by the assigned agent after the scheduler fires a "missed runs" alert. Three actions: run_now,
+// skip, pause (see alertMissedRuns in scheduler/runner.ts for the semantics).
 
 export function trackerResolveMissedRuns(agentId: string, args: Record<string, unknown>): string {
   const rawTaskId = (args.task_id ?? args.taskId) as string | undefined;
@@ -2505,26 +2143,23 @@ export function trackerResolveMissedRuns(agentId: string, args: Record<string, u
   if (!resolved.ok) return formatResolveError('task', rawTaskId, resolved);
   const taskId = resolved.id;
 
-  { const no = taskWriteRefusal(agentId, taskId, 'change the schedule of'); if (no) return no; }   // t193 (dec 3): a schedule is part of the task; the task's editors change it.
+  { const no = taskWriteRefusal(agentId, taskId, 'change the schedule of'); if (no) return no; }   // a schedule is part of the task; the task's editors change it.
   const db = getDb();
   const task = db.prepare(`SELECT ${scheduleRowColumns('w')} FROM work w WHERE ${taskScope('w')} AND w.id = ?`).get(taskId) as Record<string, unknown> | undefined;
   if (!task) return `Error: Task ${taskId} no longer exists.`;
   const title = (task.title as string) ?? '(untitled)';
   if (action !== 'pause') { const no = finishedScheduleRefusal(taskId, title, action === 'skip' ? 'skipped ahead' : 'started now'); if (no) return no; }
   if (action === 'pause') {
-    // Already paused by the alert handler; confirm and exit. D12: clear
-    // missed_runs_paused_at so the engine's auto-skip fallback stands down.
-    // The agent explicitly chose to keep the task paused, and the model
-    // tool takes precedence over the fallback when called first.
+    // Already paused by the alert handler: confirm and exit. Clear missed_runs_paused_at so the engine's
+    // auto-skip fallback stands down; the agent's explicit choice takes precedence when called first.
     if (task.missed_runs_paused_at != null) noteUnsettled(patchWork(taskId, { missed_runs_paused_at: null }), 'trackerResolveMissedRuns: missed-run pause cleared', { taskId });
     logger.info('Missed-runs resolved: pause', { taskId }, agentId);
     return `OK: task "${title}" stays paused. The user can resume it from the dashboard, or you can later call work_schedule(action="resume").`;
   }
 
   if (action === 'skip') {
-    // Compute next future anchor (strictly > now). calculateNextRun
-    // already does this when fed an unpaused snapshot, its inner loop
-    // walks the anchor forward until it lands in the future.
+    // The next future anchor (strictly > now): calculateNextRun walks the anchor forward when fed an
+    // unpaused snapshot.
     const scheduledTask: ScheduledTask = {
       id: task.id as string,
       scheduled_start: task.scheduled_start as string | null,
@@ -2543,7 +2178,6 @@ export function trackerResolveMissedRuns(agentId: string, args: Record<string, u
     };
     const nextRun = calculateNextRun(scheduledTask);
     if (!nextRun) {
-      // End conditions reached or anchor unset, leave paused.
       return `Could not compute a next-run for "${title}" (likely past repeat_end_value or anchor missing). Task stays paused; investigate manually.`;
     }
     noteUnsettled(setNextRun(taskId, {
@@ -2555,15 +2189,12 @@ export function trackerResolveMissedRuns(agentId: string, args: Record<string, u
     return `OK: task "${title}" unpaused. All missed slots skipped. Next run: ${nextRun}.`;
   }
 
-  // action === 'run_now': fire one catch-up run immediately. Set
-  // next_run_at to now so the next scheduler tick picks it up. After
-  // that run completes, onTaskRunComplete will compute the natural
-  // next anchor and the task resumes its normal cadence.
+  // action === 'run_now': fire one catch-up run now by setting next_run_at to now; onTaskRunComplete then
+  // computes the natural next anchor and the task resumes its cadence.
   const nowIso = new Date().toISOString();
-  // ⚠ ONE OF THE TWO INSTANTS IN THE PRODUCT THAT DOES NOT COME FROM `calculateNextRun`, and
-  // it is declared as such in `work/next-run.ts`: the owner asked for ONE catch-up run, so the
-  // fire time is NOW by request rather than by cadence. `onTaskRunComplete` recomputes the
-  // natural anchor once that run closes.
+  // One of the two instants not computed by calculateNextRun (declared in work/next-run.ts): one catch-up
+  // run is requested now, so the fire time is NOW; onTaskRunComplete recomputes the natural anchor when it
+  // closes.
   noteUnsettled(setNextRun(taskId, {
     at: tsToMs(nowIso),
     alongside: { is_paused: 0, schedule_status: 'waiting', missed_runs_paused_at: null },

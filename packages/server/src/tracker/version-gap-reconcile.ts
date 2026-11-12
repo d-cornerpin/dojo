@@ -1,53 +1,10 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// THE VERSION-GAP RECONCILIATION PASS — the owner's "stale project checker".
-// ✅ OWNER-REQUESTED 2026-08-06, from his own agent's report on his preflight box.
-// Landed by SWEEP CORE-2 item 3 (SWEEP-F's INBOUND).
-//
-// ── HIS CASE ────────────────────────────────────────────────────────────────────────────
-// A prior build's broken `close_project` left his production dojo carrying 27 stale projects
-// while the board reported 29 "Active" with zero in-progress work. The fix ships; the wreckage
-// stays. That is the whole of the problem: a release repairs the DOOR, and nothing has ever
-// gone back to look at what walked through the broken one.
-//
-// ── WHAT THE ORCHESTRATOR VERIFIED BY COMMAND, AND WHAT IT COULD NOT ────────────────────
-// (a) No such mechanism exists — nothing in the tree reconciles tracker state across a version
-//     change (`update-state.ts` is the update flow only).
-// (b) `work_update:close_project` IS wired at HEAD (`agent/tools/cat/tracker.ts:776`), so his
-//     older build's defect is his box's history and is not re-derivable here.
-// (c) ⚠ THE DEV BODY CANNOT CONFIRM THE POPULATION. Measured 2026-08-06: 228 projects, ALL
-//     terminal (222 done / 6 abandoned); zero-task ghosts **0**; all-terminal-but-open **0** —
-//     because this box was reset during the overhaul. That is ABSENCE OF EVIDENCE, NOT EVIDENCE
-//     OF ABSENCE (#15). The coverage for every shape below is therefore an ADVERSARIAL BODY
-//     carrying all of them at once (`__tests__/version-gap-reconcile.test.ts`), plus a rehearsal
-//     on a `VACUUM INTO` copy of the real box recorded in the task report. Nobody should read a
-//     green run on this box as proof the checks would find anything on his.
-//
-// ── REPORT, NEVER REWRITE — AND THE ONE EXCEPTION ───────────────────────────────────────
-// The orchestrator's rider, earned by the anchor work: report, never rewrite, EXCEPT where a
-// STRUCTURAL invariant makes the case unambiguous. Everything else surfaces WITH ITS ONE-CALL
-// CORRECTION, because a stored state carries no record of intent and rewriting on inference
-// moves real work.
-//
-// So exactly ONE of the four shapes is repaired, and not here: a project whose tasks have all ended is
-// settled by `work/done/project-state.ts`, because a project is derived from its tasks. A project whose
-// last task fell is left open, as the derivation says.
-//
-// ── HIS SAFETY CONSTRAINTS, ADOPTED VERBATIM ────────────────────────────────────────────
-//   * never close a project holding any `in_progress`/`on_deck` task
-//   * never touch task-level data
-//   * flag-don't-touch when ambiguous
-// The first is structural: shape (a) requires EVERY task terminal, so a live task disqualifies
-// the project before anything is handed anywhere — and the authority independently refuses on
-// its own count, so the constraint holds even if this module's predicate were wrong. The second
-// is why shape (d) is a report and not a reassignment. The third is why a zero-task project is
-// flagged and never closed: "no tasks" reads as wreckage on his box and as "I am building this
-// right now" on anybody's, and a stored row cannot tell you which.
-//
-// ── A DENOMINATOR IS MANDATORY ──────────────────────────────────────────────────────────
-// How many were EXAMINED, not only how many changed (#11). Every examined project lands in
-// exactly one named bucket — a finding or a NAMED stand-down — and the test asserts the sum.
-// "The rest" is not a reason.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// Version-gap reconciliation: after an update, reports tracker rows left behind by an older build's
+// defects. (a) an open project whose tasks derive it as settled is settled from them, the only repair (one
+// whose last task fell stays open by design). (b) an open project with no tasks, (c) a finished project
+// holding live tasks and (d) a live task on a terminated assignee are reported with a one-call correction
+// and left alone, since a stored state carries no record of intent. Never close a project holding a live
+// task, never touch task-level data. Every examined project lands in exactly one named bucket (a finding
+// or a named stand-down) and the test asserts that sum.
 
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
@@ -62,47 +19,13 @@ const logger = createLogger('version-gap');
 /** The durable sink. Logs rotate; a report the owner can open must not. */
 export const VERSION_GAP_REPORT_KEY = 'version_gap_reconcile_last';
 
-// ════════════════════════════════════════════════════════════════════════════════
-// THE PREDICATES — ONE COPY, SHARED WITH THE HEALER
-// ════════════════════════════════════════════════════════════════════════════════
-//
-// The orphaned-task shape also has a live detector in `healer/diagnostic.ts`; the predicate is
-// single-sourced here and the healer imports it.
+// Single source of the orphaned-task predicate; healer/diagnostic.ts and healer/auto-fix.ts import it.
 
 /**
- * SHAPE (d): a task dangling in a live state on an assignee that no longer exists.
- * `state IN ('claimed','open')` is the tracker's `in_progress`/`on_deck`;
- * the assignee's dormancy is `agents.status = 'terminated'`, the tree's own predicate.
- *
- * ── ⚠ t129 — THE JOIN KEY IS PART OF THE DEFINITION NOW, AND IT HAD TO BECOME SO ──
- *
- * This predicate's own comment claimed *"'what counts as orphaned' has ONE definition, because
- * two copies of it is the drift this project keeps closing"* — and that claim was false, because
- * the KEY the predicate is joined ON was never inside it. Each of the three consumers supplied
- * its own, and they did not agree: `healer/diagnostic.ts` and this file's own scan joined on
- * `agent_id` (the HOLDER), while `healer/auto-fix.ts` selected and cleared on `assignee_agent`
- * (the ASSIGNEE, the nullable twin).
- *
- * The consequence was a permanent critical false positive. `agent_id` is `TEXT NOT NULL`, so
- * "nobody in particular is assigned" can only live in `assignee_agent` (M7 / P706, stated on
- * `tracker/schema.ts:updateTask`) — which means a CORRECTLY unassigned orphan still has the
- * terminated agent as its holder. After a successful auto-fix the row was `on_deck` (inside the
- * state set), `assignee_agent` NULL, `agent_id` still the dead agent — so the diagnostic raised
- * `severity: 'critical'` ORPHANED_TASK on it on every sweep, for ever, about a row the auto-fix
- * deliberately and correctly leaves alone. A diagnostic that cries wolf every sweep trains both
- * the owner and the healer's own active mode to discount the one signal that would catch a REAL
- * orphan.
- *
- * So the key moves INSIDE. `ORPHANED_TASK_JOIN` is the join every consumer must use and
- * `ORPHANED_TASK_WHERE` now reads the same column, which makes the drift unrepresentable rather
- * than merely discouraged: a consumer cannot pick a different key without declining the helper
- * that supplies the join. The ASSIGNEE is the correct key on the merits as well as for
- * agreement — "is anyone who still exists assigned to this?" is the question, and the holder is
- * the row's history, not its owner.
- *
- * `__tests__/version-gap-reconcile.test.ts` carries the conformance clause: the diagnostic and
- * the auto-fix must select the SAME row set, and a row the auto-fix has just fixed must not
- * still be flagged. It also censuses the three consumers for a re-typed join.
+ * SHAPE (d): a task live (`claimed`/`open`, the tracker's in_progress/on_deck) on an assignee whose
+ * `agents.status` is 'terminated'. The join key is `assignee_agent`, not the holder `agent_id` (NOT NULL,
+ * still the dead agent after an auto-fix); every consumer uses these helpers so all select the same row
+ * set.
  */
 export const ORPHANED_TASK_JOIN = (t = 't', a = 'a'): string =>
   `JOIN agents ${a} ON ${a}.id = ${t}.assignee_agent`;
@@ -111,9 +34,6 @@ export const ORPHANED_TASK_WHERE = (t = 't', a = 'a'): string =>
   `${taskScope(t)} AND ${workingExpr(t, true)}`
   + ` AND ${t}.assignee_agent IS NOT NULL AND ${a}.status = 'terminated'`;
 
-// ════════════════════════════════════════════════════════════════════════════════
-// THE SCAN
-// ════════════════════════════════════════════════════════════════════════════════
 
 export type ReconcileShape =
   | 'all-tasks-terminal-but-open'
@@ -126,16 +46,12 @@ export interface ReconcileFinding {
   readonly subject: 'project' | 'task';
   readonly id: string;
   readonly title: string;
-  /** Why this row is a finding, in words a person reads. */
   readonly why: string;
-  /** The ONE call that corrects it. A report with no correction is a complaint. */
   readonly correction: string;
 }
 
 export interface ReconcileScan {
-  /** THE DENOMINATOR. How many project rows were looked at. */
   projectsExamined: number;
-  /** And how many task rows. */
   tasksExamined: number;
   /** Every examined project that is NOT a finding, by NAMED reason. Sums with the findings. */
   projectStandDown: Record<string, number>;
@@ -145,9 +61,7 @@ export interface ReconcileScan {
 interface Row { id: string; title: string | null }
 
 /**
- * Look at every tracker project and task and classify it. Reads only — this function writes
- * nothing, anywhere, which is what makes it safe to run on a `VACUUM INTO` copy of a real box
- * before it is ever pointed at the box itself (#16).
+ * Classifies every project and task; writes nothing, so it is safe on a `VACUUM INTO` copy of a real box.
  */
 export function scanVersionGap(): ReconcileScan {
   const db = getDb();
@@ -173,10 +87,8 @@ export function scanVersionGap(): ReconcileScan {
         AND NOT EXISTS (SELECT 1 FROM work t WHERE t.parent_id = p.id AND t.kind = 'task')`,
   ).all() as Row[]).map((r) => r.id));
 
-  // SHAPE (c): the project says one thing and its tasks say another. The direction that
-  // matters is the one his board showed him — a row presented as settled while work under it
-  // is still live. The reverse (open project, all tasks done) IS shape (a) and is not counted
-  // twice here.
+  // SHAPE (c): a project marked settled while work under it is still live. The reverse (open project, all
+  // tasks done) is shape (a) and is not counted twice.
   const contradictionIds = new Set((db.prepare(
     `SELECT p.id AS id FROM work p
       WHERE ${projectScope('p')} AND p.state IN ('done', 'failed', 'abandoned')
@@ -213,7 +125,6 @@ export function scanVersionGap(): ReconcileScan {
       continue;
     }
     if (p.state === 'open') {
-      // Not a finding. Which of the two innocent reasons?
       const fell = db.prepare(
         `SELECT COUNT(*) AS c FROM work t WHERE t.parent_id = ? AND t.kind = 'task' AND t.state IN ('failed','abandoned')`,
       ).get(p.id) as { c: number };
@@ -228,7 +139,7 @@ export function scanVersionGap(): ReconcileScan {
     projectStandDown['already closed'] += 1;
   }
 
-  // SHAPE (d) — reported, never touched. Task-level data is his named red line.
+  // SHAPE (d): reported, never touched; task-level data is never rewritten.
   const dangling = db.prepare(
     `SELECT t.id AS id, t.title AS title, a.name AS agent_name
        FROM work t ${ORPHANED_TASK_JOIN('t', 'a')}
@@ -250,20 +161,15 @@ export function scanVersionGap(): ReconcileScan {
   return { projectsExamined: projects.length, tasksExamined, projectStandDown, findings };
 }
 
-// ════════════════════════════════════════════════════════════════════════════════
-// THE PASS
-// ════════════════════════════════════════════════════════════════════════════════
 
 export interface ReconcileResult extends ReconcileScan {
-  /** How many the pass CHANGED — only ever through the existing authority. */
+  /** How many the pass CHANGED, only ever through the existing authority. */
   repaired: number;
   at: string;
 }
 
-/**
- * Run the pass. The one change it makes is settling each shape-(a) project from its tasks
- * (`settleProject`), which stops matching the moment it acts, so a second run repairs nothing.
- */
+// Runs the pass: its one change is settling each shape-(a) project from its tasks, so a second run repairs
+// nothing.
 export async function runVersionGapReconcile(): Promise<ReconcileResult> {
   const scan = scanVersionGap();
   let repaired = 0;
@@ -274,7 +180,6 @@ export async function runVersionGapReconcile(): Promise<ReconcileResult> {
 
   const result: ReconcileResult = { ...scan, repaired, at: new Date().toISOString() };
 
-  // The durable sink. Logs rotate; the report the owner opens must not.
   try {
     getDb().prepare(
       `INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
@@ -292,10 +197,9 @@ export async function runVersionGapReconcile(): Promise<ReconcileResult> {
     standDown: result.projectStandDown,
   });
 
-  // ── ONE PLAIN LINE, to the agent, never the owner's chat: the agent decides and speaks.
-  // It is ONE LINE with the denominator in it, not the report. The report is in `config`
-  // and on the tracker route; a wall of findings in an awareness notice is a wall nobody reads.
-  // Silent when there is nothing to say — the negative control is a clause.
+  // One plain line to the agent, never the owner's chat (the agent decides and speaks), carrying the
+  // denominator rather than the report, which is in `config` and on the tracker route. Silent when there is
+  // nothing to say.
   if (result.findings.length > 0) {
     const nProjects = result.findings.filter((f) => f.subject === 'project').length;
     const nTasks = result.findings.filter((f) => f.subject === 'task').length;
