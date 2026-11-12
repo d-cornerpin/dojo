@@ -1,25 +1,8 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// t140 round 7 (round-6 re-review H2') — WHEN NO ROUTER PICK CAN HOLD THE AGENT, THE OWNER IS TOLD
-// WHY, IN PLAIN WORDS, AND THE TURN ENDS CLEANLY.
-//
-// Round 6 threw the by-name refusal into the turn-error cascade, which knows nothing of it: the owner
-// read "Agent hit an error and the Healer is looking into it", the agent was marked errored and
-// handed to the Healer — when the real cause was a daily spending limit already reached. A budget
-// stop is not an injury and nothing the Healer can do changes it. So the cause is read here, from
-// the router's own filters (`routedSkipReasons`) restricted to the models that WOULD hold the agent,
-// said once to the owner (a persisted note in the agent's chat and a `chat:error` notice), and the
-// turn ends: the `assemble` step, which routes before it builds (t212), asks the driver to end it (`requestExit`). The agent is left idle, not errored.
-// The "cannot hold a conversation" card shows too, only when it is true: no model of the agent's own
-// (its configured model, or a pick the router opens a tier on) can hold it.
-//
-// t148 (an honest stop): that exit finalized a "chose not to reply" turn that handed the message back,
-// so the notice repeated up to four times and the message was then set aside. The two causes that
-// are an honest stop (the spending limit alone, or no model that fits) now THROW to the platform's
-// existing lock instead (`agent/v2/honest-stop.ts`): the owner is told once there, the agent is
-// parked, and the parked message is answered when the limit or the models change. This file only
-// names the cause; it says nothing to the owner for those two. A transient cause (a rate limit, a
-// provider that is down, a model that failed earlier in the turn) keeps the notice-and-exit below.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// When no router pick can hold the agent, name the cause from the router's own filters
+// (`routedSkipReasons`), limited to the models that would hold it. The spending limit, or no model that
+// fits, is an honest stop thrown to the lock (`agent/v2/honest-stop.ts`); a transient cause is told to
+// the owner here and returned, so the `assemble` step ends the turn with the agent idle, not errored.
+// The "cannot hold a conversation" card shows only when no model of the agent's own can hold it.
 
 import { v4 as uuidv4 } from 'uuid';
 import { broadcast } from '../../../../gateway/ws.js';
@@ -44,10 +27,7 @@ const CAUSE: Record<RoutedSkip, string> = {
 };
 const NONE_HOLDS = 'none of the models the auto-router uses can hold its instructions and tools. Add a model with a larger context window to the router, or give it fewer tools';
 
-/**
- * Name why no routed pick holds the agent. A transient cause is told to the owner here and returned
- * as what was said; an honest stop is NOT told here: it is thrown to the lock (see above).
- */
+/** Why no routed pick holds the agent: a transient cause is told and returned, an honest stop thrown. */
 export async function tellOwnerNoPickHolds(args: {
   agentId: string; turnNumber: number; tier: string | null | undefined; excluded: string[]; turnContext: PromptTurnContext;
   /** The last pick's refusal: its numbers are the card's. */
@@ -65,8 +45,6 @@ export async function tellOwnerNoPickHolds(args: {
   // The limit is the real stop even beside a transient cause (a rate limit clears by itself; the limit does not).
   const stop: HonestStopKind | null = causes.has('budget') ? 'budget_stop' : causes.size === 0 ? 'no_model_fits' : null;
   if (stop) {
-    // t148: the limit alone, or no model that fits, is an honest stop: the platform's lock parks the
-    // agent and tells the owner once (recovery.ts -> honest-stop.ts). Nothing is said here.
     revertTrigger();
     throw new AgentError(honestStopWords(stop), agentId, { code: stop === 'budget_stop' ? BUDGET_STOP_CODE : NO_MODEL_FITS_CODE });
   }

@@ -1,51 +1,9 @@
-// ════════════════════════════════════════
-// PHASE-6 T5 (CUT 5) — WHAT GOES INTO THE CALL, moved from `loop.ts` with its
-// bodies byte-unchanged: the pre-flight capability gate, then every VOLATILE
-// injection this turn makes — turn-context, the engine-verified outbound facts,
-// peer-status, current-time — and the debug-gated context receipt.
-//
-// ⚠ THIS FILE IS OR7 GROUND. Everything it appends rides the TAIL, past the
-// cached prefix, and the ORDER is the contract (roadmap non-negotiable #10,
-// research 25). The two golden gates — the assembled-array golden and the
-// cache-prefix matrix — ran before the commit that moved it and both reference
-// files are byte-unmoved. Nothing here was reordered; the comments that explain
-// each position moved with the line they explain.
-//
-// ── T69b: THE ORDER IS THE CONTRACT, AND THIS TASK CHANGED IT ON PURPOSE ────────────────
-// The rule the contract encodes is MOST-STABLE-FIRST: a provider's prefix cache breaks at
-// the first differing token and never recovers, so every byte behind the earliest-changing
-// block is re-billed on every turn. Two blocks were in the wrong places and the dev box
-// measured the cost (`2557747`, three consecutive quiet turns, full receipts): the FIRST
-// divergence in the tail landed at `engine.recently-answered` on all three pairs, and
-// ~1,400 chars of board state sat behind the per-ask retrieval where every ask re-billed it.
-//
-// The tail's order, and what makes each position true:
-//
-//   msg.pending-nudge          one-shot steer; absent on almost every turn
-//   msg.attempt-ledger         moves when a WORK ROW is touched                   ← W81
-//   msg.active-tasks           moves when the BOARD does, incl. the engine's floor ← W81
-//   msg.scratchpad             moves when the agent writes one                    ← W81
-//   msg.events                 moves when the tail's ROW WINDOW scrolls           ← W81
-//   msg.turn-context           routing/presence; moves when the CHANNEL or the wait count does
-//   engine.recent-outbound     receipts; moves when the agent SENDS
-//   msg.deliveries             deliveries into this conversation; moves when the agent SENDS
-//   engine.open-work           obligations; moves when the BOARD does
-//   engine.open-commitments    HL5 snapshot; moves when the BOARD does            ← T69b
-//   msg.peer-status            one line; moves when a peer flips idle/working
-//   msg.integration-status     live connection truth; moves on a SUCCESSFUL call  ← T76b
-//   engine.recently-answered   moves on EVERY answered turn                       ← T69b
-//   msg.relevant-memory        retrieved against the LIVE ASK: moves every turn, BY DESIGN
-//   msg.current-time           the clock: moves every call, BY DESIGN
-//
-// The last two are the DELIBERATE churn — registered as such in
-// `memory/__tests__/the-tail-holds-still.test.ts`, which is the gate that judges this order.
-// Everything above them is required to be byte-identical between two turns that changed no
-// source data, and every one of them had a wall-clock read in it before this task.
-// ════════════════════════════════════════
+// What goes into the call: the capability gate, the volatile injections on the tail past the cached
+// prefix, and the context receipt. The tail is ordered most-stable-first because a provider's prefix cache
+// breaks at the first differing token; `memory/__tests__/the-tail-holds-still.test.ts` judges the order.
 
 import type { ModelCallParams } from '../../../model.js';
 
-/** The array the assembler hands over and the injections append to. */
 type ModelMessage = ModelCallParams['messages'][number];
 import { advance, type AgentTurnState } from '../../state.js';
 import { injectRegistryMessage } from '../../../../prompt/registry/assembler.js';
@@ -95,33 +53,17 @@ export async function injectAndRecord(
 ): Promise<{ state: AgentTurnState; useTools: boolean; messages: ModelMessage[] }> {
   const { agentId, turnNumber, modelId, messages, systemPrompt, ctx, mctx, volatileFrom, counterparty, steerAwaitingConfirm, turnCtx } = input;
   let state = stateIn;
-  // ── Pre-flight capability enforcement (matches v1 runtime.ts:995) ──
-  // Routes images through the fallback vision model when configured
-  // (replacing each image block with a text description), or strips
-  // them if no fallback is set. Returns useTools=false if model
-  // lacks tool support (with banner). Now async because the
-  // fallback caption call is a network round-trip.
+  // Captions or strips images the model cannot see, and turns tools off when it cannot use them.
   const { enforceModelCapabilities } = await import('../../../runtime.js');
   const { useTools } = await enforceModelCapabilities(agentId, modelId, messages);
 
-  // If tools are disabled, inject a one-shot note so the model knows it
-  // can only respond with text. Only inject on first iteration when last
-  // message is assistant (alternation safety).
+  // Tools off: a one-shot text-only note, first iteration only, after an assistant row (alternation).
   if (!useTools && state.loopCount === 1 && messages.length > 0 && messages[messages.length - 1].role === 'assistant') {
     injectRegistryMessage('msg.tool-note', messages, mctx);
   }
 
-  // ── W81: THE FOUR LANES THE OWNER'S DS4 FINDING 2 MOVED BELOW THE CONVERSATION ────────
-  // Slots 1810 -> 1840, i.e. FIRST in the tail, ahead of `msg.turn-context` at 1850, because
-  // the tail's order is most-stable-first and all four move less often than the channel does.
-  // They were `fitLanes` candidates at slots 500 / 600 / 800 / 1050 — AHEAD of the entire
-  // conversation — while every `work_*` tool moves the first two (and so does the engine's
-  // >=6-non-trivial-tool-call tracker floor, out of six PURE READS), three tools move the
-  // third, and the fourth is a scrolling window over the live tail's fixed row budget, so it
-  // moves when the CONVERSATION does. The assembler computes all four (one tracker read for
-  // the first two); they enter the array HERE, past `volatileFrom`, where a block that
-  // changes costs its own bytes instead of every byte behind it.
-  const blocksFrom = messages.length; // t210: the state blocks start here; above it, this call's one-shot steers
+  // The four state lanes lead the tail: they move less often than the channel does.
+  const blocksFrom = messages.length; // the state blocks start here; above it, this call's one-shot steers
   mctx.attemptLedgerLane = ctx.attemptLedgerLane ?? null;
   injectRegistryMessage('msg.attempt-ledger', messages, mctx);
   mctx.activeTasksLane = ctx.activeTasksLane ?? null;
@@ -131,31 +73,14 @@ export async function injectAndRecord(
   mctx.eventsLane = ctx.eventsLane ?? null;
   injectRegistryMessage('msg.events', messages, mctx);
 
-  // Precise clock time as the FINAL message, after every other engine injection, so its
-  // per-minute churn falls past the entire cached prefix. The system prompt carries date-only;
-  // this is the live time. Always injected.
-  // C28 Part 1: the per-turn routing/presence block (reply destination, the
-  // sole routing authority C5, channel landscape, phone conduct, counterparty
-  // header, bridge state, waiting/conversational hints) injects HERE, right
-  // before current-time, so the volatile route sits past the cached prefix.
+  // Routing and presence (reply destination, channels, counterparty): volatile, so past the cached prefix.
   injectRegistryMessage('msg.turn-context', messages, mctx);
 
-  // ── RC-12 / RC-1: engine-verified outbound facts (volatile lane) ──
-  // Injected HERE, in the same volatile region as turn-context / current-time
-  // (after the fresh tail, past the cached prefix), so they never break the
-  // prompt-cache prefix. Rebuilt each iteration with the rest of this block, so a
-  // single copy lands per model call.
-  //
-  // t158 F: RECENT OUTBOUND rides EVERY agent turn. The receipts are the agent's own, and the turns
-  // scoped hardest (an engine poke, an agent counterparty) need them most: a PM's idle poke started a
-  // one-message turn with no sign of the agent's own send, and it re-did the whole job (run 6, S1;
-  // owner report #7). The per-counterparty deliveries lane and OPEN WORK stay human-only below.
+  // Recent outbound receipts ride every agent turn: an engine or peer turn needs the agent's own sends most.
   try {
-    // RECENT OUTBOUND (RC-12 item 7): the last N sends in 24h, engine-verified.
-    // Survives scoping (receipts are not conversation rows). T69b: the render lives in `outbound-ledger.ts`.
     const outBlock = renderRecentOutboundBlock(getRecentOutbound(agentId, 24, 5));
     if (outBlock) {
-      pushEngineMessage(messages, outBlock, 'engine.recent-outbound'); // registry-exempt(2026-07-16): RC-12 receipts block reads per-iteration ledger state; migrate with the volatile-injection registry refactor
+      pushEngineMessage(messages, outBlock, 'engine.recent-outbound'); // registry-exempt: the receipts block reads per-iteration ledger state; migrate with the volatile-injection registry refactor
     }
   } catch (err) {
     logger.debug('RC-12 recent-outbound injection failed (non-fatal)', {
@@ -163,25 +88,11 @@ export async function injectAndRecord(
     }, agentId);
   }
 
-  // Human turns only from here: the per-counterparty lanes.
   if (counterparty.kind === 'user') {
     const pendConvId = turnCtx.root?.conversationId ?? null;
     try {
-      // ── THE DELIVERIES LANE (PHASE-3 T7 Step 1, research 18 §open-1) ──
-      // Quote the agent's own recent messages TO THIS counterparty (never another
-      // conversation's content) so a bare answer ("5550001234") is bindable even by
-      // the weakest model. It reads the `deliveries` rows natively and is DECLARED in
-      // the lane table (`lane.deliveries`: position 1860, a 316-token reserve, and a
-      // real `truncate()`), which is what lets the cross-conversation ECHO ROW
-      // DUPLICATION be stripped in T7 Step 2 — until now those persisted rows were the
-      // primary and this header was the fallback they suppressed.
-      //
-      // The read, the render and the fit live in `memory/deliveries-lane.ts`. What
-      // stays HERE is the one thing only the array's holder can answer: is this text
-      // already visible? (The echo rows are still being written during T7's quiet
-      // window; quoting a row the tail already carries would duplicate it.) When the
-      // echo writer dies the predicate stops matching and the lane carries the job
-      // whole — nothing else about this site changes.
+      // The agent's recent messages to this counterparty only (`memory/deliveries-lane.ts`), so a bare
+      // answer can be bound; `alreadyVisible` skips a send the tail already carries, never quoting it twice.
       mctx.deliveriesLane = renderDeliveriesLaneMessage({
         agentId,
         conversationId: pendConvId,
@@ -201,33 +112,11 @@ export async function injectAndRecord(
       }, agentId);
     }
 
-    // OPEN WORK (PHASE-2 T7): what this agent still OWES — the current
-    // conversation's open asks and commitments first, then up to 3 from other
-    // conversations labelled as such. Reads the work spine directly; the rows
-    // are created when the obligation is made (4a), so nothing here parses a
-    // summary or matches prose. Aged rows are excluded and go to the daily
-    // brief instead (4b: ageing demotes, it never closes). Same volatile lane
-    // as the outbound facts above, so it never breaks the prompt-cache prefix.
-    //
-    // Keyed on `conversation_id`, not on `conv_key`: the deleted block compared
-    // conv_key strings, which is the column that also carried the claim token
-    // and the park sigils, so a parked row changed which party its items
-    // belonged to.
-    //
-    // ── PHASE-6 T13: THIS INJECTION HAS ITS OWN SCOPE, AND ITS OWN FAILURE IS LOUD ──
-    // It used to sit inside the best-effort `try` above, under a `catch` that logs at
-    // DEBUG and swallows — so a throw in the recent-outbound ledger read or in the
-    // deliveries render silently took "what you still owe" off the model's desk, and
-    // `buildOpenWorkInjection` was never even CALLED. That is not an equivalence of
-    // concerns: those two are enrichments, and this is the mechanism a promise survives
-    // a turn BY (`promise-survives-the-turn`'s `inFrontOfModel` clause is exactly this
-    // block's own rendering). Whether that swallow fired on the scenario's own red is
-    // NOT claimed here — the catch logged at debug, so no record exists either way.
-    // What is fixed is that the injection had no independent failure path.
-    // WARN, not debug: a person is owed something and the model cannot see it.
+    // Open work, what the agent still owes. Its own try with a WARN: unlike the enrichments above, a
+    // person is owed something and the model cannot see it.
     try {
       const openWorkBlock = buildOpenWorkInjection(agentId, pendConvId);
-      if (openWorkBlock) pushEngineMessage(messages, openWorkBlock, 'engine.open-work'); // registry-exempt(2026-07-16): the open-work block reads conv-scoped rows mid-iteration; migrate with the volatile-injection registry refactor
+      if (openWorkBlock) pushEngineMessage(messages, openWorkBlock, 'engine.open-work'); // registry-exempt: the open-work block reads conv-scoped rows mid-iteration; migrate with the volatile-injection registry refactor
     } catch (err) {
       logger.warn('OPEN WORK injection FAILED — work this agent owes is NOT in front of the model this call', {
         agentId, turnNumber, error: err instanceof Error ? err.message : String(err),
@@ -236,137 +125,64 @@ export async function injectAndRecord(
 
   }
 
-  // ── T69b: HL5's OPEN COMMITMENTS SNAPSHOT, AHEAD OF EVERYTHING PER-ASK ─────────────────
-  // The assembler computes it inside the recall lane's single retrieval (`ctx.openCommitments
-  // Lane`); it enters the array HERE, in front of `msg.relevant-memory` instead of glued to
-  // the back of it. It is a pure function of the WORK BOARD — read through `boardLastChanged
-  // At`, whose instant the block's own header states — so on a turn that changed no work row
-  // it is byte-identical, and the provider's cache reaches through it. Behind the per-ask
-  // half it was re-billed by every ask, which is the whole of what this move fixes.
-  // Injected for EVERY counterparty, exactly as the lane it came from is: what an agent owes
-  // does not stop being true because the turn is an A2A or an engine one.
+  // Open commitments, a pure function of the work board: byte-identical on a turn that changed no work row,
+  // so it sits ahead of everything per-ask. Every counterparty: what is owed does not depend on the turn.
   if (ctx.openCommitmentsLane) {
-    pushEngineMessage(messages, ctx.openCommitmentsLane, 'engine.open-commitments'); // registry-exempt(2026-09-01): the STATE half of lane.relevant-memory, computed by the assembler and ordered by the loop; migrate with the volatile-injection registry refactor
+    pushEngineMessage(messages, ctx.openCommitmentsLane, 'engine.open-commitments'); // registry-exempt: the STATE half of lane.relevant-memory, computed by the assembler and ordered by the loop; migrate with the volatile-injection registry refactor
   }
 
-  // ── ROUND-4 RED: THE REPORT-STATE LANE, BESIDE THE SNAPSHOT IT IS MODELLED ON ─────────
-  // Rounds 2-3 suppressed the engine's re-answer RECORD about a withdrawn report card; round 4
-  // proved that was a carrier and not the cause. With every such block provably absent the model
-  // still said "it's sitting on your dashboard as a preview card" — reading its OWN earlier reply
-  // in the fresh tail, true when written, while nothing in the engine ever said what became of the
-  // card. So the engine says it, in the shape this tree already uses for this class (the snapshot
-  // above): current state, read at assembly time, superseding earlier mentions in words.
-  // HERE, next to that snapshot, for its two reasons: both are CURRENT STATE rather than
-  // retrieval, and both ride past `volatileFrom` so the cached prefix is untouched. EMPTY IS
-  // ABSENT — `buildReportStateInjection` returns null, so the 126 of 138 agents on the owner's box
-  // that never filed a report pay nothing. Its own try/catch, exactly like the open-work block: a
-  // lane that cannot build must not cost the turn its other lanes.
+  // Report state: what became of the agent's report cards, as current state beside the snapshot above.
+  // Empty is absent; its own try, so a lane that cannot build does not cost the turn its other lanes.
   try {
     const reportStateBlock = buildReportStateInjection(agentId);
-    if (reportStateBlock) pushEngineMessage(messages, reportStateBlock, 'engine.report-state'); // registry-exempt(2026-09-26): per-turn report-row state read mid-iteration, like engine.open-work; migrate with the volatile-injection registry refactor
+    if (reportStateBlock) pushEngineMessage(messages, reportStateBlock, 'engine.report-state'); // registry-exempt: per-turn report-row state read mid-iteration, like engine.open-work; migrate with the volatile-injection registry refactor
   } catch (err) {
     logger.warn('REPORT STATE injection FAILED — a withdrawn report card is NOT contradicted in front of the model this call', {
       agentId, turnNumber, error: err instanceof Error ? err.message : String(err),
     }, agentId);
   }
 
-  // ── RULING P3-R1 (PHASE-3 T3): msg.peer-status, RESTORED. ──
-  // The entry has been registered at MessageSlot.PeerStatus (1875) since `5cb1758` and
-  // NO injection site has ever existed, so the live idle/working state the 2026-07-16
-  // cache fix relocated out of the cached group roster has never reached a model. No
-  // decision removed it (#15: the absence is not a ruling) — that commit's own stated
-  // intent was to RELOCATE, and the relocation only ever landed its first half.
-  // It goes HERE because the near-tail order 1850 -> 1875 -> 1900 is a preserved
-  // contract (this phase's Global Constraints): after msg.turn-context, before
-  // msg.current-time, behind the cache boundary by construction.
+  // Peer idle/working status: after the turn context, before the clock, behind the cache boundary.
   injectRegistryMessage('msg.peer-status', messages, mctx);
 
-  // ── T76b (W85): THE LIVE INTEGRATION-STATUS LINE, at 1877 ─────────────────────────────
-  // W84: the Plaud read tools reported an empty account for a day, and the agent wrote the
-  // conclusion into its vault ("Plaud flaps"). That note returns through
-  // `msg.relevant-memory`, three messages below this one, and until now nothing in the tail
-  // outranked it — so a fixed tool could still be refused by a remembered breakage.
-  // The assembler computes the block (`ctx.integrationStatusLane`); it enters the array HERE
-  // for a position argument the tail's own rule makes for it. Every block AHEAD of this one
-  // is stabler: peer-status flips rarely, the snapshot moves with the board, the send-keyed
-  // blocks move when the agent sends. This one moves whenever the agent SUCCESSFULLY USES
-  // Google or Microsoft — a real content change, not a clock read, and on a working agent it
-  // is most turns. Most-stable-first therefore puts it at the BACK of the stable group, one
-  // place ahead of `engine.recently-answered` and the rest of the registered deliberate
-  // churn, so the bytes it re-bills when it moves are only the ones already being re-billed.
-  // Injected for EVERY counterparty, exactly as the snapshot above is: whether a connection
-  // works does not stop being true because the turn is an A2A or an engine one.
+  // Live integration status outranks a remembered breakage in `msg.relevant-memory` below. It moves on each
+  // successful Google or Microsoft call, so it sits last in the stable group. Every counterparty.
   mctx.integrationStatusLane = ctx.integrationStatusLane ?? null;
   injectRegistryMessage('msg.integration-status', messages, mctx);
 
-  // ── RECENTLY ANSWERED (ticket-stamps plan A4, owner-approved) ─────────────────────────
-  // The last few asks of THIS conversation that already have answers, read from the per-ask
-  // answer stamps (mig 113), so answered-ness survives compaction structurally and the model
-  // never re-answers a settled question. Bounded: 3 lines; human turns; volatile lane.
-  //
-  // ⚠ SWEEP CORE-2 item 4 (the 2026-08-09 incident): a hand-written join here threw on every row once
-  // `created_at` became epoch-ms (mig 131), into a silent catch. The read lives in `answered-edge.ts` now.
-  //
-  // ── T69b MOVED IT HERE, AND MOVED ITS RENDER OUT ─────────────────────────────────────
-  // POSITION. It used to be pushed inside the human-turn block above — ahead of peer-status,
-  // ahead of the snapshot, ahead of everything. Its content changes on EVERY answered turn
-  // (a new stamp lands, the oldest of three falls off), which makes it one of the two most
-  // volatile blocks that carry content — and it was sitting in front of the stablest ones.
-  // The tail orders most-stable-first, so it belongs down here with the per-ask material.
-  // Measured on the dev box at `2557747`: on all three judged consecutive-turn pairs this
-  // block was the FIRST divergence in the tail, and everything behind it — the snapshot, the
-  // recall lane, the pin, the clock — was re-billed because of where it sat.
-  // RENDER. `renderRecentlyAnsweredBlock` lives beside the read now. The `.map()` that stood
-  // here called `relativeTimeAgo(a.askAt)` off the wall clock, so the block moved at every
-  // bucket boundary as well; it states the recorded instant now.
+  // Recently answered: this conversation's last answered asks (`answered-edge.ts`), so the model never
+  // re-answers a settled one. It moves on every answered turn, so it sits with the per-ask blocks.
   if (counterparty.kind === 'user' && turnCtx.conversationId) {
-    // HEAD 2 — THE OTHER-THREADS LANE: same gate as the ledger below; it says the thread above is ONE
-    // thread (the owner's 2026-09-24 false denial). AHEAD of that ledger on most-stable-first — `the-tail-holds-still.test.ts`
-    // §4 caught it placed the other way: this moves only when ANOTHER thread moves. EMPTY IS ABSENT; the builder WARNs. tracker #24:
-    // laid out in the same room the assembler reserved for it (`other-threads-room.ts`), never the whole list.
+    // Other threads: tells the model this thread is one of several. It moves only when another thread does,
+    // so it leads the answered block; laid out in the room the assembler reserved (`other-threads-room.ts`).
     const otherThreads = buildOtherThreadsInjection(agentId, turnCtx.conversationId, otherThreadsRoomTokens((await dialedPolicy(agentId, modelId)).policy.assemblyBudgetTokens, systemPrompt));
-    if (otherThreads) pushEngineMessage(messages, otherThreads, 'engine.other-threads'); // registry-exempt(2026-09-26): per-turn cross-conversation state read mid-iteration, like engine.open-work; migrate with the volatile-injection registry refactor
+    if (otherThreads) pushEngineMessage(messages, otherThreads, 'engine.other-threads'); // registry-exempt: per-turn cross-conversation state read mid-iteration, like engine.open-work; migrate with the volatile-injection registry refactor
     try {
       const answeredBlock = renderRecentlyAnsweredBlock(
         recentlyAnsweredAsks(agentId, turnCtx.conversationId, RECENTLY_ANSWERED_LIMIT),
       );
       if (answeredBlock) {
-        pushEngineMessage(messages, answeredBlock, 'engine.recently-answered'); // registry-exempt(2026-07-22): reads per-iteration conv-scoped answer stamps; migrate with the volatile-injection registry refactor
+        pushEngineMessage(messages, answeredBlock, 'engine.recently-answered'); // registry-exempt: reads per-iteration conv-scoped answer stamps; migrate with the volatile-injection registry refactor
       }
     } catch { /* best effort */ }
   }
 
-  // ── THE RECALL LANE (SWEEP CORE-2 item 4; `SWEEP-C.md` T4, owner GO 2026-07-26) ──
-  // Per-message semantic recall, and the conclusions it carries from the answer stamps. The
-  // assembler computed and fitted it (`ctx.recallLane`); this is where it enters the array,
-  // past `volatileFrom`, because its content is retrieved against the LIVE ASK and a lane like
-  // that may not sit in the cached prefix — it sat at slot 400, ahead of the fresh tail, until
-  // that task. Injected for EVERY counterparty, not only human turns: the per-turn recall query
-  // has an A2A/engine branch of its own and recall on those turns is the reason it has one.
-  // T67b moved it 1870 -> 1880, i.e. BEHIND peer-status: this block moves with every ask and
-  // a peer's idle/working flip is rare, so most-stable-first puts peer-status ahead of it.
+  // Recall, retrieved against the live ask, so it may not sit in the cached prefix. Every counterparty:
+  // the recall query has its own branch for peer and engine turns.
   mctx.recallLane = ctx.recallLane ?? null;
   injectRegistryMessage('msg.relevant-memory', messages, mctx);
 
   injectRegistryMessage('msg.current-time', messages, mctx);
 
-  // ── t210 (decision 37): a later call of the turn APPENDS to what the previous call sent ──
-  // (`append-only-turn.ts`). Every block of `messages` is in `sent`, appended or unchanged above.
+  // A later call of the turn appends to what the previous call sent (`append-only-turn.ts`).
   const sent = await appendOnlyTurn({
     turn: turnCtx, loopCount: state.loopCount, modelId, fresh: messages, volatileFrom: volatileFrom ?? messages.length, blocksFrom,
     fits: async (arr) => estimateAssembledArrayTokens(systemPrompt, arr) <= (await dialedPolicy(agentId, modelId)).policy.assemblyBudgetTokens,
   });
 
-  // ── Context receipt (debug-gated, fire-and-forget): what the provider is handed. ──
-  // PHASE-4 T3: DELIVERED-TO-MODEL, RECORDED not assumed — read off THIS call's blocks, all of
-  // which are in `sent`; a steer pushed and then dropped is NOT delivered.
+  // Context receipt: what the provider is handed. Delivered lanes are read off this call's blocks.
   const laneIdsForThisCall = collectMessageLaneIds(messages);
-  // ── UX-REPAIR ROUND 13 T61(b) — "RECALLED MEMORY REACHED THE MODEL", RECORDED HERE ──
-  // Off the SAME array read the steer-delivery latch below takes, and for the same reason:
-  // a lane the assembler computed and the budget then dropped is not a read the model had.
-  // The one reader is the turn-boundary marker that asks whether an answer to a fresh owner
-  // ask was produced having consulted NOTHING — no tool row, no recalled memory. It latches
-  // (never clears) because a later iteration without recall does not un-read an earlier one.
+  // Latches once recall reached the model this turn; a lane the budget dropped is not a read.
   if (!state.recallLaneReachedModelThisTurn && laneIdsForThisCall.includes('msg.relevant-memory')) {
     state = advance(state, { recallLaneReachedModelThisTurn: true });
   }
@@ -386,10 +202,9 @@ export async function injectAndRecord(
     messages: sent.messages,
     useTools,
     systemEntryIds: ctx.systemEntryIds,
-    // PHASE-3 T6 (F21): read OFF THE SENT ARRAY, not off `ctx.messageEntryIds` (it stops at `volatileFrom`).
+    // Off the sent array: `ctx.messageEntryIds` describes the assembled array and misses the tail.
     messageEntryIds: collectMessageLaneIds(sent.messages),
     volatileFrom: sent.volatileFrom,
-    // F20/F22: the allocator's own record, and the assembly's own numbers.
     allocation: ctx.allocation,
     freshTailDropped: ctx.freshTailDropped,
     systemVolatileChars: (ctx.systemVolatile ?? '').length,

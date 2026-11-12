@@ -1,20 +1,5 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// T82a FIX WAVE — THE ONE RE-ASSEMBLE-AGAINST-THE-TRUTH HELPER.
-//
-// Extracted from `index.ts`'s round-1 fix (the router's INITIAL pick re-checks the budget
-// it was assembled without; since t212 the turn is built for that pick, and the check is the one
-// every pick gets) once round 2 found the same hole one layer deeper: a same-turn
-// FALLBACK pick, after a failed dial, can be a declared-slow model too, and
-// `callWithRetryAndFallback` (`model-call.ts`) dials whatever array it already has,
-// unchecked. Both sites need the identical answer to "does this model's declared ceiling
-// cover what's already assembled, and if not, what does the ONE assembler produce for it" —
-// so the answer lives here, once, and both call it.
-//
-// `estimateAssembledArrayTokens` is exported too, for the SAME reason: round 2's selector
-// fit-filter needs "how big is the array right now" BEFORE it knows whether a re-assembly
-// will happen, and re-deriving that reducer a second time is the exact duplication this
-// extraction exists to prevent.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// The one "does the array fit the model about to be dialed, and if not, rebuild it for that model" check,
+// shared by the router's pick (`index.ts`) and every fallback pick (`model-call.ts`).
 
 import type { ModelCallParams } from '../../../model.js';
 import { estimateTokens, SystemPromptTooLargeError } from '../../../../memory/budget.js';
@@ -24,18 +9,9 @@ import { createLogger } from '../../../../logger.js';
 
 const logger = createLogger('v2-loop');
 
-/** The array the assembler hands over and both call sites' injections append to. */
 type ModelMessage = ModelCallParams['messages'][number];
 
-/**
- * The estimator both call sites need to decide whether a re-assembly is warranted, and that
- * `router/selector.ts`'s fit filter needs to decide whether a fallback candidate should be
- * excluded in the first place. Mirrors `agent/model.ts`'s own `finalInputEstimate` shape
- * (content-only; tool schemas and output are the RESERVE side of the same budget, not this
- * side) — the same composition of the ONE estimator (`memory/budget.ts`'s `estimateTokens`),
- * for the SAME reason that reducer is not folded into `estimateTokens` itself: it is a
- * caller-specific composition, not a second implementation of what a character costs.
- */
+/** Content-only token estimate of an assembled array; tools and output are the budget's reserve side. */
 export function estimateAssembledArrayTokens(systemPrompt: string, messages: ModelMessage[]): number {
   return estimateTokens(systemPrompt) + messages.reduce((sum, m) => {
     const content = typeof m.content === 'string' ? m.content : JSON.stringify(m.content ?? '');
@@ -45,21 +21,15 @@ export function estimateAssembledArrayTokens(systemPrompt: string, messages: Mod
 
 export interface ReassembleForFitInput {
   readonly agentId: string;
-  /** The model that is ABOUT to be dialed — the router's initial pick (round 1) or a
-   *  same-turn fallback pick (round 2). */
   readonly modelId: string;
   readonly messages: ModelMessage[];
   readonly systemPrompt: string;
-  /** Where THIS iteration's own loop-appended tail begins in `messages` — preserved
-   *  verbatim across a re-assembly; see the splice note below. */
+  /** Where this iteration's own tail begins in `messages`; it is kept verbatim across a re-assembly. */
   readonly volatileFrom: number | undefined;
-  /** The exact turn context the ORIGINAL `assembleContext` call used, so a re-assembly
-   *  reproduces the same content decisions instead of silently diverging from them. */
+  /** The original assembly's turn context, so a re-assembly makes the same content decisions. */
   readonly assemblyTurnContext: PromptTurnContext;
-  /** t140 round 2 (re-review N1): a FALLBACK candidate, and another may follow. A pick that cannot
-   *  hold the system prompt and tools is refused WITHOUT the owner's "cannot hold a conversation"
-   *  card (it says the agent is broken until reconfigured — false while another pick may answer).
-   *  Absent (the router's own pick, the redirect's only free model), it cards as the assembler does. */
+  /** Another pick may follow: a pick too small for the prompt and tools is refused without the owner's
+   *  "cannot hold a conversation" card, which would be false while another pick may still answer. */
   readonly anotherPickMayFollow?: boolean;
 }
 
@@ -70,34 +40,12 @@ export interface ReassembleForFitResult {
   readonly volatileFrom: number;
 }
 
-/**
- * `null` when nothing needs to change — the array already assembled fits the budget of the
- * model about to be dialed: ITS window, ITS output cap, and its provider ceiling when it
- * declares one. The common path costs one policy derivation (the tool payload measurement is
- * memoised) and nothing else; `assembleContext` runs only when the array does not fit.
- *
- * ── t140: EVERY PICK, NOT ONLY A DECLARED-CEILING ONE (tracker #13) ──────────────────────
- * This used to return `null` for any model that declared no provider ceiling, so for every
- * ordinary routed or fallback pick the array went to the provider boundary exactly as it was
- * assembled — for the `'__auto__'` stand-in window, not for the model being dialed. When the
- * pick's own window was smaller, the boundary's lane repair cut the difference out of the array
- * a whole lane at a time, ending with `lane.fresh-tail`: the call went out without the agent's
- * live conversation. The window is a fact of EVERY model, so the check is now made for every
- * model, and the ceiling is applied on top of it only where one is declared — the T82a case is
- * a special case of this one, not a separate door.
- *
- * When it DOES re-assemble: the current iteration's own loop-appended tail (technique
- * hints, the multistep scaffold, the delegation hint, the drained steer — everything the
- * `assemble` step appended past `volatileFrom`) is preserved verbatim by slicing it off the
- * OLD array and splicing it onto the NEW cacheable prefix, never re-derived — re-running
- * those injection functions a second time would double-fire their one-shot side effects
- * (consumed flags, steer delivery marks).
- */
+/** `null` when the array already fits the dialed model's window, output cap and provider ceiling; else a
+ *  re-assembly with this iteration's tail spliced on verbatim (re-running it would double-fire steers). */
 export async function reassembleForFitIfNeeded(input: ReassembleForFitInput): Promise<ReassembleForFitResult | null> {
   const refit = await refitToThePick(input);
-  // t140 round 5: the routine condense check, measured for THIS pick if the gate could not
-  // (`pre-call-gates/context-gates.ts`'s header). After any re-fit, so the assembly door's own
-  // fold is not set aside by a background one started here.
+  // The routine condense check for this pick, when the gate could not measure it. It runs after the re-fit
+  // so the re-fit's own fold is not set aside by a background one started here.
   const gates = await import('../pre-call-gates/context-gates.js');
   if (!gates.routineCheckMeasuredAtGate(input.agentId, input.modelId)) {
     const [{ agentTurnWindow }, { getDb }] = await Promise.all([import('../../../../router/router-window.js'), import('../../../../db/connection.js')]);
@@ -110,8 +58,7 @@ export async function reassembleForFitIfNeeded(input: ReassembleForFitInput): Pr
   return refit;
 }
 
-/** The budget of the model about to be dialed: ITS window, ITS output cap, its provider ceiling.
- *  One derivation, read by the re-fit below and by the append-only turn's room check (t210). */
+/** The dialed model's budget (window, output cap, provider ceiling): one derivation for every caller. */
 export async function dialedPolicy(agentId: string, modelId: string) {
   const [{ getProviderCeilingTokens, getModelOutputCap }, { agentTurnWindow }] = await Promise.all([import('../../../model.js'), import('../../../../router/router-window.js')]);
   const [{ contextWindowPolicy }, { measureAgentToolPayloadTokens }] = await Promise.all([
@@ -119,7 +66,7 @@ export async function dialedPolicy(agentId: string, modelId: string) {
     import('../../../../tools/tool-docs.js'),
   ]);
   const toolPayloadTokens = await measureAgentToolPayloadTokens(agentId);
-  const policy = contextWindowPolicy(agentTurnWindow(agentId, modelId), {   // N42: an auto agent's one router window
+  const policy = contextWindowPolicy(agentTurnWindow(agentId, modelId), {   // an auto agent's one router window
     toolPayloadTokens,
     maxOutputTokens: getModelOutputCap(modelId),
     providerCeilingTokens: getProviderCeilingTokens(modelId),
@@ -132,17 +79,10 @@ async function refitToThePick(input: ReassembleForFitInput): Promise<ReassembleF
   const assembledEstimate = estimateAssembledArrayTokens(systemPrompt, messages);
   const { policy, toolPayloadTokens } = await dialedPolicy(agentId, modelId);
   if (assembledEstimate <= policy.assemblyBudgetTokens) return null;
-  // t140 round 2 (re-review N1): whether this pick can hold the system prompt and tools at all is
-  // answered HERE, from the policy above — the same numbers the assembler's own check reads — and
-  // before any context is rebuilt. A pick that cannot is refused by name without assembling.
-  // Round 5: the prompt measured is the one the assembler WILL build for this pick (its runtime
-  // section names the pick), by the assembler's own two functions — so a pick a few tokens short
-  // cannot pass here and then card from inside `assembleContext`.
+  // Refuse by name, before rebuilding, a pick whose prompt (as built for it) and tools exceed its budget.
   const systemTokens = await systemTokensFor(agentId, modelId, assemblyTurnContext);
   if (systemTokens > policy.assemblyBudgetTokens) {
-    // Round 5: the card says the AGENT cannot hold a conversation until its model or tools change.
-    // That is true only when no model of its own (its configured model, or every pick the router
-    // opens on) can hold it — not when one stand-in pick is too small.
+    // The card only when no model of the agent's own can hold it, not when one stand-in pick is too small.
     if (!anotherPickMayFollow && !(await anOwnModelHolds(agentId, toolPayloadTokens, assemblyTurnContext))) {
       const { reportStarvedWindow } = await import('../../../../memory/window-starvation-card.js');
       reportStarvedWindow(agentId, systemTokens, policy);
@@ -157,9 +97,7 @@ async function refitToThePick(input: ReassembleForFitInput): Promise<ReassembleF
     import('../../../../memory/assembler.js'),
     import('../../../../memory/out-of-view.js'),
   ]);
-  // t140 round 2 (re-review C1; replaces fix round 1's background M3 fold): a re-fit for a smaller
-  // pick may take rows out of the view for THAT window — floor rows included — and they are folded
-  // before this pick is dialed, through the same door as the turn's own assembly.
+  // Rows the smaller window drops from view are folded before the dial, through the assembly's own door.
   const reassembled = await assembleWithNothingOutOfViewUnsummarised(agentId, policy.contextWindow,
     () => assembleContext(agentId, modelId, assemblyTurnContext), { dialedModelId: modelId });
   const tail = messages.slice(volatileFrom ?? messages.length);
@@ -177,8 +115,7 @@ async function systemTokensFor(agentId: string, modelId: string, turnContext: Pr
   return estimateTokens(assembleSystemFromRegistry(buildAssemblyContext(agentId, modelId, turnContext)).text);
 }
 
-/** Whether a model of the agent's OWN can hold its system prompt and tools: its configured model, or,
- *  auto-routed, any model the router opens a tier on (`router/selector.ts`'s `routedFirstPicks`). */
+/** Whether the agent's configured model, or (auto) any model the router opens a tier on, can hold it. */
 export async function anOwnModelHolds(agentId: string, toolPayloadTokens: number, turnContext: PromptTurnContext): Promise<boolean> {
   const [{ getDb }, { routedFirstPicks }] = await Promise.all([
     import('../../../../db/connection.js'), import('../../../../router/selector.js'),
@@ -191,14 +128,12 @@ export async function anOwnModelHolds(agentId: string, toolPayloadTokens: number
   return false;
 }
 
-/** Whether `modelId` can hold this agent's system prompt and tools (round 7: also names a no-pick cause). */
 export async function modelHoldsAgent(agentId: string, modelId: string, toolPayloadTokens: number, turnContext: PromptTurnContext): Promise<boolean> {
   return (await refusalFor(agentId, modelId, toolPayloadTokens, turnContext)) === null;
 }
 
-/** t212: the refusal the assembler would raise for `modelId` (its system prompt and tools do not fit its
- *  budget), or null. Asked BEFORE an auto-routed turn is assembled for its pick, so a pick too small is
- *  passed over without the assembler's card (`call-llm/model-selection.ts`). */
+/** The refusal the assembler would raise for `modelId` (prompt and tools exceed its budget), or null.
+ *  Asked before an auto-routed turn is assembled, so a too-small pick is passed over without a card. */
 export async function refusalFor(agentId: string, modelId: string, toolPayloadTokens: number, turnContext: PromptTurnContext): Promise<SystemPromptTooLargeError | null> {
   const [{ contextWindowPolicy }, model, { agentTurnWindow }] = await Promise.all([import('../../../../memory/budget.js'), import('../../../model.js'), import('../../../../router/router-window.js')]);
   const policy = contextWindowPolicy(agentTurnWindow(agentId, modelId), {

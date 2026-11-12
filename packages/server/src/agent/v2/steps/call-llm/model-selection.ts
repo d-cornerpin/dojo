@@ -1,16 +1,8 @@
-// ════════════════════════════════════════
-// THE MODEL THIS ITERATION DIALS, chosen BEFORE it is assembled (t212, v3.4 D11). Moved from
-// `loop.ts` at PHASE-6 T5 (matches v1 `runtime.ts:954-988`); called by the `assemble` step, which
-// then builds the turn once, for this model.
-//
+// The model this iteration dials, chosen before the `assemble` step builds the turn once, for it.
 // Auto-routed: the locked model mid-task, else the router's pick from the newest rows
-// (`router/routing-view.ts`; it used to read an array assembled for a stand-in window, which is
-// why every smaller pick was assembled twice). A pick that cannot hold this agent's instructions
-// and tools is passed over like a fallback (t140 round 6), before anything is built for it; when
-// no reachable pick holds it, the owner is told why (round 7, `no-pick-holds.ts`).
-// The shadow probe downstream needs the tier, the confidence and whether this was a FRESH
-// decision (a locked-model reuse never probes), so they ride on the selection.
-// ════════════════════════════════════════
+// (`router/routing-view.ts`). A pick that cannot hold the agent's instructions and tools is passed over
+// before anything is built for it; when none holds, `no-pick-holds.ts` names why.
+// The shadow probe needs the tier, confidence and whether the decision was fresh, so they ride along.
 
 import { advance, type AgentTurnState } from '../../state.js';
 import { createLogger } from '../../../../logger.js';
@@ -70,7 +62,7 @@ export async function selectModel(stateIn: AgentTurnState, input: SelectModelInp
     routerFreshDecision = true;
     const selected = selector.selectModel(decision.tier, agentId, undefined, ['tools']);
     if (!selected) {
-      input.revertTriggerStampOnAbort(); // N-1: no answer produced, re-arm the ask
+      input.revertTriggerStampOnAbort(); // no answer produced, re-arm the ask
       throw new AgentError('Auto-router: no models available in any tier', agentId, { code: 'NO_MODEL' });
     }
     modelId = selected.modelId;

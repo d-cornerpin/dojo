@@ -1,25 +1,9 @@
-// ════════════════════════════════════════
-// PHASE-6 T5 (CUT 5) — THE MODEL CALL ITSELF, moved from `loop.ts` with its
-// bodies byte-unchanged: the retry-and-fallback ladder, the streaming sinks, and
-// the two exits that ABANDON THE TURN.
-//
-// ── THE TWO CONTROL-FLOW CONVERSIONS, AND THEY ARE THE ONLY ONES ──
-// The stopped and preempted arms of the model call's own `catch` were `return`
-// statements of `runV2TurnBody`: they leave the TURN, not the loop, so finalize
-// never runs for them and only the `finally` does. A module cannot `return` from
-// its caller, so each becomes `abandonTurn(...)` with its own named reason and the
-// driver honours it by returning. CUT 4's finalize contract pins the same two exits
-// from the driver's side, at exactly two; this file is the other half of that pin.
-//
-// Everything else is the same bytes: the 3-vs-2 attempt ladder, the stream-idle
-// rule ("the ONLY error that earns the second attempt"), the credential read point
-// (PHASE-5 T6B / RULING P5-R11 — still the only one in the engine, held by a
-// clause), every `logger` line and the N-1 hand-back on both give-up paths.
-// ════════════════════════════════════════
+// The model call: the retry-and-fallback ladder, the streaming sinks, and the turn's only two abandon
+// exits (stop, preempt). A module cannot return from its caller, so each is an `abandonTurn(...)` the
+// driver honours by returning; finalize does not run for them, only the `finally`.
 
 import type { ModelCallParams } from '../../../model.js';
 
-/** The array the assembler hands over and the injections append to. */
 type ModelMessage = ModelCallParams['messages'][number];
 import { callModel, getContextWindow, STREAM_IDLE_TIMEOUT_ERROR, STREAM_NO_FINISH_ERROR } from '../../../model.js';
 import { advance, type AgentTurnState } from '../../state.js';
@@ -59,20 +43,13 @@ export interface ModelCallInputs {
   readonly assembled: AssembledContext;
   readonly routerTier: string | null;
   readonly counterparty: TurnCounterparty;
-  /**
-   * T82a fix wave (round 2) — the same two facts `reassembleForFitIfNeeded` needs, now
-   * threaded here too: a same-turn FALLBACK pick (below) can be a declared-slow model just
-   * as easily as the router's initial pick was, and dialing it with the array built for a
-   * DIFFERENT model unchecked is the identical hole one layer deeper.
-   */
   readonly volatileFrom: number | undefined;
   readonly assemblyTurnContext: PromptTurnContext;
-  /** t210: the FIRST attempt sends this (append-only); a retry, fallback or re-fit sends `messages`. */
+  /** The FIRST attempt sends this (append-only); a retry, fallback or re-fit sends `messages`. */
   readonly firstSend?: ModelMessage[];
 }
 
-/** Either the turn is abandoned, or the call produced a result and a (possibly
- *  fallen-back) model id. The union is what keeps the abandon arm unmissable. */
+/** Either the turn is abandoned, or a result and the (possibly fallen-back) model id. */
 export type ModelCallResultOrAbandon =
   | { readonly abandoned: StepOutcome }
   | { readonly abandoned?: undefined; readonly state: AgentTurnState; readonly result: Awaited<ReturnType<typeof callModel>>; readonly modelId: string };
@@ -88,131 +65,58 @@ export async function callWithRetryAndFallback(
   } = input;
   let state = stateIn;
   let modelId = modelIdIn;
-  // Mutable locals: a FALLBACK pick can be a model this array was never sized for, so
-  // `reassembleForFitIfNeeded` may replace all four; later attempts read these, never `input`'s.
+  // A fallback pick may need the array re-fitted; later attempts read these locals, never `input`'s.
   let messages = input.messages;
   let systemPrompt = input.systemPrompt;
   let ctx = input.assembled;
   let volatileFrom = input.volatileFrom;
-  // ── Call model with retry-and-fallback (matches v1 runtime.ts:1028-1116) ──
-  // For auto-routed agents, try up to 3 different models in the tier.
-  // For fixed-model agents, throw on first failure.
-  // Fixed-model agents get ONE attempt normally, PLUS one same-model retry
-  // when the stream idle watchdog aborted a hung provider call (model.ts,
-  // 2026-07-10): the request died on the wire, not in the model, and a
-  // fresh attempt typically succeeds in seconds (the 602s production hang's
-  // silent retry completed in 3s).
+  // Auto-routed: up to three models. Fixed: one attempt, plus one same-model retry after a stream abort.
   const maxAttempts = isAutoRouted ? 3 : 2;
   let result: Awaited<ReturnType<typeof callModel>> | undefined;
   let callSucceeded = false;
 
-  /** UX-REPAIR T37 — the turn's ONE stop-abandon, said twice with two truthful
-   *  reasons. Kept as one call so the step's abandon census (its contract test
-   *  counts `abandonTurn` in this file) still reads TWO: this and the preempt. */
-  //  T83 FIX ROUND (A-3): no idle write here — abandoning the TURN is not the run going down
-  //  (finalize and teardown still run; `activeRuns` still holds the agent).
-  //  t93: AND THE TURN RECORD NOW SAYS `stop`. An abandon still runs the `finally`, so the
-  //  recorder DOES see this turn — it simply had no fact to see, and derived
-  //  `no_reply_intended` from the absence of a reply. That is the BACKLOG's headline shape:
-  //  the owner's press written down as the model choosing silence, and a rung spent on it.
-  //  `state` is the live `let` above, so the latch rides whatever the retry loop has advanced.
-  //  t116 E1: AND THE THIRD REASON IS THE SUCCESS SIDE. The two reasons above are the two
-  //  ways a call can fail to produce text; `stopped-after-call` is the way it SUCCEEDS and
-  //  the owner still said no. Said through this same closure deliberately — the step's
-  //  abandon census counts `abandonTurn` in this file and must keep reading TWO (this and
-  //  the preempt), so a third checkpoint may add a REASON here but never a third call.
+  // The turn's one stop-abandon, with three reasons, so this file holds exactly two `abandonTurn` calls
+  // (this and the preempt): a new checkpoint adds a reason, never a call. No idle write here, teardown
+  // owns it. The `stop` latch records the owner's press, not the model choosing silence.
   const abandonForStop = (reason: 'stopped-before-call' | 'stopped-mid-call' | 'stopped-after-call'): { abandoned: StepOutcome } => {
     return { abandoned: abandonTurn(latchEngineCut(state, 'stop'), reason) };
   };
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    // ── UX-REPAIR T37: THE WINDOW BETWEEN THE GATE AND THE WIRE ──
-    //
-    // `stopAgent` can only abort a call that is ALREADY in flight. Between the
-    // pre-call gate that read the flag and the dial below sits the whole of
-    // assemble (vector search, context build, injections) plus, on the first
-    // round, the tool batch that preceded it. A stop landing in there hit
-    // nothing: no checkpoint to see it, no controller to abort. Measured on the
-    // dev box 2026-08-11 (control C3): stop at 07:34:19.429 — 70 ms after that
-    // iteration's gate — and the provider call went out at 07:34:19.506 and ran
-    // 27 s to completion, followed by a whole tool batch; the turn did not
-    // actually stop until the NEXT gate at 07:35:08.284, 49 s later.
-    //
-    // Reading the flag at the instant the call becomes interruptible closes the
-    // window from the other side: either the stop was already recorded and we
-    // never dial, or the controller is registered and the abort reaches the
-    // fetch. There is no third state.
-    //
-    // T83 — AND THE REGISTRATION IS NO LONGER THIS FILE'S JOB. `callModel` itself
-    // registers a stop-linked controller for EVERY call the tree makes, through
-    // the one door that refuses while a stop is live, so the turn's own dial is
-    // covered by the same mechanism that finally covers the seventeen other
-    // dials a turn can make. The controller below stays because it still has a
-    // job this one does not: suppressing `onChunk` broadcasts and the phone-TTS
-    // flush for a stream this code has abandoned. It rides down as the caller's
-    // `abortSignal` exactly as before and is folded into the stop's signal there.
+    // Read the stop fence right before the dial: a recorded stop never dials, and in flight `callModel`'s
+    // stop-linked controller aborts the fetch. The controller below also mutes an abandoned stream's sinks.
     const beforeCall = isStopFenced(agentId) ? abandonForStop('stopped-before-call') : null;
     if (beforeCall) return beforeCall;
 
     const abortController = new AbortController();
-    // The ONE credential read point (PHASE-5 T6B / P5-R11), as a function of the array: t140 fix
-    // round 1 sends a re-fitted array down the budget redirect too, and it must be hydrated at
-    // this same point rather than at a second one.
+    // The one credential read point, as a function of the array, so a re-fitted array is hydrated here too.
     const forTheWire = (arr: ModelMessage[]): ModelMessage[] => hydrateCredentialsInMessages(agentId, arr);
     if (attempt > 0) forgetTurnArray(turnCtx);
 
     try {
-      // RC-4.4: mark the model call in flight so the start-ack streaming-race grace
-      // can defer firing while the reply is still streaming. Cleared in the finally.
       result = await callModel({
         agentId,
         modelId,
-        // PHASE-5 T6B (RULING P5-R11): THE CREDENTIAL READ POINT, and the
-        // ONLY one. Assembly rebuilds this array from the STORED rows every
-        // iteration, so from the second iteration on the model was reading
-        // its own prior call with the placeholder in it and copying that
-        // forward — the credential worked once per turn and then stopped.
-        // The value goes back HERE, at the provider boundary, so assembly,
-        // the context receipt and the dev instruments all keep the
-        // placeholder and no stored byte is rewritten. A no-op returning
-        // this very array when no placeholder is present, hence no effect on
-        // the cached prefix (OR7/#10). Full rationale + the three properties
-        // that make it safe: `credentials/secret-values.ts`.
+        // Credentials are restored only here, at the wire: assembly, the receipt and stored rows keep the
+        // placeholder. A no-op without a placeholder, so the cached prefix is unaffected.
         messages: forTheWire(attempt === 0 && input.firstSend ? input.firstSend : messages),
         systemPrompt,
-        // t140 fix round 1 (review I1): the budget redirect inside `callModel` dials a free model
-        // this array was never sized for; this re-fits it there, from this turn's own assembly.
+        // The budget redirect inside `callModel` dials a free model this array was not sized for; re-fit it.
         refitFor: async (pick) => {
           const r = await reassembleForFitIfNeeded({ agentId, modelId: pick, messages, systemPrompt, volatileFrom, assemblyTurnContext });
           if (r) forgetTurnArray(turnCtx);
           return r ? { messages: forTheWire(r.messages), systemPrompt: r.systemPrompt } : null;
         },
-        // t195: the extra room the engine gave this retry (0 = everyday). It was written and never read.
         outputRoomAsk: state.outputTokensEscalated,
-        // C28 P-2: system-side volatile lane (empty after P-1). Trails the
-        // cached stable system block so it can't invalidate the cached prefix.
         systemVolatile: ctx.systemVolatile,
         tools: useTools,
-        // The ledger's kind, DECLARED by the only dial that is a served turn — never inferred from `tools`, which `runtime.ts`'s capability gate turns off for a real turn.
+        // Declared, never inferred from `tools`: the capability gate in `runtime.ts` can turn tools off.
         purpose: 'agent_turn',
         routerTier: routerTier ?? undefined,
-        // Real abort signal, when stopAgent fires controller.abort(), the
-        // underlying SDK call (Anthropic/OpenAI/Ollama) actually cancels
-        // the in-flight fetch and throws here. Without this signal, stop
-        // would only halt the runtime loop AFTER the model call finished.
         abortSignal: abortController.signal,
-        // TRUE streaming, broadcast each chunk as it arrives.
         onChunk: (chunk) => {
           if (abortController.signal.aborted) return;
-          // Inter-agent turns must NOT stream to the user's chat. The turn's
-          // persisted message is hidden from the dashboard (source='a2a', via
-          // the origin classifier), but the live chat:chunk path bypasses that
-          // filter, streaming the agent-to-agent prose live produced a "reply
-          // to no one" bubble that then vanished on refresh (the refetch
-          // correctly hides the A2A row). Suppress the live stream at the
-          // source so inter-agent coordination never reaches the user's chat,
-          // live OR on reload. The phone/TTS accumulation below is unaffected:
-          // an inter-agent turn never has turnCtx.phoneStreamCallSid set.
+          // Inter-agent turns never stream to the user's chat, where their persisted row is hidden.
           if (!isA2ATurn && counterparty.kind !== 'agent') {
             broadcast({
               type: 'chat:chunk',
@@ -222,19 +126,9 @@ export async function callWithRetryAndFallback(
               done: false,
             });
           }
-          // v2.9.23, phone-call streaming TTS. Accumulate chunks
-          // into a buffer and flush each completed sentence to
-          // CallSession.queueAgentSay as it appears. Effect: audio
-          // starts playing on the first sentence, instead of
-          // waiting for the full model response. Same idea as
-          // voice mode's clause splitter but landing on the
-          // Twilio CallSession's TTS queue instead of the voice
-          // WS stream.
+          // Phone call: flush each completed sentence to the call's TTS queue, so audio starts early.
           if (turnCtx.phoneStreamCallSid) {
             turnCtx.phoneStreamBuffer += chunk;
-            // Boundary: sentence-end punctuation followed by
-            // whitespace. Sentence-level keeps the synth boundary
-            // clean for both Kokoro and Hume.
             const flushParts: string[] = [];
             let last = 0;
             const re = /[.!?\n]+\s+/g;
@@ -247,23 +141,9 @@ export async function callWithRetryAndFallback(
             }
             if (last > 0) turnCtx.phoneStreamBuffer = turnCtx.phoneStreamBuffer.slice(last);
             if (flushParts.length > 0) {
-              // B-2 (comms-audit): set the streamed flag SYNCHRONOUSLY the moment
-              // we decide to flush, BEFORE the detached async IIFE. The old code
-              // set it inside the IIFE after an awaited import, so the turn-end
-              // check could read it as false (microtask not yet run) and fall to
-              // the one-shot full-reply fallback → the caller heard the reply
-              // TWICE. Setting it here is safe even though the enqueue is deferred:
-              // queueAgentSay only no-ops when the session is gone or ENDED, and
-              // `ended` is a one-way latch, so if the session is still live at
-              // turn-end (the only path that reads this flag, after re-checking
-              // !session / isEnded()), it was live at IIFE time too and the parts
-              // WERE enqueued. There is no live-call-hears-silence window here.
+              // Set before the async enqueue, or the turn-end check could read false and replay the reply.
+              // Safe: `ended` is a one-way latch, so a session live at turn end was live when parts queued.
               turnCtx.phoneStreamFlushedAny = true;
-              // v2.10.1, queueAgentSay is now just an enqueue
-              // (the CallSession runs a single-flight drain
-              // worker), so synchronous push is fine and order
-              // is preserved by the worker. No IIFE / no
-              // parallel synths.
               void (async () => {
                 try {
                   const { getCallSession } = await import('../../../../twilio/call-session.js');
@@ -271,9 +151,7 @@ export async function callWithRetryAndFallback(
                   if (!session || session.isEnded()) return;
                   for (const part of flushParts) {
                     if (abortController.signal.aborted) return;
-                    // Fire-and-forget: queueAgentSay enqueues
-                    // and returns; the drain worker handles
-                    // serial synthesis.
+                    // Enqueue only; the session's single-flight drain worker synthesises in order.
                     void session.queueAgentSay(part);
                   }
                 } catch { /* best effort; one-shot fallback runs at turn end */ }
@@ -281,10 +159,6 @@ export async function callWithRetryAndFallback(
             }
           }
         },
-        // Reasoning / thinking chunks (DeepSeek native, OpenRouter
-        // unified). The dashboard renders these in a collapsible
-        // "Thinking…" panel above the assistant bubble, separate
-        // from the final-answer text stream.
         onReasoningChunk: (chunk) => {
           if (abortController.signal.aborted) return;
           broadcast({
@@ -299,88 +173,43 @@ export async function callWithRetryAndFallback(
       callSucceeded = true;
       break;
     } catch (err) {
-      // T83: the two `activeAbortControllers.delete(agentId)` calls that stood here and on
-      // the success path are gone — `callModel`'s own `finally` releases its registration by
-      // IDENTITY. Deleting by KEY from here was the second half of the old registry's defect:
-      // a second call in flight on the same agent (ask-title, the compaction summariser —
-      // both observed concurrent on 2026-09-21) was silently de-registered by THIS call
-      // settling, and the next stop reached neither.
 
-      // UX-REPAIR T37: READ, never delete. The flag's owner is the run's own
-      // exit path in `runtime.ts` — see `shared-state.ts`'s header on
-      // `stoppedAgents`. The preempt below still consumes at its checkpoint,
-      // and must: a preempt exists so the QUEUED WAKEUP CAN FIRE.
+      // Read the stop flag, never clear it (`runtime.ts` owns it); the preempt is consumed so the wakeup fires.
       if (isStopFenced(agentId)) return abandonForStop('stopped-mid-call');
       if (preemptedAgents.has(agentId)) {
         preemptedAgents.delete(agentId);
         logger.info('v2 run preempted, queued wakeup will fire', {}, agentId);
-        // T83 FIX ROUND (review IMPORTANT A-3): idle is teardown's to write, not this arm's.
-        // t93: `preempt` — a PEER or a barge-in took the turn, which is neither a failure nor a
-        // silence. Latched here rather than left to the recorder for the same reason as the stop.
         return { abandoned: abandonTurn(latchEngineCut(state, 'preempt'), 'preempted-mid-call') };
       }
 
-      // Fixed-model path: the ONLY error that earns the second attempt is
-      // the stream-idle watchdog abort (same model, fresh connection).
-      // Everything else rethrows immediately, exactly as before.
-      //
-      // T72b claim 2 — WHAT DELIBERATELY DOES NOT MATCH HERE. A first-chunk timeout on a
-      // provider that DECLARED its first-chunk patience throws
-      // `STREAM_FIRST_CHUNK_TIMEOUT_ERROR` instead, and that phrase does not contain this
-      // one, so it falls through to the rethrow below. That is the intended behaviour, not
-      // an accident of string matching: this retry re-dials COLD with the same messages, so
-      // a local box restarts the entire prompt-processing run it was most of the way
-      // through, dies at the same declared bound again, and the user waits twice as long for
-      // the same error. A provider whose owner stated how long it needs before token 1, and
-      // which then exceeded that, has already answered the question a retry asks. Providers
-      // that declared nothing still throw the idle phrase and still get their one retry —
-      // cloud behaviour is the untouched control.
+      // Fixed model: only the stream-idle abort earns the second attempt. A declared first-chunk timeout
+      // deliberately does not match: a cold re-dial would rerun the whole prompt and hit the same bound.
       if (!isAutoRouted) {
         const msg = err instanceof Error ? err.message : String(err);
-        if (attempt < maxAttempts - 1 && (msg.includes(STREAM_IDLE_TIMEOUT_ERROR) || (msg.includes(STREAM_NO_FINISH_ERROR) && !turnCtx.phoneStreamFlushedAny))) {   // R7: a hung-up answer gets the same one retry, unless a caller already heard part of it (that audio cannot be recalled; a re-dial would say it twice)
+        if (attempt < maxAttempts - 1 && (msg.includes(STREAM_IDLE_TIMEOUT_ERROR) || (msg.includes(STREAM_NO_FINISH_ERROR) && !turnCtx.phoneStreamFlushedAny))) {   // a hung-up answer gets the same one retry, unless a caller already heard part of it (that audio cannot be recalled; a re-dial would say it twice)
           logger.warn('v2: model stream idle timeout; retrying the same model once on a fresh connection', {
             attempt, modelId,
           }, agentId);
-          // Phone streaming: the retry re-dials the SAME model from the first word, so the
-          // abandoned attempt's unspoken fragment must not be carried into it. The fallback
-          // path below applies the identical clear and no more.
+          // Phone: the retry speaks from the first word, so the abandoned attempt's unspoken fragment goes.
           if (turnCtx.phoneStreamCallSid) { turnCtx.phoneStreamBuffer = ''; turnCtx.phoneStreamFlushedAny = false; }
           continue;
         }
-        revertTriggerStampOnAbort(); // N-1: model call failed with no answer, re-arm the ask
+        revertTriggerStampOnAbort(); // model call failed with no answer, re-arm the ask
         throw err;
       }
-      // Auto-routed and exhausted attempts, rethrow.
-      // (v1's catch path in handleMessage handles further recovery, 
-      // Dreamer overflow, provider 4xx, healer notification, etc. Phase 6
-      // moves all of that into agent/v2/recovery.ts.)
       if (attempt >= maxAttempts - 1) {
-        revertTriggerStampOnAbort(); // N-1: model call failed with no answer, re-arm the ask
+        revertTriggerStampOnAbort(); // model call failed with no answer, re-arm the ask
         throw freeFallbackDown(err, agentId, routerTier ?? state.lockedTier ?? 'standard', [...excludedModels, modelId]);
       }
 
-      // Auto-routed: try the next model in the fallback chain.
       excludedModels.push(modelId);
       // Clear model lock so fallback can pick a different model.
       state = advance(state, { lockedModelId: null, lockedTier: null });
       const { selectModel } = await import('../../../../router/selector.js');
       const fallbackTier = routerTier ?? state.lockedTier ?? 'standard';
 
-      // ══════════════════════════════════════════════════════════════════════════════
-      // T82a FIX WAVE (round 2) — THE FALLBACK PICK RE-CHECKS THE BUDGET TOO.
-      // ══════════════════════════════════════════════════════════════════════════════
-      // The SAME hole round 1 closed on the router's INITIAL pick, one layer deeper: a
-      // tier mixes cloud rows (no declared ceiling) with a declared-slow local row by
-      // design, and until now a fallback pick was filtered on capability/rate-limit/
-      // budget only — nothing stopped it from being handed the SAME oversized array.
-      //
-      // FILTER-FIRST (consolidation-fitting: the selector already filters on budget and
-      // rate-limit; this is one more predicate in the same walk, not a second gate).
-      // `messages`/`systemPrompt` here are whatever is CURRENTLY in hand — round 1's own
-      // re-assembly, or an earlier round-2 rescue this same loop, may already have
-      // resized them for a different model, and the fallback pick must be judged
-      // against that reality, not the turn's original assembly.
-      /** Fallback candidates refused because their window cannot hold the instructions and tools. */
+      // The fallback pick is judged on fit too, against the array in hand (it may already be re-fitted for
+      // another model), as one more predicate in the selector's walk.
       const tooSmallToHold: string[] = [];
       let fallback = selectModel(
         fallbackTier, agentId, excludedModels, ['tools'],
@@ -388,16 +217,8 @@ export async function callWithRetryAndFallback(
       );
 
       if (!fallback) {
-        // RESCUE-IF-EMPTIED: the fit filter may have starved a candidate every OTHER
-        // filter would have accepted. Re-running the identical selection WITHOUT an
-        // estimate answers "who is the best candidate ignoring fit" — since every other
-        // predicate is unchanged between the two calls, a candidate that call accepts
-        // and the fit-aware call did not can only have failed on fit. Reuse the ONE
-        // re-assemble helper (round 1's own) rather than a second trimmer.
-        // t140 fix round 1 (review I1): the fit filter now also judges WINDOWS, so a candidate
-        // excluded for fit may be one whose window cannot hold this agent's system prompt and
-        // tools at all — its re-fit refuses by name (`SystemPromptTooLargeError`). That one is
-        // excluded and the next candidate is tried, bounded by the candidates there are.
+        // Rescue: when the fit filter empties the pick, select ignoring fit and re-fit that candidate; one
+        // whose window cannot hold the prompt and tools is excluded and the next tried, bounded.
         for (let rescue = 0; rescue < 8 && !fallback; rescue++) {
           const fitExcluded = selectModel(fallbackTier, agentId, excludedModels, ['tools']);
           if (!fitExcluded) break;
@@ -419,9 +240,7 @@ export async function callWithRetryAndFallback(
             ctx = reassembly.assembled;
             volatileFrom = reassembly.volatileFrom;
           }
-          // Re-run selection with the NEW estimate: the rescue candidate is the most
-          // likely winner, but the smaller re-assembled array may now also fit a
-          // higher-priority candidate the first fit-aware pass had already rejected.
+          // Select again with the new estimate: the smaller array may now fit a higher-priority candidate.
           fallback = selectModel(
             fallbackTier, agentId, excludedModels, ['tools'],
             estimateAssembledArrayTokens(systemPrompt, messages), getContextWindow,
@@ -430,11 +249,8 @@ export async function callWithRetryAndFallback(
         }
       }
 
-      // t140 fix round 1 (review I1): EVERY fallback pick is re-fitted to its own window before it
-      // is dialed — not only the rescue above. The selector prefers a pick that holds the array
-      // as built; this makes the array right for whichever pick it got. A pick whose window cannot
-      // hold the system prompt and tools at all refuses by name and is excluded, and the fit-aware
-      // selection is asked again (bounded), exactly as the rescue does.
+      // Every fallback pick is re-fitted to its own window before the dial; one that cannot hold the prompt
+      // and tools is excluded and the fit-aware selection asked again, bounded.
       for (let pickTry = 0; fallback && pickTry < 8; pickTry++) {
         try {
           const refit = await reassembleForFitIfNeeded({
@@ -459,17 +275,12 @@ export async function callWithRetryAndFallback(
         }
       }
 
-      // Existing fallback-exhausted honest-fail path, unchanged: nothing fits, with or
-      // without the rescue attempt above.
       if (!fallback) {
         logger.error('v2 auto-router: no fallback models available', {
           failedModel: modelId, tier: fallbackTier, excludedModels, attempt,
         }, agentId);
-        revertTriggerStampOnAbort(); // N-1: all fallbacks exhausted, no answer, re-arm the ask
-        // t140 round 2: when the candidates ran out because none could hold this agent's
-        // instructions and tools, THAT is what the owner is told — the first pick's wire error
-        // alone is not repairable from what they see. Its code and facts are kept, so recovery
-        // decides exactly as before; only the words change.
+        revertTriggerStampOnAbort(); // all fallbacks exhausted, no answer, re-arm the ask
+        // Out of candidates because none could hold the agent: say so, keeping the code recovery reads.
         if (tooSmallToHold.length > 0) {
           const named = `No model this agent could fall back to can hold this agent's instructions and tools `
             + `(${tooSmallToHold.join(', ')}: window too small) after ${modelId} failed: `
@@ -486,72 +297,33 @@ export async function callWithRetryAndFallback(
         tier: routerTier,
         error: err instanceof Error ? err.message.slice(0, 100) : String(err),
       }, agentId);
-      // Phone streaming: this failed model's stream is discarded, so
-      // drop its un-flushed tail and clear the "already streamed"
-      // latch before the fallback attempt runs. The buffer only ever
-      // holds the CURRENT stream's unsent tail (the sent prefix is
-      // stripped in onChunk), and that stream is gone. The latch
-      // means "this turn's answer already streamed"; the fallback
-      // attempt re-latches it if IT streams. Resetting the latch here
-      // prefers a rare duplication (a partial already spoken plus the
-      // full answer spoken one-shot when the fallback does NOT stream)
-      // over ever leaving the caller without the final answer. Audio
-      // already handed to queueAgentSay stays committed by design;
-      // there is no dequeue and none should be added.
+      // Phone: drop the failed stream's unsent tail and the streamed latch before the fallback. A rare
+      // duplicate (partial plus full one-shot) beats a caller without the answer; queued audio stays.
       if (turnCtx.phoneStreamCallSid) { turnCtx.phoneStreamBuffer = ''; turnCtx.phoneStreamFlushedAny = false; }
       modelId = fallback.modelId;
       state = advance(state, { modelId });
     } finally {
-      // RC-4.4: the model call for this attempt has settled (success break, retry
-      // continue, or throw); it is no longer in flight. A retry sets it true again.
+      // Nothing to release: `callModel`'s own `finally` releases its stop registration by identity.
     }
   }
 
   if (!callSucceeded || !result) {
-    // Defensive guard only, in practice unreachable: the retry loop above exits
-    // either by `break` (callSucceeded=true) or by throwing on the final failed
-    // attempt (the catch's give-up paths). The N-1 stamp-revert therefore lives at
-    // those actual throw sites (revertTriggerStampOnAbort), NOT here, so a model-call
-    // failure re-arms the human's ask on the path that genuinely runs.
+    // Unreachable in practice: the loop breaks on success or throws; the ask is re-armed at those throws.
     revertTriggerStampOnAbort();
     throw new AgentError('Model call failed after all attempts', agentId, { code: 'MODEL_CALL_FAILED' });
   }
 
-  // ── t116 E1 — THE FOURTH CHECKPOINT, AND THE ONE THE OTHER THREE LEFT OPEN ──
-  //
-  // THE MEASURED DEFECT. The fence was read before the dial (`:147`) and in the catch
-  // (`:292`) — never on the path where the call SUCCEEDS. A press landing after the stream
-  // completed but before the broadcast was accepted (the status still reads `working`, so
-  // the route said 200), raised the fence, and the reply shipped anyway: seven post-call
-  // stages ran and `runPersistAssistant` inserted and broadcast the owner-lane row with
-  // zero fence reads. The fence was first honoured at the NEXT checkpoint, which is why the
-  // record correctly said `stop` while the person still watched the answer arrive. Observed
-  // on both release-blast attempts whose press got a 200: `replies after press=1 (must be 0)`.
-  //
-  // THE ASYMMETRY IS THE WHOLE POINT, and it is deliberate in both directions:
-  //   · text arriving AFTER the press never reaches the person — this return is taken before
-  //     anything downstream can persist or broadcast it;
-  //   · a press landing AFTER the row is already persisted retro-deletes NOTHING. The fence
-  //     is read here and at the persist seam, both BEFORE the write; neither is a reader of
-  //     the past, so a reply the person has honestly already received stays received.
-  // Either way the turn keeps its honest record: an abandon still runs the run's `finally`,
-  // so the recorder sees this turn, and `latchEngineCut(state, 'stop')` above means it is
-  // written down as the owner's stop rather than as the model choosing silence.
+  // The stop fence on the success path: a stop pressed after the stream ended keeps the reply from being
+  // persisted or broadcast. A stop after the row is persisted deletes nothing; the person keeps it.
   if (isStopFenced(agentId)) return abandonForStop('stopped-after-call');
 
-  // PHASE-4 T5b (P4-R2): learn this result's DECLARED secrets here, once,
-  // before it reaches any persist / index / broadcast seam below. The live
-  // tool call keeps the real value; every stored copy gets the sentinel.
+  // Learn declared secrets once, before any persist, index or broadcast; stored copies get the sentinel.
   noteDeclaredSecretsFromToolCalls(agentId, result.toolCalls);
-  // t118 round 2: registration is the moment this process first LEARNS a value, so it is
-  // where an ask title minted before the learning gets re-vetted. On a first-introduction
-  // message the inbound titler runs before any `credential_add`, so `acceptModelTitle`'s
-  // handed-value refusal has nothing to match yet — a race, not a property. This closes the
-  // other ordering; see `work/ask-title.ts`'s re-vet header.
+  // A value is first learned here, so ask titles minted before it are re-vetted (`work/ask-title.ts`).
   revetOpenAskTitles(agentId);
 
-  // t195: extra room is for the ONE retry. A call not cut off has spent it (back to the everyday budget);
-  // one cut off again keeps the mark, telling the ladder the room was already given.
+  // Extra output room is for the one retry: a call not cut off has spent it; one cut off again keeps the
+  // mark, telling the ladder the room was already given.
   if (state.outputTokensEscalated > 0 && !isOutputCut(result.stopReason)) state = advance(state, { outputTokensEscalated: 0 });
   return { state, result, modelId };
 }

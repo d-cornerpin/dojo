@@ -1,40 +1,14 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// t210 (owner decision 37) — WITHIN ONE TURN, THE ARRAY ONLY GROWS.
-//
-// THE COST IT REMOVES (t206 item 2, re-derived from 221 main-agent receipts): the loop builds
-// every call's array from scratch, so a later call's new tool rows land between the
-// conversation and the post-tail block (task list, events, turn context, open commitments,
-// the clock...). The block MOVES even when nothing in it changed, and the provider re-bills
-// it and everything behind it: 128 of ~170 later calls broke exactly there, ~2.6K tokens a call.
-//
-// THE RULE (decision 37: "append-only within a turn ... the same 'label, never hide' approach"):
-//   call 1 of a turn goes out as built. A later call sends
-//     [what the previous call sent] + [the conversation rows that are new since]
-//     + [this call's one-shot steers] + [each block whose text CHANGED, labelled as replacing
-//       the copy above] + [a notice for each block that went EMPTY, before the clock].
-//   The older copy of a block stays exactly where it was, so the cached prefix holds through
-//   the end of the previous call. An unchanged block is not sent again.
-//
-// WHEN IT GOES OUT FRESH INSTEAD (each is a real signal, never a count):
-//   - the conversation region did not simply GROW: a fold, a trim or a re-rendered row
-//     changed something the previous call already sent (94% of later calls on the dev box
-//     DO simply grow: 162 of 172);
-//   - the appended array does not fit the room of the model about to be dialed;
-//   - the model about to be dialed is not the one the previous call went to (t212: a re-route
-//     mid-turn; the previous array was built for, and cached by, the other model);
-//   - the call is a retry, a fallback or a re-fit (`model-call.ts` forgets the memo).
-// A fresh call starts the memo again, so the next call appends to it.
-//
-// THE MEMO lives exactly as long as the turn's own context object (a WeakMap keyed on it), so
-// nothing carries across turns: every turn's first call is built from scratch, as before.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// Within one turn the array only grows, so the cached prefix holds: a later call resends the previous
+// array plus new rows, this call's steers, changed blocks (labelled) and notices for emptied blocks.
+// It goes out fresh when sent history changed, the model changed, the append does not fit, or the memo
+// was forgotten (`model-call.ts`: retry, fallback, re-fit). The memo is a WeakMap on the turn object.
 
 import type { ModelCallParams } from '../../../model.js';
 import { messageLaneOf, tagMessageLane } from '../../../../memory/message-lane-tag.js';
 
 type ModelMessage = ModelCallParams['messages'][number];
 
-/** The label on a block sent again because it changed. One line, one bracket pair (t141). */
+/** The label on a block sent again because it changed. One line, one bracket pair. */
 export const UPDATE_LABEL = '[update · this replaces the earlier copy of this section, above, which is now out of date]';
 /** The label on a block that went empty. The block's own first line follows it, to name it. */
 export const EMPTIED_LABEL = '[update · the section that starts with the line below was shown earlier in this turn and is now empty; that earlier copy no longer applies]';
@@ -42,13 +16,11 @@ export const EMPTIED_LABEL = '[update · the section that starts with the line b
 interface TurnArray {
   /** The previous call's conversation region (`[0, volatileFrom)` of its fresh array), serialised. */
   history: string[];
-  /** The array the previous call sent. */
   sent: ModelMessage[];
   /** Per block occurrence: the newest text the sent array shows for it ('' = shown as emptied). */
   shown: Map<string, string>;
   /** The turn's first allocator boundary: the receipt's cross-turn cacheable region. */
   firstVolatileFrom: number;
-  /** The model the previous call was sent to. */
   modelId: string;
 }
 
@@ -60,14 +32,10 @@ export function forgetTurnArray(turn: object): void {
 }
 
 export interface AppendInput {
-  /** The turn's own context object; the memo lives exactly as long as it. */
   readonly turn: object;
   readonly loopCount: number;
-  /** The model this call dials. */
   readonly modelId: string;
-  /** This call's array, built from scratch (every injection already pushed). */
   readonly fresh: ModelMessage[];
-  /** Where the allocator's region ends in `fresh`. */
   readonly volatileFrom: number;
   /** Where the state blocks begin in `fresh`; the one-shot steers sit between the two. */
   readonly blocksFrom: number;
@@ -77,7 +45,6 @@ export interface AppendInput {
 
 export interface AppendOutput {
   readonly messages: ModelMessage[];
-  /** The receipt's boundary: the turn's FIRST allocator boundary on an appended call. */
   readonly volatileFrom: number;
   readonly appended: boolean;
 }
