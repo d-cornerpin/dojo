@@ -1,26 +1,7 @@
-// ════════════════════════════════════════
-// t203 (B6) — THE EXECUTOR STOPS WAITING WHEN THE OWNER PRESSES STOP.
-//
-// THE DEFECT. Stop was opt-in per tool: `stopAgent` aborts what is in the abort registry, and
-// the executor read the stop fence only BETWEEN calls. In between it awaited `executeTool` with
-// no race of its own, so a tool that registered nothing — a shell command, a hung child
-// process, a send blocked somewhere — held the turn until it returned on its own.
-//
-// THE FIX IS ONE RACE AT THE ONE DOOR every tool call goes through (`run-one.ts`): the call
-// against the owner's stop (`stop-waiters.ts`, notified by `stopAgent`). On
-// the stop the call's slot is `Cancelled by user (agent stopped).` — the text the executor
-// already gives the calls it never started — and the turn leaves through the existing
-// `stopped-mid-batch` exit. Not a timeout: nothing here bounds how long a tool may run.
-//
-// WHAT HAPPENS TO THE ACTION ITSELF is each tool's own cancel, not this file's: the stop
-// already aborts every registered network call and (since t203) kills the process tree of
-// every child the toolbox spawned. What this file owes is HONESTY about the rest:
-//   • the abandoned call's late result is NEVER applied to the turn and records nothing;
-//   • a call that may have acted is not reported to the model as if it did not happen — its
-//     slot says the action may already have happened, so a resumed turn checks before redoing;
-//   • when an abandoned ACTION settles, the owner is told the real outcome in plain words
-//     ("the email had already been sent"), through the chat's existing notice toast.
-// ════════════════════════════════════════
+// The executor stops waiting when the owner presses Stop: each call in `run-one.ts` races the stop
+// (`stop-waiters.ts`), and a cut call's slot reads CANCELLED_BY_STOP. Not a timeout: no tool run is bounded.
+// The tool's own cancel handles the action. This file never applies an abandoned call's late result;
+// its slot says an action may already have happened, and the owner is told the real outcome when it settles.
 
 import { classifyTool, type ToolCall } from '@dojo/shared';
 import { untilUserStop } from '../../../stop-waiters.js';
@@ -43,10 +24,8 @@ export type StopRace =
   | { readonly stopped: false; readonly outcome: ToolOutcome }
   | { readonly stopped: true; readonly result: PendingToolResult };
 
-/**
- * Run one tool call unless the owner stops it. A stop already standing means the call is
- * never started; a stop that lands while it runs ends the wait now and abandons the call.
- */
+/** Run one tool call unless the owner stops it: a standing stop never starts it; a stop that lands
+ *  while it runs ends the wait now and abandons the call. */
 export async function runUnlessStopped(
   agentId: string, tc: ToolCall, start: () => Promise<ToolOutcome>,
 ): Promise<StopRace> {
@@ -79,10 +58,8 @@ const CHANNEL_WORDS: Readonly<Record<string, readonly [string, string]>> = {
   imessage: ['iMessage', 'sent'], phone: ['call', 'placed'],
 };
 
-/**
- * The abandoned call keeps its own life; its result is read here and nowhere else. An ACTION
- * (a send, a write, a command) is reported to the owner when it lands; a read is only logged.
- */
+/** The abandoned call keeps its own life; its result is read here only. An action (send, write,
+ *  command) is reported to the owner when it lands; a read is only logged. */
 function followAbandoned(agentId: string, tc: ToolCall, work: Promise<ToolOutcome>): void {
   const isAction = classifyTool(tc.name, tc.arguments as Record<string, unknown> | undefined) === 'effectful-action';
   work.then(

@@ -1,28 +1,8 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// t211 (D7a, ctx 11) — THE RESULTS OF ONE RESPONSE ARE ADMITTED TOGETHER, AGAINST THE ROOM THE TURN HAS.
-//
-// Each result is admitted on its own at the executor (`admitToolResult`): shown whole up to one view, a pointer
-// beyond it. But one response can call several tools at once and all their results land in ONE stored `tool`
-// row, which the trim and the fold treat as one unit with its call. Six results of 12,000 tokens were six
-// whole results, ~72K tokens in one row on a 65K window: more than the live conversation's whole room, so the
-// newest group (kept whatever it costs) pushed the rest of the conversation out of view.
-//
-// THE ROOM is read off the assembler's own gauge (`estimateAssembledTokens`): the live conversation's room in
-// the content budget, of which the newest whole groups may take up to half (the protected recent part,
-// `viewOf`'s law: owner decision 7b), less the response's own calls. There is no constant here; a bigger window
-// or a smaller system prompt gives the batch more.
-//
-// WHEN THE BATCH DOES NOT FIT, results give way in the order of what each costs:
-//   1. the LARGEST result becomes its pointer first (the start, the end with the engine's trailer, a label that
-//      names the size and the exact `tool_result_read` call), then the next largest, and so on until it fits;
-//   2. if every result is already a pointer and the batch still does not fit, the room is shared equally
-//      (small results keep what they need, the rest share what is left) and each pointer's excerpt narrows to
-//      its share. The label stays whatever the share, so every result says how big it is and how to read it.
-// NOTHING IS LOST: the whole of every result switched is kept in `kept_tool_results` by the recorder
-// (`keptWhole`), exactly as for a result past one view. The row stores the bytes the model will see, so every
-// later assembly renders the same ones (the cache tenet forbids a view that moves as headroom moves), and
-// there is nothing else to store: no migration, and a row recorded before this is untouched.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// Admits one response's tool results together against the turn's room: they share one stored `tool` row,
+// so several whole results could push the rest of the conversation out of view. The room is half the live
+// conversation's room (`estimateAssembledTokens`) less the calls; largest results become pointers first, then
+// the room is shared equally. Whole results stay in `kept_tool_results` via `keptWhole`, and the row stores
+// exactly the bytes the model sees so every later assembly renders the same ones (prompt cache).
 
 import { createLogger } from '../../../../logger.js';
 import { agentTurnWindow } from '../../../../router/router-window.js';
@@ -36,7 +16,6 @@ const logger = createLogger('v2-batch-admission');
 
 interface Item {
   r: PendingToolResult;
-  /** The whole result as the tool produced it. */
   whole: string;
   /** What the row stores around the result's own view (an engine warning ahead of it, a notice after it). */
   before: string;
@@ -55,7 +34,6 @@ function itemOf(r: PendingToolResult): Item | null {
   return { r, whole: r.keptWhole, before: r.content.slice(0, at), after: r.content.slice(at + own.length), tokens: estimateTokens(r.content) };
 }
 
-/** Show the result at `viewChars`. Returns false when that changes nothing (it already fits that view). */
 function narrow(it: Item, viewChars: number): boolean {
   const view = toolResultView(it.whole, it.r.toolCallId, viewChars);
   if (view === it.whole) return false;
@@ -67,10 +45,7 @@ function narrow(it: Item, viewChars: number): boolean {
   return true;
 }
 
-/**
- * Admit this response's results against the room. Changes `content` (and `keptWhole`) of results in place; never
- * throws (an unmeasurable room leaves every result as the executor admitted it).
- */
+/** Narrows results in place to fit the room; never throws (an unmeasurable room leaves them as admitted). */
 export async function admitBatchToRoom(ctx: ExecuteContext, results: PendingToolResult[]): Promise<void> {
   try {
     const items = results.map(itemOf).filter((it): it is Item => it !== null);
@@ -86,13 +61,12 @@ export async function admitBatchToRoom(ctx: ExecuteContext, results: PendingTool
     const total = (): number => fixed + items.reduce((t, it) => t + it.tokens, 0);
     if (total() <= room) return;
 
-    // 1. Largest first, to the standard pointer.
     const before = total();
     for (const it of [...items].sort((a, b) => b.tokens - a.tokens)) {
       if (total() <= room) break;
       narrow(it, POINTER_VIEW_CHARS);
     }
-    // 2. Still over with every result at its pointer: share what is left equally; small results keep what they need.
+    // 2. Still over with every result a pointer: share the rest equally; small results keep what they need.
     if (total() > room) {
       let left = room - fixed;
       const ascending = [...items].sort((a, b) => a.tokens - b.tokens);

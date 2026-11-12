@@ -1,18 +1,6 @@
-// ════════════════════════════════════════
-// PHASE-6 T7 (CUT 7) — THE GATES THAT CAN REFUSE A CALL BEFORE IT RUNS, moved
-// byte-faithfully out of `loop.ts`'s `execute` span: the reminder-delivery lane,
-// the A2A re-send cap, the thrash gate, the anti-hoarding
-// ADVISORY (which refuses nothing — it nudges and falls through, and its own
-// comment says so), and the pre-turn close-out gate.
-//
-// THE ONE CONVERSION: inside the loop each of these returned a tool result
-// straight out of `runOne`. A module cannot return from its caller, so the gates
-// hand back `{ state, refusal }` and `run-one.ts` returns the refusal if there is
-// one. The refusal VALUES are the same bytes, including every threshold and every
-// word of every refusal text.
-//
-// The owner check they use is the shared one (`services/safe-senders.ts`, t146).
-// ════════════════════════════════════════
+// The gates that can refuse a call before it runs: the reminder-delivery lane, the A2A re-send cap, the
+// thrash gate and the compile gate, plus the hoarding advisory, which refuses nothing. A refusal comes back
+// as `{ state, refusal }` and `run-one.ts` returns it as the call's result.
 
 import { broadcast } from '../../../../gateway/ws.js';
 import { isOwnerIMessageRecipient } from '../../../../services/safe-senders.js';
@@ -32,20 +20,7 @@ import type { ExecuteContext, PendingToolResult } from './index.js';
 
 const logger = createLogger('v2-loop');
 
-// D16 recipient comparison moved to agent/recipient-identity.ts (P5c rekey:
-// canonical contact/safe-sender identity first, digit-tail heuristic only as
-// the both-unknown fallback).
 
-// Reminder-delivery lane (2026-07-21, battery root-cause find; P1 spine
-// consumer #1). A reminder task is BY DESIGN a delivery to the owner (or a
-// household member the owner named). Production/battery incident: on an
-// engine turn serving a reminder, the floor model resolved "deliver this to
-// the user" to the most RECENT human it had chatted with (a third-party
-// iMessage contact) and texted owner-bound content there, recipient chosen
-// explicitly by the model, so no recency-map fix could catch it. "Is this
-// recipient the owner?" is answered by the ONE owner rule
-// (`services/safe-senders.ts:isOwnerIMessageRecipient`, t146), address or
-// record name, phone-tolerant via recipientIdsMatch.
 
 /** `refusal` non-null means the call does NOT run and this is its result. */
 export function runRefusalGates(
@@ -57,17 +32,9 @@ export function runRefusalGates(
   const { agentId, turnNumber, turnCtx, counterparty, reminderLaneRefusedSigs } = ctx;
 
 
-  // ── Reminder-delivery lane (destination-from-root) ──
-  // A refuse-once guard on channel sends, costing legitimate
-  // work at most one corrective round (an identical re-send proceeds):
-  //  1. Reminder lane: this turn serves a kind='reminder' task (read
-  //     structurally off the claimed trigger's task_id, migration 112).
-  //     Reminder output belongs to the OWNER; a send naming someone who
-  //     is not the owner is refused once with guidance ("remind my
-  //     wife" repeats and goes through).
-  //  A send TO the owner is never refused (owner ruling 2026-10-27, GitHub #27/#28): the
-  //  presence switch is not proof the owner is watching, and on a turn rooted in someone
-  //  else's text the "chat reply" goes to that person. The channel choice is the agent's.
+  // Reminder lane: a turn serving a kind='reminder' task delivers to the owner, so a send naming anyone
+  // else is refused once (an identical re-send goes through). The owner test is `isOwnerIMessageRecipient`.
+  // A send to the owner is never refused: the channel choice is the agent's.
   if ((tc.name === 'imessage_send' || tc.name === 'sms_send')) {
     const served = turnCtx.servedWork;
     const a = (tc.arguments ?? {}) as Record<string, unknown>;
@@ -91,24 +58,14 @@ export function runRefusalGates(
     }
   }
 
-  // ── A2A re-send cap (per recipient per turn) ──
-  // Inter-agent replies are ASYNC, the recipient answers on its OWN
-  // later turn, never synchronously in this one. An agent that doesn't
-  // get an instant reply re-sends the same ask, REWORDING it each time,
-  // which defeats the content-signature dedup (every rewording is a new
-  // signature) and spams the recipient (observed: 29 send_to_agent calls
-  // to one agent in a single turn). Cap it at A2A_SEND_CAP_PER_RECIPIENT
-  // per recipient per turn, set well ABOVE any genuine case (two distinct
-  // messages to one agent, a retry after a transient failure) so it only
-  // catches a pathological re-send loop, never real multi-send. Different
-  // recipients are independent, and the first several sends always pass.
+  // A2A re-send cap per recipient per turn: replies are async, and a model re-sending reworded asks
+  // defeats the signature dedup. The cap sits well above any genuine multi-send.
   if (tc.name === 'send_to_agent' || tc.name === 'broadcast_to_group') {
     const a = (tc.arguments ?? {}) as Record<string, unknown>;
     const recip = String(
       a.to_agent ?? a.agent ?? a.to ?? a.recipient ?? a.group ?? a.group_id ?? '',
     ).trim().toLowerCase();
     if (recip && (state.sendsPerAgentThisTurn[recip] ?? 0) >= A2A_SEND_CAP_PER_RECIPIENT) {
-      // Audit round (#4): facts, not orders and not the escape hatch.
       const refusal =
         `Refused: you have already sent "${recip}" ${A2A_SEND_CAP_PER_RECIPIENT} messages this turn. ` +
         `Inter-agent replies are asynchronous: "${recip}" answers on its own next turn, and its reply arrives then. ` +
@@ -124,14 +81,8 @@ export function runRefusalGates(
     }
   }
 
-  // ── Thrash-gate refusal (per-canonical-signature) ──
-  // The iteration-top thrash detector added this signature to the gate when it caught the
-  // agent repeating the same call. The gate refuses ONLY this exact (tool, args) combo — the
-  // agent can keep calling the same tool with DIFFERENT args — and the message names the exact
-  // call so DeepSeek can't miss it (unlike a buried system message). Refusal count tracks how
-  // many times the agent ignored the gate. WHAT THE MESSAGE MAY CLAIM IS BOUNDED BY WHAT THE
-  // SIGNATURE MEASURES (owner ruling 2026-09-22, argued in full at `pre-call-gates/thrash-gate.ts`):
-  // it may say the result is already here only because `canonicalToolSignature` carries EVERY argument.
+  // Thrash gate: refuses only the exact (tool, args) signature the detector caught. The message may say the
+  // result is already here only because `canonicalToolSignature` carries every argument (thrash-gate.ts).
   if (state.thrashGatedSignatures.length > 0 && !isA2AReplyTool) {
     const thisSig = canonicalToolSignature(tc.name, tc.arguments);
     if (state.thrashGatedSignatures.includes(thisSig)) {
@@ -161,41 +112,8 @@ export function runRefusalGates(
       } };
     }
   }
-  // ── Anti-hoarding gate (v2.5.43) ──
-  // Refuse loading-tool calls past LOADING_GATE_THRESHOLD when no
-  // structuring (work_open, file_write/append/patch,
-  // scratchpad_set, work_update(action="status"), etc.) has happened
-  // this turn. Engine enforcement of the corpus-synthesis pattern
-  //, prompt-level guidance was being ignored on prod by
-  // DeepSeek V4 Pro. See classifiers/hoarding.ts for full
-  // rationale. The structuring call itself is NEVER refused
-  // (we check loading-only), and once any structuring happens
-  // the gate is permanently off for the rest of the turn.
-  //
-  // v2.7.8, carve-out: trainer reading from its own techniques
-  // directory doesn't count. The trainer's job IS reading the
-  // technique files it manages; the gate fired on a trainer
-  // doing exactly that (reading the 4 scripts + TECHNIQUE.md
-  // of its own technique) and forced it to open a confused
-  // "Edit Technique" tracker for what was a one-shot ask.
-  // D3: anti-hoarding is now a NON-BLOCKING compaction-proximity advisory,
-  // not a count-based refusal. The old gate refused the (THRESHOLD+1)th
-  // read of a turn until a tracker/file write landed, which blocked
-  // legitimate multi-source work ("check my inboxes", 6-source research,
-  // exec-heavy asks), taxed weak models by effort-count (a weaker model
-  // needs MORE reads for the same job), and even demanded "open a tracker
-  // project" in order to read email. The real hazard is context PRESSURE
-  // (loaded sources summarized into confabulation at compaction), which the
-  // engine already measures (lastContextRatio). So when many unscaffolded
-  // loads have happened AND context is genuinely near compaction, nudge
-  // ONCE (advice, framed as an engine hint, never a refusal) to write the
-  // sources down now, then let the read through. Reads are never blocked.
-  // The count (heavyLoadsThisTurn) reflects the SIZE of prior results this
-  // turn (see the post-result accounting below); the trigger no longer
-  // keys on whether THIS call is a "loading tool" (that name-set is gone).
-  // We only skip nudging on the very call that structures (isStructuringTool),
-  // since telling the agent to write things down as it writes them down is
-  // noise; !structuringToolCalledThisTurn already covers "already structured".
+  // Hoarding advisory, never a block: after many unscaffolded heavy loads with context near compaction,
+  // nudge once to write sources down before compaction summarizes them. Skip the call that structures.
   if (
     !state.structuringToolCalledThisTurn &&
     !steerFired(state.steerQueue, 'hoarding-advisory') &&
@@ -210,15 +128,8 @@ export function runRefusalGates(
       `are facts here you'll rely on, jot them into scratchpad_set / a file_write / a tracker note now so ` +
       `they survive. This is advice, not a block, keep going.]`
     );
-    // Phase 0.4: route the [Engine hint] through persistEngineSteer so the
-    // advice reaches the model (the steer queue, drained as a synthetic user
-    // message next iteration) AND keeps the dashboard row. The old bare
-    // role='system' INSERT was stripped by the assembler, so the advisory
-    // never reached the model at all (INVISIBLE by choice, but the model
-    // could not act on advice it never saw). This stays ADVICE, not a block:
-    // the tool still executes below (no refusal, no `continue`), the nudge
-    // just rides along to the next iteration. Already gated once per turn by
-    // the queue's own `hoarding-advisory` latch.
+    // Sent as an engine steer so the model sees it (the assembler strips a role='system' row); the
+    // queue's `hoarding-advisory` latch keeps it to once per turn.
     state = persistEngineSteer(
       state,
       { agentId, content: nudge, turnNumber, floor: 'hoarding-advisory', atLoop: state.loopCount },
@@ -229,18 +140,8 @@ export function runRefusalGates(
     }, agentId);
     // Fall through: the tool executes normally. No refusal.
   }
-  // ── UX-REPAIR ROUND 12 T47 — THE PRE-TURN COMPILE GATE ──
-  //
-  // The owner is owed a compiled reply, every delegated piece is back, and the redrive ladder
-  // has already come back for it at least once. Round-12 S5: three steers each saying "Do NOT
-  // search, open files, run commands, or call any tools first" were answered with
-  // `load_tool_docs`, `history_search`, `history_get`, `work_update` (errored ×2) and
-  // `history_get`, across 12m26s, with no reply. Persuasion failed 3/3; this is the same duty
-  // made mechanical, in the shape of the gate directly above that already worked.
-  //
-  // The re-validation is the DISARM: the decision re-reads `compile_pending` at the moment it
-  // would refuse, so the model's own answer, T48's engine relay, a fail-closed notice and a
-  // bare flag clear all take the gate down without knowing it exists.
+  // Compile gate: while the owner is owed a compiled reply and every piece is back, refuse calls outside
+  // a closed set. The decision re-reads `compile_pending`, so any way out of the duty takes the gate down.
   const compileOwed = compileOwedGateDecision(
     state.compileOwedAskIds, state.compileGateSatisfied, toolOpKey(tc.name, tc.arguments),
     state.compileOrderReachedModel,
@@ -251,10 +152,8 @@ export function runRefusalGates(
       agentId, remaining: compileOwed.live.length,
     }, agentId);
   }
-  // T68b: armed, genuinely owed, and the assembly could NOT confirm the pieces are in front
-  // of the model. The refusal below would tell the model they are, which is the sentence that
-  // burned three full output budgets on 2026-08-31, so the call runs. Logged at WARN because
-  // reaching here means an ENGINE defect: the compile order was written and did not arrive.
+  // Armed and owed, but the assembly could not confirm the pieces reached the model: the refusal would
+  // be false, so the call runs, logged at WARN as an engine defect.
   if (compileOwed.standDownUnverified) {
     logger.warn('v2: compile gate stood down — the compile order did not reach the model whole', {
       agentId, tool: tc.name, owedCount: compileOwed.live.length,

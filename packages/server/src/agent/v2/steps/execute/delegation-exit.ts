@@ -1,17 +1,5 @@
-// ════════════════════════════════════════
-// PHASE-6 T7 (CUT 7) — THE DELEGATION TURN-END, moved byte-faithfully out of
-// `loop.ts`'s `execute` span. On a NON-A2A turn a wake-intent `send_to_agent`
-// (QUESTION / ASSIGN / BLOCK) means the agent asked another agent for something it
-// needs, and that reply is ASYNCHRONOUS — it lands on a LATER turn, never in this
-// one. The turn ends here, the owner's question is DELEGATED onto the threads the
-// sends just created, and the join's countdown is what closes the loop.
-//
-// TWO OF THE SPAN'S SIX WAYS OUT LIVE HERE, and they are the pair that made this
-// block worth its own file: the async exit itself, and the owner-law steer that
-// asks for ONE more iteration first so a user-triggered turn cannot go silent on a
-// hand-off (2026-07-23, run bmrx5kjitjq — the status line vanished because this
-// exit bypasses every turn-ending floor).
-// ════════════════════════════════════════
+// The delegation turn-end: on a non-A2A turn a wake-intent `send_to_agent` (QUESTION / ASSIGN / BLOCK)
+// is answered on a later turn, so the turn ends here and the owner's question is delegated to the threads.
 
 import { JOIN_TTL_MINUTES, openDelegationJoin, threadHopCount, type DelegationThread } from '../../../../work/store.js';
 import { broadcast } from '../../../../gateway/ws.js';
@@ -33,62 +21,20 @@ export function runDelegationTurnEnd(state: AgentTurnState, ctx: ExecuteContext)
   } = ctx;
   const MAX_TOOL_LOOPS = maxToolLoops;
 
-  // ── Delegation turn-end (agent-coordination flow) ──
-  // On a NON-A2A turn, a wake-intent send_to_agent (QUESTION / ASSIGN /
-  // BLOCK) means the agent asked another agent for something it needs, and
-  // that reply is ASYNCHRONOUS, it lands on a LATER turn, never in this one.
-  // End the turn now. Without this, the agent loops re-asking (observed: 29
-  // send_to_agent calls in one turn) AND/OR fabricates the answer before the
-  // reply arrives. The owner's question is parked + resumed when the reply
-  // lands (close-the-loop, handled below / in the runtime). The model can
-  // still delegate to MULTIPLE agents in this single response's tool batch
-  // before the turn ends, so genuine multi-delegation is not blocked.
+  // End the turn now, or the agent re-asks or fabricates the answer. Every send in this one response's batch
+  // still goes out, so multi-delegation is not blocked.
   const issuedWakeAsk = (result.toolCalls ?? []).some((tc) => {
     if (tc.name !== 'send_to_agent') return false;
     const intent = String((tc.arguments as Record<string, unknown> | undefined)?.intent ?? '').toUpperCase();
     return intent === 'QUESTION' || intent === 'ASSIGN' || intent === 'BLOCK';
   });
   if (counterparty.kind !== 'agent' && issuedWakeAsk) {
-    // DELEGATE the owner's question onto the thread(s) we just asked (PHASE-2 T4).
-    //
-    // What this replaces: the owner's message row used to have its `conv_key` overwritten
-    // with `park:<thread>` (or `park:~<t1>|<t2>#<remaining>` for a fan-out) so the question
-    // (a) did NOT re-trigger and (b) was NOT falsely treated as answered. That column also
-    // carries the conversation's IDENTITY, so parking destroyed the record of where the
-    // question came from — research 07 §3's "worst coupling", and the reason the relay had
-    // to recover the channel from an `inbound_meta` JSON blob.
-    //
-    // Both jobs now belong to rows that were built for them: the ask's TICKET is already
-    // `claimed` (T3), which is what stops the re-trigger and what says it is not answered;
-    // and the join is N CHILD rows under it with an atomic countdown. The message row is
-    // not touched at all — requirement 3g/3l, state and identity are separate fields.
-    //
-    // When a reply comes back the ENGINE closes the loop directly (a2a-transport): it
-    // relays a single piece to the owner on their own channel, or holds a fan-out until the
-    // LAST piece lands and then steers the model to compile. It does NOT re-fire the
-    // model's own question — that proved flaky (the weak model re-reads "ask X" and
-    // re-asks: an ask→delegate→answer→re-ask loop).
+    // The ask's work row is already claimed, which stops a re-trigger; the join is child rows with an
+    // atomic countdown, and the message row is untouched. On reply the engine relays, never re-asks.
     if (triggerRow && triggerWorkId) {
       try {
-        // T-2 (comms-audit): derive the asked thread(s) STRUCTURALLY from the A2A rows the
-        // sends just created (source_agent_id = this agent, this turn), never by
-        // regex-scraping the tool-result prose — if the wording ever changed, the regex
-        // would miss and the owner's question would be SILENTLY DROPPED.
-        // C9: constrain to reply-warranting intents. The weak model routinely batches a
-        // real QUESTION/ASSIGN/BLOCK to a worker AND a STATUS/FYI to the PM in one response.
-        // Ordering is ASC (oldest first) so the children read in hand-off order.
-        // BUG-4: the FULL thread id, never an 8-char prefix — two threads sharing a prefix
-        // collided in the relay, and `makeThreadId`'s own comment records that an 8-char
-        // prefix of a `thread-<hash>-<seed>` id is ~36 buckets. The short-token minter that
-        // forced the old length-sniffing SQL is GONE with this block (3j).
-        // t139 round 2 (hand-up 4): THIS TURN'S sends are read off this turn's own DELIVERY
-        // records (`send_to_agent` writes one per hand-off, stamped with the turn number, and it
-        // names the row it delivered), never off a clock. The clock bound was
-        // `created_at >= unixepoch(turnStartedAt) * 1000`, and the a2a rows are stored to the
-        // WHOLE SECOND (measured: `…259000` against a turn start of `…259053`), so a turn starting
-        // inside the previous turn's second swept that turn's sends into its own join and held its
-        // ask on pieces that were never its own. A millisecond bound cannot work either — the row
-        // is rounded DOWN past it — so the key is the turn number.
+        // This turn's reply-warranting sends, keyed by turn number on its own delivery rows: a2a rows are
+        // stored to the whole second, so a clock bound would sweep in the previous turn's sends.
         const sentRows = db.prepare(
           `SELECT m.a2a_thread_id AS a2a_thread_id, m.agent_id AS agent_id, m.a2a_intent AS a2a_intent
              FROM deliveries d JOIN messages m ON m.id = d.message_id
@@ -105,8 +51,6 @@ export function runDelegationTurnEnd(state: AgentTurnState, ctx: ExecuteContext)
           seen.add(r.a2a_thread_id);
           threads.push({
             threadId: r.a2a_thread_id,
-            // The ASKED agent, recorded HERE where it is known. The string machine had to
-            // reconstruct it later by scanning messages around the park's timestamp.
             assigneeAgent: r.agent_id,
             intent: r.a2a_intent ?? 'ASSIGN',
             hopCount: threadHopCount(r.a2a_thread_id) ?? 0,
@@ -116,8 +60,7 @@ export function runDelegationTurnEnd(state: AgentTurnState, ctx: ExecuteContext)
           const opened = openDelegationJoin({
             parentWorkId: triggerWorkId,
             agentId,
-            // COPIED at delegation time, never resolved later: the reply comes back on the
-            // conversation the question arrived on, and that fact is written down now.
+            // Copied now, never resolved later: the reply returns on the conversation the ask came on.
             replyConversationId: triggerConversationId,
             ttlAt: Date.now() + JOIN_TTL_MINUTES * 60_000,
             threads,
@@ -132,13 +75,8 @@ export function runDelegationTurnEnd(state: AgentTurnState, ctx: ExecuteContext)
         }, agentId);
       }
     }
-    // Owner law (2026-07-09) applies at the ASYNC-EXIT path too (2026-07-23,
-    // run bmrx5kjitjq: the hand-off status line vanished because this exit
-    // bypasses every turn-ending floor). A user-triggered turn may not go
-    // silent on a delegation hand-off: one steer for the status line, in
-    // the agent's own voice. If the model ghosts it (or delegates yet
-    // again), exit as designed; the park relay stays the deterministic
-    // backstop for the ANSWER, this net only covers the interim silence.
+    // A user-triggered turn may not go silent on a hand-off, and this exit bypasses every turn-ending floor:
+    // one steer for a status line. If ignored, exit anyway; the park relay still delivers the answer.
     if (
       triggerRow &&
       !state.surfacedReplyThisTurn && !deferredDeliveredByAck &&
@@ -148,22 +86,10 @@ export function runDelegationTurnEnd(state: AgentTurnState, ctx: ExecuteContext)
       !steerFired(state.steerQueue, 'delegation-exit') &&
       state.loopCount < MAX_TOOL_LOOPS
     ) {
-      // ── UX-REPAIR ROUND 13 T62 — NOT-DOING, RULED, so it is not silently re-litigated ──
-      // Round-13 S5: the line this hint asks for came back with the two helpers' names
-      // SWAPPED ("a sub-agent's on real 3-year cost … Healer's on food quality") while the work
-      // itself was assigned exactly right. Step-0 re-queried the turn record directly (turn
-      // 4946, dev body): the model's own `send_to_agent` row (seq 66563) carries agent and
-      // brief ADJACENT in one object — call_00 healer/COST, call_01 a sub-agent/FOOD QUALITY — and
-      // the results (seq 66566) came back in the same order, each bound by `tool_use_id`, so
-      // a positional swap is structurally impossible at that seam; the piece rows confirm
-      // healer=cost, a sub-agent=food. The model had the truth in context, 7 seconds old, and
-      // misspoke anyway. NO structural contributor exists, so there is nothing to fix here:
-      // any "fix" would be the engine reading the model's sentence and judging its content,
-      // which is the standing prose-classification ban. Recorded, not forgotten.
+      // A status line that misnames the helpers is not fixed here: judging the model's sentence is banned.
       const exitSteer =
         `[Engine hint: you delegated work on ${userWords(ctx.turnCtx.address)}'s request and are about to end your turn without telling them anything. WRITE ONE short line to them first, as your reply (it goes to ${userWords(ctx.turnCtx.address)} by ${replyChannelWords(ctx.turnCtx.address)}): if you already have their answer, give it now; otherwise say you have handed the pieces off and will report back when they return. Do NOT call imessage_send or any send tool (the engine routes your reply), and do not message any agent again this turn.]`;
-      // HL3: the RC-19 door — this exit bypasses every turn-ending floor, so nothing else
-      // on the turn records that the status line was asked for.
+      // Persisted as an engine steer: nothing else on this exit records that the status line was asked for.
       state = persistEngineSteer(state, { agentId, content: exitSteer, turnNumber, floor: 'delegation-exit', atLoop: state.loopCount }, { broadcast });
       logger.info('v2 delegation-exit steer: user-triggered hand-off ending silently; one steer for the status line before the async exit', {
         agentId, turnNumber,
