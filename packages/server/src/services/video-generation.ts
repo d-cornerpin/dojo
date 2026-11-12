@@ -1,22 +1,9 @@
-// ════════════════════════════════════════
-// services/video-generation.ts — async video job submit + poll + fetch.
-//
-// Unlike image_create / tts_create (synchronous single HTTP call), video
-// generation is long-running (1 to 10 min). The flow is three-legged:
-//
-//   1. submitVideoJob()      POST /v1/videos        -> provider job id
-//   2. pollProviderVideo()   GET  /v1/videos/{id}   -> status / progress
+// Async video jobs: submit, poll, fetch (OpenAI Sora-style API, as exposed by OpenRouter and compatibles).
+//   1. submitVideoJob()      POST /v1/videos              -> provider job id
+//   2. pollProviderVideo()   GET  /v1/videos/{id}         -> status / progress
 //   3. fetchVideoAsset()     GET  /v1/videos/{id}/content -> mp4 bytes
-//
-// This matches the OpenAI Sora async video API, which is the de-facto
-// shape OpenRouter and OpenAI-compatible providers expose. submitVideoJob
-// writes a `video_jobs` row (status='queued'); the boot-time poller in
-// video-job-poller.ts owns legs 2 and 3 and the chat delivery.
-//
-// We resolve provider base_url + credential from the DB by provider_id so
-// the poller only needs the row's provider_id / provider_job_id to drive
-// each leg — no extra state threaded through.
-// ════════════════════════════════════════
+// submitVideoJob writes a `video_jobs` row (status='queued'); the poller in video-job-poller.ts owns legs
+// 2 and 3 and the chat delivery. Base URL and credential are resolved from the DB by provider_id.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -42,12 +29,10 @@ function ensureGeneratedDir(): void {
 
 export interface SubmitVideoRequest {
   modelId: string;        // dojo models.id
-  agentId: string;        // caller — used for delivery + cost attribution
+  agentId: string;        // caller, used for delivery + cost attribution
   prompt: string;
   title?: string;
-  // Per-model generation spec + the agent's validated canonical values
-  // (duration / aspect_ratio / resolution). The wire body is composed from
-  // these via buildWireBody — no hardcoded size/seconds mapping.
+  // Per-model generation spec plus the agent's validated canonical values; buildWireBody composes the wire body.
   paramSpec: GenerationParamSpec;
   canonicalParams: Record<string, string | number>;
   refImagePath?: string;  // optional reference image (absolute path)
@@ -63,7 +48,7 @@ export interface SubmitVideoSuccess {
 export interface SubmitVideoError {
   ok: false;
   error: string;
-  // A-5: `STOPPED` is the user's own button, not a provider failure. See `image-generation.ts`.
+  // STOPPED is the user's own stop button, not a provider failure.
   code: 'MODEL_NOT_FOUND' | 'NO_CREDENTIAL' | 'HTTP_ERROR' | 'NO_JOB_ID' | 'STOPPED' | 'UNKNOWN';
 }
 
@@ -72,9 +57,7 @@ export type SubmitVideoResult = SubmitVideoSuccess | SubmitVideoError;
 interface ProviderRow { id: string; type: string; base_url: string | null }
 interface ModelRow { id: string; api_model_id: string; provider_id: string }
 
-// Provider job state, normalized across the small variations we've seen.
-// OpenAI returns queued | in_progress | completed | failed; some
-// passthroughs use 'processing' / 'succeeded'. We collapse to four.
+// Provider job state, normalized to four values (providers vary: 'processing', 'succeeded', ...).
 export interface ProviderPollResult {
   ok: true;
   status: 'queued' | 'in_progress' | 'completed' | 'failed';
@@ -82,8 +65,7 @@ export interface ProviderPollResult {
   error: string | null;
   durationSeconds: number | null;
 }
-// A-5: `stopped` is how the poller tells a user stop apart from a provider failure. A stopped
-// leg is NOT retryable and must NOT reach `markFailed` — a job the owner stopped did not fail.
+// `stopped` tells a user stop apart from a provider failure: it is not retryable and must not reach `markFailed`.
 export interface ProviderPollError { ok: false; error: string; retryable: boolean; stopped?: true }
 export type ProviderPollOutcome = ProviderPollResult | ProviderPollError;
 
@@ -120,10 +102,7 @@ function resolveProvider(providerId: string): { base: string; credential: string
   return { base: resolveVideosBase(provider.base_url), credential };
 }
 
-// ── t114 (census U9) — the asset download's two phases, named ──
-// `ASSET_HEADERS_TIMEOUT_MS` is the old flat number's honest job: how long the provider may take
-// to START answering. The body then earns time from the size it declared, capped, because a
-// billed clip must not be thrown away for being large.
+// The asset download's headers window; the body then earns time from its declared size, capped.
 const ASSET_HEADERS_TIMEOUT_MS = 30_000;
 const ASSET_BODY_BASE_TIMEOUT_MS = 120_000;
 const ASSET_BODY_CEILING_MS = 30 * 60_000;
@@ -134,15 +113,9 @@ const COMMON_HEADERS = (credential: string): Record<string, string> => ({
   'X-Title': 'Dojo Agent Platform',
 });
 
-/**
- * Submit a new video job. Writes a `video_jobs` row (status='queued') and
- * returns the dojo job id. The poller takes it from here.
- */
-/** A-5 — the stop door. Same shape as `generateImage`'s: see that function's note. */
+/** Submit a new video job: writes a `video_jobs` row (status='queued') and returns the dojo job id. */
 export async function submitVideoJob(req: SubmitVideoRequest): Promise<SubmitVideoResult> {
-  // A-5 FIX ROUND: `turn` — this leg runs INSIDE `video_create`, synchronously, and the tool
-  // is still waiting on it. A turn that dies here has nothing to protect: the job does not
-  // exist yet. The two legs the POLLER drives are the background ones.
+  // The 'turn' scope: this leg runs inside `video_create`, which is still waiting, and no job exists yet.
   const slot = openAgentCall(req.agentId, 'turn');
   try {
     if (slot.refused) {
@@ -164,15 +137,10 @@ async function dialVideoSubmit(req: SubmitVideoRequest, slot: AgentCallSlot): Pr
   const base = resolveVideosBase(provider.base_url);
   const endpoint = `${base}/videos`;
 
-  // Compose the provider-specific wire fields from the agent's validated
-  // canonical values (duration / aspect_ratio / resolution) per this model's
-  // spec. This is the tool → model mapping layer — no silent param drop.
+  // Provider wire fields come from the agent's canonical values per this model's spec; no silent param drop.
   const wire = buildWireBody(req.paramSpec, req.canonicalParams);
 
-  // When the agent supplied a reference image we must send multipart
-  // form-data (the OpenAI video API takes the reference as a file part
-  // named `input_reference`). Otherwise a plain JSON body is simpler and
-  // works everywhere.
+  // A reference image goes as multipart (file part `input_reference`); otherwise a plain JSON body.
   let requestInit: RequestInit;
   const hasRef = !!req.refImagePath && fs.existsSync(req.refImagePath);
   if (hasRef) {
@@ -189,7 +157,7 @@ async function dialVideoSubmit(req: SubmitVideoRequest, slot: AgentCallSlot): Pr
     } catch (err) {
       return { ok: false, error: `Failed to read reference image: ${err instanceof Error ? err.message : String(err)}`, code: 'HTTP_ERROR' };
     }
-    // A-5: COMPOSED, not replaced — the 60s submit ceiling is unchanged and still armed here.
+    // Composed with the stop signal; the 60s submit ceiling stays armed.
     requestInit = { method: 'POST', headers: COMMON_HEADERS(credential), body: form, signal: AbortSignal.any([slot.signal, AbortSignal.timeout(60_000)]) };
   } else {
     const body: Record<string, unknown> = { model: model.api_model_id, prompt: req.prompt, ...wire };
@@ -244,14 +212,11 @@ async function dialVideoSubmit(req: SubmitVideoRequest, slot: AgentCallSlot): Pr
 }
 
 /**
- * Poll the provider for a job's current state.
- *
- * A-5: `agentId` is the requesting agent, so each poll leg registers as one abortable call of
- * that agent's — the poller outlives the turn, and a stop pressed at minute six of a ten-minute
- * video has to reach the leg that is on the wire right then, not only the loop around it.
+ * Poll the provider for a job's current state. Each poll leg registers as an abortable call of
+ * `agentId`, since the poller outlives the turn and a stop must reach the leg on the wire.
  */
 export async function pollProviderVideo(agentId: string, providerId: string, providerJobId: string): Promise<ProviderPollOutcome> {
-  // A-5 FIX ROUND: `background` — driven by the poll loop, minutes after its turn ended.
+  // The 'background' scope: driven by the poll loop, minutes after its turn ended.
   const slot = openAgentCall(agentId, 'background');
   try {
     if (slot.refused) return { ok: false, error: STOPPED_BY_USER, retryable: false, stopped: true };
@@ -270,7 +235,7 @@ async function dialVideoPoll(slot: AgentCallSlot, providerId: string, providerJo
     response = await fetch(`${resolved.base}/videos/${encodeURIComponent(providerJobId)}`, {
       method: 'GET',
       headers: COMMON_HEADERS(resolved.credential),
-      // A-5: COMPOSED — the 30s poll ceiling is unchanged and still armed here.
+      // Composed with the stop signal; the 30s poll ceiling stays armed.
       signal: AbortSignal.any([slot.signal, AbortSignal.timeout(30_000)]),
     });
   } catch (err) {
@@ -280,8 +245,7 @@ async function dialVideoPoll(slot: AgentCallSlot, providerId: string, providerJo
 
   if (!response.ok) {
     const errText = await response.text().catch(() => '');
-    // 5xx and 429 are transient; 4xx (other than 429) means the job id is
-    // bad or gone — not worth retrying forever.
+    // 5xx and 429 are transient; other 4xx mean the job id is bad or gone.
     const retryable = response.status >= 500 || response.status === 429;
     return { ok: false, error: `Poll HTTP ${response.status}: ${errText.slice(0, 300)}`, retryable };
   }
@@ -323,18 +287,14 @@ async function dialVideoPoll(slot: AgentCallSlot, providerId: string, providerJo
   };
 }
 
-/** A-5: `stopped` marks the user's own button so the poller does not record it as a failure. */
+/** `stopped` marks the user's own stop so the poller does not record it as a failure. */
 export type VideoAssetOutcome =
   | { ok: true; filePath: string; filename: string; sizeBytes: number }
   | { ok: false; error: string; stopped?: true };
 
-/**
- * Download the finished asset to ~/.dojo/uploads/generated/<uuid>.mp4.
- * Returns the absolute path + byte size on success.
- */
+/** Download the finished asset to ~/.dojo/uploads/generated/<uuid>.mp4. */
 export async function fetchVideoAsset(agentId: string, providerId: string, providerJobId: string): Promise<VideoAssetOutcome> {
-  // A-5: the download leg registers too — it is the longest single wire of the three.
-  // A-5 FIX ROUND: `background` — same reason as the poll leg; the turn is long gone.
+  // The longest of the three wires; 'background' for the same reason as the poll leg.
   const slot = openAgentCall(agentId, 'background');
   try {
     if (slot.refused) return { ok: false, error: STOPPED_BY_USER, stopped: true };
@@ -349,15 +309,8 @@ async function dialVideoAsset(slot: AgentCallSlot, providerId: string, providerJ
   const resolved = resolveProvider(providerId);
   if (!resolved) return { ok: false, error: `Provider ${providerId} unavailable.` };
 
-  // ── t114 (census U9) — THE DOWNLOAD'S DEADLINE IS SIZED FROM WHAT THE SERVER DECLARES ──
-  //
-  // THE DEFECT: a flat 120s `AbortSignal.timeout` covering the WHOLE operation, body included. A
-  // 1080p clip is tens of megabytes, so on an ordinary connection this aborted a transfer that
-  // was moving perfectly — and the clip is already RENDERED AND BILLED by the time this runs, so
-  // the abort threw away something the owner had paid for and `markFailed` made it terminal with
-  // no resume. The two phases now get two bounds (see `transfer-deadline.ts`): the provider must
-  // answer within the headers window, and the body then gets a deadline derived from the
-  // `content-length` it just declared.
+  // The provider must answer within the headers window, then the body gets a deadline from its declared
+  // content-length (see transfer-deadline.ts): the clip is already rendered and billed, so it must not be aborted.
   const deadline = phasedTransferDeadline({
     headersMs: ASSET_HEADERS_TIMEOUT_MS,
     bodyBaseMs: ASSET_BODY_BASE_TIMEOUT_MS,
@@ -370,14 +323,13 @@ async function dialVideoAsset(slot: AgentCallSlot, providerId: string, providerJ
     response = await fetch(`${resolved.base}/videos/${encodeURIComponent(providerJobId)}/content`, {
       method: 'GET',
       headers: COMMON_HEADERS(resolved.credential),
-      // A-5: COMPOSED — the agent's stop still cuts this, now alongside a phased deadline.
+      // Composed: the agent's stop still cuts this, alongside the phased deadline.
       signal: deadline.signal,
     });
   } catch (err) {
     deadline.done();
     if (slot.cutByStop()) return { ok: false, error: STOPPED_BY_USER, stopped: true };
-    // t114: name the phase. "the provider never answered" and "the download stalled" are
-    // different failures and the difference is what tells a person whether to retry.
+    // Name the phase: "never answered" and "stalled mid-body" tell a person whether to retry.
     if (deadline.firedPhase() === 'headers') {
       return { ok: false, error: `Asset download failed: the provider did not answer within ${Math.round(ASSET_HEADERS_TIMEOUT_MS / 1000)}s.` };
     }
@@ -397,7 +349,7 @@ async function dialVideoAsset(slot: AgentCallSlot, providerId: string, providerJ
   try {
     bytes = Buffer.from(await response.arrayBuffer());
   } catch (err) {
-    // A-5: a stop landing while tens of megabytes of mp4 are arriving surfaces here.
+    // A stop landing mid-body surfaces here.
     if (slot.cutByStop()) { deadline.done(); return { ok: false, error: STOPPED_BY_USER, stopped: true }; }
     const stalled = deadline.firedPhase() === 'body';
     const granted = deadline.grantedBodyMs();
@@ -421,12 +373,8 @@ async function dialVideoAsset(slot: AgentCallSlot, providerId: string, providerJ
 }
 
 /**
- * Best-effort provider-side cancel. Returns true if the provider accepted it.
- *
- * A-5 — DELIBERATELY NOT REGISTERED, and this is the one media dial in the tree that must not
- * be. It is the call that ENACTS a cancel; registering it would let the very stop that asked
- * for the cancel abort the request that delivers it, leaving the provider generating (and
- * billing for) a clip nobody will ever see. The stop reaches this call by CALLING it.
+ * Best-effort provider-side cancel; true if the provider accepted it. Deliberately NOT registered as an
+ * abortable call: it enacts the cancel, and the stop that asked for it must not abort the request.
  */
 export async function cancelProviderVideo(providerId: string, providerJobId: string): Promise<boolean> {
   const resolved = resolveProvider(providerId);

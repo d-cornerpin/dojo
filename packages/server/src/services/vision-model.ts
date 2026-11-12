@@ -1,29 +1,7 @@
-// ════════════════════════════════════════
-// services/vision-model.ts — centralized vision-model resolution.
-//
-// Background: before this helper existed, two different tools each had
-// their own findVisionModel() with its own auto-pick heuristic
-// (browser.ts and system-control.ts). Both silently picked a model
-// without telling the user. That hid an important config decision
-// (which model handles vision work? at what cost? at what quality?)
-// behind a "cheapest vision-ish model" heuristic that could surprise
-// the user.
-//
-// This module replaces both. Resolution order, applied everywhere on
-// the platform that needs vision:
-//   1. The calling agent's own model, if it's vision-capable and
-//      enabled — fastest path, one model end-to-end, no extra hop.
-//   2. The configured fallback vision model (config key
-//      `dojo_fallback_vision_model_id`), if set and still pointing at
-//      an enabled vision-capable model.
-//   3. null — the caller decides what to do (usually: tell the user
-//      that vision is unavailable, and degrade gracefully).
-//
-// There is intentionally NO step "auto-pick the cheapest vision
-// model." That was the old hidden behavior. Forcing the user to set a
-// fallback explicitly means they always know which model is doing the
-// seeing.
-// ════════════════════════════════════════
+// Centralized vision-model resolution. Order: (1) the calling agent's own model if enabled and vision-capable;
+// (2) the configured fallback (`dojo_fallback_vision_model_id`) if it still points at an enabled vision model;
+// (3) null, and the caller degrades. There is deliberately no auto-pick of the cheapest vision model, so the
+// user always knows which model is doing the seeing.
 
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
@@ -67,11 +45,7 @@ function rowHasVision(row: ModelRow | null): boolean {
   return caps.includes('vision');
 }
 
-/**
- * Read the configured fallback vision model ID (or null if unset).
- * Does NOT validate that the model still exists or is enabled — use
- * getEffectiveVisionModel() for the full resolution including validation.
- */
+/** The configured fallback vision model ID, or null. Not validated; getEffectiveVisionModel does that. */
 export function getConfiguredFallbackVisionModelId(): string | null {
   try {
     const row = getDb()
@@ -84,9 +58,7 @@ export function getConfiguredFallbackVisionModelId(): string | null {
   }
 }
 
-/**
- * Set (or clear) the configured fallback vision model. Pass null to clear.
- */
+/** Set (or clear, with null) the configured fallback vision model. */
 export function setConfiguredFallbackVisionModelId(modelId: string | null): void {
   const db = getDb();
   if (modelId === null || modelId.trim().length === 0) {
@@ -99,13 +71,9 @@ export function setConfiguredFallbackVisionModelId(modelId: string | null): void
   `).run(FALLBACK_VISION_MODEL_CONFIG_KEY, modelId, modelId);
 }
 
-/**
- * Resolve the vision model to use for a given calling agent. Returns
- * null if no usable vision path exists (agent's own model can't see AND
- * no fallback is configured / the configured fallback is invalid).
- */
+/** The vision model for a calling agent, or null when neither its own model nor a valid fallback can see. */
 export function getEffectiveVisionModel(agentId: string | null): VisionModelChoice | null {
-  // Step 1 — agent's own model, if vision-capable.
+  // Step 1: the agent's own model.
   if (agentId) {
     try {
       const db = getDb();
@@ -131,7 +99,7 @@ export function getEffectiveVisionModel(agentId: string | null): VisionModelChoi
     }
   }
 
-  // Step 2 — configured fallback.
+  // Step 2: the configured fallback.
   const fallbackId = getConfiguredFallbackVisionModelId();
   if (fallbackId) {
     const fallbackModel = loadEnabledModel(fallbackId);
@@ -143,8 +111,7 @@ export function getEffectiveVisionModel(agentId: string | null): VisionModelChoi
         source: 'fallback',
       };
     }
-    // Fallback configured but invalid (disabled, deleted, lost vision
-    // capability). Log and proceed to step 3.
+    // Fallback configured but unusable (disabled, deleted, lost vision): log and fall through.
     logger.warn('Configured fallback vision model is no longer usable', {
       configuredId: fallbackId,
       enabled: !!fallbackModel,
@@ -152,16 +119,11 @@ export function getEffectiveVisionModel(agentId: string | null): VisionModelChoi
     });
   }
 
-  // Step 3 — no usable path.
+  // Step 3: no usable path.
   return null;
 }
 
-/**
- * List every enabled vision-capable model on the platform. Used by the
- * Settings UI to populate the fallback-vision-model dropdown, and by
- * the startup migration to decide whether there's an obvious single
- * choice to auto-set.
- */
+/** One enabled vision-capable model, as listed for the Settings fallback dropdown and the boot auto-configure. */
 export interface VisionCandidate {
   id: string;
   providerId: string;
@@ -206,12 +168,8 @@ export function listEnabledVisionModels(): VisionCandidate[] {
 }
 
 /**
- * Startup migration / boot helper. If no fallback vision model is
- * currently configured AND exactly one enabled vision-capable model
- * exists, silently set it as the fallback. Preserves working setups
- * for users upgrading from the auto-pick era. If multiple vision
- * models exist, leave the config empty so the Settings UI can prompt
- * the user to choose explicitly. If zero exist, do nothing.
+ * Boot helper: with no fallback configured and exactly one enabled vision-capable model, set it as the
+ * fallback; with several, leave it empty so the Settings UI prompts the user.
  */
 export function autoConfigureFallbackVisionModelIfObvious(): void {
   try {

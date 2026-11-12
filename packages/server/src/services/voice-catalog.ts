@@ -1,24 +1,8 @@
-// ════════════════════════════════════════
-// services/voice-catalog.ts — per-model TTS voice catalog.
-//
-// OpenRouter's model catalog returns `supported_voices: null` for the
-// gpt-audio family, so the list of valid voices is not discoverable at
-// runtime. We seed it from the code family registry below on add (and a
-// boot backfill), store it per model in models.voice_catalog, and let the
-// user edit it on the Settings model card. The registry is only the seed
-// source; we never overwrite a stored catalog (it may contain user edits).
-//
-// Two uses for the stored catalog:
-//   1. getFilteredTools() injects the configured model's voices (id +
-//      character) into the tts_create description so the agent picks a
-//      real voice by vibe instead of guessing.
-//   2. The tts_create dispatcher validates the agent's chosen voice and
-//      kicks the call back when it isn't in the model's set.
-//
-// The voice id sets the base timbre only. Character/accent/emotion
-// (gravelly, elderly, excited, etc.) is steered by writing the delivery
-// into the spoken text, not by the voice id — the catalog guidance says so.
-// ════════════════════════════════════════
+// Per-model TTS voice catalog. OpenRouter returns `supported_voices: null` for the gpt-audio family, so the
+// valid voices are seeded from the code registry below on add (and a boot backfill), stored in
+// models.voice_catalog and user-editable. A stored catalog is never overwritten. getFilteredTools() puts the
+// voices in the tts_create description, and the tts_create dispatcher rejects a voice outside the set. The
+// voice id sets the base timbre only; accent and emotion are steered through the spoken text.
 
 import type { VoiceOption } from '@dojo/shared';
 import { getDb } from '../db/connection.js';
@@ -28,8 +12,7 @@ export type { VoiceOption };
 
 const logger = createLogger('voice-catalog');
 
-// Standard OpenAI gpt-audio voice set, shared by openai/gpt-audio and
-// openai/gpt-audio-mini.
+// Standard OpenAI gpt-audio voice set, shared by openai/gpt-audio and openai/gpt-audio-mini.
 const OPENAI_GPT_AUDIO_VOICES: VoiceOption[] = [
   { id: 'alloy', description: 'neutral and balanced', gender: 'neutral' },
   { id: 'ash', description: 'clear and articulate', gender: 'male' },
@@ -43,16 +26,12 @@ const OPENAI_GPT_AUDIO_VOICES: VoiceOption[] = [
   { id: 'shimmer', description: 'bright and cheerful', gender: 'female' },
 ];
 
-// Match by api_model_id family. gpt-audio and gpt-audio-mini both match.
+// Matched by api_model_id family.
 const CATALOG_BY_FAMILY: Array<{ match: (id: string) => boolean; voices: VoiceOption[] }> = [
   { match: (id) => id.includes('gpt-audio'), voices: OPENAI_GPT_AUDIO_VOICES },
 ];
 
-/**
- * The seed voice catalog for a model from the code family registry, or null
- * when we have no seed for it. This is the seed source only; the live
- * catalog is read from the DB (getModelVoiceCatalog) with this as fallback.
- */
+/** The seed catalog for a model from the code registry, or null; the live catalog is read from the DB. */
 export function defaultVoiceCatalogFor(apiModelId: string): VoiceOption[] | null {
   const id = apiModelId.toLowerCase();
   for (const entry of CATALOG_BY_FAMILY) {
@@ -71,7 +50,6 @@ export function formatVoiceCatalog(catalog: VoiceOption[]): string {
   return catalog.map((o) => `${o.id} (${o.gender}, ${o.description})`).join('; ');
 }
 
-// ── DB helpers + seeding (mirror generation-params.ts) ──
 
 /** The stored voice catalog for a model, or null when none is stored. */
 export function getModelVoiceCatalog(modelId: string): VoiceOption[] | null {
@@ -96,9 +74,8 @@ export function setModelVoiceCatalog(modelId: string, catalog: VoiceOption[] | n
   );
 }
 
-// Seed a model's voice catalog from the family registry, but only if it has
-// no stored catalog yet (never clobber user edits) and the model is
-// audio-generation capable.
+// Seed from the family registry only when no catalog is stored (never clobber user edits) and the model
+// is audio-generation capable.
 export function seedVoiceCatalog(modelId: string): void {
   const db = getDb();
   const row = db
@@ -118,7 +95,7 @@ export function seedVoiceCatalog(modelId: string): void {
   if (!caps.includes('audio_generation')) return;
 
   const seed = defaultVoiceCatalogFor(row.api_model_id);
-  if (!seed) return; // no family seed for this model — leave NULL
+  if (!seed) return; // no family seed for this model, leave NULL
   setModelVoiceCatalog(row.id, seed);
   logger.info('Seeded voice catalog', { modelId: row.id, apiModelId: row.api_model_id });
 }

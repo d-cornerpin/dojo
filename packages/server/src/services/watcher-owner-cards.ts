@@ -1,11 +1,10 @@
 import { getDb } from '../db/connection.js';
 import { ownerConditionCleared, tellOwner } from '../healer/owner-notices.js';
 
-// THE OWNER'S CARD FOR A FAILING WATCHER, AND ITS RECORD. One config row per watcher holds a map by ACCOUNT (Teams has one
-// account, keyed by its own name): the truth about "already alerted", so after a restart a still-failing account is not
-// told again and an account that recovered meanwhile clears on its first good poll. Its card (`watcher:<name>:<account>`)
-// stands while the entry does and its subject (the watched account) still exists and is still watched; the account
-// tables' writers call `reconcileWatcherCards` after every change.
+// The owner's card for a failing watcher, and its record: one config row per watcher maps account to what was told,
+// so a restart does not re-tell a still-failing account and a recovered one clears on its first good poll. The card
+// `watcher:<name>:<account>` stands while the entry and its watched subject do; account writers call
+// `reconcileWatcherCards`.
 
 type Name = 'gmail' | 'outlook' | 'teams';
 type Entry = { at: number; words: string };
@@ -35,7 +34,6 @@ export function watcherFailingOnRecord(name: Name, account: string = name): bool
   return readRecord(name)[account] !== undefined;
 }
 
-/** The owner is being told this account's watcher is failing. */
 export function recordFailureTold(name: Name, account: string, words: string): void {
   writeRecord(name, { ...readRecord(name), [account]: { at: Date.now(), words } });
   tellOwner(`watcher:${name}:${account}`, words);
@@ -52,18 +50,16 @@ export function clearFailure(name: Name, account: string): Entry | null {
   return told;
 }
 
-/** THE "is this account's mail watched" rule, shared: the Gmail and Outlook watchers poll an
- *  account when it is connected AND this holds (their `isMonitored`), and a watcher card's
- *  subject stands while this holds (round 7, re-review P7). Connected is left out here on purpose:
- *  a benched account's failure is still live, and reconnecting resumes polls that clear it. A
- *  service missing from `services` defaults on, as both workspaces' service defaults do. */
+/** The shared "is this account's mail watched" rule: the Gmail and Outlook watchers poll a connected account
+ *  when it holds, and a card's subject stands while it holds. Connected is left out on purpose: a benched
+ *  account's failure is still live and reconnecting resumes polls that clear it. A service missing from
+ *  `services` defaults on. */
 export function watchedForMail(
   v: { enabled: boolean; watchEmail: boolean; services: Partial<Record<string, boolean>> }, service: 'gmail' | 'outlook',
 ): boolean {
   return v.enabled && v.watchEmail && v.services[service] !== false;
 }
 
-/** Is the watched subject still there and still watched? */
 function subjectStands(name: Name, account: string): boolean {
   const db = getDb();
   if (name !== 'teams') {

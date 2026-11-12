@@ -1,9 +1,5 @@
-// ════════════════════════════════════════
-// services/video-gen-model.ts — video-generation model resolver.
-//
-// Platform-wide config key points at one video-capable model that the
-// `video_create` tool dispatches to. Mirrors image-gen-model.ts.
-// ════════════════════════════════════════
+// Video-generation model resolver: the platform config key names the one video-capable model
+// that the `video_create` tool dispatches to. Mirrors image-gen-model.ts.
 
 import { makeCapabilityModelResolver, type CapabilityModelChoice } from './capability-model.js';
 

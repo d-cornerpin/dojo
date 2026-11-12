@@ -1,7 +1,4 @@
-// ════════════════════════════════════════
-// Cloudflare Tunnel Manager
-// Quick tunnels (trycloudflare.com) and named tunnels (custom domain)
-// ════════════════════════════════════════
+// Cloudflare tunnel manager: quick tunnels (trycloudflare.com) and named tunnels (custom domain).
 
 import { sendAlert } from './imessage-bridge.js';
 import { spawn, execSync, type ChildProcess } from 'node:child_process';
@@ -23,60 +20,36 @@ let tunnelStatus: 'inactive' | 'starting' | 'active' | 'error' = 'inactive';
 let tunnelError: string | null = null;
 let tunnelStartedAt: number | null = null;
 let restartAttempted = false;
-// Bumped by every stopTunnel; a delayed one-restart armed before a stop compares
-// against it so a tunnel stopped (or replaced) inside the restart window is not
-// started again by a timer that no longer belongs to anyone.
+// Bumped by every stopTunnel; a delayed restart compares against it so a stopped tunnel is not restarted.
 let intentionalStopGeneration = 0;
 
-// ── Cross-boot state files ──
-//
-// The in-process `tunnelProcess` guard above only knows about a cloudflared
-// this process spawned. When tsx-watch SIGKILLs the parent (dev reloads) or
-// the uncaughtException handler exits without stopTunnel, cloudflared is
-// orphaned and the next boot has no idea it's still up. These two files carry
-// the minimum state across a process boundary so autoStartTunnel can (1)
-// reclaim an orphaned quick tunnel and (2) back off after a Cloudflare throttle
-// instead of stacking another request onto the account-less pool. Both live
-// under ~/.dojo alongside the rest of the platform state.
+// The in-process `tunnelProcess` only knows a cloudflared this process spawned. These two files under
+// ~/.dojo carry state across boots so autoStartTunnel can reclaim an orphaned quick tunnel and back off
+// after a Cloudflare throttle.
 const DOJO_DIR = path.join(homeDir(), '.dojo');
 const TUNNEL_PIDFILE = path.join(DOJO_DIR, 'tunnel.pid');
 const TUNNEL_BACKOFF_FILE = path.join(DOJO_DIR, 'tunnel-backoff.json');
 
-// Backoff window: 2^consecutiveFails minutes, capped at 30 minutes.
-// ── t114 (CENSUS U15) — "NO URL YET" IS ABSENCE OF EVIDENCE, NOT EVIDENCE OF FAILURE ──
-//
-// THE DEFECT: both start paths armed a flat deadline from spawn (30s quick, 60s named) and on
-// expiry called `stopTunnel()` — SIGTERM then SIGKILL — on a child that may have been
-// mid-handshake. cloudflared logs its progress continuously to stderr (registering the tunnel,
-// picking an edge, retrying a region), so proof it was alive was arriving the whole time and each
-// path's own `handleOutput` was already reading it. The clock never asked.
-//
-// The deadline now re-arms on the child's OUTPUT: a cloudflared that is still talking keeps its
-// window, one that has genuinely gone silent is still stopped, and a non-re-arming ceiling stops
-// a chatty child holding `starting` for ever. `TUNNEL_START_QUIET_MS` carries the old 30s with
-// its meaning corrected — "silent for this long" rather than "alive for this long", which is the
-// one thing that number can honestly measure about a process that is still logging.
+// Start deadline: cloudflared output re-arms it, so only a child silent for QUIET_MS is stopped, and
+// CEILING_MS stops a chatty child from holding `starting` forever.
 const TUNNEL_START_QUIET_MS = 30_000;
 const TUNNEL_START_CEILING_MS = 5 * 60_000;
 
-/** Set by each start path; `noteTunnelOutput` is what the child's streams bump. */
+/** Set by each start path; the child's output streams bump it via `noteTunnelOutput`. */
 let startWatch: { lastOutputAt: number; startedAt: number; timer: ReturnType<typeof setTimeout> | null } | null = null;
 
-/** Called for every chunk either stream produces — the measured fact of liveness. */
+/** Called for every chunk either stream produces, as evidence of liveness. */
 function noteTunnelOutput(): void {
   if (startWatch) startWatch.lastOutputAt = Date.now();
 }
 
-/** Stop watching: the tunnel reached a verdict, so the start deadline is no longer anyone's. */
+/** Stop watching: the tunnel reached a verdict. */
 function clearStartWatch(): void {
   if (startWatch?.timer) clearTimeout(startWatch.timer);
   startWatch = null;
 }
 
-/**
- * Arm the start deadline for whichever path is booting. `label` names the path in the error, so a
- * user sees which kind of tunnel gave up and why — silence or the ceiling.
- */
+/** Arm the start deadline for the booting path; `label` names that path in the error message. */
 function armTunnelStartDeadline(label: string): void {
   clearStartWatch();
   const watch: NonNullable<typeof startWatch> = { lastOutputAt: Date.now(), startedAt: Date.now(), timer: null };
@@ -103,6 +76,7 @@ function armTunnelStartDeadline(label: string): void {
   watch.timer.unref?.();
 }
 
+// Backoff window: 2^consecutiveFails minutes, capped at 30 minutes.
 const BACKOFF_BASE_MS = 60_000;
 const BACKOFF_MAX_MS = 30 * 60_000;
 
@@ -145,15 +119,8 @@ function setConfig(key: string, value: string): void {
   `).run(key, value, value);
 }
 
-// ── Output buffering ──
-//
-// cloudflared writes its useful diagnostics (auth failures, port conflicts,
-// network errors, certificate issues) to stderr. Pre-2026-04-30 we threw
-// all of that away and only kept the trycloudflare URL match, so when the
-// process exited with a non-zero code the dashboard surfaced "cloudflared
-// exited with code N" with no further context. Now we keep a rolling
-// 4KB tail and include it in the error message.
-
+// cloudflared writes its diagnostics (auth, port, network, certificate errors) to stderr; a rolling 4KB
+// tail is kept and included in the exit error.
 const TUNNEL_OUTPUT_TAIL_BYTES = 4000;
 
 function createOutputBuffer() {
@@ -176,58 +143,39 @@ function createOutputBuffer() {
 function formatTunnelExitError(code: number, tail: string): string {
   const base = `cloudflared exited with code ${code}`;
   if (!tail) return base;
-  // First try to recognize specific failure shapes and surface a
-  // human-readable one-liner instead of a wall of cloudflared log
-  // spew. Falls through to the raw-tail fallback if no pattern hits.
+  // Recognize specific failure shapes first and surface a one-liner; otherwise fall back to the raw tail.
   const friendly = recognizeKnownTunnelFailure(tail);
   if (friendly) return friendly;
-  // Pull the most informative line(s) — typically the last error/warning
-  // entries. We pick the last 6 non-empty lines, which is usually enough
-  // context to read what went wrong without flooding the dashboard.
+  // The last 6 non-empty lines are usually enough context without flooding the dashboard.
   const lines = tail.split('\n').map(l => l.trim()).filter(Boolean);
   const recent = lines.slice(-6).join('\n');
   return `${base}\n${recent}`;
 }
 
 /**
- * Map common cloudflared failure modes to short user-readable strings.
- * Returns null when no pattern matches so the raw tail fallback runs.
- *
- * Pattern recognition is intentionally narrow: each entry maps a
- * specific log signature to ONE message. If cloudflared rewords its
- * error in a future release, the pattern misses and we fall back to
- * showing the raw tail — no silent mis-translation.
+ * Maps common cloudflared failure modes to short user-readable strings, or null when none matches.
+ * Patterns are narrow on purpose: a reworded cloudflared error falls back to the raw tail, never a
+ * wrong translation.
  */
 function recognizeKnownTunnelFailure(tail: string): string | null {
-  // Quick tunnel rate limit. cloudflared logs the trycloudflare API failure
-  // as a "failed to request quick Tunnel" line and the throttled HTTP response
-  // carries the "429 Too Many Requests" status. Earlier this gated on the
-  // literal token "QuickTunnel", which cloudflared never emits (it prints
-  // "quick Tunnel", lower-case with a space), so the recognizer silently
-  // missed and the raw stderr wall leaked to the dashboard. Match the 429
-  // status text directly instead. Cloudflare's account-less tunnel pool
-  // throttles aggressively when restarted frequently or shared from one IP.
+  // Quick tunnel rate limit: match the "429 Too Many Requests" status text; cloudflared prints "quick Tunnel"
+  // with a space, so a "QuickTunnel" token never matches.
   if (/429\s*Too\s*Many\s*Requests/i.test(tail)) {
     return 'Quick tunnel rate-limited (429 Too Many Requests). Cloudflare throttles account-less trycloudflare.com tunnels when restarted often. Wait a few minutes and try again, or set up a named tunnel in Settings → Dojo → Remote Access for a permanent URL.';
   }
-  // Generic 1015 (Cloudflare global rate limit). The trycloudflare challenge
-  // page carries "error code: 1015" in its HTML body, so this catches the
-  // throttle even when the 429 status line is not in the captured tail.
+  // Cloudflare global rate limit: the challenge page carries "error code: 1015" even when no 429 line is captured.
   if (/error code:\s*1015/i.test(tail)) {
     return 'Cloudflare rate-limited this connection (error 1015). Wait a few minutes and try again. If it keeps happening, switch to a named tunnel.';
   }
-  // No cloudflared binary on PATH at exec time (rare; install checker
-  // usually catches this first, but the binary can disappear mid-session
-  // if Homebrew removes it).
+  // No cloudflared binary at exec time (it can disappear mid-session if Homebrew removes it).
   if (/cloudflared.*not found|command not found/i.test(tail)) {
     return 'cloudflared binary is missing. Install it from Settings → Dojo → Remote Access (Install cloudflared button) and try again.';
   }
-  // Connector failed to register — usually auth/cert problem on a named
-  // tunnel. Quick tunnels never hit this path.
+  // Connector failed to register, usually an auth or cert problem on a named tunnel.
   if (/Connector registration error|Failed to fetch tunnel/i.test(tail)) {
     return 'Could not register the tunnel connector with Cloudflare. Your tunnel credentials or cert may have expired — re-run "cloudflared tunnel login" and recreate the tunnel.';
   }
-  // Port already in use (cloudflared can't bind its metrics endpoint).
+  // cloudflared cannot bind its metrics port.
   if (/address already in use|bind: address already in use/i.test(tail)) {
     return 'A cloudflared process is already running on this machine. Stop the other one (or kill it from Activity Monitor) and try again.';
   }
@@ -235,22 +183,15 @@ function recognizeKnownTunnelFailure(tail: string): string | null {
 }
 
 /**
- * True when the exit output is a recognized Cloudflare throttle of the
- * account-less quick-tunnel pool (429 / error 1015). The cross-reload backoff
- * keys off this specific subset: a throttle means "stop asking for a while",
- * whereas other recognized failures (port in use, missing binary, connector
- * registration) are not helped by waiting.
+ * True when the exit output is a Cloudflare throttle of the account-less quick-tunnel pool. Only a
+ * throttle drives the cross-boot backoff; other recognized failures are not helped by waiting.
  */
 function isQuickTunnelThrottle(tail: string): boolean {
   return /429\s*Too\s*Many\s*Requests/i.test(tail) || /error code:\s*1015/i.test(tail);
 }
 
-// ── Pidfile reclaim (cross-boot) ──
-//
-// Quick tunnels can't be adopted (the trycloudflare URL only appears once in
-// the spawning process's stderr and can't be re-derived), so the correct shape
-// is reclaim-and-respawn: kill a stale cloudflared left behind by a previous
-// boot, then start fresh.
+// A quick tunnel's URL appears once in the spawning process's stderr and cannot be re-derived, so a stale
+// cloudflared from a previous boot is killed and a fresh one started.
 
 function writeTunnelPidfile(pid: number, port: number): void {
   try {
@@ -280,10 +221,8 @@ function readTunnelPidfile(): TunnelPidRecord | null {
 }
 
 /**
- * If the pidfile names a live cloudflared from a previous boot, terminate it.
- * We only kill a pid we can positively confirm is cloudflared (signal 0 for
- * liveness, then `ps -o comm=` for identity) so a recycled pid belonging to an
- * unrelated process is never touched.
+ * If the pidfile names a live cloudflared from a previous boot, terminate it. Only a pid confirmed to be
+ * cloudflared (signal 0, then `ps -o comm=`) is killed, so a recycled pid is never touched.
  */
 function reclaimStaleTunnel(): void {
   const record = readTunnelPidfile();
@@ -382,10 +321,8 @@ function broadcastStatus(): void {
 }
 
 /**
- * v2.5.6 — read the user-entered named-tunnel URL (e.g. https://primary.theagentdojo.com).
- * Quick tunnels parse their URL from cloudflared stderr; named tunnels can't
- * (the URL lives in Cloudflare's dashboard, not in cloudflared's logs), so
- * we ask the user to type it in once and persist it here.
+ * The user-entered named-tunnel URL. A named tunnel's URL lives in Cloudflare's dashboard, not in
+ * cloudflared's logs, so the user types it in once and it is persisted here.
  */
 export function getNamedTunnelUrl(): string | null {
   try {
@@ -401,19 +338,14 @@ export function setNamedTunnelUrl(url: string | null): void {
     try { getDb().prepare("DELETE FROM config WHERE key = 'tunnel_named_url'").run(); } catch { /* ignore */ }
     return;
   }
-  // v2.7.25 — strip trailing slash before persisting so downstream URL
-  // concatenations (download links, share links, etc.) don't end up
-  // with "https://host//path". Users routinely copy-paste URLs with a
-  // trailing slash from their browser address bar; normalize on save.
+  // Strip trailing slashes so concatenated links do not end up as "https://host//path".
   const normalized = url.trim().replace(/\/+$/, '');
   setConfig('tunnel_named_url', normalized);
 }
 
 export function getTunnelStatus(): TunnelStatus {
   const config = getConfig();
-  // For named tunnels, prefer the user-saved public URL over the (always
-  // null) parsed URL — cloudflared running a named tunnel doesn't emit the
-  // hostname anywhere we can scrape it from.
+  // A named tunnel never emits its hostname, so prefer the user-saved public URL.
   const url = config.mode === 'named'
     ? (tunnelUrl ?? getNamedTunnelUrl())
     : tunnelUrl;
@@ -464,21 +396,15 @@ function startQuickTunnel(port: number): { ok: boolean; error?: string } {
     });
 
     tunnelProcess = proc;
-    // Record the pid so a hard-killed boot (tsx SIGKILL / uncaughtException
-    // exit) can be reclaimed by the next autoStartTunnel instead of orphaning
-    // cloudflared and stacking another quick tunnel onto the throttled pool.
+    // Record the pid so the next autoStartTunnel can reclaim a cloudflared orphaned by a hard-killed boot.
     if (proc.pid) writeTunnelPidfile(proc.pid, port);
 
-    // Buffer cloudflared's recent output. When it exits non-zero we surface
-    // the tail to the dashboard — pre-2026-04-30 the only signal was
-    // "cloudflared exited with code 1" with no clue WHY (auth failure,
-    // bad token, port conflict, network, …) which made tunnel breakage
-    // very hard to diagnose.
+    // Rolling tail of cloudflared output, surfaced to the dashboard when it exits non-zero.
     const outputBuffer = createOutputBuffer();
 
-    // Parse stdout/stderr for the URL. cloudflared prints to stderr.
+    // Parse stdout/stderr for the URL; cloudflared prints to stderr.
     const handleOutput = (data: Buffer) => {
-      noteTunnelOutput();   // t114 (U15): the start deadline reads this
+      noteTunnelOutput();
       const text = data.toString();
       outputBuffer.append(text);
       const urlMatch = text.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/);
@@ -486,15 +412,13 @@ function startQuickTunnel(port: number): { ok: boolean; error?: string } {
         tunnelUrl = urlMatch[0];
         tunnelStatus = 'active';
         tunnelStartedAt = Date.now();
-        // A healthy URL acquisition means Cloudflare is no longer throttling;
-        // reset the cross-reload backoff counter.
+        // A healthy URL means Cloudflare is no longer throttling; reset the cross-boot backoff counter.
         clearQuickTunnelBackoff();
         logger.info('Quick tunnel active', { url: tunnelUrl });
         broadcastStatus();
 
-        // Re-review 2 S8 (owner): the new remote dashboard address IS one of the Dojo's texts. An owner away from
-        // home is on the old link, which is now dead, so the phone is the only place he can learn the new one.
-        // 'notice': it reaches the phone without the "[CRITICAL]" prefix; a status line, not a card.
+        // The new remote dashboard address is texted to the owner, whose old link is now dead.
+        // 'notice' reaches the phone without the "[CRITICAL]" prefix.
         try {
           void sendAlert(`The dashboard is online at ${tunnelUrl}`, 'notice', { kind: 'remote-address' });
         } catch { /* iMessage bridge may not be running yet */ }
@@ -506,8 +430,7 @@ function startQuickTunnel(port: number): { ok: boolean; error?: string } {
 
     proc.on('error', (err) => {
       if (tunnelProcess !== proc) {
-        // A child that was stopped-and-replaced is no longer ours; its error must
-        // not overwrite the tunnel that replaced it.
+        // A stopped-and-replaced child must not overwrite the tunnel that replaced it.
         logger.warn('Ignoring error from stale tunnel process', { error: err.message });
         return;
       }
@@ -520,29 +443,23 @@ function startQuickTunnel(port: number): { ok: boolean; error?: string } {
 
     proc.on('exit', (code) => {
       if (tunnelProcess !== proc) {
-        // A child that was stopped-and-replaced is no longer ours; its exit must
-        // not overwrite the new tunnel's status, pidfile or handle, nor arm a
-        // restart for a tunnel that is gone.
+        // A stopped-and-replaced child must not overwrite the new tunnel's state or arm a restart.
         logger.warn('Ignoring exit from stale tunnel process', { pid: proc.pid, code });
         return;
       }
-      clearStartWatch();   // t114 (U15): an exited child has no start deadline to keep
+      clearStartWatch();
       const wasActive = tunnelStatus === 'active';
       const tail = outputBuffer.tail();
       tunnelStatus = 'inactive';
       tunnelUrl = null;
       tunnelProcess = null;
       tunnelStartedAt = null;
-      // Our process is gone; drop its reclaim record so a future boot doesn't
-      // chase a dead (or recycled) pid.
+      // Drop the reclaim record so a future boot does not chase a dead (or recycled) pid.
       removeTunnelPidfile();
 
       if (code !== 0 && code !== null && isQuickTunnelThrottle(tail)) {
-        // Recognized Cloudflare throttle (429 / 1015). The cross-reload backoff
-        // owns this case: do NOT auto-restart (that just stacks another request
-        // onto the throttled account-less pool). Record the failure, surface a
-        // single-line explanation, and downgrade to WARN. A throttle is
-        // non-fatal dev noise, not a broken tunnel the user must act on now.
+        // A recognized throttle (429 / 1015) is owned by the cross-boot backoff: no auto-restart, which
+        // would stack another request onto the throttled pool. Logged at WARN, not a fault to act on now.
         recordQuickTunnelThrottle();
         tunnelStatus = 'error';
         tunnelError = recognizeKnownTunnelFailure(tail) ?? formatTunnelExitError(code, tail);
@@ -557,9 +474,7 @@ function startQuickTunnel(port: number): { ok: boolean; error?: string } {
           startQuickTunnel(port);
         }, 2000);
       } else if (code !== 0 && code !== null) {
-        // Recognized (non-throttle) failures get a one-line explanation at
-        // WARN. Unrecognized failures keep ERROR + the full stderr tail so the
-        // user still notices real tunnel breakage.
+        // Recognized failures get a one-line explanation at WARN; unrecognized ones keep ERROR and the tail.
         const friendly = recognizeKnownTunnelFailure(tail);
         tunnelStatus = 'error';
         tunnelError = friendly ?? formatTunnelExitError(code, tail);
@@ -584,7 +499,6 @@ function startQuickTunnel(port: number): { ok: boolean; error?: string } {
 }
 
 function startNamedTunnel(): { ok: boolean; error?: string } {
-  // Get token from secrets
   const token = getProviderCredential('cloudflare_tunnel');
   if (!token) {
     tunnelStatus = 'error';
@@ -606,10 +520,10 @@ function startNamedTunnel(): { ok: boolean; error?: string } {
     const outputBuffer = createOutputBuffer();
 
     const handleOutput = (data: Buffer) => {
-      noteTunnelOutput();   // t114 (U15): the start deadline reads this
+      noteTunnelOutput();
       const text = data.toString();
       outputBuffer.append(text);
-      // Named tunnels log "Connection registered" when active
+      // Named tunnels log "Connection registered" when active.
       if (text.includes('Registered tunnel connection') || (text.includes('Connection') && text.includes('registered'))) {
         if (tunnelStatus !== 'active') {
           tunnelStatus = 'active';
@@ -676,17 +590,14 @@ function startNamedTunnel(): { ok: boolean; error?: string } {
 }
 
 export function stopTunnel(): void {
-  // The stop invalidates any delayed restart armed before it, even when there is
-  // no live child to SIGTERM (a crash may already have nulled the handle).
+  // Invalidates any delayed restart, even when a crash already nulled the child handle.
   intentionalStopGeneration++;
   if (tunnelProcess) {
     const proc = tunnelProcess;
     try {
       proc.kill('SIGTERM');
-      // Force kill after 5s if still running — on THIS child, captured by value,
-      // so a tunnel the owner restarts in its place is never SIGKILLed by the
-      // stale timer. The module handle is cleared at once below, which is why
-      // the timer must not re-read it.
+      // Force kill after 5s on THIS child, captured by value: the module handle is cleared below and a
+      // replacement tunnel must not be SIGKILLed by this timer.
       const t = setTimeout(() => {
         try { proc.kill('SIGKILL'); } catch { /* ignore */ }
       }, 5000);
@@ -705,13 +616,8 @@ export function stopTunnel(): void {
 }
 
 /**
- * Synchronous best-effort kill for the crash path. The uncaughtException
- * handler exits the process within ~100ms without awaiting, so it can't use
- * the async dynamic-import shutdown path or stopTunnel's setTimeout SIGKILL
- * escalation. Sending an immediate SIGKILL here keeps cloudflared from
- * outliving the crash and getting reclaimed (or stacking another throttled
- * quick tunnel) on the next boot. The pidfile reclaim in autoStartTunnel is
- * still the primary safety net; this must never throw.
+ * Synchronous best-effort kill for the crash path: the uncaughtException handler exits within ~100ms
+ * without awaiting, so stopTunnel's timed SIGKILL escalation cannot run. Must never throw.
  */
 export function killTunnelSync(): void {
   if (tunnelProcess) {
@@ -742,18 +648,11 @@ export function autoStartTunnel(port?: number): void {
   const config = getConfig();
   if (!config.enabled || !isCloudflaredInstalled()) return;
 
-  // Reclaim a cloudflared orphaned by a hard-killed previous boot (tsx SIGKILL
-  // on reload, or an uncaughtException exit that skipped stopTunnel). The
-  // in-process tunnelProcess guard can't see a process from a prior process,
-  // so without this each reload stacks another quick tunnel onto the pool.
+  // Reclaim a cloudflared orphaned by a hard-killed previous boot; the in-process guard cannot see it.
   reclaimStaleTunnel();
 
-  // Cross-reload backoff: after a recognized Cloudflare throttle (429 / 1015)
-  // on the account-less quick pool, skip auto-start for an exponential window
-  // so rapid dev reloads stop hammering trycloudflare.com. Auto-start is the
-  // ONLY lane that backs off; a manual start from the dashboard/API/agent-tool
-  // (startTunnel / enableTunnel) bypasses this because the user asked for it
-  // explicitly. Named tunnels don't use the throttled pool, so they never gate.
+  // After a Cloudflare throttle on the quick pool, auto-start skips an exponential window. Only auto-start
+  // backs off; a manual start bypasses it. Named tunnels do not use the throttled pool.
   if (config.mode === 'quick') {
     const remainingMs = quickTunnelBackoffRemainingMs();
     if (remainingMs > 0) {

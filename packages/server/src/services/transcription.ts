@@ -1,25 +1,8 @@
-// ════════════════════════════════════════
-// services/transcription.ts — audio-to-text dispatch.
-//
-// Two paths:
-//   1. Local engines (local:whisper, local:moonshine) — reuse the
-//      existing voice/stt-service.ts engines. Free. Charged $0 in the
-//      ledger.
-//   2. Cloud — POST /v1/audio/transcriptions (OpenAI-compatible) with
-//      a multipart body. Most providers (OpenAI, Groq, OpenRouter)
-//      return `duration` in their JSON response so we can record
-//      $/minute cost accurately without parsing the audio ourselves.
-//
-// Audio source resolution lives upstream of this module: the tool
-// dispatcher in agent/tools.ts loads bytes from an attachment id or
-// fetches an https URL with a 50 MB cap and hands the buffer here.
-// ════════════════════════════════════════
+// Audio-to-text dispatch. Local engines (local:whisper, local:moonshine) reuse voice/stt-service.ts and
+// are charged $0; cloud posts a multipart body to /v1/audio/transcriptions (OpenAI-compatible), whose
+// JSON `duration` gives per-minute cost. Audio bytes are resolved upstream by the tool dispatcher.
 
 import path from 'node:path';
-// PHASE-5 T8 Step 3 (RULING P5-R15 ADDENDUM 4(1)) — the transcode mechanism
-// moved into the carrying layer WHOLE. Its fs reach was entirely a temp PAIR in
-// `os.tmpdir()` under platform-generated names, which no declaration can name;
-// what the tool declares is the PROGRAM, carried under branch (B).
 import { decodeToWav16kMono, extractAudioFromVideo } from '../agent/effects/transcode.js';
 import { createLogger } from '../logger.js';
 import { getDb } from '../db/connection.js';
@@ -31,23 +14,15 @@ import { DEFAULT_WHISPER } from '../voice/model-manager.js';
 import { phasedTransferDeadline } from './transfer-deadline.js';
 import { openAiCompatibleUrl } from './openai-compatible-url.js';
 
-// Audio length (in seconds, derived from 16 kHz mono PCM WAV size) beyond
-// which we transparently fall back from Moonshine to Whisper for local
-// transcription. Moonshine is trained for short-utterance inference and
-// falls into a repeat-loop ("I'm going to be a good person." × 80) on
-// long-form audio; whisper.cpp does internal 30 s chunking and handles
-// long content cleanly. Whisper-base is only marginally slower for short
-// clips, so we only swap when the audio genuinely warrants it.
+// Local clips longer than this (seconds of 16 kHz mono PCM) fall back from Moonshine, which loops on
+// long-form audio, to Whisper, which chunks internally.
 const MOONSHINE_MAX_SECONDS = 30;
 
 const logger = createLogger('transcription');
 
-// 1 GB per fetched URL (matches the chat-upload cap). Single-user local
-// install — no abuse vector — only catches obviously-wrong inputs.
+// 1 GB per fetched URL (matches the chat-upload cap).
 const FETCH_MAX_BYTES = 1024 * 1024 * 1024;
-// ── t114 (census U10) — the body's own allowance, beside the cap it has to agree with ──
-// `FETCH_TIMEOUT_MS` keeps its honest job (time to first response). These two bound the TRANSFER,
-// which is what the 1 GiB cap above implies but the old flat clock contradicted.
+// Body allowance for the transfer; FETCH_TIMEOUT_MS is the time to first response only.
 const FETCH_BODY_BASE_TIMEOUT_MS = 60_000;
 const FETCH_BODY_CEILING_MS = 30 * 60_000;
 const FETCH_TIMEOUT_MS = 30_000;
@@ -57,17 +32,14 @@ export interface TranscribeAudioRequest {
   mimeType: string;
   filename: string;
   language?: string;
-  // A-5: whose stop cuts this call. `transcribe_audio` runs SYNCHRONOUSLY inside the tool
-  // executor, so this is the media dial most likely to be in flight when the button is pressed.
+  // Whose stop cuts this call; `transcribe_audio` runs synchronously inside the tool executor.
   agentId: string;
 }
 
 export interface TranscribeAudioSuccess {
   ok: true;
   text: string;
-  // Best-effort duration of the input audio in seconds. Used by the cost
-  // recorder for per-minute pricing. May be null for local engines
-  // (charged $0 anyway) or when the cloud provider didn't return it.
+  // Best-effort input length in seconds for per-minute pricing; null when the provider did not return it.
   durationSeconds: number | null;
   latencyMs: number;
   // 'local' for Whisper / Moonshine; otherwise the provider id.
@@ -79,27 +51,18 @@ export interface TranscribeAudioSuccess {
 export interface TranscribeAudioError {
   ok: false;
   error: string;
-  // A-5: `STOPPED` is the user's own button, not a provider failure. See `image-generation.ts`.
+  // STOPPED is the user's own stop button, not a provider failure.
   code: 'NO_MODEL_CONFIGURED' | 'CLOUD_NO_CREDENTIAL' | 'HTTP_ERROR' | 'LOCAL_ENGINE_ERROR' | 'STOPPED' | 'UNKNOWN';
 }
 
 export type TranscribeAudioResult = TranscribeAudioSuccess | TranscribeAudioError;
 
-// Resolve an attachment id to the absolute file path on disk. MOVED VERBATIM to
-// `services/attachment-resolve.ts` (PHASE-5 T8 Step 3, RULING P5-R15 ADDENDUM
-// mechanic 5) so the executor's gate loop can resolve an id BEFORE it mints the
-// call's capability without importing this module's STT engines and subprocess
-// spawn. Re-exported here so no consumer moved: ONE resolution point, shared by
-// the gate loop and the handler, is what keeps their two answers the same fact.
+// Re-exported from attachment-resolve.ts so the executor's gate loop and this handler share one resolution point.
 export { resolveAttachmentPath } from './attachment-resolve.js';
 
-// Fetch an https URL into a buffer with a hard byte cap and timeout.
-// Non-https URLs and file:// are rejected. Used when the agent passes
-// `url` instead of `attachment_id`.
+// Fetch an https URL into a buffer with a hard byte cap and timeout; non-https URLs are rejected.
 export async function fetchAudioUrl(agentId: string, url: string): Promise<{ buffer: Buffer; mimeType: string; filename: string } | { error: string; stopped?: true }> {
-  // A-5: the source download is an agent's dial like any other — it can be a gigabyte.
-  // A-5 FIX ROUND: `turn` — `transcribe_audio` is a synchronous tool call and the executor is
-  // holding the turn open on it, so the turn ending genuinely is a reason to cut it.
+  // The 'turn' scope: the executor holds the turn open on this synchronous call, so the turn ending cuts it.
   const slot = openAgentCall(agentId, 'turn');
   try {
     if (slot.refused) return { error: STOPPED_BY_USER, stopped: true };
@@ -115,18 +78,8 @@ async function dialAudioUrl(slot: AgentCallSlot, url: string): Promise<{ buffer:
     if (parsed.protocol !== 'https:') {
       return { error: `Only https URLs are allowed (got ${parsed.protocol}).` };
     }
-    // ── t114 (census U10) — THE FETCH'S TWO PHASES GET TWO BOUNDS ──
-    //
-    // THE DEFECT: one flat `FETCH_TIMEOUT_MS` (30s) covering the whole operation, in a file that
-    // permits `FETCH_MAX_BYTES = 1 GiB`. A 200 MB podcast cannot be downloaded in 30 seconds on
-    // any ordinary line, so the cap and the clock disagreed by orders of magnitude — and the
-    // clock won, silently, on exactly the recordings a user most wants transcribed. The byte cap
-    // IS the measured fact and `content-length` is read eight lines below the clock, so the
-    // information was already here.
-    //
-    // Now: the server must ANSWER inside the headers window, and the body earns a deadline from
-    // the size it declares (capped). The over-cap refusal below is unchanged and still fires
-    // first, so a 1 GiB file is still refused rather than patiently downloaded.
+    // The server must answer inside the headers window; the body then earns a deadline from its declared
+    // size. The over-cap refusal below fires first, so a file past the cap is refused, not downloaded.
     const deadline = phasedTransferDeadline({
       headersMs: FETCH_TIMEOUT_MS,
       bodyBaseMs: FETCH_BODY_BASE_TIMEOUT_MS,
@@ -174,7 +127,6 @@ async function dialAudioUrl(slot: AgentCallSlot, url: string): Promise<{ buffer:
       return { error: `Audio file is too large after download (${(ab.byteLength / 1024 / 1024).toFixed(1)} MB).` };
     }
     const mimeType = response.headers.get('content-type')?.split(';')[0]?.trim() || 'audio/mpeg';
-    // Derive a filename from the URL path; fall back to a uuid-ish stem.
     const urlFilename = parsed.pathname.split('/').pop() ?? '';
     const filename = urlFilename || `download-${Date.now()}.mp3`;
     return { buffer: Buffer.from(ab), mimeType, filename };
@@ -185,22 +137,14 @@ async function dialAudioUrl(slot: AgentCallSlot, url: string): Promise<{ buffer:
   }
 }
 
-// Translate dojo's local pseudo-engine names into the modelKey the
-// stt-service understands. Moonshine ships as 'moonshine-base'. The
-// stt-service's parseSttModelKey treats the Whisper key as a raw
-// WhisperSize (e.g. 'base.en', 'large-v3-turbo') — passing the literal
-// string 'whisper-base' falls through to the unknown-value branch and
-// silently routes back to Moonshine. Use DEFAULT_WHISPER so the swap
-// actually lands on Whisper.
+// Maps the local engine name to the stt-service modelKey. The Whisper key must be a raw WhisperSize
+// (DEFAULT_WHISPER); an unknown string silently routes back to Moonshine.
 function localEngineToSttModelKey(engine: LocalTranscriptionEngine): string {
   return engine === 'whisper' ? DEFAULT_WHISPER : 'moonshine-base';
 }
 
-// Detect whether a buffer is already a WAV in the exact shape the local engines read:
-// 16 kHz, mono, 16-bit PCM. Saves a tmp ffmpeg round-trip for that common case. Any other
-// WAV (44.1/48 kHz, stereo, 24-bit, float, damaged) must be converted: the engines would
-// either refuse it or read its samples at the wrong rate. The format chunk is found by
-// walking the RIFF chunks, since other chunks may sit before it.
+// True for a WAV already in the engines' format (16 kHz, mono, 16-bit PCM), skipping an ffmpeg pass.
+// Any other WAV must be converted; the fmt chunk is found by walking the RIFF chunks.
 function isPcmWav(bytes: Buffer): boolean {
   if (bytes.length < 12
     || bytes.subarray(0, 4).toString('ascii') !== 'RIFF'
@@ -222,13 +166,7 @@ function isPcmWav(bytes: Buffer): boolean {
   return false;
 }
 
-// Detect a video container by mime/extension. We strip the video track
-// before transcription because cloud transcription providers (OpenAI,
-// Groq, OpenRouter passthroughs) reject most video MIME types — they
-// only formally accept a subset of audio formats. Local engines could
-// in principle read video directly via ffmpeg, but for consistency we
-// run the same demux for both paths so the local/cloud branches see
-// identical inputs.
+// Video containers have their video track stripped first: cloud providers reject most video MIME types.
 const VIDEO_EXTENSIONS = new Set(['.mp4', '.mov', '.mkv', '.avi', '.webm', '.3gp', '.m4v', '.wmv', '.flv']);
 function isVideoInput(mimeType: string, filename: string): boolean {
   if (mimeType.toLowerCase().startsWith('video/')) return true;
@@ -242,25 +180,17 @@ async function transcribeLocal(
 ): Promise<TranscribeAudioResult> {
   const start = Date.now();
   try {
-    // Local engines expect 16 kHz mono PCM WAV. The phone-mode pipeline
-    // bypasses this because Twilio already streams raw PCM, but
-    // user-uploaded clips can be anything (mp3, m4a, opus, etc.). Run
-    // ffmpeg unless the buffer is already a RIFF/WAVE.
+    // Local engines expect 16 kHz mono PCM WAV; ffmpeg converts anything that is not already one.
     let audio = req.audio;
     if (!isPcmWav(audio)) {
       const ext = path.extname(req.filename || '').toLowerCase() || '.bin';
       audio = await decodeToWav16kMono(audio, ext);
     }
 
-    // Estimate clip duration from the prepared PCM WAV. 16 kHz mono
-    // 16-bit = 32_000 bytes per second of audio. Header is 44 bytes.
+    // Clip length from the PCM WAV: 16 kHz mono 16-bit is 32_000 bytes per second, after a 44-byte header.
     const estimatedSeconds = Math.max(0, (audio.length - 44) / 32_000);
 
-    // Auto-fall-back from Moonshine to Whisper for long clips.
-    // Moonshine's repeat-loop failure mode kicks in around the 30 s
-    // mark; whisper.cpp chunks internally and handles long-form fine.
-    // If Whisper isn't installed, fall through and let Moonshine try
-    // anyway — best-effort beats a hard error.
+    // Long clips swap Moonshine for Whisper; without Whisper installed Moonshine runs anyway.
     let effectiveEngine = engine;
     if (engine === 'moonshine' && estimatedSeconds > MOONSHINE_MAX_SECONDS && isWhisperBinaryAvailable()) {
       logger.info('Local STT: auto-falling back to Whisper for long audio', {
@@ -303,8 +233,7 @@ async function transcribeCloud(
   apiModelId: string,
   req: TranscribeAudioRequest,
 ): Promise<TranscribeAudioResult> {
-  // A-5: the stop door, opened around the whole cloud leg (request AND body read).
-  // A-5 FIX ROUND: `turn` — same reason as the source download above.
+  // The stop door covers the whole cloud leg (request and body read); 'turn' as for the source download.
   const slot = openAgentCall(req.agentId, 'turn');
   try {
     if (slot.refused) return { ok: false, error: STOPPED_BY_USER, code: 'STOPPED' };
@@ -326,8 +255,7 @@ async function dialTranscribeCloud(
     return { ok: false, error: `No credential found for provider ${providerId}.`, code: 'CLOUD_NO_CREDENTIAL' };
   }
 
-  // Resolve provider base URL from the DB so we route to the right host
-  // (OpenAI, OpenRouter, Groq, custom).
+  // The provider's base URL comes from the DB so the request reaches the right host.
   const db = getDb();
   const providerRow = db.prepare('SELECT base_url FROM providers WHERE id = ?').get(providerId) as
     | { base_url: string | null }
@@ -336,20 +264,12 @@ async function dialTranscribeCloud(
 
   const start = Date.now();
   try {
-    // The body is assembled from the buffer this function was handed. A tmp copy
-    // of the whole audio used to be written here and unlinked in the `finally`
-    // below with nothing ever reading it; its comment claimed the multipart
-    // helper wanted a file with a stable filename, and the filename is the third
-    // argument to `append`. Deleted at PHASE-5 T8 (RULING P5-R15 ADDENDUM 4(2))
-    // on positive evidence, held by `__tests__/transcription-cloud-form.test.ts`:
-    // the body carries every byte under the field and filename the provider
-    // expects, and the cloud path now touches the filesystem zero times.
+    // The multipart body is built from the buffer in memory; the cloud path never touches the filesystem.
     const form = new FormData();
     form.append('file', new Blob([req.audio], { type: req.mimeType || 'audio/mpeg' }), req.filename);
     form.append('model', apiModelId);
     if (req.language) form.append('language', req.language);
-    // Ask for verbose_json so we get `duration` back (OpenAI / Groq
-    // honor this; OpenRouter passes through to the underlying provider).
+    // verbose_json makes the provider return `duration`.
     form.append('response_format', 'verbose_json');
 
     const response = await fetch(endpoint, {
@@ -359,7 +279,7 @@ async function dialTranscribeCloud(
         'HTTP-Referer': 'https://dojo.dev',
       },
       body: form,
-      // A-5: COMPOSED — the 120s upload ceiling (SUSPECT clock U10) is unchanged.
+      // Composed with the stop signal; 120s ceiling on the upload.
       signal: AbortSignal.any([slot.signal, AbortSignal.timeout(120_000)]),
     });
 
@@ -372,8 +292,7 @@ async function dialTranscribeCloud(
       };
     }
 
-    // Some providers default to text/plain when verbose_json isn't
-    // honored; handle that gracefully.
+    // Providers that ignore verbose_json answer text/plain.
     const contentType = (response.headers.get('content-type') ?? '').toLowerCase();
     let text: string;
     let duration: number | null = null;
@@ -412,19 +331,13 @@ export async function transcribeAudio(req: TranscribeAudioRequest): Promise<Tran
     };
   }
 
-  // If the input is a video container (mp4, mov, mkv, …), strip the
-  // video track and convert the audio to 16 kHz mono PCM WAV via
-  // ffmpeg. Cloud providers reject most video MIMEs; local engines
-  // can read video but get cleaner results from prepared PCM. Doing
-  // this once at the entry point keeps the local/cloud branches simple.
+  // Video input is demuxed to 16 kHz mono WAV once here, so the local and cloud branches see the same input.
   let workingReq = req;
   if (isVideoInput(req.mimeType, req.filename)) {
     try {
       const ext = path.extname(req.filename || '').toLowerCase() || '.bin';
       const audioWav = await extractAudioFromVideo(req.audio, ext);
-      // Rename to .wav so downstream cloud providers see a sane file
-      // extension on the multipart upload. Keep the original stem so
-      // the agent can still recognize which source it came from.
+      // The .wav extension keeps the upload sane for cloud providers; the stem keeps the source recognizable.
       const stem = path.basename(req.filename, path.extname(req.filename)) || 'audio';
       workingReq = {
         ...req,

@@ -1,20 +1,7 @@
-// ════════════════════════════════════════
-// services/workspace-reconnect-probe.ts — the way back through the one-way door.
-//
-// A benched Google/Microsoft account (connected=0) used to have NO automatic
-// path back: a single bad token-refresh response benched it and only a manual
-// Settings re-auth restored it (live incident 2026-07-08 — a healthy Microsoft
-// account was benched at ~5:38 PM after flowing mail hours earlier, and stayed
-// dead until a human noticed). The classify-before-bench fix stops MOST false
-// benches; this probe closes the loop for the rest: every ~30 minutes it
-// re-tests each benched account that still holds a refresh token and un-benches
-// any whose refresh token still works. Terminal (genuinely dead) accounts stay
-// benched WITHOUT re-alerting; transient ones get another chance next cycle.
-//
-// Cheap: the per-account network refresh only runs when a benched account with
-// a refresh token actually exists. A fully-healthy box does one tiny SELECT per
-// provider per cycle and returns.
-// ════════════════════════════════════════
+// The way back for a benched Google/Microsoft account (connected=0): every ~30 minutes, re-test each benched
+// account that still holds a refresh token and un-bench any whose token still works. Terminal accounts stay
+// benched without re-alerting; transient ones get another chance next cycle. The network refresh runs only when
+// such an account exists, so a healthy box does one small SELECT per provider per cycle.
 
 import { createLogger } from '../logger.js';
 
@@ -37,7 +24,7 @@ async function sweep(): Promise<void> {
 
   const benchedMs = listReconnectableMicrosoftAccounts();
   const benchedGoogle = listReconnectableGoogleAccounts();
-  // Nothing benched with a usable refresh token — do no network work.
+  // Nothing benched with a usable refresh token: no network work.
   if (benchedMs.length === 0 && benchedGoogle.length === 0) return;
 
   let reconnected = 0;
