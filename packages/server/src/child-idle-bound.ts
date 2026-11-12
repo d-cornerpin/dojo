@@ -1,49 +1,12 @@
 import { constants as bufferConstants } from 'node:buffer';
 
-// ════════════════════════════════════════════════════════════════════════════
-// BOUNDING A CHILD PROCESS BY ITS SILENCE (t114, census U2 / U14 / U21 / U22).
-//
-// A total-duration `timeout` on `exec`/`execFile` cannot tell a wedged command from a slow one:
-// it SIGTERMs at a wall-clock mark whatever the child is doing. Several of the census's flat
-// kills are that one option — the exec door at 120s, the updater's `curl` and `npm install` at
-// 120s each, the installers at 120–300s, AppleScript at 30s. All of them kill processes that are
-// demonstrably alive, because output is arriving the whole time.
-//
-// This module is the measured answer, and it holds NOTHING ELSE: given a child that someone else
-// decided to spawn, bound the GAP BETWEEN ITS WRITES rather than its total life. Every chunk on
-// either stream re-arms the idle timer, which is `makeStreamWatchdog`'s contract (the model
-// transports' per-chunk `bump`) applied to a process instead of a token stream. A ceiling that
-// does NOT re-arm sits behind it, because an idle bound alone can be held open for ever by a
-// process dribbling a byte a minute — the unbounded-renewal trap the stream watchdog's own
-// header refuses.
-//
-// ── WHY IT TAKES A CHILD RATHER THAN SPAWNING ONE ──
-//
-// Two very different callers need this mechanism and they must NOT share a spawn:
-//
-//   * the agent toolbox spawns through `agent/effects/proc.ts`'s capability facade, which
-//     refuses a program the gate loop did not resolve for the running call;
-//   * platform code (the updater, the dependency installers) is not an agent tool call at all
-//     and has no capability to present — `requireAuthorized` would refuse it outright.
-//
-// So the DECISION about what may run stays at each caller's own spawn site, where its own rules
-// live, and only the clock is shared. A `spawn`-injecting parameter would have put a hole in the
-// toolbox's facade guarantee; handing in the child cannot, because a caller who has a child has
-// already passed whatever gate governs it.
-// ════════════════════════════════════════════════════════════════════════════
+// Bounds a child process by the gap between its writes, not its total life: every chunk on either
+// stream re-arms the idle timer, and an optional non-re-arming ceiling stops a byte-a-minute dribbler.
+// It takes an already-spawned child so each caller keeps its own spawn gate (the toolbox's capability
+// facade in `agent/effects/proc.ts`, the updater's own spawn); only the clock is shared.
 
-/**
- * The child, STRUCTURALLY — deliberately NOT `import type { ChildProcess } from
- * 'node:child_process'`.
- *
- * The effects gate refuses that import from any module an agent can reach, and this one IS
- * reachable: `agent/tools/process-idle-bound.ts` calls it on every `exec`/`shell`. Putting this
- * file on the exclusion list would have been the wrong answer — that list is for platform
- * machinery no agent can influence, and claiming it here would be false. The import is not needed
- * either way: this module never CREATES a child, it only watches one, so the members it actually
- * touches are the whole type it requires. Spelling them out keeps the gate honest and documents
- * the entire surface this mechanism depends on.
- */
+/** The child's touched members, structural: the effects gate refuses a `node:child_process` import
+ *  here because `agent/tools/process-idle-bound.ts` makes this module agent-reachable. */
 export interface WatchableChild {
   stdout?: {
     setEncoding(enc: string): unknown;
@@ -58,18 +21,11 @@ export interface WatchableChild {
   kill(signal?: NodeJS.Signals): unknown;
 }
 
-/**
- * THE ONE MEMORY-SAFETY BOUND on what is HELD (t209; owner: no hard limits, keep it whole).
- * A command is never killed for how much it prints: past the old 1 MiB `execFile` buffer the
- * output keeps streaming into the result the caller keeps whole. This is not a policy cap, it is
- * where a JavaScript string stops being safe to build (a quarter of the engine's longest string,
- * both streams together). Past it the pipe is still drained so the child never blocks, the
- * command still runs to its end, and the result names how much was not kept.
- */
+/** The only output bound, a memory-safety one: past it the pipe is still drained, the command runs to
+ *  its end and the result names how much was not kept. Output volume never kills a command. */
 export const CHILD_KEEP_CEILING_CHARS = Math.floor(bufferConstants.MAX_STRING_LENGTH / 4);
 
-/** The shape `execFile` rejects with, rebuilt from a streaming run so that callers which used to
- *  read `err.killed` / `err.signal` / `err.code` keep working unchanged. */
+/** The `execFile` rejection shape, so callers reading `killed` / `signal` / `code` work unchanged. */
 export interface ChildRunFailure {
   stdout: string;
   stderr: string;
@@ -82,18 +38,14 @@ export interface ChildRunFailure {
 export interface IdleBoundOptions {
   /** Milliseconds of SILENCE tolerated. Re-arms on every chunk from either stream. */
   idleMs: number;
-  /** The one bound on TOTAL life. Does not re-arm. Absent: no total bound (an agent's own command, audit #14). */
+  /** The one bound on TOTAL life. Does not re-arm. Absent: no total bound. */
   ceilingMs?: number;
   /** Combined stdout+stderr characters HELD; defaults to `CHILD_KEEP_CEILING_CHARS`. Never a kill. */
   keepCeilingChars?: number;
 }
 
-/**
- * Collect a child's output under an idle bound. Resolves on a clean exit; rejects with a
- * `ChildRunFailure` otherwise, naming WHICH bound fired so a caller can tell the agent (or the
- * log) that the process went silent rather than that it "timed out" — which implied a work budget
- * it never had.
- */
+/** Collect a child's output under an idle bound. Rejects with a `ChildRunFailure` naming which
+ *  bound fired, so the caller can say the process went silent rather than that it timed out. */
 export async function attachIdleBound(
   child: WatchableChild,
   opts: IdleBoundOptions,
@@ -113,7 +65,6 @@ export async function attachIdleBound(
     };
     let settled = false;
     let idleTimer: ReturnType<typeof setTimeout> | null = null;
-    /** Which bound fired, so the reason can name it. */
     let killedBy: 'idle' | 'ceiling' | null = null;
 
     const done = (fn: () => void): void => {
@@ -127,13 +78,11 @@ export async function attachIdleBound(
     const kill = (why: 'idle' | 'ceiling'): void => {
       if (settled) return;
       killedBy = why;
-      // SIGTERM first, exactly as `execFile`'s own timeout does; the `close` handler reports it.
-      // No SIGKILL escalation is added — that would be new behaviour the buffered primitive
-      // never had, and a process mid-write deserves the chance to finish its syscall.
+      // SIGTERM only, as `execFile`'s timeout does; the `close` handler reports it.
       try { child.kill('SIGTERM'); } catch { /* already gone */ }
     };
 
-    /** THE RE-ARM. This is the whole mechanism — output is the measured fact of liveness. */
+    /** Output is the measured fact of liveness, so each chunk re-arms the idle timer. */
     const bumpIdle = (): void => {
       if (settled) return;
       if (idleTimer) clearTimeout(idleTimer);
