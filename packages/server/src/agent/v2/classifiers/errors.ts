@@ -1,14 +1,5 @@
-// ════════════════════════════════════════
-// Phase 1E — errors master switch
-//
-// Per Part VI #6 and Part IX. Single classification entry point used
-// by the recovery cascade in agent/v2/recovery.ts. Maps every error
-// to a categorized RecoveryAction the cascade can act on.
-//
-// This is intentionally a thin layer on top of the dedicated
-// classifiers (provider.ts, etc.). The unified shape lets the
-// recovery cascade in Phase 6 dispatch via a single switch.
-// ════════════════════════════════════════
+// Single classification entry: maps any error to a RecoveryAction for the
+// cascade in agent/v2/recovery.ts; a thin layer over the dedicated classifiers.
 
 import { classifyRecoverableProviderError } from './provider.js';
 import { classifyProviderErrorText } from '../../provider-error.js';
@@ -27,7 +18,6 @@ export type RecoveryActionKind =
   | 'tool_crash'
   | 'network'
   | 'auth'
-  // v2.3.19 additions from the expanded provider classifier
   | 'image_too_large_post_sips'
   | 'image_too_many'
   | 'tool_name_unknown'
@@ -49,11 +39,7 @@ export interface RecoveryAction {
   guidance?: string;
 }
 
-/**
- * Master classifier. Inspects an error message and returns a structured
- * RecoveryAction. The recovery cascade (Phase 6) maps each kind to a
- * specific recovery strategy.
- */
+/** Maps an error message to the RecoveryAction the recovery cascade dispatches on. */
 export function errorRecoveryClassifier(error: Error | string): RecoveryAction {
   const message = typeof error === 'string' ? error : error.message;
   if (!message) {
@@ -61,31 +47,19 @@ export function errorRecoveryClassifier(error: Error | string): RecoveryAction {
   }
   const lower = message.toLowerCase();
 
-  // PHASE-4 T5 — ORDER IS THE FIX HERE, not just the matcher.
-  //
-  // The two conditions whose message CARRIES a large number are checked FIRST. Before this,
-  // auth (`/(401|403|…)/`) was tested three branches ABOVE context overflow, and Anthropic's
-  // over-length error — "prompt is too long: 204015 tokens > 200000 maximum" — contains
-  // "401" inside its token count. So the one error this cascade exists to recover from
-  // classified as an auth failure and the compaction never ran.
-  //
-  // Everything numeric below now goes through `classifyProviderErrorText`, which matches a
-  // status as a TOKEN (a `401` inside `204015` has no boundary and cannot match) and is the
-  // single table this tree keeps — the comment three files over calling out "a fourth
-  // hand-rolled substring set" was describing this one.
+  // Order is load-bearing: the branches whose message carries a large number run
+  // first, and every status matches as a token via classifyProviderErrorText, the
+  // single table: a "401" inside "204015" has no boundary and must not read as auth.
 
-  // Context overflow
   if (/(context.*overflow|context.*exceed|context.*too.?long|prompt.*too.?long|input.*too.?long|context_length_exceeded|maximum context)/.test(lower)) {
     return { kind: 'context_overflow', reason: 'context window exceeded' };
   }
 
-  // Output truncation
   if (/(output.*token.*(limit|exceed|max)|max_output_tokens|truncat(ed|ion))/.test(lower)) {
     return { kind: 'output_truncated', reason: 'output truncated by token limit' };
   }
 
-  // Tool execution crash (check before network — "tool timed out" is a
-  // tool problem, not a network problem; bare "timeout" stays network).
+  // Tool crash before network: "tool timed out" is a tool problem; bare "timeout" is network.
   if (/\btool\b.*(crash|timed out|timeout)/.test(lower)) {
     return { kind: 'tool_crash', reason: 'tool execution crashed' };
   }
@@ -106,13 +80,12 @@ export function errorRecoveryClassifier(error: Error | string): RecoveryAction {
     default:
       break;
   }
-  // A credential named in prose with no status behind it: the text classifier has nothing
-  // structured to read, and this is still an auth failure.
+  // A credential named in prose with no status: nothing structured to read, still auth.
   if (lower.includes('api key')) {
     return { kind: 'auth', reason: 'auth failure' };
   }
 
-  // Provider 4xx with recoverable shape — defer to dedicated classifier
+  // Provider 4xx with a recoverable shape: defer to the dedicated classifier.
   const provider = classifyRecoverableProviderError(message);
   if (provider) {
     return {

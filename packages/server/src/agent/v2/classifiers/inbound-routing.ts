@@ -1,6 +1,5 @@
-// The two judgments about an arrived message the decision model answers, each falling to its rule:
-//   simple_chat   is it a simple conversational ask?                      rule: `complexityClassifier`
-//   deliverable   is a sub-agent's FYI a finished deliverable (it wakes the primary)?   rule: the caller's
+// Two judgments about an arrived message: simple_chat via complexityClassifier,
+// deliverable via the caller's rule; the model answers, these are the fallback.
 
 import type { Question } from '../../decide.js';
 import { judgment } from '../../decision-hooks.js';
@@ -16,7 +15,6 @@ async function yesNo(question: string, agentId: string, message: string, asked: 
 /** Each turn is judged once, however many times it is assembled. */
 const conversational = new WeakMap<object, Promise<boolean>>();
 
-/** Is this turn a quick conversational ask? */
 export function isConversational(turnCtx: object, agentId: string, message: string): Promise<boolean> {
   let said = conversational.get(turnCtx);
   if (!said) {
@@ -27,6 +25,5 @@ export function isConversational(turnCtx: object, agentId: string, message: stri
   return said;
 }
 
-/** Is a sub-agent's FYI to the primary really a deliverable, so it wakes the primary? */
 export const deliverableJudged = (agentId: string, payload: string, rule: boolean): Promise<boolean> =>
   yesNo('inbound_routing/deliverable', agentId, payload, DELIVERABLE, rule);

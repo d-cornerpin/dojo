@@ -1,24 +1,5 @@
-// ════════════════════════════════════════
-// Phase v2.3.3 — multi-step detection
-//
-// Engine-side detection of "this prompt is going to take more than one
-// turn." When confident, the loop calls createProject directly so the
-// tracker entry exists before the agent starts working — same lesson
-// as the technique injection: take the decision out of the LLM's hands
-// because system-prompt instructions don't reliably get followed.
-//
-// Two-stage:
-//   1. Heuristic prefilter (free, deterministic): action-verb count,
-//      coordinating conjunctions, distinct deliverables. Decides
-//      confidently in most cases — only ambiguous prompts go to (2).
-//   2. Local-LLM classifier (optional, ~500ms): asks a small Ollama
-//      model "is this multi-step? if so, give a 3-5 word name." Used
-//      only when the heuristic is uncertain. Falls back to heuristic-
-//      only if no model is configured.
-//
-// Config lives in the `config` table under key 'multistep_config' to
-// match the embedding_config pattern.
-// ════════════════════════════════════════
+// Multi-step detection: when confident the engine creates the tracker project before the agent
+// starts: prompt instructions don't reliably get followed. An optional LLM pass covers ambiguous ones.
 
 import { getDb } from '../../../db/connection.js';
 import { createLogger } from '../../../logger.js';
@@ -29,7 +10,7 @@ const logger = createLogger('classifier:multistep');
 
 export interface MultistepConfig {
   enabled: boolean;
-  /** Ollama model name (e.g. "qwen2.5:7b"). null → heuristic-only. */
+  /** Ollama model name (e.g. "qwen2.5:7b"). null means heuristic-only. */
   model: string | null;
   baseUrl: string;
   timeoutMs: number;
@@ -79,15 +60,14 @@ export interface MultistepHeuristic {
   signals: {
     actionVerbs: number;
     conjunctions: number;
-    /** Sentence/clause boundaries between imperatives — coordination, like "and". */
+    /** Sentence/clause boundaries between imperatives: coordination, like "and". */
     clauseBoundaries: number;
     deliverables: number;
     chars: number;
   };
 }
 
-// Action verbs that suggest the agent has to *do* something, not just
-// answer a question. Tense-folded; we lowercase the input.
+// Action verbs the agent must DO, not just answer. Tense-folded; the input is lowercased.
 const ACTION_VERBS = new Set([
   'pull', 'fetch', 'get', 'grab', 'download', 'retrieve',
   'send', 'email', 'message', 'text', 'imessage', 'post', 'publish',
@@ -102,25 +82,13 @@ const ACTION_VERBS = new Set([
   'remind', 'notify', 'alert',
   'export', 'import', 'backup', 'restore',
   'attach', 'upload', 'save',
-  // UX-REPAIR T4 — the divide-and-recombine family. Measured, not guessed: on
-  // 2026-08-10 the LARGEST job in the six-scenario review scored
-  // `actionVerbs = 0` and took the 30s timer door instead of the pre-call one,
-  // because "Split ... and give me one combined write-up" contains no verb this
-  // set knew. These four are imperative WORK verbs; the `NOUNIFYING_PREDECESSORS`
-  // guard below still applies to them, so "what was the split" and "any
-  // distribute jobs today?" stay at zero.
   'split', 'divide', 'distribute', 'combine',
 ]);
 
 const CONJUNCTIONS = new Set(['and', 'then', 'also', 'plus', 'after', 'next']);
 
-// v2.5.46 — words that, when they immediately precede a candidate "verb",
-// strongly suggest the candidate is actually being used as a noun. "Email"
-// is an action verb in "email the team" but a noun in "any new emails".
-// "Message", "text", "post", "list", "report" have the same ambiguity.
-// Without this guard the heuristic falsely fires multistep for short
-// lookup questions ("do you have any new emails today?") which then
-// auto-creates a tracker project and triggers the close-out loop.
+// A determiner or quantifier right before a candidate ("email the team" vs "any new emails")
+// means the candidate is a noun: counting it would fire multistep on a plain lookup question.
 const NOUNIFYING_PREDECESSORS = new Set([
   'any', 'the', 'a', 'an',
   'my', 'your', 'his', 'her', 'its', 'our', 'their',
@@ -130,16 +98,8 @@ const NOUNIFYING_PREDECESSORS = new Set([
   'new', 'old', 'recent', 'latest', 'pending', 'unread',
 ]);
 
-/**
- * Try the token against ACTION_VERBS in a few morphological forms.
- * Catches "pulling" / "pulled" / "summarizing" / "summarised" without
- * requiring every conjugation in the set.
- *
- * `prevToken` is the immediately preceding word in the input (or null at
- * the start). When `prevToken` is a determiner / quantifier / adjective
- * that almost always introduces a noun phrase, we treat the candidate as
- * a noun and refuse to count it as an action verb.
- */
+/** Try a token against ACTION_VERBS in a few morphological forms ("pulling", "pulled",
+ *  "summarised"), so every conjugation need not live in the set. */
 function matchesActionVerb(token: string, prevToken: string | null): boolean {
   const candidateIsVerbLike =
     ACTION_VERBS.has(token) ||
@@ -149,16 +109,13 @@ function matchesActionVerb(token: string, prevToken: string | null): boolean {
 
   if (!candidateIsVerbLike) return false;
 
-  // Determiner / adjective directly before this token → noun usage.
   if (prevToken && NOUNIFYING_PREDECESSORS.has(prevToken)) return false;
 
   return true;
 }
 
-// v2.5.46 — Question detection. Prompts that ask the agent for information
-// (rather than directing it to do work) are almost always single-step
-// lookups. We use this as a tiebreaker for ambiguous heuristic cases and
-// as the fallback bias when no local-LLM classifier is configured.
+// A prompt asking for information is almost always a single-step lookup: the tiebreaker for
+// ambiguous cases and the fallback bias when no LLM classifier is configured.
 const INTERROGATIVE_LEAD =
   /^\s*(do|does|did|is|are|am|was|were|will|would|can|could|should|shall|may|might|have|has|had|what|whats|where|wheres|when|whens|why|whys|who|whos|whom|whose|which|how|hows)\b/i;
 
@@ -169,20 +126,8 @@ export function looksLikeQuestion(query: string): boolean {
   return false;
 }
 
-// Deliverable indicators: words/phrases that signal a discrete output
-// the agent has to produce. Catches prompts that imply outputs without
-// explicit conjunctions ("a summary of X for Y").
-// UX-REPAIR T4: `summary` and `report` were already here — verified before
-// adding, and NOT re-added. What was missing is the class of deliverable NOUN
-// that names the thing the agent has to produce when the request is phrased as
-// a want rather than an order ("I want a comparison ... give me one combined
-// write-up with a bottom-line recommendation" scored zero deliverables).
-//
-// THESE ARE EXPLICIT ENTRIES, NOT A STEMMER. The verb morphology above folds
-// only s/ed/ing on purpose; `comparison → compare` is a derivational fold and
-// the moment this file starts guessing at word endings it starts flipping
-// verdicts nobody can predict from reading it. `comparison` earns its place by
-// being written down, and so does the next one.
+// Deliverable nouns: a discrete output the agent must produce, with or without a conjunction.
+// Explicit entries, never a stemmer: derivational folds would flip verdicts no reader can predict.
 const DELIVERABLE_HINTS = [
   /\bsummary\b/, /\breport\b/, /\bdoc(?:ument)?\b/, /\bemail\b/,
   /\bmessage\b/, /\blist\b/, /\boverview\b/, /\bbreakdown\b/,
@@ -208,43 +153,30 @@ export function multistepHeuristic(query: string): MultistepHeuristic {
     if (re.test(lower)) deliverables++;
   }
 
-  // Sentence/clause boundaries act as coordination: "Make X. Generate Y." is
-  // the same "do two things" signal as "Make X and generate Y." The tokenizer
-  // above strips punctuation, so we count boundaries on the raw lowercased
-  // text. Only count a terminator when real word content follows it — so a
-  // trailing "." and tokens like "report.txt" / "3.5" (no following space)
-  // don't register. This is what catches the "Build a page. Generate an
-  // image." class the conjunction-only check used to miss.
+  // Clause boundaries are coordination: "Make X. Generate Y." asks for two things like "and".
+  // The tokenizer strips punctuation, so count boundaries on the raw text; a terminator counts
+  // only when a word starts after a space, so "report.txt" or a trailing "." never registers.
   const clauseBoundaries = (lower.match(/[.!?;\n]+\s+(?=[a-z0-9])/g) ?? []).length;
-  // Coordination = explicit conjunctions OR clause boundaries between work.
   const coordination = conjunctions + clauseBoundaries;
 
   const chars = query.length;
   const isQuestion = looksLikeQuestion(query);
 
-  // Scoring: weight action verbs heaviest. Two distinct action verbs
-  // joined by coordination is the canonical multi-step signal.
+  // Two distinct action verbs joined by coordination is the canonical multi-step signal.
   const score = actionVerbs * 1.0 + Math.min(coordination, 3) * 0.5 + deliverables * 0.6;
 
   let decision: HeuristicDecision;
   if (chars < 20 && actionVerbs <= 1) {
     decision = 'definitely_single';
   } else if (actionVerbs >= 3 || (actionVerbs >= 2 && coordination >= 1)) {
-    // Genuinely multi-step even if phrased as a question
-    // ("can you find X, summarize it, and email it?") or split across
-    // sentences ("Build the page. Generate the background image.").
+    // Multi-step even as a question or split across sentences: "find X, summarize it, email it".
     decision = 'definitely_multi';
   } else if (isQuestion && actionVerbs <= 1 && conjunctions === 0) {
-    // Short/medium question with at most one action verb and no
-    // conjunction — almost certainly a lookup, not a project.
+    // A question with at most one action verb and no conjunction: a lookup, not a project.
     decision = 'definitely_single';
   } else if (actionVerbs <= 1 && conjunctions === 0) {
-    // v2.5.46 — Single imperative: "Send an email saying hi", "Schedule a
-    // meeting for Tuesday", "Delete the test files". One action, no
-    // "and/then" joining additional work — it's one task, not a project.
-    // Without this, the fallback path was auto-creating trackers for simple
-    // commands and the close-out gate then looped the agent (observed
-    // 2026-05-19: "Send an email" → 3 replies for one voice prompt).
+    // One action, no conjunction joining more work: a single imperative ("Send an email
+    // saying hi") is one task, not a project; auto-creating here loops the close-out gate.
     decision = 'definitely_single';
   } else if (actionVerbs === 0 && deliverables === 0) {
     decision = 'definitely_single';
@@ -266,9 +198,8 @@ export interface MultistepLLMResult {
   name: string | null;
 }
 
-/** Tolerant JSON extraction — cloud models may wrap the object in prose or
- *  ```json fences, unlike Ollama's forced `format: 'json'`. Pull the first
- *  balanced-looking {...} and parse that. */
+/** Tolerant JSON extraction: cloud models may wrap the object in prose or fences, unlike
+ *  Ollama's forced `format: 'json'`. Parse the first balanced-looking {...}. */
 function parseClassifierJson(text: string): { multistep?: unknown; name?: unknown } | null {
   if (!text) return null;
   let s = text.trim();
@@ -284,13 +215,8 @@ function parseClassifierJson(text: string): { multistep?: unknown; name?: unknow
   }
 }
 
-/**
- * Classify an ambiguous prompt using the configured SYSTEM model (the
- * "system" router tier — Settings → Router). Routed through the general
- * callModel path so the System model can be cloud OR local, not just Ollama.
- * Returns null on any failure or when no System model is configured — the
- * caller then falls back to heuristic-only behavior.
- */
+/** Classify an ambiguous prompt with the SYSTEM router model, routed through callModel so it
+ *  can be cloud OR local. Null on failure or no System model: the caller falls back to heuristic. */
 export async function multistepLLMClassify(
   query: string,
   agentId: string,
@@ -315,14 +241,11 @@ export async function multistepLLMClassify(
       systemPrompt: '',
       messages: [{ role: 'user', content: prompt }],
       tools: false,
-      // t88: an engine artifact — one small JSON object. Thinking off, 48-token cap, window sized to
-      // the prompt. The timeout below is this caller's own and stays as it is.
+      // A small engine artifact: thinking off, 48-token cap, window sized to the prompt.
       purpose: 'multistep_classify',
       abortSignal: AbortSignal.timeout(timeoutMs),
-      // W3-1 (behavioral run bmr59ix4lsg): this call is fully handled, any
-      // failure falls back to the heuristic classifier in the catch below.
-      // Without bestEffort the provider layer logged the already-recovered
-      // timeout at ERROR and it read as an unhandled agent-level error.
+      // Fully handled: any failure falls back to the heuristic in the catch below, so
+      // bestEffort stops the provider logging an already-recovered timeout as an error.
       bestEffort: true,
     });
 
@@ -347,54 +270,17 @@ export async function multistepLLMClassify(
   }
 }
 
-// Engine-auto-created projects carry this prefix in their description.
-// Used by:
-//  - The tracker dup-guard, to detect "the engine just opened this for
-//    you on this same user turn" and steer the agent toward
-//    work_update(action="edit") rather than spinning a parallel project.
-//  - The post-create rename handoff, which fires an A2A-style message
-//    at the PM agent asking it to rename the project and first task
-//    using its local model (gemma4:31b). Naming runs async on the PM's
-//    turn rather than on the user-facing agent's turn — keeps the chat
-//    reply latency clean.
-// ── ENGINE_AUTO_MARKER IS GONE (PHASE-2 T8c item 3) ──
-//
-// This constant was the prose prefix `'[engine:multistep] '` written onto an auto-created
-// PROJECT's description. It had THREE declarations (here, plus hand-kept mirrors in
-// `agent/v2/loop.ts` and `tracker/tools.ts`, each with a comment apologising for the
-// duplication), five `LIKE`/`startsWith` readers, and an edit-guard in `work_update:edit`
-// that silently re-prefixed the string on every rewrite because a PM description rewrite had
-// once stripped it and the scaffold stopped reading as engine-created.
-//
-// It is `root_kind='engine_scaffold'` now — a column, stamped at creation, declared once in
-// `work/tracker-view.ts`, and unreachable from every tool surface, so the guard that defended
-// it is unnecessary rather than merely moved.
-// requirement preserved: "this row was opened by the engine, not by an agent", which is what
-// the near-duplicate steer, the unanswered-scaffold probe, the auto-block's user-origin test
-// and the completed-scaffold summary each need.
+// Engine-created projects carry root_kind='engine_scaffold', a column stamped at creation and
+// declared once in work/tracker-view.ts. The requirement it serves: "this row was opened by the
+// engine, not by an agent", which the near-duplicate steer and rename handoff still need.
 
 // ── User explicitly requesting project creation ──
-//
-// v2.5.46 — Audit found that the multistep auto-create fires on prompts
-// like "Start a project called X with step 1 and step 2." The classifier
-// sees 3+ action verbs and creates an umbrella task. Then the agent
-// (correctly) builds its OWN multi-step project structure. The
-// auto-created umbrella becomes a redundant dangler that never gets
-// closed — triggering the close-out gate next turn for no good reason.
-//
-// Fix: when the user explicitly asks the agent to create a tracker
-// entity ("start a project", "create a task", "add to the tracker"),
-// skip auto-create and let the agent do it themselves. The new v2.5.46
-// reflex bullet defaults agents toward work_open(kind="project") for any
-// non-trivial work, so we can trust the agent to follow through.
 
-// Engine-generated user-role messages — never trigger auto-create on these.
-// Discovered the hard way: the PM rename-request handoff was being
-// re-classified as a multi-step user prompt on PM's turn, causing PM to
-// auto-create a second project where the title was the rename request
-// text itself. Same shape of bug for any engine-injected "user" message
-// that happens to contain action verbs (A2A pokes, scheduler payloads,
-// assignment notifications, system source tags).
+// An explicit creation request ("start a project") skips auto-create: the agent builds their own
+// structure; an auto-created umbrella task would be a redundant orphan next to it.
+
+// Engine-injected user-role messages are never user intent: they carry action verbs and would
+// make the receiving agent auto-create a project from the engine's own handoff text.
 const ENGINE_MESSAGE_PREFIXES: readonly string[] = [
   '[ENGINE RENAME REQUEST]',
   '[PLATFORM MIGRATION]',
@@ -412,13 +298,9 @@ export function looksLikeEngineMessage(query: string): boolean {
 }
 
 const EXPLICIT_CREATION_PATTERNS: readonly RegExp[] = [
-  // "start/create/make/set up/open/build a project"
   /\b(start|create|make|set ?up|open|build|spin ?up)\s+(a |an |the |another )?(new\s+)?(tracker\s+)?project\b/i,
-  // "start/create/add a task" / "create a tracker task"
   /\b(start|create|make|add|put|register)\s+(a |an |the |another )?(new\s+)?(tracker\s+)?task\b/i,
-  // "(track|log|put|add) this/it/that in/into the tracker"
   /\b(track|log|put|add)\s+(this|it|that|these|them)\s+(in|into|on|to)\s+(the\s+)?tracker\b/i,
-  // "tracker entry for X"
   /\b(open|create|make|start)\s+(a |an |the )?(tracker\s+entry|tracker\s+item|tracker\s+record)\b/i,
 ];
 
@@ -432,7 +314,7 @@ export interface MultistepDecision {
   multistep: boolean;
   /** Suggested project name, or null. Caller may fall back to first 50 chars. */
   name: string | null;
-  /** How we decided — for logging. */
+  /** How we decided, for logging. */
   source:
     | 'heuristic_single' | 'heuristic_multi'
     | 'llm_single' | 'llm_multi' | 'decision_single' | 'decision_multi'
@@ -452,19 +334,10 @@ export async function detectMultistep(
     return { multistep: false, name: null, source: 'disabled', heuristic };
   }
 
-  // Engine-generated user-role messages (rename requests, A2A pokes,
-  // scheduler payloads, source-tagged notifications) are never user
-  // intent. Skip auto-create — otherwise PM/sensei agents would
-  // recursively auto-create projects FROM the rename requests we send
-  // them.
   if (looksLikeEngineMessage(query)) {
     return { multistep: false, name: null, source: 'engine_message', heuristic };
   }
 
-  // v2.5.46 — explicit project-creation request → skip auto-create.
-  // The user wants the agent to build the structure themselves; an
-  // auto-created umbrella task would be redundant and would orphan
-  // when the agent finishes their own structure.
   if (userExplicitlyAsksToCreateTracker(query)) {
     return { multistep: false, name: null, source: 'user_creating_explicitly', heuristic };
   }
@@ -474,22 +347,15 @@ export async function detectMultistep(
   }
 
   if (heuristic.decision === 'definitely_multi') {
-    // Skip LLM round-trip — the heuristic is already confident. Caller
-    // can fall back to a prompt-derived name.
+    // The heuristic is confident: skip the LLM call, name falls back to the prompt.
     return { multistep: true, name: null, source: 'heuristic_multi', heuristic };
   }
 
-  // Ambiguous — try the System model if one is configured.
+  // Ambiguous: try the System model if one is configured.
   const llm = await multistepLLMClassify(query, agentId, config.timeoutMs);
   if (llm === null) {
-    // v2.5.46 (revised) — When the heuristic is genuinely uncertain AND no
-    // local-LLM classifier is wired up, default to SINGLE. Earlier we
-    // defaulted to multi ("over-creation is annoying but missing multi-step
-    // is worse"), but in practice over-creation triggers the close-out gate
-    // loop and produces 2-3 replies for one user prompt. The v2.5.46 reflex
-    // bullets + close-out gate already direct agents to call
-    // work_open(kind="project") themselves when work is genuinely multi-step —
-    // trust the agent rather than preempting.
+    // Uncertain with no model wired: default SINGLE. Over-creation loops the close-out gate
+    // (2-3 replies per user prompt); reflex bullets already make agents open projects themselves.
     if (looksLikeQuestion(query)) {
       return { multistep: false, name: null, source: 'fallback_single_question', heuristic };
     }

@@ -1,23 +1,6 @@
-// ════════════════════════════════════════
-// Phase 1C — A2A (agent-to-agent) classifiers
-//
-// Per Part VI #2 + #3 and Part X. v1 enforces A2A intent rules via
-// 50+ lines of "CRITICAL: Communicating With Other Agents" in the
-// system prompt. Weak models forget. v2 takes the rules out of the
-// LLM's hands:
-//
-//   - a2aReplyEnforcer: when an agent received a reply-needed intent
-//     (QUESTION/ASSIGN/BLOCK) and ended its turn with text but no
-//     send_to_agent, the engine inserts a nudge telling them to
-//     retry through send_to_agent. (Subsumes v1 runtime.ts:1344-1378.)
-//
-//   - a2aIntentValidator: validates send_to_agent calls before they
-//     execute. Rejects calls without an intent, calls to closed
-//     threads with non-reopening intents, and calls that would
-//     exceed the hop limit (preventing acknowledgment loops).
-// ════════════════════════════════════════
+// A2A intent rules live in engine code, not prompt prose: weak models forget
+// prompt rules. Two classifiers: the missed-reply nudge, the pre-execution validator.
 
-// PHASE-3 T5: was an inline hex-only A2A envelope regex. ONE regex, imported.
 import { A2A_ENVELOPE_RE } from '@dojo/shared';
 import type { ToolCall } from '@dojo/shared';
 
@@ -33,44 +16,20 @@ export const REOPEN_INTENTS = new Set(['QUESTION', 'BLOCK', 'ASSIGN']);
 /** Maximum hop depth for a single A2A exchange chain. */
 export const A2A_HOP_LIMIT = 5;
 
-// ── Reply enforcer ──
 
 export interface A2AReplyEnforcerInput {
-  /** Did this turn receive a reply-needed A2A intent (QUESTION/ASSIGN/BLOCK)? */
   triggeredByReplyNeededIntent: boolean;
-  /** Did the agent call send_to_agent at any point in this turn? */
   sentToAgentThisTurn: boolean;
   /** Was the missed-reply nudge already injected this turn? (Fire at most once.) */
   alreadyNudgedForMissedReply: boolean;
-  /** Did the agent produce any text this turn? */
   agentProducedText: boolean;
-  /** Context for the nudge text. */
   intent?: string;
   threadShort?: string;
   fromName?: string;
-  /**
-   * v2.5.31 — true when a2a_replies has any prior reply from this agent on
-   * the same thread. Switches the nudge text from "the receiver got
-   * nothing" (which is a lie when the agent already replied earlier) to
-   * "you replied earlier; if you're done, end your turn." Avoids the
-   * spiral where the agent reads "got nothing", knows it sent the
-   * message, and writes another summary trying to clarify.
-   */
+  /** Prior reply on this thread: avoids the nudge claiming the receiver got nothing. */
   priorReplyOnSameThread?: boolean;
-  /**
-   * ROUND-11 T46 — the SECOND evidence source for the SAME fact, and the reason it exists.
-   *
-   * `priorReplyOnSameThread` is sourced from `a2a_replies`, whose row is written only when the
-   * reply BINDS to an inbound assign message — a binding that needs a `thread_id` the sender
-   * may omit. On 2026-08-15 a DELIVERED ANSWER left no row, this input was false, and the
-   * fresh-miss text below told the agent his peer "got nothing" five seconds after it landed;
-   * he re-sent, and the same answer was delivered twice.
-   *
-   * This one is the engine's own VERIFIED `send_to_agent` receipt for the thread — the ledger
-   * the platform already answers delivery-denials from. Either evidence means the same thing
-   * ("you have already replied on this thread"), so both feed the same branch and neither
-   * changes a word of either text.
-   */
+  /** The engine's own verified send receipt: the same fact, for when an
+   *  a2a_replies row is missing because the sender omitted thread_id. */
   verifiedSendReceiptOnThread?: boolean;
 }
 
@@ -78,15 +37,6 @@ export type A2AReplyDecision =
   | { decision: 'no_action'; reason: string }
   | { decision: 'nudge'; reason: string; nudgeText: string };
 
-/**
- * Decide whether to inject a missed-reply nudge.
- *
- * Original behavior (v1 runtime.ts:1344-1378) was a single nudge text. v2.5.31
- * adds two-flavor nudge: "fresh miss" (the agent never replied) keeps the
- * urgent original text; "stale miss" (the agent replied earlier on this same
- * thread but is now writing trailing text) gets a softer "you're done — just
- * end your turn" message that doesn't lie about delivery.
- */
 export function a2aReplyEnforcer(input: A2AReplyEnforcerInput): A2AReplyDecision {
   if (!input.triggeredByReplyNeededIntent) {
     return { decision: 'no_action', reason: 'turn not triggered by reply-needed A2A intent' };
@@ -105,15 +55,9 @@ export function a2aReplyEnforcer(input: A2AReplyEnforcerInput): A2AReplyDecision
   const threadShort = input.threadShort ?? 'unknown';
 
   let nudgeText: string;
-  // ROUND-11 T46: EITHER evidence of a prior reply on this thread — the a2a_replies row, or
-  // the engine's own verified send receipt — takes this branch. The fresh-miss text below is
-  // reachable only when the platform holds NO record of the reply at all, which is the only
-  // state in which "they got nothing" is a true sentence.
+  // Either record of a reply takes this branch; the fresh-miss text below is
+  // reachable only with no record at all, the sole state where "got nothing" is true.
   if (input.priorReplyOnSameThread || input.verifiedSendReceiptOnThread) {
-    // The agent already sent send_to_agent on this thread in a prior
-    // handleMessage invocation. They handled the inbound — they're now
-    // just writing a trailing summary which the user can see but the
-    // sender doesn't need. Don't lie about delivery; tell them to stop.
     nudgeText = (
       `[System: You already replied to ${fromName}'s [A2A:${intent}] on thread ${threadShort} ` +
       `via send_to_agent in an earlier turn — ${fromName} has the message. ` +
@@ -122,7 +66,7 @@ export function a2aReplyEnforcer(input: A2AReplyEnforcerInput): A2AReplyDecision
       `Only call send_to_agent again if you have NEW information for ${fromName} (use the same thread_id, intent STATUS or ANSWER as appropriate).]`
     );
   } else {
-    // The agent has never replied on this thread. Original urgent framing.
+    // Never replied on this thread: urgent framing.
     nudgeText = (
       `[System: You received an [A2A:${intent}] message from ${fromName} on thread ${threadShort} ` +
       `but you wrote your reply as text in your own chat instead of calling send_to_agent. ` +
@@ -136,11 +80,8 @@ export function a2aReplyEnforcer(input: A2AReplyEnforcerInput): A2AReplyDecision
   return { decision: 'nudge', reason: 'agent received reply-needed intent but did not send_to_agent', nudgeText };
 }
 
-// ── Intent validator ──
-
 export interface A2AIntentValidatorInput {
   call: ToolCall;
-  /** Thread state lookup result. null if thread doesn't exist or this is a new thread. */
   threadIsClosed: boolean;
   /** How many hops deep is this A2A chain? (sender count along the chain.) */
   hopCount: number;
@@ -150,12 +91,7 @@ export type A2AIntentValidatorResult =
   | { decision: 'ok' }
   | { decision: 'reject'; reason: string };
 
-/**
- * Validate a send_to_agent call before it executes. Returns ok or
- * a rejection reason that the engine surfaces as a synthetic tool
- * result (so the agent sees the failure in the same shape as a real
- * tool error).
- */
+// Validates a send_to_agent call pre-execution; a reject surfaces as a synthetic tool result.
 export function a2aIntentValidator(input: A2AIntentValidatorInput): A2AIntentValidatorResult {
   if (input.call.name !== 'send_to_agent' && input.call.name !== 'broadcast_to_group') {
     return { decision: 'ok' }; // not an A2A call
@@ -202,7 +138,6 @@ export function a2aIntentValidator(input: A2AIntentValidatorInput): A2AIntentVal
   return { decision: 'ok' };
 }
 
-/** Parse an A2A trigger tag from a user message body. Verbatim from v1 runtime.ts:817. */
 export function parseA2ATrigger(content: string | null): {
   intent: string;
   threadShort: string;
@@ -212,8 +147,7 @@ export function parseA2ATrigger(content: string | null): {
   const match = content.match(A2A_ENVELOPE_RE);
   if (!match) return null;
   const intent = match[1];
-  // Only return non-null for reply-needed intents — terminal intents
-  // (ANSWER, DELIVERABLE, FYI, COMPLETE, FAIL) don't expect a reply.
+  // Non-null only for reply-needed intents: terminal intents expect no reply.
   if (!REPLY_NEEDED_INTENTS.has(intent)) return null;
   return { intent, threadShort: match[2], fromName: match[3].trim() };
 }

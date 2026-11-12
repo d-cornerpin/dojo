@@ -1,25 +1,10 @@
-// ════════════════════════════════════════
-// Context-gap detector (remediation 2026-06-15, the "ask when stuck" design).
-//
-// Replaces the dropped deep caption-reorder (#5). Rather than have the engine
-// INFER intent from a bare unlabeled photo, the engine detects the gaps it can
-// reliably SEE and nudges the agent to ASK the user. This is the floor-safe
-// half of "ask when you don't have enough context": the prompt carries the
-// general judgment rule, and this catches the specific detectable conditions
-// so we don't rely on a weak model noticing it's under-informed.
-//
-// v1 detects the clearest case: an attachment arrived with no text
-// instruction. The nudge is an `[Engine hint]` (advice, lowest precedence) so
-// it never overrides a real instruction, an active task, or a matching
-// technique — the agent uses judgment on top. Add new detectable gaps here as
-// distinct checks (missing required arg, dangling referent, disconnected
-// integration the task needs).
-// ════════════════════════════════════════
+// Detects the context gaps the engine can SEE and returns an `[Engine hint]`
+// (advice, lowest precedence) nudging the agent to ASK instead of guessing.
+// No I/O: the prompt carries the general rule, this catches detectable conditions.
 
 const ATTACHMENT_POINTER_RE = /\[(Image|PDF|Audio|Video|Office file|File) attached:/i;
 
-// Strip the attachment pointer block and its boilerplate so we can see how
-// much actual instruction the user typed alongside the attachment.
+// Strip the attachment pointer and its boilerplate: only the user's own words count.
 function userTextMinusAttachments(raw: string): string {
   let s = raw;
   s = s.replace(/\[(Image|PDF|Audio|Video|Office file|File) attached:[^\]]*\]/gi, ' ');
@@ -33,15 +18,9 @@ function userTextMinusAttachments(raw: string): string {
   return s.replace(/\s+/g, ' ').trim();
 }
 
-/**
- * Returns an advisory ask-the-user hint if the engine can see the agent lacks
- * enough to proceed, else null. Pure function: no I/O, easy to unit-test.
- */
 export function detectContextGap(rawUserContent: string | null | undefined): string | null {
   if (!rawUserContent) return null;
 
-  // Gap 1: attachment with no (or trivially short) text instruction. The user
-  // sent a file but didn't say what to do with it.
   if (ATTACHMENT_POINTER_RE.test(rawUserContent)) {
     const instruction = userTextMinusAttachments(rawUserContent);
     const words = instruction.split(/\s+/).filter((w) => w.length > 1);

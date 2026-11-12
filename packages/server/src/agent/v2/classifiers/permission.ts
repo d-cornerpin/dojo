@@ -1,19 +1,8 @@
-// ════════════════════════════════════════
-// Phase 1C, permission alternative finder
-//
-// Per Part VI #19. When a tool call is denied by the permission
-// system, v1 returns a [BLOCKED] result with the bare reason.
-// The agent often retries the same disallowed call repeatedly
-// (which is how `consecutivePermissionDenials` got invented).
-//
-// v2's enforcement is unchanged (existing per-agent manifest in
-// permissions.ts is still authoritative, REJECTED bypassing it
-// per Part XVI #20). What v2 ADDS is a suggestion layer: when a
-// denial occurs, this classifier produces a list of alternative
-// approaches the agent might try instead. The engine appends
-// the suggestions to the [BLOCKED] tool result so the agent can
-// adapt instead of looping.
-// ════════════════════════════════════════
+// When a tool call is denied, this finder proposes alternatives. The engine
+// appends them to the [BLOCKED] tool result so the agent adapts instead of
+// retrying the same disallowed call. Enforcement is unchanged: the per-agent
+// manifest in permissions.ts stays authoritative, and this is only a layer
+// that suggests other approaches once a denial has happened.
 
 import type { PermissionManifest } from '@dojo/shared';
 import { execCallText } from '../../brokers/exec-seam.js';
@@ -45,11 +34,9 @@ export function permissionAlternativeFinder(
   const { toolName, toolArgs, manifest, hasSendToAgent, hasCompleteTask } = input;
 
   switch (toolName) {
-    // FA-P4 (option B): 'file_delete' shares the file_write suggestions but is
-    // currently unreachable, there is no agent-callable file_delete tool, so no
-    // denied call arrives under this name (deletion rides the exec/rm path). Kept
-    // as future-proofing for FU-4's possible scoped-delete tool; it does not imply
-    // a live file_delete tool exists now.
+    // 'file_delete' shares the file_write suggestions and is kept for a future
+    // scoped-delete tool; today no agent-callable file_delete exists (deletes
+    // ride the exec/rm path), so no denied call arrives under this name.
     case 'file_write':
     case 'file_delete': {
       const allowedWrite = Array.isArray(manifest.file_write) ? manifest.file_write : [];
@@ -69,11 +56,9 @@ export function permissionAlternativeFinder(
 
     case 'exec':
     case 'shell': {
-      // PHASE-5 T3: read the call's REAL shape through the one owner of that
-      // question. `toolArgs.command` is `undefined` at both rebuilt doors, and a
-      // refusal that says *"`unknown` is not in that list"* is a refusal an
-      // agent cannot act on — the alternative-finder's whole job is to be
-      // actionable, so its input has to follow the shape.
+      // Read the call's real shape through the one owner of that question:
+      // `toolArgs.command` is `undefined` at both rebuilt doors, and a refusal
+      // naming `unknown` is one the agent cannot act on.
       const cmd = execCallText(toolName, toolArgs)?.trim().split(/\s+/)[0] ?? 'unknown';
       if (manifest.exec_allow.length > 0 && !manifest.exec_allow.includes('*')) {
         suggestions.push(
@@ -81,7 +66,6 @@ export function permissionAlternativeFinder(
           `\`${cmd}\` is not in that list.`,
         );
       }
-      // Common substitution suggestions
       if (cmd === 'rm' || cmd === 'mv' || cmd === 'cp') {
         suggestions.push('File management is restricted, use file_read / file_write through the API instead.');
       }
@@ -129,7 +113,6 @@ export function permissionAlternativeFinder(
     case 'kill_agent':
     case 'set_user_presence':
     case 'tunnel': {
-      // Privileged ops, only the primary has these
       suggestions.push(
         'This tool is restricted to the primary agent. Use send_to_agent to ask the primary to perform this action.',
       );
@@ -137,7 +120,6 @@ export function permissionAlternativeFinder(
     }
   }
 
-  // Universal fallback: escalate or mark blocked
   if (hasSendToAgent) {
     suggestions.push('If no alternative works, use send_to_agent with intent=BLOCK to ask for help.');
   }

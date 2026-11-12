@@ -1,25 +1,11 @@
-// ════════════════════════════════════════
-// Phase 1A, loop detector classifier
-//
-// Ports v1's canonicalToolSignature + repeat-count check from
-// runtime.ts:261-293 + 1440-1463 into a v2 classifier. Behavior is
-// identical: a tool call signature normalized to ignore agent prose,
-// timestamp/UUID variation, and JSON key order. After 3 calls of
-// the same signature in the recent window, the call is blocked.
-//
-// Window size and threshold match v1 exactly (RECENT_TOOL_WINDOW = 8,
-// MAX_REPEATS_BEFORE_BREAK = 3) so v2 behavior matches v1 verbatim.
-// ════════════════════════════════════════
+// Loop detector: blocks a tool call whose canonical signature repeats MAX_REPEATS times in the window.
 
 import type { ToolCall } from '@dojo/shared';
 
-export const RECENT_TOOL_WINDOW = 8;       // matches v1 runtime.ts:785
-export const MAX_REPEATS_BEFORE_BREAK = 3; // matches v1 runtime.ts:786
+export const RECENT_TOOL_WINDOW = 8;       // calls remembered per turn
+export const MAX_REPEATS_BEFORE_BREAK = 3; // identical signatures allowed before blocking
 
-// Remediation 4f (catalog row 9): user-facing repetition guard. The exact-
-// match check missed trivially reworded repeats; token-set Jaccard catches
-// near-duplicates cheaply on the hot reply path (no embedding call). Short
-// replies stay exact-only: "Done." twice in a row can be legitimate.
+// Token-set Jaccard catches reworded repeats cheaply; short replies stay exact ("Done." twice is legit).
 export function isNearDuplicateText(a: string | null | undefined, b: string | null | undefined): boolean {
   if (!a || !b) return false;
   if (a === b) return true;
@@ -43,63 +29,7 @@ export interface LoopCheckResult {
   refusalMessage?: string;  // populated when decision === 'block'
 }
 
-// ════════════════════════════════════════════════════════════════════════════
-// THE SIGNATURE IS THE WHOLE ARGUMENT OBJECT (OWNER RULING, 2026-09-22)
-//
-// ── WHAT WAS HERE, AND WHY IT IS GONE ──
-// A PROSE-FIELD ALLOW-LIST. v1 shipped `PROSE_FIELDS` — `caption, message,
-// content, text, payload, summary, description, query, reason, note, notes,
-// change_summary, instructions` — DROPPED from the signature on the theory that
-// they "carry agent prose rather than operation identity", so two `show_to_user`
-// calls with different captions would compare equal. Every time that theory met a
-// real tool it was wrong, and every time the answer was ANOTHER CARVE-OUT SET
-// keyed on TOOL NAME rather than a fix to the rule:
-//   · v2.7.25     SEARCH_TOOLS       `query` is identity for 26 named search tools
-//                                    (a vault_search sweep of 4 phrasings, blocked)
-//   · 2026-07     GENERATION_TOOLS   `description`/`prompt`/`text` is identity
-//                                    (7 distinct headshots, blocked after 3)
-//   · OPEN-3      COORDINATION_TOOLS `payload`/`message` is identity
-//                                    (multi-message PM coordination, blocked)
-//   · D5 + 07-21  MUTATING_TOOLS     `content` is identity
-//                                    (a Word doc abandoned mid-build on the 4th append)
-// Four sets, a release-gate derivation scan (`deploy/check-tool-conformance.mjs`
-// section (e)) and a registry-exhaustive unit test were built to keep the
-// allow-list honest. The allow-list still failed in production:
-//
-//   THE LIVE DEFECT (2026-09-22). An agent ran FIVE `user_gmail_search` calls
-//   with five different date ranges — `after:2026/09/08 before:2026/09/11`, then
-//   /11–/14, /14–/17, /17–/20, /20–/23 — each returning different mail.
-//   `user_gmail_search` is a RUNTIME-GENERATED twin of `gmail_search` and is in
-//   no carve-out set, so `query` was stripped and all five collapsed to
-//   `user_gmail_search:{"max_results":40}`. The thrash gate refused the work AND
-//   told the model *"You already have the result from the first call"*, which was
-//   not true. NEITHER GUARD COULD HAVE CAUGHT IT: the `user_` twins are minted at
-//   runtime and are not in the category registry the exhaustive scan iterates, so
-//   the scan is structurally blind to the entire twin family.
-//
-// ── THE RULE NOW ──
-// OWNER RULING: *"Two calls are 'the same' only when the model asked for the same
-// work."* EVERY argument key participates, keys sorted, no allow-list and no
-// name-keyed exception to keep in sync. There is no set left to forget a tool
-// from — which is why this DELETES four exported sets, five field lists,
-// `proseFieldsFor`, and the release-gate section built to police them, instead of
-// adding a fifth set for the twins.
-//
-// ── WHAT THIS COSTS, STATED ──
-// A model that varies a caption while re-running the same operation no longer
-// collapses to one signature, so `loopDetector` will not stop it. That case is
-// covered where it always actually was: the thrash ladder's DRIFT arms
-// (`agent/v2/steps/pre-call-gates/thrash-gate.ts`) exist precisely to catch an
-// agent that VARIES its signatures to dodge the gate — a one-shot nudge at 8
-// iterations, a terminal block at 24 — with `MAX_TOOL_LOOPS` as the per-turn
-// ceiling. Trading a false REFUSAL of genuine work for a slightly later stop on
-// genuine spinning is the direction the owner has ruled on every time this has
-// come up; the reverse trade is the one that reached production.
-// ════════════════════════════════════════════════════════════════════════════
-
-/** 32-bit FNV-1a, hex. Deterministic and dependency-free, and used ONLY to keep a
- *  length-capped value distinguishable from another value with the same head and
- *  the same length. Never a security hash. */
+/** 32-bit FNV-1a, hex: tells a capped value from a same-head, same-length twin. Never a security hash. */
 function fnv1a32(s: string): string {
   let h = 0x811c9dc5;
   for (let i = 0; i < s.length; i++) {
@@ -109,42 +39,19 @@ function fnv1a32(s: string): string {
   return (h >>> 0).toString(16).padStart(8, '0');
 }
 
-/** Above this many characters a value is CAPPED (never dropped). */
 const LONG_VALUE_CHARS = 80;
-/** The readable head kept in a capped value, so a human reading a log or a steer
- *  can still tell what the call was about. */
 const VALUE_PREFIX_CHARS = 60;
-/** Array items carried verbatim before the tail is folded into the digest. */
 const ARRAY_HEAD_ITEMS = 5;
 
-// D5 (2026-07-08 defect-class sweep): the "a successful mutating call is forward
-// progress" predicate is not a hand list either. It lives at the
-// detectTaskThrashing call site as classifyTool(name) === 'effectful-action',
-// which expands correctly (creating a calendar event or uploading a file IS real
-// work) and never drifts. MUTATING_TOOLS used to survive here for the signature
-// carve-out alone; with no carve-out left, the set is gone.
+// "A successful mutating call is forward progress": decided at the detectTaskThrashing call site.
 
-/**
- * Build a canonical signature for a tool call, used to detect loops.
- *
- * The identity is the tool `name` plus EVERY argument it was given, keys sorted
- * so JSON ordering does not matter. Two normalizations survive, and each is
- * stated here because each one CAN make two different values compare equal:
- *
- *   1. RUNS OF 6+ DIGITS inside strings become `*`. The one deliberate collapse
- *      left, narrow and load-bearing: re-reading the same re-rendered artifact
- *      (`/tmp/render_1738422123_000.png` vs `…_1738422999_000.png`) is one
- *      operation, not two. RESIDUAL, NAMED: two genuinely DISTINCT all-numeric
- *      ids of 6+ digits also collapse. Nothing on the owner's live surface passes
- *      such an id (Gmail/Drive/Graph ids are alphanumeric), so this is kept as it
- *      was rather than moved in a fix that was not about it.
- *   2. VALUES LONGER THAN `LONG_VALUE_CHARS` are CAPPED, never dropped, to
- *      `head…[len=N#digest]` — a readable prefix, the exact length, and a digest
- *      of the WHOLE value. Two 500-character queries differing only at the tail
- *      therefore stay DISTINCT; the pre-2026-09-22 form kept `head…[len=N]` with
- *      no digest and did not. Over-long arrays keep their head and fold the tail
- *      into the same kind of digest, for the same reason.
- */
+/** Identity = tool name + EVERY argument key, keys sorted: same signature only when
+ *  the model asked for the same work (no allow-list). Runs of 6+ digits become '*' so a
+ *  re-rendered artifact counts as one operation; residual: distinct all-numeric ids also
+ *  collapse, none on the live surface pass such an id. Long values and array tails are
+ *  CAPPED with a digest of the rest, never dropped, so tail differences stay distinct.
+ *  Varied-argument spinning is not caught here by design: the thrash gate's drift arms
+ *  (steps/pre-call-gates/thrash-gate.ts) and MAX_TOOL_LOOPS cover it. */
 export function canonicalToolSignature(
   name: string,
   args: Record<string, unknown> | undefined,
@@ -166,9 +73,7 @@ export function canonicalToolSignature(
       const head: unknown[] = v.slice(0, ARRAY_HEAD_ITEMS).map((item: unknown) =>
         (typeof item === 'string' ? cap(scrubDigits(item)) : item));
       if (v.length > ARRAY_HEAD_ITEMS) {
-        // The TAIL IS FOLDED IN, NOT DROPPED. Two 7-item arrays that share a
-        // 5-item head are two different asks and must not share a signature —
-        // the same defect the prose allow-list had, one type down.
+        // The folded tail stays in the signature: two arrays with a shared head are two different asks.
         let tail: string;
         try { tail = JSON.stringify(v.slice(ARRAY_HEAD_ITEMS)); } catch { tail = `unserializable:${v.length}`; }
         head.push(`…[n=${v.length}#${fnv1a32(scrubDigits(tail))}]`);
@@ -185,17 +90,6 @@ export function canonicalToolSignature(
   return `${name}:${JSON.stringify(normalized)}`;
 }
 
-/**
- * Check whether this tool call is a duplicate that should be blocked.
- *
- * Caller passes the recent tool signatures window (managed in state).
- * If the new call's signature appears MAX_REPEATS_BEFORE_BREAK times
- * already in the window, the decision is 'block' with a refusal
- * message that tells the agent to stop and respond with text.
- *
- * Behavior verbatim from v1 runtime.ts:1440-1463, same threshold,
- * same refusal message, same windowing.
- */
 export function loopDetector(
   call: ToolCall,
   recentSignatures: string[],
@@ -215,14 +109,6 @@ export function loopDetector(
     };
   }
 
-  // Same-tool-name threshold REMOVED 2026-05-06. The blanket "same tool
-  // called >5 times in the window" check (added in v2.2.2 to catch
-  // history_search thrashing) blocked legitimate batch operations, an agent
-  // updating profiles on 6 sub-agents looked identical to a real loop.
-  // The original target (history_search thrashing) is now handled by giving
-  // history_search results their message IDs + a copy-pasteable
-  // history_get(id="…") hint when truncated, so the agent has a clean
-  // recovery path instead of needing to thrash. MAX_TOOL_LOOPS=75
-  // remains as the per-turn ceiling for the truly-pathological case.
+  // Only an identical signature blocks; a same-tool-name count would stop legitimate batches.
   return { decision: 'ok', signature, repeatCount: repeatCount + 1 };
 }

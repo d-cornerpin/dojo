@@ -1,26 +1,7 @@
-// ════════════════════════════════════════
-// RC-8: content-free courtesy inbound classifier
-//
-// Two Dojo boxes pointed at each other over the iMessage bridge volley stock
-// pleasantries and stock engine acks, and every one of those inbound lines
-// wakes a full model turn on the counterpart (the iMessage lane has none of the
-// A2A lane's terminal-intent / hop-limit structure). This classifier is the
-// deterministic gate the wake point consults: when the sender is a known agent
-// (SafeSender.is_agent) AND the WHOLE message is content-free courtesy, the
-// bridge persists the row but takes no turn, so the loop cannot self-sustain.
-//
-// Two matchers, both whole-message and conservative (a courtesy-shaped message
-// that actually carries a request or a fact must NOT match. A missed turn is
-// the cost of a false positive, so we lean toward NOT firing):
-//   (a) a small pleasantry family (talk soon / sounds good / thanks / you too /
-//       have a good one / no rush ...), short-only. It was modelled on the
-//       strictness of `isGenericCloseout`, which PHASE-2 T6 DELETED; the
-//       strictness stayed, the borrowed neighbour did not.
-//   (b) exact string match against the engine's OWN ack pools (an inbound that
-//       IS verbatim one of our emitted lines is provably machine courtesy).
-//
-// Pure, no I/O; shared by the wake point and its unit test.
-// ════════════════════════════════════════
+// Known agent + WHOLE content-free pleasantry: persist the row, take no turn, so the
+// iMessage courtesy volley cannot self-sustain. A human's "thanks!" is never damped.
+// Matchers are whole-message and lean never-fires: a missed turn costs more than a
+// dampened courtesy. (b) an inbound that IS an engine ack line is machine courtesy.
 
 import {
   START_ACK_POOL,
@@ -29,9 +10,6 @@ import {
   COMPLETION_ACK_POOL,
 } from '../ack-copy.js';
 
-// (b) The exact set of lines the engine itself emits as acks. An inbound that
-// matches one verbatim (after trim) is our own copy bounced back off another
-// box, courtesy by construction, no length gate, these lines run long.
 const ACK_POOL_STRINGS: ReadonlySet<string> = new Set<string>([
   ...START_ACK_POOL,
   ...PROGRESS_ACK_POOL,
@@ -39,10 +17,6 @@ const ACK_POOL_STRINGS: ReadonlySet<string> = new Set<string>([
   ...COMPLETION_ACK_POOL,
 ]);
 
-// (a) The pleasantry family. Kept deliberately narrow: only sign-off / thanks /
-// well-wish phrases that carry no request and no information. Anything with a
-// referent ("let me know when you hear back", "thanks for the deploy update")
-// contains a non-pleasantry token and therefore fails the whole-message anchor.
 const PLEASANTRY_PHRASE =
   '(?:talk soon|talk later|talk to you soon|chat soon|catch you later|catch you soon|' +
   'sounds good|sounds great|sounds like a plan|sound good|works for me|good deal|' +
@@ -52,43 +26,21 @@ const PLEASANTRY_PHRASE =
   'no rush|no worries|no problem|not a problem|all good|all set|' +
   'sure thing|will do|take care|see you|see ya|cheers)';
 
-// Whole-message only: one pleasantry, optionally chained with more via light
-// connective punctuation or "and". Leading/trailing markdown + closing
-// punctuation tolerated.
-//
-// PHASE-2 T6 note (C1): the sibling this comment used to point at — `CLOSEOUT_WHOLE_RE` in
-// classifiers/output.ts — is DELETED. The resemblance was in the ANCHORING IDIOM, never in
-// the job: that one read the model's OUTBOUND prose to decide whether the person had been
-// answered (an honesty question, now keyed on the delivery ledger), while this one reads an
-// INBOUND peer message to decide whether a content-free "thanks!" should wake an agent. The
-// second is a routing question about somebody else's text and is not part of the answered
-// edge, so it stays.
 const PLEASANTRY_WHOLE_RE = new RegExp(
   `^[\\s\`*_>-]*${PLEASANTRY_PHRASE}(?:[.!,\\s]+(?:and\\s+)?${PLEASANTRY_PHRASE})*[.!\\s\`*_]*$`,
   'i',
 );
 
-// Real courtesy sign-offs are short. The cap only guards matcher (a); the
-// exact ack-pool match in (b) is exempt (those lines are longer).
+// Cap guards (a) only; (b) runs any length, those ack lines are long.
 const PLEASANTRY_MAX_CHARS = 48;
 
-/**
- * True when `text`, taken as a whole, is nothing but content-free courtesy:
- * either an exact engine ack-pool line (b) or a short pleasantry (a). Pure and
- * deterministic. Conservative by design, a message that also carries a request
- * or a fact will not match. The caller pairs this with a sender.is_agent check
- * before damping, so a human's "thanks!" is never affected.
- */
-/** v3.5: an inbound that IS one of the engine's own ack lines, verbatim — machine courtesy by construction. */
 export const isEngineAckLine = (text: string): boolean => ACK_POOL_STRINGS.has((text ?? '').trim());
 
 export function isContentFreeCourtesy(text: string): boolean {
   if (!text) return false;
   const t = text.trim();
   if (t.length === 0) return false;
-  // (b) exact match against our own emitted ack lines, any length.
   if (isEngineAckLine(t)) return true;
-  // (a) short pleasantry family, whole-message only.
   if (t.length > PLEASANTRY_MAX_CHARS) return false;
   return PLEASANTRY_WHOLE_RE.test(t);
 }

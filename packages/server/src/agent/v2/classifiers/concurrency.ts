@@ -1,15 +1,6 @@
-// ════════════════════════════════════════
-// Phase 1A, partitionTools classifier
-//
-// Groups consecutive same-category tool calls into batches so the
-// executor can run safe (read-only) batches concurrently via
-// Promise.all and serialize everything else.
-//
-// Phase 1A: hard-coded category map keyed by tool name.
-// Phase 3 will move the source of truth to ToolDefinition.concurrency
-// and replace TOOL_CATEGORY here with a registry lookup. The classifier
-// signature stays the same.
-// ════════════════════════════════════════
+// Groups consecutive same-category tool calls into batches so the executor can run
+// safe (read-only) batches concurrently via Promise.all and serialize everything
+// else. Unknown tools default to 'special', the safest serial behavior.
 
 import type { ToolCall } from '@dojo/shared';
 import { workOperation } from '../../../tools/work-verbs.js';
@@ -21,30 +12,9 @@ export interface ToolBatch {
   calls: ToolCall[];
 }
 
-/**
- * Hardcoded category map per Part VII table. Audited against
- * cornerpin-platform/packages/server/src/agent/tools.ts as of v2 plan.
- *
- * Categories:
- *   safe, pure read, no side effects, parallelizable
- *   serial, has side effects, must run in order
- *   agent, coordinates with other agents, sequential
- *   special, one-of-a-kind semantics, sequential
- *
- * Unknown tools default to 'special' (safest serial behavior).
- *
- * HAND-PICKED, but SAFE-BY-CONSTRUCTION and superseded as source of truth: the
- * canonical concurrency category is now ToolDefinition.concurrency, registered
- * into REGISTRY_OVERRIDES at module init (see registerConcurrency below), which
- * classifyConcurrency checks FIRST. This map is only the Phase-1A fallback for
- * tools that declare no concurrency field, and the fallback default for anything
- * missing is 'special' (serial), the SAFEST behavior, so drift here can only
- * cost parallelism, never correctness. The 2026-07-08 sweep removed phantom keys
- * (drive_search, teams_read_chat, gmail_archive/gmail_delete, docs_update/
- * sheets_update, outlook_archive, slides_create_deck, word_/excel_/pptx_*) that
- * named no real tool and so never matched a call; the conformance test now
- * asserts every remaining key is a real registered tool.
- */
+/** Category map, now the fallback only: ToolDefinition.concurrency registers into
+ *  REGISTRY_OVERRIDES and wins every lookup here. Drift costs parallelism, never
+ *  correctness: unmapped tools fall back to 'special' (serial), the safest behavior. */
 export const TOOL_CATEGORY: Record<string, ToolCategory> = {
   // ── safe (read-only, parallelizable) ──
   load_tool_docs: 'safe',
@@ -65,7 +35,6 @@ export const TOOL_CATEGORY: Record<string, ToolCategory> = {
   technique_list_versions: 'safe',
   technique_read: 'safe',
   get_agent_profile: 'safe',
-  // Google read-only
   gmail_search: 'safe',
   gmail_read: 'safe',
   calendar_agenda: 'safe',
@@ -73,7 +42,6 @@ export const TOOL_CATEGORY: Record<string, ToolCategory> = {
   drive_read: 'safe',
   docs_read: 'safe',
   sheets_read: 'safe',
-  // Microsoft read-only
   outlook_search: 'safe',
   outlook_read: 'safe',
   calendar_agenda_ms: 'safe',
@@ -88,16 +56,12 @@ export const TOOL_CATEGORY: Record<string, ToolCategory> = {
   applescript_run: 'serial',
   vault_remember: 'serial',
   vault_forget: 'serial',
-  // PHASE-2 T8V: the eleven tracker entries moved to WORK_OP_CONCURRENCY below.
-  // They cannot live in this name-keyed map any more: `work_update` is both the
-  // status write (serial) and the two reads (safe), so a single entry would
-  // either serialise every board read or — far worse — mark a status write safe
-  // and let two of them run concurrently.
+  // The tracker verbs moved to WORK_OP_CONCURRENCY below: `work_update` is both the
+  // status write (serial) and the two reads (safe), so no single name-keyed entry fits.
   healer_log_action: 'serial',
   healer_propose: 'serial',
   set_user_presence: 'serial',
   tunnel: 'serial',
-  // Google writes
   gmail_send: 'serial',
   gmail_draft: 'serial',
   gmail_reply: 'serial',
@@ -112,7 +76,6 @@ export const TOOL_CATEGORY: Record<string, ToolCategory> = {
   drive_delete: 'serial',
   docs_create: 'serial',
   sheets_create: 'serial',
-  // Microsoft writes
   outlook_send: 'serial',
   outlook_draft: 'serial',
   outlook_reply: 'serial',
@@ -142,7 +105,6 @@ export const TOOL_CATEGORY: Record<string, ToolCategory> = {
   forms_set_settings: 'serial',
   forms_delete_item: 'serial',
   forms_delete_form: 'serial',
-  // Office docs over Graph (OneDrive in-place edits)
   office_create_word_document: 'serial',
   office_append_to_word_document: 'serial',
   office_get_word_document_outline: 'safe',
@@ -162,7 +124,6 @@ export const TOOL_CATEGORY: Record<string, ToolCategory> = {
   office_replace_in_presentation: 'serial',
   office_insert_slide: 'serial',
   office_delete_slide: 'serial',
-  // Techniques (writes to disk)
   save_technique: 'serial',
   publish_technique: 'serial',
   update_technique: 'serial',
@@ -197,21 +158,10 @@ export const TOOL_CATEGORY: Record<string, ToolCategory> = {
   web_browse: 'special',
 };
 
-/**
- * Per-tool concurrency overrides registered from `tools.ts` (and
- * google/microsoft tool files) at module-init time. Lookups check this
- * map first, then fall back to TOOL_CATEGORY.
- *
- * Phase 3 (2026-05-04): tools.ts iterates its `toolDefinitions` and calls
- * `registerConcurrency` for any tool with a `concurrency` field set on its
- * definition. This makes ToolDefinition the canonical source of truth
- * without creating a circular import (concurrency.ts → tools.ts → ...).
- *
- * Phase 3.5 (2026-05-04): also stores `maxResultTokens` so cross-file tool
- * registries (Google, Microsoft, Slides, Office) can declare their per-tool
- * caps without all of them having to be in the agent/tools.ts toolDefinitions
- * array. Looked up by `resultViewChars` in agent/tools/index.ts.
- */
+/** Per-tool overrides registered from the tool files at module-init time; lookups
+ *  check this first, then TOOL_CATEGORY. Registration is one-way (the tool file calls
+ *  registerConcurrency), so this map needs no import back there and no cycle exists.
+ *  Also stores per-tool max-result-token caps for registries outside tools.ts. */
 const REGISTRY_OVERRIDES = new Map<string, ToolCategory>();
 const REGISTRY_MAX_RESULT_TOKENS = new Map<string, number>();
 
@@ -223,38 +173,21 @@ export function registerMaxResultTokens(toolName: string, tokens: number): void 
   REGISTRY_MAX_RESULT_TOKENS.set(toolName, tokens);
 }
 
-/**
- * Look up a tool's max-result-token cap. Returns undefined if no cap
- * was registered for this tool.
- */
+/** The tool's registered max-result-token cap, or undefined if none. */
 export function getRegisteredMaxResultTokens(toolName: string): number | undefined {
   return REGISTRY_MAX_RESULT_TOKENS.get(toolName);
 }
 
-/**
- * Look up a tool's concurrency category. Order of precedence:
- *   1. Definition-level override (registered from tools.ts)
- *   2. Hardcoded TOOL_CATEGORY map (Phase 1A baseline)
- *   3. 'special' (safest serial default for unknown tools)
- */
-/**
- * PHASE-2 T8V — the collapsed verbs' concurrency, keyed on the OPERATION.
- *
- * `work_update` is the reason this map has to exist: it performs both the two
- * read operations (parallelisable) and the status/edit writes (must serialise).
- * A single name-keyed entry could only be one of those, and the wrong direction
- * is not a parallelism cost but a correctness bug — two concurrent status writes
- * to the same task. Anything not listed falls through to 'special' (serial),
- * which is the safe direction and is what the eleven retired write entries had.
- */
+/** Keyed on the OPERATION, not the name: `work_update` is both the two reads (safe)
+ *  and the status/edit writes; one name-keyed entry could only be one of those. */
 export const WORK_OP_CONCURRENCY: Readonly<Record<string, ToolCategory>> = {
   'work_update:list': 'safe',
   'work_update:get': 'safe',
-  // UX-REPAIR ROUND 13 T60. Same class as its two siblings and for the same reason: it
-  // executes SELECTs and nothing else, so two of them cannot race each other or anything.
+  // Same class as its siblings: it runs SELECTs and nothing else, so it cannot race.
   'work_update:activity': 'safe',
 };
 
+/** Lookup order: tracker operation map, then registry override, then TOOL_CATEGORY. */
 export function classifyConcurrency(toolName: string, args?: Record<string, unknown>): ToolCategory {
   const op = workOperation(toolName, args);
   if (op !== null) return WORK_OP_CONCURRENCY[op] ?? 'special';
@@ -263,17 +196,9 @@ export function classifyConcurrency(toolName: string, args?: Record<string, unkn
   return TOOL_CATEGORY[toolName] ?? 'special';
 }
 
-/**
- * Group consecutive same-category calls into batches.
- *
- * Only `safe` batches will be executed concurrently by the executor.
- * Everything else runs serially. We still group by category so the
- * executor can apply per-category logic uniformly.
- *
- * Critical invariant: a `serial`/`agent`/`special` call BREAKS a
- * preceding `safe` batch. The model called them in a specific order
- * and reordering by category would change semantics.
- */
+/** Only `safe` batches run concurrently; everything else runs serially. Invariant: a
+ *  serial/agent/special call BREAKS a preceding safe batch, the model chose that order
+ *  and regrouping by category would change semantics. */
 export function partitionTools(toolCalls: ToolCall[]): ToolBatch[] {
   const batches: ToolBatch[] = [];
   for (const tc of toolCalls) {
