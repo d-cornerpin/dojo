@@ -19,7 +19,7 @@ export function migrationFileNames(): string[] {
   return fs.existsSync(MIGRATIONS_DIR) ? fs.readdirSync(MIGRATIONS_DIR).filter(f => f.endsWith('.sql')).sort() : [];
 }
 
-/** One chain file's text; the runner applies it, and v3.5 dojo_inspect reads its prose notes. */
+/** One chain file's text, read from the bundled migrations directory. */
 export function readMigrationFile(name: string): string {
   return fs.readFileSync(path.join(MIGRATIONS_DIR, name), 'utf-8');
 }
@@ -111,7 +111,6 @@ export function runMigrations(): void {
     CREATE INDEX IF NOT EXISTS idx_models_provider_id ON models(provider_id);
   `);
 
-  // Run SQL file migrations
   runSqlMigrations(db);
 
   // Ensure the 'auto' sentinel model exists for auto-routing FK compliance
@@ -125,33 +124,10 @@ export function runMigrations(): void {
   logger.info('Database migrations completed');
 }
 
-// ── A REPAIR FILE WHOSE SUBJECT MAY ALREADY BE GONE (UPDATE-INTEGRITY U0) ──
-//
-// A migration added to fix an OLD defect sorts into the chain where the damage happens, so
-// a body that stopped short of that point gets the repair on its next boot. But a body that
-// already ran past that point has the file PENDING too — and by then the thing the repair
-// operates on can be gone. `135c_stable_close_open_parks.sql` is the case that forced this:
-// it rewrites `messages.conv_key`, and `148` DROPS that column, so on every box that
-// completed the 3.1.17 chain the file would be prepared against a column that no longer
-// exists and throw `no such column: conv_key` — the same bricked boot the repair exists to
-// end, moved thirteen files down the chain.
-//
-// The guard cannot live in the SQL. SQLite resolves column names when a statement is
-// PREPARED, not when it runs, so `WHERE EXISTS (SELECT … FROM pragma_table_info(…))` never
-// gets the chance to be false; measured, including the strongest form available (a TEMP
-// TRIGGER body that is never fired still fails at prepare — the probe is kept as a test in
-// `an-open-park-is-closed-by-the-chain.test.ts`).
-//
-// So a file may DECLARE what it needs, on one line the runner reads:
-//
-//     -- REQUIRES-COLUMN: <table>.<column>
-//
-// When the column is absent the file is RECORDED AS RUN WITHOUT EXECUTING. Recorded, not
-// re-tried, because the condition is permanent: a dropped column does not come back, and a
-// file retried every boot forever is a crash loop with extra steps. Its checksum is stored
-// like any other. Deliberately ONE form and not a general expression language: the question a
-// repair file needs to ask is "is my subject still here", and a directive that could ask
-// anything would become a place to put logic that belongs in the file.
+// A repair file may sort before a migration that drops its subject, so a body already past that point
+// would fail to prepare it. SQLite resolves columns at prepare time, so the guard cannot live in the SQL:
+// a file declares `-- REQUIRES-COLUMN: <table>.<column>` and, when the column is absent, is recorded as
+// run without executing (a dropped column never returns, so retrying every boot would be a crash loop).
 const REQUIRES_COLUMN = /^--[ \t]*REQUIRES-COLUMN:[ \t]*([A-Za-z_]\w*)\.([A-Za-z_]\w*)[ \t]*$/m;
 
 /** The `<table>.<column>` a migration declared and this database does not have, or null. */
@@ -164,7 +140,6 @@ function unmetRequirement(db: ReturnType<typeof getDb>, sqlText: string): string
 }
 
 function runSqlMigrations(db: ReturnType<typeof getDb>): void {
-  // Ensure migration tracking table exists
   db.exec(`
     CREATE TABLE IF NOT EXISTS _migrations (
       name TEXT PRIMARY KEY,
@@ -179,45 +154,23 @@ function runSqlMigrations(db: ReturnType<typeof getDb>): void {
   if (!fs.existsSync(MIGRATIONS_DIR)) return;
   const files = migrationFileNames();
 
-  // Snapshot the pending set up front so the pre-chain backup and the chain
-  // timing both see the whole set. This is a read-only probe; each file is still
-  // RECORDED atomically alongside its apply inside applyOne below.
+  // Read-only probe of the pending set so the backup sees it whole; each file is recorded in applyOne.
   const pending = files.filter(
     f => !db.prepare('SELECT name FROM _migrations WHERE name = ?').get(f),
   );
 
-  // ── Pre-chain online DB backup (owner decision D-F restore point) ──
-  // D-F is a deliberate NO-rollback-after-migrations policy; that policy needs an
-  // actual restore point. Before applying ANY pending migration, snapshot the live
-  // DB so a bad upgrade can be recovered by copying the snapshot back. Only when
-  // there is real work to do.
-  //
-  // This CAN throw (MigrationBackupRequiredError), and that is the point: a chain
-  // with no restore point is not run. See db/migration-backup.ts for the two scope
-  // limits and the override. The throw is deliberately NOT caught here — it must
-  // reach the boot, because a boot that fails before any migration applied is one
-  // the watchdog's auto-rollback still covers, whereas a chain that ran without a
-  // backup is not covered by anything.
+  // Snapshot before any pending migration (see migration-backup.ts). Its throw is deliberately not caught:
+  // a boot that fails before any migration applied is still covered by the watchdog's auto-rollback.
   if (pending.length > 0) {
     ensurePreChainBackup(db, files, pending);
   }
 
-  // Disable FK checks for the entire migration run.
-  // Migrations may drop/recreate tables or insert into tables with cross-references.
-  // FK checks are re-enabled after all migrations complete. This is set OUTSIDE the
-  // per-migration transactions below (a `PRAGMA foreign_keys` change is a no-op
-  // while a transaction is open), so the OFF state holds across the whole chain.
+  // FK checks off for the whole chain (migrations drop and recreate cross-referenced tables). Set outside
+  // the per-file transactions, where a `PRAGMA foreign_keys` change would be a no-op.
   db.pragma('foreign_keys = OFF');
 
-  // ── Atomic apply+record ──
-  // Each migration file is applied AND recorded into _migrations inside ONE
-  // transaction, so a mid-file crash can no longer leave partial DDL committed
-  // (a re-run would otherwise die on a bare ALTER/CREATE), and the old
-  // crash-between-exec-and-record double-run window is closed: either both the
-  // schema change and its _migrations row commit, or neither does. Verified safe
-  // to wrap every file: no migration self-BEGINs, none runs a transaction-hostile
-  // statement (VACUUM / FTS 'rebuild' / a foreign_keys PRAGMA), and FK enforcement
-  // is toggled outside this loop.
+  // Each file is applied AND recorded in one transaction: both commit or neither. So no migration may
+  // self-BEGIN or run VACUUM, an FTS 'rebuild' or a foreign_keys PRAGMA.
   const applyOne = db.transaction((fileName: string, sqlText: string) => {
     // Migration 019 needs special inline SQL (the .sql file is a no-op marker).
     if (fileName === '019_agent_sdk_auth.sql') {
@@ -240,19 +193,16 @@ function runSqlMigrations(db: ReturnType<typeof getDb>): void {
     } else {
       db.exec(sqlText);
     }
-    // Record WHAT ran, in the same transaction as the apply.
     db.prepare('INSERT INTO _migrations (name, checksum) VALUES (?, ?)')
       .run(fileName, migrationChecksum(sqlText));
   });
 
-  // ── Chain timing (info-level, cheap Date.now diffs) ──
   const chainStart = Date.now();
   for (const file of pending) {
     const sql = readMigrationFile(file);
     const missing = unmetRequirement(db, sql);
     if (missing) {
-      // The subject of this file is already gone. Record it as run and move on — see
-      // `unmetRequirement` for why this is a skip and not a failure.
+      // The file's subject is already gone: record it as run (see REQUIRES_COLUMN above).
       logger.info(`Migration not applicable to this database; recording as run: ${file}`, { missing });
       db.prepare('INSERT INTO _migrations (name, checksum) VALUES (?, ?)')
         .run(file, migrationChecksum(sql));
@@ -281,7 +231,6 @@ function runSqlMigrations(db: ReturnType<typeof getDb>): void {
     });
   }
 
-  // Re-enable FK checks after all migrations
   db.pragma('foreign_keys = ON');
 
   // A released file never changes under a box (the release gate holds that). One that did is said
@@ -291,16 +240,8 @@ function runSqlMigrations(db: ReturnType<typeof getDb>): void {
     .map((r) => r.name);
   if (changed.length > 0) logger.warn('Migration files differ from the ones this database applied; they are not re-run', { files: changed });
 
-  // ── 075 visibility ──
-  // When migration 075 was just applied, surface how many role='user' rows are still
-  // UNCLASSIFIED yet carry content that starts with '[', a bracketed prefix 075's
-  // backfill did not recognise. A novel legacy engine prefix would otherwise render
-  // silently as the user speaking; this count makes it visible so it can be classified
-  // instead of leaking as user speech.
-  // T6: "unclassified" was `origin_kind IS NULL`; it is `lane = 'owner'` now (migration
-  // 127 derived the lane FROM origin_kind for every migrated row, so the two select the
-  // same rows). The probe only ever runs on a database old enough for 075 to be pending,
-  // which reaches this code path with the unified table already in place.
+  // When 075 just ran, log how many owner-lane user rows still start with '[': an unrecognised legacy
+  // engine prefix would otherwise render silently as the user speaking.
   if (pending.includes('075_message_origin_kind.sql')) {
     try {
       const unmatched = (db.prepare(
@@ -314,27 +255,7 @@ function runSqlMigrations(db: ReturnType<typeof getDb>): void {
     } catch { /* visibility only; a probe failure must never fail the boot */ }
   }
 
-  // ── The search index's health is `memory/fts-health.ts`'s question now (t89 D3 / t98 D3) ──
-  //
-  // A region here used to compare `messages_fts_docsize` against `messages` and repair a mismatch
-  // with fts5's `'rebuild'`. It asked the RIGHT question — it replaced an earlier probe that
-  // compared `messages` against itself and whose repair structurally could not fire — and that
-  // argument, with the measurement behind it, is carried in `fts-health.ts`'s header rather than
-  // lost with the code.
-  //
-  // What it could not be, HERE, was non-blocking. `runMigrations()` is called hundreds of lines
-  // ahead of the port bind, and `'rebuild'` on a 729 MB database is minutes of synchronous C++ on
-  // the thread that is about to serve HTTP — so the box whose index is broken was exactly the box
-  // that spent its whole boot window rebuilding before it answered anything. It also could not see
-  // a MISSING table (`COUNT(*) FROM messages_fts_docsize` throws, the catch logs, nothing is
-  // repaired) or a CORRUPT one (agreeing counts say the row COUNT is right and say nothing about
-  // whether `MATCH` works).
-  //
-  // `scheduleFtsHealthCheck()` in `index.ts` answers all three, on another thread, 45 s after the
-  // box is already serving. ⚠ DO NOT RE-ADD A REBUILD HERE: a clause
-  // (`memory/__tests__/a-database-from-april-must-end-up-searchable.test.ts`) reads this file with
-  // its comments stripped and reds on an fts5 `'rebuild'` call anywhere in it, because both
-  // mechanisms shipping at once is how the background one quietly never repaired anything — the
-  // synchronous one got there first, and the boot stayed blocked.
+  // Search-index health belongs to memory/fts-health.ts, run off-thread once the box serves (index.ts).
+  // Never add an fts5 'rebuild' here: on a large database it blocks the boot for minutes.
 }
 

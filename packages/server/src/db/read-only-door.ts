@@ -1,18 +1,7 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// v3.5 inspect (fix round 1) — THE ONE DOOR OF THE READ-ONLY CONNECTION.
-//
-// `readonly: true` is the real guard: SQLite will not write the file. But a read-only handle
-// still accepts statements that change the CONNECTION — `PRAGMA query_only = 0`, `ATTACH`, and
-// then `VACUUM INTO '<path>'`, which writes a full copy of the database (every credential
-// table included) to any path (measured by the review). SQLite's own `sqlite3_stmt_readonly`
-// answers TRUE for a pragma and an ATTACH, so it cannot be the whole test either.
-//
-// So the connection runs only through this door, whatever the caller: a statement is prepared
-// only when its first keyword is SELECT, WITH, VALUES or EXPLAIN (an EXPLAIN only of one of
-// those), and the prepared statement is a reader that SQLite calls read-only. `exec`, `pragma`,
-// `backup` and `loadExtension` are closed on the handle. The connection's own settings are
-// applied before the door shuts.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// The one door of the read-only connection. `readonly` stops file writes, but the handle still accepts
+// PRAGMA query_only = 0, ATTACH, then VACUUM INTO (a full database copy to any path), and SQLite's
+// stmt_readonly says true for a pragma or ATTACH. So only a SELECT, WITH, VALUES or EXPLAIN of one that
+// SQLite marks a read-only reader is prepared, and exec, pragma, backup and loadExtension are closed.
 
 import type Database from 'better-sqlite3';
 
@@ -24,14 +13,12 @@ export function firstKeyword(sql: string): string {
   return (/^[A-Za-z]+/.exec(sql.replace(LEAD, ''))?.[0] ?? '').toLowerCase();
 }
 
-/** A statement without its leading `EXPLAIN` / `EXPLAIN QUERY PLAN`, and whether it had one. */
 export function stripExplain(sql: string): { explained: boolean; inner: string } {
   const s = sql.replace(LEAD, '');
   const m = /^explain(\s+query\s+plan)?\b/i.exec(s);
   return m ? { explained: true, inner: s.slice(m[0].length) } : { explained: false, inner: s };
 }
 
-/** Is this statement, by its words, a read (or an EXPLAIN of one)? */
 export function isReadStatement(sql: string): boolean {
   const { inner } = stripExplain(sql);
   return READS.has(firstKeyword(inner));
@@ -45,7 +32,7 @@ const refuse = (what: string): never => {
   throw new ReadOnlyDoorError(`${what} does not run on dojo_inspect's read-only connection: only a read does (SELECT, WITH, VALUES, or EXPLAIN of one).`);
 };
 
-/** Shut the door on a connection already opened `readonly` with its settings applied. */
+/** Shut the door on a connection opened `readonly` whose settings are already applied. */
 export function guardReadOnly(db: Database.Database): Database.Database {
   const prepare = db.prepare.bind(db);
   const door = ((source: string) => {

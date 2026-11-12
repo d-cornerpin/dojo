@@ -22,28 +22,18 @@ export function getDb(): Database.Database {
 
   db = new Database(DB_PATH);
 
-  // Enable WAL mode and foreign keys
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
 
-  // PHASE-0 T12c: the settings every statement in the platform inherits, set
-  // here because this is the only place the platform opens its own database.
-  // Behaviour-neutral by construction — none of the three changes a result,
-  // only where the bytes come from. Asserted by readback in
-  // db/__tests__/connection-pragmas.test.ts, because SQLite accepts an
-  // unusable value in silence.
-  //
-  // Negative cache_size is KiB, not pages: 32 MB, roughly twice the whole
-  // database today, so the working set is not evicted by one large scan.
+  // Connection-wide settings, set here because this is the only place the platform opens its database.
+  // Asserted by readback in db/__tests__/connection-pragmas.test.ts: SQLite accepts a bad value silently.
+  // Negative cache_size is KiB, not pages: 32 MB keeps the working set through one large scan.
   db.pragma('cache_size = -32000');
-  // Read pages straight out of the OS page cache instead of a read() syscall
-  // per page; 256 MB is well clear of the current file with room to grow.
+  // Read pages through mmap instead of one read() syscall per page (256 MB window).
   db.pragma('mmap_size = 268435456');
-  // Sorts, GROUP BY spills and temp b-trees stay in RAM instead of writing a
-  // scratch file next to the database.
+  // Sorts, GROUP BY spills and temp b-trees stay in RAM instead of a scratch file.
   db.pragma('temp_store = MEMORY');
 
-  // Verify foreign keys are actually enabled
   const fkStatus = db.pragma('foreign_keys', { simple: true });
   if (fkStatus !== 1) {
     logger.warn('Foreign keys not enabled, forcing ON', { status: fkStatus });
@@ -55,8 +45,8 @@ export function getDb(): Database.Database {
   return db;
 }
 
-/** v3.5 inspect: the connection every dojo_inspect view reads through. `readonly` makes SQLite
- *  refuse a write; the door refuses anything but a read. WAL lets it read beside the writer. */
+/** The connection every dojo_inspect view reads through. `readonly` makes SQLite refuse a write,
+ *  the door refuses anything but a read, and WAL lets it read beside the writer. */
 export function getReadOnlyDb(): Database.Database {
   if (readOnlyDb) return readOnlyDb;
   getDb(); // the file and its WAL exist before a readonly open
