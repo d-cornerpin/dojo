@@ -1,33 +1,4 @@
-// ════════════════════════════════════════
-// Reply-Destination Resolver (v2.7.23)
-//
-// Decides where the model's terminal assistant text gets delivered at
-// end-of-turn. The model just writes text; this resolver tells the engine
-// which channel to route through. OpenClaw-inspired (see their
-// src/auto-reply/reply/source-reply-delivery-mode.ts).
-//
-// Replaces the v2.7.22 "model must call imessage_send for every reply"
-// pattern, which failed in practice because the model's trained default
-// for conversational/short replies is to stream text, not call a tool.
-// Asking the model to flip mid-stream lost ~50% of replies into dashboard
-// chat that the owner never saw on iMessage.
-//
-// Two layers:
-//
-//  1. Inbound channel binding (read from state.inboundChannel) → reply
-//     goes back via the SAME channel the inbound came in on. A reply to
-//     an iMessage thread goes back to that iMessage. A reply on the
-//     dashboard goes back to dashboard.
-//
-//  2. Away override → when presence === 'away' AND the natural reply
-//     destination is 'dashboard' AND the iMessage bridge is configured,
-//     rewrite the destination to 'imessage'. This means proactive agent
-//     messages (no inbound trigger) reach the user on their phone when
-//     they're not at the dashboard.
-//
-// The watchdog/sendAlert path is independent of this resolver — it goes
-// direct to iMessage when configured and is not subject to routing.
-// ════════════════════════════════════════
+
 
 import type { AgentTurnState } from './state.js';
 
@@ -37,59 +8,33 @@ export interface ResolveReplyDestinationParams {
   state: Pick<AgentTurnState, 'inboundChannel'>;
   presence: 'in_dojo' | 'away';
   imessageBridgeConfigured: boolean;
-  // RC-10: owner-channel affinity. When the turn counterparty is the owner AND the
-  // natural destination is 'dashboard', route to the channel the owner actually
-  // converses on instead of the invisible dashboard. `counterpartyIsOwner` gates it to
-  // the owner (never a contact); `ownerAffinityChannel` is the resolved channel from
-  // resolveOwnerAffinityChannel AFTER the caller applied the per-conversation rate
-  // limit (null = no promotion this turn). The presence-away override stays stronger.
+  // Owner affinity: owner only, never a contact; the channel arrives past the caller's rate limit,
+  // null = no promotion. `personAskedHere`: the turn address is a person, not an engine or proactive turn.
   counterpartyIsOwner?: boolean;
   ownerAffinityChannel?: 'imessage' | null;
-  /** v3.5 field fix 3: this turn is a PERSON's ask (the turn address's kind is 'person'), not an
-   *  engine, proactive or notification turn whose reply merely defaults to the dashboard. */
   personAskedHere?: boolean;
 }
 
 export function resolveReplyDestination(params: ResolveReplyDestinationParams): ReplyDestination {
   const { state, presence, imessageBridgeConfigured, counterpartyIsOwner, ownerAffinityChannel, personAskedHere } = params;
 
-  // Layer 1: bind to the inbound channel when one is set. The away override
-  // never applies to these — if the user reached out via Teams, the reply
-  // goes back via Teams regardless of presence; same for iMessage and email.
+  // Layer 1: a routed inbound is answered on the channel it arrived on, whatever presence says.
   if (state.inboundChannel === 'imessage') return 'imessage';
   if (state.inboundChannel === 'teams') return 'teams';
   if (state.inboundChannel === 'email') return 'email';
   if (state.inboundChannel === 'sms') return 'sms';
   if (state.inboundChannel === 'phone') return 'phone';
-  // Voice is in-person speech: the reply is spoken back via TTS. It must NOT
-  // fall through to the away override below — a person talking to you out
-  // loud doesn't get a text on their phone instead. Returning 'voice' here
-  // keeps the reply on the voice channel regardless of presence.
+  // Voice is in-person speech: it is spoken back, so it must never fall through to a text.
   if (state.inboundChannel === 'voice') return 'voice';
-  // OWNER RULING (2026-11-04, field fix 3 test-2 round), verbatim: "obviously if a user types a
-  // message on the dashboard, they get a response on the dashboard." A person's dashboard ask is
-  // bound like every other routed inbound, whatever the presence state; neither the away override
-  // nor affinity below ever applies to it. (Away still forwards everything else to the phone: the
-  // engine, proactive and notification turns that merely DEFAULT to the dashboard. The server also
-  // flips presence back to in-dojo when the owner types there: `gateway/routes/chat.ts`.)
+  // A person's own dashboard ask is bound like every other inbound, not a dashboard-default turn.
   if (state.inboundChannel === 'dashboard' && personAskedHere === true) return 'dashboard';
 
-  // Layer 2: a dashboard-default turn that no person asked on the dashboard (engine, proactive,
-  // notification) → default to dashboard,
-  // then apply the away override if applicable. (Away override only
-  // promotes to iMessage — Teams/email require a specific recipient
-  // context that proactive turns don't carry.)
+  // Layer 2: away promotes only to iMessage (Teams and email need a recipient context proactive turns
+  // lack) and outranks affinity; typing on the dashboard flips presence back (gateway/routes/chat.ts).
   const base: ReplyDestination = 'dashboard';
-  // Away override stays the STRONGER promotion: the owner is explicitly not at the
-  // dashboard, so every dashboard-default reply reaches their phone.
   if (presence === 'away' && imessageBridgeConfigured) {
     return 'imessage';
   }
-  // RC-10: owner-channel affinity. Only for the owner (never a contact), only when the
-  // owner's live conversation channel resolved to a routed one, and only when the
-  // caller's per-conversation rate limit allowed the promotion (ownerAffinityChannel
-  // is null otherwise). Follows the channel the conversation lives on instead of the
-  // invisible dashboard, so a follow-up reaches the owner where they actually are.
   if (counterpartyIsOwner && ownerAffinityChannel === 'imessage' && imessageBridgeConfigured) {
     return 'imessage';
   }

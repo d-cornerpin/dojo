@@ -1,24 +1,7 @@
-// ════════════════════════════════════════
-// Context receipt — Phase 0 of the remediation plan.
-//
-// Records exactly what the model received on one loop iteration, after every
-// injector and post-assembly mutation has run. The receipt is the instrument
-// that turns "what did the model actually see?" from a theory into a fact,
-// which is what makes every later deletion in the plan safe.
-//
-// Permanent, debug-gated: off by default, near-zero cost when off.
-//
-// Modes (config key `context_receipt_mode`; env DOJO_RECEIPT_MODE wins):
-//   off  — no receipts (default)
-//   meta — structure only: system-prompt block headings + sizes + hashes,
-//          per-message shape (role, source, kinds, sizes). No content bodies,
-//          so nothing sensitive is persisted.
-//   full — meta plus verbatim system prompt and message bodies. Explicit
-//          debugging only. Files stay local under ~/.dojo/receipts and are
-//          never logged, broadcast, or embedded.
-//
-// Discipline: writes are fire-and-forget and NEVER throw into the turn.
-// ════════════════════════════════════════
+// Context receipt: what the model actually received on one loop iteration, after every
+// injector and post-assembly mutation has run. Debug-gated and off by default: `meta`
+// records headings, sizes and hashes only, `full` adds verbatim bodies. Writes are
+// fire-and-forget and NEVER throw into the turn; files stay under ~/.dojo/receipts, never logged.
 
 import fs from 'node:fs';
 import { estimateTokensFromChars } from '../../memory/budget.js';
@@ -51,48 +34,28 @@ export interface ReceiptInput {
   loopCount: number;
   systemPrompt: string;
   messages: LoopMessage[];
-  /**
-   * PHASE-3 T3: index of the FIRST message of the near-tail volatile lane
-   * (`msg.turn-context` -> `msg.peer-status` -> `msg.current-time` and the one-shot engine
-   * hints beside them). Everything BELOW it is the cacheable region and must be
-   * append-only across calls; everything at or above it is volatile BY DESIGN and is
-   * re-emitted after each turn's new rows. `check-message-prefix.mjs` could not tell the
-   * two apart and therefore reported the designed shape as a broken prefix.
-   */
+  /** Index of the first near-tail volatile message: below it the region is cacheable and
+   *  append-only; at or above it messages are volatile by design, re-emitted each turn. */
   volatileFrom?: number;
   useTools: boolean;
-  /** Registry path only: the entry id that produced each system-prompt part,
-   *  aligned to the parts recovered by splitting on PART_JOINER. Attached to
-   *  each part only when the count matches (so a misalignment from a later
-   *  loop-side mutation is dropped rather than mislabeled). Omitted on the
-   *  legacy path → receipt unchanged. */
+  /** The entry id behind each system-prompt part, aligned to the PART_JOINER split;
+   *  attached only when the counts match, so a loop-side misalignment is dropped, not mislabeled. */
   systemEntryIds?: (string | null)[];
-  /**
-   * The LANE that produced each message, aligned to `messages`. PHASE-3 T6 (F21) —
-   * declared since the registry landed and assigned by nothing until now. `null` means no
-   * lane claimed the message, which is a finding, not a hole to pattern-match over.
-   */
+  /** The LANE that produced each message, aligned to `messages`; `null` means no lane
+   *  claimed it, which is a finding in its own right, not a hole to pattern over. */
   messageEntryIds?: (string | null)[];
-  /**
-   * F20: the allocator's own record — one grant per lane INCLUDING the rejected, the
-   * truncated and the ones that rendered nothing, each with its reason in words. Before
-   * this a section the budget dropped produced a byte-identical receipt to a section that
-   * never existed (research 06 §8's own complaint).
-   */
+  /** The allocator's own record: one grant per lane INCLUDING rejected, truncated and
+   *  no-rendered, each with its reason; a dropped section must not look like an absent one. */
   allocation?: AllocationReport;
-  /** F22: how many fresh-tail messages the assembler dropped to fit the window. */
+  /** How many fresh-tail messages the assembler dropped to fit the window. */
   freshTailDropped?: number;
-  /** F22: `systemVolatile.length`. The cache law says it stays 0; recording it is how a
-   *  regression becomes visible per assembly instead of only at the next gate run. */
+  /** The cache law says this stays 0; recording it makes a regression visible per assembly. */
   systemVolatileChars?: number;
-  /** What the assembly set aside for tool schemas + output (T4's measured reserve). */
   reserveTokens?: number;
 }
 
-/** Resolved per call, never cached at module load: a test that redirects `HOME` gets the
- *  redirected path, which a constant computed at import time silently ignores. Same rule the
- *  two durable sinks follow, and the reason this one changed — PHASE-3 T7's receipt clause
- *  wrote into the real `~/.dojo` until it did. */
+/** Resolved per call, never cached at module load: a test that redirects `HOME` must get
+ *  the redirected path, and every durable sink must follow this rule. */
 function receiptsRoot(): string {
   return path.join(homeDir(), '.dojo', 'receipts');
 }
@@ -103,53 +66,14 @@ let cachedMode: ReceiptMode = 'off';
 let cachedModeAt = 0;
 let writesSinceSweep = 0;
 
-// ════════════════════════════════════════════════════════════════════════════════════════
-// UX-REPAIR ROUND 14 / T67 — THE INSTRUMENT SAYS WHETHER IT IS RUNNING.
-//
-// ── WHAT ACTUALLY HAPPENED (W47's Step-0, and it is NOT what the round assumed) ─────────
-// Receipts "stopped" at `t4978`, `2026-08-17T03:12:14Z`, and the round-14 review then ran
-// completely unrecorded — round-14 S1 could not observe its own turn's context because no
-// receipt for t4979 exists. The round read that as a writer that had died.
-//
-// THE WRITER NEVER DIED. `config.context_receipt_mode` on that box reads `off`, and its
-// `updated_at` is `2026-08-17 03:12:21` — SEVEN SECONDS after that last receipt. The kit's
-// own prefix gate (`dojo-test-kit/checks/check-message-prefix.mjs`) turns the mode to `meta`
-// for the four turns it drives and RESTORES the prior value on every path, which is correct
-// behaviour and is why the last four receipts on the box are its drive (t4975–t4978, 8s
-// apart) and the "stop" is its restore. Nothing crashed. The mode was `off` for the rounds,
-// as it has been by default since 2026-06-12.
-//
-// SO THE ROOT IS THE SILENCE, NOT A CRASH: this switch is global, process-cached for 30s,
-// flipped and un-flipped by tooling under the operator's feet, and NOTHING ANYWHERE SAYS
-// WHICH WAY IT IS SET. Two facts were unobtainable — "are receipts on?" and "is the writer
-// working?", so a whole review round was spent before anyone could ask. Two small
-// answers, no new mechanism, no new config key, no new table:
-//   1. every TRANSITION of the resolved mode logs, naming the new mode and where it came
-//      from. This one line is the thing that did not exist at 03:12:21;
-//   2. the writer's own failures move from `debug` (a level nobody reads) to `warn` — the
-//      literal "cannot die silently".
-//
-// WHY NOTHING WATCHES "A TURN FINISHED WITH NO RECEIPT" SEPARATELY. `writeContextReceipt`
-// has exactly ONE production call site — immediately before every provider call
-// (`steps/call-llm/pre-call-injections.ts`) — so a turn that called a model attempted a
-// receipt by construction, and a turn that called no model has no receipt to be missing. The
-// only silent deaths left are a failed write (now loud, (2)) and a mode that changed under
-// the turn (now loud, (1)). A turn-boundary counter would be a second mechanism measuring
-// what the writer itself already knows, which is the disease this phase exists to remove.
-//
-// COLLISIONS ARGUED. The watchdog card watches AGENTS stalling, not platform instruments,
-// and its alert lane is the owner's. The dashboard Health page is the OWNER'S surface and
-// gets no card here: receipts are off on every shipped box, so a card would draw a permanent
-// "disabled" row for a debug tool the owner never uses — and `the-health-page-tells-the-
-// truth.test.ts` refuses rows with nothing behind them.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// The mode is process-global, cached for 30s and can flip under the turn, so every
+// TRANSITION is announced once and a failed write warns: this instrument must never die silently.
 
-/** Where the resolved mode came from — the env override wins, else the config row. */
 type ReceiptModeSource = 'env' | 'config';
 
 let lastAnnouncedMode: ReceiptMode | null = null;
 
-/** The resolved mode plus where it came from. `getReceiptMode` is the one-value front door. */
+/** The resolved mode plus where it came from: the env override wins, else the config row. */
 function resolveReceiptMode(): { mode: ReceiptMode; source: ReceiptModeSource } {
   const envMode = process.env.DOJO_RECEIPT_MODE;
   if (envMode === 'off' || envMode === 'meta' || envMode === 'full') {
@@ -172,8 +96,8 @@ function resolveReceiptMode(): { mode: ReceiptMode; source: ReceiptModeSource } 
 
 export function getReceiptMode(): ReceiptMode {
   const { mode, source } = resolveReceiptMode();
-  // (1) THE EDGE, ANNOUNCED. Once per change, never per call — the 30s cache above already
-  // throttles the read, and this only speaks when the answer is different from last time.
+  // Once per change, never per call: this only speaks when the answer differs from last
+  // time, and the 30s cache above already throttles the read.
   if (mode !== lastAnnouncedMode) {
     const from = lastAnnouncedMode;
     lastAnnouncedMode = mode;
@@ -190,9 +114,7 @@ export function getReceiptMode(): ReceiptMode {
   return mode;
 }
 
-// PHASE-3 T2: was an independent re-declaration of the /4 estimator (§T0-C #4). The
-// receipt takes a CHAR COUNT rather than the text, so it adapts the one estimator instead
-// of re-implementing it — the receipt must report the number the budget actually spent.
+// The receipt reports tokens through the ONE estimator: its number is what the budget spent.
 function estTokens(chars: number): number {
   return estimateTokensFromChars(chars);
 }
@@ -210,9 +132,7 @@ function summarizeSystemPrompt(
   estTokens: number;
   entryId?: string | null;
 }> {
-  // D16: IMPORTED from the shared taxonomy, never re-declared. `receipt.ts:63` held a
-  // byte-identical private `PART_SEPARATOR`, so the receipt could have gone on splitting on
-  // a string the assembler had stopped writing and reported one part as the whole prompt.
+  // Split on the IMPORTED joiner, never a private copy, so the split tracks what the assembler writes.
   const parts = systemPrompt.split(PART_JOINER);
   const aligned = entryIds && entryIds.length === parts.length;
   return parts.map((part, i) => {
@@ -226,24 +146,9 @@ function summarizeSystemPrompt(
   });
 }
 
-// Engine/source tags that classify where a synthetic user-role message came
-// from. Read-only pattern sniffing; if none match, the message is organic.
-//
-// ── PHASE-3 T5: THE ORDER WAS THE DEFECT (research 06 §5) ──────────────────────────────
-// `'[SOURCE:'` was tested BEFORE `'[A2A:'`, and this list is first-match-wins. A legacy
-// A2A row (`[SOURCE: AGENT MESSAGE FROM …`, `[SOURCE: GROUP BROADCAST FROM …`) therefore
-// tagged `source-tagged` and could NEVER tag `a2a` — the receipt said "an envelope" about
-// a row that was peer traffic, and the one field a reader would use to count A2A in a
-// context was structurally incapable of counting the legacy half of it.
-//
-// The fix is not "move one line up": the A2A test now uses the shared matcher, which knows
-// all four inbound forms, and it runs FIRST. The generic `[SOURCE:` opener stays as the
-// catch-all BELOW it, which is the only order in which both are true.
-//
-// The `new-session-marker` test also gained its closer. It was `startsWith('[New Session')`
-// with nothing after it — `platform-noise.ts` required `[New Session]` and this required
-// no bracket at all, so the two disagreed about `[New Sessions are great]` AND about the
-// dated `[New Session: …]` form. One matcher now.
+// Engine/source tags for synthetic user-role messages; if none match, the message is organic.
+// First-match-wins order is load-bearing: the shared A2A matcher runs FIRST and the generic
+// `[SOURCE:` opener stays as the catch-all below it, or legacy A2A rows would mis-tag.
 const SOURCE_PATTERNS: Array<{ tag: string; test: (s: string) => boolean }> = [
   { tag: 'a2a', test: (s) => A2A_INBOUND_RE.test(s) },
   { tag: 'source-tagged', test: (s) => s.startsWith(SOURCE_ENVELOPE_OPENER) },
@@ -256,13 +161,8 @@ const SOURCE_PATTERNS: Array<{ tag: string; test: (s: string) => boolean }> = [
   { tag: 'new-session-marker', test: (s) => NEW_SESSION_BRACKET_RE.test(s) },
 ];
 
-// PHASE-3 T6 (F23): THE LANE IS THE ANSWER; THE PATTERNS ARE THE FALLBACK.
-// Every message now carries the lane that emitted it, including the six raw engine
-// injections that had no marker prose to sniff and therefore reported as `organic` —
-// research 06 §8 names four of them (RECENT OUTBOUND, RECENTLY ANSWERED, open-loops, the
-// settled hint) and there are six. A tagged message reports its lane; only a message NO
-// lane claimed falls through to the prose sniffing, and `organic` finally means what it
-// says: content nobody in the engine put there.
+// The lane that emitted a message is the answer; prose sniffing is only the fallback for
+// messages no lane claimed, so `organic` means content nobody in the engine put there.
 function classifySource(text: string, laneId: string | null): string {
   if (laneId) return laneId;
   for (const p of SOURCE_PATTERNS) {
@@ -296,9 +196,8 @@ function summarizeMessage(msg: LoopMessage, mode: ReceiptMode, laneId: string | 
     if (kind === 'text' && 'text' in (block as object)) {
       const text = String((block as { text: unknown }).text ?? '');
       textChars += text.length;
-      // Role-merging can fold the technique-wrapped live ask into a blocks
-      // message (e.g. after a tool_result), so the wrap must be detected
-      // here too, not just on string-content messages.
+      // Role-merging can fold the technique-wrapped live ask into a blocks message,
+      // so the wrap must be detected here too, not just on string-content messages.
       if (text.includes('--- TECHNIQUE:') || text.startsWith('[DOJO:')) techniqueWrap = true;
     }
   }
@@ -318,16 +217,11 @@ function summarizeMessage(msg: LoopMessage, mode: ReceiptMode, laneId: string | 
 /** The registry entry the deliveries lane emits under. Its tokens belong to `lane.deliveries`,
  *  which declares its own reserve, and not to the loop tail it sits inside. */
 const DELIVERIES_ENTRY_ID = 'msg.deliveries';
-/** SWEEP CORE-2 item 4: the recall lane, the same split for the same reason — it declares its
- *  own reserve, so its tokens belong to it and not to the loop tail it sits inside.
- *  T69b: the lane emits TWO messages — the HL5 snapshot first, the per-ask retrieval second —
- *  so BOTH entry ids are the recall lane's, and the measurement below sums them. Reading only
- *  the first would price a 2,179-token reserve against half its content. */
+/** The recall lane, the same split for the same reason: it declares its own reserve. It emits
+ *  TWO messages (snapshot then per-ask retrieval), so both ids count and the sum is measured. */
 const RECALL_ENTRY_IDS = new Set(['msg.relevant-memory', 'engine.open-commitments']);
 const HISTORY_IDS = new Set(['lane.fresh-tail', 'lane.pm-tail']);
 
-/** t210 (t206 hand-up): the tools this call was built with, BY NAME, so a `sys.tools` or tool-head
- *  change can be explained: `permitted` feeds the system prompt's tool section, `sent` the definitions. */
 function toolNameLists(agentId: string): Record<string, string | number> | null {
   try {
     const permitted = getFilteredTools(agentId);
@@ -337,14 +231,8 @@ function toolNameLists(agentId: string): Record<string, string | number> | null 
   } catch { return null; }
 }
 
-/**
- * `lane.loop-tail` is DECLARED by the assembler and FILLED by the loop, so the assembler's
- * own report can only ever say "did not fire on this turn" about it. The receipt is written
- * after the tail-append and knows where it starts (`volatileFrom`), so it is the one place
- * that can state the truth. Measured, never estimated; the grants array is COPIED rather
- * than mutated, because the report belongs to the assembly and recording must not change it.
- * (A hint that FOLDS into an existing string tail counts against that message's lane.)
- */
+/** The loop tail is DECLARED by the assembler but FILLED by the loop, so only the receipt,
+ *  written after the tail-append, can measure it. Grants are COPIED, never mutated. */
 function withMeasuredLoopTail(input: ReceiptInput): AllocationReport['grants'] {
   const grants = input.allocation?.grants ?? [];
   const from = input.volatileFrom;
@@ -352,14 +240,11 @@ function withMeasuredLoopTail(input: ReceiptInput): AllocationReport['grants'] {
   const tail = input.messages.slice(from);
   if (tail.length === 0) return grants;
   const tailIds = (input.messageEntryIds ?? []).slice(from);
-  // PHASE-3 T7: `lane.deliveries` is the SECOND lane declared by the assembler and filled by
-  // the loop, and it has its OWN reserve — so its tokens are attributed to it and taken OUT
-  // of the loop tail's measurement. Counting them in both would report the same tokens twice
-  // against two different reserves, and the receipt's whole job is that a number in it is
-  // the number that happened.
+  // The deliveries lane has its OWN reserve, so its tokens are attributed to it and taken
+  // OUT of the loop tail's measurement, or the same tokens would be reported twice.
   const isDeliveries = (i: number) => tailIds[i] === DELIVERIES_ENTRY_ID;
   const isRecall = (i: number) => RECALL_ENTRY_IDS.has(tailIds[i] ?? '');
-  // t210: an appended call's tail holds the turn's own conversation rows too; they are not loop tail.
+  // An appended call's tail holds the turn's own conversation rows too; they are not loop tail.
   const isOwnReserve = (i: number) => isDeliveries(i) || isRecall(i) || HISTORY_IDS.has(tailIds[i] ?? '');
   const deliveries = tail.filter((_, i) => isDeliveries(i));
   const recall = tail.filter((_, i) => isRecall(i));
@@ -396,10 +281,8 @@ function withMeasuredLoopTail(input: ReceiptInput): AllocationReport['grants'] {
   });
 }
 
-/**
- * Fire-and-forget. Call at the callModel site, after ALL mutations, so the
- * receipt reflects precisely what the provider request will contain.
- */
+/** Fire-and-forget, with exactly one production call site, immediately before every provider
+ *  call. Call at the callModel site, after ALL mutations: the receipt is the request. */
 export function writeContextReceipt(input: ReceiptInput): void {
   try {
     const mode = getReceiptMode();
@@ -423,14 +306,13 @@ export function writeContextReceipt(input: ReceiptInput): void {
         parts: summarizeSystemPrompt(input.systemPrompt, input.systemEntryIds),
         ...(mode === 'full' ? { content: input.systemPrompt } : {}),
       },
-      // ── THE ALLOCATOR RECEIPT (F20/F22): every lane's grant, THREADED from the allocator's own
-      // `AllocationReport` — never recomputed here, so the receipt cannot disagree with the assembly.
+      // Every lane's grant, THREADED from the allocator's own report, never recomputed here,
+      // so the receipt cannot disagree with the assembly.
       assembly: {
         freshTailDropped: input.freshTailDropped ?? null,
         systemVolatileChars: input.systemVolatileChars ?? null,
         reserveTokens: input.reserveTokens ?? null,
-        // The array's cost by the ONE estimator, through the VALIDATOR's own function, at the last
-        // point before the provider call (only the logged pairing repair sits between it and the wire).
+        // Token cost through the VALIDATOR's own estimator, at the last point before the provider call.
         tokenTotalAtBoundary: assemblyTokens(input.messages),
         ...(input.allocation
           ? {
@@ -453,11 +335,10 @@ export function writeContextReceipt(input: ReceiptInput): void {
         items: input.messages.map((m, i) => {
           const laneId = input.messageEntryIds?.[i] ?? null;
           const summary = summarizeMessage(m, mode, laneId);
-          // KIT-HARDENING K10(a): a hash per message says WHERE two consecutive receipts first
-          // diverge — the direct evidence of whether the cached prefix survived. Read-only.
+          // A hash per message says WHERE two consecutive receipts first diverge, the direct
+          // evidence of whether the cached prefix survived. Read-only.
           summary.sha256 = sha256(JSON.stringify(m));
-          // T6: the ids are read off the same array (`collectMessageLaneIds`), so no length guard;
-          // `null` is a real answer — no lane claimed this message.
+          // Read off the same array, so no length guard; `null` is a real answer: no lane claimed it.
           summary.entryId = laneId;
           return summary;
         }),
@@ -481,16 +362,15 @@ export function writeContextReceipt(input: ReceiptInput): void {
         }
         return undefined;
       })
-      // T67 (2): WARN, not debug. Receipts stay fire-and-forget — the turn is untouched — but
-      // an ENABLED instrument that is writing nothing is exactly the silence this task exists
-      // to end, and `debug` is a level nobody reads. The file it could not write is named.
+      // WARN, not debug: an ENABLED instrument writing nothing is exactly the silence this
+      // must end, and the turn stays untouched: receipts are still fire-and-forget.
       .catch((err) => {
         logger.warn('context receipts are ON and this receipt COULD NOT BE WRITTEN — the record of what the model was sent is being lost for every call while this persists', {
           agentId: input.agentId, mode, file, error: err instanceof Error ? err.message : String(err),
         });
       });
   } catch (err) {
-    // Receipts must never affect the turn — but they must not fail invisibly either (T67).
+    // Receipts must never affect the turn, but they must not fail invisibly either.
     logger.warn('context receipts are ON and this receipt COULD NOT BE BUILT — the record of what the model was sent is being lost for every call while this persists', {
       agentId: input.agentId, error: err instanceof Error ? err.message : String(err),
     });

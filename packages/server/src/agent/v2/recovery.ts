@@ -1,19 +1,5 @@
-// ════════════════════════════════════════
-// v2 unified error recovery cascade — Part IX
-//
-// Single entry point for every error path. v1's recovery is split across
-// 9+ different code locations in runtime.ts; v2 funnels everything through
-// recoverFromError(). Recovery happens in code, never reaches the LLM
-// unless all paths exhausted, at which point the run surrenders to the
-// existing healer-handoff contract.
-//
-// Phase 6 (2026-05-04) — replaced the surrender stub with full cascade:
-//   1. Context overflow recovery (Dreamer batch-resize, non-Dreamer compact)
-//   2. Recoverable provider 4xx with per-agent streak cap, 3. Generic injury (recordError + healer)
-//
-// All side effects happen in this file. recoverFromError returns void —
-// the caller (v2/loop.ts catch) just awaits it and exits cleanly.
-// ════════════════════════════════════════
+// One entry point (recoverFromError) for every error path: recovery runs in code and only
+// surrenders to the healer-handoff contract once every path fails. All side effects live here.
 
 import { v4 as uuidv4 } from 'uuid';
 import { OWNER_ALERT_DOJO_PREFIX, stripInboundChannelMarker } from '@dojo/shared';
@@ -49,85 +35,19 @@ import {
 
 const logger = createLogger('v2-recovery');
 
-// Informational chat note for a rate limit whose recovery the background
-// retry manager owns. Shared by the step-0 passthrough (retry active) and the
-// auto-router-exhausted loud path in recordInjury (no retry scheduled) so the
-// wording lives in one place.
+// Shared by the two rate-limit paths so the wording lives in one place.
 const RATE_LIMIT_RETRY_NOTE =
   `[System: The model provider returned a rate limit error. The platform is retrying ` +
   `automatically. Give it a moment, and tell the person you are talking to there is a short delay if they are waiting.]`;
 
-// ── T82d (ANSWER-ANYWAY) — OWNER'S RULING R3 ──
-//
-// Verbatim, binding: "Silence is never an acceptable failure mode." The incident this task
-// closes: the owner asked a question, the turn died at declared patience, and he got NOTHING
-// in his own chat — the honest read of what happened went to internal logs and the Healer,
-// never to him. `tryDeclaredPatienceCompactOnceRecovery` (T82b, below) already answers the
-// FIRST such death with a compact-and-retry that usually just works; `recordInjury`'s
-// honest-fail path (T81a, below) already answers the SECOND (ladder exhaustion) with a marker,
-// a note to the Healer, and deliberately NO auto-wake. Both are honest. Neither, before this
-// task, put one word of that honesty where the person asking could actually read it.
-//
-// THE SURFACE THESE TWO LINES USE, AND WHY IT IS NOT `persistAndBroadcastSystemNote`'s PLAIN
-// `[System: ...]` SHAPE EVERY OTHER NOTE IN THIS FILE USES. A bare role='system' row classifies
-// `agent-only` under `packages/shared/src/visibility.ts`'s `classifyMessageForDisplay`
-// (mirrored in the dashboard's own reader, `packages/dashboard/src/pages/Chat.tsx`) — hidden
-// from the owner's default (non-wordy) chat, visible only in wordy mode. That is fine for
-// every OTHER note in this file, because every other note either has a next turn that will
-// read and relay it in the agent's own voice (Tier B, the rate-limit passthrough) or is paired
-// with a `chat:error` toast / iMessage alert that reaches the person a different way (Tier D).
-// Neither is true here: case 1's status line has to land WHILE the retry is still in flight
-// (there is no "next turn" to relay it from yet), and case 3's honest fail IS T81a's own
-// no-auto-wake path — there is no future turn to relay anything from at all. So both reuse the
-// ONE existing mechanism that makes a role='system' row `user-visible` without depending on a
-// further turn: `OWNER_ALERT_HEADS_UP_PREFIX` (`@dojo/shared`), the exact idiom
-// `agent/destructive-gate.ts`'s `notifyOwnerApprovalExpired` already uses for an expired
-// approval. This is not a new delivery mechanism — it is the SAME `insertMessageIfAbsent` +
-// `broadcast chat:message` this file has always used (`persistAndBroadcastSystemNote`, below),
-// with the one prefix that earns default-mode visibility instead of one that doesn't.
-//
-// Gated throughout on `RecoveryTurnFacing.isUserFacingTurn` — see that type's own doc for the
-// predicate — so an engine/A2A/scheduled turn (no person on the other end) never gets either
-// line: internal reporting (recordError / onAgentInjured / status writes) is unchanged for
-// those turns, only the channel stays silent, which is correct for them (case 4).
-// Exported for tests: `agent/v2/__tests__/integration.test.ts` (the wording/marker pins) and
-// `memory/__tests__/platform-noise.test.ts` (so that suite's fixtures are the ACTUAL generated
-// text, never a hand-typed copy that could quietly drift from what this file really produces).
+// A bare system row is hidden in default chat; OWNER_ALERT_DOJO_PREFIX makes it visible with no later
+// turn to relay it. Callers post it only on turns a person is waiting on.
 export function declaredPatienceStatusLine(): string {
   return `${OWNER_ALERT_DOJO_PREFIX} the agent hit its model's size limit, so it is trimming its context and retrying now.`;
 }
 
-// CASE 3 — the honest failure. Names what was asked (briefly — this is a status line, not a
-// transcript) and the plain cause, in the agent's own voice: no jargon, no error codes. `cause`
-// stays deliberately generic across BOTH shapes `DECLARED_PATIENCE_EXCEEDED_CODE` covers (a
-// pre-dial refusal, or a live dial the watchdog cut mid-flight): this file does not read
-// `error.preDialRefusal` any more (T82b's own step-0.5 header explains why the two shapes share
-// one discipline), so it has no honest way to say which one this was — and guessing would be
-// exactly the kind of engine-internal detail this line exists to keep OUT of the user's channel.
-//
-// FIX ROUND 1, CRITICAL 1 (marker leak, reproduced live) — `triggerContent` is
-// `state.lastUserMessageContent`, read RAW off the trigger row. On a routed-channel ask
-// (iMessage/SMS/Teams/email) that string carries its own leading `[SOURCE: IMESSAGE FROM
-// John Smith]`-shaped inbound marker: the ENGINE stamps it there so the model can tell which
-// channel and who, the human who actually typed the message never wrote it and never sees it
-// (the dashboard strips it before rendering their bubble, `parseInboundChannel` /
-// `stripInboundChannelMarker` in `packages/shared/src/visibility.ts`). Quoting the raw string
-// leaked that engine-only tag straight into the owner's own chat — `Heads up: I couldn't
-// finish answering "[SOURCE: IMESSAGE FROM John Smith] How did..."` — the exact opposite of
-// "no engine jargon" this line exists to guarantee. Stripped with the SAME shared parser the
-// dashboard already trusts for "show just what the sender wrote", before any collapsing,
-// truncation or quoting, so the quoted preview reads exactly like the bubble the owner already
-// sees for that message.
-//
-// T82 FIX WAVE, Important I2 — `didCompact` forks the trim clause. This function used to claim
-// "even after I trimmed it once and tried again" UNCONDITIONALLY, but `recordInjury` (below)
-// is reachable on a FIRST occurrence too: when `tryDeclaredPatienceCompactOnceRecovery` bails
-// before any compaction lands (`checkAndCompact` itself threw; t211: the auto-router no longer bails), no trim ever happened, and the old wording asserted one anyway. `didCompact` is
-// true exactly when a compaction genuinely completed for THIS doomed chain — either on the
-// immediately preceding turn (the ladder-exhaustion case: `spentAtTurn === turnNumber - 1`,
-// still true and correct) or never (the bail cases) — never a re-derivation, just the caller's
-// own fact, already in hand at the `tryDeclaredPatienceCompactOnceRecovery` call site, threaded
-// down.
+// The ask named briefly, the cause shape-agnostic, no jargon or error codes; didCompact keeps the
+// trim clause honest. Strip the trigger's inbound marker first or the engine-only tag leaks.
 export function declaredPatienceHonestFailNote(triggerContent: string | null, didCompact: boolean): string {
   const stripped = stripInboundChannelMarker(triggerContent ?? '');
   const trimmed = stripped.replace(/\s+/g, ' ').trim();
@@ -142,21 +62,11 @@ export function declaredPatienceHonestFailNote(triggerContent: string | null, di
   );
 }
 
-/**
- * T82d (ANSWER-ANYWAY) — the SAME established predicate
- * `agent/v2/steps/teardown/finalize-record.ts` already uses twice
- * (`counterparty.kind === 'user' && !isA2ATurn && !isEngineTurn`): a turn serving a genuine
- * human conversation (dashboard OR a routed channel), as distinct from an engine/A2A/scheduled
- * turn with no person on the other end. Computed ONCE, at this file's one caller
- * (`steps/teardown/index.ts`, from the turn's own bag), and handed in as a plain boolean so
- * this file stays decoupled from `TurnCounterparty`'s shape — recovery.ts does not otherwise
- * know or care what a counterparty is.
- */
+/** A turn with a person on the other end: the same predicate steps/teardown/finalize-record.ts uses,
+ *  computed once at the caller and passed as a boolean to keep this file decoupled. */
 export interface RecoveryTurnFacing {
   readonly isUserFacingTurn: boolean;
 }
-
-// ── Public API ──
 
 export type RecoveryKind =
   | 'rate_limit'
@@ -176,13 +86,7 @@ export interface ClassifiedError {
   guidance?: string;
 }
 
-/**
- * Recovery cascade entry point. Tries each recovery path in order and
- * stops at the first one that handles the error. If none do, records
- * an injury so the Healer can take over. All side effects (DB writes,
- * broadcasts, status changes, wakeup queueing) happen in here — the
- * caller just awaits and lets the turn end.
- */
+/** Cascade entry point: the first path that handles it wins, else an injury is recorded for the Healer. */
 export async function recoverFromError(
   state: AgentTurnState,
   error: unknown,
@@ -196,25 +100,11 @@ export async function recoverFromError(
   const code = error instanceof AgentError ? error.code : undefined;
   const fullErrText = cause ? `${message} ${cause}` : message;
   const agentId = state.agentId;
-  // PHASE-4 T5: what the provider actually said, read ONCE and handed to every step below.
-  // The model layer attaches it when it raises; anything else is classified here.
+  // What the provider said, read ONCE for every step: the model layer attaches it at raise time.
   const facts = error instanceof AgentError && error.provider ? error.provider : classifyProviderError(error);
 
-  // 0. Rate limit / overloaded that the background decay retry manager already
-  //    owns (FA-A1). When the model layer hit a 429/529 on a PINNED model (not
-  //    auto-routed), it called scheduleRateLimitRetry BEFORE re-throwing; that
-  //    manager owns recovery end to end (silent retries, status 'rate_limited'
-  //    at strike 3, re-wake when the provider window resets). Running the
-  //    injury cascade for the SAME error double-handles it: it bumps the
-  //    error-loop counter (5 in 2min pauses even the primary), thrashes status
-  //    between error/working/rate_limited, and wakes the Healer for an infra
-  //    condition it is forbidden to fix by switching a pinned model.
-  //
-  //    Gated on an ACTIVE retry state, NEVER on the error text alone. The
-  //    auto-router all-fallbacks-exhausted case set routerTier, so the model
-  //    layer did NOT schedule a retry, hasActiveRateLimitRetry is false, and
-  //    that case still degrades loudly through the cascade below. Reuses
-  //    classifyError's regex so the match stays in one place.
+  // 0. A rate limit the retry manager owns: the cascade would double-handle it (error-loop count, status
+  //    thrash). Gate on an ACTIVE retry, never the text, so an auto-router exhaustion still degrades loudly.
   const rlKind = classifyError(new Error(fullErrText), facts).kind;
   if ((rlKind === 'rate_limit' || rlKind === 'overloaded') && hasActiveRateLimitRetry(agentId)) {
     logger.info(
@@ -222,112 +112,54 @@ export async function recoverFromError(
       { agentId, kind: rlKind },
       agentId,
     );
-    // Persist the informational note only (no recordError, no status='error',
-    // no last_error write, no onAgentInjured). The retry manager drives status
-    // and the eventual back-online notice.
+    // Persist the note only: no recordError, no status write, no injury; the manager drives those.
     persistAndBroadcastSystemNote(agentId, RATE_LIMIT_RETRY_NOTE);
     return;
   }
 
-  // 0.5. T81b, WIDENED BY T82b (ANSWER-ANYWAY) — a declared-patience exhaustion, checked
-  //      structurally on `error.code` alone, BEFORE step 1: `DECLARED_PATIENCE_EXCEEDED_CODE`
-  //      shares nothing with `isContextOverflowError`'s prose vocabulary.
-  //
-  //      THE DELETION: pre-T82b this branch also required `error.preDialRefusal`, so only
-  //      `agent/model.ts` REFUSING to dial (census row 37) got the compact-and-retry below. A
-  //      REAL dial that died at the SAME bound (`preDialRefusal` false — the watchdog cut it
-  //      mid-flight) fell straight through to `recordInjury` on its FIRST occurrence: "a live
-  //      timeout is immediately terminal." That is gone — both shapes share the SAME one-shot
-  //      discipline now; `tryDeclaredPatienceCompactOnceRecovery` no longer reads the flag.
-  //
-  //      WHY SAFE: `preDialRefusal` mattered because a cold re-dial of a real dial death repeats
-  //      the exact wall-clock cost that just failed (P3). But the retry here was never a bare
-  //      cold re-dial — it is "force-compact (to T82a's provider-aware budget, strictly under
-  //      the threshold that just failed) THEN re-dial", a smaller, different request by
-  //      construction. The shared spent/adjacency marker still caps this at one extra dial per
-  //      chain, so a SECOND exhaustion (either shape) still falls straight to `recordInjury`.
-  // T82 FIX WAVE, I2 — `didCompact` carries whether a compaction genuinely completed for this
-  // doomed chain (this turn, or the immediately preceding one) down to `recordInjury`'s honest-
-  // fail wording. Declared here (not inside the `if` below) so the fall-through to `recordInjury`
-  // always has a defined value — `false` when this code path never ran at all (a wholly
-  // different injury class), which is correct: `declaredPatienceHonestFailNote` is only ever
-  // invoked when `code === DECLARED_PATIENCE_EXCEEDED_CODE` anyway (see `recordInjury`'s own
-  // gate), so this default is never read for any other class.
+  // 0.5. Declared-patience exhaustion, structural on `error.code` alone, BEFORE step 1; both
+  //      shapes share one capped compact-and-retry; declared outside so the fall-through is defined.
   let declaredPatienceDidCompact = false;
   if (error instanceof AgentError && error.code === DECLARED_PATIENCE_EXCEEDED_CODE) {
     const compactAttempt = await tryDeclaredPatienceCompactOnceRecovery(state);
     declaredPatienceDidCompact = compactAttempt.didCompact;
     if (compactAttempt.recovered) {
-      // T82d (R3) CASE 1 — the FIRST live patience death on a turn a human is actually
-      // waiting on. The compact-and-retry above just engaged (this is exactly the branch
-      // T82b's own spent/adjacency marker gates to ONCE per doomed-request chain, so this
-      // status line is deduped for free). One short "Dojo:" line, and the agent is told it was
-      // posted; the ANSWER is still the next thing the person sees once the retried dial completes.
+      // Fires once per doomed chain, so this status line is deduped for free; the answer follows.
       if (turnFacing.isUserFacingTurn) {
         persistAndBroadcastSystemNote(agentId, declaredPatienceStatusLine());
         tellAgentWhatDojoSent({ agentId, recipient: 'the person who asked (on the dashboard)', text: declaredPatienceStatusLine(), why: 'because your model hit its size limit' });
       }
       return;
     }
-    // The one compaction attempt is already spent (or the pass threw before it could land) — fall through to the ordinary cascade. None of the
-    // steps below recognise this code, so it lands on `recordInjury`: T81a's honest fail, and
-    // still never a dial that would only re-prove the same arithmetic. `declaredPatienceDidCompact`
-    // is `true` here iff that spent attempt genuinely ran (on the turn just before this one) —
-    // `false` iff it never got the chance to (I2's bail cases).
+    // The one attempt is spent: no step below knows this code, so it falls through to the honest fail.
   }
 
-  // 0.9. v3.5 D18: the boundary's own over-budget refusal condenses and re-assembles once, or stops with the card.
+  // 0.9. The boundary's own over-budget refusal condenses and re-assembles once, or stops on a card.
   if (await (await import('./over-budget-assembly.js')).tryOverBudgetAssemblyRecovery(state, error)) return;
-  // 1. Context overflow — provider rejected because prompt too big; Dreamer batch-resize, else force-compact + wakeup.
   if (await tryContextOverflowRecovery(state, fullErrText, message, code, cause)) {
     return;
   }
 
-  // 2. Output truncation as a thrown error.
   if (await tryOutputTruncationRecovery(agentId, fullErrText)) {
     return;
   }
 
-  // 3. Platform errors (Tier D) — auth invalid, access denied, quota
-  //    exhausted, DNS failure. The platform genuinely can't proceed; the
-  //    user needs to act. Persist a human-language system note for the
-  //    agent (so when it eventually wakes, it has context) AND set
-  //    status='error' AND surface a plain-English banner + iMessage.
-  //    error-handling-spec Phase 1 / Phase 2. t148: the money guardrail and "no model fits" ride this lock too.
+  // 3. Platform errors (Tier D): the user must act: human-language note, status='error', banner + iMessage.
   if (await tryHonestStopRecovery(state, error) || await tryPlatformErrorRecovery(state, fullErrText, message, facts)) {
     return;
   }
 
-  // 4. Provider 4xx that the agent itself can adapt to. Persist a
-  //    [System: …] note + wakeup. Status STAYS idle. error-handling-spec
-  //    Phase 1: no status change for Tier B. Same-kind cap replaced with
-  //    "same kind + same inputs" so the agent has unlimited adaptation
-  //    attempts as long as it actually changes its approach.
-  if (!isEngineAssemblyFault(error) && await tryProviderRecovery(state, fullErrText, message, facts)) { // t192 D5: an engine fault is no provider 4xx
+  // 4. Provider 4xx the agent can adapt to: note + wakeup, status STAYS idle (Tier B); cap: kind + inputs.
+  if (!isEngineAssemblyFault(error) && await tryProviderRecovery(state, fullErrText, message, facts)) { // An engine fault is no provider 4xx
     return;
   }
 
-  // 5. Unclassified error. Per spec Phase 1: still persist a
-  //    plain-language system note so the agent has context on its
-  //    next turn. Only THEN consider injury — and even then, the agent
-  //    has something in chat history to read instead of just going
-  //    silent.
+  // 5. Unclassified: persist the plain note FIRST (context for the next turn), then record the wound.
   await recordInjury(state, message, cause, code, turnFacing, facts, declaredPatienceDidCompact);
 }
 
-/**
- * v2.3.19 — fingerprint an agent's "inputs" so we can detect when a
- * recovery is being re-tried with identical inputs (system note isn't
- * helping). Stable across identical retries; changes when the agent's
- * trigger message or last response actually differs.
- *
- * Uses readily-available state: the turn's trigger user message and the
- * canonical signature of the agent's most recent response (already
- * computed for repetition detection). Cheap, no DB query.
- */
-// Exported for tests in agent/v2/__tests__/integration.test.ts so the
-// cap-reach test can pre-populate `recoveryRunStreak` with the exact
-// fingerprint runV2Turn will compute on the next failure.
+/** Fingerprint of the agent's "inputs": stable across identical retries, changes when the
+ *  trigger or last response differs. Cheap, no DB query. */
 export function computeInputsFingerprint(state: AgentTurnState): string {
   const trigger = state.lastUserMessageContent?.slice(0, 200) ?? '';
   const lastResp = state.lastResponseSig ?? '';
@@ -337,44 +169,30 @@ export function computeInputsFingerprint(state: AgentTurnState): string {
     h = ((h << 5) - h) + seed.charCodeAt(i);
     h |= 0;
   }
-  // PHASE-2 T2: the turn number is NOT an input and is out of this key. With `t<turnNumber>`
-  // in it the streak could only match WITHIN a turn; the cross-turn cap fired only because the
-  // old MAX(messages) derivation handed two turns the same number. Details: T2's report §4.
+  // The turn number is NOT an input: with it the streak could only match within one turn.
   return `h${h.toString(36)}`;
 }
 
-/**
- * Classify an error into a recovery kind. Used by callers that want to
- * report what KIND of failure occurred (e.g. for telemetry) without
- * actually running recovery.
- */
+/** Classify an error to a recovery kind, for callers reporting the KIND without running recovery. */
 export function classifyError(error: Error, facts?: ProviderErrorFacts): ClassifiedError {
   const msg = error.message.toLowerCase();
-  // PHASE-4 T5: the two message shapes that CARRY a big number are read FIRST, then the
-  // provider's own verdict. "usage limit" is the Claude subscription (agent-sdk) phrasing for
-  // a rate limit; keeping it here keeps the FA-A1 passthrough owning SDK usage-limit errors
-  // on pinned models instead of injuring the agent (FA-PC4), and no status can express it.
+  // The two message shapes that carry a big number read FIRST, then the provider's verdict:
+  // "usage limit" is the SDK's own rate-limit phrasing and must ride the passthrough.
   if (/context.*overflow|prompt.*too.?long/.test(msg)) return { kind: 'context_overflow' };
   if (/output.*token.*(limit|exceed|max)|max_output_tokens|truncat/.test(msg))
     return { kind: 'output_truncated' };
   if (msg.includes('usage limit')) return { kind: 'rate_limit' };
   const cls = (facts ?? classifyProviderErrorText(msg)).class;
-  if (cls === 'rate_limit') return { kind: 'rate_limit' };   // t151: not `quota` — out of credit is the owner's to fix, not a wait
+  if (cls === 'rate_limit') return { kind: 'rate_limit' };   // Not `quota`: out of credit is the owner's to fix, not a wait
   if (cls === 'overloaded') return { kind: 'overloaded' };
   if (cls === 'network' || msg.includes('socket')) return { kind: 'network' };
   return { kind: 'unknown' };
 }
 
-// ── The forced pass both compaction recoveries run, and what they do after it (t211, D7b) ──
-//
-// Both used to read the agent's stored model, bail on the auto-router, measure THAT model's window, and park with
-// an unconditional immediate wake: the pre-t168 park. They share one door now, the one the context gate's
-// surrenders already use (`parkAfterForcedPass`, `full-context-wait.ts`): the wake is queued now when the pass
-// reclaimed, and set for the compaction brake's expiry when the brake binds (a skipped pass changes nothing, so an
-// immediate wake re-ran the same wall). The pass is for the model the failed call dialed (the locked model on an
-// auto-routed turn, else the configured one) and that model's window, so nothing bails on the auto-router.
-// `brakedBefore` is read as the gate read it: before the pass is asked. `afterPass` runs once the pass has
-// returned without throwing, before the park.
+// Both run it through the one door the context gate's surrenders use (`parkAfterForcedPass`): the wake is
+// queued when the pass reclaimed, or set for the compaction brake's expiry when the brake binds.
+// `brakedBefore` is read before the pass is asked, as the gate reads it; `afterPass` runs only after the
+// pass returned without throwing, before the park.
 async function forcedPassThenPark(state: AgentTurnState, reason: string, afterPass?: () => void): Promise<void> {
   const { agentId } = state;
   const { checkAndCompact } = await import('../../memory/compaction.js');
@@ -382,12 +200,10 @@ async function forcedPassThenPark(state: AgentTurnState, reason: string, afterPa
   const contextWindow = state.lockedModelId ? agentTurnWindow(agentId, state.lockedModelId) : state.contextWindow;
   const brakedBefore = compactionBrakeMsLeft(agentId) !== null;
   const ran = await checkAndCompact(agentId, state.configuredModelId, contextWindow, { force: true, inTurn: true, dialedModelId: state.lockedModelId ?? state.configuredModelId });
-  if (ran.lockBusy) { parkUntilCompactionLands(agentId, reason); return; }   // v3.5 D18 r5: never wait on its lock
+  if (ran.lockBusy) { parkUntilCompactionLands(agentId, reason); return; }   // Never wait on its lock
   afterPass?.();
   parkAfterForcedPass(agentId, reason, brakedBefore);
 }
-
-// ── Step 1: context overflow ──
 
 async function tryContextOverflowRecovery(
   state: AgentTurnState,
@@ -403,13 +219,8 @@ async function tryContextOverflowRecovery(
     );
     if (!isContextOverflowError(fullErrText)) return false;
 
-    // t113 B3: BOUNDED, like every other consumer in this file. A provider's overflow message
-    // can be enormous (some echo the whole offending prompt back), and an unbounded one in the
-    // log MESSAGE position pushes everything after it — including the `code` and `cause` that
-    // say what class of failure this was — past whatever the reader's log view truncates at.
-    // 200 is this file's own convention for a message in a log (`:608`, `:690`), not a new
-    // number, and the untruncated text is not lost: `cause` and the structured fields carry the
-    // diagnosis, which is what a reader needs first.
+    // BOUNDED (200) like every log message here: a provider's overflow text can echo the whole
+    // prompt and push the `code`/`cause` that classify the death past the reader's truncation.
     logger.warn(`v2: context overflow detected — ${message.slice(0, 200)}`, { agentId, code, cause }, agentId);
 
     const { getDreamerAgentId } = await import('../../config/platform.js');
@@ -423,8 +234,7 @@ async function tryContextOverflowRecovery(
       return false;
     }
 
-    // Non-Dreamer agents: force a compaction, then park the job with the wake that fits what the pass left
-    // behind (t211: `parkAfterForcedPass`, the same door the context gate's surrenders use).
+    // Non-Dreamer agents: force a compaction, then park with the wake the pass left behind.
     await forcedPassThenPark(state, 'recovery-forced-compaction');
     logger.warn('v2: forced compaction after context overflow on non-Dreamer agent', { agentId }, agentId);
     return true;
@@ -437,50 +247,12 @@ async function tryContextOverflowRecovery(
   }
 }
 
-// ── Step 0.5: T81b, WIDENED BY T82b — a declared-patience exhaustion, either shape ──
-//
-// Deliberately its OWN step, not folded into `tryContextOverflowRecovery` above even though
-// both end in the identical `checkAndCompact(..., { force: true })` call: that step's trigger
-// is a STRING pattern match against provider prose (`isContextOverflowError`); this one is a
-// STRUCTURAL fact — `error.code === DECLARED_PATIENCE_EXCEEDED_CODE`. Sharing a function would
-// mean either step's future edit risks widening what the other one fires on — the exact
-// prose-vs-structure conflation `provider-error.ts`'s own header spends a paragraph warning
-// against.
-//
-// T82b (ANSWER-ANYWAY) — CONSOLIDATION, NOT A NEW MECHANISM: this function was named (and
-// scoped) `tryPreDialDoomedRefusalRecovery`, gated on `error.preDialRefusal` at its call site,
-// reachable ONLY when `agent/model.ts`'s pre-dial gate refused to dial at all — a real dial that
-// died mid-flight at the identical bound never reached it, honest-failing on the FIRST such
-// timeout. Renamed and re-scoped because the discipline it enforces (one compact-and-retry
-// attempt per doomed-request chain, never a second) does not care WHICH shape produced the
-// code: a pre-dial refusal and a live watchdog death are the SAME fact — this box's declared
-// patience cannot carry this prompt — discovered at two different moments. Both get the same
-// one-shot compaction and the same shared spent/adjacency marker; no second Map, no branch.
-//
-// UNLIKE context overflow, this recovery is capped at exactly ONE attempt PER DOOMED-REQUEST
-// CHAIN (`doomedPrefillCompactionSpent`, keyed `agentId -> turnNumber` — see that map's own doc
-// in `shared-state.ts` for the identity check and the review-round finding it replaced a bare
-// boolean to fix; that doc now covers both shapes too). Context overflow has no such cap because
-// each retry answers a DIFFERENT question the provider just asked ("still too big?" — maybe not,
-// once compaction ran); a declared-patience exhaustion recurring on the immediate next turn
-// after ONE forced compaction answers the SAME question the same way twice — the box's declared
-// speed and patience have not changed (though per T82a the redial IS materially smaller: the
-// compaction targets the provider-aware budget, strictly under the threshold that just failed —
-// a SECOND failure means even that smaller prompt could not be served). A doomed chain that
-// resurfaces LATER — after some OTHER turn ran in between — is a fresh chain and earns its own
-// single attempt.
-/**
- * T82 FIX WAVE, I2 — the return shape carries TWO independent facts, not one:
- *   `recovered`  — did THIS call just compact and queue a retry (the caller returns early on
- *                  `true`, posting CASE 1's status line).
- *   `didCompact` — did a compaction genuinely complete for this doomed chain AT ALL, whether
- *                  just now or on the turn immediately before this one. `false` only when
- *                  `checkAndCompact` itself threw — the arm `recordInjury`'s honest-fail wording
- *                  must NOT claim a trim for.
- * `recovered: true` implies `didCompact: true`; the reverse does not hold (the ladder-exhaustion
- * arm below is `recovered: false, didCompact: true` — a trim ran, on the PRIOR turn, and it
- * still was not enough).
- */
+// Its own step, not folded into the overflow recovery above: that fires on provider PROSE, this on the
+// STRUCTURAL `error.code`; sharing a function would let either edit widen what the other one fires on.
+// Capped at ONE attempt per doomed chain, unlike overflow: a repeat after one forced compaction asks the
+// same question twice, while a chain that resurfaces after another turn ran earns its own try.
+/** Two facts: `recovered` = compacted and queued a retry (caller returns early); `didCompact` = a
+ *  compaction completed for this doomed chain, now or the turn before. `recovered` implies it. */
 interface DeclaredPatienceCompactAttempt {
   recovered: boolean;
   didCompact: boolean;
@@ -493,11 +265,7 @@ async function tryDeclaredPatienceCompactOnceRecovery(
   const turnNumber = state.turnNumber;
   const spentAtTurn = doomedPrefillCompactionSpent.get(agentId);
   if (spentAtTurn === turnNumber - 1) {
-    // The one attempt ran on the turn immediately before this one, and THIS declared-patience
-    // exhaustion (pre-dial refusal or a live dial that died at patience — either shape) is the
-    // retry that followed it — still could not be served. Clear the marker (a later, unrelated
-    // doomed chain earns its own single try) and let the caller fall through to the honest fail.
-    // A real trim DID run (last turn) — `didCompact: true` is the honest answer here.
+    // The attempt ran last turn, its retry still failed: clear the marker so a later chain gets its own try.
     doomedPrefillCompactionSpent.delete(agentId);
     return { recovered: false, didCompact: true };
   }
@@ -507,8 +275,6 @@ async function tryDeclaredPatienceCompactOnceRecovery(
     logger.warn('v2: forced compaction after a declared-patience exhaustion (T81b/T82b)', { agentId, turnNumber }, agentId);
     return { recovered: true, didCompact: true };
   } catch (recovErr) {
-    // BAIL ARM 2 (I2) — the attempt STARTED but did not complete: `checkAndCompact` threw
-    // before this doomed chain's marker was ever set, so no trim actually landed.
     logger.warn('v2: declared-patience compact-once recovery attempt failed', {
       agentId,
       error: recovErr instanceof Error ? recovErr.message : String(recovErr),
@@ -517,15 +283,12 @@ async function tryDeclaredPatienceCompactOnceRecovery(
   }
 }
 
-// ── Step 1.5: output truncation thrown as error ──
-
 async function tryOutputTruncationRecovery(
   agentId: string,
   fullErrText: string,
 ): Promise<boolean> {
   const lower = fullErrText.toLowerCase();
-  // Match the patterns providers use when they raise (rather than signal via
-  // stopReason). Conservative — only obvious output-budget-exceeded phrasing.
+  // Match the providers' raise-time phrasings; conservative: only obvious output-budget-exceeded ones.
   const matches =
     /(max[_\s-]?output[_\s-]?tokens|output[_\s-]?token[_\s-]?limit|output[_\s-]?(token|length).*(exceed|limit)|exceed.*output[_\s-]?token)/i.test(
       fullErrText,
@@ -547,8 +310,6 @@ async function tryOutputTruncationRecovery(
   return true;
 }
 
-// ── Step 2: provider 4xx ──
-
 async function tryProviderRecovery(
   state: AgentTurnState,
   fullErrText: string,
@@ -568,11 +329,7 @@ async function tryProviderRecovery(
   }
   if (!recovery) return false;
 
-  // v2.3.19 — inputs-changed check replaces the per-kind count cap. We
-  // only consider a retry "wasteful" when the same kind fires WITH the
-  // same inputs fingerprint. If the agent has adapted (different message
-  // content, different last response), the streak resets even if the
-  // error kind is identical.
+  // A retry is wasteful only when the same kind fires with the same inputs fingerprint.
   const fingerprint = computeInputsFingerprint(state);
   const prev = recoveryRunStreak.get(agentId);
   const sameKindSameInputs =
@@ -585,11 +342,7 @@ async function tryProviderRecovery(
   });
 
   if (newCount > MAX_INLOOP_RECOVERIES_SAME_INPUTS) {
-    // Same error, same inputs, multiple attempts in a row. The system note
-    // isn't unsticking the agent — escalate to Healer (Tier C) instead of
-    // looping uselessly. We still leave the agent IDLE — only the Healer
-    // path runs. The agent will get one final "we've tried, the Healer is
-    // looking" note so it can apologize cleanly to the user if asked.
+    // Same error, same inputs, repeatedly: stop looping and hand the agent to the Healer, still IDLE.
     recoveryRunStreak.delete(agentId);
     logger.warn('v2: in-loop recovery exhausted on same inputs — handing off to Healer (Tier C)', {
       agentId,
@@ -602,9 +355,7 @@ async function tryProviderRecovery(
       `The Healer is being notified to investigate. ` +
       `If ${userWords(currentAddress(agentId))} is waiting, apologize and tell them you ran into a problem you cannot work around right now.]`;
     persistAndBroadcastSystemNote(agentId, giveUpNote);
-    // Fall through so recoverFromError calls recordInjury — but per
-    // spec Phase 1, recordInjury now persists a Tier B note first AND
-    // tries to keep the agent recoverable without status='error'.
+    // Fall through: recordInjury persists the Tier B note and keeps the agent recoverable, not 'error'.
     return false;
   }
 
@@ -616,9 +367,7 @@ async function tryProviderRecovery(
     message: message.slice(0, 200),
   }, agentId);
 
-  // For vision-mismatch errors, also correct the model's capability cache
-  // so the pre-flight gate strips images on every subsequent turn for any
-  // agent using this model. Self-healing capability probe.
+  // Vision mismatch: also correct the model's capability cache so later turns strip images. Self-healing.
   if (recovery.kind === 'vision_mismatch') {
     try {
       const lastModelRow = getDb()
@@ -629,35 +378,23 @@ async function tryProviderRecovery(
         removeCapability(lastModelRow.model_id, 'vision');
       }
     } catch {
-      /* best effort — recovery still proceeds */
+      /* best effort; recovery still proceeds */
     }
   }
 
-  // v2.3.19 — agent system note is now sourced from the spec table via
-  // formatTierBNoteForAgent. The recovery.userFacingReason / guidance
-  // fields still live on the recovery object so legacy callers don't
-  // break, but the user-facing wording flows through one place.
+  // The agent note comes from the spec table via formatTierBNoteForAgent, one source of wording.
   const recoveryKindAsErrorKind = recovery.kind as ErrorKind;
   const tierBBody = formatTierBNoteForAgent(recoveryKindAsErrorKind, recovery.context ?? {});
   const systemNote = `[System: ${tierBBody}]`;
   persistAndBroadcastSystemNote(agentId, systemNote);
 
-  // Tier B: NO status change. Queue a wakeup so the agent retries with
-  // the system note in context.
+  // Tier B: NO status change; queue a wakeup so the agent retries with the note in context.
   queueSelfWake(agentId, 'recovery-tier-b-retry');
   return true;
 }
 
-/**
- * Tier D — true platform conditions (auth invalid, access denied, quota
- * exhausted, DNS failure). The agent CAN'T proceed and the user needs to
- * act. Sets status='error', persists a chat-history system note for the
- * agent (so the next session has context), broadcasts a plain-English
- * banner, sends iMessage.
- *
- * Returns true if it handled the error (caller should NOT fall through
- * to recordInjury).
- */
+/** Tier D: true platform conditions (auth, access, quota, DNS): the agent CAN'T proceed, the user
+ *  must act. Returns true when handled, so the caller must NOT fall through to recordInjury. */
 async function tryPlatformErrorRecovery(
   state: AgentTurnState,
   fullErrText: string,
@@ -677,7 +414,6 @@ async function tryPlatformErrorRecovery(
   }
   if (!platform) return false;
 
-  // Resolve display context for human-language message.
   let agentName = agentId;
   let providerName: string | undefined;
   try {
@@ -698,24 +434,16 @@ async function tryPlatformErrorRecovery(
     agentId, kind: platform.kind, message: message.slice(0, 200),
   }, agentId);
 
-  // Persist a chat-history system note for the agent. The agent will
-  // not run again until the platform issue is resolved, but if/when it
-  // does, this note will be at the top of its next session context.
+  // Persist a chat-history system note: the agent won't run again until the platform issue is
+  // fixed, but when it does, this note heads its next session context.
   const humanText = formatErrorForHuman(platform.kind as ErrorKind, { agentName, providerName });
   const systemNote = `[System (platform error): ${humanText}]`;
   persistAndBroadcastSystemNote(agentId, systemNote);
 
-  // Set status='error' so the dashboard reflects the locked state, and persist last_error for
-  // diagnostics in the SAME statement (full technical detail logged already above; only the
-  // sanitized version stored, still sliced HERE at 400 — the slice is the caller's).
-  //
-  // SWEEP CORE-2 item 2: these were two statements, the second inside a swallowing try/catch.
-  // A throw on it — or a process death between them — left `error` with a NULL `last_error`,
-  // and `rehydrateInjuredAgents` filtered exactly those rows out, so the agent was invisible to
-  // the sweep that exists to rescue it across a restart. One statement, no window.
+  // status='error' AND the sanitized last_error in ONE statement: two could leave an `error`
+  // row with a NULL last_error, invisible to the rehydrate sweep that rescues it on restart.
   setAgentStatus(agentId, 'error', { lastError: `[${platform.kind}] ${message.slice(0, 400)}` });
 
-  // Plain-English chat:error toast.
   const code =
     platform.kind === 'auth_invalid' ? 'AUTH_INVALID' as const :
     platform.kind === 'access_denied' ? 'ACCESS_DENIED' as const :
@@ -731,7 +459,6 @@ async function tryPlatformErrorRecovery(
     retryable: false,
   });
 
-  // Schedule Healer (it can still help — different provider, can audit).
   try {
     const { onAgentInjured } = await import('../../healer/injury-recovery.js');
     onAgentInjured(agentId, `[${platform.kind}] ${humanText}`);
@@ -740,8 +467,6 @@ async function tryPlatformErrorRecovery(
   return true;
 }
 
-// ── Step 3: injury ──
-
 async function recordInjury(
   state: AgentTurnState,
   message: string,
@@ -749,65 +474,31 @@ async function recordInjury(
   code: string | undefined,
   turnFacing: RecoveryTurnFacing,
   facts?: ProviderErrorFacts,
-  /** T82 FIX WAVE, I2 — true iff a compaction genuinely completed for this doomed chain (this
-   *  turn or the one before it). Only ever read when `code === DECLARED_PATIENCE_EXCEEDED_CODE`
-   *  (see the read site below); defaults `false` for every other caller/class, where it is
-   *  never consulted. */
+  /** True iff a compaction genuinely completed for this doomed chain; only read under
+   *  `DECLARED_PATIENCE_EXCEEDED_CODE`. Default `false`: never consulted for other classes. */
   declaredPatienceDidCompact = false,
 ): Promise<void> {
   const agentId = state.agentId;
-  // t113 B3: BOUNDED — same reason and the same 200 as the sibling above. This is the line a
-  // reader finds FIRST when a turn died, so the fields that classify the death must not be
-  // pushed off the end of it by a provider that returned a wall of text.
+  // BOUNDED, same reason and 200 as the sibling above: the first line a reader sees when a turn died.
   logger.error(`v2 agent loop failed: ${message.slice(0, 200)}`, { agentId, code, cause }, agentId);
-  // P4 turn record: a turn that died on an exception gets an honest terminal
-  // state instead of an open-ended row.
-  //
-  // t93: AND IT NAMES THE CAUSE WHEN THE ENGINE OBSERVED ONE. This statement closes the row
-  // (`AND ended_at IS NULL`) ~40 statements before the `finally` arm's `finalizeTurn`, so on
-  // the injury path THIS word is the one that lands — and it was `unknown` even for a stream
-  // watchdog cut or a non-retryable provider failure the engine had already classified.
-  // `state.engineCutExit` is what `steps/teardown/index.ts` OBSERVED from the throw, never a
-  // guess: `classifyThrownCut` answers null for anything it cannot place, so a bug in this
-  // engine still records `unknown` exactly as `markTurnDied`'s own docstring requires.
+  // A dead turn gets an honest terminal state; this closes the row before `finalizeTurn` can, so
+  // the cause the engine OBSERVED lands; `classifyThrownCut` answers null, recording `unknown`.
   try { markTurnDied(agentId, state.turnNumber, state.engineCutExit ?? 'unknown'); } catch { /* best effort */ }
 
-  // T81c FIX ROUND 1 (NO-DOOMED-DIALS) — THE ONE PLACE THIS MARKER IS EVER SET. Reaching
-  // `recordInjury` with `DECLARED_PATIENCE_EXCEEDED_CODE` means every earlier cascade step —
-  // the pre-dial-refusal compaction retry, context-overflow, output-truncation, Tier-B — has
-  // already declined to handle this specific failure, so THIS is the honest-fail turn: no
-  // self-scheduled retry exists for it. Keyed to the turn number so `runtime.ts`'s queued-wakeup
-  // gate can tell "the marker names the turn that JUST ended" from "a stale entry from some
-  // earlier, unrelated chain" — see the marker's own doc in `shared-state.ts` for the defect
-  // this replaces (an unscoped `agents.last_error` read that silently declined an unrelated
-  // turn's legitimate retry).
+  // THE ONLY PLACE THIS MARKER IS SET: reaching recordInjury with the patience code means every
+  // earlier step declined, so THIS is the honest-fail turn; keyed by turn for the wake gate.
   if (code === DECLARED_PATIENCE_EXCEEDED_CODE) {
     declaredPatienceHonestFailTurn.set(agentId, state.turnNumber);
   }
 
-  // v2.3.19 — ALWAYS persist a chat-history system note FIRST so the
-  // agent has context on its next turn. Pre-spec the only path that
-  // wrote a note was rate-limit; every other error went silent. The
-  // note uses plain language and never contains raw provider JSON.
-  // PHASE-4 T5: the provider's own verdict, not this message's digits.
+  // ALWAYS persist a chat-history system note FIRST so the agent has context on its next turn;
+  // plain language, never raw provider JSON. The provider's own verdict, not this message's digits.
   const injuryClass = (facts ?? classifyProviderErrorText(message)).class;
   const isRateLimit =
     injuryClass === 'rate_limit' || injuryClass === 'quota' || injuryClass === 'overloaded';
 
-  // Persist the unclassified-error note as a system message so the agent
-  // sees something it can act on (apologize to user, try a different
-  // approach next session, etc.) rather than just going silent.
-  //
-  // T82d (R3) CASE 3 — ladder exhaustion. Reaching here with `DECLARED_PATIENCE_EXCEEDED_CODE`
-  // means T82b's one compact-and-retry attempt is already spent (see step 0.5 above) — this IS
-  // T81a's honest-fail turn: no self-scheduled retry, no auto-wake, nothing will read the
-  // generic "[System: ...] apologize to the user" note below on some later turn, because there
-  // is no later turn coming on its own. On a turn a human is actually waiting on, that note
-  // reaching only the agent's own (hidden) history is exactly the silence R3 exists to end, so
-  // this REPLACES it with one honest, in-channel line naming the ask and the plain cause — see
-  // `declaredPatienceHonestFailNote`'s own doc for why the cause stays shape-agnostic. Gated on
-  // `isUserFacingTurn` (case 4, control-pinned): an engine/A2A/scheduled turn has no such human
-  // and keeps today's unclassified path untouched, byte-for-byte.
+  // The patience honest fail has no later turn coming on its own, so on a human-facing turn
+  // the generic apology note is REPLACED by one honest in-channel line naming the ask and cause.
   const isDeclaredPatienceHonestFail = code === DECLARED_PATIENCE_EXCEEDED_CODE;
   if (isDeclaredPatienceHonestFail && turnFacing.isUserFacingTurn) {
     const honestFail = declaredPatienceHonestFailNote(state.lastUserMessageContent, declaredPatienceDidCompact);
@@ -823,43 +514,24 @@ async function recordInjury(
     );
   }
 
-  // Loop detection (5 errors in 2min → pause). Per spec Phase 1, this
-  // remains as the SAFETY NET for genuine error loops — but the
-  // threshold should rarely be hit now that Tier B errors don't bump
-  // the count (they no longer reach recordInjury).
-  // Persisted so the healer system can diagnose and attempt auto-recovery without needing the
-  // in-memory state. Computed BEFORE the pause decision so the status write below can carry it.
+  // Loop detection (5 errors in 2min -> pause) stays as the SAFETY NET for genuine error
+  // loops; Tier B errors no longer reach here, so it should rarely trip now.
+  // Persisted for the healer, and computed BEFORE the pause decision so the status write carries it.
   const errDetail = (cause ? `${message} (${cause})` : message).slice(0, 500);
 
   const paused = recordError(agentId);
   if (!paused) {
-    // v2.3.19 — keep setting status='error' here for the unclassified
-    // and rate-limit paths. Tier B and Tier D are handled BEFORE
-    // recordInjury fires; anything that reaches this function is by
-    // definition "we couldn't classify or recover, the agent should
-    // pause until something changes."
-    //
-    // SWEEP CORE-2 item 2: status and diagnostic in ONE statement, so this arm cannot leave
-    // an `error` row with a NULL `last_error`.
+    // status='error' stays here for unclassified/rate-limit paths; one statement for status
+    // AND the diagnostic, so this arm cannot leave an `error` row with a NULL `last_error`.
     setAgentStatus(agentId, 'error', { lastError: errDetail });
   } else {
-    // The PAUSED arm keeps two writes, and deliberately: `recordError` has already moved the
-    // status inside `agent/errors.ts`, which decides the pause without ever seeing this
-    // message. Both writes go through the one owner, and the window they leave is what the
-    // rehydrate sweep's widened query (injury-recovery.ts) is there to catch on the next boot.
+    // The PAUSED arm keeps two writes deliberately: `recordError` already moved the status
+    // inside `agent/errors.ts`; the window they leave is what the rehydrate sweep catches.
     try { writeAgentLastError(agentId, errDetail); } catch { /* best effort */ }
   }
 
-  // Schedule healer notification after grace period.
-  //
-  // T81a: `code` rides along, not just `message`. The GPU livelock incident's root cause lived
-  // exactly in the gap between these two — `injury-recovery.ts` held nothing but a STRING, so a
-  // declared-patience exhaustion (which its own message names in prose) was indistinguishable
-  // from a genuine dropped connection until the classifier there learned the phrase too. Both
-  // signals are threaded now: the code for the live path (this call, the common case), the
-  // identical phrase inside `message` for the one that survives a restart holding nothing but
-  // `agents.last_error` (`rehydrateInjuredAgents`, which cannot pass a code that was never
-  // persisted).
+  // `code` rides along with `message` to the healer: the live path gets the code; only the
+  // restart path holding `agents.last_error` carries the identical phrase instead.
   try {
     const { onAgentInjured } = await import('../../healer/injury-recovery.js');
     onAgentInjured(agentId, message, code);
@@ -867,28 +539,24 @@ async function recordInjury(
     /* module may not be available */
   }
 
-  // Broadcast plain-English chat:error to dashboard. The persisted
-  // system note (above) is the durable record; the toast is the
-  // ephemeral signal.
+  // Broadcast the plain-English chat:error toast; the system note above is the durable
+  // record and this toast the ephemeral signal.
   const userMsg = isRateLimit
     ? 'Model is rate-limited. Retrying automatically, give it a moment.'
     : paused
-      ? pausedWords(agentId) // the owner card's words: on this chat the two fold into one (t138 r6)
+      ? pausedWords(agentId) // the owner card's words: on this chat the two fold into one
       : 'Agent hit an error and the Healer is looking into it. Send a new message to retry, or check the Vitals page if it keeps failing.';
   broadcast({
     type: 'chat:error',
     agentId,
     error: userMsg,
     code: isRateLimit ? 'RATE_LIMITED' : paused ? 'ERROR_LOOP' : 'MODEL_FAILED',
-    // Audit #7 (M11, owner: "It shouldn't be a persistent notification if it doesn't require the intervention of the
-    // user. It also shouldn't be red."): "the Healer is looking into it" asks nothing of him. Only a paused agent is his.
+    // "the Healer is looking into it" asks nothing of the user: only a paused agent is his.
     severity: paused ? 'error' : 'warning',
     cardClass: paused ? 'action' : 'informational',
     retryable: isRateLimit,
   });
 }
-
-// ── Helpers ──
 
 function persistAndBroadcastSystemNote(agentId: string, content: string): void {
   try {

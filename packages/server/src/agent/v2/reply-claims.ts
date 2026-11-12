@@ -1,6 +1,5 @@
-// The reply claim the decision model answers: "does the reply claim, in the past tense, that something was sent
-// to someone other than the person being replied to?" Asked once per reply; the claimed-delivery floor reads the
-// verdict in place of its rule, and the ledger (a delivery receipt) still decides whether the floor fires.
+// Per reply, the model's verdict: does it claim, past tense, a send to someone other than the
+// person being replied to? The claimed-delivery floor reads the verdict; the ledger still decides.
 
 import { isBareNoReplySentinel } from '@dojo/shared';
 import type { Question } from '../decide.js';
@@ -35,7 +34,6 @@ export async function askReplyClaims(state: AgentTurnState, ctx: PostCallClassif
   await entry.settled;
 }
 
-/** The claimed-delivery floor's reading of this reply: the model's verdict, else the rule's. */
 export function claimsSentToThirdParty(at: ReplyAt, ruleSaid: boolean): boolean {
   const e = asked.get(at.agentId);
   return e && e.messageId === at.messageId && e.said !== undefined ? e.said : ruleSaid;
