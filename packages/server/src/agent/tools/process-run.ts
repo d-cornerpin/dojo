@@ -1,92 +1,31 @@
-// ════════════════════════════════════════════════════════════════════════════
-// RUNNING A PROCESS (PHASE-5 T3 Step 1) — the shared body of both exec doors.
-//
-// WHY THIS IS A MODULE AND NOT 120 MORE LINES OF `agent/tools.ts`. T3 turns one
-// exec entry point into two, and two doors that format their output differently
-// is how a scenario asserting on one door's output starts passing on one
-// and failing on the other. Everything below is the SAME code the deleted
-// string-exec handler ran — the `command_failed: <reason>` header, the ENOENT/SIGTERM
-// translations — lifted verbatim so both doors share it by construction rather
-// than by anybody remembering to keep them in step.
-//
-// It is also the shape T4 wants: a leaf that imports nothing from the toolbox,
-// so when handler bodies move into `agent/tools/cat/*.ts` this one does not have
-// to move again. `auditLog` is INJECTED rather than imported, which is the only
-// reason this file can be a leaf at all.
-// ════════════════════════════════════════════════════════════════════════════
+// THE SHARED BODY OF BOTH EXEC DOORS: one runner, so two doors cannot drift into two output formats.
+// `auditLog` is injected rather than imported, which is what keeps this module a toolbox-free leaf.
 
 import { resolveHomePath, isExistingDirectory } from '../path-resolve.js';
 import { sudoWouldHang } from '../brokers/sudo-probe.js';
 import { coerceNumberArg } from './pagination.js';
 import { silentWindowMs } from '../../tracker/silent-window.js';
-// t114 (census U2): the streaming, output-idle-bounded runner lives in its own leaf — see its
-// header for why. This door keeps the argument shapes, the per-stream caps and the failure
-// wording; the clock's mechanism is next door.
 import { runWithIdleBound } from './process-idle-bound.js';
 
-// `execFile` never consults a shell, which is what makes `exec({argv})`
-// argv-no-shell rather than argv-shaped. The `shell` door reaches /bin/zsh
-// through this SAME primitive with an explicit `-c`, so there is exactly one
-// process-spawning call in the toolbox.
-//
-// PHASE-5 T8 Step 3 (CATEGORY: the process door). That one call now goes through
-// `agent/effects/proc.ts`, which requires the capability the gate loop minted
-// for THIS call and refuses a program it does not name. Nothing else moved: the
-// same primitive, the same arguments, the same options object, the same caps and
-// the same failure translation below. The brokers still DECIDE (`gates.ts` rows
-// 3 and 3s → `authorizeExecShapedCall`); what changed is that the carrying is no
-// longer done by a raw `child_process` import a handler could aim anywhere.
+// `execFile` never consults a shell, which is what makes `exec({argv})` argv-no-shell; the shell
+// door reaches /bin/zsh by `-c` through this same single spawning call, carrying the call's capability.
 
-// ── t114 (census U2) — THE EXEC CLOCK BOUNDS SILENCE, NOT WORK ──
-//
-// THE DEFECT: `EXEC_TIMEOUT_MAX_MS` was a hard TOTAL-duration cap the agent could not exceed
-// (`Math.min(coerced ?? 30s, 120s)`), handed to `execFile`'s own `timeout` option, which SIGTERMs
-// the child at that wall-clock mark whatever it is doing. `shell({script:"npm install"})`, a
-// `pytest` suite, a `docker build`, a large `git clone` all routinely exceed two minutes while
-// healthily producing output, and all were killed mid-stride. The census called it the
-// highest-frequency flat kill in the tree by raw call count, and noted the deeper problem: the
-// door used the BUFFERED `execFileAuthorized`, so there was structurally no per-chunk signal that
-// could have extended the clock even if someone had wanted to.
-//
-// THE FIX: the same bound, re-pointed at the thing it can actually prove. These numbers now bound
-// OUTPUT SILENCE — the gap between two writes to stdout/stderr — rather than total runtime, which
-// makes them the `makeStreamWatchdog` shape the model transports use (bound a GAP, re-arm on
-// every chunk) applied to a child process. A command that is talking is a command that is alive,
-// so it runs; a command that has gone quiet for the whole window is as dead as we can prove and
-// is still killed, loudly, with a reason that says silence is what ended it.
-//
-// The door moves to the STREAMING primitive (`spawnAuthorized`) to get that per-chunk signal.
-// Same capability, same program check, same no-shell argv — `proc.ts` makes that explicit.
-// RULINGS AUDIT #14 (P1-l, M14, OR-LONG-JOBS). The owner: "I don't want to put hard limits on the dojo." and "the main
-// agent owns the Mac they live in and the dojo doesn't limit them." The 30 s default, the 120 s maximum and the one-hour
-// total cap are GONE. Requirement preserved: a command that is truly dead (no output for longer than the agent's silent
-// window, the owner's per-agent setting for "no movement") is still ended, with a reason that says silence ended it, so
-// a wedged command cannot hold a turn for ever. An agent that knows its command should answer fast passes its own
-// `timeout`, which is its choice and is honoured as asked.
+// THE EXEC CLOCK BOUNDS SILENCE, NOT WORK: these numbers bound the gap between two output writes,
+// not a command's total life: one that is talking runs, one quiet for the whole window is killed.
 /** setTimeout's own largest delay (a larger one fires at once); a technical edge, not a policy. */
 const LARGEST_TIMER_MS = 2 ** 31 - 1;
 
-// t200 (D12): the output is returned WHOLE. It used to keep 16,000 characters of each stream and
-// drop the rest before anything was stored; a long output is now kept whole by the executor and the
-// agent reads any part of it (`memory/tool-result-view.ts`).
+// The output is returned WHOLE: the executor keeps it and the agent reads any part of it.
 
-/** How long a command may stay quiet: the agent's own `timeout` when it asks for one, else its silent window.
- *  Phase 3.5 fix, defensive coerce: DeepSeek emits numeric args as strings despite the schema. */
+/** How long a command may stay quiet: the agent's own `timeout` when it asks, else its silent window. */
 export function processTimeout(raw: unknown, agentId: string): number {
   const coerced = coerceNumberArg(raw);
   const asked = coerced !== null && coerced > 0 ? coerced : silentWindowMs(agentId);
   return Math.min(asked, LARGEST_TIMER_MS);
 }
 
-/**
- * The working directory for a process door.
- *
- * `undefined` means "inherit the server's cwd", which is exactly what the
- * deleted entry point did — it passed no `cwd` at all. A `cwd` that does not
- * name an existing directory is NOT a refusal: it falls back with a note, so a
- * model guessing at a path gets its command run and a sentence telling it why
- * the directory was ignored, rather than an error it will retry blind.
- */
+/** `undefined` means "inherit the server's cwd". A `cwd` that does not exist is NOT a refusal: it
+ *  falls back with a note, so a model that guessed a path gets its run plus the reason, not an error. */
 export function resolveProcessCwd(raw: unknown): { cwd: string | undefined; note: string | null } {
   if (typeof raw !== 'string' || raw.trim().length === 0) return { cwd: undefined, note: null };
   if (isExistingDirectory(raw)) return { cwd: resolveHomePath(raw), note: null };
@@ -96,9 +35,7 @@ export function resolveProcessCwd(raw: unknown): { cwd: string | undefined; note
   };
 }
 
-/** The ENOENT / signal / exit-code translation, verbatim from the deleted
- *  string-exec handler: an agent must not read "Error (exit unknown)" when the
- *  real cause was a timeout or a missing binary. */
+/** The failure translation both doors share: never "failed (exit unknown)" for a timeout or ENOENT. */
 function processFailureReason(err: unknown, timeout: number): { reason: string; messageFallback: string } {
   const error = err as {
     stderr?: string; stdout?: string; message?: string;
@@ -106,10 +43,7 @@ function processFailureReason(err: unknown, timeout: number): { reason: string; 
   };
   let reason: string;
   if (error.killed && error.signal === 'SIGTERM') {
-    // t114 (U2): the reason NAMES WHICH BOUND FIRED. "timed out after 120s" was the only story
-    // this door could tell while the clock was a total, and it was the wrong one — it implied the
-    // command had been given 120 seconds of work when what it had actually been given was 120
-    // seconds of SILENCE. `message` is set by the runner for exactly this.
+    // The reason NAMES WHICH BOUND FIRED: the runner's `message` says silence ended it, not the clock.
     reason = error.message
       ? `stopped: ${error.message} (killed by SIGTERM)`
       : `timed out after ${Math.round(timeout / 1000)}s (killed by SIGTERM)`;
@@ -147,13 +81,11 @@ function formatProcessResult(
   return parts.join('\n\n');
 }
 
-/** How a door records what it ran. Injected so this module stays a leaf. */
 export type ProcessAudit = (target: string, result: 'success' | 'error', detail: string) => void;
 
-/** ONE runner for both doors: same caps, same audit shape, same failure
- *  translation. Only the program and the arguments differ. */
+/** ONE runner for both doors: same caps, same audit shape, same failure translation. */
 export async function runProcess(input: {
-  /** What the audit row records as the target — the argv line, or the whole script. */
+  /** What the audit row records as the target: the argv line, or the whole script. */
   auditTarget: string;
   file: string;
   argv: string[];
@@ -161,33 +93,23 @@ export async function runProcess(input: {
   cwd: string | undefined;
   note: string | null;
   audit: ProcessAudit;
-  /** OWNER RULING "Your messages come first" (field fix 3, re-review 2 and 3). Absent: the call
-   *  waits for the command, as before. */
+  /** A person's message can hand the call back while the command runs; absent, the call waits for it. */
   personFirst?: PersonFirst;
 }): Promise<string> {
   const { auditTarget, file, argv, timeout, cwd, audit, personFirst } = input;
-  // ── HONEST FAILURE FOR SUDO (owner ruling 2026-09-26, v3.2.2) ──
-  // A sudo line on a box with no NOPASSWD rule does not fail — it BLOCKS on a password prompt nobody
-  // can type into, and the turn dies on the timeout with nothing to read. `sudoWouldHang` probes it
-  // in ~1.5s and the answer names the ONE command a human runs once. Checked HERE, at the single
-  // execution seam, so both the shell door and the argv door are covered by one check.
+  // Sudo with no NOPASSWD rule BLOCKS on a prompt nobody can type into; the probe checks HERE, both doors.
   const hang = await sudoWouldHang(auditTarget);
   if (hang) {
     audit(auditTarget, 'error', 'sudo requires a password on this box; nothing was run');
     return hang;
   }
-  // t114 (U2): `timeout` is now the OUTPUT-IDLE bound rather than a total-duration cap, and the run
-  // streams so each chunk can re-arm it. A healthy long build talks the whole way through and
-  // survives; a wedged command says nothing and is still killed. Its bounds and the Stop button
-  // reach the child the same way whether or not the call has been handed back.
+  // `timeout` bounds OUTPUT SILENCE here, not total duration; the run streams so each chunk re-arms it.
   let pid: number | undefined;
   const startedAt = Date.now();
-  // The person-first watch starts BEFORE the child: only a message that arrives after this instant
-  // hands the call back (re-review 3, T1). The asks the turn already knew of when it chose to run the
-  // command never interrupt it.
+  // The watch starts BEFORE the child: only a message arriving after this instant hands the call back.
   const watch = personFirst?.watchFrom(startedAt);
   const running = runWithIdleBound(file, argv, {
-    idleMs: timeout,   // audit #14: no total-life cap on the agent's own command
+    idleMs: timeout,   // no total-life cap on the agent's own command
     ...(cwd ? { cwd } : {}),
     onSpawn: (p) => { pid = p; },
   });
@@ -203,13 +125,12 @@ export async function runProcess(input: {
 
 /** One background hand-off, as the exec door wires it (`tools/person-first.ts`). */
 export interface PersonFirst {
-  /** Resolves when a person's message ARRIVES after this call (the newest message row now). Never for one already open. */
+  /** Resolves when a person's message ARRIVES after this instant, never for one already open. */
   watchFrom(startedAt: number): { arrived: Promise<void>; cancel(): void };
   /** The call was handed back: own the still-running command, and hand its result over when it ends. */
   handedBack(pid: number | undefined, outcome: Promise<string>): void;
 }
 
-/** What the agent reads when the call is handed back: the fact, the consequence, and the handle. */
 export function handBackText(pid: number | undefined): string {
   return '[A message from a person arrived while this command was running, and it comes first, so the command was moved to the background'
     + `${pid !== undefined ? ` (pid ${pid})` : ''}. Its result is NOT available yet. Nothing that depends on this command's result can run now: `
@@ -217,7 +138,6 @@ export function handBackText(pid: number | undefined): string {
     + `${pid !== undefined ? `It is still running as process group ${pid}; \`kill -- -${pid}\` through the shell ends it and everything it started, and so does the Stop button.` : 'The Stop button ends it.'}]`;
 }
 
-/** The command's result as the agent reads it, and its audit row. */
 async function settleProcess(
   running: Promise<{ stdout: string; stderr: string }>,
   input: { auditTarget: string; timeout: number; note: string | null; audit: ProcessAudit },
