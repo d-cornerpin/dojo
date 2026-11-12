@@ -1,66 +1,13 @@
-// ════════════════════════════════════════════════════════════════════════════
-// THE COMPENSATED-ANCHOR SCAN — PHASE-6 T0A Step 4.
-//
-// ── WHY THIS EXISTS, AND WHAT IT IS PROTECTING ──────────────────────────────
-// Between 2026-08-03 and the build that carries T0A's door fix, `anchor_time`
-// was DROPPED at both agent-facing tracker doors and the only way to move a
-// recurring task's firing time was to move `scheduled_start`. The box that
-// reported the defect ALSO saw a whole-offset shift, so the relief deployed
-// there was a COMPENSATION: the intended LOCAL wall-clock digits were stored as
-// if they were UTC, to cancel the shift back to the right instant. The
-// issues-log entry of 2026-08-03 and its 2026-08-04 follow-up are the record.
-//
-// ⚠ WHERE THAT SHIFT ACTUALLY LIVED — CORRECTED BY TASK ANCHOR-HUNT (2026-08-06).
-// This header used to say the shift was in "the next-run computation". It was
-// not, and the distinction changes nothing about this scan's rule while
-// changing everything about who must act. The store and the computer were
-// always right; `services/format-time.ts:formatTimeForAgent` took a bare
-// `new Date()` on the DB's space-separated, Z-less text and V8 read it as LOCAL
-// wall clock, so the tool REPLY reported a next run an offset away from the one
-// the row held and would fire. Reproduced through `work_open` on the owner's two
-// literal values and fixed at that line; `tracker/__tests__/schedule-echo-seam.test.ts`
-// holds it.
-//
-// The consequence for THIS module is the reason it still matters, not less:
-// because nothing about firing was ever wrong, a compensated row is not
-// "waiting to break when the fix lands" — it has been firing an offset early
-// since the day it was compensated, and the fix does not touch it. The scan's
-// four clauses are unchanged and its corrections are unchanged; only the
-// urgency is. Driven against the reporting box's compensated shape after the
-// fix: 3 examined / 2 suspects on a PDT box, 0 suspects on a UTC box, an
-// uncompensated pre-window row standing down — so the rule still accuses
-// exactly the rows a compensation touched and no row the fix handles.
-//
-// A compensation is only correct while the thing it compensates for is still
-// there. The moment a box updates onto a build that honours the anchor as
-// written, those rows fire an offset the OTHER way — silently, because a
-// schedule that fires is not an error.
-//
-// ── WHAT IT DOES, AND THE ONE THING IT DELIBERATELY DOES NOT DO ─────────────
-// It SURFACES suspects. It never rewrites a schedule, and that is a decision
-// with a reason rather than caution: an instant carries no record of the intent
-// behind it. A stored anchor of 06:00Z is indistinguishable, in the data, from
-// a correct 06:00Z anchor and from a compensated stand-in for 06:00 local. The
-// ONLY discriminator is WHEN it was written, which narrows the set but cannot
-// prove any single row. Rewriting on that evidence would move a real recurring
-// alert by hours on rows that were never compensated — trading a defect that is
-// visible to its owner for one that is not (roadmap #15: absence of a
-// contradicting fact is not evidence, and a schedule nobody chose is worse than
-// one somebody has to fix). So each suspect is reported with BOTH readings and
-// the exact one-call correction, and the correction works because T0A's fix is
-// what put `anchor_time` back through the door.
-//
-// ── THE RULE, STATED, WITH ITS DENOMINATOR ──────────────────────────────────
-// Every row carrying a schedule is EXAMINED. A row is SUSPECT when all four
-// hold; a row that fails one is counted against the clause it failed, and the
-// clause counts sum to the number examined:
-//   1. it can still fire        — a future `next_run_at`, not terminal, not paused
-//   2. it has a readable anchor — `anchor_local ?? scheduled_start` parses
-//   3. it was written IN WINDOW — `updated_at` in [2026-08-03, first boot of a
-//                                 build carrying the door fix)
-//   4. the box is not on UTC    — at offset 0 the compensating transform is the
-//                                 identity and there is nothing to undo
-// ════════════════════════════════════════════════════════════════════════════
+// Compensated-anchor scan. Rows written while the tracker doors dropped `anchor_time` may hold the intended
+// LOCAL wall-clock digits stored as UTC; once the door honours the anchor they fire an offset the other way.
+// The scan only SURFACES suspects (both readings plus the one-call correction): a stored instant carries no
+// record of intent, so a rewrite could move a real alert by hours.
+// Every scheduled row is EXAMINED; a SUSPECT passes all four clauses and a row failing one is counted
+// against it, so the stand-down counts plus the suspects sum to the number examined:
+//   1. it can still fire: a future `next_run_at`, not terminal, not paused
+//   2. it has a readable anchor: `anchor_local ?? scheduled_start` parses
+//   3. written in window: `updated_at` in [COMPENSATION_WINDOW_OPENED_AT, first boot with the door fix)
+//   4. the box is not on UTC: at offset 0 the compensating transform is the identity
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { postAgentNotice } from '../agent/agent-notice.js';
@@ -69,16 +16,14 @@ import { instantToWall, wallToInstant, getBoxTimeZone, normalizeDbTimestamp } fr
 
 const logger = createLogger('anchor-compensation');
 
-/** The day the door-drop was reported and same-day relief began on the reporting box. */
 export const COMPENSATION_WINDOW_OPENED_AT = '2026-08-03T00:00:00Z';
 
-/** Set on the first boot of a build carrying T0A's door fix; closes the window. */
+/** Config key set on the first boot of a build carrying the door fix; it closes the window. */
 export const FIX_FIRST_BOOT_KEY = 'anchor_door_fix_first_boot_at';
 
-/** The scan's durable record — this is the sink, because logs rotate. */
+/** Config key for the scan's durable result (logs rotate, so the record lives in config). */
 export const SCAN_RECORD_KEY = 'anchor_compensation_scan';
 
-/** Terminal work states: a row here cannot fire again. */
 const TERMINAL_STATES = new Set(['done', 'failed', 'abandoned']);
 
 export type StandDownReason =
@@ -103,18 +48,13 @@ export interface ScheduledRow {
 export interface Suspect {
   id: string;
   title: string;
-  /** The instant the row holds today. */
   storedAnchor: string;
-  /** The instant it would name if its digits were meant as box-local wall clock. */
   intendedIfCompensated: string;
-  /** intendedIfCompensated - storedAnchor, in minutes. */
   shiftMinutes: number;
-  /** The single call that corrects it, now that the door forwards the field. */
   correction: string;
 }
 
 export interface ScanResult {
-  /** THE DENOMINATOR: rows carrying a schedule that were looked at. */
   examined: number;
   suspects: Suspect[];
   /** Why each non-suspect row stood down; these sum to `examined - suspects.length`. */
@@ -125,7 +65,6 @@ export interface ScanResult {
   scannedAt: string;
 }
 
-/** Read a config value, or null. */
 function cfg(key: string): string | null {
   try {
     const row = getDb().prepare('SELECT value FROM config WHERE key = ?').get(key) as { value: string } | undefined;
@@ -141,21 +80,14 @@ function setCfg(key: string, value: string): void {
   ).run(key, value);
 }
 
-/**
- * The two readings of one stored anchor. `stored` is the instant the row holds;
- * `intended` is the instant those same digits would name if they had been meant
- * as box-local wall clock — which is exactly the transform a compensation
- * applied, and exactly the transform that has to be undone if it was one.
- */
+/** The two readings of one stored anchor: as stored, and as its UTC digits read in the box zone. */
 export function readingsOf(anchorIso: string, timeZone: string): { stored: number; intended: number } | null {
   const stored = new Date(normalizeDbTimestamp(anchorIso)).getTime();
   if (Number.isNaN(stored)) return null;
-  // The UTC digits of the stored instant, read back as wall clock in the box zone.
   const digits = instantToWall(stored, 'UTC');
   return { stored, intended: wallToInstant(digits, timeZone).getTime() };
 }
 
-/** Every row that carries a schedule. This SELECT is the denominator. */
 export function scheduledRows(): ScheduledRow[] {
   return getDb().prepare(`
     SELECT id, title, anchor_local, scheduled_start, next_run_at, updated_at,
@@ -174,11 +106,7 @@ export interface ScanOptions {
   windowClosedAtMs?: number | null;
 }
 
-/**
- * Classify every scheduled row. Pure with respect to its inputs — the boot pass
- * supplies the rows and the window, the unit tests supply their own, and the
- * `VACUUM INTO` rehearsal supplies a copy of a real body.
- */
+/** Classify every scheduled row. Pure with respect to its inputs (rows, zone, window, clock). */
 export function scanForCompensatedAnchors(opts: ScanOptions = {}): ScanResult {
   const timeZone = opts.timeZone ?? getBoxTimeZone();
   const now = opts.now ?? Date.now();
@@ -195,25 +123,20 @@ export function scanForCompensatedAnchors(opts: ScanOptions = {}): ScanResult {
   const suspects: Suspect[] = [];
 
   for (const row of rows) {
-    // 1 — can it still fire?
     const live =
       row.next_run_at !== null && row.next_run_at > now
       && !TERMINAL_STATES.has(String(row.state ?? ''))
       && (row.is_paused ?? 0) === 0;
     if (!live) { standDown['cannot-fire']++; continue; }
 
-    // 2 — is there a readable anchor? The scheduler's own fallback is
-    //     `anchor_time ?? scheduled_start`, so the EFFECTIVE anchor is what
-    //     matters, never the column that happens to hold it.
+    // The effective anchor (`anchor_time ?? scheduled_start`) matters, never the column holding it.
     const effective = row.anchor_local ?? (row.scheduled_start !== null ? new Date(row.scheduled_start).toISOString() : null);
     const readings = effective ? readingsOf(effective, timeZone) : null;
     if (!readings) { standDown['no-readable-anchor']++; continue; }
 
-    // 3 — was it written while the door was dropping the field?
     const writtenAt = row.updated_at ?? 0;
     if (writtenAt < openedAt || writtenAt >= closeBound) { standDown['written-outside-window']++; continue; }
 
-    // 4 — on a UTC box the transform is the identity, so nothing was compensated.
     const shiftMinutes = Math.round((readings.intended - readings.stored) / 60_000);
     if (shiftMinutes === 0) { standDown['box-is-utc']++; continue; }
 
@@ -239,7 +162,6 @@ export function scanForCompensatedAnchors(opts: ScanOptions = {}): ScanResult {
   };
 }
 
-/** The owner-facing brief. Plain language, both readings, and the one call that fixes it. */
 export function describeSuspects(result: ScanResult): string {
   const lines = result.suspects.map(
     (s) => `- "${s.title}" (${s.id.slice(0, 8)}): set to fire at ${s.storedAnchor}; `
@@ -257,11 +179,9 @@ export function describeSuspects(result: ScanResult): string {
 }
 
 /**
- * Report suspects to the PRIMARY agent, on the events lane, so the agent raises
- * it with the owner in his own words (OR2: detect -> steer -> the agent speaks,
- * never the engine wearing the agent's face). `selfIntro` is off because this is
- * the platform reporting maintenance; "this is the scheduler agent" would
- * introduce an agent that does not exist.
+ * Report suspects to the primary agent on the events lane so the agent raises them with the owner in
+ * its own words (the engine detects, the agent speaks). `selfIntro` is off: this is platform
+ * maintenance, and there is no scheduler agent to introduce.
  */
 function reportToPrimary(brief: string): void {
   const primaryId = getPrimaryAgentId();
@@ -270,11 +190,9 @@ function reportToPrimary(brief: string): void {
 }
 
 /**
- * The boot pass. Idempotent and one-shot: it records the first boot of a build
- * carrying the fix (which is what CLOSES the compensation window), runs the
- * scan once, writes its result to `config`, and never nags again.
- *
- * Returns the result it recorded, or null when it had already run.
+ * The boot pass, idempotent and one-shot: records the first boot of a build carrying the fix (which closes
+ * the window), runs the scan once, writes its result to `config`, and never nags again. Returns the
+ * result it recorded, or null when it had already run.
  */
 export function runAnchorCompensationPass(
   notify: (brief: string) => void = reportToPrimary,
@@ -284,9 +202,8 @@ export function runAnchorCompensationPass(
     const firstBoot = cfg(FIX_FIRST_BOOT_KEY);
     const nowIso = new Date().toISOString();
 
-    // The window closes at the FIRST boot of a build carrying the fix. On that
-    // boot the marker does not exist yet, so the bound is now; on every later
-    // boot it is the recorded instant, which is what keeps the set stable.
+    // The window closes at the first boot of a build carrying the fix: the marker is absent then (the bound
+    // is now) and recorded afterwards, which keeps the set stable.
     if (!firstBoot) setCfg(FIX_FIRST_BOOT_KEY, nowIso);
     if (already) return null;
 

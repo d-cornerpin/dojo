@@ -1,29 +1,11 @@
-// ════════════════════════════════════════
-// Schedule Calculation Engine (Phase 6)
-// Computes next run times for scheduled/recurring tasks
-// ════════════════════════════════════════
-//
-// D21 (timezone/DST cadence): calendar-unit occurrences (days, weeks, months,
-// years, weekdays, specific_days) are computed in the BOX's IANA timezone via
-// Intl, holding the anchor's wall-clock time fixed across DST transitions.
-// "8am daily" stays 8am wall clock on both sides of a transition, and a
-// 02:30 anchor no longer drifts permanently to 03:30 after spring-forward
-// (the old Date#setDate walk normalized the gap-day occurrence and then kept
-// stepping from the normalized time). Time-based units (minutes, hours) step
-// the absolute instant instead: "every 2 hours" means 2 real hours, so DST
-// wall-clock identity deliberately does not apply to them.
-//
-// DST policy, PINNED BY TEST at `scheduler/__tests__/the-reminder-clock-holds-its-wall-time.test.ts`
-// (UX-REPAIR round 2 T13). The citation above this line used to read "proven in the D21
-// verification harness" — a harness that is not in the tree and, by `grep -rn "D21"`, never was
-// anything but prose. Until those tests landed, NO test in the repo exercised
-// `repeat_unit:'months'` or `'years'` at all and none crossed a DST boundary:
-//   * spring-forward gap (e.g. 02:30 does not exist): the occurrence fires at
-//     the next valid instant (02:30 -> 03:30), and the NEXT day returns to the
-//     anchor's own wall time (02:30) because the walk carries wall-clock
-//     components, never the normalized instant.
-//   * fall-back ambiguity (e.g. 01:30 exists twice): the FIRST occurrence
-//     (pre-transition offset) is chosen, so the task fires once, not twice.
+// Schedule calculation engine: computes next run times for scheduled and recurring tasks.
+// Calendar units (days, weeks, months, years, weekdays, specific_days) are computed in the BOX's IANA
+// timezone via Intl, holding the anchor's wall-clock time fixed across DST ("8am daily" stays 8am).
+// Minutes and hours step the absolute instant ("every 2 hours" is 2 real hours), so DST does not apply.
+// DST policy, pinned by `scheduler/__tests__/the-reminder-clock-holds-its-wall-time.test.ts`:
+//   * spring-forward gap (02:30 does not exist): fires at the next valid instant (03:30); the next day
+//     returns to the anchor's wall time because the walk carries wall-clock components, not the instant.
+//   * fall-back ambiguity (01:30 exists twice): the FIRST occurrence is chosen, so the task fires once.
 
 export interface ScheduledTask {
   id: string;
@@ -37,47 +19,22 @@ export interface ScheduledTask {
   last_run_at: string | null;
   next_run_at: string | null;
   schedule_status: string;
-  // v2.5.2 — comma-separated day numbers (0=Sun..6=Sat) used when
-  // repeat_unit='specific_days'. e.g. '1,3' = Mon+Wed. Nullable.
+  // Comma-separated day numbers (0=Sun..6=Sat) for repeat_unit='specific_days', e.g. '1,3' = Mon+Wed.
   repeat_days_of_week?: string | null;
-  // v2.5.45 — full ISO timestamp that anchors all future runs of a
-  // recurring task. Computed forward from anchor instead of from
-  // last_run_at, so a run that takes 5 minutes to complete doesn't
-  // drift the schedule by 5 minutes every cycle. Nullable for
-  // backwards compatibility; when null, falls back to scheduled_start.
+  // Anchors all future runs (so slow runs do not drift); null falls back to scheduled_start.
   anchor_time?: string | null;
-  /**
-   * UX-REPAIR round 2 T13 — THE DECLARED PER-TASK ZONE, honoured at last.
-   *
-   * `work.tz` has existed since migration `135` and was DEAD: absent from `TrackerAttr` so no
-   * write could name it, absent from `scheduleRowColumns` so the scheduler never read it, and
-   * absent from this interface entirely. `resolveLocalWallClock` accepted `local_timezone`,
-   * resolved it correctly, and DISCARDED the resolved zone at the write. So every calendar-unit
-   * schedule resolved against the PROCESS timezone — measured (investigation-round2.md R2):
-   * the same monthly reminder fires 9:00 AM local on this box and 8:00 AM if the process runs
-   * `TZ=UTC`, for four months of every year.
-   *
-   * NULL is the honest answer for every row that predates the write, and NULL means "the box
-   * timezone" — byte-identically today's behaviour.
-   */
+  /** The declared per-task IANA zone; null means the box timezone. */
   tz?: string | null;
 }
 
-// ── Box timezone + wall-clock helpers (D21) ──
 
-/** The single box's IANA timezone (follows the process/system TZ). */
 export function getBoxTimeZone(): string {
   return Intl.DateTimeFormat().resolvedOptions().timeZone;
 }
 
 /**
- * Normalize a DB timestamp string to an unambiguous ISO instant. SQLite's
- * `datetime('now')` writes UTC in `YYYY-MM-DD HH:MM:SS` form (space
- * separator, no `Z`). The space-separator variant is parsed as LOCAL time
- * by V8, which yields a multi-hour drift for any value that came in via a
- * raw SQL path instead of the tracker tools (which normalize via
- * .toISOString()). Be defensive: if the string is missing an explicit
- * timezone marker, treat it as UTC.
+ * Normalize a DB timestamp to an unambiguous ISO instant. SQLite's `datetime('now')` writes UTC without a
+ * `Z`, which V8 parses as LOCAL time, so a value with no timezone marker is treated as UTC.
  */
 export function normalizeDbTimestamp(raw: string): string {
   return raw.includes('Z') || /[+-]\d{2}:?\d{2}$/.test(raw)
@@ -107,7 +64,6 @@ function getDtf(timeZone: string): Intl.DateTimeFormat {
   return dtf;
 }
 
-/** The wall-clock reading of a UTC instant in the given timezone. */
 export function instantToWall(instantMs: number, timeZone: string): WallClock {
   const parts = getDtf(timeZone).formatToParts(new Date(instantMs));
   const get = (type: string): number => {
@@ -116,34 +72,25 @@ export function instantToWall(instantMs: number, timeZone: string): WallClock {
   };
   return {
     year: get('year'), month: get('month'), day: get('day'),
-    // hourCycle h23 should never emit 24, but normalize defensively.
     hour: get('hour') % 24, minute: get('minute'), second: get('second'),
   };
 }
 
-/** Wall-clock components read as if they were UTC (calendar arithmetic base). */
 function wallAsUtcMs(w: WallClock): number {
   return Date.UTC(w.year, w.month - 1, w.day, w.hour, w.minute, w.second);
 }
 
-/** Offset (ms) such that wall = instant + offset, at the given instant. */
 function offsetAt(instantMs: number, timeZone: string): number {
   return wallAsUtcMs(instantToWall(instantMs, timeZone)) - instantMs;
 }
 
 /**
- * The UTC instant at which the given wall clock is shown in the given
- * timezone. DST-transition handling:
- *   * ambiguous wall times (fall-back, the clock shows them twice) resolve
- *     to the FIRST occurrence (earliest instant);
- *   * non-existent wall times (spring-forward gap) resolve using the
- *     pre-transition offset, which lands on the next valid instant
- *     (02:30 in a 02:00->03:00 gap becomes 03:30).
+ * The UTC instant at which the wall clock is shown in the timezone. An ambiguous time (fall-back)
+ * resolves to the FIRST occurrence; a non-existent time (spring-forward gap) uses the pre-transition
+ * offset, landing on the next valid instant (02:30 in a 02:00->03:00 gap becomes 03:30).
  */
 export function wallToInstant(w: WallClock, timeZone: string): Date {
   const target = wallAsUtcMs(w);
-  // Probe the offset on both sides of the target so any transition near it
-  // contributes its offset as a candidate.
   const offsets = new Set<number>([
     offsetAt(target - 86_400_000, timeZone),
     offsetAt(target, timeZone),
@@ -155,13 +102,11 @@ export function wallToInstant(w: WallClock, timeZone: string): Date {
     if (offsetAt(t, timeZone) === o) valid.push(t);
   }
   if (valid.length > 0) return new Date(Math.min(...valid));
-  // No candidate round-trips: the wall time falls in a spring-forward gap.
-  // The pre-transition offset is always the smaller one (clocks jumped
-  // forward), and target - min(offsets) is the first instant past the gap.
+  // No candidate round-trips: the time is in a spring-forward gap; the pre-transition offset is the
+  // smaller one, so target - min(offsets) is the first instant past the gap.
   return new Date(target - Math.min(...offsets));
 }
 
-/** Normalize overflowed wall components (day 32, month 13, ...) in pure calendar space. */
 function normalizeWall(w: WallClock): WallClock {
   const d = new Date(wallAsUtcMs(w));
   return {
@@ -170,17 +115,13 @@ function normalizeWall(w: WallClock): WallClock {
   };
 }
 
-/** Day-of-week (0=Sun..6=Sat) of a wall-clock date. */
 function wallDayOfWeek(w: WallClock): number {
   return new Date(Date.UTC(w.year, w.month - 1, w.day)).getUTCDay();
 }
 
 /**
- * Add `totalMonths` to a wall clock in calendar space, CLAMPING the day to
- * the target month's length instead of overflowing it (Jan 31 + 1 month is
- * Feb 28, not "Feb 31" → Mar 3). Used for months/years, which must keep the
- * anchor's day across short months; the other units keep normalizeWall's
- * overflow so day 32 rolls into the next month as before.
+ * Add `totalMonths` to a wall clock, CLAMPING the day to the target month's length (Jan 31 + 1 month is
+ * Feb 28). Used for months/years; the other units keep normalizeWall's overflow.
  */
 function addClampedMonths(w: WallClock, totalMonths: number): WallClock {
   const month0 = w.month - 1 + totalMonths;
@@ -191,14 +132,9 @@ function addClampedMonths(w: WallClock, totalMonths: number): WallClock {
 }
 
 /**
- * Advance a wall clock by `interval` of a CALENDAR `unit`, holding the
- * time-of-day fixed. For 'weekdays', advance `interval` calendar days and
- * then skip past Saturday/Sunday to Monday, so an interval of 1 means
- * "every business day". For 'specific_days', `daysCSV` selects which
- * day-of-week the task fires on (e.g. "1,3" = Mon+Wed); `interval` is
- * ignored, the next matching day after `w` is chosen. If `daysCSV` is
- * empty/invalid the input is returned unchanged (caller treats this as a
- * config error).
+ * Advance a wall clock by `interval` of a calendar `unit`, holding time-of-day fixed. 'weekdays' skips
+ * Saturday/Sunday; 'specific_days' ignores `interval` and picks the next day in `daysCSV`, returning the
+ * input unchanged when that is empty or invalid (the caller treats that as a config error).
  */
 function advanceWallByUnit(w: WallClock, interval: number, unit: string, daysCSV: string | null): WallClock {
   switch (unit) {
@@ -236,36 +172,22 @@ export function calculateNextRun(task: ScheduledTask, timeZone?: string): string
   if (!task.scheduled_start) return null;
   if (task.is_paused) return null;
 
-  // UX-REPAIR round 2 T13 — precedence, and why the row's own zone is read HERE rather than at
-  // the callers. All twelve call sites passed exactly one argument, so `timeZone` was always
-  // `undefined` and the declared per-task zone reached nothing. Reading it inside is the shape
-  // a thirteenth caller cannot forget; an EXPLICIT argument still wins, so the one caller that
-  // ever wants to ask "when would this fire in Tokyo?" keeps that answer.
+  // The row's own zone is read here so no caller can forget it; an explicit argument still wins.
   const tz = timeZone ?? task.tz ?? getBoxTimeZone();
 
-  // One-time task
   if (!task.repeat_interval || !task.repeat_unit) {
     return task.run_count === 0 ? task.scheduled_start : null;
   }
 
-  // Check end conditions
   if (task.repeat_end_type === 'after_count' && task.repeat_end_value) {
     const maxRuns = parseInt(task.repeat_end_value, 10);
     if (!isNaN(maxRuns) && task.run_count >= maxRuns) return null;
   }
   let endMs: number | null = null;
   if (task.repeat_end_type === 'on_date' && task.repeat_end_value) {
-    // D21 discipline: resolve the end boundary in the BOX timezone, not via a
-    // bare `new Date(...)`. A DATE-ONLY value ("2026-07-10", the shape the
-    // dashboard date picker sends) parsed raw lands on UTC midnight, so on a
-    // UTC-minus box it cuts the task's final local-day occurrences hours
-    // early. The user picked a calendar DAY, so a date-only end value means
-    // "through the end of that local day": end-of-day (23:59:59) wall clock in
-    // the box timezone. A value that CARRIES a time-of-day (ISO `T` form or the
-    // SQLite space form, with or without an explicit offset) is an explicit
-    // instant: normalize the space/no-offset form to UTC exactly as
-    // scheduled_start and anchor_time are normalized, and honor it as given
-    // with no end-of-day rounding.
+    // Resolve the end boundary in the box timezone. A date-only value (what the dashboard date picker
+    // sends) means through the end of that local day (23:59:59); a value carrying a time of day is an
+    // explicit instant, normalized like scheduled_start and anchor_time, with no end-of-day rounding.
     const rawEnd = task.repeat_end_value.trim();
     const parsedEnd = /^\d{4}-\d{2}-\d{2}$/.test(rawEnd)
       ? wallToInstant({
@@ -278,13 +200,10 @@ export function calculateNextRun(task: ScheduledTask, timeZone?: string): string
     if (!isNaN(parsedEnd)) endMs = parsedEnd;
     if (!isNaN(parsedEnd) && Date.now() >= parsedEnd) return null;
   }
-  // A computed next run that lands after the end date is no run at all.
   const pastEnd = (iso: string): boolean => endMs !== null && new Date(iso).getTime() > endMs;
 
-  // If task has never run, first run IS the scheduled_start (don't add
-  // interval). D21 exception: a specific_days schedule whose start falls on
-  // a disallowed weekday must have its FIRST run land on the next allowed
-  // day (same wall time), not fire on the disallowed day.
+  // First run is scheduled_start itself, except a specific_days or weekdays start on a disallowed day,
+  // which moves to the next allowed day at the same wall time.
   if (!task.last_run_at && task.run_count === 0) {
     if (task.repeat_unit === 'specific_days') {
       const allowed = parseDaysOfWeek(task.repeat_days_of_week ?? null);
@@ -301,9 +220,6 @@ export function calculateNextRun(task: ScheduledTask, timeZone?: string): string
         }
       }
     }
-    // Weekdays parity with the D21 specific_days exception above: a weekday
-    // repeat whose scheduled_start lands on a weekend first-runs on Monday at
-    // the same wall time instead of firing on the weekend.
     if (task.repeat_unit === 'weekdays') {
       const start = new Date(normalizeDbTimestamp(task.scheduled_start));
       if (!isNaN(start.getTime())) {
@@ -318,12 +234,7 @@ export function calculateNextRun(task: ScheduledTask, timeZone?: string): string
     return task.scheduled_start;
   }
 
-  // v2.5.45: base every recurring run on anchor_time, not on the
-  // completion timestamp. Falls back to scheduled_start when anchor is
-  // unset (pre-migration tasks). The "advance until future" walk below
-  // then moves the anchor forward by whole intervals, so the wall-clock
-  // alignment (e.g. "Monday at 06:00") is preserved even if past runs
-  // took variable time to complete.
+  // Base runs on anchor_time ?? scheduled_start, not completion time, so wall-clock alignment survives.
   const rawAnchor = task.anchor_time ?? task.scheduled_start;
   const baseTime = new Date(normalizeDbTimestamp(rawAnchor));
 
@@ -337,9 +248,7 @@ export function calculateNextRun(task: ScheduledTask, timeZone?: string): string
     return null;
   }
 
-  // Walk the anchor forward by whole intervals until we land strictly
-  // after now. The previous run's slot also has to be passed (we don't
-  // re-fire the same slot the agent just finished).
+  // Walk strictly past both now and the last run's slot, so a just-finished slot never re-fires.
   const now = new Date();
   const lastSlot = task.last_run_at ? new Date(normalizeDbTimestamp(task.last_run_at)) : null;
   const notAfterMs = Math.max(
@@ -347,10 +256,7 @@ export function calculateNextRun(task: ScheduledTask, timeZone?: string): string
     lastSlot && !isNaN(lastSlot.getTime()) ? lastSlot.getTime() : Number.NEGATIVE_INFINITY,
   );
 
-  // Time-based units: step the absolute instant. "Every N hours" means N
-  // real hours; DST wall-clock identity does not apply. Closed-form
-  // fast-forward, so a long-idle minute-cadence anchor can't exhaust a
-  // step bound.
+  // Minutes and hours step the absolute instant in closed form, so a long-idle anchor cannot exhaust a bound.
   if (task.repeat_unit === 'minutes' || task.repeat_unit === 'hours') {
     const stepMs = task.repeat_interval * (task.repeat_unit === 'minutes' ? 60_000 : 3_600_000);
     if (stepMs <= 0) return null;
@@ -362,15 +268,9 @@ export function calculateNextRun(task: ScheduledTask, timeZone?: string): string
     return pastEnd(nextIso) ? null : nextIso;
   }
 
-  // Calendar units: walk wall-clock components in the box timezone.
-  // Bounded loop, prevents infinite spin on a misconfigured interval;
-  // 10k steps of daily catch-up is over 27 years, far more than any real
-  // scenario.
+  // Calendar units walk wall-clock components in the box timezone; the step bound stops a runaway interval.
   const MAX_ADVANCE_STEPS = 10_000;
-  // Month/year schedules keep their anchor's day, so each candidate is the
-  // anchor plus N x interval months, clamped to the target month's length.
-  // Deriving from the ANCHOR (not the previous clamped occurrence) is what
-  // lets Jan 31 -> Feb 28 -> Mar 31 come back to the 31st.
+  // Month/year candidates derive from the ANCHOR, not the previous clamped one: Jan 31 -> Feb 28 -> Mar 31.
   const anchorWall = instantToWall(baseTime.getTime(), tz);
   let wall = anchorWall;
   let candidate = wallToInstant(wall, tz);
@@ -386,12 +286,7 @@ export function calculateNextRun(task: ScheduledTask, timeZone?: string): string
   }
   if (steps >= MAX_ADVANCE_STEPS) return null;
 
-  // Weekday-result guarantee (2026-07-21, unit-suite root-cause find): the
-  // weekend skip lived ONLY inside the advance step, so the zero-advance path
-  // (anchor already past now/lastSlot after the v2.5.45 anchor rebase) could
-  // return a weekend instant for an every-business-day schedule, and did, the
-  // suite had been failing about it since 2026-05-16. Enforce the constraint
-  // on the RESULT, not just the step: a weekdays schedule never yields Sat/Sun.
+  // A weekdays schedule never yields Sat/Sun: enforce it on the result (the zero-advance path skips the step).
   if (task.repeat_unit === 'weekdays') {
     const dow = wallDayOfWeek(wall);
     if (dow === 6) { wall = normalizeWall({ ...wall, day: wall.day + 2 }); candidate = wallToInstant(wall, tz); }
@@ -402,11 +297,7 @@ export function calculateNextRun(task: ScheduledTask, timeZone?: string): string
   return pastEnd(candidateIso) ? null : candidateIso;
 }
 
-/**
- * Parse a comma-separated day-of-week string like "1,3" into a Set of
- * day numbers (0=Sun..6=Sat). Returns null if the string is empty or
- * has no valid entries (caller decides what to do).
- */
+/** Parse a day-of-week CSV like "1,3" into a Set (0=Sun..6=Sat); null when empty or without a valid entry. */
 export function parseDaysOfWeek(s: string | null): Set<number> | null {
   if (!s) return null;
   const out = new Set<number>();

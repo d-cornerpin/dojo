@@ -1,39 +1,13 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// THE SCHEDULER'S CLOCK — SWEEP-F T2, via SWEEP CORE-2 item 3.
-//
-// The scheduler's own 30-second clock, started on its own terms (never with the project manager). The
-// period is `work/work-reaper.ts`'s `REAPER_BASE_TICK_MS`, the cadence its kinds cite as "the 30s
-// scheduler tick".
-//
-// ── THE RE-ENTRANCY GUARD, AND WHY THE TICK NEEDED ONE ──────────────────────────────────
-// `checkScheduledTasks` is async and awaits: the due scan's cleanup, `claimOccurrence`, and —
-// through `onTaskRunComplete` — the agent runtime itself. A tick that outran the 30-second
-// period therefore had a SECOND tick walking the same due set while the first was still
-// deciding what to fire. Nothing crashed, because D21's occurrence claim is a UNIQUE
-// constraint and the loser skips; what was lost was the ability to say so. The overlap was
-// invisible, uncounted, and indistinguishable from "the schedule was already claimed
-// elsewhere" in the log.
-//
-// So the guard does not merely prevent the overlap — it COUNTS it. `overlapsSkipped` is the
-// honest measure of a tick that cannot keep up with its own period, which is a real operating
-// condition on a loaded box and one nobody could previously see.
-//
-// The guard releases in a `finally`: a tick that THROWS must not wedge the clock for ever,
-// and that arm is driven by its own test rather than argued for in a comment.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// The scheduler's own 30 s clock, independent of the project manager. A tick that outruns the period must
+// not let a second tick walk the same due set: overlaps are skipped and counted, and the guard releases
+// in a `finally` so a throwing tick cannot wedge the clock.
 
 import { createLogger } from '../logger.js';
 import { kickBalanceCheck, kickMemoryRecheck, kickLivenessSweep, backgroundChecksSettled } from './background-checks.js';
 
 const logger = createLogger('scheduler-clock');
 
-/**
- * How often the scheduler asks "what is due".
- *
- * CARRIED VERBATIM from `tracker/pm-agent.ts`'s `SCHEDULER_INTERVAL_MS = 30_000` — the value
- * this module took ownership of, not a new one. `work/work-reaper.ts` names this clock in
- * three of its kinds' `cadenceFrom` strings, so moving the number moves those too.
- */
+/** How often the scheduler asks what is due; work/work-reaper.ts cites this 30 s period in its cadences. */
 export const SCHEDULER_INTERVAL_MS = 30_000;
 
 type TickBody = () => Promise<void>;
@@ -42,34 +16,24 @@ let timer: ReturnType<typeof setInterval> | null = null;
 let inFlight = false;
 let overlapsSkipped = 0;
 
-/** What the clock is doing. Exported so "is the scheduler keeping up" is answerable. */
 export function schedulerClockState(): {
   running: boolean; inFlight: boolean; overlapsSkipped: number; everyMs: number;
 } {
   return { running: timer !== null, inFlight, overlapsSkipped, everyMs: SCHEDULER_INTERVAL_MS };
 }
 
-/** Resolves when the background checks kicked by the last tick (scheduler/background-checks.ts:
- *  the provider balances, t138; the low-memory re-measure, t138 r4) have finished. */
 export const balanceCheckSettled = backgroundChecksSettled;
 
-/** The default body: the background checks' kicks around the scheduler's own due scan. Injectable
- *  so the guard can be driven. */
+/** The default tick body: background kicks around the due scan. Injectable so the guard can be driven. */
 const defaultBody: TickBody = async () => {
   kickBalanceCheck();
   const { checkScheduledTasks } = await import('./runner.js');
   await checkScheduledTasks();
   kickMemoryRecheck(); // after the due scan: never ahead of it, never awaited by it
-  kickLivenessSweep(); // t143: silent agents, whether or not the PM is enabled
+  kickLivenessSweep();
 };
 
-/**
- * Run ONE scheduler tick, refusing to re-enter one that is already running.
- *
- * Returns `'skipped'` when a tick was already in flight — the caller's tick did not happen and
- * the count says so. Never throws: the timer must survive a failing tick, and a rejected
- * promise on a `setInterval` callback is an unhandled rejection.
- */
+/** Run one tick unless one is in flight (`'skipped'`). Never throws: a `setInterval` rejection is unhandled. */
 export async function runSchedulerTick(body: TickBody = defaultBody): Promise<'ran' | 'skipped'> {
   if (inFlight) {
     overlapsSkipped += 1;
@@ -89,21 +53,16 @@ export async function runSchedulerTick(body: TickBody = defaultBody): Promise<'r
   return 'ran';
 }
 
-/**
- * Install the scheduler's own interval. Idempotent — a second call is a no-op rather than a
- * second clock, the same discipline `startReaper()` keeps.
- */
+/** Install the scheduler's interval. Idempotent: a second call is a no-op, not a second clock. */
 export function startScheduler(): void {
   if (timer) return;
-  // The immediate first pass, carried from the PM's version of this block: a box that has
-  // just come back up must not wait a full period before it looks at what is overdue.
+  // Run once at once so a freshly restarted box does not wait a full period for overdue work.
   void runSchedulerTick();
   timer = setInterval(() => { void runSchedulerTick(); }, SCHEDULER_INTERVAL_MS);
   timer.unref?.();
   logger.info(`Scheduler started, checking every ${SCHEDULER_INTERVAL_MS / 1000}s`);
 }
 
-/** Stop the scheduler's clock. Stopping the PM no longer does this by accident. */
 export function stopScheduler(): void {
   if (!timer) return;
   clearInterval(timer);
