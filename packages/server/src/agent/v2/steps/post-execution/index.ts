@@ -1,32 +1,6 @@
-// ════════════════════════════════════════
-// PHASE-6 T8 — THE `postExecution` STEP
-//
-// The three floors that run after this iteration's tools have executed and
-// before the loop head decides whether to go round again: repetition detection,
-// the permission-denial and no-results counters, and the spinning classifier's
-// ask-before-breaking nudge. Relocated verbatim from `agent/v2/loop.ts`
-// (`:8329`–`:8480` at `b391949`), bounds and wording unchanged.
-//
-// ── WHAT CHANGED IN THE MOVE, AND IT IS ONLY THIS ──
-// The five control-flow statements. Inside the driver's `while` body they were
-// two `continue`s and three `break`s; a module cannot `break` its caller's
-// loop, so each one became the corresponding directive from `../step-outcome.js`
-// and the driver honours it at the call site. That is the exit-request channel,
-// and its rules are written where the type lives. Nothing else moved: the
-// signature string, the thresholds (the classifier's own constants), the steer
-// floors, the log lines and the two `chat:error` codes are the same bytes.
-//
-// The logger keeps the component name `v2-loop`. It is not a decoration — it is
-// what the structured log sink records, and a relocation that renames the field
-// its own operators grep by has changed behaviour it did not admit to.
-//
-// ── INPUTS, MEASURED RATHER THAN GUESSED ──
-// The span's free identifiers at `b391949` are `state`, `agentId`, `turnNumber`,
-// `result`, `turnToolResults`, and module-level imports. Nothing it declares is
-// referenced after the boundary (0 crossings, measured over `runV2TurnBody`
-// `:1005`–`:9808`), which is why this tranche is a relocation and needed no
-// carrier field on the turn's bag under RULING P6-R3(1).
-// ════════════════════════════════════════
+// Post-execution floors (repetition, permission-denial and no-results counters, spinning nudge). A module
+// cannot break its caller's loop, so each exit is a StepOutcome directive the driver honours.
+// The logger keeps component name `v2-loop`: operators grep the structured log sink by it.
 
 import type { WsEvent } from '@dojo/shared';
 import { createLogger } from '../../../../logger.js';
@@ -63,19 +37,14 @@ export interface PostExecutionContext {
 }
 
 /**
- * The post-execution gates. `state` is reassigned exactly as it was inside the
- * loop body — every assignment is still a whole-state `advance`, so `validate()`
- * still runs on each one — and the returned outcome carries the last value.
+ * Every `state` reassignment goes through `advance`, so `validate()` runs on each one;
+ * the returned outcome carries the last value.
  */
 export function runPostExecution(state: AgentTurnState, ctx: PostExecutionContext): StepOutcome {
   const { agentId, turnNumber, result, turnToolResults, broadcast } = ctx;
 
-  // ── Repetition detection (matches v1 runtime.ts:1622-1634) ──
-  // If the model produces the SAME text + SAME tool calls as the last
-  // iteration, it's stuck. Nudge once. If still repeating, break with
-  // STUCK_REPEATING. The loopDetector catches duplicate-tool-call
-  // patterns; this catches duplicate-FULL-response patterns including
-  // text-only responses.
+  // Same text and same tool calls as last iteration means stuck: nudge once, then exit STUCK_REPEATING.
+  // The loopDetector catches repeated tool calls; this also catches repeated text-only responses.
   const currentResponseSig =
     (result.content ?? '') +
     '|' +
@@ -88,9 +57,7 @@ export function runPostExecution(state: AgentTurnState, ctx: PostExecutionContex
       logger.warn('v2: agent repeating itself, nudging on next iteration', {
         loopCount: state.loopCount,
       }, agentId);
-      // HL3: the RC-19 door — the one the `spinning` floor below has always used.
-      // FN-8: complete_task is not available to every agent, so don't name it here where
-      // the filtered tool list isn't in scope. Point at work_update(action="status") instead.
+      // complete_task is not available to every agent, so the steer names work_update instead.
       state = persistEngineSteer(state, {
         agentId, turnNumber, floor: 'repetition', atLoop: state.loopCount,
         content:
@@ -125,11 +92,7 @@ export function runPostExecution(state: AgentTurnState, ctx: PostExecutionContex
     state = advance(state, { consecutivePermissionDenials: 0 });
   }
 
-  // ── No-results detection (matches v1 runtime.ts:1658-1678) ──
-  // When search tools (vault_search, history_search, web_search, etc.)
-  // repeatedly return "No results found" / "not in memory", the agent
-  // is probably looking for something that doesn't exist. Nudge once,
-  // then break with a NO_RESULTS error if it persists.
+  // Search tools that keep returning "No results found" / "not in memory": nudge once, then exit NO_RESULTS.
   const allNoResults =
     turnToolResults.length > 0 &&
     turnToolResults.every(
@@ -145,8 +108,7 @@ export function runPostExecution(state: AgentTurnState, ctx: PostExecutionContex
           loopCount: state.loopCount,
           consecutiveNoResultTools: nextNoResultsCount,
         }, agentId);
-        // HL3: the RC-19 door. The counter reset stays its own `advance`; the atomicity
-        // that matters (the steer and its LATCH) lives on the queue entry itself.
+        // The steer's latch lives on its queue entry; the counter reset is a separate `advance`.
         state = persistEngineSteer(state, {
           agentId, turnNumber, floor: 'no-results', atLoop: state.loopCount,
           content:
@@ -175,39 +137,24 @@ export function runPostExecution(state: AgentTurnState, ctx: PostExecutionContex
     state = advance(state, { consecutiveNoResultTools: 0 });
   }
 
-  // Spinning detection (Part XVIII §F, engine asks model before breaking)
+  // Spinning detection: the engine asks the model before breaking.
   const progressDecision = progressClassifier({
     toolCallsExecutedThisTurn: state.toolCallsExecutedThisTurn,
-    // PHASE-6 T8: these two zeros are LEFT AS THEY ARE, with the measurement
-    // that decided it, because the comment they carried ("Phase 4 will track
-    // this") is now false and a false comment is a live instruction to the next
-    // editor. `consecutiveSmallDeltas` has no producer anywhere in the tree —
-    // `git grep consecutiveSmallDeltas -- packages/server/src` finds only these
-    // two literals and the classifier's own threshold — so there is no state to
-    // wire it to. `consecutiveNoResultTools` DOES have real state, three
-    // statements above, and wiring it would be dead by construction: the
-    // no-results floor either resets that counter to 0 when it nudges or exits
-    // the loop when it reaches 2, and the classifier's NO_RESULTS_THRESHOLD is
-    // 3, which the counter can therefore never reach. Wiring it would add a
-    // second, unreachable mechanism on a signal that already has one.
+    // Both zeros are deliberate. Nothing produces consecutiveSmallDeltas. The no-results floor above resets
+    // or exits at 2, below the classifier's threshold of 3, so passing that counter would be dead.
     consecutiveSmallDeltas: 0,
     consecutivePermissionDenials: state.consecutivePermissionDenials,
     consecutiveNoResultTools: 0,
-    // PHASE-4 T3: the counter IS the latch, and it is now read off the queue's own
-    // entries rather than a state field only this floor ever wrote.
+    // The spinning nudge count is read off the steer queue's own fire count; the queue is the latch.
     spinningNudgeCount: steerFireCount(state.steerQueue, 'spinning'),
     loopCount: state.loopCount,
   });
   if (!progressDecision.progressing) {
-    // If we've already nudged 3 times and the agent kept going, break.
     if (progressDecision.signals?.includes('nudge cap')) {
       logger.warn('v2: spinning nudge cap reached, breaking', { agentId }, agentId);
       return requestExit(state, 'spinning-nudge-cap' satisfies PostExecutionExitReason);
     }
-    // Otherwise inject a nudge and continue once.
-    // FN-8: the nudge only names complete_task for agents that can actually
-    // self-complete; a persistent agent gets "explain the block in your
-    // reply" wording instead of being pointed at a tool the guard refuses.
+    // Names complete_task only for agents that can self-complete; others are told to explain the block.
     const nudgeText = buildSpinningNudge({
       toolCallsExecutedThisTurn: state.toolCallsExecutedThisTurn,
       consecutiveSmallDeltas: 0,
@@ -216,12 +163,8 @@ export function runPostExecution(state: AgentTurnState, ctx: PostExecutionContex
       spinningNudgeCount: steerFireCount(state.steerQueue, 'spinning'),
       loopCount: state.loopCount,
     }, agentCanSelfCompleteById(agentId));
-    // RC-19: via persistEngineSteer so the "you seem stuck, here is what to do"
-    // question reaches the model (the steer queue) AND keeps its dashboard row. The
-    // comment above ("engine asks model before breaking") only works if the model
-    // actually hears the question; the bare role='system' row the assembler strips
-    // meant it never did. The ignored-nudge count is the queue's own fire count, keyed
-    // per loop: this floor is deliberately NOT one-shot (cap MAX_SPINNING_NUDGES).
+    // Sent as an engine steer so the model actually hears the question and the dashboard keeps its row.
+    // Keyed per loop: this floor is deliberately not one-shot (capped by MAX_SPINNING_NUDGES).
     state = persistEngineSteer(
       state,
       { agentId, content: nudgeText, turnNumber, floor: 'spinning', key: `loop-${state.loopCount}`, atLoop: state.loopCount },
@@ -229,6 +172,5 @@ export function runPostExecution(state: AgentTurnState, ctx: PostExecutionContex
     );
   }
 
-  // Loop continues, model will see tool results and respond
   return proceed(state);
 }
