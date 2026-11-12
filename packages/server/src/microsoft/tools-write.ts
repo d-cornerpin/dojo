@@ -81,7 +81,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
     },
   },
   {
-    // T77b — see the twin note on `gmail_draft`. No `reachesPeople`: this reaches
+    // See the twin note on `gmail_draft`. No `reachesPeople`: this reaches
     // nobody. It creates a draft in the mailbox and stops, so it passes the
     // integration WRITE grant and consults no channel grant.
     name: 'outlook_draft',
@@ -641,7 +641,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
   },
 ];
 
-// ── v2.7.1 multi-account: user_* send tool variants ──
+// ── user_* send tool variants ──
 // Mirrors USER_SLOT_SEND_TOOLS in google/tools-write.ts. Gated by
 // isMsEmailSendingEnabled('user') in the executor below. Off by default.
 const USER_SLOT_SEND_TOOLS: readonly string[] = ['outlook_send', 'outlook_reply', 'outlook_forward'];
@@ -655,7 +655,7 @@ for (const canonical of USER_SLOT_SEND_TOOLS) {
   });
 }
 
-// ── Full-parity (2026-06-17): user_* variants for ALL remaining write tools ──
+// ── user_* variants for all remaining write tools ──
 // Every non-send Microsoft write tool (calendar/onedrive/outlook ops/teams/
 // contacts/onenote/tasks/online_meeting) gets a generic user_ variant. Every
 // write executor case threads the resolved `slot` into msGraphWrite
@@ -1062,7 +1062,7 @@ export async function executeMicrosoftWriteTool(
       return `Reply sent${replyAll ? ' (to all)' : ''} to message ${args.message_id}${draftRecipientsNote(result.recipients)}${attachSummary}`;
     }
 
-    // ── T77b — THE DRAFT. The same two Graph shapes `outlook_send` / `outlook_reply`
+    // ── The draft: the same two Graph shapes `outlook_send` / `outlook_reply`
     // build, pointed at the endpoints that STOP at the mailbox. ──
     //
     // What it deliberately does not do, and why, is identical to `gmail_draft`: it never
@@ -1073,7 +1073,7 @@ export async function executeMicrosoftWriteTool(
     // REPLY DRAFTS REUSE `outlook_reply`'S OWN REQUEST BODY, verbatim in shape: Graph's
     // `createReply` / `createReplyAll` take the same `{ comment }` or
     // `{ comment, message: { attachments } }` payload as `reply` / `replyAll` and differ only
-    // in returning the draft instead of queueing the send. That is the reuse — the
+    // in returning the draft instead of queueing the send. The
     // threading is Graph's, from the conversation the original message is on, so there is
     // no second threading rule here to drift from the first.
     case 'outlook_draft': {
@@ -1894,7 +1894,7 @@ export async function executeMicrosoftWriteTool(
       const summary = `Batch upload: ${succeeded.length}/${filePaths.length} files uploaded successfully.`;
       if (failed.length === 0) return summary;
       // The engine reads failure from the first word (agent/tools/index.ts), so a partly-failed
-      // batch leads with `Error: ` — same rule as Gmail's batch label. Every word stays.
+      // batch leads with `Error: `, same rule as Gmail's batch label. Every word stays.
       return `Error: ${summary}\n\nFailed (${failed.length}):\n` + failed.map(f => `- ${f.path}: ${f.message}`).join('\n');
     }
 
