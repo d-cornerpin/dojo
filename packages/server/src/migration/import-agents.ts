@@ -1,10 +1,5 @@
-// ════════════════════════════════════════
-// Migration Import — the agents an import stops, and bringing them back when it fails
-// ════════════════════════════════════════
-// Final round (owner rule: the Dojo does the work). The import closes the database to swap the data folder, so the
-// runs in flight must stop first. They are STOPPED, never terminated: a termination is written into the very database
-// a failed import puts back, so every agent used to come back terminated. When the import fails and its data is back,
-// the agents it stopped carry on by themselves.
+// Migration import: stops the agents an import interrupts and resumes them if it fails. They are
+// stopped, never terminated (a termination would be written into the database a failed import puts back).
 
 import { getDb } from '../db/connection.js';
 import { stopAgent } from '../agent/runtime.js';
@@ -13,14 +8,12 @@ import { createLogger } from '../logger.js';
 
 const logger = createLogger('migration-import');
 
-/** The agents the OWNER stopped after this import began (`noteOwnerStop`, from the stop route). A failed import
- *  brings back only the agents it stopped itself, so these keep the owner's stop. */
+/** Agents the OWNER stopped after the import began; a failed import must not lift these. */
 const ownerStopsDuringImport = new Set<string>();
 let importOpen = false;
 
-/** Stop every run in flight before the database closes. Returns the agents the IMPORT stopped: a run the owner had
- *  already stopped (still unwinding, so still in `activeRuns`) is stopped again but not returned, because that stop
- *  is the owner's and a failed import must not lift it. */
+/** Stop every run before the database closes; returns only the agents the IMPORT stopped (a run the owner
+ *  already stopped is stopped again but not returned). */
 export function stopAgentRunsForImport(): string[] {
   ownerStopsDuringImport.clear();
   importOpen = true;
@@ -32,21 +25,17 @@ export function stopAgentRunsForImport(): string[] {
   return all.filter((id) => !ownerStoppedAlready.has(id));
 }
 
-/** The owner pressed stop on this agent. Called by the stop route; while an import is open it keeps a failed
- *  import from lifting that stop. */
+/** The owner pressed stop (called by the stop route); noted while an import is open. */
 export function noteOwnerStop(id: string): void {
   if (importOpen) ownerStopsDuringImport.add(id);
 }
 
-/** The import failed and its data is back: lift the stop, clear the owner-stop marker it set (the owner did not stop
- *  these agents), and wake each to carry on. An agent the owner stopped during the import is left stopped. */
+/** The import failed and its data is back: lift its stops and wake each agent; owner-stopped ones stay stopped. */
 export function resumeAgentsAfterFailedImport(ids: readonly string[]): void {
   importOpen = false;
   const ownerStopped = new Set(ownerStopsDuringImport);
   ownerStopsDuringImport.clear();
   for (const id of ids.filter((x) => !ownerStopped.has(x))) {
-    // Owner ruling: a failed import brings back by themselves only the agents it stopped (`stopAgentRunsForImport`
-    // returns exactly those), so this clear never lifts a stop the owner pressed.
     stoppedAgents.delete(id);
     try {
       const row = getDb().prepare('SELECT config FROM agents WHERE id = ?').get(id) as { config: string | null } | undefined;

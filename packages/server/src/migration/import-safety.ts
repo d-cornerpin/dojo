@@ -1,11 +1,6 @@
-// ════════════════════════════════════════
-// Migration Import — safe put-back of the owner's data after a failed import
-// ════════════════════════════════════════
-//
-// The caller passes the `fs` module in: this file holds no direct fs import of its own.
+// Safe put-back of the owner's data after a failed import; the caller passes `fs` in (no fs import here).
 
 
-/** The few fs calls used here; the caller passes the real module in. */
 interface Fs {
   existsSync(p: string): boolean;
   renameSync(from: string, to: string): void;
@@ -17,12 +12,9 @@ interface Fs {
 }
 import path from 'node:path';
 
-/**
- * Put the backup THIS run made back at `dojoDir`, without ever leaving the owner with no data:
- * the failed tree is renamed ASIDE first, the backup is renamed in, and only then is the failed
- * tree deleted. If the rename-in fails, nothing is deleted and nothing is restarted onto a
- * missing folder: the backup stays exactly where it is and the caller is told where.
- */
+// Put the backup this run made back at `dojoDir` without ever leaving the owner with no data: the failed tree
+// is renamed aside first, the backup renamed in, and only then is the failed tree deleted. If the rename-in
+// fails nothing is deleted or restarted onto a missing folder; the caller is told where the backup stays.
 export function putBackOwnBackup(fs: Fs, dojoDir: string, backup: string): { ok: true } | { ok: false; backup: string; reason: string } {
   const aside = `${dojoDir}-failed-import-${Date.now()}`;
   let movedAside = false;
@@ -31,33 +23,28 @@ export function putBackOwnBackup(fs: Fs, dojoDir: string, backup: string): { ok:
     try {
       fs.renameSync(backup, dojoDir);
     } catch (renameErr) {
-      // Final round (owner rule: the Dojo does the work): a refused rename (another volume, a permission on the
-      // parent) is done by COPY instead. The copy goes in whole or not at all: a partial one is removed. The backup
-      // is then no longer needed and goes too.
+      // A refused rename (another volume, a permission on the parent) falls back to a COPY that goes in whole
+      // or not at all (a partial one is removed); the backup is then removed too.
       try {
         fs.cpSync(backup, dojoDir, { recursive: true, verbatimSymlinks: true });
       } catch (copyErr) {
-        try { fs.rmSync(dojoDir, { recursive: true, force: true }); } catch { /* nothing more can be done */ }
+        try { fs.rmSync(dojoDir, { recursive: true, force: true }); } catch { }
         throw new Error(`${renameErr instanceof Error ? renameErr.message : String(renameErr)}; copying it back failed too: ${copyErr instanceof Error ? copyErr.message : String(copyErr)}`);
       }
       try { fs.rmSync(backup, { recursive: true, force: true }); } catch { /* a leftover copy; the data is back */ }
     }
   } catch (e) {
     // ~/.dojo must never vanish: put the live data we set aside back where it was.
-    if (movedAside) { try { fs.renameSync(aside, dojoDir); } catch { /* nothing more can be done */ } }
+    if (movedAside) { try { fs.renameSync(aside, dojoDir); } catch { /* best effort; the backup is intact and returned */ } }
     return { ok: false, backup, reason: e instanceof Error ? e.message : String(e) };
   }
   if (movedAside) { try { fs.rmSync(aside, { recursive: true, force: true }); } catch { /* disposable; leave it */ } }
   return { ok: true };
 }
 
-// ── One import at a time ──
-//
-// The lock is a directory next to ~/.dojo (never inside it: the folder is swapped during an
-// import) holding the owner's pid. It is created by writing a private directory fully and then
-// RENAMING it into place, so a lock never exists without its pid and two racers cannot both win.
-// A dead holder's lock is cleared by renaming it away (atomic: one racer wins, the rest see
-// "gone") and then deleting the renamed copy; it is never checked-then-deleted in place.
+// One import at a time. The lock is a directory next to ~/.dojo (the folder is swapped during an import)
+// holding the owner's pid. It is written fully, then RENAMED into place, so a lock never exists without its
+// pid and two racers cannot both win. A dead holder's lock is renamed away, then deleted, never in place.
 
 export class ImportAlreadyRunningError extends Error {
   constructor() { super('An import is already running. Wait for it to finish, then try again.'); this.name = 'ImportAlreadyRunningError'; }
@@ -71,7 +58,6 @@ const holderOf = (fs: Fs, lock: string): number | null => {
   try { const n = Number(fs.readFileSync(path.join(lock, 'pid'), 'utf-8')); return Number.isInteger(n) && n > 0 ? n : null; } catch { return null; }
 };
 
-/** Take the import lock or throw ImportAlreadyRunningError. Returns the release function. */
 export function acquireImportLock(fs: Fs, lock: string): () => void {
   for (let attempt = 0; attempt < 3; attempt++) {
     const fresh = fs.mkdtempSync(`${lock}.new-`);
@@ -86,7 +72,7 @@ export function acquireImportLock(fs: Fs, lock: string): () => void {
     }
     const holder = holderOf(fs, lock);
     if (holder !== null && alive(holder)) throw new ImportAlreadyRunningError();
-    // Dead (or unreadable) holder: move the lock away atomically; only one racer's rename succeeds.
+    // Dead (or unreadable) holder: rename the lock away atomically; only one racer's rename succeeds.
     const stale = `${lock}.stale-${process.pid}-${Date.now()}-${attempt}`;
     try { fs.renameSync(lock, stale); } catch { continue; }
     if (holderOf(fs, stale) !== holder && holderOf(fs, stale) !== null && alive(holderOf(fs, stale)!)) {

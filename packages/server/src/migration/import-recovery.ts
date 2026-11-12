@@ -1,6 +1,4 @@
-// ════════════════════════════════════════
-// Migration Import — what happens after a failed import (restart, and telling the owner)
-// ════════════════════════════════════════
+// Migration import: what happens after a failed import (restart, and telling the owner).
 
 import { createLogger } from '../logger.js';
 import { ownerConditionCleared, tellOwner } from '../healer/owner-notices.js';
@@ -11,9 +9,8 @@ const logger = createLogger('migration-import');
 const CARD_KEY = 'import-failed-not-running';
 let standing: string | null = null;
 
-// The "data could not be put back" card must outlive a restart (Dojo comes up on the imported tree and the owner's real
-// data waits in the backup). The database lives in the very folder an import swaps, so the truth of this card is a small
-// marker file BESIDE ~/.dojo (next to the import lock); binding it at load raises the card again in this database.
+// The "data could not be put back" card must outlive a restart. The database lives in the folder an import
+// swaps, so its truth is a marker file beside ~/.dojo (next to the import lock); binding re-raises the card.
 interface MarkerFs {
   existsSync(p: string): boolean;
   readFileSync(p: string, enc: 'utf-8'): string;
@@ -42,7 +39,6 @@ function raiseImportCard(words: string): void {
   tellOwner(CARD_KEY, words);
 }
 
-/** An import (or a restart) succeeded: the card leaves every open dashboard. */
 export function clearImportCard(): void {
   dropMarker();
   standing = null;
@@ -51,18 +47,15 @@ export function clearImportCard(): void {
 
 /** Does the import card still stand: raised in this process, or its marker beside ~/.dojo? */
 export const importCardStands = (): boolean => standing !== null || stuckFromMarker() !== null;
-/** He dismissed the card: it does not come back after a restart either. */
 export function importCardDismissed(): void { standing = null; dropMarker(); }
 
-/** The owner-facing sentence when the old data could not be put back (rename and copy both refused). The path is
- *  exact. Final round: a fact, no chore. */
+/** Owner-facing sentence when the old data could not be put back (rename and copy both refused). */
 export function backupStuckWords(backupPath: string): string {
   return `The import did not finish, and Dojo could not put your previous data back by itself, so it did not start again on the imported data. Your data is safe at ${backupPath}.`;
 }
 
 const RESTART_FAILED_WORDS = 'The import did not finish, and Dojo could not start its services again by itself. Your data is safe.';
 
-/** The data could not be put back: say so on the dashboard. */
 export function noteBackupStuck(backupPath: string): string {
   const words = backupStuckWords(backupPath);
   try { marker?.fs.writeFileSync(marker.file, JSON.stringify({ words, backupPath })); } catch { /* the live card still goes */ }
@@ -71,11 +64,9 @@ export function noteBackupStuck(backupPath: string): string {
 }
 
 /**
- * After a failed import that had already stopped services (and closed the database), bring the
- * Dojo back: the caller's restart re-opens the database. It runs again even if the success-path
- * restart already ran on a tree since swapped out. A failing restart is logged and raised as an
- * owner card; it never replaces the original error, which the caller rethrows. Returns the words
- * the owner was told when the restart failed, else null.
+ * After a failed import that had stopped services (and closed the database), restart them so the database
+ * re-opens. Runs even if the success-path restart already ran on a swapped-out tree. A failing restart is
+ * raised as an owner card and never replaces the original error. Returns the owner's words, else null.
  */
 export async function restartAfterFailedImport(opts: {
   servicesStopped: boolean;

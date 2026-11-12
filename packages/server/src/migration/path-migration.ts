@@ -1,6 +1,4 @@
-// ════════════════════════════════════════
-// Path Migration — update home directory references after import
-// ════════════════════════════════════════
+// Path migration: rewrite home directory references after an import.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -10,13 +8,9 @@ import { createLogger } from '../logger.js';
 const logger = createLogger('path-migration');
 
 /**
- * Replace `oldHome` with `newHome` in `text`, but only where `oldHome` is a whole
- * path prefix: it must be followed by the end of the text, a `/`, whitespace, a quote,
- * or a JSON/YAML delimiter. That is an allow-list of real path boundaries: a folder name
- * that merely STARTS with the old home (`<oldHome>x`, `<oldHome>-old`, `<oldHome>@corp`,
- * any non-ASCII letter) is left alone, whatever character it continues with. `oldHome` is
- * matched literally and `newHome` is inserted literally (a `$` in it is never read as a
- * pattern).
+ * Replace `oldHome` with `newHome` only where it is a whole path prefix (followed by end of text, `/`,
+ * whitespace, a quote or a JSON/YAML delimiter), so a folder that merely starts with the old home
+ * (`<oldHome>x`, `<oldHome>-old`) is left alone. Both are literal: a `$` in newHome is never a pattern.
  */
 export function swapHome(text: string, oldHome: string, newHome: string): string {
   if (!oldHome) return text;
@@ -46,30 +40,22 @@ export function migratePaths(rawOldHome: string, rawNewHome: string, dojoDir: st
 
   logger.info('Migrating paths', { oldHome, newHome });
 
-  // 1. Update paths in the SQLite database
   migrateDatabase(oldHome, newHome, dojoDir);
 
-  // 2. Update paths in secrets.yaml
   migrateTextFile(path.join(dojoDir, 'secrets.yaml'), oldHome, newHome);
 
-  // 3. Update paths in config files
   const configDir = path.join(dojoDir, 'config');
   if (fs.existsSync(configDir)) {
     migrateDirectory(configDir, oldHome, newHome);
   }
 
-  // 4. Update paths in technique TECHNIQUE.md files
   const techniquesDir = path.join(dojoDir, 'techniques');
   if (fs.existsSync(techniquesDir)) {
     migrateDirectory(techniquesDir, oldHome, newHome);
   }
 
-  // 5. Update paths in the Cloudflare tunnel config (~/.cloudflared). config.yml
-  //    references the credentials file by absolute path under the old home
-  //    (e.g. credentials-file: /Users/<old>/.cloudflared/<uuid>.json); without
-  //    this the named tunnel can't find its key on the new machine. The
-  //    credentials .json itself holds only base64 secrets (no home paths), so
-  //    migrateTextFile leaves it untouched.
+  // Cloudflare tunnel config (~/.cloudflared): config.yml names the credentials file by absolute path under
+  // the old home, so it needs rewriting; the credentials .json holds no home paths and is left untouched.
   const cloudflaredDir = path.join(newHome, '.cloudflared');
   if (fs.existsSync(cloudflaredDir)) {
     migrateDirectory(cloudflaredDir, oldHome, newHome);
@@ -111,7 +97,6 @@ function migrateDirectory(dirPath: string, oldHome: string, newHome: string): vo
     if (entry.isDirectory()) {
       migrateDirectory(fullPath, oldHome, newHome);
     } else {
-      // Only process text-like files
       const ext = path.extname(entry.name).toLowerCase();
       if (['.md', '.txt', '.yaml', '.yml', '.json', '.toml', '.sh'].includes(ext)) {
         migrateTextFile(fullPath, oldHome, newHome);

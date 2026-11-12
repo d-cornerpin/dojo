@@ -1,6 +1,4 @@
-// ════════════════════════════════════════
-// Post-Migration Checks — verify dependencies, auth, models
-// ════════════════════════════════════════
+// Post-migration checks: verify dependencies, auth and models after an import.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -66,7 +64,6 @@ function broadcastChecks(): void {
   } as any);
 }
 
-// ── Technique dependency check ──
 
 function expandHome(p: string): string {
   if (p === '~') return homeDir();
@@ -91,11 +88,8 @@ function formatTechniqueDeps(m: DependencyManifest): { commands: string[]; manua
   return { commands, manual: m.manual_steps };
 }
 
-// Each migrated technique can declare external dependencies (brew/npm/pip
-// packages, git repos, downloads, manual steps) in its dependencies.json. The
-// technique files migrate, but those external installs do NOT — so surface what
-// each technique needs so the user can set it up on the new machine. Only
-// techniques that actually declare something get a row.
+// Surface the external installs (brew/npm/pip, repos, downloads, manual steps) a technique declares in
+// dependencies.json: the files migrate but the installs do not. Only declaring techniques get a row.
 function checkTechniqueDependencies(): void {
   let techs: Array<{ name: string; directory_path: string | null }> = [];
   try {
@@ -120,15 +114,13 @@ function checkTechniqueDependencies(): void {
     if (commands.length === 0 && manual.length === 0) continue;
     const slug = t.name.replace(/[^a-z0-9]+/gi, '-').toLowerCase();
 
-    // Classify the free-text manual steps: do the doable, verify what's
-    // checkable, drop pure info, and keep only genuine human actions. Install
-    // commands (brew/pip/git/…) are run by the combined installer → automated.
+    // Classify manual steps: do the doable, verify the checkable, drop pure info, keep genuine human
+    // actions. Install commands are run by the combined installer, so they count as automated.
     const classified = classifyManualSteps(manual);
     const actionSteps = classified.filter((c) => c.bucket === 'action');
     const autoSteps = classified.filter((c) => c.bucket === 'automated');
 
-    // Automated summary (lands in "What migrated automatically"): the installed
-    // deps + everything the classifier handled/verified.
+    // Automated summary ("What migrated automatically"): installed deps plus what the classifier handled.
     const autoItems = [
       ...commands.map((text) => ({ text: `Installed: ${text}`, kind: 'install' as const })),
       ...autoSteps.map((c) => ({ text: c.detail ? `${c.detail}` : c.text, kind: 'install' as const })),
@@ -143,8 +135,7 @@ function checkTechniqueDependencies(): void {
       });
     }
 
-    // Only genuine human actions become a "needs you" technique card. A
-    // technique whose every step was automated/info shows no card at all.
+    // Only genuine human actions become a card; a technique whose steps were all automated shows none.
     if (actionSteps.length) {
       currentChecks.push({
         id: `technique-deps-${slug}`,
@@ -161,16 +152,13 @@ function checkTechniqueDependencies(): void {
   }
 }
 
-// ── Run All Checks ──
 
 export async function runPostMigrationChecks(manifest: ExportManifest): Promise<PostMigrationCheck[]> {
   migrationDismissed = false;
   currentChecks = [];
 
-  // Database restored (always ok if we got here)
   currentChecks.push({ id: 'database', label: 'Database restored', status: 'ok', category: 'automated' });
 
-  // Agents restored
   currentChecks.push({
     id: 'agents',
     label: `Agents restored (${manifest.contents.agents_count})`,
@@ -178,7 +166,6 @@ export async function runPostMigrationChecks(manifest: ExportManifest): Promise<
     category: 'automated',
   });
 
-  // Techniques restored
   if (manifest.contents.techniques_count > 0) {
     currentChecks.push({
       id: 'techniques',
@@ -188,11 +175,9 @@ export async function runPostMigrationChecks(manifest: ExportManifest): Promise<
     });
   }
 
-  // Technique external dependencies (brew/npm/pip/git/manual) — the files come
-  // over, but the installs don't. Flag each technique that declares any.
+  // Technique external dependencies: the files come over, the installs do not.
   checkTechniqueDependencies();
 
-  // Vault restored
   if (manifest.contents.vault_entries_count > 0) {
     currentChecks.push({
       id: 'vault',
@@ -202,8 +187,7 @@ export async function runPostMigrationChecks(manifest: ExportManifest): Promise<
     });
   }
 
-  // Ollama installed? Auto-installed by the dependency step; if it's still
-  // missing the user can re-run the installer.
+  // Ollama installed? Auto-installed by the dependency step; if missing the user can re-run it.
   const ollamaInstalled = checkCommandExists('ollama');
   currentChecks.push({
     id: 'ollama',
@@ -213,10 +197,9 @@ export async function runPostMigrationChecks(manifest: ExportManifest): Promise<
     cta: ollamaInstalled ? undefined : { type: 'run_installer', label: 'Re-run installer' },
   });
 
-  // Ollama models. Read over HTTP, never `ollama list`: the CLI auto-launches
-  // Ollama.app when the daemon is down, so the probe could START the thing it
-  // was only meant to ask about (see listOllamaModelNames). `checkCommandExists`
-  // above stays a PATH lookup — it names the binary but never runs it.
+  // Ollama models. Read over HTTP, never `ollama list`: the CLI auto-launches Ollama.app when the
+  // daemon is down, so the probe could start what it only meant to ask about (see listOllamaModelNames).
+  // checkCommandExists above stays a PATH lookup: it names the binary, never runs it.
   if (ollamaInstalled && manifest.contents.ollama_models.length > 0) {
     const localModels = await listOllamaModelNames();
     for (const model of manifest.contents.ollama_models) {
@@ -227,26 +210,22 @@ export async function runPostMigrationChecks(manifest: ExportManifest): Promise<
         label: model,
         status: isLocal ? 'ok' : 'action_needed',
         category: 'automated',
-        // The wizard recognizes the `ollama-model-` id prefix and drives the
-        // download itself — streaming progress + real errors + retry, mirroring
-        // OOBE — instead of a fire-and-forget spawn that swallowed errors.
+        // The wizard recognizes the `ollama-model-` id prefix and drives the download itself, with
+        // streaming progress, real errors and retry.
         detail: isLocal ? 'Downloaded' : 'Needs download',
       });
     }
   }
 
-  // Provider API keys — restored with the vault/secrets, so most verify clean.
-  // Only surface the ones whose restored key fails (needs re-entry).
+  // Provider API keys restore with the vault, so most verify clean; surface only keys that fail.
   for (const providerName of manifest.contents.providers) {
     const checkId = `provider-${providerName}`;
-    // The internal "System" provider is an engine sentinel with no user API key
-    // (seeded '__system__'); it migrated fine and must never be flagged for
-    // re-entry. This was the bogus "System API key needs re-entry" item.
+    // The internal "System" provider is an engine sentinel with no user API key (seeded '__system__'),
+    // so it is never flagged for re-entry.
     if (providerName === 'System' || providerName.toLowerCase() === '__system__') {
       continue;
     }
     if (providerName.toLowerCase().includes('ollama')) {
-      // Ollama doesn't need API key verification
       currentChecks.push({ id: checkId, label: `${providerName} configured`, status: ollamaInstalled ? 'ok' : 'action_needed', category: 'automated' });
       continue;
     }
@@ -260,10 +239,8 @@ export async function runPostMigrationChecks(manifest: ExportManifest): Promise<
     });
   }
 
-  // Google accounts — a dojo can have MANY (up to 5 agent + 5 user). For each,
-  // ACTUALLY validate the migrated token (refresh it): a valid one needs no
-  // action; one that fails gets a reconnect card. This is why Re-check works —
-  // once the user reconnects, the refreshed token validates and the card clears.
+  // Google accounts (up to 5 agent + 5 user): validate each migrated token by refreshing it. A valid
+  // one needs no action; a failing one gets a reconnect card that clears on Re-check after reauth.
   const googleAccounts = listConnectedAccounts('google_accounts');
   if (googleAccounts.length > 0) {
     const gwsInstalled = checkCommandExists('gws');
@@ -288,7 +265,7 @@ export async function runPostMigrationChecks(manifest: ExportManifest): Promise<
       });
     }
   } else if (manifest.contents.google_workspace_connected || checkDbGoogleConnected()) {
-    // Legacy DB without the accounts table — one generic reconnect.
+    // Legacy DB without the accounts table, one generic reconnect.
     currentChecks.push({
       id: 'google-auth',
       label: 'Reconnect Google',
@@ -299,10 +276,8 @@ export async function runPostMigrationChecks(manifest: ExportManifest): Promise<
     });
   }
 
-  // Microsoft accounts — covers M365 work accounts AND personal Microsoft
-  // accounts (all live in microsoft_accounts). Each migrated account is validated
-  // (refresh tokens carry over between machines, so most just work); only one that
-  // fails to refresh gets a reconnect card.
+  // Microsoft accounts (M365 work and personal, all in microsoft_accounts): each token is validated;
+  // only one that fails to refresh gets a reconnect card.
   const microsoftAccounts = listConnectedAccounts('microsoft_accounts');
   if (microsoftAccounts.length > 0) {
     for (const acc of microsoftAccounts) {
@@ -329,16 +304,11 @@ export async function runPostMigrationChecks(manifest: ExportManifest): Promise<
     });
   }
 
-  // iMessage — Full Disk Access is a macOS permission that does NOT transfer
-  // between machines. DOJO reads Messages as a Node process, so FDA is granted
-  // to "node" (this is what OOBE does too — not Terminal/the DOJO app).
+  // iMessage: Full Disk Access does not transfer between machines and is granted to "node", the
+  // process that reads Messages.
   if (manifest.contents.imessage_configured) {
-    // Actually DETECT whether Full Disk Access is granted by opening the Messages
-    // DB from THIS (the dojo server / node) process — the same process that
-    // reads iMessage at runtime. If it opens, FDA is on for the right node and
-    // we're done; if it throws (EPERM under macOS TCC), it's still needed. This
-    // is why Re-check works now: it re-runs this real probe instead of a
-    // hardcoded "needs you".
+    // Detect FDA by opening the Messages DB from this (server) process, the one that reads iMessage at
+    // runtime: it opens when granted and throws EPERM under macOS TCC when not. Re-check re-runs the probe.
     const chatDb = path.join(homeDir(), 'Library', 'Messages', 'chat.db');
     let fdaGranted = false;
     try { fs.closeSync(fs.openSync(chatDb, 'r')); fdaGranted = true; } catch { /* TCC-denied or missing */ }
@@ -354,7 +324,6 @@ export async function runPostMigrationChecks(manifest: ExportManifest): Promise<
     });
   }
 
-  // cloudflared — auto-installed by the dependency step.
   const cfInstalled = checkCommandExists('cloudflared');
   currentChecks.push({
     id: 'cloudflared',
@@ -364,10 +333,8 @@ export async function runPostMigrationChecks(manifest: ExportManifest): Promise<
     cta: cfInstalled ? undefined : { type: 'run_installer', label: 'Re-run installer' },
   });
 
-  // Cloudflare tunnel — the full named-tunnel setup migrates with the export:
-  // the connector token (secrets.yaml), the ~/.cloudflared cert + credentials
-  // key, and the tunnel_* settings (DB). Surface it so the user can see remote
-  // access carried over; it auto-starts on boot once cloudflared is installed.
+  // Cloudflare tunnel: token (secrets.yaml), ~/.cloudflared cert and key, and tunnel_* settings migrate;
+  // surface it so the user sees remote access carried over (auto-starts once cloudflared is installed).
   if (checkDbConfigFlag('tunnel_enabled')) {
     let namedUrl: string | null = null;
     let isNamed = false;
@@ -377,8 +344,7 @@ export async function runPostMigrationChecks(manifest: ExportManifest): Promise<
       const mode = getDb().prepare("SELECT value FROM config WHERE key = 'tunnel_mode'").get() as { value: string } | undefined;
       isNamed = mode?.value === 'named';
     } catch { /* ignore */ }
-    // A named tunnel can only run on one machine. Flag it for the user to make
-    // sure the OLD dojo's tunnel is off, or the two will fight over the name/key.
+    // A named tunnel runs on one machine only: the old dojo's tunnel must be off or the two fight over it.
     const conflictNote = isNamed
       ? ' IMPORTANT: a named tunnel runs on one machine only — make sure the old dojo has its tunnel turned OFF, or neither will connect.'
       : '';
@@ -394,10 +360,8 @@ export async function runPostMigrationChecks(manifest: ExportManifest): Promise<
     });
   }
 
-  // Twilio — config + numbers live in the DB (migrated) and the auth token is
-  // encrypted with the credential master key (also migrated), so it decrypts
-  // here. Surface it so the user knows to update webhook URLs if their public
-  // URL changed.
+  // Twilio: config and numbers live in the DB and the auth token is encrypted with the migrated master
+  // key. Surface it so the user updates webhook URLs if their public URL changed.
   try {
     const tw = getDb().prepare('SELECT account_sid FROM twilio_config WHERE id = 1').get() as { account_sid: string | null } | undefined;
     if (tw?.account_sid) {
@@ -413,7 +377,6 @@ export async function runPostMigrationChecks(manifest: ExportManifest): Promise<
 
   broadcastChecks();
 
-  // Store checks in DB for persistence
   try {
     const db = getDb();
     db.prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('migration_checks', ?)").run(JSON.stringify(currentChecks));
@@ -442,20 +405,15 @@ export function loadSavedChecks(): void {
   } catch { /* ignore */ }
 }
 
-// ── Helpers ──
 
-// All connected accounts of a kind-table (google_accounts / microsoft_accounts).
-// Used to emit one reconnect card per account. Table name is a fixed literal,
-// not user input.
+// All connected accounts of a kind-table, to emit one reconnect card each. The table name is a fixed
+// literal, not user input.
 function listConnectedAccounts(
   table: 'google_accounts' | 'microsoft_accounts',
 ): Array<{ id: string; email: string | null; kind: string }> {
   try {
-    // Enumerate by refresh_token presence, NOT connected=1. Validating a token
-    // (getValidAccessTokenForAccount) flips connected→0 as a side effect when a
-    // refresh fails, so a connected=1 filter would make a just-failed account
-    // VANISH on the next check/recheck. An account that was ever set up keeps its
-    // refresh_token, so this keeps its reconnect card visible until reauthed.
+    // Enumerate by refresh_token presence, not connected=1: validating a token flips connected to 0 on a
+    // failed refresh, so that filter would make a just-failed account vanish on the next check.
     return getDb()
       .prepare(`SELECT id, email, kind FROM ${table} WHERE refresh_token IS NOT NULL AND refresh_token != '' ORDER BY kind, position`)
       .all() as Array<{ id: string; email: string | null; kind: string }>;
@@ -464,10 +422,8 @@ function listConnectedAccounts(
   }
 }
 
-// Validate an account's migrated token by trying to get a usable access token
-// (refreshes via the stored refresh token). Returns false on any failure so a
-// broken account surfaces a reconnect card — and true once it's been reauthed,
-// so Re-check clears the card.
+// Validate an account's migrated token by getting a usable access token (refreshes via the stored
+// refresh token). False on any failure, so a broken account shows a reconnect card until reauthed.
 async function accountTokenValid(provider: 'google' | 'microsoft', accountId: string): Promise<boolean> {
   try {
     const token = provider === 'google'
@@ -489,9 +445,8 @@ function checkDbConfigFlag(key: string): boolean {
   }
 }
 
-/** Google connection now lives in google_accounts (Path B); the legacy
- *  gws_connected key is frozen. Check the table, falling back to the legacy
- *  flag for DBs restored from a pre-migration export. */
+/** Google connection lives in google_accounts; the legacy gws_connected key is frozen and is only
+ *  the fallback for DBs restored from an older export. */
 function checkDbGoogleConnected(): boolean {
   try {
     const row = getDb().prepare('SELECT 1 FROM google_accounts WHERE connected = 1 LIMIT 1').get();
@@ -500,7 +455,7 @@ function checkDbGoogleConnected(): boolean {
   return checkDbConfigFlag('gws_connected');
 }
 
-/** Microsoft connection now lives in microsoft_accounts (Path B). */
+/** Microsoft connection lives in microsoft_accounts. */
 function checkDbMicrosoftConnected(): boolean {
   try {
     const row = getDb().prepare('SELECT 1 FROM microsoft_accounts WHERE connected = 1 LIMIT 1').get();

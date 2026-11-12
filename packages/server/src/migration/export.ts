@@ -1,6 +1,4 @@
-// ════════════════════════════════════════
-// Migration Export — database snapshot, file collection, encryption, zip
-// ════════════════════════════════════════
+// Migration export: database snapshot, file collection, encryption and zip.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -21,39 +19,21 @@ const logger = createLogger('migration-export');
 
 const DOJO_DIR = path.join(homeDir(), '.dojo');
 const GWS_DIR = path.join(homeDir(), '.config', 'gws');
-// Cloudflare tunnel setup lives OUTSIDE ~/.dojo, in ~/.cloudflared: the account
-// cert (cert.pem), the named-tunnel credentials file (<UUID>.json — the tunnel
-// secret/key) and config.yml. The named-tunnel connector token also lives in
-// secrets.yaml (already inside ~/.dojo), but a credentials-file / cert based
-// setup needs this directory to run on the new machine. Travels as cloudflared/.
+// Cloudflare tunnel setup lives outside ~/.dojo: the account cert, the named-tunnel credentials file
+// (the tunnel key) and config.yml. A cert/credentials setup needs this directory to run on the new
+// machine. Travels as cloudflared/.
 const CLOUDFLARED_DIR = path.join(homeDir(), '.cloudflared');
 
-// Deny-list for the comprehensive ~/.dojo copy. Top-level entries we never
-// export because they are installer/runtime APP CODE or assets (the target
-// machine's own installer provides them), not user data:
-//   platform/      — the live installed app (node_modules + dist), per-arch
-//   watchdog/      — the installed watchdog daemon (node_modules + dist)
-//   scripts/       — installer-provided helper scripts (start/stop/etc.)
-//   tools/         — tool docs, regenerated on boot
-//   bin/           — built binaries (e.g. imsg), per-arch, rebuilt on install
-//   logs/          — runtime noise
-//   dojologo.pdf   — installer-provided app icon
-// Plus platform.backup-<version>/ dirs (the updater's full app-code backups;
-// disposable, often many GB) — matched by prefix below.
-//
-// IMPORTANT: if the installer ever adds a NEW app-code dir under ~/.dojo, add it
-// here AND to the import's preserve list. Everything else (user data) migrates
-// automatically by design.
+// Deny-list for the ~/.dojo copy: top-level app code and assets the target machine's installer
+// provides (platform, watchdog, scripts, tools, bin, logs, dojologo.pdf), plus platform.backup-* dirs
+// matched by prefix. A new app-code dir under ~/.dojo must be added here AND to the import's preserve list.
 const TOP_LEVEL_SKIP = new Set(['platform', 'watchdog', 'scripts', 'tools', 'bin', 'logs', 'dojologo.pdf']);
 const PLATFORM_BACKUP_PREFIX = 'platform.backup-';
-// voice/ is mostly large, re-downloadable model weights (kokoro/moonshine/...).
-// We migrate only the user's custom imports; the base models re-download on
-// first use on the new machine.
+// voice/ is mostly re-downloadable model weights; only the custom subdir migrates.
 const VOICE_KEEP_SUBDIR = 'custom';
-// Files inside data/ we skip because the DB is snapshotted via the backup API
-// (a raw copy of an open WAL database would be inconsistent). dojo.sqlite is an
-// empty legacy artifact. The toolbox ledger names process groups of this machine's current boot, so it
-// never travels (a restore on the same machine would swap the live ledger for an old one).
+// Skipped in data/: the DB is snapshotted via the backup API (a raw copy of an open WAL database is
+// inconsistent), dojo.sqlite is empty, and the toolbox ledger names this boot's process groups so it
+// never travels.
 const DATA_FILE_SKIP = new Set(['dojo.db', 'dojo.db-shm', 'dojo.db-wal', 'dojo.sqlite', TOOLBOX_LEDGER_FILE]);
 const JUNK = new Set(['.DS_Store']);
 
@@ -64,13 +44,9 @@ function broadcastProgress(stage: string, progress: number, message: string): vo
   } as any);
 }
 
-// ── Encryption ──
-
-// Stream-encrypt a file on disk to payload.enc, returning the sha256 of the
-// whole output (salt+iv+ciphertext) for the manifest checksum. Streaming (not
-// a single Buffer) is required: fs.readFileSync and crypto.update() both cap at
-// 2^31-1 bytes, so a multi-GB inner archive can't go through them in one shot.
-// Output layout: salt(32) | iv(16) | AES-256-CBC ciphertext.
+// Stream-encrypt a file to payload.enc and return the sha256 of the whole output (salt+iv+ciphertext)
+// for the manifest checksum. Streaming is required: readFileSync and crypto.update() cap at 2^31-1
+// bytes. Output layout: salt(32) | iv(16) | AES-256-CBC ciphertext.
 async function encryptFileToFile(srcPath: string, destPath: string, password: string): Promise<string> {
   const salt = crypto.randomBytes(32);
   const iv = crypto.randomBytes(16);
@@ -100,8 +76,6 @@ async function encryptFileToFile(srcPath: string, destPath: string, password: st
   return hash.digest('hex');
 }
 
-// ── Directory Size ──
-
 function getDirSize(dirPath: string): number {
   if (!fs.existsSync(dirPath)) return 0;
   let total = 0;
@@ -117,19 +91,13 @@ function getDirSize(dirPath: string): number {
   return total;
 }
 
-// ── List Files ──
-
 function listFiles(dirPath: string): string[] {
   if (!fs.existsSync(dirPath)) return [];
   return fs.readdirSync(dirPath).filter(f => !f.startsWith('.'));
 }
 
-// ── Export ──
-
-// The final zip's path. The date alone is NOT unique: a second export the same
-// day (a second tab, a retry) would open the same path and truncate the file a
-// first request is still streaming. The random suffix gives every export its
-// own file; the route shows the owner a clean `dojo-export-<date>.zip` name.
+// The date alone is not unique: a second export the same day would truncate the file a first request
+// is still streaming, so the path carries a random suffix (the route shows a clean name).
 export function exportOutputPath(date: string): string {
   return path.join(os.tmpdir(), `dojo-export-${date}-${crypto.randomBytes(4).toString('hex')}.zip`);
 }
@@ -138,7 +106,7 @@ export async function createExport(password: string): Promise<{ filePath: string
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dojo-export-'));
 
   try {
-    // Step 1: Database snapshot using better-sqlite3 backup API
+    // Database snapshot using the better-sqlite3 backup API.
     broadcastProgress('database', 10, 'Preparing database snapshot...');
     logger.info('Starting database snapshot');
 
@@ -150,41 +118,25 @@ export async function createExport(password: string): Promise<{ filePath: string
     const dbSize = fs.statSync(dbBackupPath).size;
     logger.info('Database snapshot complete', { size: dbSize });
 
-    // Step 2: Comprehensive copy of ~/.dojo (DENY-LIST, not allow-list).
-    // Everything in the dojo directory migrates so the new machine is the exact
-    // same dojo — prompts, techniques (with their files + dependency manifests),
-    // uploads + all generated media, the memory file cache, custom voice imports,
-    // the imessage archive, receipts, canvas screenshots, secrets.yaml, config,
-    // and anything added in the future. We skip only:
-    //   - tools/  (re-created by the dojo installer on the target machine)
-    //   - logs/   (machine-local runtime noise)
-    //   - the live DB files in data/ (snapshotted above via the backup API)
-    // We also skip the installed app code (platform/) and the updater's
-    // platform.backup-<version>/ dirs — that's per-machine app code, not user
-    // data, and would add gigabytes. Using a deny-list is deliberate: new user
-    // folders are picked up automatically, so this never falls behind.
+    // Copy ~/.dojo by deny-list so new user folders migrate automatically. Skipped: tools/ (regenerated),
+    // logs/, the live DB files in data/ (snapshotted above), the installed app and platform.backup-* dirs.
     broadcastProgress('files', 40, 'Packaging your dojo...');
     copyDojoTree(DOJO_DIR, tmpDir);
     logger.info('Dojo tree copied (deny-list)');
 
-    // Step 3: Google Workspace auth lives OUTSIDE ~/.dojo (legacy ~/.config/gws).
+    // Google Workspace auth lives outside ~/.dojo (legacy ~/.config/gws).
     if (fs.existsSync(GWS_DIR)) {
       copyDirRecursive(GWS_DIR, path.join(tmpDir, 'gws'));
     }
 
-    // Step 3a: Cloudflare tunnel setup (~/.cloudflared) — cert.pem, the tunnel
-    // credentials file (the key) and config.yml. Also outside ~/.dojo, so it
-    // needs the same explicit handling as gws or the tunnel won't come up on
-    // the new machine.
+    // Cloudflare tunnel setup (~/.cloudflared) is also outside ~/.dojo and needs explicit copying.
     if (fs.existsSync(CLOUDFLARED_DIR)) {
       copyDirRecursive(CLOUDFLARED_DIR, path.join(tmpDir, 'cloudflared'));
       logger.info('Cloudflare tunnel config bundled');
     }
 
-    // Step 3b: Generate the technique-dependency installer. It travels in the
-    // archive (setup-dependencies.sh) so the new machine can one-click install
-    // the external tools techniques rely on. Generated from the structured
-    // dependency manifests only (injection-safe).
+    // Generate the technique-dependency installer (setup-dependencies.sh) from the structured dependency
+    // manifests only (injection-safe), so the new machine can install the tools techniques rely on.
     try {
       const { generateDependencySetupScript } = await import('./dependency-script.js');
       const dep = generateDependencySetupScript(new Date().toISOString());
@@ -200,27 +152,24 @@ export async function createExport(password: string): Promise<{ filePath: string
       });
     }
 
-    // Step 4: Generate manifest (descriptive summary of what's inside).
     broadcastProgress('manifest', 60, 'Generating manifest...');
     const promptFiles = listFiles(path.join(DOJO_DIR, 'prompts'));
     const techniqueNames = listTechniqueNames();
     const uploadsSize = getDirSize(path.join(DOJO_DIR, 'uploads'));
     const manifest = await generateManifest(dbSize, promptFiles, techniqueNames, uploadsSize);
 
-    // Step 9: Create inner archive (everything except manifest)
+    // Inner archive: everything except the manifest.
     broadcastProgress('archive', 70, 'Creating archive...');
     const innerZipPath = path.join(tmpDir, '_inner.zip');
     await createZipFromDir(tmpDir, innerZipPath, ['_inner.zip']);
 
-    // Step 10+11: Stream-encrypt the inner archive to payload.enc and compute
-    // its checksum in the same pass (no whole-file Buffer — see encryptFileToFile).
+    // Stream-encrypt the inner archive and compute its checksum in the same pass.
     broadcastProgress('encrypt', 80, 'Encrypting archive...');
     const payloadEncPath = path.join(tmpDir, 'payload.enc');
     const checksum = await encryptFileToFile(innerZipPath, payloadEncPath, password);
     manifest.checksum = `sha256:${checksum}`;
 
-    // Step 12: Create final zip with manifest (unencrypted) + encrypted payload
-    // (streamed from disk, not buffered).
+    // Final zip: unencrypted manifest plus the encrypted payload streamed from disk.
     const date = new Date().toISOString().split('T')[0];
     const outputPath = exportOutputPath(date);
     await createFinalZip(outputPath, manifest, payloadEncPath);
@@ -228,33 +177,22 @@ export async function createExport(password: string): Promise<{ filePath: string
     broadcastProgress('complete', 100, 'Export complete!');
     logger.info('Export complete', { outputPath, size: fs.statSync(outputPath).size });
 
-    // Cleanup temp dir
     fs.rmSync(tmpDir, { recursive: true, force: true });
 
     return { filePath: outputPath, manifest };
   } catch (err) {
-    // Cleanup on error
     fs.rmSync(tmpDir, { recursive: true, force: true });
     throw err;
   }
 }
 
-// ── Helpers ──
-
 function copyDirRecursive(src: string, dest: string): void {
-  // copyTree is symlink/special-file aware (see fs-copy.ts); JUNK is skipped at
-  // every level. The export deny-list keeps node_modules out, but user data can
-  // still hold the odd symlink — copyTree preserves it instead of crashing.
+  // copyTree is symlink/special-file aware (see fs-copy.ts) and skips JUNK at every level.
   copyTree(src, dest, { skip: JUNK });
 }
 
-// Copy the entire ~/.dojo tree into the export staging dir, applying the
-// deny-list: skip tools/ and logs/ at the top level, and skip the live DB
-// files inside data/ (the consistent snapshot is written separately). The DB
-// snapshot is written to <dest>/data/dojo.db before this runs, so the data/
-// copy here just merges the rest (files/, canvas-shots/, slides_styles.json…).
-// Copy only loose, non-.md custom files from ~/.dojo/tools (technique-owned
-// scripts). The .md tool docs and any subdirs are regeneratable and skipped.
+// Copy only loose, non-.md custom files from ~/.dojo/tools (technique-owned scripts); the .md docs and
+// subdirectories regenerate and are skipped.
 function copyToolsCustomFiles(src: string, dest: string): void {
   if (!fs.existsSync(src)) return;
   for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
@@ -266,12 +204,12 @@ function copyToolsCustomFiles(src: string, dest: string): void {
   }
 }
 
+// Copy ~/.dojo into the export staging dir under the deny-list. The DB snapshot is written to
+// <dest>/data/dojo.db first, so the data/ copy only merges the rest.
 export function copyDojoTree(srcRoot: string, destRoot: string): void {
   for (const entry of fs.readdirSync(srcRoot, { withFileTypes: true })) {
-    // tools/ is deny-listed (it's ~450 regeneratable .md tool docs), BUT a
-    // technique may drop custom scripts loose at its root (e.g. validate_deck.sh,
-    // build_deck.py). Those don't regenerate, so migrate ONLY the loose non-.md
-    // files; skip the .md docs and any subdirectories.
+    // tools/ is deny-listed, but a technique may leave custom scripts loose at its root that do not
+    // regenerate, so only loose non-.md files migrate.
     if (entry.name === 'tools' && entry.isDirectory()) {
       copyToolsCustomFiles(path.join(srcRoot, 'tools'), path.join(destRoot, 'tools'));
       continue;
@@ -299,8 +237,7 @@ export function copyDojoTree(srcRoot: string, destRoot: string): void {
   }
 }
 
-// Like copyDirRecursive but skips the given top-level names (used for data/ to
-// exclude the live DB files).
+// Like copyDirRecursive but skips the given top-level names (data/ excludes the live DB files).
 function copyDirRecursiveExcept(src: string, dest: string, skipTopLevel: Set<string>): void {
   fs.mkdirSync(dest, { recursive: true });
   for (const name of fs.readdirSync(src)) {
@@ -323,12 +260,9 @@ export function createZipFromDir(dirPath: string, outputPath: string, exclude: s
     const output = fs.createWriteStream(outputPath);
     const archive = archiver('zip', { zlib: { level: 6 } });
 
-    // The OUTPUT stream can fail independently of the archive (disk full, a
-    // read-only or missing temp folder, a permission error). Its 'error' event
-    // has no listener here, so it becomes an uncaught exception that takes the
-    // whole server down — and the promise never settles, so the export's catch
-    // that deletes the staging folder never runs. Reject with it and stop
-    // feeding the dead stream; settle exactly once so a trailing 'close' cannot
+    // The output stream can fail independently of the archive (disk full, missing temp folder). With no
+    // 'error' listener that is an uncaught exception that takes the server down and the export's cleanup
+    // never runs. Reject, stop feeding the dead stream, and settle exactly once so a late 'close' cannot
     // resolve a failed export.
     let settled = false;
     const settle = (fn: () => void): void => { if (!settled) { settled = true; fn(); } };
@@ -361,9 +295,7 @@ export function createFinalZip(outputPath: string, manifest: ExportManifest, pay
     const output = fs.createWriteStream(outputPath);
     const archive = archiver('zip', { zlib: { level: 1 } }); // light compression, payload already compressed
 
-    // Same output-stream failure handling as createZipFromDir: an 'error' on the
-    // WriteStream is otherwise an uncaught exception, and a trailing 'close'
-    // must not resolve a failed export.
+    // Same output-stream failure handling as createZipFromDir.
     let settled = false;
     const settle = (fn: () => void): void => { if (!settled) { settled = true; fn(); } };
 
@@ -375,10 +307,8 @@ export function createFinalZip(outputPath: string, manifest: ExportManifest, pay
     });
     archive.pipe(output);
 
-    // Manifest is unencrypted and first in the zip
     archive.append(JSON.stringify(manifest, null, 2), { name: 'manifest.json' });
 
-    // Encrypted payload, streamed from disk (never buffered whole)
     archive.file(payloadEncPath, { name: 'payload.enc' });
 
     archive.finalize();

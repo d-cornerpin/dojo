@@ -1,6 +1,4 @@
-// What the server does with its database right after a migration import swaps it in: bring the schema up to
-// date, then the same one-time owner-star conversion the boot runs (an imported 3.4.1 box keeps exactly the
-// owner it had, without waiting for the next reboot - ruling #27).
+// After import: migrate, then the boot's owner-star conversion, so an older box keeps its owner pre-reboot.
 import { runMigrations } from '../db/migrations.js';
 import { starTheOwnersTheOldReaderImplied } from '../services/owner-star-upgrade.js';
 

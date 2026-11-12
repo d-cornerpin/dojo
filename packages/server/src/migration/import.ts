@@ -1,6 +1,4 @@
-// ════════════════════════════════════════
-// Migration Import — decrypt, verify, restore, path migration
-// ════════════════════════════════════════
+// Migration import: decrypt, verify, restore and migrate paths.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -26,8 +24,7 @@ const logger = createLogger('migration-import');
 
 const DOJO_DIR = path.join(homeDir(), '.dojo');
 const GWS_DIR = path.join(homeDir(), '.config', 'gws');
-// Cloudflare tunnel setup restores to ~/.cloudflared (mirror of the export's
-// CLOUDFLARED_DIR). Outside ~/.dojo, so routed separately like gws.
+// Restores to ~/.cloudflared (mirror of the export's CLOUDFLARED_DIR); outside ~/.dojo, routed like gws.
 const CLOUDFLARED_DIR = path.join(homeDir(), '.cloudflared');
 
 function broadcastProgress(stage: string, progress: number, message: string): void {
@@ -37,13 +34,10 @@ function broadcastProgress(stage: string, progress: number, message: string): vo
   } as any);
 }
 
-// ── Read Manifest from Zip (no password needed) ──
 
-// Takes a PATH to the export zip on disk. Uses unzipper's seek-based reader,
-// which reads the central directory via fd seeks and only pulls the (small)
-// manifest.json entry — so a multi-GB export is never read into memory as a
-// single Buffer. (adm-zip can't do this: it fs.readFileSync()s the whole
-// archive, and both fs reads and crypto.update() cap out at 2^31-1 bytes.)
+// Takes a PATH to the zip. unzipper's seek-based reader pulls only the small manifest.json, so a multi-GB
+// export is never read whole (adm-zip would readFileSync the archive; fs reads and crypto.update() cap at
+// 2^31-1 bytes).
 export async function readManifestFromZip(zipPath: string): Promise<ExportManifest> {
   const dir = await unzipper.Open.file(zipPath);
   const manifestEntry = dir.files.find((f) => f.path === 'manifest.json');
@@ -54,14 +48,9 @@ export async function readManifestFromZip(zipPath: string): Promise<ExportManife
   return JSON.parse(buf.toString('utf-8'));
 }
 
-// ── Preflight verification (no mutation) ──
-//
-// Powers the import wizard's "scan" step: confirm the archive is intact and the
-// password is right BEFORE touching ~/.dojo. Streams payload.enc to a temp file
-// (never buffered whole — same reason as the import), verifies the sha256
-// checksum over its full bytes, then decrypts only a short prefix to confirm the
-// password yields a valid inner zip (plaintext begins with the "PK" local-file
-// header). Cleans up after itself and changes nothing on disk.
+// The wizard's scan step, no mutation: confirm the archive is intact and the password right before touching
+// ~/.dojo. Streams payload.enc to a temp file, verifies its sha256, then decrypts a short prefix and checks
+// for the "PK" zip header.
 export async function verifyArchive(
   zipPath: string,
   password: string,
@@ -84,9 +73,8 @@ export async function verifyArchive(
     const expected = manifest.checksum.replace('sha256:', '');
     const integrityOk = hash.digest('hex') === expected;
 
-    // Cheap password check: decrypt only the first few cipher blocks (autopadding
-    // off so we never touch the final block) and look for the zip signature.
-    // Right key+iv ⇒ plaintext starts "PK\x03\x04"; wrong password ⇒ garbage.
+    // Cheap password check: decrypt only the first cipher blocks (autopadding off, so the final block is never
+    // touched). The right key gives plaintext starting "PK\x03\x04"; a wrong password gives garbage.
     let passwordOk = false;
     if (integrityOk) {
       const header = Buffer.alloc(48);
@@ -116,7 +104,6 @@ export async function verifyArchive(
   }
 }
 
-// ── Import ──
 
 async function runImport(
   // PATH to the export zip on disk (see readManifestFromZip on why not a Buffer).
@@ -124,16 +111,13 @@ async function runImport(
   password: string,
   stopServices: () => Promise<void>,
   restartServices: () => Promise<void>,
-  /** Current password hash and JWT secret to preserve after import */
   currentAuth?: { passwordHash: string | null; jwtSecret: string },
-  /** Final round: a failed import whose data is back and whose services restarted brings back what it stopped. */
+  /** Called when a failed import's data is back and services restarted: resumes the agents it stopped. */
   resumeAfterFailure?: () => void,
 ): Promise<{ manifest: ExportManifest; checks: PostMigrationCheck[]; newToken?: string }> {
-  // The whole pipeline streams: a multi-GB export must never be held in a
-  // single Buffer. We use unzipper (seek-based, streams entries) and streaming
-  // crypto, staging intermediates on disk in tmpDir.
+  // The whole pipeline streams (unzipper, streaming crypto, intermediates on disk in tmpDir): a multi-GB
+  // export is never held in one Buffer.
 
-  // Step 1: Read manifest (seek-reads just manifest.json)
   broadcastProgress('manifest', 5, 'Reading manifest...');
   const manifest = await readManifestFromZip(zipPath);
   logger.info('Import started', {
@@ -143,18 +127,15 @@ async function runImport(
   });
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dojo-import-'));
-  // Where the decrypted inner zip is unpacked; the restore below reads this.
   const extractRoot = path.join(tmpDir, 'extracted');
 
-  // The backup THIS run makes (Step 6). Only it may be restored on failure — a failure
-  // before Step 6 means no backup was taken, and reaching for an older `.dojo-backup-*`
-  // some earlier run left behind would delete the user's live ~/.dojo.
+  // Only the backup THIS run makes may be restored on failure: reaching for an older `.dojo-backup-*` from
+  // an earlier run would delete the live ~/.dojo.
   let ownBackup: string | null = null;
   let servicesStopped = false; // a failure after stop must put the old tree back and restart onto it
 
   try {
-    // Step 2: Stream the encrypted payload out of the outer zip to disk,
-    // hashing it as it flows so the checksum is verified without buffering it.
+    // Stream the encrypted payload to disk, hashing as it flows so the checksum needs no buffering.
     broadcastProgress('decrypt', 12, 'Reading encrypted payload...');
     const outerDir = await unzipper.Open.file(zipPath);
     const payloadEntry = outerDir.files.find((f) => f.path === 'payload.enc');
@@ -174,7 +155,7 @@ async function runImport(
       fs.createWriteStream(payloadPath),
     );
 
-    // Step 3: Verify checksum (over the full payload.enc bytes: salt+iv+ciphertext)
+    // Verify the checksum over the full payload.enc bytes (salt+iv+ciphertext).
     broadcastProgress('verify', 22, 'Verifying checksum...');
     const expectedChecksum = manifest.checksum.replace('sha256:', '');
     const actualChecksum = hash.digest('hex');
@@ -183,8 +164,7 @@ async function runImport(
     }
     logger.info('Checksum verified');
 
-    // Step 4: Stream-decrypt payload.enc → the inner zip on disk.
-    // Layout: salt(32) | iv(16) | AES-256-CBC ciphertext.
+    // Stream-decrypt payload.enc to the inner zip. Layout: salt(32) | iv(16) | AES-256-CBC ciphertext.
     broadcastProgress('decrypt', 28, 'Decrypting archive...');
     const header = Buffer.alloc(48);
     const fd = fs.openSync(payloadPath, 'r');
@@ -210,8 +190,7 @@ async function runImport(
     }
     fs.rmSync(payloadPath, { force: true });
 
-    // Step 5: Extract the inner zip — seek-based, streaming each entry to disk
-    // so even a multi-GB entry never buffers whole.
+    // Extract the inner zip, streaming each entry to disk.
     broadcastProgress('extract', 35, 'Extracting files...');
     fs.mkdirSync(extractRoot, { recursive: true });
     const innerDir = await unzipper.Open.file(innerZipPath);
@@ -230,15 +209,13 @@ async function runImport(
     }
     fs.rmSync(innerZipPath, { force: true });
 
-    // Step 5b: Stop services
     broadcastProgress('services', 45, 'Stopping services...');
     servicesStopped = true;
     await stopServices();
 
-    // Close database connection so we can replace the file
+    // Close the database so its file can be replaced.
     closeDb();
 
-    // Step 6: Backup current ~/.dojo/
     broadcastProgress('backup', 50, 'Backing up current dojo...');
     const timestamp = Date.now();
     const backupDir = `${DOJO_DIR}-backup-${timestamp}`;
@@ -248,15 +225,10 @@ async function runImport(
       logger.info('Current dojo backed up', { backupDir });
     }
 
-    // Recreate dojo dir
     fs.mkdirSync(DOJO_DIR, { recursive: true });
 
-    // Step 7: Restore the ENTIRE dojo tree. The payload mirrors ~/.dojo (minus
-    // the installer's tools/ and logs/, and with a consistent DB snapshot in
-    // data/dojo.db), so we copy it all in — database, prompts, techniques,
-    // uploads + generated media, voice, the imessage archive, receipts, config,
-    // secrets.yaml, and anything else. The entries that belong OUTSIDE ~/.dojo
-    // are gws/ and cloudflared/, routed separately below.
+    // Restore the entire dojo tree: the payload mirrors ~/.dojo (minus tools/ and logs/, with a consistent DB
+    // snapshot at data/dojo.db). gws/ and cloudflared/ belong outside ~/.dojo and are routed below.
     broadcastProgress('database', 60, 'Restoring your dojo...');
     for (const entry of fs.readdirSync(extractRoot, { withFileTypes: true })) {
       if (entry.name === 'gws') continue; // belongs at ~/.config/gws (below)
@@ -266,16 +238,14 @@ async function runImport(
       copyTree(src, dest);
     }
 
-    // Step 8: Restore Google Workspace auth (lives at ~/.config/gws).
+    // Google Workspace auth lives at ~/.config/gws.
     const srcGws = path.join(extractRoot, 'gws');
     if (fs.existsSync(srcGws)) {
       copyTree(srcGws, GWS_DIR);
     }
 
-    // Step 8a: Restore Cloudflare tunnel setup (lives at ~/.cloudflared) —
-    // cert.pem, the tunnel credentials file (the key) and config.yml. Lock the
-    // sensitive files down to 0600 (zip transport doesn't preserve mode, and
-    // cloudflared refuses world-readable credentials).
+    // Restore the Cloudflare tunnel setup (~/.cloudflared). Zip transport drops file modes and cloudflared
+    // refuses world-readable credentials, so the .pem and .json files are set to 0600.
     const srcCloudflared = path.join(extractRoot, 'cloudflared');
     if (fs.existsSync(srcCloudflared)) {
       copyTree(srcCloudflared, CLOUDFLARED_DIR);
@@ -287,66 +257,49 @@ async function runImport(
       logger.info('Cloudflare tunnel config restored');
     }
 
-    // Step 9: Preserve THIS machine's installer/runtime app code + assets from
-    // the pre-import backup. The export omits these (they're per-machine app
-    // code, mirror of the export deny-list), and we recreated ~/.dojo fresh, so
-    // without this the new machine's running install would be gone after restart:
-    //   platform/ — the live app (node_modules + dist); the app self-updates and
-    //               runs from ~/.dojo/platform in production.
-    //   watchdog/ — the installed watchdog daemon.
-    //   scripts/  — installer helper scripts (start/stop/status/uninstall).
-    //   tools/    — tool docs.
-    //   bin/      — built binaries (imsg), per-arch.
-    //   dojologo.pdf — app icon.
-    // platform.backup-* dirs are intentionally NOT restored (disposable update
-    // history). Voice models are not restored either (they re-download on use).
+    // Preserve this machine's installer/runtime app code from the pre-import backup (the export omits it and
+    // ~/.dojo was recreated fresh): platform, watchdog, scripts, tools, bin, dojologo.pdf. platform.backup-*
+    // dirs and voice models are deliberately not restored.
     broadcastProgress('config', 80, 'Finalizing configuration...');
     if (backupDir && fs.existsSync(backupDir)) {
       for (const appItem of ['platform', 'watchdog', 'scripts', 'tools', 'bin', 'dojologo.pdf']) {
         const src = path.join(backupDir, appItem);
         if (!fs.existsSync(src)) continue;
         const dest = path.join(DOJO_DIR, appItem);
-        // copyTree preserves the node_modules workspace symlinks (@dojo/*, .bin)
-        // instead of trying to copyfile() a symlink-to-directory (the ENOTSUP crash).
+        // copyTree keeps the node_modules workspace symlinks intact.
         copyTree(src, dest);
       }
     }
 
-    // Step 10: Lock down secrets.yaml (restored as part of the tree above).
+    // Lock down secrets.yaml (restored with the tree).
     const restoredSecretsPath = path.join(DOJO_DIR, 'secrets.yaml');
     if (fs.existsSync(restoredSecretsPath)) {
       fs.chmodSync(restoredSecretsPath, 0o600);
     }
 
-    // Make the bundled technique-dependency installer executable (zip transport
-    // may not preserve the mode). The wizard runs it on user click.
+    // Make the bundled dependency installer executable (zip transport may drop the mode).
     const depScriptPath = path.join(DOJO_DIR, 'setup-dependencies.sh');
     if (fs.existsSync(depScriptPath)) {
       try { fs.chmodSync(depScriptPath, 0o755); } catch { /* non-fatal */ }
     }
 
-    // Recreate logs directory (not exported).
     fs.mkdirSync(path.join(DOJO_DIR, 'logs'), { recursive: true });
 
-    // Step 14: Path migration
     broadcastProgress('paths', 85, 'Updating paths for this machine...');
     const oldHome = manifest.exported_from.home_directory;
     const newHome = homeDir();
     migratePaths(oldHome, newHome, DOJO_DIR);
 
-    // Clear all caches so they reload from the restored files
+    // Clear caches so they reload from the restored files.
     clearSecretsCache();
     const { clearPlatformConfigCache } = await import('../config/platform.js');
     clearPlatformConfigCache();
 
-    // Step 14b: Preserve the current session's auth (password + JWT secret)
-    // so the user doesn't get logged out after import
+    // Preserve the current session's auth (password and JWT secret) so the user stays logged in.
     if (currentAuth) {
       const { loadSecrets, saveSecrets } = await import('../config/loader.js');
       const restoredSecrets = loadSecrets();
-      // Keep the current JWT secret so the active session token remains valid
       restoredSecrets.jwt_secret = currentAuth.jwtSecret;
-      // Keep the current password hash so the user can log in with the password they just set
       if (currentAuth.passwordHash) {
         restoredSecrets.dashboard_password_hash = currentAuth.passwordHash;
       }
@@ -354,16 +307,14 @@ async function runImport(
       logger.info('Preserved current session auth in restored secrets');
     }
 
-    // Step 15: Mark OOBE as completed
     markOobeComplete();
 
-    // Step 16: Restart services
     broadcastProgress('restart', 90, 'Restarting services...');
     await restartServices();   // from here the import is COMMITTED: nothing below rolls it back
     clearImportCard();
 
-    // Step 17: post-migration checks (the manifest is cached first for later re-checks). The import
-    // is committed: a failure here is logged, never rolled back.
+    // Post-migration checks (manifest cached first for later re-checks). The import is committed: a failure
+    // here is logged, never rolled back.
     let checks: PostMigrationCheck[] = [];
     try {
       setLastManifest(manifest);
@@ -393,7 +344,6 @@ export async function performImport(...args: Parameters<typeof runImport>): Retu
   try { return await runImport(...args); } finally { release(); }
 }
 
-// ── Helpers ──
 
 function markOobeComplete(): void {
   // Open the restored database directly (main connection is closed during import)
@@ -403,8 +353,7 @@ function markOobeComplete(): void {
   const db = new Database(dbPath);
   try {
     db.pragma('journal_mode = WAL');
-    // ONE key, the one every reader uses. This also wrote `setup_complete`, which NOTHING reads;
-    // migration 177 removes that row and its header carries the full argument (audit finding 4).
+    // One key, the one every reader uses.
     db.prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('setup_completed', 'true')").run();
   } finally {
     db.close();

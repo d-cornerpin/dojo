@@ -1,6 +1,4 @@
-// ════════════════════════════════════════
-// Migration filesystem copy — symlink & special-file aware
-// ════════════════════════════════════════
+// Migration filesystem copy: aware of symlinks and special files.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -8,34 +6,15 @@ import { createLogger } from '../logger.js';
 
 const logger = createLogger('migration-copy');
 
-// Skipped at every level of the tree (editor/OS cruft).
 const DEFAULT_SKIP = new Set(['.DS_Store']);
 
 export interface CopyTreeOptions {
-  /** Names skipped at every level (defaults to .DS_Store). */
   skip?: Set<string>;
 }
 
-// Recursively copy src → dest, handling every node type a real ~/.dojo can
-// contain. Critically, symlinks are RECREATED as symlinks (target preserved
-// verbatim), never dereferenced.
-//
-// This is the fix for the import crash:
-//   ENOTSUP: operation not supported on socket, copyfile
-//   '.../platform/node_modules/@dojo/dashboard' -> '.../@dojo/dashboard'
-// An installed platform's node_modules holds npm-workspace symlinks
-// (@dojo/dashboard -> ../../packages/dashboard, plus .bin/* link scripts). The
-// old recursive copy used readdirSync(withFileTypes) where a symlink reports
-// isDirectory() === false, so it fell through to fs.copyFileSync(), which
-// follows the link to a directory; macOS copyfile() then fails with ENOTSUP
-// (surfaced as the misleading "operation not supported on socket"). Preserving
-// the link verbatim copies it instantly and keeps it valid, because the copy
-// brings the link's target along too (the whole platform/ tree is copied).
-//
-//   - symlink       → recreated as a symlink (relative or absolute target kept)
-//   - directory     → created, recursed
-//   - regular file  → copied
-//   - socket / fifo / device → skipped (not migratable; copyfile() errors on them)
+// Recursively copy src to dest. Symlinks are recreated verbatim, never dereferenced: copying through a
+// link to a directory fails with ENOTSUP in macOS copyfile(), and the link stays valid because the whole
+// tree is copied with it. Sockets, FIFOs and devices are skipped (not migratable).
 export function copyTree(src: string, dest: string, opts: CopyTreeOptions = {}): void {
   copyEntry(src, dest, opts.skip ?? DEFAULT_SKIP);
 }
@@ -68,7 +47,5 @@ function copyEntry(src: string, dest: string, skip: Set<string>): void {
     return;
   }
 
-  // Socket, FIFO, char/block device: nothing a dojo needs, and copyfile() would
-  // throw on it. Skip and note it (rare, but possible inside node_modules).
   logger.warn('Skipping non-regular file during migration copy', { src });
 }

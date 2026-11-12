@@ -1,6 +1,4 @@
-// ════════════════════════════════════════
-// Migration Manifest — generation & parsing
-// ════════════════════════════════════════
+// Migration manifest: generation and parsing.
 
 import os from 'node:os';
 import { execSync } from 'node:child_process';
@@ -41,11 +39,8 @@ export interface ExportManifest {
     ollama_models: string[];
     providers: string[];
     uploads_size_bytes: number;
-    // True when the source dojo runs a NAMED Cloudflare tunnel (fixed hostname +
-    // credentials/key). The import warns about this before restoring, because a
-    // named tunnel can only run on one machine at a time — the old dojo must
-    // disable it first or neither will connect. (Quick tunnels get random URLs,
-    // so they never collide and don't trigger the warning.)
+    // True when the source dojo runs a NAMED Cloudflare tunnel (fixed hostname + key). The import warns
+    // first, since a named tunnel runs on one machine only; quick tunnels never collide.
     cloudflare_named_tunnel: boolean;
   };
   encryption: 'aes-256-cbc';
@@ -60,50 +55,27 @@ function getOsVersion(): string {
   }
 }
 
-// ── SWEEP CORE-2 item 6, rider (ii): the manifest stops claiming 1.0.0 ──
-//
-// This read `config.platform_version`, a key NOTHING IN THE TREE HAS EVER
-// WRITTEN — the residue `release/release-steps.ts` recorded and deliberately did
-// not disturb. So the fallback fired on every box and every export manifest ever
-// produced claims it was made by platform "1.0.0". The import side reads the
-// field back and does nothing with it, so the lie has cost nothing yet; it would
-// cost exactly when somebody is diagnosing a bad import and asks which build made
-// the file.
-//
-// The reader's need is "which platform produced this export", and the tree
-// already has ONE authority for that: `getCurrentVersion()`, read off the
-// installed platform's package.json, used by the update path, the boot sentinel
-// and the release-step ledger. So the READER is retired rather than a writer
-// wired — wiring one would mint a SECOND version authority that can disagree
-// with the first, and add a write to the boot spine for a value already
-// derivable. `config.platform_version` is left exactly as unwritten as it was
-// found, and now has no readers either.
+// The platform version comes from getCurrentVersion(), the one authority (the installed package.json).
+// `config.platform_version` is never written, so it must not be read.
 function getPlatformVersion(): string {
   return getCurrentVersion();
 }
 
-// ASYNC because the installed-model list is now read over HTTP rather than from
-// `execSync('ollama list')` — the CLI auto-launches Ollama.app when the daemon is
-// down, so the export's inventory probe could start a daemon under the exporting
-// process's environment (see listOllamaModelNames).
+// Async because the installed-model list is read over HTTP: `ollama list` auto-launches Ollama.app when
+// the daemon is down (see listOllamaModelNames).
 export async function generateManifest(dbSizeBytes: number, prompts: string[], techniques: string[], uploadsSize: number): Promise<ExportManifest> {
   const db = getDb();
 
-  // Agents
   const agents = db.prepare('SELECT name, classification, model_id FROM agents WHERE agent_type != ?').all('archived') as Array<{ name: string; classification: string; model_id: string | null }>;
 
-  // Vault entries count
   const vaultRow = db.prepare('SELECT COUNT(*) as cnt FROM vault_entries').get() as { cnt: number } | undefined;
   const vaultCount = vaultRow?.cnt ?? 0;
 
-  // Providers
   const providerRows = db.prepare('SELECT name FROM providers').all() as Array<{ name: string }>;
   const providers = providerRows.map(p => p.name);
 
-  // Google workspace (Path B: connection lives in google_accounts; the legacy
-  // gws_connected/gws_account_email keys are frozen). Read any connected
-  // account from the table — agent-kind preferred — and fall back to the legacy
-  // keys for DBs exported before the migration.
+  // Google: the connection lives in google_accounts (agent kind preferred); the legacy gws_* config keys
+  // are frozen and only the fallback for older DBs.
   let googleConnected = false;
   let googleEmail: string | null = null;
   try {
@@ -126,8 +98,7 @@ export async function generateManifest(dbSizeBytes: number, prompts: string[], t
     } catch { /* table may not exist */ }
   }
 
-  // Microsoft (Path B: connection lives in microsoft_accounts; legacy
-  // ms_connected key is frozen). Table first, legacy fallback for old exports.
+  // Microsoft: table first, the frozen legacy ms_connected key as fallback for older DBs.
   let msConnected = false;
   try {
     const acctRow = db.prepare('SELECT 1 FROM microsoft_accounts WHERE connected = 1 LIMIT 1').get();
@@ -140,8 +111,7 @@ export async function generateManifest(dbSizeBytes: number, prompts: string[], t
     } catch { /* table may not exist */ }
   }
 
-  // Named Cloudflare tunnel: enabled AND mode 'named' (fixed hostname + key).
-  // The import warns about this so the old dojo's tunnel gets turned off first.
+  // Named Cloudflare tunnel: enabled AND mode 'named'.
   let cloudflareNamedTunnel = false;
   try {
     const enabled = db.prepare("SELECT value FROM config WHERE key = 'tunnel_enabled'").get() as { value: string } | undefined;
@@ -173,7 +143,7 @@ export async function generateManifest(dbSizeBytes: number, prompts: string[], t
       google_workspace_email: googleEmail,
       microsoft_connected: msConnected,
       imessage_configured: (() => { try { return isImessageConfigured(); } catch { return false; } })(),
-      ollama_models: withoutDojoInternalTags(await listOllamaModelNames()),   // t268 (I-1): the window tag is made locally, never downloaded
+      ollama_models: withoutDojoInternalTags(await listOllamaModelNames()), // the window tag is made locally, never downloaded
       providers,
       uploads_size_bytes: uploadsSize,
       cloudflare_named_tunnel: cloudflareNamedTunnel,

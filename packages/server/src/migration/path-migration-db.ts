@@ -24,7 +24,6 @@ export function migrateDatabase(oldHome: string, newHome: string, dojoDir: strin
 
   try {
     db.transaction(() => {
-    // Technique directory paths
     if (has('techniques', 'id', 'directory_path')) {
       const techniques = db.prepare("SELECT id, directory_path FROM techniques WHERE directory_path LIKE ?").all(`${oldHome}%`) as Array<{ id: string; directory_path: string }>;
       const updateTech = db.prepare('UPDATE techniques SET directory_path = ? WHERE id = ?');
@@ -36,7 +35,6 @@ export function migrateDatabase(oldHome: string, newHome: string, dojoDir: strin
       }
     }
 
-    // Platform config paths
     if (has('config', 'key', 'value')) {
       const configs = db.prepare("SELECT key, value FROM config WHERE value LIKE ?").all(`%${oldHome}%`) as Array<{ key: string; value: string }>;
       const updateConfig = db.prepare('UPDATE config SET value = ? WHERE key = ?');
@@ -48,7 +46,6 @@ export function migrateDatabase(oldHome: string, newHome: string, dojoDir: strin
       }
     }
 
-    // Agent system_prompt_path and any config JSON that might contain paths
     if (has('agents', 'id', 'system_prompt_path', 'config')) {
       const agents = db.prepare("SELECT id, system_prompt_path, config FROM agents WHERE system_prompt_path LIKE ? OR config LIKE ?").all(`${oldHome}%`, `%${oldHome}%`) as Array<{ id: string; system_prompt_path: string | null; config: string | null }>;
       const updateAgent = db.prepare('UPDATE agents SET system_prompt_path = ?, config = ? WHERE id = ?');
@@ -62,20 +59,9 @@ export function migrateDatabase(oldHome: string, newHome: string, dojoDir: strin
       }
     }
 
-    // Upload file paths in messages (attachments JSON)
-    //
-    // PHASE-1 T4 (2026-07-27): this is the ONE write against `messages` that does NOT go
-    // through memory/message-store.ts, and the exemption is deliberate — it is named in
-    // OFFLINE_DB_TOOLS in memory/__tests__/single-writer-conformance.test.ts, with a test
-    // that only lets a file sit there if it really does open its own connection.
-    //
-    // The reason: this function rewrites $HOME references inside a database file taken
-    // from ANOTHER MACHINE, and it opens that file itself (`new Database(dbPath)` above,
-    // closed in the finally). The writer module writes through the app singleton. Routing
-    // this through it would open a SECOND connection to a database the import path is
-    // about to move, and would silently target the wrong file the day `dojoDir` is ever
-    // passed anything other than the live one — a correctness risk taken to satisfy a rule
-    // about the RUNNING platform's store, which this is not.
+    // The one write against `messages` outside memory/message-store.ts, deliberately: it rewrites $HOME paths
+    // in a database file from another machine that this function opens itself (not the app singleton), so
+    // routing through the writer would open a second connection to a file the import is about to move.
     if (has('messages', 'id', 'attachments')) {
       const msgs = db.prepare("SELECT id, attachments FROM messages WHERE attachments LIKE ?").all(`%${oldHome}%`) as Array<{ id: string; attachments: string }>;
       const updateMsg = db.prepare('UPDATE messages SET attachments = ? WHERE id = ?');
