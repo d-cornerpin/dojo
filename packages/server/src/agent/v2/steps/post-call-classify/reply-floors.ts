@@ -15,10 +15,10 @@ import { decideRefusedDelivery, refusedDeliverySteer } from '../../refused-deliv
 import { decideUncommittedPromise, openedBoardWorkSince, uncommittedPromiseSteer } from '../../recorded-commitment.js';
 import { askReplyClaims, replyClaim } from '../../reply-claims.js';
 import { tsToMs } from '../../../../work/tracker-view.js';
+import { isBareNoReplySentinel } from '@dojo/shared';
 import { continueLoop, proceed, type StepOutcome } from '../step-outcome.js';
 import { holdAndSteer } from './closeout-floors.js';
 import type { PostCallClassifyContext, PostCallScratch } from './index.js';
-import { userWords } from '../../turn-address.js';
 
 const logger = createLogger('v2-loop');
 
@@ -124,7 +124,7 @@ const TRUTH_GUARD_SET: TruthGuard[] = [
       const rejected = vaultRemembers.filter((r) => r.isError).length;
       const succeeded = vaultRemembers.filter((r) => !r.isError).length;
       if (!(succeeded === 0 && rejected >= 1)) return null;
-      logger.info('v2 RC-13.2 save-claim floor fired, all vault saves rejected this turn, re-entering', {
+      logger.info('v2 save-claim floor fired, all vault saves rejected this turn, re-entering', {
         agentId, rejected,
       }, agentId);
       return {
@@ -175,7 +175,7 @@ const TRUTH_GUARD_SET: TruthGuard[] = [
     decide: (state, ctx) => {
       const refused = decideRefusedDelivery(state.toolResults);
       if (!refused) return null;
-      logger.info('v2 false-delivery-claim floor fired: the reply claims a delivery this turn\'s report tool refused, re-entering', {
+      logger.info('v2 false-delivery-claim floor fired: every report call this turn was refused, re-entering', {
         agentId: ctx.agentId, refused: refused.refused,
       }, ctx.agentId);
       return { content: refusedDeliverySteer(refused) };
@@ -198,7 +198,7 @@ export async function runReplyFloors(
   const { persistedContent } = sc;
   await askReplyClaims(state, ctx, persistedContent);
   // Shared prologue: a terminal reply on a non-inter-agent turn. The first guard to fire re-enters.
-  if (persistedContent && result.toolCalls.length === 0 && !interAgentTurn) {
+  if (persistedContent && !isBareNoReplySentinel(persistedContent) && result.toolCalls.length === 0 && !interAgentTurn) {
     const reply = persistedContent;
     for (const guard of TRUTH_GUARDS) {
       if (!guard.gate(state, ctx, reply)) continue;

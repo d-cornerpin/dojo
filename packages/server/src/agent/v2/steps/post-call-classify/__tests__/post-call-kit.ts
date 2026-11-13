@@ -24,8 +24,10 @@ export function modelSays(verdicts: Partial<Record<ReplyClaim, boolean>> | null)
 let n = 0;
 type ToolResult = AgentTurnState['toolResults'][number];
 
-/** One ending reply after the turn's earlier tool results; returns the step's outcome. */
-export function endTurn(reply: string, toolResults: Array<Partial<ToolResult>> = []): Promise<PostCallClassifyOutcome> {
+/** One ending reply after the turn's earlier tool results (and steers already fired); returns the step's outcome. */
+export function endTurn(
+  reply: string, toolResults: Array<Partial<ToolResult>> = [], steerQueue?: AgentTurnState['steerQueue'],
+): Promise<PostCallClassifyOutcome> {
   const base = initState({
     agentId: FXID.n4, contextWindow: 128_000, isAutoRouted: false, configuredModelId: 'test-model', turnNumber: 7,
     triggeredByIMessage: false, triggeredByA2AReplyIntent: null, lastUserMessageContent: 'what is the answer?', lastUserMessageId: 'msg-user-1',
@@ -33,6 +35,7 @@ export function endTurn(reply: string, toolResults: Array<Partial<ToolResult>> =
   const state = advance(base, {
     phase: POST_CALL_CLASSIFY_PHASE, loopCount: 2, modelId: 'test-model',
     toolResults: toolResults.map((r, i) => ({ toolCallId: `tc-${i}`, content: 'ok', isError: false, ...r })) as ToolResult[],
+    ...(steerQueue ? { steerQueue } : {}),
   });
   const ctx = {
     agentId: FXID.n4, turnNumber: 7, db: fakeDb, agent: { id: FXID.n4, name: FX.n4 },

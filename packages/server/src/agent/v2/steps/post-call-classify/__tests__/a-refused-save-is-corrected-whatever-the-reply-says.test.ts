@@ -23,6 +23,10 @@ describe('a refused save is corrected whatever the reply says', () => {
     }
   });
 
+  it('a turn that ends with the bare no-reply token gets no steer', async () => {
+    expect(steered(await endTurn('[no-reply]', [REFUSED]))).not.toContain('failed-save-claim');
+  });
+
   it('one write that went through means nothing to correct', async () => {
     const out = await endTurn('Saved that for you.', [REFUSED, { name: 'vault_remember', content: 'stored' }]);
     expect(steered(out)).not.toContain('failed-save-claim');

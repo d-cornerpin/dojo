@@ -172,7 +172,7 @@ describe('the declared precedence table', () => {
     // whole and in that conversation only — it used to be a 400-char events-lane gist every turn saw.
     // FIELD FIX 3 AUDIT ROUND (#11) ADDS 31-33: `redundant-closeout`, `near-duplicate-reply` and
     // `prose-decline`, the three floors that used to NULL the agent's reply and now steer it once.
-    // 32: `tracker-closeout` went with the close-out gate. 31: `prose-decline` went with its word list.
+    // 32: `tracker-closeout` went with the close-out gate.
     expect(STEER_PRECEDENCE.length).toBe(31);
     for (const id of ['redundant-closeout', 'near-duplicate-reply']) {
       expect(STEER_PRECEDENCE.filter((f) => f.id === id).length).toBe(1);

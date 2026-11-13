@@ -19,5 +19,5 @@ export function decideRefusedDelivery(results: readonly TurnToolResult[]): Refus
 export function refusedDeliverySteer(d: RefusedDelivery): string {
   return '[System: The only tool this turn that could have sent your report to the person you are talking to '
     + `REFUSED. Its own words: "${d.quoted}". Nothing was delivered. Tell them plainly what the `
-    + 'state really is and what you can do about it — do not let the claim stand, and do not go silent.]';
+    + 'state really is and what you can do about it, and do not go silent.]';
 }

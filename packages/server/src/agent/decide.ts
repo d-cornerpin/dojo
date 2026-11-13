@@ -108,8 +108,7 @@ async function sent(
     const answers: Record<string, Answer> = {};
     for (const name of names) {
       const a = typed(body.answers?.[name]);
-      if (!a) return fail('parse', opts, `no usable answer for ${name}`);
-      answers[name] = a;
+      if (a) answers[name] = a; else fail('parse', opts, `no usable answer for ${name}`);
     }
     const inputTokens = body.usage?.input_tokens ?? body.usage?.prompt_tokens ?? 0;
     recordCost({

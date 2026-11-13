@@ -25,6 +25,16 @@ describe('a refused report is corrected whatever the reply says', () => {
     }
   });
 
+  it('fires once per turn: a second pass with the steer already fired does not fire it again', async () => {
+    const first = await endTurn('Submitted!', [REFUSED]);
+    const second = await endTurn('Submitted!', [REFUSED], first.state.steerQueue);
+    expect(steered(second).filter((f) => f === 'false-delivery-claim')).toHaveLength(1);
+  });
+
+  it('a turn that ends with the bare no-reply token gets no steer', async () => {
+    expect(steered(await endTurn('[no-reply]', [REFUSED]))).not.toContain('false-delivery-claim');
+  });
+
   it('a report call that went through means nothing to correct', async () => {
     const out = await endTurn('Submitted!', [REFUSED, { name: 'dojo_report', content: 'Report submitted.' }]);
     expect(steered(out)).not.toContain('false-delivery-claim');

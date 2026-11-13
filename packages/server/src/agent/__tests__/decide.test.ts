@@ -135,12 +135,16 @@ describe('decide()', () => {
     expect(await decide('text', QUESTIONS, { purpose: 'reply_claims' })).toBeNull();
   });
 
-  it('an answer that does not parse, or misses a question → null', async () => {
+  it('an answer that does not parse → null', async () => {
     install();
     respond = async () => new Response('not json', { status: 200 });
     expect(await decide('text', QUESTIONS, { purpose: 'reply_claims' })).toBeNull();
-    respond = async () => Response.json({ answers: { only_promises_to_start: { noul: 0.5 } } });
-    expect(await decide('text', QUESTIONS, { purpose: 'reply_claims' })).toBeNull();
+  });
+
+  it('a question left unanswered drops only its own answer', async () => {
+    install();
+    respond = async () => Response.json({ answers: { only_promises_to_start: { noul: 0.5 }, topic_is_billing: 'yes' } });
+    expect(await decide('text', QUESTIONS, { purpose: 'reply_claims' })).toEqual({ only_promises_to_start: { type: 'noul', noul: 0.5 } });
   });
 
   it('Ollama refusing the connection → null', async () => {
