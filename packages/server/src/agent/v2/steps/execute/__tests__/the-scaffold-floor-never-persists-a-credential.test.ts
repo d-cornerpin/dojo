@@ -125,7 +125,7 @@ function executeCtx(
     result: result as unknown as ExecuteContext['result'],
     messageId: `resp-${turnNumber}`, persistedContent: null, interAgentTurn: false,
     hasXmlFallbackTools: false, effectiveModelIdForPersist: 'floor-model',
-    staleTaskWindowMinutes: 45, maxToolLoops: 40, engineBlockEscapeHatch: '',
+    staleTaskWindowMinutes: 45, engineBlockEscapeHatch: '',
     engineStartAckAfterMs: 30_000,
   } as unknown as ExecuteContext;
 }

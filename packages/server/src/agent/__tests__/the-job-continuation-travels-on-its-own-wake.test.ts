@@ -105,10 +105,10 @@ function aWholeTurnPassedItOver(): void {
 /** The newest checkpoint note on the job's task, epoch ms (0 when none). */
 const touchedAt = (): number => (mockDb.current!.prepare("SELECT COALESCE(MAX(created_at), 0) AS u FROM work_events WHERE work_id = 'task-job' AND kind = 'audit' AND json_extract(payload, '$.reason') LIKE 'engine checkpoint:%'").get() as { u: number }).u;
 
-/** The park the engine makes at the 75-call cap: the real checkpoint writer and the real helper that
+/** A timer park: the real checkpoint writer and the real helper that
  *  arms the park's own continuation. */
 async function toolLoopPark(): Promise<void> {
-  m.note.noteEngineCheckpoint(AGENT, 'tool-loop');
+  m.note.noteEngineCheckpoint(AGENT, 'job-continues');
   m.cont.armToolLoopContinuation(AGENT);
 }
 

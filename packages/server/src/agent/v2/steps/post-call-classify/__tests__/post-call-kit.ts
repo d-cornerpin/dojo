@@ -43,7 +43,7 @@ export function endTurn(reply: string, toolResults: Array<Partial<ToolResult>> =
     mostRecentInbound: undefined, pendingEngineEvent: null, unrepliedAssign: null, a2aReplyContext: null,
     a2aReplyAssignMessageId: null, settledContextWakeTurn: false, waitingConvs: [], inboundChannel: 'dashboard',
     latestUserSource: 'dashboard', lastUserMessageContent: 'what is the answer?', configuredModelId: 'test-model',
-    turnStartedAt: new Date().toISOString(), messageId: `msg-${++n}`, maxToolLoops: 75,
+    turnStartedAt: new Date().toISOString(), messageId: `msg-${++n}`,
     result: { content: reply, toolCalls: [], inputTokens: 10, outputTokens: 5, stopReason: 'end_turn' },
     reArmIfStrandedNoAnswer: vi.fn(), noteTerminalAnswer: vi.fn(), deliverEngineUserAck: vi.fn(async () => undefined),
     persistAndBroadcastSystemRow: vi.fn(), startAckRepliedNow: () => false, stashContinuationIfHuman: vi.fn(),

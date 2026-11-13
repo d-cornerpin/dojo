@@ -134,7 +134,6 @@ function ctxFor(toolCalls: ToolCall[]): ExecuteContext {
     hasXmlFallbackTools: false,
     effectiveModelIdForPersist: MODEL,
     staleTaskWindowMinutes: 45,
-    maxToolLoops: 75,
     engineBlockEscapeHatch: '[escape hatch]',
     engineStartAckAfterMs: 20000,
   } as ExecuteContext;

@@ -389,7 +389,7 @@ vi.mock('../steer-queue.js', async () => {
 
 import { runV2Turn } from '../loop.js';
 import {
-  stoppedAgents, recoveryRunStreak, pendingWakeups, turnContinuationCounts,
+  stoppedAgents, recoveryRunStreak, pendingWakeups,
   doomedPrefillCompactionSpent, declaredPatienceHonestFailTurn,
 } from '../../shared-state.js';
 import { continuationContext } from '../../turn-state.js';
@@ -457,7 +457,6 @@ beforeEach(() => {
   doomedPrefillCompactionSpent.clear();
   declaredPatienceHonestFailTurn.clear();
   pendingWakeups.clear();
-  turnContinuationCounts.clear();
   continuationContext.clear();
 });
 
@@ -509,7 +508,8 @@ async function readOnlyTurnAcrossTheCheckpoint(
   const clock = controllableClock();
   executeToolSpy.mockImplementation(async (_agentId: string, toolCall: ToolCall) => {
     clock.jump(TURN_BUDGET_MS + 60_000 + (opts.extraMs ?? 0));
-    return { toolCallId: toolCall.id, name: toolCall.name, content: 'file body', isError: false };
+    // The read finds nothing, so the job does not move and the window's end is a checkpoint.
+    return { toolCallId: toolCall.id, name: toolCall.name, content: 'no such file', isError: true };
   });
   try {
     await runV2Turn('primary');
@@ -603,12 +603,12 @@ async function readsThenSaysNothing(): Promise<number> {
 // simply no longer gets a line in the chat every fifteen minutes about it.
 // ════════════════════════════════════════════════════════════════════════════════
 describe('t137 (c): a 15-minute park writes nothing to the owner\'s chat', () => {
-  it('the park happens (exit `budget`, continuation queued), and it leaves ZERO system rows and ZERO chat broadcasts', async () => {
+  it('the park happens (exit `iteration_cap`, continuation queued), and it leaves ZERO system rows and ZERO chat broadcasts', async () => {
     seedInFlightTask();
     await readOnlyTurnAcrossTheCheckpoint();
 
     // Positive control: the turn genuinely parked. A fix that stopped parking is not a fix.
-    expect(turnRows()).toEqual([expect.objectContaining({ turn_number: 1, exit_reason: 'budget' })]);
+    expect(turnRows()).toEqual([expect.objectContaining({ turn_number: 1, exit_reason: 'iteration_cap' })]);
     expect(pendingWakeups.has('primary')).toBe(true);
     expect(checkAndCompactSpy).toHaveBeenCalledTimes(1);
 
@@ -644,7 +644,7 @@ describe('t137 (b): a parked turn never moves its task to "paused, waiting on th
     // refusal stays as the guard for a continuing turn that DID answer (a live-ask answer
     // delivered mid-turn). Was: `t.answered === 1`.
     const turns = turnRows();
-    expect(turns.filter((t) => t.exit_reason === 'budget')).toHaveLength(2);
+    expect(turns.filter((t) => t.exit_reason === 'iteration_cap')).toHaveLength(2);
     expect(turns.every((t) => t.answered === 0 && t.effectful_calls === 0)).toBe(true);
     expect(pauseDriveWorkWaitingOnOwnerSpy).toHaveBeenCalledTimes(2);
 
@@ -658,8 +658,8 @@ describe('t137 (b): a parked turn never moves its task to "paused, waiting on th
   });
 
   it('the OTHER engine continuation (the 75-call tool-loop checkpoint) is not a hand-back either', async () => {
-    // Exit is NOT `budget` here: the turn spoke, read 75 files, and the engine scheduled its
-    // continuation at the tool-loop cap. The queued-continuation arm is what keeps this claimed.
+    // The turn spoke, tried 75 files that were not there, and the window's end parked it.
+    // The queued-continuation arm is what keeps this claimed.
     seedInFlightTask();
     mockDb.current!.prepare('UPDATE work SET updated_at = ? WHERE id = ?').run(Date.now() + 5_000, 'w-long-job');
     let call = 0;
@@ -672,7 +672,7 @@ describe('t137 (b): a parked turn never moves its task to "paused, waiting on th
       };
     });
     executeToolSpy.mockImplementation(async (_a: string, tc: ToolCall) => (
-      { toolCallId: tc.id, name: tc.name, content: `body of ${tc.id}`, isError: false }));
+      { toolCallId: tc.id, name: tc.name, content: 'no such file', isError: true }));
     await runV2Turn('primary');
 
     const [t] = turnRows();
@@ -680,7 +680,7 @@ describe('t137 (b): a parked turn never moves its task to "paused, waiting on th
     // turn the engine is continuing. Was: `toBe(1)`.
     expect(t.answered).toBe(0);
     expect(t.effectful_calls).toBe(0);
-    expect(t.exit_reason).not.toBe('budget');
+    expect(t.exit_reason).toBe('iteration_cap');
     expect(continuationContext.has('primary')).toBe(true);   // the engine queued its continuation
     expect(workState('w-long-job')).toBe('claimed');
   });
@@ -709,7 +709,7 @@ describe('t137 (b): a parked turn never moves its task to "paused, waiting on th
 
     const second = turnRows()[1];
     expect(second).toEqual(expect.objectContaining({ turn_number: 2, answered: 1, effectful_calls: 0 }));
-    expect(second.exit_reason).not.toBe('budget');
+    expect(second.exit_reason).not.toBe('iteration_cap');
     expect(continuationContext.has('primary'), 'the continuation consumed the stash and queued none').toBe(false);
     expect(workState('w-long-job')).toBe('paused');
   });
@@ -800,7 +800,7 @@ describe('t137: a long job is never cut off by elapsed time', () => {
       await readOnlyTurnAcrossTheCheckpoint(i === 1 ? { narrate: 'Starting on the research folder now.' } : {});
       expect(pendingWakeups.has('primary'), `park ${i} queued its continuation`).toBe(true);
     }
-    expect(turnRows().map((t) => t.exit_reason)).toEqual(['budget', 'budget', 'budget', 'budget', 'budget']);
+    expect(turnRows().map((t) => t.exit_reason)).toEqual(Array(5).fill('iteration_cap'));
     expect(checkAndCompactSpy).toHaveBeenCalledTimes(5);
     // The only system row is the agent's own working note from the first turn — its own words.
     expect(messageRows().filter((m) => m.role === 'system').map((m) => m.content))
@@ -823,7 +823,7 @@ describe('t137 lifecycle: the park stays honest around stops and stale work', ()
       await readOnlyTurnAcrossTheCheckpoint(i === 1 ? { narrate: 'Starting on the research folder now.' } : {});
       expect(pendingWakeups.has('primary'), `park ${i} queued its continuation`).toBe(true);
     }
-    expect(turnRows().map((t) => t.exit_reason)).toEqual(['budget', 'budget', 'budget', 'budget']);
+    expect(turnRows().map((t) => t.exit_reason)).toEqual(Array(4).fill('iteration_cap'));
     expect(workState('w-long-job')).toBe('claimed');
   });
 
@@ -860,7 +860,7 @@ describe('t137 round 2: the 75-call checkpoint writes nothing to the owner', () 
       };
     });
     executeToolSpy.mockImplementation(async (_a: string, tc: ToolCall) => (
-      { toolCallId: tc.id, name: tc.name, content: `body of ${tc.id}`, isError: false }));
+      { toolCallId: tc.id, name: tc.name, content: 'no such file', isError: true }));
     await runV2Turn('primary');
   }
 

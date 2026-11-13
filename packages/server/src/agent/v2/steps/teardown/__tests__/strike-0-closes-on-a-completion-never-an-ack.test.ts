@@ -54,7 +54,7 @@ function ctxFor(conv: string, channel: string, answerRowId: string | null): Tear
     turnNumber: TURN, db: db(),
     chosenConvKey: `${channel}:owner`, chosenConversationId: conv, lastAssembledAtIso: null,
     terminalAnswerRowId: answerRowId, triggerWorkId: null,
-    toolPhaseEndedBySpinBrake: false, toolLoopCapReached: false, turnInjectedTechniqueId: null,
+    toolPhaseEndedBySpinBrake: false, turnInjectedTechniqueId: null,
     counterparty: { kind: 'user', name: 'the owner', relation: 'owner', channel, senderId: 'owner', senderIsAgent: false } as never,
     isA2ATurn: false, isEngineTurn: false,
     turnStartedAt: new Date(Date.now() - 60_000).toISOString().slice(0, 19).replace('T', ' '),

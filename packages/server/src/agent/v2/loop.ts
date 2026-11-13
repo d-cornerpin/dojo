@@ -29,8 +29,6 @@ import { runFinalize } from './steps/finalize/index.js';
 import { runCallLLM, type CallLLMContext } from './steps/call-llm/index.js';
 import { runPostCallClassify } from './steps/post-call-classify/index.js';
 import { runPreflight } from './steps/preflight/index.js';
-import { noteEngineCheckpoint } from '../../work/engine-checkpoint-note.js';
-import { parkJob } from '../../work/job-continuation.js';
 import { ensureArtifactDir } from '../artifact-dir.js';
 
 const logger = createLogger('v2-loop');
@@ -39,7 +37,6 @@ const STATUS_HEARTBEAT_INTERVAL_MS = 30_000;
 // An assigned open task disarms untracked-multistep enforcement only if touched within this window, so new work
 // cannot ride in under an abandoned task. Same value as `DEADLINES.stale_task_window` (work/work-reaper.ts).
 const STALE_TASK_WINDOW_MINUTES = 30;
-const MAX_TOOL_LOOPS = 75;
 // Start-ack floor on the person's wait: a turn still working after 30s owes an ack; quick lookups stay quiet.
 const ENGINE_START_ACK_AFTER_MS = 30000;
 // Task-thrash detector: the same canonical call (canonicalToolSignature, so varying one parameter cannot slip
@@ -198,7 +195,6 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
     // close-out latch and spin-brake grace are read here instead, ending the turn after the iteration ran.
     while (
       turnCtx.state!.phase !== 'done' &&
-      turnCtx.state!.loopCount < MAX_TOOL_LOOPS &&
       !turnCtx.state!.taskClosedWithTextThisTurn &&
       !(turnCtx.toolPhaseEndedBySpinBrake && turnCtx.spinBrakeGraceCalls < 0)
     ) {
@@ -259,7 +255,6 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
         unrepliedAssign, a2aReplyContext, a2aReplyAssignMessageId, settledContextWakeTurn,
         waitingConvs, inboundChannel, latestUserSource, lastUserMessageContent,
         configuredModelId, turnStartedAt, messageId, result,
-        maxToolLoops: MAX_TOOL_LOOPS,
         // Closures over driver state, passed as values so they keep the bindings they closed over.
         reArmIfStrandedNoAnswer, noteTerminalAnswer, deliverEngineUserAck,
         persistAndBroadcastSystemRow, startAckRepliedNow, stashContinuationIfHuman,
@@ -287,7 +282,6 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
         result, messageId, persistedContent, interAgentTurn, hasXmlFallbackTools,
         effectiveModelIdForPersist,
         staleTaskWindowMinutes: STALE_TASK_WINDOW_MINUTES,
-        maxToolLoops: MAX_TOOL_LOOPS,
         engineStartAckAfterMs: ENGINE_START_ACK_AFTER_MS,
       });
       turnCtx.state = executed.state;
@@ -303,26 +297,6 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
       if (postExecution.directive === 'exit') break;
       if (postExecution.directive === 'continue') continue;
 
-    }
-
-    if (turnCtx.state!.loopCount >= MAX_TOOL_LOOPS) {
-      // Soft tool-loop cap: auto-continue in a fresh turn instead of dead-stopping; the continuity brief and
-      // tracker let the agent pick up where it left off.
-      logger.warn('v2 hit MAX_TOOL_LOOPS, auto-continuing with fresh turn', {
-        agentId, maxLoops: MAX_TOOL_LOOPS,
-      }, agentId);
-      turnCtx.toolLoopCapReached = true;   // teardown records the cut, not the model's intent
-      // Invisible housekeeping (no owner chat row). Square the tracker before the continuation is scheduled, so
-      // the next turn's close-out gate does not read the checkpoint as abandonment.
-      try {
-        noteEngineCheckpoint(agentId, 'tool-loop');
-      } catch (checkpointErr) {
-        logger.warn('v2: engine-checkpoint tracker note failed (non-fatal)', {
-          agentId, error: checkpointErr instanceof Error ? checkpointErr.message : String(checkpointErr),
-        }, agentId);
-      }
-      stashContinuationIfHuman(); // carry the human conversation into the continuation
-      parkJob(agentId, 'tool-loop', 'timer'); // the job travels on this wake; only the run it starts carries it
     }
 
     turnCtx.state = advance(turnCtx.state!, { phase: 'finalize' });

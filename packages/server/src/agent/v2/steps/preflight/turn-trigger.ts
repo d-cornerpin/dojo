@@ -6,7 +6,6 @@ import { getDb } from '../../../../db/connection.js';
 import { AgentError } from '../../../errors.js';
 import { agentTurnWindow } from '../../../../router/router-window.js';
 import { continuationContext } from '../../../turn-state.js';
-import { turnContinuationCounts } from '../../../shared-state.js';
 import { stampConversationIdByRowid } from '../../../../memory/message-store.js';
 import { resolveOrCreateConversation } from '../../../../memory/conversations.js';
 import { claimAsk, isStateConflict } from '../../../../work/store.js';
@@ -119,8 +118,6 @@ export function runTurnTrigger(
         stampConversationIdByRowid({ rowid: triggerRow.rowid, agentId, conversationId: chosenConversationId });
       } catch { /* best effort, served-tagging also happens at turn end */ }
     }
-    // A fresh claimed trigger resets the counter bounding consecutive auto-continuations of one turn.
-    if (claimed) turnContinuationCounts.delete(agentId);
     if (!claimed) {
       // Another process claimed this trigger between our read and our claim: bail, never a duplicate turn.
       logger.warn('v2: pickup claim lost, another process already claimed this trigger; skipping to avoid a duplicate turn', { agentId, rowid: triggerRow.rowid, workId: triggerWorkId }, agentId);

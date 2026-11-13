@@ -10,6 +10,7 @@ import { userWords, replyChannelWords } from '../../turn-address.js';
 import { createLogger } from '../../../../logger.js';
 import { continueLoop, proceed, requestExit, type StepOutcome } from '../step-outcome.js';
 import type { ExecuteContext } from './index.js';
+import { turnWindow } from '../post-call-classify/job-turn-end.js';
 
 const logger = createLogger('v2-loop');
 
@@ -17,9 +18,7 @@ export function runDelegationTurnEnd(state: AgentTurnState, ctx: ExecuteContext)
   const {
     agentId, turnNumber, db, counterparty, result, triggerRow, triggerWorkId,
     triggerConversationId, persistedContent, deferredDeliveredByAck,
-    maxToolLoops,
   } = ctx;
-  const MAX_TOOL_LOOPS = maxToolLoops;
 
   // End the turn now, or the agent re-asks or fabricates the answer. Every send in this one response's batch
   // still goes out, so multi-delegation is not blocked.
@@ -84,7 +83,7 @@ export function runDelegationTurnEnd(state: AgentTurnState, ctx: ExecuteContext)
       (!persistedContent || persistedContent.trim().length === 0) &&
       !Object.values(state.explicitSendThisTurn).some(Boolean) &&
       !steerFired(state.steerQueue, 'delegation-exit') &&
-      state.loopCount < MAX_TOOL_LOOPS
+      turnWindow(state, agentId, 1) !== 'checkpoint'
     ) {
       // A status line that misnames the helpers is not fixed here: judging the model's sentence is banned.
       const exitSteer =

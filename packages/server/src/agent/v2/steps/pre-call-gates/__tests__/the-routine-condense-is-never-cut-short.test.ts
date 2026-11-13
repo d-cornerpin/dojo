@@ -65,7 +65,7 @@ vi.mock('../../../../../config/platform.js', async (importOriginal) => ({
 
 import { runMigrations } from '../../../../../db/migrations.js';
 import { insertMessage } from '../../../../../memory/message-store.js';
-import { backgroundDrains, pendingWakeups, stoppedAgents, turnContinuationCounts } from '../../../../shared-state.js';
+import { backgroundDrains, pendingWakeups, stoppedAgents } from '../../../../shared-state.js';
 import { __resetBrakesForTests } from '../../../../../memory/compaction-brakes.js';
 import { __resetEstimateCacheForTests } from '../../../../../memory/assembled-estimate-cache.js';
 import { __resetSummaryWriterHealthForTests, markWaiting, clearOn, providerOf } from '../../../../../memory/writer.js';
@@ -137,7 +137,6 @@ beforeEach(() => {
   backgroundDrains.clear();
   pendingWakeups.clear();
   stoppedAgents.clear();
-  turnContinuationCounts.clear();
   __resetBrakesForTests();
   __resetEstimateCacheForTests();
   __resetSummaryWriterHealthForTests();

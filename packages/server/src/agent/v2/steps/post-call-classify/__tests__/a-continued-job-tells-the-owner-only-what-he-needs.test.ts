@@ -83,7 +83,7 @@ async function continuedTurn(taskId: string, text: string, work: { from: number;
   lastStart = Math.max(Date.now(), lastStart + 1000);
   armTimerWake(AGENT);
   beginJobRun(AGENT, 'timer');
-  let state: AgentTurnState = advance(initState({ agentId: AGENT, maxToolLoops: 75, turnNumber, lastUserMessageContent: null } as unknown as Parameters<typeof initState>[0]),
+  let state: AgentTurnState = advance(initState({ agentId: AGENT, turnNumber, lastUserMessageContent: null } as unknown as Parameters<typeof initState>[0]),
     { loopCount: 1, modelId: 'test-model', turnStartMs: lastStart });
   const ctxFor = (result: ModelResult): PostCallClassifyContext => {
     msg += 1;
@@ -97,7 +97,7 @@ async function continuedTurn(taskId: string, text: string, work: { from: number;
       a2aReplyAssignMessageId: null, settledContextWakeTurn: false, waitingConvs: [], inboundChannel: null,
       latestUserSource: null, lastUserMessageContent: null, configuredModelId: 'test-model',
       turnStartedAt: new Date(lastStart).toISOString(), messageId: `msg-${msg}`, result,
-      maxToolLoops: 75, reArmIfStrandedNoAnswer: vi.fn(), noteTerminalAnswer: vi.fn(),
+      reArmIfStrandedNoAnswer: vi.fn(), noteTerminalAnswer: vi.fn(),
       deliverEngineUserAck: vi.fn(async () => undefined), persistAndBroadcastSystemRow: vi.fn(), startAckRepliedNow: () => false,
       stashContinuationIfHuman: stash, ...over,
     } as unknown as PostCallClassifyContext;

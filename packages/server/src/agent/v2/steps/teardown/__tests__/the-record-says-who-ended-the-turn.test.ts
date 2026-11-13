@@ -72,7 +72,7 @@ function ctxFor(over: Partial<TeardownContext> = {}, bag: Record<string, unknown
     agentId: AGENT, turnCtx: bagFor(bag) as never, turnNumber: TURN, db: db(),
     chosenConvKey: 'dashboard:owner', chosenConversationId: CONV, lastAssembledAtIso: null,
     terminalAnswerRowId: null, triggerWorkId: null,
-    toolPhaseEndedBySpinBrake: false, toolLoopCapReached: false, turnInjectedTechniqueId: null,
+    toolPhaseEndedBySpinBrake: false, turnInjectedTechniqueId: null,
     counterparty: {
       kind: 'user', name: 'the owner', relation: 'owner', channel: 'dashboard',
       senderId: 'owner', senderIsAgent: false,
@@ -209,11 +209,12 @@ describe('§2 an ordinary turn lands exactly the word it always did', () => {
     expect((await record(cut('stop'), { toolPhaseEndedBySpinBrake: true })).exit_reason).toBe('brake');
   });
 
-  it('iteration_cap — C2\'s word, unaffected, and still below a cut', async () => {
-    expect((await record(freshState(), { toolLoopCapReached: true })).exit_reason).toBe('iteration_cap');
-    openTurn(TURN + 1);
-    await finalizeTurnRecord(cut('budget'), ctxFor({ turnNumber: TURN + 1, toolLoopCapReached: true }));
-    expect(rowFor(TURN + 1).exit_reason, 'the cut is the proximate cause').toBe('budget');
+  it('iteration_cap: the checkpoint is a cut, and it outranks a delivered reply', async () => {
+    db().prepare(
+      `INSERT INTO messages (id, agent_id, role, content, lane, conversation_id, turn_number)
+       VALUES ('m-answer', ?, 'assistant', 'Done with the first half.', 'owner', ?, ?)`,
+    ).run(AGENT, CONV, TURN);
+    expect((await record(cut('iteration_cap'), { terminalAnswerRowId: 'm-answer' })).exit_reason).toBe('iteration_cap');
   });
 
   it('park — a turn that delegated the ask it was serving', async () => {
@@ -236,7 +237,7 @@ describe('§2 an ordinary turn lands exactly the word it always did', () => {
 
   it('identical_call sits BELOW the cap and the handoff, never above them', async () => {
     const refused = advance(freshState(), { identicalCallRefusedThisTurn: true });
-    expect((await record(refused, { toolLoopCapReached: true })).exit_reason).toBe('iteration_cap');
+    expect((await record(latchEngineCut(refused, 'iteration_cap'))).exit_reason).toBe('iteration_cap');
   });
 });
 

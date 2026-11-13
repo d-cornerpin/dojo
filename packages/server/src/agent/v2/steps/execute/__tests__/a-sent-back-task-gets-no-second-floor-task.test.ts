@@ -41,7 +41,7 @@ async function sixUntrackedCalls(turnNumber: number): Promise<void> {
     engineStartAckDeliveredThisTurn: false, deferredDeliveredByAck: false, identicalCallState: {}, reminderLaneRefusedSigs: new Set<string>(),
     startAckArmed: false, startAckArmedAtMs: 0, fireStartAckIfOwed: async () => undefined, result, messageId: `resp-${turnNumber}`,
     persistedContent: null, interAgentTurn: false, hasXmlFallbackTools: false, effectiveModelIdForPersist: 'm',
-    staleTaskWindowMinutes: 45, maxToolLoops: 40, engineBlockEscapeHatch: '', engineStartAckAfterMs: 30_000,
+    staleTaskWindowMinutes: 45, engineBlockEscapeHatch: '', engineStartAckAfterMs: 30_000,
   } as unknown as ExecuteContext;
   state = countTrackerWorkThisIteration(state, ectx);
   await runTrackerFloors(state, ectx);

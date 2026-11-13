@@ -94,7 +94,6 @@ function ctxFor(over: Partial<PostCallClassifyContext> = {}): PostCallClassifyCo
     counterparty: { kind: 'user', relation: 'owner', channel: 'dashboard' } as unknown as PostCallClassifyContext['counterparty'],
     chosenConvKey: 'ck-1',
     isEngineTurn: false,
-    maxToolLoops: 75,
     turnCtx: {},
     ...over,
   } as unknown as PostCallClassifyContext;
@@ -206,8 +205,8 @@ describe('T22 controls: the untouched guards still bound the floor', () => {
     expect((await floor(st, ctxFor(), scratch(EMPTY_PROMISE))).directive).toBe('proceed');
   });
 
-  it('the MAX_TOOL_LOOPS proximity skip is unchanged', async () => {
-    const out = await floor(stateWith({ loopCount: 75 }), ctxFor({ maxToolLoops: 75 }), scratch(EMPTY_PROMISE));
+  it('a floor does not steer into a due checkpoint', async () => {
+    const out = await floor(stateWith({ loopCount: 75 }), ctxFor({}), scratch(EMPTY_PROMISE));
     expect(out.directive).toBe('proceed');
   });
 

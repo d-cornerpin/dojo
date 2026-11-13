@@ -104,7 +104,7 @@ async function assembleLoop(over: {
 } = {}): Promise<{ state: AgentTurnState; turnCtx: Bag }> {
   const turnCtx = over.turnCtx ?? bag();
   const state = advance(
-    initState({ agentId: AGENT, maxToolLoops: 20 } as Parameters<typeof initState>[0]),
+    initState({ agentId: AGENT } as Parameters<typeof initState>[0]),
     { loopCount: over.loopCount ?? 1 },
   );
   const out = await detectMultistepAndScaffold(state, {

@@ -33,7 +33,7 @@ type Bag = Record<string, unknown>;
 const bag = (over: Bag = {}): Bag => ({ startAckSteerRequested: false, startAckSteerArmedThisTurn: false, startAckSteersInjected: 0, startAckSteerInjectedAtLoop: 0, ...over });
 
 function checkpoint(turnCtx: Bag, loopCount: number): AgentTurnState {
-  const state = advance(initState({ agentId: AGENT, maxToolLoops: 20 } as Parameters<typeof initState>[0]), { loopCount });
+  const state = advance(initState({ agentId: AGENT } as Parameters<typeof initState>[0]), { loopCount });
   return runSteerCheckpoint(state, {
     agentId: AGENT, turnCtx: turnCtx as never, turnNumber: TURN, engineStartAckDeliveredThisTurn: false,
     startAckRepliedNow: () => false,   // the old probe's answer in every clause: it cannot see either kind of line

@@ -75,7 +75,7 @@ describe('ruling 1: an owner asks for a measured job — reply delivered, then t
     const id = /task_id=([0-9a-f-]{36})/.exec(opened.content)![1];
     await call('work_update:status', { task_id: id, status: 'in_progress' });
 
-    let state: AgentTurnState = advance(initState({ agentId: AGENT, maxToolLoops: 75, turnNumber: 3, lastUserMessageContent: 'please sort my inbox' } as unknown as Parameters<typeof initState>[0]),
+    let state: AgentTurnState = advance(initState({ agentId: AGENT, turnNumber: 3, lastUserMessageContent: 'please sort my inbox' } as unknown as Parameters<typeof initState>[0]),
       { loopCount: 1, modelId: 'test-model' });
     const label = { id: 'tc-1', name: 'gmail_label', arguments: { message_ids: ['a', 'b'], add: ['Done'] } } as ToolCall;
     chargeEffortCalls(id, [label], { startMs: state.turnStartMs, succeeded: () => true });

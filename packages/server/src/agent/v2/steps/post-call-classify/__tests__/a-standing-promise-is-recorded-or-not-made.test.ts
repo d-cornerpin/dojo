@@ -22,7 +22,7 @@
 //   * the exemption is a RECEIPT, never prose: a vault write or a tracked row this turn exempts
 //     it, and the model SAYING it recorded something does not;
 //   * every bound of the floor the plan marks UNTOUCHED still bounds it: one-shot/no-spin, the
-//     MAX_TOOL_LOOPS proximity skip, engine turns, non-user counterparties, and T22's
+//     checkpoint proximity skip, engine turns, non-user counterparties, and T22's
 //     scheduled-work exemption (whose own suite stays green, unchanged);
 //   * the FORWARD class keeps precedence and keeps its byte-identical steer text, so the
 //     2026-07-08 pin cannot be re-worded by this task.
@@ -97,7 +97,6 @@ function ctxFor(over: Partial<PostCallClassifyContext> = {}): PostCallClassifyCo
     counterparty: { kind: 'user', relation: 'owner', channel: 'dashboard' } as unknown as PostCallClassifyContext['counterparty'],
     chosenConvKey: 'ck-1',
     isEngineTurn: false,
-    maxToolLoops: 75,
     turnCtx: {},
     ...over,
   } as unknown as PostCallClassifyContext;
@@ -261,8 +260,8 @@ describe('T33 controls: every UNTOUCHED bound still bounds the floor', () => {
     expect(steerRowSpy).not.toHaveBeenCalled();
   });
 
-  it('the MAX_TOOL_LOOPS proximity skip is unchanged', async () => {
-    const out = await floor(stateWith({ loopCount: 75 }), ctxFor({ maxToolLoops: 75 }), scratch(S5_STANDING_PROMISE));
+  it('a floor does not steer into a due checkpoint', async () => {
+    const out = await floor(stateWith({ loopCount: 75 }), ctxFor({}), scratch(S5_STANDING_PROMISE));
     expect(out.directive).toBe('proceed');
   });
 

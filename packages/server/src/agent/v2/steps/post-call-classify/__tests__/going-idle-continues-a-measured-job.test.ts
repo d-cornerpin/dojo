@@ -80,7 +80,7 @@ let lastTurnStartMs = 0;
 function freshTurn(): AgentTurnState {
   turnNumber += 1;
   lastTurnStartMs = Math.max(Date.now(), lastTurnStartMs + 1000);
-  return advance(initState({ agentId: AGENT, maxToolLoops: 75, turnNumber, lastUserMessageContent: null } as unknown as Parameters<typeof initState>[0]),
+  return advance(initState({ agentId: AGENT, turnNumber, lastUserMessageContent: null } as unknown as Parameters<typeof initState>[0]),
     { loopCount: 1, modelId: 'test-model', turnStartMs: lastTurnStartMs });
 }
 

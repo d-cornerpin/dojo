@@ -14,7 +14,7 @@ export function queueJobContinuation(agentId: string, reason: string): boolean {
   return queued;
 }
 
-/** The tool-loop park's continuation: its own timer (a second lets the park's DB writes settle),
+/** A timer park's continuation: its own timer (a second lets the park's DB writes settle),
  *  which starts a run FROM that wake. */
 export function armToolLoopContinuation(agentId: string, delayMs = 1000, after?: Promise<unknown>): void {
   const wake = armTimerWake(agentId);

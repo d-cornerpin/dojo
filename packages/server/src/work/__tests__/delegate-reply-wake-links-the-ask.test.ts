@@ -184,7 +184,7 @@ import { runV2Turn } from '../../agent/v2/loop.js';
 import { runMigrations } from '../../db/migrations.js';
 import { insertMessage, insertEngineEvent } from '../../memory/message-store.js';
 import { buildWorkBoardLane } from '../../memory/work-board-lane.js';
-import { stoppedAgents, pendingWakeups, turnContinuationCounts } from '../../agent/shared-state.js';
+import { stoppedAgents, pendingWakeups } from '../../agent/shared-state.js';
 import { deliverA2AMessage } from '../../agent/a2a-transport.js';
 
 const PRIMARY = 'primary';
@@ -273,7 +273,6 @@ beforeEach(() => {
   handleMessageSpy.mockImplementation(async () => undefined);
   stoppedAgents.clear();
   pendingWakeups.clear();
-  turnContinuationCounts.clear();
 });
 
 afterEach(() => {

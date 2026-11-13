@@ -22,7 +22,7 @@
 //     with the board or the calendar this turn) exempts it, and SAYING "I checked" does not;
 //   * the class is the decision model's verdict (`asserts_board_state`); with none, no steer;
 //   * every bound the plan marks UNTOUCHED still bounds the floor: one steer per turn shared with
-//     both sibling classes, the MAX_TOOL_LOOPS proximity skip, engine turns, non-user
+//     both sibling classes, the checkpoint proximity skip, engine turns, non-user
 //     counterparties, the engine conv key — and both sibling classes keep PRECEDENCE and their
 //     byte-identical steer texts (T22's and T33's suites are the regression obligation).
 //
@@ -115,7 +115,6 @@ function ctxFor(over: Partial<PostCallClassifyContext> = {}): PostCallClassifyCo
     counterparty: { kind: 'user', relation: 'owner', channel: 'dashboard' } as unknown as PostCallClassifyContext['counterparty'],
     chosenConvKey: 'ck-1',
     isEngineTurn: false,
-    maxToolLoops: 75,
     turnCtx: {},
     ...over,
   } as unknown as PostCallClassifyContext;
@@ -265,8 +264,8 @@ describe('T36 controls: every UNTOUCHED bound still bounds the floor', () => {
     expect(steerRowSpy).not.toHaveBeenCalled();
   });
 
-  it('the MAX_TOOL_LOOPS proximity skip is unchanged', async () => {
-    const out = await floor(stateWith({ loopCount: 75 }), ctxFor({ maxToolLoops: 75 }), scratch(S5_RECAP));
+  it('a floor does not steer into a due checkpoint', async () => {
+    const out = await floor(stateWith({ loopCount: 75 }), ctxFor({}), scratch(S5_RECAP));
     expect(out.directive).toBe('proceed');
   });
 

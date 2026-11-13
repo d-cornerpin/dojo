@@ -121,7 +121,7 @@ const markerLogs = (): Array<{ msg: string; data: Record<string, unknown> }> =>
 
 /** The S1 turn's own shape: one model call, no tools, no recall, and a delivered answer. */
 function s1State(over: Partial<AgentTurnState> = {}): AgentTurnState {
-  const base = initState({ agentId: AGENT, maxToolLoops: 20, turnNumber: TURN } as Parameters<typeof initState>[0]);
+  const base = initState({ agentId: AGENT, turnNumber: TURN } as Parameters<typeof initState>[0]);
   return advance(base, {
     toolCallsExecutedThisTurn: 0,
     recallLaneReachedModelThisTurn: false,

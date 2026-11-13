@@ -2,6 +2,7 @@
 // closeout-floors.ts and job-continues.ts, which must agree within a pass.
 
 import type { Database } from 'better-sqlite3';
+import { getDb } from '../../../../db/connection.js';
 import { taskScope, workingTaskOrder } from '../../../../work/tracker-view.js';
 import { parseMeasure, type Measure } from '../../../../work/measure.js';
 import { ledgerNewItemsSince, recordMeasured } from '../../../../work/ledger-store.js';
@@ -55,6 +56,20 @@ function storedFacts(state: AgentTurnState, agentId: string, db: Database): JobA
     taskId: task.id, measure, remaining: measure ? task.stored : null, touchedThisTurn, novelCallsThisTurn, openedThisTurn,
     momentum: touchedThisTurn > 0 || novelCallsThisTurn > 0 || openedThisTurn,
   };
+}
+
+/** The job's momentum as one count that only grows within a turn. */
+export function jobProgressMark(state: AgentTurnState, agentId: string, db: Database): number {
+  const f = storedFacts(state, agentId, db);
+  return f ? f.touchedThisTurn + f.novelCallsThisTurn + (f.openedThisTurn ? 1 : 0) : 0;
+}
+
+/** May the turn take pass `loopCount + ahead`? Open inside the window (75 passes, 15 minutes); at its end it
+ *  renews if the job moved since the window opened, else the turn checkpoints. */
+export function turnWindow(state: AgentTurnState, agentId: string, ahead = 0): 'open' | 'renew' | 'checkpoint' {
+  const w = state.checkpointWindow ?? { atLoop: 0, atMs: state.turnStartMs, mark: 0 };
+  if (state.loopCount + ahead - w.atLoop <= 75 && Date.now() - w.atMs <= 15 * 60_000) return 'open';
+  return jobProgressMark(state, agentId, getDb()) > w.mark ? 'renew' : 'checkpoint';
 }
 
 const memo = new Map<string, { key: string; facts: JobAtPassEnd | null }>();

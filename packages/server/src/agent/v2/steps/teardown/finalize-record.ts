@@ -12,6 +12,7 @@ import {
   pauseDriveWorkWaitingOnOwner, stillClaimedWork, terminalDeliveryForTurn,
 } from '../../answered-edge.js';
 import { finalizeTurn, type TurnExitReason } from '../../turn-record.js';
+import { turnParkedTheJob } from '../../engine-exit.js';
 import type { AgentTurnState } from '../../state.js';
 import type { TeardownContext } from './index.js';
 
@@ -24,7 +25,7 @@ export async function finalizeTurnRecord(
   const {
     agentId, turnCtx, turnNumber, chosenConvKey, chosenConversationId, lastAssembledAtIso,
     terminalAnswerRowId, triggerWorkId,
-    toolPhaseEndedBySpinBrake, toolLoopCapReached, counterparty, isA2ATurn, isEngineTurn, turnStartedAt,
+    toolPhaseEndedBySpinBrake, counterparty, isA2ATurn, isEngineTurn, turnStartedAt,
     inboundChannel, inboundContext, db,
   } = ctx;
 
@@ -46,12 +47,10 @@ export async function finalizeTurnRecord(
     ).get(agentId, turnNumber) : undefined;
     // ORDER IS THE GUARD (coerced-reply-not-a-delivery.test.ts): `brake` and the engine's own cut come
     // before `answerRow` because they are why the turn ended (delivery is the separate `answered` column);
-    // the cap follows `answered` so a capped answer stays representable, and precedes park/handoff;
     // `identical_call` is last since it is not the ending event. Meanings: work/exit-attribution.ts.
     const exitReason: TurnExitReason = toolPhaseEndedBySpinBrake ? 'brake'
       : state.engineCutExit ? state.engineCutExit
       : answerRow ? 'answered'
-      : toolLoopCapReached ? 'iteration_cap'
       : parkedRow ? 'park'
       : handoffRow ? 'handoff'
       : state.identicalCallRefusedThisTurn ? 'identical_call'
@@ -72,7 +71,7 @@ export async function finalizeTurnRecord(
     const startLineOnly = turnCtx.inboundClassifiedAsWork && state.nonIdempotentCallsThisTurn === 0;
     // The engine queued this turn's own continuation, so settlement does not take its opening line as
     // the answer. Same expression as queuedOwnContinuation below.
-    const continuing = !isStopFenced(agentId) && (continuationContext.has(agentId) || toolLoopCapReached);
+    const continuing = turnParkedTheJob(agentId) || (!isStopFenced(agentId) && continuationContext.has(agentId));
     // `claimed_by_turn` is NULLed when an answered ask leaves `claimed` mid-turn; claim_turn is the record.
     const triggerAsk = triggerWorkId
       ? db.prepare('SELECT kind, requester FROM work WHERE id = ?').get(triggerWorkId) as
@@ -110,8 +109,7 @@ export async function finalizeTurnRecord(
           startLineOnly,
           trackerWriteThisTurn: state.trackerWriteThisTurn,
           servedSourceMessageId: turnCtx.root?.sourceMessageId ?? null,
-          queuedOwnContinuation: !isStopFenced(agentId)
-            && (continuationContext.has(agentId) || toolLoopCapReached),
+          queuedOwnContinuation: continuing,
           // Only work this turn touched; untouched backlog belongs to the poke ladder.
           touchedSince: turnStartedAt,
         });

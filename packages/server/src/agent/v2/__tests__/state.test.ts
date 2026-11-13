@@ -96,14 +96,8 @@ describe('validate', () => {
     expect(() => validate(s)).toThrow(/outputTokensEscalated invalid/);
   });
 
-  it('throws on runaway tool count', () => {
-    const s = { ...freshState(), toolCallsExecutedThisTurn: 250 };
-    expect(() => validate(s)).toThrow(/runaway tool count/);
-  });
-
-  it('throws on runaway loop count', () => {
-    const s = { ...freshState(), loopCount: 600 };
-    expect(() => validate(s)).toThrow(/runaway loop count/);
+  it('a long moving job has no step or call ceiling', () => {
+    expect(() => validate({ ...freshState(), toolCallsExecutedThisTurn: 250, loopCount: 600 })).not.toThrow();
   });
 
   it('throws on runaway permission denials', () => {

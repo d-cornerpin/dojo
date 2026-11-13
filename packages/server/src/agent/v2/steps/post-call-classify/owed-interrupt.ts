@@ -8,6 +8,7 @@ import { steerFired } from '../../steer-queue.js';
 import { getOwedMidTurnArrivals } from '../../counterparty.js';
 import { continueLoop, proceed, type StepOutcome } from '../step-outcome.js';
 import type { PostCallClassifyContext, PostCallScratch } from './index.js';
+import { turnWindow } from './job-turn-end.js';
 import { userWords } from '../../turn-address.js';
 
 const logger = createLogger('v2-loop');
@@ -18,10 +19,9 @@ export async function runOwedInterrupt(
   sc: PostCallScratch,
 ): Promise<StepOutcome> {
   const {
-    agentId, chosenConvKey, counterparty, isEngineTurn, maxToolLoops, turnCtx,
+    agentId, chosenConvKey, counterparty, isEngineTurn, turnCtx,
     turnNumber, turnStartedAt,
   } = ctx;
-  const MAX_TOOL_LOOPS = maxToolLoops;
   const { persistedContent } = sc;
 
   // The teardown claim marks every assembled mid-turn row served, so steer once first, scoped by
@@ -30,7 +30,7 @@ export async function runOwedInterrupt(
   // that answer close an owed ask it never addressed.
   const hasReply = !!persistedContent && persistedContent.trim().length > 0;
   const mayRecord = hasReply && !state.owedInterruptSubjectsRecorded;
-  const maySteer = !steerFired(state.steerQueue, 'owed-interrupt') && state.loopCount < MAX_TOOL_LOOPS;
+  const maySteer = !steerFired(state.steerQueue, 'owed-interrupt') && turnWindow(state, agentId, 1) !== 'checkpoint';
   // Riding tool calls must not take the loop: continuing would skip the execute phase and drop them.
   const ridingToolCalls = ctx.result.toolCalls.length > 0;
   if (

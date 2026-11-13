@@ -132,7 +132,7 @@ function ctxFor(turnCtx: Bag, over: Partial<PostCallClassifyContext> = {}): Post
     latestUserSource: null,
     lastUserMessageContent: 'Go through the last 2 weeks of email in my mailbox and get it organized.',
     configuredModelId: 'deepseek-v4-flash', turnStartedAt: new Date().toISOString(), messageId: 'msg-76947',
-    result: modelResult(THE_STATUS), maxToolLoops: 20,
+    result: modelResult(THE_STATUS),
     reArmIfStrandedNoAnswer: vi.fn(), noteTerminalAnswer: noteTerminalAnswerSpy,
     deliverEngineUserAck: deliverAckSpy,
     persistAndBroadcastSystemRow: vi.fn(),
@@ -160,7 +160,7 @@ let state: AgentTurnState;
 beforeEach(() => {
   broadcastSpy.mockClear(); insertMessageIfAbsentSpy.mockClear(); deliverAckSpy.mockClear();
   noteTerminalAnswerSpy.mockClear();
-  state = initState({ agentId: AGENT, maxToolLoops: 20 } as Parameters<typeof initState>[0]);
+  state = initState({ agentId: AGENT } as Parameters<typeof initState>[0]);
 });
 
 // ── THE 7: THE MEASURED CLASS, BOTH OF ITS PREDICATES ──────────────────────────────────

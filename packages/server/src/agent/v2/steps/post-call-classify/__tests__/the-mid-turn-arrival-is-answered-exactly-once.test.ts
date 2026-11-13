@@ -137,7 +137,6 @@ function ctxFor(over: Partial<PostCallClassifyContext> = {}): PostCallClassifyCo
     turnStartedAt: new Date(Date.now() - 60_000).toISOString(),
     messageId: 'msg-live',
     result: { content: null, toolCalls: [], inputTokens: 1, outputTokens: 1, stopReason: 'end_turn' },
-    maxToolLoops: 20,
     reArmIfStrandedNoAnswer: vi.fn(),
     noteTerminalAnswer: vi.fn(),
     deliverEngineUserAck: vi.fn(async () => undefined),

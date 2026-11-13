@@ -371,7 +371,7 @@ vi.mock('../steer-queue.js', async () => {
 
 import { runV2Turn } from '../loop.js';
 import {
-  stoppedAgents, recoveryRunStreak, pendingWakeups, turnContinuationCounts,
+  stoppedAgents, recoveryRunStreak, pendingWakeups,
   doomedPrefillCompactionSpent, declaredPatienceHonestFailTurn,
 } from '../../shared-state.js';
 import { continuationContext } from '../../turn-state.js';
@@ -438,7 +438,6 @@ beforeEach(() => {
   doomedPrefillCompactionSpent.clear();
   declaredPatienceHonestFailTurn.clear();
   pendingWakeups.clear();
-  turnContinuationCounts.clear();
   continuationContext.clear();
 });
 
@@ -478,8 +477,8 @@ const workingFile = () => ({
 
 let toolSeq = 0;
 
-/** The job: `rounds` read-only calls, the second of which writes the working file (the real
- *  queue, exactly as `tools/util.ts` does after a file_write), then whatever `after` says. */
+/** The job: `rounds` read-only calls that find nothing (so the job does not move), the second of which
+ *  writes the working file (the real queue, exactly as `tools/util.ts` does after a file_write), then `after`. */
 function scriptTheJob(opts: { rounds: number; after: { content: string }; onRound?: (round: number) => void }): void {
   let call = 0;
   callModelSpy.mockImplementation(async () => {
@@ -497,7 +496,7 @@ function scriptTheJob(opts: { rounds: number; after: { content: string }; onRoun
     round++;
     if (round === 2) queueCanvasDoc('primary', workingFile());
     opts.onRound?.(round);
-    return { toolCallId: tc.id, name: tc.name, content: 'file body', isError: false };
+    return { toolCallId: tc.id, name: tc.name, content: 'no such file', isError: true };
   });
 }
 
@@ -510,11 +509,11 @@ function expectTheOwnerHeardNothing(): void {
 beforeEach(() => { toolSeq = 0; });
 
 // ════════════════════════════════════════════════════════════════════════════════
-// (i) A PARKED TURN IS SILENT: the tool-loop cap
+// (i) A PARKED TURN IS SILENT: a window of steps with no movement
 // ════════════════════════════════════════════════════════════════════════════════
-describe('t159 G (i): the 75-call cap parks the job — nothing reaches the owner, nothing is noted as the answer', () => {
-  it('a working file queued before the cap stays queued: no owner row, no broadcast, rows undelivered, turn not answered, ask not settled', async () => {
-    scriptTheJob({ rounds: 80, after: { content: '' } });   // the cap ends the turn before the model ever speaks
+describe('t159 G (i): a still window parks the job — nothing reaches the owner, nothing is noted as the answer', () => {
+  it('a working file queued before the park stays queued: no owner row, no broadcast, rows undelivered, turn not answered, ask not settled', async () => {
+    scriptTheJob({ rounds: 160, after: { content: '' } });   // the checkpoint ends the turn before the model ever speaks
     await runV2Turn('primary');
 
     // Positive controls: the turn really parked, and the file really was queued.
@@ -539,13 +538,14 @@ describe('t159 G (i-b): the 15-minute budget park is silent the same way', () =>
     const real = Date.now.bind(Date);
     let offset = 0;
     const clock = vi.spyOn(Date, 'now').mockImplementation(() => real() + offset);
-    scriptTheJob({ rounds: 3, after: { content: '' }, onRound: (r) => { if (r === 2) offset += TURN_BUDGET_MS + 60_000; } });
+    // Two windows of time pass: the first holds the task's opening, the second holds no movement.
+    scriptTheJob({ rounds: 6, after: { content: '' }, onRound: (r) => { if (r === 2 || r === 4) offset += TURN_BUDGET_MS + 60_000; } });
     try {
       await runV2Turn('primary');
     } finally {
       clock.mockRestore();
     }
-    expect(turnRows()).toEqual([expect.objectContaining({ exit_reason: 'budget' })]);   // positive control: it parked
+    expect(turnRows()).toEqual([expect.objectContaining({ exit_reason: 'iteration_cap' })]);   // positive control: it parked
     expect(artifactRows()).toEqual([expect.objectContaining({ kind: 'canvas', path: FILE })]);
     expectTheOwnerHeardNothing();
     expect(artifactRows().map((a) => a.delivered_at)).toEqual([null]);
@@ -559,7 +559,7 @@ describe('t159 G (i-b): the 15-minute budget park is silent the same way', () =>
 // ════════════════════════════════════════════════════════════════════════════════
 describe('t159 G (ii): the turn that really ends the job delivers what the park held back, with its own reply, once', () => {
   it('park, then a continuation that answers: one assistant row, carrying the file; the queue is drained once', async () => {
-    scriptTheJob({ rounds: 80, after: { content: '' } });
+    scriptTheJob({ rounds: 160, after: { content: '' } });
     await runV2Turn('primary');
     expectTheOwnerHeardNothing();
 

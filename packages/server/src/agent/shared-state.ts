@@ -141,8 +141,6 @@ export const A2A_PREEMPT_MIN_INTERVAL_MS = 30_000;
 
 export const agentStartTimes = new Map<string, number>();
 
-export const turnContinuationCounts = new Map<string, number>();
-
 export const statusHeartbeats = new Map<string, ReturnType<typeof setInterval>>();
 
 // Keyed by (kind, inputsFingerprint): the cap fires only on REPEATED identical inputs, else adapt freely.

@@ -372,7 +372,7 @@ vi.mock('../steer-queue.js', async () => {
 });
 import { runV2Turn } from '../loop.js';
 import {
-  stoppedAgents, recoveryRunStreak, pendingWakeups, turnContinuationCounts,
+  stoppedAgents, recoveryRunStreak, pendingWakeups,
   doomedPrefillCompactionSpent, declaredPatienceHonestFailTurn,
 } from '../../shared-state.js';
 import { AgentError } from '../../errors.js';
@@ -546,7 +546,6 @@ beforeEach(() => {
   doomedPrefillCompactionSpent.clear();
   declaredPatienceHonestFailTurn.clear();
   pendingWakeups.clear();
-  turnContinuationCounts.clear();
   untrackedWorkAcrossTurns.clear();
   enqueueSteerSpy.mockClear();
   stampTasksSpy.mockClear();
@@ -834,14 +833,9 @@ describe('runV2Turn integration', () => {
     expect(errors.find((e) => e.code === 'CONTEXT_HIGH'), 'no "memory is getting full" toast').toBeUndefined();
   });
 
-  it('PRESERVATION #14: auto-continuation fires at MAX_TOOL_LOOPS (75) and schedules a fresh turn', async () => {
-    // v2/loop.ts:1282-1320, when the inner tool loop hits MAX_TOOL_LOOPS
-    // (=75) without the model deciding to stop, persist a [System: ...]
-    // message and self-schedule another handleMessage call. This is the
-    // safety valve for long autonomous tasks.
-    //
-    // Simulate a model that ALWAYS wants another tool call. The loop
-    // should run 75 iterations, then trigger auto-continue.
+  it('PRESERVATION #14: a job that does not move for a window of 75 steps parks and queues a fresh turn', async () => {
+    // A model that ALWAYS wants another tool call, and every call finds nothing: the job never
+    // moves, so the window's end (75 steps) is a checkpoint, not a renewal.
     let modelCallCount = 0;
     callModelSpy.mockImplementation(async () => {
       modelCallCount++;
@@ -858,35 +852,20 @@ describe('runV2Turn integration', () => {
     executeToolSpy.mockImplementation(async (_agentId, toolCall) => ({
       toolCallId: toolCall.id,
       name: toolCall.name,
-      content: 'file body, keep going',
-      isError: false,
+      content: 'no such file',
+      isError: true,
     }));
 
-    // Use fake timers so the setTimeout(handleMessage, 1000) in the
-    // auto-continue path fires within the test.
-    vi.useFakeTimers({ shouldAdvanceTime: true });
-    try {
-      await runV2Turn('primary');
-      // Drain the 1s delay before handleMessage('') fires.
-      await vi.advanceTimersByTimeAsync(1500);
-    } finally {
-      vi.useRealTimers();
-    }
+    await runV2Turn('primary');
 
-    // Hit MAX_TOOL_LOOPS exactly (75 model calls inside the loop).
-    expect(modelCallCount).toBe(75);
-
-    // t137 round 2 (R-V333-3, OR-LONG-JOBS): the auto-continue is invisible housekeeping — it no
-    // longer persists a "[System: This turn reached 75 tool calls …]" row for the owner (the
-    // model never read that role='system' row either). The safety valve itself is unchanged:
-    // the continuation below still fires.
+    // The engine opened the work's task in the first window, which is movement; the second has none.
+    expect(modelCallCount).toBe(150);
+    // The park is invisible housekeeping: no system row for the owner.
     const sysMsgs = mockDb.current!
       .prepare("SELECT content FROM messages WHERE agent_id = 'primary' AND role = 'system'")
       .all() as Array<{ content: string }>;
     expect(sysMsgs.filter((r) => /tool calls.*Starting a fresh turn/.test(r.content))).toEqual([]);
-
-    // handleMessage('') was called to continue.
-    expect(handleMessageSpy).toHaveBeenCalledWith('primary', '', { job: true });   // t143 r6: the park's own wake
+    expect(pendingWakeups.has('primary'), 'the continuation is queued').toBe(true);
   });
 
   it('PRESERVATION #7: drainPendingAttachments IS called when persisting assistant message', async () => {
@@ -3226,14 +3205,9 @@ describe('PHASE-6 CUT 3: the turn-time budget auto-continues (compacting only wh
   /**
    * Run `rounds` tool rounds, cross the turn-time budget between the last round and the
    * next loop head, and let `preCallGates` meet it.
-   *
-   * `continuationsAlready` is seeded from INSIDE the first tool call on purpose, and the
-   * reason is a measured one: preflight deletes the counter for any turn that claims work
-   * (`loop.ts:1203` — a turn that picks up fresh work is not a continuation), so a value
-   * set before `runV2Turn` would be wiped before the gate ever read it.
    */
   async function runAcrossTheBudget(
-    opts: { batch?: number; continuationsAlready?: number; extraMs?: number } = {},
+    opts: { batch?: number; extraMs?: number } = {},
   ): Promise<void> {
     const batch = opts.batch ?? 1;
     let call = 0;
@@ -3253,9 +3227,6 @@ describe('PHASE-6 CUT 3: the turn-time budget auto-continues (compacting only wh
     let executed = 0;
     executeToolSpy.mockImplementation(async (_agentId: string, toolCall: ToolCall) => {
       executed++;
-      if (executed === 1 && opts.continuationsAlready !== undefined) {
-        turnContinuationCounts.set('primary', opts.continuationsAlready);
-      }
       // The budget can only be crossed BETWEEN iterations — the gate is read once per
       // loop head — so the jump rides the LAST tool of the round.
       if (executed === batch) clock.jump(TURN_TIME_BUDGET_MS + 60_000 + (opts.extraMs ?? 0));
@@ -3335,7 +3306,7 @@ describe('PHASE-6 CUT 3: the turn-time budget auto-continues (compacting only wh
   // t137: `elapsedMin` used to surface in the owner's park row; that row is retired, and the
   // number's one carrier now is the operator's log line — so the crossing is read there.
   const parkLogElapsed = (): number[] => loggerWarnSpy.mock.calls
-    .filter((c) => c[0] === 'v2 turn time budget reached, auto-continuing')
+    .filter((c) => c[0] === 'v2 checkpoint window passed without the job moving, auto-continuing')
     .map((c) => (c[1] as { elapsedMin: number }).elapsedMin);
 
   it('THE CROSSING TEST: the checkpoint reads LIVE turn state, not a snapshot taken at turn start', async () => {
@@ -3346,7 +3317,6 @@ describe('PHASE-6 CUT 3: the turn-time budget auto-continues (compacting only wh
     enqueueSteerSpy.mockClear();
     checkAndCompactSpy.mockClear();
     pendingWakeups.clear();
-    turnContinuationCounts.clear();
     mockDb.current = setupTestDb();
 
     await runAcrossTheBudget({ extraMs: 19 * 60 * 1000 });
@@ -3364,26 +3334,6 @@ describe('PHASE-6 CUT 3: the turn-time budget auto-continues (compacting only wh
     // The turn still parks — the branch is best-effort about the rebuild, never about
     // the continuation.
     expect(pendingWakeups.has('primary')).toBe(true);
-  });
-
-  it('t137 (OR-LONG-JOBS): past the old MAX_TURN_AUTO_CONTINUATIONS the turn PARKS like any other — no total-time cap', async () => {
-    // This clause used to pin the cap trip (no compaction, no wakeup, a "running for about 60
-    // minutes … Pausing here" row and a PM hand-off). The cap is deleted, so the fourth
-    // crossing is asserted to be an ordinary park: the token math is asked, the continuation is
-    // queued, the counter climbs, and nobody is told.
-    await runAcrossTheBudget({ continuationsAlready: 3 });
-
-    expect(checkAndCompactSpy).toHaveBeenCalledTimes(1);
-    expect(recaps()).toEqual([]);
-    expect(pendingWakeups.has('primary')).toBe(true);
-    expect(turnContinuationCounts.get('primary')).toBe(4);
-    // No park or trip row. (A seeded fourth continuation also crosses the untracked-work floor,
-    // whose own "[System] The engine opened tracker task" row is that mechanism's, not this one's.)
-    const sys = mockDb.current!
-      .prepare("SELECT content FROM messages WHERE agent_id = 'primary' AND role = 'system'")
-      .all() as Array<{ content: string }>;
-    expect(sys.filter((r) => /This turn ran for|Pausing here|running for about|unattended budget/.test(r.content))).toEqual([]);
-    expect(sys.every((r) => r.content.startsWith('[System] The engine opened tracker task'))).toBe(true);
   });
 
   // ══════════════════════════════════════════════════════════════════════════════
@@ -3483,7 +3433,6 @@ describe('PHASE-6 CUT 3: the turn-time budget auto-continues (compacting only wh
     expect(pendingWakeups.has('primary')).toBe(true);
 
     pendingWakeups.clear();
-    turnContinuationCounts.clear();
     mockDb.current = setupTestDb();
     await runAcrossTheBudget();
     expect(sysOf()).toEqual([]);
@@ -3518,8 +3467,7 @@ describe('PHASE-6 CUT 3: the turn-time budget auto-continues (compacting only wh
 // takes six identical failures plus three refusals; that arm is driven at the unit level
 // in `identical-call-brake.test.ts` (the rung's first-ever clauses). What THIS clause has
 // to prove is the DRIVER's half — that an exhausted grace ends the turn — so the latch is
-// seeded from inside the first tool call, which is this file's own precedent (the
-// turn-budget block seeds `turnContinuationCounts` the same way and for the same reason).
+// seeded from inside the first tool call.
 // ════════════════════════════════════════════════════════════════════════════════
 describe('PHASE-6 T13: the spin-brake grace ends the turn instead of announcing that it did', () => {
   it('the turn CONCLUDES when the grace is exhausted, though the model never stops asking for tools', async () => {
@@ -3547,7 +3495,7 @@ describe('PHASE-6 T13: the spin-brake grace ends the turn instead of announcing 
     // Round 1 latches (the grace is read at the TOP of a round, so it first sees the
     // latch on round 2). The grace is 2: rounds 2, 3 and 4 take it 2 -> 1 -> 0 -> -1,
     // and round 4 is the one that concludes. The turn ends there rather than running
-    // to MAX_TOOL_LOOPS (75), which is what it did before.
+    // to the end of a checkpoint window, which is what it did before.
     expect(call).toBe(4);
   });
 
@@ -4194,7 +4142,7 @@ describe('PHASE-6 CUT 8: the postCallClassify span kept the RC-13.2 save-claim f
 
   it('ONE SHOT: the model repeats the claim after the steer and the engine does NOT steer again', async () => {
     // The `steerFired` guard is what stops an unrepentant model spinning the loop on a
-    // floor that re-enters. Without it this turn would ping-pong until MAX_TOOL_LOOPS.
+    // floor that re-enters. Without it this turn would ping-pong until a checkpoint.
     await driveClaimTurn({
       saves: 1,
       accept: () => false,

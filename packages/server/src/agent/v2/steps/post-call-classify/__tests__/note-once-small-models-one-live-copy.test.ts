@@ -87,7 +87,6 @@ function seamCtx(turnCtx: unknown): PostCallClassifyContext {
       toolCalls: [{ id: 'c1', name: 'work_update', input: {} }] as ToolCall[],
       inputTokens: 10, outputTokens: 5, stopReason: 'tool_use',
     },
-    maxToolLoops: 20,
     reArmIfStrandedNoAnswer: vi.fn(), noteTerminalAnswer: vi.fn(),
     deliverEngineUserAck: vi.fn(async () => undefined),
     persistAndBroadcastSystemRow: vi.fn(),
@@ -104,7 +103,7 @@ const scratch = (): PostCallScratch => ({
 async function driveSeamThenRecovery() {
   const turnCtx = openTurnContext(AGENT);
   turnCtx.turnNumber = TURN;
-  const state0 = initState({ agentId: AGENT, maxToolLoops: 20 } as Parameters<typeof initState>[0]);
+  const state0 = initState({ agentId: AGENT } as Parameters<typeof initState>[0]);
   const out = await runTerminalText(state0, seamCtx(turnCtx), scratch());
   const recovered = recoverDeferredReply(out.state, {
     agentId: AGENT, turnNumber: TURN, turnCtx,
@@ -147,7 +146,7 @@ describe('the ordinary waiting-human path: seam writes the note, recovery writes
   it('when recovery does NOT fire (a real reply landed) the note stays live as the note it is', async () => {
     const turnCtx = openTurnContext(AGENT);
     turnCtx.turnNumber = TURN;
-    const state0 = initState({ agentId: AGENT, maxToolLoops: 20 } as Parameters<typeof initState>[0]);
+    const state0 = initState({ agentId: AGENT } as Parameters<typeof initState>[0]);
     const out = await runTerminalText(state0, seamCtx(turnCtx), scratch());
     const spoke = { ...out.state, lastAssistantTextForIM: 'Done.' };
     const same = recoverDeferredReply(spoke, {
@@ -162,7 +161,7 @@ describe('the ordinary waiting-human path: seam writes the note, recovery writes
   it('a second, DIFFERENT note on the same turn is not swept up with the one recovery promotes', async () => {
     const turnCtx = openTurnContext(AGENT);
     turnCtx.turnNumber = TURN;
-    let state = initState({ agentId: AGENT, maxToolLoops: 20 } as Parameters<typeof initState>[0]);
+    let state = initState({ agentId: AGENT } as Parameters<typeof initState>[0]);
     // an earlier narration line of the same turn, demoted and not the deferred text
     const early = seamCtx(turnCtx);
     (early.result as { content: string }).content = 'Starting on the first batch now.';

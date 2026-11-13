@@ -134,7 +134,6 @@ function ctxFor(over: Partial<PostCallClassifyContext> = {}): PostCallClassifyCo
     turnStartedAt: new Date().toISOString(),
     messageId: 'msg-1',
     result: modelResult(),
-    maxToolLoops: 75,
     reArmIfStrandedNoAnswer: reArmIfStrandedNoAnswerSpy,
     noteTerminalAnswer: noteTerminalAnswerSpy,
     deliverEngineUserAck: deliverEngineUserAckSpy,

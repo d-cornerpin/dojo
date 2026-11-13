@@ -138,7 +138,7 @@ function ctxFor(turnCtx: Bag, over: Partial<PostCallClassifyContext> = {}): Post
     settledContextWakeTurn: false, waitingConvs: [], inboundChannel: null,
     latestUserSource: null, lastUserMessageContent: 'plan me a Saturday in Leavenworth with the dog',
     configuredModelId: 'deepseek-v4-flash', turnStartedAt: new Date().toISOString(), messageId: 'msg-65934',
-    result: modelResult(), maxToolLoops: 20,
+    result: modelResult(),
     reArmIfStrandedNoAnswer: vi.fn(), noteTerminalAnswer: noteTerminalAnswerSpy,
     deliverEngineUserAck: deliverAckSpy,
     persistAndBroadcastSystemRow: vi.fn(),
@@ -168,7 +168,7 @@ beforeEach(() => {
   noteTerminalAnswerSpy.mockClear(); injectRegistryMessageSpy.mockClear();
   stillCompileOwedSpy.mockClear();
   stillCompileOwedSpy.mockImplementation((ids: readonly string[]) => [...ids]);
-  state = initState({ agentId: AGENT, maxToolLoops: 20 } as Parameters<typeof initState>[0]);
+  state = initState({ agentId: AGENT } as Parameters<typeof initState>[0]);
 });
 
 describe('the S5 shape: an owed compile composed with a tool call reaches the owner NOW', () => {

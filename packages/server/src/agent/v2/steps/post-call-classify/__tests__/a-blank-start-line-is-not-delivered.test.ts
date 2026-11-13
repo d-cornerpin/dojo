@@ -46,7 +46,7 @@ function ctx(): PostCallClassifyContext {
     result: { content: 'Audit is at page 92 of the chain and still walking it.',
       toolCalls: [{ id: 'tc1', name: 'file_read', input: { path: '/x/page-93.txt' } }] as ToolCall[],
       inputTokens: 10, outputTokens: 5, stopReason: 'tool_use' } as unknown as PostCallClassifyContext['result'],
-    maxToolLoops: 20, reArmIfStrandedNoAnswer: vi.fn(), noteTerminalAnswer: vi.fn(),
+    reArmIfStrandedNoAnswer: vi.fn(), noteTerminalAnswer: vi.fn(),
     deliverEngineUserAck: vi.fn(async () => undefined), persistAndBroadcastSystemRow: vi.fn(), startAckRepliedNow: () => false,
   } as unknown as PostCallClassifyContext;
 }
@@ -54,7 +54,7 @@ const scratch = (): PostCallScratch => ({ persistedContent: null, interAgentTurn
   deliveredAsStartLine: false, hasXmlFallbackTools: false, effectiveModelIdForPersist: 'floor' });
 
 let state: AgentTurnState;
-beforeEach(() => { broadcastSpy.mockClear(); insertMessageIfAbsentSpy.mockClear(); state = initState({ maxToolLoops: 20 } as Parameters<typeof initState>[0]); });
+beforeEach(() => { broadcastSpy.mockClear(); insertMessageIfAbsentSpy.mockClear(); state = initState({} as Parameters<typeof initState>[0]); });
 
 describe('t183: a blank text is never delivered as the start line', () => {
   const armed = { ...turnCtx, startAckSteerArmedThisTurn: true, startAckSteerRequested: true, engineStartAckDeliveredThisTurn: false };

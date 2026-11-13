@@ -101,7 +101,7 @@ const recordWarns = (): Array<{ msg: string; data: Record<string, unknown> }> =>
 
 /** A turn's queue, built the way the loop builds one. */
 function queueWith(build: (q: SteerQueue) => SteerQueue): AgentTurnState {
-  const base = initState({ agentId: AGENT, maxToolLoops: 20, turnNumber: TURN } as Parameters<typeof initState>[0]);
+  const base = initState({ agentId: AGENT, turnNumber: TURN } as Parameters<typeof initState>[0]);
   return advance(base, { steerQueue: build(emptySteerQueue()) });
 }
 

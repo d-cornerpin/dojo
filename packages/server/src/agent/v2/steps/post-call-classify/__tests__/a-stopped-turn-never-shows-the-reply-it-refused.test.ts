@@ -112,7 +112,7 @@ function ctxFor(over: Partial<PostCallClassifyContext> = {}): PostCallClassifyCo
     settledContextWakeTurn: false, waitingConvs: [], inboundChannel: 'dashboard',
     latestUserSource: null, lastUserMessageContent: 'compare the options for me',
     configuredModelId: 'floor', turnStartedAt: new Date().toISOString(), messageId: ROW,
-    result: modelResult(), maxToolLoops: 20,
+    result: modelResult(),
     reArmIfStrandedNoAnswer: vi.fn(), noteTerminalAnswer,
     deliverEngineUserAck: vi.fn(),
     persistAndBroadcastSystemRow: vi.fn(),
@@ -161,7 +161,7 @@ beforeEach(() => {
   db.prepare(
     `INSERT INTO conversations (id, agent_id, channel, counterparty_id) VALUES (?, ?, 'dashboard', 'owner')`,
   ).run(CONV, AGENT);
-  state = initState({ agentId: AGENT, maxToolLoops: 20 } as Parameters<typeof initState>[0]);
+  state = initState({ agentId: AGENT } as Parameters<typeof initState>[0]);
 });
 
 // ── §1 — text that arrives after the press never reaches the person ───────────────────────

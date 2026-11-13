@@ -60,7 +60,6 @@ export interface PostCallClassifyContext {
   readonly result: PostCallModelResult;
 
   /** Read outside this step too, so the driver hands it across rather than it being moved or copied. */
-  readonly maxToolLoops: number;
 
   /** Driver-owned closures, passed rather than imported so a step never imports the driver. */
   readonly reArmIfStrandedNoAnswer: () => void;

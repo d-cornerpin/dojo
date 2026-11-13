@@ -30,7 +30,7 @@ import { FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 /** t143 round 2: a park happens INSIDE a turn, and touches only the work that turn's trigger names.
  *  Here the trigger is the owner's ask `msg-job`, which opened the job's task (or project). */
-function park(reason: 'turn-budget' | 'tool-loop', turnNumber = 5, ask: string | null = 'msg-job'): number {
+function park(reason: 'turn-budget', turnNumber = 5, ask: string | null = 'msg-job'): number {
   const tc = openTurnContext(AGENT);
   tc.turnNumber = turnNumber;
   tc.root = ask ? { kind: 'ask', id: ask, sourceMessageId: ask } : null;

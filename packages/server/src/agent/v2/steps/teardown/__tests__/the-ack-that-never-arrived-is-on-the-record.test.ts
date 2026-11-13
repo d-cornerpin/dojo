@@ -108,7 +108,7 @@ beforeEach(() => {
                         source_message_id, conv_key, answered, effectful_calls, started_at)
      VALUES (?, ?, 'user', 'conv', ?, 'message', 'm-1', 'm-1', 'imessage:+1555', 0, 0, datetime('now'))`,
   ).run(AGENT, TURN, CONV);
-  state = initState({ agentId: AGENT, maxToolLoops: 20, turnNumber: TURN } as Parameters<typeof initState>[0]);
+  state = initState({ agentId: AGENT, turnNumber: TURN } as Parameters<typeof initState>[0]);
 });
 
 describe('a turn that owed an acknowledgment and never gave one says so, at the boundary', () => {

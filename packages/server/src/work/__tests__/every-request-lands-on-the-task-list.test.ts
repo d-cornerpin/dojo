@@ -205,7 +205,7 @@ import { buildWorkBoardLane } from '../../memory/work-board-lane.js';
 import { composeTurnDeliverySummary } from '../../tracker/task-stamps.js';
 import { renderMessageTimeStamp } from '../../memory/message-stamp.js';
 import { setHold, holdOf } from '../done/hold.js';
-import { stoppedAgents, pendingWakeups, turnContinuationCounts } from '../../agent/shared-state.js';
+import { stoppedAgents, pendingWakeups } from '../../agent/shared-state.js';
 import { continuationContext } from '../../agent/turn-state.js';
 import { deliverA2AMessage } from '../../agent/a2a-transport.js';
 
@@ -310,7 +310,6 @@ beforeEach(() => {
   handleMessageSpy.mockImplementation(async () => undefined);
   stoppedAgents.clear();
   pendingWakeups.clear();
-  turnContinuationCounts.clear();
 });
 
 afterEach(() => {
@@ -537,7 +536,7 @@ describe('t139 — every multi-step request lands on the task list with its word
     const parked = mockDb.current!.prepare(
       'SELECT exit_reason FROM turns WHERE agent_id = ? AND turn_number = 1',
     ).get(PRIMARY) as { exit_reason: string };
-    expect(parked.exit_reason).toBe('budget');           // the engine continued the work
+    expect(parked.exit_reason).toBe('iteration_cap');    // the engine continued the work
     expect(askStateOf('msg-parked')).not.toBe('done');   // "On it." was not the answer
 
     script([{ content: 'Here is the venue comparison: Dock 700, Ferry 640, Elm Hall 850 — Ferry is cheapest.' }]);
@@ -568,7 +567,7 @@ describe('t139 — every multi-step request lands on the task list with its word
       });
       await runV2Turn(PRIMARY);
     } finally { nowSpy.mockRestore(); }
-    expect((mockDb.current!.prepare('SELECT exit_reason FROM turns WHERE agent_id = ? AND turn_number = 1').get(PRIMARY) as { exit_reason: string }).exit_reason).toBe('budget');
+    expect((mockDb.current!.prepare('SELECT exit_reason FROM turns WHERE agent_id = ? AND turn_number = 1').get(PRIMARY) as { exit_reason: string }).exit_reason).toBe('iteration_cap');
     const visible = (text: string): number => (mockDb.current!.prepare(
       "SELECT COUNT(*) AS n FROM messages WHERE agent_id = ? AND role = 'assistant' AND display_kind = 'agent-text' AND content = ?",
     ).get(PRIMARY, text) as { n: number }).n;

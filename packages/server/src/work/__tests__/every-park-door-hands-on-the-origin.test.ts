@@ -15,7 +15,7 @@
 // first and from the task the agent is most recently working second, and carried on the job record with
 // the ids and asks (it never shields those tasks from the PM or the close-out gate: t143 round 2).
 //
-// One clause per park door: tool-loop cap, turn budget, both recovery compactions. Every door is driven
+// One clause per park door: the checkpoint window (by steps and by time), both recovery compactions. Every door is driven
 // through the engine's real turn entry. (t194: the context gate's two arms, and so its two park doors,
 // are DELETED — a full view is condensed, never surrendered — and their three clauses with them.)
 // ════════════════════════════════════════════════════════════════════════════════════════
@@ -61,7 +61,8 @@ vi.mock('../../agent/tools/index.js', async () => {
       world.clockMs += world.clockPerTool;   // the budget door: a tool call that takes the turn past its 15 minutes
       return classifyToolResult({
         toolCallId: tc.id, name: tc.name,
-        content: `page ${String(tc.arguments.path ?? tc.id)}: ${'ledger line '.repeat(world.pad)}`, isError: false,
+        // Each page comes back unreadable: the job does not move, so a window's end parks it.
+        content: `page ${String(tc.arguments.path ?? tc.id)}: ${'ledger line '.repeat(world.pad)}`, isError: true,
       } as never);
     },
     getFilteredTools: () => [],
@@ -179,7 +180,7 @@ vi.mock('../../logger.js', () => ({
 import { runV2Turn } from '../../agent/v2/loop.js';
 import { runMigrations } from '../../db/migrations.js';
 import { insertMessage, insertEngineEvent } from '../../memory/message-store.js';
-import { stoppedAgents, pendingWakeups, turnContinuationCounts, doomedPrefillCompactionSpent } from '../../agent/shared-state.js';
+import { stoppedAgents, pendingWakeups, doomedPrefillCompactionSpent } from '../../agent/shared-state.js';
 import { continuationContext } from '../../agent/turn-state.js';
 import { deliverA2AMessage } from '../../agent/a2a-transport.js';
 import { recordA2AReply } from '../../agent/a2a-replies.js';
@@ -237,7 +238,6 @@ beforeEach(() => {
   loggerErrorSpy.mockReset();
   stoppedAgents.clear();
   pendingWakeups.clear();
-  turnContinuationCounts.clear();
   continuationContext.clear();
   doomedPrefillCompactionSpent.clear();
   __resetBrakesForTests();
@@ -259,7 +259,7 @@ afterEach(() => {
 // ── THE SCRIPTED PROVIDER ────────────────────────────────────────────────────────────────
 type Step = { content?: string; toolCalls?: Array<{ id: string; name: string; arguments: Record<string, unknown> }> };
 let callNo = 0;
-/** `first` (optional), then `reads` file reads (80 outlasts the 75-call cap), then a closing line. */
+/** `first` (optional), then `reads` file reads (80 outlasts a 75-step window), then a closing line. */
 function script(opts: { reads: number; first?: Step }): void {
   let i = 0;
   callModelSpy.mockImplementation(async () => {
@@ -320,7 +320,7 @@ function anUnrelatedNotice(id: string): void {
 
 /** The park's continuation, started the way the runtime starts it: from the wake the park registered. */
 async function continuationTurn(): Promise<{ turn: number; firstCall: number }> {
-  expect(beginJobRun(WORKER, 'drain') || beginJobRun(WORKER, 'timer'), 'the park registered its own wake, and the run carries the job').toBe(true);
+  expect(beginJobRun(WORKER, 'drain') || beginJobRun(WORKER, 'drain'), 'the park registered its own wake, and the run carries the job').toBe(true);
   const firstCall = callModelSpy.mock.calls.length;
   script({ reads: 0 });
   try { await runV2Turn(WORKER); } finally { endJobRun(WORKER); }
@@ -364,20 +364,20 @@ describe('t173b: the run 11 shape — the parking turn names no task, the task w
     const questionId = (mockDb.current!.prepare("SELECT id FROM messages WHERE agent_id = ? AND a2a_intent = 'QUESTION'").get(WORKER) as { id: string }).id;
     recordA2AReply({ assignMessageId: questionId, agentId: WORKER, threadId: OTHER_THREAD, replyIntent: 'ABANDONED' });
     world.clockPerTool = 0;
-    await expectTheContinuationHoldsTheOrigin(parked, { reason: 'turn-budget-continuation', how: 'drain' }, 'budget');
+    await expectTheContinuationHoldsTheOrigin(parked, { reason: 'turn-budget-continuation', how: 'drain' }, 'iteration_cap');
   });
 });
 
 describe('t173b: EVERY park door hands the job\'s origin to its continuation', () => {
-  it('door 1, the 75-call tool-loop cap (a timer wake)', async () => {
+  it('door 1, a still window of 75 steps', async () => {
     await pmJob();
     anUnrelatedNotice('notice-loop');
     script({ reads: 80 });
     await runV2Turn(WORKER);
-    await expectTheContinuationHoldsTheOrigin(lastTurnNumber(), { reason: 'tool-loop', how: 'timer' }, 'iteration_cap');
+    await expectTheContinuationHoldsTheOrigin(lastTurnNumber(), { reason: 'turn-budget-continuation', how: 'drain' }, 'iteration_cap');
   });
 
-  it('door 2, the 15-minute turn budget (the shared wake set)', async () => {
+  it('door 2, a still window of 15 minutes', async () => {
     await pmJob();
     anUnrelatedNotice('notice-budget');
     const clock = Date.now.bind(Date);
@@ -385,7 +385,7 @@ describe('t173b: EVERY park door hands the job\'s origin to its continuation', (
     world.clockPerTool = BUDGET_MS + 60_000;
     script({ reads: 5 });
     try { await runV2Turn(WORKER); } finally { dateSpy.mockRestore(); world.clockMs = 0; world.clockPerTool = 0; }   // the next turn must not look fifteen minutes old
-    await expectTheContinuationHoldsTheOrigin(lastTurnNumber(), { reason: 'turn-budget-continuation', how: 'drain' }, 'budget');
+    await expectTheContinuationHoldsTheOrigin(lastTurnNumber(), { reason: 'turn-budget-continuation', how: 'drain' }, 'iteration_cap');
   });
 
   it('door 5, error recovery\'s forced compaction after a context overflow', async () => {
@@ -421,9 +421,9 @@ describe('t173b amendment: the origin a park borrows is never a guess', () => {
     await runV2Turn(WORKER);
     const parked = lastTurnNumber();
     expect(turnRow(parked).exit_reason).toBe('iteration_cap');
-    expect(parks).toEqual([{ reason: 'tool-loop', how: 'timer' }]);
+    expect(parks).toEqual([{ reason: 'turn-budget-continuation', how: 'drain' }]);
 
-    expect(beginJobRun(WORKER, 'timer'), 'the park carried the job').toBe(true);
+    expect(beginJobRun(WORKER, 'drain'), 'the park carried the job').toBe(true);
     expect(jobOrigin(WORKER), 'the origin is the owner\'s ask').toEqual({ kind: 'ask', messageId: 'owner-ask' });
     const firstCall = callModelSpy.mock.calls.length;
     script({ reads: 0 });
@@ -441,10 +441,10 @@ describe('t173b amendment: the origin a park borrows is never a guess', () => {
     script({ reads: 80 });
     await runV2Turn(WORKER);
     expect(turnRow(lastTurnNumber()).exit_reason).toBe('iteration_cap');
-    expect(parks).toEqual([{ reason: 'tool-loop', how: 'timer' }]);
+    expect(parks).toEqual([{ reason: 'turn-budget-continuation', how: 'drain' }]);
 
     // Nothing was named and nothing was guessed, so no job was registered: the existing behaviour stands.
-    expect(beginJobRun(WORKER, 'timer'), 'no job: nothing to continue but a plain wake').toBe(false);
+    expect(beginJobRun(WORKER, 'drain'), 'no job: nothing to continue but a plain wake').toBe(false);
     expect(jobOrigin(WORKER)).toBeNull();
     script({ reads: 0 });
     await runV2Turn(WORKER);
@@ -464,7 +464,7 @@ describe('t173b amendment: the origin a park borrows is never a guess', () => {
     anUnrelatedNotice('notice-same');
     script({ reads: 80 });
     await runV2Turn(WORKER);
-    expect(beginJobRun(WORKER, 'timer')).toBe(true);
+    expect(beginJobRun(WORKER, 'drain')).toBe(true);
     expect(jobOrigin(WORKER)).toMatchObject({ kind: 'a2a', threadId: THREAD });
     endJobRun(WORKER);
   });

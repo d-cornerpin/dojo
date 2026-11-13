@@ -52,7 +52,7 @@ function ctxFor(): ExecuteContext {
     startAckArmed: false, startAckArmedAtMs: 0, fireStartAckIfOwed: async () => undefined,
     result: { toolCalls: [] } as unknown as ExecuteContext['result'],
     messageId: 'resp-9', persistedContent: null, interAgentTurn: false, hasXmlFallbackTools: false,
-    effectiveModelIdForPersist: 'm', staleTaskWindowMinutes: 30, maxToolLoops: 40, engineBlockEscapeHatch: '',
+    effectiveModelIdForPersist: 'm', staleTaskWindowMinutes: 30, engineBlockEscapeHatch: '',
     engineStartAckAfterMs: 30_000,
   } as unknown as ExecuteContext;
 }

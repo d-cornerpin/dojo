@@ -61,7 +61,6 @@ export interface TurnContext {
   // execute latches the flag, callLLM reads it and writes the grace: one mechanism across two spans.
   toolPhaseEndedBySpinBrake: boolean;
   spinBrakeGraceCalls: number;
-  toolLoopCapReached: boolean;
   mediaWordsStepOwed: boolean;
   jobParked: boolean;
 
@@ -127,7 +126,6 @@ export function openTurnContext(agentId: string): TurnContext {
     phoneStreamFlushedAny: false,
     phoneStreamCallSid: null,
     toolPhaseEndedBySpinBrake: false,
-    toolLoopCapReached: false,
     mediaWordsStepOwed: false,
     jobParked: false,
     spinBrakeGraceCalls: 2,

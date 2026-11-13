@@ -51,7 +51,7 @@ const ARRAY_HEAD_ITEMS = 5;
  *  collapse, none on the live surface pass such an id. Long values and array tails are
  *  CAPPED with a digest of the rest, never dropped, so tail differences stay distinct.
  *  Varied-argument spinning is not caught here by design: the thrash gate's drift arms
- *  (steps/pre-call-gates/thrash-gate.ts) and MAX_TOOL_LOOPS cover it. */
+ *  (steps/pre-call-gates/thrash-gate.ts) and the checkpoint window cover it. */
 export function canonicalToolSignature(
   name: string,
   args: Record<string, unknown> | undefined,

@@ -11,6 +11,7 @@ import { steerFired } from '../../steer-queue.js';
 import { replyClaim } from '../../reply-claims.js';
 import { continueLoop, proceed, type StepOutcome } from '../step-outcome.js';
 import type { PostCallClassifyContext, PostCallScratch } from './index.js';
+import { turnWindow } from './job-turn-end.js';
 import { userWords } from '../../turn-address.js';
 
 const logger = createLogger('v2-loop');
@@ -35,8 +36,7 @@ export function runPromiseFloor(
   ctx: PostCallClassifyContext,
   sc: PostCallScratch,
 ): StepOutcome {
-  const { agentId, chosenConvKey, counterparty, db, isEngineTurn, maxToolLoops, turnNumber } = ctx;
-  const MAX_TOOL_LOOPS = maxToolLoops;
+  const { agentId, chosenConvKey, counterparty, db, isEngineTurn, turnNumber } = ctx;
   const { persistedContent } = sc;
   // Three classes share the guards and one steer per turn: a promise to start with no work done, a
   // standing promise with nothing durable written, and a claim about live state with no board read.
@@ -49,7 +49,7 @@ export function runPromiseFloor(
     counterparty.kind === 'user' &&
     !isEngineTurn &&
     persistedContent && persistedContent.trim().length > 0 &&
-    state.loopCount < MAX_TOOL_LOOPS &&
+    turnWindow(state, agentId, 1) !== 'checkpoint' &&
     chosenConvKey &&
     chosenConvKey !== 'engine' &&
     (forwardPromise || standingPromise || standingStateClaim !== null)

@@ -1,11 +1,13 @@
-// The turn-time budget: past 15 minutes a turn checkpoints (token-math compaction check, tracker note,
-// park for a fresh continuation), as often as the job needs; elapsed time alone never means trouble.
+// The one place a turn parks itself: at the end of a checkpoint window a moving job renews it, a still one
+// checkpoints (token-math compaction check, tracker note, park for a fresh continuation).
 
 import { createLogger } from '../../../../logger.js';
 import { agentTurnWindow } from '../../../../router/router-window.js';
 import { checkAndCompact } from '../../../../memory/compaction.js';
-import { turnContinuationCounts, isStopFenced } from '../../../shared-state.js';
-import { type AgentTurnState } from '../../state.js';
+import { isStopFenced } from '../../../shared-state.js';
+import { getDb } from '../../../../db/connection.js';
+import { advance, type AgentTurnState } from '../../state.js';
+import { jobProgressMark, turnWindow } from '../post-call-classify/job-turn-end.js';
 import { proceed, requestExit, type StepOutcome } from '../step-outcome.js';
 import { latchEngineCut } from '../../engine-exit.js';
 import { noteEngineCheckpoint } from '../../../../work/engine-checkpoint-note.js';
@@ -13,8 +15,6 @@ import { parkJob } from '../../../../work/job-continuation.js';
 import type { PreCallGatesContext, PreCallGatesExitReason } from './index.js';
 
 const logger = createLogger('v2-loop');
-
-const TURN_TIME_BUDGET_MS = 15 * 60 * 1000;    // 15 min per turn
 
 export async function runTurnTimeBudget(
   state: AgentTurnState,
@@ -24,16 +24,18 @@ export async function runTurnTimeBudget(
     agentId, turnNumber, configuredModelId, stashContinuationIfHuman,
   } = ctx;
 
-  // The park counter only numbers parks for the operator's log; nothing decides on it.
-  if (Date.now() - state.turnStartMs > TURN_TIME_BUDGET_MS) {
+  const window = turnWindow(state, agentId);
+  if (window === 'renew') {
+    logger.info('v2 checkpoint window renewed: the job moved', { agentId, turnNumber, loopCount: state.loopCount }, agentId);
+    return proceed(advance(state, { checkpointWindow: { atLoop: state.loopCount - 1, atMs: Date.now(), mark: jobProgressMark(state, agentId, getDb()) } }));
+  }
+  if (window === 'checkpoint') {
     const elapsedMin = Math.round((Date.now() - state.turnStartMs) / 60000);
-    const continuationCount = (turnContinuationCounts.get(agentId) ?? 0) + 1;
     const effectiveModel =
       state.modelId === '__auto__' ? configuredModelId : state.modelId;
 
-    turnContinuationCounts.set(agentId, continuationCount);
-    logger.warn('v2 turn time budget reached, auto-continuing', {
-      elapsedMin, continuationCount, agentId,
+    logger.warn('v2 checkpoint window passed without the job moving, auto-continuing', {
+      elapsedMin, loopCount: state.loopCount, agentId,
     }, agentId);
 
     // No `force`: the token math decides. Elapsed time alone must never rebuild an agent's history.
@@ -56,9 +58,8 @@ export async function runTurnTimeBudget(
     // must not park the job or queue a continuation.
     if (isStopFenced(agentId)) {
       logger.info('v2 turn-budget checkpoint: the user stopped this agent during the compaction check; not parking and not queuing a continuation', {
-        agentId, turnNumber, continuationCount,
+        agentId, turnNumber,
       }, agentId);
-      turnContinuationCounts.delete(agentId);
       // `stop` is the cause a person took; `latchEngineCut` is first-writer-wins, so an earlier latch stands.
       return requestExit(latchEngineCut(state, 'stop'), 'stopped-by-user' satisfies PreCallGatesExitReason);
     }
@@ -73,8 +74,8 @@ export async function runTurnTimeBudget(
     }
     stashContinuationIfHuman(); // carry the human conversation into the continuation
     parkJob(agentId, 'turn-budget-continuation');   // the job travels on this wake
-    // An engine cut (`budget`), not `no_reply_intended`: a long job must not spend the re-serve ladder.
-    return requestExit(latchEngineCut(state, 'budget'), 'turn-time-budget' satisfies PreCallGatesExitReason);
+    // An engine cut, not `no_reply_intended`: a long job must not spend the re-serve ladder.
+    return requestExit(latchEngineCut(state, 'iteration_cap'), 'turn-time-budget' satisfies PreCallGatesExitReason);
   }
   return proceed(state);
 }

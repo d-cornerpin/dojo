@@ -114,7 +114,6 @@ function ctxFor(turnCtx: TurnBag, over: Partial<PostCallClassifyContext> = {}): 
     turnStartedAt: new Date().toISOString(),
     messageId: 'msg-1',
     result: modelResult(),
-    maxToolLoops: 20,
     reArmIfStrandedNoAnswer: vi.fn(),
     noteTerminalAnswer: vi.fn(),
     deliverEngineUserAck: vi.fn(async () => undefined),
@@ -145,7 +144,7 @@ let state: AgentTurnState;
 beforeEach(() => {
   broadcastSpy.mockClear();
   insertMessageIfAbsentSpy.mockClear();
-  state = initState({ maxToolLoops: 20 } as Parameters<typeof initState>[0]);
+  state = initState({} as Parameters<typeof initState>[0]);
 });
 
 describe('D1 — a scheduler turn serving a user-deliverable run remembers the words the model wrote', () => {

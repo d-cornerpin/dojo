@@ -3,7 +3,7 @@
 //
 // THE MEASURED SHAPE (run 10, S1, the dev box's own rows and log, 2026-10-15): a worker was assigned
 // a job by another agent over an A2A thread and replied once. A later engine notice about its task
-// woke it; that turn read 75 files and hit the tool-loop cap, so `parkJob` queued the job's
+// woke it; that turn tried 75 files that would not read and reached the end of a still window, so `parkJob` queued the job's
 // continuation. The continuations (three, one after each cap/budget park) recorded NO kind, subject
 // `none` and no root. Their tail was only the previous turn's tool rows, the integrity pass emptied
 // it, and the zero-messages guard fired three times in the first calls
@@ -13,7 +13,7 @@
 // subject is a2a or owner. A subject-less continuation had neither.
 //
 // EVERY clause below goes through the real doors: the real A2A delivery (which opens the job's task),
-// the engine's real turn entry (`runV2Turn`), the real tool-loop cap and `parkJob`, the real
+// the engine's real turn entry (`runV2Turn`), the real checkpoint window and `parkJob`, the real
 // assembler. Only the provider is scripted, and the continuation is started the way the runtime
 // starts it (`beginJobRun` for the park's own wake, then the turn).
 // ════════════════════════════════════════════════════════════════════════════════════════
@@ -58,7 +58,8 @@ vi.mock('../../agent/tools/index.js', async () => {
       if (tc.name.startsWith('work_') || tc.name === 'send_to_agent') return actual.executeTool(agentId, tc as never);
       return classifyToolResult({
         toolCallId: tc.id, name: tc.name,
-        content: `page ${String(tc.arguments.path ?? tc.id)}: ${'ledger line '.repeat(world.pad)}`, isError: false,
+        // Each page comes back unreadable: the job does not move, so a window's end parks it.
+        content: `page ${String(tc.arguments.path ?? tc.id)}: ${'ledger line '.repeat(world.pad)}`, isError: true,
       } as never);
     },
     getFilteredTools: () => [],
@@ -170,7 +171,7 @@ vi.mock('../../logger.js', () => ({
 import { runV2Turn } from '../../agent/v2/loop.js';
 import { runMigrations } from '../../db/migrations.js';
 import { insertMessage, insertEngineEvent } from '../../memory/message-store.js';
-import { stoppedAgents, pendingWakeups, turnContinuationCounts } from '../../agent/shared-state.js';
+import { stoppedAgents, pendingWakeups } from '../../agent/shared-state.js';
 import { continuationContext } from '../../agent/turn-state.js';
 import { deliverA2AMessage } from '../../agent/a2a-transport.js';
 import { recordA2AReply } from '../../agent/a2a-replies.js';
@@ -220,7 +221,6 @@ beforeEach(() => {
   loggerErrorSpy.mockReset();
   stoppedAgents.clear();
   pendingWakeups.clear();
-  turnContinuationCounts.clear();
   continuationContext.clear();
 });
 
@@ -236,7 +236,7 @@ afterEach(() => {
 // ── THE SCRIPTED PROVIDER ────────────────────────────────────────────────────────────────
 type Step = { content?: string; toolCalls?: Array<{ id: string; name: string; arguments: Record<string, unknown> }> };
 let callNo = 0;
-/** `reads` file reads (the 75-call cap parks a turn that makes them all), then a closing line. */
+/** `reads` file reads (a still window of 75 steps parks a turn that makes them all), then a closing line. */
 function script(opts: { reads: number; first?: Step }): void {
   let i = 0;
   callModelSpy.mockImplementation(async () => {
@@ -295,7 +295,7 @@ async function noticeTurn(taskId: string, id: string, reads: number): Promise<vo
 
 /** The park's continuation, started the way the runtime starts it: from the park's own wake. */
 async function continuationTurn(reads: number): Promise<{ turn: number; firstCall: number }> {
-  expect(beginJobRun(WORKER, 'timer'), 'the park\'s own wake is owed, and the run carries the job').toBe(true);
+  expect(beginJobRun(WORKER, 'drain'), 'the park\'s own wake is owed, and the run carries the job').toBe(true);
   const firstCall = callModelSpy.mock.calls.length;
   script({ reads });
   try { await runV2Turn(WORKER); } finally { endJobRun(WORKER); }

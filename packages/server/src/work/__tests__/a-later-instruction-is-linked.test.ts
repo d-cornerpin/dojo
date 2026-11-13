@@ -194,7 +194,7 @@ import { insertMessage, insertEngineEvent } from '../../memory/message-store.js'
 import { writeTaskLog } from '../../tracker/task-log.js';
 import { estimateTokens } from '../../memory/budget.js';
 import { buildWorkBoardLane } from '../../memory/work-board-lane.js';
-import { stoppedAgents, pendingWakeups, turnContinuationCounts } from '../../agent/shared-state.js';
+import { stoppedAgents, pendingWakeups } from '../../agent/shared-state.js';
 
 const PRIMARY = 'primary';
 
@@ -285,7 +285,6 @@ beforeEach(() => {
   handleMessageSpy.mockImplementation(async () => undefined);
   stoppedAgents.clear();
   pendingWakeups.clear();
-  turnContinuationCounts.clear();
 });
 
 afterEach(() => {
@@ -427,7 +426,7 @@ describe('t145 A1 — a later owner message that updates an open task is linked 
     ]);
     await runV2Turn(PRIMARY);
     // a reboot: every process-memory structure is gone; only the database remains
-    stoppedAgents.clear(); pendingWakeups.clear(); turnContinuationCounts.clear();
+    stoppedAgents.clear(); pendingWakeups.clear();
     const reopened = new Database(mockDb.current!.serialize());
     mockDb.current!.close();
     mockDb.current = reopened;

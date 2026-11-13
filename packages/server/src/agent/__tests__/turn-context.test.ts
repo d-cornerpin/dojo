@@ -34,7 +34,7 @@ import {
 import {
   activeRuns, pendingWakeups, stoppedAgents, activeAbortControllers, preemptedAgents,
   backgroundDrains, lastCompactionDividerAt, lastA2APreemptAt, agentStartTimes,
-  turnContinuationCounts, statusHeartbeats, recoveryRunStreak,
+  statusHeartbeats, recoveryRunStreak,
 } from '../shared-state.js';
 import { FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
@@ -75,7 +75,6 @@ const THE_DRIVER_CARRIES = [
   // The spin-brake pair is split across the `execute` and `callLLM` spans in OPPOSITE
   // directions, so it is the one family here that by value would be wrong twice over.
   'toolPhaseEndedBySpinBrake',
-  'toolLoopCapReached',
   'spinBrakeGraceCalls',
   'mediaWordsStepOwed',   // proof-fix K: set by `execute` after a generator, read by `execute` and its tool door on the next iteration
   'ownerAffinityConversationId',
@@ -228,7 +227,7 @@ describe('PHASE-6 T1: TurnContext — what the turn owns', () => {
 });
 
 describe('PHASE-6 T1: the other direction — what must NOT be in the bag', () => {
-  it('the eighteen CROSS-TURN carriers survive endTurnContext', () => {
+  it('the seventeen CROSS-TURN carriers survive endTurnContext', () => {
     const A = FXID.n4;
     openTurnContext(A);
 
@@ -250,13 +249,12 @@ describe('PHASE-6 T1: the other direction — what must NOT be in the bag', () =
     lastCompactionDividerAt.set(A, 1);
     lastA2APreemptAt.set(A, 2);
     agentStartTimes.set(A, 3);
-    turnContinuationCounts.set(A, 4);
     statusHeartbeats.set(A, 0 as unknown as ReturnType<typeof setInterval>);
     recoveryRunStreak.set(A, { kind: 'k', inputsFingerprint: 'f', count: 1 });
 
     endTurnContext(A);
 
-    // THE CLAUSE: the turn's bag is gone and every one of the eighteen is still there.
+    // THE CLAUSE: the turn's bag is gone and every one of the seventeen is still there.
     // A collapse that swept these in would delete a continuation the NEXT turn is meant
     // to consume, reset a counter whose whole purpose is to cross turns, and drop an
     // abort controller mid-flight.
@@ -277,16 +275,15 @@ describe('PHASE-6 T1: the other direction — what must NOT be in the bag', () =
       lastCompactionDividerAt: lastCompactionDividerAt.has(A),
       lastA2APreemptAt: lastA2APreemptAt.has(A),
       agentStartTimes: agentStartTimes.has(A),
-      turnContinuationCounts: turnContinuationCounts.has(A),
       statusHeartbeats: statusHeartbeats.has(A),
       recoveryRunStreak: recoveryRunStreak.has(A),
     };
     expect(Object.entries(survivors).filter(([, v]) => !v).map(([k]) => k)).toEqual([]);
-    expect(Object.keys(survivors)).toHaveLength(18);
+    expect(Object.keys(survivors)).toHaveLength(17);
 
     for (const m of [turnBoundary, continuationContext, a2aTurnRetries, untrackedWorkAcrossTurns,
       activeAbortControllers, lastCompactionDividerAt, lastA2APreemptAt, agentStartTimes,
-      turnContinuationCounts, statusHeartbeats, recoveryRunStreak]) m.delete(A);
+      statusHeartbeats, recoveryRunStreak]) m.delete(A);
     for (const s of [forceA2ATurn, lastTurnWasA2A, activeRuns, pendingWakeups, stoppedAgents,
       preemptedAgents, backgroundDrains]) s.delete(A);
   });

@@ -95,7 +95,7 @@ function ctxFor(turnCtx: Bag, over: Partial<PostCallClassifyContext> = {}): Post
     settledContextWakeTurn: false, waitingConvs: [], inboundChannel: 'imessage',
     latestUserSource: null, lastUserMessageContent: 'Did the T-Mobile internet go down?',
     configuredModelId: 'floor', turnStartedAt: new Date().toISOString(), messageId: 'msg-1',
-    result: modelResult(), maxToolLoops: 20,
+    result: modelResult(),
     reArmIfStrandedNoAnswer: vi.fn(), noteTerminalAnswer: vi.fn(),
     deliverEngineUserAck: deliverAckSpy,
     persistAndBroadcastSystemRow: vi.fn(),
@@ -119,7 +119,7 @@ let state: AgentTurnState;
 beforeEach(() => {
   broadcastSpy.mockClear(); insertMessageIfAbsentSpy.mockClear(); deliverAckSpy.mockClear();
   injectRegistryMessageSpy.mockClear();
-  state = initState({ agentId: AGENT, maxToolLoops: 20 } as Parameters<typeof initState>[0]);
+  state = initState({ agentId: AGENT } as Parameters<typeof initState>[0]);
 });
 
 describe('inside the owed window the person hears the model\'s own words, at the moment it says them', () => {

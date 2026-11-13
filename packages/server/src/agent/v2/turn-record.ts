@@ -13,7 +13,7 @@ export type TurnExitReason =
 /** Exits a turn site may latch as engine- or owner-imposed (engine-exit.ts); not the model's own exits.
  * `brake` and `identical_call` are absent: the recorder derives them from the tool phase's state. */
 export type EngineCutReason = Extract<TurnExitReason,
-  'stop' | 'preempt' | 'abort' | 'terminated' | 'budget' | 'provider_error' | 'stream_idle'>;
+  'stop' | 'preempt' | 'abort' | 'terminated' | 'budget' | 'provider_error' | 'stream_idle' | 'iteration_cap'>;
 
 export interface TurnStartParams {
   agentId: string;

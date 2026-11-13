@@ -127,7 +127,8 @@ export interface AgentTurnState {
   thrashGateRefusalCount: number;
   // loopCount when the gate first armed; the drift detector auto-blocks if no transition follows.
   thrashGateActivatedAtLoopCount: number | null;
-
+  /** The checkpoint window the turn is in: its last pass before it, its clock and the job's mark; null is the first. */
+  checkpointWindow: { readonly atLoop: number; readonly atMs: number; readonly mark: number } | null;
   // ── Trigger context (read once at preflight) ──
   readonly triggeredByIMessage: boolean;
   readonly triggeredByA2AReplyIntent: A2AReplyContext | null;
@@ -254,6 +255,7 @@ export function initState(params: InitStateParams): AgentTurnState {
     thrashGatedSignatures: [],
     thrashGateRefusalCount: 0,
     thrashGateActivatedAtLoopCount: null,
+    checkpointWindow: null,
 
     triggeredByIMessage: params.triggeredByIMessage,
     triggeredByA2AReplyIntent: params.triggeredByA2AReplyIntent,
@@ -310,12 +312,6 @@ export function validate(state: AgentTurnState): void {
   // outputTokensEscalated is bounded where it is spent (the model call); here it need only be a sane count.
   if (!Number.isFinite(state.outputTokensEscalated) || state.outputTokensEscalated < 0) {
     throw new StateValidationError(`outputTokensEscalated invalid: ${state.outputTokensEscalated}`);
-  }
-  if (state.toolCallsExecutedThisTurn > 200) {
-    throw new StateValidationError(`runaway tool count: ${state.toolCallsExecutedThisTurn}`);
-  }
-  if (state.loopCount > 500) {
-    throw new StateValidationError(`runaway loop count: ${state.loopCount}`);
   }
   if (state.consecutivePermissionDenials > 20) {
     throw new StateValidationError(`runaway permission denials: ${state.consecutivePermissionDenials}`);

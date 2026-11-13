@@ -63,7 +63,7 @@ vi.mock('../../../../../config/platform.js', async (importOriginal) => ({
 }));
 
 import { runMigrations } from '../../../../../db/migrations.js';
-import { turnContinuationCounts, pendingWakeups, stoppedAgents } from '../../../../shared-state.js';
+import { pendingWakeups, stoppedAgents } from '../../../../shared-state.js';
 import { advance, initState, type AgentTurnState } from '../../../state.js';
 import { runTurnTimeBudget } from '../turn-budget.js';
 import { __resetEstimateCacheForTests } from '../../../../../memory/assembled-estimate-cache.js';
@@ -198,7 +198,6 @@ beforeEach(() => {
   // t194: the trigger's budget now comes from the (memoised) gauge, whose key is the message facts —
   // two clauses with identical rows and different provider declarations must not share an answer.
   __resetEstimateCacheForTests();
-  turnContinuationCounts.clear();
   pendingWakeups.clear();
   stoppedAgents.clear();
   generateSummarySpy.mockReset();
@@ -208,7 +207,6 @@ beforeEach(() => {
 afterEach(() => {
   mockDb.current?.close();
   mockDb.current = null;
-  turnContinuationCounts.clear();
   pendingWakeups.clear();
   vi.clearAllMocks();
 });
@@ -239,7 +237,6 @@ describe('T84 — the 15-minute checkpoint compacts only when the token math ask
     // housekeeping, so it writes no row.)
     expect(out).toMatchObject({ directive: 'exit', reason: 'turn-time-budget' });
     expect(pendingWakeups.has(AGENT)).toBe(true);
-    expect(turnContinuationCounts.get(AGENT)).toBe(1);
     expect(lastSystemMessage()).toBeNull();
   });
 
@@ -294,7 +291,7 @@ describe('T84 — the 15-minute checkpoint compacts only when the token math ask
     expect(pendingWakeups.has(AGENT)).toBe(true);
   });
 
-  it('THE CONTINUATION LADDER HAS NO CAP (t137): the count climbs on every park and the fourth parks like the first', async () => {
+  it('THE CONTINUATION LADDER HAS NO CAP: every park is the same park', async () => {
     // The fix is about WHAT the checkpoint does to the history, never about how many times it
     // may do it — and since t137 (OR-LONG-JOBS) nothing bounds how many times either. The
     // crossing that used to trip the standard 3-continuation cap parks, asks the token math
@@ -305,7 +302,6 @@ describe('T84 — the 15-minute checkpoint compacts only when the token math ask
       pendingWakeups.clear();
       const out = await runTurnTimeBudget(stateOverBudget(), makeCtx());
       expect(out).toMatchObject({ directive: 'exit', reason: 'turn-time-budget' });
-      expect(turnContinuationCounts.get(AGENT)).toBe(n);
       expect(pendingWakeups.has(AGENT)).toBe(true);
     }
     expect(generateSummarySpy).not.toHaveBeenCalled();

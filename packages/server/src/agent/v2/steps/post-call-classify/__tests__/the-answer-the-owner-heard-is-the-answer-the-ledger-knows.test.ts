@@ -172,7 +172,7 @@ function ctxFor(turnCtx: Bag, over: Partial<PostCallClassifyContext> = {}): Post
     settledContextWakeTurn: false, waitingConvs: [], inboundChannel: 'dashboard',
     latestUserSource: null, lastUserMessageContent: 'Research the current state of e-ink tablets…',
     configuredModelId: 'floor', turnStartedAt: new Date().toISOString(), messageId: 'msg-tooluse',
-    result: modelResult(), maxToolLoops: 20,
+    result: modelResult(),
     reArmIfStrandedNoAnswer: vi.fn(), noteTerminalAnswer,
     deliverEngineUserAck: deliverEngineUserAck as never,
     persistAndBroadcastSystemRow,
@@ -274,7 +274,7 @@ beforeEach(() => {
   ).run(CONV, AGENT);
   broadcastSpy.mockClear(); deliverEngineUserAck.mockClear();
   noteTerminalAnswer.mockClear(); persistAndBroadcastSystemRow.mockClear();
-  state = initState({ agentId: AGENT, maxToolLoops: 20 } as Parameters<typeof initState>[0]);
+  state = initState({ agentId: AGENT } as Parameters<typeof initState>[0]);
 });
 
 // ════════════════════════════════════════════════════════════════════════════════════════

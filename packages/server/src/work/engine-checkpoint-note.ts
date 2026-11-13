@@ -8,11 +8,10 @@ import { taskScope } from './tracker-view.js';
 import { workingExpr } from './terminal-states.js';
 
 /** Why the checkpoint fired: one member per checkpoint site. */
-export type EngineCheckpointReason = 'turn-budget' | 'tool-loop' | 'job-continues';
+export type EngineCheckpointReason = 'turn-budget' | 'job-continues';
 
 const REASON_TEXT: Record<EngineCheckpointReason, string> = {
-  'turn-budget': 'the 15-minute turn-time budget parked this turn for a fresh continuation',
-  'tool-loop': 'the 75-tool-call loop cap parked this turn for a fresh continuation',
+  'turn-budget': 'a window of 75 steps or 15 minutes passed without the job moving; the engine parked this turn for a fresh continuation',
   'job-continues': 'the turn ended mid-job while making progress; the engine parked it for a fresh continuation',
 };
 

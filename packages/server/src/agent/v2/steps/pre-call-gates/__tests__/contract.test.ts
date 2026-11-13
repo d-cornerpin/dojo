@@ -32,7 +32,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { WsEvent } from '@dojo/shared';
 import { advance, initState, type AgentTurnState } from '../../../state.js';
 import type { TurnCounterparty } from '../../../counterparty.js';
-import { stoppedAgents, preemptedAgents, pendingWakeups, turnContinuationCounts, backgroundDrains } from '../../../../shared-state.js';
+import { stoppedAgents, preemptedAgents, pendingWakeups, backgroundDrains } from '../../../../shared-state.js';
 import { steerFired } from '../../../steer-queue.js';
 import {
   runPreCallGates,
@@ -154,7 +154,6 @@ beforeEach(() => {
   stoppedAgents.clear();
   preemptedAgents.clear();
   pendingWakeups.clear();
-  turnContinuationCounts.clear();
   backgroundDrains.clear();
   checkAndCompactSpy.mockClear();
   // T79b: a pre-existing gap — this spy's DEFAULT implementation (unlike its siblings below)
@@ -176,6 +175,9 @@ beforeEach(() => {
   getDbSpy.mockReset();
   getDbSpy.mockImplementation(() => { throw new Error('no database in a contract test'); });
 });
+
+/** At a window's end the gate reads the job's record; this turn has no job. */
+const noJob = (): void => { getDbSpy.mockImplementation((() => ({ prepare: () => ({ get: () => undefined, all: () => [] }) })) as never); };
 
 /** Drive the step with a view that WANTS `pct` of its room (over 1: the trim is cutting). */
 function atUtilisation(pct: number): void {
@@ -276,6 +278,7 @@ describe('the exit-request channel — seven ways out, each with a name', () => 
     expect((await runPreCallGates(stateInStep(), makeCtx())).directive, 'a full view is not an exit').toBe('proceed');
 
     atUtilisation(0.005);
+    noJob();
     const overBudget = stateInStep({ turnStartMs: Date.now() - (16 * 60 * 1000) });
     reasons.push((await runPreCallGates(overBudget, makeCtx()) as { reason: string }).reason);
 
@@ -321,20 +324,17 @@ describe('the numbers this tranche must not move (bounds copied verbatim)', () =
     expect(checkAndCompactSpy).not.toHaveBeenCalled();
 
     // Just outside: the turn parks for a continuation.
+    noJob();
     const outside = await runPreCallGates(stateInStep({ turnStartMs: Date.now() - (16 * 60 * 1000) }), makeCtx());
     expect(outside).toMatchObject({ directive: 'exit', reason: 'turn-time-budget' satisfies PreCallGatesExitReason });
-    expect(turnContinuationCounts.get(AGENT)).toBe(1);
 
-    // The crossing that used to be "one too many" (the 4th; 3 was the old standing cap) parks
-    // exactly like the first, and so does the fiftieth: OR-LONG-JOBS, no total-time cap.
-    for (const already of [3, 49]) {
-      turnContinuationCounts.set(AGENT, already);
+    // Every later park is the same park: there is no count of them.
+    for (let n = 0; n < 2; n++) {
       checkAndCompactSpy.mockClear();
       const later = await runPreCallGates(stateInStep({ turnStartMs: Date.now() - (16 * 60 * 1000) }), makeCtx());
       expect(later).toMatchObject({ directive: 'exit', reason: 'turn-time-budget' satisfies PreCallGatesExitReason });
       expect(checkAndCompactSpy).toHaveBeenCalledTimes(1);
       expect(pendingWakeups.has(AGENT)).toBe(true);
-      expect(turnContinuationCounts.get(AGENT)).toBe(already + 1);
       pendingWakeups.clear();
     }
   });
@@ -400,6 +400,7 @@ describe('the background condense stays fire-and-forget', () => {
 describe('t137 — the 15-minute park writes nothing and rings nobody', () => {
   it('a park inserts no message row and broadcasts nothing; it squares the tracker and queues the continuation', async () => {
     const ctx = makeCtx();
+    noJob();
     const out = await runPreCallGates(stateInStep({ turnStartMs: Date.now() - (16 * 60 * 1000) }), ctx);
 
     expect(out).toMatchObject({ directive: 'exit', reason: 'turn-time-budget' satisfies PreCallGatesExitReason });
@@ -410,11 +411,4 @@ describe('t137 — the 15-minute park writes nothing and rings nobody', () => {
     expect(pendingWakeups.has(AGENT)).toBe(true);
   });
 
-  it('a long-running ladder (the 50th park) writes nothing either', async () => {
-    turnContinuationCounts.set(AGENT, 49);
-    const ctx = makeCtx();
-    await runPreCallGates(stateInStep({ turnStartMs: Date.now() - (16 * 60 * 1000) }), ctx);
-    expect(insertMessageIfAbsentSpy).not.toHaveBeenCalled();
-    expect(ctx.events).toEqual([]);
-  });
 });

@@ -78,7 +78,6 @@ export interface ExecuteContext {
   readonly effectiveModelIdForPersist: string;
   /** Passed in, not copied: declared at `loop.ts` module level and read outside this step too. */
   readonly staleTaskWindowMinutes: number;
-  readonly maxToolLoops: number;
   readonly engineStartAckAfterMs: number;
 }
 

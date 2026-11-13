@@ -117,7 +117,7 @@ function ctxFor(turnCtx: Bag, messageId: string, content: string): PostCallClass
     settledContextWakeTurn: false, waitingConvs: [], inboundChannel: 'dashboard',
     latestUserSource: 'dashboard', lastUserMessageContent: ASK,
     configuredModelId: 'test-model', turnStartedAt: new Date().toISOString(), messageId,
-    result: modelResult(content), maxToolLoops: 75,
+    result: modelResult(content),
     reArmIfStrandedNoAnswer: vi.fn(), noteTerminalAnswer,
     deliverEngineUserAck: deliverEngineUserAck as never,
     persistAndBroadcastSystemRow, startAckRepliedNow: () => false,
@@ -203,7 +203,7 @@ beforeEach(() => {
     `INSERT INTO conversations (id, agent_id, channel, counterparty_id) VALUES (?, ?, 'dashboard', 'owner')`,
   ).run(CONV, AGENT);
   state = initState({
-    agentId: AGENT, maxToolLoops: 75, turnNumber: TURN, lastUserMessageContent: ASK,
+    agentId: AGENT, turnNumber: TURN, lastUserMessageContent: ASK,
   } as Parameters<typeof initState>[0]);
   state = advance(state, { loopCount: 1, modelId: 'test-model' });
 });

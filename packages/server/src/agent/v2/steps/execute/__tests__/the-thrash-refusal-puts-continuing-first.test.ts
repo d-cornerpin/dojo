@@ -41,7 +41,7 @@ describe('the thrash refusal', () => {
 
   it('fix round 1 (I-2): the thrash refusal puts continuing first and offers complete only for done work', () => {
     const call = { id: 'c2', name: 'gmail_search', arguments: { query: 'in:inbox' } };
-    const state = advance(initState({ agentId: AGENT, maxToolLoops: 75, turnNumber: 1, lastUserMessageContent: null } as unknown as Parameters<typeof initState>[0]),
+    const state = advance(initState({ agentId: AGENT, turnNumber: 1, lastUserMessageContent: null } as unknown as Parameters<typeof initState>[0]),
       { thrashGatedSignatures: [canonicalToolSignature(call.name, call.arguments)] });
     const ctx = { agentId: AGENT, turnNumber: 1, turnCtx: {}, counterparty: null, reminderLaneRefusedSigs: new Set<string>(), engineBlockEscapeHatch: '' };
     const text = runRefusalGates(state as never, call as never, ctx as never, false).refusal?.content ?? '';

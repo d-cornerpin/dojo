@@ -64,7 +64,7 @@ import { insertMessage } from '../../../../../memory/message-store.js';
 import { assembleContext } from '../../../../../memory/assembler.js';
 import { assembleWithNothingOutOfViewUnsummarised } from '../../../../../memory/out-of-view.js';
 import { estimateAssembledTokens, checkAndCompact } from '../../../../../memory/compaction.js';
-import { backgroundDrains, pendingWakeups, stoppedAgents, turnContinuationCounts } from '../../../../shared-state.js';
+import { backgroundDrains, pendingWakeups, stoppedAgents } from '../../../../shared-state.js';
 import { __resetBrakesForTests } from '../../../../../memory/compaction-brakes.js';
 import { __resetEstimateCacheForTests } from '../../../../../memory/assembled-estimate-cache.js';
 import { advance, initState, type AgentTurnState } from '../../../state.js';
@@ -166,7 +166,7 @@ function allSeqs(): number[] {
 beforeEach(() => {
   mockDb.current = new Database(':memory:');
   runMigrations();
-  backgroundDrains.clear(); pendingWakeups.clear(); stoppedAgents.clear(); turnContinuationCounts.clear();
+  backgroundDrains.clear(); pendingWakeups.clear(); stoppedAgents.clear();
   __resetBrakesForTests();
   __resetEstimateCacheForTests();
   wsEvents.length = 0;

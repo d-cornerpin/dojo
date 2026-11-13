@@ -343,7 +343,6 @@ function classifyCtx(over: Partial<PostCallClassifyContext> = {}): PostCallClass
     counterpartyIsAgentSender: false,
     chosenConvKey: 'ck-1',
     isEngineTurn: false,
-    maxToolLoops: 75,
     triggerRow: { id: 'trigger-1' },
     turnCtx: { conversationId: 'conv-1', servedWork: null, root: null },
     ...over,

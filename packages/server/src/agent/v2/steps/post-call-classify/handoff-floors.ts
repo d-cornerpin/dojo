@@ -15,6 +15,7 @@ import { turnDeliveredToPerson } from '../../answered-edge.js';
 import { MAX_FLOOR_STEER_ATTEMPTS, recordFloorGhost } from '../../floor-ghost.js';
 import { continueLoop, proceed, type StepOutcome } from '../step-outcome.js';
 import type { PostCallClassifyContext, PostCallScratch } from './index.js';
+import { turnWindow } from './job-turn-end.js';
 
 const logger = createLogger('v2-loop');
 
@@ -26,9 +27,8 @@ export async function runHandoffFloors(
 ): Promise<StepOutcome> {
   const {
     agentId, chosenConvKey, counterparty, counterpartyIsAgentSender, db,
-    isEngineTurn, maxToolLoops, triggerRow, turnCtx, turnNumber,
+    isEngineTurn, triggerRow, turnCtx, turnNumber,
   } = ctx;
-  const MAX_TOOL_LOOPS = maxToolLoops;
   const chosenConversationId = turnCtx.conversationId ?? null;
   const { persistedContent } = sc;
   // A2A-handoff floor: on a weak model the handoff contract's "end your turn" wins over telling the user,
@@ -45,7 +45,7 @@ export async function runHandoffFloors(
     state.toolResults.some((tr) => !tr.isError && tr.name === 'send_to_agent')
   ) {
     const handoffAttempts = steerFireCount(state.steerQueue, 'a2a-handoff-floor');
-    if (handoffAttempts < MAX_FLOOR_STEER_ATTEMPTS && state.loopCount < MAX_TOOL_LOOPS) {
+    if (handoffAttempts < MAX_FLOOR_STEER_ATTEMPTS && turnWindow(state, agentId, 1) !== 'checkpoint') {
       const again = handoffAttempts === 1;
       // Name who is waiting and where the written reply lands, from the turn's address.
       const addr = liveAddress(turnCtx.address);
@@ -112,7 +112,7 @@ export async function runHandoffFloors(
           : undefined;
         const remText = (remRow?.description || remRow?.title || '').replace(/^Reminder:?\s*/i, '').trim();
         const remAttempts = steerFireCount(state.steerQueue, 'reminder-silence');
-        if (remText && remAttempts < MAX_FLOOR_STEER_ATTEMPTS && state.loopCount < MAX_TOOL_LOOPS) {
+        if (remText && remAttempts < MAX_FLOOR_STEER_ATTEMPTS && turnWindow(state, agentId, 1) !== 'checkpoint') {
           // The reply reaches the owner by the channel the turn's address says, not always this conversation.
           const liveAddr = liveAddress(turnCtx.address);
           const remRoute = liveAddr
