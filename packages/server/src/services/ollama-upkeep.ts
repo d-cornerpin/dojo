@@ -28,9 +28,9 @@ import { getOllamaModelInfo } from './ollama.js';
 import { computeAndStoreRecommendedNumCtx } from './num-ctx-calculator.js';
 import { assignStandard, registerStandardRow, unregisterStandardRow } from './standard-model-rows.js';
 import {
-  OLLAMA_DOWN_WORDS, OLLAMA_LIMIT_FAILED_WORDS, OLLAMA_TOO_OLD_WORDS, STANDARD_MODELS_MISSING_WORDS, ownerConditionCleared, tellOwner,
+  OLLAMA_DOWN_WORDS, OLLAMA_LIMIT_FAILED_WORDS, OLLAMA_TOO_OLD_WORDS, STANDARD_MODELS_MISSING_WORDS, ownerConditionCleared, tellOwner, toldWords,
 } from '../healer/owner-notices.js';
-import { OLLAMA_APP_LEFT_WORDS } from '../healer/local-model-notice-words.js';
+import { OLLAMA_APP_LEFT, ollamaAppLeftWords } from '../healer/local-model-notice-words.js';
 
 const logger = createLogger('ollama-upkeep');
 const NOTICE = 'ollama';
@@ -125,9 +125,10 @@ async function keep(reason: UpkeepReason, need: Need): Promise<UpgradeResult> {
   }
   const complete = !!(ids.writer && ids.decision);
   noteUpkeep({ triedAt: (complete && windowMade) || !listed ? undefined : Date.now() });
-  const appLeft = !!host && current.ok && await retireDownloadedApp(host, local.baseUrl)
-    .then(() => false, (err: unknown) => { logger.warn('The downloaded Ollama app could not be moved to the Trash', { error: childFailureText(err) }); return true; });
-  if (complete && current.ok && !upkeepRecord().limitOwed) { if (appLeft) tellOwner(NOTICE, OLLAMA_APP_LEFT_WORDS); else ownerConditionCleared(NOTICE); }
+  // The app is tried once per boot: after a failure, only the next boot pass tries it again, and its notice stands.
+  const standing = toldWords(NOTICE).startsWith(OLLAMA_APP_LEFT);
+  const appLeft = host && current.ok && (!standing || reason === 'boot') ? await retireDownloadedApp(host, local.baseUrl) : standing;
+  if (complete && current.ok && !upkeepRecord().limitOwed) { if (typeof appLeft === 'string') tellOwner(NOTICE, ollamaAppLeftWords(appLeft)); else if (!appLeft) ownerConditionCleared(NOTICE); }
   else if (!complete && (current.ok || current.transient) && !current.starting) tellOwner(NOTICE, STANDARD_MODELS_MISSING_WORDS);   // a failed upkeep told its own sentence
   return current;
 }

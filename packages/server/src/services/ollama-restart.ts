@@ -191,15 +191,17 @@ export async function endStuckStart(host: OllamaHost, baseUrl: string, residentC
   return started === 'dead' ? 'dead' : null;
 }
 
-/** Homebrew's own Ollama answers on the port while an app Homebrew does not own is installed: the app is quit, moved to
- *  the Trash and the command re-linked to Homebrew's. Never `~/.ollama`. Throws when a step fails. */
-export async function retireDownloadedApp(host: OllamaHost, baseUrl: string): Promise<void> {
-  if ((await host.brewCaskToken()) !== null || !await host.appInstalled()) return;
+/** Homebrew's own Ollama answers on the port while an app Homebrew does not own is installed: the app is quit, the
+ *  command re-linked to Homebrew's and the app moved to the Trash. Never `~/.ollama`. The step that failed, else null. */
+export async function retireDownloadedApp(host: OllamaHost, baseUrl: string): Promise<'stop' | 'link' | 'trash' | null> {
+  if ((await host.brewCaskToken()) !== null || !await host.appInstalled()) return null;
   const here = await classifyOllama(host, portOf(baseUrl));
-  if (!here || !BREW_FORMULA_PATH.test(here.path) || !await host.answers(baseUrl)) return;
-  await stopApp(host);
-  await host.trashApp();
-  await host.brew(['link', '--overwrite', 'ollama']);
+  if (!here || !BREW_FORMULA_PATH.test(here.path) || !await host.answers(baseUrl)) return null;
+  const steps = [['stop', () => stopApp(host)], ['link', () => host.brew(['link', '--overwrite', 'ollama'])], ['trash', () => host.trashApp()]] as const;
+  for (const [step, work] of steps) {
+    try { await work(); } catch (e) { logger.warn('The downloaded Ollama app could not be retired', { step, error: childFailureText(e) }); return step; }
+  }
+  return null;
 }
 
 export class StepFailed extends Error {

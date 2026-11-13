@@ -1,5 +1,5 @@
-// When Finder will not move the downloaded Ollama app to the Trash, the owner hears one notice in the `ollama` key,
-// a later start tells nothing new, and Ollama keeps serving. `fake-mac.ts` plays the Mac; nothing real runs.
+// When the Dojo cannot retire the downloaded Ollama app, the owner hears one notice in the `ollama` key naming the step
+// that failed, the app is tried again only at the next start, and Ollama keeps serving. `fake-mac.ts` plays the Mac.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
@@ -13,7 +13,8 @@ vi.mock('../../gateway/ws.js', () => ({ broadcast: (f: { error?: string }) => { 
 
 import { runMigrations } from '../../db/migrations.js';
 import { upkeep, upkeepSettled } from '../ollama-upkeep.js';
-import { OLLAMA_APP_LEFT_WORDS } from '../../healer/local-model-notice-words.js';
+import { ollamaAppLeftWords } from '../../healer/local-model-notice-words.js';
+import { ownerToldOf } from '../../healer/owner-notices.js';
 import { ollama, startFakeOllama, stopFakeOllama, fakeMac, serviceServe, LATEST, useOllamaHost } from './fake-mac.js';
 
 beforeEach(async () => {
@@ -27,14 +28,32 @@ beforeEach(async () => {
 afterEach(async () => { await upkeepSettled(); useOllamaHost(null); await stopFakeOllama(); mockDb.current?.close(); mockDb.current = null; });
 
 describe('a downloaded Ollama app the Dojo cannot trash is told once', () => {
-  it('one notice at the first start, none at the next, and Ollama keeps serving', async () => {
+  const told = (words: string): number => frames.list.filter((f) => f.error === words).length;
+  const attempts = (mac: { log: string[] }): number => mac.log.filter((l) => l === 'trash').length;
+
+  it('one notice naming the Trash, one attempt across two passes of a start, one more at the next start', async () => {
     const mac = fakeMac({ running: serviceServe(LATEST), formula: LATEST, app: '0.30.1', appCask: null });
     mac.failTrash = true;
     useOllamaHost(mac);
     expect((await upkeep('boot')).ok).toBe(true);
+    await upkeep('repair');
+    expect(attempts(mac)).toBe(1);
+    expect(told(ollamaAppLeftWords('trash'))).toBe(1);
+    expect(ownerToldOf('ollama'), 'the notice stands after the second pass').toBe(true);
     await upkeep('boot');
-    expect(frames.list.filter((f) => f.error === OLLAMA_APP_LEFT_WORDS)).toHaveLength(1);
+    expect(attempts(mac)).toBe(2);
+    expect(told(ollamaAppLeftWords('trash'))).toBe(1);
     expect(mac.disk.app).toBe('0.30.1');
     expect(ollama.serving?.version).toBe(LATEST);
+  });
+
+  it('a re-link that fails is told as the re-link, and the app is not trashed', async () => {
+    const mac = fakeMac({ running: serviceServe(LATEST), formula: LATEST, app: '0.30.1', appCask: null });
+    useOllamaHost(mac);
+    mac.failBrew = true;
+    await upkeep('boot');
+    expect(told(ollamaAppLeftWords('link'))).toBe(1);
+    expect(told(ollamaAppLeftWords('trash'))).toBe(0);
+    expect(mac.disk.app).toBe('0.30.1');
   });
 });

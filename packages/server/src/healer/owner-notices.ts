@@ -64,7 +64,7 @@ const STALL_TRIED: Record<string, string> = {
 export function endStallCard(workId: string): void {
   if (ownerToldOf(stallKey(workId))) frame(toldWords(stallKey(workId)), 'info', stallKey(workId));
 }
-const toldWords = (key: string): string =>
+export const toldWords = (key: string): string =>
   (getDb().prepare('SELECT value FROM healer_state WHERE scope = ? AND key = ?').get(TOLD, key) as { value: string | null } | undefined)?.value ?? '';
 /** The stall card: what is stuck, since when, and what was tried; '' once the task is no longer waiting. */
 function stallWords(workId: string): string {

@@ -12,7 +12,8 @@ export const OLLAMA_LIMIT_FAILED_WORDS = "Dojo: it could not raise Ollama's limi
   + 'own models may unload each other and answer more slowly. Everything else keeps working; the Dojo tries again at its next start.';
 export const OLLAMA_TOO_OLD_WORDS = "Dojo: a local model needs a newer Ollama, and the Dojo could not update the Ollama on this Mac by itself. "
   + `${settingsPath('ollama')} shows why. Everything else keeps working, and the Dojo tries again at its next start.`;
-export const OLLAMA_APP_LEFT_WORDS = "Dojo: the Dojo now runs Homebrew's Ollama, and the older Ollama app from ollama.com is no longer needed, but the Dojo could not "
-  + 'move it to the Trash. You can drag Ollama from Applications to the Trash; your downloaded models are kept either way.';
+export const OLLAMA_APP_LEFT = "Dojo: the Dojo now runs Homebrew's Ollama, and the older Ollama app from ollama.com is no longer needed, but the Dojo could not ";
+export const ollamaAppLeftWords = (step: 'stop' | 'link' | 'trash'): string => `${OLLAMA_APP_LEFT}${step === 'link' ? "point the ollama command at Homebrew's" : step === 'trash' ? 'move it to the Trash'
+  : 'quit it'}. You can quit Ollama and drag it from Applications to the Trash; your downloaded models are kept either way.`;
 export const OLLAMA_DOWN_WORDS = "Dojo: Ollama stopped while the Dojo was updating it and has not come back yet, so the local models are not answering. "
   + `The Dojo tries again at its next start. ${settingsPath('ollama')} shows why.`;
