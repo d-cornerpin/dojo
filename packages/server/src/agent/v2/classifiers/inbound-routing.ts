@@ -1,5 +1,5 @@
 // Two judgments about an arrived message. A person's message: does it hand over a job of several steps (yes: work, no:
-// chat, between the lines: neither)? A helper's note: does it deliver finished work (its rule answers without a model)?
+// chat, between the lines: neither; no answer: the word list below)? A helper's note: does it deliver finished work?
 
 import type { Question } from '../../decide.js';
 import { judgment } from '../../decision-hooks.js';
@@ -30,17 +30,44 @@ function previousAgentMessage(agentId: string, root: TurnRoot | null | undefined
   } catch { return null; }
 }
 
+// With no answer from the model: two action verbs joined by a conjunction or a new sentence, or three anywhere, is work.
+const ACTION_VERBS = new Set([
+  'pull', 'fetch', 'get', 'grab', 'download', 'retrieve', 'send', 'email', 'message', 'text', 'imessage', 'post', 'publish',
+  'create', 'make', 'build', 'generate', 'draft', 'write', 'compose', 'summarize', 'summarise', 'compile', 'aggregate', 'gather',
+  'find', 'search', 'look', 'lookup', 'investigate', 'check', 'research', 'compare', 'contrast', 'weigh',
+  'update', 'edit', 'change', 'modify', 'fix', 'patch', 'delete', 'remove', 'clear', 'archive',
+  'schedule', 'plan', 'organize', 'organise', 'analyze', 'analyse', 'review', 'audit', 'evaluate', 'remind', 'notify', 'alert',
+  'export', 'import', 'backup', 'restore', 'attach', 'upload', 'save', 'split', 'divide', 'distribute', 'combine',
+]);
+const CONJUNCTIONS = new Set(['and', 'then', 'also', 'plus', 'after', 'next']);
+/** A word after one of these is a noun ("any new emails"), not an action. */
+const NOUN_AFTER = new Set([
+  'any', 'the', 'a', 'an', 'my', 'your', 'his', 'her', 'its', 'our', 'their', 'some', 'this', 'that', 'these', 'those',
+  'few', 'several', 'many', 'all', 'no', 'every', 'each', 'another', 'such', 'new', 'old', 'recent', 'latest', 'pending', 'unread',
+]);
+const VERB_ENDINGS: ReadonlyArray<[RegExp, string]> = [[/s$/, ''], [/ed$/, ''], [/ed$/, 'e'], [/ing$/, ''], [/ing$/, 'e']];
+const isVerb = (word: string): boolean => ACTION_VERBS.has(word) || VERB_ENDINGS.some(([end, stem]) => end.test(word) && ACTION_VERBS.has(word.replace(end, stem)));
+function wordListSaysWork(message: string): boolean {
+  const lower = message.toLowerCase();
+  const words = lower.replace(/[^a-z0-9\s'-]/g, ' ').split(/\s+/).filter(Boolean);
+  const verbs = words.filter((w, i) => isVerb(w) && !NOUN_AFTER.has(words[i - 1] ?? '')).length;
+  const joins = words.filter((w) => CONJUNCTIONS.has(w)).length + (lower.match(/[.!?;\n]+\s+(?=[a-z0-9])/g) ?? []).length;
+  return verbs >= 3 || (verbs >= 2 && joins >= 1);
+}
+
 /** Each turn is judged once, however many times it is assembled and whichever reader asks first. */
 const judged = new WeakMap<object, Promise<boolean | undefined>>();
 
-/** True: the person handed over a job of several steps; false: chat; undefined: between the lines, or no answer. */
+/** True: the person handed over a job of several steps; false: chat; undefined: between the lines. With no answer
+ *  the word list says work or nothing. */
 export function inboundIsWork(turnCtx: { root?: TurnRoot | null }, agentId: string, message: string): Promise<boolean | undefined> {
   let said = judged.get(turnCtx);
   if (!said) {
     const previous = message.trim() ? previousAgentMessage(agentId, turnCtx.root) : null;
     const state = previous === null ? { message } : { message, previous_agent_message: previous };
     said = message.trim()
-      ? judgment('inbound_routing/needs_several_steps', { agentId, state, questions: { asked: SEVERAL_STEPS } }).then((v) => v?.asked)
+      ? judgment('inbound_routing/needs_several_steps', { agentId, state, questions: { asked: SEVERAL_STEPS } })
+        .then((v) => (v === null ? (wordListSaysWork(message) || undefined) : v.asked))
       : Promise.resolve(undefined);
     judged.set(turnCtx, said);
   }

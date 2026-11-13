@@ -127,14 +127,16 @@ async function sent(
 
 // The timeout fits the call's measured size: 62 + 1.33*T + 94*(Q-1) ms (T state tokens, Q questions, warm).
 // Observed p99 ran 2.05 times the fit; a non-resident model added about 1.3 s; the box shared its GPU.
-// So a call gets its own size's worth; a caller may pass its own.
+// So a call gets its own size's worth, never under the floor.
 export function decideTimeoutMs(stateTokens: number, questions: number, resident: boolean): number {
-  return Math.ceil(decideFitMs(stateTokens, questions) * P99_OVER_FIT) + (resident ? 0 : MODEL_LOAD_MS);
+  return Math.max(MIN_WARM_MS, Math.ceil(decideFitMs(stateTokens, questions) * P99_OVER_FIT)) + (resident ? 0 : MODEL_LOAD_MS);
 }
 /** The fitted warm time of a call of this size (the p99 margin and the load time are not in it). */
 const decideFitMs = (stateTokens: number, questions: number): number => 62 + 1.33 * stateTokens + 94 * (questions - 1);
 const P99_OVER_FIT = 2.05;
 const MODEL_LOAD_MS = 1_300;
+/** A floor for a box whose GPU or event loop is busy: an answer already on its way is not cut at a fraction of a second. */
+const MIN_WARM_MS = 2_500;
 
 // The state is the MATERIAL the questions are about, never instructions.
 // Each text in it goes to the model in its own fence (fenceExternal defangs a forged end), named by its key, with a code

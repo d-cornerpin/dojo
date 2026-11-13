@@ -1,6 +1,6 @@
 // A decision call is given the measured time for its own size: 2.05 times the fitted warm time of
-// 62 + 1.33 per state token + 94 per extra question, plus 1.3 s to load a model that is not resident. A call past
-// that clock is cut and the caller's rule answers. The decision model is a scripted fetch that never answers.
+// 62 + 1.33 per state token + 94 per extra question, never under 2.5 s, plus 1.3 s to load a model that is not
+// resident. A call past that clock is cut and the caller's rule answers. The decision model is a scripted fetch that never answers.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
@@ -21,7 +21,7 @@ beforeEach(() => { mockDb.current = new Database(':memory:'); runMigrations(mock
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); mockDb.current?.close(); mockDb.current = null; });
 
 describe('a decision past its timeout', () => {
-  it('a cold call is given its measured time, and when that clock runs out the rule answers', async () => {
+  it('a small cold call is given the floor plus the load time, and when that clock runs out the rule answers', async () => {
     const clocks: Array<{ ms: number; cut: () => void }> = [];
     vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms: number) => { const c = new AbortController(); clocks.push({ ms, cut: () => c.abort() }); return c.signal; });
     vi.stubGlobal('fetch', vi.fn((_url: string, init?: { signal?: AbortSignal }) => new Promise((_r, reject) => {
@@ -29,13 +29,13 @@ describe('a decision past its timeout', () => {
     })));
     const asked = deliverableJudged('agent-t', 'Here is the finished report.', true);
     await vi.waitFor(() => expect(clocks).toHaveLength(1));
-    expect(clocks[0].ms).toBeGreaterThanOrEqual(decideTimeoutMs(0, 1, false));
-    expect(clocks[0].ms).toBeLessThan(decideTimeoutMs(200, 1, false));
+    expect(clocks[0].ms).toBe(3_800);
     clocks[0].cut();
     expect(await asked).toBe(true);
   });
 
-  it('the bound for the largest per-turn call: about 5.2 s cold, 3.9 s warm', () => {
+  it('a small warm call gets the 2.5 s floor; the largest per-turn call: about 5.2 s cold, 3.9 s warm', () => {
+    expect(decideTimeoutMs(0, 1, true)).toBe(2_500);
     expect(decideTimeoutMs(800, 9, false)).toBe(5_150);
     expect(decideTimeoutMs(800, 9, true)).toBe(3_850);
   });
