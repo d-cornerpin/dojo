@@ -19,6 +19,7 @@ import { postAgentNotice } from './agent-notice.js';
 import { writeAgentStatus } from './agent-status.js';
 import { taskScope, STATE_TO_STATUS_SQL } from '../work/tracker-view.js';
 import { setHold, heldExpr, workingExpr } from '../work/done/hold.js';
+import { moveAssignee } from '../work/row-authority.js';
 import { memoryGrep } from '../memory/retrieval.js';
 import { insertMessageIfAbsent, insertEngineEventIfAbsent } from '../memory/message-store.js';
 import { canSpawnAgent } from '../services/resource-monitor.js';
@@ -468,7 +469,7 @@ export function terminateAgent(agentId: string, reason?: string): void {
 
   writeAgentStatus(agentId, 'terminated');
 
-  // Its Working tasks are held paused (never closed) so the owner can reassign or close them.
+  // Its Working tasks are held paused (never closed), then go back to the agent that made it.
   try {
     const danglers = db.prepare(`
       SELECT w.id AS id FROM work w
@@ -480,6 +481,7 @@ export function terminateAgent(agentId: string, reason?: string): void {
       if (!r.ok) logger.warn('terminateAgent: auto-pause refused', { taskId: dt.id, why: r.why });
     }
     if (danglers.length > 0) logger.info('terminateAgent: auto-paused in_progress tasks', { agentId, count: danglers.length }, agentId);
+    returnHeldSteps(agentId, 'helper ended (terminated)');
   } catch (autopauseErr) {
     logger.warn('terminateAgent: task auto-pause failed (non-fatal)', {
       agentId, error: autopauseErr instanceof Error ? autopauseErr.message : String(autopauseErr),
@@ -678,7 +680,7 @@ export async function completeAgent(
   }
 
   // The ending agent's other working tasks cannot progress ("complete" is refused while any is open):
-  // each is handed in as can't be done on the termination record. Held tasks are left as they are.
+  // each is handed in as can't be done on the termination record. Held tasks go back to its creator.
   try {
     const { engineHandIn } = await import('../work/done/hand-in.js');
     const primary = resolvedTaskId
@@ -696,6 +698,7 @@ export async function completeAgent(
         : `agent "${agent.name}" ended (complete_task ${status}) and this task is not part of its work`,
       { outcome: 'cant_be_done' });
     }
+    if (!isPersistent) returnHeldSteps(agentId, `helper ended (complete_task ${status})`);
   } catch (err) {
     logger.warn('completeAgent: dangler hand-in failed (non-fatal)', { agentId, error: err instanceof Error ? err.message : String(err) }, agentId);
   }
@@ -1131,3 +1134,12 @@ export function checkTimeouts(): void {
   }
 }
 
+/** An ended helper's held steps go, hold and reason kept, to the agent that made it. */
+function returnHeldSteps(agentId: string, door: string): void {
+  const parentId = (getDb().prepare('SELECT parent_agent AS p FROM agents WHERE id = ?').get(agentId) as { p: string | null } | undefined)?.p;
+  const held = parentId ? getDb().prepare(`SELECT w.id AS id FROM work w WHERE ${taskScope('w')} AND w.agent_id = ? AND ${workingExpr('w')} AND ${heldExpr('w')}`).all(agentId) as Array<{ id: string }> : [];
+  for (const { id } of held) {
+    const moved = moveAssignee({ taskId: id, by: 'engine', actorId: agentId, cause: 'assignee_gone', to: { agentId: parentId! }, door });
+    if (!moved.ok) logger.warn('a held step stays with its ended helper', { agentId, taskId: id, why: moved.text }, agentId);
+  }
+}
