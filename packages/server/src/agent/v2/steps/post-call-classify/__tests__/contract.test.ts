@@ -310,34 +310,6 @@ describe('PHASE-6 CUT 8: the `postCallClassify` step\'s contract', () => {
     expect(out.interAgentTurn).toBe(false);
   });
 
-  it('THE RC-13.2 SAVE-CLAIM FLOOR SURVIVES THE MOVE WITH ITS THREE-PART CONDITION INTACT', async () => {
-    // Step 1a landed this guard's end-to-end clauses GREEN on the unmoved tree, because
-    // it had no test anywhere in either repo. This is the unit-level echo: the condition
-    // that decides it is still all three parts and not two.
-    const out = await runPostCallClassify(
-      freshState({
-        toolResults: [
-          { toolCallId: 'vr-1', name: 'vault_remember', content: 'REJECTED', isError: true },
-        ] as AgentTurnState['toolResults'],
-      }),
-      ctxFor({ result: modelResult({ content: 'Saved that for you.' }) }),
-    );
-    expect(out.directive).toBe('continue');
-    expect(out.state.steerQueue.fired.some((e) => e.floor === 'failed-save-claim')).toBe(true);
-
-    // …and the arm that must stay quiet: something WAS stored, so the claim is not a lie.
-    const quiet = await runPostCallClassify(
-      freshState({
-        toolResults: [
-          { toolCallId: 'vr-1', name: 'vault_remember', content: 'REJECTED', isError: true },
-          { toolCallId: 'vr-2', name: 'vault_remember', content: 'stored', isError: false },
-        ] as AgentTurnState['toolResults'],
-      }),
-      ctxFor({ result: modelResult({ content: 'Saved that for you.' }) }),
-    );
-    expect(quiet.state.steerQueue.fired.some((e) => e.floor === 'failed-save-claim')).toBe(false);
-  });
-
   it('PHASE-6 T-PROMISE: THE UNCOMMITTED-PROMISE FLOOR — the LEDGER fires it, and the SAME WORDS with a row stand down', async () => {
     // The measured miss, verbatim from the Step-0 drive (9 of 9 misses called no tool at all
     // and claimed the recording anyway). `fakeDb` answers nothing, so the spine read returns
@@ -369,10 +341,7 @@ describe('PHASE-6 CUT 8: the `postCallClassify` step\'s contract', () => {
   });
 
   it('PHASE-6 T-PROMISE: it is NOT `promise-floor` — different trigger, different action, and it is sequenced first', async () => {
-    // Measured rather than asserted: across all 12 Step-0 attempts `promise-floor` never
-    // fired, and it MUST not here — `isForwardPromiseReply` keys on a promise to START WORK
-    // NOW ("I'll pull/check/get…"), while the scenario's own prompt says the work cannot be
-    // done this turn. Steering "do the work NOW" would be a false accusation.
+    // `promise-floor` needs the decision model's verdict, and none is installed here.
     const out = await runPostCallClassify(freshState(), ctxFor({
       result: modelResult({
         content: 'acorn Noted — the fence estimate to Bob is recorded as a commitment; I will email it once he sends his address.',

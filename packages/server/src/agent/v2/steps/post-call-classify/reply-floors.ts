@@ -11,9 +11,9 @@ import { channelLabel, findRecentDeliveries, findRecentDeliveriesKeyed, relative
 import { isNearDuplicateText } from '../../classifiers/loop.js';
 import { detectDeliveryDenial } from '../../classifiers/grounding.js';
 import { claimedDeliverySteer, decideClaimedDelivery } from '../../claimed-delivery.js';
-import { claimsDelivery, decideRefusedDelivery, refusedDeliverySteer } from '../../refused-delivery.js';
+import { decideRefusedDelivery, refusedDeliverySteer } from '../../refused-delivery.js';
 import { decideUncommittedPromise, openedBoardWorkSince, uncommittedPromiseSteer } from '../../recorded-commitment.js';
-import { askReplyClaims, claimsSentToThirdParty } from '../../reply-claims.js';
+import { askReplyClaims, replyClaim } from '../../reply-claims.js';
 import { tsToMs } from '../../../../work/tracker-view.js';
 import { continueLoop, proceed, type StepOutcome } from '../step-outcome.js';
 import { holdAndSteer } from './closeout-floors.js';
@@ -64,7 +64,7 @@ const TRUTH_GUARD_SET: TruthGuard[] = [
         hasDeliveryReceipt: (recipient) =>
           findRecentDeliveriesKeyed(agentId, recipient, 24).length > 0 ||
           findRecentDeliveries(agentId, recipient, 24).length > 0,
-        claimInText: (said) => claimsSentToThirdParty(ctx, said),
+        claimInText: (said) => replyClaim(ctx, 'claims_sent_to_third_party') ?? said,
       });
       if (!claim.fires && claim.recipient) {
         logger.info('v2 claimed-delivery floor stood down; the ledger answered', {
@@ -114,11 +114,10 @@ const TRUTH_GUARD_SET: TruthGuard[] = [
     },
   },
 
-  // Failed save: the reply claims a save, but every vault_remember this turn was rejected.
+  // Failed save: every vault_remember this turn was rejected and the turn is ending with a reply.
   {
     floor: 'failed-save-claim',
-    gate: (state, _ctx, reply) => !steerFired(state.steerQueue, 'failed-save-claim')
-      && /\b(saved|stored|remembered|noted it|added (it|that) to (memory|the vault)|put it in (memory|the vault))\b/i.test(reply),
+    gate: (state) => !steerFired(state.steerQueue, 'failed-save-claim'),
     decide: (state, ctx) => {
       const { agentId } = ctx;
       const vaultRemembers = state.toolResults.filter((r) => r.name === 'vault_remember');
@@ -130,7 +129,7 @@ const TRUTH_GUARD_SET: TruthGuard[] = [
       }, agentId);
       return {
         content:
-          `[System: You told ${userWords(ctx.turnCtx.address)} you saved that, but all ${rejected} vault_remember call${rejected === 1 ? '' : 's'} this turn `
+          `[System: All ${rejected} vault_remember call${rejected === 1 ? '' : 's'} this turn `
           + `${rejected === 1 ? 'was' : 'were'} REJECTED and nothing was stored. Either retry with the correction the tool `
           + `gave you, or tell the counterpart truthfully that it is not saved yet. Do not claim it was saved.]`,
       };
@@ -172,8 +171,7 @@ const TRUTH_GUARD_SET: TruthGuard[] = [
   // so only this turn's tool record can refute it.
   {
     floor: 'false-delivery-claim',
-    gate: (state, _ctx, reply) =>
-      !steerFired(state.steerQueue, 'false-delivery-claim') && claimsDelivery(reply),
+    gate: (state) => !steerFired(state.steerQueue, 'false-delivery-claim'),
     decide: (state, ctx) => {
       const refused = decideRefusedDelivery(state.toolResults);
       if (!refused) return null;

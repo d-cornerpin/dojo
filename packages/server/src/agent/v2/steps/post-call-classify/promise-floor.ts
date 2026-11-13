@@ -8,7 +8,7 @@ import { broadcast } from '../../../../gateway/ws.js';
 import { type AgentTurnState } from '../../state.js';
 import { persistEngineSteer } from '../../engine-steer.js';
 import { steerFired } from '../../steer-queue.js';
-import { isForwardPromiseReply, isStandingPromiseReply, standingStateClaimSentence } from '../../ack-copy.js';
+import { replyClaim } from '../../reply-claims.js';
 import { continueLoop, proceed, type StepOutcome } from '../step-outcome.js';
 import type { PostCallClassifyContext, PostCallScratch } from './index.js';
 import { userWords } from '../../turn-address.js';
@@ -42,9 +42,9 @@ export function runPromiseFloor(
   // standing promise with nothing durable written, and a claim about live state with no board read.
   // Earlier classes take precedence. Exemptions are receipts (rows, tool results), never the reply's prose.
   // One-shot: a second promise ending is logged and the turn ends rather than spins.
-  const forwardPromise = isForwardPromiseReply(persistedContent);
-  const standingPromise = !forwardPromise && isStandingPromiseReply(persistedContent);
-  const standingStateClaim = !forwardPromise && !standingPromise ? standingStateClaimSentence(persistedContent) : null;
+  const forwardPromise = replyClaim(ctx, 'only_promises_to_start') === true;
+  const standingPromise = !forwardPromise && replyClaim(ctx, 'standing_promise') === true;
+  const standingStateClaim = !forwardPromise && !standingPromise && replyClaim(ctx, 'asserts_board_state') === true ? persistedContent : null;
   if (
     counterparty.kind === 'user' &&
     !isEngineTurn &&
@@ -104,7 +104,7 @@ export function runPromiseFloor(
     }
     if (!didEffectfulWorkThisTurn && !transitionedATaskThisTurn && !openedFutureScheduledWorkThisTurn
       && !wroteSomethingDurableThisTurn && !readTheBoardThisTurn) {
-      const quoted = (standingStateClaim ?? persistedContent).replace(/\s+/g, ' ').trim().slice(0, 200);
+      const quoted = persistedContent.replace(/\s+/g, ' ').trim().slice(0, 200);
       if (steerFired(state.steerQueue, 'promise-floor')) {
         logger.warn('promise floor: second promise ending, letting the turn end', {
           agentId, turnNumber, convKey: chosenConvKey,

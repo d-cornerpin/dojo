@@ -1,7 +1,8 @@
-// The owner put five judgments on the small local decision model: simple chat, deliverable, filler, "the reply claims
-// it sent something to someone else", and the summary check's "does it state something as pending". Each reaches the
-// model through its real entry point when the model is installed, and falls to its rule when it is not. Every other
-// question is its rule and never dials the model. The decision model is a provider row and a scripted fetch.
+// The owner put these judgments on the small local decision model: simple chat, deliverable, filler, the four reply
+// claims (sent to someone else, only promises to start, a standing promise, asserts board state), and the summary
+// check's "does it state something as pending". Each reaches the model through its real entry point when the model is
+// installed, and falls to its rule (or to no verdict) when it is not. Every other question is its rule and never dials
+// the model. The decision model is a provider row and a scripted fetch.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
@@ -18,7 +19,7 @@ import { judgment } from '../decision-hooks.js';
 import { __forgetResidencyForTests } from '../decide.js';
 import { isConversational, deliverableJudged } from '../v2/classifiers/inbound-routing.js';
 import { complexityClassifier } from '../v2/classifiers/complexity.js';
-import { askReplyClaims, claimsSentToThirdParty } from '../v2/reply-claims.js';
+import { askReplyClaims, replyClaim, type ReplyClaim } from '../v2/reply-claims.js';
 import { settleFiller } from '../../memory/shape-judgment.js';
 import { beginFillerPass, isFiller, setFillerVerdicts } from '../../vault/filler.js';
 import { keepOnlyIfChecked } from '../../memory/summary-check.js';
@@ -38,9 +39,17 @@ afterEach(() => { vi.unstubAllGlobals(); mockDb.current?.close(); mockDb.current
 const PLAN = 'Draft a five-part migration plan, then email it to the whole team and book a review.';
 const PLAN_IS_SIMPLE = complexityClassifier(PLAN).complexity === 'simple';
 
-/** Each of the five through its own entry point; `modelSays` is the opposite of its rule, and `run` is true when the
+/** The reply claims through their one entry point; `fallback` is what the floor uses with no verdict. */
+async function replyClaimUsed(name: ReplyClaim, fallback: boolean): Promise<boolean> {
+  const at = { agentId: agent(), messageId: `msg-${n}` };
+  const ctx = { ...at, result: { toolCalls: [] }, lastUserMessageContent: 'did you tell them?' };
+  await askReplyClaims({ toolResults: [] } as never, ctx as never, 'I sent the invoice to the accountant.');
+  return (replyClaim(at, name) ?? fallback) !== fallback;
+}
+
+/** Each through its own entry point; `modelSays` is the opposite of its rule, and `run` is true when the
  *  model's answer was the one used. */
-const FIVE: Array<{ name: string; modelSays: number; run: () => Promise<boolean> }> = [
+const JUDGMENTS: Array<{ name: string; modelSays: number; run: () => Promise<boolean> }> = [
   { name: 'simple_chat', modelSays: PLAN_IS_SIMPLE ? 0.02 : 0.97, run: async () => (await isConversational({}, agent(), PLAN)) !== PLAN_IS_SIMPLE },
   { name: 'deliverable', modelSays: 0.02, run: async () => !(await deliverableJudged(agent(), 'Here is the finished report.', true)) },
   {
@@ -53,14 +62,10 @@ const FIVE: Array<{ name: string; modelSays: number; run: () => Promise<boolean>
       return isFiller('sure') === false;
     },
   },
-  {
-    name: 'claims_sent_to_third_party', modelSays: 0.02, run: async () => {
-      const at = { agentId: agent(), messageId: `msg-${n}` };
-      const ctx = { ...at, result: { toolCalls: [] }, lastUserMessageContent: 'did you tell them?' };
-      await askReplyClaims({ toolResults: [] } as never, ctx as never, 'I sent the invoice to the accountant.');
-      return claimsSentToThirdParty(at, true) === false;
-    },
-  },
+  { name: 'claims_sent_to_third_party', modelSays: 0.02, run: () => replyClaimUsed('claims_sent_to_third_party', true) },
+  { name: 'only_promises_to_start', modelSays: 0.97, run: () => replyClaimUsed('only_promises_to_start', false) },
+  { name: 'standing_promise', modelSays: 0.97, run: () => replyClaimUsed('standing_promise', false) },
+  { name: 'asserts_board_state', modelSays: 0.97, run: () => replyClaimUsed('asserts_board_state', false) },
   {
     name: 'stated_current', modelSays: 0.97, run: async () => {
       const rewrite = vi.fn(async () => ({ ok: true as const, text: 'The owner asked for a budget.' }));
@@ -70,8 +75,8 @@ const FIVE: Array<{ name: string; modelSays: number; run: () => Promise<boolean>
   },
 ];
 
-describe('the five judgments the owner put on the decision model', () => {
-  for (const { name, modelSays, run } of FIVE) {
+describe('the judgments the owner put on the decision model', () => {
+  for (const { name, modelSays, run } of JUDGMENTS) {
     it(`${name}: the model answers when it is installed`, async () => {
       installDecisionModel(db());
       const calls = scriptDecisions(() => yes(modelSays));
@@ -84,6 +89,16 @@ describe('the five judgments the owner put on the decision model', () => {
       expect(calls).toHaveLength(0);
     });
   }
+});
+
+describe('the reply claims are one request', () => {
+  it('one reply asks all four questions in a single call', async () => {
+    installDecisionModel(db());
+    const calls = scriptDecisions(() => yes(0.97));
+    await replyClaimUsed('only_promises_to_start', false);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].questions.sort()).toEqual(['asserts_board_state', 'claims_sent_to_third_party', 'only_promises_to_start', 'standing_promise']);
+  });
 });
 
 describe('every other question is its rule', () => {

@@ -1,5 +1,5 @@
 // The `[no-reply]` sentinel: a trailing one is stripped, a bare one ends the turn silently with a closed
-// marker, and a prose decline is held once and steered. Silence is refused where a person is owed: a captured
+// marker. Silence is refused where a person is owed: a captured
 // answer is promoted, a live call gets a spoken ack, and a ghosted work ask is steered.
 
 import { v4 as uuidv4 } from 'uuid';
@@ -11,16 +11,12 @@ import { advance, type AgentTurnState } from '../../state.js';
 import { enqueueSteer, steerFired } from '../../steer-queue.js';
 import { recordedAnswerInConversation } from '../../answered-edge.js';
 import { continueLoop, proceed, type StepOutcome } from '../step-outcome.js';
-import { holdAndSteer } from './closeout-floors.js';
 import type { PostCallClassifyContext, PostCallScratch } from './index.js';
 import { userWords } from '../../turn-address.js';
 
 const logger = createLogger('v2-loop');
 
-/** A reply that OPENS with an unambiguous self-decline. */
-const DECLINE_OPENER_RE = /^\s*[`*_>]*\s*(?:no\s+(?:reply|response)\s+(?:needed|necessary|required|warranted)\b|no\s+need\s+to\s+(?:reply|respond)\b|nothing\s+(?:to\s+)?(?:reply|respond|to\s+say)\b|i(?:'|’)?ll\s+hold\s+off\s+(?:on\s+)?repl|i\s+(?:won(?:'|’)?t|will\s+not|am\s+not\s+going\s+to)\s+(?:reply|respond)\b)/i;
-
-/** The no-reply sentinel, the decline-as-prose variant, and the ghosted-ask ladder. */
+/** The no-reply sentinel and the ghosted-ask ladder. */
 export async function runNoReply(
   state: AgentTurnState,
   ctx: PostCallClassifyContext,
@@ -54,31 +50,6 @@ export async function runNoReply(
     result.toolCalls.length === 0 &&
     isBareNoReplySentinel(persistedContent);
 
-  // Decline-as-prose: a reply that opens with an unambiguous self-decline reads as a no-reply, not a
-  // message to route. Leading phrase only, so a reply mentioning "no reply" mid-sentence is untouched.
-  const declineRead =
-    persistedContent !== null &&
-    result.toolCalls.length === 0 &&
-    !isBareNoReply &&
-    // Never on a turn a human is waiting on: a genuine answer can open with such a phrase.
-    !triggerRow &&
-    DECLINE_OPENER_RE.test(persistedContent);
-
-  // The agent is told how its line reads and decides: the same line written again goes out as written,
-  // and only its own [no-reply] sends nothing.
-  if (declineRead && persistedContent) {
-    const t = persistedContent.replace(/\s+/g, ' ').trim();
-    const held = holdAndSteer(state, { agentId, messageId: ctx.messageId, turnNumber, sc, db: ctx.db }, {
-      floor: 'prose-decline', text: persistedContent,
-      steer: `[Engine record: your reply opens as a decision not to reply: "${t.length > 120 ? `${t.slice(0, 120)}…` : t}". `
-        + 'It has not been sent; written as your final reply again, it is sent as written. A final reply of [no-reply] sends nothing.]',
-    });
-    if (held) return held;
-  }
-  // A prose decline is never a no-reply on the engine's reading: once told, the agent's repeat is its
-  // reply. Only the agent's own [no-reply] is a no-reply.
-  const isDeclineNonReply = false;
-
   // A bare [no-reply] on a turn serving a human, with nothing surfaced and a captured text-with-tools
   // answer, promotes those words: every authorized human message gets exactly one substantive answer.
   let noReplyOverridden = false;
@@ -97,7 +68,7 @@ export async function runNoReply(
       agentId, turnNumber, preview: persistedContent.slice(0, 60),
     }, agentId);
   }
-  if (!noReplyOverridden && (isBareNoReply || isDeclineNonReply) && (latestUserSource === 'voice' || state.inboundChannel === 'phone')) {
+  if (!noReplyOverridden && isBareNoReply && (latestUserSource === 'voice' || state.inboundChannel === 'phone')) {
     // Voice and phone are live calls, where silence reads as a dropped call: swap the sentinel for a short
     // spoken ack. Phone utterances carry no `source`, so phone is told apart by `inboundChannel`.
     const voiceAcks = [
@@ -109,7 +80,7 @@ export async function runNoReply(
     logger.info('v2: [no-reply] on a voice turn, substituted a brief spoken acknowledgment to avoid dead air', {
       agentId, loopCount: state.loopCount,
     }, agentId);
-  } else if (!noReplyOverridden && (isBareNoReply || isDeclineNonReply)) {
+  } else if (!noReplyOverridden && isBareNoReply) {
     // Ghosted work ask: a bare [no-reply] on a human ask classified as work, with nothing surfaced, gets a
     // steer to point at the settled delivery or do the work. If a promoted start-ack line was shown, the
     // steer quotes it and asks the model to confirm it or answer now: ambiguity resolves toward answering.
@@ -178,11 +149,6 @@ export async function runNoReply(
       }, agentId);
     }
     {
-      if (isDeclineNonReply) {
-        logger.info('v2: agent declined in prose ("no reply needed…"), honoring intent as no-reply (not routing it)', {
-          agentId, turnNumber, preview: (persistedContent ?? '').slice(0, 60),
-        }, agentId);
-      }
       persistedContent = null;
       // Intentional silence: drop deferred narration so the finalize recovery cannot resurrect it.
       turnCtx.deferredUserReplyWithTools = null;

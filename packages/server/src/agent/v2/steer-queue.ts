@@ -13,7 +13,7 @@ export type SteerFloorId =
   | 'output-grind' | 'empty-response' | 'thrash-gate' | 'thrash-drift' | 'spinning'
   | 'repetition' | 'no-results' | 'add-notes-stop'
   | 'tracker-stop-directive' | 'tracker-scaffold' | 'hoarding-advisory'
-  | 'redundant-closeout' | 'near-duplicate-reply' | 'prose-decline';
+  | 'redundant-closeout' | 'near-duplicate-reply';
 
 export interface SteerFloorSpec {
   readonly id: SteerFloorId;
@@ -62,10 +62,9 @@ export const STEER_PRECEDENCE: readonly SteerFloorSpec[] = [
 
   { id: 'tracker-stop-directive', priority: 70, why: 'multi-step work with no tracker entry' },
   { id: 'tracker-scaffold',      priority: 71, why: 'the engine opened the work row itself' },
-  // These three hold the reply once and state the fact; written again, the reply goes out.
+  // These two hold the reply once and state the fact; written again, the reply goes out.
   { id: 'redundant-closeout',    priority: 73, why: 'a short final line after this turn already delivered its answer' },
   { id: 'near-duplicate-reply',  priority: 74, why: 'a final reply matching one already sent' },
-  { id: 'prose-decline',         priority: 75, why: 'a final reply that opens as a decision not to reply' },
   { id: 'hoarding-advisory',     priority: 90, why: 'advice only — it never blocks and says so' },
 ];
 

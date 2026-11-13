@@ -54,7 +54,7 @@ import { runMigrations } from '../../../../../db/migrations.js';
 import { openTrackerTask } from '../../../../../work/tracker-store.js';
 import { patchWork } from '../../../../../work/tracker-store.js';
 import { advance, initState, type AgentTurnState } from '../../../state.js';
-import { runPromiseFloor } from '../promise-floor.js';
+import { judgedFloor } from './post-call-kit.js';
 import type { PostCallClassifyContext, PostCallScratch } from '../index.js';
 
 const AGENT = 'harnessbot';
@@ -105,6 +105,10 @@ const scratch = (persistedContent: string): PostCallScratch => ({
   deliveredAsStartLine: false, hasXmlFallbackTools: false, effectiveModelIdForPersist: 'test-model',
 });
 
+/** The floor on a reply the decision model judged; `says` defaults to this suite's class. */
+const floor = (st: AgentTurnState, c: PostCallClassifyContext, sc: PostCallScratch, says: Parameters<typeof judgedFloor>[3] = { only_promises_to_start: true }) =>
+  judgedFloor(st, c, sc, says);
+
 /** A tracker row opened BY THIS TURN, with the schedule the caller names. */
 function seedOpenedThisTurn(o: { scheduledStartMs?: number | null; nextRunAtMs?: number | null; turn?: number }): string {
   const id = openTrackerTask({
@@ -131,23 +135,23 @@ beforeEach(() => {
 });
 
 describe('T22: a promise backed by a future-scheduled row is not an empty promise', () => {
-  it('THE S1 REPLAY: the timed job is opened for 15 minutes out — no steer', () => {
+  it('THE S1 REPLAY: the timed job is opened for 15 minutes out, no steer', async () => {
     seedOpenedThisTurn({ scheduledStartMs: Date.now() + FIFTEEN_MIN });
-    const out = runPromiseFloor(withWorkOpen(stateWith()), ctxFor(), scratch(S1_PROMISE));
+    const out = await floor(withWorkOpen(stateWith()), ctxFor(), scratch(S1_PROMISE));
     expect(out.directive, 'the user said "in 15 minutes"; the floor must not order the work done NOW').toBe('proceed');
     expect(steerRowSpy).not.toHaveBeenCalled();
   });
 
-  it('a recurring row whose next fire is in the future counts the same', () => {
+  it('a recurring row whose next fire is in the future counts the same', async () => {
     seedOpenedThisTurn({ scheduledStartMs: null, nextRunAtMs: Date.now() + FIFTEEN_MIN });
-    const out = runPromiseFloor(withWorkOpen(stateWith()), ctxFor(), scratch(S1_PROMISE));
+    const out = await floor(withWorkOpen(stateWith()), ctxFor(), scratch(S1_PROMISE));
     expect(out.directive).toBe('proceed');
   });
 });
 
 describe('T22 controls: the 2026-07-08 case this floor was built for stays red', () => {
-  it('THE PIN: a promise with NO tool work at all is still steered', () => {
-    const out = runPromiseFloor(stateWith(), ctxFor(), scratch(EMPTY_PROMISE));
+  it('THE PIN: a promise with NO tool work at all is still steered', async () => {
+    const out = await floor(stateWith(), ctxFor(), scratch(EMPTY_PROMISE));
     expect(out.directive).toBe('continue');
     expect(steerRowSpy).toHaveBeenCalledTimes(1);
     expect((steerRowSpy.mock.calls[0][0] as { role: string }).role)
@@ -157,63 +161,63 @@ describe('T22 controls: the 2026-07-08 case this floor was built for stays red',
       .toContain('Do the work NOW with tool calls and deliver the result.');
   });
 
-  it('a promise beside a PAST-scheduled row is still steered', () => {
+  it('a promise beside a PAST-scheduled row is still steered', async () => {
     seedOpenedThisTurn({ scheduledStartMs: Date.now() - FIFTEEN_MIN });
-    const out = runPromiseFloor(withWorkOpen(stateWith()), ctxFor(), scratch(S1_PROMISE));
+    const out = await floor(withWorkOpen(stateWith()), ctxFor(), scratch(S1_PROMISE));
     expect(out.directive, 'a row whose fire is already past is not a bounded future').toBe('continue');
   });
 
-  it('a promise beside a row with NO schedule at all is still steered', () => {
+  it('a promise beside a row with NO schedule at all is still steered', async () => {
     seedOpenedThisTurn({});
-    const out = runPromiseFloor(withWorkOpen(stateWith()), ctxFor(), scratch(S1_PROMISE));
+    const out = await floor(withWorkOpen(stateWith()), ctxFor(), scratch(S1_PROMISE));
     expect(out.directive).toBe('continue');
   });
 
-  it('a FAILED work_open leaves no row, so the floor still fires', () => {
+  it('a FAILED work_open leaves no row, so the floor still fires', async () => {
     // Nothing seeded: the failed call created nothing, which is exactly what the ROW-side
     // predicate reads. A tool-result-text predicate would have had to guess.
-    const out = runPromiseFloor(withWorkOpen(stateWith(), { isError: true }), ctxFor(), scratch(S1_PROMISE));
+    const out = await floor(withWorkOpen(stateWith(), { isError: true }), ctxFor(), scratch(S1_PROMISE));
     expect(out.directive).toBe('continue');
   });
 
-  it("another agent's future-scheduled row on the same turn number does not exempt this turn", () => {
+  it("another agent's future-scheduled row on the same turn number does not exempt this turn", async () => {
     mockDb.current!.prepare(`INSERT INTO agents (id, name, status, session_started_at) VALUES ('other', 'Other', 'idle', '1970-01-01')`).run();
     const id = openTrackerTask({
       title: 'someone else\'s timed job', status: 'in_progress', assignedTo: 'other', createdBy: 'other',
       origin: { kind: 'agent', sourceMessageId: null, turn: TURN, convKey: 'ck-other' },
     });
     patchWork(id, { scheduled_start: Date.now() + FIFTEEN_MIN });
-    const out = runPromiseFloor(withWorkOpen(stateWith()), ctxFor(), scratch(S1_PROMISE));
+    const out = await floor(withWorkOpen(stateWith()), ctxFor(), scratch(S1_PROMISE));
     expect(out.directive).toBe('continue');
   });
 
-  it('a row this agent opened on an EARLIER turn does not exempt this one', () => {
+  it('a row this agent opened on an EARLIER turn does not exempt this one', async () => {
     seedOpenedThisTurn({ scheduledStartMs: Date.now() + FIFTEEN_MIN, turn: TURN - 1 });
-    const out = runPromiseFloor(withWorkOpen(stateWith()), ctxFor(), scratch(S1_PROMISE));
+    const out = await floor(withWorkOpen(stateWith()), ctxFor(), scratch(S1_PROMISE));
     expect(out.directive).toBe('continue');
   });
 });
 
 describe('T22 controls: the untouched guards still bound the floor', () => {
-  it('the effectful-work exemption is unchanged', () => {
+  it('the effectful-work exemption is unchanged', async () => {
     const st = advance(stateWith(), {
       toolResults: [{ toolCallId: 'tc-2', name: 'send_email', isError: false, content: 'sent', arguments: { to: 'a@b.c' } }],
     });
-    expect(runPromiseFloor(st, ctxFor(), scratch(EMPTY_PROMISE)).directive).toBe('proceed');
+    expect((await floor(st, ctxFor(), scratch(EMPTY_PROMISE))).directive).toBe('proceed');
   });
 
-  it('the MAX_TOOL_LOOPS proximity skip is unchanged', () => {
-    const out = runPromiseFloor(stateWith({ loopCount: 75 }), ctxFor({ maxToolLoops: 75 }), scratch(EMPTY_PROMISE));
+  it('the MAX_TOOL_LOOPS proximity skip is unchanged', async () => {
+    const out = await floor(stateWith({ loopCount: 75 }), ctxFor({ maxToolLoops: 75 }), scratch(EMPTY_PROMISE));
     expect(out.directive).toBe('proceed');
   });
 
-  it('an engine turn is never steered by this floor', () => {
-    const out = runPromiseFloor(stateWith(), ctxFor({ isEngineTurn: true }), scratch(EMPTY_PROMISE));
+  it('an engine turn is never steered by this floor', async () => {
+    const out = await floor(stateWith(), ctxFor({ isEngineTurn: true }), scratch(EMPTY_PROMISE));
     expect(out.directive).toBe('proceed');
   });
 
-  it('a reply that is not a forward promise is never steered', () => {
-    const out = runPromiseFloor(stateWith(), ctxFor(), scratch('The Mariners lost 4-2 to the Angels.'));
+  it('a reply the decision model does not judge a promise is never steered', async () => {
+    const out = await floor(stateWith(), ctxFor(), scratch('The Mariners lost 4-2 to the Angels.'), { only_promises_to_start: false });
     expect(out.directive).toBe('proceed');
   });
 });

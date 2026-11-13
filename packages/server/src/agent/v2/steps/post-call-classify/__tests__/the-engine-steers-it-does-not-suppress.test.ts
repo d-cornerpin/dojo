@@ -1,8 +1,8 @@
 // v3.5 field fix 3, audit round (#11, V11): THE ENGINE STEERS, IT DOES NOT SUPPRESS THE AGENT'S REPLY.
 //
-// Three floors nulled the agent's final reply: a line of 30 characters or less after the turn already
-// delivered (and `chat:retract`ed it off the screen), a reply that looked like one sent in the last five,
-// and a reply that opened with a decline phrase ("No reply needed"). Owner law: engine detects, agent
+// Two floors nulled the agent's final reply: a line of 30 characters or less after the turn already
+// delivered (and `chat:retract`ed it off the screen), and a reply that looked like one sent in the last
+// five. Owner law: engine detects, agent
 // speaks. Each floor now holds the line (demoted to a working note, never discarded), states the fact to
 // the agent once, and lets the agent decide; a reply written again after the fact goes out.
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -128,7 +128,6 @@ function freshState(over: Partial<AgentTurnState> = {}): AgentTurnState {
 
 import { runCloseoutFloors } from '../closeout-floors.js';
 import { runReplyFloors } from '../reply-floors.js';
-import { runNoReply } from '../no-reply.js';
 import { steerFired } from '../../../steer-queue.js';
 import type { PostCallScratch } from '../index.js';
 
@@ -163,20 +162,6 @@ describe('a near-duplicate reply is steered, not nulled', () => {
     expect(steerFired(out.state.steerQueue, 'near-duplicate-reply')).toBe(true);
     const sc2 = scFor(text);
     await runReplyFloors(out.state, ctx, sc2);
-    expect(sc2.persistedContent).toBe(text);
-  });
-});
-
-describe('a reply that opens with a decline phrase is steered, not nulled', () => {
-  it('THE RED: the agent is told how its line reads; written again, it goes out', async () => {
-    const text = 'No reply needed here, the renewal is already signed.';
-    const ctx = ctxFor({ hasUnansweredUser: false, result: modelResult({ content: text }) });
-    const sc = scFor(text);
-    const out = await runNoReply(freshState(), ctx, sc);
-    expect(out.directive).toBe('continue');
-    expect(steerFired(out.state.steerQueue, 'prose-decline')).toBe(true);
-    const sc2 = scFor(text);
-    await runNoReply(out.state, ctx, sc2);
     expect(sc2.persistedContent).toBe(text);
   });
 });

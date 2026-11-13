@@ -65,6 +65,7 @@ import { settleAsksAtTurnFinalize } from '../../../../../work/ask-settlement.js'
 import { advance, initState, type AgentTurnState } from '../../../state.js';
 import { reclassifyTurnDrafts } from '../../teardown/draft-reclassify.js';
 import { runPostCallClassify, type PostCallClassifyContext } from '../index.js';
+import { installJudgment } from '../../../../decision-hooks.js';
 
 const AGENT = 'harnessbot';
 const CONV = 'conv-1';
@@ -185,6 +186,13 @@ function claimedAsk(): string {
 beforeEach(() => {
   vi.clearAllMocks();
   answerKey = null;
+  // The decision model's verdict per reply: the first reply asserts board state, the others promise.
+  installJudgment(async (_q, { state: asked }) => {
+    const reply = (asked as { reply: string }).reply;
+    if (reply === FIRST_REPLY) return { asserts_board_state: true };
+    if (reply.startsWith('On it.')) return { only_promises_to_start: true };
+    return reply.startsWith('Yes, I can.') ? { standing_promise: true } : {};
+  });
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
   mockDb.current = db;

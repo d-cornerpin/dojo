@@ -1,64 +1,8 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// THE FALSE-DELIVERY GUARD'S TWO DECISIONS, ON THEIR OWN.
-//
-// `refused-delivery.ts` holds the two halves of the fifth truth guard: `claimsDelivery` (the
-// GATE — does the reply claim the artifact went out, and is that claim not itself a denial) and
-// `decideRefusedDelivery` (the EVIDENCE — did the turn's `dojo_report` calls all refuse). Neither
-// had coverage: the only tests that name the file are the guard census and the author-tag test,
-// and neither calls a decision. Every expectation below is the two regexes run on the input.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// The refused-report guard's evidence and its steer: did every dojo_report call this turn refuse,
+// and what the model is handed when they did.
 
 import { describe, it, expect } from 'vitest';
-import { claimsDelivery, decideRefusedDelivery, refusedDeliverySteer } from '../refused-delivery.js';
-
-describe('claimsDelivery — the gate half, prose only', () => {
-  const CLAIMS = [
-    'Submitted!',
-    'Your report has been submitted.',
-    'It was delivered to the builders.',
-    'I submitted it for you.',
-    'Posted it for you',
-    'Sent it in',
-    'Filed it with the team',
-    'delivered?',
-  ];
-  it('claims the artifact went out on every reserved delivery sentence', () => {
-    for (const text of CLAIMS) {
-      expect(claimsDelivery(text), text).toBe(true);
-    }
-  });
-
-  // Honest sentences the lane keeps saying on a failing turn: they never match the claim regex at
-  // all. A bare "sent it in chat" or "published the draft to the shared folder" is NOT a delivery.
-  const NEVER_CLAIMS = [
-    '',
-    'hi',
-    'I will submit it later',
-    'I sent you the link in chat',
-    'I published the draft to the shared folder',
-  ];
-  it('never claims on the honest non-delivery sentences', () => {
-    for (const text of NEVER_CLAIMS) {
-      expect(claimsDelivery(text), text).toBe(false);
-    }
-  });
-
-  // These MATCH the claim regex, but a denial inside the same sentence quietens them: a guard that
-  // steered a truthful "it did not go out" would teach the model to distrust the engine.
-  const DENIALS = [
-    'I could not submit it',
-    'The submit failed',
-    'it is not submitted',
-    'Submitting failed, so no.',
-    'Nothing was submitted',
-    'Not sure it was delivered',
-  ];
-  it('a denial inside the sentence quietens the claim', () => {
-    for (const text of DENIALS) {
-      expect(claimsDelivery(text), text).toBe(false);
-    }
-  });
-});
+import { decideRefusedDelivery, refusedDeliverySteer } from '../refused-delivery.js';
 
 describe('decideRefusedDelivery — the evidence half', () => {
   it('is null when the turn made no dojo_report call', () => {

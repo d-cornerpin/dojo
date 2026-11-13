@@ -39,6 +39,7 @@ import { runV2Turn } from '../../../loop.js';
 import { runMigrations } from '../../../../../db/migrations.js';
 import { submitUserMessage } from '../../../../../gateway/routes/chat.js';
 import { openTrackerTask } from '../../../../../work/tracker-store.js';
+import { installJudgment } from '../../../../decision-hooks.js';
 
 const AGENT = 'agent-desk';
 const PROMISE = 'On it. Let me pull up the supplier quotes.';
@@ -76,6 +77,7 @@ beforeEach(() => {
     origin: { kind: 'agent', sourceMessageId: null, turn: 1, convKey: null },
   });
   callModelSpy.mockReset();
+  installJudgment(async () => ({ only_promises_to_start: true }));   // the decision model reads each reply as a promise
 });
 afterEach(() => { mockDb.current?.close(); mockDb.current = null; });
 

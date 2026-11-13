@@ -14,11 +14,8 @@
 // agent by identity — `agent/tools/cat/comms.ts`). It will silently never happen, and it does
 // not even survive a session reset: it exists only as one assistant message.
 //
-// The promise floor is the mechanism for exactly this class — a promise with nothing behind it,
-// its own header's 2026-07-08 case. Its recognizer covers IMMEDIATE forward promises ("I'll go
-// pull up your calendars"), not STANDING ones ("from now on … I'll"), so no steer fired.
-// Verified at HEAD before this suite was written: `isForwardPromiseReply(<the S5 reply>)` is
-// `false`, and the floor returns `proceed`.
+// The promise floor is the mechanism for exactly this class: a promise with nothing behind it.
+// The class is the decision model's `standing_promise` verdict.
 //
 // ── WHAT THIS SUITE PINS ──
 //   * the S5 reply with nothing durable written → ONE steer, naming the durable doors;
@@ -67,7 +64,7 @@ import { runMigrations } from '../../../../../db/migrations.js';
 import { openTrackerTask, patchWork } from '../../../../../work/tracker-store.js';
 import { advance, initState, type AgentTurnState } from '../../../state.js';
 import { enqueueSteer, nextSteer } from '../../../steer-queue.js';
-import { runPromiseFloor } from '../promise-floor.js';
+import { judgedFloor } from './post-call-kit.js';
 import type { PostCallClassifyContext, PostCallScratch } from '../index.js';
 import { FX } from '../../../../../../../../deploy/checks/fixture-vocabulary.mjs';
 
@@ -111,6 +108,10 @@ const scratch = (persistedContent: string): PostCallScratch => ({
   deliveredAsStartLine: false, hasXmlFallbackTools: false, effectiveModelIdForPersist: 'test-model',
 });
 
+/** The floor on a reply the decision model judged; `says` defaults to this suite's class. */
+const floor = (st: AgentTurnState, c: PostCallClassifyContext, sc: PostCallScratch, says: Parameters<typeof judgedFloor>[3] = { standing_promise: true }) =>
+  judgedFloor(st, c, sc, says);
+
 /** A successful tool result for `name`, the way the loop records one. */
 function withToolCall(state: AgentTurnState, name: string, args: Record<string, unknown> = {}, opts: { isError?: boolean } = {}): AgentTurnState {
   const call = { id: `tc-${name}`, name, arguments: args } as ToolCall;
@@ -146,15 +147,15 @@ beforeEach(() => {
 });
 
 describe('T33: a standing promise with nothing behind it is steered once', () => {
-  it('THE S5 REPLAY: zero tool calls, zero durable writes → one steer', () => {
-    const out = runPromiseFloor(stateWith(), ctxFor(), scratch(S5_STANDING_PROMISE));
+  it('THE S5 REPLAY: zero tool calls, zero durable writes → one steer', async () => {
+    const out = await floor(stateWith(), ctxFor(), scratch(S5_STANDING_PROMISE));
     expect(out.directive, 'a standing promise backed by nothing must not end the turn unchallenged').toBe('continue');
     expect(steerRowSpy).toHaveBeenCalledTimes(1);
     expect((steerRowSpy.mock.calls[0][0] as { role: string }).role).toBe('system');
   });
 
-  it('the steer names the durable doors that exist, and never speaks to the user', () => {
-    runPromiseFloor(stateWith(), ctxFor(), scratch(S5_STANDING_PROMISE));
+  it('the steer names the durable doors that exist, and never speaks to the user', async () => {
+    await floor(stateWith(), ctxFor(), scratch(S5_STANDING_PROMISE));
     const text = steerText();
     expect(text.startsWith('[System]'), 'the floor steers the MODEL (OR2)').toBe(true);
     expect(text).toContain('vault_remember');
@@ -166,8 +167,8 @@ describe('T33: a standing promise with nothing behind it is steered once', () =>
   });
 
   // ── T53 (owner ruling 5): the floor speaks ONCE, on the channel that carries it ──
-  it('T53: the steer reaches the model on the QUEUE only — no events-lane second copy', () => {
-    const out = runPromiseFloor(stateWith(), ctxFor(), scratch(S5_STANDING_PROMISE));
+  it('T53: the steer reaches the model on the QUEUE only, no events-lane second copy', async () => {
+    const out = await floor(stateWith(), ctxFor(), scratch(S5_STANDING_PROMISE));
     const queued = nextSteer(out.state.steerQueue);
     // CHANNEL 1, the delivery: the whole steer, on the very next iteration.
     expect(queued!.floor).toBe('promise-floor');
@@ -182,136 +183,108 @@ describe('T33: a standing promise with nothing behind it is steered once', () =>
     expect(riders.n, 'the steer must not reach the model a second time next turn').toBe(0);
   });
 
-  it('the standing promise is quoted back to the model so the steer is about THIS reply', () => {
-    runPromiseFloor(stateWith(), ctxFor(), scratch(S5_STANDING_PROMISE));
+  it('the standing promise is quoted back to the model so the steer is about THIS reply', async () => {
+    await floor(stateWith(), ctxFor(), scratch(S5_STANDING_PROMISE));
     expect(steerText()).toContain('From now on, when a reminder fires');
   });
 });
 
 describe('T33: the exemption is a RECEIPT, never prose', () => {
-  it('a successful vault_remember this turn exempts the reply', () => {
-    const out = runPromiseFloor(
+  it('a successful vault_remember this turn exempts the reply', async () => {
+    const out = await floor(
       withToolCall(stateWith(), 'vault_remember', { verbatim: true, pin: true, content: 'text my phone as a backup' }),
       ctxFor(), scratch(S5_STANDING_PROMISE));
     expect(out.directive).toBe('proceed');
     expect(steerRowSpy).not.toHaveBeenCalled();
   });
 
-  it('a FAILED vault_remember is not a receipt — the floor still fires', () => {
-    const out = runPromiseFloor(
+  it('a FAILED vault_remember is not a receipt, the floor still fires', async () => {
+    const out = await floor(
       withToolCall(stateWith(), 'vault_remember', { content: 'x' }, { isError: true }),
       ctxFor(), scratch(S5_STANDING_PROMISE));
     expect(out.directive).toBe('continue');
   });
 
-  it('a tracked row this turn opened exempts the reply, schedule or no schedule', () => {
+  it('a tracked row this turn opened exempts the reply, schedule or no schedule', async () => {
     seedRowOpenedThisTurn();
-    const out = runPromiseFloor(withToolCall(stateWith(), 'work_open', { kind: 'task' }), ctxFor(), scratch(S5_STANDING_PROMISE));
+    const out = await floor(withToolCall(stateWith(), 'work_open', { kind: 'task' }), ctxFor(), scratch(S5_STANDING_PROMISE));
     expect(out.directive).toBe('proceed');
   });
 
-  it("a row this agent opened on an EARLIER turn does not exempt this one", () => {
+  it("a row this agent opened on an EARLIER turn does not exempt this one", async () => {
     seedRowOpenedThisTurn({ turn: TURN - 1 });
-    const out = runPromiseFloor(withToolCall(stateWith(), 'work_open', { kind: 'task' }), ctxFor(), scratch(S5_STANDING_PROMISE));
+    const out = await floor(withToolCall(stateWith(), 'work_open', { kind: 'task' }), ctxFor(), scratch(S5_STANDING_PROMISE));
     expect(out.directive).toBe('continue');
   });
 
-  it('SAYING the promise was recorded, with no receipt anywhere, does not exempt it', () => {
-    const out = runPromiseFloor(stateWith(), ctxFor(),
+  it('SAYING the promise was recorded, with no receipt anywhere, does not exempt it', async () => {
+    const out = await floor(stateWith(), ctxFor(),
       scratch("Yes, I can. I've saved that to your preferences — from now on, if you don't reply within a few minutes I'll text your phone."));
     expect(out.directive).toBe('continue');
   });
 
-  it('an updated agent configuration (a standing instruction that survives a reset) is a receipt', () => {
-    const out = runPromiseFloor(
+  it('an updated agent configuration (a standing instruction that survives a reset) is a receipt', async () => {
+    const out = await floor(
       withToolCall(stateWith(), 'update_agent', { agent_id: 'someone', system_prompt: '…' }),
       ctxFor(), scratch(S5_STANDING_PROMISE));
     expect(out.directive).toBe('proceed');
   });
 
-  it('a scratchpad write is NOT durable (it dies on session reset) and does not exempt', () => {
-    const out = runPromiseFloor(
+  it('a scratchpad write is NOT durable (it dies on session reset) and does not exempt', async () => {
+    const out = await floor(
       withToolCall(stateWith(), 'scratchpad_set', { content: 'remember to text the phone' }),
       ctxFor(), scratch(S5_STANDING_PROMISE));
     expect(out.directive).toBe('continue');
   });
 });
 
-describe('T33 controls: the recognizer stays conservative', () => {
-  const quiet = (text: string) => {
-    const out = runPromiseFloor(stateWith(), ctxFor(), scratch(text));
-    expect(out.directive, `should not steer on: ${text}`).toBe('proceed');
-    expect(steerRowSpy).not.toHaveBeenCalled();
-  };
-
-  it('a standing scope with no first-person commitment is not a promise', () => {
-    quiet('From now on the reminders fire at 7am in your local timezone.');
-  });
-
-  it('a question is a legitimate ending, never a promise', () => {
-    quiet('From now on, should I text your phone when you have not replied?');
-  });
-
-  it('an honest disclosure of what it cannot do is an accepted outcome, not a steer', () => {
-    quiet(`From now on I'll post reminders here, but I can't text your phone — only the primary agent can send SMS, so you would need to ask ${FX.n4}.`);
-  });
-
-  it('a plain answer with no standing scope is untouched', () => {
-    quiet('The Mariners lost 4-2 to the Angels.');
-  });
-
-  it('"whenever you like, let me know" is an invitation, not a promise', () => {
-    quiet('Your reminder is set for 7pm. Whenever you want to change it, let me know.');
-  });
-});
-
 describe('T33 controls: every UNTOUCHED bound still bounds the floor', () => {
-  it('the forward class keeps precedence and its byte-identical steer text', () => {
-    const out = runPromiseFloor(stateWith(), ctxFor(),
-      scratch("From now on I'll check that for you. Let me pull up all your calendars."));
+  it('the forward class keeps precedence and its byte-identical steer text', async () => {
+    const out = await floor(stateWith(), ctxFor(),
+      scratch("From now on I'll check that for you. Let me pull up all your calendars."), { standing_promise: true, only_promises_to_start: true });
     expect(out.directive).toBe('continue');
     expect(steerText()).toContain('Do the work NOW with tool calls and deliver the result.');
   });
 
-  it('the 2026-07-08 pin is untouched: an immediate empty promise gets the original steer', () => {
-    const out = runPromiseFloor(stateWith(), ctxFor(), scratch(EMPTY_PROMISE));
+  it('the 2026-07-08 pin is untouched: an immediate empty promise gets the original steer', async () => {
+    const out = await floor(stateWith(), ctxFor(), scratch(EMPTY_PROMISE), { only_promises_to_start: true });
     expect(out.directive).toBe('continue');
     expect(steerText()).toContain('Do the work NOW with tool calls and deliver the result.');
   });
 
-  it('ONE STEER PER TURN: a promise-floor steer already fired means no second steer', () => {
+  it('ONE STEER PER TURN: a promise-floor steer already fired means no second steer', async () => {
     const st = advance(stateWith(), {
       steerQueue: enqueueSteer(stateWith().steerQueue, { floor: 'promise-floor', content: 'earlier steer', atLoop: 1 }),
     });
-    const out = runPromiseFloor(st, ctxFor(), scratch(S5_STANDING_PROMISE));
+    const out = await floor(st, ctxFor(), scratch(S5_STANDING_PROMISE));
     expect(out.directive).toBe('proceed');
     expect(steerRowSpy).not.toHaveBeenCalled();
   });
 
-  it('the MAX_TOOL_LOOPS proximity skip is unchanged', () => {
-    const out = runPromiseFloor(stateWith({ loopCount: 75 }), ctxFor({ maxToolLoops: 75 }), scratch(S5_STANDING_PROMISE));
+  it('the MAX_TOOL_LOOPS proximity skip is unchanged', async () => {
+    const out = await floor(stateWith({ loopCount: 75 }), ctxFor({ maxToolLoops: 75 }), scratch(S5_STANDING_PROMISE));
     expect(out.directive).toBe('proceed');
   });
 
-  it('an engine turn is never steered by this floor', () => {
-    const out = runPromiseFloor(stateWith(), ctxFor({ isEngineTurn: true }), scratch(S5_STANDING_PROMISE));
+  it('an engine turn is never steered by this floor', async () => {
+    const out = await floor(stateWith(), ctxFor({ isEngineTurn: true }), scratch(S5_STANDING_PROMISE));
     expect(out.directive).toBe('proceed');
   });
 
-  it('a peer counterparty is never steered by this floor', () => {
-    const out = runPromiseFloor(stateWith(), ctxFor({
+  it('a peer counterparty is never steered by this floor', async () => {
+    const out = await floor(stateWith(), ctxFor({
       counterparty: { kind: 'agent', relation: 'peer' } as unknown as PostCallClassifyContext['counterparty'],
     }), scratch(S5_STANDING_PROMISE));
     expect(out.directive).toBe('proceed');
   });
 
-  it('the engine conv key is never steered by this floor', () => {
-    const out = runPromiseFloor(stateWith(), ctxFor({ chosenConvKey: 'engine' }), scratch(S5_STANDING_PROMISE));
+  it('the engine conv key is never steered by this floor', async () => {
+    const out = await floor(stateWith(), ctxFor({ chosenConvKey: 'engine' }), scratch(S5_STANDING_PROMISE));
     expect(out.directive).toBe('proceed');
   });
 
-  it('an effectful action this turn exempts a standing promise too', () => {
-    const out = runPromiseFloor(withToolCall(stateWith(), 'sms_send', { to: '+15550200' }), ctxFor(), scratch(S5_STANDING_PROMISE));
+  it('an effectful action this turn exempts a standing promise too', async () => {
+    const out = await floor(withToolCall(stateWith(), 'sms_send', { to: '+15550200' }), ctxFor(), scratch(S5_STANDING_PROMISE));
     expect(out.directive).toBe('proceed');
   });
 });

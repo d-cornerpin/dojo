@@ -17,13 +17,13 @@ describe('t196 (A4) - the two steers that were untagged', () => {
     const verdict = guard.decide(state, { agentId: 'a', turnCtx: {} } as never, 'Saved that for you.');
     expect(verdict, 'the guard fires on all-rejected saves').not.toBeNull();
     expect(verdict!.content).toMatch(TAGGED);
-    expect(verdict!.content).toContain('You told the user you saved that');
+    expect(verdict!.content).toContain('REJECTED and nothing was stored');
   });
 
   it('false-delivery-claim carries the author head', () => {
     const text = refusedDeliverySteer({ quoted: 'no such recipient' } as never);
     expect(text).toMatch(TAGGED);
-    expect(text).toContain('You told the person you are talking to that went out');
+    expect(text).toContain('could have sent your report to the person you are talking to');
   });
 });
 

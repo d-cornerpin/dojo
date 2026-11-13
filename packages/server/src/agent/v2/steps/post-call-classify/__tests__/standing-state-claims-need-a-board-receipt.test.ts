@@ -20,17 +20,12 @@
 //   * the S5 recap with zero board contact → ONE steer, naming the door that answers the question;
 //   * the exemption is the RECEIPT, never the prose: a `work_update` read (or any other contact
 //     with the board or the calendar this turn) exempts it, and SAYING "I checked" does not;
-//   * the recognizer is CONSERVATIVE, which is the whole risk here — a false positive spends a
-//     needless round on an ordinary answer. A past-work recap with no standing claims, a short
-//     factual answer, and an honestly-hedged "from memory" reply are all left alone;
+//   * the class is the decision model's verdict (`asserts_board_state`); with none, no steer;
 //   * every bound the plan marks UNTOUCHED still bounds the floor: one steer per turn shared with
 //     both sibling classes, the MAX_TOOL_LOOPS proximity skip, engine turns, non-user
 //     counterparties, the engine conv key — and both sibling classes keep PRECEDENCE and their
 //     byte-identical steer texts (T22's and T33's suites are the regression obligation).
 //
-// RED AT HEAD, recorded before the fix: every test in the first two describes below failed —
-// `runPromiseFloor` returned `proceed` and `insertEngineEventIfAbsent` was never called. The
-// controls below were green before AND after, which is what makes them controls.
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
@@ -68,7 +63,7 @@ vi.mock('../../../../../memory/message-store.js', async (importOriginal) => ({
 import { runMigrations } from '../../../../../db/migrations.js';
 import { advance, initState, type AgentTurnState } from '../../../state.js';
 import { enqueueSteer } from '../../../steer-queue.js';
-import { runPromiseFloor } from '../promise-floor.js';
+import { judgedFloor } from './post-call-kit.js';
 import type { PostCallClassifyContext, PostCallScratch } from '../index.js';
 import { FX } from '../../../../../../../../deploy/checks/fixture-vocabulary.mjs';
 
@@ -93,13 +88,6 @@ const S5_RECAP = `Here's the week, ${FX.n11} — the bulk of it landed today:
 - Quotes: two fence quotes still parked, waiting on Bob's address.
 
 Still on deck: parking pass renewal, and the fence quote once Bob sends his address.`;
-
-/** The same week, told without a single claim about what is still live. */
-const PAST_ONLY_RECAP =
-  `Here's the week, ${FX.n11}. We finished the Denver trip prep — the carry-on checklist and the `
-  + 'departure brief — tidied three uploads folders and cleared 11 junk files with your sign-off, '
-  + 'and answered the Mariners, inbox, commute-cost and Labor Day flight questions. The cheapest '
-  + 'direct SEA-Chicago fare came back at $297 and nothing was booked.';
 
 /** The 2026-07-08 case the floor was BUILT for, verbatim from its own header. */
 const EMPTY_PROMISE = 'On it. Let me pull up all your calendars.';
@@ -138,6 +126,10 @@ const scratch = (persistedContent: string): PostCallScratch => ({
   deliveredAsStartLine: false, hasXmlFallbackTools: false, effectiveModelIdForPersist: 'test-model',
 });
 
+/** The floor on a reply the decision model judged; `says` defaults to this suite's class. */
+const floor = (st: AgentTurnState, c: PostCallClassifyContext, sc: PostCallScratch, says: Parameters<typeof judgedFloor>[3] = { asserts_board_state: true }) =>
+  judgedFloor(st, c, sc, says);
+
 /** A successful tool result for `name`, the way the loop records one. */
 function withToolCall(state: AgentTurnState, name: string, args: Record<string, unknown> = {}, opts: { isError?: boolean } = {}): AgentTurnState {
   const call = { id: `tc-${name}`, name, arguments: args } as ToolCall;
@@ -162,15 +154,15 @@ beforeEach(() => {
 });
 
 describe('T36: a reply that asserts standing state without reading the board is steered once', () => {
-  it('THE S5 REPLAY: the week recap, zero tool calls → one steer', () => {
-    const out = runPromiseFloor(stateWith(), ctxFor(), scratch(S5_RECAP));
+  it('THE S5 REPLAY: the week recap, zero tool calls → one steer', async () => {
+    const out = await floor(stateWith(), ctxFor(), scratch(S5_RECAP));
     expect(out.directive, 'a recap that asserts what is scheduled and owed must not end the turn unchecked').toBe('continue');
     expect(steerRowSpy).toHaveBeenCalledTimes(1);
     expect((steerRowSpy.mock.calls[0][0] as { role: string }).role).toBe('system');
   });
 
-  it('the steer names the door that answers the question, and never speaks to the user', () => {
-    runPromiseFloor(stateWith(), ctxFor(), scratch(S5_RECAP));
+  it('the steer names the door that answers the question, and never speaks to the user', async () => {
+    await floor(stateWith(), ctxFor(), scratch(S5_RECAP));
     const text = steerText();
     expect(text.startsWith('[System]'), 'the floor steers the MODEL (OR2)').toBe(true);
     expect(text).toContain('work_update');
@@ -188,191 +180,115 @@ describe('T36: a reply that asserts standing state without reading the board is 
     expect(text).not.toContain('made a STANDING promise');
   });
 
-  it('the steer quotes the CLAIM, not the top of the reply', () => {
-    runPromiseFloor(stateWith(), ctxFor(), scratch(S5_RECAP));
+  it('the steer quotes the first 200 characters of the reply', async () => {
+    await floor(stateWith(), ctxFor(), scratch(S5_RECAP));
     const text = steerText();
-    // The FIRST standing-state claim in the recap, which is not its first sentence: a 200-char
-    // slice of a 1,100-char recap would have quoted the greeting back and named nothing.
-    expect(text).toContain('schedule intact for tomorrow');
-    expect(text).not.toContain(`Here's the week, ${FX.n11}`);
-  });
-
-  it('each of the three S5 claim shapes fires on its own', () => {
-    for (const claim of [
-      'The 6:45 AM weekday routine reminder is set up and the schedule is intact for tomorrow.',
-      'Two fence quotes are still parked, waiting on Bob\'s address.',
-      'Still on deck: the parking pass renewal.',
-    ]) {
-      vi.clearAllMocks();
-      expect(runPromiseFloor(stateWith(), ctxFor(), scratch(claim)).directive, claim).toBe('continue');
-    }
-  });
-
-  it('a future firing asserted as fact is the same claim', () => {
-    expect(runPromiseFloor(stateWith(), ctxFor(),
-      scratch('Your dinner reminder will fire at 6 PM on Wednesday.')).directive).toBe('continue');
-  });
-
-  it('asserting the calendar without reading it counts too', () => {
-    expect(runPromiseFloor(stateWith(), ctxFor(),
-      scratch('The vet call is on your calendar for Friday at 10.')).directive).toBe('continue');
-  });
-
-  // The driven replay of this same send on the floor model (2026-08-11, zero tool calls again)
-  // came back with the same two claims AND a closing question. The siblings drop any reply
-  // containing a '?' — for them a question means the reply did not commit. Here it would have
-  // meant "end every recap with a question and the check never runs", so the question test is
-  // applied to the ASSERTING sentence instead. This is that reply, verbatim.
-  it('the driven reply, which ends in a question, still fires on its asserting sentences', () => {
-    const driven =
-      'Week recap (Mon Aug 3 → tonight):\n\n**Reminders set**\n'
-      + '- Weekday 6:45 AM routine (first fire glitched, schedule intact for tomorrow)\n'
-      + '- Daily 4:08 PM Seattle weather check — first one landed today\n\n'
-      + '**Still parked:** the roof, fence, and boiler quotes — all waiting on Bob\'s address.\n\n'
-      + 'Want me to dig into anything specific from the list?';
-    expect(runPromiseFloor(stateWith(), ctxFor(), scratch(driven)).directive).toBe('continue');
+    expect(text).toContain(`Here's the week, ${FX.n11}`);
+    expect(text).not.toContain('schedule intact for tomorrow');
   });
 });
 
 describe('T36: the exemption is a BOARD RECEIPT, never prose', () => {
-  it('a work_update list this turn exempts the recap', () => {
-    const out = runPromiseFloor(
+  it('a work_update list this turn exempts the recap', async () => {
+    const out = await floor(
       withToolCall(stateWith(), 'work_update', { action: 'list' }), ctxFor(), scratch(S5_RECAP));
     expect(out.directive).toBe('proceed');
     expect(steerRowSpy).not.toHaveBeenCalled();
   });
 
-  it('a work_update get on one row is a read too', () => {
-    const out = runPromiseFloor(
+  it('a work_update get on one row is a read too', async () => {
+    const out = await floor(
       withToolCall(stateWith(), 'work_update', { action: 'get', task_id: 'abc' }), ctxFor(), scratch(S5_RECAP));
     expect(out.directive).toBe('proceed');
   });
 
-  it('a calendar_agenda this turn exempts a claim about the calendar', () => {
-    const out = runPromiseFloor(
+  it('a calendar_agenda this turn exempts a claim about the calendar', async () => {
+    const out = await floor(
       withToolCall(stateWith(), 'calendar_agenda', { days: 7 }), ctxFor(),
       scratch('The vet call is on your calendar for Friday at 10.'));
     expect(out.directive).toBe('proceed');
   });
 
-  it('opening the row it is describing is contact with the board', () => {
-    const out = runPromiseFloor(
+  it('opening the row it is describing is contact with the board', async () => {
+    const out = await floor(
       withToolCall(stateWith(), 'work_open', { kind: 'reminder', what: 'recycling', when: 'Fri 6pm' }),
       ctxFor(), scratch('Recycling is set for Friday 6 PM and is still on your board.'));
     expect(out.directive).toBe('proceed');
   });
 
-  it('a FAILED board read is not a receipt — the floor still fires', () => {
-    const out = runPromiseFloor(
+  it('a FAILED board read is not a receipt, the floor still fires', async () => {
+    const out = await floor(
       withToolCall(stateWith(), 'work_update', { action: 'list' }, { isError: true }), ctxFor(), scratch(S5_RECAP));
     expect(out.directive).toBe('continue');
   });
 
-  it('a tool call that is not board contact does not exempt it', () => {
-    const out = runPromiseFloor(
+  it('a tool call that is not board contact does not exempt it', async () => {
+    const out = await floor(
       withToolCall(stateWith(), 'web_search', { query: 'mariners score' }), ctxFor(), scratch(S5_RECAP));
     expect(out.directive).toBe('continue');
   });
 
-  it('SAYING the board was checked, with no receipt anywhere, does not exempt it', () => {
-    const out = runPromiseFloor(stateWith(), ctxFor(),
+  it('SAYING the board was checked, with no receipt anywhere, does not exempt it', async () => {
+    const out = await floor(stateWith(), ctxFor(),
       scratch('I checked the tracker just now: the parking pass renewal is still on deck and the fence quotes are still parked.'));
     expect(out.directive).toBe('continue');
   });
 });
 
-describe('T36 controls: the recognizer stays conservative (a false positive costs a needless round)', () => {
-  const quiet = (text: string) => {
-    vi.clearAllMocks();
-    const out = runPromiseFloor(stateWith(), ctxFor(), scratch(text));
-    expect(out.directive, `should not steer on: ${text.slice(0, 80)}`).toBe('proceed');
-    expect(steerRowSpy).not.toHaveBeenCalled();
-  };
-
-  it('a past-work recap with no standing claim is left alone', () => {
-    quiet(PAST_ONLY_RECAP);
-  });
-
-  it('a short factual answer never matches', () => {
-    quiet('Your garage code is 8841.');
-    quiet("It's 72 and sunny in Seattle.");
-    quiet('Done — the file is saved.');
-    quiet('The Mariners lost 4-2 to the Angels.');
-  });
-
-  it('asking about standing state is not asserting it', () => {
-    quiet('Is the parking pass renewal still on deck, or did you take care of it?');
-  });
-
-  it('an honest disclosure that the answer is from memory is an accepted outcome, not a steer', () => {
-    quiet('From memory, the parking pass renewal is still on deck — I have not checked the tracker for this.');
-  });
-
-  it('ordinary English that happens to reuse a board word is left alone', () => {
-    quiet('The hardware store is still open until 8, so you can pick the bolts up tonight.');
-    quiet("That question is still open — I'd want your call on it before I go further.");
-    quiet('I am still on it and will send the draft over when it is ready.');
-  });
-
-  it('a claim about state the reply does not present as live is left alone', () => {
-    quiet('The recycling reminder was cancelled last Thursday at your request.');
-  });
-});
-
 describe('T36 controls: every UNTOUCHED bound still bounds the floor', () => {
-  it('the forward class keeps precedence and its byte-identical steer text', () => {
-    const out = runPromiseFloor(stateWith(), ctxFor(),
-      scratch('Two fence quotes are still parked. Let me pull up all your calendars.'));
+  it('the forward class keeps precedence and its byte-identical steer text', async () => {
+    const out = await floor(stateWith(), ctxFor(),
+      scratch('Two fence quotes are still parked. Let me pull up all your calendars.'), { asserts_board_state: true, only_promises_to_start: true });
     expect(out.directive).toBe('continue');
     expect(steerText()).toContain('Do the work NOW with tool calls and deliver the result.');
   });
 
-  it('the standing-PROMISE class keeps precedence and its own steer text', () => {
-    const out = runPromiseFloor(stateWith(), ctxFor(),
-      scratch(`${S5_STANDING_PROMISE} Two fence quotes are still parked.`));
+  it('the standing-PROMISE class keeps precedence and its own steer text', async () => {
+    const out = await floor(stateWith(), ctxFor(),
+      scratch(`${S5_STANDING_PROMISE} Two fence quotes are still parked.`), { asserts_board_state: true, standing_promise: true });
     expect(out.directive).toBe('continue');
     expect(steerText()).toContain('made a STANDING promise');
   });
 
-  it('the 2026-07-08 pin is untouched: an immediate empty promise gets the original steer', () => {
-    const out = runPromiseFloor(stateWith(), ctxFor(), scratch(EMPTY_PROMISE));
+  it('the 2026-07-08 pin is untouched: an immediate empty promise gets the original steer', async () => {
+    const out = await floor(stateWith(), ctxFor(), scratch(EMPTY_PROMISE), { only_promises_to_start: true });
     expect(out.directive).toBe('continue');
     expect(steerText()).toContain('Do the work NOW with tool calls and deliver the result.');
   });
 
-  it('ONE STEER PER TURN, shared with both siblings: a fired promise-floor steer means no second steer', () => {
+  it('ONE STEER PER TURN, shared with both siblings: a fired promise-floor steer means no second steer', async () => {
     const st = advance(stateWith(), {
       steerQueue: enqueueSteer(stateWith().steerQueue, { floor: 'promise-floor', content: 'earlier steer', atLoop: 1 }),
     });
-    const out = runPromiseFloor(st, ctxFor(), scratch(S5_RECAP));
+    const out = await floor(st, ctxFor(), scratch(S5_RECAP));
     expect(out.directive).toBe('proceed');
     expect(steerRowSpy).not.toHaveBeenCalled();
   });
 
-  it('the MAX_TOOL_LOOPS proximity skip is unchanged', () => {
-    const out = runPromiseFloor(stateWith({ loopCount: 75 }), ctxFor({ maxToolLoops: 75 }), scratch(S5_RECAP));
+  it('the MAX_TOOL_LOOPS proximity skip is unchanged', async () => {
+    const out = await floor(stateWith({ loopCount: 75 }), ctxFor({ maxToolLoops: 75 }), scratch(S5_RECAP));
     expect(out.directive).toBe('proceed');
   });
 
-  it('an engine turn is never steered by this floor', () => {
-    const out = runPromiseFloor(stateWith(), ctxFor({ isEngineTurn: true }), scratch(S5_RECAP));
+  it('an engine turn is never steered by this floor', async () => {
+    const out = await floor(stateWith(), ctxFor({ isEngineTurn: true }), scratch(S5_RECAP));
     expect(out.directive).toBe('proceed');
   });
 
-  it('a peer counterparty is never steered by this floor', () => {
-    const out = runPromiseFloor(stateWith(), ctxFor({
+  it('a peer counterparty is never steered by this floor', async () => {
+    const out = await floor(stateWith(), ctxFor({
       counterparty: { kind: 'agent', relation: 'peer' } as unknown as PostCallClassifyContext['counterparty'],
     }), scratch(S5_RECAP));
     expect(out.directive).toBe('proceed');
   });
 
-  it('the engine conv key is never steered by this floor', () => {
-    const out = runPromiseFloor(stateWith(), ctxFor({ chosenConvKey: 'engine' }), scratch(S5_RECAP));
+  it('the engine conv key is never steered by this floor', async () => {
+    const out = await floor(stateWith(), ctxFor({ chosenConvKey: 'engine' }), scratch(S5_RECAP));
     expect(out.directive).toBe('proceed');
   });
 
-  it('an effectful action this turn exempts a standing-state claim too', () => {
-    const out = runPromiseFloor(withToolCall(stateWith(), 'sms_send', { to: '+15550200' }), ctxFor(), scratch(S5_RECAP));
+  it('an effectful action this turn exempts a standing-state claim too', async () => {
+    const out = await floor(withToolCall(stateWith(), 'sms_send', { to: '+15550200' }), ctxFor(), scratch(S5_RECAP));
     expect(out.directive).toBe('proceed');
   });
 });
