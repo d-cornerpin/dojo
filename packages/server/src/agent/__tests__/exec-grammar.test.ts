@@ -5,7 +5,7 @@
 // broker suites reach them only indirectly, through checkPermission. The quoting
 // and separator rules are exactly where a security regression would hide — a
 // `;` or a keyword mistaken for grammar, or a quoted / substituted span split
-// where it must not be — so the two functions are pinned directly here.
+// where it must not be, so the two functions are pinned directly here.
 //
 // These are PINNING tests: every case below is measured against the current
 // (v35) code and all pass on it unchanged. The intent is to freeze the behavior

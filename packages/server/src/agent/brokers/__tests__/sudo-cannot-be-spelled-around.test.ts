@@ -385,7 +385,7 @@ describe('§3 the hold sees sudo wherever it is', () => {
 });
 
 // ════════════════════════════════════════════════════════════════════════════════════════
-// §4 — the grant question is asked of every simple command in the line.
+// §4: the grant question is asked of every simple command in the line.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 describe('§4 the allowlist reads every command', () => {
