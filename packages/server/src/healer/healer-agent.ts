@@ -238,7 +238,7 @@ function getDefaultHealerModel(): string | null {
 // The Healer keeps every permission the primary has for write/exec work, with ONE deny-list carve-out: the shared
 // SEND_TO_PEOPLE set (comms tools with no identity gate in their executors), derived from the same sensei-policy
 // set the Trainer denies from so a future comms tool is denied by construction. An empty allow keeps everything
-// the manifest permits. The destructive-action gate (destructive-gate.ts) still holds rm/dd/truncate, DELETE/DROP/ALTER
+// the manifest permits. The destructive-action gate (destructive-gate.ts) still holds rm/dd/truncate, DELETE/DROP/ALTER/REPLACE
 // on the Dojo database and writes to the owner's identity/config files; the global denies and PRIMARY_ONLY_TOOLS strip apply.
 // Written on the create and reactivate paths only.
 const HEALER_TOOLS_POLICY = JSON.stringify({ allow: [], deny: [...SEND_TO_PEOPLE] });

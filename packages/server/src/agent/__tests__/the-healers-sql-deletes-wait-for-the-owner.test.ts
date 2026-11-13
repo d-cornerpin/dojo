@@ -1,5 +1,6 @@
-// The Healer's DELETE, DROP and ALTER against the Dojo's own database are held for the owner
-// by the destructive-action approval; its routine UPDATE and INSERT repairs run directly.
+// The Healer's DELETE, DROP, ALTER, REPLACE and writable_schema against the Dojo's own database are
+// held for the owner by the destructive-action approval, comments or not; its routine UPDATE and
+// INSERT repairs run directly, whatever their string literals say.
 // Driven through the two functions the dispatcher asks before it holds a call.
 
 import { describe, it, expect, vi } from 'vitest';
@@ -40,6 +41,15 @@ describe("the Healer's SQL deletes wait for the owner", () => {
     `sqlite3 ${DB} "DELETE FROM messages WHERE agent_id = 'x'"`,
     `sqlite3 ${DB} "DROP TABLE scratch_rows"`,
     `sqlite3 ${DB} "ALTER TABLE agents ADD COLUMN extra TEXT"`,
+    `sqlite3 ${DB} "DELETE/**/FROM messages"`,
+    `sqlite3 ${DB} "DELETE--x\nFROM messages"`,
+    `sqlite3 ${DB} "drop/**/table t"`,
+    `sqlite3 ${DB} "ALTER/**/TABLE t ADD COLUMN c TEXT"`,
+    `sqlite3 ${DB} "/* it's */ WITH x AS (SELECT 1) DELETE FROM messages WHERE id = 'a'"`,
+    `sqlite3 ${DB} "UPDATE agents SET name = 'n' WHERE id = 'x'; DELETE FROM messages"`,
+    `sqlite3 ${DB} "REPLACE INTO config (key, value) VALUES ('k', 'v')"`,
+    `sqlite3 ${DB} "INSERT OR REPLACE INTO config (key, value) VALUES ('k', 'v')"`,
+    `sqlite3 ${DB} "PRAGMA writable_schema = ON"`,
   ])('held at the shell door: %s', (script) => {
     expect(held('shell', { script })).toBe(true);
   });
@@ -52,6 +62,8 @@ describe("the Healer's SQL deletes wait for the owner", () => {
     `sqlite3 ${DB} "UPDATE agents SET model_id = 'm2' WHERE id = 'x'"`,
     `sqlite3 ${DB} "INSERT INTO config (key, value) VALUES ('k', 'v')"`,
     `sqlite3 -readonly ${DB} "SELECT id FROM agents"`,
+    `sqlite3 ${DB} "UPDATE notes SET body = 'delete from messages; drop table agents' WHERE id = 'x'"`,
+    `sqlite3 ${DB} "UPDATE notes SET body = replace(body, 'a', 'b')"`,
     'sqlite3 ./app.db "DELETE FROM t"',
   ])('runs directly: %s', (script) => {
     expect(isDestructiveCall('shell', { script }, 'agent-healer')).toBeNull();

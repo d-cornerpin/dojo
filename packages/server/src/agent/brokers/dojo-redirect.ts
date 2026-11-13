@@ -97,7 +97,9 @@ export function splitStatements(sql: string): string[] {
   return out.filter((s) => s.replace(/--[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '').trim() !== '');
 }
 
-const bare = (s: string): string => s.replace(/'(?:[^']|'')*'/g, "''").replace(/"(?:[^"]|"")*"/g, '""').replace(/--[^\n]*/g, ' ').replace(/\/\*[\s\S]*?\*\//g, ' ');
+/** The statement with literals and quoted names emptied and comments blanked, read left to right. */
+const bare = (s: string): string => s.replace(/'(?:[^']|'')*'|"(?:[^"]|"")*"|`(?:[^`]|``)*`|\[[^\]]*\]|--[^\n]*|\/\*[\s\S]*?(?:\*\/|$)/g,
+  (m) => (m.startsWith('--') || m.startsWith('/*') ? ' ' : m[0] === '[' ? '[]' : m[0] + m[0]));
 
 function topLevelWords(s: string): string[] {
   let depth = 0; let flat = '';
@@ -222,6 +224,25 @@ function shapeSql(words: readonly Word[]): string | null {
   return sql.value;
 }
 
+/** Each simple command's words: the shell's reading of a line, or an argv vector as one literal command. */
+function commandsOf(command: string | readonly string[]): Word[][] {
+  if (typeof command === 'string') return lexShellLine(command)?.segments.map((seg) => seg.words) ?? [];
+  // No shell: every element is literal text, so nothing expands and the SQL element is whole.
+  return [command.map((value) => ({ value, plain: !/\s/.test(value), quotedWhole: true, expands: false, tilde: value.startsWith('~/') }))];
+}
+
+/** Whether a sqlite3 command on the Dojo database deletes, replaces, drops or reshapes, asked of each
+ *  statement's top-level words. */
+export function destroysDojoData(command: string | readonly string[]): boolean {
+  return commandsOf(command).some((words) => {
+    const sql = shapeSql(words);
+    return sql !== null && splitStatements(sql).some((stmt) => {
+      const top = topLevelWords(bare(stmt));
+      return top.some((t, k) => t === 'delete' || t === 'drop' || t === 'alter' || t === 'writable_schema' || (t === 'replace' && top[k + 1] === 'into'));
+    });
+  });
+}
+
 /** The door's verdict on a command (a shell line, or an argv vector) for an agent's role. */
 export function dojoDoorVerdict(command: string | readonly string[], role: DoorRole): DoorVerdict {
   const text = typeof command === 'string' ? command : command.join(' ');
@@ -231,8 +252,7 @@ export function dojoDoorVerdict(command: string | readonly string[], role: DoorR
   if (!refersToDojoDatabase(text) && !refersToDojoDatabase(unquoted)) return { outcome: 'untouched' };
   if (role === 'worker') return { outcome: 'refused', message: WORKER_REFUSAL };
   if (typeof command !== 'string') {
-    // No shell: every element is literal text, so nothing expands and the SQL element is whole.
-    const words = command.map((value) => ({ value, plain: !/\s/.test(value), quotedWhole: true, expands: false, tilde: value.startsWith('~/') }));
+    const [words] = commandsOf(command);
     if (isMetadataLook(words)) return { outcome: 'allowed' };
     const sql = shapeSql(words);
     return sql === null ? { outcome: 'refused', message: FACT_REFUSAL } : sqlVerdict(sql, role);
