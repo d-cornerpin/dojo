@@ -70,8 +70,8 @@ const ATTACHMENT_NOTE = [
   'machine under this report id.',
 ];
 
-/** The report as the world sees it; '' for a briefless row, which `post.ts` refuses as nothing to send. */
-export function renderIssueBody(row: ReportRow): string {
+/** The report as the world sees it ('' for a briefless row); `room` bounds the attachment, 0 leaves it off. */
+export function renderIssueBody(row: ReportRow, room?: number): string {
   const brief = row.brief;
   if (!brief) return '';
   const version = reportVersion(row);
@@ -108,7 +108,6 @@ export function renderIssueBody(row: ReportRow): string {
   ];
   // The attachment room: the whole bound less every other character (a newline per joined element).
   const around = [...parts, ...head, ...tail].join('\n').length + 1;
-  const json = telemetryJsonWithin((row.telemetry ?? {}) as Record<string, unknown>,
-    GITHUB_ISSUE_BODY_MAX_CHARS - around);
+  const json = telemetryJsonWithin((row.telemetry ?? {}) as Record<string, unknown>, room ?? GITHUB_ISSUE_BODY_MAX_CHARS - around);
   return [...parts, ...head, json, ...tail].join('\n');
 }

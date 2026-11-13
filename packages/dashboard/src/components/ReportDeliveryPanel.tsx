@@ -33,7 +33,7 @@ export const DeliveredPanel = ({ delivery, onDone }: {
         <p className="text-xs text-ui/80">
           {delivery.bodyWasTrimmed
             ? 'It is too long to fill in by link. One click copies the report and opens GitHub; paste it into the new issue.'
-            : 'The link below opens a new issue with the text already filled in. You can also copy the report.'}
+            : 'The link below opens a new issue with your report already filled in. You can also copy the whole report, diagnostics included.'}
         </p>
         {delivery.bodyWasTrimmed && delivery.reportText && delivery.newIssueUrl && (
           <CopyAndOpenButton text={delivery.reportText} url={delivery.newIssueUrl} />

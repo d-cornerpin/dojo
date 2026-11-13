@@ -203,6 +203,20 @@ describe('the prefilled link is usable, or it says it is not', () => {
     expect(fs.readFileSync(result.filePath, 'utf8')).toContain(long.whatHappened);
   });
 
+  it('words that fit but diagnostics that do not: the link carries every section of the words, the file stays whole', () => {
+    const r = createReport('agent-1', 'tool-error', 'ds1-aaaaaaaaaaaa');
+    const telemetry = { ...TELEMETRY, turns: Array.from({ length: 400 }, (_, i) => ({ turn: i, tool: 'work_open', ms: 1200 })) };
+    attachDraft(r.id, { lane: r.lane, signature: r.signature, brief: BRIEF, telemetry, bundlePath: writeBundle(r.id, 'agent-1', { evidence: BUNDLE_MARKER }).path });
+    submitForApproval(r.id);
+    const result = exportReport(r.id)!;
+    expect(result.bodyWasTrimmed).toBe(false);
+    const body = new URL(result.newIssueUrl).searchParams.get('body') ?? '';
+    for (const words of [BRIEF.whatHappened, BRIEF.whatShouldHaveHappened, BRIEF.whyItWentWrong, BRIEF.fixIdeas]) expect(body).toContain(words);
+    expect(body).toContain('ds1-aaaaaaaaaaaa');
+    expect(encodeURIComponent(body).length).toBeLessThanOrEqual(PREFILL_MAX_BODY_CHARS);
+    expect(fs.readFileSync(result.filePath, 'utf8')).toContain('"turn": 399');
+  });
+
   it('the cap is measured on the ENCODED body, which is what a browser carries', () => {
     // A brief of characters that each encode to three bytes is under the cap when counted raw
     // and far over it once encoded. Counting the wrong string is how a "capped" URL still breaks.

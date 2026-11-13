@@ -1,6 +1,6 @@
 // Unconnected-box export: the same sanitized brief as the issue body (one renderer, `issue-body.ts`) is
 // written to a local file plus a prefilled new-issue link; the raw bundle is deliberately never read here.
-// The cap binds the link, never the text: over it the link carries a pointer body that names nothing local,
+// The cap binds the link, never the text: over it the link drops the attachment, then a pointer body that names nothing local,
 // while `reportText` and the file stay whole (a silently truncated body would cut off the owner's words).
 
 import { getReport } from './store.js';
@@ -35,9 +35,9 @@ export function exportReport(id: string): ExportResult | null {
   const markdown = renderIssueBody(row);
   const filePath = writeReportFile(id, 'report.md', markdown);
 
-  const encodedFull = encodeURIComponent(markdown);
-  const bodyWasTrimmed = encodedFull.length > PREFILL_MAX_BODY_CHARS;
-  const body = bodyWasTrimmed ? pointerBody(row.signature) : markdown;
+  const words = encodeURIComponent(markdown).length <= PREFILL_MAX_BODY_CHARS ? markdown : renderIssueBody(row, 0);
+  const bodyWasTrimmed = encodeURIComponent(words).length > PREFILL_MAX_BODY_CHARS;
+  const body = bodyWasTrimmed ? pointerBody(row.signature) : words;
 
   // `encodeURIComponent`, not `URLSearchParams` (it turns a space into `+` and a literal `+` into a space).
   // Labels come from `issueLabelsFor` as in `post.ts`; the comma between them stays unencoded.
