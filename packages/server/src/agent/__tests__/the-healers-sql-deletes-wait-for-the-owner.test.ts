@@ -1,6 +1,7 @@
-// The Healer's DELETE, DROP, ALTER, REPLACE and writable_schema against the Dojo's own database are
+// The Healer's DELETE, DROP, ALTER, REPLACE (INSERT or UPDATE OR REPLACE too) and
+// writable_schema, quoted or not, against the Dojo's own database are
 // held for the owner by the destructive-action approval, comments or not; its routine UPDATE and
-// INSERT repairs run directly, whatever their string literals say.
+// INSERT repairs run directly, whatever their string literals say, and a pragma whose value is DELETE.
 // Driven through the two functions the dispatcher asks before it holds a call.
 
 import { describe, it, expect, vi } from 'vitest';
@@ -50,6 +51,11 @@ describe("the Healer's SQL deletes wait for the owner", () => {
     `sqlite3 ${DB} "REPLACE INTO config (key, value) VALUES ('k', 'v')"`,
     `sqlite3 ${DB} "INSERT OR REPLACE INTO config (key, value) VALUES ('k', 'v')"`,
     `sqlite3 ${DB} "PRAGMA writable_schema = ON"`,
+    `sqlite3 ${DB} "UPDATE OR REPLACE agents SET id = 'b' WHERE id = 'a'"`,
+    `sqlite3 ${DB} "insert or replace into config (key, value) values ('k', 'v')"`,
+    `sqlite3 ${DB} 'PRAGMA "writable_schema" = ON'`,
+    `sqlite3 ${DB} "PRAGMA main.[writable_schema] = 1"`,
+    `sqlite3 ${DB} 'PRAGMA /* x */ \`writable_schema\` = 1'`,
   ])('held at the shell door: %s', (script) => {
     expect(held('shell', { script })).toBe(true);
   });
@@ -65,6 +71,8 @@ describe("the Healer's SQL deletes wait for the owner", () => {
     `sqlite3 ${DB} "UPDATE notes SET body = 'delete from messages; drop table agents' WHERE id = 'x'"`,
     `sqlite3 ${DB} "UPDATE notes SET body = replace(body, 'a', 'b')"`,
     'sqlite3 ./app.db "DELETE FROM t"',
+    `sqlite3 ${DB} "PRAGMA journal_mode = DELETE"`,
+    `sqlite3 ${DB} "UPDATE notes SET body = 'x' WHERE id = 'a' OR replace(body, 'a', 'b') = 'c'"`,
   ])('runs directly: %s', (script) => {
     expect(isDestructiveCall('shell', { script }, 'agent-healer')).toBeNull();
   });

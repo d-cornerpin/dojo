@@ -232,14 +232,19 @@ function commandsOf(command: string | readonly string[]): Word[][] {
   return [command.map((value) => ({ value, plain: !/\s/.test(value), quotedWhole: true, expands: false, tilde: value.startsWith('~/') }))];
 }
 
+/** A pragma setting writable_schema, read with comments blanked and name quotes dropped. */
+const WRITABLE_SCHEMA = /^\s*pragma\s+(?:\w+\s*\.\s*)?writable_schema(?!\w)/i;
+
 /** Whether a sqlite3 command on the Dojo database deletes, replaces, drops or reshapes, asked of each
- *  statement's top-level words. */
+ *  statement's top-level words; a pragma only by its name. */
 export function destroysDojoData(command: string | readonly string[]): boolean {
   return commandsOf(command).some((words) => {
     const sql = shapeSql(words);
     return sql !== null && splitStatements(sql).some((stmt) => {
+      if (firstKeyword(stmt) === 'pragma') return WRITABLE_SCHEMA.test(stmt.replace(/--[^\n]*|\/\*[\s\S]*?(?:\*\/|$)/g, ' ').replace(/["'`[\]]/g, ''));
       const top = topLevelWords(bare(stmt));
-      return top.some((t, k) => t === 'delete' || t === 'drop' || t === 'alter' || t === 'writable_schema' || (t === 'replace' && top[k + 1] === 'into'));
+      return top.some((t, k) => t === 'delete' || t === 'drop' || t === 'alter'
+        || (t === 'replace' && (top[k + 1] === 'into' || (top[k - 1] === 'or' && ['insert', 'update'].includes(top[k - 2])))));
     });
   });
 }
