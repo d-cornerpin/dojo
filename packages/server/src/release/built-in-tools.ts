@@ -32,8 +32,8 @@ function removedNames(agentId: string): Set<string> {
   for (const { detail } of rows) {
     const m = /tools\.allow: (\[[^\]]*\]) → (\[[^\]]*\])/.exec(detail);
     try {
-      const [before, after] = [canon(JSON.parse(m![1])), canon(JSON.parse(m![2]))];
-      before.forEach((t) => { if (!after.has(t)) out.add(t); });
+      const [before, after] = [canon(JSON.parse(m?.[1] ?? '')), canon(JSON.parse(m?.[2] ?? ''))];
+      before.forEach((t) => out.add(t));
       after.forEach((t) => out.delete(t));
     } catch { /* not an allow change this reader can read */ }
   }
