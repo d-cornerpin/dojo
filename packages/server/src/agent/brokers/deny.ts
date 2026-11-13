@@ -74,6 +74,9 @@ function isDojoDbFile(folded: string, home: string): boolean {
   return !rest.includes(path.sep) && /\.db(?:-wal|-shm|-journal)?$/.test(rest);
 }
 
+/** The folders under ~/.dojo holding whole copies of the platform database; the shell door reads them too. */
+export const DOJO_BACKUP_DIRS: readonly string[] = ['data/backups', 'backups'];
+
 export const DENY_RULES: readonly DenyRule[] = [
   {
     id: 'dojo-secrets-store',
@@ -168,8 +171,7 @@ export const DENY_RULES: readonly DenyRule[] = [
     tiers: ['global_read'],
     since: 'added',
     reason: 'the backup folders hold whole copies of the platform database, credential tables included.',
-    test: ({ folded, home }) =>
-      underDir(folded, path.join(home, '.dojo', 'data', 'backups')) || underDir(folded, path.join(home, '.dojo', 'backups')),
+    test: ({ folded, home }) => DOJO_BACKUP_DIRS.some((dir) => underDir(folded, path.join(home, '.dojo', dir))),
   },
   {
     id: 'soul-files',

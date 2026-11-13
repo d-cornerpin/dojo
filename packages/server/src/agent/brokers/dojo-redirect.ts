@@ -14,6 +14,7 @@ import { getDb } from '../../db/connection.js';
 import { firstKeyword } from '../../db/read-only-door.js';
 import { homeDir } from '../../home.js';
 import { refuseDeniedSql } from '../../inspect/redact.js';
+import { DOJO_BACKUP_DIRS } from './deny.js';
 import { lexShellLine, type Segment, type Word } from './shell-words.js';
 import { deny, type Verdict } from './types.js';
 
@@ -66,8 +67,8 @@ function tableFunctions(b: string): string[] {
 
 /** The live database file by its basename, as a whole path segment (`dojo.db.bak` is not it). */
 const DB_FILE = /(?:^|[^\w.-])dojo\.db(?:-wal|-shm|-journal)?(?![\w.-])/i;
-/** The Dojo folder itself, its data folder, a glob inside it, or a `..` that could reach either. */
-const DOJO_FOLDER = /\.dojo(?:\/+data(?![\w.-])|\/+[^\s/'"]*[*?[{]|\/+(?:[^\s'"]*\/)?\.\.(?![\w.-])|\/*(?=$|[\s'";|&)<>]))/i;
+/** The Dojo folder itself, its data or backup folders, a glob inside it, or a `..` that could reach either. */
+const DOJO_FOLDER = new RegExp(String.raw`\.dojo(?:\/+(?:data|${DOJO_BACKUP_DIRS.map((d) => d.replace('/', String.raw`\/+`)).join('|')})(?![\w.-])|\/+[^\s/'"]*[*?[{]|\/+(?:[^\s'"]*\/)?\.\.(?![\w.-])|\/*(?=$|[\s'";|&)<>]))`, 'i');
 
 export function refersToDojoDatabase(text: string): boolean {
   const t = text.replace(/\/\.(?=\/)/g, '');   // `a/./b` is `a/b`

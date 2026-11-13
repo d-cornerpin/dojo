@@ -104,3 +104,13 @@ describe('dojoDoorVerdict: find for a worker', () => {
     expect(dojoDoorVerdict('find ~/.dojo -type f', 'worker').outcome).toBe('refused');
   });
 });
+
+describe('dojoDoorVerdict: the backup folders are the database', () => {
+  it.each(['main', 'healer', 'worker'] as const)('%s', (role) => {
+    for (const dir of ['~/.dojo/backups', '~/.dojo/data/backups', '~/.DOJO//Backups']) {
+      expect(dojoDoorVerdict(`cat ${dir}/pre-update.db`, role).outcome, dir).toBe('refused');
+      expect(dojoDoorVerdict(`sqlite3 -readonly ${dir}/pre-update.db "SELECT 1"`, role).outcome, dir).toBe('refused');
+      expect(dojoDoorVerdict(`ls -la ${dir}`, role).outcome, dir).toBe(role === 'worker' ? 'refused' : 'allowed');
+    }
+  });
+});
