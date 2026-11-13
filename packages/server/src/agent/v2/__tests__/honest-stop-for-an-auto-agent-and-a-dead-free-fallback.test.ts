@@ -418,7 +418,7 @@ function setupTestDb(): Database.Database {
   const model = db.prepare(`INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, max_output_tokens, is_enabled, input_cost_per_m, output_cost_per_m)
     VALUES (?, 'test-provider', ?, ?, '["text","tools"]', ?, 4096, 1, ?, ?)`);
   model.run('test-model', 'Test Model', 'test-1', 200_000, 3, 15);   // priced: the budget wall applies
-  model.run('m-tiny', 'Tiny', 'tiny', 8_192, 0, 0);                   // free, and too small for this agent
+  model.run('m-tiny', 'Tiny', 'tiny', 32_000, 0, 0);                  // free, and too small for this agent
   const tier = db.prepare('INSERT INTO router_tier_models (tier_id, model_id, priority) VALUES (?, ?, 0)');
   tier.run('light', 'm-tiny');
   tier.run('standard', 'test-model');
@@ -558,10 +558,11 @@ describe('t149 F5 — an auto agent whose every routed model is too small is the
     db().prepare('DELETE FROM router_tier_models').run();
     const tier = db().prepare('INSERT INTO router_tier_models (tier_id, model_id, priority) VALUES (?, ?, 0)');
     for (const t of ['light', 'standard', 'heavy']) tier.run(t, 'm-tiny');
+    toolPayload.tokens = 30_000;
     assembleContextMock.mockImplementation(async () => {
-      const policy = contextWindowPolicy(8_192, { toolPayloadTokens: 2_000, maxOutputTokens: 4_096 });
-      reportStarvedWindow(AGENT, 9_000, policy);
-      throw new SystemPromptTooLargeError(9_000, policy);
+      const policy = contextWindowPolicy(32_000, { toolPayloadTokens: 30_000, maxOutputTokens: 4_096 });
+      reportStarvedWindow(AGENT, 33_000, policy);
+      throw new SystemPromptTooLargeError(33_000, policy);
     });
   }
 

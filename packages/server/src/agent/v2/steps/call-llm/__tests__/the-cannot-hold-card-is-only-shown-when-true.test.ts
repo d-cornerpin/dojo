@@ -60,7 +60,7 @@ vi.mock('../../../../../memory/assembler.js', async (importOriginal) => {
   };
 });
 
-const TOOL_PAYLOAD_TOKENS = 2_000;
+const TOOL_PAYLOAD_TOKENS = 30_000;
 vi.mock('../../../../../tools/tool-docs.js', async () => {
   const actual = await vi.importActual<typeof import('../../../../../tools/tool-docs.js')>('../../../../../tools/tool-docs.js');
   return { ...actual, measureAgentToolPayloadTokens: async () => TOOL_PAYLOAD_TOKENS, filterToolsForApiCall: () => [], getAgentAlwaysLoadedTools: () => [] };
@@ -82,8 +82,8 @@ import { reassembleForFitIfNeeded } from '../reassemble-for-fit.js';
 import type { PromptTurnContext } from '../../../../../prompt/assembler.js';
 
 const ROOMY = 'm-roomy-200k';
-const TINY = 'm-tiny-8k';
-const TINY_WINDOW = 8_192;
+const TINY = 'm-tiny-32k';
+const TINY_WINDOW = 32_000;
 /** A long identifier: the runtime section of a prompt built for it is several tokens longer than one
  *  built for `'__auto__'` — the few tokens round 3's pre-check could not see. */
 const EDGE = `m-edge-${'northdock'.repeat(12)}`;

@@ -192,11 +192,11 @@ describe('N42: an auto-routed agent keeps one window across tiers', () => {
     expect(turns.map((t) => t.window)).toEqual([32_000]);
   });
 
-  it('a 16K model assigned to the light tier: the window follows the new floor to 16K', async () => {
+  it('a 16K model assigned to the light tier is too small for agents: the window stays at the 32K floor', async () => {
     seed('auto');
     db().prepare('INSERT INTO router_tier_models (tier_id, model_id, priority) VALUES (?, ?, ?)').run('light', TINY, 1);
     await oneTurn('auto', 'heavy');
-    expect(turns.map((t) => t.window)).toEqual([16_000]);
+    expect(turns.map((t) => t.window)).toEqual([32_000]);
   });
 
   it('CONTROL: an agent with a fixed model is sized by its own model, as before', async () => {

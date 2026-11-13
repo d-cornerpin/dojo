@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import * as api from '../lib/api';
 import { useToast } from '../hooks/useToast';
 import { RouterUsage } from './RouterUsage';
+import { AgentModelOption } from './AgentModelOption';
 
 interface TierModel {
   modelId: string;
@@ -248,11 +249,7 @@ const TierPanel = ({
               className="glass-select w-full"
             >
               <option value="" disabled>Select a model...</option>
-              {selectableModels.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.name} ({m.provider_name})
-                </option>
-              ))}
+              {selectableModels.map((m) => <AgentModelOption key={m.id} model={m} label={`${m.name} (${m.provider_name})`} />)}
             </select>
           )}
           <button

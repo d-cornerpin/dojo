@@ -6,6 +6,7 @@ import { stopAffordance } from '../lib/stop-affordance';
 import { useToast } from '../hooks/useToast';
 import { useActiveAgent } from './ActiveAgentProvider';
 import { resolveAgentHue, ORB_PALETTE, CHAMPAGNE_HUE } from '../lib/agent-hue';
+import { AgentModelOption } from './AgentModelOption';
 
 interface AgentCardProps {
   agent: AgentDetail;
@@ -265,12 +266,7 @@ export const AgentCard = ({ agent, models, providerNameById, onModelChanged, ind
                 style={{ height: 28, lineHeight: '26px', fontSize: 11, maxWidth: 170 }}
               >
                 <option value="auto">Auto (Smart Router)</option>
-                {models.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.name}
-                    {providerNameById[m.providerId] ? ` (${providerNameById[m.providerId]})` : ''}
-                  </option>
-                ))}
+                {models.map((m) => <AgentModelOption key={m.id} model={m} label={`${m.name}${providerNameById[m.providerId] ? ` (${providerNameById[m.providerId]})` : ''}`} />)}
               </select>
             </dd>
           ) : (

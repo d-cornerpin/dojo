@@ -9,6 +9,8 @@
 
 import { getDb } from '../db/connection.js';
 import { getContextWindow } from '../agent/model.js';
+import { MAIN_MODEL_MIN_WINDOW, passesMainModelFloor } from '../agent/main-model-floor.js';
+import { agentFloor } from './standing-filters.js';
 import { registerRouterFloorName } from '../healer/owner-notices.js';
 
 export const ROUTER_WINDOW_SETTING = 'router.context_window';
@@ -30,13 +32,14 @@ export function routerWindowFloor(): { tokens: number; modelName: string; modelI
   for (const r of rows) {
     if (r.model_id === 'auto' || r.model_id === '__auto__') continue;
     const tokens = getContextWindow(r.model_id);
-    if (floor === null || tokens < floor.tokens) floor = { tokens, modelName: r.name ?? r.model_id, modelId: r.model_id };
+    if (tokens >= MAIN_MODEL_MIN_WINDOW && (floor === null || tokens < floor.tokens)) floor = { tokens, modelName: r.name ?? r.model_id, modelId: r.model_id };
   }
   return floor;
 }
 
 // The no-fit text names the router's smallest model (`healer/owner-notices.ts`, a light module).
 registerRouterFloorName(() => routerWindowFloor()?.modelName ?? null);
+agentFloor.mayRun = passesMainModelFloor;
 
 function routerWindowSetting(): number | null {
   try {

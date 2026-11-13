@@ -53,7 +53,7 @@ vi.mock('../../../../../memory/embeddings.js', () => ({
 }));
 vi.mock('../../../../../tools/tool-docs.js', async () => {
   const actual = await vi.importActual<typeof import('../../../../../tools/tool-docs.js')>('../../../../../tools/tool-docs.js');
-  return { ...actual, measureAgentToolPayloadTokens: async () => 2_000, filterToolsForApiCall: () => [], getAgentAlwaysLoadedTools: () => [] };
+  return { ...actual, measureAgentToolPayloadTokens: async () => 30_000, filterToolsForApiCall: () => [], getAgentAlwaysLoadedTools: () => [] };
 });
 vi.mock('../../../outbound-ledger.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../outbound-ledger.js')>()),
@@ -93,7 +93,7 @@ function seed(roomyOverBudget: boolean, opts: { tinyOnRouter?: boolean } = {}): 
                 VALUES ('prov', 'P', 'anthropic', 'agent-sdk', 1, datetime('now'), datetime('now'))`).run();
   const model = db().prepare(`INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, max_output_tokens, is_enabled, input_cost_per_m, output_cost_per_m, created_at, updated_at)
     VALUES (?, 'prov', ?, ?, '["text","tools"]', ?, 4096, 1, ?, ?, datetime('now'), datetime('now'))`);
-  model.run(TINY, 'Tiny', 'tiny', 8_192, 0, 0);
+  model.run(TINY, 'Tiny', 'tiny', 32_000, 0, 0);
   model.run(ROOMY, 'Roomy', 'roomy', 200_000, 3, 15);
   const tier = db().prepare('INSERT INTO router_tier_models (tier_id, model_id, priority) VALUES (?, ?, 0)');
   tier.run('light', tinyOnRouter ? TINY : ROOMY);

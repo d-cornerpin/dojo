@@ -2642,6 +2642,7 @@ function rowToModel(row: Record<string, unknown>): Model {
     costPerMegapixel,
     priceUnknown,
     isEnabled: Boolean(row.is_enabled),
+    tooSmallForAgents: !passesMainModelFloor(row.id as string),
     thinkingEnabled,
     thinkingLevel: row.thinking_level === 'low' || row.thinking_level === 'max' ? row.thinking_level : 'high',
     thinkingLevels: thinkingLevelsForRow(row),

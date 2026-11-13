@@ -8,6 +8,7 @@ import { formatDate } from '../../lib/dates';
 import { HealerCard } from './CapabilityModelCards';
 import { isPickableAgentModel } from '../../lib/role-models';
 import { useGuardedLoad } from '../../lib/load-guard';
+import { AgentModelOption } from '../AgentModelOption';
 
 
 type DreamingConfig = Awaited<ReturnType<typeof api.getDreamingConfig>> extends infer R ? (R extends { ok: true; data: infer D } ? D : never) : never;
@@ -98,11 +99,7 @@ const DreamingEditor = ({ initial }: { initial: DreamingConfig }) => {
             className="finput field--select"
           >
             <option value="">Auto (first available Standard tier model)</option>
-            {models.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.name} ({m.apiModelId})
-              </option>
-            ))}
+            {models.map((m) => <AgentModelOption key={m.id} model={m} label={`${m.name} (${m.apiModelId})`} />)}
           </select>
           <div className="fhelp">
             The model the Dreamer agent uses. Standard tier recommended for good extraction quality at reasonable cost.

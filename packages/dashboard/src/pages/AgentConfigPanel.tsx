@@ -7,6 +7,7 @@ import { AccessPanel } from '../components/AccessPanel';
 import { useActiveAgent } from '../components/ActiveAgentProvider';
 import { QuietTimeCard } from '../components/QuietTimeCard';
 import { useGuardedLoad } from '../lib/load-guard';
+import { AgentModelOption } from '../components/AgentModelOption';
 
 // Agent config overlay. This is the element for the /agents/:id route and
 // renders as a self-headered dojo3 panel (an overlay over the chat in the
@@ -281,12 +282,7 @@ const ConfigBody = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: (
           >
             <option value="">No model selected</option>
             <option value="auto">Auto (Smart Router)</option>
-            {models.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.name}
-                {providerNameById[m.providerId] ? ` (${providerNameById[m.providerId]})` : ''}
-              </option>
-            ))}
+            {models.map((m) => <AgentModelOption key={m.id} model={m} label={`${m.name}${providerNameById[m.providerId] ? ` (${providerNameById[m.providerId]})` : ''}`} />)}
           </select>
           <button
             type="button"

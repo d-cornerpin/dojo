@@ -73,7 +73,9 @@ vi.mock('../../../../../memory/assembler.js', async (importOriginal) => {
 
 /** The agent's tool payload, as the budget measures it. A fixed number so the arithmetic in
  *  this file is derivable by hand; `filterToolsForApiCall` is the transport's own list. */
-const TOOL_PAYLOAD_TOKENS = 2_000;
+// Every window below is a small box's shape plus 32,000, and the tools carry 0.96 × 32,000 more, so each fit
+// is the small box's while every model clears the 32K floor (the names keep the small box's sizes).
+const TOOL_PAYLOAD_TOKENS = 32_720;
 vi.mock('../../../../../tools/tool-docs.js', async () => {
   const actual = await vi.importActual<typeof import('../../../../../tools/tool-docs.js')>('../../../../../tools/tool-docs.js');
   return {
@@ -124,10 +126,10 @@ const AGENT = 'agent-t140-routed';
 /** Two routed models, both far below the 200K stand-in — the reporting box's shape. */
 const HEAVY = 'm-routed-heavy';
 const LIGHT = 'm-routed-light';
-const HEAVY_WINDOW = 32_768;
+const HEAVY_WINDOW = 64_768;
 /** Small enough that an array sized for the heavy pick cannot reach it unchanged:
  *  floor(0.96 × 16,384) − (2,000 tools + 4,096 output) leaves ~9.6K for a ~6K system prompt. */
-const LIGHT_WINDOW = 16_384;
+const LIGHT_WINDOW = 48_384;
 
 /** Fictional bodies (G1). Each row carries a marker so a request can be searched for it. */
 const ASK = 'Please keep counting the crates on the north dock and tell me the running total.';
@@ -138,7 +140,7 @@ const REPLY = 'Counted another stack on the north dock; the running total is wri
 /** A model that cannot hold this agent's system prompt and tools at all (not in a tier: a
  *  fallback pick or a mis-set override can still name it). */
 const TINY = 'm-too-small';
-const TINY_WINDOW = 8_192;
+const TINY_WINDOW = 40_192;
 /** A roomy model the router never picks: an array assembled for it is the shape of a stale
  *  array reaching a smaller pick's boundary unchanged — the backstop case. */
 const ROOMY = 'm-roomy-unrouted';
@@ -397,7 +399,7 @@ describe('t140 fix round 1 — I1: the fallback and the budget redirect are re-f
     const SMALLER = 'm-routed-smaller';
     db().prepare(
       `INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, max_output_tokens, is_enabled, created_at, updated_at)
-       VALUES (?, 'prov-routed', 'Routed Smaller', 'sonnet', '["text","tools"]', 12288, 4096, 1, datetime('now'), datetime('now'))`,
+       VALUES (?, 'prov-routed', 'Routed Smaller', 'sonnet', '["text","tools"]', 44288, 4096, 1, datetime('now'), datetime('now'))`,
     ).run(SMALLER);
     db().prepare("UPDATE router_tier_models SET priority = 1 WHERE tier_id = 'light' AND model_id = ?").run(LIGHT);
     db().prepare("INSERT INTO router_tier_models (tier_id, model_id, priority) VALUES ('light', ?, 0)").run(SMALLER);
@@ -414,7 +416,7 @@ describe('t140 fix round 1 — I1: the fallback and the budget redirect are re-f
     const SMALLER = 'm-routed-smaller';
     db().prepare(
       `INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, max_output_tokens, is_enabled, created_at, updated_at)
-       VALUES (?, 'prov-routed', 'Routed Smaller', 'sonnet', '["text","tools"]', 12288, 4096, 1, datetime('now'), datetime('now'))`,
+       VALUES (?, 'prov-routed', 'Routed Smaller', 'sonnet', '["text","tools"]', 44288, 4096, 1, datetime('now'), datetime('now'))`,
     ).run(SMALLER);
     db().prepare("UPDATE router_tier_models SET priority = 1 WHERE tier_id = 'light' AND model_id = ?").run(LIGHT);
     db().prepare("INSERT INTO router_tier_models (tier_id, model_id, priority) VALUES ('light', ?, 0)").run(SMALLER);
@@ -465,7 +467,7 @@ describe('t140 fix round 1 — M3: a single-call turn routed to a smaller pick f
     const OFF_TIER = 'm-off-tier-14k';
     db().prepare(
       `INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, max_output_tokens, is_enabled, created_at, updated_at)
-       VALUES (?, 'prov-routed', 'Off Tier 14K', 'sonnet', '["text","tools"]', 14336, 4096, 1, datetime('now'), datetime('now'))`,
+       VALUES (?, 'prov-routed', 'Off Tier 14K', 'sonnet', '["text","tools"]', 46336, 4096, 1, datetime('now'), datetime('now'))`,
     ).run(OFF_TIER);
     const dialed = await dialAsRouted(OFF_TIER);
     const summarisedAtDial = summarisedRowCount();
@@ -503,7 +505,7 @@ const windowCards = (): number => owner.cards.filter((c) => c.code === 'WINDOW_T
 describe('t140 round 2 — N1: a too-small fallback is passed over quietly when a later pick answers', () => {
   it('v3.5 N42: a 12K pick on the light tier is the router window, too small for the agent: refused by name and the true card, never a pick dialled', async () => {
     seedConversation(5);
-    addModel('m-routed-12k', 12_288);
+    addModel('m-routed-12k', 44_288);
     lightTierIs('m-routed-12k', LIGHT);
     provider.failNext = 1;
     await expect(dialStep(HEAVY)).rejects.toBeInstanceOf(SystemPromptTooLargeError);
@@ -517,8 +519,8 @@ describe('t140 round 2 — I1c: the selector judges each candidate against its o
     seedConversation(250);
     // 14K holds the system prompt and tools (so only the SELECTOR's window check can pass it
     // over), but not this turn as built; 64K holds the turn as built.
-    addModel('m-routed-14k', 14_336);
-    addModel('m-routed-64k', 65_536);
+    addModel('m-routed-14k', 46_336);
+    addModel('m-routed-64k', 97_536);
     lightTierIs('m-routed-14k', 'm-routed-64k');
     provider.failNext = 1;
     const out = await dialStep(HEAVY);
@@ -532,7 +534,7 @@ describe('t140 round 2 — I1c: the selector judges each candidate against its o
 describe('t140 round 2 — when every fallback is too small, the owner is told THAT, not the first wire error', () => {
   it('v3.5 N42: the 8K and 12K light models make the router window too small: the turn fails naming the window cause before any dial, with the true card', async () => {
     seedConversation(5);
-    addModel('m-routed-12k', 12_288);
+    addModel('m-routed-12k', 44_288);
     lightTierIs(TINY, 'm-routed-12k');
     provider.failNext = 1;
     let thrown: unknown = null;

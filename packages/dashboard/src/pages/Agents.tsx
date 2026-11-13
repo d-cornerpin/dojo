@@ -11,6 +11,7 @@ import { GroupCard } from '../components/GroupCard';
 import { PermissionsEditor, DEFAULT_SUBAGENT_PERMISSIONS, DEFAULT_SUBAGENT_TOOLS_POLICY } from '../components/PermissionsEditor';
 import { TechniqueSelector } from '../components/TechniqueSelector';
 import { ModalShell } from '../components/ModalShell';
+import { AgentModelOption } from '../components/AgentModelOption';
 
 // ── Create Agent Modal ──
 
@@ -126,12 +127,7 @@ const CreateAgentModal = ({
               >
                 <option value="">No model selected</option>
                 <option value="auto">Auto (Smart Router)</option>
-                {models.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.name}
-                    {providerNameById[m.providerId] ? ` (${providerNameById[m.providerId]})` : ''}
-                  </option>
-                ))}
+                {models.map((m) => <AgentModelOption key={m.id} model={m} label={`${m.name}${providerNameById[m.providerId] ? ` (${providerNameById[m.providerId]})` : ''}`} />)}
               </select>
             </div>
             <div className="w-36">

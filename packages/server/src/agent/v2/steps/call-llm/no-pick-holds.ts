@@ -24,6 +24,7 @@ const CAUSE: Record<RoutedSkip, string> = {
   provider_down: 'the provider of the models big enough for this agent is not answering (check it in Settings → Providers)',
   excluded: 'the models big enough for this agent failed earlier in this turn. Send the message again in a few minutes',
   capability: 'the only models big enough for this agent cannot use tools',
+  too_small: 'the only models left have a memory window under 32K, too small for an agent. Add a bigger model to the router',
 };
 const NONE_HOLDS = 'none of the models the auto-router uses can hold its instructions and tools. Add a model with a larger context window to the router, or give it fewer tools';
 

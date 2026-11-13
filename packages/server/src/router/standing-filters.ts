@@ -8,6 +8,7 @@ import { exceededBudget } from '../costs/spend.js';
 import { TIER_FALLBACK, getTierModels, type TierModelRow } from './tier-chain.js';
 
 const logger = createLogger('selector');
+export const agentFloor = { mayRun: (_modelId: string): boolean => true };   // the 32K floor, set by router-window.ts so this file stays clear of agent/model.js
 
 export function estimateRequestCost(model: TierModelRow): number {
   // 2k input + 1k output per request; an unknown (NULL) price counts as $0, as the biller records it.
@@ -16,7 +17,7 @@ export function estimateRequestCost(model: TierModelRow): number {
   return inputCost + outputCost;
 }
 
-export type RoutedSkip = 'provider_down' | 'capability' | 'rate_limit' | 'budget' | 'excluded';
+export type RoutedSkip = 'provider_down' | 'capability' | 'rate_limit' | 'budget' | 'excluded' | 'too_small';
 
 /** Why the standing filters turn a candidate away; `null` when they do not. */
 export function standingSkip(model: TierModelRow, required: string[], agentId?: string): RoutedSkip | null {
@@ -27,6 +28,7 @@ export function standingSkip(model: TierModelRow, required: string[], agentId?: 
     }, agentId);
     return 'provider_down';
   }
+  if (required.includes('tools') && !agentFloor.mayRun(model.model_id)) return 'too_small';   // an agent turn, never a helper job
 
   if (required.length > 0) {
     const caps = getModelCapabilities(model.model_id);

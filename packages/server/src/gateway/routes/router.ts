@@ -90,7 +90,7 @@ routerRouter.get('/available-models', (c) => {
     provider_type: string;
   }>;
 
-  return c.json({ ok: true, data: models });
+  return c.json({ ok: true, data: models.map((m) => ({ ...m, tooSmallForAgents: refuseSmallMainModel(m.id) !== null })) });
 });
 
 // PUT /tiers/:tierId/models (reorder models in tier)

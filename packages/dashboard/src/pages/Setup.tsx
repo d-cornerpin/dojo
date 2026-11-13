@@ -22,6 +22,7 @@ import { formatCost } from '../lib/model-cost';
 // var(--btn-primary-text) / var(--btn-success-text)).
 import { ImportWizard } from '../components/ImportWizard';
 import { LaunchButton } from '../components/SetupLaunchButton';
+import { AgentModelOption } from '../components/AgentModelOption';
 
 type Step = 'welcome' | 'dependencies' | 'permissions' | 'provider' | 'models' | 'your-profile' | 'primary-agent' | 'pm-agent' | 'trainer-agent' | 'dreamer' | 'imessage' | 'workspace' | 'web-search' | 'voice' | 'complete';
 
@@ -851,7 +852,7 @@ export const PrimaryAgentStep = ({ onReady }: { onReady?: (ready: boolean) => vo
       }
       if (cancelled) return;
       if (existingName) setAgentName(existingName);
-      setSelectedModel(existingModel || (enabled[0]?.id ?? ''));
+      setSelectedModel(existingModel || (enabled.find((m) => !m.tooSmallForAgents)?.id ?? ''));
       if (existingName) setSaved(true);
     })();
     return () => { cancelled = true; };
@@ -920,7 +921,7 @@ export const PrimaryAgentStep = ({ onReady }: { onReady?: (ready: boolean) => vo
           <label className="block text-sm font-medium text-ui/70 mb-1">Model</label>
           <select value={selectedModel} onChange={(e) => { setSelectedModel(e.target.value); setSaved(false); }}
             className="glass-select w-full">
-            {models.map((m) => <option key={m.id} value={m.id}>{m.name} ({m.apiModelId})</option>)}
+            {models.map((m) => <AgentModelOption key={m.id} model={m} label={`${m.name} (${m.apiModelId})`} />)}
           </select>
         </div>
       )}
@@ -1043,11 +1044,7 @@ export const PMAgentStep = ({ onReady }: { onReady?: (ready: boolean) => void })
           </p>
           <select value={selectedModel} onChange={(e) => { setSelectedModel(e.target.value); setSaved(false); }}
             className="glass-select w-full">
-            {models.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.name} ({m.apiModelId}){m.inputCostPerM === 0 || m.inputCostPerM === null ? ', free' : ''}
-              </option>
-            ))}
+            {models.map((m) => <AgentModelOption key={m.id} model={m} label={`${m.name} (${m.apiModelId})${m.inputCostPerM === 0 || m.inputCostPerM === null ? ', free' : ''}`} />)}
           </select>
         </div>
       )}
@@ -1143,11 +1140,7 @@ const TrainerAgentStep = ({ onReady }: { onReady?: (ready: boolean) => void }) =
           </p>
           <select value={selectedModel} onChange={(e) => { setSelectedModel(e.target.value); setSaved(false); }}
             className="glass-select w-full">
-            {models.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.name} ({m.apiModelId}){m.inputCostPerM === 0 || m.inputCostPerM === null ? ', free' : ''}
-              </option>
-            ))}
+            {models.map((m) => <AgentModelOption key={m.id} model={m} label={`${m.name} (${m.apiModelId})${m.inputCostPerM === 0 || m.inputCostPerM === null ? ', free' : ''}`} />)}
           </select>
         </div>
       )}
@@ -1248,11 +1241,7 @@ export const DreamerStep = ({ onReady }: { onReady?: (ready: boolean) => void })
         {models.length > 0 && (
           <select value={selectedModel} onChange={(e) => { setSelectedModel(e.target.value); setSaved(false); }}
             className="glass-select w-full">
-            {models.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.name} ({m.apiModelId}){m.inputCostPerM === 0 || m.inputCostPerM === null ? ' -- free' : ''}
-              </option>
-            ))}
+            {models.map((m) => <AgentModelOption key={m.id} model={m} label={`${m.name} (${m.apiModelId})${m.inputCostPerM === 0 || m.inputCostPerM === null ? ' -- free' : ''}`} />)}
           </select>
         )}
       </div>

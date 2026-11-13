@@ -39,7 +39,7 @@ beforeEach(() => {
     VALUES ('prov', 'P', 'anthropic', 'agent-sdk', 1, datetime('now'), datetime('now'))`).run();
   const model = db().prepare(`INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, max_output_tokens, is_enabled, created_at, updated_at)
     VALUES (?, 'prov', ?, ?, '["text","tools"]', ?, 4096, 1, datetime('now'), datetime('now'))`);
-  model.run('m-small', 'Dock Small', 'small', 8_192);
+  model.run('m-small', 'Dock Small', 'small', 40_000);
   model.run('m-big', 'Dock Big', 'big', 200_000);
   const tier = db().prepare('INSERT INTO router_tier_models (tier_id, model_id, priority) VALUES (?, ?, 0)');
   tier.run('light', 'm-small');

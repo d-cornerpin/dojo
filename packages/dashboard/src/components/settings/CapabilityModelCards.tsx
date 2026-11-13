@@ -8,6 +8,7 @@ import * as api from '../../lib/api';
 import { useToast } from '../../hooks/useToast';
 import { engineRoleId, loadEngineRoleIds } from '../../lib/engine-role-ids';
 import { formatDate } from '../../lib/dates';
+import { AgentModelOption } from '../AgentModelOption';
 
 
 // Platform-wide fallback vision pick: which vision-capable model takes over when the calling
@@ -428,11 +429,7 @@ const HealerEditor = ({ models, config, refresh }: { models: Model[]; config: He
           className="finput field--select"
         >
           <option value="">Auto (first available mid-tier model)</option>
-          {models.filter((m) => !m.capabilities.includes('decision')).map((m) => (
-            <option key={m.id} value={m.id}>
-              {m.name} ({m.apiModelId})
-            </option>
-          ))}
+          {models.filter((m) => !m.capabilities.includes('decision')).map((m) => <AgentModelOption key={m.id} model={m} label={`${m.name} (${m.apiModelId})`} />)}
         </select>
         <p className="text-[10px] text-ui/25 mt-1">
           Mid-tier model recommended. Needs good reasoning but doesn't need to be frontier.

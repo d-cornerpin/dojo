@@ -82,9 +82,10 @@ describe('the floor', () => {
   });
 
   it('every assigned model counts, a provider that is down included, so the figure does not jump when one trips', () => {
-    model('m-down', 'Down 24K', 24_000, 'prov-down');
+    db().prepare("DELETE FROM router_tier_models WHERE model_id = 'm-light'").run();
+    model('m-down', 'Down 64K', 64_000, 'prov-down');
     assign('standard', 'm-down', 1);
-    expect(routerWindowFloor()).toMatchObject({ tokens: 24_000, modelName: 'Down 24K' });
+    expect(routerWindowFloor()).toMatchObject({ tokens: 64_000, modelName: 'Down 64K' });
   });
 
   it('fix round 1: a model the owner DISABLED on a tier is never dialled, so it does not set the floor', () => {
@@ -114,10 +115,11 @@ describe('the router window', () => {
     expect(routerWindowTokens()).toBe(32_000);
   });
   it('a smaller model joins a tier: the window follows the new floor', () => {
-    setting('30000');
-    model('m-tiny', 'Tiny 16K', 16_000);
-    assign('light', 'm-tiny', 1);
-    expect(routerWindowTokens()).toBe(16_000);
+    db().prepare("DELETE FROM router_tier_models WHERE model_id = 'm-light'").run();
+    setting('100000');
+    model('m-mid', 'Mid 64K', 64_000);
+    assign('light', 'm-mid', 1);
+    expect(routerWindowTokens()).toBe(64_000);
   });
   it('a setting that is not a positive whole number is not a setting', () => {
     for (const bad of ['', 'abc', '-5', '0', '12.5']) {
