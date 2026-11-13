@@ -31,7 +31,7 @@ describe('disabling a model never lands an agent on a too-small one', () => {
   it('with only a sub-32K model left, the agent has no model', async () => {
     const app = new Hono().route('/config', configRouter);
     const res = await app.request('/config/models/disable', { method: 'POST', body: JSON.stringify({ modelIds: ['m-in-use'] }), headers: { 'content-type': 'application/json' } });
-    expect(res.status).toBe(200);
+    expect(await res.json(), 'the reply never calls it moved').toEqual({ ok: true, data: { disabled: 1, agentsMoved: 0, agentsWithoutModel: 1 } });
     expect(db().prepare("SELECT model_id FROM agents WHERE id = 'agent-a'").get()).toEqual({ model_id: null });
   });
 });

@@ -44,7 +44,7 @@ export const ProvidersTab = () => {
       if (usage.ok && usage.data.usages.length > 0) {
         const affected = usage.data.usages.flatMap(u => u.usedBy.map((a: { name: string }) => a.name));
         const unique = [...new Set(affected)];
-        warning += `\n\nCurrently used by: ${unique.join(', ')}. They will be reassigned to another model.`;
+        warning += `\n\nCurrently used by: ${unique.join(', ')}. They will be left with no model until you pick a new one.`;
       }
     }
 

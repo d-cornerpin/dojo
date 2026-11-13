@@ -109,7 +109,10 @@ describe('a window renews only while the job moves and nobody waits', () => {
     aNewCallSucceeded(state, 1);
     expect((await gate(state)).directive, 'only the served person waits: the window renews').toBe('proceed');
 
-    turn.convKey = 'another-conversation';
+    const other = insertMessage({ agentId: AGENT, role: 'user', lane: 'owner', channel: 'imessage', senderId: '+15550001111',
+      authorized: true, inboundMeta: JSON.stringify({ channel: 'imessage', sender: '+15550001111', authorized: true }), content: 'are you free?', turnNumber: 1 });
+    turn.pickupSeq = other.seq;   // the second person was already waiting when the turn began
+    expect(getWaitingHumanConversations(AGENT), 'precondition: two people wait').toHaveLength(2);
     const next = stateAt(76);
     aNewCallSucceeded(next, 2);
     const parked = await gate(next);

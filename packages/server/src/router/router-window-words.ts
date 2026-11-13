@@ -1,7 +1,7 @@
 // Owner-facing words for an auto agent that cannot run at the router window (router-window.ts). They name
 // the router's smallest model and the slider; "pick a bigger model" would push the owner to pin a pricier one.
 
-import { autoRouterContext } from './router-window.js';
+import { autoRouterContext, isAutoRouted } from './router-window.js';
 import { honestStopWords } from '../agent/v2/error-format.js';
 
 export interface AutoRouterContext { modelName: string; floorTokens: number; windowTokens: number }
@@ -30,5 +30,6 @@ export function autoNoFitOwnerWords(r: AutoRouterContext): string {
 
 export function noFitOwnerWords(agentId: string): string {
   const r = autoRouterContext(agentId);
-  return r ? autoNoFitOwnerWords(r) : honestStopWords('no_model_fits');
+  if (r) return autoNoFitOwnerWords(r);
+  return isAutoRouted(agentId) ? `This agent's turn was not run: the router has no model with a memory window of 32K or more, the least an agent needs. Your message is kept. Add one to the router in Settings and it will answer.` : honestStopWords('no_model_fits');
 }

@@ -30,7 +30,7 @@ beforeEach(() => {
   vi.mocked(api.getProviders).mockResolvedValue({ ok: true, data: [{ id: 'p', name: 'Prov', type: 'anthropic' }] } as never);
   vi.mocked(api.getAgent).mockResolvedValue({ ok: true, data: { modelId: 'm1' } } as never);
   vi.mocked(api.checkModelUsage).mockResolvedValue({ ok: true, data: { usages: [] } } as never);
-  vi.mocked(api.disableModels).mockResolvedValue({ ok: true, data: undefined } as never);
+  vi.mocked(api.disableModels).mockResolvedValue({ ok: true, data: { disabled: 1, agentsMoved: 0, agentsWithoutModel: 0 } } as never);
 });
 afterEach(() => { vi.restoreAllMocks(); vi.clearAllMocks(); });
 
@@ -52,6 +52,12 @@ describe('turning a model off', () => {
     fireEvent.click(await openAndFindSwitch());
     await waitFor(() => expect(confirm).toHaveBeenCalled());
     expect(api.disableModels).not.toHaveBeenCalled();
+  });
+
+  it('says how many agents moved and how many were left with no model', async () => {
+    vi.mocked(api.disableModels).mockResolvedValue({ ok: true, data: { disabled: 1, agentsMoved: 0, agentsWithoutModel: 2 } } as never);
+    fireEvent.click(await openAndFindSwitch());
+    await waitFor(() => expect(toasts.calls).toContainEqual({ level: 'info', message: '0 agent(s) moved to another model and 2 left with no model.' }));
   });
 
   it('shows the server sentence when the switch is refused', async () => {

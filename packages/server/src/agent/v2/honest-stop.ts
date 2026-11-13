@@ -85,8 +85,6 @@ export async function classifyHonestStop(agentId: string, error: unknown): Promi
   if (codes.includes(FREE_FALLBACK_DOWN_CODE)) return budgetStop(agentId, true);
   if (codes.includes(BUDGET_STOP_CODE) || codes.includes('BUDGET_EXCEEDED')) return budgetStop(agentId);
   if (codes.includes(NO_MODEL_FITS_CODE)) return noFit(agentId);
-  // The auto-router found no model at all, and the money limit is what filtered them out.
-  if (codes.includes('NO_MODEL') && budgetStopFor(agentId)) return budgetStop(agentId);
 
   const refusal = links.find((e): e is SystemPromptTooLargeError => e instanceof SystemPromptTooLargeError);
   if (refusal) {

@@ -63,9 +63,7 @@ function getModelUsage(modelId: string): ModelUsage {
   return { modelId, modelName: model?.name ?? modelId, usedBy };
 }
 
-function reassignAffectedAgents(modelIds: string[]): number {
-  if (modelIds.length === 0) return 0;
-
+function reassignAffectedAgents(modelIds: string[]): { agentsMoved: number; agentsWithoutModel: number } {
   const db = getDb();
   let reassigned = 0;
 
@@ -105,7 +103,7 @@ function reassignAffectedAgents(modelIds: string[]): number {
     }
   }
 
-  return reassigned;
+  return fallbackId ? { agentsMoved: reassigned, agentsWithoutModel: 0 } : { agentsMoved: 0, agentsWithoutModel: reassigned };
 }
 
 const logger = createLogger('config-routes');
@@ -2165,11 +2163,11 @@ configRouter.post('/models/disable', async (c) => {
 
   disableMany(modelIds);
 
-  const reassigned = reassignAffectedAgents(modelIds);
+  const moved = reassignAffectedAgents(modelIds);
 
-  logger.info('Models disabled', { count: modelIds.length, agentsReassigned: reassigned });
+  logger.info('Models disabled', { count: modelIds.length, ...moved });
 
-  return c.json({ ok: true, data: { disabled: modelIds.length, agentsReassigned: reassigned } });
+  return c.json({ ok: true, data: { disabled: modelIds.length, ...moved } });
 });
 
 
