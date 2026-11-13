@@ -29,7 +29,7 @@ import { allow, deny, type Verdict } from './types.js';
 const GLOBAL_EXEC_DENY: readonly string[] = ['rm -rf /', 'rm -rf ~', 'chmod 777 *'];
 
 const SENSITIVE_FILE_READING_COMMANDS: ReadonlySet<string> = new Set<string>([
-  'cat', 'less', 'more', 'head', 'tail', 'bat', 'nl', 'strings',
+  'cat', 'less', 'more', 'head', 'tail', 'bat', 'nl', 'strings', 'sort', 'jq',
   'cp', 'mv', 'rsync', 'scp', // exfiltration shapes
   'sed', 'awk', 'grep', 'rg', 'ag', 'fgrep', 'egrep',
   'xxd', 'od', 'hexdump',

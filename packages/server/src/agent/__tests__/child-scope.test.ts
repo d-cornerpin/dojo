@@ -90,7 +90,7 @@ describe('A — the DECIDED default: inherit parent, minus danger', () => {
     expect(child().file_read).toBe('*');
   });
 
-  it('MUST-SURVIVE: the default sub-agent keeps its fourteen commands on BOTH doors', () => {
+  it('MUST-SURVIVE: the default sub-agent keeps its seventeen commands on BOTH doors', () => {
     // T3's measurement, and the brief names it: the new default must not shrink
     // it. Counted rather than eyeballed.
     //
@@ -101,8 +101,9 @@ describe('A — the DECIDED default: inherit parent, minus danger', () => {
     // (`PRIMARY_AGENT_PERMISSIONS.exec_allow`, manifest.ts:25), so the product
     // never blocked a file-move for the owner's own agent; the gap this closes is
     // the DEFAULT sub-agent's, which is what a delegated worker gets.
-    expect(DEFAULT_SUBAGENT_PERMISSIONS.exec_allow).toHaveLength(14);
-    expect(DEFAULT_SUBAGENT_PERMISSIONS.shell_allow).toHaveLength(14);
+    // 14 -> 17: `sort`, `jq` and `tee` join both doors (owner ruling, also a widening).
+    expect(DEFAULT_SUBAGENT_PERMISSIONS.exec_allow).toHaveLength(17);
+    expect(DEFAULT_SUBAGENT_PERMISSIONS.shell_allow).toHaveLength(17);
     expect(DEFAULT_SUBAGENT_PERMISSIONS.shell_allow).toEqual(DEFAULT_SUBAGENT_PERMISSIONS.exec_allow);
     // The ruling by name, on both doors, so a re-ordering cannot satisfy the count
     // while dropping the capability.

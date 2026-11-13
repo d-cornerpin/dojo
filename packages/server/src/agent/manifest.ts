@@ -26,15 +26,16 @@ export const PRIMARY_AGENT_PERMISSIONS: PermissionManifest = {
   system_control: ['*', 'applescript'],
 };
 
+/** A helper's default commands: one list, so the exec and shell doors stay equal. */
+const HELPER_COMMANDS = ['ls', 'cat', 'head', 'tail', 'grep', 'find', 'wc', 'echo', 'node', 'npm', 'npx', 'git', 'mv', 'cp', 'sort', 'jq', 'tee'];
 export const DEFAULT_SUBAGENT_PERMISSIONS: PermissionManifest = {
   file_read: ['~/Projects/**', '/tmp/**'],
   file_write: ['~/Projects/**', '/tmp/**'],
   file_delete: 'none',
   // `mv`/`cp` so a delegated worker can place an artifact it produced; `file_delete` stays `'none'`.
-  exec_allow: ['ls', 'cat', 'head', 'tail', 'grep', 'find', 'wc', 'echo', 'node', 'npm', 'npx', 'git', 'mv', 'cp'],
+  exec_allow: HELPER_COMMANDS,
   exec_deny: ['rm -rf /', 'rm -rf ~', 'sudo *', 'chmod 777 *'],
-  // Deliberately the same list as `exec_allow`; the child-scope test asserts the doors stay equal.
-  shell_allow: ['ls', 'cat', 'head', 'tail', 'grep', 'find', 'wc', 'echo', 'node', 'npm', 'npx', 'git', 'mv', 'cp'],
+  shell_allow: HELPER_COMMANDS,
   shell_deny: ['rm -rf /', 'rm -rf ~', 'sudo *', 'chmod 777 *'],
   // Wide by design (workers browse): the default inherits the parent minus danger; network is not danger.
   network_domains: '*',
