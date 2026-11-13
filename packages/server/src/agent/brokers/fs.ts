@@ -14,8 +14,7 @@ import { allow, deny, type Verdict } from './types.js';
 
 export type FsKind = 'fs_read' | 'fs_write' | 'fs_delete';
 
-/** The legacy per-kind refusal wording, kept verbatim: a message an agent parses is a
- *  contract, so these agent-facing strings must not move under a refactor. */
+/** The per-kind refusal wording; a Healer-log read names the bounded helper tools instead. */
 function globalDenyReason(kind: FsKind, tier: DenyTier, rawPath: string, ruleId: string): string {
   if (tier === 'sensitive') {
     return `${rawPath} is on the sensitive-files block list (secrets.yaml, .env files, SSH keys, cloud credentials)`;

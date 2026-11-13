@@ -16,8 +16,9 @@ interface WindowRow {
   num_ctx_recommended: number | null;
 }
 
-/** The window this model's calls are budgeted against (under `numCtxOverride` when given), or null when it declared none. */
-export function windowOf(modelId: string, numCtxOverride?: number | null): { name: string; window: number } | null {
+/** The window this model's calls are budgeted against (under `numCtxOverride` when given) and `now`, under the
+ *  stored override; null when it declared none. */
+export function windowOf(modelId: string, numCtxOverride?: number | null): { name: string; window: number; now: number } | null {
   if (modelId === 'auto' || modelId === '__auto__') return null;
   let row: WindowRow | undefined;
   try {
@@ -28,10 +29,8 @@ export function windowOf(modelId: string, numCtxOverride?: number | null): { nam
   if (!row) return null;
   const declared = row.context_window;
   if (typeof declared !== 'number' || !Number.isFinite(declared) || declared <= 0) return null;
-  const numCtx = resolveNumCtx({
-    numCtxOverride: numCtxOverride === undefined ? row.num_ctx_override : numCtxOverride, numCtxRecommended: row.num_ctx_recommended,
-  }).effective;
-  return { name: row.name, window: effectiveContextWindow(declared, numCtx) };
+  const under = (o: number | null): number => effectiveContextWindow(declared, resolveNumCtx({ numCtxOverride: o, numCtxRecommended: row.num_ctx_recommended }).effective);
+  return { name: row.name, window: under(numCtxOverride === undefined ? row.num_ctx_override : numCtxOverride), now: under(row.num_ctx_override) };
 }
 
 function kLabel(tokens: number): string {
@@ -56,8 +55,8 @@ export function refuseSmallMainModel(
   return smallMainModelMessage(w.name, w.window);
 }
 
-export function passesMainModelFloor(modelId: string, numCtxOverride?: number | null): boolean {
-  const w = windowOf(modelId, numCtxOverride);
+export function passesMainModelFloor(modelId: string): boolean {
+  const w = windowOf(modelId);
   return !w || w.window >= MAIN_MODEL_MIN_WINDOW;
 }
 

@@ -45,5 +45,7 @@ describe("the context setting cannot narrow an agent's model under 32K", () => {
     expect((await setNumCtx('in-use', 32_768)).status).toBe(200);
     expect((await setNumCtx('spare', 8_192)).status).toBe(200);
     expect(overrideOf('spare')).toBe(8_192);
+    expect((await setNumCtx('in-use', 8_192)).status).toBe(409);
+    expect((await setNumCtx('missing', 8_192)).status).toBe(404);
   });
 });

@@ -22,7 +22,7 @@ import { dismissOwnerNotice, ownerToldOf } from '../../healer/owner-notices.js';
 import { servedOwnerNotices } from '../../healer/owner-notice-kinds.js';
 import { writeOobeSoul } from '../../prompt/soul-rerun.js';
 import { isPastFirstRun } from '../../config/setup-state.js';
-import { refuseSmallMainModel, refuseUnfitLocalModel, passesMainModelFloor, smallMainModelMessage, windowOf, MAIN_MODEL_SETTING_KEYS, LOCAL_MODEL_SETTING_KEYS } from '../../agent/main-model-floor.js';
+import { refuseSmallMainModel, refuseUnfitLocalModel, passesMainModelFloor, smallMainModelMessage, windowOf, MAIN_MODEL_MIN_WINDOW, MAIN_MODEL_SETTING_KEYS, LOCAL_MODEL_SETTING_KEYS } from '../../agent/main-model-floor.js';
 import { parsePrice } from '../../services/price-per-million.js';
 import { refuseBadClockTime, CLOCK_TIME_SETTING_KEYS } from '../../config/clock-time.js';
 import { refuseStaleWholeDocument } from './whole-document-guard.js';
@@ -1895,14 +1895,14 @@ configRouter.patch('/models/:id/num-ctx', async (c) => {
   }
 
   const db = getDb();
-  if (!db.prepare('SELECT 1 FROM models WHERE id = ?').get(id)) return c.json({ ok: false, error: 'Model not found' }, 404);
-
   // An agent's model may not be narrowed under the floor every door that sets a main model enforces.
   const after = windowOf(id, override);
-  if (after && after.window < (windowOf(id)?.window ?? Infinity) && !passesMainModelFloor(id, override) && agentsOnModel(id).length > 0) {
+  if (after && after.window < after.now && after.window < MAIN_MODEL_MIN_WINDOW && agentsOnModel(id).length > 0) {
     return c.json({ ok: false, error: smallMainModelMessage(after.name, after.window) }, 409);
   }
-  db.prepare("UPDATE models SET num_ctx_override = ?, updated_at = datetime('now') WHERE id = ?").run(override, id);
+  if (db.prepare("UPDATE models SET num_ctx_override = ?, updated_at = datetime('now') WHERE id = ?").run(override, id).changes === 0) {
+    return c.json({ ok: false, error: 'Model not found' }, 404);
+  }
 
   const row = db.prepare('SELECT * FROM models WHERE id = ?').get(id) as Record<string, unknown>;
 

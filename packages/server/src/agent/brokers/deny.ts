@@ -10,8 +10,8 @@ export type DenyTier = 'sensitive' | 'global_read' | 'global_write' | 'global_de
 
 export const DENY_TIERS: readonly DenyTier[] = ['sensitive', 'global_read', 'global_write', 'global_delete'];
 
-/** Where a rule came from: the pre-merge lists, or a bypass hardening row. */
-export type DenyProvenance = 'legacy' | 'T2-hardening';
+/** Where a rule came from: the pre-merge lists, or a row added after them. */
+export type DenyProvenance = 'legacy' | 'added';
 
 export interface DenyMatchContext {
   /** Case-folded absolute path (folded only where the filesystem folds). */
@@ -166,7 +166,7 @@ export const DENY_RULES: readonly DenyRule[] = [
   {
     id: 'dojo-database-backups',
     tiers: ['global_read'],
-    since: 'T2-hardening',
+    since: 'added',
     reason: 'the backup folders hold whole copies of the platform database, credential tables included.',
     test: ({ folded, home }) =>
       underDir(folded, path.join(home, '.dojo', 'data', 'backups')) || underDir(folded, path.join(home, '.dojo', 'backups')),
