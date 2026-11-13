@@ -14,7 +14,7 @@ import { getDb } from '../../db/connection.js';
 import { firstKeyword } from '../../db/read-only-door.js';
 import { homeDir } from '../../home.js';
 import { refuseDeniedSql } from '../../inspect/redact.js';
-import { DOJO_BACKUP_DIRS } from './deny.js';
+import { DOJO_BACKUP_DIRS, denyRuleFor } from './deny.js';
 import { lexShellLine, type Segment, type Word } from './shell-words.js';
 import { deny, type Verdict } from './types.js';
 
@@ -145,8 +145,9 @@ function readRefusal(stmt: string, db: Database.Database | undefined): string | 
 
 // Full-Mac access is the main agent's alone, plus the Healer's repair scope: every statement
 // still passes the credential list and the server's own SQLite compile; dot-commands (an
-// `.import` writes rows no SQL check can read) and `VACUUM INTO` (a whole-database copy) stay refused.
+// `.import` writes rows no SQL check can read) stay refused, and a `VACUUM INTO` copy lands only in a backup folder.
 const VACUUM_INTO = /^\s*vacuum\b[^;]*\binto\b/i;
+const COPY_REFUSAL = `Refused: a copy of the database may be written only into ${DOJO_BACKUP_DIRS.map((d) => `~/.dojo/${d}/`).join(' or ')}, given as a full path.`;
 /** Whole-db checks: they open every table and return no rows; the credential list holds them by NAME. */
 const WHOLE_DB_MAINTENANCE = /^\s*(?:pragma\s+(?:integrity_check|quick_check)\s*(?:\(\s*\w+\s*\))?|reindex(?:\s+\w+)?|vacuum)\s*$/i;
 
@@ -156,7 +157,8 @@ export function healerRepairRefusal(stmt: string, db: Database.Database | undefi
   if (/^\s*\./.test(stmt)) return FACT_REFUSAL;
   if (CLI_ONLY_NAME.test(b)) return FACT_REFUSAL;
   if (tableFunctions(b).some((f) => !SAFE_TABLE_FUNCTIONS.has(f))) return FACT_REFUSAL;
-  if (VACUUM_INTO.test(b)) return FACT_REFUSAL;
+  const to = /^\s*vacuum(?:\s+\w+)?\s+into\s+'([^']+)'\s*;?\s*$/i.exec(stmt)?.[1];
+  if (VACUUM_INTO.test(b) && !(to && path.isAbsolute(to) && denyRuleFor(path.normalize(to), 'global_read')?.id === 'dojo-database-backups')) return COPY_REFUSAL;
   if (!db) return FACT_REFUSAL;
   try {
     db.prepare(stmt);

@@ -174,7 +174,7 @@ const REFUSED: Row[] = [
   { who: MAIN, line: `sqlite3 ${DB} "PRAGMA integrity_check"`, want: 'refuse', why: 'the whole-database checks are the Healer\'s, not the main agent\'s read' },
   { who: HEALER, line: `sqlite3 ${DB} ".restore /tmp/old.db"`, want: 'refuse', why: 'a dot-command' },
   { who: HEALER, line: `sqlite3 ${DB} ".import /tmp/rows.csv agents"`, want: 'refuse', why: 'a dot-command: .import writes rows no SQL check can read' },
-  { who: HEALER, line: `sqlite3 ${DB} "VACUUM INTO '/tmp/copy.db'"`, want: 'refuse', why: 'VACUUM INTO copies the credential tables into another file' },
+  { who: HEALER, line: `sqlite3 ${DB} "VACUUM INTO '/tmp/copy.db'"`, want: 'refuse', why: 'a whole-database copy lands only in a backup folder' },
   { who: HEALER, line: `sqlite3 ${DB} "UPDATE agents SET name = readfile('/etc/hosts') WHERE id = 'x'"`, want: 'refuse', why: 'a CLI-only function stays refused' },
   { who: HEALER, line: `sqlite3 ${DB} "UPDATE no_such_table SET a = 1"`, want: 'refuse', why: 'a statement the server cannot compile does not run (fail closed)' },
   { who: HEALER, line: `rm ${DB}-wal`, want: 'refuse', why: 'a file-level write is not a repair' },
