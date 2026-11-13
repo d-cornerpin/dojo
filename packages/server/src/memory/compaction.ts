@@ -14,7 +14,8 @@ import type { PromptTurnContext } from '../prompt/assembler.js';
 import { insertMessageIfAbsent, retireReplayedReasoningBeforeTurn } from './message-store.js';
 // The assembler declares and renders the stub distance, this module decides when it applies: one literal.
 import { V2_STUB_AFTER_TURNS, groupTail, type ContextView } from './assembler.js';
-import { summaryWriterCandidates, eligibleSummaryWriters, ownModel, pickWriter, summaryRoom, writerPassedOver, spanWaitsForAWriter } from './writer.js';
+import { summaryWriterCandidates, eligibleSummaryWriters, ownModel, pickWriter, summaryRoom, writerPassedOver, spanWaitsForAWriter, summaryCallStarts } from './writer.js';
+import { ownerProgressFrame } from '../healer/owner-notices.js';
 import { supersedeUncondensedPlaceholders } from './uncondensed-head.js';
 import {
   createLeafSummary,
@@ -217,17 +218,17 @@ function insertCompactionDivider(agentId: string, opts: { label: string }): void
   }
 }
 
-// Wraps a compaction work call so the dashboard shows "Compacting memory" while it runs (try/finally ends it).
+// Wraps a compaction work call so the dashboard shows "Compacting memory" from its first summary model call
+// (summarize.ts runs summaryCallStarts) until it ends; a pass that never calls the writer shows nothing.
 async function withCompactionActivity<T>(agentId: string, work: () => Promise<T>): Promise<T> {
   const id = `compaction_${agentId}_${Date.now()}`;
-  const startedAt = new Date().toISOString();
-  const emit = (phase: 'start' | 'end'): void =>
-    broadcast({ type: 'engine:activity', data: { id, kind: 'compaction', agentId, label: 'Compacting memory', startedAt, phase } });
-  emit('start');
+  let started = false;
+  summaryCallStarts.set(agentId, () => { if (!started) ownerProgressFrame('start', id, agentId, 'Compacting memory'); started = true; });
   try {
     return await work();
   } finally {
-    emit('end');
+    summaryCallStarts.delete(agentId);
+    if (started) ownerProgressFrame('end', id, agentId, 'Compacting memory');
   }
 }
 
@@ -468,7 +469,7 @@ async function condenseOnlyPass(
   budget: number, force: boolean, compactableRows: number, options?: CheckAndCompactOptions,
 ): Promise<CompactionResult> {
   const args = condenseArgs(agentId, modelId, turnModelId, contextWindow, options?.abortSignal);
-  // Asked BEFORE the activity broadcast, so a tail-bloated agent does not flicker "Compacting memory".
+  // Asked before any summary call, so a tail-bloated agent with nothing to fold costs no writer work.
   const est = await args.measure() as Awaited<ReturnType<typeof estimateAssembledTokens>>;
   if (rawContextSummaryTokens(agentId) <= est.summaryTokens || est.view.budgetTokens === 0) {
     logger.info('Compaction skipped: nothing outside the protected recent part, and every summary already fits', {

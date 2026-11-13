@@ -5,7 +5,7 @@ import { estimateTokens } from './budget.js';
 import type { ProviderErrorFacts } from '../agent/provider-error.js';
 import { isContextOverflowError } from '../agent/context-overflow.js';
 import { writeThenCheck, rewriteInstruction } from './summary-check.js';
-import { settleSummaryCall, refuseWhatTheWriterCannotHold, refuseFallbackOverFreeMemory } from './writer.js';
+import { settleSummaryCall, refuseWhatTheWriterCannotHold, refuseFallbackOverFreeMemory, summaryCallStarts } from './writer.js';
 import { noteSummaryCallFailed } from '../agent/failed-call.js';
 import { summaryConversationLabel, LabelFacts } from './summary-subject.js';
 import { renderInstant } from './message-stamp.js';
@@ -220,6 +220,7 @@ async function writeSummary(params: {
       charsPerToken: modelCharsPerToken(modelId),   // the writer's own density
       fits: (extra) => refuseWhatTheWriterCannotHold(modelId, systemPrompt + extra, content, agentId) === null,
       call: async (extra, outputRoomAsk) => {
+        summaryCallStarts.get(agentId)?.();
         const result = await callModel({
           agentId, modelId, messages: [{ role: 'user', content }], systemPrompt: systemPrompt + extra, tools: false,
           purpose: 'memory_summarize', utilityTargetTokens: targetTokens, abortSignal,

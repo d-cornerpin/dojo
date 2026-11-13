@@ -33,6 +33,8 @@ const TRANSIENT: readonly WaitReason[] = ['not-answering', 'no-room', 'memory-un
 const SCOPE = 'writer_wait.';
 /** The agent part of a mark about the writer itself, for every agent. */
 export const EVERY_AGENT = '*';
+/** Per agent, what a running compaction pass does at each summary model call (compaction.ts withCompactionActivity). */
+export const summaryCallStarts = new Map<string, () => void>();
 
 export type Signal =
   | { kind: 'person-spoke'; agentId: string }

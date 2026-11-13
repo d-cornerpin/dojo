@@ -8,7 +8,7 @@
 // every loop iteration of every agent, so that was a glyph per tool round.
 //
 // Real: the migrated DB, the rows, `checkAndCompact`'s leaving-view arm. Mocked: the broadcast (it
-// is what this file reads), the summariser, the vault archive. Fixture names invented.
+// is what this file reads), the summary writer's model call, the vault archive. Fixture names invented.
 // ════════════════════════════════════════════════════════════════════════════════════════
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
@@ -23,8 +23,11 @@ vi.mock('../../db/connection.js', () => ({
 const frames = vi.hoisted(() => [] as Array<{ type: string; data?: { phase?: string; kind?: string } }>);
 vi.mock('../../gateway/ws.js', () => ({ broadcast: (e: { type: string }) => { frames.push(e); } }));
 vi.mock('../../tools/tool-docs.js', () => ({ measureAgentToolPayloadTokens: async () => 1000 }));
-const generateSummarySpy = vi.fn();
-vi.mock('../summarize.js', () => ({ generateSummary: (...args: unknown[]) => generateSummarySpy(...args) }));
+const callModelSpy = vi.fn();
+vi.mock('../../agent/model.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../agent/model.js')>()),
+  callModel: (...args: unknown[]) => callModelSpy(...args),
+}));
 vi.mock('../../vault/archive.js', () => ({
   archiveMessagesBeforeCompaction: vi.fn(() => 'archive-1'),
   isDreamerIgnored: vi.fn(() => false),
@@ -60,8 +63,8 @@ beforeEach(() => {
   __resetEstimateCacheForTests();
   __resetBrakesForTests();
   frames.length = 0;
-  generateSummarySpy.mockReset();
-  generateSummarySpy.mockImplementation(async () => ({ ok: true, text: 'A summary of the older span.', tokenCount: 12 }));
+  callModelSpy.mockReset();
+  callModelSpy.mockImplementation(async () => ({ content: 'A summary of the older span.', toolCalls: [], usage: {}, stopReason: 'end_turn' }));
 });
 afterEach(() => {
   mockDb.current?.close();
@@ -73,8 +76,17 @@ describe('the leaving-view pass', () => {
     seed(12);
     const result = await checkAndCompact(AGENT, MODEL, WINDOW, { leaving: { cause: 'out-of-view', throughSeq: 0.5, rowsLeaving: 0 } });
     expect(result.leafCreated).toBe(0);
-    expect(generateSummarySpy).not.toHaveBeenCalled();
+    expect(callModelSpy).not.toHaveBeenCalled();
     expect(activity(), 'a pass that folds nothing is not shown as compaction').toEqual([]);
+  });
+
+  it('a span with rows to fold whose pass stops before its first model call shows no activity', async () => {
+    seed(12);
+    const stopped = AbortSignal.abort();
+    const result = await checkAndCompact(AGENT, MODEL, WINDOW, { abortSignal: stopped, leaving: { cause: 'out-of-view', throughSeq: 6, rowsLeaving: 6 } });
+    expect(result.leafCreated).toBe(0);
+    expect(callModelSpy).not.toHaveBeenCalled();
+    expect(activity(), 'a pass that never reached the writer is not shown as compaction').toEqual([]);
   });
 
   it('CONTROL: a span with rows to fold shows its start and its end', async () => {
@@ -94,7 +106,7 @@ describe('the summaries-dropped pass', () => {
     rebuildContextItems(AGENT);
     const result = await checkAndCompact(AGENT, MODEL, WINDOW);
     expect(result.cannotHelp).toBe(true);
-    expect(generateSummarySpy).not.toHaveBeenCalled();
+    expect(callModelSpy).not.toHaveBeenCalled();
     expect(activity()).toEqual([]);
   });
 });
