@@ -268,7 +268,8 @@ export function dojoDoorVerdict(command: string | readonly string[], role: DoorR
     return sql === null ? { outcome: 'refused', message: FACT_REFUSAL } : sqlVerdict(sql, role);
   }
   if (!lexed || lexed.special) return { outcome: 'refused', message: FACT_REFUSAL };
-  const refers = (seg: Segment): boolean => refersToDojoDatabase(seg.text) || refersToDojoDatabase(seg.words.map((w) => w.value).join(' '));
+  // `$_` is the previous command's last word, so a command reading it may be handed a name on the data.
+  const refers = (seg: Segment): boolean => /\$\{?[#!]?_(?!\w)/.test(seg.text) || refersToDojoDatabase(seg.text) || refersToDojoDatabase(seg.words.map((w) => w.value).join(' '));
   const looks = lexed.segments.some((seg) => refers(seg) && isMetadataLook(seg.words));
   let result: DoorVerdict = { outcome: 'allowed' };
   for (const [k, seg] of lexed.segments.entries()) {

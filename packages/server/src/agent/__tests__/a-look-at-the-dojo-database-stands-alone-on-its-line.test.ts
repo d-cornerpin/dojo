@@ -1,6 +1,7 @@
 // A metadata look at the Dojo database or its data folder (ls, stat, ...) stands alone: on its line
 // every command is a look with no pipe or the shaped sqlite3 read, since piped onward, or followed by
-// a reader of `$_`, it could name the file to that reader. Driven through the exec seam the broker uses.
+// a reader of `$_`, it could name the file to that reader. Any line naming the data that reads `$_` is
+// refused, look or not. Driven through the exec seam the broker uses.
 
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import fs from 'node:fs';
@@ -57,6 +58,12 @@ const STANDALONE = [
   'ls -la ~/.dojo/data && stat ~/.dojo/data/dojo.db-wal',
   'sqlite3 -readonly ~/.dojo/data/dojo.db "select id from agents"; ls -la ~/.dojo/data',
   'sqlite3 -readonly ~/.dojo/data/dojo.db "select id from agents" | head -5',
+  'grep -c x ~/.dojo/logs/dojo.log | tail -100; sqlite3 -readonly ~/.dojo/data/dojo.db "SELECT id FROM agents"',
+];
+const READS_LAST_WORD = [
+  'sqlite3 -readonly ~/.dojo/data/dojo.db "select 1"; cat $_',
+  'sqlite3 -readonly ~/.dojo/data/dojo.db .tables && strings "${_}"',
+  'sqlite3 -readonly ~/.dojo/data/dojo.db "select 1"\necho $_ | xargs cat',
 ];
 
 describe('a look at the Dojo database stands alone on its line', () => {
@@ -67,5 +74,6 @@ describe('a look at the Dojo database stands alone on its line', () => {
       expect(v.allowed === false && v.blockedMessage).toBe(LOOK_SENTENCE);
     });
     it.each(STANDALONE)(`${who} still runs: %s`, (line) => expect(allowed(who, line)).toBe(true));
+    it.each(READS_LAST_WORD)(`${who} is refused a $_ on a line naming the data: %s`, (line) => expect(allowed(who, line)).toBe(false));
   }
 });
