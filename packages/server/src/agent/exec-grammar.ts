@@ -22,11 +22,15 @@ const NO_AUTHORITY_WORDS = new Set([
 const ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?=/;
 const REDIRECT_RE = /^\d*(&)?[<>]/;
 
+/** An unescaped `$` at k: it opens `$'...'` and `${ }`; `\\$` is a plain character. */
+const dollarAt = (line: string, k: number): boolean => line[k] === '$' && /^(\\\\)*$/.test(/\\*$/.exec(line.slice(0, k))![0]);
+
 function scanQuoted(line: string, i: number): number {
   const quote = line[i];
+  const escapes = quote !== "'" || dollarAt(line, i - 1);   // `$'...'` reads backslash escapes, `'...'` does not
   let j = i + 1;
   while (j < line.length) {
-    if (line[j] === '\\' && quote !== "'") { j += 2; continue; }
+    if (line[j] === '\\' && escapes) { j += 2; continue; }
     if (line[j] === quote) return j + 1;
     j++;
   }
@@ -40,7 +44,7 @@ function scanParens(line: string, i: number): number {
     const c = line[j];
     if (c === '\\') { j += 2; continue; }
     if (c === "'" || c === '"' || c === '`') { j = scanQuoted(line, j); continue; }
-    if (c === line[i]) depth++;
+    if (c === line[i] && (c !== '{' || dollarAt(line, j - 1))) depth++;
     else if (c === (line[i] === '{' ? '}' : ')')) { depth--; if (depth === 0) return j + 1; }
     j++;
   }
@@ -51,13 +55,14 @@ const HEREDOC_RE = /^<<(-?)[ \t]*(['"]?)([\w.-]+)\2(?=[ \t\n;&|<>()]|$)/;
 
 /** Words and separators; quoted spans and `$( )`, `${ }`, `(( ))` ride verbatim, so grammar inside them is never
  *  grammar. A here-document body is data, cut out unless it is unquoted and holds `$( )` or a backtick. */
-function tokenize(line: string): Tok[] {
+function tokenize(line: string, cutBodies = true): Tok[] {
   const toks: Tok[] = [];
   let cur = '';
   let i = 0;
+  let rawEnd = false;
   const flushWord = (): void => { if (cur) { toks.push({ text: cur, op: false }); cur = ''; } };
   const heredocs: string[][] = [];
-  let heredocsOff = line.includes("$'");   // `$'` and `#` make where a here-document starts unsure
+  let heredocsOff = !cutBodies || line.includes("$'");   // `$'` and `#` make where a here-document starts unsure
 
   while (i < line.length) {
     const c = line[i];
@@ -73,12 +78,14 @@ function tokenize(line: string): Tok[] {
       });
       if (data) line = line.slice(0, i + 1) + rest.slice(k).join('\n');
     }
+    const redirect = rawEnd && /[<>]$/.test(cur);   // the word so far ends in an unquoted redirect sign
+    rawEnd = false;
     if (c === '\\' && i + 1 < line.length) { cur += line.slice(i, i + 2); i += 2; continue; }
     if (c === "'" || c === '"' || c === '`') { const end = scanQuoted(line, i); cur += line.slice(i, end); i = end; continue; }
     if ((c === '$' && '({'.includes(line[i + 1] ?? '-')) || (c === '(' && line[i + 1] === '(')) { const end = scanParens(line, c === '$' ? i + 1 : i); cur += line.slice(i, end); i = end; continue; }
     if (c === ' ' || c === '\t') { flushWord(); i++; continue; }
-    // `2>&1` and `&>file` are redirects, not a background job.
-    if (c === '&' && (/[<>]$/.test(cur) || line[i + 1] === '>')) { cur += c; i++; continue; }
+    // `2>&1`, `&>file` and `>|file` are redirects, not a background job or a pipe.
+    if ((c === '&' && (redirect || line[i + 1] === '>')) || (c === '|' && redirect && cur.endsWith('>'))) { cur += c; i++; continue; }
     if (c === '\n' || c === ';' || c === '&' || c === '|' || c === '(' || c === ')') {
       flushWord();
       const two = line.slice(i, i + 2);
@@ -88,6 +95,7 @@ function tokenize(line: string): Tok[] {
       continue;
     }
     cur += c;
+    rawEnd = true;
     i++;
   }
   flushWord();
@@ -138,9 +146,9 @@ function substitutionBodies(word: string): string[] {
 }
 
 /** EVERY SIMPLE COMMAND THE LINE CONTAINS, substitution bodies included: what the floor, the
- *  sudo policy and the grant rows are each asked of. */
-export function execSimpleCommands(command: string): string[] {
-  const toks = tokenize(command);
+ *  sudo policy and the grant rows are each asked of. The floor keeps here-document bodies (a shell may run them). */
+export function execSimpleCommands(command: string, cutBodies = true): string[] {
+  const toks = tokenize(command, cutBodies);
   const commands: string[] = [];
   let seg: Tok[] = [];
   const flush = (): void => {
@@ -151,7 +159,7 @@ export function execSimpleCommands(command: string): string[] {
   for (const t of toks) {
     if (t.op) { flush(); continue; }
     seg.push(t);
-    for (const body of substitutionBodies(t.text)) commands.push(...execSimpleCommands(body));
+    for (const body of substitutionBodies(t.text)) commands.push(...execSimpleCommands(body, cutBodies));
   }
   flush();
   return commands.length > 0 ? commands : [command.trim()];

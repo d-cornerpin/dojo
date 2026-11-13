@@ -18,6 +18,15 @@ const g = grantForManifest('agent-rules', {
 const shell = (line: string) => authorizeExecShapedCall(g, 'shell', line);
 
 describe('a heredoc body is data', () => {
+  it('the catastrophic floor still reads a body, whoever receives it', () => {
+    const all = grantForManifest('agent-all', {
+      file_read: '*', file_write: '*', file_delete: '*', exec_allow: ['*'], exec_deny: [],
+      network_domains: '*', max_processes: 1, can_spawn_agents: false, can_assign_permissions: false, system_control: [],
+    });
+    expect(authorizeExecShapedCall(all, 'shell', "bash <<'EOF'\nrm -rf /\nEOF").allowed).toBe(false);
+    expect(authorizeExecShapedCall(all, 'shell', "bash <<'EOF'\necho hello\nEOF").allowed).toBe(true);
+  });
+
   it('a listed cat with a quoted-terminator body holding apostrophes and command words is admitted', () => {
     expect(shell("cat > /tmp/notes.txt <<'EOF'\nIt's done; rm -rf old files later.\nDon't forget `date`.\nEOF").allowed).toBe(true);
     expect(shell("cat > /tmp/notes.txt <<-\"EOF\"\n\trm $(whoami) isn't run\n\tEOF").allowed).toBe(true);

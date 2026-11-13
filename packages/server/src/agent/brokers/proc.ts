@@ -407,7 +407,7 @@ export function authorizeProc(
   //    segment gets full sudo authorization; floor fired and walk placed nothing: UNPLACEABLE, refused.
   const segments = execSimpleCommands(resource.raw);
   let privilegedSeen = false;
-  for (const seg of segments) {
+  for (const seg of execSimpleCommands(resource.raw, false)) {
     // The floor PER SEGMENT, not just the head program of the line (an unoverridable floor must
     // not be escapable by a pipe); its items are the catastrophic only, so this cannot lose a capability.
     const floored = globalExecDeny(seg);
