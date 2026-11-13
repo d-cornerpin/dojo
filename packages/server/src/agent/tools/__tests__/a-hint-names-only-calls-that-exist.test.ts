@@ -13,9 +13,15 @@ vi.mock('../../../config/platform.js', async () => ({
   getTrainerAgentId: () => 'trainer-1', getTrainerAgentName: () => 'Coach',
   getHealerAgentId: () => 'healer-1', getHealerAgentName: () => 'Mender',
 }));
+vi.mock('../../agent-task.js', async () => ({
+  ...(await vi.importActual<typeof import('../../agent-task.js')>('../../agent-task.js')),
+  resolveAgentTaskId: () => null,
+  ownedOpenTasks: () => [{ id: 'task-0001-aaaa', title: 'Count the boxes' }, { id: 'task-0002-bbbb', title: 'Label the shelves' }],
+}));
 import { toolDefinitionsByName } from '../definitions.js';
 import { gatesForCall } from '../gates.js';
 import { evaluateGate } from '../gate-eval.js';
+import { completeTaskHandIn } from '../cat/measure-door.js';
 import { renderPmAwareness, renderTrainerAwareness, renderHealerAwareness } from '../../../prompt/assembler.js';
 
 /** The calls a text shows, `name(key="value", ...)`, that the registered schemas do not accept. */
@@ -47,5 +53,12 @@ describe('a hint names only calls that exist', () => {
       expect(unknownCalls(text)).toEqual([]);
       expect(text).toContain('send_to_agent(');
     }
+  });
+
+  it('the refusal of a helper ending itself while it owns open steps', async () => {
+    const text = (await completeTaskHandIn('helper-1', 'complete', 'done')) ?? '';
+    expect(text).toContain('Count the boxes');
+    expect(unknownCalls(text)).toEqual([]);
+    expect(text).toContain('complete_task(status="blocked")');
   });
 });

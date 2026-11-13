@@ -79,7 +79,7 @@ export async function completeTaskHandIn(agentId: string, status: 'complete' | '
   const taskId = resolveAgentTaskId(agentId);
   const others = status === 'complete' ? ownedOpenTasks(agentId).filter((t) => t.id !== taskId) : [];
   if (others.length > 0) {
-    return `You are not ended: you still own open steps ${others.map((t) => `"${t.title}" (${t.id.slice(0, 8)})`).join(', ')}; hand each in with work_update(action="hand_in", ...) or end with complete_task(status="blocked") and say why.`;
+    return `You are not ended: you still own open steps ${others.map((t) => `"${t.title}" (${t.id.slice(0, 8)})`).join(', ')}. Hand in each step you can with work_update(action="hand_in", ...); when a step waits on the owner, end with complete_task(status="blocked") and say why.`;
   }
   if (!taskId) return null;
   const row = getDb().prepare('SELECT state FROM work WHERE id = ?').get(taskId) as { state: string } | undefined;
