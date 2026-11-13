@@ -10,7 +10,7 @@ import type { AssemblyContext } from '../../../../prompt/registry/types.js';
 import type { PromptTurnContext } from '../../../../prompt/assembler.js';
 import { broadcast } from '../../../../gateway/ws.js';
 import { clearConsumedOneShotFlags } from '../../../runtime.js';
-import { isConversational } from '../../classifiers/inbound-routing.js';
+import { inboundIsWork } from '../../classifiers/inbound-routing.js';
 import { advance, type AgentTurnState } from '../../state.js';
 import type { SteerEntry } from '../../steer-queue.js';
 import type { TurnContext } from '../../../turn-context.js';
@@ -95,7 +95,7 @@ export async function runAssemble(stateIn: AgentTurnState, ctxIn: AssembleContex
 
   // Intent companion: a quick conversational ask must not spin up a tracked task that then churns.
   const conversationalTurn = counterparty.kind === 'user'
-    && await isConversational(turnCtx, agentId, lastUserMessageContent ?? '');
+    && await inboundIsWork(turnCtx, agentId, lastUserMessageContent ?? '') === false;
   // Keep THIS turn's trigger row whole, by row identity, never a category (engine: `pendingEngineEvent`,
   // notification: `mostRecentInbound`): on a sparse tail gisting it empties the tail. Older notices still gist.
   let engineEventKeepFullId: string | null = null;

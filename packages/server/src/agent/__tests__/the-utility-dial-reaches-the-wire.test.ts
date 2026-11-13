@@ -319,7 +319,7 @@ describe('the Dojo\'s standard writer is kept resident on the wire', () => {
 // its dial's output cap, and a window sized to the call — also on a fresh box whose writer row has no
 // recommended window yet (Ollama would otherwise allocate the Modelfile's full 256K context).
 describe('every writer job on the standard writer is sized per job, never per model', () => {
-  const WRITER_PURPOSES = ['ask_title', 'multistep_classify', 'voice_opener', 'memory_summarize', 'continuity_brief'] as const;
+  const WRITER_PURPOSES = ['ask_title', 'voice_opener', 'memory_summarize', 'continuity_brief'] as const;
   const write = (purpose: string, chars: number): Promise<unknown> => callModel({
     agentId: 'a-fixture', modelId: 'm-std-writer', systemPrompt: '',
     messages: [{ role: 'user', content: 'x'.repeat(chars) }], tools: false, purpose,

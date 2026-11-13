@@ -1,4 +1,4 @@
-// Engine-side detection of prompts that need a tracker, and the start-ack steer the verdict arms.
+// Engine-side judgment of whether a person's message is work, and the start-ack steer the verdict arms.
 // Returns state (it enqueues on the steer queue). staleTaskWindowMinutes is an INPUT, never an
 // import: a guard pins the constant's declaration to `loop.ts` by path and the `execute` span reads it too.
 
@@ -11,6 +11,8 @@ import { engineAckReachesTheirChannel, type TurnCounterparty } from '../../count
 import { createLogger } from '../../../../logger.js';
 import { armStartAck, startAckDoorOpen } from './start-ack-door.js';
 import { workingExpr } from '../../../../work/done/hold.js';
+import { inboundIsWork } from '../../classifiers/inbound-routing.js';
+import { looksLikeEngineMessage, userExplicitlyAsksToCreateTracker } from '../../classifiers/multistep.js';
 
 const logger = createLogger('v2-loop');
 
@@ -55,50 +57,34 @@ export async function detectMultistepAndScaffold(stateIn: AgentTurnState, input:
       }, agentId);
     }
     try {
-      const { detectMultistep, getMultistepConfig } = await import('../../classifiers/multistep.js');
-      const cfg = getMultistepConfig();
-      if (cfg.enabled) {
-        // Skip only on an open task touched inside the stale window: a quick follow-up rides under the
-        // task it continues, but a STALE open task must not suppress or new untracked work never surfaces.
-        const db = getDb();
-        const existingTask = db.prepare(`
-          SELECT w.id AS id FROM work w
-          WHERE ${taskScope('w')} AND w.agent_id = ? AND ${workingExpr('w', true)}
-            AND w.updated_at >= ?
-          LIMIT 1
-        `).get(agentId, Date.now() - STALE_TASK_WINDOW_MINUTES * 60_000) as { id: string } | undefined;
+      // Skip only on an open task touched inside the stale window: a quick follow-up rides under the
+      // task it continues, but a STALE open task must not suppress or new untracked work never surfaces.
+      const db = getDb();
+      const existingTask = db.prepare(`
+        SELECT w.id AS id FROM work w
+        WHERE ${taskScope('w')} AND w.agent_id = ? AND ${workingExpr('w', true)}
+          AND w.updated_at >= ?
+        LIMIT 1
+      `).get(agentId, Date.now() - STALE_TASK_WINDOW_MINUTES * 60_000) as { id: string } | undefined;
 
-        // Also skip a creation prompt: it is byte-identical to a system row (the bootstrap twin).
-        const bootstrapTwin = db.prepare(
-          `SELECT 1 FROM messages WHERE agent_id = ? AND role = 'system' AND content = ? LIMIT 1`,
-        ).get(agentId, lastUserMessageContent);
-        if (!existingTask && !bootstrapTwin) {
-          const decision = await detectMultistep(lastUserMessageContent, agentId, cfg);
-          turnCtx.inboundClassifiedAsWork =
-            decision.multistep || decision.source === 'user_creating_explicitly';
-          logger.info('v2 multistep classifier ran', {
-            agentId,
-            source: decision.source,
-            multistep: decision.multistep,
-            name: decision.name,
-            signals: decision.heuristic.signals,
-          }, agentId);
-
-          // Nothing is created on a prediction: the >=6 engine floor opens the row only on OBSERVED work.
-          if (decision.multistep) {
-            if (thisOpenerMayArm()) {
-              state = arm(state);
-            }
-          }
-        }
+      // Also skip a creation prompt: it is byte-identical to a system row (the bootstrap twin).
+      const bootstrapTwin = db.prepare(
+        `SELECT 1 FROM messages WHERE agent_id = ? AND role = 'system' AND content = ? LIMIT 1`,
+      ).get(agentId, lastUserMessageContent);
+      if (!existingTask && !bootstrapTwin && !looksLikeEngineMessage(lastUserMessageContent)) {
+        const explicit = userExplicitlyAsksToCreateTracker(lastUserMessageContent);
+        const work = !explicit && await inboundIsWork(turnCtx, agentId, lastUserMessageContent) === true;
+        turnCtx.inboundClassifiedAsWork = work || explicit;
+        logger.info('v2 inbound judged', { agentId, work, explicit }, agentId);
+        // Nothing is created on a prediction: the >=6 engine floor opens the row only on OBSERVED work.
+        if (work && thisOpenerMayArm()) state = arm(state);
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      const isMissingTable = /no such table/i.test(msg);
-      if (isMissingTable) {
-        logger.debug('v2 multistep: tracker tables not present (expected in tests/fresh DBs)', { agentId }, agentId);
+      if (/no such table/i.test(msg)) {
+        logger.debug('v2 inbound judgment: tracker tables not present (expected in tests/fresh DBs)', { agentId }, agentId);
       } else {
-        logger.warn('v2 multistep classifier failed (non-fatal)', { agentId, error: msg }, agentId);
+        logger.warn('v2 inbound judgment failed (non-fatal)', { agentId, error: msg }, agentId);
       }
     }
   }

@@ -76,25 +76,9 @@ export function runPromiseFloor(
         }, agentId);
       }
     }
-    // Durable: a successful call to a memory door above, or a work row stamped with this turn.
-    let wroteSomethingDurableThisTurn = false;
-    if (standingPromise && !didEffectfulWorkThisTurn && !transitionedATaskThisTurn) {
-      wroteSomethingDurableThisTurn = state.toolResults.some(
-        (tr) => !tr.isError && !!tr.name && DURABLE_MEMORY_WRITES.has(tr.name),
-      );
-      if (!wroteSomethingDurableThisTurn) {
-        try {
-          wroteSomethingDurableThisTurn = !!db.prepare(
-            'SELECT 1 AS ok FROM work w WHERE (w.agent_id = ? OR w.requester_id = ?)'
-            + ' AND w.origin_turn = ? LIMIT 1',
-          ).get(agentId, agentId, turnNumber);
-        } catch (err) {
-          logger.warn('promise floor: could not read this turn\'s opened work; treating the standing promise as unbacked', {
-            agentId, turnNumber, error: err instanceof Error ? err.message : String(err),
-          }, agentId);
-        }
-      }
-    }
+    // Durable: a successful call to a memory door above (a turn that opened a work row is never asked, `reply-claims.ts`).
+    const wroteSomethingDurableThisTurn = standingPromise && !didEffectfulWorkThisTurn && !transitionedATaskThisTurn
+      && state.toolResults.some((tr) => !tr.isError && !!tr.name && DURABLE_MEMORY_WRITES.has(tr.name));
     // Read from tool results, not rows: the question is about looking, and a read leaves no row.
     let readTheBoardThisTurn = false;
     if (standingStateClaim !== null && !didEffectfulWorkThisTurn && !transitionedATaskThisTurn) {

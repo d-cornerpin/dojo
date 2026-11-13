@@ -1,6 +1,7 @@
 // The one door to the local decision model: typed answers, or null on any failure; then the caller's rule.
 // Its own request, so the agent's prompt is untouched; the model stays resident at its reserved window.
 
+import { createHash } from 'node:crypto';
 import { createLogger } from '../logger.js';
 import { recordCost } from '../costs/tracker.js';
 import { openAgentCall } from './abortable-call.js';
@@ -34,7 +35,7 @@ function fail(cls: FailureClass, opts: DecideOpts, detail?: string): null {
   const now = Date.now();
   if (now - (lastLogged.get(cls) ?? 0) >= LOG_EVERY_MS) {
     lastLogged.set(cls, now);
-    logger.warn(cls === 'too_large' ? 'decide() refused a request as too large; the caller splits it if it can, else the rule decides' : 'decide() returned no answer; the rule decides', { failure: cls, purpose: opts.purpose, detail });
+    logger.warn(cls === 'too_large' ? 'decide() refused a request as too large; the rule decides' : 'decide() returned no answer; the rule decides', { failure: cls, purpose: opts.purpose, detail });
   }
   try { opts.onFailure?.(cls); } catch { /* a caller's note never breaks the seam */ }
   return null;
@@ -136,10 +137,10 @@ const P99_OVER_FIT = 2.05;
 const MODEL_LOAD_MS = 1_300;
 
 // The state is the MATERIAL the questions are about, never instructions.
-// Each text in it goes to the model in its own fence (fenceExternal defangs a forged end), named by its key.
-// Numbers, flags and shape pass through; exported so a caller sizing a request can count the fences.
-export function fencedState(v: unknown, key = 'state'): unknown {
-  if (typeof v === 'string') return fenceExternal('document', `the ${key} this question is about`, v);
+// Each text in it goes to the model in its own fence (fenceExternal defangs a forged end), named by its key, with a code
+// hashed from the text: the same request is the same prompt, so it gets the same answer. Numbers, flags and shape pass through.
+function fencedState(v: unknown, key = 'state'): unknown {
+  if (typeof v === 'string') return fenceExternal('document', `the ${key} this question is about`, v, { code: createHash('sha256').update(v).digest('hex').slice(0, 8) });
   if (Array.isArray(v)) return v.map((x) => fencedState(x, key));
   if (v !== null && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, fencedState(x, k)]));
   return v;
@@ -149,6 +150,5 @@ export function fencedState(v: unknown, key = 'state'): unknown {
 export const decideRequestBody = (model: string, state: unknown, questions: Record<string, Question>): string =>
   JSON.stringify({ model, state: fencedState(state), questions, keep_alive: -1 });
 // Measured: Ollama counts state's JSON plus questions' JSON plus 93 bytes of its own, not the full body.
-// A caller sizing parts counts with this.
-export const decideCountedBytes = (state: unknown, questions: Record<string, Question>): number =>
+const decideCountedBytes = (state: unknown, questions: Record<string, Question>): number =>
   Buffer.byteLength(JSON.stringify(fencedState(state))) + Buffer.byteLength(JSON.stringify(questions)) + 93;

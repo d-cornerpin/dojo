@@ -14,14 +14,11 @@
 // resolving to `cmt:` rows that are ALL `abandoned`. Every vault-hygiene arm is gated on
 // `retrieval_count = 0`, so being recalled was exactly what kept them alive.
 //
-// §1 is the FALSE-POSITIVE GUARD for the writer refusal, and it is the reason the writer
-// guard was allowed to be enabled at all: it carries the whole live vault corpus of the dev
-// box (25 non-obsolete entries, verbatim) and asserts the classifier refuses the three
-// commitment lines and NOTHING else. It is a corpus test on purpose — an allowlist of
-// shapes a note is permitted to have would be the prose-keyed detector this project bans.
+// §6 carries the whole live vault corpus of the dev box (25 non-obsolete entries, verbatim):
+// the writer refusal lets every one of them through.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
 const mockDb: { current: Database.Database | null } = { current: null };
@@ -41,11 +38,13 @@ vi.mock('../../db/connection.js', async () => {
 
 import { runMigrations } from '../../db/migrations.js';
 import {
-  obligationShape, obligationTags, obligationVerdict, retireObligationMemory,
+  obligationTags, obligationVerdict, retireObligationMemory,
 } from '../obligation-memory.js';
 import { renderRecallLane, type RecallLaneContext } from '../../memory/recall-lane.js';
 import { dismissCommitment, transition } from '../store.js';
 import { executeVaultRemember } from '../../vault/tools.js';
+import '../../agent/decision-ask.js';
+import { installDecisionModel, scriptDecisions, yes } from '../../agent/__tests__/decision-fake.js';
 import { FX } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const AGENT = 't17-agent';
@@ -133,41 +132,10 @@ const LIVE_CORPUS_NON_OBLIGATION = [
 ];
 
 // ════════════════════════════════════════════════════════════════════════════════════════
-// §1 — THE CLASSIFIER, MEASURED BEFORE IT REFUSES ANYTHING
+// §1: THE JOIN TOKENS
 // ════════════════════════════════════════════════════════════════════════════════════════
 
-describe('§1 obligation shape is narrow enough to refuse on', () => {
-  it('fires on all three live commitment lines', () => {
-    for (const c of [BOB_ROOF, BOB_FENCE, BOB_BOILER]) {
-      expect(obligationShape(c), c.slice(0, 40)).not.toBeNull();
-    }
-  });
-
-  it('ZERO false positives across the whole live vault corpus of the dev box', () => {
-    const refused = LIVE_CORPUS_NON_OBLIGATION
-      .map((c) => ({ c, marker: obligationShape(c) }))
-      .filter((r) => r.marker !== null);
-    expect(refused, `false positives: ${JSON.stringify(refused)}`).toEqual([]);
-  });
-
-  it('does not fire on the near-miss shapes the corpus contains', () => {
-    // "due" is a fact about the world; a third party's future act is not the agent's
-    // obligation; a past delivery is a record, not a promise.
-    expect(obligationShape('My car is at 86,900 miles and the oil change is due at 87,500.')).toBeNull();
-    expect(obligationShape(`${FX.n11} will send the address when he has it.`)).toBeNull();
-    expect(obligationShape('Bob promised to send his address.')).toBeNull();
-    expect(obligationShape('Delivered the roof quote to Bob on Aug 1.')).toBeNull();
-    expect(obligationShape('The user prefers a follow-up email over a call.')).toBeNull();
-  });
-
-  it('fires on first-person commissives and on the two join tokens', () => {
-    expect(obligationShape("I'll email Bob the quote once he sends his address")).not.toBeNull();
-    expect(obligationShape('I need to send the invoice to Bob')).not.toBeNull();
-    expect(obligationShape('I promised to send the invoice')).not.toBeNull();
-    expect(obligationShape('see cmt:5a0d68d9039e for the details')).not.toBeNull();
-    expect(obligationShape('run tag promise-bmsbcibqqem')).not.toBeNull();
-  });
-
+describe('§1 the join tokens', () => {
   it('extracts both token forms and nothing else', () => {
     expect(obligationTags(BOB_ROOF)).toEqual(['promise-bmsbcibqqem']);
     expect(obligationTags('cmt:5a0d68d9039e and promise-bmsh708xse7 and cmt:5A0D68D9039E'))
@@ -365,9 +333,12 @@ describe('§5 the spine writer retires the memory', () => {
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 describe('§6 vault_remember refuses obligation-shaped content', () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
   const remember = (content: string) => executeVaultRemember(AGENT, { content, type: 'note' });
 
-  it('refuses the S6 line and names work_open(kind="commitment")', async () => {
+  it('refuses the S6 line, which the decision model judges owed, and names work_open(kind="commitment")', async () => {
+    installDecisionModel(mockDb.current!);
+    scriptDecisions(() => yes(0.9));
     const out = await remember('Commitment: email the roof quote to Bob once he sends his address.');
     expect(out).toMatch(/^Refused:/);
     expect(out).toContain('work_open');

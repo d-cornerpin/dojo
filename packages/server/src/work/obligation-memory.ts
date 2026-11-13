@@ -11,38 +11,20 @@ import { createLogger } from '../logger.js';
 import { markObsolete } from '../vault/store.js';
 import { taskScope, projectScope } from './tracker-view.js';
 import { heldExpr } from './done/hold.js';
+import type { Question } from '../agent/decide.js';
+import { judgment } from '../agent/decision-hooks.js';
 
 const logger = createLogger('obligation-memory');
 
-// SHAPE: what makes a sentence an OBLIGATION. Deliberately narrow, because the writer guard REFUSES on
-// this: only a label, a first-person commissive or promise report, or a join token, which a note about the
-// world never says.
+/** Does this note record a promise or to-do still owed? The decision model answers; with no answer it does not. */
+const OBLIGATION: Question = { type: 'noul', instructions: 'Does `note` record a promise or to-do that the writer still owes (to be kept or dropped later), rather than a fact, preference or standing rule?',
+  criteria: { true: "I'll text the babysitter the new pickup time once it is set / Need to return the ladder to the neighbour this weekend / Promised to look up the swim club fees", false: 'States a fact, a code, a preference or a standing rule, or something already done: the bike lock code is 3019 / Always book window seats for the kids / Paid the water bill on Oct 3' } };
+export const isObligationNote = async (agentId: string, note: string): Promise<boolean> =>
+  (await judgment('memory_shape/obligation', { agentId, state: { note }, questions: { asked: OBLIGATION } }))?.asked === true;
 
-/** An obligation LABEL heading the content, after the engine's optional `[date]` stamp (`vault/tools.ts`). */
-const OBLIGATION_LABEL =
-  /^\s*(?:\[\d{4}-\d{2}-\d{2}\]\s*)?(commitment|promise|todo|to-do|action item|follow[- ]?up|owed|deliverable)\s*[:\-—]/i;
-
-const COMMISSIVE = /\b(?:i|we)\s*(?:'ll|’ll|\s+(?:will|shall|must|am going to|'m going to|’m going to|are going to|'re going to|’re going to|need to|have to|ought to))\s+\S/i;
-
-const PROMISE_REPORT = /\b(?:i|we)\s+(?:promised?|committed?|undertook|undertake|agreed)\s+to\b/i;
-
-/** The two literal join tokens; only a commitment record writes them, so either alone is obligation shape. */
+/** The two literal join tokens; only a commitment record writes them. */
 const CMT_TAG = /\bcmt:[0-9a-f]{6,}\b/gi;
 const PROMISE_TAG = /\bpromise-[a-z0-9]{6,}\b/gi;
-
-export function obligationShape(content: string): string | null {
-  const text = (content ?? '').trim();
-  if (!text) return null;
-  const label = OBLIGATION_LABEL.exec(text);
-  if (label) return `obligation label "${label[1].toLowerCase()}"`;
-  if (PROMISE_REPORT.test(text)) return 'first-person promise report ("I promised to …")';
-  if (COMMISSIVE.test(text)) return 'first-person commissive ("I will …" / "I need to …")';
-  CMT_TAG.lastIndex = 0;
-  if (CMT_TAG.test(text)) return 'a commitment id (cmt:…)';
-  PROMISE_TAG.lastIndex = 0;
-  if (PROMISE_TAG.test(text)) return 'a promise tag (promise-…)';
-  return null;
-}
 
 export function obligationTags(content: string): string[] {
   const out: string[] = [];
@@ -84,16 +66,16 @@ export type ObligationVerdict =
   | { kind: 'not-an-obligation' }
   | { kind: 'live'; workIds: string[] }
   | { kind: 'closed'; workIds: string[]; states: string[] }
-  /** Obligation-shaped, and nothing it says resolves to a record: UNKNOWN, not dead. */
-  | { kind: 'unresolvable'; marker: string };
+  /** It names a commitment, and no record has that name: UNKNOWN, not dead. */
+  | { kind: 'unresolvable' };
 
 /** What the recall lane needs about one vault hit: at most six lookups a minute (60s block cache,
  *  `memory/recall-lane.ts`). */
 export function obligationVerdict(content: string): ObligationVerdict {
-  const marker = obligationShape(content);
-  if (!marker) return { kind: 'not-an-obligation' };
-  const rows = rowsForTags(obligationTags(content));
-  if (rows.length === 0) return { kind: 'unresolvable', marker };
+  const tags = obligationTags(content);
+  if (tags.length === 0) return { kind: 'not-an-obligation' };
+  const rows = rowsForTags(tags);
+  if (rows.length === 0) return { kind: 'unresolvable' };
   const open = rows.filter((r) => !r.closed);
   if (open.length > 0) return { kind: 'live', workIds: open.map((r) => r.id) };
   return { kind: 'closed', workIds: rows.map((r) => r.id), states: [...new Set(rows.map((r) => r.state))] };

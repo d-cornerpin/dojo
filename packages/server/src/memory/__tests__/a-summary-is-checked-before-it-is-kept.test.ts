@@ -1,5 +1,5 @@
 // Owner rulings "Check each summary against the decision model" and "Redo bad summaries": whoever writes a summary,
-// the decision model reads it against the rows it summarizes before the engine replaces those rows with it, a failing
+// the decision model reads it before the engine replaces the rows it summarizes with it, a failing
 // summary is rewritten once by the agent's own model, and no card is sent. The writer is scripted; every
 // /v1/systemone call is a scripted fetch (PENDING fails the check).
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -31,10 +31,6 @@ vi.mock('../../agent/model.js', () => ({
 import { runMigrations } from '../../db/migrations.js';
 import { generateSummary } from '../summarize.js';
 import { writerPassedOver, __resetSummaryWriterHealthForTests } from '../writer.js';
-import { checkSummary } from '../summary-check.js';
-import { decisionWindowTokens } from '../../services/dojo-working-memory.js';
-import { CHARS_PER_TOKEN } from '../budget.js';
-import { unfenceExternal } from '../../tools/external-content.js';
 import { summaryCheckLine } from '../summary-check.js';
 import { compileDiagnosticReport } from '../../healer/diagnostic.js';
 import { STANDARD_DECISION_MODEL } from '../../services/local-standard.js';
@@ -108,7 +104,7 @@ describe('a summary is checked against its source before it is kept', () => {
     expect(checks().map((c) => c.outcome)).toEqual(['unavailable']);
   });
 
-  it('a part the decision model refuses as too large: the summary is kept, and counted unchecked in the Healer line', async () => {
+  it('a check the decision model refuses as too large: the summary is kept, and counted unchecked in the Healer line', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('request entity too large', { status: 413 })));
     writer.outputs = ['The owner asked for the offsite budget.'];
     expect(await write()).toMatchObject({ ok: true });
@@ -136,38 +132,15 @@ describe('a summary is checked against its source before it is kept', () => {
   });
 });
 
-describe('a source larger than the decision model\'s window is checked in parts, never cut', () => {
-  it('every part fits the window with the summary; the parts together are the whole source; the verdicts combine', async () => {
-    const seen: Array<{ rows: string; part?: string; sent: number }> = [];
-    let open = 0; let most = 0;
+describe('the check reads the summary alone', () => {
+  it('one request per summary, carrying the summary and nothing of its source', async () => {
+    const states: unknown[] = [];
     vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: { body?: string }) => {
-      const { state } = JSON.parse(init?.body ?? '{}') as { state: { source_rows: string; summary: string; source_part?: string } };
-      // v3.5 K33: decide() fences each text of the state; the part is read back unfenced, and what was SENT
-      // (fences included) is what must fit the window.
-      seen.push({ rows: unfenceExternal(state.source_rows), part: state.source_part === undefined ? undefined : unfenceExternal(state.source_part),
-        sent: state.source_rows.length + state.summary.length + (state.source_part?.length ?? 0) });
-      open++; most = Math.max(most, open);
-      await new Promise((r) => setTimeout(r, 5));
-      open--;
-      // The summary reads as pending beside exactly one part: the whole check fails on it.
-      return Response.json({ answers: { stated_current: { noul: state.source_rows.includes('PENDING-PART') ? 0.9 : 0.05 } } });
+      states.push((JSON.parse(init?.body ?? '{}') as { state: unknown }).state);
+      return Response.json({ answers: { stated_current: { noul: 0.04 } } });
     }));
-    const window = await decisionWindowTokens();
-    const row = (i: number): string => `[USER · the owner] row ${i} ${'x'.repeat(1000)}`;
-    const rows = Array.from({ length: Math.ceil((window * CHARS_PER_TOKEN * 2.5) / 1000) }, (_, i) => (i === 7 ? `${row(i)} PENDING-PART` : row(i)));
-    const source = rows.join('\n\n---\n\n');
-    const r = await checkSummary(source, 'A plain summary.', AGENT);
-    expect(seen.length).toBeGreaterThanOrEqual(3);
-    for (const s of seen) expect(s.sent).toBeLessThan(window * CHARS_PER_TOKEN);
-    expect(seen.map((s) => s.rows).join('\n---\n')).toBe(source);   // nothing was cut
-    expect(seen.map((s) => s.part)).toEqual(seen.map((_, i) => `${i + 1} of ${seen.length}`));
-    expect(r).toBe(0.9);
-    expect(most).toBe(1);   // one part after another, never all at once against one clock
-  });
-
-  it('a source that fits is asked once, whole, as before', async () => {
-    const r = await checkSummary(SOURCE, 'The owner asked for the offsite budget.', AGENT);
-    expect(decisions.asked).toBe(1);
-    expect(r).toBe(0.04);
+    writer.outputs = ['The owner asked for the offsite budget.'];
+    await write();
+    expect(states.map((x) => Object.keys(x as object))).toEqual([['summary']]);
   });
 });

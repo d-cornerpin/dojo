@@ -22,8 +22,6 @@ const repair = async (): Promise<Awaited<ReturnType<typeof standardState>>> => {
 import { decisionWindowTokens, writerJobWindowTokens } from '../dojo-working-memory.js';
 import { MEASURED_CHARS_PER_TOKEN } from '../token-density.js';
 import { decide, type Question } from '../../agent/decide.js';
-import { checkSummary } from '../../memory/summary-check.js';
-import { unfenceExternal } from '../../tools/external-content.js';
 
 const BASE = 'http://127.0.0.1:47141';
 const db = (): Database.Database => mockDb.current!;
@@ -116,19 +114,4 @@ describe('decide()\'s requests fit that window and Ollama\'s 64 KiB body', () =>
     expect(ollama.asked).toHaveLength(0);
   });
 
-  it('a large check of multi-byte text: every part is under 64 KiB on the wire and within the window at the box\'s density; nothing is cut', async () => {
-    await repair();
-    const window = await decisionWindowTokens();
-    const row = (i: number): string => `[USER · the owner] row ${i} ${'é—'.repeat(900)}`;   // 3-byte and 2-byte characters
-    const source = Array.from({ length: 120 }, (_, i) => row(i)).join('\n---\n');
-    const r = await checkSummary(source, 'A plain summary.', 'agent-window');
-    expect(r.answers).not.toBeNull();
-    expect(ollama.asked.length).toBeGreaterThan(1);
-    for (const a of ollama.asked) {
-      expect(a.bytes).toBeLessThanOrEqual(64 * 1024);
-      const chars = Object.values(a.state).reduce((n, v) => n + v.length, 0);
-      expect(chars / MEASURED_CHARS_PER_TOKEN).toBeLessThan(window);
-    }
-    expect(ollama.asked.map((a) => unfenceExternal(a.state.source_rows)).join('\n---\n')).toBe(source);
-  });
 });

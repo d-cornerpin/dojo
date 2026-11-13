@@ -342,7 +342,7 @@ trackerRouter.post('/tasks', async (c) => {
       // rather than asked for: otherwise every schedule the owner creates himself would stay undeclared.
       // Same call, rules and audit row as the tool door.
       const { declareDeliverableOnSchedule } = await import('../../work/deliverable-declaration.js');
-      declareDeliverableOnSchedule(taskId);
+      await declareDeliverableOnSchedule(taskId);
     }
 
     // The LAST frame for this id must equal the stored row; a no-op when nothing settled.

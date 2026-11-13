@@ -5,7 +5,7 @@ import { TECHNIQUE_FRESH_SENTINEL } from '@dojo/shared';
 import { createLogger } from '../logger.js';
 import { createEntry, semanticSearch, findNearDuplicateEntry, markObsolete, getEntry, updateEntry, isOverEntryLimit, AGENT_ENTRY_CUT_NOTE, listEntriesBounded, lastSemanticSearchWindow, formatCitationSuffix, resolveRecallScope, OWNER_VAULT_AGENT_ID } from './store.js';
 import { searchUnfiledArchives, UNFILED_ARCHIVE_LABEL, type UnfiledArchiveSnippet } from './retrieval.js';
-import { obligationShape } from '../work/obligation-memory.js';
+import { isObligationNote, obligationTags } from '../work/obligation-memory.js';
 import { detectCredentialContent } from './credential-gate.js';
 
 /** The kinds a saved fact may have. The agent tool and the dashboard check against this one list. */
@@ -151,11 +151,10 @@ export async function executeVaultRemember(
 
   // Refuse obligations: a promise is kept or dropped, and `work(kind='commitment')` is the ledger that knows.
   // Frozen in the vault it would be recalled as still owed, and recall keeps it alive (hygiene arms are keyed
-  // on retrieval_count = 0). The classifier is deliberately narrow.
-  const obligationMarker = obligationShape(content);
-  if (obligationMarker) {
+  // on retrieval_count = 0). A commitment's join token is one by name; any other note is asked of the decision model.
+  if (obligationTags(content).length > 0 || await isObligationNote(agentId, content)) {
     return (
-      `Refused: this reads as an OBLIGATION rather than a memory (matched: ${obligationMarker}). ` +
+      `Refused: this reads as an OBLIGATION rather than a memory. ` +
       `A promise changes state — it gets kept or dropped — and the vault has no way to find out: ` +
       `it does not age, it never enters your OPEN WORK block, and nothing will ever surface it as ` +
       `still owed. Worse, recall keeps it alive: vault hygiene only expires entries nobody reads. ` +

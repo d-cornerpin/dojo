@@ -5,7 +5,6 @@ import { effectiveDivisor } from '../memory/budget.js';
 
 export type UtilityPurpose =
   | 'ask_title'
-  | 'multistep_classify'
   | 'memory_summarize'
   | 'continuity_brief'
   | 'vision_caption'
@@ -22,8 +21,6 @@ export interface UtilityDial {
 const DIALS: Readonly<Record<UtilityPurpose, UtilityDial>> = {
   // 30s: the caller falls back to the ask's own id, so slow is worth less than fast.
   ask_title: { purpose: 'ask_title', maxOutputTokens: 64, latencyBudgetMs: 30_000 },
-
-  multistep_classify: { purpose: 'multistep_classify', maxOutputTokens: 48, latencyBudgetMs: null },
 
   // 4,096 on purpose: truncating a compaction summary loses conversation history permanently.
   memory_summarize: { purpose: 'memory_summarize', maxOutputTokens: 4_096, latencyBudgetMs: null },

@@ -7,12 +7,9 @@
 
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
-import type { Question } from '../agent/decide.js';
-import { isYes, onTheModel } from '../agent/decision-policy.js';
+import { decide, type Question } from '../agent/decide.js';
+import { onTheModel, verdict } from '../agent/decision-policy.js';
 import type { SummaryResult } from './summarize.js';
-import { decisionWindowTokens } from '../services/dojo-working-memory.js';
-import { sourceParts, checkPart } from './summary-check-parts.js';
-import { MEASURED_CHARS_PER_TOKEN } from '../services/token-density.js';
 import { createHash } from 'node:crypto';
 import { clearOn, markWaiting, ownModel, waiting } from './writer.js';
 
@@ -25,22 +22,11 @@ const QUESTIONS: Record<string, Question> = { stated_current: { type: 'noul', in
 const FEEDBACK = 'it described something as currently pending or owed';
 const KEEP_MS = 14 * 24 * 60 * 60 * 1000;
 
-/** Max over the parts of P(summary states something pending); null if any part went unanswered. */
-export async function checkSummary(sourceRows: string, summary: string, agentId: string): Promise<number | null> {
-  const parts = sourceParts(sourceRows, summary, await decisionWindowTokens(), QUESTIONS, MEASURED_CHARS_PER_TOKEN);
-  if (parts === null) {
-    logger.warn('summary_check_unavailable the summary alone is larger than the decision model\'s window; it is kept unchecked', { summaryChars: summary.length }, agentId);
-    return null;
-  }
-  // One part after another, each with its own clock: the local Ollama answers one request at a time.
-  let highest = 0;
-  for (const [i, part] of parts.entries()) {
-    const a = await checkPart(part, parts.length === 1 ? null : `${i + 1} of ${parts.length}`, summary, QUESTIONS, agentId);
-    if (!a?.stated_current) return null;
-    highest = Math.max(highest, a.stated_current.noul);
-  }
-  return highest;
+/** P(the summary states something pending), asked of the summary alone; null when unanswered. */
+async function checkSummary(summary: string, agentId: string): Promise<number | null> {
+  return (await decide({ summary }, QUESTIONS, { purpose: 'summary_check', agentId }))?.stated_current?.noul ?? null;
 }
+const fails = (p: number | null): p is number => p !== null && verdict(ON_THE_MODEL, p) === true;
 
 type Outcome = 'ok' | 'rewritten_ok' | 'not_kept' | 'unavailable';
 
@@ -58,17 +44,17 @@ function record(agentId: string, writer: string, outcome: Outcome, statedCurrent
 
 /** The flow between "written" and "kept". `rewrite(feedback)` writes the same input again with the failure named. */
 export async function keepOnlyIfChecked(
-  source: string, written: Extract<SummaryResult, { ok: true }>, agentId: string, writer: string,
+  written: Extract<SummaryResult, { ok: true }>, agentId: string, writer: string,
   rewrite: (feedback: string) => Promise<SummaryResult>,
 ): Promise<SummaryResult> {
   if (!onTheModel(ON_THE_MODEL)) return written;
-  const first = await checkSummary(source, written.text, agentId);
-  if (first === null || !isYes(first)) { record(agentId, writer, first === null ? 'unavailable' : 'ok', first); return written; }
+  const first = await checkSummary(written.text, agentId);
+  if (!fails(first)) { record(agentId, writer, first === null ? 'unavailable' : 'ok', first); return written; }
 
   const again = await rewrite(FEEDBACK);
   if (!again.ok) return again;   // the writer itself refused: its own outcome, recorded by its own door
-  const second = await checkSummary(source, again.text, agentId);
-  if (second === null || !isYes(second)) { record(agentId, writer, second === null ? 'unavailable' : 'rewritten_ok', second); return again; }
+  const second = await checkSummary(again.text, agentId);
+  if (!fails(second)) { record(agentId, writer, second === null ? 'unavailable' : 'rewritten_ok', second); return again; }
 
   record(agentId, writer, 'not_kept', second);
   logger.warn('summary_check_failed the summary was not kept; the rows stay whole for a later pass', { writer, statedCurrent: second }, agentId);
@@ -98,7 +84,7 @@ export async function writeThenCheck<P extends SummaryParams>(params: P, write: 
   }
   const written = await write(params);
   if (!written.ok || !params.modelId) return written;
-  const kept = await keepOnlyIfChecked(params.content, written, params.agentId, params.modelId, (checkFeedback) => write({ ...params, checkFeedback }));
+  const kept = await keepOnlyIfChecked(written, params.agentId, params.modelId, (checkFeedback) => write({ ...params, checkFeedback }));
   if (!kept.ok && kept.checkFailed) for (const k of keys) markWaiting(params.agentId, own, k, 'check-failed');
   else if (kept.ok) clearOn({ kind: 'span-written', agentId: params.agentId, spanKeys: keys });
   return kept;

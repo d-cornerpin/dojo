@@ -393,6 +393,8 @@ import { recoverFromError } from '../recovery.js';
 import { initState } from '../state.js';
 import { recordDelivery } from '../deliveries.js';
 import { runMigrations } from '../../../db/migrations.js';
+import '../../decision-ask.js';
+import { installDecisionModel, scriptDecisions, yes } from '../../__tests__/decision-fake.js';
 import { insertMessage } from '../../../memory/message-store.js';
 import { UPDATE_LABEL, EMPTIED_LABEL } from '../steps/call-llm/append-only-turn.js';
 import {
@@ -2825,8 +2827,9 @@ describe('STRIP-3: the turn hands down conversation IDENTITY, never a conversati
        VALUES ('msg-prior-ask', 'primary', 'user', 'when does the launch happen?', 1, 'conv-primary', 'dashboard', 'owner', 'msg-prior-answer', (CAST(strftime('%s','now') AS INTEGER) * 1000) - 61000)`,
     ).run();
 
-    // The trigger: a WORK-classified human ask (three action verbs → the multistep
-    // heuristic's `definitely_multi`, so no classifier model call is needed).
+    // The trigger: a human ask the decision model judges WORK.
+    installDecisionModel(mockDb.current!);
+    scriptDecisions(() => yes(0.9));
     expect(claimAsk(askIdForMessage('msg-user-1'), 'primary').kind).toBe('applied');
     insertMessage({
       id: 'msg-work-ask', agentId: 'primary', role: 'user',
@@ -2854,6 +2857,7 @@ describe('STRIP-3: the turn hands down conversation IDENTITY, never a conversati
     expect(callModelSpy.mock.calls.length).toBeGreaterThanOrEqual(3);
     expect(messagesOfCall(2)).toContain('[Engine record: you again ended with [no-reply]');
     expect(messagesOfCall(2)).toContain('The launch is on the 14th');
+    vi.unstubAllGlobals();
   });
 });
 

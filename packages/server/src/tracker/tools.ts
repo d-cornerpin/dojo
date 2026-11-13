@@ -401,7 +401,7 @@ export function trackerCreateProject(agentId: string, args: Record<string, unkno
 
 // ── trackerCreateTask ──
 
-export function trackerCreateTask(agentId: string, args: Record<string, unknown>, opts: { measure?: MeasureReading } = {}): string {
+export async function trackerCreateTask(agentId: string, args: Record<string, unknown>, opts: { measure?: MeasureReading } = {}): Promise<string> {
   try {
     const title = args.title as string;
     if (!title) return 'Error: title is required';
@@ -544,12 +544,13 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
     // declaration in work/deliverable-declaration.ts. Only live schedules count, so replacing a stopped one
     // stays allowed. allow_duplicate overrides it, the same flag as the prongs above.
     if (!allowDuplicate && args.repeat_interval) {
-      const shape = declaredDeliverableShape({
+      const shape = await declaredDeliverableShape({
         kind: args.kind as string | undefined,
         title,
         description: description ?? null,
         goal,
         hasSchedule: true,
+        agentId,
       });
       if (shape && DELIVERABLE_OWING_TASK_KINDS.includes(shape.shape)) {
         const twin = findLiveRecurringTwin({
@@ -682,7 +683,7 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
       // Declare what this schedule owes a person, once, after the schedule columns (whether it is scheduled
       // is an input). Idempotent and never overrides a caller who named the kind. Its runs cannot be
       // recorded complete without a message the person actually received.
-      declareDeliverableOnSchedule(taskId);
+      await declareDeliverableOnSchedule(taskId);
     }
 
     // Group assignment is validated first: an unknown group id would otherwise surface as a raw FK error.
@@ -747,7 +748,7 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
 // Thin wrapper over trackerCreateTask for "the user asked for a reminder". With no `when` it returns an
 // ASK_USER instruction so the agent asks the user and re-fires; otherwise it creates a kind='reminder' task
 // with the supplied schedule, which the scheduler fires with the reminder template (scheduler/runner.ts).
-export function reminderCreate(agentId: string, args: Record<string, unknown>): string {
+export async function reminderCreate(agentId: string, args: Record<string, unknown>): Promise<string> {
   const what = (args.what as string | undefined)?.trim();
   if (!what) return 'Error: `what` is required (the reminder text).';
 

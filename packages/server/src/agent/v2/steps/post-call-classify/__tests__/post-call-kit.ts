@@ -16,9 +16,9 @@ export const fakeDb = {
   transaction: (fn: (...a: unknown[]) => unknown) => (...a: unknown[]) => fn(...a),
 } as unknown as PostCallClassifyContext['db'];
 
-/** What the decision model says about the reply; null is "no decision model on this box". */
+/** What the decision model says about each question it is asked; null is "no decision model on this box". */
 export function modelSays(verdicts: Partial<Record<ReplyClaim, boolean>> | null): void {
-  installJudgment(async () => verdicts);
+  installJudgment(async (_q, ask) => verdicts && Object.fromEntries(Object.entries(verdicts).filter(([name]) => name in ask.questions)));
 }
 
 let n = 0;

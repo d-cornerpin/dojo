@@ -121,7 +121,7 @@ describe('his box, upgraded from 3.4.1', () => {
     await expectSettingsTellTheTruth();
     expect((await settings()).note).toMatch(/^Both standard models are installed/);
     // The judgments the owner put on the model now answer on it, and none of them was told as his choice
-    expect(onTheModel('inbound_routing/simple_chat')).toBe(true);
+    expect(onTheModel('inbound_routing/needs_several_steps')).toBe(true);
     expect(frames.list.map((f) => f.error ?? '').join('\n')).not.toMatch(/You chose/);
   });
 

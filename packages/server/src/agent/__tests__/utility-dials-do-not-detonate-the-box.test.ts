@@ -20,7 +20,7 @@ const TITLE_INPUT_CHARS = ASK_TITLE_INPUT_CHARS;
 describe('a utility dial is declared, never inferred', () => {
   it('every engine artifact the audit found has a dial', () => {
     for (const purpose of [
-      'ask_title', 'multistep_classify', 'memory_summarize', 'continuity_brief',
+      'ask_title', 'memory_summarize', 'continuity_brief',
       'vision_caption', 'page_summary', 'voice_opener',
     ]) {
       expect(utilityDial(purpose), purpose).not.toBeNull();
@@ -52,8 +52,7 @@ describe('the output cap is sized to the artifact', () => {
     expect(dial.maxOutputTokens).toBeLessThan(4_156 / 10);
   });
 
-  it('a classification gets fewer still, and a summary gets room', () => {
-    expect(utilityDial('multistep_classify')!.maxOutputTokens).toBeLessThan(128);
+  it('a summary gets room', () => {
     // ⚠ THE OPPOSITE DIRECTION MATTERS TOO: truncating a compaction summary loses conversation
     // history permanently, so this one is deliberately generous.
     expect(utilityDial('memory_summarize')!.maxOutputTokens).toBeGreaterThan(2_000);

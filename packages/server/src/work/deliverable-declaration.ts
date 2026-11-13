@@ -1,11 +1,11 @@
-// Which scheduled tasks owe a person a message: declared once at create, never re-judged at close (the
-// closer reads `work.task_kind` only, never a run's prose). It derives rather than asks: `POST /api/tracker/tasks`
-// has no kind field, and `work_open`'s schema sits in the cached prompt prefix that `check-cache-prefix`
-// byte-compares. A false negative closes a run having reached nobody, so the rules err toward telling.
-// Lives in work/ because it writes `work` and `work_events` (never `work.state`).
+// Which scheduled tasks owe a person a message: declared once at create, never re-judged at close (the closer reads
+// `work.task_kind` only, never a run's prose). A caller's kind is its declaration; otherwise the decision model judges
+// the definition, and with no answer the task is not declared. Lives in work/ because it writes `work` and `work_events`.
 
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
+import type { Question } from '../agent/decide.js';
+import { judgment } from '../agent/decision-hooks.js';
 import { appendWorkEvent } from './store.js';
 
 const logger = createLogger('deliverable-declaration');
@@ -16,89 +16,60 @@ export const DELIVERABLE_OWING_TASK_KINDS: readonly string[] = ['reminder', 'bri
 /** The audit marker: a free string in the `audit` payload, since a new `work_events.kind` needs a table rebuild. */
 export const DECLARATION_MARKER = 'ct2_deliverable_declared';
 
-export interface DeliverableShape {
-  shape: string;
-  /** The exact phrase from the definition that caused it, printed on the audit row. */
-  matched: string;
-  rule: string;
-}
+/** `shape` is the task kind declared; `rule` says who declared it. */
+export interface DeliverableShape { shape: string; rule: 'declared-by-the-caller' | 'already-declared' | 'judged-by-the-decision-model' }
 
-/** The rules, most specific noun first (order sets only the label); word-bounded so "debrief" is no brief. */
-const DELIVERABLE_RULES: ReadonlyArray<{ shape: string; rule: string; re: RegExp; why: string }> = [
-  {
-    shape: 'brief', rule: 'names-a-brief',
-    re: /\b(?:brief|briefing|briefings|briefs|digest|digests|rundown|rundowns|round-?up|round-?ups)\b/i,
-    why: 'the definition names a BRIEF — an output that exists only to be read by a person',
-  },
-  {
-    shape: 'report', rule: 'names-a-report-for-somebody',
-    // A report addressed to somebody or on a cadence; bare "report" alone is not enough.
-    re: /\b(?:a|the|my|our|your|daily|nightly|weekly|monthly|morning|evening|status|progress)\s+report\b|\breports?\s+(?:to|for)\s+(?:me|us|him|her|them|the\s+owner)\b/i,
-    why: 'the definition names a REPORT addressed to a person or issued on a cadence for one',
-  },
-  {
-    shape: 'notify', rule: 'tells-the-agent-to-tell-a-person',
-    re: /\b(?:send|text|email|message|notify|tell|remind|ping|update|alert)\s+(?:me|us|him|her|them|the\s+owner)\b|\blet\s+(?:me|us|the\s+owner)\s+know\b/i,
-    why: 'the definition instructs the agent to say something TO A PERSON on a schedule',
-  },
-];
+/** Two readings of one definition, weighed together: is its job to tell a person, and does each run end by telling one? */
+const OWES: Record<string, Question> = {
+  sends: { type: 'noul', instructions: 'Is the job of `task` to tell, send, remind or report something to a person, so finishing it owes a person a message?',
+    criteria: { true: 'Every morning, send me the weather', false: 'Writes a file, changes a system, or works for another agent' } },
+  tells: { type: 'noul', instructions: 'Will this task, each time it runs, end by telling a person something (a reminder, a heads-up, an answer, a summary or a report), going by `task`?',
+    criteria: { true: "Remind me to take the vitamins / Every evening send me tomorrow's forecast / Tell the kids it is bath time at 7 / Read the statement and tell me the total", false: 'Copy the documents folder to the backup drive / Turn the heating down at night / Save the shopping list to a file / Ask the helper agent to refresh its cache' } },
+};
 
-/** What the definition declares it owes, or null; pure, no database. `hasSchedule` is required: one-shot
- *  tasks are settled by the ask/task lane (`work/ask-settlement.ts`). */
-export function declaredDeliverableShape(def: {
+/** What the definition declares it owes, or null. `hasSchedule` is required: one-shot tasks are settled by the
+ *  ask/task lane (`work/ask-settlement.ts`). */
+export async function declaredDeliverableShape(def: {
   kind?: string | null;
   title?: string | null;
   description?: string | null;
   goal?: string | null;
   hasSchedule: boolean;
-}): DeliverableShape | null {
+  agentId?: string;
+}): Promise<DeliverableShape | null> {
   const explicit = (def.kind ?? '').trim().toLowerCase();
-  if (explicit && DELIVERABLE_OWING_TASK_KINDS.includes(explicit)) {
-    return { shape: explicit, matched: `kind="${explicit}"`, rule: 'declared-by-the-caller' };
-  }
+  if (explicit && DELIVERABLE_OWING_TASK_KINDS.includes(explicit)) return { shape: explicit, rule: 'declared-by-the-caller' };
   if (!def.hasSchedule) return null;
-
-  const definition = [def.title, def.description, def.goal]
-    .filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
-    .join('\n');
-  if (definition.length === 0) return null;
-
-  for (const rule of DELIVERABLE_RULES) {
-    const m = rule.re.exec(definition);
-    if (m) return { shape: rule.shape, matched: m[0], rule: rule.rule };
-  }
-  return null;
-}
-
-function whyOf(shape: DeliverableShape): string {
-  if (shape.rule === 'declared-by-the-caller') return 'the caller declared this kind explicitly';
-  return DELIVERABLE_RULES.find((r) => r.rule === shape.rule)?.why ?? shape.rule;
+  const task = [def.title, def.description, def.goal].filter((s): s is string => typeof s === 'string' && s.trim().length > 0).join('\n');
+  if (task.length === 0) return null;
+  const said = await judgment('deliverable_declaration/owes_a_message', {
+    agentId: def.agentId, state: { task }, questions: OWES, combine: (p) => (p.sends + p.tells) / 2,
+  });
+  return said?.owes_a_message ? { shape: 'notify', rule: 'judged-by-the-decision-model' } : null;
 }
 
 /** Declare the deliverable once; a declared task is left as is. Call after the schedule columns are written. */
-export function declareDeliverableOnSchedule(taskId: string): DeliverableShape | null {
+export async function declareDeliverableOnSchedule(taskId: string): Promise<DeliverableShape | null> {
   const db = getDb();
   const row = db.prepare(
-    `SELECT title, description, goal, task_kind, schedule_status, repeat_interval, next_run_at
+    `SELECT title, description, goal, task_kind, schedule_status, repeat_interval, next_run_at, agent_id
        FROM work WHERE id = ? AND kind = 'task'`,
   ).get(taskId) as {
     title: string | null; description: string | null; goal: string | null;
     task_kind: string | null; schedule_status: string | null;
-    repeat_interval: number | null; next_run_at: number | null;
+    repeat_interval: number | null; next_run_at: number | null; agent_id: string | null;
   } | undefined;
   if (!row) return null;
 
   const existing = (row.task_kind ?? '').trim().toLowerCase();
-  if (existing && DELIVERABLE_OWING_TASK_KINDS.includes(existing)) {
-    return { shape: existing, matched: `task_kind="${existing}"`, rule: 'already-declared' };
-  }
+  if (existing && DELIVERABLE_OWING_TASK_KINDS.includes(existing)) return { shape: existing, rule: 'already-declared' };
   // A caller-supplied kind that is not on the list is a deliberate statement and is honoured.
   if (existing) return null;
 
   const hasSchedule = row.schedule_status !== null || row.repeat_interval !== null
     || row.next_run_at !== null;
-  const shape = declaredDeliverableShape({
-    kind: null, title: row.title, description: row.description, goal: row.goal, hasSchedule,
+  const shape = await declaredDeliverableShape({
+    title: row.title, description: row.description, goal: row.goal, hasSchedule, agentId: row.agent_id ?? undefined,
   });
   if (!shape) return null;
 
@@ -107,15 +78,12 @@ export function declareDeliverableOnSchedule(taskId: string): DeliverableShape |
   appendWorkEvent(taskId, 'audit', 'deliverable-declaration', {
     marker: DECLARATION_MARKER,
     shape: shape.shape,
-    matched: shape.matched,
     rule: shape.rule,
-    reason: `this scheduled task owes the person a user-visible message: ${whyOf(shape)} `
-      + `(matched "${shape.matched}"). Its runs cannot be recorded complete until one is sent. `
+    reason: 'this scheduled task owes the person a user-visible message: the decision model judged that each run ends by '
+      + 'telling a person something. Its runs cannot be recorded complete until one is sent. '
       + 'To change that, set the task\'s kind explicitly.',
   });
-  logger.info('scheduled task declared deliverable-owing', {
-    taskId, shape: shape.shape, rule: shape.rule, matched: shape.matched,
-  });
+  logger.info('scheduled task declared deliverable-owing', { taskId, shape: shape.shape, rule: shape.rule });
   return shape;
 }
 

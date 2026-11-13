@@ -1,7 +1,7 @@
 // A scheduled run is DECLARED deliverable-owing from its definition, never from the run (ARM 1), and a
 // second live recurring task of the same shape by the same owner is caught as a twin (ARM 4). What a run
 // owing a message settles as is `a-fired-reminder-reaches-the-user` and the run hand-in tests.
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
 const mockDb: { current: Database.Database | null } = { current: null };
@@ -20,6 +20,7 @@ vi.mock('../../db/connection.js', async () => {
 });
 
 import { createWorkTable, seedTrackerTask } from './work-fixture.js';
+import { installJudgment } from '../../agent/decision-hooks.js';
 import {
   declaredDeliverableShape, declareDeliverableOnSchedule, taskOwesDeliverable,
   occurrenceOwesDeliverable, findLiveRecurringTwin, DELIVERABLE_OWING_TASK_KINDS,
@@ -63,78 +64,46 @@ beforeEach(() => {
 
 // ════════════════════════════════════════════════════════════════════════════════
 describe('ARM 1 — THE DECLARATION: decided once, from the DEFINITION, never from the run', () => {
-  it("1a the owner's own definition declares a brief", () => {
-    const s = declaredDeliverableShape({
-      title: 'Tomorrow Brief',
-      description: 'Every morning, send me a short brief of what is on for tomorrow.',
-      goal: null, hasSchedule: true,
-    });
-    expect(s?.shape).toBe('brief');
-    expect(s?.matched.toLowerCase()).toBe('brief');
+  const modelSays = (owes: boolean | null): void => installJudgment(async () => (owes === null ? null : { owes_a_message: owes }));
+  afterEach(() => installJudgment(async () => null));
+
+  it('1a a scheduled definition the decision model judges owing is declared a notify', async () => {
+    modelSays(true);
+    expect(await declaredDeliverableShape({ title: 'Morning update', description: 'Every day at 7am, text me what is on today.', hasSchedule: true }))
+      .toEqual({ shape: 'notify', rule: 'judged-by-the-decision-model' });
+    modelSays(false);
+    expect(await declaredDeliverableShape({ title: 'Nightly backup', description: 'back up the database every night', hasSchedule: true })).toBeNull();
+    modelSays(null);
+    expect(await declaredDeliverableShape({ title: 'Morning update', description: 'text me', hasSchedule: true })).toBeNull();
   });
 
-  it('1a the plain-language shape the owner actually types is caught by the notify rule', () => {
-    expect(declaredDeliverableShape({
-      title: 'Morning update', description: 'Every day at 7am, text me what is on today.',
-      hasSchedule: true,
-    })?.shape).toBe('notify');
-    expect(declaredDeliverableShape({
-      title: 'Weekly status', description: 'Send me the weekly report every Monday.',
-      hasSchedule: true,
-    })?.shape).toBe('report');
+  it('1b an explicit kind from the caller ALWAYS wins, schedule or not', async () => {
+    const s = await declaredDeliverableShape({ kind: 'reminder', title: 'x', hasSchedule: false });
+    expect(s).toEqual({ shape: 'reminder', rule: 'declared-by-the-caller' });
   });
 
-  it('1b an explicit kind from the caller ALWAYS wins, schedule or not', () => {
-    const s = declaredDeliverableShape({ kind: 'reminder', title: 'x', hasSchedule: false });
-    expect(s?.shape).toBe('reminder');
-    expect(s?.rule).toBe('declared-by-the-caller');
+  it('1c NEGATIVE CONTROL: an UNSCHEDULED task is never declared, however it is worded', async () => {
+    modelSays(true);
+    expect(await declaredDeliverableShape({ title: 'Send me the brief', description: 'send me a brief when you are done', hasSchedule: false })).toBeNull();
   });
 
-  it('1c NEGATIVE CONTROL — an UNSCHEDULED task is never declared, however it is worded', () => {
-    expect(declaredDeliverableShape({
-      title: 'Send me the brief', description: 'send me a brief when you are done',
-      hasSchedule: false,
-    })).toBeNull();
-  });
-
-  it('1d NEGATIVE CONTROLS — the patterns are word-bounded and addressed, not substrings', () => {
-    // "debrief" contains "brief". An unbounded substring is the exact defect class TB3 fixed
-    // in the kit's own census, and it would declare this a brief.
-    expect(declaredDeliverableShape({
-      title: 'debrief the logs', description: 'debrief the logs nightly', hasSchedule: true,
-    })).toBeNull();
-    // A bare "report" verb with no person on the other end owes nobody a word.
-    expect(declaredDeliverableShape({
-      title: 'error sweep', description: 'report any errors to the log file', hasSchedule: true,
-    })).toBeNull();
-    // A telling verb aimed at somebody who is not a person in this conversation.
-    expect(declaredDeliverableShape({
-      title: 'client mail', description: 'email the client the invoice each month', hasSchedule: true,
-    })).toBeNull();
-    // The nightly backup: the case that must keep closing exactly as it always has.
-    expect(declaredDeliverableShape({
-      title: 'Nightly backup', description: 'back up the database to the NAS every night at 2am',
-      hasSchedule: true,
-    })).toBeNull();
-  });
-
-  it('1e the declaration is written to the row AND audited with the phrase that caused it', () => {
+  it('1e the declaration is written to the row AND audited', async () => {
+    modelSays(true);
     seedSchedule();
-    const s = declareDeliverableOnSchedule(W);
-    expect(s?.shape).toBe('brief');
-    expect(taskOwesDeliverable(W)).toEqual({ owes: true, taskKind: 'brief' });
+    expect((await declareDeliverableOnSchedule(W))?.shape).toBe('notify');
+    expect(taskOwesDeliverable(W)).toEqual({ owes: true, taskKind: 'notify' });
     const ev = mockDb.current!.prepare(
       `SELECT payload FROM work_events WHERE work_id = ? AND kind = 'audit'
         AND json_extract(payload, '$.marker') = ?`,
     ).get(W, DECLARATION_MARKER) as { payload: string } | undefined;
     expect(ev, 'the declaration must be readable by a person, not only by the closer').toBeTruthy();
-    expect(ev!.payload).toContain('brief');
     expect(ev!.payload).toContain('cannot be recorded complete');
   });
 
-  it('1f it is idempotent and never re-labels a kind somebody already set', () => {
+  it('1f it is idempotent and never re-labels a kind somebody already set', async () => {
+    modelSays(true);
     seedSchedule({ task_kind: 'reminder' });
-    expect(declareDeliverableOnSchedule(W)?.rule).toBe('already-declared');
+    expect((await declareDeliverableOnSchedule(W))?.rule).toBe('already-declared');
     expect(taskOwesDeliverable(W).taskKind).toBe('reminder');
     // A caller-supplied kind that is NOT on the list is a deliberate statement and is honoured.
     seedTrackerTask(mockDb.current!, {
@@ -142,7 +111,7 @@ describe('ARM 1 — THE DECLARATION: decided once, from the DEFINITION, never fr
       schedule_status: 'waiting', repeat_interval: 1, repeat_unit: 'days', task_kind: 'chore',
       description: 'send me a brief every day',
     });
-    expect(declareDeliverableOnSchedule('sched-2')).toBeNull();
+    expect(await declareDeliverableOnSchedule('sched-2')).toBeNull();
     expect(taskOwesDeliverable('sched-2')).toEqual({ owes: false, taskKind: 'chore' });
   });
 

@@ -241,7 +241,7 @@ const tableOfHandlers: ToolHandlerMap = {
     const measured = await readMeasureArg(agentId, args.measure);
     if (measured.error) return { content: measured.error, isError: true };
     try {
-      content = trackerCreateTask(agentId, {
+      content = await trackerCreateTask(agentId, {
         projectId: args.project_id as string | undefined,
         title: args.title as string,
         description: args.description as string | undefined,
@@ -347,7 +347,7 @@ const tableOfHandlers: ToolHandlerMap = {
     }
 
     try {
-      content = reminderCreate(agentId, {
+      content = await reminderCreate(agentId, {
         what: args.what,
         when: args.when,
         repeat_interval: (args.repeat_interval as number | undefined)

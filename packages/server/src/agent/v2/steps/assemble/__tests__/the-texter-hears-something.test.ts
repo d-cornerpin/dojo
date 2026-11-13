@@ -48,14 +48,9 @@ vi.mock('../../../../../config/platform.js', () => ({
   isDreamerAgent: () => false,
 }));
 
-const decision = { multistep: false, name: null as string | null, source: 'heuristic_single', heuristic: { signals: [] } };
-// This unit pins what the step does with the DECISION, so the classifier answers with the scripted one.
-vi.mock('../../../classifiers/multistep.js', async (original) => ({
-  ...await original<typeof import('../../../classifiers/multistep.js')>(),
-  getMultistepConfig: () => ({ enabled: true, model: null, baseUrl: '', timeoutMs: 5000 }),
-  detectMultistep: async () => decision,
-}));
-
+const decision = { multistep: false };
+// This unit pins what the step does with the VERDICT, so the inbound question answers with the scripted one.
+vi.mock('../../../classifiers/inbound-routing.js', () => ({ inboundIsWork: async () => (decision.multistep ? true : undefined) }));
 const infos: Array<{ msg: string }> = [];
 vi.mock('../../../../../logger.js', () => ({
   createLogger: () => ({
