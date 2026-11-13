@@ -83,6 +83,12 @@ const CASES: Array<{ line: string; want: DoorOutcome; why: string }> = [
   { line: 'find ~/.dojo -ok cat {} ;', want: 'refused', why: '-ok runs a program' },
   { line: 'find ~/.dojo -fprint /tmp/list', want: 'refused', why: '-fprint writes a file' },
   { line: 'find -files0-from ~/.dojo/data/dojo.db', want: 'refused', why: '-files0-from reads a file and prints its bytes as names' },
+  { line: 'file -f ~/.dojo/data/dojo.db', want: 'refused', why: 'file -f reads names from the file and prints its lines' },
+  { line: 'file -bf ~/.dojo/data/dojo.db', want: 'refused', why: '-f inside a flag cluster' },
+  { line: 'file -m ~/.dojo/data/dojo.db x', want: 'refused', why: 'file -m reads the file as magic and prints its lines' },
+  { line: 'file --files-from ~/.dojo/data/dojo.db', want: 'refused', why: 'the long spelling of -f' },
+  { line: 'file --magic ~/.dojo/data/dojo.db x', want: 'refused', why: 'an abbreviated --magic-file' },
+  { line: 'file --mime-type ~/.dojo/data/dojo.db', want: 'allowed', why: 'a mime type is a file fact' },
   { line: 'find ~/.dojo -name *.md', want: 'refused', why: 'an unquoted pattern the shell expands' },
   { line: 'find ~/.dojo -name "*.db" | xargs strings', want: 'refused', why: 'a look piped onward is no longer a look' },
 ];
