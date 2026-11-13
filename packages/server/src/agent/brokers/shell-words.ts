@@ -34,8 +34,10 @@ export function lexShellLine(line: string): Lexed | null {
   };
   const endSegment = (at: number, nextPiped: boolean): void => {
     endWord();
-    if (words.length > 0) segments.push({ words, text: line.slice(start, at), pipedIn });
-    words = []; pipedIn = nextPiped;
+    // An empty segment (a newline after `|`) keeps the pipe it carries for the next command.
+    if (words.length > 0) { segments.push({ words, text: line.slice(start, at), pipedIn }); pipedIn = nextPiped; }
+    else pipedIn ||= nextPiped;
+    words = [];
   };
   const word = (): Word => (w ??= { value: '', plain: true, quotedWhole: false, expands: false, tilde: false });
   const run = (): Word => { const cur = word(); if (!inRun) { parts++; inRun = true; } return cur; };

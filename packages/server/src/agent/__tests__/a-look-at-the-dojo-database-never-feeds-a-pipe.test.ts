@@ -38,6 +38,8 @@ const allowed = (who: string, line: string): boolean => brokers.authorizeExecSha
 
 const PIPED = [
   'ls -d ~/.dojo/data/dojo.db | xargs cat',
+  'ls -d ~/.dojo/data/dojo.db |\nxargs cat',
+  'ls -d ~/.dojo/data/dojo.db |\n\nxargs cat',
   'stat -f %N ~/.dojo/data/dojo.db | xargs strings',
   'ls ~/.dojo/data | xargs -I{} cat ~/.dojo/data/{}',
   'ls ~/.dojo/data | wc -l',
