@@ -33,7 +33,7 @@ const DELIVERABLE_RULES: ReadonlyArray<{ shape: string; rule: string; re: RegExp
   {
     shape: 'brief', rule: 'names-a-brief',
     re: /\b(?:brief|briefing|briefings|briefs|digest|digests|rundown|rundowns|round-?up|round-?ups)\b/i,
-    why: 'the definition names a BRIEF — an output that exists only to be read by a person',
+    why: 'the definition names a BRIEF, an output that exists only to be read by a person',
   },
   {
     shape: 'report', rule: 'names-a-report-for-somebody',
