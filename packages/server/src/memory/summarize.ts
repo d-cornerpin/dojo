@@ -220,7 +220,7 @@ async function writeSummary(params: {
       charsPerToken: modelCharsPerToken(modelId),   // the writer's own density
       fits: (extra) => refuseWhatTheWriterCannotHold(modelId, systemPrompt + extra, content, agentId) === null,
       call: async (extra, outputRoomAsk) => {
-        summaryCallStarts.get(agentId)?.();
+        summaryCallStarts.getStore()?.();
         const result = await callModel({
           agentId, modelId, messages: [{ role: 'user', content }], systemPrompt: systemPrompt + extra, tools: false,
           purpose: 'memory_summarize', utilityTargetTokens: targetTokens, abortSignal,

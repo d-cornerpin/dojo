@@ -223,11 +223,9 @@ function insertCompactionDivider(agentId: string, opts: { label: string }): void
 async function withCompactionActivity<T>(agentId: string, work: () => Promise<T>): Promise<T> {
   const id = `compaction_${agentId}_${Date.now()}`;
   let started = false;
-  summaryCallStarts.set(agentId, () => { if (!started) ownerProgressFrame('start', id, agentId, 'Compacting memory'); started = true; });
   try {
-    return await work();
+    return await summaryCallStarts.run(() => { if (!started) ownerProgressFrame('start', id, agentId, 'Compacting memory'); started = true; }, work);
   } finally {
-    summaryCallStarts.delete(agentId);
     if (started) ownerProgressFrame('end', id, agentId, 'Compacting memory');
   }
 }

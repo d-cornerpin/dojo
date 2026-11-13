@@ -4,6 +4,7 @@
 // again until one of the signals in `clearOn` fires. "Not answering" is a fact about the writer, so it is kept once
 // for every agent (agent `*`). A span whose rows change has a new key, so it is asked again.
 
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { contextWindowPolicy, estimateRequestTokens } from './budget.js';
@@ -33,8 +34,9 @@ const TRANSIENT: readonly WaitReason[] = ['not-answering', 'no-room', 'memory-un
 const SCOPE = 'writer_wait.';
 /** The agent part of a mark about the writer itself, for every agent. */
 export const EVERY_AGENT = '*';
-/** Per agent, what a running compaction pass does at each summary model call (compaction.ts withCompactionActivity). */
-export const summaryCallStarts = new Map<string, () => void>();
+/** What the compaction pass a summary call runs inside does at that model call, carried by the pass's own
+ *  async context (compaction.ts withCompactionActivity), so overlapping passes share nothing. */
+export const summaryCallStarts = new AsyncLocalStorage<() => void>();
 
 export type Signal =
   | { kind: 'person-spoke'; agentId: string }
