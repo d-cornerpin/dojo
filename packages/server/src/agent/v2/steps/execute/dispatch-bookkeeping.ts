@@ -3,7 +3,7 @@
 
 import { isHealerAgent, isPrimaryAgent } from '../../../../config/platform.js';
 import { broadcast } from '../../../../gateway/ws.js';
-import { fileHealerApprovalProposal, markHealerProposalAppliedBySignature, maybeAutoApproveHealerScratch } from '../../../../healer/approval-routing.js';
+import { fileHealerApprovalProposal, markHealerProposalAppliedBySignature, maybeAutoApproveHealerScratch, type EngineSeverity } from '../../../../healer/approval-routing.js';
 import { CLOSING_WORK_OPS, toolOpKey } from '../../../../tools/work-verbs.js';
 import { consumeApproval, isDestructiveCall, manifestPermitsDestructiveCall, requestApproval } from '../../../destructive-gate.js';
 import { getSudoPolicy, isSudoHoldRequired } from '../../../brokers/sudo-policy.js';
@@ -81,6 +81,7 @@ export async function recordDispatchAndHold(
         callDescription: commandText,
         argsJson: JSON.stringify(tc.arguments ?? {}),
         heldDirectDestructiveCall: true,
+        engineSeverity: diagnosticSeverity(db),
         copy: sudoOwnerCardCopy(commandText),
         // The refusal names the policy it read and the card, so the held agent can say what is possible.
         agentRefusal: sudoHeldRefusal(commandText, getSudoPolicy()),
@@ -132,6 +133,7 @@ export async function recordDispatchAndHold(
             callDescription,
             argsJson: JSON.stringify(tc.arguments ?? {}),
             heldDirectDestructiveCall: true,
+            engineSeverity: diagnosticSeverity(db),
           });
           refusal = held.refusal;
           heldIsError = !held.queued;
@@ -164,3 +166,6 @@ export async function recordDispatchAndHold(
   }
   return { state, refusal: null };
 }
+
+/** The worst finding in the newest diagnostic, the one the Healer is working from: critical makes an approval urgent. */
+const diagnosticSeverity = (db: ExecuteContext['db']): EngineSeverity => (db.prepare('SELECT critical_count FROM healer_diagnostics ORDER BY created_at DESC LIMIT 1').get() as { critical_count: number } | undefined)?.critical_count ? 'critical' : 'warning';
