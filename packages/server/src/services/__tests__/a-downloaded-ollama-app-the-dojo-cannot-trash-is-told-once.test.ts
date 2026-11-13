@@ -47,6 +47,17 @@ describe('a downloaded Ollama app the Dojo cannot trash is told once', () => {
     expect(ollama.serving?.version).toBe(LATEST);
   });
 
+  it('one attempt per start even when the standard models are missing and the notice says so instead', async () => {
+    const mac = fakeMac({ running: serviceServe(LATEST), formula: LATEST, app: '0.30.1', appCask: null });
+    mac.failTrash = true;
+    ollama.failPulls = true;
+    useOllamaHost(mac);
+    await upkeep('boot');
+    await upkeep('repair');
+    await upkeep('repair');
+    expect(attempts(mac)).toBe(1);
+  });
+
   it('a re-link that fails is told as the re-link, and the app is not trashed', async () => {
     const mac = fakeMac({ running: serviceServe(LATEST), formula: LATEST, app: '0.30.1', appCask: null });
     useOllamaHost(mac);

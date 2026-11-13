@@ -28,9 +28,9 @@ import { getOllamaModelInfo } from './ollama.js';
 import { computeAndStoreRecommendedNumCtx } from './num-ctx-calculator.js';
 import { assignStandard, registerStandardRow, unregisterStandardRow } from './standard-model-rows.js';
 import {
-  OLLAMA_DOWN_WORDS, OLLAMA_LIMIT_FAILED_WORDS, OLLAMA_TOO_OLD_WORDS, STANDARD_MODELS_MISSING_WORDS, ownerConditionCleared, tellOwner, toldWords,
+  OLLAMA_DOWN_WORDS, OLLAMA_LIMIT_FAILED_WORDS, OLLAMA_TOO_OLD_WORDS, STANDARD_MODELS_MISSING_WORDS, ownerConditionCleared, tellOwner,
 } from '../healer/owner-notices.js';
-import { OLLAMA_APP_LEFT, ollamaAppLeftWords } from '../healer/local-model-notice-words.js';
+import { ollamaAppLeftWords } from '../healer/local-model-notice-words.js';
 
 const logger = createLogger('ollama-upkeep');
 const NOTICE = 'ollama';
@@ -53,6 +53,8 @@ let currentLine: string | null = null;
 let modelLines: Partial<Record<Which, string>> = {};
 let heldLine: string | null = null;
 const pulling = new Set<Which>();
+/** The step at which retiring the downloaded app failed; after a failure only a boot pass tries it again. */
+let appFailed: Awaited<ReturnType<typeof retireDownloadedApp>> = null;
 
 /** Run the upkeep. One run at a time: a caller with no version need joins the run under way; Repair and a caller with a
  *  need run after it, so each looks afresh. */
@@ -125,10 +127,8 @@ async function keep(reason: UpkeepReason, need: Need): Promise<UpgradeResult> {
   }
   const complete = !!(ids.writer && ids.decision);
   noteUpkeep({ triedAt: (complete && windowMade) || !listed ? undefined : Date.now() });
-  // The app is tried once per boot: after a failure, only the next boot pass tries it again, and its notice stands.
-  const standing = toldWords(NOTICE).startsWith(OLLAMA_APP_LEFT);
-  const appLeft = host && current.ok && (!standing || reason === 'boot') ? await retireDownloadedApp(host, local.baseUrl) : standing;
-  if (complete && current.ok && !upkeepRecord().limitOwed) { if (typeof appLeft === 'string') tellOwner(NOTICE, ollamaAppLeftWords(appLeft)); else if (!appLeft) ownerConditionCleared(NOTICE); }
+  if (host && current.ok && (appFailed === null || reason === 'boot')) appFailed = await retireDownloadedApp(host, local.baseUrl);
+  if (complete && current.ok && !upkeepRecord().limitOwed) { if (appFailed) tellOwner(NOTICE, ollamaAppLeftWords(appFailed)); else ownerConditionCleared(NOTICE); }
   else if (!complete && (current.ok || current.transient) && !current.starting) tellOwner(NOTICE, STANDARD_MODELS_MISSING_WORDS);   // a failed upkeep told its own sentence
   return current;
 }
