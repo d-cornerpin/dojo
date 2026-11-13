@@ -2,8 +2,8 @@
 // text-spotting credential reads inside arbitrary shell text cannot be complete. A
 // line referring to the live database file or the Dojo data folder runs only in the
 // shape shapeSql() accepts, each statement a read that passes refuseDeniedSql; the
-// one other shape is a metadata look (METADATA_PROGRAMS, plain words, not piped onward):
-// file facts, no rows. The main agent and the Healer get the allowlist, a worker every refusal;
+// one other shape is a metadata look (METADATA_PROGRAMS, plain words, not piped):
+// file facts, no rows. A line holding a look does nothing else: every command on it is one of the two. The main agent and the Healer get the allowlist, a worker every refusal;
 // anything else gets FACT_REFUSAL. The door cannot see inside a script file the
 // agent writes and runs: encryption at rest and the blocked key file guard credentials.
 
@@ -14,7 +14,7 @@ import { getDb } from '../../db/connection.js';
 import { firstKeyword } from '../../db/read-only-door.js';
 import { homeDir } from '../../home.js';
 import { refuseDeniedSql } from '../../inspect/redact.js';
-import { lexShellLine, type Word } from './shell-words.js';
+import { lexShellLine, type Segment, type Word } from './shell-words.js';
 import { deny, type Verdict } from './types.js';
 
 export type DoorRole = 'main' | 'healer' | 'worker';
@@ -238,9 +238,11 @@ export function dojoDoorVerdict(command: string | readonly string[], role: DoorR
     return sql === null ? { outcome: 'refused', message: FACT_REFUSAL } : sqlVerdict(sql, role);
   }
   if (!lexed || lexed.special) return { outcome: 'refused', message: FACT_REFUSAL };
+  const refers = (seg: Segment): boolean => refersToDojoDatabase(seg.text) || refersToDojoDatabase(seg.words.map((w) => w.value).join(' '));
+  const looks = lexed.segments.some((seg) => refers(seg) && isMetadataLook(seg.words));
   let result: DoorVerdict = { outcome: 'allowed' };
   for (const [k, seg] of lexed.segments.entries()) {
-    if (!refersToDojoDatabase(seg.text) && !refersToDojoDatabase(seg.words.map((w) => w.value).join(' '))) continue;
+    if (!looks && !refers(seg)) continue;
     // A look at the file, not its rows, and only while its output goes nowhere else.
     if (!seg.pipedIn && !lexed.segments[k + 1]?.pipedIn && isMetadataLook(seg.words)) continue;
     const sql = seg.pipedIn ? null : shapeSql(seg.words);

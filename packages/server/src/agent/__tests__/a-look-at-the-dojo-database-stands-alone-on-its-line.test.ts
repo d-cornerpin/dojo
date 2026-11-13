@@ -1,6 +1,6 @@
-// A metadata look at the Dojo database or its data folder (ls, stat, ...) is a look only while
-// its output goes nowhere else: piped onward it could name the file to a reader, so it is refused.
-// Driven through the exec seam the broker uses, for the two roles that get metadata looks.
+// A metadata look at the Dojo database or its data folder (ls, stat, ...) stands alone: on its line
+// every command is a look with no pipe or the shaped sqlite3 read, since piped onward, or followed by
+// a reader of `$_`, it could name the file to that reader. Driven through the exec seam the broker uses.
 
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import fs from 'node:fs';
@@ -44,15 +44,20 @@ const PIPED = [
   'ls ~/.dojo/data | xargs -I{} cat ~/.dojo/data/{}',
   'ls ~/.dojo/data | wc -l',
   'find ~/.dojo -name "*.db" | xargs strings',
+  'ls -d ~/.dojo/data/dojo.db; cat $_',
+  'stat ~/.dojo/data/dojo.db && strings $_',
+  'ls -d ~/.dojo/data/dojo.db\ncat "$_"',
+  'ls -la ~/.dojo/data; grep -c x ~/.dojo/logs/dojo.log',
 ];
 const STANDALONE = [
   'ls -la ~/.dojo/data/dojo.db',
   'find ~/.dojo/data -name "*.db"',
   'ls -la ~/.dojo/data && stat ~/.dojo/data/dojo.db-wal',
+  'sqlite3 -readonly ~/.dojo/data/dojo.db "select id from agents"; ls -la ~/.dojo/data',
   'sqlite3 -readonly ~/.dojo/data/dojo.db "select id from agents" | head -5',
 ];
 
-describe('a look at the Dojo database never feeds a pipe', () => {
+describe('a look at the Dojo database stands alone on its line', () => {
   for (const who of [MAIN, HEALER]) {
     it.each(PIPED)(`${who} is refused: %s`, (line) => expect(allowed(who, line)).toBe(false));
     it.each(STANDALONE)(`${who} still runs: %s`, (line) => expect(allowed(who, line)).toBe(true));
