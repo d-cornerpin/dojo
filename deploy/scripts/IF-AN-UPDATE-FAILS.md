@@ -160,7 +160,7 @@ the hours since the update.
 One thing to know about going back **without** restoring the data (Situation A on its
 own): **the update tidies up your to-do list, and putting the old app back does not
 untidy it.** Old requests that had been marked finished on flimsy evidence get pointed
-at the real answer instead, and a number of them come back to you as still open ,
+at the real answer instead, and a number of them come back to you as still open,
 roughly twenty, on a list the size of yours. That is a repair, not damage: those items
 genuinely were not finished. It is also the *only* part of the update that going back
 cannot undo on its own. If you want that undone too, you need B1–B4 above.
