@@ -82,6 +82,7 @@ const CASES: Array<{ line: string; want: DoorOutcome; why: string }> = [
   { line: 'find ~/.dojo -name x -execdir cat {} ;', want: 'refused', why: '-execdir runs a program' },
   { line: 'find ~/.dojo -ok cat {} ;', want: 'refused', why: '-ok runs a program' },
   { line: 'find ~/.dojo -fprint /tmp/list', want: 'refused', why: '-fprint writes a file' },
+  { line: 'find -files0-from ~/.dojo/data/dojo.db', want: 'refused', why: '-files0-from reads a file and prints its bytes as names' },
   { line: 'find ~/.dojo -name *.md', want: 'refused', why: 'an unquoted pattern the shell expands' },
   { line: 'find ~/.dojo -name "*.db" | xargs strings', want: 'refused', why: 'a look piped onward is no longer a look' },
 ];

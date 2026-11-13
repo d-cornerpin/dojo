@@ -27,8 +27,8 @@ export const WORKER_REFUSAL = "Refused: the Dojo's own database is read through 
 
 const SQLITE = new Set(['sqlite3', '/usr/bin/sqlite3']);
 const METADATA_PROGRAMS = new Set(['ls', 'stat', 'du', 'wc', 'lsof', 'fuser', 'file', 'shasum', 'find']);
-/** The find primaries that run a program, write a file or delete one. */
-const FIND_ACTIONS = /^-(?:exec|execdir|ok|okdir|delete|fprint|fprint0|fprintf|fls)$/;
+/** The find primaries that run a program, write a file, delete one, or read names from a file. */
+const FIND_ACTIONS = /^-(?:exec|execdir|ok|okdir|delete|fprint|fprint0|fprintf|fls|files0-from)$/;
 const SYSTEM_BIN = new Set(['/bin', '/usr/bin', '/usr/sbin', '/sbin']);
 const OUTPUT_FLAGS = new Set(['-readonly', '-header', '-noheader', '-csv', '-json', '-line', '-column', '-list', '-box', '-table', '-markdown', '-tabs']);
 const READ_PRAGMAS = new Set(['table_info', 'table_xinfo', 'index_list', 'index_info', 'index_xinfo', 'foreign_key_list']);
