@@ -46,6 +46,7 @@ const writers = vi.hoisted(() => ({
   written: 0,
 }));
 vi.mock('../../agent/model.js', () => ({
+  effectiveContextWindow: (w: number) => w, resolveNumCtx: () => ({ effective: null }),
   callModel: async (p: { modelId: string; systemPrompt: string; messages: Array<{ content: string }> }) => {
     writers.calls.push({ modelId: p.modelId, systemPrompt: p.systemPrompt, content: p.messages[0].content });
     const mode = writers.mode[p.modelId] ?? 'ok';

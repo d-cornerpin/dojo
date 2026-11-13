@@ -1581,6 +1581,7 @@ export const getAvailableRouterModels = async (): Promise<ApiResponse<Array<{
   api_model_id: string;
   provider_name: string;
   provider_type: string;
+  tooSmallForAgents?: boolean;
 }>>> => {
   return request('/router/available-models');
 };

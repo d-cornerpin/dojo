@@ -196,8 +196,8 @@ export async function spawnAgent(params: SpawnParams): Promise<{ agentId: string
   }
 
   const resolvedModelId = modelId === 'auto' ? 'auto' : (modelId ?? parent.model_id);
-  // The fit checks apply to a NAMED model only. Loaded on demand (agent/model.ts is a heavy graph).
-  const refused = modelId && modelId !== 'auto' ? await import('./main-model-floor.js').then(async (f) => await f.refuseUnfitLocalModel(modelId, parent.model_id, 'agent', () => f.refuseSmallMainModel(modelId, parent.model_id))) : null;
+  // The floor applies to the model the child runs, inherited too; the fit check to a named one. Loaded on demand.
+  const refused = resolvedModelId && resolvedModelId !== 'auto' ? await import('./main-model-floor.js').then(async (f) => f.refuseSmallMainModel(resolvedModelId) ?? await f.refuseUnfitLocalModel(modelId, parent.model_id, 'agent')) : null;
   if (refused) throw new Error(refused);
   if (!resolvedModelId) {
     throw new Error('No model specified and parent has no model configured');

@@ -6,7 +6,6 @@
 
 import { advance, type AgentTurnState } from '../../state.js';
 import { createLogger } from '../../../../logger.js';
-import { AgentError } from '../../../errors.js';
 import type { PromptTurnContext } from '../../../../prompt/assembler.js';
 
 const logger = createLogger('v2-loop');
@@ -62,8 +61,8 @@ export async function selectModel(stateIn: AgentTurnState, input: SelectModelInp
     routerFreshDecision = true;
     const selected = selector.selectModel(decision.tier, agentId, undefined, ['tools']);
     if (!selected) {
-      input.revertTriggerStampOnAbort(); // no answer produced, re-arm the ask
-      throw new AgentError('Auto-router: no models available in any tier', agentId, { code: 'NO_MODEL' });
+      const { tellOwnerNoPickHolds } = await import('./no-pick-holds.js');
+      return { state, said: await tellOwnerNoPickHolds({ agentId, turnNumber: input.turnNumber, tier: routerTier, excluded: [], turnContext, revertTrigger: input.revertTriggerStampOnAbort }) };
     }
     modelId = selected.modelId;
     logger.info(`v2 auto-router: tier=${decision.tier} (${decision.method}) → ${modelId}`, {

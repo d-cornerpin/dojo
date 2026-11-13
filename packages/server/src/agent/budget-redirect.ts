@@ -11,6 +11,7 @@ import { getPrimaryAgentId, isPrimaryAgent } from '../config/platform.js';
 import { SystemPromptTooLargeError } from '../memory/budget.js';
 import { isStopFenced } from './shared-state.js';
 import { AgentError } from './errors.js';
+import { passesMainModelFloor } from './main-model-floor.js';
 import { FREE_FALLBACK_DOWN_CODE } from './v2/honest-stop-lock.js';
 import type { BudgetCheckResult } from '../costs/budget.js';
 import type { ModelCallParams, ModelCallResult } from './model.js';
@@ -51,7 +52,8 @@ export async function redirectToAFreeModel(
   dial: (p: ModelCallParams) => Promise<ModelCallResult>,
 ): Promise<ModelCallResult> {
   const { agentId } = params;
-  const candidates = check.freeModelFallbacks ?? (check.freeModelFallback ? [check.freeModelFallback] : []);
+  const candidates = (check.freeModelFallbacks ?? (check.freeModelFallback ? [check.freeModelFallback] : []))
+    .filter((fb) => params.purpose !== 'agent_turn' || passesMainModelFloor(fb.modelId));   // helper jobs keep small models
   let refusal: SystemPromptTooLargeError | null = null;
   let failure: unknown = null;
   for (const fb of candidates) {

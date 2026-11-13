@@ -19,6 +19,7 @@ vi.mock('../hooks/useToast', async () => {
 import * as api from '../lib/api';
 import { PrimaryAgentStep } from '../pages/Setup';
 import { DreamingTab } from '../components/settings/DreamingTab';
+import { ModelsTab } from '../components/settings/ModelsTab';
 
 const model = (id: string, tooSmallForAgents: boolean) =>
   ({ id, name: id, apiModelId: id, providerId: 'p', capabilities: ['chat'], isEnabled: true, inputCostPerM: 1, outputCostPerM: 1, tooSmallForAgents }) as never;
@@ -44,5 +45,11 @@ describe('a model too small for agents cannot be picked', () => {
     render(<DreamingTab />);
     await waitFor(() => expect(optionsNamed(/tiny-8k/).length).toBeGreaterThanOrEqual(2));
     expect(optionsNamed(/tiny-8k/).every((o) => o.disabled && /too small for an agent/.test(o.textContent ?? ''))).toBe(true);
+  });
+
+  it('the Models tab\'s "no model assigned" picker does the same', async () => {
+    render(<ModelsTab />);
+    await waitFor(() => expect(optionsNamed(/tiny-8k/)).toHaveLength(1));
+    expect(optionsNamed(/tiny-8k.*\(too small for an agent\)/)[0].disabled).toBe(true);
   });
 });

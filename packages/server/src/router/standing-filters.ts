@@ -8,7 +8,7 @@ import { exceededBudget } from '../costs/spend.js';
 import { TIER_FALLBACK, getTierModels, type TierModelRow } from './tier-chain.js';
 
 const logger = createLogger('selector');
-export const agentFloor = { mayRun: (_modelId: string): boolean => true };   // the 32K floor, set by router-window.ts so this file stays clear of agent/model.js
+export const agentFloor = { mayRun: (_modelId: string): boolean => false };   // the 32K floor, set by router-window.ts so this file stays clear of agent/model.js; refuses until set
 
 export function estimateRequestCost(model: TierModelRow): number {
   // 2k input + 1k output per request; an unknown (NULL) price counts as $0, as the biller records it.

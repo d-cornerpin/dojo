@@ -9,7 +9,7 @@
 
 import { getDb } from '../db/connection.js';
 import { getContextWindow } from '../agent/model.js';
-import { MAIN_MODEL_MIN_WINDOW, passesMainModelFloor } from '../agent/main-model-floor.js';
+import { passesMainModelFloor } from '../agent/main-model-floor.js';
 import { agentFloor } from './standing-filters.js';
 import { registerRouterFloorName } from '../healer/owner-notices.js';
 
@@ -32,7 +32,7 @@ export function routerWindowFloor(): { tokens: number; modelName: string; modelI
   for (const r of rows) {
     if (r.model_id === 'auto' || r.model_id === '__auto__') continue;
     const tokens = getContextWindow(r.model_id);
-    if (tokens >= MAIN_MODEL_MIN_WINDOW && (floor === null || tokens < floor.tokens)) floor = { tokens, modelName: r.name ?? r.model_id, modelId: r.model_id };
+    if (passesMainModelFloor(r.model_id) && (floor === null || tokens < floor.tokens)) floor = { tokens, modelName: r.name ?? r.model_id, modelId: r.model_id };
   }
   return floor;
 }

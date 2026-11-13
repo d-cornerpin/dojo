@@ -31,17 +31,17 @@ const NONE_HOLDS = 'none of the models the auto-router uses can hold its instruc
 /** Why no routed pick holds the agent: a transient cause is told and returned, an honest stop thrown. */
 export async function tellOwnerNoPickHolds(args: {
   agentId: string; turnNumber: number; tier: string | null | undefined; excluded: string[]; turnContext: PromptTurnContext;
-  /** The last pick's refusal: its numbers are the card's. */
-  refusal: SystemPromptTooLargeError;
+  /** The last pick's refusal: its numbers are the card's. None when nothing was picked: every skip is a cause. */
+  refusal?: SystemPromptTooLargeError;
   /** Re-arms the ask (no settlement rung spent) before an honest stop is thrown. */
   revertTrigger: () => void;
 }): Promise<string> {
   const { agentId, turnNumber, tier, excluded, turnContext, refusal, revertTrigger } = args;
   const toolPayloadTokens = await measureAgentToolPayloadTokens(agentId);
-  if (!(await anOwnModelHolds(agentId, toolPayloadTokens, turnContext))) reportStarvedWindow(agentId, refusal.systemPromptTokens, refusal.policy);
+  if (refusal && !(await anOwnModelHolds(agentId, toolPayloadTokens, turnContext))) reportStarvedWindow(agentId, refusal.systemPromptTokens, refusal.policy);
   const causes = new Set<RoutedSkip>();
   for (const { modelId, skip } of routedSkipReasons(tier, agentId, excluded, ['tools'])) {
-    if (skip && !causes.has(skip) && await modelHoldsAgent(agentId, modelId, toolPayloadTokens, turnContext)) causes.add(skip);
+    if (skip && !causes.has(skip) && (!refusal || await modelHoldsAgent(agentId, modelId, toolPayloadTokens, turnContext))) causes.add(skip);
   }
   // The limit is the real stop even beside a transient cause (a rate limit clears by itself; the limit does not).
   const stop: HonestStopKind | null = causes.has('budget') ? 'budget_stop' : causes.size === 0 ? 'no_model_fits' : null;

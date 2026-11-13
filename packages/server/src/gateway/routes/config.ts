@@ -71,7 +71,7 @@ function reassignAffectedAgents(modelIds: string[]): number {
 
   // Fallback: the first enabled TEXT-capable model outside the affected set (media-generation and
   // embedding models cost 0 and would otherwise win the cost order). The cheapest that clears the 32K
-  // main-model floor wins; if none does, the cheapest is still used so the agent always has a model.
+  // main-model floor wins; if none does, the agent is left with no model rather than a too-small one.
   let candidates: Array<{ id: string }>;
   try {
     const placeholders = modelIds.map(() => '?').join(',');
@@ -84,7 +84,7 @@ function reassignAffectedAgents(modelIds: string[]): number {
       `SELECT id FROM models WHERE is_enabled = 1 AND capabilities NOT LIKE '%generation%' AND capabilities NOT LIKE '%embedding%' AND capabilities NOT LIKE '%"decision"%' ORDER BY input_cost_per_m ASC, id ASC`
     ).all() as Array<{ id: string }>;
   }
-  const fallback = candidates.find(m => passesMainModelFloor(m.id)) ?? candidates[0];
+  const fallback = candidates.find(m => passesMainModelFloor(m.id));
 
   const fallbackId = fallback?.id ?? null;
 

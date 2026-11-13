@@ -55,10 +55,7 @@ export function refuseSmallMainModel(
   return smallMainModelMessage(w.name, w.window);
 }
 
-export function passesMainModelFloor(modelId: string): boolean {
-  const w = windowOf(modelId);
-  return !w || w.window >= MAIN_MODEL_MIN_WINDOW;
-}
+export function passesMainModelFloor(modelId: string): boolean { return refuseSmallMainModel(modelId) === null; }
 
 /** Config keys picking a service agent's MAIN model; the settings route guards these before writing. */
 export const MAIN_MODEL_SETTING_KEYS: readonly string[] = [

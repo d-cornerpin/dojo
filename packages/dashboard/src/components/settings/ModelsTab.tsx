@@ -14,6 +14,7 @@ import {
   MusicGenModelCard, TranscriptionModelCard,
 } from './CapabilityModelCards';
 import { ModalShell } from '../ModalShell';
+import { AgentModelOption } from '../AgentModelOption';
 
 
 export const BrowseModels = ({ providerId, providerName, onModelAdded }: { providerId: string; providerName: string; onModelAdded: () => void }) => {
@@ -646,9 +647,7 @@ export const ModelsTab = () => {
             <option value="" disabled>
               {settingModel ? 'Setting...' : 'Set Model'}
             </option>
-            {enabledModels.filter((m) => !m.capabilities.includes('decision')).map((m) => (
-              <option key={m.id} value={m.id}>{m.name}</option>
-            ))}
+            {enabledModels.filter((m) => !m.capabilities.includes('decision')).map((m) => <AgentModelOption key={m.id} model={m} label={m.name} />)}
           </select>
         </div>
       )}

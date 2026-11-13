@@ -159,7 +159,7 @@ describe('t140 round 6 — the router\'s own pick, too small for the agent', () 
     // re-armed, nothing handed back), and the lock tells the owner once.
     const thrown = await callStep().then(() => null, (err: unknown) => err);
     // N42: on this router (its smallest model holds the agent) the limit leaves the router no model at all.
-    expect(thrown, 'the router hands the stop on: no model within the limit').toMatchObject({ code: 'NO_MODEL' });
+    expect(thrown, 'the router hands the stop on: no model within the limit').toMatchObject({ code: 'BUDGET_STOP' });
     await recoverFromError(advance(initState({ agentId: AGENT, contextWindow: 200_000, isAutoRouted: true, configuredModelId: 'auto', turnNumber: 21 }), { phase: CALL_LLM_PHASE, loopCount: 1 }), thrown, { isUserFacingTurn: true });
     expect((db().prepare('SELECT status FROM agents WHERE id = ?').get(AGENT) as { status: string }).status).toBe('paused');
     const notices = owner.cards.filter((c) => c.type === 'chat:error');

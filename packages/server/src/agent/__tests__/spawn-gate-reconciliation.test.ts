@@ -88,6 +88,7 @@ vi.mock('../../work/tracker-store.js', () => ({
 }));
 vi.mock('../../work/done/proof.js', () => ({ proofDelivery: vi.fn() }));
 vi.mock('../../work/store.js', () => ({ workSettled: vi.fn() }));
+vi.mock('../main-model-floor.js', () => ({ refuseSmallMainModel: () => null, refuseUnfitLocalModel: async () => null }));
 vi.mock('../../work/tracker-view.js', () => ({ taskScope: () => '1=1', STATE_TO_STATUS_SQL: "'open'" }));
 
 // The resource monitor is the OTHER refusal in the same region. It is stubbed
