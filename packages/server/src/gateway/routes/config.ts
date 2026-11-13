@@ -22,7 +22,7 @@ import { dismissOwnerNotice, ownerToldOf } from '../../healer/owner-notices.js';
 import { servedOwnerNotices } from '../../healer/owner-notice-kinds.js';
 import { writeOobeSoul } from '../../prompt/soul-rerun.js';
 import { isPastFirstRun } from '../../config/setup-state.js';
-import { refuseSmallMainModel, refuseUnfitLocalModel, passesMainModelFloor, MAIN_MODEL_SETTING_KEYS, LOCAL_MODEL_SETTING_KEYS } from '../../agent/main-model-floor.js';
+import { refuseSmallMainModel, refuseUnfitLocalModel, passesMainModelFloor, smallMainModelMessage, windowOf, MAIN_MODEL_SETTING_KEYS, LOCAL_MODEL_SETTING_KEYS } from '../../agent/main-model-floor.js';
 import { parsePrice } from '../../services/price-per-million.js';
 import { refuseBadClockTime, CLOCK_TIME_SETTING_KEYS } from '../../config/clock-time.js';
 import { refuseStaleWholeDocument } from './whole-document-guard.js';
@@ -1892,11 +1892,19 @@ configRouter.patch('/models/:id/num-ctx', async (c) => {
   }
 
   const db = getDb();
-  const model = db.prepare('SELECT id FROM models WHERE id = ?').get(id);
+  const model = db.prepare('SELECT num_ctx_override FROM models WHERE id = ?').get(id) as { num_ctx_override: number | null } | undefined;
   if (!model) return c.json({ ok: false, error: 'Model not found' }, 404);
 
-  db.prepare("UPDATE models SET num_ctx_override = ?, updated_at = datetime('now') WHERE id = ?")
-    .run(override, id);
+  const before = windowOf(id)?.window ?? Infinity;
+  const setOverride = db.prepare("UPDATE models SET num_ctx_override = ?, updated_at = datetime('now') WHERE id = ?");
+  setOverride.run(override, id);
+  // An agent's model may not be narrowed under the floor every door that sets a main model enforces.
+  const after = windowOf(id);
+  if (after && after.window < before && !passesMainModelFloor(id)
+    && db.prepare("SELECT 1 FROM agents WHERE model_id = ? AND status != 'terminated'").get(id)) {
+    setOverride.run(model.num_ctx_override, id);
+    return c.json({ ok: false, error: smallMainModelMessage(after.name, after.window) }, 409);
+  }
 
   const row = db.prepare('SELECT * FROM models WHERE id = ?').get(id) as Record<string, unknown>;
 
