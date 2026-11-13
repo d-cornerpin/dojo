@@ -103,7 +103,7 @@ export async function runGoingIdle(
       const recentSideEffects: Array<{ name: string; preview: string }> = [];
       for (let i = state.toolResults.length - 1; i >= 0 && recentSideEffects.length < 4; i--) {
         const tr = state.toolResults[i];
-        if (!tr.name || classifyTool(tr.name) !== 'effectful-action') continue;
+        if (!tr.name || classifyTool(tr.name, tr.arguments) !== 'effectful-action') continue;
         if (tr.isError) continue;
         const preview = (tr.content ?? '').replace(/\s+/g, ' ').slice(0, 160);
         recentSideEffects.push({ name: tr.name, preview });
