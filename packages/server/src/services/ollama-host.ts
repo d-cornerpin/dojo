@@ -24,6 +24,8 @@ export interface OllamaHost {
   /** The Ollama app's own processes (`pgrep -x Ollama`, case-sensitive: Homebrew's server is `ollama`). */
   appPids(): Promise<number[]>;
   appInstalled(): Promise<boolean>;
+  /** Finder moves the app's bundle to the Trash (Put Back works); its login item is removed when it can be. */
+  trashApp(): Promise<void>;
   terminate(pid: number): void;
   alive(pid: number): boolean;
   launchApp(): Promise<void>;
@@ -64,6 +66,9 @@ export function makeRealDeps(
     for (const p of BREW_PATHS) { try { await run('/bin/test', ['-x', p]); return p; } catch { /* not here */ } }
     return null;
   };
+  const bundles = async (): Promise<string[]> => (await Promise.all(   // `/bin/test -d`: the app bundles there (no file-system import)
+    ['/Applications/Ollama.app', join(homeDir(), 'Applications', 'Ollama.app')].map((p) => run('/bin/test', ['-d', p]).then(() => [p], () => [])),
+  )).flat();
   return {
     getenv: async (name) => { try { return (await run('launchctl', ['getenv', name])).stdout.trim() || null; } catch { return null; } },
     setenv: async (name, value) => { await run('launchctl', ['setenv', name, value]); },
@@ -80,9 +85,10 @@ export function makeRealDeps(
     },
     // This user's own processes only: another user's Ollama app is not ours to signal.
     appPids: async () => { try { return pids((await run('pgrep', ['-x', '-u', String(process.getuid?.() ?? ''), 'Ollama'])).stdout); } catch { return []; } },
-    appInstalled: async () => {   // `/bin/test -d`: the bundle is there (no file-system import for one yes/no)
-      for (const p of ['/Applications/Ollama.app', join(homeDir(), 'Applications', 'Ollama.app')]) { try { await run('/bin/test', ['-d', p]); return true; } catch { /* not here */ } }
-      return false;
+    appInstalled: async () => (await bundles()).length > 0,
+    trashApp: async () => {
+      for (const p of await bundles()) await run('osascript', ['-e', `tell application "Finder" to delete POSIX file "${p}"`]);
+      await run('osascript', ['-e', 'tell application "System Events" to delete (every login item whose name is "Ollama")']).catch(() => undefined);
     },
     terminate: (pid) => { try { kill(pid, 'SIGTERM'); } catch { /* already gone */ } },
     alive: (pid) => { try { return kill(pid, 0); } catch (e) { return (e as NodeJS.ErrnoException).code === 'EPERM'; } },

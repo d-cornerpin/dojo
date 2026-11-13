@@ -7,7 +7,7 @@
 // Dojo start, Repair and a health check that finds the pair incomplete all run it, one run at a time. What it cannot fix
 // is one owner notice (key `ollama`) and one held version: a health check tries again only once the version changes.
 // Only an Ollama program is ever stopped; nothing here runs `--zap` or `uninstall`, strips quarantine, or touches
-// `~/.ollama`.
+// `~/.ollama`. An Ollama app from ollama.com is moved to the Trash once Homebrew's own Ollama serves.
 // ════════════════════════════════════════════════════════════════════════════
 
 import os from 'node:os';
@@ -17,7 +17,7 @@ import { type OllamaHost, getOllamaHost } from './ollama-host.js';
 import { heldOllamaVersion, noteUpkeep, upkeepRecord, isUnknownBuild, isVersionRefusal, ollamaAtLeast, readOllamaVersion, requiredOllamaVersion } from './ollama-version.js';
 import {
   StepFailed, classifyOllama, desiredLoaded, endStuckStart, portOf, restartWithLimit, setLaunchdLimit, settleTakeover,
-  startInstalled, startingNow, takeoverSettled, upkeepApp, upkeepServe, type Start,
+  retireDownloadedApp, startInstalled, startingNow, takeoverSettled, upkeepApp, upkeepServe, type Start,
 } from './ollama-restart.js';
 import {
   STANDARD_DECISION_MODEL, STANDARD_FLOOR_BYTES, STANDARD_PAIR_BYTES, STANDARD_TAGS, STANDARD_WRITER_MODEL,
@@ -30,6 +30,7 @@ import { assignStandard, registerStandardRow, unregisterStandardRow } from './st
 import {
   OLLAMA_DOWN_WORDS, OLLAMA_LIMIT_FAILED_WORDS, OLLAMA_TOO_OLD_WORDS, STANDARD_MODELS_MISSING_WORDS, ownerConditionCleared, tellOwner,
 } from '../healer/owner-notices.js';
+import { OLLAMA_APP_LEFT_WORDS } from '../healer/local-model-notice-words.js';
 
 const logger = createLogger('ollama-upkeep');
 const NOTICE = 'ollama';
@@ -124,7 +125,9 @@ async function keep(reason: UpkeepReason, need: Need): Promise<UpgradeResult> {
   }
   const complete = !!(ids.writer && ids.decision);
   noteUpkeep({ triedAt: (complete && windowMade) || !listed ? undefined : Date.now() });
-  if (complete && current.ok && !upkeepRecord().limitOwed) ownerConditionCleared(NOTICE);
+  const appLeft = !!host && current.ok && await retireDownloadedApp(host, local.baseUrl)
+    .then(() => false, (err: unknown) => { logger.warn('The downloaded Ollama app could not be moved to the Trash', { error: childFailureText(err) }); return true; });
+  if (complete && current.ok && !upkeepRecord().limitOwed) { if (appLeft) tellOwner(NOTICE, OLLAMA_APP_LEFT_WORDS); else ownerConditionCleared(NOTICE); }
   else if (!complete && (current.ok || current.transient) && !current.starting) tellOwner(NOTICE, STANDARD_MODELS_MISSING_WORDS);   // a failed upkeep told its own sentence
   return current;
 }

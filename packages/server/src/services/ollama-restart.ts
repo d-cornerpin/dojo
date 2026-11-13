@@ -191,6 +191,17 @@ export async function endStuckStart(host: OllamaHost, baseUrl: string, residentC
   return started === 'dead' ? 'dead' : null;
 }
 
+/** Homebrew's own Ollama answers on the port while an app Homebrew does not own is installed: the app is quit, moved to
+ *  the Trash and the command re-linked to Homebrew's. Never `~/.ollama`. Throws when a step fails. */
+export async function retireDownloadedApp(host: OllamaHost, baseUrl: string): Promise<void> {
+  if ((await host.brewCaskToken()) !== null || !await host.appInstalled()) return;
+  const here = await classifyOllama(host, portOf(baseUrl));
+  if (!here || !BREW_FORMULA_PATH.test(here.path) || !await host.answers(baseUrl)) return;
+  await stopApp(host);
+  await host.trashApp();
+  await host.brew(['link', '--overwrite', 'ollama']);
+}
+
 export class StepFailed extends Error {
   constructor(readonly step: 'install' | 'stop' | 'again' | 'start', cause: unknown) { super(childFailureText(cause)); }
 }

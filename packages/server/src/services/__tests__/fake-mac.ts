@@ -82,6 +82,8 @@ export type Mac = OllamaHost & {
   env: Record<string, string>;
   brews: string[][]; setenvs: string[]; terms: number[]; launches: number; serviceRestarts: number;
   downAtBrew: boolean[];
+  /** Finder refuses the move to the Trash (the Automation prompt declined). */
+  failTrash: boolean;
   hasBrewInstalled: boolean; failBrew: boolean; failBrewOnce: boolean; cliOk: boolean; serviceWorks: boolean; serveWorks: boolean; failCask: boolean;
   relaunchGate: Promise<void>;
   /** A supervisor that starts this program again whenever its serve stops (a launchd job of the owner's). `program` null:
@@ -128,7 +130,7 @@ export function fakeMac(o: { running?: Serve | null; formula?: string | null; ap
     disk: { formula: o.formula ?? null, app: o.app ?? null, appCask: o.appCask === undefined ? (o.app ? 'ollama-app' : null) : o.appCask },
     latest: LATEST, env: {},
     brews: [], setenvs: [], terms: [], launches: 0, serviceRestarts: 0, downAtBrew: [], serves: [], log: [],
-    hasBrewInstalled: true, failBrew: false, failBrewOnce: false, cliOk: true, serviceWorks: true, serveWorks: true, failCask: false, relaunchGate: Promise.resolve(), respawn: null,
+    failTrash: false, hasBrewInstalled: true, failBrew: false, failBrewOnce: false, cliOk: true, serviceWorks: true, serveWorks: true, failCask: false, relaunchGate: Promise.resolve(), respawn: null,
     cli: null, startMs: 0, appStartMs: 0, macos: 15, now: 0, serviceLoaded: false,
     wait: (ms) => tick(ms),
     getenv: async (k) => m.env[k] ?? null,
@@ -136,6 +138,11 @@ export function fakeMac(o: { running?: Serve | null; formula?: string | null; ap
     listener: async () => (serve ? { pid: serve.pid, path: serve.path } : null),
     appPids: async () => (serve?.by === 'app' ? [APP_PID] : []),
     appInstalled: async () => m.disk.app !== null,
+    trashApp: async () => {
+      m.log.push('trash');
+      if (m.failTrash) throw new Error('Finder got an error: Not authorized to send Apple events to Finder. (-1743) (raw)');
+      m.disk.app = null;
+    },
     terminate: (pid) => {
       m.terms.push(pid); m.log.push('term'); started.delete(pid);
       if (serve && !serve.foreign && (pid === serve.pid || (serve.by === 'app' && pid === APP_PID))) stop();
