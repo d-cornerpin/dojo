@@ -34,6 +34,7 @@ export interface ToolResultRecord {
   content: string;
   isError: boolean;
   contentBlocks?: Array<{ type: string; [key: string]: unknown }>;
+  arguments?: Record<string, unknown>;   // the producing call's arguments, for the turn-ending floors
 }
 
 export interface RecoveryStreak {

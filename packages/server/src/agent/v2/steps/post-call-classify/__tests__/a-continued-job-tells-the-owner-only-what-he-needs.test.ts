@@ -73,9 +73,8 @@ type ModelResult = PostCallClassifyContext['result'];
 
 /** One continued turn: the park's own wake starts the run, the agent works over one or more passes, then
  *  ends with `text`. The state is shaped EXACTLY as the engine builds it (fix round 4): each pass's model
- *  call REPLACES `toolCalls` with that pass's own calls (`call-llm/index.ts`), the post-call step persists
- *  the pass's assistant row with its `tool_use` blocks (`persist-assistant.ts`), and execute APPENDS the
- *  pass's results to `toolResults` (`execute/index.ts`). So the closing pass sees only its own calls in
+ *  call REPLACES `toolCalls` with that pass's own calls (`call-llm/index.ts`), and execute APPENDS the
+ *  pass's results, each carrying its call's arguments, to `toolResults` (`execute/index.ts`). So the closing pass sees only its own calls in
  *  `toolCalls`, never an earlier pass's. `earlier` = calls an earlier pass made, which succeeded; `earlierFailed`, ones that failed. */
 async function continuedTurn(taskId: string, text: string, work: { from: number; n: number } | null,
   over: Partial<Record<string, unknown>> = {},
@@ -109,7 +108,7 @@ async function continuedTurn(taskId: string, text: string, work: { from: number;
     state = advance(state, { toolCalls: calls });
     state = (await runPostCallClassify(state, ctxFor({ content: '', toolCalls: calls, inputTokens: 10, outputTokens: 5, stopReason: 'tool_use' } as ModelResult))).state;
     state = advance(state, {
-      toolResults: state.toolResults.concat(calls.map((c) => ({ toolCallId: c.id, name: c.name, isError, content: isError ? 'Error: no such task' : '[OK]' }) as AgentTurnState['toolResults'][number])),
+      toolResults: state.toolResults.concat(calls.map((c) => ({ toolCallId: c.id, name: c.name, isError, content: isError ? 'Error: no such task' : '[OK]', arguments: c.arguments }))),
       loopCount: state.loopCount + 1,
     });
   };

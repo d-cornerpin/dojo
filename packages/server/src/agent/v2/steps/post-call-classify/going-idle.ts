@@ -13,7 +13,6 @@ import { advance, type AgentTurnState } from '../../state.js';
 import { enqueueSteer, steerFired } from '../../steer-queue.js';
 import { persistEngineSteer } from '../../engine-steer.js';
 import { userWords } from '../../turn-address.js';
-import { argsForResult } from './args-for-result.js';
 import { continueLoop, proceed, requestExit, type StepOutcome } from '../step-outcome.js';
 import { continueTheJob } from './job-continues.js';
 import type { PostCallClassifyContext, PostCallScratch } from './index.js';
@@ -39,16 +38,8 @@ export async function runGoingIdle(
   ) {
     const lastTool = state.toolResults[state.toolResults.length - 1];
     if (lastTool && lastTool.name === 'work_note') {
-      // The task id lives on the matching tool call's arguments.
-      let nudgedTaskId: string | null = null;
-      for (let i = state.toolCalls.length - 1; i >= 0; i--) {
-        const tc = state.toolCalls[i];
-        if (tc.id === lastTool.toolCallId && tc.name === 'work_note') {
-          const tid = (tc.arguments as { task_id?: unknown })?.task_id;
-          if (typeof tid === 'string') nudgedTaskId = tid;
-          break;
-        }
-      }
+      const tid = lastTool.arguments?.task_id;
+      const nudgedTaskId = typeof tid === 'string' ? tid : null;
       if (nudgedTaskId) {
         const row = db.prepare(`SELECT ${workingExpr('w')} AS working, w.title FROM work w WHERE w.id = ?`).get(nudgedTaskId) as { working?: number; title?: string } | undefined;
         if (row?.working) {
@@ -94,7 +85,7 @@ export async function runGoingIdle(
     `).all(agentId) as Array<{ id: string; title: string }>;
 
     // A turn that already transitioned a task made a deliberate state choice; another left open is fine.
-    const transitionedThisTurn = state.toolResults.some(tr => CLOSING_WORK_OPS.has(toolOpKey(tr.name, argsForResult(state.toolCalls, tr))));
+    const transitionedThisTurn = state.toolResults.some(tr => CLOSING_WORK_OPS.has(toolOpKey(tr.name, tr.arguments)));
 
     // Bookkeeping is enforced only on a turn that worked a task (task-triggered, or a real side effect),
     // never on a conversation turn. Membership comes from `classifyTool`, so new tools cannot fall out;
@@ -106,7 +97,7 @@ export async function runGoingIdle(
     };
     const schedulerTurn = mostRecentInbound?.origin_intent === 'scheduler' || (lastUserMessageContent ?? '').includes('[SOURCE: SCHEDULER');
     const workedATaskThisTurn = schedulerTurn || isA2ATurn ||
-      state.toolResults.some(tr => !tr.isError && !!tr.name && countsAsTaskWork(tr.name, argsForResult(state.toolCalls, tr)));
+      state.toolResults.some(tr => !tr.isError && !!tr.name && countsAsTaskWork(tr.name, tr.arguments));
 
     if (openTasks.length > 0 && !transitionedThisTurn && workedATaskThisTurn) {
       // Successful side effects this turn are listed as a fact so they are not repeated (read from

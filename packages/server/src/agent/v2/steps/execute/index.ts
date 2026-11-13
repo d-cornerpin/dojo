@@ -175,7 +175,9 @@ export async function runExecute(state: AgentTurnState, ctx: ExecuteContext): Pr
   // A mid-batch stop latches engineCut 'stop' (first writer wins): the turn records the owner's stop.
   state = advance(state, {
     recentToolSignatures: recentSigs,
-    toolResults: state.toolResults.concat(turnToolResults),
+    toolResults: state.toolResults.concat(turnToolResults.map((r) => ({
+      ...r, arguments: result.toolCalls.find((tc) => tc.id === r.toolCallId)?.arguments,
+    }))),
     identicalCallRefusedThisTurn:
       state.identicalCallRefusedThisTurn || anyIdenticalCallRefused(identicalCallState),
   });

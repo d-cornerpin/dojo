@@ -20,7 +20,6 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import type { ToolCall } from '@dojo/shared';
 
 const mockDb: { current: Database.Database | null } = { current: null };
 
@@ -78,16 +77,12 @@ function stateWith(over: Partial<AgentTurnState> = {}): AgentTurnState {
 
 /** The S1 turn's tool traffic: one successful `work_open`, nothing else. */
 function withWorkOpen(state: AgentTurnState, opts: { isError?: boolean } = {}): AgentTurnState {
-  const call = {
-    id: 'tc-1', name: 'work_open',
-    arguments: { kind: 'task', title: 'Mariners score check', scheduled_start: '2026-08-10T21:06:00Z' },
-  } as ToolCall;
   return advance(state, {
-    toolCalls: [call],
     toolResults: [{
       toolCallId: 'tc-1', name: 'work_open', isError: opts.isError ?? false,
       content: 'Task opened: 92fba53b (scheduled)',
-    } as AgentTurnState['toolResults'][number]],
+      arguments: { kind: 'task', title: 'Mariners score check', scheduled_start: '2026-08-10T21:06:00Z' },
+    }],
   });
 }
 
@@ -201,10 +196,8 @@ describe('T22 controls: the 2026-07-08 case this floor was built for stays red',
 
 describe('T22 controls: the untouched guards still bound the floor', () => {
   it('the effectful-work exemption is unchanged', () => {
-    const call = { id: 'tc-2', name: 'send_email', arguments: { to: 'a@b.c' } } as ToolCall;
     const st = advance(stateWith(), {
-      toolCalls: [call],
-      toolResults: [{ toolCallId: 'tc-2', name: 'send_email', isError: false, content: 'sent' } as AgentTurnState['toolResults'][number]],
+      toolResults: [{ toolCallId: 'tc-2', name: 'send_email', isError: false, content: 'sent', arguments: { to: 'a@b.c' } }],
     });
     expect(runPromiseFloor(st, ctxFor(), scratch(EMPTY_PROMISE)).directive).toBe('proceed');
   });

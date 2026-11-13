@@ -9,7 +9,6 @@ import { type AgentTurnState } from '../../state.js';
 import { persistEngineSteer } from '../../engine-steer.js';
 import { steerFired } from '../../steer-queue.js';
 import { isForwardPromiseReply, isStandingPromiseReply, standingStateClaimSentence } from '../../ack-copy.js';
-import { argsForResult } from './args-for-result.js';
 import { continueLoop, proceed, type StepOutcome } from '../step-outcome.js';
 import type { PostCallClassifyContext, PostCallScratch } from './index.js';
 import { userWords } from '../../turn-address.js';
@@ -56,10 +55,10 @@ export function runPromiseFloor(
     (forwardPromise || standingPromise || standingStateClaim !== null)
   ) {
     const didEffectfulWorkThisTurn = state.toolResults.some(
-      (tr) => !tr.isError && !!tr.name && classifyTool(tr.name, argsForResult(state.toolCalls, tr)) === 'effectful-action',
+      (tr) => !tr.isError && !!tr.name && classifyTool(tr.name, tr.arguments) === 'effectful-action',
     );
     const transitionedATaskThisTurn = state.toolResults.some(
-      (tr) => !tr.isError && CLOSING_WORK_OPS.has(toolOpKey(tr.name, argsForResult(state.toolCalls, tr))),
+      (tr) => !tr.isError && CLOSING_WORK_OPS.has(toolOpKey(tr.name, tr.arguments)),
     );
     // A promise backed by a row this turn opened with a future fire is the scheduler's to keep;
     // `origin_turn` is stamped on every tracker open, and a failed open leaves no row.

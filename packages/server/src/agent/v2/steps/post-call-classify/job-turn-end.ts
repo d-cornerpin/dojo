@@ -7,10 +7,8 @@ import { parseMeasure, type Measure } from '../../../../work/measure.js';
 import { ledgerNewItemsSince, recordMeasured } from '../../../../work/ledger-store.js';
 import { jobCarriedIds, runCarriesJob } from '../../../../work/task-freshness.js';
 import { lastTurnEnd, novelCallsInTurn } from '../../../../work/job-momentum.js';
-import { succeededIn } from '../../../../work/ledger-store.js';
 import { toolOpKey } from '../../../../tools/work-verbs.js';
 import { normalizeTaskStatus } from '../../../../tracker/task-status-words.js';
-import type { ToolCall } from '@dojo/shared';
 import type { AgentTurnState } from '../../state.js';
 import type { PostCallClassifyContext } from './index.js';
 import { heldExpr, workingExpr } from '../../../../work/done/hold.js';
@@ -86,33 +84,16 @@ export function jobAtPassEndNow(state: AgentTurnState, ctx: Pick<PostCallClassif
 }
 
 /** A status call that is a door to the owner: "paused" (waiting on him) or "blocked", on ANY task. */
-const isDoorCall = (tc: Pick<ToolCall, 'name' | 'arguments'>): boolean =>
+const isDoorCall = (tc: { name: string; arguments?: Record<string, unknown> }): boolean =>
   toolOpKey(tc.name, tc.arguments) === 'work_update:status'
   && ['paused', 'blocked'].includes(normalizeTaskStatus((tc.arguments as { status?: unknown } | undefined)?.status) ?? '');
-
-/** The calls this whole turn made, read from its persisted assistant rows: `state.toolCalls` holds only
- *  the current pass's calls, so an earlier pass's door would be missing. Results join by call id. */
-function callsThisTurn(agentId: string, turnNumber: number, db: Database): ToolCall[] {
-  const rows = db.prepare(`SELECT content FROM messages WHERE agent_id = ? AND turn_number = ? AND role = 'assistant' AND content LIKE '[{%'`)
-    .all(agentId, turnNumber) as Array<{ content: string }>;
-  const calls: ToolCall[] = [];
-  for (const r of rows) {
-    try {
-      for (const b of JSON.parse(r.content) as Array<{ type?: string; id?: string; name?: string; input?: Record<string, unknown> }>) {
-        if (b.type === 'tool_use' && b.id && b.name) calls.push({ id: b.id, name: b.name, arguments: b.input ?? {} } as ToolCall);
-      }
-    } catch { /* not a block array */ }
-  }
-  return calls;
-}
 
 /** Does this turn speak to the owner whatever the job does: a waiting person, a door call on this pass
  *  (judged before it runs), or a door call an earlier pass of this turn made that succeeded? */
 function speaksThisTurn(state: AgentTurnState, ctx: Pick<PostCallClassifyContext, 'agentId' | 'db' | 'turnNumber' | 'hasUnansweredUser' | 'triggerRow' | 'result'>): boolean {
   if (ctx.hasUnansweredUser || ctx.triggerRow) return true;
   if ((ctx.result?.toolCalls ?? []).some(isDoorCall)) return true;
-  const ok = succeededIn(state.toolResults as unknown as Parameters<typeof succeededIn>[0]);
-  return callsThisTurn(ctx.agentId, ctx.turnNumber, ctx.db).some((tc) => isDoorCall(tc) && ok(tc));
+  return state.toolResults.some((tr) => !tr.isError && isDoorCall(tr));
 }
 
 /** Is this pass the engine's continuation of a measured job with items left and nothing the owner must
