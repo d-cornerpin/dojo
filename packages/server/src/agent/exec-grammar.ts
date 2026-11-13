@@ -40,29 +40,42 @@ function scanParens(line: string, i: number): number {
     const c = line[j];
     if (c === '\\') { j += 2; continue; }
     if (c === "'" || c === '"' || c === '`') { j = scanQuoted(line, j); continue; }
-    if (c === '(') depth++;
-    else if (c === ')') { depth--; if (depth === 0) return j + 1; }
+    if (c === line[i]) depth++;
+    else if (c === (line[i] === '{' ? '}' : ')')) { depth--; if (depth === 0) return j + 1; }
     j++;
   }
   return line.length;
 }
 
-/** Words and separators; quoted spans ride verbatim, so grammar inside a string is never grammar. */
+const HEREDOC_RE = /^<<(-?)[ \t]*(['"]?)([\w.-]+)\2(?=[ \t\n;&|<>()]|$)/;
+
+/** Words and separators; quoted spans and `$( )`, `${ }`, `(( ))` ride verbatim, so grammar inside them is never
+ *  grammar. A here-document body is data, cut out unless it is unquoted and holds `$( )` or a backtick. */
 function tokenize(line: string): Tok[] {
   const toks: Tok[] = [];
   let cur = '';
   let i = 0;
   const flushWord = (): void => { if (cur) { toks.push({ text: cur, op: false }); cur = ''; } };
+  const heredocs: string[][] = [];
+  let heredocsOff = line.includes("$'");   // `$'` and `#` make where a here-document starts unsure
 
   while (i < line.length) {
     const c = line[i];
+    heredocsOff ||= c === '#';
+    if (c === '<' && !heredocsOff && line[i - 1] !== '<') { const h = HEREDOC_RE.exec(line.slice(i)); if (h) heredocs.push(h); }
+    if (c === '\n' && heredocs.length > 0) {
+      const rest = line.slice(i + 1).split('\n');
+      let k = 0;
+      const data = heredocs.splice(0).every(([, dash, quote, delim]) => {
+        const first = k;
+        while (k < rest.length && (dash ? rest[k].replace(/^\t+/, '') : rest[k]) !== delim) k++;
+        return !/\$\(|`/.test(rest.slice(first, k++).join('\n')) || quote !== '';
+      });
+      if (data) line = line.slice(0, i + 1) + rest.slice(k).join('\n');
+    }
     if (c === '\\' && i + 1 < line.length) { cur += line.slice(i, i + 2); i += 2; continue; }
     if (c === "'" || c === '"' || c === '`') { const end = scanQuoted(line, i); cur += line.slice(i, end); i = end; continue; }
-    if (c === '$' && (line[i + 1] === '(' || line[i + 1] === '{')) {
-      const end = line[i + 1] === '(' ? scanParens(line, i + 1) : line.indexOf('}', i) + 1 || line.length;
-      cur += line.slice(i, end); i = end; continue;
-    }
-    if (c === '(' && line[i + 1] === '(') { const end = scanParens(line, i); cur += line.slice(i, end); i = end; continue; }
+    if ((c === '$' && '({'.includes(line[i + 1] ?? '-')) || (c === '(' && line[i + 1] === '(')) { const end = scanParens(line, c === '$' ? i + 1 : i); cur += line.slice(i, end); i = end; continue; }
     if (c === ' ' || c === '\t') { flushWord(); i++; continue; }
     // `2>&1` and `&>file` are redirects, not a background job.
     if (c === '&' && (/[<>]$/.test(cur) || line[i + 1] === '>')) { cur += c; i++; continue; }

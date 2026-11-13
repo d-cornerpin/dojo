@@ -219,13 +219,11 @@ export function globalExecDenyPublic(trimmed: string): Verdict | null {
   return globalExecDeny(trimmed);
 }
 
-/** SHELL authority for a line (a script, a do shell script payload): every simple command in it
- *  must be admitted by an allow row. A line the shared lexer cannot read is admitted only by `*`. */
+/** SHELL authority for a line (a script, a do shell script payload): every simple command in it needs an allow row. */
 export function authorizeShellCommandText(grant: Grant, line: string, commands = execSimpleCommands(line)): Verdict {
-  const lexable = lexShellLine(line) !== null;
   let verdict = allow('exec-grant');
   for (const command of commands) {
-    verdict = authorizeOneCommand(grant, command, 'shell', line, lexable);
+    verdict = authorizeOneCommand(grant, command, 'shell', line);
     if (!verdict.allowed) break;
   }
   return verdict;
@@ -275,8 +273,9 @@ export function commandReadsSensitiveFile(command: string): { blocked: true; rea
 
 /** One simple command's authority: deny rows on it or on its whole line (a deny may span a pipe,
  *  and can only refuse), then allow rows on the command alone, glob on it or its base command. */
-function authorizeOneCommand(grant: Grant, command: string, kind: 'proc' | 'shell' = 'shell', line = command, lexable = true): Verdict {
+function authorizeOneCommand(grant: Grant, command: string, kind: 'proc' | 'shell' = 'shell', line = command): Verdict {
   const trimmed = command.trim();
+  const lexable = kind === 'proc' || lexShellLine(trimmed) !== null;   // a shell quote left open: only `*` admits it
   const globals = globalExecDeny(trimmed);
   if (globals) return globals;
 
