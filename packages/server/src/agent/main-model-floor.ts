@@ -16,8 +16,8 @@ interface WindowRow {
   num_ctx_recommended: number | null;
 }
 
-/** The window this model's calls are budgeted against, or null when it declared none. */
-export function windowOf(modelId: string): { name: string; window: number } | null {
+/** The window this model's calls are budgeted against (under `numCtxOverride` when given), or null when it declared none. */
+export function windowOf(modelId: string, numCtxOverride?: number | null): { name: string; window: number } | null {
   if (modelId === 'auto' || modelId === '__auto__') return null;
   let row: WindowRow | undefined;
   try {
@@ -29,7 +29,7 @@ export function windowOf(modelId: string): { name: string; window: number } | nu
   const declared = row.context_window;
   if (typeof declared !== 'number' || !Number.isFinite(declared) || declared <= 0) return null;
   const numCtx = resolveNumCtx({
-    numCtxOverride: row.num_ctx_override, numCtxRecommended: row.num_ctx_recommended,
+    numCtxOverride: numCtxOverride === undefined ? row.num_ctx_override : numCtxOverride, numCtxRecommended: row.num_ctx_recommended,
   }).effective;
   return { name: row.name, window: effectiveContextWindow(declared, numCtx) };
 }
@@ -56,8 +56,8 @@ export function refuseSmallMainModel(
   return smallMainModelMessage(w.name, w.window);
 }
 
-export function passesMainModelFloor(modelId: string): boolean {
-  const w = windowOf(modelId);
+export function passesMainModelFloor(modelId: string, numCtxOverride?: number | null): boolean {
+  const w = windowOf(modelId, numCtxOverride);
   return !w || w.window >= MAIN_MODEL_MIN_WINDOW;
 }
 

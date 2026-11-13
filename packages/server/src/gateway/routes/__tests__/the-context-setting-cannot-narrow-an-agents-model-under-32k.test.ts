@@ -32,11 +32,13 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllGlobals(); mockDb.current?.close(); mockDb.current = null; });
 
 describe("the context setting cannot narrow an agent's model under 32K", () => {
-  it('a model an agent runs on: refused with the plain reason, and the setting is unchanged', async () => {
+  it('a model an agent runs on: refused with the plain reason, and the row is never written', async () => {
+    db().prepare("UPDATE models SET updated_at = '2000-01-01 00:00:00' WHERE id = 'in-use'").run();
     const res = await setNumCtx('in-use', 8_192);
     expect(res.status).toBe(409);
     expect((await res.json() as { error: string }).error).toBe(smallMainModelMessage('In use', 8_192));
     expect(overrideOf('in-use')).toBeNull();
+    expect(db().prepare("SELECT updated_at FROM models WHERE id = 'in-use'").pluck().get()).toBe('2000-01-01 00:00:00');
   });
 
   it('the same model at or above the floor, and a model no agent uses, are accepted', async () => {

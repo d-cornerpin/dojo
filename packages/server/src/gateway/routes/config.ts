@@ -1648,6 +1648,11 @@ configRouter.patch('/providers/:id/prefill-throughput', async (c) => {
   return c.json({ ok: true, data: rowToProvider(row) });
 });
 
+/** The live agents whose main model this is. */
+function agentsOnModel(modelId: string): Array<{ id: string; name: string }> {
+  return getDb().prepare("SELECT id, name FROM agents WHERE model_id = ? AND status != 'terminated'").all(modelId) as Array<{ id: string; name: string }>;
+}
+
 // DELETE /models/:id: remove a model from the DB. Checks for active usage
 // by agents first and refuses (409) while a live agent uses it. Removes from router tiers,
 // clears config references (PM model, dreamer model, imaginer model).
@@ -1661,9 +1666,7 @@ configRouter.delete('/models/:id', async (c) => {
   if (!model) return c.json({ ok: false, error: 'Model not found' }, 404);
   if (isStandardModelRow(id)) return c.json({ ok: false, error: STANDARD_ROW_STAYS }, 409);
 
-  const agents = db.prepare(
-    "SELECT id, name FROM agents WHERE model_id = ? AND status != 'terminated'",
-  ).all(id) as Array<{ id: string; name: string }>;
+  const agents = agentsOnModel(id);
   if (agents.length > 0) {
     const names = agents.map(a => a.name).join(', ');
     return c.json({
@@ -1892,19 +1895,14 @@ configRouter.patch('/models/:id/num-ctx', async (c) => {
   }
 
   const db = getDb();
-  const model = db.prepare('SELECT num_ctx_override FROM models WHERE id = ?').get(id) as { num_ctx_override: number | null } | undefined;
-  if (!model) return c.json({ ok: false, error: 'Model not found' }, 404);
+  if (!db.prepare('SELECT 1 FROM models WHERE id = ?').get(id)) return c.json({ ok: false, error: 'Model not found' }, 404);
 
-  const before = windowOf(id)?.window ?? Infinity;
-  const setOverride = db.prepare("UPDATE models SET num_ctx_override = ?, updated_at = datetime('now') WHERE id = ?");
-  setOverride.run(override, id);
   // An agent's model may not be narrowed under the floor every door that sets a main model enforces.
-  const after = windowOf(id);
-  if (after && after.window < before && !passesMainModelFloor(id)
-    && db.prepare("SELECT 1 FROM agents WHERE model_id = ? AND status != 'terminated'").get(id)) {
-    setOverride.run(model.num_ctx_override, id);
+  const after = windowOf(id, override);
+  if (after && after.window < (windowOf(id)?.window ?? Infinity) && !passesMainModelFloor(id, override) && agentsOnModel(id).length > 0) {
     return c.json({ ok: false, error: smallMainModelMessage(after.name, after.window) }, 409);
   }
+  db.prepare("UPDATE models SET num_ctx_override = ?, updated_at = datetime('now') WHERE id = ?").run(override, id);
 
   const row = db.prepare('SELECT * FROM models WHERE id = ?').get(id) as Record<string, unknown>;
 
