@@ -64,10 +64,10 @@ export const RELEASE_STEPS: readonly ReleaseStep[] = [
   },
   {
     id: 'built-in-tools',
-    sinceVersion: '3.5.0-0',
+    sinceVersion: '3.5.0-preflight.4',
     pays:
-      'the Dreamer and PM keep the tool list they last held, so an upgraded box\'s Dreamer was refused lesson_record and the PM '
-      + 'tool_result_read. Adds only those names; an older listed tool still missing is offered once on a card, never added.',
+      'the Dreamer and PM keep the tool list they last held, so an upgraded box\'s built-in agents lacked tools their build lists. '
+      + 'Adds every listed tool the owner neither denied nor removed in an audited edit.',
     run: async () => (await import('./built-in-tools.js')).deliverBuiltInTools(),
   },
 ];

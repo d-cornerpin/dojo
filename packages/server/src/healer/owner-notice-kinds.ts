@@ -8,7 +8,6 @@ import { heldOllamaVersion } from '../services/ollama-version.js';
 import { latestToldAt, windowOf } from '../costs/budget-cards.js';
 import { watcherCardStands } from '../services/watcher-owner-cards.js';
 import { importCardDismissed, importCardStands } from '../migration/import-recovery.js';
-import { missingTools, readGap } from '../services/built-in-tools-card.js';
 import { DISMISSED, TOLD, dismissOwnerNotice, ownerConditionCleared, wordsOf, type OwnerCardClass } from './owner-notices.js';
 import { workingExpr } from '../work/terminal-states.js';
 
@@ -60,7 +59,6 @@ const KINDS: Record<string, Kind> = {
   'embedding-switch': informational,
   fitunchecked: informational,
   lessons: informational,
-  'built-in-tools': { cls: () => 'informational', stands: (id) => missingTools(id, readGap()[id]?.names ?? []).length > 0 },
 };
 
 /** The kind of `key`; an unknown kind (one an earlier build told and this one retired) never stands. */
