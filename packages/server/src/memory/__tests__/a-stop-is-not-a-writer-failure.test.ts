@@ -67,7 +67,6 @@ import { stopAgent } from '../../agent/runtime.js';
 
 // t268 round 5: whether the small writer fits the box's memory is not this file's question.
 vi.mock('../../agent/local-model-fit.js', async (orig) => ({ ...(await orig<object>()), freeWriterWindowTokens: async () => Number.MAX_SAFE_INTEGER }));
-vi.setConfig({ testTimeout: 20_000 });
 
 const AGENT = 'agent-t149-stop';
 const OWN = 'model-t149-own';
@@ -83,6 +82,9 @@ let stubUrl = '';
 let ownMode: 'hang' | 'answer' = 'hang';
 let openResponses: http.ServerResponse[] = [];
 let wire: string[] = [];
+/** Resolves when the first writer's call reaches the stub; the suite's hang detector bounds the wait. */
+let ownArrived: Promise<void> = Promise.resolve();
+let markOwnArrived = (): void => {};
 
 beforeAll(async () => {
   server = http.createServer((req, res) => {
@@ -91,6 +93,7 @@ beforeAll(async () => {
     req.on('end', () => {
       const model = (JSON.parse(raw || '{}') as { model?: string }).model ?? '';
       wire.push(model);
+      if (model === 'own') markOwnArrived();
       res.writeHead(200, { 'content-type': 'application/x-ndjson' });
       if (model === 'own' && ownMode === 'hang') { openResponses.push(res); return; }
       res.write(`${JSON.stringify({ message: { role: 'assistant', content: 'The crew counted the depot and filed the manifests.' } })}\n`);
@@ -108,6 +111,7 @@ afterAll(async () => {
 beforeEach(() => {
   clearClientCache();
   ownMode = 'hang'; openResponses = []; wire = [];
+  ownArrived = new Promise((r) => { markOwnArrived = r; });
   dialed.models.length = 0; owner.cards.length = 0;
   backgroundDrains.clear(); stoppedAgents.clear(); stopFencedRuns.clear(); activeAbortControllers.clear();
   __resetBrakesForTests(); __resetBreakersForTests(); __resetSummaryWriterHealthForTests();
@@ -131,6 +135,7 @@ beforeEach(() => {
   expect(writeUncondensedPlaceholders(AGENT, through), 'precondition: rows under placeholder notes').toBeGreaterThan(0);
 });
 afterEach(() => {
+  for (const set of activeAbortControllers.values()) for (const c of set) c.abort();   // nothing in flight outlives the database
   for (const r of openResponses) { try { r.end(); } catch { /* gone */ } }
   stoppedAgents.clear(); stopFencedRuns.clear(); activeAbortControllers.clear();
   mockDb.current?.close();
@@ -139,10 +144,7 @@ afterEach(() => {
 
 const placeholders = (): number =>
   (db().prepare("SELECT COUNT(*) AS n FROM summaries WHERE agent_id = ? AND kind = 'uncondensed'").get(AGENT) as { n: number }).n;
-const untilInFlight = async (): Promise<void> => {
-  for (let i = 0; i < 400 && !wire.includes('own'); i++) await new Promise((r) => setTimeout(r, 25));
-  expect(wire, 'the first writer\'s call never reached the wire').toContain('own');
-};
+const untilInFlight = (): Promise<void> => ownArrived;
 
 describe('t149 F3 — Stop during a background summary', () => {
   it('cuts the call, marks no writer failed, walks no further and files no defect; the replacement resumes on its own later path', async () => {
