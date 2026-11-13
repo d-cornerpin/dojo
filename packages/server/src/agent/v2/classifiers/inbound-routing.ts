@@ -2,7 +2,7 @@
 // chat, between the lines: neither; no answer: the word list below)? A helper's note: does it deliver finished work?
 
 import type { Question } from '../../decide.js';
-import { judgment } from '../../decision-hooks.js';
+import { judgment, type Ask } from '../../decision-hooks.js';
 import { getDb } from '../../../db/connection.js';
 import { NON_ANSWERING_DISPLAY_KINDS } from '../../../work/ask-settlement.js';
 import type { TurnRoot } from '../../turn-context.js';
@@ -10,6 +10,9 @@ import { START_ACK_ORIGIN_INTENT } from '../../../memory/origin-intents.js';
 
 const SEVERAL_STEPS: Question = { type: 'noul', instructions: "Does `message` ask the assistant to do a job that takes several steps, such as researching, comparing, planning, organizing, or producing something over time? If `previous_agent_message` is given, `message` is the person's reply to it.",
   criteria: { true: 'Yes: the person hands over a job of several steps, even in a few words.', false: 'No: chat, news, thanks, a correction, never mind, one question, or one quick action.' } };
+/** Asked beside SEVERAL_STEPS when a previous message is attached: a yes here makes a work verdict not work. */
+const DECLINED: Question = { type: 'noul', instructions: 'Does `message` only decline, put off, or acknowledge what `previous_agent_message` offered or said? A yes with a condition, or any request, is not.',
+  criteria: { true: 'Yes: it declines, postpones or just acknowledges, such as "no leave it", "no, don\'t send it", "maybe later", "ok thanks", "got it", "nvm".', false: 'No: it accepts, even with a condition, or asks for something, such as "yes go ahead", "please do", "yes but only weekdays", "all of it please", or a new request.' } };
 const DELIVERABLE: Question = { type: 'noul', instructions: 'Does `message` announce that a finished piece of work (a document, post, link, file or result) is ready for someone to receive?' };
 
 /** The tail of the agent's last reply in this conversation before the message (not the engine's start line), so
@@ -64,10 +67,12 @@ export function inboundIsWork(turnCtx: { root?: TurnRoot | null }, agentId: stri
   let said = judged.get(turnCtx);
   if (!said) {
     const previous = message.trim() ? previousAgentMessage(agentId, turnCtx.root) : null;
-    const state = previous === null ? { message } : { message, previous_agent_message: previous };
+    const ask: Ask = previous === null
+      ? { agentId, state: { message }, questions: { needs_several_steps: SEVERAL_STEPS } }
+      : { agentId, state: { message, previous_agent_message: previous }, questions: { needs_several_steps: SEVERAL_STEPS, declined: DECLINED } };
     said = message.trim()
-      ? judgment('inbound_routing/needs_several_steps', { agentId, state, questions: { asked: SEVERAL_STEPS } })
-        .then((v) => (v === null ? (wordListSaysWork(message) || undefined) : v.asked))
+      ? judgment('inbound_routing', ask)
+        .then((v) => (v === null ? (wordListSaysWork(message) || undefined) : v.needs_several_steps && !v.declined))
       : Promise.resolve(undefined);
     judged.set(turnCtx, said);
   }

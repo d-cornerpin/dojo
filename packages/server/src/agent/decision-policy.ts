@@ -4,6 +4,7 @@ import { getDecisionProvider } from './decision-provider.js';
 
 const LINES: ReadonlyMap<string, { yes: number; no: number }> = new Map([
   ['inbound_routing/needs_several_steps', { yes: 0.5, no: 0.3 }],
+  ['inbound_routing/declined', { yes: 0.5, no: 0.5 }],
   ['inbound_routing/deliverable', { yes: 0.5, no: 0.5 }],
   ['memory_shape/filler', { yes: 0.52, no: 0.52 }],
   ['memory_shape/obligation', { yes: 0.7, no: 0.3 }],

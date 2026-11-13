@@ -32,7 +32,7 @@ describe('the inbound question reads the agent\'s last reply', () => {
     row('m1', 'assistant', 'Want me to compare three movers and book the cheapest?', 'c1');
     row('m2', 'assistant', 'Unrelated reply elsewhere.', 'c2');
     row('m3', 'user', 'yes, go ahead', 'c1');
-    const calls = scriptDecisions(() => yes(0.9));
+    const calls = scriptDecisions((name) => yes(name === 'declined' ? 0.1 : 0.9));
     expect(await inboundIsWork({ root: { kind: 'ask', id: 'm3', sourceMessageId: 'm3', conversationId: 'c1' } }, 'a1', 'yes, go ahead')).toBe(true);
     const state = calls[0].state as Record<string, string>;
     expect(unfenceExternal(state.previous_agent_message)).toBe('Want me to compare three movers and book the cheapest?');

@@ -2827,9 +2827,9 @@ describe('STRIP-3: the turn hands down conversation IDENTITY, never a conversati
        VALUES ('msg-prior-ask', 'primary', 'user', 'when does the launch happen?', 1, 'conv-primary', 'dashboard', 'owner', 'msg-prior-answer', (CAST(strftime('%s','now') AS INTEGER) * 1000) - 61000)`,
     ).run();
 
-    // The trigger: a human ask the decision model judges WORK.
+    // The trigger: a human ask the decision model judges WORK, not a decline of the earlier reply.
     installDecisionModel(mockDb.current!);
-    scriptDecisions(() => yes(0.9));
+    scriptDecisions((name) => yes(name === 'declined' ? 0.1 : 0.9));
     expect(claimAsk(askIdForMessage('msg-user-1'), 'primary').kind).toBe('applied');
     insertMessage({
       id: 'msg-work-ask', agentId: 'primary', role: 'user',
