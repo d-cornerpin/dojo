@@ -7,7 +7,7 @@
 // bare refusals would silently re-classify refusals. Keep both fields exact.
 // ════════════════════════════════════════════════════════════════════════════
 
-import { isPrimaryAgent, isHealerAgent, isPMAgent } from '../../config/platform.js';
+import { isPrimaryAgent, isHealerAgent, isPMAgent, getPMAgentId } from '../../config/platform.js';
 import { effectsFor } from './registry.js';
 import {
   authorizeFs, authorizeAppleScript, authorizeNet, authorizeSpawn, authorizeSystemControl,
@@ -268,7 +268,7 @@ export async function evaluateGate(gate: ToolGate, ctx: GateContext): Promise<Ga
             verdict: denied(
               `pm-only:${gate.operation}`,
               `${gate.operation} is restricted to the PM agent`,
-              `Permission denied: only the PM agent can call ${gate.operation}. If you think the engine or PM got it wrong, call work_close_request(action="override") with a justification instead.`,
+              `Permission denied: only the PM agent can call ${gate.operation}. If you think the engine or PM got it wrong, tell the PM why with send_to_agent(agent="${getPMAgentId()}", ...) instead.`,
             ),
             resource: null,
             errorCode: 'PERMISSION_DENIED',

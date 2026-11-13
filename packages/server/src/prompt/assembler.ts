@@ -1059,7 +1059,7 @@ export function renderPmAwareness(agentId: string): string | null {
     const db = getDb();
     const pmAgent = db.prepare('SELECT id, status, model_id FROM agents WHERE id = ?').get(pmId) as { id: string; status: string; model_id: string | null } | undefined;
     if (pmAgent && pmAgent.status !== 'terminated') {
-      return `## Project Manager: ${pmName}\n\n${pmName} (ID: ${pmId}) is the dedicated PM agent. ${pmName} already watches the task tracker: poking idle work, validating completions, escalating stalls. Schedule work, one-off or recurring, as tracker tasks, not as watcher agents; spawning a worker agent and assigning it tracker work is fine. Message ${pmName} via \`send_to_agent(agent_id="${pmId}", ...)\`.`;
+      return `## Project Manager: ${pmName}\n\n${pmName} (ID: ${pmId}) is the dedicated PM agent. ${pmName} already watches the task tracker: poking idle work, validating completions, escalating stalls. Schedule work, one-off or recurring, as tracker tasks, not as watcher agents; spawning a worker agent and assigning it tracker work is fine. Message ${pmName} via \`send_to_agent(agent="${pmId}", ...)\`.`;
     }
   } catch { /* PM may not be configured */ }
   return null;
@@ -1074,7 +1074,7 @@ export function renderTrainerAwareness(agentId: string): string | null {
     const db = getDb();
     const trainerAgent = db.prepare('SELECT id, status FROM agents WHERE id = ?').get(trainerId) as { id: string; status: string } | undefined;
     if (trainerAgent && trainerAgent.status !== 'terminated') {
-      return `## Trainer: ${trainerName}\n\n${trainerName} (ID: ${trainerId}) is the dedicated Trainer agent, owns the technique library. \`save_technique\` and \`update_technique\` are reserved for ${trainerName}; if you want a technique created or edited, send ${trainerName} a message describing what you want and they'll do it. Message via \`send_to_agent(agent_id="${trainerId}", ...)\`.`;
+      return `## Trainer: ${trainerName}\n\n${trainerName} (ID: ${trainerId}) is the dedicated Trainer agent, owns the technique library. \`save_technique\` and \`update_technique\` are reserved for ${trainerName}; if you want a technique created or edited, send ${trainerName} a message describing what you want and they'll do it. Message via \`send_to_agent(agent="${trainerId}", ...)\`.`;
     }
   } catch { /* Trainer may not be configured */ }
   return null;
@@ -1089,7 +1089,7 @@ export function renderHealerAwareness(agentId: string): string | null {
     const db = getDb();
     const healerAgent = db.prepare('SELECT id, status FROM agents WHERE id = ?').get(healerId) as { id: string; status: string } | undefined;
     if (healerAgent && healerAgent.status !== 'terminated') {
-      return `## Healer: ${healerName}\n\n${healerName} (ID: ${healerId}) is the dedicated Healer agent, auto-triages injured agents (status=error / stuck loops) and can reset sessions. Operates autonomously most of the time; you rarely need to message them directly. If you do: \`send_to_agent(agent_id="${healerId}", ...)\`.`;
+      return `## Healer: ${healerName}\n\n${healerName} (ID: ${healerId}) is the dedicated Healer agent, auto-triages injured agents (status=error / stuck loops) and can reset sessions. Operates autonomously most of the time; you rarely need to message them directly. If you do: \`send_to_agent(agent="${healerId}", ...)\`.`;
     }
   } catch { /* Healer may not be configured */ }
   return null;
