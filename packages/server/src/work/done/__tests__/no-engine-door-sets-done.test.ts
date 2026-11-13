@@ -59,7 +59,17 @@ describe('no engine door sets done', () => {
     expect(latestHandIn(TASK)?.outcome).toBe('cant_be_done');
   });
 
-  it('complete_task hands the helper\'s task in as its own, sends the parent the result first, and the same-work dangler is handed in by the engine', async () => {
+  it('complete_task hands the helper\'s task in as its own and sends the parent the result first', async () => {
+    freshBoard();
+    doneDb().prepare("UPDATE agents SET classification = 'apprentice', parent_agent = ?, task_id = ? WHERE id = ?").run(MAIN, TASK, WORKER);
+    deliveredToOwner();
+    const r = await call(WORKER, 'complete_task', { status: 'complete', summary: 'The report is written and sent.' });
+    expect(r.isError, r.content).toBe(false);
+    handedInByEngine(TASK, WORKER);
+    expect(doneDb().prepare("SELECT 1 FROM messages WHERE agent_id = ? AND source_agent_id = ? AND a2a_intent = 'result'").get(MAIN, WORKER), 'the parent has the result before any decision').toBeTruthy();
+  });
+
+  it('a helper that gives up has its other working task handed in by the engine as can\'t be done', async () => {
     freshBoard();
     doneDb().prepare("UPDATE agents SET classification = 'apprentice', parent_agent = ?, task_id = ? WHERE id = ?").run(MAIN, TASK, WORKER);
     const at = Date.now() - 60_000;
@@ -67,12 +77,9 @@ describe('no engine door sets done', () => {
       `INSERT INTO work (id, kind, agent_id, requester, root_kind, root_id, state, intent, wakes, closes_thread, title, source_message_id, opened_at, updated_at)
        VALUES ('dangler-1', 'task', ?, 'owner', 'tracker', 'dangler-1', 'claimed', 'task', 1, 0, 'a second piece', NULL, ?, ?)`,
     ).run(WORKER, at, at);
-    doneDb().prepare("UPDATE work SET source_message_id = 'msg-ask-1' WHERE id IN (?, 'dangler-1')").run(TASK);
-    deliveredToOwner();
-    const r = await call(WORKER, 'complete_task', { status: 'complete', summary: 'The report is written and sent.' });
+    const r = await call(WORKER, 'complete_task', { status: 'fallen', summary: 'The report source is gone, so neither piece can be written.' });
     expect(r.isError, r.content).toBe(false);
-    handedInByEngine(TASK, WORKER);
     handedInByEngine('dangler-1');
-    expect(doneDb().prepare("SELECT 1 FROM messages WHERE agent_id = ? AND source_agent_id = ? AND a2a_intent = 'result'").get(MAIN, WORKER), 'the parent has the result before any decision').toBeTruthy();
+    expect(latestHandIn('dangler-1')?.outcome).toBe('cant_be_done');
   });
 });

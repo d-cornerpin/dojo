@@ -4,7 +4,7 @@ import { getDb } from '../../../db/connection.js';
 import { parseMeasure, countMeasure, type Measure, type MeasureCount } from '../../../work/measure.js';
 import { recordMeasured } from '../../../work/ledger-store.js';
 import { editMeasure, type MeasureReading } from '../../../tracker/measure-gate.js';
-import { resolveAgentTaskId } from '../../agent-task.js';
+import { ownedOpenTasks, resolveAgentTaskId } from '../../agent-task.js';
 import { handIn } from '../../../work/done/hand-in.js';
 import { proofFor } from '../../../work/done/proof.js';
 import { gatesForCall } from '../gates.js';
@@ -73,9 +73,14 @@ export async function editWithMeasure(
 }
 
 // complete_task, before the agent is ended: the task is handed in on the proof on record (its
-// measure re-read first). A refusal means the agent is not ended; work already handed in is not re-handed.
+// measure re-read first); "complete" is refused while any other owned step is open. A refusal means the
+// agent is not ended; work already handed in is not re-handed.
 export async function completeTaskHandIn(agentId: string, status: 'complete' | 'fallen', summary: string): Promise<string | null> {
   const taskId = resolveAgentTaskId(agentId);
+  const others = status === 'complete' ? ownedOpenTasks(agentId).filter((t) => t.id !== taskId) : [];
+  if (others.length > 0) {
+    return `You are not ended: you still own open steps ${others.map((t) => `"${t.title}" (${t.id.slice(0, 8)})`).join(', ')}; hand each in with work_update(action="hand_in", ...) or end with complete_task(status="blocked") and say why.`;
+  }
   if (!taskId) return null;
   const row = getDb().prepare('SELECT state FROM work WHERE id = ?').get(taskId) as { state: string } | undefined;
   if (!row || !['open', ...WORKING_STATES].includes(row.state)) return null;

@@ -677,15 +677,13 @@ export async function completeAgent(
     }
   }
 
-  // The ending agent's other working tasks cannot progress. One sharing its task's work order (same
-  // project, or same originating ask) is handed in on the items of that task's hand-in; any other is
-  // handed in as can't be done on the termination record. Held tasks are left as they are.
+  // The ending agent's other working tasks cannot progress ("complete" is refused while any is open):
+  // each is handed in as can't be done on the termination record. Held tasks are left as they are.
   try {
-    const [{ engineHandIn }, { latestHandIn }] = await Promise.all([import('../work/done/hand-in.js'), import('../work/done/record.js')]);
+    const { engineHandIn } = await import('../work/done/hand-in.js');
     const primary = resolvedTaskId
       ? db.prepare('SELECT parent_id AS project_id, source_message_id FROM work WHERE id = ?').get(resolvedTaskId) as { project_id: string | null; source_message_id: string | null } | undefined
       : undefined;
-    const items = resolvedTaskId ? (latestHandIn(resolvedTaskId)?.items ?? []).map(({ kind, ref }) => ({ kind, ref })) : [];
     const danglers = db.prepare(`
       SELECT w.id AS id, w.parent_id AS project_id, w.source_message_id AS source_message_id FROM work w
       WHERE ${taskScope('w')} AND w.agent_id = ? AND ${workingExpr('w')} AND NOT ${heldExpr('w')} AND w.id != COALESCE(?, '')
@@ -696,7 +694,7 @@ export async function completeAgent(
       engineHandIn(dt.id, sameWork
         ? `agent "${agent.name}" ended (complete_task ${status}); this task shares its work order`
         : `agent "${agent.name}" ended (complete_task ${status}) and this task is not part of its work`,
-      sameWork && status === 'complete' && items.length > 0 ? { items } : { outcome: 'cant_be_done' });
+      { outcome: 'cant_be_done' });
     }
   } catch (err) {
     logger.warn('completeAgent: dangler hand-in failed (non-fatal)', { agentId, error: err instanceof Error ? err.message : String(err) }, agentId);
