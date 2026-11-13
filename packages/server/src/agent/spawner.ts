@@ -1134,7 +1134,6 @@ export function checkTimeouts(): void {
   }
 }
 
-/** An ended helper's held steps go, hold and reason kept, to the agent that made it. */
 function returnHeldSteps(agentId: string, door: string): void {
   const parentId = (getDb().prepare('SELECT parent_agent AS p FROM agents WHERE id = ?').get(agentId) as { p: string | null } | undefined)?.p;
   const held = parentId ? getDb().prepare(`SELECT w.id AS id FROM work w WHERE ${taskScope('w')} AND w.agent_id = ? AND ${workingExpr('w')} AND ${heldExpr('w')}`).all(agentId) as Array<{ id: string }> : [];
