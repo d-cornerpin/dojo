@@ -1,11 +1,11 @@
 // exec-grammar.ts — the shell control-flow grammar the exec permission check
-// (agent/brokers/resolve.ts, proc.ts, sudo-policy.ts) trusts to decide WHICH
-// commands a shell line actually runs. Its three exports are read by that check,
+// (agent/brokers/proc.ts, sudo-policy.ts) trusts to decide WHICH
+// commands a shell line actually runs. Its two exports are read by that check,
 // yet none is referenced by a test under src: exec-shell-grammar.test.ts and the
 // broker suites reach them only indirectly, through checkPermission. The quoting
 // and separator rules are exactly where a security regression would hide — a
 // `;` or a keyword mistaken for grammar, or a quoted / substituted span split
-// where it must not be — so the three functions are pinned directly here.
+// where it must not be — so the two functions are pinned directly here.
 //
 // These are PINNING tests: every case below is measured against the current
 // (v35) code and all pass on it unchanged. The intent is to freeze the behavior
@@ -17,7 +17,6 @@ import { describe, it, expect } from 'vitest';
 import {
   commandWords,
   execSimpleCommands,
-  execInnerCommands,
 } from '../exec-grammar.js';
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -45,33 +44,9 @@ describe('execSimpleCommands — every simple command in the line', () => {
     expect(execSimpleCommands('')).toEqual(['']);
   });
 
-  it('⚠ a command substitution is NOT looked inside (documented limitation, header §"WHAT THIS IS NOT")', () => {
-    // The check has never looked inside `$( )`; this freezes that. The whole
-    // `echo $(rm -rf x)` is one command, so the destructive inner form is unseen.
-    expect(execSimpleCommands('echo $(rm -rf x)')).toEqual(['echo $(rm -rf x)']);
-  });
-});
-
-// ════════════════════════════════════════════════════════════════════════════
-// execInnerCommands — construct-gated: null for a plain line (the caller keeps
-// its first-word behavior), the body commands for a construct, [] when nothing
-// inside is nameable (the caller falls back to the whole line).
-// ════════════════════════════════════════════════════════════════════════════
-describe('execInnerCommands — the commands a control-flow line actually runs', () => {
-  it('a line with no control-flow keyword returns null', () => {
-    expect(execInnerCommands('ls -la')).toBeNull();
-  });
-
-  it('a for loop yields its body commands, header and `done` dropped', () => {
-    expect(execInnerCommands('for i in $(seq 1 3); do cat f; done')).toEqual(['cat f']);
-  });
-
-  it('a construct with nothing nameable inside returns [] (caller falls back to the whole line)', () => {
-    expect(execInnerCommands('for i in $(x); do :; done')).toEqual([]);
-  });
-
-  it('the `[` test builtin has no authority — the if BODY is the command', () => {
-    expect(execInnerCommands('if [ -f x ]; then cat x; fi')).toEqual(['cat x']);
+  it('a command substitution body is a command too, a single-quoted one is data', () => {
+    expect(execSimpleCommands('echo $(rm -rf x)')).toEqual(['rm -rf x', 'echo $(rm -rf x)']);
+    expect(execSimpleCommands("echo '$(rm -rf x)'")).toEqual(["echo '$(rm -rf x)'"]);
   });
 });
 

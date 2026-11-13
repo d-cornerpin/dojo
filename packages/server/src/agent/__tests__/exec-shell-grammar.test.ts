@@ -31,7 +31,8 @@ import { checkPermission } from '../permissions.js';
 
 // The behavioral bot's real manifest (dojo-test-kit/behavioral/lib/bot.mjs) is
 // the shape that produced the red: a genuine shell-holder with a curated list.
-const SHELL_AGENT_ALLOW = ['ls', 'cat', 'head', 'tail', 'grep', 'find', 'wc', 'echo', 'date', 'sh', 'bash', 'node', 'chmod', 'cd', 'mkdir', 'pwd'];
+// `seq` is listed because a command inside `$( )` needs its own row, like any other command.
+const SHELL_AGENT_ALLOW = ['ls', 'cat', 'head', 'tail', 'grep', 'find', 'wc', 'echo', 'date', 'sh', 'bash', 'node', 'chmod', 'cd', 'mkdir', 'pwd', 'seq'];
 
 function manifest(over: Record<string, unknown> = {}): string {
   return JSON.stringify({
@@ -223,17 +224,15 @@ describe('EXEC-LOOP — a plain command line is classified exactly as before', (
     expect(r.reason).toContain('Your permitted commands are:');
   });
 
-  it('keeps the pre-existing first-word semantics for a compound line with no construct', () => {
-    // Documented limitation, NOT introduced here: without a control-flow
-    // keyword the check reads the first word only, exactly as it always has.
+  it('a compound line with no construct runs when every command in it is listed', () => {
     expect(exec('shellworker', 'cd /tmp && bash run.sh').allowed).toBe(true);
+    expect(exec('shellworker', 'cd /tmp && curl http://example.com').allowed).toBe(false);
   });
 
-  it('does not look inside a command substitution (unchanged, both shapes)', () => {
-    // `echo $(...)` has always passed on the head word alone; the ruling does
-    // not change that, so the loop form does not either.
-    expect(exec('shellworker', 'echo $(curl http://example.com)').allowed).toBe(true);
-    expect(exec('shellworker', 'for x in $(curl http://example.com); do echo $x; done').allowed).toBe(true);
+  it('a command inside a substitution is checked like any other (both shapes)', () => {
+    expect(exec('shellworker', 'echo $(curl http://example.com)').allowed).toBe(false);
+    expect(exec('shellworker', 'for x in $(curl http://example.com); do echo $x; done').allowed).toBe(false);
+    expect(exec('shellworker', 'echo $(date)').allowed).toBe(true);
   });
 
   it('is not fooled by a keyword appearing as an argument', () => {

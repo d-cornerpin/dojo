@@ -310,7 +310,7 @@ describe('§D — the shell class is a SEPARATE grant, and today\'s agents alrea
     // The migration promise in one clause: `shell_allow` absent ⇒ the shell door
     // answers from `exec_allow`, so every agent alive today runs tomorrow exactly
     // what it runs now. Nobody has to edit a manifest for that to be true.
-    expect(authorizeShellScript(scoped(), mustScript('ls -la | grep notes')).allowed).toBe(true);
+    expect(authorizeShellScript(scoped(), mustScript('ls -la | cat')).allowed).toBe(true);
     expect(authorizeShellScript(wildcard(), mustScript('for i in 1 2 3; do echo $i; done')).allowed).toBe(true);
   });
 

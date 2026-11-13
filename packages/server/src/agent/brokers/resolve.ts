@@ -4,7 +4,6 @@
 
 import path from 'node:path';
 import { canonicalizeAgentPath, resolveRealPathHardened } from '../path-resolve.js';
-import { execInnerCommands } from '../exec-grammar.js';
 
 declare const PATH_BRAND: unique symbol;
 declare const COMMAND_BRAND: unique symbol;
@@ -24,12 +23,10 @@ export interface ResolvedPath {
   readonly [PATH_BRAND]: true;
 }
 
-/** The INNER commands a shell construct actually runs: authority runs per inner command and the
- *  refusal names it; `inner` is empty for a plain line, which is then checked whole. */
+/** A shell line as typed; authority runs per simple command (see proc.ts). */
 export interface ResolvedCommand {
   readonly raw: string;
   readonly trimmed: string;
-  readonly inner: readonly string[];
   readonly [COMMAND_BRAND]: true;
 }
 
@@ -94,11 +91,9 @@ export function resolvePathArg(raw: unknown): Resolution<ResolvedPath> {
 export function resolveCommandArg(raw: unknown): Resolution<ResolvedCommand> {
   const str = asPresentString(raw, 'command');
   if (!str.ok) return str;
-  const trimmed = str.value.trim();
-  const inner = execInnerCommands(str.value);
   return {
     ok: true,
-    value: { raw: str.value, trimmed, inner: inner ?? [] } as unknown as ResolvedCommand,
+    value: { raw: str.value, trimmed: str.value.trim() } as unknown as ResolvedCommand,
   };
 }
 

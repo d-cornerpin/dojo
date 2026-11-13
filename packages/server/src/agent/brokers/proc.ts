@@ -4,8 +4,8 @@
 // secrets.yaml substring (every spelling a file_write deny cannot see: tilde, absolute, $HOME,
 // basename, inside $() or backticks, either side of a redirect), the sensitive-file command scan.
 // Refusal text rides verbatim on the verdict: the agent loop keys retry off [BLOCKED]. Control
-// is grammar, not a program: authority runs per inner command, refusal names it; a construct with
-// nothing nameable inside falls back to the whole line. Grammar widens; authority does not.
+// is grammar, not a program: authority runs per simple command, refusal names it; a line naming
+// no command is checked whole. Grammar widens; authority does not.
 
 import path from 'node:path';
 import { foldPath } from '../fs-case.js';
@@ -219,9 +219,16 @@ export function globalExecDenyPublic(trimmed: string): Verdict | null {
   return globalExecDeny(trimmed);
 }
 
-/** SHELL authority for one command: a do shell script payload meets the shell tool's own grant rows. */
-export function authorizeShellCommandText(grant: Grant, command: string): Verdict {
-  return authorizeOneCommand(grant, command, 'shell');
+/** SHELL authority for a line (a script, a do shell script payload): every simple command in it
+ *  must be admitted by an allow row. A line the shared lexer cannot read is admitted only by `*`. */
+export function authorizeShellCommandText(grant: Grant, line: string, commands = execSimpleCommands(line)): Verdict {
+  const lexable = lexShellLine(line) !== null;
+  let verdict = allow('exec-grant');
+  for (const command of commands) {
+    verdict = authorizeOneCommand(grant, command, 'shell', line, lexable);
+    if (!verdict.allowed) break;
+  }
+  return verdict;
 }
 
 function globalExecDeny(trimmed: string): Verdict | null {
@@ -266,8 +273,9 @@ export function commandReadsSensitiveFile(command: string): { blocked: true; rea
   return { blocked: false };
 }
 
-/** Per-command authority: deny rows, then allow rows; glob on the whole line OR the base command. */
-function authorizeOneCommand(grant: Grant, command: string, kind: 'proc' | 'shell' = 'shell'): Verdict {
+/** One simple command's authority: deny rows on it or on its whole line (a deny may span a pipe,
+ *  and can only refuse), then allow rows on the command alone, glob on it or its base command. */
+function authorizeOneCommand(grant: Grant, command: string, kind: 'proc' | 'shell' = 'shell', line = command, lexable = true): Verdict {
   const trimmed = command.trim();
   const globals = globalExecDeny(trimmed);
   if (globals) return globals;
@@ -278,8 +286,8 @@ function authorizeOneCommand(grant: Grant, command: string, kind: 'proc' | 'shel
   const baseCommand = trimmed.split(/\s+/)[0];
   const verdict = evaluateRules(grant, kind, (pattern, mode) =>
     mode === 'deny'
-      ? matchCommandDenyPattern(pattern, trimmed)
-      : matchCommandPattern(pattern, trimmed, baseCommand));
+      ? matchCommandDenyPattern(pattern, trimmed) || matchCommandDenyPattern(pattern, line.trim())
+      : (lexable || pattern === '*') && matchCommandPattern(pattern, trimmed, baseCommand));
 
   if (verdict.decided && verdict.allowed) return allow(verdict.pattern);
   if (verdict.decided && !verdict.allowed) {
@@ -398,8 +406,6 @@ export function authorizeProc(
   // 1. the sound floor: a privilege token anywhere in the RAW line, asked before any parse.
   // 2. the precise walk: simple commands from the shared grammar, wrappers unwrapped; a privileged
   //    segment gets full sudo authorization; floor fired and walk placed nothing: UNPLACEABLE, refused.
-  // execSimpleCommands shares this tree's ONE grammar with `execInnerCommands`; only the contract
-  // differs, because this view feeds the FLOOR and the allowlist keeps the old one (see that module).
   const segments = execSimpleCommands(resource.raw);
   let privilegedSeen = false;
   for (const seg of segments) {
@@ -431,12 +437,7 @@ export function authorizeProc(
     }
   }
 
-  const parts = resource.inner.length > 0 ? resource.inner : [resource.raw];
-  for (const part of parts) {
-    const verdict = authorizeOneCommand(grant, part);
-    if (!verdict.allowed) return verdict;
-  }
-  return allow('exec-grant');
+  return authorizeShellCommandText(grant, resource.raw, segments);
 }
 
 /** THE SHELL DOOR: shell({script}) under /bin/zsh -c, authorizeProc with the scan ON over shell rows. */

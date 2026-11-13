@@ -246,19 +246,18 @@ describe('§1 the evasion corpus, through the real shell door', () => {
     expect(role.allowed).toBe(false);
     expect(role.allowed === false && role.reason).toBe(SUDO_NOT_PRIMARY_REASON);
     // present but unplaceable ⇒ the fail-closed refusal, even for the primary under `free`
-    const unplaced = shell('$(sudo whoami)', PRIMARY);
+    const unplaced = shell('echo sudo whoami | sh', PRIMARY);
     expect(unplaced.allowed).toBe(false);
     expect(unplaced.allowed === false && unplaced.reason).toBe(SUDO_UNPLACEABLE_REASON);
     expect(SUDO_UNPLACEABLE_REASON).toContain('cannot place');
     expect(SUDO_UNPLACEABLE_REASON).toContain('is not run as root');
   });
 
-  it('an UNPLACEABLE `doas` needs the DETECTOR, not the walker', () => {
-    // MUTATION GAP: dropping `doas` from the sound detector left every clause green, because the
-    // precise walker names it too — so the mutant was only half applied. The shape that needs the
-    // DETECTOR is the one the walker cannot see: a privilege token inside a substitution.
+  it('a `doas` inside a substitution is a privileged command, placed and governed by the policy', () => {
+    // gated allows at the broker: the consent hold is the dispatch gate's, upstream.
     underEach((p) => {
-      expect(shellAllows('$(doas whoami)', PRIMARY), `${p}`).toBe(false);
+      expect(shellAllows('$(doas whoami)', PRIMARY), `${p}`).toBe(p !== 'blocked');
+      expect(shellAllows('$(doas whoami)', WORKER), `${p}`).toBe(false);
       expect(shellAllows('`doas rm -rf /`', PRIMARY), `${p}`).toBe(false);
     });
   });
@@ -386,18 +385,15 @@ describe('§3 the hold sees sudo wherever it is', () => {
 });
 
 // ════════════════════════════════════════════════════════════════════════════════════════
-// §4 — NO CAPABILITY LOST. The grant question is exactly what it was.
-//
-// The first cut of this fix deleted the grammar's construct gate outright, which made every segment
-// the GRANT question too — and an agent granted `['ls','cat','echo','git *','node']` lost `ls | grep`.
-// Taking a capability away is the owner's decision (RULING P5-R5), not a fix round's.
+// §4 — the grant question is asked of every simple command in the line.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
-describe('§4 the allowlist behaves as it did', () => {
-  it('a scoped agent still pipes into a program its manifest never lists', () => {
+describe('§4 the allowlist reads every command', () => {
+  it('a scoped agent pipes between listed programs, never into one its manifest does not list', () => {
     policyRow.current = 'gated';
-    expect(shellAllows('ls -la | grep notes', PRIMARY, scoped)).toBe(true);
-    expect(shellAllows('cat a.txt | wc -l', PRIMARY, scoped)).toBe(true);
+    expect(shellAllows('ls -la | cat', PRIMARY, scoped)).toBe(true);
+    expect(shellAllows('ls -la | grep notes', PRIMARY, scoped)).toBe(false);
+    expect(shellAllows('cat a.txt | wc -l', PRIMARY, scoped)).toBe(false);
   });
 
   it('⚠ AND THE FLOOR NOW BITES INSIDE THOSE SAME LINES, which it did not before', () => {

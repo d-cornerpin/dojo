@@ -1,19 +1,14 @@
-// Shell control-flow grammar, for the exec permission check: it classifies a command
-// line by its FIRST WORD, so the shell's own grammar reads as a program name, yet exec
-// runs the line through /bin/zsh, so the construct was always EXECUTABLE. This answers
-// which COMMANDS a control-flow line actually runs; each is checked exactly as a plain
-// line. Grammar widens, authority does not. NOT a shell parser: null when no keyword
-// (plain behavior), EMPTY when a construct hides no command (the caller re-checks the
-// whole line, deny-by-default survives), and never inside `$( )` or backticks.
+// Shell control-flow grammar, for the exec permission check: which simple COMMANDS a line
+// runs, across separators, constructs, subshells and the bodies of `$( )` and backticks; each
+// is checked exactly as a plain line. Grammar widens, authority does not. NOT a shell parser:
+// a line naming no command comes back whole, so deny-by-default survives.
 
 interface Tok { text: string; op: boolean }
 
-// Detection uses these words alone, so a bare `in` or `!` in a plain line flips nothing.
-const CONSTRUCT_WORDS = new Set([
+const GRAMMAR_WORDS = new Set([
   'for', 'while', 'until', 'if', 'then', 'elif', 'else', 'fi', 'do', 'done', 'case', 'esac', 'select',
+  'in', 'time', '!', '{', '}',
 ]);
-
-const GRAMMAR_WORDS = new Set([...CONSTRUCT_WORDS, 'in', 'time', '!', '{', '}']);
 
 // A segment opening with these is a HEADER (a word list): it contributes no command.
 const HEADER_WORDS = new Set(['for', 'select', 'case']);
@@ -69,6 +64,8 @@ function tokenize(line: string): Tok[] {
     }
     if (c === '(' && line[i + 1] === '(') { const end = scanParens(line, i); cur += line.slice(i, end); i = end; continue; }
     if (c === ' ' || c === '\t') { flushWord(); i++; continue; }
+    // `2>&1` and `&>file` are redirects, not a background job.
+    if (c === '&' && (/[<>]$/.test(cur) || line[i + 1] === '>')) { cur += c; i++; continue; }
     if (c === '\n' || c === ';' || c === '&' || c === '|' || c === '(' || c === ')') {
       flushWord();
       const two = line.slice(i, i + 2);
@@ -111,9 +108,24 @@ export function commandWords(command: string): string[] {
   return tokenize(command).filter((t) => !t.op).map((t) => t.text);
 }
 
-/** EVERY SIMPLE COMMAND THE LINE CONTAINS: the FLOOR and sudo view, unlike
- *  `execInnerCommands`' GRANT QUESTION. Widening that one changes what an agent may run;
- *  this one can only refuse, never take away a legitimate capability. */
+/** The text inside each `$( )` and backtick span of one word; single-quoted spans and `$(( ))`
+ *  arithmetic are not commands, a substitution nested in arithmetic still is. */
+function substitutionBodies(word: string): string[] {
+  const bodies: string[] = [];
+  let doubleQuoted = false;
+  for (let i = 0; i < word.length; i++) {
+    const c = word[i];
+    if (c === '\\') i++;
+    else if (c === '"') doubleQuoted = !doubleQuoted;
+    else if (c === "'" && !doubleQuoted) i = scanQuoted(word, i) - 1;
+    else if (c === '`') { const end = scanQuoted(word, i); bodies.push(word.slice(i + 1, end - 1)); i = end - 1; }
+    else if (c === '$' && word[i + 1] === '(' && word[i + 2] !== '(') { const end = scanParens(word, i + 1); bodies.push(word.slice(i + 2, end - 1)); i = end - 1; }
+  }
+  return bodies;
+}
+
+/** EVERY SIMPLE COMMAND THE LINE CONTAINS, substitution bodies included: what the floor, the
+ *  sudo policy and the grant rows are each asked of. */
 export function execSimpleCommands(command: string): string[] {
   const toks = tokenize(command);
   const commands: string[] = [];
@@ -124,29 +136,10 @@ export function execSimpleCommands(command: string): string[] {
     seg = [];
   };
   for (const t of toks) {
-    if (t.op) flush();
-    else seg.push(t);
+    if (t.op) { flush(); continue; }
+    seg.push(t);
+    for (const body of substitutionBodies(t.text)) commands.push(...execSimpleCommands(body));
   }
   flush();
   return commands.length > 0 ? commands : [command.trim()];
-}
-
-/** The commands a control-flow line runs; null with no construct, empty when it names none. */
-export function execInnerCommands(command: string): string[] | null {
-  const toks = tokenize(command);
-  if (!toks.some((t) => !t.op && CONSTRUCT_WORDS.has(t.text))) return null;
-
-  const commands: string[] = [];
-  let seg: Tok[] = [];
-  const flushSegment = (): void => {
-    const cmd = segmentCommand(seg);
-    if (cmd) commands.push(cmd);
-    seg = [];
-  };
-  for (const t of toks) {
-    if (t.op) flushSegment();
-    else seg.push(t);
-  }
-  flushSegment();
-  return commands;
 }
