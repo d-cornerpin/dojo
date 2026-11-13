@@ -23,6 +23,7 @@ export type DoorOutcome = 'untouched' | 'allowed' | 'refused' | 'credential';
 export interface DoorVerdict { outcome: DoorOutcome; message?: string }
 
 export const FACT_REFUSAL = 'Refused: dojo_inspect answers questions about the Dojo\'s database, and the shell allows only a plain read-only sqlite3 SELECT of it, written as sqlite3 -readonly ~/.dojo/data/dojo.db "SELECT ...".';
+export const LOOK_REFUSAL = "Look at the Dojo's data folder in a command of its own, with no pipe and nothing else on the line.";
 export const WORKER_REFUSAL = "Refused: the Dojo's own database is read through the shell by the main agent and the Healer only; it holds the platform's credential tables.";
 
 const SQLITE = new Set(['sqlite3', '/usr/bin/sqlite3']);
@@ -266,7 +267,7 @@ export function dojoDoorVerdict(command: string | readonly string[], role: DoorR
     // A look at the file, not its rows, and only while its output goes nowhere else.
     if (!seg.pipedIn && !lexed.segments[k + 1]?.pipedIn && isMetadataLook(seg.words)) continue;
     const sql = seg.pipedIn ? null : shapeSql(seg.words);
-    if (sql === null) return { outcome: 'refused', message: FACT_REFUSAL };
+    if (sql === null) return { outcome: 'refused', message: looks ? LOOK_REFUSAL : FACT_REFUSAL };
     const v = sqlVerdict(sql, role);
     if (v.outcome !== 'allowed') return v;
     result = v;

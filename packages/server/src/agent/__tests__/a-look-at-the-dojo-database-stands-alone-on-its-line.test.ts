@@ -34,7 +34,9 @@ afterAll(() => {
   fs.rmSync(home, { recursive: true, force: true });
 });
 
-const allowed = (who: string, line: string): boolean => brokers.authorizeExecShapedCall(brokers.grantFor(who), 'shell', line).allowed;
+const verdictFor = (who: string, line: string) => brokers.authorizeExecShapedCall(brokers.grantFor(who), 'shell', line);
+const allowed = (who: string, line: string): boolean => verdictFor(who, line).allowed;
+const LOOK_SENTENCE = "Look at the Dojo's data folder in a command of its own, with no pipe and nothing else on the line.";
 
 const PIPED = [
   'ls -d ~/.dojo/data/dojo.db | xargs cat',
@@ -59,7 +61,11 @@ const STANDALONE = [
 
 describe('a look at the Dojo database stands alone on its line', () => {
   for (const who of [MAIN, HEALER]) {
-    it.each(PIPED)(`${who} is refused: %s`, (line) => expect(allowed(who, line)).toBe(false));
+    it.each(PIPED)(`${who} is refused, told to look on a line of its own: %s`, (line) => {
+      const v = verdictFor(who, line);
+      expect(v.allowed).toBe(false);
+      expect(v.allowed === false && v.blockedMessage).toBe(LOOK_SENTENCE);
+    });
     it.each(STANDALONE)(`${who} still runs: %s`, (line) => expect(allowed(who, line)).toBe(true));
   }
 });
