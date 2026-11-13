@@ -66,12 +66,12 @@ function underDir(folded: string, dir: string): boolean {
   return folded === dir || folded.startsWith(dir + path.sep);
 }
 
-/** `~/.dojo/data/<one segment>.db`, reproducing the legacy `~/.dojo/data/*.db` glob. */
+/** `~/.dojo/data/<one segment>.db` and its `-wal`, `-shm` and `-journal` files, the same database's bytes. */
 function isDojoDbFile(folded: string, home: string): boolean {
   const dataDir = path.join(home, '.dojo', 'data');
   if (!folded.startsWith(dataDir + path.sep)) return false;
   const rest = folded.slice(dataDir.length + 1);
-  return !rest.includes(path.sep) && rest.endsWith('.db');
+  return !rest.includes(path.sep) && /\.db(?:-wal|-shm|-journal)?$/.test(rest);
 }
 
 export const DENY_RULES: readonly DenyRule[] = [
@@ -158,25 +158,18 @@ export const DENY_RULES: readonly DenyRule[] = [
   },
   {
     id: 'dojo-database-files',
-    tiers: ['global_write'],
+    tiers: ['global_read', 'global_write'],
     since: 'legacy',
-    reason: 'the platform database is the spine; an agent writing it directly corrupts every other guarantee.',
+    reason: 'the platform database is the spine: writing it directly corrupts every other guarantee, reading it raw hands over its credential tables.',
     test: ({ folded, home }) => isDojoDbFile(folded, home),
   },
   {
-    id: 'dojo-database-journal-siblings',
-    tiers: ['global_write'],
+    id: 'dojo-database-backups',
+    tiers: ['global_read'],
     since: 'T2-hardening',
-    reason:
-      'BYPASS CLASS (T2 corpus): `dojo.db-wal` / `dojo.db-shm` are the SAME database\'s bytes mid-transaction ' +
-      'and slip the legacy `~/.dojo/data/*.db` glob on the extension alone. Writing them rewrites a file that ' +
-      'is already globally denied, so this is guard strengthening (RULING P5-R5), never a new policy.',
-    test: ({ folded, home }) => {
-      const dataDir = path.join(home, '.dojo', 'data');
-      if (!folded.startsWith(dataDir + path.sep)) return false;
-      const rest = folded.slice(dataDir.length + 1);
-      return !rest.includes(path.sep) && (rest.endsWith('.db-wal') || rest.endsWith('.db-shm') || rest.endsWith('.db-journal'));
-    },
+    reason: 'the backup folders hold whole copies of the platform database, credential tables included.',
+    test: ({ folded, home }) =>
+      underDir(folded, path.join(home, '.dojo', 'data', 'backups')) || underDir(folded, path.join(home, '.dojo', 'backups')),
   },
   {
     id: 'soul-files',

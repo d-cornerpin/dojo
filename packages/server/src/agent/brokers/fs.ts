@@ -16,10 +16,11 @@ export type FsKind = 'fs_read' | 'fs_write' | 'fs_delete';
 
 /** The legacy per-kind refusal wording, kept verbatim: a message an agent parses is a
  *  contract, so these agent-facing strings must not move under a refactor. */
-function globalDenyReason(kind: FsKind, tier: DenyTier, rawPath: string): string {
+function globalDenyReason(kind: FsKind, tier: DenyTier, rawPath: string, ruleId: string): string {
   if (tier === 'sensitive') {
     return `${rawPath} is on the sensitive-files block list (secrets.yaml, .env files, SSH keys, cloud credentials)`;
   }
+  if (kind === 'fs_read' && !ruleId.startsWith('healer-')) return `Global deny: reading ${rawPath} is prohibited`;
   if (kind === 'fs_read') {
     return `Global deny: ${rawPath} is restricted. Use the engine helper tools (healer_recent_actions / healer_action_detail) to access this kind of data with bounded response size.`;
   }
@@ -40,7 +41,7 @@ export function globalDeny(kind: FsKind, resource: ResolvedPath, viewer?: DenyVi
     const lexicalRule = denyRuleFor(resource.lexical, tier, viewer);
     if (lexicalRule) {
       const basis = lexicalRule.since === 'legacy' ? 'ladder-parity' : 'bypass-hardening';
-      return deny(basis, lexicalRule.id, globalDenyReason(kind, tier, resource.raw));
+      return deny(basis, lexicalRule.id, globalDenyReason(kind, tier, resource.raw, lexicalRule.id));
     }
     if (resource.real !== resource.lexical) {
       const realRule = denyRuleFor(resource.real, tier, viewer);
@@ -51,7 +52,7 @@ export function globalDeny(kind: FsKind, resource: ResolvedPath, viewer?: DenyVi
         return deny(
           basis,
           realRule.id,
-          `${globalDenyReason(kind, tier, resource.raw)} (it resolves to ${resource.real})`,
+          `${globalDenyReason(kind, tier, resource.raw, realRule.id)} (it resolves to ${resource.real})`,
         );
       }
     }
