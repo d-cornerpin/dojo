@@ -29,13 +29,11 @@ export async function runGoingIdle(
   const {
     agentId, db, isA2ATurn, lastUserMessageContent, mostRecentInbound, turnCtx, turnNumber,
   } = ctx;
-  const { persistedContent } = sc;
-  // Add-notes-stop: the turn's last tool call was a `work_note` on a task still in progress and nothing
-  // says what comes next. One steer per turn, so it cannot loop.
-  if (
-    !steerFired(state.steerQueue, 'add-notes-stop') &&
-    state.toolResults.length > 0
-  ) {
+  // The engine never re-prompts after a spoken reply: the agent would answer again.
+  const replied = !!sc.persistedContent?.trim();
+  // Add-notes-stop: the turn's last tool call was a `work_note` on a task still in progress, then
+  // silence. One steer per turn, so it cannot loop.
+  if (!replied && !steerFired(state.steerQueue, 'add-notes-stop') && state.toolResults.length > 0) {
     const lastTool = state.toolResults[state.toolResults.length - 1];
     if (lastTool && lastTool.name === 'work_note') {
       const tid = lastTool.arguments?.task_id;
@@ -125,11 +123,9 @@ export async function runGoingIdle(
         `If the task is genuinely finished: work_update(action="hand_in", task_id, outcome="finished", proof=[...], note); a measured task is finished when its measure reads 0, and items that genuinely cannot or should not be done are handed in as can't be done with a remainder item naming them and why.\n` +
         `A task left in progress is not a problem: a one-off task stays open and you are brought back to it; a scheduled run left in progress is recorded as not done, and its schedule goes on.]`
       );
-      // Re-prompt only on a silent stop: an agent that already replied would answer again (a duplicate
-      // reply, or redone work). With a reply the flag is set and only the reconciliation below runs.
+      // Re-prompt only on a silent stop; with a reply the flag is set and only the reconciliation below runs.
       turnCtx.goingIdleDetectorRanThisTurn = true;
-      const alreadyRepliedThisTurn = !!(persistedContent && persistedContent.trim().length > 0);
-      if (alreadyRepliedThisTurn) {
+      if (replied) {
         logger.info('v2 going-idle-with-in_progress: agent already replied this turn, skipping re-prompt, engine reconciles the dangling task', {
           agentId, openTaskCount: openTasks.length, taskIds: openTasks.map(t => t.id),
         }, agentId);
@@ -160,10 +156,7 @@ export async function runGoingIdle(
   // Reconciliation once the detector ran and the turn ended with a reply (nudged or not): a recurring
   // task's run is failed and its schedule kept. A one-shot task stays visibly in progress for the check-in
   // ladder; a reply is never taken as delivery evidence.
-  if (
-    turnCtx.goingIdleDetectorRanThisTurn &&
-    persistedContent && persistedContent.trim().length > 0
-  ) {
+  if (turnCtx.goingIdleDetectorRanThisTurn && replied) {
     const recurringDanglers = db.prepare(`
       SELECT w.id AS id FROM work w
       WHERE ${taskScope('w')} AND w.agent_id = ?

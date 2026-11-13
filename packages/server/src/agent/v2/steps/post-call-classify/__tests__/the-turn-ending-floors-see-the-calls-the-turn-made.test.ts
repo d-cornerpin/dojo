@@ -94,10 +94,15 @@ describe('the turn-ending floors see the calls the turn made', () => {
     expect(steered(rows, PROMISE_STEER)).toBe(1);
   });
 
-  it('the going-idle floor reads the task a note named', async () => {
-    const rows = await turn('Any progress on the quotes?', [{
-      name: 'work_note', arguments: { task_id: step, notes: 'Two of three quotes are in.' },
-    }], 'Noted the two quotes that came in.');
+  const note = (): Call[] => [{ name: 'work_note', arguments: { task_id: step, notes: 'Two of three quotes are in.' } }];
+  it('a note on a working task, then silence, is steered once', async () => {
+    // A reply that is only a copied time stamp reaches the person as nothing.
+    const rows = await turn('Any progress on the quotes?', note(), '[2026-11-12 10:00]');
     expect(steered(rows, NOTE_STEER)).toBe(1);
+  });
+
+  it('a note, then a spoken reply, is not steered', async () => {
+    const rows = await turn('Any progress on the quotes?', note(), 'Noted the two quotes that came in.');
+    expect(steered(rows, NOTE_STEER)).toBe(0);
   });
 });
