@@ -50,7 +50,6 @@ beforeEach(() => {
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
     CREATE TABLE agents (id TEXT PRIMARY KEY, name TEXT);
-    CREATE TABLE healer_diagnostics (id TEXT PRIMARY KEY, critical_count INTEGER, created_at TEXT);
   `);
   db.prepare("INSERT INTO agents (id, name) VALUES (?, 'Primary')").run(PRIMARY);
   mockDb.current = db;

@@ -81,7 +81,6 @@ export async function recordDispatchAndHold(
         callDescription: commandText,
         argsJson: JSON.stringify(tc.arguments ?? {}),
         heldDirectDestructiveCall: true,
-        engineSeverity: diagnosticSeverity(db),
         copy: sudoOwnerCardCopy(commandText),
         // The refusal names the policy it read and the card, so the held agent can say what is possible.
         agentRefusal: sudoHeldRefusal(commandText, getSudoPolicy()),
