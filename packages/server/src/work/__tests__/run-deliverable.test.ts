@@ -77,10 +77,11 @@ describe('ARM 1 — THE DECLARATION: decided once, from the DEFINITION, never fr
     expect((await declaredDeliverableShape({ title: 'Tomorrow Brief', description: 'Every morning, send me a short brief.', hasSchedule: true }))?.shape).toBe('brief');
   });
 
-  it('1a no answer from the decision model declares it: a run must not close having told nobody', async () => {
+  it('1a with no answer from the decision model, base\'s word list decides', async () => {
     modelSays(null);
-    expect(await declaredDeliverableShape({ title: 'Morning update', description: 'text me', hasSchedule: true }))
-      .toEqual({ shape: 'notify', rule: 'no-answer' });
+    expect(await declaredDeliverableShape({ title: 'Morning update', description: 'text me the agenda', hasSchedule: true }))
+      .toEqual({ shape: 'notify', rule: 'tells-the-agent-to-tell-a-person' });
+    expect(await declaredDeliverableShape({ title: 'Nightly backup', description: 'back up the database', hasSchedule: true })).toBeNull();
   });
 
   it('1e a verdict the caller already has is not asked again', async () => {
