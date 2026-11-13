@@ -67,13 +67,14 @@ export function jobProgressMark(state: AgentTurnState, agentId: string, db: Data
 }
 
 /** May the turn take pass `loopCount + ahead`? Open inside the window (75 passes, 15 minutes); at its end it
- *  renews if the job moved and no person has spoken since the turn began, else the turn checkpoints, as it
- *  always does after 200 tool calls or 500 passes. */
+ *  renews if the job moved and no person waits behind this turn, else the turn checkpoints, as it always
+ *  does after 200 tool calls or 500 passes. */
 export function turnWindow(state: AgentTurnState, agentId: string, ahead = 0): 'open' | 'renew' | 'checkpoint' {
   const w = state.checkpointWindow ?? { atLoop: 0, atMs: state.turnStartMs, mark: 0 };
   if (state.toolCallsExecutedThisTurn >= 200 || state.loopCount + ahead > 500) return 'checkpoint';
   if (state.loopCount + ahead - w.atLoop <= 75 && Date.now() - w.atMs <= 15 * 60_000) return 'open';
-  return jobProgressMark(state, agentId, getDb()) > w.mark && !personArrivedSince(agentId, turnContext(agentId)?.pickupSeq ?? Infinity) ? 'renew' : 'checkpoint';
+  const turn = turnContext(agentId);
+  return jobProgressMark(state, agentId, getDb()) > w.mark && !personArrivedSince(agentId, turn?.pickupSeq ?? 0, turn?.convKey ?? null) ? 'renew' : 'checkpoint';
 }
 
 const memo = new Map<string, { key: string; facts: JobAtPassEnd | null }>();

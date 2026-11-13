@@ -98,6 +98,25 @@ describe('a window renews only while the job moves and nobody waits', () => {
     expect(pendingWakeups.has(AGENT)).toBe(true);
   });
 
+  it('a person already waiting in another conversation at pickup ends the window; the served one does not', async () => {
+    seedClaimedTask();
+    insertMessage({ agentId: AGENT, role: 'user', lane: 'owner', channel: 'dashboard', senderId: 'owner', content: 'sort the archive', turnNumber: 1 });
+    const [served] = getWaitingHumanConversations(AGENT);
+    const turn = openTurnContext(AGENT);
+    turn.pickupSeq = served.latest.rowid;
+    turn.convKey = served.key;
+    const state = stateAt(76);
+    aNewCallSucceeded(state, 1);
+    expect((await gate(state)).directive, 'only the served person waits: the window renews').toBe('proceed');
+
+    turn.convKey = 'another-conversation';
+    const next = stateAt(76);
+    aNewCallSucceeded(next, 2);
+    const parked = await gate(next);
+    expect(parked).toMatchObject({ directive: 'exit', reason: 'turn-time-budget' });
+    expect(pendingWakeups.has(AGENT)).toBe(true);
+  });
+
   it('a moving job checkpoints at 200 tool calls or 500 passes, inside its window too', async () => {
     seedClaimedTask();
     for (const at of [{ loopCount: 10, toolCallsExecutedThisTurn: 200 }, { loopCount: 501 }]) {
