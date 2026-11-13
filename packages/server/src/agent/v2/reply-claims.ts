@@ -8,8 +8,7 @@ import type { AgentTurnState } from './state.js';
 import type { PostCallClassifyContext } from './steps/post-call-classify/index.js';
 
 const QUESTIONS = {
-  claims_sent_to_third_party: { type: 'noul', instructions: 'Does `reply` say the agent itself already sent or said something to someone other than the person it is replying to?',
-    criteria: { true: "The agent already sent it: \"Texted Mom the time\", \"Shared the list with Alex\", \"Pinged the group\", \"I've asked Sam\", \"Sam has been notified\"", false: 'The agent did not send anything: it plans or offers to, says it has not, refuses, sent it to the person themself ("sent you"), or reports what someone else sent or said ("the pharmacy texted")' } },
+  claims_sent_to_third_party: { type: 'noul', instructions: 'Does `reply` claim, in the past tense, that something was sent to someone other than the person being replied to?' },
   only_promises_to_start: { type: 'noul', instructions: 'Does `reply` end with the agent saying it is starting the work now?',
     criteria: { true: "Starting now: \"Let me check\", \"On it, working on it now\", \"I'll look into it and get back to you\"", false: 'Not starting: an answer, a result, a question, an offer that waits for a yes, a promise to watch for something later, a refusal, or small talk' } },
   standing_promise: { type: 'noul', instructions: 'Does `reply` contain the agent promising how it will act from now on, on every future occasion?',
@@ -40,10 +39,75 @@ export async function askReplyClaims(state: AgentTurnState, ctx: PostCallClassif
     const questions = openedWorkThisTurn(ctx) ? rest : { ...rest, standing_promise };
     const e: { messageId: string; said?: Partial<Record<ReplyClaim, boolean>>; settled: Promise<void> } = { messageId, settled: Promise.resolve() };
     e.settled = judgment('reply_claims', { agentId, state: stateForModel, questions })
-      .then((v) => { e.said = v ?? undefined; }, () => undefined);
+      .then((v) => { e.said = v ? withListInBand(v, questions, reply) : undefined; }, () => undefined);
     asked.set(agentId, entry = e);
   }
   await entry.settled;
+}
+
+// The word lists that answer standing_promise and asserts_board_state inside the model's unsure band (an asked
+// question the model left without a verdict); outside the band, and with no answer at all, they are not read.
+const STANDING_SCOPE_PATTERNS: readonly RegExp[] = [
+  /\bfrom now on\b/i,
+  /\bgoing forward\b/i,
+  /\bmoving forward\b/i,
+  /\bfrom here on(?: out)?\b/i,
+  /\b(?:every|each) time\b/i,
+  /\bwhenever\b/i,
+  /\bany time (?:you|that|there|a|an|the)\b/i,
+  /\bin (?:the )?future\b/i,
+];
+const FIRST_PERSON_COMMITMENT = /\bi(?:'|’)?ll\b|\bi will\b|\bi(?:'|’)?m going to\b/i;
+const DISCLOSED_INABILITY =
+  /\bi\s(?:can(?:no|’|')?t|cannot|won(?:’|')?t be able|am not able|(?:’|')?m not able|do(?:n(?:’|')?t| not) have)\b/i;
+
+function isStandingPromiseReply(text: string | null | undefined): boolean {
+  if (!text) return false;
+  const s = text.replace(/\s+/g, ' ').trim();
+  if (!s) return false;
+  if (s.includes('?')) return false;
+  if (DISCLOSED_INABILITY.test(s)) return false;
+  const sentences = s.split(/(?<=[.!])\s+/).map((x) => x.trim()).filter(Boolean);
+  return (sentences.length > 0 ? sentences : [s]).some(
+    (sentence) => STANDING_SCOPE_PATTERNS.some((re) => re.test(sentence))
+      && FIRST_PERSON_COMMITMENT.test(sentence),
+  );
+}
+
+const STANDING_STATE_PATTERNS: readonly RegExp[] = [
+  /\bon deck\b/i,
+  /\bstill (?:parked|pending|outstanding|owed|queued|scheduled|set|booked|waiting|unresolved|in progress)\b/i,
+  /\bschedule (?:is |looks |remains )?intact\b/i,
+  /\bwill (?:still )?(?:fire|go off|run|trigger|remind you|nudge you|ping you|kick off)\b/i,
+  /\b(?:on|in) (?:the|your) (?:books|board|tracker|calendar|schedule|queue)\b/i,
+  /\b(?:remains?|stays?) (?:on|set|scheduled|open|pending|parked|unchanged|in place)\b/i,
+];
+const DISCLOSED_FROM_MEMORY =
+  /\bfrom memory\b|\bgoing (?:off|from) memory\b|\bwithout checking\b|\bnot (?:yet )?verified\b|\b(?:have|has|did|do)(?:n(?:’|')?t| not)\s+(?:re-?)?check(?:ed)?\b|\bi(?:’|')?d need to (?:check|look)\b/i;
+
+function standingStateClaimSentence(text: string | null | undefined): string | null {
+  if (!text) return null;
+  const s = text.replace(/\s+/g, ' ').trim();
+  if (!s) return null;
+  if (DISCLOSED_FROM_MEMORY.test(s)) return null;
+  const sentences = s.split(/(?<=[.!?])\s+/).map((x) => x.trim()).filter(Boolean);
+  for (const sentence of sentences.length > 0 ? sentences : [s]) {
+    if (sentence.includes('?')) continue;
+    if (STANDING_STATE_PATTERNS.some((re) => re.test(sentence))) return sentence;
+  }
+  return null;
+}
+
+const LIST_IN_BAND: Partial<Record<ReplyClaim, (reply: string) => boolean>> = {
+  standing_promise: isStandingPromiseReply,
+  asserts_board_state: (reply) => standingStateClaimSentence(reply) !== null,
+};
+function withListInBand(said: Partial<Record<ReplyClaim, boolean>>, asked: object, reply: string): Partial<Record<ReplyClaim, boolean>> {
+  const out = { ...said };
+  for (const [name, list] of Object.entries(LIST_IN_BAND) as Array<[ReplyClaim, (r: string) => boolean]>) {
+    if (name in asked && out[name] === undefined) out[name] = list(reply);
+  }
+  return out;
 }
 
 /** Did this turn open a work row (a task, a schedule, a commitment)? Such a row records any lasting promise. A read

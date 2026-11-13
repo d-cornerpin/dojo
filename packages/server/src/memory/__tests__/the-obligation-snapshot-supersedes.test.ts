@@ -293,10 +293,10 @@ describe('§3 the per-hit obligation serving is withdrawn while the snapshot ser
   it('an UNRESOLVABLE obligation line is superseded too — the snapshot answers it better than the marker did', () => {
     seedCommitment({ id: 'cmt:555555555555', title: 'Something else entirely', state: 'open' });
     const text = textOf(renderRecallLane(ctxWith({
-      vaultHits: [{ id: 'v-x', type: 'note', content: 'Commitment: I will send the deck to Priya tomorrow (cmt:999999999999).' }],
+      vaultHits: [{ id: 'v-x', type: 'note', content: 'Commitment: I will send the deck to Priya tomorrow.' }],
     })));
     expect(text).not.toContain(UNRESOLVED_OBLIGATION_MARK);
-    expect(text).not.toContain('I will send the deck to Priya tomorrow');
+    expect(text).not.toContain('I will send the deck to Priya tomorrow.');
     expect(text).toContain(SNAPSHOT_HEAD);
   });
 
@@ -312,10 +312,10 @@ describe('§3 the per-hit obligation serving is withdrawn while the snapshot ser
     // No commitment rows at all for this agent, so no snapshot: T17's per-hit rendering is
     // still the whole of the obligation serving and must behave exactly as it did.
     const text = textOf(renderRecallLane(ctxWith({
-      vaultHits: [{ id: 'v-y', type: 'note', content: 'Commitment: I will send the deck to Priya tomorrow (cmt:999999999999).' }],
+      vaultHits: [{ id: 'v-y', type: 'note', content: 'Commitment: I will send the deck to Priya tomorrow.' }],
     })));
     expect(text).toContain(UNRESOLVED_OBLIGATION_MARK);
-    expect(text).toContain('I will send the deck to Priya tomorrow');
+    expect(text).toContain('I will send the deck to Priya tomorrow.');
   });
 
   it('recalled MESSAGE rows are never withheld — history stays history, and the preamble is what supersedes it', () => {
@@ -632,10 +632,10 @@ describe('§6 the board counts are complete, and they agree with the spine at re
       // of T17's hands for agents that now publish. For an agent that still does not publish,
       // every branch must behave exactly as it did before this task and before HL5.
       const text = textOf(renderRecallLane(ctxWith({
-        vaultHits: [{ id: 'v-t17', type: 'note', content: 'Commitment: I will send the deck to Priya tomorrow (cmt:999999999999).' }],
+        vaultHits: [{ id: 'v-t17', type: 'note', content: 'Commitment: I will send the deck to Priya tomorrow.' }],
       })));
       expect(text).toContain(UNRESOLVED_OBLIGATION_MARK);
-      expect(text).toContain('I will send the deck to Priya tomorrow');
+      expect(text).toContain('I will send the deck to Priya tomorrow.');
       expect(text).not.toContain(SNAPSHOT_HEAD);
     });
 

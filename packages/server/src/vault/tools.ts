@@ -151,7 +151,7 @@ export async function executeVaultRemember(
 
   // Refuse obligations: a promise is kept or dropped, and `work(kind='commitment')` is the ledger that knows.
   // Frozen in the vault it would be recalled as still owed, and recall keeps it alive (hygiene arms are keyed
-  // on retrieval_count = 0). A commitment's join token is one by name; any other note is asked of the decision model.
+  // on retrieval_count = 0). A commitment's join token is one by name; any other note is judged by `isObligationNote`.
   if (obligationTags(content).length > 0 || await isObligationNote(agentId, content)) {
     return (
       `Refused: this reads as an OBLIGATION rather than a memory. ` +

@@ -1,7 +1,8 @@
 // The owner put these judgments on the small local decision model, each with its own lines: yes at or above the yes
-// line, no below the no line, and between them no verdict, so the caller takes the harmless action. Each is driven
-// through its real entry point with the decision endpoint answering scripted probabilities. With no decision model
-// installed nothing is dialled and the rule (or no verdict) stands. Every other question is its rule.
+// line, no below the no line, and between them no verdict, so the caller takes the harmless action (for three questions
+// its word list decides there: `in-the-unsure-band-the-word-list-decides.test.ts`). Each is driven through its real
+// entry point with the decision endpoint answering scripted probabilities. With no decision model installed nothing
+// is dialled and the rule (or no verdict) stands. Every other question is its rule.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
@@ -68,13 +69,13 @@ const QUESTIONS: Array<{ name: string; run: () => Promise<boolean | undefined>; 
   { name: 'needs_several_steps', run: () => inboundIsWork({}, agent(), 'Plan the move and book the van.'), cases: [[0.6, true], [0.2, false], [0.4, undefined]], none: undefined },
   { name: 'deliverable', run: () => deliverableJudged(agent(), 'Here is the finished report.', true), cases: [[0.6, true], [0.4, false]], none: true },
   { name: 'filler', run: fillerSaid, cases: [[0.6, true], [0.45, false]], none: true },
-  { name: 'obligation', run: () => isObligationNote(agent(), 'Need to return the drill.'), cases: [[0.6, true], [0.4, false]], none: false },
+  { name: 'obligation', run: () => isObligationNote(agent(), 'Need to return the drill.'), cases: [[0.8, true], [0.2, false]], none: false },
   { name: 'owes_a_message', run: declared, cases: [[0.45, true], [0.35, false]], none: false },
   { name: 'stated_current', run: summaryRewritten, cases: [[0.6, true], [0.4, false]], none: false },
-  { name: 'claims_sent_to_third_party', run: () => replyClaimSaid('claims_sent_to_third_party'), cases: [[0.35, true], [0.25, false]], none: undefined },
+  { name: 'claims_sent_to_third_party', run: () => replyClaimSaid('claims_sent_to_third_party'), cases: [[0.6, true], [0.4, false]], none: undefined },
   { name: 'only_promises_to_start', run: () => replyClaimSaid('only_promises_to_start'), cases: [[0.6, true], [0.4, false]], none: undefined },
-  { name: 'standing_promise', run: () => replyClaimSaid('standing_promise'), cases: [[0.6, true], [0.4, false]], none: undefined },
-  { name: 'asserts_board_state', run: () => replyClaimSaid('asserts_board_state'), cases: [[0.6, true], [0.4, false]], none: undefined },
+  { name: 'standing_promise', run: () => replyClaimSaid('standing_promise'), cases: [[0.8, true], [0.2, false]], none: undefined },
+  { name: 'asserts_board_state', run: () => replyClaimSaid('asserts_board_state'), cases: [[0.8, true], [0.2, false]], none: undefined },
 ];
 
 describe('each judgment the owner put on the decision model is answered on its own lines', () => {
