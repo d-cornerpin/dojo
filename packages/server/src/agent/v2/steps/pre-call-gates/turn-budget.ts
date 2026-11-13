@@ -1,5 +1,5 @@
-// The one place a turn parks itself: at the end of a checkpoint window a moving job renews it, a still one
-// checkpoints (token-math compaction check, tracker note, park for a fresh continuation).
+// The one place a turn parks itself: at the end of a checkpoint window a moving job renews it unless a person is
+// waiting; otherwise the turn checkpoints (token-math compaction check, tracker note, park for a fresh continuation).
 
 import { createLogger } from '../../../../logger.js';
 import { agentTurnWindow } from '../../../../router/router-window.js';
@@ -26,7 +26,6 @@ export async function runTurnTimeBudget(
 
   const window = turnWindow(state, agentId);
   if (window === 'renew') {
-    logger.info('v2 checkpoint window renewed: the job moved', { agentId, turnNumber, loopCount: state.loopCount }, agentId);
     return proceed(advance(state, { checkpointWindow: { atLoop: state.loopCount - 1, atMs: Date.now(), mark: jobProgressMark(state, agentId, getDb()) } }));
   }
   if (window === 'checkpoint') {
@@ -34,7 +33,7 @@ export async function runTurnTimeBudget(
     const effectiveModel =
       state.modelId === '__auto__' ? configuredModelId : state.modelId;
 
-    logger.warn('v2 checkpoint window passed without the job moving, auto-continuing', {
+    logger.warn('v2 checkpoint window ended, auto-continuing', {
       elapsedMin, loopCount: state.loopCount, agentId,
     }, agentId);
 

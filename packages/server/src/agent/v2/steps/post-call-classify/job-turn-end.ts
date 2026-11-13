@@ -13,6 +13,8 @@ import { normalizeTaskStatus } from '../../../../tracker/task-status-words.js';
 import type { AgentTurnState } from '../../state.js';
 import type { PostCallClassifyContext } from './index.js';
 import { heldExpr, workingExpr } from '../../../../work/done/hold.js';
+import { personArrivedSince } from '../../counterparty.js';
+import { turnContext } from '../../../turn-context.js';
 
 export interface JobAtPassEnd {
   taskId: string;
@@ -65,11 +67,13 @@ export function jobProgressMark(state: AgentTurnState, agentId: string, db: Data
 }
 
 /** May the turn take pass `loopCount + ahead`? Open inside the window (75 passes, 15 minutes); at its end it
- *  renews if the job moved since the window opened, else the turn checkpoints. */
+ *  renews if the job moved and no person has spoken since the turn began, else the turn checkpoints, as it
+ *  always does after 200 tool calls or 500 passes. */
 export function turnWindow(state: AgentTurnState, agentId: string, ahead = 0): 'open' | 'renew' | 'checkpoint' {
   const w = state.checkpointWindow ?? { atLoop: 0, atMs: state.turnStartMs, mark: 0 };
+  if (state.toolCallsExecutedThisTurn >= 200 || state.loopCount + ahead > 500) return 'checkpoint';
   if (state.loopCount + ahead - w.atLoop <= 75 && Date.now() - w.atMs <= 15 * 60_000) return 'open';
-  return jobProgressMark(state, agentId, getDb()) > w.mark ? 'renew' : 'checkpoint';
+  return jobProgressMark(state, agentId, getDb()) > w.mark && !personArrivedSince(agentId, turnContext(agentId)?.pickupSeq ?? Infinity) ? 'renew' : 'checkpoint';
 }
 
 const memo = new Map<string, { key: string; facts: JobAtPassEnd | null }>();

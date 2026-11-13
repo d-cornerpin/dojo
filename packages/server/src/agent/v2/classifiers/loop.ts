@@ -50,8 +50,8 @@ const ARRAY_HEAD_ITEMS = 5;
  *  re-rendered artifact counts as one operation; residual: distinct all-numeric ids also
  *  collapse, none on the live surface pass such an id. Long values and array tails are
  *  CAPPED with a digest of the rest, never dropped, so tail differences stay distinct.
- *  Varied-argument spinning is not caught here by design: the thrash gate's drift arms
- *  (steps/pre-call-gates/thrash-gate.ts) and the checkpoint window cover it. */
+ *  Varied-argument spinning is not caught here: the turn checkpoints at its window's end unless its
+ *  job moved, and at 200 tool calls or 500 passes even when it did (steps/post-call-classify/job-turn-end.ts). */
 export function canonicalToolSignature(
   name: string,
   args: Record<string, unknown> | undefined,

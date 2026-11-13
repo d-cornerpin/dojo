@@ -2,7 +2,7 @@
 // already open when the command began never interrupts it; after a hand-back the agent owns the job.
 import { getDb } from '../../db/connection.js';
 import { onArrivalWhileBusy } from '../shared-state.js';
-import { getWaitingHumanConversations } from '../v2/counterparty.js';
+import { personArrivedSince } from '../v2/counterparty.js';
 import { handToBackground } from '../effects/proc-tree.js';
 import { recordHandOff, settleHandOff, endHandOff } from '../background-commands.js';
 import { getTurnScopedImRecipient } from '../../services/imessage-bridge.js';
@@ -14,12 +14,6 @@ import { redactHandedCredentials } from '../../credentials/secret-values.js';
 
 export function newestMessageSeq(): number {
   return (getDb().prepare('SELECT MAX(seq) AS s FROM messages').get() as { s: number | null } | undefined)?.s ?? 0;
-}
-
-/** Has a person's message for `agentId` arrived after the row `sinceSeq`? The one waiting-set definition.
- *  Compare `seq` row order, never whole-second `created_at`: a same-second arrival reads as older. */
-export function personArrivedSince(agentId: string, sinceSeq: number): boolean {
-  return getWaitingHumanConversations(agentId).some((c) => c.latest.rowid > sinceSeq);
 }
 
 /** The exec door's person-first wiring for one call by `agentId`, which runs `what`. */

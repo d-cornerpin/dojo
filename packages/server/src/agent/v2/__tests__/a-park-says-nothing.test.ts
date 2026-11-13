@@ -511,7 +511,7 @@ beforeEach(() => { toolSeq = 0; });
 // ════════════════════════════════════════════════════════════════════════════════
 // (i) A PARKED TURN IS SILENT: a window of steps with no movement
 // ════════════════════════════════════════════════════════════════════════════════
-describe('t159 G (i): a still window parks the job — nothing reaches the owner, nothing is noted as the answer', () => {
+describe('t159 G (i): a still window parks the job: nothing reaches the owner, nothing is noted as the answer', () => {
   it('a working file queued before the park stays queued: no owner row, no broadcast, rows undelivered, turn not answered, ask not settled', async () => {
     scriptTheJob({ rounds: 160, after: { content: '' } });   // the checkpoint ends the turn before the model ever speaks
     await runV2Turn('primary');

@@ -123,6 +123,12 @@ export function getWaitingHumanConversations(agentId: string): WaitingConversati
     .sort((a, b) => a.oldestWaitingRowid - b.oldestWaitingRowid);              // FIFO by rowid
 }
 
+/** Has a person's message for `agentId` arrived after the row `sinceSeq`? The one waiting-set definition.
+ *  Compare `seq` row order, never whole-second `created_at`: a same-second arrival reads as older. */
+export function personArrivedSince(agentId: string, sinceSeq: number): boolean {
+  return getWaitingHumanConversations(agentId).some((c) => c.latest.rowid > sinceSeq);
+}
+
 /** Quarantine every OPEN ask of ONE waiting conversation served again and again without a reply
  *  (poisoned message, or turns that end silent) so a poisoned head cannot starve the queue behind
  *  it; only key-matching rows are touched. */

@@ -3306,7 +3306,7 @@ describe('PHASE-6 CUT 3: the turn-time budget auto-continues (compacting only wh
   // t137: `elapsedMin` used to surface in the owner's park row; that row is retired, and the
   // number's one carrier now is the operator's log line — so the crossing is read there.
   const parkLogElapsed = (): number[] => loggerWarnSpy.mock.calls
-    .filter((c) => c[0] === 'v2 checkpoint window passed without the job moving, auto-continuing')
+    .filter((c) => c[0] === 'v2 checkpoint window ended, auto-continuing')
     .map((c) => (c[1] as { elapsedMin: number }).elapsedMin);
 
   it('THE CROSSING TEST: the checkpoint reads LIVE turn state, not a snapshot taken at turn start', async () => {
