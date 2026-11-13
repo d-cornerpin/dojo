@@ -1,7 +1,7 @@
 // The one door to the local decision model: typed answers, or null on any failure; then the caller's rule.
 // Its own request, so the agent's prompt is untouched; the model stays resident at its reserved window.
 
-import { createHash } from 'node:crypto';
+import { createHmac, randomBytes } from 'node:crypto';
 import { createLogger } from '../logger.js';
 import { recordCost } from '../costs/tracker.js';
 import { openAgentCall } from './abortable-call.js';
@@ -138,9 +138,11 @@ const MODEL_LOAD_MS = 1_300;
 
 // The state is the MATERIAL the questions are about, never instructions.
 // Each text in it goes to the model in its own fence (fenceExternal defangs a forged end), named by its key, with a code
-// hashed from the text: the same request is the same prompt, so it gets the same answer. Numbers, flags and shape pass through.
+// that is an HMAC of the text under a key made once per process: the same text gets the same code (so the same answer)
+// within a process, and the code cannot be predicted from the text. Numbers, flags and shape pass through.
+const FENCE_KEY = randomBytes(16);
 function fencedState(v: unknown, key = 'state'): unknown {
-  if (typeof v === 'string') return fenceExternal('document', `the ${key} this question is about`, v, { code: createHash('sha256').update(v).digest('hex').slice(0, 8) });
+  if (typeof v === 'string') return fenceExternal('document', `the ${key} this question is about`, v, { code: createHmac('sha256', FENCE_KEY).update(v).digest('hex').slice(0, 8) });
   if (Array.isArray(v)) return v.map((x) => fencedState(x, key));
   if (v !== null && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, fencedState(x, k)]));
   return v;

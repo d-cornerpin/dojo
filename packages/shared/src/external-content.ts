@@ -41,8 +41,9 @@ function cleanSource(from: string): string {
 
 /**
  * Fence `body` as outside text of `kind` from `from`. `addressedToAgent`: sent TO the agent, so it may be
- * answered but never obeyed. `code`: a caller that re-renders the text each model call passes a stable
- * unpredictable code (server tools/inbound-fences.ts) so the prompt cache holds.
+ * answered but never obeyed. `code`: a caller passes its own stable unpredictable code, so the same text renders
+ * the same way: re-rendered text keeps the prompt cache (server tools/inbound-fences.ts), and a decision request is
+ * repeatable within a process (server agent/decide.ts, an HMAC of the text under a per-process random key).
  */
 export function fenceExternal(kind: ExternalKind, from: string, body: string, opts: { addressedToAgent?: boolean; code?: string } = {}): string {
   const code = opts.code ?? newFenceCode();

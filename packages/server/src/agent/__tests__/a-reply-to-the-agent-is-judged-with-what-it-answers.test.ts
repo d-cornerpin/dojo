@@ -45,3 +45,18 @@ describe('the inbound question reads the agent\'s last reply', () => {
     expect(Object.keys(calls[0].state as object)).toEqual(['message']);
   });
 });
+
+describe('only the tail of a long reply, never the engine\'s start line', () => {
+  it('a long reply is cut to its last 1,500 characters, from a sentence start; the engine start line is skipped', async () => {
+    const long = `${'Background sentence one. '.repeat(100)}Want me to book the cheapest of the three?`;
+    row('m1', 'assistant', long, 'c1');
+    mockDb.current!.prepare("INSERT INTO messages (id, agent_id, role, content, conversation_id, origin_intent, created_at) VALUES ('m2', 'a1', 'assistant', 'On it.', 'c1', 'engine_start_ack', 0)").run();
+    row('m3', 'user', 'yes please', 'c1');
+    const calls = scriptDecisions(() => yes(0.9));
+    await inboundIsWork({ root: { kind: 'ask', id: 'm3', sourceMessageId: 'm3', conversationId: 'c1' } }, 'a1', 'yes please');
+    const sent = unfenceExternal((calls[0].state as Record<string, string>).previous_agent_message);
+    expect(sent.length).toBeLessThanOrEqual(1_500);
+    expect(sent.startsWith('Background sentence one.')).toBe(true);
+    expect(sent.endsWith('Want me to book the cheapest of the three?')).toBe(true);
+  });
+});

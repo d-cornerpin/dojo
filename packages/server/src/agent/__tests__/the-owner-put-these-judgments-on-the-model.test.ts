@@ -70,7 +70,7 @@ const QUESTIONS: Array<{ name: string; run: () => Promise<boolean | undefined>; 
   { name: 'deliverable', run: () => deliverableJudged(agent(), 'Here is the finished report.', true), cases: [[0.6, true], [0.4, false]], none: true },
   { name: 'filler', run: fillerSaid, cases: [[0.6, true], [0.45, false]], none: true },
   { name: 'obligation', run: () => isObligationNote(agent(), 'Need to return the drill.'), cases: [[0.8, true], [0.2, false]], none: false },
-  { name: 'owes_a_message', run: declared, cases: [[0.45, true], [0.35, false]], none: false },
+  { name: 'owes_a_message', run: declared, cases: [[0.45, true], [0.35, false]], none: true },
   { name: 'stated_current', run: summaryRewritten, cases: [[0.6, true], [0.4, false]], none: false },
   { name: 'claims_sent_to_third_party', run: () => replyClaimSaid('claims_sent_to_third_party'), cases: [[0.6, true], [0.4, false]], none: undefined },
   { name: 'only_promises_to_start', run: () => replyClaimSaid('only_promises_to_start'), cases: [[0.6, true], [0.4, false]], none: undefined },

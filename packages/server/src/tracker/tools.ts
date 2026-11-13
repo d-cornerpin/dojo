@@ -151,9 +151,8 @@ interface DuplicateMatch {
   id: string;
   title: string;
   createdMinutesAgo: number;
-  /** True when the existing project was opened by the engine's multistep
-   * classifier on the agent's most recent user turn (not by the agent
-   * calling work_open(kind="project") themselves). */
+  /** True when the existing project was opened by the engine on the agent's most recent user turn (not by the
+   * agent calling work_open(kind="project") themselves). */
   engineAutoCreated: boolean;
   /** First in_progress / on_deck task on the existing project, if any, 
    * the natural target for work_update(action="edit"). */
@@ -543,8 +542,9 @@ export async function trackerCreateTask(agentId: string, args: Record<string, un
     // not the anchor (a recreated twin usually has a different one). The deliverable shape comes from the
     // declaration in work/deliverable-declaration.ts. Only live schedules count, so replacing a stopped one
     // stays allowed. allow_duplicate overrides it, the same flag as the prongs above.
+    let judged: Awaited<ReturnType<typeof declaredDeliverableShape>> | undefined;
     if (!allowDuplicate && args.repeat_interval) {
-      const shape = await declaredDeliverableShape({
+      const shape = judged = await declaredDeliverableShape({
         kind: args.kind as string | undefined,
         title,
         description: description ?? null,
@@ -683,7 +683,7 @@ export async function trackerCreateTask(agentId: string, args: Record<string, un
       // Declare what this schedule owes a person, once, after the schedule columns (whether it is scheduled
       // is an input). Idempotent and never overrides a caller who named the kind. Its runs cannot be
       // recorded complete without a message the person actually received.
-      await declareDeliverableOnSchedule(taskId);
+      await declareDeliverableOnSchedule(taskId, judged);
     }
 
     // Group assignment is validated first: an unknown group id would otherwise surface as a raw FK error.
@@ -1907,8 +1907,7 @@ export function trackerActivity(
 }
 
 
-// Renames or re-describes a project, so the PM agent can rename engine-auto-created projects (the multistep
-// classifier names them from a slice of the user prompt).
+// Renames or re-describes a project, so the PM agent can rename a project the engine opened.
 
 export function trackerEditProject(agentId: string, args: Record<string, unknown>): string {
   const rawProjectId = (args.project_id ?? args.projectId) as string | undefined;

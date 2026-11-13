@@ -73,8 +73,22 @@ describe('ARM 1 — THE DECLARATION: decided once, from the DEFINITION, never fr
       .toEqual({ shape: 'notify', rule: 'judged-by-the-decision-model' });
     modelSays(false);
     expect(await declaredDeliverableShape({ title: 'Nightly backup', description: 'back up the database every night', hasSchedule: true })).toBeNull();
+    modelSays(true);
+    expect((await declaredDeliverableShape({ title: 'Tomorrow Brief', description: 'Every morning, send me a short brief.', hasSchedule: true }))?.shape).toBe('brief');
+  });
+
+  it('1a no answer from the decision model declares it: a run must not close having told nobody', async () => {
     modelSays(null);
-    expect(await declaredDeliverableShape({ title: 'Morning update', description: 'text me', hasSchedule: true })).toBeNull();
+    expect(await declaredDeliverableShape({ title: 'Morning update', description: 'text me', hasSchedule: true }))
+      .toEqual({ shape: 'notify', rule: 'no-answer' });
+  });
+
+  it('1e a verdict the caller already has is not asked again', async () => {
+    const asked = vi.fn(async () => ({ owes_a_message: false }));
+    installJudgment(asked);
+    seedSchedule();
+    expect((await declareDeliverableOnSchedule(W, { shape: 'brief', rule: 'judged-by-the-decision-model' }))?.shape).toBe('brief');
+    expect(asked).not.toHaveBeenCalled();
   });
 
   it('1b an explicit kind from the caller ALWAYS wins, schedule or not', async () => {
@@ -90,8 +104,8 @@ describe('ARM 1 — THE DECLARATION: decided once, from the DEFINITION, never fr
   it('1e the declaration is written to the row AND audited', async () => {
     modelSays(true);
     seedSchedule();
-    expect((await declareDeliverableOnSchedule(W))?.shape).toBe('notify');
-    expect(taskOwesDeliverable(W)).toEqual({ owes: true, taskKind: 'notify' });
+    expect((await declareDeliverableOnSchedule(W))?.shape).toBe('brief');
+    expect(taskOwesDeliverable(W)).toEqual({ owes: true, taskKind: 'brief' });
     const ev = mockDb.current!.prepare(
       `SELECT payload FROM work_events WHERE work_id = ? AND kind = 'audit'
         AND json_extract(payload, '$.marker') = ?`,
