@@ -27,6 +27,9 @@ export function getBackfillProgress(): typeof backfillProgress {
  * `includeStale` also takes rows embedded by a different model than the current one and replaces them.
  * Unset, it is on only when the current model is local; the backfill route and embedding switch pass true.
  */
+// The same floor `storeEmbedding` applies, so a row it would skip is never picked (and never counted failed).
+const LONG_ENOUGH = (t: string): string => `length(trim(${t}.content, char(9, 10, 13, 32))) >= 20`;
+
 export async function runBackfill(opts?: { includeStale?: boolean }): Promise<{ completed: number; failed: number; total: number }> {
   if (backfillRunning) {
     throw new Error('Backfill is already running');
@@ -50,7 +53,7 @@ export async function runBackfill(opts?: { includeStale?: boolean }): Promise<{ 
       SELECT m.id, m.agent_id, m.content
       FROM messages m
       LEFT JOIN embeddings e ON e.source_type = 'message' AND e.source_id = m.id
-      WHERE ${todo} AND length(m.content) >= 20
+      WHERE ${todo} AND ${LONG_ENOUGH('m')}
       ORDER BY m.created_at ${dir}
       LIMIT ?
     `).all(...todoParams, BACKFILL_PER_RUN_CAP) as Array<{ id: string; agent_id: string; content: string }>;
@@ -60,7 +63,7 @@ export async function runBackfill(opts?: { includeStale?: boolean }): Promise<{ 
       SELECT s.id, s.agent_id, s.content
       FROM summaries s
       LEFT JOIN embeddings e ON e.source_type = 'summary' AND e.source_id = s.id
-      WHERE ${todo} AND s.kind != 'uncondensed'   -- t140: a not-yet-condensed note is not knowledge
+      WHERE ${todo} AND s.kind != 'uncondensed' AND ${LONG_ENOUGH('s')}
       ORDER BY s.created_at ${dir}
       LIMIT ?
     `).all(...todoParams, BACKFILL_PER_RUN_CAP) as Array<{ id: string; agent_id: string; content: string }>;
@@ -88,21 +91,9 @@ export async function runBackfill(opts?: { includeStale?: boolean }): Promise<{ 
       }),
     ].slice(0, BACKFILL_PER_RUN_CAP);
 
-    // Remaining un-embedded backlog across all sources (cheap COUNTs), so progress shows boot to boot.
-    const remaining = (() => {
-      try {
-        const c = (q: string): number => (db.prepare(q).get(...todoParams) as { c: number }).c;
-        const total =
-          c(`SELECT COUNT(*) AS c FROM messages m LEFT JOIN embeddings e ON e.source_type='message' AND e.source_id=m.id WHERE ${todo} AND length(m.content) >= 20`) +
-          c(`SELECT COUNT(*) AS c FROM summaries s LEFT JOIN embeddings e ON e.source_type='summary' AND e.source_id=s.id WHERE ${todo} AND s.kind != 'uncondensed'`) +
-          c(`SELECT COUNT(*) AS c FROM techniques t LEFT JOIN embeddings e ON e.source_type='technique' AND e.source_id=t.id WHERE ${todo}`);
-        return Math.max(0, total - items.length);
-      } catch { return null; }
-    })();
-
     backfillProgress.total = items.length;
 
-    logger.info(`Backfill started: embedding ${items.length} item(s) this run (cap ${BACKFILL_PER_RUN_CAP}); ${remaining ?? 'unknown'} still pending after this run`);
+    logger.info(`Backfill started: embedding ${items.length} item(s) this run (cap ${BACKFILL_PER_RUN_CAP})`);
 
     broadcast({
       type: 'backfill:progress',

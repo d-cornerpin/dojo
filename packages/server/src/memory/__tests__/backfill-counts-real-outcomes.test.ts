@@ -77,6 +77,12 @@ describe('backfill counts the rows that landed, not the calls that returned', ()
     expect(await runBackfill()).toEqual({ completed: 0, failed: 4, total: 4 });
   });
 
+  it('never picks a row too short to embed once its padding is trimmed', async () => {
+    insertMessage({ agentId: AGENT, role: 'user', lane: 'owner', senderId: 'owner', content: `ok${' '.repeat(12)}\n\n\t${' '.repeat(12)}`, turnNumber: 5 });
+    for (const id of messageIds) okIds.add(id);
+    expect(await runBackfill()).toEqual({ completed: 4, failed: 0, total: 4 });
+  });
+
   it('counts all 4 embedded when every row lands', async () => {
     for (const id of messageIds) okIds.add(id);
     expect(await runBackfill()).toEqual({ completed: 4, failed: 0, total: 4 });
