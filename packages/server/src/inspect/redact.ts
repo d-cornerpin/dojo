@@ -154,10 +154,11 @@ function tableRefusal(table: string): string {
 
 /** The secrets file's values (every field but the search provider's name), longest first. */
 function secretsFileValues(): string[] {
-  const s = loadSecrets();
+  let s: ReturnType<typeof loadSecrets>;
+  try { s = loadSecrets(); } catch { return []; }
   const providers = Object.values(s.providers ?? {}).flatMap((p) => [p.api_key, p.oauth_token]);
   return [s.jwt_secret, s.dashboard_password_hash, s.credential_master_key, s.search?.api_key, ...providers]
-    .filter((v): v is string => typeof v === 'string' && v.length >= 6).sort((a, b) => b.length - a.length);
+    .filter((v): v is string => typeof v === 'string' && v.length >= 16).sort((a, b) => b.length - a.length);
 }
 
 export function redactText(s: string, agentIds: readonly string[] = []): string {

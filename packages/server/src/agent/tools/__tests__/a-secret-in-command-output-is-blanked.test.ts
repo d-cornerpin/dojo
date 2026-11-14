@@ -13,10 +13,10 @@ const FAKE_KEY = 'zq7FakeProviderValue0042';
 const home = fs.mkdtempSync(path.join(process.env.DOJO_TEST_HOME_ROOT || os.tmpdir(), 'blank-secret-'));
 vi.stubEnv('DOJO_HOME', home);
 fs.mkdirSync(path.join(home, '.dojo'), { recursive: true });
-fs.writeFileSync(path.join(home, '.dojo', 'secrets.yaml'), `jwt_secret: fakejwtsecret000111\nproviders:\n  example:\n    api_key: ${FAKE_KEY}\n`, { mode: 0o600 });
+fs.writeFileSync(path.join(home, '.dojo', 'secrets.yaml'), `jwt_secret: fakejwtsecret000111\nproviders:\n  example:\n    api_key: ${FAKE_KEY}\n  local:\n    api_key: ollama\n`, { mode: 0o600 });
 fs.mkdirSync(path.join(home, 'notes'));
 fs.writeFileSync(path.join(home, 'notes', 'todo.txt'),
-  `zq7 invoice 42 is paid\ncopied ${FAKE_KEY} into the zq7 form\n-----BEGIN OPENSSH PRIVATE KEY-----\nzq7fakekeybody\n-----END OPENSSH PRIVATE KEY-----\n`);
+  `zq7 invoice 42 is paid\ncopied ${FAKE_KEY} into the zq7 form\n-----BEGIN OPENSSH PRIVATE KEY-----\nzq7fakekeybody\n-----END OPENSSH PRIVATE KEY-----\nzq7 ollama list\nzq7 {"nextPageToken": "Cj0KAQ7pageAbC"}\n`);
 
 const connection = await import('../../../db/connection.js');
 const migrations = await import('../../../db/migrations.js');
@@ -46,5 +46,12 @@ describe('a secret in command output is blanked, the rest stays', () => {
     expect(text).toContain('secrets.yaml');
     expect(text).not.toContain(FAKE_KEY);
     expect(text).not.toContain('zq7fakekeybody');
+  });
+
+  it('a short secrets value and a page token are left alone', async () => {
+    const outcome = await executeTool(MAIN, { id: 'call-short', name: 'shell', arguments: { script: `grep -h zq7 "${home}/notes/todo.txt"` } });
+    const text = toolResultOf(outcome).content;
+    expect(text).toContain('zq7 ollama list');
+    expect(text).toContain('Cj0KAQ7pageAbC');
   });
 });
