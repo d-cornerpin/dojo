@@ -11,7 +11,7 @@ import { appendWorkEvent } from './store.js';
 
 const logger = createLogger('deliverable-declaration');
 
-/** Kinds that owe a person a message; the kit mirrors them in `behavioral/lib/scheduled-run-truth.mjs`. */
+/** Kinds that owe a person a message. */
 export const DELIVERABLE_OWING_TASK_KINDS: readonly string[] = ['reminder', 'brief', 'report', 'notify'];
 
 /** The audit marker: a free string in the `audit` payload, since a new `work_events.kind` needs a table rebuild. */

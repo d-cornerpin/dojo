@@ -144,7 +144,7 @@ describe('it never throws — a stamp is an assertion, not a precondition', () =
 //   1. THE STAMP CHANGES WHEN THE LOADED CODE CHANGES. This is the whole point — a stamp that
 //      reported the same sha across two different builds would reproduce the defect with extra
 //      steps, since the three zombie servers were caught by their sha NOT having moved.
-//   2. THE PROBE READS IT BACK. The probe is kit-side (`behavioral/lib/serverstate.mjs` reads
+//   2. THE PROBE READS IT BACK. The probe is kit-side (`lib/serverstate.mjs` reads
 //      `~/.dojo/server-boot.json` and labels provenance `boot-stamp:<source>`), so the half that
 //      belongs to THIS repo is the contract: the file is at the path the probe looks at, and it
 //      carries the fields the probe reads. That is what is asserted here.

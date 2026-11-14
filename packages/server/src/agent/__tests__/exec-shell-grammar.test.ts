@@ -29,8 +29,7 @@ vi.mock('../../db/connection.js', () => ({
 
 import { checkPermission } from '../permissions.js';
 
-// The behavioral bot's real manifest (dojo-test-kit/behavioral/lib/bot.mjs) is
-// the shape that produced the red: a genuine shell-holder with a curated list.
+// The shape that produced the red: a genuine shell-holder with a curated list.
 // `seq` is listed because a command inside `$( )` needs its own row, like any other command.
 const SHELL_AGENT_ALLOW = ['ls', 'cat', 'head', 'tail', 'grep', 'find', 'wc', 'echo', 'date', 'sh', 'bash', 'node', 'chmod', 'cd', 'mkdir', 'pwd', 'seq'];
 
