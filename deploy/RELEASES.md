@@ -72,11 +72,10 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
 
 ## 3. Procedures
 
-### The release path, every candidate (owner ruling 2026-11-06)
-1. **Free readiness check.** `bash <test-kit>/checks/release-readiness.sh <checkout> <version> [--preflight] --notes-file <path>` runs the real `release.sh --dry-run` on a throwaway clone. It must say `READY FOR PAID RUN`. Report-only gates (size limits, growth, lint baseline and similar) print their results but never stop a release.
-2. **Live check.** Upgrade a copy of a lived-in box to the candidate (outbound channels off) and try every claim in the release notes by hand. Record what you saw.
-3. **One paid run.** `node behavioral/runner.mjs --targeted <version-tag>` in the test kit: two scenarios (decision-shadow-run and measured-job-finishes), 3 attempts each, all must pass. The result stays valid while no product code (`packages`, `watchdog`, `templates`, `menubar`) changes after it; gate-side or doc commits do not void it.
-4. **Owner approval, then `release.sh` for real** (Procedure A or B below).
+### The release path, every candidate
+1. **Free readiness check.** `bash <test-kit>/checks/release-readiness.sh <checkout> <version> [--preflight] --notes-file <path>` runs the real `release.sh --dry-run` on a throwaway clone. It must say `READY`. Report-only gates (size limits, growth, lint baseline and similar) print their results but never stop a release.
+2. **Scenario rounds.** Behavioral testing is the real-world scenario rounds on the dev Dojo, tracked in a claims ledger and judged by the owner. The method is in the test kit's `DOJO-DEV-AND-TESTING.md`. `release.sh` reads no behavioral marker.
+3. **Owner approval, then `release.sh` for real** (Procedure A or B below).
 
 ### A — Cut a Preflight build (test a feature on a real box)
 ```bash
@@ -124,5 +123,3 @@ The next Preflight build's base is now `new-stable + 1 patch` (the invariant in 
 - **Commits since the last tag must carry the neutral identity.** The blocking commit-identity gate (`deploy/checks/check-commit-identity.mjs`) refuses a release when any commit `PREV_TAG..HEAD` has an author or committer email that is a machine default (`.local`) or differs from this repo's configured `git config user.email`, or when that configured identity is not a GitHub noreply address (the release commit's trailer is that identity).
 - **If a release fails verification,** it printed the exact `gh release upload … --clobber` repair command; run it, then re-run `verify-release.sh`.
 - The channel toggle + updater live in `packages/server/src/gateway/routes/update.ts` (`getUpdateChannel` / `resolveLatestRelease` / `compareVersions`) and Settings → Update (`UpdateTab`).
-
-- **Skipping the behavioral-suite gate (owner-authorized only):** `bash deploy/release.sh --preflight --skip-behavioral-gate` bypasses the suite-green-marker check for that ONE invocation. Use it only when the owner explicitly said this specific push may skip the suite; it is a flag on purpose (never an env var) so it must be typed deliberately each time, the console prints a loud warning, and the release notes carry a line saying the suite was not re-run. Every other gate (smoke boot, cache-prefix determinism, dev-instrument scan, asset verification) still runs.

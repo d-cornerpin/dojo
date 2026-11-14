@@ -8,8 +8,7 @@
 // job 100 minutes later; drifted google validator maps left drive_upload +
 // sheets_append 100% dead. This gate refuses the release when any SURVIVING hand
 // list references a nonexistent tool OR the coverage-critical DERIVED
-// classifications regress. It is CHEAP and must run on EVERY cut (normal AND
-// --skip-behavioral-gate); it is never skippable.
+// classifications regress. It is CHEAP and runs on EVERY cut; it is never skippable.
 //
 // This is the standalone twin of packages/server/src/tools/__tests__/
 // tool-list-conformance.test.ts, same assertions, run at release time.

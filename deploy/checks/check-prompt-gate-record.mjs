@@ -24,10 +24,9 @@
 //  1. No record file            → REFUSE. An absence is never evidence (#15).
 //  2. Unparseable / no checks[] → REFUSE.
 //  3. platform.sha != HEAD      → REFUSE. The record must describe the tree
-//                                 being shipped, not some other one. This is
-//                                 the same hard sha match the behavioral gate
-//                                 uses (FA-D4) and it is what makes a stale
-//                                 record unusable rather than convenient.
+//                                 being shipped, not some other one. It is
+//                                 what makes a stale record unusable rather
+//                                 than convenient.
 //  4. older than the window     → REFUSE (default 24h, --max-age-hours).
 //  5. a rostered check missing  → REFUSE. Dropping a gate has to be an edit to
 //                                 the roster below, where a human sees it.
@@ -64,7 +63,10 @@ const arg = (name, dflt) => {
 };
 
 const ROOT = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim();
-const KIT = process.env.DOJO_TEST_KIT ?? path.join(ROOT, '..', 'dojo-test-kit');
+// The kit sits beside the checkout; a git worktree is one level deeper.
+const KIT = process.env.DOJO_TEST_KIT
+  ?? ['..', '../..'].map((up) => path.join(ROOT, up, 'dojo-test-kit')).find((d) => fs.existsSync(d))
+  ?? path.join(ROOT, '..', 'dojo-test-kit');
 const RECORD = arg('--record', path.join(KIT, 'checks', 'results', 'prompt-gates.json'));
 const MAX_AGE_H = Number(arg('--max-age-hours', '24'));
 const HEAD = arg('--head', execFileSync('git', ['rev-parse', 'HEAD'], { cwd: ROOT, encoding: 'utf8' }).trim());

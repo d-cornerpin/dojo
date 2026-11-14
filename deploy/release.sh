@@ -40,20 +40,12 @@ DIST="$SCRIPT_DIR/dist"
 
 DRY_RUN=0
 PREFLIGHT=0
-SKIP_BEHAVIORAL=0
 NOTES_FILE=""
 VERSION=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) DRY_RUN=1; shift ;;
     --preflight) PREFLIGHT=1; shift ;;
-    # Owner-authorized bypass of the behavioral-suite gate for THIS invocation
-    # only. Deliberately a FLAG, not an env var (env-var toggles here caused an
-    # accidental publish once; a flag must be typed on purpose, every time).
-    # Only use it when the owner explicitly said this push may skip the suite;
-    # every other gate (smoke boot, cache prefix, dev instruments, asset
-    # verification) still runs.
-    --skip-behavioral-gate) SKIP_BEHAVIORAL=1; shift ;;
     --notes-file) NOTES_FILE="${2:-}"; shift 2 ;;
     -*) echo "Unknown flag: $1" >&2; exit 2 ;;
     *) VERSION="$1"; shift ;;
@@ -94,64 +86,6 @@ trap 'echo "" >&2; echo "interrupted — cleaning up" >&2; exit 130' INT TERM
 
 fail() { echo "" >&2; echo "❌ $*" >&2; exit 1; }
 step() { echo ""; echo "▶ $*"; }
-
-# ── ONE PLACE RESOLVES THE TEST KIT (t112, 2026-10-05) ──────────────────────────────────
-# The kit is a SIBLING repo, not a submodule, and three gates below read files out of it.
-# Every one of those reads used to spell its own path as `$SCRIPT_DIR/../../dojo-test-kit`,
-# which is correct from the MAIN checkout and wrong from anywhere else: a git worktree sits
-# one level deeper, so `../..` lands in `worktrees/` and the behavioral marker, the floor
-# model and the ritual shape all resolve to a path that does not exist. The gate that reads
-# the marker then refuses with "no last-green marker at <a path nobody has>", which reads as
-# "run the suite" and is really "this checkout cannot see the kit" — and the pressure that
-# produces is `--skip-behavioral-gate`, which is the one thing these gates exist to avoid.
-#
-# So the kit is resolved ONCE, loudly, and the answer is EXPORTED: `check-ritual-parity.mjs`
-# already honours `DOJO_TEST_KIT` and already tries both layouts, so exporting what this
-# script resolved makes the bash side and the node side name the same directory instead of
-# each guessing. A caller who knows better still wins — an inherited `DOJO_TEST_KIT` is taken
-# as given and never second-guessed.
-#
-# It is a FUNCTION, called from inside the behavioral block, not a line at file scope: with
-# `--skip-behavioral-gate` the owner has said this cut does not read the kit at all, and a
-# refusal at startup would turn an authorized skip into an impossible release.
-KIT_DIR=""
-KIT_MARKER='behavioral/lib/release-ritual.mjs'
-
-# Sets KIT_DIR and exports DOJO_TEST_KIT when a kit is found; returns 1 when none is, WITHOUT
-# failing — so a `--skip-behavioral-gate` run on a box with no kit still cuts, and the gates
-# that merely prefer a kit (check-ritual-parity.mjs skips loudly without one) see the same
-# directory this script resolved rather than guessing separately.
-find_kit() {
-  [ -n "$KIT_DIR" ] && return 0
-  local declared="${DOJO_TEST_KIT:-}"
-  local c
-  if [ -n "$declared" ]; then
-    if [ -f "$declared/$KIT_MARKER" ]; then
-      KIT_DIR="$(cd "$declared" && pwd)"
-      export DOJO_TEST_KIT="$KIT_DIR"
-      return 0
-    fi
-    # A DECLARED path that is not a kit is a typo, never a box without a kit. Saying so here
-    # rather than returning 1 stops it from being silently re-guessed into a sibling.
-    fail "Test kit: DOJO_TEST_KIT=$declared carries no $KIT_MARKER, so it is not a dojo-test-kit checkout. The behavioral, floor-model and ritual gates all read their evidence out of that repo and cannot be answered from a wrong path. Point DOJO_TEST_KIT at the kit, or clear it to let this script search beside the checkout. NOT publishing."
-  fi
-  for c in "$ROOT/../dojo-test-kit" "$ROOT/../../dojo-test-kit"; do
-    if [ -f "$c/$KIT_MARKER" ]; then
-      KIT_DIR="$(cd "$c" && pwd)"
-      export DOJO_TEST_KIT="$KIT_DIR"
-      return 0
-    fi
-  done
-  return 1
-}
-
-# The same question, asked where the answer is REQUIRED: a loud refusal naming both layouts
-# it looked under, because the failure this replaces ("no last-green marker at <a path nobody
-# has>") read as "run the suite" when it meant "this checkout cannot see the kit".
-resolve_kit() {
-  find_kit && return 0
-  fail "Test kit: no dojo-test-kit found. Looked for $KIT_MARKER under $ROOT/../dojo-test-kit and $ROOT/../../dojo-test-kit. This checkout is not the one the kit sits beside (a git worktree is one level deeper than the main checkout), so the behavioral-suite, floor-model and release-ritual gates have no evidence to read and a green from them would mean nothing. Set DOJO_TEST_KIT=/path/to/dojo-test-kit and re-run. NOT publishing."
-}
 
 # Prerelease-aware "strictly greater": exit 0 iff version $1 ranks strictly
 # ABOVE version $2. Mirrors the engine's compareVersions (packages/server/src/
@@ -339,8 +273,7 @@ echo "  ✓ server, shared, dashboard typecheck clean"
 # All of these read SOURCE, so they run BEFORE the version bump, per this
 # script's own "fail before changing anything" rule — and before it, because
 # check-deletion-ratio refuses to report on a dirty tree and the bump makes the
-# tree dirty. Cheap and static (except lint, tens of seconds); none is skippable
-# and --skip-behavioral-gate does not skip any of them.
+# tree dirty. Cheap and static (except lint, tens of seconds); none is skippable.
 #
 # ONE ORDERING DEVIATION, deliberate: the 10th blocking gate,
 # check-upgrade-bypass, needs a LIVE server. It runs further down against the
@@ -380,13 +313,6 @@ RELEASE_RECORD="$(mktemp)"
 # Gate 10/10 (upgrade-header auth bypass) is declared `post-smoke` and runs further
 # down, against the packaged artifact — that difference is DECLARED in the manifest
 # rather than left to be re-derived by counting.
-# Probe for the kit BEFORE the gates run, without refusing: `check-ritual-parity.mjs` reads
-# `DOJO_TEST_KIT` and otherwise guesses between two layouts, so exporting what this script
-# resolved makes the bash side and the node side name one directory. No kit found is not a
-# refusal here — that belongs to `resolve_kit` at the behavioral gate, which is the place the
-# kit is actually REQUIRED and the place `--skip-behavioral-gate` can excuse.
-find_kit || true
-
 GATE_ROWS="$(node "$SCRIPT_DIR/checks/gate-manifest.mjs" --emit blocking pre-build)" \
   || fail "Gate manifest: deploy/checks/gate-manifest.mjs could not be read. NOT publishing."
 GATE_TOTAL="$(printf '%s' "$GATE_ROWS" | grep -c . || true)"
@@ -630,8 +556,7 @@ step "Cacheable-prefix determinism gate (C28)"
 # dead. This gate reads the freshly-BUILT dist (npm run build:package above ran
 # tsc into packages/{shared,server}/dist) and refuses to publish if any surviving
 # hand list names a nonexistent tool OR the derived classifications regress. It is
-# CHEAP and static, so it runs OUTSIDE the behavioral conditional, on EVERY cut
-# including --skip-behavioral-gate; it is never skippable. It never imports
+# CHEAP and static, so it runs on EVERY cut; it is never skippable. It never imports
 # agent/tools.ts (module-init circular import), only categories + leaf hand-list
 # modules + @dojo/shared.
 step "Tool-list conformance gate (hand lists vs. real tool surface)"
@@ -643,8 +568,7 @@ HOME="$SMOKE_HOME" DOJO_DATA_DIR="$SMOKE_HOME/.dojo/data" node "$SCRIPT_DIR/chec
 # Every prior era proved it: 8 suites sat red for up to 8 weeks (one carried a
 # real production bug, weekend reminder fires) because nothing ever ran them.
 # The full server vitest suite now runs on EVERY cut, instruments-clean, and a
-# single red refuses the release. It is never skippable; --skip-behavioral-gate
-# does not skip this (unit tests are fast; there is no excuse).
+# single red refuses the release. It is never skippable.
 #
 # PHASE-0 T13 verified this was already wired and left it exactly where it is —
 # the plan's accumulated item #3 asked the question ("does the unit suite run in
@@ -691,248 +615,6 @@ printf '%s\n' "$PG_OUT" | sed 's/^/  /'
   echo ""
 } >> "$RELEASE_RECORD"
 
-# ── Behavioral suite gate (wave-2 fix loop, 2026-07-03) ──
-# Real-model behavioral runs are slow (~25 min) and cannot run inline here, so
-# the gate checks for a RECENT full-suite green MARKER written only when every
-# scenario passed with zero blocking findings (dojo-test-kit/behavioral/
-# results/last-green.json). FA-D4: freshness is only the STALENESS FLOOR. The
-# gate must also mean "THIS change set passed." Since the owner ruling of 2026-11-06
-# that means: the marker's sha is an ancestor of the pre-bump HEAD AND no product code
-# (packages, watchdog, templates, menubar) changed between them (marker_matches_tree
-# below). Gate-side and doc commits after the paid run no longer void it.
-# (Before 2026-11-06 this HARD-MATCHED the marker's gitSha to HEAD.) HEAD is still the change-set
-# commit at this point, the version bump above is uncommitted and the release
-# commit happens later, and the runner records exactly `git rev-parse HEAD` of
-# the platform repo, so an equal-length compare is exact. A change landed after
-# the green run ⇒ HEAD moved ⇒ mismatch ⇒ refuse. Run the suite with:
-#   (cd ../dojo-test-kit && node behavioral/runner.mjs)
-step "Behavioral suite gate (paid marker, <24h AND no product code changed since it ran)"
-if [ "$SKIP_BEHAVIORAL" = "1" ]; then
-  echo "  ⚠⚠⚠ BEHAVIORAL SUITE GATE SKIPPED (--skip-behavioral-gate) ⚠⚠⚠"
-  echo "  This build ships WITHOUT a suite-green marker tied to this HEAD."
-  echo "  Only valid when the owner explicitly authorized skipping the suite"
-  echo "  for THIS push. The skip is recorded in the release notes."
-else
-# K1 (2026-07-26): the kit lives at the workspace sibling `dojo-test-kit/`
-# (the old `dev-test-tools/` path never resolved on this layout, which made
-# this gate permanently unpassable and pushed releases toward --skip).
-# t112: WHICH sibling is now `resolve_kit`'s single answer rather than a path
-# spelled again here — see its header. It refuses loudly if there is no kit.
-resolve_kit
-echo "  · test kit: $KIT_DIR"
-BEHAV_MARKER="$KIT_DIR/behavioral/results/last-green.json"
-if [ ! -f "$BEHAV_MARKER" ]; then
-  fail "Behavioral gate: no last-green marker at $BEHAV_MARKER. Run the behavioral suite to green first. NOT publishing."
-fi
-BEHAV_AGE_H=$(node -e "const s=require('fs').statSync('$BEHAV_MARKER');console.log(((Date.now()-s.mtimeMs)/3600000).toFixed(1))")
-BEHAV_SHA=$(node -e "try{console.log(require('$BEHAV_MARKER').gitSha||'unknown')}catch{console.log('unreadable')}")
-if [ "$(node -e "console.log($BEHAV_AGE_H > 24 ? 1 : 0)")" = "1" ]; then
-  fail "Behavioral gate: last-green marker is ${BEHAV_AGE_H}h old (>24h). Re-run the suite to green. NOT publishing."
-fi
-# FA-D4, relaxed by the owner ruling of 2026-11-06. The marker must carry a readable sha, that
-# sha must be an ancestor of the tree we are about to ship, and no product code may differ
-# between the two, or the "green" tells us nothing about this change. One function, so the
-# kit's release-readiness check extracts and runs these exact bytes instead of a copy.
-marker_matches_tree() {
-  # $1 = the marker's sha. Prints the refusal reason and returns 1, or returns 0.
-  if ! git merge-base --is-ancestor "$1" HEAD 2>/dev/null; then
-    echo "marker sha ${1:0:8} is not an ancestor of HEAD $(git rev-parse --short=8 HEAD) (the paid run tested a tree this one does not descend from)"
-    return 1
-  fi
-  if ! git diff --quiet "$1" HEAD -- packages watchdog templates menubar; then
-    echo "product code changed since the paid run (marker ${1:0:8}, HEAD $(git rev-parse --short=8 HEAD)); files that differ:"
-    git diff --name-only "$1" HEAD -- packages watchdog templates menubar | sed 's/^/    /'
-    return 1
-  fi
-  return 0
-}
-HEAD_SHA="$(git rev-parse HEAD)"
-if [ "$BEHAV_SHA" = "unknown" ] || [ "$BEHAV_SHA" = "unreadable" ] || [ -z "$BEHAV_SHA" ]; then
-  fail "Behavioral gate: the last-green marker has no readable gitSha, so it can't be tied to this change set. Re-run the behavioral suite to green. NOT publishing."
-fi
-if ! BEHAV_TREE_WHY="$(marker_matches_tree "$BEHAV_SHA")"; then
-  fail "Behavioral gate: the paid marker does not cover this tree: $BEHAV_TREE_WHY Re-run the paid scenarios against this HEAD. NOT publishing."
-fi
-# K1 (2026-07-26): honesty check. The marker now records strict truth
-# (green flag, per-scenario pass ratios, flake markers, known-failing list,
-# merge provenance). Refuse anything that isn't a clean, first-class green:
-#  - green !== true (covers gate-passes carried by known-failing acks)
-#  - any scenario that flaked (HARD retry rescue) or passed by SOFT minority
-#  - any known-failing entry at all
-#  - a merged marker without provenance
-# Markers written by a pre-K1 kit lack these fields entirely and are refused,
-# which forces regeneration through the hardened kit. Shipping past a known
-# failure is still possible — but only via the loud, recorded --skip flag.
-BEHAV_DISHONEST=$(node -e "
-const m=require('$BEHAV_MARKER');
-const bad=[];
-if (m.green !== true) bad.push('green!=true');
-const v=m.verdicts;
-if (!v || typeof v !== 'object') bad.push('no-verdicts(pre-hardening marker)');
-else for (const [id,x] of Object.entries(v)) {
-  if (x.flaked) bad.push(id+':flaked');
-  if ((x.attempts||0)>0 && (x.passCount||0) < x.attempts) bad.push(id+':'+(x.passCount||0)+'/'+x.attempts);
-  if (x.knownFailing) bad.push(id+':known-failing');
-}
-if (Array.isArray(m.knownFailing) && m.knownFailing.length) bad.push('knownFailing-list('+m.knownFailing.length+')');
-if (m.merged && !m.mergedFrom) bad.push('merge-without-provenance');
-console.log(bad.join(', '));
-")
-if [ -n "$BEHAV_DISHONEST" ]; then
-  fail "Behavioral gate: marker is not an honest first-class green ($BEHAV_DISHONEST). Fix and re-run the suite — or the owner explicitly authorizes --skip-behavioral-gate. NOT publishing."
-fi
-# ── The marker must have run on the DECLARED FLOOR MODEL (Phase 0 T6 + T13) ──
-# T6 made the kit RECORD which model produced a run; T13 makes the release READ
-# it. A battery green says nothing about this build unless you know what answered
-# the questions: a run on a frontier model hides exactly the failures the floor
-# model is meant to expose, and a marker from before the pin carries no modelId
-# at all and cannot be checked. Both are refusals here, because "probably the
-# right model" is the belief this whole phase exists to stop shipping on.
-FLOOR_MODEL_FILE="$KIT_DIR/behavioral/floor-model.json"
-[ -f "$FLOOR_MODEL_FILE" ] \
-  || fail "Behavioral gate: no declared floor model at $FLOOR_MODEL_FILE, so the marker's model cannot be checked against anything. NOT publishing."
-MODEL_MISMATCH=$(node -e "
-const declared = require('$FLOOR_MODEL_FILE');
-const marker = require('$BEHAV_MARKER');
-const want = declared.modelId;
-const got = marker.modelId;
-if (!want) { console.log('the floor-model declaration carries no modelId'); }
-else if (!got) { console.log('the marker carries NO modelId (a pre-pin run) — it cannot say which model produced the green; re-run the battery on the pinned kit'); }
-else if (got !== want) { console.log('the battery ran on ' + got + ', the declared floor model is ' + want + ' (' + (declared.observed && declared.observed.name || '?') + ')'); }
-")
-if [ -n "$MODEL_MISMATCH" ]; then
-  fail "Behavioral gate: $MODEL_MISMATCH. A green on an undeclared model is not evidence about this build. NOT publishing."
-fi
-# ── The marker must be a RELEASE-RITUAL marker (owner ruling 2026-09-20, REDESIGNED 2026-10-11) ──
-#
-# OWNER RULING 2026-11-06 (test simplification): the ritual is now TWO targeted scenarios,
-# decision-shadow-run and measured-job-finishes, 3 attempts each, unanimity, one dojo head. The
-# other three of the v3.5 five never caught a Dojo bug through their own pass rules. The compare
-# against HEAD moved out of this block into marker_matches_tree above (ancestor + no product
-# diff). The history below describes the five-scenario ritual it replaced.
-#
-# THE OWNER'S REDESIGN, verbatim (2026-10-11): "we need to remove the random scenarios run before
-# each cut. Instead, I want 5 targeted scenarios against the things being fixed to make sure the
-# fixes hold." So the ritual is now ONE proof, five times over: FIVE hand-authored scenarios, each
-# aimed at something THIS cut fixes, each run with 3 independent attempts and UNANIMITY required
-# (the 2026-09-20 blast discipline, generalised from one scenario to five), all five at ONE dojo
-# platform commit. The ten-random generated draw is GONE FROM THE CUT PATH — the generator and the
-# kit's `--generated` mode stay for the separate on-demand Real World protocol, and a generated
-# marker is refused here BY NAME. The v1 marker shape (blast{} + final{}) is likewise a named
-# refusal rather than a silent accept: it is a complete, once-shippable object that proves a ritual
-# this project no longer runs, so accepting it would certify a cut against the wrong evidence.
-# v3.3.2 shipped under the v1 shape; the first v2 cut is the next one.
-# THE HOLE, MEASURED: `grep -c ritual deploy/release.sh` was ZERO. The owner's ruling says every
-# cut proves its own fixes held — and the kit does assemble a
-# marker that records it (`behavioral/lib/release-ritual.mjs`). But the gate above only ever
-# asked "green, fresh, this HEAD, floor model", every one of which an ORDINARY green marker
-# satisfies. So a cut with no blast proof and no 10-family draw walked straight through the one
-# gate the ruling exists to stand behind, and nothing said the ritual had been skipped.
-#
-# The kit's own module header names this gate as the second, DELIBERATE copy of its
-# `validateReleaseRitualMarker` field checks: the release runs in bash and cannot import ESM
-# across the sibling-repo boundary, exactly as BEHAV_DISHONEST and MODEL_MISMATCH above cannot.
-# So the fields are re-expressed here, and a product-side clause
-# (`packages/server/src/update/__tests__/the-release-demands-the-ritual.test.ts`) drives THIS
-# script's block against fixture markers so the copy cannot silently rot into a weaker one. When the
-# kit's validator gains a field, this copy owes the same one: `final.drawUnsteered` + `pinnedDraws`
-# arrived that way, HOURS after the first replication, and for that window a steered rehearsal draw
-# was refused at write time and accepted here, with nothing failing. (Those two fields are now gone
-# from both sides with the rest of the ten-random draw — the lesson they taught is why the v1-to-v2
-# rewrite moved all four surfaces, this block included, in one change.)
-#
-# THAT HOLE IS NOW MACHINE-BOUND (2026-10-05): `deploy/checks/check-ritual-parity.mjs`, a blocking
-# gate in `npm run gates`, EXTRACTS both this block and BEHAV_DISHONEST above, runs them, imports the
-# kit's validator, and refuses when the two disagree about which markers are shippable — one valid
-# marker both must accept, one single-clause mutant per clause both must refuse. Deleting, weakening
-# or renaming a clause on EITHER side now reds that gate by name. The product-side clause above is
-# kept: it drives this block's refusals directly, which is a different question from parity.
-#
-# ⚠ NOT SELF-SUFFICIENT, AND THAT IS A DEPENDENCY ON ORDER (review C, L3-F5b). This block does NOT
-# re-check `green`, `verdicts[].flaked`, the known-failing list or merge provenance — the
-# BEHAV_DISHONEST (K1) block ABOVE owns those, and the kit's `validateReleaseRitualMarker` owns them
-# too on its side. So a dishonest green is refused here only because K1 already ran. MOVE OR REMOVE K1
-# AND THIS GATE STOPS CATCHING IT. The division of labour is deliberate (one copy of each question),
-# but it is an ordering contract, so: K1 stays above this block. The parity gate reads the UNION of the
-# two blocks for exactly this reason, and reds if either one goes missing or stops being read.
-RITUAL_BAD=$(node -e "
-const m = require('$BEHAV_MARKER');
-const bad = [];
-if (m.mode !== 'release-ritual') bad.push('mode=' + JSON.stringify(m.mode) + ' (needs release-ritual)');
-if (m.blast !== undefined) bad.push('marker carries the v1 blast{} object - the owner redesign of 2026-10-11 replaced the single blast-radius scenario plus the ten-random draw with FIVE hand-authored targeted scenarios, 3 attempts each, all at one dojo head. A v1 marker is not a weaker v2 marker, it is evidence about a different ritual: re-certify with --targeted <version-tag>');
-if (m.final !== undefined) bad.push('marker carries the v1 final{} object (the ten-random generated draw) - that draw was REMOVED from the cut path by the owner redesign of 2026-10-11 and no longer certifies anything. The generator and --generated mode still exist for the on-demand Real World protocol, but a generated run cannot mint a shippable marker: re-certify with --targeted <version-tag>');
-if (m.ritualVersion !== 2) bad.push('ritualVersion=' + JSON.stringify(m.ritualVersion) + ' (needs the literal 2; a marker carrying none was written by the pre-redesign kit and is refused rather than read as a v2 marker missing a field)');
-if (typeof m.targetedVersion !== 'string' || !m.targetedVersion.trim()) bad.push('targetedVersion missing - the marker cannot say WHICH cut these scenarios were authored against, and targeted scenarios are only evidence about the fixes they were aimed at');
-const t = m.targeted;
-if (!Array.isArray(t)) bad.push('no targeted[] array - the ritual requires 2 hand-authored scenarios aimed at this cut changes, each run 3 times with unanimity');
-else {
-  if (t.length !== 2) bad.push('targeted[] has ' + t.length + ' entries (needs exactly 2 - the owner number since 2026-11-06 is two scenarios, decision-shadow-run and measured-job-finishes)');
-  var seenRejudged = {};
-  var ids = t.map(function (e) { return (e && typeof e === 'object') ? e.id : null; });
-  var named = ids.filter(function (x) { return typeof x === 'string' && x.trim(); });
-  var distinct = new Set(named).size;
-  if (named.length !== t.length || distinct !== named.length) bad.push('targeted[] ids are ' + named.length + ' non-empty / ' + distinct + ' distinct of ' + t.length + ' - the ritual requires two DIFFERENT scenarios; a count alone is satisfiable by two copies of one id (or two entries with no id at all), which is one proof recorded twice');
-  t.forEach(function (r, i) {
-    var label = (r && typeof r === 'object' && typeof r.id === 'string' && r.id) ? r.id : ('targeted[' + i + ']');
-    if (!r || typeof r !== 'object') { bad.push('targeted[' + i + '] is not an object - it records no scenario, no attempts and no head'); return; }
-    if (typeof r.id !== 'string' || !r.id.trim()) bad.push('targeted[' + i + '].id missing - which scenario this entry is about is not recorded');
-    if (r.attempts !== 3) bad.push(label + ': attempts=' + JSON.stringify(r.attempts) + ' (needs exactly 3 - the standing blast discipline, owner ruling 2026-09-20)');
-    if (r.passCount !== 3) bad.push(label + ': passCount=' + JSON.stringify(r.passCount) + ' of the required 3 - unanimity means every attempt passed; a majority, a retry rescue or a short record is not a 3/3');
-    if (r.allGreen !== true) bad.push(label + ': allGreen!=true - all 3 attempts of every one of the two must have passed');
-    if (typeof r.gitSha !== 'string' || !r.gitSha) bad.push(label + ': gitSha missing - cannot prove this scenario ran at the same commit as the other one');
-    else if (m.dojoHead && r.gitSha !== m.dojoHead) bad.push(label + ' ran at ' + String(r.gitSha).slice(0, 8) + ' but the marker dojoHead is ' + String(m.dojoHead).slice(0, 8) + ' - not the same commit (a fix landed between this scenario and the other, so the two do not certify one build)');
-    // v3.4 (owner decision 22): attempts RE-JUDGED from their recording count only under the decision guards - the recording was proven complete by the self-replay at record time, the attempt ran against THIS product commit, no clause the recording held is gone, and the replay is green. Mirror of the kit validateReleaseRitualMarker block; check-ritual-parity binds them.
-    if (r.rejudged !== undefined) {
-      if (!Array.isArray(r.rejudged)) bad.push(label + ': rejudged is not an array of re-judge records');
-      else {
-        if (r.rejudged.length > (Number.isInteger(r.attempts) ? r.attempts : 0)) bad.push(label + ': ' + r.rejudged.length + ' re-judged attempts but only ' + r.attempts + ' attempts recorded - a re-judge replaces a run, it cannot add one');
-        r.rejudged.forEach(function (j, k) {
-          var where = label + ' rejudged[' + k + ']';
-          if (!j || typeof j !== 'object') { bad.push(where + ' is not an object'); return; }
-          if (typeof j.run !== 'string' || !j.run.trim() || !Number.isInteger(j.attempt)) bad.push(where + ': names no source run and attempt - what the re-judge rests on is not recorded');
-          else { var key = j.run + '/' + j.attempt + '/' + (j.scenario || label); if (seenRejudged[key]) bad.push(where + ': the same recording ' + key + ' is counted twice - re-judged attempts must be distinct'); seenRejudged[key] = true; }
-          if (j.countable !== true) bad.push(where + ': the record does not say it is countable - every decision-22 guard must hold and the re-judge says so itself');
-          if (j.selfReplayAtRecord !== true) bad.push(where + ': the recording was never proven complete - the self-replay at record time did not pass');
-          if (j.clausesLost !== 0) bad.push(where + ': ' + JSON.stringify(j.clausesLost) + ' clause(s) the recording held are no longer judged - a judge that stops asking a question is loosening, not fixing');
-          if (j.replayedPass !== true) bad.push(where + ': the replayed attempt is not green (it did not pass)');
-          if (typeof j.productShaRecorded !== 'string' || !j.productShaRecorded) bad.push(where + ': the recording names no product commit');
-          else if (m.dojoHead && j.productShaRecorded !== m.dojoHead) bad.push(where + ': the product changed since the recording - it ran at ' + String(j.productShaRecorded).slice(0, 8) + ' and the marker certifies ' + String(m.dojoHead).slice(0, 8) + ' - a re-judge may change the test only');
-          if (typeof j.judgeSourceHashNow !== 'string' || !j.judgeSourceHashNow.trim()) bad.push(where + ': no judge-source hash for the judge that re-judged it - which test change this rests on is not recorded');
-        });
-      }
-    }
-  });
-}
-if (typeof m.dojoHead !== 'string' || !m.dojoHead) bad.push('dojoHead missing');
-if (m.gitSha && m.dojoHead && m.gitSha !== m.dojoHead) bad.push('marker.gitSha != marker.dojoHead');
-if (m.fixesAfterFinalDraw !== false) bad.push('fixesAfterFinalDraw=' + JSON.stringify(m.fixesAfterFinalDraw) + ' (must be the literal false)');
-console.log(bad.join(', '));
-")
-if [ -n "$RITUAL_BAD" ]; then
-  fail "Behavioral gate: the marker is not a release-ritual marker ($RITUAL_BAD). Since the owner ruling of 2026-11-06 the ritual is TWO targeted scenarios (decision-shadow-run and measured-job-finishes), 3 green attempts each, all at one commit with no product code changed since: author them as behavioral/blast/<version-tag>/*.mjs and run \`node behavioral/runner.mjs --targeted <version-tag>\` in $KIT_DIR. The ten-random generated draw is no longer part of the cut path and a mode:'generated' marker can never certify a cut. NOT publishing."
-fi
-# The ✓ line reports `targeted.length` and each entry's OWN recorded ratio — THE FIELDS THE GATE
-# CHECKED — never a separate stored count. v1 learned this the hard way: a marker carrying `n: 3`
-# with ten families made this line announce "3 families" about a draw the gate had just accepted as
-# ten (review C, L3-F6), so the rule is that the ✓ line may only read what a clause above validated.
-echo "  ✓ release ritual proven: $(node -e "const m=require('$BEHAV_MARKER');const t=m.targeted||[];console.log(t.length+' targeted scenarios for '+(m.targetedVersion||'?')+', each '+[...new Set(t.map(r=>(r.passCount||0)+'/'+(r.attempts||0)))].join(' ')+' at '+String(m.dojoHead||'?').slice(0,8))")"
-echo "    $(node -e "const m=require('$BEHAV_MARKER');console.log((m.targeted||[]).map(r=>r.id).join(', '))")"
-echo "  ✓ battery ran on the declared floor model $(node -e "const d=require('$FLOOR_MODEL_FILE');console.log((d.observed&&d.observed.name||'?')+' ('+d.modelId.slice(0,8)+'…)')")"
-echo "  ✓ behavioral suite honest-green ${BEHAV_AGE_H}h ago at ${BEHAV_SHA:0:8}, no product code changed since (HEAD ${HEAD_SHA:0:8})$(node -e "const m=require('$BEHAV_MARKER'); if(m.merged) console.log(' [merged over '+(m.mergedFrom&&m.mergedFrom.runId||'?')+']')")"
-{
-  echo ""
-  echo "## Behavioral battery"
-  echo ""
-  node -e "
-const m=require('$BEHAV_MARKER'), d=require('$FLOOR_MODEL_FILE');
-console.log('- marker run: ' + (m.runId||'?') + '  at sha ' + String(m.gitSha||'?').slice(0,8));
-console.log('- model:      ' + (m.modelId||'(none)') + '  = declared floor model ' + ((d.observed&&d.observed.name)||'?'));
-console.log('- green:      ' + m.green + '   scenarios: ' + Object.keys(m.verdicts||{}).length);
-"
-  echo ""
-} >> "$RELEASE_RECORD"
-fi
-
 # ── Dev-instrument ship-gate (C23) ──
 # The dev-test-tools harness injects sim-outbound send-capture + /api/dev routes into
 # source (tools.ts, model.ts, imessage-bridge.ts, gateway/server.ts). uninstall.mjs
@@ -944,7 +626,7 @@ fi
 if grep -raqiE "sim-outbound|/api/dev/|DEV-INSTRUMENTS" "$SMOKE_PLATFORM/packages/server/dist" 2>/dev/null; then
   echo "  ---- offending dev-instrument references in packaged build ----"
   grep -raniE "sim-outbound|/api/dev/|DEV-INSTRUMENTS" "$SMOKE_PLATFORM/packages/server/dist" 2>/dev/null | head -10
-  fail "Dev-instrument ship-gate: packaged build still references dev instruments (sim-outbound / /api/dev). Run <dojo-test-kit>/server-instruments/uninstall.mjs (DOJO_TEST_KIT names the one this run resolved), rebuild, and re-run. NOT publishing."
+  fail "Dev-instrument ship-gate: packaged build still references dev instruments (sim-outbound / /api/dev). Run <dojo-test-kit>/server-instruments/uninstall.mjs, rebuild, and re-run. NOT publishing."
 fi
 echo "  ✓ no dev instruments (sim-outbound / /api/dev) in packaged build"
 
@@ -972,14 +654,8 @@ if [ "$DRY_RUN" = "1" ]; then
 fi
 
 # ── Release notes ──
-# The notes file was checked up front (a missing or empty one never gets here). A build cut without
-# the behavioral-suite marker says so on its release page, so that honesty line rides on a copy.
-TMP_NOTES="$(mktemp)"
-cat "$NOTES_FILE" > "$TMP_NOTES"
-if [ "$SKIP_BEHAVIORAL" = "1" ]; then
-  { echo ""; echo "Note: cut with --skip-behavioral-gate (owner-authorized); the behavioral suite was not re-run for this build."; } >> "$TMP_NOTES"
-fi
-NOTES_ARGS=(--notes-file "$TMP_NOTES")
+# The notes file was checked up front (a missing or empty one never gets here).
+NOTES_ARGS=(--notes-file "$NOTES_FILE")
 
 # ── Commit + tag + push (order preserved; each step idempotent on re-run) ──
 # FA-D3: keeping the documented order (commit → tag → push → release), every
