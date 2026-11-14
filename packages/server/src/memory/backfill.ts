@@ -23,13 +23,13 @@ export function getBackfillProgress(): typeof backfillProgress {
   return { ...backfillProgress };
 }
 
+// The same floor `storeEmbedding` applies, so a row it would skip is never picked (and never counted failed).
+const LONG_ENOUGH = (t: string): string => `length(trim(${t}.content, char(9, 10, 13, 32))) >= 20`;
+
 /**
  * `includeStale` also takes rows embedded by a different model than the current one and replaces them.
  * Unset, it is on only when the current model is local; the backfill route and embedding switch pass true.
  */
-// The same floor `storeEmbedding` applies, so a row it would skip is never picked (and never counted failed).
-const LONG_ENOUGH = (t: string): string => `length(trim(${t}.content, char(9, 10, 13, 32))) >= 20`;
-
 export async function runBackfill(opts?: { includeStale?: boolean }): Promise<{ completed: number; failed: number; total: number }> {
   if (backfillRunning) {
     throw new Error('Backfill is already running');
