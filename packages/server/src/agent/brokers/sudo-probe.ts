@@ -19,11 +19,11 @@ export function resetSudoProbeCache(): void {
 async function probePasswordless(): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
     const child = execFile('sudo', ['-n', 'true'], { timeout: SUDO_PROBE_TIMEOUT_MS }, (err) => {
-      // Any error answers NO, fail closed: a wrong "yes" hangs, a wrong "no" prints an actionable message.
+      // Any error answers NO, a spawn that throws included: a wrong "yes" hangs, a wrong "no" prints an actionable message.
       resolve(!err);
     });
     child.on('error', () => resolve(false));
-  });
+  }).catch(() => false);
 }
 
 /** The message to return instead of running a hanging sudo line; null = carry on. */
