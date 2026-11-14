@@ -635,7 +635,8 @@ step "Cacheable-prefix determinism gate (C28)"
 # agent/tools.ts (module-init circular import), only categories + leaf hand-list
 # modules + @dojo/shared.
 step "Tool-list conformance gate (hand lists vs. real tool surface)"
-node "$SCRIPT_DIR/check-tool-conformance.mjs" \
+# It loads built server modules, so it gets the smoke sandbox as its home and never opens the real database.
+HOME="$SMOKE_HOME" DOJO_DATA_DIR="$SMOKE_HOME/.dojo/data" node "$SCRIPT_DIR/check-tool-conformance.mjs" \
   || fail "Tool-list conformance gate: a tool-name list drifted from the real tool surface. NOT publishing."
 
 # ── Unit-suite gate (2026-07-21, owner ruling: suites in no gate rot silently) ──
