@@ -80,12 +80,18 @@ export const DOJO_BACKUP_DIRS: readonly string[] = ['data/backups', 'backups'];
 export const DENY_RULES: readonly DenyRule[] = [
   {
     id: 'dojo-secrets-store',
-    tiers: ['sensitive', 'global_read', 'global_write'],
+    tiers: ['sensitive', 'global_read'],
     since: 'legacy',
-    reason:
-      '~/.dojo/secrets.yaml holds the platform API keys as PLAINTEXT on disk (owner decision 2026-07-04), ' +
-      'protected only by 0600 and by this deny. It is the actual protection, not a fallback: a read would ' +
-      'return the keys in the clear into the conversation.',
+    reason: '~/.dojo/secrets.yaml holds the platform API keys as plaintext, protected only by 0600 and by this deny: '
+      + 'a read would return the keys in the clear into the conversation.',
+    test: ({ folded, home }) => folded === path.join(home, '.dojo', 'secrets.yaml'),
+  },
+  {
+    id: 'dojo-secrets-writes',
+    tiers: ['global_write'],
+    since: 'legacy',
+    exceptFor: 'main',
+    reason: 'overwriting the secrets file loses every saved key. The main agent is warned instead.',
     test: ({ folded, home }) => folded === path.join(home, '.dojo', 'secrets.yaml'),
   },
   {

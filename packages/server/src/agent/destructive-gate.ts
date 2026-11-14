@@ -77,6 +77,7 @@ export function wouldWreck(toolName: string, args: Record<string, unknown>): str
   if (FS_WRITE_TOOLS.has(toolName)) {
     const target = resolvePathArg(args.path);
     const rule = target.ok ? denyRuleFor(target.value.real, 'global_write') ?? denyRuleFor(target.value.lexical, 'global_write') : null;
+    if (rule?.id === 'dojo-secrets-writes') return 'overwrite the Dojo\'s secrets file and lose every saved key';
     return rule?.id === 'dojo-database-writes' ? 'write straight into the Dojo\'s live database file and can corrupt every agent, message and setting in it' : null;
   }
   const raw = args[EXEC_DOOR_ARG[execDoorFor(toolName) ?? 'shell']];
