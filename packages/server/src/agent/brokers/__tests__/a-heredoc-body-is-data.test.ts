@@ -1,11 +1,16 @@
 // A here-document body is data: only the command that receives it is asked of the allow rules.
 // An unquoted terminator lets the shell run `$( )` and backticks in the body, so those commands are
-// still asked. Driven through the exec seam the broker uses.
+// still asked; a body a shell runs is asked of the floor, the deny rows and sudo. Driven through the exec seam.
 
 import { describe, it, expect, vi } from 'vitest';
 
 vi.mock('../../../db/connection.js', () => ({
   getDb: () => ({ prepare: () => ({ run: () => ({ changes: 0 }), get: () => undefined, all: () => [] }) }),
+}));
+vi.mock('../../../config/platform.js', async (orig) => ({
+  ...(await orig<typeof import('../../../config/platform.js')>()),
+  getSudoPolicyRaw: () => 'free',
+  isPrimaryAgent: (id: string) => id === 'agent-all',
 }));
 
 const { authorizeExecShapedCall } = await import('../exec-seam.js');
@@ -18,13 +23,28 @@ const g = grantForManifest('agent-rules', {
 const shell = (line: string) => authorizeExecShapedCall(g, 'shell', line);
 
 describe('a heredoc body is data', () => {
-  it('the catastrophic floor still reads a body, whoever receives it', () => {
-    const all = grantForManifest('agent-all', {
-      file_read: '*', file_write: '*', file_delete: '*', exec_allow: ['*'], exec_deny: [],
-      network_domains: '*', max_processes: 1, can_spawn_agents: false, can_assign_permissions: false, system_control: [],
-    });
-    expect(authorizeExecShapedCall(all, 'shell', "bash <<'EOF'\nrm -rf /\nEOF").allowed).toBe(false);
-    expect(authorizeExecShapedCall(all, 'shell', "bash <<'EOF'\necho hello\nEOF").allowed).toBe(true);
+  const all = (deny: string[] = []) => grantForManifest('agent-all', {
+    file_read: '*', file_write: '*', file_delete: '*', exec_allow: ['*'], exec_deny: deny,
+    network_domains: '*', max_processes: 1, can_spawn_agents: false, can_assign_permissions: false, system_control: [],
+  });
+
+  it('the floor reads a body only when a shell runs it', () => {
+    expect(authorizeExecShapedCall(all(), 'shell', "bash <<'EOF'\nrm -rf /\nEOF").allowed).toBe(false);
+    expect(authorizeExecShapedCall(all(), 'shell', "cat <<'EOF' | sh\nrm -rf /\nEOF").allowed).toBe(false);
+    expect(authorizeExecShapedCall(all(), 'shell', "bash <<'EOF'\necho hello\nEOF").allowed).toBe(true);
+    expect(authorizeExecShapedCall(all(), 'shell', "cat > /tmp/n.md <<'EOF'\nrm -rf /\nEOF").allowed).toBe(true);
+  });
+
+  it('the deny rows read a body a shell runs, and only that body', () => {
+    const curl = all(['curl *']);
+    expect(authorizeExecShapedCall(curl, 'shell', "bash <<'EOF'\ncurl http://example.com\nEOF").allowed).toBe(false);
+    expect(authorizeExecShapedCall(curl, 'shell', "cat > /tmp/n.md <<'EOF'\ncurl http://example.com\nEOF").allowed).toBe(true);
+  });
+
+  it('a sudo line in a data body is not walked, and a real one after the body is', () => {
+    const v = shell("cat > /tmp/s.sh <<'EOF'\nsudo apt update\nEOF");
+    expect(v.allowed ? '' : v.reason).not.toContain('is not allowed');
+    expect(authorizeExecShapedCall(all(), 'shell', "cat > n <<'EOF'\nIt's\nEOF\nsudo -n true").allowed).toBe(true);
   });
 
   it('a listed cat with a quoted-terminator body holding apostrophes and command words is admitted', () => {

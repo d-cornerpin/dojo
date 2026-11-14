@@ -11,12 +11,12 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect } from 'vitest';
-import { commandReadsSensitiveFile, globalExecDenyPublic } from '../proc.js';
+import { commandReadsSensitiveFile, globalExecDeny } from '../proc.js';
 import { SENSITIVE_LOCATIONS, isSensitivePath } from '../deny.js';
 import path from 'node:path';
 import { homeDir } from '../../../home.js';
 
-const refused = (line: string): boolean => globalExecDenyPublic(line) !== null || commandReadsSensitiveFile(line).blocked;
+const refused = (line: string): boolean => globalExecDeny(line) !== null || commandReadsSensitiveFile(line).blocked;
 
 const ROWS: Array<{ line: string; want: boolean; why: string }> = [
   // ── controls: the plain forms, refused before and after ──

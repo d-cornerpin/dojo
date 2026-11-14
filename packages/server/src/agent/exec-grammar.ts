@@ -19,6 +19,10 @@ const NO_AUTHORITY_WORDS = new Set([
   '[', '[[', ']', ']]', 'test', 'true', 'false', ':', 'break', 'continue', 'read',
 ]);
 
+/** The shells: their `-c` text is a script, and a here-document body they receive is run. */
+export const SHELL_INTERPRETERS: ReadonlySet<string> = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'csh', 'tcsh', 'fish', 'ash', 'busybox']);
+const namesShell = (text: string): boolean => text.split(/[^\w./-]+/).some((w) => SHELL_INTERPRETERS.has(w.slice(w.lastIndexOf('/') + 1)));
+
 const ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?=/;
 const REDIRECT_RE = /^\d*(&)?[<>]/;
 
@@ -53,21 +57,20 @@ function scanParens(line: string, i: number): number {
 
 const HEREDOC_RE = /^<<(-?)[ \t]*(['"]?)([\w.-]+)\2(?=[ \t\n;&|<>()]|$)/;
 
-/** Words and separators; quoted spans and `$( )`, `${ }`, `(( ))` ride verbatim, so grammar inside them is never
- *  grammar. A here-document body is data, cut out unless it is unquoted and holds `$( )` or a backtick. */
+/** Words and separators; quoted spans, `$( )`, `${ }`, `(( ))` ride verbatim and a `#` word comments out its line. A here-document
+ *  body is data, cut unless unquoted with `$( )` or a backtick, or (`cutBodies` off) a shell is named around it; `$'` keeps all. */
 function tokenize(line: string, cutBodies = true): Tok[] {
   const toks: Tok[] = [];
   let cur = '';
   let i = 0;
   let rawEnd = false;
+  let lineStart = 0;   // a body is run when a shell is named on its command's line or after the body
   const flushWord = (): void => { if (cur) { toks.push({ text: cur, op: false }); cur = ''; } };
   const heredocs: string[][] = [];
-  let heredocsOff = !cutBodies || line.includes("$'");   // `$'` and `#` make where a here-document starts unsure
 
   while (i < line.length) {
     const c = line[i];
-    heredocsOff ||= c === '#';
-    if (c === '<' && !heredocsOff && line[i - 1] !== '<') { const h = HEREDOC_RE.exec(line.slice(i)); if (h) heredocs.push(h); }
+    if (c === '<' && !line.includes("$'") && line[i - 1] !== '<') { const h = HEREDOC_RE.exec(line.slice(i)); if (h) heredocs.push(h); }
     if (c === '\n' && heredocs.length > 0) {
       const rest = line.slice(i + 1).split('\n');
       let k = 0;
@@ -75,11 +78,13 @@ function tokenize(line: string, cutBodies = true): Tok[] {
         const first = k;
         while (k < rest.length && (dash ? rest[k].replace(/^\t+/, '') : rest[k]) !== delim) k++;
         return !/\$\(|`/.test(rest.slice(first, k++).join('\n')) || quote !== '';
-      });
+      }) && (cutBodies || !namesShell(`${line.slice(lineStart, i)}\n${rest.slice(k).join('\n')}`));
       if (data) line = line.slice(0, i + 1) + rest.slice(k).join('\n');
     }
+    if (c === '\n') lineStart = i + 1;
     const redirect = rawEnd && /[<>]$/.test(cur);   // the word so far ends in an unquoted redirect sign
     rawEnd = false;
+    if (c === '#' && cur === '') { const nl = line.indexOf('\n', i); i = nl < 0 ? line.length : nl; continue; }
     if (c === '\\' && i + 1 < line.length) { cur += line.slice(i, i + 2); i += 2; continue; }
     if (c === "'" || c === '"' || c === '`') { const end = scanQuoted(line, i); cur += line.slice(i, end); i = end; continue; }
     if ((c === '$' && '({'.includes(line[i + 1] ?? '-')) || (c === '(' && line[i + 1] === '(')) { const end = scanParens(line, c === '$' ? i + 1 : i); cur += line.slice(i, end); i = end; continue; }
@@ -146,7 +151,7 @@ function substitutionBodies(word: string): string[] {
 }
 
 /** EVERY SIMPLE COMMAND THE LINE CONTAINS, substitution bodies included: what the floor, the
- *  sudo policy and the grant rows are each asked of. The floor keeps here-document bodies (a shell may run them). */
+ *  sudo policy and the grant rows are each asked of. The floor keeps the here-document bodies a shell runs. */
 export function execSimpleCommands(command: string, cutBodies = true): string[] {
   const toks = tokenize(command, cutBodies);
   const commands: string[] = [];

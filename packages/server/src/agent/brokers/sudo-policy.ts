@@ -2,7 +2,7 @@
 // Safety: strip sudo, re-authorize the INNER command fully, then apply policy; grants are never widened.
 
 import { getSudoPolicyRaw, isPrimaryAgent } from '../../config/platform.js';
-import { commandWords, execSimpleCommands } from '../exec-grammar.js';
+import { SHELL_INTERPRETERS, commandWords, execSimpleCommands } from '../exec-grammar.js';
 // types.js is a leaf; proc.ts imports THIS module, so the verdict helpers come from the leaf, not proc.
 import { allow, deny, type Verdict } from './types.js';
 import {
@@ -124,7 +124,7 @@ const INERT_PROGRAMS: ReadonlySet<string> = new Set([
   'echo', 'printf', 'cat', 'head', 'tail', 'wc', 'grep', 'egrep', 'fgrep', 'rg', 'comm',
   ':', 'true', 'false',
 ]);
-const INTERPRETERS: ReadonlySet<string> = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'eval', 'source', '.']);
+const INTERPRETERS: ReadonlySet<string> = new Set([...SHELL_INTERPRETERS, 'eval', 'source', '.']);
 const EXECUTING_CONTEXT_RE = /\$\(|\$\{|`/;
 
 export function privilegeTokenIsQuotedData(raw: string, segments: readonly string[]): boolean {
@@ -300,8 +300,6 @@ function unwrapBodies(command: string, depth = 0): Unwrapped {
   }
   return { commands, unparseable, interactive };
 }
-
-const SHELL_INTERPRETERS: ReadonlySet<string> = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'ash']);
 
 /**
  * Quoted runs in a non-shell body ARE the reach: crude, a missed one can be root.

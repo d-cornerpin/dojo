@@ -17,7 +17,7 @@ import {
   privilegedInnerCommands,
 } from './sudo-policy.js';
 import { SUDO_UNPLACEABLE_REASON } from './sudo-copy.js';
-import { execSimpleCommands } from '../exec-grammar.js';
+import { SHELL_INTERPRETERS, execSimpleCommands } from '../exec-grammar.js';
 import {
   evaluateRules, matchCommandPattern, matchCommandDenyPattern, type Grant,
 } from './grants.js';
@@ -214,22 +214,19 @@ function sensitiveReadDeny(reason: string, basis: 'ladder-parity' | 'bypass-hard
   );
 }
 
-/** The deny scan, exported so the AppleScript broker's do shell script payload meets the same floor. */
-export function globalExecDenyPublic(trimmed: string): Verdict | null {
-  return globalExecDeny(trimmed);
-}
-
-/** SHELL authority for a line (a script, a do shell script payload): every simple command in it needs an allow row. */
-export function authorizeShellCommandText(grant: Grant, line: string, commands = execSimpleCommands(line)): Verdict {
+/** SHELL authority for a line (a script, a do shell script payload): every simple command in it needs an allow row;
+ *  the deny rows also read `runs`, every command the line runs, a shell's here-document body included. */
+export function authorizeShellCommandText(grant: Grant, line: string, commands = execSimpleCommands(line), runs = execSimpleCommands(line, false)): Verdict {
   let verdict = allow('exec-grant');
   for (const command of commands) {
-    verdict = authorizeOneCommand(grant, command, 'shell', line);
+    verdict = authorizeOneCommand(grant, command, 'shell', [line, ...runs]);
     if (!verdict.allowed) break;
   }
   return verdict;
 }
 
-function globalExecDeny(trimmed: string): Verdict | null {
+/** The deny scan, exported so the AppleScript broker's do shell script payload meets the same floor. */
+export function globalExecDeny(trimmed: string): Verdict | null {
   const asTyped = globalExecDenyOneSpelling(trimmed, 'ladder-parity');
   if (asTyped) return asTyped;
   const normalized = basenameNormalized(trimmed);
@@ -271,9 +268,9 @@ export function commandReadsSensitiveFile(command: string): { blocked: true; rea
   return { blocked: false };
 }
 
-/** One simple command's authority: deny rows on it or on its whole line (a deny may span a pipe,
+/** One simple command's authority: deny rows on it or on `runs`, the line and all it runs (a deny may span a pipe,
  *  and can only refuse), then allow rows on the command alone, glob on it or its base command. */
-function authorizeOneCommand(grant: Grant, command: string, kind: 'proc' | 'shell' = 'shell', line = command): Verdict {
+function authorizeOneCommand(grant: Grant, command: string, kind: 'proc' | 'shell' = 'shell', runs: readonly string[] = []): Verdict {
   const trimmed = command.trim();
   const lexable = kind === 'proc' || lexShellLine(trimmed) !== null;   // a shell quote left open: only `*` admits it
   const globals = globalExecDeny(trimmed);
@@ -285,7 +282,7 @@ function authorizeOneCommand(grant: Grant, command: string, kind: 'proc' | 'shel
   const baseCommand = trimmed.split(/\s+/)[0];
   const verdict = evaluateRules(grant, kind, (pattern, mode) =>
     mode === 'deny'
-      ? matchCommandDenyPattern(pattern, trimmed) || matchCommandDenyPattern(pattern, line.trim())
+      ? [trimmed, ...runs].some((run) => matchCommandDenyPattern(pattern, run.trim()))
       : (lexable || pattern === '*') && matchCommandPattern(pattern, trimmed, baseCommand));
 
   if (verdict.decided && verdict.allowed) return allow(verdict.pattern);
@@ -311,16 +308,6 @@ function authorizeOneCommand(grant: Grant, command: string, kind: 'proc' | 'shel
   );
 }
 
-
-/**
- * INLINE SCRIPT TEXT IS NOT AN ARGUMENT, AND THAT IS THE ONLY THING THE ARGV DOOR REFUSES: `sh -c`
- * is a shell script in argv's clothes, refused over EVERY element (`env FOO=1 sh -c` re-points the
- * program after argv[0] was read). Running a script FILE still runs: refusing it is a capability loss.
- */
-const SHELL_INTERPRETERS: ReadonlySet<string> = new Set<string>([
-  'sh', 'bash', 'zsh', 'dash', 'ksh', 'csh', 'tcsh', 'fish', 'ash', 'busybox',
-]);
-
 /** Programs that are not programs: shell builtins with no binary to run. */
 const SHELL_BUILTINS: ReadonlySet<string> = new Set<string>([
   'eval', 'source', '.', 'exec', 'command',
@@ -328,11 +315,13 @@ const SHELL_BUILTINS: ReadonlySet<string> = new Set<string>([
 
 const INLINE_SCRIPT_FLAGS: ReadonlySet<string> = new Set<string>(['-c', '--command', '-lc', '-ic']);
 
-/** Is this vector `<some shell> -c <script text>` in any spelling? */
+/**
+ * INLINE SCRIPT TEXT IS NOT AN ARGUMENT, AND THAT IS THE ONLY THING THE ARGV DOOR REFUSES: `sh -c`
+ * is a shell script in argv's clothes, refused over EVERY element (`env FOO=1 sh -c` re-points the
+ * program after argv[0] was read). Running a script FILE still runs: refusing it is a capability loss.
+ */
 function isInlineShellScript(argv: readonly string[]): boolean {
-  const hasInterpreter = argv.some((a) => SHELL_INTERPRETERS.has(path.basename(a)));
-  if (!hasInterpreter) return false;
-  return argv.some((a) => INLINE_SCRIPT_FLAGS.has(a));
+  return argv.some((a) => SHELL_INTERPRETERS.has(path.basename(a))) && argv.some((a) => INLINE_SCRIPT_FLAGS.has(a));
 }
 
 /** The argv door. Refusals in order: builtins and -c on the program; global deny and secrets substring
@@ -406,8 +395,9 @@ export function authorizeProc(
   // 2. the precise walk: simple commands from the shared grammar, wrappers unwrapped; a privileged
   //    segment gets full sudo authorization; floor fired and walk placed nothing: UNPLACEABLE, refused.
   const segments = execSimpleCommands(resource.raw);
+  const runs = execSimpleCommands(resource.raw, false);
   let privilegedSeen = false;
-  for (const seg of execSimpleCommands(resource.raw, false)) {
+  for (const seg of runs) {
     // The floor PER SEGMENT, not just the head program of the line (an unoverridable floor must
     // not be escapable by a pipe); its items are the catastrophic only, so this cannot lose a capability.
     const floored = globalExecDeny(seg);
@@ -436,7 +426,7 @@ export function authorizeProc(
     }
   }
 
-  return authorizeShellCommandText(grant, resource.raw, segments);
+  return authorizeShellCommandText(grant, resource.raw, segments, runs);
 }
 
 /** THE SHELL DOOR: shell({script}) under /bin/zsh -c, authorizeProc with the scan ON over shell rows. */

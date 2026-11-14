@@ -1,6 +1,6 @@
 
 import { evaluateRules, type Grant } from './grants.js';
-import { commandReadsSensitiveFile, globalExecDenyPublic, authorizeShellCommandText } from './proc.js';
+import { commandReadsSensitiveFile, globalExecDeny, authorizeShellCommandText } from './proc.js';
 import { authorizeAdminPrivilegeRequest, mentionsAdminPrivileges } from './sudo-policy.js';
 import type { ResolvedCommand } from './resolve.js';
 import { allow, deny, type Verdict } from './types.js';
@@ -11,7 +11,7 @@ const DO_SHELL_SCRIPT_RE = /\bdo\s+shell\s+script\s+("(?:[^"\\]|\\.)*"|'(?:[^'\\
 // /bin/sh, so the script body and every payload answer to the shell rules.
 export function authorizeAppleScript(grant: Grant, script: ResolvedCommand): Verdict {
   // Checking the raw body refuses a script that merely names the secret store.
-  const globals = globalExecDenyPublic(script.raw);
+  const globals = globalExecDeny(script.raw);
   if (globals) return globals;
 
   // "do shell script ... with administrator privileges" is macOS root with no
@@ -24,7 +24,7 @@ export function authorizeAppleScript(grant: Grant, script: ResolvedCommand): Ver
   for (const match of script.raw.matchAll(DO_SHELL_SCRIPT_RE)) {
     const quoted = match[1];
     const inner = quoted.slice(1, -1).replace(/\\(["'\\])/g, '$1');
-    const payloadDeny = globalExecDenyPublic(inner.trim());
+    const payloadDeny = globalExecDeny(inner.trim());
     if (payloadDeny) return payloadDeny;
     const scan = commandReadsSensitiveFile(inner);
     if (scan.blocked) {
