@@ -100,8 +100,7 @@ function skip(...lines) {
 {
   const CONTRACT_REL = 'packages/shared/src/tool-docs-health.ts';
   // `fileURLToPath`, never `new URL(...).pathname`: the latter percent-encodes, and this
-  // checkout's path contains a space. That exact idiom made every `gate-manifest --emit`
-  // print nothing at the PHASE-3 T8G merge (see check-gate-manifest.mjs §4b).
+  // checkout's path contains a space.
   const CONTRACT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..', CONTRACT_REL);
   const READS = ['expected', 'written', 'missing', 'dir', 'lastError'];
   let src = null;

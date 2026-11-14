@@ -77,18 +77,6 @@
 //   likewise tracked-only: "reached only through a test" means deleting it
 //   breaks the build, and an uncommitted test breaks nobody's build.
 //
-// ── THE OTHER FIVE `git ls-files` READERS: DECIDED, NOT OVERLOOKED ──
-// `check-bytes.mjs`, `check-ratchets.mjs`, `check-growth.mjs`,
-// `check-capability-ledger.mjs` and `check-iso-writes.mjs` enumerate the same
-// way and KEEP tracked-only, for a reason that is a property of this gate rather
-// than of them: each of those measures or ledgers the file it is looking at, so
-// an invisible file is a MISSED finding — and the finding arrives intact at the
-// commit that tracks it, because `git ls-files` covers staged files. This walk is
-// the only one whose verdict about OTHER, tracked files is wrong while a file is
-// missing. Widening the others would also make `npm run gates` red on a working
-// tree holding an ordinary untracked scratch file, which is a different rule and
-// would need the owner, not a gate edit.
-//
 // Usage: node deploy/checks/check-wiring.mjs [--verbose]
 // ════════════════════════════════════════
 import fs from 'node:fs';
@@ -414,8 +402,7 @@ const refuse = (msg) => { failed = true; console.error(`✗ wiring walk: ${msg}`
 // ════════════════════════════════════════
 // CONTROLS — the enumeration rule, driven on a SYNTHETIC tree, every run.
 // ════════════════════════════════════════
-// Same reasoning as `check-gate-manifest.mjs` §7 and `check-must-consume.mjs`'s
-// selftest: the rule that an untracked file is a resolution target but not a
+// The rule that an untracked file is a resolution target but not a
 // judged production file is the whole fix, and a rule nothing exercises is a
 // sentence. These run against hand-built sets, never the real tree, so they are
 // deterministic and cost nothing — and they bite in BOTH directions, because a

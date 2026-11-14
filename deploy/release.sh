@@ -260,31 +260,12 @@ npm run typecheck
 ( cd packages/dashboard && npx tsc --noEmit -p tsconfig.json )
 echo "  ✓ server, shared, dashboard typecheck clean"
 
-# ════════════════════════════════════════════════════════════════════════
-# THE PHASE-0 GATE STACK (wired here by PHASE-0 T13 Step 2)
-#
-# `npm run gates` is two named tiers and a release runs BOTH:
-#   gates:block (10) — each one refuses the release, in this exact order.
-#   gates:report (4) — instruments that never stop a build; their output is
-#                      CAPTURED into the release record instead of discarded,
-#                      because "reported and nobody read it" is how a phase
-#                      ends up net-positive with no accounting.
-#
-# All of these read SOURCE, so they run BEFORE the version bump, per this
-# script's own "fail before changing anything" rule — and before it, because
-# check-deletion-ratio refuses to report on a dirty tree and the bump makes the
-# tree dirty. Cheap and static (except lint, tens of seconds); none is skippable.
-#
-# ONE ORDERING DEVIATION, deliberate: the 10th blocking gate,
-# check-upgrade-bypass, needs a LIVE server. It runs further down against the
-# packaged artifact this script smoke-boots — the actual thing being shipped,
-# rather than the working tree — with --require-live so a missing server fails
-# instead of skipping. See "Upgrade-header auth-bypass gate" below.
-# ════════════════════════════════════════════════════════════════════════
+# ── The gate manifest (deploy/checks/gate-manifest.mjs) ──
+# The pre-build rows read source, so they run here, before the version bump, per
+# this script's "fail before changing anything" rule. The post-smoke rows run
+# further down, against the packaged build.
 
-# The release record collects what the report tier measured, plus every
-# acknowledged red, so the cut is described by its own outputs rather than by
-# whoever writes the notes. Copied into deploy/dist at the end.
+# The release record holds what the report tier printed. Copied into deploy/dist at the end.
 RELEASE_RECORD="$(mktemp)"
 {
   echo "# Release record — $CHANNEL_LABEL"
@@ -295,86 +276,40 @@ RELEASE_RECORD="$(mktemp)"
   echo ""
 } > "$RELEASE_RECORD"
 
-# ── THE BLOCKING GATES — read from deploy/checks/gate-manifest.mjs ──
-# There used to be nine hand-written blocks here plus a tenth further down, each
-# carrying a hand-typed `N/10` in its comment — and that comment was the ONLY thing
-# binding this list to package.json's `gates:block`. It did not hold. PHASE-1 T11
-# added `check-watchdog-sql.mjs` (renamed `check-sql-prepares.mjs` when PHASE-3 T8G
-# took it whole-tree) to `npm run gates:block` and NOT to this file, so
-# the one path that publishes to a user's box was the one path that did not run it;
-# it was found two phases later by T13 counting the tiers by hand.
-#
-# The list now lives in ONE place and both consumers read it. The first gate below is
-# `check-gate-manifest.mjs`, which refuses when the two consumers drift, when a
-# `deploy/checks/check-*.mjs` exists that no tier names, or when a release-only gate
-# goes missing from this file. Each gate's reasoning moved into the manifest and now
-# sits beside its declaration instead of beside one of its two invocations.
-#
-# Gate 10/10 (upgrade-header auth bypass) is declared `post-smoke` and runs further
-# down, against the packaged artifact — that difference is DECLARED in the manifest
-# rather than left to be re-derived by counting.
-GATE_ROWS="$(node "$SCRIPT_DIR/checks/gate-manifest.mjs" --emit blocking pre-build)" \
-  || fail "Gate manifest: deploy/checks/gate-manifest.mjs could not be read. NOT publishing."
-GATE_TOTAL="$(printf '%s' "$GATE_ROWS" | grep -c . || true)"
-# Floor 5 since the owner ruling of 2026-11-06 moved eleven gates to the report tier: the
-# pre-build blocking list is byte hygiene, names/PII, migration freeze, SQL prepares and
-# commit identity (the other three blocking gates run post-smoke, further down).
-[ "${GATE_TOTAL:-0}" -ge 5 ] \
-  || fail "Gate manifest: only ${GATE_TOTAL:-0} pre-build blocking gate(s) declared; a gate list that empties itself passes every release. NOT publishing."
-
-# ── EACH ROW'S DECLARED RELEASE ARGS ARE PASSED (t112, 2026-10-05) ──────────────────────
-# Both loops below read a `releaseArgs` column off the manifest and then ran `node $script`
-# with nothing after it. So the column was inert: a gate could be declared with a
-# release-time flag it needs — `--require-kit`, `--require-live`, `--require-artifact` are
-# all real flags that turn a SKIP into a refusal — and the release would run it without the
-# flag and accept its skip as a green. Nothing failed; the gate simply answered a weaker
-# question than the manifest said it was asked. (Harmless on the day it was found: every
-# pre-build row declared no args, and the three post-smoke rows that do are invoked by hand
-# further down WITH their flags. That is the ONLY reason it never shipped a false green.)
-#
-# `eval` and not word-splitting, deliberately: the column is declared SHELL SOURCE
-# (gate-manifest.mjs spells the post-smoke rows `"$SMOKE_PORT"`, `"$(git rev-parse HEAD)"`),
-# which is the whole point of having it — a release-time arg that cannot name a release-time
-# value is not worth declaring. The manifest is a tracked, gate-side file in this repo and
-# reaches here only through `check-gate-manifest.mjs`, which is itself gate 1/14.
-run_gate() {
-  # $1 = script path relative to ROOT, $2 = the declared args as shell source (may be empty)
-  if [ -n "$2" ]; then
-    eval "node \"\$ROOT/\$1\" $2"
-  else
-    node "$ROOT/$1"
-  fi
-}
-
-GATE_N=0
-while IFS=$'\x1f' read -r g_id g_script g_args g_title g_fail; do
-  [ -n "$g_id" ] || continue
-  GATE_N=$((GATE_N + 1))
-  step "Blocking gate $GATE_N/$GATE_TOTAL: $g_title"
-  run_gate "$g_script" "$g_args" || fail "$g_fail"
-done <<__GATE_ROWS__
-$GATE_ROWS
+# Runs every blocking manifest row of one phase, in order; the first failure refuses
+# the release. $1 = phase, $2 = the fewest rows that phase may declare (an emptied
+# list would pass every release). A row's args are shell source naming release-time
+# values such as "$SMOKE_PORT", hence eval.
+run_blocking_gates() {
+  local rows total n=0
+  rows="$(node "$SCRIPT_DIR/checks/gate-manifest.mjs" --emit blocking "$1")" \
+    || fail "Gate manifest: deploy/checks/gate-manifest.mjs could not be read. NOT publishing."
+  total="$(printf '%s' "$rows" | grep -c . || true)"
+  [ "${total:-0}" -ge "$2" ] \
+    || fail "Gate manifest: only ${total:-0} $1 blocking gate(s) declared, fewer than $2. NOT publishing."
+  while IFS=$'\x1f' read -r g_id g_script g_args g_title g_fail; do
+    [ -n "$g_id" ] || continue
+    n=$((n + 1))
+    step "Blocking gate ($1) $n/$total: $g_title"
+    eval "node \"\$ROOT/\$g_script\" $g_args" </dev/null || fail "$g_fail"
+  done <<__GATE_ROWS__
+$rows
 __GATE_ROWS__
-[ "$GATE_N" -eq "$GATE_TOTAL" ] \
-  || fail "Gate manifest: ran $GATE_N of $GATE_TOTAL declared pre-build blocking gates. NOT publishing."
-echo ""
-echo "  ✓ $GATE_N/$GATE_TOTAL pre-build blocking gates green (declared in deploy/checks/gate-manifest.mjs)"
+  [ "$n" -eq "$total" ] \
+    || fail "Gate manifest: ran $n of $total declared $1 blocking gates. NOT publishing."
+  echo ""
+  echo "  ✓ $n/$total $1 blocking gates green (declared in deploy/checks/gate-manifest.mjs)"
+}
+run_blocking_gates pre-build 5
 
-# ── The report tier — also read from the manifest ──
-# These measure rather than refuse — mixed timestamp formats, a stale resume pointer,
-# capability the tree lost, and the phase's real added/deleted/net line counts.
-# Non-negotiable #7: no phase passes or fails on a line count, but a net-positive phase
-# owes an accounting, and the accounting starts with the numbers being IN the release
-# record instead of on a terminal nobody kept. Nothing here can fail the release: a
-# report tier that can fail a release is a blocking tier wearing the wrong name.
-# The instrument list was hand-typed here too; it now comes from the same manifest, so
-# a new instrument cannot reach one consumer and miss the other.
-REPORT_ROWS="$(node "$SCRIPT_DIR/checks/gate-manifest.mjs" --emit report)" \
+# ── The report tier, read from the same manifest ──
+# These print into the release record and never refuse the release.
+REPORT_ROWS="$(node "$SCRIPT_DIR/checks/gate-manifest.mjs" --emit report pre-build)" \
   || fail "Gate manifest: the report tier could not be read. NOT publishing."
 REPORT_TOTAL="$(printf '%s' "$REPORT_ROWS" | grep -c . || true)"
-step "Report tier (${REPORT_TOTAL:-0} instruments — recorded into the release record, never blocking)"
+step "Report tier (${REPORT_TOTAL:-0} checks, recorded into the release record, never blocking)"
 {
-  echo "## Report tier (never blocking — measured, recorded, judged by the exit review)"
+  echo "## Report tier (never blocking)"
   echo ""
   echo '```'
 } >> "$RELEASE_RECORD"
@@ -382,7 +317,7 @@ REPORT_N=0
 while IFS=$'\x1f' read -r r_id r_script r_args r_title r_fail; do
   [ -n "$r_id" ] || continue
   REPORT_N=$((REPORT_N + 1))
-  R_OUT="$(run_gate "$r_script" "$r_args" 2>&1)" && R_RC=0 || R_RC=$?
+  R_OUT="$(node "$ROOT/$r_script" 2>&1 </dev/null)" && R_RC=0 || R_RC=$?
   {
     echo "── $r_id ──"
     printf '%s\n' "$R_OUT"
@@ -395,7 +330,7 @@ $REPORT_ROWS
 __REPORT_ROWS__
 echo '```' >> "$RELEASE_RECORD"
 echo "" >> "$RELEASE_RECORD"
-echo "  ✓ $REPORT_N report-tier instrument(s) captured into the release record"
+echo "  ✓ $REPORT_N report-tier check(s) captured into the release record"
 
 # ── Bump version ──
 step "Bumping root package.json → $VERSION"
@@ -479,54 +414,10 @@ fi
 }
 echo "  ✓ packaged build boots and answers on :$SMOKE_PORT — import graph resolves, migrations run, listener up"
 
-# ── Blocking gate `upgrade-bypass`, declared post-smoke in gate-manifest.mjs ──
-# Until 2026-07-26 the auth middleware returned next() for ANY request whose
-# `Upgrade` header said `websocket`, before reading a token, across the whole
-# /api/* mount — an unauthenticated GET /api/agents came back 200. The exemption
-# is now scoped to the three real WS endpoints by PATH, and this is the
-# regression gate. It uses a RAW SOCKET because undici/fetch silently refuse to
-# send an Upgrade header, so a fetch-based version passes against the vulnerable
-# build too — do not "simplify" it.
-#
-# It asks the PACKAGED ARTIFACT just smoke-booted above, not the working tree:
-# the compiled thing being shipped is what a user runs. --require-live turns the
-# offline SKIP (correct for `npm run gates`) into a failure, because a release
-# that could not ask the question must not answer it.
-step "Upgrade-header auth-bypass gate (asked of the packaged artifact, live)"
-node "$SCRIPT_DIR/checks/check-upgrade-bypass.mjs" "$SMOKE_PORT" --require-live \
-  || fail "Upgrade-header auth-bypass gate: the packaged build let an untokened request through, or no server answered. NOT publishing."
-
-# ── Blocking gate `shipped-souls`, declared post-smoke in gate-manifest.mjs ──
-# W24 and W25 measured the PM and the Trainer running the in-code STUB on a live
-# box while thousands of bytes of shipped doctrine reached no model anywhere. The
-# repair made the assembler resolve `templates/*-SOUL.md` out of the payload — so
-# it rests entirely on build-package.sh:69-71 copying those files to where the
-# COMPILED module looks. W35 proved that by replaying an install BY HAND and said
-# out loud that no gate checks it. This is that gate: it asks the unzipped
-# PACKAGED ARTIFACT, recomputing the assembler's own relative hop rather than
-# trusting the script text, and --require-artifact refuses a skip.
-step "Shipped-souls gate (the built artifact carries templates/*-SOUL.md AND src/tools/docs/*.md where the code looks)"
-node "$SCRIPT_DIR/checks/check-shipped-souls.mjs" "$SMOKE_PLATFORM" --require-artifact \
-  || fail "Shipped-souls gate: the packaged build is missing a soul template or a TOOL MANUAL, or ships one the compiled assembler / doc reader cannot resolve. NOT publishing. (Which one it is: read the gate's own output — it names the file and the directory it looked in.)"
-
-# ── Blocking gate `shipped-tool-docs`, declared post-smoke in gate-manifest.mjs ──
-# The installed-box audit's cheap gate-side close. The doc generator writes one
-# `~/.dojo/tools/<tool>.md` per registered tool at boot and counted only its
-# SUCCESSES — so a box whose docs directory was not writable logged warn lines,
-# reported `count: 0`, and served the previous version's manuals for ever. A stale
-# manual reads exactly like a current one, so nothing surfaced.
-#
-# The smoke boot above already ran the shipped artifact against $SMOKE_HOME, which
-# means the answer is sitting right here and has never been asked for. This gate asks
-# it twice over: the boot's OWN arithmetic (`/api/health` → `data.toolDocs`, the same
-# numbers the owner's Vitals card renders) and an independent count of the `.md`
-# files in that sandbox HOME — with the directory the runtime NAMES asserted to be
-# that sandbox, because a gate that counted the developer's own ~/.dojo/tools would
-# pass every time while measuring nothing. --require-boot turns the offline SKIP
-# (correct for `npm run gates`) into a failure.
-step "Shipped tool-docs gate (the boot wrote every manual the registry owed)"
-node "$SCRIPT_DIR/checks/check-shipped-tool-docs.mjs" "$SMOKE_HOME" "$SMOKE_PORT" --require-boot \
-  || fail "Shipped tool-docs gate: the packaged build booted and did not write every tool manual its own registry declares, or could not say whether it had. Agents on that build would read the PREVIOUS version's instructions, which look exactly like current ones. NOT publishing."
+# ── The post-smoke manifest rows: asked of the packaged build just booted ──
+# Each passes a flag that turns its offline skip into a failure, so a release
+# that could not ask the question does not answer it.
+run_blocking_gates post-smoke 3
 
 # The smoke server has now answered every question we have for it. Stop it
 # BEFORE the prefix-determinism gate below, which opens the same sandbox
@@ -582,39 +473,6 @@ step "Unit-suite gate (server + dashboard vitest, full run)"
   || fail "Unit-suite gate: DASHBOARD tests are red. Root-cause and fix; NOT publishing."
 echo "- unit suite: full server + dashboard vitest runs, green (never skippable)" >> "$RELEASE_RECORD"
 
-# ── Prompt-gate record (Phase 0 T13) ──
-# Four kit checks read the live server THROUGH THE DEV INSTRUMENTS —
-# check-cache-prefix, check-prompt-inventory, check-steer-delivery,
-# check-message-prefix. They can never run inside a release: the instruments
-# patch the tree being shipped, and the ship-gate below refuses any artifact
-# still carrying them. Before this step, "the cache-prefix gate stays blocking"
-# was a sentence people remembered rather than a thing the build read.
-#
-# So the release READS their recorded result instead. The record is written only
-# by `dojo-test-kit/checks/run-prompt-gates.mjs`, from the checks' own exit
-# codes, and only when it can name the tree the LISTENING SERVER was executing
-# and see the instruments installed. This gate then binds that record to THIS
-# release: same sha as HEAD, inside a freshness window, every rostered check
-# present, the two gates with no owner pointer green, and the acknowledged reds
-# carried through wearing their owners' names rather than counted as passes.
-#
-# NON-BLOCKING since the owner ruling of 2026-11-06: it runs, prints its verdict and goes into
-# the release record, and a missing, stale or red record no longer refuses the release.
-step "Prompt-gate record (cache prefix, prompt inventory, steer delivery, message prefix)"
-PG_OUT="$(node "$SCRIPT_DIR/checks/check-prompt-gate-record.mjs" --head "$(git rev-parse HEAD)" 2>&1)" && PG_RC=0 || PG_RC=$?
-printf '%s\n' "$PG_OUT" | sed 's/^/  /'
-[ "$PG_RC" -eq 0 ] || echo "  · prompt-gate record: exit $PG_RC (report only since 2026-11-06, not blocking)"
-{
-  echo ""
-  echo "## Prompt gates (recorded, report only)"
-  echo ""
-  echo '```'
-  printf '%s\n' "$PG_OUT"
-  [ "$PG_RC" -eq 0 ] || echo "(exit $PG_RC, report only, not blocking)"
-  echo '```'
-  echo ""
-} >> "$RELEASE_RECORD"
-
 # ── Dev-instrument ship-gate (C23) ──
 # The dev-test-tools harness injects sim-outbound send-capture + /api/dev routes into
 # source (tools.ts, model.ts, imessage-bridge.ts, gateway/server.ts). uninstall.mjs
@@ -631,10 +489,6 @@ fi
 echo "  ✓ no dev instruments (sim-outbound / /api/dev) in packaged build"
 
 # ── Land the release record beside the artifacts ──
-# The report tier measured things that would otherwise
-# scroll off a terminal. Non-negotiable #7 is explicit that a net-positive phase
-# owes an accounting, not a number — an accounting needs the numbers written
-# down somewhere a reviewer can open.
 RECORD_OUT="$DIST/release-record-$VERSION.md"
 cp "$RELEASE_RECORD" "$RECORD_OUT" 2>/dev/null || true
 echo ""

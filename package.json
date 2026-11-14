@@ -18,7 +18,6 @@
     "test:dashboard": "npm run test -w packages/dashboard",
     "typecheck": "tsc --noEmit -p packages/shared/tsconfig.json && tsc --noEmit -p packages/server/tsconfig.json && tsc --noEmit -p packages/dashboard/tsconfig.json",
     "lint": "eslint packages/server/src --no-inline-config",
-    "lint:types": "tsc -p tsconfig.lint.json --noEmit",
     "build:package": "bash deploy/build-package.sh",
     "release": "bash deploy/release.sh",
     "release:verify": "bash deploy/verify-release.sh",

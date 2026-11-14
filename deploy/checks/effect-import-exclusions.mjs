@@ -37,24 +37,12 @@
 //                            reason recorded (RULING P5-R15 ADDENDUM 2's own
 //                            sanctioned outcome).
 //
-// ── WHAT KEEPS THIS LIST HONEST ──
-// `check-lint-baseline.mjs` censuses it on every gate run: an entry naming a
-// file that does not exist FAILS; an entry naming a file that no longer holds a
-// restricted import FAILS (a stale exclusion cannot rot into a permission); a
-// file that holds one and is NOT here FAILS, naming the file. So the list is
-// exactly the measured set, and adding to it is a hand edit somebody reviews.
-//
 // ── THE REFUSALS THAT SHAPED IT (RULING P5-R12, restated because they bind) ──
 // Never move a site between classes to make the count fall. Never route
 // platform-internal machinery through agent-facing brokers. Both were live
 // temptations here and both were refused; the per-file `why` of every honest
 // label says what was measured instead.
 //
-// PROVENANCE, said plainly: the class of every entry below is the classification
-// two independent read-throughs produced at PHASE-5 T7 (`lint-baseline.json`
-// `$classification-no-restricted-imports`) plus every amendment recorded since.
-// This task re-derived the SET by the recorded command at its own HEAD with zero
-// drift, and re-read from scratch only the files it acted on.
 // ════════════════════════════════════════════════════════════════════════════
 
 /**

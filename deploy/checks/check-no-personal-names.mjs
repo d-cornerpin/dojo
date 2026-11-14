@@ -35,8 +35,7 @@
 // Three reviewers of the v3.3 campaign found the same hole independently: tests, `deploy/checks/**`
 // and the root gate JSON were excluded BY DESIGN, so the owner's rule was enforced on them by review
 // only — and review missed the owner's own first name in a fixture, his agents' names in 169 test
-// files, his real email addresses and GitHub handle in four more, and three measurement notes in
-// `ratchets.json` that name the box's agents. The rule says "anything that goes live". THIS
+// files, and his real email addresses and GitHub handle in four more. The rule says "anything that goes live". THIS
 // REPOSITORY IS PUBLIC, so a name in a test file is published the moment it is pushed, exactly as
 // surely as a name in a comment that compiles into `dist`. Hence two corpora:
 //
@@ -55,10 +54,9 @@
 //     tests ship as well — that file-shape used to need its own clause and no longer does, because
 //     the two corpora together cover it either way.)
 //   · `watchdog/src/**/*.ts` — product code that the packager builds separately.
-//   · `deploy/checks/**` — the gate sources, their fixtures, `gate-manifest.mjs`,
-//     `growth-baseline.json`, `spine-manifest.json` and `capability-ledger.csv`.
-//   · `deploy/release.sh`, `ratchets.json`, `lint-baseline.json` — the pin and ritual files, whose
-//     `why` prose is where worker measurement notes name the box's agents.
+//   · `deploy/checks/**`: the gate sources, their fixtures, `gate-manifest.mjs` and
+//     `spine-manifest.json`.
+//   · `deploy/release.sh`.
 //
 // ── WHAT IS NOT A LEAK, AND WHY EACH EXEMPTION IS SAFE ──
 //   · THE SERVICE-AGENT ROLE NAMES (`Agent`, `PM`, `Trainer`, `Imaginer`, `Healer`, `Dreamer`) are
@@ -109,7 +107,6 @@ const PUBLIC = [
   /^watchdog\/src\/.*\.ts$/,
   /^deploy\/checks\/.*$/,
   /^deploy\/release\.sh$/,
-  /^(?:ratchets|lint-baseline)\.json$/,
 ];
 
 function scannedFiles() {

@@ -350,8 +350,7 @@ if (!fs.existsSync(shippedGenerator)) {
 
 // ════════ 5. control: this gate refuses what it is supposed to refuse ════════
 // Ships WITH the gate and runs on every invocation, so "the detector still bites" is a fact
-// this file proves about itself rather than something someone checked once. Same practice as
-// check-gate-manifest.mjs §7 and check-must-consume.mjs's planted-fault selftest.
+// this file proves about itself rather than something someone checked once.
 {
   const detects = (dir) => {
     const anchor = path.join(dir, 'packages', 'server', 'dist', 'prompt');

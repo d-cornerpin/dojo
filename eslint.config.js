@@ -1,41 +1,14 @@
-// ════════════════════════════════════════
-// The repo's first-ever eslint config (Phase 0 T3).
-//
-// WARN-ONLY, ON PURPOSE. This codebase has hundreds of pre-existing findings
-// for these five rules. Turning any of them into an error today would make the
-// tree unshippable, and an unshippable gate gets bypassed, then deleted. So the
-// severity is `warn` and the ENFORCEMENT lives elsewhere: lint-baseline.json
-// pins today's per-rule counts and deploy/checks/check-lint-baseline.mjs fails
-// the build if any of them rises. The findings can only go down. That ratchet
-// is the mechanism — not the severity.
-//
-// Scope is packages/server/src only. Step 1 of the plan says "server package
-// first"; widening the scope later is a deliberate, reviewable edit that shows
-// up as new baseline entries, exactly like a ratchet ceiling raise.
-//
-// Test files are excluded because packages/server/tsconfig.json excludes them,
-// and the type-aware rules below need every linted file to belong to that
-// project. The two exclusions must stay in sync.
-//
-// EVERY invocation that feeds a number passes `--no-inline-config`. A
-// decrease-only baseline that a `// eslint-disable-next-line no-empty` comment
-// can lower is not a ratchet, it is a suggestion; with the flag, a finding can
-// only leave the count by being FIXED. (The flag lives in the npm scripts and in
-// check-lint-baseline.mjs rather than in `linterOptions.noInlineConfig` here,
-// because the config-level switch makes ESLint emit a fresh warning for every
-// directive it ignored — 52 of them — which is the noise we are removing.)
-//
-// Run:  npm run lint          (human-readable)
-//       npm run gates         (the ratchet — this is what refuses)
-// ════════════════════════════════════════
+// ESLint config for `npm run lint`. Scope is packages/server/src, tests excluded
+// because the server tsconfig excludes them and the type-aware rules need every
+// linted file to belong to that project. Rules are `warn` except the fs/proc
+// import restriction, which is an error outside its named exceptions.
 import tseslint from 'typescript-eslint';
 import { EFFECT_IMPORT_EXCLUDED_FILES } from './deploy/checks/effect-import-exclusions.mjs';
 
 // Node builtins that reach the filesystem or spawn processes. ENFORCED as of
 // PHASE-5 T8 Step 4: everything an agent can reach performs its fs/proc work
 // through `agent/effects/*`, behind the per-call capability the executor's gate
-// loop mints. The exceptions are a NAMED LIST with a reason each, imported
-// above, and `check-lint-baseline.mjs` censuses that list on every gate run.
+// loop mints. The exceptions are a NAMED LIST with a reason each, imported above.
 const RESTRICTED_EFFECT_MODULES = [
   'fs',
   'node:fs',
@@ -57,8 +30,7 @@ export default [
       parser: tseslint.parser,
       parserOptions: {
         // Type-aware linting: no-floating-promises cannot work without it.
-        // A misconfigured project here reports ZERO findings silently, which is
-        // why the baseline check treats a 0 for that rule as a config bug.
+        // A misconfigured project here reports ZERO findings silently.
         project: ['./packages/server/tsconfig.json'],
         tsconfigRootDir: import.meta.dirname,
       },
@@ -70,7 +42,7 @@ export default [
       // The tree already carries 52 `eslint-disable` comments (written before
       // this config existed; every one of them names a rule this config does not
       // enable). Reporting each as "unused" would put 52 findings about a MISSING
-      // config into a baseline that is supposed to describe the CODE.
+      // config into a report that is supposed to describe the CODE.
       reportUnusedDisableDirectives: 'off',
     },
     rules: {
@@ -99,7 +71,7 @@ export default [
       // from `agent/tools/**`, because `logger.ts` and `db/connection.ts` are
       // reachable from everything. A computed set excludes nearly the whole tree
       // or nothing at all. The question is what the CALL acts on, not what the
-      // module graph permits — so it is written down, and censused.
+      // module graph permits, so it is written down.
       'no-restricted-imports': [
         'error',
         {
@@ -132,11 +104,7 @@ export default [
     //
     // These files keep the import ON PURPOSE, each for a reason written beside
     // it in `deploy/checks/effect-import-exclusions.mjs`. The severity drops to
-    // `warn` rather than `off` deliberately: `lint-baseline.json` keeps counting
-    // them, so the pin still may only FALL and a class that stops shrinking is
-    // visible. Turning them off would delete the measurement along with the
-    // refusal, and the direction is the thing that has protected this surface
-    // for five phases.
+    // `warn` rather than `off` so `npm run lint` still lists them.
     files: EFFECT_IMPORT_EXCLUDED_FILES.map((f) => `packages/server/src/${f}`),
     rules: {
       'no-restricted-imports': [

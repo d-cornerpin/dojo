@@ -1,71 +1,26 @@
 #!/usr/bin/env node
-// ════════════════════════════════════════
-// THE GATE MANIFEST — one declared list, both consumers.
+// The gate manifest: the one list of release checks that run as a plain node script.
+// `npm run gates` runs it through run-gates.mjs; deploy/release.sh reads it with `--emit`.
 //
-// ── WHY THIS EXISTS ──
-// There were two hand-maintained lists of the same gates: `package.json`'s
-// `gates:block` / `gates:report` scripts, and `deploy/release.sh`'s hand-written
-// steps. The ONLY thing binding them was a hand-typed `N/10` in a release.sh comment.
+//   tier   blocking  a failure refuses the build and the release.
+//          report    runs and prints into the release record; never refuses.
+//   phase  pre-build   reads source; runs in release.sh's opening block.
+//          post-smoke  asks the packaged build release.sh has just smoke-booted.
+//   releaseArgs  shell source release.sh appends to the call (post-smoke rows only).
 //
-// That is not a hypothetical: PHASE-1 T11 built `check-watchdog-sql.mjs` (renamed
-// `check-sql-prepares.mjs` at the T8G merge — see that entry) and wired it
-// into `npm run gates:block` but NOT into release.sh — so the one path that publishes
-// to a user's box was the one path that did not run it. It was found by T13 counting
-// the tiers BY HAND (package.json had 9 blocking checks, release.sh described 8), and
-// release.sh:355-363 still says so in its own words. A gate that only runs on the
-// developer's machine is a gate the release does not have.
-//
-// So the list lives here, once. `package.json` runs it through `run-gates.mjs`;
-// `release.sh` reads it with `--emit` and runs each entry with its own `step`/`fail`.
-// `check-gate-manifest.mjs` refuses when a `deploy/checks/check-*.mjs` file exists
-// that this list does not name, when either consumer stops reading this list, or when
-// a declared release-only gate has vanished from release.sh.
-//
-// ── THE THREE TIERS, AND WHY release.sh RUNS MORE THAN `npm run gates` ──
-//   blocking      both consumers. Refuses the build and refuses the release.
-//   report        both consumers. Measures and records; never blocks (non-negotiable
-//                 #7 — no phase passes or fails on a line count).
-//   release-only  release.sh ONLY, and DECLARED here rather than omitted, because
-//                 "the lists differ" must be a readable fact instead of a discrepancy
-//                 someone re-derives by counting. Each needs something `npm run gates`
-//                 does not have: a packaged artifact, a live smoke server, a full
-//                 build, or a recorded marker tied to HEAD.
-//
-// ── PHASE ──
-// `pre-build` runs in release.sh's opening gate block. `post-smoke` needs the packaged
-// build already smoke-booted, so release.sh invokes it inline at that point and this
-// manifest records that it does. `n/a` is for release-only entries whose runner is
-// release.sh's own shell (a `cd`, an env, a subshell) rather than a plain node call.
-// ════════════════════════════════════════
+// release.sh also runs steps that are its own shell and so are not listed here:
+// typecheck, embedded version, smoke boot, cache-prefix determinism, tool-list
+// conformance and the unit suite.
 
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const GATES = [
-  // ════════ blocking ════════
-  // Owner ruling 2026-11-06 (test simplification): ten entries in this block now carry
-  // tier 'report' in place (gate-manifest, size-ratchets, growth-detector, lint-baseline,
-  // orphan-structures, module-wiring, watchdog-contract, waiver-budget, must-consume,
-  // test-cold-imports). In five weeks they refused releases for bookkeeping
-  // and never for a real Dojo bug, so they still run and print, and never refuse.
-  // What still blocks: the build works, safety, names/PII, bytes, migrations, SQL,
-  // commit identity, the post-smoke checks, and the release-only list below.
-  {
-    id: 'gate-manifest',
-    tier: 'report', // owner ruling 2026-11-06: runs and prints, never refuses
-    phase: 'pre-build',
-    script: 'deploy/checks/check-gate-manifest.mjs',
-    args: [],
-    title: 'Gate-manifest conformance (one declared list, both consumers read it)',
-    fail: 'Gate-manifest conformance: a checker no list names, a consumer that stopped reading the manifest, or a declared release-only gate missing from this file. NOT publishing.',
-    why: 'First in the chain on purpose: every gate after it is named by the list this one checks. It is the replacement for the hand-typed `N/10` comment that used to be the only binding between package.json and release.sh.',
-  },
   {
     id: 'byte-hygiene',
     tier: 'blocking',
     phase: 'pre-build',
     script: 'deploy/checks/check-bytes.mjs',
-    args: [],
     title: 'Byte-hygiene gate (no bytes that blind grep or deceive review)',
     fail: 'Byte-hygiene gate: tracked source carries NUL/control/bidi/zero-width bytes. NOT publishing.',
     why: 'NUL and C0 control bytes make a file BINARY to plain grep, which then reports no match and looks clean — that is how the dev-instrument ship gate spent months blind to the two largest files in this tree. Bidi/zero-width characters are the render-time version of the same trick. Early in the chain on purpose: every gate after it greps something.',
@@ -75,7 +30,6 @@ export const GATES = [
     tier: 'blocking',
     phase: 'pre-build',
     script: 'deploy/checks/check-no-personal-names.mjs',
-    args: [],
     title: 'Names/PII gate (no person or agent name in anything that ships)',
     fail: 'Names/PII gate: a shipped surface carries a person\'s or an agent\'s name. NOT publishing.',
     why: 'The owner\'s rule of 2026-09-26 — "in no code, comments, or documentation that goes live should we be including any agents names, peoples names, identifiable information of any kind" — and the v3.2.0 audit measured the shipped tree breaking it in 109 places across 51 files, one of them the owner\'s own credential inventory as string literals in a live data structure. Comments SHIP: `tsconfig.base.json` sets no `removeComments`, so a worker\'s measurement note naming the box\'s agents reaches every user\'s disk, and the repository is PUBLIC. The one-time scrub is batches A-C; this is what stops the inflow, because notes naming agents are a steady-state habit rather than a one-off mess. TWO HALVES, and neither may embed a name in this repo: the ROSTER half reads `agents.name` from the local database AT CHECK TIME (nothing written down, whole-word and case-sensitive so a vendor voice id is not a name, role names subtracted by reading `config/platform.ts`\'s own defaults) and SKIPS LOUDLY with no database rather than passing silently; the PATTERN half holds SHAPES only — a home-path username, an email address, a quoted GitHub handle — each with a fixture row proving what it catches AND what it ignores, and the gate refuses if its own fixture table fails. Early, pre-build, beside byte-hygiene: it is a text scan over tracked files and needs no build.',
@@ -85,67 +39,33 @@ export const GATES = [
     tier: 'blocking',
     phase: 'pre-build',
     script: 'deploy/checks/check-migration-freeze.mjs',
-    args: [],
     title: 'Migration freeze (a migration a box may have applied never changes)',
     fail: 'Migration freeze: a migration a box may already have applied changed. That box keeps the old bytes and warns at every boot. NOT publishing.',
     why: 'Migrations are raw-copied into the package and `_migrations.checksum` records the bytes a box applied, so an edit to a released (or branch-committed) migration never reaches that box: the change belongs in a new numbered file. The gate compares each such version against the tree with the runner\'s own checksum.',
   },
   {
-    id: 'size-ratchets',
-    tier: 'report', // owner ruling 2026-11-06: runs and prints, never refuses
-    phase: 'pre-build',
-    script: 'deploy/checks/check-ratchets.mjs',
-    args: [],
-    title: 'Size-ratchet gate (files may only shrink; new files may not balloon)',
-    fail: 'Size-ratchet gate: a pinned file grew past its ratchet, a pinned file vanished without its manifest entry, or an unlisted new file exceeded the cap. NOT publishing.',
-    why: 'The overhaul exists to shrink this codebase, and nothing shrinks by itself: the god files got that way one "just five more lines" at a time, over two years, with no gate that could see it. ratchets.json pins every large source file at its measured wc -l; a pinned file may shrink but never exceed its pin, and any unlisted source file above the new-file cap fails too. Reads SOURCE, not the packaged dist.',
-  },
-  {
-    id: 'growth-detector',
-    tier: 'report', // owner ruling 2026-11-06: runs and prints, never refuses
-    phase: 'pre-build',
-    script: 'deploy/checks/check-growth.mjs',
-    args: [],
-    title: 'Growth-detector gate (no file balloons past its recorded baseline)',
-    fail: 'Growth-detector gate: a file grew >25% above its baseline, or an unlisted file crossed 60% of the new-file cap. NOT publishing.',
-    why: 'The ratchet governs files it already knows about. This is the other half: a file more than 25% above its recorded baseline, or a NEW unlisted file that crosses 60% of the new-file cap, fails — so a god file is argued about while it is still cheap to argue about, not after it passes 400 lines.',
-  },
-  {
-    id: 'lint-baseline',
-    tier: 'report', // owner ruling 2026-11-06: runs and prints, never refuses
-    phase: 'pre-build',
-    script: 'deploy/checks/check-lint-baseline.mjs',
-    args: [],
-    title: 'Lint-baseline gate (per-rule finding counts are decrease-only)',
-    fail: 'Lint-baseline gate: an eslint rule or unused-symbol diagnostic rose above its pinned count in lint-baseline.json. NOT publishing.',
-    why: 'The eslint rules are all `warn` because the tree has hundreds of pre-existing findings and error-mode would be unshippable — so lint-baseline.json is the enforcement instead: every count is pinned PER RULE and may only fall. Slower than the others (type-aware eslint plus a full tsc pass) and still never skippable: a gate that only runs on the good days is a habit, not a gate.',
-  },
-  {
     id: 'orphan-structures',
-    tier: 'report', // owner ruling 2026-11-06: runs and prints, never refuses
+    tier: 'report',
     phase: 'pre-build',
     script: 'deploy/checks/check-orphans.mjs',
-    args: [],
     title: 'Orphan-structure gate (no undeclared work-shaped table; every spine structure read, waived or owed)',
     fail: 'Orphan-structure gate: an undeclared work-shaped table, a manifest entry that stopped describing the schema, or a spine structure with no production reader and no dated disposition. NOT publishing.',
     why: 'Two rules, one checker. The spine READER rule was log-only through Phases 0 and 1 and BLOCKS from the PHASE-1 exit (2026-07-28, T13). The flip changed the checker\'s DEFAULT rather than adding an env var to the invocation, and that was the point: this invocation passes no environment, so an env-var-only flip would have left the release path measuring nothing. The WORK-SHAPED TABLE rule blocks from day one: any table carrying an agent link and a state column must be declared in spine-manifest.json, which is the machine check for the plan\'s own falsifier. Reads SOURCE and the migration chain, never the live ~/.dojo database.',
   },
   {
     id: 'module-wiring',
-    tier: 'report', // owner ruling 2026-11-06: runs and prints, never refuses
+    tier: 'report',
     phase: 'pre-build',
     script: 'deploy/checks/check-wiring.mjs',
-    args: [],
     title: 'Module wiring walk (no unreached production file without a dated allowlist line)',
     fail: 'Wiring walk: a production file no entry point reaches with no allowlist entry, a stale allowlist entry, a missing entry point, or an unresolved relative import. NOT publishing.',
     why: 'The orphan gate works a column at a time and cannot see a WHOLE MODULE that no longer hangs off any entry point. This walk does: it starts at the four real entry points and reports the production files it never reaches. It refuses a NEW unreached file, a stale allowlist entry, a missing entry point, and an unresolved relative import (a hole in the walk means the lists cannot be trusted). It never asks anyone to delete anything: the fix is to wire the file or write down why it survives.',
   },
   {
     id: 'watchdog-contract',
-    tier: 'report', // owner ruling 2026-11-06: runs and prints, never refuses
+    tier: 'report',
     phase: 'pre-build',
     script: 'deploy/checks/check-watchdog-contract.mjs',
-    args: [],
     title: 'Watchdog/platform contract gate (hand-synced copies must not drift)',
     fail: 'Watchdog contract gate: the hand-synced update-state copies disagree, a new undeclared copy appeared, or watchdog/src imported platform code. NOT publishing.',
     why: 'The watchdog must keep working while the platform will not boot, so it cannot import platform code — which means the update-state contract (boot-attempt limit, wall clock, rollback cap, phase names, marker shape) is HAND-COPIED into both packages with a comment as the only thing binding them. If the copies drift, nothing fails and nothing warns; the divergence surfaces during a failed self-update, i.e. on a user\'s box, mid-incident, deciding whether to roll back. This gate is the binding.',
@@ -155,27 +75,15 @@ export const GATES = [
     tier: 'blocking',
     phase: 'pre-build',
     script: 'deploy/checks/check-sql-prepares.mjs',
-    args: [],
     title: 'SQL-prepares gate (every statement in the tree prepares against the migrated schema)',
     fail: 'SQL-prepares gate: a statement does not prepare against the schema the migration chain produces. NOT publishing.',
     why: 'ADDED AT THE PHASE-1 EXIT AND THE GAP IS THE POINT: T11 built this check and wired it into `npm run gates:block`, but not into the release stack — so the one path that publishes to a user\'s box was the one path that did not run it. That gap is the reason this manifest exists. T10 found both halves of watchdog supervision silently dead for a day because `watchdog/` sits outside every `packages/` scan; PHASE-3 T8G took the gate whole-tree (1,800 statements) after fixing five defects in the guard itself. Repo contained: the live ~/.dojo database is never consulted.',
-  },
-  {
-    id: 'waiver-budget',
-    tier: 'report', // owner ruling 2026-11-06: runs and prints, never refuses
-    phase: 'pre-build',
-    script: 'deploy/checks/check-waivers.mjs',
-    args: [],
-    title: 'Waiver-budget gate (counted Gate-Waiver trailers across the arc)',
-    fail: 'Waiver-budget gate: more waivers across this arc than the budget allows. The gate being waived is the thing to fix. NOT publishing.',
-    why: 'The pre-committed consequence for "gates get waived": every waiver is a counted commit trailer, and more than ~5 across an arc means the RULE is wrong. Over budget the finding is a mis-scoped gate to re-aim, never a habit to hide.',
   },
   {
     id: 'commit-identity',
     tier: 'blocking',
     phase: 'pre-build',
     script: 'deploy/checks/check-commit-identity.mjs',
-    args: [],
     title: 'Commit-identity gate (no machine-default author or committer since the last release)',
     fail: 'Commit-identity gate: a commit since the last release tag carries a machine-default or non-neutral identity (or this repo\'s configured identity is not a noreply address). NOT publishing.',
     why: 'A commit made on a box with no identity configured takes the machine default, a real name and user@Hostname.local, and a release publishes that history for ever. The owner set the neutral identity repo-locally on 2026-10-19; nothing checked it. This lists every commit PREV_TAG..HEAD whose author or committer email is on a .local host or differs from the repo\'s configured noreply identity, and refuses a repo whose own configured identity is not neutral (the release commit would carry it).',
@@ -185,189 +93,39 @@ export const GATES = [
     tier: 'blocking',
     phase: 'post-smoke',
     script: 'deploy/checks/check-upgrade-bypass.mjs',
-    args: [],
     releaseArgs: ['"$SMOKE_PORT"', '--require-live'],
     title: 'Upgrade-header auth-bypass gate (asked of the packaged artifact, live)',
     fail: 'Upgrade-header auth-bypass gate: the packaged build let an untokened request through, or no server answered. NOT publishing.',
     why: 'Blocking in BOTH consumers, but it cannot run in the opening block: it asks the PACKAGED ARTIFACT just smoke-booted, not the working tree, because the compiled thing being shipped is what a user runs. `--require-live` turns the offline SKIP (correct for `npm run gates`) into a failure, because a release that could not ask the question must not answer it. release.sh therefore invokes it inline after the smoke boot; that is recorded here so the difference is declared rather than discovered.',
   },
-
   {
     id: 'shipped-souls',
     tier: 'blocking',
     phase: 'post-smoke',
     script: 'deploy/checks/check-shipped-souls.mjs',
-    args: [],
     releaseArgs: ['"$SMOKE_PLATFORM"', '--require-artifact'],
     title: 'Shipped-souls gate (the built artifact carries templates/*-SOUL.md AND src/tools/docs/*.md where the code looks)',
     fail: 'Shipped-souls gate: the packaged build is missing a soul template or a TOOL MANUAL, or ships one the compiled assembler / doc reader cannot resolve. NOT publishing. (Which one it is: read the gate\'s own output — it names the file and the directory it looked in.)',
     why: 'UX-REPAIR T55, and the gap it closes was found by hand twice. W24 and W25 measured the PM and the Trainer running the in-code STUB (961 B and 3,023 B) while 13,593 B and 8,074 B of shipped doctrine reached no model on any box; the repair made the assembler resolve `templates/*-SOUL.md` out of the payload. That repair rests entirely on `build-package.sh:69-71` copying those files to where the COMPILED module looks — and W35 (HU-1) proved it only by replaying an install by hand, saying out loud that no gate checks it. Drop those two lines and every PM and Trainer silently reverts to the stub with nothing failing. Post-smoke because it asks the unzipped PACKAGED ARTIFACT, not the script text: it recomputes `platformTemplateSearchPaths`\'s own relative hop from the artifact\'s `packages/server/dist/prompt/` and demands each soul be there, byte-identical to the repo template when the artifact is of this tree. Offline it SKIPS loudly, exactly like the upgrade-bypass gate; the release passes --require-artifact so a skip cannot stand in for an answer.',
   },
-
   {
     id: 'shipped-tool-docs',
     tier: 'blocking',
     phase: 'post-smoke',
     script: 'deploy/checks/check-shipped-tool-docs.mjs',
-    args: [],
     releaseArgs: ['"$SMOKE_HOME"', '"$SMOKE_PORT"', '--require-boot'],
     title: 'Shipped tool-docs gate (the boot wrote every manual the registry owed)',
     fail: 'Shipped tool-docs gate: the packaged build booted and did not write every tool manual its own registry declares, or could not say whether it had. Agents on that build would read the PREVIOUS version\'s instructions, which look exactly like current ones. NOT publishing.',
     why: 'The installed-box audit, 2026-09-26: the doc generator wrote each `~/.dojo/tools/<tool>.md` inside its own try/catch, logged `warn` on failure and counted only successes. An unwritable docs directory does not make `mkdirSync(…, {recursive:true})` throw — the directory already exists — so a box produced N warn lines, `count: 0`, an INFO line reading "Tool docs generated", and served the previous version\'s manuals for ever. The failure is silent by construction: a stale manual reads exactly like a current one. The runtime half shipped (`tools/doc-freshness.ts` compares written against the registry, speaks at ERROR, and reaches `/api/health` as `data.toolDocs` and the Vitals card through `@dojo/shared`\'s `toolDocsShortfall`); this is the question nobody asked at the one moment it is cheap — does the thing we are about to publish actually do it. Post-smoke because it asks the ARTIFACT: the release already unzips the package, installs it and boots it against a scratch HOME, so this reads that boot. DOUBLE ENTRY on purpose: the boot\'s own arithmetic from `/api/health`, AND an independent count of the `*.md` files in the sandbox HOME, with the directory the runtime NAMES asserted to be that sandbox — a runtime reporting a complete set over an empty directory fails the second, a pre-seeded directory fails the first, and a gate that counted the developer\'s own ~/.dojo/tools would otherwise pass for ever while measuring nothing. `expected` must clear a vacuity FLOOR (not a ratchet) because `missing === 0` is satisfiable by `expected === 0`; 443 manuals measured on a live box 2026-10-05. Offline it SKIPS LOUDLY like the upgrade-bypass and shipped-souls gates, and the release passes --require-boot so a skip cannot stand in for an answer.',
   },
-
-  {
-    id: 'must-consume',
-    tier: 'report', // owner ruling 2026-11-06: runs and prints, never refuses
-    phase: 'pre-build',
-    script: 'deploy/checks/check-must-consume.mjs',
-    args: [],
-    title: 'Must-consume gate (no discarded Outcome at the three boundaries)',
-    fail: 'Must-consume gate: an Outcome was reported and discarded — a refusal nobody consumed. NOT publishing.',
-    why: 'PHASE-4 T1. It entered this manifest at REPORT tier on purpose and stayed there for the whole compile-fail burn-down — a lint that ships red is a whitelist waiting to happen, and the inventory was 31 across 12 files at the start (20 at the work boundary, 11 at the delivery doors). This is the flip, and it is a ONE-LINE tier change with nothing else in it because the fail line was written at report tier: the population is zero, measured by the gate itself, so from here a single discarded Outcome refuses the build. Its three clauses are the inventory, a planted-fault selftest (four discards must be flagged, six consuming shapes must not), and a conformance check that the rule and `outcome.ts` still declare the same five arms.',
-  },
-
-  {
-    id: 'test-cold-imports',
-    tier: 'report', // owner ruling 2026-11-06: runs and prints, never refuses
-    phase: 'pre-build',
-    script: 'deploy/checks/check-test-cold-imports.mjs',
-    args: [],
-    title: 'Test cold-import gate (no heavy module imported from inside a test clause, hook or helper)',
-    fail: 'Test cold-import gate: a server test imports a heavy module (static graph of 200+ modules) from inside a function, so a loaded machine times the clause out. NOT publishing.',
-    why: 'THE DEFECT CLASS WAS MET FOUR TIMES in one campaign (t265, t270, t277, and a fourth file in the same full-suite run) and each time it was fixed in the one file that had just failed. A clause did `await import(...)` of a module whose static graph is hundreds of modules, usually after `vi.resetModules()`, so the whole graph loaded INSIDE the clause\'s own 30 s timeout: 1.3 s on an idle box, 13-20 s on a loaded one. It fails as "Test timed out", passes alone, and is blamed on load; the product call it wraps takes milliseconds. A hook with a longer bound (`beforeAll(..., 120_000)`) only moved the same cost into a longer timeout. Static imports and top-level awaits load at COLLECTION, which has no per-test budget. The gate counts the static import graph of each in-function dynamic import (deterministic, unlike a stopwatch) and fails on a new heavy site; deploy/checks/test-cold-imports-baseline.json lists the sites that remain on purpose (a restart IS the subject, or module state has no reset door), each with its reason, and may only shrink.',
-  },
-
-  // ════════ report ════════
-  // Never blocks, always recorded. Non-negotiable #7: no phase passes or fails on a
-  // line count, but a net-positive phase owes an accounting, and the accounting starts
-  // with the numbers being IN the release record instead of on a terminal nobody kept.
-  {
-    id: 'iso-writes',
-    tier: 'report',
-    phase: 'pre-build',
-    script: 'deploy/checks/check-iso-writes.mjs',
-    args: [],
-    title: 'ISO-write instrument (mixed timestamp formats)',
-    why: 'Measures the remaining ISO-string time writes against the epoch-ms convention.',
-  },
-  {
-    id: 'status-fresh',
-    tier: 'report',
-    phase: 'pre-build',
-    script: 'deploy/checks/check-status-fresh.mjs',
-    args: [],
-    title: 'STATUS freshness instrument (the resume pointer must describe reality)',
-    why: 'Roadmap #13: STATUS.md outranks every other document for "where are we". This measures whether it is stale.',
-  },
-  {
-    id: 'capability-ledger',
-    tier: 'report',
-    phase: 'pre-build',
-    script: 'deploy/checks/check-capability-ledger.mjs',
-    args: [],
-    title: 'Capability-ledger instrument (capability the tree lost)',
-    why: 'The owner\'s standing rule is never less capability. This reports what the ledger says left.',
-  },
-  {
-    id: 'deletion-ratio',
-    tier: 'report',
-    phase: 'pre-build',
-    script: 'deploy/checks/check-deletion-ratio.mjs',
-    args: [],
-    title: 'Net-production instrument (added / deleted / net)',
-    why: 'The blanket deletion-ratio GATE was retired by owner ruling 2026-07-26 (satisfiable by pure relocation, and it drives hallucinated deletions). The MEASUREMENT stays, and it is report tier forever.',
-  },
-
-  // ════════ release-only ════════
-  // Declared, never omitted. Each needs something `npm run gates` does not have.
-  {
-    id: 'typecheck',
-    tier: 'release-only',
-    phase: 'n/a',
-    script: null,
-    args: [],
-    title: 'Typecheck',
-    why: 'A full tsc across the workspace. Not in `npm run gates` because the dev loop already typechecks continuously; a release cannot assume that happened.',
-  },
-  {
-    id: 'embedded-version',
-    tier: 'release-only',
-    phase: 'n/a',
-    script: null,
-    args: [],
-    title: 'Verifying embedded version inside $ZIP_NAME',
-    why: 'Needs the built zip. Every past release failure was the same shape — a version bumped, tagged and released with assets that did not match or were never uploaded.',
-  },
-  {
-    id: 'smoke-boot',
-    tier: 'release-only',
-    phase: 'n/a',
-    script: null,
-    args: [],
-    title: 'Smoke-booting the packaged build (catches non-resolvable imports before publish)',
-    why: 'Needs the packaged build and a sandbox HOME. Catches what a source-tree check cannot: an import that resolves in dev and not in the shipped layout.',
-  },
-  {
-    id: 'cache-prefix-determinism',
-    tier: 'release-only',
-    phase: 'n/a',
-    script: null,
-    args: [],
-    title: 'Cacheable-prefix determinism gate (C28)',
-    why: 'Runs against the smoke sandbox (migrations already applied, a primary agent present) and asks the compiled build to assemble twice. Roadmap #10, the cache-prefix law: a cache-breaker in the system prefix fails no test today, it just silently multiplies token cost.',
-  },
-  {
-    id: 'tool-list-conformance',
-    tier: 'release-only',
-    phase: 'n/a',
-    script: null,
-    args: [],
-    title: 'Tool-list conformance gate (hand lists vs. real tool surface)',
-    why: 'A whole defect class: hand-maintained lists/maps of tool NAMES that freeze while the real tool surface moves. Needs the built module graph.',
-  },
-  {
-    id: 'unit-suite',
-    tier: 'release-only',
-    phase: 'n/a',
-    script: null,
-    args: [],
-    title: 'Unit-suite gate (server + dashboard vitest, full run)',
-    why: 'Owner ruling 2026-07-21: suites in no gate rot silently — 8 suites sat red for up to 8 weeks, one carrying a real production bug. Minutes long, so it is a release gate rather than a per-commit one, and it is never skippable. The DASHBOARD suite joined it the day that package got a runner (t86-dashrunner): it holds the byte-to-DOM consent gate, the refetch-on-event idiom and the working-note visibility rules — a red there is an owner looking at the wrong text or at nothing, which is exactly the class this gate exists for, and ~6s of the run.',
-  },
-  {
-    id: 'prompt-gate-record',
-    tier: 'release-only',
-    phase: 'post-smoke',
-    script: 'deploy/checks/check-prompt-gate-record.mjs',
-    args: [],
-    releaseArgs: ['--head', '"$(git rev-parse HEAD)"'],
-    title: 'Prompt-gate record (cache prefix, prompt inventory, steer delivery, message prefix)',
-    why: 'NON-BLOCKING since the owner ruling of 2026-11-06: release.sh runs it and prints its verdict, and a missing, stale or red record no longer refuses the release (the cache-prefix determinism gate, which caught the one real bug, still blocks). The four kit prompt checks read a LIVE server through the dev instruments, so they cannot run inside a release, a release build has no instruments by construction. The gate therefore reads a RECORDED marker and refuses if it is missing, stale, measured another tree, or carries a red blocking prompt gate. `--head` binds the record to this HEAD.',
-  },
 ];
 
-// ── CLI: `--emit <tier> [phase]` prints one record per line for release.sh ──
-// Columns: id, script, releaseArgs (space-joined, may be EMPTY), title, fail.
-//
-// The separator is US (\x1f), not a tab, and that is not decoration. Bash treats tab
-// as IFS *whitespace*, so `IFS=$'\t' read` COLLAPSES two adjacent tabs into one
-// delimiter — an empty `releaseArgs` column therefore shifted every later field left
-// by one and release.sh printed each gate's failure message as its step title. It
-// still ran the right gates and still exited 0, so only rehearsing the actual shell
-// caught it (non-negotiable #16). \x1f is not whitespace, so empty fields survive, and
-// no title or prose can contain it.
-//
-// Deliberately not JSON: release.sh is bash 3.2 on macOS with no jq guarantee.
-// The main-entry guard compares REAL PATHS, not hand-built URL strings. `import.meta.url`
-// percent-encodes (a space becomes %20) and `process.argv[1]` does not, so the popular
-// `import.meta.url === \`file://${process.argv[1]}\`` idiom is FALSE for every checkout
-// whose path contains a space — this repo's does. That is not theoretical: it shipped in
-// T8G, made every `--emit` print nothing, and was invisible to `npm run gates` (which
-// imports GATES rather than spawning this file). The release refused to publish with
-// "only 0 pre-build blocking gate(s) declared" — the vacuity floor doing its job — and
-// `check-gate-manifest.mjs` §4b now runs this CLI and compares its row count to the list.
-// T8G's rehearsal could not have caught it: the worktree lived under a path with no spaces.
+// CLI: `--emit <tier> <phase>` prints one record per line for release.sh.
+// Columns: id, script, releaseArgs (space-joined, may be empty), title, fail.
+// The separator is US (\x1f) because bash collapses adjacent tabs, which would shift
+// the columns after an empty one. Not JSON: release.sh is bash 3.2 with no jq guarantee.
+// The entry guard compares real paths because import.meta.url percent-encodes spaces
+// and process.argv[1] does not.
 const invokedDirectly = (() => {
   if (!process.argv[1]) return false;
   try { return fileURLToPath(import.meta.url) === path.resolve(process.argv[1]); }
@@ -375,18 +133,11 @@ const invokedDirectly = (() => {
 })();
 if (invokedDirectly) {
   const [flag, tier, phase] = process.argv.slice(2);
-  if (flag !== '--emit' || !tier) {
-    console.error('usage: node deploy/checks/gate-manifest.mjs --emit <blocking|report|release-only> [phase]');
+  if (flag !== '--emit' || !tier || !phase) {
+    console.error('usage: node deploy/checks/gate-manifest.mjs --emit <blocking|report> <pre-build|post-smoke>');
     process.exit(2);
   }
-  const rows = GATES.filter((g) => g.tier === tier && (phase === undefined || g.phase === phase));
-  for (const g of rows) {
-    process.stdout.write([
-      g.id,
-      g.script ?? '',
-      (g.releaseArgs ?? []).join(' '),
-      g.title,
-      g.fail ?? '',
-    ].join('\x1f') + '\n');
+  for (const g of GATES.filter((g) => g.tier === tier && g.phase === phase)) {
+    process.stdout.write([g.id, g.script, (g.releaseArgs ?? []).join(' '), g.title, g.fail].join('\x1f') + '\n');
   }
 }
