@@ -8,10 +8,9 @@
 // no command is checked whole. Grammar widens; authority does not.
 
 import path from 'node:path';
-import { foldPath } from '../fs-case.js';
 import { ownsTheMac } from '../owns-the-mac.js';
 import { resolveHomePath as resolvePath } from '../path-resolve.js';
-import { GLOBAL_EXEC_DENY_SUBSTRINGS, containsSensitiveLocation, isSensitivePath } from './deny.js';
+import { containsSensitiveLocation, isSensitivePath, namesSecretsFile } from './deny.js';
 import { lexShellLine, shellUnquoted } from './shell-words.js';
 import {
   authorizePrivilege, isSudoLine, mentionsPrivilegeToken, privilegeTokenIsQuotedData,
@@ -175,8 +174,8 @@ function basenameNormalized(trimmed: string): string | null {
 }
 
 /** Deny over ONE spelling; basis says whether basename normalising added the refusal. */
-function globalExecDenyOneSpelling(trimmed: string, basis: 'ladder-parity' | 'bypass-hardening', floor: boolean): Verdict | null {
-  for (const pattern of floor ? GLOBAL_EXEC_DENY : []) {
+function globalExecDenyOneSpelling(trimmed: string, basis: 'ladder-parity' | 'bypass-hardening'): Verdict | null {
+  for (const pattern of GLOBAL_EXEC_DENY) {
     if (matchCommandDenyPattern(pattern, trimmed)) {
       const prefix = pattern.endsWith(' *') ? pattern.slice(0, -2) : null;
       return deny(
@@ -194,16 +193,11 @@ function globalExecDenyOneSpelling(trimmed: string, basis: 'ladder-parity' | 'by
 
 /** The secrets-file substring over one spelling of the line, one voice for its refusal. */
 function secretsSubstringDeny(spelling: string, basis: 'ladder-parity' | 'bypass-hardening'): Verdict | null {
-  for (const needle of GLOBAL_EXEC_DENY_SUBSTRINGS) {
-    if (foldPath(spelling).includes(needle)) {
-      return deny(
-        basis,
-        `global-exec-substring:${needle}`,
-        `Global deny: shell commands cannot read or modify ${needle} — this file holds API keys and is protected. Use Settings → Providers in the dashboard to change credentials.`,
-      );
-    }
-  }
-  return null;
+  return namesSecretsFile(spelling) ? deny(
+    basis,
+    'global-exec-substring:secrets.yaml',
+    'Global deny: shell commands cannot read or modify secrets.yaml, this file holds API keys and is protected. Use Settings → Providers in the dashboard to change credentials.',
+  ) : null;
 }
 
 /** ONE VOICE for the sensitive-read refusal: two places, identical words, different basis. */
@@ -227,13 +221,14 @@ export function authorizeShellCommandText(grant: Grant, line: string, commands =
 }
 
 /** The deny scan, exported so the AppleScript broker's do shell script payload meets the same floor.
- *  `floor` false (the main agent) keeps only the secrets half. */
+ *  `floor` false (the main agent) skips it: its output is blanked and its writes meet the warn-once hurdle. */
 export function globalExecDeny(trimmed: string, floor = true): Verdict | null {
-  const asTyped = globalExecDenyOneSpelling(trimmed, 'ladder-parity', floor);
+  if (!floor) return null;
+  const asTyped = globalExecDenyOneSpelling(trimmed, 'ladder-parity');
   if (asTyped) return asTyped;
   const normalized = basenameNormalized(trimmed);
   if (normalized) {
-    const v = globalExecDenyOneSpelling(normalized, 'bypass-hardening', floor);
+    const v = globalExecDenyOneSpelling(normalized, 'bypass-hardening');
     if (v) return v;
   }
   return secretsSubstringUnquoted(trimmed);
@@ -397,7 +392,7 @@ export function authorizeProc(
   scanSensitiveReads = false,
 ): Verdict {
   // The floor reads the whole line (a construct's header is not one of its commands), every simple
-  // command and what a privilege wrapper runs; the main agent meets only its secrets half.
+  // command and what a privilege wrapper runs; the main agent does not meet it.
   const floor = !ownsTheMac(grant.agentId);
   for (const command of floorReadings(resource.raw)) {
     const denied = globalExecDeny(command, floor);

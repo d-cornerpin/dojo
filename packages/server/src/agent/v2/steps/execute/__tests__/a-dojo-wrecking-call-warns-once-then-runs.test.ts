@@ -26,6 +26,8 @@ const WRECKS = [
   { name: 'shell', arguments: { script: 'sudo rm -rf /' } },
   { name: 'shell', arguments: { script: 'rm -rf ~/.dojo/data' } },
   { name: 'shell', arguments: { script: 'mv ~/.dojo/backups /tmp/old' } },
+  { name: 'shell', arguments: { script: 'rm ~/.dojo/secrets.yaml' } },
+  { name: 'shell', arguments: { script: 'echo x > ~/.dojo/secrets.yaml' } },
   { name: 'shell', arguments: { script: 'sqlite3 ~/.dojo/data/dojo.db "DELETE FROM messages"' } },
   { name: 'exec', arguments: { argv: ['truncate', '-s', '0', `${process.env.HOME}/.dojo/data/dojo.db`] } },
   { name: 'applescript_run', arguments: { script: 'do shell script "rm -rf ~"' } },
@@ -57,7 +59,7 @@ describe('a Dojo-wrecking call warns once, then runs', () => {
   });
 
   it('ordinary work and copies out are not warned', () => {
-    for (const script of ['ls ~/.dojo/data', 'cp ~/.dojo/data/dojo.db ~/Desktop/', 'rm -rf ~/Downloads/tmp', 'chmod 777 ~/Shared']) {
+    for (const script of ['ls ~/.dojo/data', 'chmod 600 ~/.dojo/secrets.yaml', 'cp ~/.dojo/data/dojo.db ~/Desktop/', 'rm -rf ~/Downloads/tmp', 'chmod 777 ~/Shared']) {
       expect(gate(PRIMARY, { name: 'shell', arguments: { script } }, new Set()), script).toBeNull();
     }
     expect(gate(PRIMARY, { name: 'kill_agent', arguments: { agent_id: 'Worker' } }, new Set())).toBeNull();
@@ -65,7 +67,7 @@ describe('a Dojo-wrecking call warns once, then runs', () => {
 
   it('past the warning, the broker authorizes the call', () => {
     const main = grantForManifest(PRIMARY, PRIMARY_AGENT_PERMISSIONS);
-    for (const line of ['rm -rf ~', 'sudo rm -rf /', 'rm -rf ~/.dojo/data', 'mv ~/.dojo/backups /tmp/old']) {
+    for (const line of ['rm -rf ~', 'sudo rm -rf /', 'rm -rf ~/.dojo/data', 'mv ~/.dojo/backups /tmp/old', 'rm ~/.dojo/secrets.yaml']) {
       expect(authorizeExecShapedCall(main, 'shell', line).allowed, line).toBe(true);
     }
     const db = resolvePathArg('~/.dojo/data/dojo.db');

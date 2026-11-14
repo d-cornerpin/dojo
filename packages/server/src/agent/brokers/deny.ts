@@ -199,8 +199,8 @@ export const DENY_RULES: readonly DenyRule[] = [
   },
 ];
 
-/** Denied in a command line whatever its shape: a file_write deny cannot see a shell redirect. */
-export const GLOBAL_EXEC_DENY_SUBSTRINGS: readonly string[] = ['secrets.yaml'];
+/** Whether a command line names the secrets file, whatever its shape: a file_write deny cannot see a shell redirect. */
+export const namesSecretsFile = (text: string): boolean => foldPath(text).includes('secrets.yaml');
 
 function contextFor(absPath: string): DenyMatchContext {
   return {

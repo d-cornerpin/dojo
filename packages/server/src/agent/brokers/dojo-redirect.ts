@@ -12,7 +12,7 @@ import { getDb } from '../../db/connection.js';
 import { firstKeyword } from '../../db/read-only-door.js';
 import { homeDir } from '../../home.js';
 import { refuseDeniedSql } from '../../inspect/redact.js';
-import { DOJO_BACKUP_DIRS, denyRuleFor } from './deny.js';
+import { DOJO_BACKUP_DIRS, denyRuleFor, namesSecretsFile } from './deny.js';
 import { lexShellLine, type Segment, type Word } from './shell-words.js';
 import { deny, type Verdict } from './types.js';
 
@@ -258,16 +258,17 @@ export function destroysDojoData(command: string | readonly string[]): boolean {
 const DESTROYS_OPERANDS = new Set(['rm', 'rmdir', 'unlink', 'shred', 'srm', 'truncate', 'mv', 'tee', 'dd']);
 const OVERWRITES_LAST = new Set(['cp', 'rsync', 'ditto', 'install', 'ln']);
 
-/** Whether a command deletes, moves, truncates or overwrites the Dojo's database, data or backups. */
+/** Whether a command deletes, moves, truncates or overwrites the Dojo's database, data, backups or secrets file. */
 export function destroysDojoFiles(command: string | readonly string[]): boolean {
+  const dojoCannotLose = (word: string): boolean => refersToDojoDatabase(word) || namesSecretsFile(word);
   if (destroysDojoData(command)) return true;
   const text = typeof command === 'string' ? command : command.join(' ');
-  if ([...text.matchAll(/>\|?\s*([^\s;&|<>]+)/g)].some((m) => refersToDojoDatabase(m[1]))) return true;
+  if ([...text.matchAll(/>\|?\s*([^\s;&|<>]+)/g)].some((m) => dojoCannotLose(m[1]))) return true;
   return commandsOf(command).some((words) => {
     const at = words.findIndex((w) => DESTROYS_OPERANDS.has(path.basename(w.value)) || OVERWRITES_LAST.has(path.basename(w.value)));
     if (at < 0) return false;
     const operands = words.slice(at + 1).map((w) => w.value).filter((v) => !v.startsWith('-'));
-    return (OVERWRITES_LAST.has(path.basename(words[at].value)) ? operands.slice(-1) : operands).some(refersToDojoDatabase);
+    return (OVERWRITES_LAST.has(path.basename(words[at].value)) ? operands.slice(-1) : operands).some(dojoCannotLose);
   });
 }
 

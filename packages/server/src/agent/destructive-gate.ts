@@ -85,7 +85,7 @@ export function wouldWreck(toolName: string, args: Record<string, unknown>): str
   if (lines.some(wipesTheMac)) return 'erase the whole disk or the home folder, the Dojo with it';
   const argv = toolName === 'exec' && Array.isArray(raw) && raw.every((e) => typeof e === 'string') ? (raw as string[]) : null;
   if (argv ? destroysDojoFiles(argv) : lines.some((l) => destroysDojoFiles(l))) {
-    return 'delete, move or overwrite the Dojo\'s own database, data or backups';
+    return 'delete, move or overwrite the Dojo\'s own database, data, backups or secrets file';
   }
   return null;
 }
