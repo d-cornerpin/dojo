@@ -2,14 +2,15 @@
 // refuseDeniedSql refuses a statement that reaches a credential table (found lexically) or reads a credential
 // column (found in what SQLite's compiled program READS, so an alias, star or renaming UNION cannot hide it).
 // redactRows and redactCell blank a credential column, then scrub every string cell. redactText scrubs log
-// lines and code: token shapes (techniques/scrub.ts) plus the values the named agents handled.
-// A shape scrub is safe here, unlike on the persist side: nothing stored is rewritten, so over-redaction only
-// costs a blank. A count, rate or timestamp is never a credential: numeric columns and `_at` are not blanked.
+// lines, code and command output: the secrets file's values, token shapes (techniques/scrub.ts) and the values
+// the named agents handled. Over-redaction only costs a blank. A count, rate or timestamp is never a credential:
+// numeric columns and `_at` are not blanked.
 
 import type Database from 'better-sqlite3';
 import { isReadStatement, stripExplain } from '../db/read-only-door.js';
 import { PATTERNS, secretOf } from '../techniques/scrub.js';
 import { REDACTED_CREDENTIAL, redactHandedCredentials } from '../credentials/secret-values.js';
+import { loadSecrets } from '../config/loader.js';
 
 export const DENIED_TABLES: readonly string[] = ['agent_credentials', 'google_accounts', 'microsoft_accounts', 'twilio_config', 'github_account', 'plaud', 'vault_entries' /* owner's private memory stays behind vault_* tools */];
 export const DENIED_COLUMN_PATTERNS: readonly RegExp[] = [/token/i, /secret/i, /passw(?:or)?d/i, /api[_-]?key/i, /refresh/i, /private/i];
@@ -151,9 +152,18 @@ function tableRefusal(table: string): string {
   return `Refused: the statement reaches ${table}, which holds credentials (or the owner's private memory) and is not readable through dojo_inspect.`;
 }
 
+/** The secrets file's values (every field but the search provider's name), longest first. */
+function secretsFileValues(): string[] {
+  const s = loadSecrets();
+  const providers = Object.values(s.providers ?? {}).flatMap((p) => [p.api_key, p.oauth_token]);
+  return [s.jwt_secret, s.dashboard_password_hash, s.credential_master_key, s.search?.api_key, ...providers]
+    .filter((v): v is string => typeof v === 'string' && v.length >= 6).sort((a, b) => b.length - a.length);
+}
+
 export function redactText(s: string, agentIds: readonly string[] = []): string {
   if (!s) return s;
   let out = s;
+  for (const v of secretsFileValues()) out = out.split(v).join(REDACTED_CREDENTIAL);
   for (const p of PATTERNS) {
     out = out.replace(p.regex, (match: string, ...rest: unknown[]) => {
       const value = secretOf(p, match, rest);

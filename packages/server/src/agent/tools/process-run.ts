@@ -6,6 +6,7 @@ import { sudoWouldHang } from '../brokers/sudo-probe.js';
 import { coerceNumberArg } from './pagination.js';
 import { silentWindowMs } from '../../tracker/silent-window.js';
 import { runWithIdleBound } from './process-idle-bound.js';
+import { redactText } from '../../inspect/redact.js';
 
 // `execFile` never consults a shell, which is what makes `exec({argv})` argv-no-shell; the shell
 // door reaches /bin/zsh by `-c` through this same single spawning call, carrying the call's capability.
@@ -144,22 +145,20 @@ async function settleProcess(
 ): Promise<string> {
   const { auditTarget, timeout, note, audit } = input;
   try {
+    // A secret the command prints is blanked before the audit row, the agent and the store see it.
     const { stdout, stderr } = await running;
-    const out = (stdout ?? '').trim();
-    const err = (stderr ?? '').trim();
+    const out = redactText((stdout ?? '').trim());
+    const err = redactText((stderr ?? '').trim());
     audit(auditTarget, 'success',
       err ? `stdout: ${out.slice(0, 250)} | stderr: ${err.slice(0, 250)}` : out.slice(0, 500));
-    return formatProcessResult({ stdout: stdout ?? '', stderr: stderr ?? '', reason: null, messageFallback: '' }, note);
+    return formatProcessResult({ stdout: out, stderr: err, reason: null, messageFallback: '' }, note);
   } catch (err: unknown) {
     const error = err as { stderr?: string; stdout?: string };
     const { reason, messageFallback } = processFailureReason(err, timeout);
-    const out = (error.stdout ?? '').trim();
-    const errStream = (error.stderr ?? '').trim();
+    const out = redactText((error.stdout ?? '').trim());
+    const errStream = redactText((error.stderr ?? '').trim());
     audit(auditTarget, 'error',
       `${reason} | stderr: ${errStream.slice(0, 250) || '(empty)'} | stdout: ${out.slice(0, 250) || '(empty)'}`);
-    return formatProcessResult(
-      { stdout: error.stdout ?? '', stderr: error.stderr ?? '', reason, messageFallback },
-      note,
-    );
+    return formatProcessResult({ stdout: out, stderr: errStream, reason, messageFallback: redactText(messageFallback) }, note);
   }
 }
