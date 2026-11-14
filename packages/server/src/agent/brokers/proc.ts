@@ -8,7 +8,7 @@
 // no command is checked whole. Grammar widens; authority does not.
 
 import path from 'node:path';
-import { ownsTheMac } from '../owns-the-mac.js';
+import { isPrimaryAgent } from '../../config/platform.js';
 import { resolveHomePath as resolvePath } from '../path-resolve.js';
 import { containsSensitiveLocation, isSensitivePath, namesSecretsFile } from './deny.js';
 import { lexShellLine, shellUnquoted } from './shell-words.js';
@@ -284,7 +284,7 @@ export function commandReadsSensitiveFile(command: string, folders = true): { bl
 function authorizeOneCommand(grant: Grant, command: string, kind: 'proc' | 'shell' = 'shell', runs: readonly string[] = []): Verdict {
   const trimmed = command.trim();
   const lexable = kind === 'proc' || lexShellLine(trimmed) !== null;   // a shell quote left open: only `*` admits it
-  const globals = globalExecDeny(trimmed, !ownsTheMac(grant.agentId));
+  const globals = globalExecDeny(trimmed, !isPrimaryAgent(grant.agentId));
   if (globals) return globals;
 
   // SUDO: the main agent's alone; the floor already read the inner command.
@@ -356,10 +356,10 @@ export function authorizeArgv(grant: Grant, resource: ResolvedArgv): Verdict {
     );
   }
 
-  const globals = globalExecDeny(resource.display, !ownsTheMac(grant.agentId));
+  const globals = globalExecDeny(resource.display, !isPrimaryAgent(grant.agentId));
   if (globals) return globals;
 
-  const scan = argvReadsSensitiveFile(resource.argv, !ownsTheMac(grant.agentId));
+  const scan = argvReadsSensitiveFile(resource.argv, !isPrimaryAgent(grant.agentId));
   if (scan.blocked) {
     return deny(
       'ladder-parity',
@@ -393,8 +393,8 @@ export function authorizeProc(
 ): Verdict {
   // The floor reads the whole line (a construct's header is not one of its commands), every simple
   // command and what a privilege wrapper runs; the main agent does not meet it.
-  const floor = !ownsTheMac(grant.agentId);
-  for (const command of floorReadings(resource.raw)) {
+  const floor = !isPrimaryAgent(grant.agentId);
+  if (floor) for (const command of floorReadings(resource.raw)) {
     const denied = globalExecDeny(command, floor);
     if (denied) return denied;
   }
@@ -423,7 +423,7 @@ export function authorizeProc(
     const v = authorizePrivilege(grant.agentId);
     if (!v.allowed) return v;
   }
-  if (!privilegedSeen && !ownsTheMac(grant.agentId) && mentionsPrivilegeToken(withoutDataBodies(resource.raw))) {
+  if (!privilegedSeen && !isPrimaryAgent(grant.agentId) && mentionsPrivilegeToken(withoutDataBodies(resource.raw))) {
     // The token is in the line and no segment owns it: a substitution, a nested quote, an opaque
     // construct. HARMLESS DATA is the one exemption: quoted spans only, and no interpreter runs them.
     if (!privilegeTokenIsQuotedData(resource.raw, segments)) {

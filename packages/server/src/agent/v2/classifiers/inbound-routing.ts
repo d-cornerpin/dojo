@@ -1,5 +1,5 @@
-// A person's message: a job of several steps? As a reply, only a decline? Work is yes then no; chat is no; between the
-// lines, or the decline unanswered, is neither; no answer at all: the word list. A helper's note: is it finished work?
+// A person's message is work when it asks for a job of several steps and, as a reply, is not only a decline; a decline left
+// unanswered, or a step answer between the lines, is neither; no answer falls to the word list. A helper's note: finished work?
 
 import type { Question } from '../../decide.js';
 import { judgment, type Ask } from '../../decision-hooks.js';

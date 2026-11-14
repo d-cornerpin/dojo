@@ -5,10 +5,10 @@ import { chromium, type Browser, type BrowserContext } from 'playwright';
 import { createLogger } from '../logger.js';
 import { openAgentCall, STOPPED_BY_USER } from './abortable-call.js';
 import { assertPublicHttpTarget, NetGuardError } from './net-guard.js';
-import { ownsTheMac } from './owns-the-mac.js';
+import { isPrimaryAgent } from '../config/platform.js';
 
 /** A private address is refused for every agent but the main one, which may show local and home-network pages. */
-const guard = async (url: string, agentId?: string): Promise<void> => { if (!ownsTheMac(agentId)) await assertPublicHttpTarget(url); };
+const guard = async (url: string, agentId?: string): Promise<void> => { if (!isPrimaryAgent(agentId)) await assertPublicHttpTarget(url); };
 
 const logger = createLogger('site-snapshot');
 

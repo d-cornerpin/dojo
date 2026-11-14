@@ -1,5 +1,5 @@
 
-import { ownsTheMac } from '../owns-the-mac.js';
+import { isPrimaryAgent } from '../../config/platform.js';
 import { evaluateRules, type Grant } from './grants.js';
 import { commandReadsSensitiveFile, globalExecDeny, authorizeShellCommandText } from './proc.js';
 import { authorizePrivilege, mentionsAdminPrivileges } from './sudo-policy.js';
@@ -17,7 +17,7 @@ export function shellPayloads(script: string): string[] {
 // /bin/sh, so the script body and every payload answer to the shell rules.
 export function authorizeAppleScript(grant: Grant, script: ResolvedCommand): Verdict {
   // Checking the raw body refuses a script that merely names the secret store.
-  const floor = !ownsTheMac(grant.agentId);
+  const floor = !isPrimaryAgent(grant.agentId);
   const globals = globalExecDeny(script.raw, floor);
   if (globals) return globals;
 

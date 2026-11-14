@@ -2,7 +2,7 @@
 
 /** Refusal for a privilege token the grammar cannot place: fail closed by construction. */
 export const SUDO_UNPLACEABLE_REASON =
-  'Global deny: this line contains `sudo` (or `doas`) somewhere the permission broker cannot place — '
+  'Global deny: this line contains `sudo` (or `doas`) somewhere the permission broker cannot place: '
   + 'inside a substitution, a nested quote or a construct it does not parse. A line whose structure '
   + 'cannot be read is not run as root. Write the privileged command as its own plain line so the '
   + 'floor and your grants can both see it.';

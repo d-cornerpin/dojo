@@ -110,8 +110,8 @@ export function getAllPlatformConfig(): Record<string, string> {
 }
 
 
-export function isPrimaryAgent(agentId: string): boolean {
-  return agentId === getPrimaryAgentId();
+export function isPrimaryAgent(agentId: string | null | undefined): boolean {
+  return !!agentId && agentId === getPrimaryAgentId();
 }
 
 export function isPMAgent(agentId: string): boolean {

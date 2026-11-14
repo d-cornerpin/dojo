@@ -4,7 +4,7 @@
 // here; anything else defers to the egress guard that runs at the actual request.
 
 import { assertPublicHttpTarget, NetGuardError, privateAddressClass } from '../net-guard.js';
-import { ownsTheMac } from '../owns-the-mac.js';
+import { isPrimaryAgent } from '../../config/platform.js';
 import { createLogger } from '../../logger.js';
 import { evaluateRules, matchDomainPattern, type Grant } from './grants.js';
 import type { ResolvedUrl } from './resolve.js';
@@ -45,7 +45,7 @@ export async function authorizeNet(grant: Grant, resource: ResolvedUrl): Promise
   }
 
   // The main agent reaches router/printer/local addresses; every other agent keeps the guard.
-  if (ownsTheMac(grant.agentId)) return allow(domainVerdict.rule);
+  if (isPrimaryAgent(grant.agentId)) return allow(domainVerdict.rule);
 
   // Literal-IP class answers without I/O, asked first: metadata shapes never spend a DNS round trip.
   const literalClass = privateAddressClass(resource.hostname);

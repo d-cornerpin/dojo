@@ -13,7 +13,7 @@ const WEB_FETCH_BODY_BASE_TIMEOUT_MS = 20_000;
 const WEB_FETCH_BODY_CEILING_MS = 2 * 60_000;
 
 import { assertPublicHttpTarget, NetGuardError } from './net-guard.js';
-import { ownsTheMac } from './owns-the-mac.js';
+import { isPrimaryAgent } from '../config/platform.js';
 import { phasedTransferDeadline } from '../services/transfer-deadline.js';
 
 const logger = createLogger('web-tools');
@@ -215,7 +215,7 @@ export async function webFetch(
       }
       // SSRF guard on every hop, inside the loop, so an open redirect cannot bounce us onto loopback, LAN or
       // metadata addresses. A rejection is a NetGuardError, handled in the catch below.
-      if (!ownsTheMac(agentId)) await assertPublicHttpTarget(currentUrl);   // the main agent may reach local addresses
+      if (!isPrimaryAgent(agentId)) await assertPublicHttpTarget(currentUrl);   // the main agent may reach local addresses
       response = await fetch(currentUrl, {
         headers: {
           'User-Agent': 'DOJO/1.0 (agent-fetch)',

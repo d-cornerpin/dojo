@@ -39,7 +39,7 @@ import { mayUseChannel } from '../../access/read.js';
 import { postAgentNotice } from '../../agent-notice.js';
 import { tellAgentAndWake, requesterReachSentence, isFailureWokenTurn, noteJobStartedIn } from '../../wake-with-notice.js';
 import { resolvePath, isSensitivePath } from '../../path-guards.js';
-import { ownsTheMac } from '../../owns-the-mac.js';
+import { isPrimaryAgent } from '../../../config/platform.js';
 import { recordCost } from '../../../costs/tracker.js';
 import { resolveAttachmentPath, fetchAudioUrl, transcribeAudio } from '../../../services/transcription.js';
 import { submitVideoJob } from '../../../services/video-generation.js';
@@ -629,7 +629,7 @@ const handlers = {
       filename = resolved.filename;
       sourceLabel = `attachment ${attachmentId}`;
     } else if (pathArg) {
-      // Fenced to the uploads dir so agents cannot read arbitrary disk; the main agent (`ownsTheMac`)
+      // Fenced to the uploads dir so agents cannot read arbitrary disk; the main agent (`isPrimaryAgent`)
       // may transcribe any non-secret path. Key and password files stay hidden from EVERY agent.
       const uploadsRoot = pathModule.join(homeDir(), '.dojo', 'uploads');
       const resolvedPath = pathModule.resolve(resolvePath(pathArg));
@@ -638,7 +638,7 @@ const handlers = {
         isError = true;
         return { content, isError };
       }
-      if (!ownsTheMac(agentId) && !resolvedPath.startsWith(uploadsRoot + pathModule.sep)) {
+      if (!isPrimaryAgent(agentId) && !resolvedPath.startsWith(uploadsRoot + pathModule.sep)) {
         content = `Error: path must be inside ~/.dojo/uploads/ (got ${resolvedPath}).`;
         isError = true;
         return { content, isError };

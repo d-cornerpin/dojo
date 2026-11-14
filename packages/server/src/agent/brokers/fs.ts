@@ -3,9 +3,8 @@
 // fixed order (global deny, trainer write-deny, grant rows, squad fallback), and that
 // order is the guarantee: a later stage never re-opens what an earlier stage shut.
 
-import { isTrainerAgent, isHealerAgent } from '../../config/platform.js';
+import { isTrainerAgent, isHealerAgent, isPrimaryAgent } from '../../config/platform.js';
 import { isProtectedIdentityPath } from '../path-resolve.js';
-import { ownsTheMac } from '../owns-the-mac.js';
 import { hasSquadWorkspaceAccess } from '../squad-workspace.js';
 import { denyRuleFor, tiersForKind, isSensitivePath, type DenyTier, type DenyViewerArg } from './deny.js';
 import { evaluateRules, matchPathPattern, type Grant } from './grants.js';
@@ -39,7 +38,7 @@ export function globalDeny(kind: FsKind, resource: ResolvedPath, viewer?: DenyVi
       const realRule = denyRuleFor(resource.real, tier, viewer);
       if (realRule) {
         // The write tier has always resolved symlinks, so a link caught there is parity; a
-        // link caught on the read or delete tier is bypass hardening.
+        // link caught on the read tier is bypass hardening.
         const basis = kind === 'fs_write' && realRule.since === 'legacy' ? 'ladder-parity' : 'bypass-hardening';
         return deny(
           basis,
@@ -86,7 +85,7 @@ export function authorizeFs(
   }
 
   // A scoped row binds every agent except the one it names, so the viewer is derived from the grant's agent.
-  const globallyDenied = globalDeny(kind, resource, () => (ownsTheMac(grant.agentId) ? 'main' : isHealerAgent(grant.agentId) ? 'healer' : 'other'));
+  const globallyDenied = globalDeny(kind, resource, () => (isPrimaryAgent(grant.agentId) ? 'main' : isHealerAgent(grant.agentId) ? 'healer' : 'other'));
   if (globallyDenied) return globallyDenied;
 
   // The trainer's broad file_write never re-opens the owner's identity/profile or

@@ -88,7 +88,10 @@ async function sent(
     const names = Object.keys(questions);
     const stateTokens = tokensAt(JSON.stringify(fencedState(state)).length, MEASURED_CHARS_PER_TOKEN);
     const clock = AbortSignal.timeout(decideTimeoutMs(stateTokens, names.length, resident.has(provider.model)));
-    const cut = (): FailureClass | null => (clock.aborted ? ((unsentThrough = joined), 'timeout') : stop?.aborted ? 'stopped' : null);
+    const cut = (): FailureClass | null => {
+      if (clock.aborted) unsentThrough = joined;   // the calls already waiting behind a timeout stay unsent
+      return clock.aborted ? 'timeout' : stop?.aborted ? 'stopped' : null;
+    };
     resident.delete(provider.model);   // until this call is answered
     const started = Date.now();
     let resp: Response;

@@ -9,7 +9,7 @@ import { callModel } from './model.js';
 import { getDb } from '../db/connection.js';
 import { getEffectiveVisionModel } from '../services/vision-model.js';
 import { assertPublicHttpTarget } from './net-guard.js';
-import { ownsTheMac } from './owns-the-mac.js';
+import { isPrimaryAgent } from '../config/platform.js';
 import { outsideSpan, stripOutsideMarks } from '../tools/external-content.js';
 
 const logger = createLogger('browser');
@@ -120,7 +120,7 @@ export class BrowserSession {
   async navigate(url: string): Promise<string> {
     // SSRF: refuse loopback/LAN/metadata BEFORE a browser is launched.
     // Playwright follows redirects and sub-resources itself: only the requested URL is checked.
-    const address = ownsTheMac(this.agentId) ? null : (await assertPublicHttpTarget(url)).address;   // the main agent is exempt: it owns the Mac
+    const address = isPrimaryAgent(this.agentId) ? null : (await assertPublicHttpTarget(url)).address;   // the main agent is exempt: it owns the Mac
     const page = await this.ensurePage();
 
     logger.info('Browser navigate', { url, address }, this.agentId);
@@ -329,7 +329,7 @@ export async function executeWebBrowse(
   const { action, url, selector, text, scroll_direction, scroll_amount = 500, goal } = args;
 
   // Rate limit check, for every agent but the main one
-  if (!ownsTheMac(agentId) && !checkRateLimit(agentId)) {
+  if (!isPrimaryAgent(agentId) && !checkRateLimit(agentId)) {
     return 'Error: Browser action rate limit exceeded (30 actions/minute). Wait before trying again.';
   }
 
