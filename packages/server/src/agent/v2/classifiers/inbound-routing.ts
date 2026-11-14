@@ -61,7 +61,7 @@ function wordListSaysWork(message: string): boolean {
 }
 
 /** Each turn is judged once, however many times it is assembled and whichever reader asks first. */
-const judged = new WeakMap<object, Promise<boolean | undefined>>();
+const judged = new WeakMap<object, Promise<{ work: boolean | undefined; declined: boolean }>>();
 
 export function inboundIsWork(turnCtx: { root?: TurnRoot | null }, agentId: string, message: string): Promise<boolean | undefined> {
   let said = judged.get(turnCtx);
@@ -71,13 +71,18 @@ export function inboundIsWork(turnCtx: { root?: TurnRoot | null }, agentId: stri
       ? { agentId, state: { message }, questions: { needs_several_steps: SEVERAL_STEPS } }
       : { agentId, state: { message, previous_agent_message: previous }, questions: { needs_several_steps: SEVERAL_STEPS, declined: DECLINED } };
     said = message.trim()
-      ? judgment('inbound_routing', ask)
-        .then((v) => (v === null ? (wordListSaysWork(message) || undefined) : v.needs_several_steps && (previous === null || v.declined !== undefined ? !v.declined : undefined)))
-      : Promise.resolve(undefined);
+      ? judgment('inbound_routing', ask).then((v) => ({
+        work: v === null ? (wordListSaysWork(message) || undefined) : v.needs_several_steps && (previous === null || v.declined !== undefined ? !v.declined : undefined),
+        declined: v?.declined === true,
+      }))
+      : Promise.resolve({ work: undefined, declined: false });
     judged.set(turnCtx, said);
   }
-  return said;
+  return said.then((v) => v.work);
 }
+
+/** The turn's message only declined or acknowledged the agent's last one, so it asks for nothing; unjudged reads no. */
+export const inboundAsksNothing = async (turnCtx: object): Promise<boolean> => (await judged.get(turnCtx))?.declined ?? false;
 
 export const deliverableJudged = async (agentId: string, payload: string, rule: boolean): Promise<boolean> =>
   (await judgment('inbound_routing/deliverable', { agentId, state: { message: payload }, questions: { asked: DELIVERABLE } }))?.asked ?? rule;

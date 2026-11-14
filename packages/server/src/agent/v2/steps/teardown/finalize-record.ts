@@ -8,6 +8,7 @@ import { taskScope } from '../../../../work/tracker-view.js';
 import { appendWorkEvent, claimingTurnOf, joinState } from '../../../../work/store.js';
 import { settleAsksAtTurnFinalize } from '../../../../work/ask-settlement.js';
 import { assembledContextAsks } from '../../counterparty.js';
+import { inboundAsksNothing } from '../../classifiers/inbound-routing.js';
 import {
   pauseDriveWorkWaitingOnOwner, stillClaimedWork, terminalDeliveryForTurn,
 } from '../../answered-edge.js';
@@ -84,7 +85,8 @@ export async function finalizeTurnRecord(
       const assembled = (chosenConvKey && chosenConversationId && lastAssembledAtIso)
         ? assembledContextAsks(agentId, chosenConvKey, lastAssembledAtIso)
         : [];
-      settleAsksAtTurnFinalize({ agentId, turnNumber, assembled, continuing });
+      const askedNothing = triggerWorkId && await inboundAsksNothing(turnCtx) ? triggerWorkId : null;
+      settleAsksAtTurnFinalize({ agentId, turnNumber, assembled, continuing, askedNothing });
     } catch (err) {
       logger.warn('v2: the turn-finalize ask adjudication FAILED — an owner ask may be left mid-flight', {
         agentId, turnNumber, error: err instanceof Error ? err.message : String(err),

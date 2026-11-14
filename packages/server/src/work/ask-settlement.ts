@@ -14,7 +14,7 @@ import { turnContext } from '../agent/turn-context.js';
 import { onTaskEnded } from './task-ended.js';
 import { handedInExpr } from './tracker-view.js';
 import { jobCarriedAsks } from './task-freshness.js';
-import { delegatedRelayEvidence } from './delegated-relay-evidence.js';
+import { delegatedRelayEvidence, turnEndedInModelSilence } from './delegated-relay-evidence.js';
 import { recordServingTurnByRowid } from '../memory/message-store.js';
 // Imported from the leaf: `NOT_A_START_ACK` reads it at module scope, and `message-store` reaches this
 // file through its own graph, so importing it from there could read it before it is initialized.
@@ -70,6 +70,8 @@ export interface SettlementContext {
   basis?: 'compiled' | 'engine-relay' | 'late-answer';
   /** FINALIZE ONLY: the engine continued the same work, so the held-back opening line is not the answer. */
   continuing?: boolean;
+  /** FINALIZE ONLY: the ask's message only declined or acknowledged, so the model's silence settles it. */
+  askedNothing?: boolean;
 }
 
 interface AskRow {
@@ -473,6 +475,11 @@ export function settleAsk(workId: string, ctx: SettlementContext): AskSettlement
     return h.kind === 'applied' ? out('held', why) : out('unchanged', `hold refused: ${h.kind}`);
   }
   if (ask.state === 'open') return out('unchanged', 'already open and waiting');
+  if (ctx.askedNothing === true && turnEndedInModelSilence(ask.agent_id, ctx.turnNumber)) {
+    const why = 'settled: the message asked for nothing (it only declined or acknowledged) and the agent stayed silent';
+    const r = transition(workId, { to: 'abandoned', by: 'agent', actorId, expectedState: ask.state, reason: why });
+    return r.kind === 'applied' ? out('closed', why) : out('unchanged', `settle refused: ${r.kind}`);
+  }
   // Who ended the turn decides whether the ladder moves: an engine cut spends nothing, never stands down.
   const engineCut = turnWasEngineCut(ask.agent_id, ctx.turnNumber);
   const spent = reServesSpent(workId);
@@ -825,6 +832,8 @@ export interface FinalizeSettlementInput {
   /** Every ask that entered this turn's context; rows arriving after the final assembly are absent. */
   assembled?: AssembledAsk[];
   continuing?: boolean;
+  /** The trigger ask whose message asked for nothing (`inboundAsksNothing`). */
+  askedNothing?: string | null;
 }
 
 export interface FinalizeSettlementResult { closed: number; held: number; reopened: number }
@@ -865,6 +874,7 @@ export function settleAsksAtTurnFinalize(p: FinalizeSettlementInput): FinalizeSe
     seen.add(r.id);
     tally(settleAsk(r.id, {
       agentId: p.agentId, turnNumber: p.turnNumber, at: 'finalize', continuing: p.continuing,
+      askedNothing: r.id === p.askedNothing,
     }).verdict);
   }
   for (const a of p.assembled ?? []) {
@@ -872,6 +882,7 @@ export function settleAsksAtTurnFinalize(p: FinalizeSettlementInput): FinalizeSe
     seen.add(a.workId);
     tally(settleAsk(a.workId, {
       agentId: p.agentId, turnNumber: p.turnNumber, at: 'finalize', rowid: a.rowid,
+      askedNothing: a.workId === p.askedNothing,
     }).verdict);
   }
   if (result.closed > 0 || result.held > 0 || result.reopened > 0) {
