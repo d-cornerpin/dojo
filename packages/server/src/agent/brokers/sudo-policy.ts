@@ -270,7 +270,6 @@ export interface PrivilegedBody {
 }
 
 /** A stream has no name the broker can read. */
-
 function isStreamName(word: string): boolean {
   const bare = word.replace(/^['"]|['"]$/g, '');
   return /^\/dev\/(std\w*|fd\/\d+|tty\w*)$/.test(bare);

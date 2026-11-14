@@ -8,7 +8,6 @@ import { createLogger } from '../logger.js';
 import { toolDefinitions } from '../agent/tools/definitions.js';
 import { getFilteredTools } from '../agent/tools/surface.js';
 import { getAgentPermissions } from '../agent/manifest.js';
-
 import { isPrimaryAgent, isPMAgent, isTrainerAgent, isHealerAgent, isImaginerAgent, getPrimaryAgentName, getPrimaryAgentId, getPMAgentName, getPMAgentId, getOwnerName, getTrainerAgentId, getTrainerAgentName, getHealerAgentId, getHealerAgentName, getImaginerAgentName} from '../config/platform.js';
 import type { TurnCounterparty } from '../agent/v2/counterparty.js';
 import { NO_REPLY_CLOSED_MARKER, WORKING_NOTE_PREFIX, INTERNAL_WORKING_NOTE_PREFIX, settingsPath, type Channel } from '@dojo/shared';
@@ -659,7 +658,6 @@ export const SOUL_CAPABILITY_CLAIMS: readonly SoulCapabilityClaim[] = [
     line: '- You can run administrator (sudo) commands; the box\'s policy decides whether each one runs immediately or is held for the owner\'s approval.\n',
     holds: () => false,
   },
-
 ];
 
 /** Strip every `## Capabilities` claim this agent cannot make. */

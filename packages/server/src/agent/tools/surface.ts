@@ -12,7 +12,6 @@ import { agentCanSelfComplete } from './util.js';
 import { holdsDojoInspect, DOJO_INSPECT } from '../../inspect/grant.js';
 import { toolDefinitions } from './definitions.js';
 import { isPrimaryAgent, isPMAgent } from '../../config/platform.js';
-
 import { getToolConfigGeneration } from '../tool-config-generation.js';
 import { pdfToolDefinitions } from '../pdf-tools.js';
 import { googleReadToolDefinitions } from '../../google/tools-read.js';
@@ -114,7 +113,6 @@ const agentDenySetCache = new Map<string, DenySetCacheEntry>();
 export function getAgentDenySet(agentId: string): Set<string> {
   const generation = getToolConfigGeneration();
   const fingerprint = computeAgentToolFingerprint(agentId);
-
   const cached = agentDenySetCache.get(agentId);
   if (cached && cached.generation === generation && cached.fingerprint === fingerprint) {
     return cached.deny;

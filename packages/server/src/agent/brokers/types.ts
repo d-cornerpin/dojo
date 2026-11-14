@@ -6,7 +6,7 @@ import type { ResolvedPath, ResolvedCommand, ResolvedArgv, ResolvedUrl } from '.
 export type VerdictBasis = 'ladder-parity' | 'bypass-hardening';
 
 export type BrokerEffect =
-  | { readonly kind: 'fs_read' | 'fs_write' | 'fs_delete'; readonly resource: ResolvedPath; readonly surface?: 'tool' | 'share' }
+  | { readonly kind: 'fs_read' | 'fs_write'; readonly resource: ResolvedPath; readonly surface?: 'tool' | 'share' }
   | { readonly kind: 'shell' | 'applescript'; readonly resource: ResolvedCommand }
   | { readonly kind: 'proc'; readonly resource: ResolvedArgv }
   | { readonly kind: 'net'; readonly resource: ResolvedUrl }

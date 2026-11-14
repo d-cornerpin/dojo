@@ -20,6 +20,7 @@ import { wipesTheMac } from './brokers/proc.js';
 import { shellPayloads } from './brokers/applescript.js';
 import { denyRuleFor } from './brokers/deny.js';
 import { resolvePathArg } from './brokers/resolve.js';
+import { resolveAgentRef } from './tool-helpers.js';
 import { FS_WRITE_TOOLS } from './tools/gates.js';
 import { OWNER_ALERT_DOJO_PREFIX } from '@dojo/shared';
 import { tellAgentWhatDojoSent } from './dojo-voice.js';
@@ -50,8 +51,6 @@ export function isDestructiveCall(
     const raw = args[EXEC_DOOR_ARG[door]];
     const argv = Array.isArray(raw) && raw.every((e) => typeof e === 'string') ? (raw as string[]) : null;
     if (DESTRUCTIVE_EXEC_RE.test(text) || destroysDojoData(argv ?? text)) return 'destructive shell command';
-    // Sudo is not classified here: the role wall in brokers/sudo-policy.ts is the one owner of that policy.
-    // Non-primary agents cannot sudo at all; the primary's gated hold goes to the owner's card at dispatch.
   }
   // The Healer holds primary-equivalent write, so a protected-identity-file write is destructive for it.
   // isProtectedIdentityPath canonicalizes the path first, so a traversal cannot slip the prefix.
@@ -70,6 +69,11 @@ export function isDestructiveCall(
 
 /** What a main-agent call would destroy, or null: the one question its warn-once hurdle asks. */
 export function wouldWreck(toolName: string, args: Record<string, unknown>): string | null {
+  if (toolName === 'kill_agent') {
+    const target = resolveAgentRef(typeof args.agent_id === 'string' ? args.agent_id : null);
+    const row = target.ok ? getDb().prepare('SELECT classification FROM agents WHERE id = ?').get(target.id) as { classification: string } | undefined : undefined;
+    return row?.classification === 'sensei' ? 'end a sensei the Dojo runs on, or the main agent itself' : null;
+  }
   if (FS_WRITE_TOOLS.has(toolName)) {
     const target = resolvePathArg(args.path);
     const rule = target.ok ? denyRuleFor(target.value.real, 'global_write') ?? denyRuleFor(target.value.lexical, 'global_write') : null;
@@ -87,7 +91,6 @@ export function wouldWreck(toolName: string, args: Record<string, unknown>): str
 }
 
 // Pre-hold check: only hold what the manifest would allow, or the hold files an unfillable approval.
-
 // The seam is authorizeExecShapedArgs, the EXACT call the dispatcher's own gate row makes: one, no drift.
 // Manifest-permitted but destructive still returns true and is held (git reset --hard, an explicit rm).
 // A shape-mismatched exec call returns FALSE: refused, never authorized as the empty command.

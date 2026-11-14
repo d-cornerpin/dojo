@@ -185,7 +185,6 @@ export interface FileHealerApprovalInput {
   callDescription: string;
   /** True for a live gate hold; recorded only, routing uses engine severity plus presence. */
   heldDirectDestructiveCall: boolean;
-
   engineSeverity?: EngineSeverity | null;
   // Full argument JSON of the held call (exact-call contract).
   argsJson?: string | null;
@@ -312,8 +311,7 @@ export async function fileHealerApprovalProposal(
   // A NON-error "queued" result so the turn continues: tell the agent to move on, not wait. If the owner
   // approves, the engine brings the exact call back through the post-approval kick and consume-once retry.
   const refusal =
-    `[Queued
- for the owner] This ${input.kind} could delete or overwrite something, so it is ` +
+    `[Queued for the owner] This ${input.kind} could delete or overwrite something, so it is ` +
     `now waiting in the Healer section of the owner's dashboard for a yes or no. This is not an ` +
     `error and nothing is blocked. Do NOT retry it, do NOT wait on it, and do NOT try another ` +
     `way around it. Move on to your other work or finish your turn. If the owner approves it ` +

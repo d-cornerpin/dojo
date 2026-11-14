@@ -24,7 +24,7 @@ export const PRIMARY_ONLY_TOOLS = new Set<string>([
 
 /** Every gate kind; `row` names the old ladder row it carries. */
 export type ToolGate =
-  | { readonly kind: 'fs'; readonly effect: 'fs_read' | 'fs_write' | 'fs_delete'; readonly row: string }
+  | { readonly kind: 'fs'; readonly effect: 'fs_read' | 'fs_write'; readonly row: string }
   /** Two doors, argv on `proc` and script on `shell`; `exec_allow` covers both unless withheld. */
   | { readonly kind: 'proc'; readonly row: string }
   | { readonly kind: 'shell'; readonly row: string }

@@ -432,11 +432,10 @@ IMPORTANT INSTRUCTIONS:
 export function terminateAgent(agentId: string, reason?: string): void {
   const db = getDb();
 
-  const agent = db.prepare('SELECT id, name, status, classification FROM agents WHERE id = ?').get(agentId) as {
+  const agent = db.prepare('SELECT id, name, status FROM agents WHERE id = ?').get(agentId) as {
     id: string;
     name: string;
     status: string;
-    classification: string;
   } | undefined;
 
   if (!agent) {
@@ -448,7 +447,6 @@ export function terminateAgent(agentId: string, reason?: string): void {
     logger.debug('Agent already terminated', { agentId });
     return;
   }
-
 
   // Ending an agent stops its run in flight, through the owner's own Stop; BEFORE the status write.
   if (runIsLive(agentId)) stopAgent(agentId);

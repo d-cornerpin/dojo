@@ -168,7 +168,7 @@ function killAllAgents(): string {
     const db = getDb();
     const agents = db.prepare(`
       SELECT id, name FROM agents
-      WHERE status NOT IN ('terminated') AND agent_type = 'standard'
+      WHERE status NOT IN ('terminated') AND agent_type = 'standard' AND classification != 'sensei'
     `).all() as Array<{ id: string; name: string }>;
 
     if (agents.length === 0) {

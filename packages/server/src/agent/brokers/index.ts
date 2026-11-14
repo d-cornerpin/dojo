@@ -60,7 +60,6 @@ export async function authorize(grant: Grant, effect: BrokerEffect): Promise<Ver
   switch (effect.kind) {
     case 'fs_read':
     case 'fs_write':
-    case 'fs_delete':
       return authorizeFs(grant, effect.kind, effect.resource, effect.surface ?? 'tool');
     case 'shell':
       return authorizeProc(grant, effect.resource, true);

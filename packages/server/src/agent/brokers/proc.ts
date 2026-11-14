@@ -423,15 +423,12 @@ export function authorizeProc(
     // whitespace: a reader in a quoted span (su root -c "cat ~/.ssh/id_rsa") matches nothing.
     for (const innerCommand of scanSensitiveReads ? privilegedInnerCommands(seg) : []) {
       const innerScan = commandReadsSensitiveFile(innerCommand, floor);
-
       if (innerScan.blocked) return sensitiveReadDeny(innerScan.reason, 'bypass-hardening');
     }
-
     const v = authorizePrivilege(grant.agentId);
     if (!v.allowed) return v;
   }
   if (!privilegedSeen && !ownsTheMac(grant.agentId) && mentionsPrivilegeToken(withoutDataBodies(resource.raw))) {
-
     // The token is in the line and no segment owns it: a substitution, a nested quote, an opaque
     // construct. HARMLESS DATA is the one exemption: quoted spans only, and no interpreter runs them.
     if (!privilegeTokenIsQuotedData(resource.raw, segments)) {

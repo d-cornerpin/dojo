@@ -6,7 +6,6 @@ import { broadcast } from '../../../../gateway/ws.js';
 import { fileHealerApprovalProposal, markHealerProposalAppliedBySignature, maybeAutoApproveHealerScratch, type EngineSeverity } from '../../../../healer/approval-routing.js';
 import { CLOSING_WORK_OPS, toolOpKey } from '../../../../tools/work-verbs.js';
 import { consumeApproval, isDestructiveCall, manifestPermitsDestructiveCall, requestApproval } from '../../../destructive-gate.js';
-
 import { isStructuringTool } from '../../classifiers/hoarding.js';
 import { canonicalToolSignature } from '../../classifiers/loop.js';
 import { advance, type AgentTurnState } from '../../state.js';
@@ -67,7 +66,6 @@ export async function recordDispatchAndHold(
   }
   // Every non-primary agent's destructive call is engine-held pending approval (one-shot, signature-bound,
   // 60-min expiry): prose cannot hold this line. The primary is exempt.
-
   if (!isPrimaryAgent(agentId)) {
     // The caller is passed so the Healer's writes to owner identity/config paths classify as destructive.
     const destructiveKind = isDestructiveCall(tc.name, tc.arguments as Record<string, unknown>, agentId);

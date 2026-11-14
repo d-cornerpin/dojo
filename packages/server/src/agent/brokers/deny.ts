@@ -174,7 +174,6 @@ export const DENY_RULES: readonly DenyRule[] = [
     reason: 'the platform database is the spine: writing it directly corrupts every other guarantee. The main agent is warned instead.',
     test: ({ folded, home }) => isDojoDbFile(folded, home),
   },
-
   {
     id: 'dojo-database-backups',
     tiers: ['global_read'],
@@ -190,7 +189,6 @@ export const DENY_RULES: readonly DenyRule[] = [
     reason:
       'only the main agent edits a Dojo soul; the glob covers every sensei soul ' +
       '(PM/TRAINER/HEALER/DREAMER/IMAGINER-SOUL.md), not only SOUL.md.',
-
     // Folding the pattern as well as the value keeps the legacy behaviour on a
     // case-SENSITIVE volume, where only the exact spelling matched.
     // The Dojo's own souls only, under ~/.dojo/prompts (assembler.ts PROMPTS_DIR): a
@@ -199,7 +197,6 @@ export const DENY_RULES: readonly DenyRule[] = [
       folded.startsWith(path.join(home, '.dojo', 'prompts') + path.sep)
       && (base === foldPath('SOUL.md') || base.endsWith(foldPath('-SOUL.md'))),
   },
-
 ];
 
 /** Denied in a command line whatever its shape: a file_write deny cannot see a shell redirect. */
@@ -259,7 +256,7 @@ export function containsSensitiveLocation(absPath: string): boolean {
 }
 
 /** fs_read consults read AND sensitive, the union the pre-merge read doors already formed. */
-export function isDeniedResource(absPath: string, kind: 'fs_read' | 'fs_write' | 'fs_delete'): boolean {
+export function isDeniedResource(absPath: string, kind: 'fs_read' | 'fs_write'): boolean {
   return tiersForKind(kind).some((tier) => denyRuleFor(absPath, tier) !== null);
 }
 
@@ -276,13 +273,11 @@ export function isGlobalDenyRule(ruleId: string): boolean {
 }
 
 /** Which tiers an effect kind consults. Stated once so the brokers cannot drift. */
-export function tiersForKind(kind: 'fs_read' | 'fs_write' | 'fs_delete'): readonly DenyTier[] {
+export function tiersForKind(kind: 'fs_read' | 'fs_write'): readonly DenyTier[] {
   switch (kind) {
     case 'fs_read': return ['global_read', 'sensitive'];
     // The sensitive tier stays out of fs_write on purpose: widening it here would
     // refuse writes the platform allows today.
     case 'fs_write': return ['global_write'];
-    case 'fs_delete': return [];
-
   }
 }

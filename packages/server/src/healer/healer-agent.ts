@@ -441,6 +441,10 @@ export async function runHealingCycle(): Promise<{ diagnosticId: string; autoFix
   let expiredCount = 0;
   try {
     const db = getDb();
+    // A held-call card for the main agent has no consumer (its calls are never held): close it, never re-wake it.
+    db.prepare(`UPDATE healer_proposals SET status = 'auto_resolved', resolved_at = datetime('now'), result_summary = ?
+      WHERE agent_id = ? AND approval_token IS NOT NULL AND (status = 'pending' OR (status = 'approved' AND applied_at IS NULL))`,
+    ).run('Nothing waits on this request any more, so it was closed. Nothing was changed.', getPrimaryAgentId());
     const pending = db.prepare(
       `SELECT id, diagnostic_code, agent_id, approval_token, surface,
               CAST((julianday('now') - julianday(created_at)) AS REAL) AS age_days

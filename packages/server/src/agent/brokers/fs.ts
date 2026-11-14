@@ -8,11 +8,11 @@ import { isProtectedIdentityPath } from '../path-resolve.js';
 import { ownsTheMac } from '../owns-the-mac.js';
 import { hasSquadWorkspaceAccess } from '../squad-workspace.js';
 import { denyRuleFor, tiersForKind, isSensitivePath, type DenyTier, type DenyViewerArg } from './deny.js';
-import { evaluateRules, matchPathPattern, type Grant, type GrantEffectKind } from './grants.js';
+import { evaluateRules, matchPathPattern, type Grant } from './grants.js';
 import type { ResolvedPath } from './resolve.js';
 import { allow, deny, type Verdict } from './types.js';
 
-export type FsKind = 'fs_read' | 'fs_write' | 'fs_delete';
+export type FsKind = 'fs_read' | 'fs_write';
 
 /** The per-kind refusal wording; a Healer-log read names the bounded helper tools instead. */
 function globalDenyReason(kind: FsKind, tier: DenyTier, rawPath: string, ruleId: string): string {
@@ -24,14 +24,7 @@ function globalDenyReason(kind: FsKind, tier: DenyTier, rawPath: string, ruleId:
     return `Global deny: ${rawPath} is restricted. Use the engine helper tools (healer_recent_actions / healer_action_detail) to access this kind of data with bounded response size.`;
   }
   return `Global deny: writing to ${rawPath} is prohibited`;
-
 }
-
-const GRANT_KIND: Record<FsKind, GrantEffectKind> = {
-  fs_read: 'fs_read',
-  fs_write: 'fs_write',
-  fs_delete: 'fs_delete',
-};
 
 /** Stage 1, isolated so the tool surface and the SHARE surface ask the same question;
  *  null when nothing denies. Both the lexical and resolved spellings are asked. */
@@ -106,7 +99,7 @@ export function authorizeFs(
     );
   }
 
-  const verdict = evaluateRules(grant, GRANT_KIND[kind], (pattern) => matchPathPattern(pattern, resource.lexical));
+  const verdict = evaluateRules(grant, kind, (pattern) => matchPathPattern(pattern, resource.lexical));
   if (verdict.decided && verdict.allowed) return allow(verdict.pattern);
   if (verdict.decided && !verdict.allowed) {
     return deny('ladder-parity', verdict.pattern, `${kind} denied by agent policy for path: ${resource.raw}`);
@@ -114,19 +107,10 @@ export function authorizeFs(
 
   // The squad-workspace fallback: an agent in a squad gets read+write inside that
   // technique's directory; stage 1 already ran, so no globally denied path re-opens here.
-  if (kind !== 'fs_delete' && hasSquadWorkspaceAccess(grant.agentId, resource.raw)) {
+  if (hasSquadWorkspaceAccess(grant.agentId, resource.raw)) {
     return allow('squad-workspace');
   }
 
-  if (kind === 'fs_delete') {
-    return deny(
-      'ladder-parity',
-      'no-delete-grant',
-      grant.manifest.file_delete === 'none'
-        ? 'File deletion is not permitted for this agent'
-        : `File deletion not allowed for path: ${resource.raw}`,
-    );
-  }
   const accessList = kind === 'fs_read' ? grant.manifest.file_read : grant.manifest.file_write;
   const configured = accessList === '*' || Array.isArray(accessList);
   const legacyKind = kind === 'fs_read' ? 'file_read' : 'file_write';

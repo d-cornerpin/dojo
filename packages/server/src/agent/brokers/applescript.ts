@@ -25,16 +25,13 @@ export function authorizeAppleScript(grant: Grant, script: ResolvedCommand): Ver
   // sudo token, so it answers to the same role wall as sudo.
   if (mentionsAdminPrivileges(script.raw)) {
     const verdict = authorizePrivilege(grant.agentId);
-
     if (!verdict.allowed) return verdict;
   }
 
   for (const inner of shellPayloads(script.raw)) {
     const payloadDeny = globalExecDeny(inner.trim(), floor);
-
     if (payloadDeny) return payloadDeny;
     const scan = commandReadsSensitiveFile(inner, floor);
-
     if (scan.blocked) {
       return deny(
         'bypass-hardening',

@@ -30,11 +30,17 @@ const WRECKS = [
   { name: 'exec', arguments: { argv: ['truncate', '-s', '0', `${process.env.HOME}/.dojo/data/dojo.db`] } },
   { name: 'applescript_run', arguments: { script: 'do shell script "rm -rf ~"' } },
   { name: 'file_write', arguments: { path: '~/.dojo/data/dojo.db', content: 'x' } },
+  { name: 'kill_agent', arguments: { agent_id: PRIMARY } },
+  { name: 'kill_agent', arguments: { agent_id: 'Keeper' } },
 ];
 
 beforeEach(() => {
   mockDb.current = new Database(':memory:');
   runMigrations();
+  const seed = mockDb.current.prepare(`INSERT INTO agents (id, name, status, classification) VALUES (?, ?, 'idle', ?)`);
+  seed.run(PRIMARY, 'Main', 'sensei');
+  seed.run('keeper-agent', 'Keeper', 'sensei');
+  seed.run('worker-agent', 'Worker', 'apprentice');
 });
 
 const gate = (agentId: string, call: { name: string; arguments: Record<string, unknown> }, seen: Set<string>) =>
@@ -45,7 +51,7 @@ describe('a Dojo-wrecking call warns once, then runs', () => {
   it('the first attempt is a warning naming the loss; the identical repeat passes the gate', () => {
     for (const call of WRECKS) {
       const seen = new Set<string>();
-      expect(gate(PRIMARY, call, seen)?.content, call.name).toMatch(/^\[Engine warning, nothing ran\] This call would .+ repeat the exact same call/);
+      expect(gate(PRIMARY, call, seen)?.content, call.name).toMatch(/^\[Engine warning, nothing ran\] This call would .+ repeat the exact same call in this same turn and it will run\.$/);
       expect(gate(PRIMARY, call, seen), JSON.stringify(call)).toBeNull();
     }
   });
@@ -54,6 +60,7 @@ describe('a Dojo-wrecking call warns once, then runs', () => {
     for (const script of ['ls ~/.dojo/data', 'cp ~/.dojo/data/dojo.db ~/Desktop/', 'rm -rf ~/Downloads/tmp', 'chmod 777 ~/Shared']) {
       expect(gate(PRIMARY, { name: 'shell', arguments: { script } }, new Set()), script).toBeNull();
     }
+    expect(gate(PRIMARY, { name: 'kill_agent', arguments: { agent_id: 'Worker' } }, new Set())).toBeNull();
   });
 
   it('past the warning, the broker authorizes the call', () => {

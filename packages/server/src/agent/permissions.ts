@@ -49,7 +49,6 @@ export function checkPermission(agentId: string, action: PermissionAction): Perm
     case 'file_read':
     case 'file_write': {
       const kind = action.type === 'file_read' ? 'fs_read' : 'fs_write';
-
       const resolved = resolvePathArg(action.path);
       if (!resolved.ok) {
         result = { allowed: false, reason: `No path specified for ${action.type}` };

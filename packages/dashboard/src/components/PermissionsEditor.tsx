@@ -364,7 +364,7 @@ export const PermissionsEditor = ({ permissions, toolsPolicy, shareUserProfile: 
                 placeholder="rm -rf *, sudo *, ..."
                 className="glass-input w-full font-mono"
               />
-              <p className="text-[10px] text-ui/25 mt-0.5">Global deny (rm -rf /, sudo *, chmod 777 *) always enforced.</p>
+              <p className="text-[10px] text-ui/25 mt-0.5">Every agent but the main one is always refused rm -rf /, sudo and chmod 777.</p>
             </div>
             <div>
               <label className="text-[10px] font-semibold text-ui/40 uppercase tracking-wide block mb-1">Max Processes</label>

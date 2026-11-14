@@ -37,5 +37,4 @@ export async function sudoWouldHang(command: string): Promise<string | null> {
   }
   if (passwordless) return null;
   return sudoPasswordPromptMessage(os.userInfo().username);
-
 }

@@ -108,7 +108,7 @@ export function runTurnClosures(
   };
   // Consecutive identical failing tool calls this turn, keyed by call signature (identical-call-brake.ts).
   const identicalCallState: RepeatCallState = new Map();
-  // Reminder lane: the first non-owner send is refused with guidance; an identical repeat proceeds.
+  // Calls refused once this turn (reminder lane, main-agent hurdle); the identical repeat proceeds.
   const refusedOnceSigs = new Set<string>();
 
   const deliverEngineUserAck = async (

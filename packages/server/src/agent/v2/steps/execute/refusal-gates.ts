@@ -23,7 +23,19 @@ import type { ExecuteContext, PendingToolResult } from './index.js';
 
 const logger = createLogger('v2-loop');
 
-
+/** Hurdle, never a block: a main-agent call that could wreck the Mac or the Dojo is warned once; the identical repeat runs. */
+function hurdle(agentId: string, tc: ToolCall, refusedOnceSigs: Set<string>): PendingToolResult | null {
+  const loss = isPrimaryAgent(agentId) ? wouldWreck(tc.name, (tc.arguments ?? {}) as Record<string, unknown>) : null;
+  const sig = `hurdle|${identicalCallSignature(tc.name, tc.arguments)}`;
+  if (!loss || refusedOnceSigs.has(sig)) return null;
+  refusedOnceSigs.add(sig);
+  return {
+    toolCallId: tc.id,
+    name: tc.name,
+    content: `[Engine warning, nothing ran] This call would ${loss}. If that is what you mean to do, repeat the exact same call in this same turn and it will run.`,
+    isError: true,
+  };
+}
 
 /** `refusal` non-null means the call does NOT run and this is its result. */
 export function runRefusalGates(
@@ -34,19 +46,8 @@ export function runRefusalGates(
 ): { state: AgentTurnState; refusal: PendingToolResult | null } {
   const { agentId, turnNumber, turnCtx, counterparty, refusedOnceSigs } = ctx;
 
-  // Hurdle, never a block: a main-agent call that could wreck the Mac or the Dojo is warned once per turn;
-  // the identical call repeated runs. `refusedOnceSigs` is the turn's one record of calls warned once.
-  const loss = isPrimaryAgent(agentId) ? wouldWreck(tc.name, (tc.arguments ?? {}) as Record<string, unknown>) : null;
-  const hurdleSig = `hurdle|${identicalCallSignature(tc.name, tc.arguments)}`;
-  if (loss && !refusedOnceSigs.has(hurdleSig)) {
-    refusedOnceSigs.add(hurdleSig);
-    return { state, refusal: {
-      toolCallId: tc.id,
-      name: tc.name,
-      content: `[Engine warning, nothing ran] This call would ${loss}. If that is what you mean to do, repeat the exact same call and it will run.`,
-      isError: true,
-    } };
-  }
+  const warning = hurdle(agentId, tc, refusedOnceSigs);
+  if (warning) return { state, refusal: warning };
 
   // Reminder lane: a turn serving a kind='reminder' task delivers to the owner, so a send naming anyone
   // else is refused once (an identical re-send goes through). The owner test is `isOwnerIMessageRecipient`.

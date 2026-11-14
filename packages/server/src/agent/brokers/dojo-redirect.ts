@@ -272,7 +272,6 @@ export function destroysDojoFiles(command: string | readonly string[]): boolean 
 }
 
 /** The door's verdict on a command (a shell line, or an argv vector) for an agent's role. */
-
 export function dojoDoorVerdict(command: string | readonly string[], role: DoorRole): DoorVerdict {
   const text = typeof command === 'string' ? command : command.join(' ');
   // The words as the shell will unquote them count too, so `~/.do''jo/...` is still the folder.
