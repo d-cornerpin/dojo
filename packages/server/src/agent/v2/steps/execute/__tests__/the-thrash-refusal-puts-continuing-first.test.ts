@@ -43,7 +43,7 @@ describe('the thrash refusal', () => {
     const call = { id: 'c2', name: 'gmail_search', arguments: { query: 'in:inbox' } };
     const state = advance(initState({ agentId: AGENT, turnNumber: 1, lastUserMessageContent: null } as unknown as Parameters<typeof initState>[0]),
       { thrashGatedSignatures: [canonicalToolSignature(call.name, call.arguments)] });
-    const ctx = { agentId: AGENT, turnNumber: 1, turnCtx: {}, counterparty: null, reminderLaneRefusedSigs: new Set<string>(), engineBlockEscapeHatch: '' };
+    const ctx = { agentId: AGENT, turnNumber: 1, turnCtx: {}, counterparty: null, refusedOnceSigs: new Set<string>(), engineBlockEscapeHatch: '' };
     const text = runRefusalGates(state as never, call as never, ctx as never, false).refusal?.content ?? '';
     expect(text).toContain('BLOCKED by engine thrash gate');
     expect(text).toContain('(a) Continue the work from that result');

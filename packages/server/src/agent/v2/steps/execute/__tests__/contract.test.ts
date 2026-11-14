@@ -118,7 +118,7 @@ function ctxFor(over: Partial<ExecuteContext> = {}): ExecuteContext {
     engineStartAckDeliveredThisTurn: false,
     deferredDeliveredByAck: false,
     identicalCallState: new Map() as RepeatCallState,
-    reminderLaneRefusedSigs: new Set<string>(),
+    refusedOnceSigs: new Set<string>(),
     startAckArmed: false,
     startAckArmedAtMs: Date.now(),
     fireStartAckIfOwed: fireStartAckIfOwedSpy,

@@ -73,7 +73,7 @@ describe('a text to the owner is never refused', () => {
     agentId: 'quillon', turnNumber: 1,
     turnCtx: { servedWork },
     counterparty,
-    reminderLaneRefusedSigs: new Set<string>(), engineBlockEscapeHatch: '',
+    refusedOnceSigs: new Set<string>(), engineBlockEscapeHatch: '',
   });
 
   const send = (

@@ -38,7 +38,7 @@ async function sixUntrackedCalls(turnNumber: number): Promise<void> {
     counterparty: { kind: 'user', name: 'Owner', relation: 'owner', channel: 'dashboard', senderId: 'owner', threadId: null, senderIsAgent: false },
     counterpartyIsAgentSender: false, chosenConvKey: 'human:owner', hasUnansweredUser: false, triggerRow: null, triggerWorkId: null,
     triggerConversationId: null, turnStartedAt: new Date().toISOString(), persistRoutingMarker: () => undefined,
-    engineStartAckDeliveredThisTurn: false, deferredDeliveredByAck: false, identicalCallState: {}, reminderLaneRefusedSigs: new Set<string>(),
+    engineStartAckDeliveredThisTurn: false, deferredDeliveredByAck: false, identicalCallState: {}, refusedOnceSigs: new Set<string>(),
     startAckArmed: false, startAckArmedAtMs: 0, fireStartAckIfOwed: async () => undefined, result, messageId: `resp-${turnNumber}`,
     persistedContent: null, interAgentTurn: false, hasXmlFallbackTools: false, effectiveModelIdForPersist: 'm',
     staleTaskWindowMinutes: 45, engineBlockEscapeHatch: '', engineStartAckAfterMs: 30_000,

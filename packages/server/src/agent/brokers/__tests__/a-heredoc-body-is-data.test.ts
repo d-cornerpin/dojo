@@ -54,7 +54,7 @@ describe('a heredoc body is data', () => {
   });
 
   it('the floor reads every body not written by one inert command alone', () => {
-    for (const line of runners('rm -rf /')) expect(authorizeExecShapedCall(all(), 'shell', line).allowed, line).toBe(false);
+    for (const line of runners('rm -rf /')) expect(authorizeExecShapedCall(worker, 'shell', line).allowed, line).toBe(false);
     expect(authorizeExecShapedCall(all(), 'shell', "bash <<'EOF'\necho hello\nEOF").allowed).toBe(true);
     expect(authorizeExecShapedCall(all(), 'shell', "cat > /tmp/n.md <<'EOF'\nrm -rf /\nEOF").allowed).toBe(true);
     expect(authorizeExecShapedCall(all(), 'shell', "cat <<'EOF' >> /tmp/n.md\nrm -rf /\nEOF").allowed).toBe(true);

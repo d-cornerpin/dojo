@@ -53,7 +53,7 @@ const SYSTEM_CONTROL_CATEGORY: Readonly<Record<string, string>> = {
 };
 
 const FS_READ_TOOLS = new Set(['file_read', 'file_list']);
-const FS_WRITE_TOOLS = new Set(['file_write', 'file_append', 'file_patch']);
+export const FS_WRITE_TOOLS = new Set(['file_write', 'file_append', 'file_patch']);
 const OWNER_FACING_TOOLS = new Set(['dreamer_run_now', 'cost_summary']);
 const IMESSAGE_PRIMARY_ONLY = new Set(['imessage_send', 'imessage_list_contacts']);
 const CREDENTIAL_TOOLS = new Set(['credential_list', 'credential_get', 'credential_add', 'credential_update', 'credential_delete']);

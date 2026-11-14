@@ -79,7 +79,7 @@ function ctxFor(toolCalls: ToolCall[]): ExecuteContext {
     engineStartAckDeliveredThisTurn: false,
     deferredDeliveredByAck: false,
     identicalCallState: new Map() as RepeatCallState,
-    reminderLaneRefusedSigs: new Set<string>(),
+    refusedOnceSigs: new Set<string>(),
     startAckArmed: false,
     startAckArmedAtMs: Date.now(),
     fireStartAckIfOwed: vi.fn(async () => undefined),

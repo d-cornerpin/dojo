@@ -15,7 +15,12 @@ import { isProtectedIdentityPath } from './permissions.js';
 import { getAgentPermissions } from './manifest.js';
 import { grantForManifest } from './brokers/grants.js';
 import { EXEC_DOOR_ARG, authorizeExecShapedArgs, execCallText, execDoorFor } from './brokers/exec-seam.js';
-import { destroysDojoData } from './brokers/dojo-redirect.js';
+import { destroysDojoData, destroysDojoFiles } from './brokers/dojo-redirect.js';
+import { wipesTheMac } from './brokers/proc.js';
+import { shellPayloads } from './brokers/applescript.js';
+import { denyRuleFor } from './brokers/deny.js';
+import { resolvePathArg } from './brokers/resolve.js';
+import { FS_WRITE_TOOLS } from './tools/gates.js';
 import { OWNER_ALERT_DOJO_PREFIX } from '@dojo/shared';
 import { tellAgentWhatDojoSent } from './dojo-voice.js';
 import { APPROVAL_TTL_MINUTES, deliverGateWake } from './approval-decision.js';
@@ -66,7 +71,26 @@ export function isDestructiveCall(
   return null;
 }
 
+/** What a main-agent call would destroy, or null: the one question its warn-once hurdle asks. */
+export function wouldWreck(toolName: string, args: Record<string, unknown>): string | null {
+  if (FS_WRITE_TOOLS.has(toolName)) {
+    const target = resolvePathArg(args.path);
+    const rule = target.ok ? denyRuleFor(target.value.real, 'global_write') ?? denyRuleFor(target.value.lexical, 'global_write') : null;
+    return rule?.id === 'dojo-database-writes' ? 'write straight into the Dojo\'s live database file and can corrupt every agent, message and setting in it' : null;
+  }
+  const raw = args[EXEC_DOOR_ARG[execDoorFor(toolName) ?? 'shell']];
+  const lines = toolName === 'applescript_run' && typeof args.script === 'string' ? shellPayloads(args.script)
+    : [execCallText(toolName, args)].filter((t): t is string => t !== null);
+  if (lines.some(wipesTheMac)) return 'erase the whole disk or the home folder, the Dojo with it';
+  const argv = toolName === 'exec' && Array.isArray(raw) && raw.every((e) => typeof e === 'string') ? (raw as string[]) : null;
+  if (argv ? destroysDojoFiles(argv) : lines.some((l) => destroysDojoFiles(l))) {
+    return 'delete, move or overwrite the Dojo\'s own database, data or backups';
+  }
+  return null;
+}
+
 // Pre-hold check: only hold what the manifest would allow, or the hold files an unfillable approval.
+
 // The seam is authorizeExecShapedArgs, the EXACT call the dispatcher's own gate row makes: one, no drift.
 // Manifest-permitted but destructive still returns true and is held (git reset --hard, an explicit rm).
 // A shape-mismatched exec call returns FALSE: refused, never authorized as the empty command.

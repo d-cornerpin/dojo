@@ -65,7 +65,7 @@ export interface ExecuteContext {
   readonly engineStartAckDeliveredThisTurn: boolean;
   readonly deferredDeliveredByAck: boolean;
   readonly identicalCallState: RepeatCallState;
-  readonly reminderLaneRefusedSigs: Set<string>;
+  readonly refusedOnceSigs: Set<string>;
   readonly startAckArmed: boolean;
   readonly startAckArmedAtMs: number;
   readonly fireStartAckIfOwed: (via: 'timer' | 'first-tool') => Promise<void>;

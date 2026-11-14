@@ -33,7 +33,7 @@ export interface TurnClosuresOutputs {
   readonly persistAndBroadcastSystemRow: (content: string) => string;
   readonly noteTerminalAnswer: (rowId: string, surface: string) => void;
   readonly identicalCallState: RepeatCallState;
-  readonly reminderLaneRefusedSigs: Set<string>;
+  readonly refusedOnceSigs: Set<string>;
   readonly deliverEngineUserAck: (
     text: string, originIntent?: string | null, reuseId?: string | null, displayKind?: DisplayKind | null,
   ) => Promise<void>;
@@ -109,7 +109,7 @@ export function runTurnClosures(
   // Consecutive identical failing tool calls this turn, keyed by call signature (identical-call-brake.ts).
   const identicalCallState: RepeatCallState = new Map();
   // Reminder lane: the first non-owner send is refused with guidance; an identical repeat proceeds.
-  const reminderLaneRefusedSigs = new Set<string>();
+  const refusedOnceSigs = new Set<string>();
 
   const deliverEngineUserAck = async (
     text: string, originIntent: string | null = null, reuseId: string | null = null,
@@ -230,6 +230,6 @@ export function runTurnClosures(
   return {
     reArmIfStrandedNoAnswer, stashContinuationIfHuman, persistRoutingMarker,
     persistAndBroadcastSystemRow, noteTerminalAnswer, identicalCallState,
-    reminderLaneRefusedSigs, deliverEngineUserAck,
+    refusedOnceSigs, deliverEngineUserAck,
   };
 }

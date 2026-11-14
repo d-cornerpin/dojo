@@ -184,7 +184,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
     isNotificationTurn, a2aReplyContext, a2aReplyAssignMessageId, counterparty, turnNumber,
     turnStartedAt, reArmIfStrandedNoAnswer, stashContinuationIfHuman, persistRoutingMarker,
     persistAndBroadcastSystemRow, noteTerminalAnswer, identicalCallState,
-    reminderLaneRefusedSigs, deliverEngineUserAck, counterpartyIsAgentSender, startAckArmed,
+    refusedOnceSigs, deliverEngineUserAck, counterpartyIsAgentSender, startAckArmed,
     startAckArmedAtMs, startAckRepliedNow, fireStartAckIfOwed, finalizeContext,
     teardownContext, preCallGatesContext,
   } = preflight.outputs;
@@ -277,7 +277,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
         turnStartedAt, persistRoutingMarker,
         engineStartAckDeliveredThisTurn: turnCtx.engineStartAckDeliveredThisTurn,
         deferredDeliveredByAck: turnCtx.deferredDeliveredByAck,
-        identicalCallState, reminderLaneRefusedSigs,
+        identicalCallState, refusedOnceSigs,
         startAckArmed, startAckArmedAtMs, fireStartAckIfOwed,
         result, messageId, persistedContent, interAgentTurn, hasXmlFallbackTools,
         effectiveModelIdForPersist,

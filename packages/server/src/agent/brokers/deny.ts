@@ -161,11 +161,20 @@ export const DENY_RULES: readonly DenyRule[] = [
   },
   {
     id: 'dojo-database-files',
-    tiers: ['global_read', 'global_write'],
+    tiers: ['global_read'],
     since: 'legacy',
-    reason: 'the platform database is the spine: writing it directly corrupts every other guarantee, reading it raw hands over its credential tables.',
+    reason: 'reading the platform database raw hands over its credential tables.',
     test: ({ folded, home }) => isDojoDbFile(folded, home),
   },
+  {
+    id: 'dojo-database-writes',
+    tiers: ['global_write'],
+    since: 'legacy',
+    exceptFor: 'main',
+    reason: 'the platform database is the spine: writing it directly corrupts every other guarantee. The main agent is warned instead.',
+    test: ({ folded, home }) => isDojoDbFile(folded, home),
+  },
+
   {
     id: 'dojo-database-backups',
     tiers: ['global_read'],

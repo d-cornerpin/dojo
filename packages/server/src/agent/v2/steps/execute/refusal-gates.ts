@@ -1,8 +1,11 @@
-// The gates that can refuse a call before it runs: the reminder-delivery lane, the A2A re-send cap, the
-// thrash gate and the compile gate, plus the hoarding advisory, which refuses nothing. A refusal comes back
-// as `{ state, refusal }` and `run-one.ts` returns it as the call's result.
+// The gates that can refuse a call before it runs: the reminder-delivery lane, the main agent's warn-once
+// hurdle, the A2A re-send cap, the thrash gate and the compile gate, plus the hoarding advisory, which
+// refuses nothing. A refusal comes back as `{ state, refusal }` and `run-one.ts` returns it as the call's result.
 
 import { broadcast } from '../../../../gateway/ws.js';
+import { isPrimaryAgent } from '../../../../config/platform.js';
+import { wouldWreck } from '../../../destructive-gate.js';
+import { identicalCallSignature } from '../../identical-call-brake.js';
 import { isOwnerIMessageRecipient } from '../../../../services/safe-senders.js';
 import { toolOpKey } from '../../../../tools/work-verbs.js';
 import { LOADING_GATE_THRESHOLD, isStructuringTool } from '../../classifiers/hoarding.js';
@@ -29,7 +32,22 @@ export function runRefusalGates(
   ctx: ExecuteContext,
   isA2AReplyTool: boolean,
 ): { state: AgentTurnState; refusal: PendingToolResult | null } {
-  const { agentId, turnNumber, turnCtx, counterparty, reminderLaneRefusedSigs } = ctx;
+  const { agentId, turnNumber, turnCtx, counterparty, refusedOnceSigs } = ctx;
+
+  // Hurdle, never a block: a main-agent call that could wreck the Mac or the Dojo is warned once per turn;
+  // the identical call repeated runs. `refusedOnceSigs` is the turn's one record of calls warned once.
+  const loss = isPrimaryAgent(agentId) ? wouldWreck(tc.name, (tc.arguments ?? {}) as Record<string, unknown>) : null;
+  const hurdleSig = `hurdle|${identicalCallSignature(tc.name, tc.arguments)}`;
+  if (loss && !refusedOnceSigs.has(hurdleSig)) {
+    refusedOnceSigs.add(hurdleSig);
+    return { state, refusal: {
+      toolCallId: tc.id,
+      name: tc.name,
+      content: `[Engine warning, nothing ran] This call would ${loss}. If that is what you mean to do, repeat the exact same call and it will run.`,
+      isError: true,
+    } };
+  }
+
 
 
   // Reminder lane: a turn serving a kind='reminder' task delivers to the owner, so a send naming anyone
@@ -42,8 +60,8 @@ export function runRefusalGates(
     const recipIsOwner = recip ? isOwnerIMessageRecipient(recip) : false;
     if (served?.taskKind === 'reminder' && recip && !recipIsOwner) {
       const laneSig = `${tc.name}|${recip}`;
-      if (!reminderLaneRefusedSigs.has(laneSig)) {
-        reminderLaneRefusedSigs.add(laneSig);
+      if (!refusedOnceSigs.has(laneSig)) {
+        refusedOnceSigs.add(laneSig);
         return { state, refusal: {
           toolCallId: tc.id,
           name: tc.name,

@@ -20,7 +20,7 @@ describe('no engine refusal hands the owner the problem', () => {
   it('the A2A send-cap refusal states facts: no "End your turn now", no hatch', () => {
     const state = advance(initState({ agentId: 'a', turnNumber: 1, lastUserMessageContent: null } as never),
       { sendsPerAgentThisTurn: { pm: 5 } });
-    const ctx = { agentId: 'a', turnNumber: 1, turnCtx: {}, counterparty: { kind: 'agent' }, reminderLaneRefusedSigs: new Set<string>() };
+    const ctx = { agentId: 'a', turnNumber: 1, turnCtx: {}, counterparty: { kind: 'agent' }, refusedOnceSigs: new Set<string>() };
     const text = runRefusalGates(state as never, { id: 'c', name: 'send_to_agent', arguments: { to_agent: 'pm', message: 'x' } } as never, ctx as never, true).refusal?.content ?? '';
     expect(text).toContain('already sent');
     expect(text).toContain('5 messages this turn');

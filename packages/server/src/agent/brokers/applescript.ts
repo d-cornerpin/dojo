@@ -1,4 +1,5 @@
 
+import { ownsTheMac } from '../owns-the-mac.js';
 import { evaluateRules, type Grant } from './grants.js';
 import { commandReadsSensitiveFile, globalExecDeny, authorizeShellCommandText } from './proc.js';
 import { authorizePrivilege, mentionsAdminPrivileges } from './sudo-policy.js';
@@ -7,11 +8,17 @@ import { allow, deny, type Verdict } from './types.js';
 
 const DO_SHELL_SCRIPT_RE = /\bdo\s+shell\s+script\s+("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/gi;
 
+/** The shell lines an AppleScript's `do shell script` statements run. */
+export function shellPayloads(script: string): string[] {
+  return [...script.matchAll(DO_SHELL_SCRIPT_RE)].map((m) => m[1].slice(1, -1).replace(/\\(["'\\])/g, '$1'));
+}
+
 // osascript is a second interpreter: its "do shell script" reaches back into
 // /bin/sh, so the script body and every payload answer to the shell rules.
 export function authorizeAppleScript(grant: Grant, script: ResolvedCommand): Verdict {
   // Checking the raw body refuses a script that merely names the secret store.
-  const globals = globalExecDeny(script.raw);
+  const floor = !ownsTheMac(grant.agentId);
+  const globals = globalExecDeny(script.raw, floor);
   if (globals) return globals;
 
   // "do shell script ... with administrator privileges" is macOS root with no
@@ -22,10 +29,9 @@ export function authorizeAppleScript(grant: Grant, script: ResolvedCommand): Ver
     if (!verdict.allowed) return verdict;
   }
 
-  for (const match of script.raw.matchAll(DO_SHELL_SCRIPT_RE)) {
-    const quoted = match[1];
-    const inner = quoted.slice(1, -1).replace(/\\(["'\\])/g, '$1');
-    const payloadDeny = globalExecDeny(inner.trim());
+  for (const inner of shellPayloads(script.raw)) {
+    const payloadDeny = globalExecDeny(inner.trim(), floor);
+
     if (payloadDeny) return payloadDeny;
     const scan = commandReadsSensitiveFile(inner);
     if (scan.blocked) {

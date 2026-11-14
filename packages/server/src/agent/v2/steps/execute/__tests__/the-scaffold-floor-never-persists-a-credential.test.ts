@@ -119,7 +119,7 @@ function executeCtx(
     turnStartedAt: new Date().toISOString(), persistRoutingMarker: () => undefined,
     engineStartAckDeliveredThisTurn: false, deferredDeliveredByAck: false,
     identicalCallState: {} as ExecuteContext['identicalCallState'],
-    reminderLaneRefusedSigs: new Set<string>(),
+    refusedOnceSigs: new Set<string>(),
     startAckArmed: false, startAckArmedAtMs: 0,
     fireStartAckIfOwed: async () => undefined,
     result: result as unknown as ExecuteContext['result'],

@@ -25,9 +25,10 @@ import {
 import type { ResolvedArgv, ResolvedCommand } from './resolve.js';
 import { allow, deny, type Verdict } from './types.js';
 
-/** Hard-coded, unoverridable, NOT a grant_rule row: the platform's floor. These three still bite
- *  inside a sudo line: the wrapper comes off and this pipeline re-runs first. */
-const GLOBAL_EXEC_DENY: readonly string[] = ['rm -rf /', 'rm -rf ~', 'chmod 777 *'];
+/** The two commands that wipe the Mac: refused to other agents, a passable warning for the main one. */
+const WIPES_THE_MAC: readonly string[] = ['rm -rf /', 'rm -rf ~'];
+/** Hard-coded, NOT a grant_rule row: the floor for every agent but the main one, read inside sudo too. */
+const GLOBAL_EXEC_DENY: readonly string[] = [...WIPES_THE_MAC, 'chmod 777 *'];
 
 const SENSITIVE_FILE_READING_COMMANDS: ReadonlySet<string> = new Set<string>([
   'cat', 'less', 'more', 'head', 'tail', 'bat', 'nl', 'strings', 'sort', 'jq',
@@ -174,8 +175,8 @@ function basenameNormalized(trimmed: string): string | null {
 }
 
 /** Deny over ONE spelling; basis says whether basename normalising added the refusal. */
-function globalExecDenyOneSpelling(trimmed: string, basis: 'ladder-parity' | 'bypass-hardening'): Verdict | null {
-  for (const pattern of GLOBAL_EXEC_DENY) {
+function globalExecDenyOneSpelling(trimmed: string, basis: 'ladder-parity' | 'bypass-hardening', floor: boolean): Verdict | null {
+  for (const pattern of floor ? GLOBAL_EXEC_DENY : []) {
     if (matchCommandDenyPattern(pattern, trimmed)) {
       const prefix = pattern.endsWith(' *') ? pattern.slice(0, -2) : null;
       return deny(
@@ -225,16 +226,30 @@ export function authorizeShellCommandText(grant: Grant, line: string, commands =
   return verdict;
 }
 
-/** The deny scan, exported so the AppleScript broker's do shell script payload meets the same floor. */
-export function globalExecDeny(trimmed: string): Verdict | null {
-  const asTyped = globalExecDenyOneSpelling(trimmed, 'ladder-parity');
+/** The deny scan, exported so the AppleScript broker's do shell script payload meets the same floor.
+ *  `floor` false (the main agent) keeps only the secrets half. */
+export function globalExecDeny(trimmed: string, floor = true): Verdict | null {
+  const asTyped = globalExecDenyOneSpelling(trimmed, 'ladder-parity', floor);
   if (asTyped) return asTyped;
   const normalized = basenameNormalized(trimmed);
   if (normalized) {
-    const v = globalExecDenyOneSpelling(normalized, 'bypass-hardening');
+    const v = globalExecDenyOneSpelling(normalized, 'bypass-hardening', floor);
     if (v) return v;
   }
   return secretsSubstringUnquoted(trimmed);
+}
+
+/** Every command a line runs as the floor reads it: the whole line, each simple command, and what a
+ *  privilege wrapper runs one interpreter deeper. */
+function floorReadings(raw: string): string[] {
+  const runs = execSimpleCommands(raw, false);
+  return [raw.trim(), ...runs, ...runs.flatMap((seg) => privilegedInnerCommands(seg))];
+}
+
+/** Whether a line runs `rm -rf /` or `rm -rf ~` anywhere the floor reads it. */
+export function wipesTheMac(raw: string): boolean {
+  return floorReadings(raw).some((command) => [command.trim(), basenameNormalized(command.trim())]
+    .some((s) => s !== null && WIPES_THE_MAC.some((pattern) => matchCommandDenyPattern(pattern, s))));
 }
 
 /** The substring is also asked of the UNQUOTED line, never the prefix denies: quoted data stays data. */
@@ -273,7 +288,7 @@ export function commandReadsSensitiveFile(command: string): { blocked: true; rea
 function authorizeOneCommand(grant: Grant, command: string, kind: 'proc' | 'shell' = 'shell', runs: readonly string[] = []): Verdict {
   const trimmed = command.trim();
   const lexable = kind === 'proc' || lexShellLine(trimmed) !== null;   // a shell quote left open: only `*` admits it
-  const globals = globalExecDeny(trimmed);
+  const globals = globalExecDeny(trimmed, !ownsTheMac(grant.agentId));
   if (globals) return globals;
 
   // SUDO: the main agent's alone; the floor already read the inner command.
@@ -345,7 +360,7 @@ export function authorizeArgv(grant: Grant, resource: ResolvedArgv): Verdict {
     );
   }
 
-  const globals = globalExecDeny(resource.display);
+  const globals = globalExecDeny(resource.display, !ownsTheMac(grant.agentId));
   if (globals) return globals;
 
   const scan = argvReadsSensitiveFile(resource.argv);
@@ -380,10 +395,13 @@ export function authorizeProc(
   resource: ResolvedCommand,
   scanSensitiveReads = false,
 ): Verdict {
-  // The WHOLE line meets the global deny first: a construct's header is not one of the inner
-  // commands, and `secrets.yaml` must not become reachable by hiding it in one.
-  const wholeLine = globalExecDeny(resource.trimmed);
-  if (wholeLine) return wholeLine;
+  // The floor reads the whole line (a construct's header is not one of its commands), every simple
+  // command and what a privilege wrapper runs; the main agent meets only its secrets half.
+  const floor = !ownsTheMac(grant.agentId);
+  for (const command of floorReadings(resource.raw)) {
+    const denied = globalExecDeny(command, floor);
+    if (denied) return denied;
+  }
 
   if (scanSensitiveReads) {
     const scan = commandReadsSensitiveFile(resource.raw);
@@ -398,23 +416,15 @@ export function authorizeProc(
   const runs = execSimpleCommands(resource.raw, false);
   let privilegedSeen = false;
   for (const seg of runs) {
-    // The floor PER SEGMENT, not just the head program of the line (an unoverridable floor must
-    // not be escapable by a pipe); its items are the catastrophic only, so this cannot lose a capability.
-    const floored = globalExecDeny(seg);
-    if (floored) return floored;
     if (!isSudoLine(seg)) continue;
     privilegedSeen = true;
-    // The floor again ONE INTERPRETER DEEPER: the pass above floors what the segment grammar can
-    // see, and a command inside `sh -c "..."` is one quoted word to that grammar.
-    for (const innerCommand of privilegedInnerCommands(seg)) {
-      const flooredInner = globalExecDeny(innerCommand);
-      if (flooredInner) return flooredInner;
-      // The sensitive-read scan for the INNER command too: the outer scan splits the raw line on
-      // whitespace: a reader in a quoted span (su root -c "cat ~/.ssh/id_rsa") matches nothing.
-      if (!scanSensitiveReads) continue;
+    // The sensitive-read scan for the INNER command too: the outer scan splits the raw line on
+    // whitespace: a reader in a quoted span (su root -c "cat ~/.ssh/id_rsa") matches nothing.
+    for (const innerCommand of scanSensitiveReads ? privilegedInnerCommands(seg) : []) {
       const innerScan = commandReadsSensitiveFile(innerCommand);
       if (innerScan.blocked) return sensitiveReadDeny(innerScan.reason, 'bypass-hardening');
     }
+
     const v = authorizePrivilege(grant.agentId);
     if (!v.allowed) return v;
   }

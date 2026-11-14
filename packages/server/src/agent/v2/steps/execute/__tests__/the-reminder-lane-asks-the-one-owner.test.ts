@@ -61,7 +61,7 @@ describe('the reminder lane asks the same owner question', () => {
       agentId: 'quillon', turnNumber: 1,
       turnCtx: { servedWork: { taskKind: 'reminder' } },
       counterparty: { kind: 'user', relation: 'owner', channel: 'dashboard' },
-      reminderLaneRefusedSigs: new Set<string>(), engineBlockEscapeHatch: '',
+      refusedOnceSigs: new Set<string>(), engineBlockEscapeHatch: '',
     };
     const out = runRefusalGates(
       state as never, { id: 'c1', name: 'imessage_send', arguments: { recipient, message: 'water the seedlings' } } as never,
@@ -100,7 +100,7 @@ describe('the reminder lane reads the turn address for where the reminder lands'
       agentId: 'quillon', turnNumber: 1,
       turnCtx: { servedWork: { taskKind: 'reminder' }, address },
       counterparty: { kind: 'user', relation: 'owner', channel: 'dashboard' },
-      reminderLaneRefusedSigs: new Set<string>(), engineBlockEscapeHatch: '',
+      refusedOnceSigs: new Set<string>(), engineBlockEscapeHatch: '',
     };
     return runRefusalGates(
       state as never, { id: 'c1', name: 'imessage_send', arguments: { recipient: FIRST, message: 'water the seedlings' } } as never,

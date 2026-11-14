@@ -93,7 +93,7 @@ export interface PreflightOutputs {
   readonly persistAndBroadcastSystemRow: (content: string) => string;
   readonly noteTerminalAnswer: (rowId: string, surface: string) => void;
   readonly identicalCallState: RepeatCallState;
-  readonly reminderLaneRefusedSigs: Set<string>;
+  readonly refusedOnceSigs: Set<string>;
   readonly deliverEngineUserAck: (
     text: string, originIntent?: string | null, reuseId?: string | null, displayKind?: DisplayKind | null,
   ) => Promise<void>;
@@ -160,7 +160,7 @@ export async function runPreflight(
   const {
     reArmIfStrandedNoAnswer, stashContinuationIfHuman, persistRoutingMarker,
     persistAndBroadcastSystemRow, noteTerminalAnswer, identicalCallState,
-    reminderLaneRefusedSigs, deliverEngineUserAck,
+    refusedOnceSigs, deliverEngineUserAck,
   } = runTurnClosures(turnCtx, ctx, sc, {
     counterparty, chosenConvKey, chosenConversationId, turnNumber, revertTriggerStampOnAbort,
   });
@@ -195,7 +195,7 @@ export async function runPreflight(
     counterparty, turnNumber, turnStartedAt,
     reArmIfStrandedNoAnswer, stashContinuationIfHuman, persistRoutingMarker,
     persistAndBroadcastSystemRow, noteTerminalAnswer, identicalCallState,
-    reminderLaneRefusedSigs, deliverEngineUserAck,
+    refusedOnceSigs, deliverEngineUserAck,
     counterpartyIsAgentSender, startAckArmed, startAckArmedAtMs, startAckRepliedNow,
     fireStartAckIfOwed,
     finalizeContext, teardownContext, preCallGatesContext,
