@@ -262,9 +262,10 @@ describe('once per real crossing', () => {
 describe('fix round 1 (M1): a hung provider never holds the scheduler', () => {
   it('a balance API that never answers: the tick still returns, the next tick runs, and nothing piles up', async () => {
     // The provider accepts the request and never answers (and ignores the abort signal).
+    let failHungCall: (err: Error) => void = () => {};
     vi.stubGlobal('fetch', vi.fn((url: string | URL) => {
       fetchCalls.push(String(url));
-      return new Promise<Response>(() => { /* never */ });
+      return new Promise<Response>((_, reject) => { failHungCall = reject; });
     }));
     const clock = await (async () => { vi.resetModules(); return import('../../scheduler/clock.js'); })();
     // Load the module graph the tick reaches BEFORE timing anything: a cold first load of it can
@@ -285,6 +286,9 @@ describe('fix round 1 (M1): a hung provider never holds the scheduler', () => {
     expect(await within(clock.runSchedulerTick(), 20_000), 'the next tick is not skipped').toBe('ran');
     expect(clock.schedulerClockState().overlapsSkipped).toBe(0);
     expect(fetchCalls.length, 'no second call stacked on the hung one').toBe(1);
+    // End as the call's own timeout would, so no check or sweep this clause kicked runs into the next one.
+    failHungCall(new Error('timed out'));
+    await clock.balanceCheckSettled();
   });
 });
 
