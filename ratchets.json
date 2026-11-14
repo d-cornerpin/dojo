@@ -9535,7 +9535,6 @@
     "packages/dashboard/src/lib/access-summary.ts": 113,
     "packages/dashboard/src/lib/api.ts": 2315,
     "packages/dashboard/src/lib/manifest-edits.ts": 205,
-    "packages/dashboard/src/lib/sudo-policy.ts": 85,
     "packages/dashboard/src/lib/voice/voice-client.ts": 878,
     "packages/dashboard/src/lib/working-note-visibility.ts": 283,
     "packages/dashboard/src/pages/AgentConfigPanel.tsx": 447,
