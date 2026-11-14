@@ -328,8 +328,8 @@ export async function executeWebBrowse(
 ): Promise<string> {
   const { action, url, selector, text, scroll_direction, scroll_amount = 500, goal } = args;
 
-  // Rate limit check
-  if (!checkRateLimit(agentId)) {
+  // Rate limit check, for every agent but the main one
+  if (!ownsTheMac(agentId) && !checkRateLimit(agentId)) {
     return 'Error: Browser action rate limit exceeded (30 actions/minute). Wait before trying again.';
   }
 

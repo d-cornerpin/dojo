@@ -277,8 +277,8 @@ export async function evaluateGate(gate: ToolGate, ctx: GateContext): Promise<Ga
 
     case 'creator_only': {
       const target = ctx.resolveRef(gate.entity, gate.ref);
-      // An unresolved ref falls through to the handler's own friendlier not-found error.
-      if (!target || target.createdBy === agentId) return skip(gate);
+      // An unresolved ref falls through to the handler's own friendlier not-found error; the main agent may end any.
+      if (!target || target.createdBy === agentId || isPrimaryAgent(agentId)) return skip(gate);
       const byUser = target.createdBy === 'dashboard' || target.createdBy === 'user' || target.createdBy === 'system';
       const noun = gate.entity === 'agent' ? 'sub-agents you created' : 'squads you created';
       const verb = gate.entity === 'agent' ? 'kill' : 'delete';

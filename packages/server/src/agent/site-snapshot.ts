@@ -5,6 +5,10 @@ import { chromium, type Browser, type BrowserContext } from 'playwright';
 import { createLogger } from '../logger.js';
 import { openAgentCall, STOPPED_BY_USER } from './abortable-call.js';
 import { assertPublicHttpTarget, NetGuardError } from './net-guard.js';
+import { ownsTheMac } from './owns-the-mac.js';
+
+/** A private address is refused for every agent but the main one, which may show local and home-network pages. */
+const guard = async (url: string, agentId?: string): Promise<void> => { if (!ownsTheMac(agentId)) await assertPublicHttpTarget(url); };
 
 const logger = createLogger('site-snapshot');
 
@@ -16,7 +20,7 @@ const BROWSER_UA =
 export async function isEmbeddable(url: string, agentId?: string): Promise<boolean> {
   // A NetGuardError must LEAVE this function: the catch below answers "let the iframe try",
   // and for a loopback/LAN URL that would hand the target to the dashboard, not refuse it.
-  await assertPublicHttpTarget(url);
+  await guard(url, agentId);
   const slot = agentId === undefined
     ? null
     : openAgentCall(agentId, 'turn', AbortSignal.timeout(8000));
@@ -37,7 +41,7 @@ export async function isEmbeddable(url: string, agentId?: string): Promise<boole
       const loc = hopRes.status >= 300 && hopRes.status < 400 ? hopRes.headers.get('location') : null;
       if (!loc) { res = hopRes; break; }
       current = new URL(loc, current).href;
-      await assertPublicHttpTarget(current);
+      await guard(current, agentId);
     }
     if (!res) return true; // redirect budget exhausted, let the iframe try
     // We only need the headers; let the body be GC'd / connection closed.
@@ -90,7 +94,7 @@ async function getBrowser(): Promise<Browser> {
 
 export async function captureSiteScreenshot(url: string, agentId?: string): Promise<Buffer> {
   // Checked before launch; Playwright follows redirects itself, so this covers the request only.
-  await assertPublicHttpTarget(url);
+  await guard(url, agentId);
   const browser = await getBrowser();
   // goto takes no AbortSignal: the stop is ENACTED by closing the capture's context, rejecting it.
   const slot = agentId === undefined ? null : openAgentCall(agentId, 'turn');

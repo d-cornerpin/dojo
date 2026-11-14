@@ -111,7 +111,7 @@ export interface SpawnParams {
   autoStart?: boolean;
 }
 
-export async function spawnAgent(params: SpawnParams): Promise<{ agentId: string; name: string; status: string; persist: boolean }> {
+export async function spawnAgent(params: SpawnParams): Promise<{ agentId: string; name: string; status: string; persist: boolean; warnings: string[] }> {
   const {
     parentId,
     name,
@@ -158,10 +158,15 @@ export async function spawnAgent(params: SpawnParams): Promise<{ agentId: string
     throw new Error(`Spawn denied: ${spawnCheck.reason}`);
   }
 
+  // Low memory and a too-small model refuse any other parent; the main agent's spawn proceeds with a warning.
+  const parentIsPrimary = isPrimaryAgent(parentId);
+  const warnings: string[] = [];
+  const refuseOrWarn = (reason: string, refusal = reason): void => {
+    if (!parentIsPrimary) throw new Error(refusal);
+    warnings.push(reason);
+  };
   const resourceCheck = canSpawnAgent();
-  if (!resourceCheck.allowed) {
-    throw new Error(`Spawn denied: ${resourceCheck.reason}`);
-  }
+  if (!resourceCheck.allowed) refuseOrWarn(resourceCheck.reason ?? 'Insufficient memory', `Spawn denied: ${resourceCheck.reason}`);
 
   const parent = db.prepare('SELECT * FROM agents WHERE id = ?').get(parentId) as {
     id: string;
@@ -177,7 +182,6 @@ export async function spawnAgent(params: SpawnParams): Promise<{ agentId: string
 
   const newDepth = (parent.spawn_depth ?? 0) + 1;
   const spawnConfig = getSpawnConfig();
-  const parentIsPrimary = isPrimaryAgent(parentId);
 
   // Validate spawn limits, primary agent is exempt from children and depth limits
   if (!parentIsPrimary && newDepth > spawnConfig.maxSpawnDepth) {
@@ -198,7 +202,7 @@ export async function spawnAgent(params: SpawnParams): Promise<{ agentId: string
   const resolvedModelId = modelId === 'auto' ? 'auto' : (modelId ?? parent.model_id);
   // The floor applies to the model the child runs, inherited too; the fit check to a named one. Loaded on demand.
   const refused = resolvedModelId && resolvedModelId !== 'auto' ? await import('./main-model-floor.js').then(async (f) => f.refuseSmallMainModel(resolvedModelId) ?? await f.refuseUnfitLocalModel(modelId, parent.model_id, 'agent')) : null;
-  if (refused) throw new Error(refused);
+  if (refused) refuseOrWarn(refused);
   if (!resolvedModelId) {
     throw new Error('No model specified and parent has no model configured');
   }
@@ -399,7 +403,7 @@ IMPORTANT INSTRUCTIONS:
     // Spawned but not poked: skip the initial message and the runtime trigger. Something else
     // (an A2A message, a task assignment, send_to_agent) will wake it.
     logger.info('Spawned with auto_start=false, agent stays idle until externally poked', { agentId, name });
-    return { agentId, name, status: 'idle', persist };
+    return { agentId, name, status: 'idle', persist, warnings };
   }
 
   // THE KICKOFF IS THE ENGINE, NOT THE OWNER: this text is the engine composing an instruction,
@@ -421,7 +425,7 @@ IMPORTANT INSTRUCTIONS:
     }, agentId);
   });
 
-  return { agentId, name, status: 'idle', persist };
+  return { agentId, name, status: 'idle', persist, warnings };
 }
 
 
@@ -445,12 +449,6 @@ export function terminateAgent(agentId: string, reason?: string): void {
     return;
   }
 
-  // Sensei and ronin agents cannot be terminated by other agents (cascade)
-  // Dashboard DELETE route handles its own check; this blocks agent-initiated termination
-  if (agent.classification === 'sensei') {
-    logger.warn('Cannot terminate sensei agent', { agentId, name: agent.name });
-    return;
-  }
 
   // Ending an agent stops its run in flight, through the owner's own Stop; BEFORE the status write.
   if (runIsLive(agentId)) stopAgent(agentId);

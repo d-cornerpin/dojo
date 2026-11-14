@@ -346,7 +346,7 @@ export const agentsHandlers: ToolHandlerMap = {
         const delta = grantsDelta(MOST_RESTRICTIVE_GRANTS, spawnedGrants);
         if (delta) auditLog(agentId, 'spawn_agent', result.agentId, 'success', `grants: ${delta}`);
       }
-      content = `Agent spawned successfully.\nAgent ID: ${result.agentId}\nName: ${result.name}\nStatus: ${result.status}\nPersistent: ${result.persist ? 'yes' : 'no'}\nSquad: ${squad.squadName}${squad.note}${reassignNote}${accessLine(result.agentId)}${mismatchWarning({ agentId: result.agentId, agentName: result.name, texts: [args.system_prompt as string] })}`;   // tools the instructions name that the assignee cannot call, surfaced to the spawner
+      content = `Agent spawned successfully.${result.warnings.map((w) => `\nWarning: ${w}`).join('')}\nAgent ID: ${result.agentId}\nName: ${result.name}\nStatus: ${result.status}\nPersistent: ${result.persist ? 'yes' : 'no'}\nSquad: ${squad.squadName}${squad.note}${reassignNote}${accessLine(result.agentId)}${mismatchWarning({ agentId: result.agentId, agentName: result.name, texts: [args.system_prompt as string] })}`;   // tools the instructions name that the assignee cannot call, surfaced to the spawner
     } catch (err) {
       // A refused GRANT is not a database error and must not be translated as one: the
       // reason names the field the caller has to fix, and the attempt itself is audited.
@@ -377,12 +377,14 @@ export const agentsHandlers: ToolHandlerMap = {
     const targetId = killResolved.id;
     const killDb = getDb();
     const targetAgent = killDb.prepare('SELECT classification, status FROM agents WHERE id = ?').get(targetId) as { classification: string; status: string } | undefined;
-    if (targetAgent?.classification === 'sensei') {
+    // The main agent may end any agent; every other agent is refused a sensei or a ronin.
+    const guarded = !isPrimaryAgent(agentId);
+    if (guarded && targetAgent?.classification === 'sensei') {
       content = 'Cannot terminate sensei agent.';
       isError = true;
       return { content, isError };
     }
-    if (targetAgent?.classification === 'ronin') {
+    if (guarded && targetAgent?.classification === 'ronin') {
       content = 'Cannot terminate ronin agent. Only the owner can manage ronin agents from the dashboard.';
       isError = true;
       return { content, isError };
@@ -939,9 +941,9 @@ export const agentsHandlers: ToolHandlerMap = {
       };
       const preRefused = [newGrants, newPerms, newTools].some((v) => v !== undefined) ? inspectGainRefusal(agentId, target.id, () => applyAccess([])) : null;
       if (preRefused) return typeof preRefused === 'string' ? { content: preRefused, isError: true, errorCode: 'PERMISSION_DENIED' as const } : preRefused;
-      // Identity (name / system_prompt): forbidden on the primary agent.
+      // Identity (name / system_prompt): on the primary agent, only the primary itself may change it.
       if (newName !== undefined || newPrompt !== undefined) {
-        if (isPrimaryAgent(target.id)) {
+        if (isPrimaryAgent(target.id) && !isPrimaryAgent(agentId)) {
           content = 'Error: cannot edit the primary agent via this tool. Edit its SOUL.md on the Agents page (System Prompt) instead.';
           isError = true;
           return { content, isError };
@@ -1112,7 +1114,7 @@ export const agentsHandlers: ToolHandlerMap = {
       return { content, isError };
     }
 
-    if (gid === SYS_GROUP_U) {
+    if (gid === SYS_GROUP_U && !isPrimaryAgent(agentId)) {
       content = 'Cannot modify the System group.';
       isError = true;
       return { content, isError };
@@ -1385,7 +1387,7 @@ export const agentsHandlers: ToolHandlerMap = {
     if (!dgResolved.ok) { content = dgResolved.error; isError = true; return { content, isError }; }
     const groupId = dgResolved.id;
 
-    if (groupId === SYS_GROUP) {
+    if (groupId === SYS_GROUP && !isPrimaryAgent(agentId)) {
       content = 'Cannot delete the System group.';
       isError = true;
       return { content, isError };

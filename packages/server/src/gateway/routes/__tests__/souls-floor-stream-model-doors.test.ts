@@ -165,12 +165,12 @@ describe('the update_agent tool refuses a model under 32K', () => {
   });
 });
 
-describe('the spawn door refuses a model under 32K', () => {
-  it('an explicit small model is refused and no agent row is made', async () => {
-    await expect(spawnAgent({
-      parentId: 'main-agent', name: 'kid', systemPrompt: 'x', modelId: 'tiny', timeout: 600,
-    } as never)).rejects.toThrow(PLAIN);
-    expect(db().prepare("SELECT id FROM agents WHERE name = 'kid'").get()).toBeUndefined();
+describe('the spawn door warns the main agent of a model under 32K', () => {
+  it('the main agent\'s spawn proceeds and the warning names the floor', async () => {
+    const r = await spawnAgent({
+      parentId: 'main-agent', name: 'kid', systemPrompt: 'x', modelId: 'tiny', timeout: 600, autoStart: false,
+    } as never);
+    expect(r.warnings.join(' ')).toMatch(PLAIN);
   });
 });
 

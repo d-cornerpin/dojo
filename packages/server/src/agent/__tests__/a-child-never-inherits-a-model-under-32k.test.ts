@@ -1,5 +1,5 @@
 // A spawned agent with no model named takes its parent's; when that model is under the 32K floor the spawn is
-// refused with the floor's sentence, whatever model the parent itself keeps.
+// refused with the floor's sentence, whatever model the parent itself keeps. The main agent's spawn proceeds with it as a warning.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
@@ -11,8 +11,9 @@ vi.mock('../../db/connection.js', () => ({
 vi.mock('../../gateway/ws.js', () => ({ broadcast: vi.fn(), stampPersistedRow: (e: unknown) => e }));
 vi.mock('../permissions.js', async (orig) => ({ ...(await orig<typeof import('../permissions.js')>()), checkPermission: () => ({ allowed: true }) }));
 vi.mock('../../services/resource-monitor.js', () => ({ canSpawnAgent: () => ({ allowed: true }) }));
+const primary = vi.hoisted(() => ({ id: 'someone-else' }));
 vi.mock('../../config/platform.js', async (orig) => ({
-  ...(await orig<typeof import('../../config/platform.js')>()), isPrimaryAgent: (id: string) => id === 'parent', getPrimaryAgentId: () => 'parent',
+  ...(await orig<typeof import('../../config/platform.js')>()), isPrimaryAgent: (id: string) => id === primary.id, getPrimaryAgentId: () => primary.id,
 }));
 
 import { runMigrations } from '../../db/migrations.js';
@@ -26,11 +27,17 @@ beforeEach(() => {
     VALUES ('m-small', 'cloud', 'Small', 'small', '["chat","tools"]', 8192, 1)`).run();
   mockDb.current.prepare("INSERT INTO agents (id, name, model_id, status, config) VALUES ('parent', 'Parent', 'm-small', 'idle', '{}')").run();
 });
-afterEach(() => { mockDb.current?.close(); mockDb.current = null; });
+afterEach(() => { mockDb.current?.close(); mockDb.current = null; primary.id = 'someone-else'; });
 
 describe('a child never inherits a model under 32K', () => {
   it('the spawn is refused and no child row is written', async () => {
     await expect(spawnAgent({ parentId: 'parent', name: 'Helper', systemPrompt: 'Sort files.' } as never)).rejects.toThrow(/too small for an agent's main model/);
     expect(mockDb.current!.prepare("SELECT COUNT(*) AS n FROM agents WHERE id != 'parent'").get()).toEqual({ n: 0 });
+  });
+
+  it('the main agent spawns anyway, warned', async () => {
+    primary.id = 'parent';
+    const r = await spawnAgent({ parentId: 'parent', name: 'Helper', systemPrompt: 'Sort files.', autoStart: false } as never);
+    expect(r.warnings.join(' ')).toMatch(/too small for an agent's main model/);
   });
 });

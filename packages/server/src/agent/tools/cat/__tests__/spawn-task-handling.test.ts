@@ -43,7 +43,7 @@ vi.mock('../../../spawner.js', () => ({
     spawned.push(opts);
     mockDb.current!.prepare("INSERT INTO agents (id, name, created_by, classification, status) VALUES ('new-agent', 'helper', ?, 'apprentice', 'idle')")
       .run(opts.parentId as string);
-    return { agentId: 'new-agent', name: 'helper', status: 'idle', persist: false };
+    return { agentId: 'new-agent', name: 'helper', status: 'idle', persist: false, warnings: [] };
   }),
   terminateAgent: vi.fn(),
   completeAgent: vi.fn(async () => {}),

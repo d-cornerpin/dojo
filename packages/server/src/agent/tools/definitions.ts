@@ -766,7 +766,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'kill_agent',
-    description: 'Terminate, kill, delete, or remove a sub-agent immediately. This is THE tool for ending a sub-agent\'s life, do NOT try to delete database rows or kill processes manually. Also terminates any of its children. Use when a sub-agent is stuck, no longer needed, or misbehaving.\n\nOWNERSHIP: you can only kill sub-agents YOU created. Agents created by the user (from the dashboard) are dismissed only by the user; kill_agent refuses them. Ronin and sensei agents are also protected.',
+    description: 'Terminate, kill, delete, or remove a sub-agent immediately. This is THE tool for ending a sub-agent\'s life, do NOT try to delete database rows or kill processes manually. Also terminates any of its children. Use when a sub-agent is stuck, no longer needed, or misbehaving.\n\nOWNERSHIP: the main agent may end any agent. Any other agent can only kill sub-agents it created; agents created by the user (from the dashboard) are dismissed only by the user, and ronin and sensei agents are protected.',
     effects: [],
     input_schema: {
       type: 'object',
@@ -1353,7 +1353,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'update_agent',
-    description: 'Change another sub-agent\'s configuration: name, system prompt, model, permissions, and/or tool policy in one call. This is THE tool for editing a sub-agent, do NOT modify files, SOUL.md, or the database directly. Provide agent_id plus at least one field to change; omitted fields are left untouched. Mirrors spawn_agent\'s parameters. Conversation history, tracker tasks, and group membership are always preserved; changes take effect on the agent\'s next turn. Cannot change the identity (name/system_prompt) of the primary agent (edit its SOUL.md via Settings instead). Changing `permissions` or `tools` requires the caller to have can_assign_permissions. Pair with get_agent_profile to read current values before rewriting.',
+    description: 'Change another sub-agent\'s configuration: name, system prompt, model, permissions, and/or tool policy in one call. This is THE tool for editing a sub-agent, do NOT modify files, SOUL.md, or the database directly. Provide agent_id plus at least one field to change; omitted fields are left untouched. Mirrors spawn_agent\'s parameters. Conversation history, tracker tasks, and group membership are always preserved; changes take effect on the agent\'s next turn. Only the primary agent itself may change the primary agent\'s identity (name/system_prompt). Changing `permissions` or `tools` requires the caller to have can_assign_permissions. Pair with get_agent_profile to read current values before rewriting.',
     effects: [],
     input_schema: {
       type: 'object',
@@ -1471,7 +1471,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'delete_group',
-    description: 'Delete an agent group (squad) entirely. This is THE tool for removing a group, do NOT try to update the database directly. By default, member agents are moved to ungrouped (not terminated). Pass terminate_members=true to also kill every member in the group as part of the cleanup. Cannot delete the System group.\n\nOWNERSHIP: you can only delete squads YOU created. Squads created by the user (from the dashboard) are dismissed only by the user; delete_group refuses them.',
+    description: 'Delete an agent group (squad) entirely. This is THE tool for removing a group, do NOT try to update the database directly. By default, member agents are moved to ungrouped (not terminated). Pass terminate_members=true to also kill every member in the group as part of the cleanup.\n\nOWNERSHIP: the main agent may delete any group. Any other agent cannot delete the System group and can only delete squads it created; squads created by the user (from the dashboard) are dismissed only by the user.',
     effects: [],
     input_schema: {
       type: 'object',
