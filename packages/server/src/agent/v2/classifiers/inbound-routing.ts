@@ -1,5 +1,5 @@
-// Two judgments about an arrived message. A person's message: does it hand over a job of several steps (yes: work, no:
-// chat, between the lines: neither; no answer: the word list below)? A helper's note: does it deliver finished work?
+// A person's message: a job of several steps? As a reply, only a decline? Work is yes then no; chat is no; between the
+// lines, or the decline unanswered, is neither; no answer at all: the word list. A helper's note: is it finished work?
 
 import type { Question } from '../../decide.js';
 import { judgment, type Ask } from '../../decision-hooks.js';
@@ -63,8 +63,6 @@ function wordListSaysWork(message: string): boolean {
 /** Each turn is judged once, however many times it is assembled and whichever reader asks first. */
 const judged = new WeakMap<object, Promise<boolean | undefined>>();
 
-/** True: the person handed over a job of several steps; false: chat; undefined: between the lines. With no answer
- *  the word list says work or nothing. */
 export function inboundIsWork(turnCtx: { root?: TurnRoot | null }, agentId: string, message: string): Promise<boolean | undefined> {
   let said = judged.get(turnCtx);
   if (!said) {
@@ -74,7 +72,7 @@ export function inboundIsWork(turnCtx: { root?: TurnRoot | null }, agentId: stri
       : { agentId, state: { message, previous_agent_message: previous }, questions: { needs_several_steps: SEVERAL_STEPS, declined: DECLINED } };
     said = message.trim()
       ? judgment('inbound_routing', ask)
-        .then((v) => (v === null ? (wordListSaysWork(message) || undefined) : v.needs_several_steps && !v.declined))
+        .then((v) => (v === null ? (wordListSaysWork(message) || undefined) : v.needs_several_steps && (previous === null || v.declined !== undefined ? !v.declined : undefined)))
       : Promise.resolve(undefined);
     judged.set(turnCtx, said);
   }

@@ -16,7 +16,7 @@ const logger = createLogger('decide');
 export interface Question { type: 'noul'; instructions: string; criteria?: { true: string; false: string } }
 export interface Answer { type: 'noul'; noul: number }
 /** `agentId`: the agent waiting on the answer, whose Stop cuts the call. */
-export interface DecideOpts { purpose: string; agentId?: string; onFailure?: (failure: FailureClass) => void }
+export interface DecideOpts { purpose: string; agentId?: string }
 
 /** Ollama's documented limit for one `/v1/systemone` request. */
 const MAX_QUESTIONS_PER_REQUEST = 64;
@@ -37,15 +37,16 @@ function fail(cls: FailureClass, opts: DecideOpts, detail?: string): null {
     lastLogged.set(cls, now);
     logger.warn(cls === 'too_large' ? 'decide() refused a request as too large; the rule decides' : 'decide() returned no answer; the rule decides', { failure: cls, purpose: opts.purpose, detail });
   }
-  try { opts.onFailure?.(cls); } catch { /* a caller's note never breaks the seam */ }
   return null;
 }
 
 /** One call in flight at a time: the local Ollama answers one request at a time, so a call's clock starts when it is
- *  sent, never while it waits. A Stop while waiting leaves at once and the call is never sent. */
+ *  sent, never while it waits. A Stop while waiting, or a timeout ahead of it in the line, leaves the call unsent. */
 let tail: Promise<unknown> = Promise.resolve();
+let joined = 0, unsentThrough = 0;
 function inTurn<T>(stop: AbortSignal | null, work: () => Promise<T | null>): Promise<T | null> {
-  const run = tail.then(() => (stop?.aborted ? null : work()));
+  const ticket = ++joined;
+  const run = tail.then(() => (stop?.aborted || ticket <= unsentThrough ? null : work()));
   tail = run.catch(() => undefined);
   if (!stop) return run;
   return Promise.race([run, new Promise<null>((r) => (stop.aborted ? r(null) : stop.addEventListener('abort', () => r(null), { once: true })))]);
@@ -73,7 +74,7 @@ export async function decide(
   try {
     let wasSent = false;
     const got = await inTurn(slot?.signal ?? null, () => { wasSent = true; return sent(provider, state, questions, opts, slot?.signal ?? null); });
-    return got === null && !wasSent ? fail('stopped', opts, 'left the line unsent') : got;
+    return got === null && !wasSent ? fail(slot?.signal.aborted ? 'stopped' : 'timeout', opts, 'left the line unsent') : got;
   } finally {
     slot?.release();
   }
@@ -87,7 +88,7 @@ async function sent(
     const names = Object.keys(questions);
     const stateTokens = tokensAt(JSON.stringify(fencedState(state)).length, MEASURED_CHARS_PER_TOKEN);
     const clock = AbortSignal.timeout(decideTimeoutMs(stateTokens, names.length, resident.has(provider.model)));
-    const cut = (): FailureClass | null => (clock.aborted ? 'timeout' : stop?.aborted ? 'stopped' : null);
+    const cut = (): FailureClass | null => (clock.aborted ? ((unsentThrough = joined), 'timeout') : stop?.aborted ? 'stopped' : null);
     resident.delete(provider.model);   // until this call is answered
     const started = Date.now();
     let resp: Response;

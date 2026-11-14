@@ -97,6 +97,14 @@ describe('each judgment the owner put on the decision model is answered on its o
   }
 });
 
+describe('with no decision model, a schedule\'s declaration is the word list', () => {
+  it('a nightly job the list does not recognize owes no message, so it is never refused as a twin', async () => {
+    for (const description of ['back up the database to the NAS', 'turn the heating down to 16 degrees']) {
+      expect(await declaredDeliverableShape({ title: 'Nightly', description, hasSchedule: true, agentId: agent() }), description).toBeNull();
+    }
+  });
+});
+
 describe('the reply claims are one request', () => {
   it('one reply asks all four questions in a single call', async () => {
     installDecisionModel(db());

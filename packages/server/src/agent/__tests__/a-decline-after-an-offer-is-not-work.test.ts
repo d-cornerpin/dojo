@@ -1,6 +1,6 @@
 // A reply to the agent's offer is asked two things in one call: is it a job of several steps, and does it only decline,
-// put off or acknowledge the offer. Work needs a yes to the first and no yes to the second; an unanswered second
-// question leaves the first one's verdict standing. A message with no previous reply is asked the first question alone.
+// put off or acknowledge the offer. Work needs a yes to the first and a no to the second; an unanswered second
+// question leaves the reply between the lines. A message with no previous reply is asked the first question alone.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
@@ -48,9 +48,9 @@ describe('a reply to an offer', () => {
     expect(await reply('yes go ahead')).toBe(true);
   });
 
-  it('with the decline question unanswered, the work verdict stands', async () => {
+  it('with the decline question unanswered, a work verdict is between the lines', async () => {
     scriptDecisions((name) => (name === 'declined' ? {} : yes(0.9)));
-    expect(await reply('yes go ahead')).toBe(true);
+    expect(await reply('yes go ahead')).toBeUndefined();
   });
 });
 
