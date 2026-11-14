@@ -214,8 +214,7 @@ function sensitiveReadDeny(reason: string, basis: 'ladder-parity' | 'bypass-hard
   );
 }
 
-/** SHELL authority for a line (a script, a do shell script payload): every simple command in it needs an allow row;
- *  the deny rows also read `runs`, every command the line runs, a shell's here-document body included. */
+/** SHELL authority for a line (a script, a do shell script payload): every simple command needs an allow row; deny rows read `runs`. */
 export function authorizeShellCommandText(grant: Grant, line: string, commands = execSimpleCommands(line), runs = execSimpleCommands(line, false)): Verdict {
   let verdict = allow('exec-grant');
   for (const command of commands) {

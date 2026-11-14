@@ -21,8 +21,7 @@ const NO_AUTHORITY_WORDS = new Set([
 
 /** The shells, whose `-c` text is a script; and the programs that never run their input or arguments as code. */
 export const SHELL_INTERPRETERS: ReadonlySet<string> = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'csh', 'tcsh', 'fish', 'ash', 'busybox']);
-export const INERT_PROGRAMS: ReadonlySet<string> = new Set(['echo', 'printf', 'cat', 'head', 'tail', 'wc', 'grep', 'egrep', 'fgrep', 'rg', 'comm', ':', 'true', 'false']);
-
+export const INERT_PROGRAMS: ReadonlySet<string> = new Set(['echo', 'printf', 'cat', 'head', 'tail', 'wc', 'grep', 'egrep', 'fgrep', 'comm', ':', 'true', 'false']);
 const ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?=/;
 const REDIRECT_RE = /^\d*(&)?[<>]/;
 
@@ -150,12 +149,15 @@ function substitutionBodies(word: string): string[] {
   return bodies;
 }
 
-/** Here-document bodies are data only on a line of inert commands alone: no pipe, group, loop, function, subshell,
- *  substitution or `/dev/` target but `/dev/null`, so nothing on the line can hand a body to code that runs it. */
+/** Bodies are data only when the whole line is one inert command writing its one here-document to one literal file. */
 export function bodiesAreData(line: string): boolean {
-  return tokenize(line).toks.every((t) => (t.op ? !/[|()]/.test(t.text)
-    : !GRAMMAR_WORDS.has(t.text) && substitutionBodies(t.text).length === 0 && !/\/dev\/(?!null(?![\w/]))/.test(t.text)))
-    && execSimpleCommands(line).every((c) => INERT_PROGRAMS.has(c.split(' ')[0]));
+  const { toks } = tokenize(line);
+  const words = toks.filter((t) => !t.op).map((t) => t.text);
+  const redirects = words.filter((w) => /^\d*[<>&]/.test(w));
+  const out = redirects.find((w) => !w.startsWith('<<')) ?? '';
+  const file = /^1?>[>|]?/.test(out) ? out.replace(/^1?>[>|]?/, '') || words[words.indexOf(out) + 1] : '';
+  return INERT_PROGRAMS.has(words[0]) && redirects.length === 2 && toks.every((t, n) => !t.op || (t.text === '\n' && n >= words.length))
+    && /^(?!(.*\/)?dev\/)(~\/)?[\w./@%+,:=-]+$/i.test(file ?? '');
 }
 
 /** The line with every body the floor skips cut out: where a privilege token is looked for. */
