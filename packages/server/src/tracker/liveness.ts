@@ -14,7 +14,7 @@ import { countAbortable, isStopFenced, activeRuns } from '../agent/shared-state.
 import { isPrimaryAgent, isPMAgent, isHealerAgent, isDreamerAgent } from '../config/platform.js';
 import { sendAlert } from '../services/imessage-bridge.js';
 import { noteNoticeOnce, endNotice, readNotice } from '../agent/agent-owner-cards.js';
-import { taskScope } from '../work/tracker-view.js';
+import { notWaitingForItsTimeSql, taskScope } from '../work/tracker-view.js';
 import { taskMovedAtSql } from '../work/task-freshness.js';
 import { createLogger } from '../logger.js';
 
@@ -112,7 +112,7 @@ function openWorkOf(agentId: string, now: number): OpenWork[] {
   return getDb().prepare(`SELECT w.id, COALESCE(w.title, w.id) AS title, w.updated_at AS updated,
         MAX(w.opened_at, COALESCE(w.last_run_at, 0), ${taskMovedAtSql('w')}) AS opened
       FROM work w WHERE ${taskScope('w')} AND w.agent_id = ? AND ${workingExpr('w')} AND w.is_paused = 0 AND NOT ${heldExpr('w')}
-        AND (w.scheduled_start IS NULL OR w.scheduled_start <= ?) AND COALESCE(w.schedule_status, '') != 'waiting'`)
+        AND ${notWaitingForItsTimeSql('w')}`)
     .all(agentId, now) as OpenWork[];
 }
 

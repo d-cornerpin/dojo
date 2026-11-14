@@ -64,6 +64,10 @@ export const taskScope = (a = 'w'): string =>
 export const projectScope = (a = 'w'): string =>
   `${a}.kind = 'project' AND ${a}.root_kind IN ${TRACKER_ROOT_KINDS}`;
 
+/** Not a schedule waiting for its time and not set to start later: work that can be worked now. Emits one `?` (now, epoch ms). */
+export const notWaitingForItsTimeSql = (a = 'w'): string =>
+  `(${a}.scheduled_start IS NULL OR ${a}.scheduled_start <= ?) AND COALESCE(${a}.schedule_status, '') != 'waiting'`;
+
 /**
  * What "overdue" means, declared once; emits exactly one `?` (the now-instant in epoch ms). No threshold
  * on purpose: a caller adds its own on top (`scheduler/runner.ts` escalates past 1.5 intervals). Both paused

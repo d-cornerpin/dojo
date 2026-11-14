@@ -4,7 +4,7 @@
 
 import { getDb } from '../../../../db/connection.js';
 import { isDreamerAgent, isHealerAgent, isPMAgent } from '../../../../config/platform.js';
-import { taskScope } from '../../../../work/tracker-view.js';
+import { notWaitingForItsTimeSql, taskScope } from '../../../../work/tracker-view.js';
 import { type AgentTurnState } from '../../state.js';
 import type { TurnContext } from '../../../turn-context.js';
 import { engineAckReachesTheirChannel, type TurnCounterparty } from '../../counterparty.js';
@@ -57,15 +57,15 @@ export async function detectMultistepAndScaffold(stateIn: AgentTurnState, input:
       }, agentId);
     }
     try {
-      // Skip only on an open task touched inside the stale window: a quick follow-up rides under the
-      // task it continues, but a STALE open task must not suppress or new untracked work never surfaces.
+      // Skip only on an open task touched inside the stale window that can be worked now: a quick follow-up
+      // rides under the task it continues; a stale task or a schedule waiting for its time must not suppress.
       const db = getDb();
       const existingTask = db.prepare(`
         SELECT w.id AS id FROM work w
         WHERE ${taskScope('w')} AND w.agent_id = ? AND ${workingExpr('w', true)}
-          AND w.updated_at >= ?
+          AND w.updated_at >= ? AND ${notWaitingForItsTimeSql('w')}
         LIMIT 1
-      `).get(agentId, Date.now() - STALE_TASK_WINDOW_MINUTES * 60_000) as { id: string } | undefined;
+      `).get(agentId, Date.now() - STALE_TASK_WINDOW_MINUTES * 60_000, Date.now()) as { id: string } | undefined;
 
       // Also skip a creation prompt: it is byte-identical to a system row (the bootstrap twin).
       const bootstrapTwin = db.prepare(
