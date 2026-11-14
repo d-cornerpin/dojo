@@ -219,7 +219,6 @@
     "packages/server/src/agent/brokers/proc.ts": 611,
     "packages/server/src/agent/brokers/resolve.ts": 233,
     "packages/server/src/agent/brokers/shell-words.ts": 103,
-    "packages/server/src/agent/brokers/sudo-claim.ts": 126,
     "packages/server/src/agent/brokers/sudo-copy.ts": 165,
     "packages/server/src/agent/brokers/sudo-policy.ts": 1322,
     "packages/server/src/agent/brokers/sudo-probe.ts": 84,
