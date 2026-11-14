@@ -6,7 +6,8 @@ import { requireAuthorized } from './capability.js';
 import { endsWithTheStop } from './proc-tree.js';
 
 // stdin is opened only when the caller writes to it; otherwise a command reading it sees end of input at once.
-export function spawnAuthorized(file: string, argv: readonly string[], options: { cwd?: string; stdin: 'pipe' }): ChildProcessWithoutNullStreams;
+export type PipedChild = ChildProcessWithoutNullStreams;
+export function spawnAuthorized(file: string, argv: readonly string[], options: { cwd?: string; stdin: 'pipe' }): PipedChild;
 export function spawnAuthorized(file: string, argv: readonly string[], options?: { cwd?: string }): ChildProcessByStdio<null, Readable, Readable>;
 export function spawnAuthorized(
   file: string,
