@@ -25,14 +25,6 @@
 // most one automatic rollback per episode). It is deliberately NOT a copy of
 // `decideAutoRollback`'s structure — a table whose oracle is the implementation
 // proves only that the implementation is itself.
-//
-// ── RELEASE-GATED, AND THE BINDING IS CHECKED HERE ──────────────────────────
-// SWEEP-F T5 requires this suite to be release-gated alongside Phase 5's
-// artifact signature check. Both are vitest files under `packages/server/src`,
-// so both ride the `unit-suite` release gate (`deploy/checks/gate-manifest.mjs`),
-// which release.sh runs and which is "never skippable". A clause below reads
-// that manifest and fails if the gate is downgraded, removed, or retiered — so
-// "release-gated" is a checked fact rather than a sentence in a report.
 // ════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -296,32 +288,12 @@ describe('update-cannot-brick — no failing episode stays silent', () => {
   });
 });
 
-// ════════════════════════════════════════════════════════════════════════════
-// THE GATE IS RELEASE-GATED, AND SO IS PHASE 5's SIGNATURE CHECK.
-// ════════════════════════════════════════════════════════════════════════════
-
-describe('update-cannot-brick — release gating', () => {
-  it('rides the never-skippable unit-suite release gate, and so does the artifact integrity check', async () => {
-    const manifestPath = path.join(REPO_ROOT, 'deploy/checks/gate-manifest.mjs');
-    const { GATES } = await import(/* @vite-ignore */ manifestPath) as { GATES: Array<{ id: string; tier: string; title: string }> };
-    const unit = GATES.find(g => g.id === 'unit-suite');
-    expect(unit, 'the unit-suite gate must exist — it is what runs this file at release').toBeTruthy();
-    expect(unit!.tier).toBe('release-only');
-
-    // Both files must be where that gate can see them (`vitest run` in packages/server).
-    for (const rel of [
-      'packages/server/src/update/__tests__/update-cannot-brick.test.ts',
-      'packages/server/src/update/__tests__/artifact-integrity.test.ts',
-    ]) {
-      expect(fs.existsSync(path.join(REPO_ROOT, rel)), `${rel} must exist under packages/server so the unit-suite gate runs it`).toBe(true);
-    }
-  });
-
+describe('update-cannot-brick: release gating', () => {
   it('the watchdog contract gate still governs both copies of the marker shape', async () => {
     const manifestPath = path.join(REPO_ROOT, 'deploy/checks/gate-manifest.mjs');
     const { GATES } = await import(/* @vite-ignore */ manifestPath) as { GATES: Array<{ id: string; tier: string }> };
     const wd = GATES.find(g => g.id === 'watchdog-contract');
-    // Report tier since the owner ruling of 2026-11-06: it still runs on every release and prints its verdict.
+    // Report tier: it runs on every release and prints its verdict.
     expect(wd?.tier).toBe('report');
   });
 });

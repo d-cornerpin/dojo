@@ -155,11 +155,8 @@ describe('the attribute door refuses a work id that no longer exists', () => {
   });
 
   it('is an OUTCOME, which is what makes the refusal impossible to discard silently', () => {
-    // The must-consume lint (PHASE-4's twelfth blocking gate) keys on the SHAPE
-    // declared in `@dojo/shared`, never on a type name. This clause asserts the
-    // shape at runtime, so the property the lint enforces is also a test: if a
-    // later change demotes this door back to a bare `number`, the lint stops
-    // seeing 51 call sites and THIS fails in the same commit.
+    // Asserts the Outcome shape declared in `@dojo/shared` at runtime: if a later
+    // change demotes this door back to a bare `number`, this fails.
     seedWork('w-shape');
     expect(isOutcomeShaped(patchWork('w-shape', { title: 't' }))).toBe(true);
     expect(isOutcomeShaped(patchWork('w-shape', {}))).toBe(true);

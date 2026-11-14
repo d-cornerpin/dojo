@@ -1,7 +1,7 @@
 // Outcome<T>: the five-way answer to "what happened?" (applied with proof, no_change, refused by a named
 // gate, failed, or unknown). `unknown` is legal only for non-live data (messages.provenance), and
-// OutcomeUnknown demands NonLiveProvenance. Boundaries refuse by returning, never throwing; the lint in
-// deploy/checks/eslint-rules/must-consume-outcome.cjs keys on this `kind` shape, not on a type name.
+// OutcomeUnknown demands NonLiveProvenance. Boundaries refuse by returning, never throwing, and a
+// caller is expected to read the `kind` it gets back.
 
 export type OutcomeKind = 'applied' | 'no_change' | 'refused' | 'failed' | 'unknown';
 
