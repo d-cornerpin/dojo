@@ -9,6 +9,7 @@
 // The query runs on a worker thread so the main thread stays idle and sees that 'end' even inside a native
 // SQLite loop, then SIGKILLs itself (process.exit() would join it). No SIGTERM handler: the stop ends it.
 
+import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { DENIED_COLUMN_PATTERNS } from './redact.js';
 import { getDbPath } from '../db/connection.js';
@@ -106,9 +107,9 @@ const CHILD_SOURCE = `
 /** Run one already-checked read in a child process; `onSpawn` hands its pid to a test. */
 export function readInChild(sql: string, onSpawn?: (pid: number) => void): Promise<ReadOutcome> {
   const agentId = currentCapability()?.agentId;
-  let child: ReturnType<typeof spawnAuthorized>;
+  let child: ChildProcessWithoutNullStreams;
   try {
-    child = spawnAuthorized(process.execPath, ['-e', CHILD_SOURCE]);
+    child = spawnAuthorized(process.execPath, ['-e', CHILD_SOURCE], { stdin: 'pipe' });
   } catch (e) {
     return Promise.resolve({ error: e instanceof Error ? e.message : String(e) });
   }
