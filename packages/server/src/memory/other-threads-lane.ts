@@ -32,21 +32,22 @@ export interface OtherThreadsRead {
 }
 
 /** Waiting threads first, then those touched since the agent's last turn here, never the served one or a2a.
- *  Activity comes from `messages`: `conversations` has no last-activity column every door maintains. */
+ *  Activity comes from `messages`: `conversations` has no last-activity column every door maintains.
+ *  The unary plus keeps the per-conversation lookup on the (conversation_id, seq) index, not a scan of the agent's rows. */
 export function readOtherThreads(agentId: string, currentConversationId: string | null): OtherThreadsRead {
   const db = getDb();
   let since: number | null = null;
   if (currentConversationId) {
     const anchor = db.prepare(
       `SELECT MAX(CASE WHEN role = 'assistant' THEN created_at END) AS last_reply, MIN(created_at) AS began
-         FROM messages WHERE agent_id = ? AND conversation_id = ?`,
+         FROM messages WHERE +agent_id = ? AND conversation_id = ?`,
     ).get(agentId, currentConversationId) as { last_reply: number | null; began: number | null } | undefined;
     since = anchor?.last_reply ?? anchor?.began ?? null;
   }
   const rows = db.prepare(
     `SELECT c.id AS conversation_id, c.channel AS channel, n.created_at AS last_at, n.role AS last_role
        FROM conversations c
-       JOIN messages n ON n.seq = (SELECT MAX(m.seq) FROM messages m WHERE m.conversation_id = c.id AND m.agent_id = ?)
+       JOIN messages n ON n.seq = (SELECT MAX(m.seq) FROM messages m WHERE m.conversation_id = c.id AND +m.agent_id = ?)
       WHERE c.agent_id = ? AND c.channel <> 'a2a' AND c.id <> COALESCE(?, '')
       ORDER BY last_at DESC`,
   ).all(agentId, agentId, currentConversationId) as Array<{
