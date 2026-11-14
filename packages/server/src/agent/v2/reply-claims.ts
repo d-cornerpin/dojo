@@ -1,7 +1,7 @@
 // Per reply, the model's verdicts on what it claims, in one request; the floors' receipts still decide.
 // A turn that opened a work row is not asked about a standing promise: the row is where that promise is kept.
 
-import { isBareNoReplySentinel } from '@dojo/shared';
+import { isBareNoReplySentinel, stripMoodMarker } from '@dojo/shared';
 import type { Question } from '../decide.js';
 import { judgment } from '../decision-hooks.js';
 import type { AgentTurnState } from './state.js';
@@ -31,7 +31,7 @@ export async function askReplyClaims(state: AgentTurnState, ctx: PostCallClassif
   let entry = asked.get(agentId);
   if (entry?.messageId !== messageId) {
     const stateForModel = {
-      reply,
+      reply: stripMoodMarker(reply),
       last_user_message: ctx.lastUserMessageContent ?? null,
       tool_calls_this_turn: state.toolResults.map((r) => r.name).filter(Boolean),
     };

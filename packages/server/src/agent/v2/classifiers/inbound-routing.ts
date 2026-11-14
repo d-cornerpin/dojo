@@ -7,25 +7,27 @@ import { getDb } from '../../../db/connection.js';
 import { NON_ANSWERING_DISPLAY_KINDS } from '../../../work/ask-settlement.js';
 import type { TurnRoot } from '../../turn-context.js';
 import { START_ACK_ORIGIN_INTENT } from '../../../memory/origin-intents.js';
+import { withSessionBoundary } from '../../../memory/session-boundary.js';
 
 const SEVERAL_STEPS: Question = { type: 'noul', instructions: "Does `message` ask the assistant to do a job that takes several steps, such as researching, comparing, planning, organizing, or producing something over time? If `previous_agent_message` is given, `message` is the person's reply to it.",
   criteria: { true: 'Yes: the person hands over a job of several steps, even in a few words.', false: 'No: chat, news, thanks, a correction, never mind, one question, or one quick action.' } };
 /** Asked beside SEVERAL_STEPS when a previous message is attached: a yes here makes a work verdict not work. */
 const DECLINED: Question = { type: 'noul', instructions: 'Does `message` only decline, put off, or acknowledge what `previous_agent_message` offered or said? A yes with a condition, or any request, is not.',
-  criteria: { true: 'Yes: it declines, postpones or just acknowledges, such as "no leave it", "no, don\'t send it", "maybe later", "ok thanks", "got it", "nvm".', false: 'No: it accepts, even with a condition, or asks for something, such as "yes go ahead", "please do", "yes but only weekdays", "all of it please", or a new request.' } };
+  criteria: { true: 'Yes: it declines, postpones or just acknowledges, such as "no leave it", "no, don\'t send it", "maybe later", "ok thanks", "thx!", "got it", "nvm".', false: 'No: it accepts, even with a condition, or asks for something, such as "yes go ahead", "please do", "yes but only weekdays", "all of it please", or a new request.' } };
 const DELIVERABLE: Question = { type: 'noul', instructions: 'Does `message` announce that a finished piece of work (a document, post, link, file or result) is ready for someone to receive?' };
 
-/** The tail of the agent's last reply in this conversation before the message (not the engine's start line), so
+/** The tail of the agent's last reply in this conversation and session before the message (not the engine's start line), so
  *  "yes, do it" reads as the reply it is. At most 1,500 characters, starting at a line or a sentence. */
 const PREVIOUS_CHARS = 1_500;
 function previousAgentMessage(agentId: string, root: TurnRoot | null | undefined): string | null {
   if (!root?.conversationId) return null;
   try {
+    const session = withSessionBoundary(agentId);
     const text = (getDb().prepare(
       `SELECT content FROM messages WHERE agent_id = ? AND conversation_id = ? AND role = 'assistant'
-         AND display_kind NOT IN (${NON_ANSWERING_DISPLAY_KINDS.map(() => '?').join(', ')}) AND COALESCE(origin_intent, '') <> ?
+         AND display_kind NOT IN (${NON_ANSWERING_DISPLAY_KINDS.map(() => '?').join(', ')}) AND COALESCE(origin_intent, '') <> ?${session.sql}
          AND rowid < (SELECT rowid FROM messages WHERE id = ?) ORDER BY rowid DESC LIMIT 1`,
-    ).get(agentId, root.conversationId, ...NON_ANSWERING_DISPLAY_KINDS, START_ACK_ORIGIN_INTENT, root.id) as { content: string } | undefined)?.content;
+    ).get(agentId, root.conversationId, ...NON_ANSWERING_DISPLAY_KINDS, START_ACK_ORIGIN_INTENT, ...session.params, root.id) as { content: string } | undefined)?.content;
     if (text === undefined || text.length <= PREVIOUS_CHARS) return text ?? null;
     const tail = text.slice(-PREVIOUS_CHARS);
     const start = /[\n.!?]\s+(?=\S)/.exec(tail);
