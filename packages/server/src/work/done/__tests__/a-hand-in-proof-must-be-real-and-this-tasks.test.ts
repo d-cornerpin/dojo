@@ -248,20 +248,23 @@ describe('a hand-in proof must be real and this task\'s', () => {
     expect(refusal(finished([{ kind: 'delivery', ref: 'd-ack' }]))).toMatch(/engine's own line or acknowledgement/);
   });
 
-  it('refuses a command that did not exit 0 for a finished hand-in, and accepts it for cant_be_done', () => {
+  it('names a command by the text the worker ran, and refuses one that did not exit 0 for a finished hand-in', () => {
     audit('a-exit2', { action: 'exec', target: 'convert report.md', result: 'error', detail: 'exit 2 | stderr: no such file' });
-    audit('a-refused', { action: 'exec', target: 'convert report.md', result: 'denied', detail: 'not allowed' });
-    expect(refusal(finished([{ kind: 'command', ref: 'a-exit2' }]))).toMatch(/did not succeed \(exit 2\)/);
-    expect(refusal(finished([{ kind: 'command', ref: 'a-refused' }]))).toMatch(/did not succeed/);
-    const r = cantBeDone([{ kind: 'command', ref: 'a-exit2' }]);
-    expect(r.ok).toBe(true);
+    audit('a-refused', { action: 'exec', target: 'pandoc report.md', result: 'denied', detail: 'not allowed' });
+    expect(refusal(finished([{ kind: 'command', ref: 'convert report.md' }]))).toMatch(/did not succeed \(exit 2\)/);
+    expect(refusal(finished([{ kind: 'command', ref: 'pandoc report.md' }]))).toMatch(/did not succeed/);
+    expect(cantBeDone([{ kind: 'command', ref: 'convert report.md' }]).ok).toBe(true);
     audit('a-ok', { action: 'exec', target: 'wc -l report.md', detail: '12 report.md' });
-    expect(finished([{ kind: 'command', ref: 'a-ok' }]).ok).toBe(true);
+    expect(finished([{ kind: 'command', ref: 'wc -l report.md' }]).ok).toBe(true);
+    audit('a-old', { action: 'exec', target: 'ls reports', at: openedAt - HOUR });
+    expect(refusal(finished([{ kind: 'command', ref: 'ls reports' }]))).toMatch(/before the task was opened/);
+    audit('a-theirs', { agent: OTHER, action: 'exec', target: 'du -sh reports' });
+    expect(refusal(finished([{ kind: 'command', ref: 'du -sh reports' }]))).toMatch(/not a command the worker ran/);
   });
 
   it('refuses the same record cited twice in one hand-in, whatever the kind', () => {
     audit('a-exit2', { action: 'exec', target: 'convert report.md', result: 'error', detail: 'exit 2' });
-    expect(refusal(cantBeDone([{ kind: 'command', ref: 'a-exit2' }, { kind: 'failure', ref: 'a-exit2' }])))
+    expect(refusal(cantBeDone([{ kind: 'failure', ref: 'a-exit2' }, { kind: 'failure', ref: 'a-exit2' }])))
       .toMatch(/already listed in this hand-in/);
   });
 

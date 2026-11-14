@@ -149,13 +149,14 @@ function exitOf(result: string, detail: string | null): number | string {
   return code ? Number(code[1]) : result === 'denied' ? 'refused before it ran' : (detail ?? 'failed').split(' | ')[0];
 }
 
+/** The worker's newest run of the command as it ran it: the shell script, or the exec argv joined by spaces. */
 function command(ctx: ProofContext, ref: string): Facts | string {
   const a = getDb().prepare(
-    "SELECT agent_id, target, result, detail, created_at FROM audit_log WHERE id = ? AND action_type = 'exec'",
-  ).get(ref) as { agent_id: string; target: string | null; result: string; detail: string | null; created_at: string } | undefined;
-  if (!a) return '';
-  const own = ownRow(ctx, a.agent_id, sqlTimeMs(a.created_at));
-  if (own) return own;
+    `SELECT target, result, detail, created_at FROM audit_log WHERE action_type = 'exec' AND agent_id = ? AND target = ?
+      ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+  ).get(ctx.workerId, ref) as { target: string | null; result: string; detail: string | null; created_at: string } | undefined;
+  if (!a) return 'is not a command the worker ran';
+  if (!(sqlTimeMs(a.created_at) >= openedFloor(ctx.task))) return 'was run before the task was opened';
   const exit = exitOf(a.result, a.detail);
   if (ctx.outcome === 'finished' && exit !== 0) return `did not succeed (exit ${exit}), so it cannot prove a finished task`;
   return { command: a.target ?? '', exit, output: excerpt(a.detail), at: a.created_at };
