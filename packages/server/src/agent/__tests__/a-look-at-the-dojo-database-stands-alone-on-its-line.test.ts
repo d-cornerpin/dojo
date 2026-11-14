@@ -1,4 +1,4 @@
-// A metadata look at the Dojo database or its data folder (ls, stat, ...) stands alone: on its line
+// For the Healer, a metadata look at the Dojo database or its data folder (ls, stat, ...) stands alone: on its line
 // every command is a look with no pipe or the shaped sqlite3 read, since piped onward, or followed by
 // a reader of `$_`, it could name the file to that reader. Any line naming the data that reads `$_` is
 // refused, look or not. Driven through the exec seam the broker uses.
@@ -67,13 +67,11 @@ const READS_LAST_WORD = [
 ];
 
 describe('a look at the Dojo database stands alone on its line', () => {
-  for (const who of [MAIN, HEALER]) {
-    it.each(PIPED)(`${who} is refused, told to look on a line of its own: %s`, (line) => {
-      const v = verdictFor(who, line);
-      expect(v.allowed).toBe(false);
-      expect(v.allowed === false && v.blockedMessage).toBe(LOOK_SENTENCE);
-    });
-    it.each(STANDALONE)(`${who} still runs: %s`, (line) => expect(allowed(who, line)).toBe(true));
-    it.each(READS_LAST_WORD)(`${who} is refused a $_ on a line naming the data: %s`, (line) => expect(allowed(who, line)).toBe(false));
-  }
+  it.each(PIPED)('the Healer is refused, told to look on a line of its own: %s', (line) => {
+    const v = verdictFor(HEALER, line);
+    expect(v.allowed).toBe(false);
+    expect(v.allowed === false && v.blockedMessage).toBe(LOOK_SENTENCE);
+  });
+  for (const who of [MAIN, HEALER]) it.each(STANDALONE)(`${who} still runs: %s`, (line) => expect(allowed(who, line)).toBe(true));
+  it.each(READS_LAST_WORD)('the Healer is refused a $_ on a line naming the data: %s', (line) => expect(allowed(HEALER, line)).toBe(false));
 });

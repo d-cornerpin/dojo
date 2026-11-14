@@ -117,7 +117,7 @@ const RECURSIVE_SHORT: Readonly<Record<string, string>> = { grep: 'rR', egrep: '
 const RECURSIVE_LONG: ReadonlySet<string> = new Set(['recursive', 'dereference-recursive', 'archive']);
 
 /** Does this reader walk the folders it is given? A recursive read reads every file under it, so a
- *  folder holding a sensitive location is refused for it; an unknown long option counts as recursive. */
+ *  folder holding a sensitive location is refused for it (not to the main agent); an unknown long option counts as recursive. */
 function readsRecursively(cmd: string, words: readonly string[]): boolean {
   if (ALWAYS_RECURSIVE.has(cmd)) return true;
   const letters = RECURSIVE_SHORT[cmd];
@@ -147,9 +147,9 @@ function readsRecursively(cmd: string, words: readonly string[]): boolean {
 /** Copy-style readers whose LAST operand is the destination: written, not read. */
 const WRITES_TO_LAST: ReadonlySet<string> = new Set(['cp', 'mv', 'rsync', 'scp']);
 
-function readerReadsSensitive(cmd: string, words: readonly string[]): { blocked: true; reason: string } | null {
+function readerReadsSensitive(cmd: string, words: readonly string[], folders: boolean): { blocked: true; reason: string } | null {
   const files = fileOperands(cmd, words);
-  const recursive = readsRecursively(cmd, words);
+  const recursive = folders && readsRecursively(cmd, words);
   const destination = WRITES_TO_LAST.has(cmd) && files.length > 1 ? files.length - 1 : -1;
   for (let k = 0; k < files.length; k++) {
     const word = files[k];
@@ -259,11 +259,12 @@ function secretsSubstringUnquoted(trimmed: string): Verdict | null {
   return secretsSubstringDeny(unquoted, 'bypass-hardening');
 }
 
-/** The tokenized sensitive-path scan, crude on purpose: the substring covers what matters. */
-export function commandReadsSensitiveFile(command: string): { blocked: true; reason: string } | { blocked: false } {
+/** The tokenized sensitive-path scan, crude on purpose: the substring covers what matters.
+ *  `folders` false (the main agent) lets a recursive read walk a folder that merely holds a secret. */
+export function commandReadsSensitiveFile(command: string, folders = true): { blocked: true; reason: string } | { blocked: false } {
   // Same scan over the words as the shell will unquote them, so a path split by quotes is still the path.
   for (const seg of lexShellLine(command)?.segments ?? []) {
-    const scan = argvReadsSensitiveFile(seg.words.map((w) => w.value));
+    const scan = argvReadsSensitiveFile(seg.words.map((w) => w.value), folders);
     if (scan.blocked) return scan;
   }
   const tokens = command.split(/\s+/).filter(Boolean);
@@ -277,7 +278,7 @@ export function commandReadsSensitiveFile(command: string): { blocked: true; rea
       if (arg === '|' || arg === '||' || arg === '&&' || arg === ';' || arg === '>') break;
       operands.push(arg);
     }
-    const found = readerReadsSensitive(cmd, operands);
+    const found = readerReadsSensitive(cmd, operands, folders);
     if (found) return found;
   }
   return { blocked: false };
@@ -363,7 +364,7 @@ export function authorizeArgv(grant: Grant, resource: ResolvedArgv): Verdict {
   const globals = globalExecDeny(resource.display, !ownsTheMac(grant.agentId));
   if (globals) return globals;
 
-  const scan = argvReadsSensitiveFile(resource.argv);
+  const scan = argvReadsSensitiveFile(resource.argv, !ownsTheMac(grant.agentId));
   if (scan.blocked) {
     return deny(
       'ladder-parity',
@@ -377,12 +378,12 @@ export function authorizeArgv(grant: Grant, resource: ResolvedArgv): Verdict {
 }
 
 /** Same scan over a vector: token boundaries come from the caller, no whitespace guess. */
-export function argvReadsSensitiveFile(argv: readonly string[]): { blocked: true; reason: string } | { blocked: false } {
+export function argvReadsSensitiveFile(argv: readonly string[], folders = true): { blocked: true; reason: string } | { blocked: false } {
   if (argv.length === 0) return { blocked: false };
   for (let i = 0; i < argv.length; i++) {
     const cmd = path.basename(argv[i]);
     if (!SENSITIVE_FILE_READING_COMMANDS.has(cmd)) continue;
-    const found = readerReadsSensitive(cmd, argv.slice(i + 1));
+    const found = readerReadsSensitive(cmd, argv.slice(i + 1), folders);
     if (found) return found;
   }
   return { blocked: false };
@@ -404,7 +405,7 @@ export function authorizeProc(
   }
 
   if (scanSensitiveReads) {
-    const scan = commandReadsSensitiveFile(resource.raw);
+    const scan = commandReadsSensitiveFile(resource.raw, floor);
     if (scan.blocked) return sensitiveReadDeny(scan.reason, 'ladder-parity');
   }
 
@@ -421,7 +422,8 @@ export function authorizeProc(
     // The sensitive-read scan for the INNER command too: the outer scan splits the raw line on
     // whitespace: a reader in a quoted span (su root -c "cat ~/.ssh/id_rsa") matches nothing.
     for (const innerCommand of scanSensitiveReads ? privilegedInnerCommands(seg) : []) {
-      const innerScan = commandReadsSensitiveFile(innerCommand);
+      const innerScan = commandReadsSensitiveFile(innerCommand, floor);
+
       if (innerScan.blocked) return sensitiveReadDeny(innerScan.reason, 'bypass-hardening');
     }
 

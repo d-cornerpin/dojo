@@ -41,9 +41,6 @@ export function isDestructiveCall(
   args: Record<string, unknown>,
   callerAgentId?: string,
 ): string | null {
-  // No agent-callable file_delete tool exists; kept so one is classified the day it is added.
-  // Real deletion rides the exec path; file_delete is destructive by definition, so this stays ahead.
-  if (toolName === 'file_delete') return 'file deletion';
   // execCallText is the one owner of 'what did this call ask to run', at both doors and every call shape.
   // A shape it cannot read is UNKNOWN, not harmless: hold it; the manifest pre-check then refuses outright.
   const door = execDoorFor(toolName);

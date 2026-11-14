@@ -33,7 +33,7 @@ async function holdWith(critical: number, presence: string): Promise<number> {
     agentId: HEALER, contextWindow: 200_000, isAutoRouted: false, configuredModelId: 'test', turnNumber: 1,
     triggeredByIMessage: false, triggeredByA2AReplyIntent: null, lastUserMessageContent: null, lastUserMessageId: null,
   } as Parameters<typeof initState>[0]);
-  const out = await recordDispatchAndHold(state, { id: 'tc-1', name: 'file_delete', arguments: { path: '/tmp/x' } } as never,
+  const out = await recordDispatchAndHold(state, { id: 'tc-1', name: 'shell', arguments: { script: 'git reset --hard' } } as never,
     { agentId: HEALER, db: kit.db } as never);
   expect(out.refusal).not.toBeNull();
   return kit.sends.length;

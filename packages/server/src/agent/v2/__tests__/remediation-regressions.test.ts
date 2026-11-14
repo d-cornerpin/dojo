@@ -166,10 +166,6 @@ describe('2f — cross-turn repeated-failure note (S6.2)', () => {
 });
 
 describe('4d — destructive-action detection (open question 6 gate)', () => {
-  it('flags file_delete', () => {
-    expect(isDestructiveCall('file_delete', { path: '/tmp/x' })).toBe('file deletion');
-  });
-
   it('flags destructive shell commands', () => {
     expect(isDestructiveCall('exec', { command: 'rm /tmp/x' })).toBe('destructive shell command');
     expect(isDestructiveCall('exec', { command: 'git push --force origin main' })).toBe('destructive shell command');

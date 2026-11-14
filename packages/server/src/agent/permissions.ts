@@ -26,7 +26,7 @@ export { hasSquadWorkspaceAccess } from './squad-workspace.js';
 
 
 export interface PermissionAction {
-  type: 'file_read' | 'file_write' | 'file_delete' | 'exec' | 'spawn' | 'network';
+  type: 'file_read' | 'file_write' | 'exec' | 'spawn' | 'network';
   path?: string;
   command?: string;
   domain?: string;
@@ -47,9 +47,9 @@ export function checkPermission(agentId: string, action: PermissionAction): Perm
 
   switch (action.type) {
     case 'file_read':
-    case 'file_write':
-    case 'file_delete': {
-      const kind = action.type === 'file_read' ? 'fs_read' : action.type === 'file_write' ? 'fs_write' : 'fs_delete';
+    case 'file_write': {
+      const kind = action.type === 'file_read' ? 'fs_read' : 'fs_write';
+
       const resolved = resolvePathArg(action.path);
       if (!resolved.ok) {
         result = { allowed: false, reason: `No path specified for ${action.type}` };

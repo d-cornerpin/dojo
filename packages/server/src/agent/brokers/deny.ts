@@ -6,9 +6,9 @@ import { foldPath } from '../fs-case.js';
 import { homeDir } from '../../home.js';
 
 /** The doors a rule can shut. One row may shut several. */
-export type DenyTier = 'sensitive' | 'global_read' | 'global_write' | 'global_delete';
+export type DenyTier = 'sensitive' | 'global_read' | 'global_write';
 
-export const DENY_TIERS: readonly DenyTier[] = ['sensitive', 'global_read', 'global_write', 'global_delete'];
+export const DENY_TIERS: readonly DenyTier[] = ['sensitive', 'global_read', 'global_write'];
 
 /** Where a rule came from: the pre-merge lists, or a row added after them. */
 export type DenyProvenance = 'legacy' | 'added';
@@ -80,7 +80,7 @@ export const DOJO_BACKUP_DIRS: readonly string[] = ['data/backups', 'backups'];
 export const DENY_RULES: readonly DenyRule[] = [
   {
     id: 'dojo-secrets-store',
-    tiers: ['sensitive', 'global_read', 'global_write', 'global_delete'],
+    tiers: ['sensitive', 'global_read', 'global_write'],
     since: 'legacy',
     reason:
       '~/.dojo/secrets.yaml holds the platform API keys as PLAINTEXT on disk (owner decision 2026-07-04), ' +
@@ -186,9 +186,11 @@ export const DENY_RULES: readonly DenyRule[] = [
     id: 'soul-files',
     tiers: ['global_write'],
     since: 'legacy',
+    exceptFor: 'main',
     reason:
-      '"never modify your own system prompt" is engine-enforced. The glob covers every sensei soul ' +
-      '(PM/TRAINER/HEALER/DREAMER/IMAGINER-SOUL.md), not only SOUL.md — the old pair left the rest writable.',
+      'only the main agent edits a Dojo soul; the glob covers every sensei soul ' +
+      '(PM/TRAINER/HEALER/DREAMER/IMAGINER-SOUL.md), not only SOUL.md.',
+
     // Folding the pattern as well as the value keeps the legacy behaviour on a
     // case-SENSITIVE volume, where only the exact spelling matched.
     // The Dojo's own souls only, under ~/.dojo/prompts (assembler.ts PROMPTS_DIR): a
@@ -197,13 +199,7 @@ export const DENY_RULES: readonly DenyRule[] = [
       folded.startsWith(path.join(home, '.dojo', 'prompts') + path.sep)
       && (base === foldPath('SOUL.md') || base.endsWith(foldPath('-SOUL.md'))),
   },
-  {
-    id: 'dojo-tree-undeletable',
-    tiers: ['global_delete'],
-    since: 'legacy',
-    reason: 'nothing under ~/.dojo is an agent\'s to delete — it is the platform\'s own state directory.',
-    test: ({ folded, home }) => underDir(folded, path.join(home, '.dojo')),
-  },
+
 ];
 
 /** Denied in a command line whatever its shape: a file_write deny cannot see a shell redirect. */
@@ -286,6 +282,7 @@ export function tiersForKind(kind: 'fs_read' | 'fs_write' | 'fs_delete'): readon
     // The sensitive tier stays out of fs_write on purpose: widening it here would
     // refuse writes the platform allows today.
     case 'fs_write': return ['global_write'];
-    case 'fs_delete': return ['global_delete'];
+    case 'fs_delete': return [];
+
   }
 }

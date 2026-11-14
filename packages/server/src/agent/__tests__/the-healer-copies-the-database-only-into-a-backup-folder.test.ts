@@ -58,11 +58,9 @@ describe('the Healer copies the database only into a backup folder', () => {
     expect((await shell(HEALER, `sqlite3 ${DB} "VACUUM INTO 'copy.db'"`)).allowed).toBe(false);
   });
 
-  it('another agent is refused the copy, by shell and by the file tool', async () => {
-    for (const who of [MAIN, WORKER]) {
-      expect((await shell(who, `sqlite3 -readonly ${COPY} "select * from agents"`)).allowed, who).toBe(false);
-      expect((await shell(who, `cat ${COPY}`)).allowed, who).toBe(false);
-      expect((await readFile(who, COPY)).allowed, who).toBe(false);
-    }
+  it('a worker is refused the copy by shell; no agent reads it with the file tool', async () => {
+    expect((await shell(WORKER, `sqlite3 -readonly ${COPY} "select * from agents"`)).allowed).toBe(false);
+    expect((await shell(WORKER, `cat ${COPY}`)).allowed).toBe(false);
+    for (const who of [MAIN, WORKER]) expect((await readFile(who, COPY)).allowed, who).toBe(false);
   });
 });

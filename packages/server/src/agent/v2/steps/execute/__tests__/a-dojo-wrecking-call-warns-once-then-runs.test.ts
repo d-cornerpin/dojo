@@ -18,6 +18,8 @@ const { initState } = await import('../../../state.js');
 const { authorizeExecShapedCall } = await import('../../../../brokers/exec-seam.js');
 const { grantForManifest } = await import('../../../../brokers/grants.js');
 const { PRIMARY_AGENT_PERMISSIONS } = await import('../../../../manifest.js');
+const { authorizeFs } = await import('../../../../brokers/fs.js');
+const { resolvePathArg } = await import('../../../../brokers/resolve.js');
 
 const WRECKS = [
   { name: 'shell', arguments: { script: 'rm -rf ~' } },
@@ -54,14 +56,16 @@ describe('a Dojo-wrecking call warns once, then runs', () => {
     }
   });
 
-  it('the broker lets the main agent run the Mac-wide ones it once refused', () => {
+  it('past the warning, the broker authorizes the call', () => {
     const main = grantForManifest(PRIMARY, PRIMARY_AGENT_PERMISSIONS);
-    for (const line of ['rm -rf ~', 'sudo rm -rf /', 'chmod 777 ~/Shared']) expect(authorizeExecShapedCall(main, 'shell', line).allowed, line).toBe(true);
+    for (const line of ['rm -rf ~', 'sudo rm -rf /', 'rm -rf ~/.dojo/data', 'mv ~/.dojo/backups /tmp/old']) {
+      expect(authorizeExecShapedCall(main, 'shell', line).allowed, line).toBe(true);
+    }
+    const db = resolvePathArg('~/.dojo/data/dojo.db');
+    expect(db.ok && authorizeFs(main, 'fs_write', db.value).allowed).toBe(true);
   });
 
-  it('another agent is not warned: its broker still refuses outright', () => {
+  it('another agent is not warned (its broker refuses outright)', () => {
     expect(gate('helper-agent', WRECKS[0], new Set())).toBeNull();
-    const helper = grantForManifest('helper-agent', PRIMARY_AGENT_PERMISSIONS);
-    for (const line of ['rm -rf ~', 'sudo rm -rf /', 'chmod 777 ~/Shared']) expect(authorizeExecShapedCall(helper, 'shell', line).allowed, line).toBe(false);
   });
 });

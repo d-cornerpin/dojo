@@ -48,8 +48,6 @@ export function runRefusalGates(
     } };
   }
 
-
-
   // Reminder lane: a turn serving a kind='reminder' task delivers to the owner, so a send naming anyone
   // else is refused once (an identical re-send goes through). The owner test is `isOwnerIMessageRecipient`.
   // A send to the owner is never refused: the channel choice is the agent's.

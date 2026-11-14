@@ -231,7 +231,6 @@ function unwrapBodies(command: string, depth = 0): string[] {
   return commands;
 }
 
-
 /**
  * Quoted runs in a non-shell body ARE the reach: crude, a missed one can be root.
  * Not covered: runtime-built payloads, shell-free language APIs, spellings the floor's 3 patterns lack.

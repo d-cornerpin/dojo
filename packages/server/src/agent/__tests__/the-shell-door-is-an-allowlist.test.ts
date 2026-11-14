@@ -1,10 +1,9 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 // THE SHELL DOOR ON THE DOJO'S DATABASE IS AN ALLOWLIST (field fix 3, v35-field-fix-3).
 //
-// The owner's rulings: the main agent may read the Dojo's own database and log from the shell;
-// password and credential data stays hidden from every agent, the main agent included; helper
-// agents keep their limits. A reviewer showed that spotting credential reads inside arbitrary
-// shell text cannot be complete, so the door fails closed: a line that refers to the live
+// The owner's rulings: the main agent may do anything with the Dojo folder from the shell, except
+// read a credential table through its sqlite3 statements; helper agents keep their limits. For the
+// Healer the door fails closed: a line that refers to the live
 // database file or the Dojo data folder runs only in ONE exact shape (sqlite3, the literal path,
 // known output flags, one quoted SQL argument of read-only statements that each pass
 // refuseDeniedSql). Every other such line is refused. The Healer keeps its existing repair scope
@@ -200,14 +199,18 @@ const REPAIRS: Row[] = [
 ].map((line) => ({ who: HEALER, line, want: 'allow' as Want, why: 'within the Healer\'s repair scope' }));
 
 const verdictOf = (who: string, line: string): Want => (door.redirectDojoQuestion(who, line) ? 'refuse' : 'allow');
+// The main agent runs every line refused to the Healer above that reaches no credential table.
+const CREDENTIAL = /google_accounts|agent_credentials|main\.config/;
+const MAIN_RUNS = REFUSED.filter((r) => r.who === MAIN && !CREDENTIAL.test(r.line)).map((r): Row => ({ ...r, want: 'allow' }));
+const STILL_REFUSED = REFUSED.filter((r) => r.who !== MAIN || CREDENTIAL.test(r.line));
 
 describe('the shell door on the Dojo database: an allowlist', () => {
-  it.each([...ALLOWED, ...REPAIRS, ...REFUSED])('$who: $line', ({ who, line, want, why }) => {
+  it.each([...ALLOWED, ...REPAIRS, ...STILL_REFUSED, ...MAIN_RUNS])('$who: $line', ({ who, line, want, why }) => {
     expect(verdictOf(who, line), why).toBe(want);
   });
 
-  it('the same repairs by the main agent are refused', () => {
-    for (const r of REPAIRS) expect(verdictOf(MAIN, r.line), r.line).toBe('refuse');
+  it('the same repairs by the main agent run', () => {
+    for (const r of REPAIRS) expect(verdictOf(MAIN, r.line), r.line).toBe('allow');
   });
 
   it('the same repairs by a worker are refused', () => {
@@ -217,12 +220,12 @@ describe('the shell door on the Dojo database: an allowlist', () => {
   it('a credential refusal names the table; any other refusal is the one-sentence fact', () => {
     const credential = door.redirectDojoQuestion(MAIN, `sqlite3 -readonly ${DB} "SELECT * FROM google_accounts"`);
     expect(credential && !credential.allowed ? credential.blockedMessage : '').toMatch(/^Refused: the statement reaches google_accounts, which holds credentials/);
-    const other = door.redirectDojoQuestion(MAIN, 'cp -r ~/.dojo/data /tmp/d');
+    const other = door.redirectDojoQuestion(HEALER, 'cp -r ~/.dojo/data /tmp/d');
     expect(other && !other.allowed ? other.blockedMessage : '').toMatch(/^Refused: dojo_inspect answers .*only a plain read-only sqlite3 SELECT/);
   });
 
   it('re-review 4 N3: a statement SQLite cannot compile is refused with SQLite\'s own error', () => {
-    const v = door.redirectDojoQuestion(MAIN, `sqlite3 -readonly ${DB} "select id from work order by no_such_column desc limit 5"`);
+    const v = door.redirectDojoQuestion(HEALER, `sqlite3 -readonly ${DB} "select id from work order by no_such_column desc limit 5"`);
     expect(v && !v.allowed ? v.blockedMessage : '').toBe("Refused: the Dojo's SQLite cannot compile this statement (no such column: no_such_column), so it does not run.");
   });
 
@@ -230,15 +233,15 @@ describe('the shell door on the Dojo database: an allowlist', () => {
     const run = (who: string, argv: string[]): Want => (brokers.authorizeExecShapedCall(brokers.grantFor(who), 'proc', argv).allowed ? 'allow' : 'refuse');
     expect(run(MAIN, ['sqlite3', '-readonly', ABS, 'select count(*) from deliveries'])).toBe('allow');
     expect(run(HEALER, ['sqlite3', ABS, "UPDATE agents SET config = json_set(config, '$.persist', 1) WHERE id = 'x'"])).toBe('allow');
-    expect(run(MAIN, ['sqlite3', ABS])).toBe('refuse');
-    expect(run(MAIN, ['sqlite3', ABS, '.dump'])).toBe('refuse');
-    expect(run(MAIN, ['sqlite3', '-cmd', 'select 1', ABS, 'select 1'])).toBe('refuse');
+    expect(run(HEALER, ['sqlite3', ABS])).toBe('refuse');
+    expect(run(HEALER, ['sqlite3', ABS, '.dump'])).toBe('refuse');
+    expect(run(HEALER, ['sqlite3', '-cmd', 'select 1', ABS, 'select 1'])).toBe('refuse');
     expect(run(MAIN, ['sqlite3', ABS, 'select * from vault_entries'])).toBe('refuse');
-    expect(run(MAIN, ['cp', '-r', `${home}/.dojo/data`, '/tmp/d'])).toBe('refuse');
+    expect(run(MAIN, ['cp', '-r', `${home}/.dojo/data`, '/tmp/d'])).toBe('allow');
     expect(run(WORKER, ['sqlite3', '-readonly', ABS, 'select 1'])).toBe('refuse');
     expect(run(MAIN, ['ls', '-la', ABS])).toBe('allow');
     expect(run(HEALER, ['du', '-sh', `${ABS}-wal`])).toBe('allow');
-    expect(run(MAIN, ['wc', '-l', ABS])).toBe('refuse');
+    expect(run(HEALER, ['wc', '-l', ABS])).toBe('refuse');
     expect(run(WORKER, ['ls', '-la', ABS])).toBe('refuse');
   });
 });

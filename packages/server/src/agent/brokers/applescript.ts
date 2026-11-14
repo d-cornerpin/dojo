@@ -33,7 +33,8 @@ export function authorizeAppleScript(grant: Grant, script: ResolvedCommand): Ver
     const payloadDeny = globalExecDeny(inner.trim(), floor);
 
     if (payloadDeny) return payloadDeny;
-    const scan = commandReadsSensitiveFile(inner);
+    const scan = commandReadsSensitiveFile(inner, floor);
+
     if (scan.blocked) {
       return deny(
         'bypass-hardening',

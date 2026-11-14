@@ -1,11 +1,9 @@
-// The shell door on the Dojo's own database: an allowlist that fails closed, because
-// text-spotting credential reads inside arbitrary shell text cannot be complete. A
-// line referring to the live database file or the Dojo data folder runs only in the
-// shape shapeSql() accepts, each statement a read that passes refuseDeniedSql; the
-// one other shape is a metadata look (METADATA_PROGRAMS, plain words, not piped):
-// file facts, no rows. A line holding a look does nothing else: every command on it is one of the two. The main agent and the Healer get the allowlist, a worker every refusal;
-// anything else gets FACT_REFUSAL. The door cannot see inside a script file the
-// agent writes and runs: encryption at rest and the blocked key file guard credentials.
+// The shell door on the Dojo's own database. The main agent may do anything with the Dojo folder;
+// only its plain sqlite3 statements are checked, and only for credential tables. For the Healer it is
+// an allowlist that fails closed: a line referring to the live database file or the data folder runs
+// only in the shape shapeSql() accepts, each statement a read that passes refuseDeniedSql, or as a
+// metadata look (METADATA_PROGRAMS, plain words, not piped) alone on its line; anything else gets
+// FACT_REFUSAL. A worker gets every refusal.
 
 import path from 'node:path';
 import type Database from 'better-sqlite3';
@@ -143,9 +141,9 @@ function readRefusal(stmt: string, db: Database.Database | undefined): string | 
   return null;
 }
 
-// Full-Mac access is the main agent's alone, plus the Healer's repair scope: every statement
-// still passes the credential list and the server's own SQLite compile; dot-commands (an
-// `.import` writes rows no SQL check can read) stay refused, and a `VACUUM INTO` copy lands only in a backup folder.
+// The Healer's repair scope: every statement still passes the credential list and the server's own
+// SQLite compile; dot-commands (an `.import` writes rows no SQL check can read) stay refused, and a
+// `VACUUM INTO` copy lands only in a backup folder.
 const VACUUM_INTO = /^\s*vacuum\b[^;]*\binto\b/i;
 const COPY_REFUSAL = `Refused: a copy of the database may be written only into ${DOJO_BACKUP_DIRS.map((d) => `~/.dojo/${d}/`).join(' or ')}, given as a full path.`;
 /** Whole-db checks: they open every table and return no rows; the credential list holds them by NAME. */
@@ -192,14 +190,15 @@ function sqlVerdict(sql: string, role: DoorRole): DoorVerdict {
   const dot = sql.trim();
   if (dot === '.tables' || /^\.schema(?:\s+[A-Za-z_]\w*)?$/.test(dot)) return { outcome: 'allowed' };
   const statements = splitStatements(sql);
-  if (statements.length === 0) return { outcome: 'refused', message: FACT_REFUSAL };
   const db = openDb();
-  // The credential check runs first for every role; the read-only check then fails closed.
+  // The credential check runs first for every role; for the Healer the read-only check then fails closed.
   for (const s of statements) {
-    const maintenance = role === 'healer' && WHOLE_DB_MAINTENANCE.test(bare(s));
+    const maintenance = WHOLE_DB_MAINTENANCE.test(bare(s));
     const refused = refuseDeniedSql(s, maintenance ? undefined : db);   // undefined: the credential list by name only
     if (refused) return { outcome: 'credential', message: refused };
   }
+  if (role === 'main') return { outcome: 'allowed' };
+  if (statements.length === 0) return { outcome: 'refused', message: FACT_REFUSAL };
   for (const s of statements) {
     const asRead = readRefusal(s, db);
     const refused = asRead !== null && role === 'healer' ? healerRepairRefusal(s, db) : asRead;
@@ -281,6 +280,14 @@ export function dojoDoorVerdict(command: string | readonly string[], role: DoorR
   const unquoted = lexed ? lexed.segments.flatMap((seg) => seg.words.map((w) => w.value)).join(' ') : '';
   if (!refersToDojoDatabase(text) && !refersToDojoDatabase(unquoted)) return { outcome: 'untouched' };
   if (role === 'worker') return { outcome: 'refused', message: WORKER_REFUSAL };
+  if (role === 'main') {
+    for (const words of commandsOf(command)) {
+      const sql = shapeSql(words);
+      const v = sql === null ? null : sqlVerdict(sql, role);
+      if (v && v.outcome !== 'allowed') return v;
+    }
+    return { outcome: 'allowed' };
+  }
   if (typeof command !== 'string') {
     const [words] = commandsOf(command);
     if (isMetadataLook(words)) return { outcome: 'allowed' };

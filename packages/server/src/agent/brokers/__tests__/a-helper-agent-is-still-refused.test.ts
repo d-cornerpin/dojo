@@ -28,6 +28,16 @@ describe('a helper agent is still refused', () => {
     expect(authorizeExecShapedCall(helper, 'proc', ['sudo', 'ls']).allowed).toBe(false);
   });
 
+  it('the Dojo folder, and a recursive read or copy of a folder holding a secret', () => {
+    for (const line of ['cd ~/.dojo && ls', 'tar czf ~/Desktop/dojo.tgz ~/.dojo', 'cp ~/.dojo/data/dojo.db ~/Desktop/', 'grep -ri invoice ~', 'rsync -a ~/ /Volumes/Backup/']) {
+      expect(refused(line), line).toBe(true);
+    }
+  });
+
+  it('rm -rf ~ and chmod 777, with no warning to pass', () => {
+    for (const line of ['rm -rf ~', 'sudo rm -rf /', 'chmod 777 ~/Shared']) expect(refused(line), line).toBe(true);
+  });
+
   it('an AppleScript asking for administrator privileges', () => {
     const r = resolveCommandArg('do shell script "ls" with administrator privileges');
     expect(r.ok && authorizeAppleScript(helper, r.value).allowed).toBe(false);

@@ -23,8 +23,8 @@ function globalDenyReason(kind: FsKind, tier: DenyTier, rawPath: string, ruleId:
   if (kind === 'fs_read') {
     return `Global deny: ${rawPath} is restricted. Use the engine helper tools (healer_recent_actions / healer_action_detail) to access this kind of data with bounded response size.`;
   }
-  if (kind === 'fs_write') return `Global deny: writing to ${rawPath} is prohibited`;
-  return `Global deny: deleting ${rawPath} is prohibited`;
+  return `Global deny: writing to ${rawPath} is prohibited`;
+
 }
 
 const GRANT_KIND: Record<FsKind, GrantEffectKind> = {

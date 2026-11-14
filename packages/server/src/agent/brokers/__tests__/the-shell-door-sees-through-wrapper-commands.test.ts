@@ -5,7 +5,7 @@
 // ('sql', 'schema', 'repair', 'write', 'logs') belonged to a denylist that tried to spot what a line
 // does. A line that refers to the live database or the Dojo data folder now runs only as one plain
 // sqlite3 read (see the header of dojo-redirect.ts), so every row below keeps its line and now pins
-// the main agent's verdict from `dojoDoorVerdict`: 'untouched' (the line refers to neither),
+// the Healer's verdict from `dojoDoorVerdict` (the main agent's lines are allowed): 'untouched' (the line refers to neither),
 // 'allowed' (the exact shape) or 'refused' (anything else that refers to them). A metadata look (ls, stat, du, wc -c, lsof, fuser,
 // file, shasum) with plain words is the one other allowed shape. Seeing through a
 // launcher no longer matters: a launcher is not the exact shape, so the line is refused.
@@ -49,6 +49,6 @@ const CASES: Array<{ line: string; want: DoorOutcome; why: string }> = [
 
 describe('dojoDoorVerdict: commands wrapped in timeout/nice/sudo/env', () => {
   it.each(CASES)('$line', ({ line, want, why }) => {
-    expect(dojoDoorVerdict(line, 'main').outcome, why).toBe(want);
+    expect(dojoDoorVerdict(line, 'healer').outcome, why).toBe(want);
   });
 });
