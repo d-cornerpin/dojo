@@ -25,7 +25,7 @@ export interface Pattern {
 }
 
 /** A name whose last segment is a credential word (`token_count`, `tokenizer`, `secretary` are not). */
-const CREDENTIAL_NAME = String.raw`[\w.-]*(?:(?<!(?:page|next|skip|continuation|sync|csrf|cursor)[_.-]?)token|secret|passw(?:or)?d|api[_-]?key|private[_-]?key)`;
+const CREDENTIAL_NAME = String.raw`[\w.-]*(?:(?<!(?:page|next|skip|continuation|sync|cursor)[_.-]?)token|secret|passw(?:or)?d|api[_-]?key|private[_-]?key)`;
 
 /** Empty, a placeholder or reference, a number, a nothing-word, a type name, or a code expression. */
 const TYPE_WORDS = /^(?:string|number|boolean|any|unknown|object|void|never|bigint|symbol|str|int|bool|bytes)$/i;
