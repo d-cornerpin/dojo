@@ -3,6 +3,7 @@
 
 import { autoRouterContext, isAutoRouted } from './router-window.js';
 import { honestStopWords } from '../agent/v2/error-format.js';
+import { NO_BIG_ROUTER_MODEL } from '../healer/owner-notices.js';
 
 export interface AutoRouterContext { modelName: string; floorTokens: number; windowTokens: number }
 
@@ -31,5 +32,5 @@ export function autoNoFitOwnerWords(r: AutoRouterContext): string {
 export function noFitOwnerWords(agentId: string): string {
   const r = autoRouterContext(agentId);
   if (r) return autoNoFitOwnerWords(r);
-  return isAutoRouted(agentId) ? `This agent's turn was not run: the router has no model with a memory window of 32K or more, the least an agent needs. Your message is kept. Add one to the router in Settings and it will answer.` : honestStopWords('no_model_fits');
+  return isAutoRouted(agentId) ? `This agent's turn was not run and your message is kept: ${NO_BIG_ROUTER_MODEL}.` : honestStopWords('no_model_fits');
 }

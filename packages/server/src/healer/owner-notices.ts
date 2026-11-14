@@ -45,10 +45,11 @@ export const stuckWords = (name: string): string =>
 /** An agent parked because none of its models can hold it; ends when the agent is released. */
 export const noFitWords = (name: string): string =>
   `${name} can't run: none of its models can hold its instructions and tools. Pick a bigger model for it on its detail page, or give it fewer tools, and it will answer your message.`;
+export const NO_BIG_ROUTER_MODEL = 'the router has no model with a memory window of 32K or more, the least an agent needs. Add one to the router in Settings and it will answer';
 /** The same for an agent on automatic model choice: it names the router's smallest model (read through a hook). */
 export const autoNoFitWords = (name: string): string => {
   const model = routerFloorName?.() ?? null;
-  if (!model) return `${name} can't run on automatic model choice: the router has no model with a memory window of 32K or more. Add one to the router in Settings and it will answer your message.`;
+  if (!model) return `${name} can't run on automatic model choice: ${NO_BIG_ROUTER_MODEL} your message.`;
   return `${name} can't run on automatic model choice: the router's smallest model, ${model}, sets a window too small for its instructions and tools. `
     + `On the Router tab in Settings, raise the "Context window for automatic choice" slider, or raise ${model}'s window or take it off the router, or give it fewer tools, and it will answer your message.`;
 };
