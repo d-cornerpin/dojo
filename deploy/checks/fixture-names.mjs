@@ -43,7 +43,7 @@ export function readLiveRoster() {
   if (!fs.existsSync(db)) return null;
   // A stopped server leaves a WAL-mode database with no -wal file beside it, and a plain read-only open then cannot start.
   // Open it as an immutable read-only URI in that case; with a -wal file present (server running) keep the normal read-only open.
-  const target = fs.existsSync(`${db}-wal`) ? db : `file:${path.resolve(db)}?mode=ro&immutable=1`;
+  const target = fs.statSync(`${db}-wal`, { throwIfNoEntry: false })?.size ? db : `file:${path.resolve(db)}?mode=ro&immutable=1`;
   const args = target === db ? ['-readonly', db] : [target];
   try {
     return execFileSync('sqlite3', [...args, 'SELECT name FROM agents'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 8 * 1024 * 1024 }).split('\n').map((s) => s.trim()).filter(Boolean);

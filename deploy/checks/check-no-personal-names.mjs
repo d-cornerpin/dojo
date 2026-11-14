@@ -276,12 +276,12 @@ function defaultDbPath() {
  * write. A running server keeps `<db>-wal` and `<db>-shm` beside a WAL-mode database, and
  * `-readonly` is right then. A server that has stopped cleanly removes them, and a read-only open
  * of a WAL database cannot create them: `unable to open database file (14)`. With no `-wal` file
- * no writer has the database open, so it is opened immutable, which needs no lock and no side file.
+ * (or an empty one) no writer has the database open, so it is opened immutable, which needs no lock and no side file.
  * Throws the sqlite error; each caller decides what an unreadable database means.
  */
 function readDb(dbPath, sql) {
   const uriPath = dbPath.split('/').map(encodeURIComponent).join('/');
-  const args = fs.existsSync(`${dbPath}-wal`)
+  const args = fs.statSync(`${dbPath}-wal`, { throwIfNoEntry: false })?.size
     ? ['-readonly', dbPath, sql]
     : [`file:${uriPath}?mode=ro&immutable=1`, sql];
   try {
