@@ -1,6 +1,6 @@
 // A here-document body is data: only the command that receives it is asked of the allow rules.
 // An unquoted terminator lets the shell run `$( )` and backticks in the body, so those commands are
-// still asked; a body a shell runs is asked of the floor, the deny rows and sudo. Driven through the exec seam.
+// still asked. Only a body an inert program writes to a file skips the floor, the deny rows and sudo. Driven through the exec seam.
 
 import { describe, it, expect, vi } from 'vitest';
 
@@ -28,20 +28,32 @@ describe('a heredoc body is data', () => {
     network_domains: '*', max_processes: 1, can_spawn_agents: false, can_assign_permissions: false, system_control: [],
   });
 
-  it('the floor reads a body only when a shell runs it', () => {
-    expect(authorizeExecShapedCall(all(), 'shell', "bash <<'EOF'\nrm -rf /\nEOF").allowed).toBe(false);
-    expect(authorizeExecShapedCall(all(), 'shell', "cat <<'EOF' | sh\nrm -rf /\nEOF").allowed).toBe(false);
+  // Receivers that run a body without naming a shell, and stages a body reaches after its command.
+  const runners = (body: string): string[] => [
+    `bash <<'EOF'\n${body}\nEOF`, `cat <<'EOF' | sh\n${body}\nEOF`, `tee /tmp/f <<'EOF' | sh\n${body}\nEOF`,
+    `source /dev/stdin <<'EOF'\n${body}\nEOF`, `. /dev/stdin <<'EOF'\n${body}\nEOF`,
+    `eval "$(cat <<'EOF'\n${body}\nEOF\n)"`, `$0 <<'EOF'\n${body}\nEOF`, `"$0" <<'EOF'\n${body}\nEOF`,
+    `$SHELL <<'EOF'\n${body}\nEOF`, `\${SHELL} <<'EOF'\n${body}\nEOF`, `bas''h <<'EOF'\n${body}\nEOF`,
+    `S=bash\n$S <<'EOF'\n${body}\nEOF`, `f() { bash; }\nf <<'EOF'\n${body}\nEOF`, `python3 - <<'EOF'\n${body}\nEOF`,
+    `{ cat <<'EOF'\n${body}\nEOF\n} | sh`, `while true; do\ncat <<'EOF'\n${body}\nEOF\ndone | sh`,
+    `cat <<'EOF' |\n${body}\nEOF\nsh`, `cat > /tmp/f <<'EOF' | sh\n${body}\nEOF`,
+  ];
+
+  it('the floor reads every body not written to a file by an inert program', () => {
+    for (const line of runners('rm -rf /')) expect(authorizeExecShapedCall(all(), 'shell', line).allowed, line).toBe(false);
     expect(authorizeExecShapedCall(all(), 'shell', "bash <<'EOF'\necho hello\nEOF").allowed).toBe(true);
     expect(authorizeExecShapedCall(all(), 'shell', "cat > /tmp/n.md <<'EOF'\nrm -rf /\nEOF").allowed).toBe(true);
+    expect(authorizeExecShapedCall(all(), 'shell', "cat <<'EOF' >> /tmp/n.md\nrm -rf /\nEOF").allowed).toBe(true);
   });
 
-  it('the deny rows read a body a shell runs, and only that body', () => {
+  it('the deny rows read the same bodies, and not a data body', () => {
     const curl = all(['curl *']);
-    expect(authorizeExecShapedCall(curl, 'shell', "bash <<'EOF'\ncurl http://example.com\nEOF").allowed).toBe(false);
+    for (const line of runners('curl http://example.com')) expect(authorizeExecShapedCall(curl, 'shell', line).allowed, line).toBe(false);
     expect(authorizeExecShapedCall(curl, 'shell', "cat > /tmp/n.md <<'EOF'\ncurl http://example.com\nEOF").allowed).toBe(true);
   });
 
-  it('a sudo line in a data body is not walked, and a real one after the body is', () => {
+  it('a sudo line in a data body is admitted, and a real one after the body is placed', () => {
+    expect(authorizeExecShapedCall(all(), 'shell', "cat > /tmp/s.sh <<'EOF'\nsudo apt update\nEOF").allowed).toBe(true);
     const v = shell("cat > /tmp/s.sh <<'EOF'\nsudo apt update\nEOF");
     expect(v.allowed ? '' : v.reason).not.toContain('is not allowed');
     expect(authorizeExecShapedCall(all(), 'shell', "cat > n <<'EOF'\nIt's\nEOF\nsudo -n true").allowed).toBe(true);

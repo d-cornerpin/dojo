@@ -19,9 +19,9 @@ const NO_AUTHORITY_WORDS = new Set([
   '[', '[[', ']', ']]', 'test', 'true', 'false', ':', 'break', 'continue', 'read',
 ]);
 
-/** The shells: their `-c` text is a script, and a here-document body they receive is run. */
+/** The shells, whose `-c` text is a script; and the programs that never run their input or arguments as code. */
 export const SHELL_INTERPRETERS: ReadonlySet<string> = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'csh', 'tcsh', 'fish', 'ash', 'busybox']);
-const namesShell = (text: string): boolean => text.split(/[^\w./-]+/).some((w) => SHELL_INTERPRETERS.has(w.slice(w.lastIndexOf('/') + 1)));
+export const INERT_PROGRAMS: ReadonlySet<string> = new Set(['echo', 'printf', 'cat', 'head', 'tail', 'wc', 'grep', 'egrep', 'fgrep', 'rg', 'comm', ':', 'true', 'false']);
 
 const ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?=/;
 const REDIRECT_RE = /^\d*(&)?[<>]/;
@@ -57,31 +57,40 @@ function scanParens(line: string, i: number): number {
 
 const HEREDOC_RE = /^<<(-?)[ \t]*(['"]?)([\w.-]+)\2(?=[ \t\n;&|<>()]|$)/;
 
+/** A body the floor may skip: its segment's program is inert and writes stdout to a file, piped nowhere. */
+function inertToFile(toks: Tok[], at: number, cur: string): boolean {
+  const seg = toks.slice(toks.slice(0, at).map((t) => t.op).lastIndexOf(true) + 1);
+  const end = seg.findIndex((t) => t.op);
+  const words = [...(end < 0 ? seg : seg.slice(0, end)), ...(end < 0 && cur ? [{ text: cur, op: false }] : [])];
+  const toFile = words.some((w, n) => /^1?>[>|]?$/.test(w.text) ? /^[^&(]/.test(words[n + 1]?.text ?? '&') : /^1?>[>|]?[^>&(|]/.test(w.text));
+  return toFile && INERT_PROGRAMS.has(segmentCommand(words)?.split(' ')[0] ?? '') && !['|', '|&', '('].includes(seg[end]?.text ?? '');
+}
+
 /** Words and separators; quoted spans, `$( )`, `${ }`, `(( ))` ride verbatim and a `#` word comments out its line. A here-document
- *  body is data, cut unless unquoted with `$( )` or a backtick, or (`cutBodies` off) a shell is named around it; `$'` keeps all. */
-function tokenize(line: string, cutBodies = true): Tok[] {
+ *  body is cut out and returned to be read on its own when unquoted with `$( )` or a backtick, or (`cutBodies` off) not `inertToFile`. */
+function tokenize(line: string, cutBodies = true): { toks: Tok[]; text: string; bodies: string[] } {
   const toks: Tok[] = [];
   let cur = '';
   let i = 0;
   let rawEnd = false;
-  let lineStart = 0;   // a body is run when a shell is named on its command's line or after the body
   const flushWord = (): void => { if (cur) { toks.push({ text: cur, op: false }); cur = ''; } };
-  const heredocs: string[][] = [];
+  const heredocs: Array<[RegExpExecArray, number]> = [];
+  const bodies: string[] = [];
 
   while (i < line.length) {
     const c = line[i];
-    if (c === '<' && !line.includes("$'") && line[i - 1] !== '<') { const h = HEREDOC_RE.exec(line.slice(i)); if (h) heredocs.push(h); }
+    if (c === '<' && !line.includes("$'") && line[i - 1] !== '<') { const h = HEREDOC_RE.exec(line.slice(i)); if (h) heredocs.push([h, toks.length]); }
     if (c === '\n' && heredocs.length > 0) {
       const rest = line.slice(i + 1).split('\n');
       let k = 0;
-      const data = heredocs.splice(0).every(([, dash, quote, delim]) => {
+      for (const [[, dash, quote, delim], at] of heredocs.splice(0)) {
         const first = k;
         while (k < rest.length && (dash ? rest[k].replace(/^\t+/, '') : rest[k]) !== delim) k++;
-        return !/\$\(|`/.test(rest.slice(first, k++).join('\n')) || quote !== '';
-      }) && (cutBodies || !namesShell(`${line.slice(lineStart, i)}\n${rest.slice(k).join('\n')}`));
-      if (data) line = line.slice(0, i + 1) + rest.slice(k).join('\n');
+        const body = rest.slice(first, k++).join('\n');
+        if ((quote === '' && /\$\(|`/.test(body)) || !(cutBodies || inertToFile(toks, at, cur))) bodies.push(body);
+      }
+      line = line.slice(0, i + 1) + rest.slice(k).join('\n');
     }
-    if (c === '\n') lineStart = i + 1;
     const redirect = rawEnd && /[<>]$/.test(cur);   // the word so far ends in an unquoted redirect sign
     rawEnd = false;
     if (c === '#' && cur === '') { const nl = line.indexOf('\n', i); i = nl < 0 ? line.length : nl; continue; }
@@ -104,7 +113,7 @@ function tokenize(line: string, cutBodies = true): Tok[] {
     i++;
   }
   flushWord();
-  return toks;
+  return { toks, text: line, bodies };
 }
 
 /** The command a segment runs, or null when it is pure grammar: a loop header, a
@@ -131,7 +140,7 @@ function segmentCommand(seg: Tok[]): string | null {
 
 /** Words of one simple command, quoted spans whole. Shared with sudo-policy: never split on whitespace. */
 export function commandWords(command: string): string[] {
-  return tokenize(command).filter((t) => !t.op).map((t) => t.text);
+  return tokenize(command).toks.filter((t) => !t.op).map((t) => t.text);
 }
 
 /** The text inside each `$( )` and backtick span of one word; single-quoted spans and `$(( ))`
@@ -150,10 +159,13 @@ function substitutionBodies(word: string): string[] {
   return bodies;
 }
 
+/** The line with every body the floor skips cut out: where a privilege token is looked for. */
+export const withoutDataBodies = (line: string): string => { const t = tokenize(line, false); return [t.text, ...t.bodies].join('\n'); };
+
 /** EVERY SIMPLE COMMAND THE LINE CONTAINS, substitution bodies included: what the floor, the
- *  sudo policy and the grant rows are each asked of. The floor keeps the here-document bodies a shell runs. */
+ *  sudo policy and the grant rows are each asked of. The floor keeps every body not proven `inertToFile`. */
 export function execSimpleCommands(command: string, cutBodies = true): string[] {
-  const toks = tokenize(command, cutBodies);
+  const { toks, bodies } = tokenize(command, cutBodies);
   const commands: string[] = [];
   let seg: Tok[] = [];
   const flush = (): void => {
@@ -167,5 +179,6 @@ export function execSimpleCommands(command: string, cutBodies = true): string[] 
     for (const body of substitutionBodies(t.text)) commands.push(...execSimpleCommands(body, cutBodies));
   }
   flush();
+  for (const body of bodies) commands.push(...execSimpleCommands(body, cutBodies));
   return commands.length > 0 ? commands : [command.trim()];
 }

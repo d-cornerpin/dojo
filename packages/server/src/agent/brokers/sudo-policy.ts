@@ -2,7 +2,7 @@
 // Safety: strip sudo, re-authorize the INNER command fully, then apply policy; grants are never widened.
 
 import { getSudoPolicyRaw, isPrimaryAgent } from '../../config/platform.js';
-import { SHELL_INTERPRETERS, commandWords, execSimpleCommands } from '../exec-grammar.js';
+import { INERT_PROGRAMS, SHELL_INTERPRETERS, commandWords, execSimpleCommands } from '../exec-grammar.js';
 // types.js is a leaf; proc.ts imports THIS module, so the verdict helpers come from the leaf, not proc.
 import { allow, deny, type Verdict } from './types.js';
 import {
@@ -119,14 +119,10 @@ export function osascriptBodyIsUnseeable(operands: readonly string[]): boolean {
   return body === null ? false : body.kind !== 'readable';
 }
 
-/** Default REFUSE: true only when every occurrence is proven inert, by program or by the precise walk. */
-const INERT_PROGRAMS: ReadonlySet<string> = new Set([
-  'echo', 'printf', 'cat', 'head', 'tail', 'wc', 'grep', 'egrep', 'fgrep', 'rg', 'comm',
-  ':', 'true', 'false',
-]);
 const INTERPRETERS: ReadonlySet<string> = new Set([...SHELL_INTERPRETERS, 'eval', 'source', '.']);
 const EXECUTING_CONTEXT_RE = /\$\(|\$\{|`/;
 
+/** Default REFUSE: true only when every occurrence is proven inert, by program or by the precise walk. */
 export function privilegeTokenIsQuotedData(raw: string, segments: readonly string[]): boolean {
   if (segments.some((seg) => INTERPRETERS.has(bareWord(seg.trim().split(/\s+/)[0] ?? '').toLowerCase()))) {
     return false;
@@ -152,10 +148,6 @@ export function privilegeTokenIsQuotedData(raw: string, segments: readonly strin
     if (o.index === 0) return !isSudoLine(o.seg);
     return INERT_PROGRAMS.has(o.program);
   });
-}
-
-export function isInertProgram(name: string): boolean {
-  return INERT_PROGRAMS.has(bareWord(name).toLowerCase());
 }
 
 /** The same two walls: role wall first, policy after; `gated` allows here, its hold is filed upstream. */

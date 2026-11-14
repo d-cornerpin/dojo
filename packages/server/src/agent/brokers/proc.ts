@@ -17,7 +17,7 @@ import {
   privilegedInnerCommands,
 } from './sudo-policy.js';
 import { SUDO_UNPLACEABLE_REASON } from './sudo-copy.js';
-import { SHELL_INTERPRETERS, execSimpleCommands } from '../exec-grammar.js';
+import { SHELL_INTERPRETERS, execSimpleCommands, withoutDataBodies } from '../exec-grammar.js';
 import {
   evaluateRules, matchCommandPattern, matchCommandDenyPattern, type Grant,
 } from './grants.js';
@@ -418,7 +418,7 @@ export function authorizeProc(
     const v = authorizeSudoLine(seg, grant.agentId, (i) => authorizeOneCommand(grant, i));
     if (!v.allowed) return v;
   }
-  if (!privilegedSeen && mentionsPrivilegeToken(resource.raw)) {
+  if (!privilegedSeen && mentionsPrivilegeToken(withoutDataBodies(resource.raw))) {
     // The token is in the line and no segment owns it: a substitution, a nested quote, an opaque
     // construct. HARMLESS DATA is the one exemption: quoted spans only, and no interpreter runs them.
     if (!privilegeTokenIsQuotedData(resource.raw, segments)) {
