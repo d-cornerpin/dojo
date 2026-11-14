@@ -1,20 +1,11 @@
-// Sudo is a policy, not a wall: `blocked | gated | free`, per box, default `gated`.
-// Safety: strip sudo, re-authorize the INNER command fully, then apply policy; grants are never widened.
+// Administrator rights (sudo, doas, su, osascript admin) belong to the main agent alone; every other
+// agent is refused. The parser finds what a privileged line runs, so the floor and secrets scan see it.
 
-import { getSudoPolicyRaw, isPrimaryAgent } from '../../config/platform.js';
-import { INERT_PROGRAMS, SHELL_INTERPRETERS, commandWords, execSimpleCommands, withoutDataBodies } from '../exec-grammar.js';
+import { isPrimaryAgent } from '../../config/platform.js';
+import { INERT_PROGRAMS, SHELL_INTERPRETERS, commandWords, execSimpleCommands } from '../exec-grammar.js';
 // types.js is a leaf; proc.ts imports THIS module, so the verdict helpers come from the leaf, not proc.
 import { allow, deny, type Verdict } from './types.js';
-import {
-  SUDO_BLOCKED_REASON, SUDO_INTERACTIVE_SHELL_REASON, SUDO_NOT_PRIMARY_REASON, SUDO_POLICY_DEFAULT,
-  SUDO_UNPARSEABLE_REASON, type SudoPolicy,
-} from './sudo-copy.js';
-
-/** An unrecognised value reads as the default, never as `free`: a bad row must not widen authority. */
-export function getSudoPolicy(): SudoPolicy {
-  const raw = getSudoPolicyRaw();
-  return raw === 'blocked' || raw === 'gated' || raw === 'free' ? raw : SUDO_POLICY_DEFAULT;
-}
+import { SUDO_NOT_PRIMARY_REASON } from './sudo-copy.js';
 
 // Options that CONSUME the next argument; a missed one leaves its value as the inner command.
 const SUDO_OPTS_WITH_VALUE: ReadonlySet<string> = new Set([
@@ -35,7 +26,7 @@ function unquoteValue(word: string): string {
   return w;
 }
 
-/** Interactive root-shell options: nothing to authorize, refused under every policy. */
+/** Interactive root-shell options; a command may follow them. */
 const SUDO_SHELL_OPTS: ReadonlySet<string> = new Set(['-i', '--login', '-s', '--shell']);
 
 /** su's grammar, NOT sudo's: su's `-s` takes a value, and `-c` is su's only command source. */
@@ -44,13 +35,6 @@ const SU_OPTS_WITH_VALUE: ReadonlySet<string> = new Set([
   '-w', '--whitelist-environment',
 ]);
 
-export interface ParsedSudo {
-  readonly inner: string;
-  readonly interactiveShell: boolean;
-  readonly nonInteractive: boolean;
-  /** True when an option's value carried a quote, so the whitespace split cannot be trusted. */
-  readonly quotedOptionValue: boolean;
-}
 
 /**
  * THE SOUND FLOOR: a privilege token anywhere in the raw line, case-insensitive; may over-report.
@@ -63,7 +47,7 @@ export function mentionsPrivilegeToken(raw: string): boolean {
   return PRIVILEGE_TOKEN_RE.test(raw) || mentionsAdminPrivileges(raw);
 }
 
-/** The AppleScript admin door, case- and whitespace-liberal: one policy governs every admin door. */
+/** The AppleScript admin door, case- and whitespace-liberal: one role wall governs every admin door. */
 const ADMIN_PRIVILEGES_RE = /\bwith\s+admin(?:istrator)?\s+privileges\b/i;
 
 export function mentionsAdminPrivileges(raw: string): boolean {
@@ -112,8 +96,7 @@ export function isSudoLine(trimmed: string): boolean {
   return osascriptBodyIsUnseeable(words.slice(at + 1));
 }
 
-/** An admin-capable interpreter on content the broker cannot read is NOT proven inert: policy governs. */
-/** Proving it inert needs a content hash (a TOCTOU window); until that plumbing closes, such bodies hold. */
+/** An admin-capable interpreter on content the broker cannot read is NOT proven inert: the role wall governs. */
 export function osascriptBodyIsUnseeable(operands: readonly string[]): boolean {
   const body = interpreterBody(['osascript', ...operands].join(' '));
   return body === null ? false : body.kind !== 'readable';
@@ -150,25 +133,16 @@ export function privilegeTokenIsQuotedData(raw: string, segments: readonly strin
   });
 }
 
-/** The same two walls: role wall first, policy after; `gated` allows here, its hold is filed upstream. */
-export function authorizeAdminPrivilegeRequest(agentId: string): Verdict {
-  if (!isPrimaryAgent(agentId)) {
-    return deny('ladder-parity', 'admin-privileges-not-primary', SUDO_NOT_PRIMARY_REASON);
-  }
-  const policy = getSudoPolicy();
-  if (policy === 'blocked') {
-    return deny('ladder-parity', 'admin-privileges-policy:blocked', SUDO_BLOCKED_REASON);
-  }
-  return allow(`admin-privileges-policy:${policy}`);
+/** The role wall: administrator rights for the main agent, a refusal for every other agent. */
+export function authorizePrivilege(agentId: string): Verdict {
+  return isPrimaryAgent(agentId) ? allow('sudo-primary') : deny('ladder-parity', 'sudo-not-primary', SUDO_NOT_PRIMARY_REASON);
 }
 
-/** Strip sudo and its options to what it would run; crude by design, recursing on nested `sudo`. */
-export function parseSudo(trimmed: string): ParsedSudo {
+/** Strip sudo and its options to the command it would run; crude by design, recursing on nested `sudo`. */
+export function parseSudo(trimmed: string): string {
   const tokens = commandWords(trimmed);
   const at = privilegeWordIndex(tokens);
   let i = (at ?? 0) + 1;
-  let nonInteractive = false;
-  let quotedOptionValue = false;
   // su takes a bare USERNAME as its first operand: step over exactly one, then keep reading options.
   const isSu = bareWord(tokens[at ?? 0] ?? '').toLowerCase() === 'su';
   let sawSuUser = false;
@@ -190,52 +164,25 @@ export function parseSudo(trimmed: string): ParsedSudo {
       commandFromOption = unquoteValue(t.slice('--command='.length));
       i += 1; break;
     }
-    if (t === '-n' || t === '--non-interactive') { nonInteractive = true; i += 1; continue; }
-    if (!isSu && SUDO_SHELL_OPTS.has(t)) {
-      // `sudo -i`/`-s` may take a command; nothing after means a shell. su differs: `-s` takes a value.
-      const rest = tokens.slice(i + 1).join(' ');
-      return rest.length === 0
-        ? { inner: '', interactiveShell: true, nonInteractive, quotedOptionValue }
-        : finish(rest, nonInteractive, quotedOptionValue);
-    }
-    if (t.includes('=')) {
-      // A quote in ANY option spelling defeats the whitespace split; both forms share one check.
-      if (/['"]/.test(t.slice(t.indexOf('=') + 1))) quotedOptionValue = true;
-      i += 1; continue;
-    }
-    if ((isSu ? SU_OPTS_WITH_VALUE : SUDO_OPTS_WITH_VALUE).has(t)) {
-      if (/['"]/.test(tokens[i + 1] ?? '')) quotedOptionValue = true;
-      i += 2; continue;
-    }
+    if (!isSu && SUDO_SHELL_OPTS.has(t)) return innerOf(tokens.slice(i + 1).join(' '));   // `sudo -i cmd`
+    if (t.includes('=')) { i += 1; continue; }
+    if ((isSu ? SU_OPTS_WITH_VALUE : SUDO_OPTS_WITH_VALUE).has(t)) { i += 2; continue; }
     i += 1;                                               // an ordinary boolean flag
   }
   // THE COMMAND OPTION WINS over trailing operands: there the tail is the username, not a command.
-  if (commandFromOption !== null) {
-    // AT MOST a username may follow the command value; more means this parser fails the line closed.
-    const after = tokens.slice(i);
-    if (after.length > 1 || after.some((w) => w.startsWith('-'))) quotedOptionValue = true;
-    return finish(commandFromOption, nonInteractive, quotedOptionValue);
-  }
+  if (commandFromOption !== null) return innerOf(commandFromOption);
+  // `su` WITHOUT `-c` IS A ROOT PROMPT; the tail is kept so the floor can name the pattern.
   const rest = tokens.slice(i).join(' ');
-  // `su` WITHOUT `-c` IS A ROOT PROMPT; inner keeps the tail so the floor can name the pattern.
-  if (isSu) return { inner: rest, interactiveShell: true, nonInteractive, quotedOptionValue };
-  if (rest.length === 0) return { inner: '', interactiveShell: true, nonInteractive, quotedOptionValue };
-  return finish(rest, nonInteractive, quotedOptionValue);
+  return isSu ? rest : innerOf(rest);
 }
+
+const innerOf = (rest: string): string => (isSudoLine(rest) ? parseSudo(rest) : rest);
 
 /** EVERY command a privileged line would run, one interpreter deeper; privileged-only by design. */
 export function privilegedInnerCommands(trimmed: string): string[] {
   if (!isSudoLine(trimmed)) return [];
-  const parsed = parseSudo(trimmed);
-  return parsed.inner.length === 0 ? [] : unwrapBodies(parsed.inner).commands;
-}
-
-export interface Unwrapped {
-  readonly commands: string[];
-  /** A body at ANY depth whose quotes do not balance: what was extracted is not what runs. */
-  readonly unparseable: boolean;
-  /** A body at ANY depth that is a root prompt or arrives on a stream. */
-  readonly interactive: boolean;
+  const inner = parseSudo(trimmed);
+  return inner.length === 0 ? [] : unwrapBodies(inner);
 }
 
 /** Per operand: a prefix floor misses `rm -rf x /`; privileged only so `echo "rm -rf /"` still works. */
@@ -257,11 +204,9 @@ function perOperandCandidates(command: string): string[] {
   return operandCandidates(commandWords(command)).filter((c) => c !== command.trim());
 }
 
-/** ONE walk returning commands AND findings; calls no parser above it, or the recursion never ends. */
-function unwrapBodies(command: string, depth = 0): Unwrapped {
+/** ONE walk over the commands a body runs; calls no parser above it, or the recursion never ends. */
+function unwrapBodies(command: string, depth = 0): string[] {
   const commands: string[] = [];
-  let unparseable = false;
-  let interactive = false;
   const push = (cmd: string): void => {
     commands.push(cmd);
     commands.push(...perOperandCandidates(cmd));
@@ -272,8 +217,6 @@ function unwrapBodies(command: string, depth = 0): Unwrapped {
     push(seg);
     const body = interpreterBody(seg);
     if (body === null) continue;
-    if (body.kind === 'unparseable') unparseable = true;
-    if (body.kind === 'interactive') interactive = true;
     if (depth >= 3 || body.inline === null || body.inline.text.length === 0) continue;
     const deeper: string[] = [];
     if (body.inline.language === 'shell') deeper.push(body.inline.text);
@@ -283,15 +226,11 @@ function unwrapBodies(command: string, depth = 0): Unwrapped {
       // The literals JOINED as well: the argv form spells one command across several of them.
       if (literals.length > 1) deeper.push(literals.join(' '));
     }
-    for (const text of deeper) {
-      const below = unwrapBodies(text, depth + 1);
-      commands.push(...below.commands);
-      unparseable = unparseable || below.unparseable;
-      interactive = interactive || below.interactive;
-    }
+    for (const text of deeper) commands.push(...unwrapBodies(text, depth + 1));
   }
-  return { commands, unparseable, interactive };
+  return commands;
 }
+
 
 /**
  * Quoted runs in a non-shell body ARE the reach: crude, a missed one can be root.
@@ -331,7 +270,8 @@ export interface PrivilegedBody {
   readonly inline: { readonly language: 'shell' | 'code'; readonly text: string } | null;
 }
 
-/** A stream has no name to inspect on a card, so it is refused under every policy, `free` included. */
+/** A stream has no name the broker can read. */
+
 function isStreamName(word: string): boolean {
   const bare = word.replace(/^['"]|['"]$/g, '');
   return /^\/dev\/(std\w*|fd\/\d+|tty\w*)$/.test(bare);
@@ -491,77 +431,3 @@ function scanOneReading(src: string, mask: string): ScannedText {
 function quotedLiterals(text: string): string[] {
   return scanQuotedText(text).literals;
 }
-
-function parseInner(rest: string): { inner: string; interactiveShell: boolean; unparseable: boolean } {
-  if (isSudoLine(rest)) {
-    const again = parseSudo(rest);
-    return { inner: again.inner, interactiveShell: again.interactiveShell, unparseable: again.quotedOptionValue };
-  }
-  const found = unwrapBodies(rest);
-  return { inner: rest, interactiveShell: found.interactive, unparseable: found.unparseable };
-}
-
-function finish(rest: string, nonInteractive: boolean, quotedOptionValue: boolean): ParsedSudo {
-  const p = parseInner(rest);
-  return {
-    inner: p.inner,
-    interactiveShell: p.interactiveShell,
-    nonInteractive,
-    quotedOptionValue: quotedOptionValue || p.unparseable,
-  };
-}
-
-/**
- * THE DECISION; the ORDER is the property: inner re-authorized first, role wall next, policy last.
- * The sensitive scan is NOT re-run: it is position-independent and already sees inside a sudo line.
- * `gated` ALLOWS: its hold is filed upstream on the owner's card; a deny would refuse the retry.
- */
-export function authorizeSudoLine(
-  trimmed: string,
-  agentId: string,
-  // `reauthorize` is passed in: the broker imports this module, so importing it back would cycle.
-  reauthorize: (inner: string) => Verdict,
-): Verdict {
-  const parsed = parseSudo(trimmed);
-  if (parsed.interactiveShell || parsed.inner.length === 0) {
-    return deny('ladder-parity', 'sudo-interactive-shell', SUDO_INTERACTIVE_SHELL_REASON);
-  }
-  // FAIL CLOSED when the parse was defeated: a stray quote hides the inner command from a PREFIX floor.
-  if (parsed.quotedOptionValue) {
-    return deny('ladder-parity', 'sudo-unparseable-options', SUDO_UNPARSEABLE_REASON);
-  }
-  const inner = reauthorize(parsed.inner);
-  if (!inner.allowed) return inner;
-  // Role wall: a non-primary agent's sudo is refused under every policy; policy governs the primary only.
-  if (!isPrimaryAgent(agentId)) {
-    return deny('ladder-parity', 'sudo-not-primary', SUDO_NOT_PRIMARY_REASON);
-  }
-  const policy = getSudoPolicy();
-  if (policy === 'blocked') return deny('ladder-parity', 'sudo-policy:blocked', SUDO_BLOCKED_REASON);
-  return allow(`sudo-policy:${policy}(${inner.rule})`);
-}
-
-/** Approval needed only for `gated` plus a privileged line; `blocked` never reaches this point. */
-export function isSudoHoldRequired(toolName: string, args: Record<string, unknown>): boolean {
-  // String work first: this runs on every tool call; a throwing config read must not down the turn.
-  const raw = toolName === 'shell' || toolName === 'applescript_run' ? args.script
-    : Array.isArray(args.argv) ? (args.argv as unknown[]).join(' ')
-      : args.command;
-  if (!(typeof raw === 'string' && raw.length > 0)) return false;
-  // SEGMENTED: isSudoLine on the WHOLE script tests only its head word, and `true; sudo x` would run
-  // unseen. The SOUND FLOOR decides the hold unless the precise walk proves the mention inert.
-  if (mentionsAdminPrivileges(withoutDataBodies(raw))) return getSudoPolicy() === 'gated';
-  const segments = execSimpleCommands(raw.trim());
-  const privileged = segments.some((seg) => isSudoLine(seg));
-  if (!privileged) {
-    if (!mentionsPrivilegeToken(withoutDataBodies(raw))) return false;
-    if (privilegeTokenIsQuotedData(raw, segments)) return false;
-  }
-  // The policy decides, and an unreadable policy HOLDS rather than runs: a failed read must not run root.
-  try {
-    return getSudoPolicy() === 'gated';
-  } catch {
-    return true;
-  }
-}
-

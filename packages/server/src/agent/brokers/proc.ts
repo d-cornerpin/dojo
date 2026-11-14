@@ -1,6 +1,6 @@
 // THE PROCESS BROKER: the exec permission checks and the sensitive-file scan in one place, asked
 // of a resolved command. Refusals: the global exec deny on the WHOLE line before any construct is
-// unpacked (so it cannot hide in a for header; sudo is a per-box policy, not a floor item), the
+// unpacked (so it cannot hide in a for header; sudo is the main agent's alone, not a floor item), the
 // secrets.yaml substring (every spelling a file_write deny cannot see: tilde, absolute, $HOME,
 // basename, inside $() or backticks, either side of a redirect), the sensitive-file command scan.
 // Refusal text rides verbatim on the verdict: the agent loop keys retry off [BLOCKED]. Control
@@ -9,11 +9,12 @@
 
 import path from 'node:path';
 import { foldPath } from '../fs-case.js';
+import { ownsTheMac } from '../owns-the-mac.js';
 import { resolveHomePath as resolvePath } from '../path-resolve.js';
 import { GLOBAL_EXEC_DENY_SUBSTRINGS, containsSensitiveLocation, isSensitivePath } from './deny.js';
 import { lexShellLine, shellUnquoted } from './shell-words.js';
 import {
-  authorizeSudoLine, isSudoLine, mentionsPrivilegeToken, privilegeTokenIsQuotedData,
+  authorizePrivilege, isSudoLine, mentionsPrivilegeToken, privilegeTokenIsQuotedData,
   privilegedInnerCommands,
 } from './sudo-policy.js';
 import { SUDO_UNPLACEABLE_REASON } from './sudo-copy.js';
@@ -25,7 +26,7 @@ import type { ResolvedArgv, ResolvedCommand } from './resolve.js';
 import { allow, deny, type Verdict } from './types.js';
 
 /** Hard-coded, unoverridable, NOT a grant_rule row: the platform's floor. These three still bite
- *  inside a sudo line under every policy: the wrapper comes off and this pipeline re-runs first. */
+ *  inside a sudo line: the wrapper comes off and this pipeline re-runs first. */
 const GLOBAL_EXEC_DENY: readonly string[] = ['rm -rf /', 'rm -rf ~', 'chmod 777 *'];
 
 const SENSITIVE_FILE_READING_COMMANDS: ReadonlySet<string> = new Set<string>([
@@ -275,8 +276,8 @@ function authorizeOneCommand(grant: Grant, command: string, kind: 'proc' | 'shel
   const globals = globalExecDeny(trimmed);
   if (globals) return globals;
 
-  // SUDO: a transparent wrapper. Strip it, re-run THIS function over the inner command, policy last.
-  if (isSudoLine(trimmed)) return authorizeSudoLine(trimmed, grant.agentId, (i) => authorizeOneCommand(grant, i, kind));
+  // SUDO: the main agent's alone; the floor already read the inner command.
+  if (isSudoLine(trimmed)) return authorizePrivilege(grant.agentId);
 
   const baseCommand = trimmed.split(/\s+/)[0];
   const verdict = evaluateRules(grant, kind, (pattern, mode) =>
@@ -392,7 +393,7 @@ export function authorizeProc(
   // THE PRIVILEGE PASS, BEFORE the grant pass, over EVERY simple command the line contains.
   // 1. the sound floor: a privilege token anywhere in the RAW line, asked before any parse.
   // 2. the precise walk: simple commands from the shared grammar, wrappers unwrapped; a privileged
-  //    segment gets full sudo authorization; floor fired and walk placed nothing: UNPLACEABLE, refused.
+  //    segment meets the role wall; floor fired and walk placed nothing: UNPLACEABLE, refused to other agents.
   const segments = execSimpleCommands(resource.raw);
   const runs = execSimpleCommands(resource.raw, false);
   let privilegedSeen = false;
@@ -414,10 +415,11 @@ export function authorizeProc(
       const innerScan = commandReadsSensitiveFile(innerCommand);
       if (innerScan.blocked) return sensitiveReadDeny(innerScan.reason, 'bypass-hardening');
     }
-    const v = authorizeSudoLine(seg, grant.agentId, (i) => authorizeOneCommand(grant, i));
+    const v = authorizePrivilege(grant.agentId);
     if (!v.allowed) return v;
   }
-  if (!privilegedSeen && mentionsPrivilegeToken(withoutDataBodies(resource.raw))) {
+  if (!privilegedSeen && !ownsTheMac(grant.agentId) && mentionsPrivilegeToken(withoutDataBodies(resource.raw))) {
+
     // The token is in the line and no segment owns it: a substitution, a nested quote, an opaque
     // construct. HARMLESS DATA is the one exemption: quoted spans only, and no interpreter runs them.
     if (!privilegeTokenIsQuotedData(resource.raw, segments)) {

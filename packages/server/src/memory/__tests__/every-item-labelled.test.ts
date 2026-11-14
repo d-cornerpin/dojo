@@ -83,7 +83,7 @@ vi.mock('../compaction.js', async () => {
   };
 });
 vi.mock('../../config/platform.js', () => ({
-  clearPlatformConfigCache: vi.fn(), getSudoPolicyRaw: () => null, getPlatformName: () => 'Dojo',
+  clearPlatformConfigCache: vi.fn(), getPlatformName: () => 'Dojo',
   getOwnerName: () => 'TestUser', getPrimaryAgentId: () => 'primary', getPrimaryAgentName: () => 'Primary',
   getPMAgentId: () => 'pm', getPMAgentName: () => 'PM',
   getTrainerAgentId: () => 'trainer', getTrainerAgentName: () => 'Trainer',

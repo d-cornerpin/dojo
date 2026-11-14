@@ -12,7 +12,7 @@ let householdCache: string[] | null = null;
 function loadCache(): void {
   try {
     const db = getDb();
-    const rows = db.prepare("SELECT key, value FROM config WHERE key IN ('platform_name', 'owner_name', 'primary_agent_id', 'primary_agent_name', 'pm_agent_id', 'pm_agent_name', 'trainer_agent_id', 'trainer_agent_name', 'imaginer_agent_id', 'imaginer_agent_name', 'healer_agent_id', 'healer_agent_name', 'dreamer_agent_id', 'dreamer_agent_name', 'household_agent_ids', 'setup_completed', 'sudo_policy')").all() as Array<{ key: string; value: string }>;
+    const rows = db.prepare("SELECT key, value FROM config WHERE key IN ('platform_name', 'owner_name', 'primary_agent_id', 'primary_agent_name', 'pm_agent_id', 'pm_agent_name', 'trainer_agent_id', 'trainer_agent_name', 'imaginer_agent_id', 'imaginer_agent_name', 'healer_agent_id', 'healer_agent_name', 'dreamer_agent_id', 'dreamer_agent_name', 'household_agent_ids', 'setup_completed')").all() as Array<{ key: string; value: string }>;
     cache = {};
     for (const row of rows) {
       cache[row.key] = row.value;
@@ -34,15 +34,6 @@ export function clearPlatformConfigCache(): void {
   householdCache = null;
 }
 
-
-/**
- * The raw `sudo_policy` row, or null when never set. What the value means (an unrecognised one never
- * reads as `free`) is decided in agent/brokers/sudo-policy.ts, not here.
- */
-export function getSudoPolicyRaw(): string | null {
-  if (!cacheLoaded) loadCache();
-  return cache['sudo_policy'] ?? null;
-}
 
 
 /** The only default for the owner's name; ownerNameIsSet() tells this fallback from a real answer. */

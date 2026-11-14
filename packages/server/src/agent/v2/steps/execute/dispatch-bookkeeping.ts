@@ -1,14 +1,12 @@
-// The moment of dispatch: the tool-call broadcast, A2A send accounting, gate flags, and the sudo and
-// destructive-action holds. A held call comes back as `{ state, refusal }`, the refusal being its result.
+// The moment of dispatch: the tool-call broadcast, A2A send accounting, gate flags, and the other agents'
+// destructive-action hold. A held call comes back as `{ state, refusal }`, the refusal being its result.
 
 import { isHealerAgent, isPrimaryAgent } from '../../../../config/platform.js';
 import { broadcast } from '../../../../gateway/ws.js';
 import { fileHealerApprovalProposal, markHealerProposalAppliedBySignature, maybeAutoApproveHealerScratch, type EngineSeverity } from '../../../../healer/approval-routing.js';
 import { CLOSING_WORK_OPS, toolOpKey } from '../../../../tools/work-verbs.js';
 import { consumeApproval, isDestructiveCall, manifestPermitsDestructiveCall, requestApproval } from '../../../destructive-gate.js';
-import { getSudoPolicy, isSudoHoldRequired } from '../../../brokers/sudo-policy.js';
-import { sudoHeldRefusal, sudoOwnerCardCopy } from '../../../brokers/sudo-copy.js';
-import { execCallText } from '../../../brokers/exec-seam.js';
+
 import { isStructuringTool } from '../../classifiers/hoarding.js';
 import { canonicalToolSignature } from '../../classifiers/loop.js';
 import { advance, type AgentTurnState } from '../../state.js';
@@ -67,33 +65,9 @@ export async function recordDispatchAndHold(
   if (isStructuringTool(tc.name, tc.arguments)) {
     state = advance(state, { structuringToolCalledThisTurn: true });
   }
-  // The primary's sudo hold (policy `gated`): only the primary can sudo, so `gated` holds the primary.
-  // It goes to the human via `fileHealerApprovalProposal` (same token, signature, card, approval mint),
-  // never to the primary, which would approve its own call, and with its own words.
-  if (isPrimaryAgent(agentId) && isSudoHoldRequired(tc.name, tc.arguments as Record<string, unknown>)) {
-    const sig = canonicalToolSignature(tc.name, tc.arguments);
-    if (!consumeApproval(agentId, sig, JSON.stringify(tc.arguments ?? {}))) {
-      const nameRow = db.prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
-      const commandText = execCallText(tc.name, tc.arguments as Record<string, unknown>) ?? tc.name;
-      const held = await fileHealerApprovalProposal({
-        agentId, agentName: nameRow?.name ?? agentId, toolName: tc.name, signature: sig,
-        kind: 'sudo (box policy: gated)',
-        callDescription: commandText,
-        argsJson: JSON.stringify(tc.arguments ?? {}),
-        heldDirectDestructiveCall: true,
-        copy: sudoOwnerCardCopy(commandText),
-        // The refusal names the policy it read and the card, so the held agent can say what is possible.
-        agentRefusal: sudoHeldRefusal(commandText, getSudoPolicy()),
-      });
-      try {
-        broadcast({ type: 'chat:tool_result', agentId, tool: tc.name, result: held.refusal.slice(0, 500) });
-      } catch { /* best effort */ }
-      return { state, refusal: { toolCallId: tc.id, name: tc.name, content: held.refusal, isError: !held.queued } };
-    }
-  }
-
   // Every non-primary agent's destructive call is engine-held pending approval (one-shot, signature-bound,
-  // 60-min expiry): prose cannot hold this line. The primary is exempt except for sudo, above.
+  // 60-min expiry): prose cannot hold this line. The primary is exempt.
+
   if (!isPrimaryAgent(agentId)) {
     // The caller is passed so the Healer's writes to owner identity/config paths classify as destructive.
     const destructiveKind = isDestructiveCall(tc.name, tc.arguments as Record<string, unknown>, agentId);

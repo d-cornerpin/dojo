@@ -2,21 +2,18 @@
 // An unquoted terminator lets the shell run `$( )` and backticks in the body, so those commands are
 // still asked. Only a body an inert program writes to a file skips the floor, the deny rows and sudo. Driven through the exec seam.
 
-import { afterEach, describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 
 vi.mock('../../../db/connection.js', () => ({
   getDb: () => ({ prepare: () => ({ run: () => ({ changes: 0 }), get: () => undefined, all: () => [] }) }),
 }));
-const policy = vi.hoisted(() => ({ current: 'free' }));
 vi.mock('../../../config/platform.js', async (orig) => ({
   ...(await orig<typeof import('../../../config/platform.js')>()),
-  getSudoPolicyRaw: () => policy.current,
   isPrimaryAgent: (id: string) => id === 'agent-all',
 }));
 
 const { authorizeExecShapedCall } = await import('../exec-seam.js');
 const { grantForManifest } = await import('../grants.js');
-const { isSudoHoldRequired } = await import('../sudo-policy.js');
 
 const g = grantForManifest('agent-rules', {
   file_read: '*', file_write: 'none', file_delete: 'none', exec_allow: ['cat', 'cat *', 'sqlite3 *'], exec_deny: [],
@@ -51,7 +48,6 @@ describe('a heredoc body is data', () => {
     `cat > /tmp/p <<'EOF'\n$(${body})\nEOF\nread -r x < /tmp/p; echo \${(e)x}`, `cat > /tmp/f <<'EOF'\n${body}\nEOF\nrg --pre sh x /tmp/f`,
     `cat > /tmp/bin/rg <<'EOF'\n${body}\nEOF\nrg x`, `cat > /tmp/f <<'EOF'\n${body}\nEOF\n[[ -n x ]]`,
   ];
-  afterEach(() => { policy.current = 'free'; });
   const worker = grantForManifest('agent-worker', {
     file_read: '*', file_write: '*', file_delete: '*', exec_allow: ['*'], exec_deny: [],
     network_domains: '*', max_processes: 1, can_spawn_agents: false, can_assign_permissions: false, system_control: [],
@@ -85,18 +81,9 @@ describe('a heredoc body is data', () => {
     expect(authorizeExecShapedCall(curl, 'shell', "cat > /dev/stdout <<'EOF'\ncurl x\nEOF").allowed).toBe(false);
   });
 
-  it('a gated primary is held for a sudo body the line goes on to use', () => {
-    policy.current = 'gated';
-    for (const script of afterTheWrite('sudo -n true')) expect(isSudoHoldRequired('shell', { script }), script).toBe(true);
-  });
-
-  it('a sudo line in a data body is admitted without a hold, and a real one after the body is placed', () => {
+  it('a sudo line in a data body is admitted', () => {
     const write = "cat > /tmp/s.sh <<'EOF'\nsudo apt update\nEOF";
     expect(authorizeExecShapedCall(all(), 'shell', write).allowed).toBe(true);
-    policy.current = 'gated';
-    expect(authorizeExecShapedCall(all(), 'shell', write).allowed).toBe(true);
-    expect(isSudoHoldRequired('shell', { script: write })).toBe(false);
-    expect(isSudoHoldRequired('shell', { script: `${write}\nsh /tmp/s.sh` })).toBe(true);
     const v = shell("cat > /tmp/s.sh <<'EOF'\nsudo apt update\nEOF");
     expect(v.allowed ? '' : v.reason).not.toContain('is not allowed');
     expect(authorizeExecShapedCall(all(), 'shell', "cat > n <<'EOF'\nIt's\nEOF\nsudo -n true").allowed).toBe(true);

@@ -113,7 +113,6 @@ vi.mock('../job-continuation.js', async () => {
 });
 vi.mock('../../config/platform.js', () => ({
   clearPlatformConfigCache: vi.fn(),
-  getSudoPolicyRaw: () => null,
   getPlatformName: () => 'Dojo',
   getOwnerName: () => 'TestOwner',
   getPrimaryAgentId: () => 'primary',

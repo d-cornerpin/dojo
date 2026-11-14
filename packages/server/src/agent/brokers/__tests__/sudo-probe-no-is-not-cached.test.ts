@@ -12,19 +12,11 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
-/** The policy the broker will read. Set per clause; the accessor is mocked at the config seam so
- *  these clauses need no database. */
-const policyRow: { current: string | null } = { current: null };
-
 /** Which agent id counts as the primary. The role wall reads this. */
 const PRIMARY = 'primary-agent';
 
 vi.mock('../../../config/platform.js', async (orig) => ({
   ...(await orig<typeof import('../../../config/platform.js')>()),
-  getSudoPolicyRaw: () => {
-    if (policyRow.current === '__throw__') throw new Error('config unavailable');
-    return policyRow.current;
-  },
   isPrimaryAgent: (id: string) => id === PRIMARY,
 }));
 
@@ -48,7 +40,6 @@ function setProbeResults() {
 
 describe('sudo-probe — a "no" is never cached', () => {
   beforeEach(() => {
-    policyRow.current = 'gated';
     execFileMock.mockReset();
     resetSudoProbeCache();
   });
@@ -76,13 +67,6 @@ describe('sudo-probe — a "no" is never cached', () => {
   it('a non-sudo line never probes at all', async () => {
     setProbeResults();
     expect(await sudoWouldHang('ls -la')).toBeNull();
-    expect(execFileMock).not.toHaveBeenCalled();
-  });
-
-  it('under the blocked policy a sudo line never probes', async () => {
-    policyRow.current = 'blocked';
-    setProbeResults();
-    expect(await sudoWouldHang('sudo ls')).toBeNull();
     expect(execFileMock).not.toHaveBeenCalled();
   });
 });

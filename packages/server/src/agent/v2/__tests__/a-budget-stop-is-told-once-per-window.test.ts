@@ -189,7 +189,6 @@ vi.mock('../../../config/platform.js', () => ({
   // test import has to be here. `getSudoPolicyRaw` arrived with the sudo policy (v3.2.2); without
   // it the import is `undefined`, calling it throws inside the dispatch step, and the turn dies —
   // which is exactly how it presented: 39 failures in this file from one missing line.
-  getSudoPolicyRaw: () => null,
   getPlatformName: () => 'Dojo',
   getOwnerName: () => 'TestUser',
   getPrimaryAgentId: () => 'primary',

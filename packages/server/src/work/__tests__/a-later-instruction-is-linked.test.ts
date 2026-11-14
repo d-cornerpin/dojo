@@ -124,7 +124,6 @@ vi.mock('../../memory/assembler.js', () => ({
 }));
 vi.mock('../../config/platform.js', () => ({
   clearPlatformConfigCache: vi.fn(),
-  getSudoPolicyRaw: () => null,
   getPlatformName: () => 'Dojo',
   getOwnerName: () => 'TestOwner',
   getPrimaryAgentId: () => 'primary',

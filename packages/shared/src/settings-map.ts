@@ -32,7 +32,6 @@ export const SETTINGS_CARDS = {
   musicGeneration: { tab: 'models', title: 'Music Generation Model' },
   transcription: { tab: 'models', title: 'Transcription Model' },
   yourMailboxes: { tab: 'profile', title: 'Your Mailboxes' },
-  sudoPolicy: { tab: 'security', title: 'Administrator privileges' },
   healing: { tab: 'sensei', title: 'Healing' },
   imessage: { tab: 'channels', title: 'iMessage Bridge' },
   twilio: { tab: 'channels', title: 'Twilio' },

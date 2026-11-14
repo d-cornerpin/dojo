@@ -27,7 +27,7 @@ const SRC = fileURLToPath(new URL('../../', import.meta.url));
 
 const GATES = [
   'agent/destructive-gate.ts', 'agent/approval-decision.ts',
-  'agent/brokers/sudo-policy.ts', 'agent/brokers/sudo-claim.ts', 'agent/brokers/sudo-probe.ts',
+  'agent/brokers/sudo-policy.ts', 'agent/brokers/sudo-probe.ts',
   'agent/permissions.ts', 'agent/brokers/deny.ts', 'agent/brokers/grants.ts', 'agent/brokers/fs.ts', 'agent/brokers/net.ts', 'agent/brokers/proc.ts',
   'agent/net-guard.ts', 'agent/path-guards.ts', 'vault/credential-gate.ts', 'services/imessage-commands.ts',
   'services/gmail-watcher.ts', 'services/outlook-watcher.ts', 'agent/tools/cat/agents.ts',

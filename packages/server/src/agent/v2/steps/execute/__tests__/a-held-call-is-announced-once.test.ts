@@ -9,9 +9,9 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
 const mockDb = { current: null as Database.Database | null };
-const policyRow = { current: 'gated' as string | null };
 const sent: Array<{ type: string; tool?: string }> = [];
 const PRIMARY = 'primary-agent';
+const HEALER = 'healer-agent';
 
 vi.mock('../../../../../db/connection.js', () => ({
   getDb: () => {
@@ -21,8 +21,8 @@ vi.mock('../../../../../db/connection.js', () => ({
 }));
 vi.mock('../../../../../config/platform.js', async (orig) => ({
   ...(await orig<typeof import('../../../../../config/platform.js')>()),
-  getSudoPolicyRaw: () => policyRow.current,
   isPrimaryAgent: (id: string) => id === PRIMARY,
+  isHealerAgent: (id: string) => id === HEALER,
   getPrimaryAgentId: () => PRIMARY,
 }));
 vi.mock('../../../../../gateway/ws.js', async (orig) => ({
@@ -49,31 +49,30 @@ beforeEach(() => {
       wake_delivered INTEGER DEFAULT 0, created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
-    CREATE TABLE agents (id TEXT PRIMARY KEY, name TEXT);
+    CREATE TABLE agents (id TEXT PRIMARY KEY, name TEXT, permissions TEXT, spawn_depth INTEGER, created_by TEXT);
     CREATE TABLE healer_diagnostics (id TEXT PRIMARY KEY, critical_count INTEGER, created_at TEXT);
   `);
-  db.prepare("INSERT INTO agents (id, name) VALUES (?, 'Primary')").run(PRIMARY);
+  db.prepare("INSERT INTO agents (id, name, permissions, spawn_depth, created_by) VALUES (?, 'Healer', ?, 1, 'system')").run(HEALER, JSON.stringify({ exec_allow: ['*'], shell_allow: ['*'] }));
   mockDb.current = db;
-  policyRow.current = 'gated';
   sent.length = 0;
 });
 
 const held = async () => {
   const state = initState({
-    agentId: PRIMARY, contextWindow: 200_000, isAutoRouted: false, configuredModelId: 'test',
+    agentId: HEALER, contextWindow: 200_000, isAutoRouted: false, configuredModelId: 'test',
     turnNumber: 1, triggeredByIMessage: false, triggeredByA2AReplyIntent: null,
     lastUserMessageContent: null, lastUserMessageId: null, inboundChannel: null,
     inboundContext: null, pendingTechniqueAck: null,
   });
   return recordDispatchAndHold(
     state,
-    ({ id: 'tc-1', name: 'shell', arguments: { script: 'sudo whoami' } } as never),
-    ({ agentId: PRIMARY, db: mockDb.current, agent: { name: 'Primary' } } as never),
+    ({ id: 'tc-1', name: 'shell', arguments: { script: 'rm ~/Documents/old-notes.txt' } } as never),
+    ({ agentId: HEALER, db: mockDb.current, agent: { name: 'Healer' } } as never),
   );
 };
 
 describe('a held call is announced once', () => {
-  it('⚠ the held sudo call is announced with exactly ONE chat:tool_call', async () => {
+  it('⚠ the held destructive call is announced with exactly ONE chat:tool_call', async () => {
     const out = await held();
     expect(out.refusal).not.toBeNull();
     expect(sent.filter((e) => e.type === 'chat:tool_call' && e.tool === 'shell').length).toBe(1);

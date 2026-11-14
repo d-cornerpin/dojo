@@ -3,7 +3,7 @@
 import { execFile } from 'node:child_process';
 import os from 'node:os';
 import { createLogger } from '../../logger.js';
-import { getSudoPolicy, isSudoLine } from './sudo-policy.js';
+import { isSudoLine } from './sudo-policy.js';
 import { SUDO_PROBE_TIMEOUT_MS, sudoPasswordPromptMessage } from './sudo-copy.js';
 
 const logger = createLogger('sudo-probe');
@@ -26,17 +26,16 @@ async function probePasswordless(): Promise<boolean> {
   });
 }
 
-/** The message to return instead of running a hanging sudo line; null = carry on, `blocked` never execs. */
+/** The message to return instead of running a hanging sudo line; null = carry on. */
 export async function sudoWouldHang(command: string): Promise<string | null> {
   const trimmed = command.trim();
   if (!isSudoLine(trimmed) && !/(^|[\s;&|(])sudo\s/.test(trimmed)) return null;
-  const policy = getSudoPolicy();
-  if (policy === 'blocked') return null;
   if (passwordless !== true) {
     const probe = await probePasswordless();
     if (probe) passwordless = true;
-    logger.info('sudo passwordless probe', { passwordless: probe, policy });
+    logger.info('sudo passwordless probe', { passwordless: probe });
   }
   if (passwordless) return null;
-  return sudoPasswordPromptMessage(os.userInfo().username, policy);
+  return sudoPasswordPromptMessage(os.userInfo().username);
+
 }

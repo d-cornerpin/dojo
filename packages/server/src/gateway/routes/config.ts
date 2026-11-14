@@ -2269,7 +2269,7 @@ configRouter.put('/settings/:key', async (c) => {
 
   if (key === 'router.context_window') await (await import('../../agent/v2/honest-stop-lock.js')).noteModelsChanged();   // the router window changed; no-fit locks get another look
 
-  const platformKeys = ['platform_name', 'owner_name', 'primary_agent_id', 'primary_agent_name', 'pm_agent_id', 'pm_agent_name', 'trainer_agent_id', 'trainer_agent_name', 'imaginer_agent_id', 'imaginer_agent_name', 'setup_completed', 'sudo_policy'];
+  const platformKeys = ['platform_name', 'owner_name', 'primary_agent_id', 'primary_agent_name', 'pm_agent_id', 'pm_agent_name', 'trainer_agent_id', 'trainer_agent_name', 'imaginer_agent_id', 'imaginer_agent_name', 'setup_completed'];
   if (platformKeys.includes(key)) {
     const { clearPlatformConfigCache } = await import('../../config/platform.js');
     clearPlatformConfigCache();

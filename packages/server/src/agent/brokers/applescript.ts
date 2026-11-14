@@ -1,7 +1,7 @@
 
 import { evaluateRules, type Grant } from './grants.js';
 import { commandReadsSensitiveFile, globalExecDeny, authorizeShellCommandText } from './proc.js';
-import { authorizeAdminPrivilegeRequest, mentionsAdminPrivileges } from './sudo-policy.js';
+import { authorizePrivilege, mentionsAdminPrivileges } from './sudo-policy.js';
 import type { ResolvedCommand } from './resolve.js';
 import { allow, deny, type Verdict } from './types.js';
 
@@ -15,9 +15,10 @@ export function authorizeAppleScript(grant: Grant, script: ResolvedCommand): Ver
   if (globals) return globals;
 
   // "do shell script ... with administrator privileges" is macOS root with no
-  // sudo token, so it answers to the same admin privilege policy as sudo.
+  // sudo token, so it answers to the same role wall as sudo.
   if (mentionsAdminPrivileges(script.raw)) {
-    const verdict = authorizeAdminPrivilegeRequest(grant.agentId);
+    const verdict = authorizePrivilege(grant.agentId);
+
     if (!verdict.allowed) return verdict;
   }
 

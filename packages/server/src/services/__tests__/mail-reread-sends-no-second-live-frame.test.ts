@@ -51,7 +51,7 @@ vi.mock('../../agent/v2/inbound-channel.js', async () => {
 });
 vi.mock('../../agent/runtime.js', () => ({ getAgentRuntime: () => ({ handleMessage: async () => undefined }) }));
 vi.mock('../../config/platform.js', () => ({
-  clearPlatformConfigCache: vi.fn(), getSudoPolicyRaw: () => null, getPlatformName: () => 'Dojo',
+  clearPlatformConfigCache: vi.fn(), getPlatformName: () => 'Dojo',
   getOwnerName: () => 'Test Owner', getPrimaryAgentId: () => 'primary', getPrimaryAgentName: () => 'Primary',
   getPMAgentId: () => 'pm', getPMAgentName: () => 'PM',
   getTrainerAgentId: () => 'trainer', getTrainerAgentName: () => 'Trainer',

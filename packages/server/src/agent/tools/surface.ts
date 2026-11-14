@@ -4,7 +4,7 @@
 
 import type { ToolDefinition } from './types.js';
 import { getDb } from '../../db/connection.js';
-import { getAgentPermissions } from '../manifest.js'; // the DECLARING manifest module; sudo-claim.ts reads this same one, per the shared-manifest test
+import { getAgentPermissions } from '../manifest.js';
 import { toolGrantsFor, toolCategoryGranted, mayUsePlaud, holdsCredentialGrant, integrationLevelFor, mayUseChannel } from '../access/read.js';
 import { channelForTool } from '../access/channels.js';
 import { PRIMARY_ONLY_TOOLS } from './gates.js';
@@ -12,9 +12,7 @@ import { agentCanSelfComplete } from './util.js';
 import { holdsDojoInspect, DOJO_INSPECT } from '../../inspect/grant.js';
 import { toolDefinitions } from './definitions.js';
 import { isPrimaryAgent, isPMAgent } from '../../config/platform.js';
-import { getSudoPolicy } from '../brokers/sudo-policy.js';
-import { agentMayRunAdminCommands, adminCommandsToolSentence } from '../brokers/sudo-claim.js';
-import type { SudoPolicy } from '../brokers/sudo-copy.js';
+
 import { getToolConfigGeneration } from '../tool-config-generation.js';
 import { pdfToolDefinitions } from '../pdf-tools.js';
 import { googleReadToolDefinitions } from '../../google/tools-read.js';
@@ -54,7 +52,7 @@ const FILTERED_TOOLS_CACHE_MAX = 512;
 
 /** ONE SELECT of everything AGENT-SPECIFIC getFilteredTools consumes: manifest source, tools
  * policy/group/lifecycle columns and primary/PM identity; any change flips the memo's key. */
-function computeAgentToolFingerprint(agentId: string, sudoPolicy: string): string {
+function computeAgentToolFingerprint(agentId: string): string {
   const primary = isPrimaryAgent(agentId) ? '1' : '0';
   const pm = isPMAgent(agentId) ? '1' : '0';
   const row = getDb()
@@ -68,11 +66,10 @@ function computeAgentToolFingerprint(agentId: string, sudoPolicy: string): strin
       classification: string | null;
       task_id: string | null;
     } | undefined;
-  if (!row) return `none\x00${primary}\x00${pm}\x00${sudoPolicy}`;
+  if (!row) return `none\x00${primary}\x00${pm}`;
   return [
     primary,
     pm,
-    sudoPolicy,
     row.permissions ?? '',
     row.spawn_depth ?? '',
     row.created_by ?? '',
@@ -85,15 +82,12 @@ function computeAgentToolFingerprint(agentId: string, sudoPolicy: string): strin
 
 export function getFilteredTools(agentId: string): ToolDefinition[] {
   const generation = getToolConfigGeneration();
-  // ONE policy read for both the cache key and the computed value: two reads could straddle a
-  // flip and store the NEW text under the OLD key, a stale description nothing invalidates.
-  const sudoPolicy = getSudoPolicy();
-  const fingerprint = computeAgentToolFingerprint(agentId, sudoPolicy);
+  const fingerprint = computeAgentToolFingerprint(agentId);
   const cached = filteredToolsCache.get(agentId);
   if (cached && cached.generation === generation && cached.fingerprint === fingerprint) {
     return cached.tools;
   }
-  const tools = computeFilteredTools(agentId, sudoPolicy);
+  const tools = computeFilteredTools(agentId);
   // Callers treat the list as read-only (audited); freeze outside production so a future
   // in-place mutation of the shared cached array trips loudly, not silently for every agent.
   if (process.env.NODE_ENV !== 'production') Object.freeze(tools);
@@ -119,8 +113,8 @@ const agentDenySetCache = new Map<string, DenySetCacheEntry>();
 
 export function getAgentDenySet(agentId: string): Set<string> {
   const generation = getToolConfigGeneration();
-  // A FIXED sentinel, not a policy read: deny sets hold tool NAMES the policy can never change.
-  const fingerprint = computeAgentToolFingerprint(agentId, 'deny-set');
+  const fingerprint = computeAgentToolFingerprint(agentId);
+
   const cached = agentDenySetCache.get(agentId);
   if (cached && cached.generation === generation && cached.fingerprint === fingerprint) {
     return cached.deny;
@@ -136,7 +130,7 @@ export function getAgentDenySet(agentId: string): Set<string> {
 }
 
 
-function computeFilteredTools(agentId: string, sudoPolicy: SudoPolicy): ToolDefinition[] {
+function computeFilteredTools(agentId: string): ToolDefinition[] {
   const manifest = getAgentPermissions(agentId);
 
   const db = getDb();
@@ -215,12 +209,7 @@ function computeFilteredTools(agentId: string, sudoPolicy: SudoPolicy): ToolDefi
   }
 
   // Permission-aware descriptions carry the agent's real limits so it does not retry a blocked
-  // command 20 times. THE SUDO DOOR IS PART OF THE TRUTH: a model believes its tools, so told that
-  // other commands are blocked it never issues the call. The door and its words live in
-  // brokers/sudo-claim.ts, which the soul capability register also reads: one predicate, two renderings.
-  const mayRunAdminCommands = agentMayRunAdminCommands(agentId, sudoPolicy);
-  const sudoDoorSentence = (finiteList: boolean): string =>
-    (mayRunAdminCommands ? adminCommandsToolSentence(sudoPolicy, finiteList) : '');
+  // command 20 times.
   if (hasExec && manifest.exec_allow[0] !== '*') {
     const allowedCmds = manifest.exec_allow.join(', ');
     // Only suggest complete_task(status="blocked") to agents that can actually self-complete.
@@ -231,24 +220,9 @@ function computeFilteredTools(agentId: string, sudoPolicy: SudoPolicy): ToolDefi
       if (t.name !== 'exec') return t;
       return {
         ...t,
-        description: `Execute a shell command. You can ONLY run these commands: ${allowedCmds}. Any other command will be blocked.${sudoDoorSentence(true)} If you need a command that's not in this list, ${blockedHint}. Has a 30-second timeout.`,
+        description: `Execute a shell command. You can ONLY run these commands: ${allowedCmds}. Any other command will be blocked. If you need a command that's not in this list, ${blockedHint}. Has a 30-second timeout.`,
       };
     });
-  } else if (hasExec && sudoDoorSentence(false) !== '') {
-    // DEFAULT primary manifest is exec_allow ['*']: the branch above never runs, door sentence appended.
-    filtered = filtered.map(t => (t.name === 'exec'
-      ? { ...t, description: `${t.description}${sudoDoorSentence(false)}` }
-      : t));
-  }
-  {
-    // `shell` is the other road a sudo line travels (authorizeShellScript): same door sentence.
-    const shellFinite = ((manifest.shell_allow ?? manifest.exec_allow)[0] ?? '*') !== '*';
-    const shellSentence = sudoDoorSentence(shellFinite);
-    if (shellSentence !== '') {
-      filtered = filtered.map(t => (t.name === 'shell'
-        ? { ...t, description: `${t.description}${shellSentence}` }
-        : t));
-    }
   }
 
   if (hasFileRead && manifest.file_read !== '*' && Array.isArray(manifest.file_read)) {

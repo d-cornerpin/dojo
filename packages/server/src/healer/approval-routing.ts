@@ -185,10 +185,7 @@ export interface FileHealerApprovalInput {
   callDescription: string;
   /** True for a live gate hold; recorded only, routing uses engine severity plus presence. */
   heldDirectDestructiveCall: boolean;
-  /** Owner-facing wording override; routing, token and approval mint stay generic. Absent means Healer copy. */
-  copy?: { title: string; description: string; proposedFix: string; evidence: readonly string[] };
-  /** Agent-facing refusal override, same split as `copy`; absent means the generic text below. */
-  agentRefusal?: string;
+
   engineSeverity?: EngineSeverity | null;
   // Full argument JSON of the held call (exact-call contract).
   argsJson?: string | null;
@@ -235,16 +232,16 @@ export async function fileHealerApprovalProposal(
   // Severity is the Vitals badge tone: red for the texted class, amber for a quiet consent. Copy is
   // engine-fixed plain language (never model-authored); the raw command rides in proposed_fix.
   const severity = routing.surface === 'imessage' ? 'critical' : 'warning';
-  const title = input.copy?.title ?? 'A cleanup change is waiting for your OK';
-  const description = input.copy?.description ??
+  const title = 'A cleanup change is waiting for your OK';
+  const description =
     'Your self-healing helper wants to delete or change something outside its ' +
     'normal temporary work area, so it paused and is checking with you first. ' +
     'Nothing has been changed yet. If you decline, nothing happens and everything ' +
     'stays exactly as it is. If you are not sure, it is safe to decline; you can ' +
     'always ask for it again later. My suggestion: approve it only if you recognize ' +
     'this as something you asked for.';
-  const proposedFix = input.copy?.proposedFix ?? `Run this action: ${input.callDescription}`;
-  const evidence = JSON.stringify(input.copy?.evidence ?? [
+  const proposedFix = `Run this action: ${input.callDescription}`;
+  const evidence = JSON.stringify([
     'It paused on its own because this kind of change can delete or overwrite files.',
     'Nothing will happen unless you approve it. Declining leaves everything as it is.',
   ]);
@@ -314,8 +311,9 @@ export async function fileHealerApprovalProposal(
 
   // A NON-error "queued" result so the turn continues: tell the agent to move on, not wait. If the owner
   // approves, the engine brings the exact call back through the post-approval kick and consume-once retry.
-  const refusal = input.agentRefusal ??
-    `[Queued for the owner] This ${input.kind} could delete or overwrite something, so it is ` +
+  const refusal =
+    `[Queued
+ for the owner] This ${input.kind} could delete or overwrite something, so it is ` +
     `now waiting in the Healer section of the owner's dashboard for a yes or no. This is not an ` +
     `error and nothing is blocked. Do NOT retry it, do NOT wait on it, and do NOT try another ` +
     `way around it. Move on to your other work or finish your turn. If the owner approves it ` +

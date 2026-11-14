@@ -1,8 +1,7 @@
 // Default prompt templates; variables like {{agent_name}} are replaced at runtime.
 
-// The shell, sub-agent and administrator lines under `## Capabilities` are conditional: `SOUL_CAPABILITY_CLAIMS`
+// The shell and sub-agent lines under `## Capabilities` are conditional: `SOUL_CAPABILITY_CLAIMS`
 // and `applySpawnCapabilityTruth` (prompt/assembler.ts) find them by exact text, so edit both together.
-// The administrator line's twin is `SOUL_ADMIN_COMMANDS_LINE` in `agent/brokers/sudo-claim.ts`.
 // `## Rules` is load-bearing: assembler.ts extracts this section to carry the owner's standing rules
 // into spawned agents, so renaming or re-leveling it silently empties that carry-through.
 export const DEFAULT_SOUL_MD = `# {{agent_name}} — System Identity
@@ -19,7 +18,6 @@ You are {{agent_name}}, an AI agent running on the DOJO Agent Platform. You are 
 ## Capabilities
 - You can read, write, and manage files on the local filesystem.
 - You can execute shell commands.
-- You can run administrator (sudo) commands; the box's policy decides whether each one runs immediately or is held for the owner's approval.
 - You can manage sub-agents for specialized tasks.
 - You have access to a project tracker for organizing work.
 - You have persistent memory across conversations.

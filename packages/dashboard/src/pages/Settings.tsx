@@ -5,10 +5,6 @@ import type { Provider, Model, GenerationParamSpec, VoiceOption, EditProviderReq
 import { fullDiskAccessInstructions, fullDiskAccessWhy, FULL_DISK_ACCESS_VERIFY } from '@dojo/shared';
 import * as api from '../lib/api';
 import {
-  SUDO_FLOOR_NOTE, SUDO_POLICY_DEFAULT, SUDO_POLICY_HINTS, SUDO_POLICY_KEY, SUDO_POLICY_LABELS,
-  SUDO_POLICY_ORDER, readSudoPolicy, sudoPolicyWarning, type SudoPolicy,
-} from '../lib/sudo-policy';
-import {
   numberEditsFor, numInput,
   THROUGHPUT_MIN_TOK_PER_SEC, THROUGHPUT_MAX_TOK_PER_SEC,
 } from '../lib/provider-edits';
@@ -40,7 +36,7 @@ import { ProvidersTab } from '../components/settings/ProvidersTab';
 import { ModelsTab } from '../components/settings/ModelsTab';
 import { ProfileTab } from '../components/settings/ProfileTab';
 import { RouterTab } from '../components/settings/RouterTab';
-import { SecurityTab, SudoPolicyCard } from '../components/settings/SecurityTab';
+import { SecurityTab } from '../components/settings/SecurityTab';
 import { DreamingTab } from '../components/settings/DreamingTab';
 import { UpdateTab } from '../components/settings/UpdateTab';
 import { VoiceTab } from '../components/settings/VoiceTab';
@@ -131,7 +127,7 @@ export const Settings = () => {
       {activeTab === 'models' && <ModelsTab />}
       {activeTab === 'router' && <RouterTab />}
       {activeTab === 'profile' && <ProfileTab />}
-      {activeTab === 'security' && <><SudoPolicyCard /><SecurityTab /></>}
+      {activeTab === 'security' && <SecurityTab />}
       {activeTab === 'sensei' && <DreamingTab />}
       {activeTab === 'channels' && (
         <>
