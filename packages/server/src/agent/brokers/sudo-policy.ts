@@ -2,7 +2,7 @@
 // Safety: strip sudo, re-authorize the INNER command fully, then apply policy; grants are never widened.
 
 import { getSudoPolicyRaw, isPrimaryAgent } from '../../config/platform.js';
-import { INERT_PROGRAMS, SHELL_INTERPRETERS, commandWords, execSimpleCommands } from '../exec-grammar.js';
+import { INERT_PROGRAMS, SHELL_INTERPRETERS, commandWords, execSimpleCommands, withoutDataBodies } from '../exec-grammar.js';
 // types.js is a leaf; proc.ts imports THIS module, so the verdict helpers come from the leaf, not proc.
 import { allow, deny, type Verdict } from './types.js';
 import {
@@ -550,11 +550,11 @@ export function isSudoHoldRequired(toolName: string, args: Record<string, unknow
   if (!(typeof raw === 'string' && raw.length > 0)) return false;
   // SEGMENTED: isSudoLine on the WHOLE script tests only its head word, and `true; sudo x` would run
   // unseen. The SOUND FLOOR decides the hold unless the precise walk proves the mention inert.
-  if (mentionsAdminPrivileges(raw)) return getSudoPolicy() === 'gated';
+  if (mentionsAdminPrivileges(withoutDataBodies(raw))) return getSudoPolicy() === 'gated';
   const segments = execSimpleCommands(raw.trim());
   const privileged = segments.some((seg) => isSudoLine(seg));
   if (!privileged) {
-    if (!mentionsPrivilegeToken(raw)) return false;
+    if (!mentionsPrivilegeToken(withoutDataBodies(raw))) return false;
     if (privilegeTokenIsQuotedData(raw, segments)) return false;
   }
   // The policy decides, and an unreadable policy HOLDS rather than runs: a failed read must not run root.

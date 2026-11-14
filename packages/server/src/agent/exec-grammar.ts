@@ -57,37 +57,28 @@ function scanParens(line: string, i: number): number {
 
 const HEREDOC_RE = /^<<(-?)[ \t]*(['"]?)([\w.-]+)\2(?=[ \t\n;&|<>()]|$)/;
 
-/** A body the floor may skip: its segment's program is inert and writes stdout to a file, piped nowhere. */
-function inertToFile(toks: Tok[], at: number, cur: string): boolean {
-  const seg = toks.slice(toks.slice(0, at).map((t) => t.op).lastIndexOf(true) + 1);
-  const end = seg.findIndex((t) => t.op);
-  const words = [...(end < 0 ? seg : seg.slice(0, end)), ...(end < 0 && cur ? [{ text: cur, op: false }] : [])];
-  const toFile = words.some((w, n) => /^1?>[>|]?$/.test(w.text) ? /^[^&(]/.test(words[n + 1]?.text ?? '&') : /^1?>[>|]?[^>&(|]/.test(w.text));
-  return toFile && INERT_PROGRAMS.has(segmentCommand(words)?.split(' ')[0] ?? '') && !['|', '|&', '('].includes(seg[end]?.text ?? '');
-}
-
 /** Words and separators; quoted spans, `$( )`, `${ }`, `(( ))` ride verbatim and a `#` word comments out its line. A here-document
- *  body is cut out and returned to be read on its own when unquoted with `$( )` or a backtick, or (`cutBodies` off) not `inertToFile`. */
-function tokenize(line: string, cutBodies = true): { toks: Tok[]; text: string; bodies: string[] } {
+ *  body is cut out and returned to be read on its own when unquoted with `$( )` or a backtick, or not `data`. */
+function tokenize(line: string, data = true): { toks: Tok[]; text: string; bodies: string[] } {
   const toks: Tok[] = [];
   let cur = '';
   let i = 0;
   let rawEnd = false;
   const flushWord = (): void => { if (cur) { toks.push({ text: cur, op: false }); cur = ''; } };
-  const heredocs: Array<[RegExpExecArray, number]> = [];
+  const heredocs: RegExpExecArray[] = [];
   const bodies: string[] = [];
 
   while (i < line.length) {
     const c = line[i];
-    if (c === '<' && !line.includes("$'") && line[i - 1] !== '<') { const h = HEREDOC_RE.exec(line.slice(i)); if (h) heredocs.push([h, toks.length]); }
+    if (c === '<' && !line.includes("$'") && line[i - 1] !== '<') { const h = HEREDOC_RE.exec(line.slice(i)); if (h) heredocs.push(h); }
     if (c === '\n' && heredocs.length > 0) {
       const rest = line.slice(i + 1).split('\n');
       let k = 0;
-      for (const [[, dash, quote, delim], at] of heredocs.splice(0)) {
+      for (const [, dash, quote, delim] of heredocs.splice(0)) {
         const first = k;
         while (k < rest.length && (dash ? rest[k].replace(/^\t+/, '') : rest[k]) !== delim) k++;
         const body = rest.slice(first, k++).join('\n');
-        if ((quote === '' && /\$\(|`/.test(body)) || !(cutBodies || inertToFile(toks, at, cur))) bodies.push(body);
+        if ((quote === '' && /\$\(|`/.test(body)) || !data) bodies.push(body);
       }
       line = line.slice(0, i + 1) + rest.slice(k).join('\n');
     }
@@ -159,13 +150,21 @@ function substitutionBodies(word: string): string[] {
   return bodies;
 }
 
+/** Here-document bodies are data only on a line of inert commands alone: no pipe, group, loop, function, subshell,
+ *  substitution or `/dev/` target but `/dev/null`, so nothing on the line can hand a body to code that runs it. */
+export function bodiesAreData(line: string): boolean {
+  return tokenize(line).toks.every((t) => (t.op ? !/[|()]/.test(t.text)
+    : !GRAMMAR_WORDS.has(t.text) && substitutionBodies(t.text).length === 0 && !/\/dev\/(?!null(?![\w/]))/.test(t.text)))
+    && execSimpleCommands(line).every((c) => INERT_PROGRAMS.has(c.split(' ')[0]));
+}
+
 /** The line with every body the floor skips cut out: where a privilege token is looked for. */
-export const withoutDataBodies = (line: string): string => { const t = tokenize(line, false); return [t.text, ...t.bodies].join('\n'); };
+export const withoutDataBodies = (line: string): string => { const t = tokenize(line, bodiesAreData(line)); return [t.text, ...t.bodies].join('\n'); };
 
 /** EVERY SIMPLE COMMAND THE LINE CONTAINS, substitution bodies included: what the floor, the
- *  sudo policy and the grant rows are each asked of. The floor keeps every body not proven `inertToFile`. */
-export function execSimpleCommands(command: string, cutBodies = true): string[] {
-  const { toks, bodies } = tokenize(command, cutBodies);
+ *  sudo policy and the grant rows are each asked of. The floor reads every body unless `bodiesAreData`. */
+export function execSimpleCommands(command: string, cutBodies = true, data = cutBodies || bodiesAreData(command)): string[] {
+  const { toks, bodies } = tokenize(command, data);
   const commands: string[] = [];
   let seg: Tok[] = [];
   const flush = (): void => {
@@ -176,7 +175,7 @@ export function execSimpleCommands(command: string, cutBodies = true): string[] 
   for (const t of toks) {
     if (t.op) { flush(); continue; }
     seg.push(t);
-    for (const body of substitutionBodies(t.text)) commands.push(...execSimpleCommands(body, cutBodies));
+    for (const body of substitutionBodies(t.text)) commands.push(...execSimpleCommands(body, cutBodies, cutBodies));
   }
   flush();
   for (const body of bodies) commands.push(...execSimpleCommands(body, cutBodies));

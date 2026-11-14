@@ -7,14 +7,16 @@ import { describe, it, expect, vi } from 'vitest';
 vi.mock('../../../db/connection.js', () => ({
   getDb: () => ({ prepare: () => ({ run: () => ({ changes: 0 }), get: () => undefined, all: () => [] }) }),
 }));
+const policy = vi.hoisted(() => ({ current: 'free' }));
 vi.mock('../../../config/platform.js', async (orig) => ({
   ...(await orig<typeof import('../../../config/platform.js')>()),
-  getSudoPolicyRaw: () => 'free',
+  getSudoPolicyRaw: () => policy.current,
   isPrimaryAgent: (id: string) => id === 'agent-all',
 }));
 
 const { authorizeExecShapedCall } = await import('../exec-seam.js');
 const { grantForManifest } = await import('../grants.js');
+const { isSudoHoldRequired } = await import('../sudo-policy.js');
 
 const g = grantForManifest('agent-rules', {
   file_read: '*', file_write: 'none', file_delete: 'none', exec_allow: ['cat', 'cat *', 'sqlite3 *'], exec_deny: [],
@@ -37,9 +39,18 @@ describe('a heredoc body is data', () => {
     `S=bash\n$S <<'EOF'\n${body}\nEOF`, `f() { bash; }\nf <<'EOF'\n${body}\nEOF`, `python3 - <<'EOF'\n${body}\nEOF`,
     `{ cat <<'EOF'\n${body}\nEOF\n} | sh`, `while true; do\ncat <<'EOF'\n${body}\nEOF\ndone | sh`,
     `cat <<'EOF' |\n${body}\nEOF\nsh`, `cat > /tmp/f <<'EOF' | sh\n${body}\nEOF`,
+    `{ cat > /dev/stdout <<'EOF'\n${body}\nEOF\n} | sh`, `( cat > /dev/stdout <<'EOF'\n${body}\nEOF\n) | sh`,
+    `{ cat > /dev/fd/1 <<'EOF'\n${body}\nEOF\n} | sh`, `{ cat 1> /dev/stdout <<'EOF'\n${body}\nEOF\n} | bash`,
+    `while true; do cat > /dev/stdout <<'EOF'\n${body}\nEOF\nbreak; done | sh`, `sh <(cat > /dev/stdout <<'EOF'\n${body}\nEOF\n)`,
+    `cat > /tmp/f <<'EOF'\n${body}\nEOF\nsh /tmp/f`, `cat > /tmp/f <<'EOF'\n${body}\nEOF\nzsh /tmp/f`,
+    `cat() { sh; }; cat > /tmp/f <<'EOF'\n${body}\nEOF`, `echo() { sh; }; echo > /tmp/f <<'EOF'\n${body}\nEOF`,
   ];
+  const worker = grantForManifest('agent-worker', {
+    file_read: '*', file_write: '*', file_delete: '*', exec_allow: ['*'], exec_deny: [],
+    network_domains: '*', max_processes: 1, can_spawn_agents: false, can_assign_permissions: false, system_control: [],
+  });
 
-  it('the floor reads every body not written to a file by an inert program', () => {
+  it('the floor reads every body on a line that is not all inert', () => {
     for (const line of runners('rm -rf /')) expect(authorizeExecShapedCall(all(), 'shell', line).allowed, line).toBe(false);
     expect(authorizeExecShapedCall(all(), 'shell', "bash <<'EOF'\necho hello\nEOF").allowed).toBe(true);
     expect(authorizeExecShapedCall(all(), 'shell', "cat > /tmp/n.md <<'EOF'\nrm -rf /\nEOF").allowed).toBe(true);
@@ -52,8 +63,24 @@ describe('a heredoc body is data', () => {
     expect(authorizeExecShapedCall(curl, 'shell', "cat > /tmp/n.md <<'EOF'\ncurl http://example.com\nEOF").allowed).toBe(true);
   });
 
-  it('a sudo line in a data body is admitted, and a real one after the body is placed', () => {
-    expect(authorizeExecShapedCall(all(), 'shell', "cat > /tmp/s.sh <<'EOF'\nsudo apt update\nEOF").allowed).toBe(true);
+  it('a sudo body a line can run is refused to a non-primary agent', () => {
+    for (const line of [...runners('sudo -n true'), "cat > /tmp/s.sh <<'EOF'\nsudo -n true\nEOF\nsh /tmp/s.sh"]) {
+      expect(authorizeExecShapedCall(worker, 'shell', line).allowed, line).toBe(false);
+    }
+  });
+
+  it('text a line only prints or writes is data to the deny rows', () => {
+    expect(authorizeExecShapedCall(all(['curl *']), 'shell', "cat <<'EOF'\ncurl is a tool\nEOF").allowed).toBe(true);
+  });
+
+  it('a sudo line in a data body is admitted without a hold, and a real one after the body is placed', () => {
+    const write = "cat > /tmp/s.sh <<'EOF'\nsudo apt update\nEOF";
+    expect(authorizeExecShapedCall(all(), 'shell', write).allowed).toBe(true);
+    policy.current = 'gated';
+    expect(authorizeExecShapedCall(all(), 'shell', write).allowed).toBe(true);
+    expect(isSudoHoldRequired('shell', { script: write })).toBe(false);
+    expect(isSudoHoldRequired('shell', { script: `${write}\nsh /tmp/s.sh` })).toBe(true);
+    policy.current = 'free';
     const v = shell("cat > /tmp/s.sh <<'EOF'\nsudo apt update\nEOF");
     expect(v.allowed ? '' : v.reason).not.toContain('is not allowed');
     expect(authorizeExecShapedCall(all(), 'shell', "cat > n <<'EOF'\nIt's\nEOF\nsudo -n true").allowed).toBe(true);
