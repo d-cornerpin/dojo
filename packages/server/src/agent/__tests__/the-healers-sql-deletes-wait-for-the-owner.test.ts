@@ -7,7 +7,7 @@
 import { describe, it, expect, vi } from 'vitest';
 
 const healerManifest = JSON.stringify({
-  file_read: '*', file_write: '*', file_delete: 'none',
+  file_read: '*', file_write: '*',
   exec_allow: ['*'], exec_deny: [], network_domains: '*',
   max_processes: 5, can_spawn_agents: false, can_assign_permissions: false, system_control: [],
 });

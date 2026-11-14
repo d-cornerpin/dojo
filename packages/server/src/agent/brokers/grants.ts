@@ -15,7 +15,7 @@ const logger = createLogger('brokers/grants');
 /** Effect kinds a `grant_rule` row speaks. proc and shell are a SPLIT of the old exec
  *  kind, not new authority; applescript is its own class, not a system_control string. */
 export type GrantEffectKind =
-  | 'fs_read' | 'fs_write' | 'fs_delete'
+  | 'fs_read' | 'fs_write'
   | 'proc' | 'shell' | 'applescript'
   | 'net' | 'spawn' | 'system_control';
 
@@ -55,10 +55,6 @@ export function projectManifestToRules(manifest: PermissionManifest): GrantRule[
     const value = manifest[field];
     if (value === '*') push(kind, 'allow', '*');
     else if (Array.isArray(value)) for (const p of value) push(kind, 'allow', p);
-  }
-
-  if (Array.isArray(manifest.file_delete)) {
-    for (const p of manifest.file_delete) push('fs_delete', 'allow', p);
   }
 
   // `exec_allow` projects to BOTH kinds: the one exec door predates the split and WAS

@@ -209,7 +209,6 @@ describe('the moved legacy toggles write exactly what they always wrote', () => 
   const stored: Partial<PermissionManifest> = {
     file_read: ['~/Projects/**'],
     file_write: '*',
-    file_delete: ['/tmp/**'],
     exec_allow: ['ls', 'cat'],
     exec_deny: ['rm -rf /'],
     network_domains: '*',
@@ -225,7 +224,6 @@ describe('the moved legacy toggles write exactly what they always wrote', () => 
     expect(built.permissions).toEqual({
       file_read: ['~/Projects/**'],
       file_write: '*',
-      file_delete: ['/tmp/**'],
       exec_allow: ['ls', 'cat'],
       exec_deny: ['rm -rf /'],
       network_domains: '*',
@@ -291,16 +289,6 @@ describe('the moved legacy toggles write exactly what they always wrote', () => 
     expect(buildLegacyAccess(s).toolsPolicy.deny).toEqual(['spawn_agent']);
   });
 
-  it('⚠ THE DELETE SUB-OPTION TELLS THE TRUTH ABOUT WHAT IT WRITES', () => {
-    // The old label was "All files" and it wrote `['/tmp/**']`. The write is
-    // unchanged; the label and the read-back now agree with it.
-    const s = readLegacyAccess(stored, tools, false);
-    expect(s.deleteOn).toBe(true);
-    expect(s.deleteTmp).toBe(true);
-    expect(buildLegacyAccess(s).permissions.file_delete).toEqual(['/tmp/**']);
-    expect(buildLegacyAccess({ ...s, deleteOn: false }).permissions.file_delete).toBe('none');
-  });
-
   it('the delegation pair still writes the manifest booleans the doors read', () => {
     const s = readLegacyAccess(stored, tools, false);
     expect(buildLegacyAccess({ ...s, spawnOn: false }).permissions.can_spawn_agents).toBe(false);
@@ -311,7 +299,7 @@ describe('the moved legacy toggles write exactly what they always wrote', () => 
     const built = buildLegacyAccess(readLegacyAccess(stored, tools, false));
     expect(Object.keys(built.permissions).sort()).toEqual([
       'can_assign_permissions', 'can_spawn_agents', 'exec_allow', 'exec_deny',
-      'file_delete', 'file_read', 'file_write', 'max_processes', 'network_domains',
+      'file_read', 'file_write', 'max_processes', 'network_domains',
       'system_control',
     ]);
     expect(Object.keys(built).sort()).toEqual(['permissions', 'shareUserProfile', 'toolsPolicy']);

@@ -185,10 +185,6 @@ export const PermissionsEditor = ({ permissions, toolsPolicy, shareUserProfile: 
   const [writeAll, setWriteAll] = useState(isAll(permissions.file_write));
   const [writeList, setWriteList] = useState(toList(permissions.file_write));
 
-  const [deleteOn, setDeleteOn] = useState(hasPath(permissions.file_delete) && permissions.file_delete !== 'none');
-  const [deleteAll, setDeleteAll] = useState(false); // delete never defaults to all
-  const [deleteList, setDeleteList] = useState(toList(permissions.file_delete));
-
   // ── Exec ──
   const [execOn, setExecOn] = useState(Array.isArray(permissions.exec_allow) && permissions.exec_allow.length > 0);
   const [execAll, setExecAll] = useState(hasExecAll(permissions));
@@ -235,7 +231,6 @@ export const PermissionsEditor = ({ permissions, toolsPolicy, shareUserProfile: 
     // File permissions
     const file_read: string[] | '*' = !readOn ? ([] as string[]) : readAll ? '*' : readList.split(',').map(s => s.trim()).filter(Boolean);
     const file_write: string[] | '*' = !writeOn ? ([] as string[]) : writeAll ? '*' : writeList.split(',').map(s => s.trim()).filter(Boolean);
-    const file_delete: string[] | 'none' = !deleteOn ? 'none' : deleteAll ? ['/tmp/**'] : deleteList.split(',').map(s => s.trim()).filter(Boolean);
 
     // Exec
     const exec_allow: string[] = !execOn ? [] : execAll ? ['*'] : execList.split(',').map(s => s.trim()).filter(Boolean);
@@ -256,7 +251,6 @@ export const PermissionsEditor = ({ permissions, toolsPolicy, shareUserProfile: 
     const perms: Partial<PermissionManifest> = {
       file_read,
       file_write,
-      file_delete,
       exec_allow,
       exec_deny,
       network_domains,
@@ -278,7 +272,7 @@ export const PermissionsEditor = ({ permissions, toolsPolicy, shareUserProfile: 
 
     return { perms, tools: { allow: advAllow, deny: mergedDeny }, shareProfile };
   }, [
-    readOn, readAll, readList, writeOn, writeAll, writeList, deleteOn, deleteAll, deleteList,
+    readOn, readAll, readList, writeOn, writeAll, writeList,
     execOn, execAll, execList, execDeny, webSearchOn, webBrowseOn, webDomainsAll, webDomainsList,
     screenOn, mouseOn, keyboardOn, applescriptOn, spawnOn, assignPermsOn,
     maxProcesses, rawToolsAllow, rawToolsDeny, shareProfile,
@@ -306,10 +300,6 @@ export const PermissionsEditor = ({ permissions, toolsPolicy, shareUserProfile: 
         <PermRow label="Write Files" description="Allow this agent to create and modify files" enabled={writeOn} onToggle={setWriteOn}>
           <SubOption allLabel="All files" specificLabel="Specific folders" isAll={writeAll} list={writeList}
             onAllChange={setWriteAll} onListChange={setWriteList} placeholder="~/Projects/**, /tmp/**" />
-        </PermRow>
-        <PermRow label="Delete Files" description="Allow this agent to permanently delete files" enabled={deleteOn} onToggle={setDeleteOn} warning>
-          <SubOption allLabel="The temporary folder" specificLabel="Specific folders" isAll={deleteAll} list={deleteList}
-            onAllChange={setDeleteAll} onListChange={setDeleteList} placeholder="/tmp/**" />
         </PermRow>
       </Section>
 
@@ -421,7 +411,6 @@ export const PermissionsEditor = ({ permissions, toolsPolicy, shareUserProfile: 
 export const DEFAULT_SUBAGENT_PERMISSIONS: Partial<PermissionManifest> = {
   file_read: ['~/Projects/**', '/tmp/**'],
   file_write: [],
-  file_delete: 'none',
   exec_allow: [],
   exec_deny: [],
   network_domains: 'none',

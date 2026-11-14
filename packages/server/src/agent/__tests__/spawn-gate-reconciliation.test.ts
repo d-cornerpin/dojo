@@ -102,7 +102,7 @@ const { spawnAgent } = await import('../spawner.js');
 
 /** A manifest that differs from the default in exactly one field. */
 const manifestWith = (over: Partial<PermissionManifest>): string => JSON.stringify({
-  file_read: '*', file_write: '*', file_delete: 'none',
+  file_read: '*', file_write: '*',
   exec_allow: ['*'], exec_deny: [], network_domains: '*',
   max_processes: 10, can_spawn_agents: true, can_assign_permissions: true,
   system_control: [],

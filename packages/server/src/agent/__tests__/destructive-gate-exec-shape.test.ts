@@ -35,12 +35,12 @@ const projects = '/tmp/p5-r3-projects';
 // `agent-rm` may rm; `agent-norm` may not. That difference is what makes the
 // pre-check a real question rather than a formality.
 const rmManifest = JSON.stringify({
-  file_read: '*', file_write: '*', file_delete: 'none',
+  file_read: '*', file_write: '*',
   exec_allow: ['rm', 'ls', 'git *'], exec_deny: [], network_domains: 'none',
   max_processes: 3, can_spawn_agents: false, can_assign_permissions: false, system_control: [],
 });
 const noRmManifest = JSON.stringify({
-  file_read: '*', file_write: '*', file_delete: 'none',
+  file_read: '*', file_write: '*',
   exec_allow: ['ls', 'git *'], exec_deny: [], network_domains: 'none',
   max_processes: 3, can_spawn_agents: false, can_assign_permissions: false, system_control: [],
 });

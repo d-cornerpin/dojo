@@ -27,7 +27,6 @@ const AUDIT_ACTION_MAP: Record<string, string> = {
   file_read: 'file_read',
   file_list: 'file_read',
   file_write: 'file_write',
-  file_delete: 'file_write',
   exec: 'exec',
 };
 

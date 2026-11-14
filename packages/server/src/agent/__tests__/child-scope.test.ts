@@ -49,10 +49,6 @@ describe('A — the DECIDED default: inherit parent, minus danger', () => {
     expect(authorizeAppleScript(grant, cmd('display dialog "hi"')).allowed).toBe(false);
   });
 
-  it('STRIPS destructive — `file_delete` is the only destructive thing a manifest says', () => {
-    expect(child().file_delete).toBe('none');
-  });
-
   it('⚠ KEEPS THE EXEC AND SHELL REACH — shell/pipes is NOT in the danger set', () => {
     // Plan T5 INBOUND (c), and the MUST-SURVIVE item. Withholding `shell_allow`
     // by default would be a narrowing the owner's ruling does not authorize, so
@@ -118,7 +114,6 @@ describe('A — the DECIDED default: inherit parent, minus danger', () => {
     // that quietly relaxed a deny rule would be a different, unauthorised change.
     expect(DEFAULT_SUBAGENT_PERMISSIONS.exec_deny).toEqual(['rm -rf /', 'rm -rf ~', 'sudo *', 'chmod 777 *']);
     expect(DEFAULT_SUBAGENT_PERMISSIONS.shell_deny).toEqual(['rm -rf /', 'rm -rf ~', 'sudo *', 'chmod 777 *']);
-    expect(DEFAULT_SUBAGENT_PERMISSIONS.file_delete).toBe('none');
   });
 });
 
@@ -163,7 +158,6 @@ describe('C — child ⊆ parent, enforced structurally', () => {
       ['system control the parent lacks', { system_control: ['keyboard'] }],
       ['system control wildcard', { system_control: '*' }],
       ['more processes', { max_processes: 99 }],
-      ['delete when the parent cannot', { file_delete: ['/tmp/x'] }],
     ];
     for (const [label, over] of cases) {
       const excesses = scopeExcesses(over as never, parent);
@@ -184,7 +178,6 @@ describe('C — child ⊆ parent, enforced structurally', () => {
       ['no network', { network_domains: 'none' }],
       ['fewer processes', { max_processes: 1 }],
       ['no system control', { system_control: [] }],
-      ['no delete', { file_delete: 'none' }],
       ['dropping spawn', { can_spawn_agents: false }],
       ['an empty object — everything defaulted', {}],
     ];
@@ -216,7 +209,6 @@ describe('C — child ⊆ parent, enforced structurally', () => {
     expect(resolved.ok).toBe(true);
     if (!resolved.ok) return;
     expect(resolved.manifest.system_control).toEqual([]);
-    expect(resolved.manifest.file_delete).toBe('none');
   });
 });
 
@@ -260,7 +252,7 @@ describe('C — a malformed manifest REFUSES, it never silently downgrades', () 
       '{}',
       JSON.stringify(PRIMARY_AGENT_PERMISSIONS),
       JSON.stringify(DEFAULT_SUBAGENT_PERMISSIONS),
-      '{"file_read":"*","file_write":"none","file_delete":"none","exec_allow":[],"exec_deny":["*"],"network_domains":"none","can_spawn_agents":false,"can_assign_permissions":false}',
+      '{"file_read":"*","file_write":"none","exec_allow":[],"exec_deny":["*"],"network_domains":"none","can_spawn_agents":false,"can_assign_permissions":false}',
       '{"system_control":"*"}',
       '{"system_control":["*","applescript"]}',
     ]) {

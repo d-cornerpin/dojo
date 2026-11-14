@@ -39,7 +39,7 @@ import { SYSTEM_CONTROL_CLASSES, authorizeSystemControl } from '../brokers/index
 import type { PermissionManifest } from '@dojo/shared';
 
 const manifest = (system_control: unknown, exec_allow: string[] = ['ls']): PermissionManifest => ({
-  file_read: '*', file_write: '*', file_delete: 'none',
+  file_read: '*', file_write: '*',
   exec_allow, exec_deny: [], network_domains: 'none',
   max_processes: 3, can_spawn_agents: false, can_assign_permissions: false,
   system_control,

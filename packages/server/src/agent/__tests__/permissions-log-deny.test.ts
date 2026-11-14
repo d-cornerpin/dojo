@@ -34,7 +34,7 @@ beforeEach(() => {
   const wildcardManifest = JSON.stringify({
     file_read: '*',
     file_write: '*',
-    file_delete: 'none',
+   
     exec_allow: [],
     exec_deny: [],
     network_allow: ['*'],

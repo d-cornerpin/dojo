@@ -66,25 +66,25 @@ fs.writeFileSync(path.join(projects, 'notes.txt'), 'an ordinary file an agent ma
 // shape a real worker carries (HarnessBot's, trimmed). LOCKED has an EMPTY
 // `exec_allow`, which is what deny-by-default has to be measured against.
 const wildcardManifest = JSON.stringify({
-  file_read: '*', file_write: '*', file_delete: 'none',
+  file_read: '*', file_write: '*',
   exec_allow: ['*'], exec_deny: [], network_domains: '*',
   max_processes: 10, can_spawn_agents: true, can_assign_permissions: true, system_control: ['*'],
 });
 const scopedManifest = JSON.stringify({
-  file_read: [`${projects}/**`], file_write: [`${projects}/**`], file_delete: 'none',
+  file_read: [`${projects}/**`], file_write: [`${projects}/**`],
   exec_allow: ['ls', 'cat', 'echo', 'git *', 'node'], exec_deny: ['git push *'],
   network_domains: ['example.com'],
   max_processes: 3, can_spawn_agents: false, can_assign_permissions: false, system_control: [],
 });
 const lockedManifest = JSON.stringify({
-  file_read: [`${projects}/**`], file_write: 'none', file_delete: 'none',
+  file_read: [`${projects}/**`], file_write: 'none',
   exec_allow: [], exec_deny: [], network_domains: 'none',
   max_processes: 1, can_spawn_agents: false, can_assign_permissions: false, system_control: [],
 });
 // The T5-shaped manifest: exec, but shell explicitly WITHHELD. It is what proves
 // the two doors are genuinely separate grants rather than one grant with two names.
 const noShellManifest = JSON.stringify({
-  file_read: [`${projects}/**`], file_write: 'none', file_delete: 'none',
+  file_read: [`${projects}/**`], file_write: 'none',
   exec_allow: ['ls', 'git *'], exec_deny: [], shell_allow: [], network_domains: 'none',
   max_processes: 1, can_spawn_agents: false, can_assign_permissions: false, system_control: [],
 });

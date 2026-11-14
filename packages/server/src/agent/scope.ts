@@ -18,7 +18,6 @@ const pathList = z.union([z.literal('*'), z.literal('none'), z.array(z.string())
 export const manifestSchema = z.object({
   file_read: pathList.optional(),
   file_write: pathList.optional(),
-  file_delete: z.union([z.literal('none'), z.array(z.string())]).optional(),
   exec_allow: z.array(z.string()).optional(),
   exec_deny: z.array(z.string()).optional(),
   shell_allow: z.array(z.string()).optional(),
@@ -73,8 +72,6 @@ export function defaultChildScope(parent: PermissionManifest, childId: string): 
   return {
     // Inherited, plus the child's own artifact directory.
     ...withArtifactPaths(parent, childId),
-    // DANGER destructive: file_delete is all a manifest can say; the gate already holds it.
-    file_delete: 'none',
     // DANGER system_control: the member that changes; empty names nothing, AppleScript included.
     system_control: [],
   };
@@ -137,9 +134,6 @@ export function scopeExcesses(child: ManifestInput, parent: PermissionManifest):
   }
   if (child.file_write !== undefined) {
     check(pathSubset(child.file_write, parent.file_write), 'file_write', 'child requests paths its parent cannot write');
-  }
-  if (child.file_delete !== undefined) {
-    check(pathSubset(child.file_delete, parent.file_delete), 'file_delete', 'child requests deletion its parent cannot perform');
   }
   if (child.exec_allow !== undefined) {
     check(pathSubset(child.exec_allow, parent.exec_allow), 'exec_allow', 'child requests commands its parent cannot run');

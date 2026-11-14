@@ -246,7 +246,6 @@ const HEALER_TOOLS_POLICY = JSON.stringify({ allow: [], deny: [...SEND_TO_PEOPLE
 const HEALER_PERMISSIONS = JSON.stringify({
   file_read: '*',
   file_write: '*',
-  file_delete: 'none',
   exec_allow: ['*'],
   exec_deny: [],
   network_domains: '*',

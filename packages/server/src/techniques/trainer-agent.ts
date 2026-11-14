@@ -33,8 +33,7 @@ export function ensureTrainerAgentRunning(): void {
 
   // Deny-list like the primary: an empty allow list keeps everything the manifest permits, so a new tool never
   // under-grants, and only the dangerous set below is blocked (comms derives from SEND_TO_PEOPLE, so a future
-  // comms tool is denied by construction). No file_delete entry: deletion rides rm-via-exec, held by the
-  // destructive gate.
+  // comms tool is denied by construction).
   const trainerToolsPolicy = JSON.stringify({
     allow: [],
     deny: [
@@ -56,7 +55,6 @@ export function ensureTrainerAgentRunning(): void {
     // file_write is unconfined: agent/brokers/fs.ts denies the Trainer the protected identity paths, and the
     // global write tier in agent/brokers/deny.ts guards secrets.yaml, the database files and the soul files.
     file_write: '*',
-    file_delete: 'none',
     exec_allow: ['*'],
     exec_deny: [],
     network_domains: '*',

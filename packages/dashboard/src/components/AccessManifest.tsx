@@ -147,14 +147,6 @@ export const ManageManifestItems = ({ state, onChange, editable, note }: Props) 
           placeholder="~/Projects/**, /tmp/**"
         />
       </Flag>
-      <Flag name="Delete files" help="Permanently remove files. There is no undo." risk on={state.deleteOn} set={(v) => edit({ deleteOn: v })}>
-        <Scope
-          id="acx-delete" allLabel="The temporary folder" someLabel="Only these folders"
-          isAll={state.deleteTmp} list={state.deleteList}
-          onAll={(v) => edit({ deleteTmp: v })} onList={(v) => edit({ deleteList: v })}
-          placeholder="/tmp/**"
-        />
-      </Flag>
 
       <div className="acx-sub">This Mac</div>
       <Flag name="See your screen" help="Take screenshots and read what is on screen." on={state.screenOn} set={(v) => edit({ screenOn: v })} />

@@ -11,7 +11,7 @@ const { authorizeExecShapedCall } = await import('../exec-seam.js');
 const { grantForManifest } = await import('../grants.js');
 
 const all = grantForManifest('agent-all', {
-  file_read: '*', file_write: '*', file_delete: '*', exec_allow: ['*'], exec_deny: [],
+  file_read: '*', file_write: '*', exec_allow: ['*'], exec_deny: [],
   network_domains: '*', max_processes: 1, can_spawn_agents: false, can_assign_permissions: false, system_control: [],
 });
 const shell = (line: string) => authorizeExecShapedCall(all, 'shell', line);

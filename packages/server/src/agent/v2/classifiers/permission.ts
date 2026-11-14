@@ -34,11 +34,7 @@ export function permissionAlternativeFinder(
   const { toolName, toolArgs, manifest, hasSendToAgent, hasCompleteTask } = input;
 
   switch (toolName) {
-    // 'file_delete' shares the file_write suggestions and is kept for a future
-    // scoped-delete tool; today no agent-callable file_delete exists (deletes
-    // ride the exec/rm path), so no denied call arrives under this name.
-    case 'file_write':
-    case 'file_delete': {
+    case 'file_write': {
       const allowedWrite = Array.isArray(manifest.file_write) ? manifest.file_write : [];
       if (allowedWrite.length > 0) {
         suggestions.push(

@@ -22,7 +22,7 @@ const PRIMARY = 'agent-main';
 const MGR = 'agent-sensei-spawner';
 const WORKER = 'agent-plain-worker';
 const HEALER = 'agent-healer-cfg';
-const SPAWNER_MANIFEST = { file_read: '*', file_write: '*', file_delete: 'none', exec_allow: ['*'], exec_deny: [], network_domains: '*', max_processes: 5, can_spawn_agents: true, can_assign_permissions: true, system_control: [] };
+const SPAWNER_MANIFEST = { file_read: '*', file_write: '*', exec_allow: ['*'], exec_deny: [], network_domains: '*', max_processes: 5, can_spawn_agents: true, can_assign_permissions: true, system_control: [] };
 
 // t277: THE ENVIRONMENT AND THE IMPORTS ARE SET UP AT COLLECTION, NOT IN A HOOK. `DOJO_HOME` must be
 // in place before the product modules are first loaded (they read it at import), so the home is made

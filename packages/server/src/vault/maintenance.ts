@@ -663,7 +663,6 @@ function getDreamerPermissions(): string {
   return JSON.stringify({
     file_read: [profilePath],
     file_write: [profilePath],
-    file_delete: 'none',
     exec_allow: [],
     exec_deny: ['*'],
     network_domains: 'none',
@@ -1594,7 +1593,6 @@ Instructions:
       permissions: {
         file_read: [profilePath],
         file_write: [profilePath],
-        file_delete: 'none',
         exec_allow: [],
         exec_deny: ['*'],
         network_domains: 'none',

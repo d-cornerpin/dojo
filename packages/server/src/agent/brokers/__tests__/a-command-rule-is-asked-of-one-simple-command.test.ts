@@ -13,7 +13,7 @@ const { authorizeExecShapedCall } = await import('../exec-seam.js');
 const { grantForManifest } = await import('../grants.js');
 
 const grant = (exec_allow: string[], exec_deny: string[] = []) => grantForManifest('agent-rules', {
-  file_read: '*', file_write: 'none', file_delete: 'none', exec_allow, exec_deny, network_domains: 'none',
+  file_read: '*', file_write: 'none', exec_allow, exec_deny, network_domains: 'none',
   max_processes: 1, can_spawn_agents: false, can_assign_permissions: false, system_control: [],
 });
 const argv = (g: ReturnType<typeof grant>, a: string[]): boolean => authorizeExecShapedCall(g, 'proc', a).allowed;

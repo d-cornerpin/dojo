@@ -38,7 +38,7 @@ function manifest(over: Record<string, unknown> = {}): string {
   return JSON.stringify({
     file_read: '*',
     file_write: '*',
-    file_delete: 'none',
+   
     exec_allow: SHELL_AGENT_ALLOW,
     exec_deny: [],
     network_domains: 'none',

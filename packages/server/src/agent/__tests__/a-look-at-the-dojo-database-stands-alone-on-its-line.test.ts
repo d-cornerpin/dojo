@@ -24,7 +24,7 @@ beforeAll(() => {
   const db = connection.getDb();
   const add = db.prepare("INSERT INTO agents (id, name, status, config, classification, permissions) VALUES (?, ?, 'idle', '{}', 'sensei', ?)");
   add.run(MAIN, 'main', null);
-  add.run(HEALER, 'healer', JSON.stringify({ exec_allow: ['*'], exec_deny: [], file_read: '*', file_write: '*', file_delete: 'none', network_domains: '*', max_processes: 5, can_spawn_agents: false, can_assign_permissions: false, system_control: [] }));
+  add.run(HEALER, 'healer', JSON.stringify({ exec_allow: ['*'], exec_deny: [], file_read: '*', file_write: '*', network_domains: '*', max_processes: 5, can_spawn_agents: false, can_assign_permissions: false, system_control: [] }));
   db.prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('primary_agent_id', ?), ('healer_agent_id', ?)").run(MAIN, HEALER);
   platform.clearPlatformConfigCache();
 });

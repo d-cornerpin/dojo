@@ -42,12 +42,11 @@ function ownerWordsLines(taskId: string): string {
 const logger = createLogger('pm-agent');
 
 // The PM is a narrow-purpose oversight agent: read-only file access so close-out validation confirms the real
-// deliverable (still bounded by the engine's global read-deny), and no file_write, file_delete, exec, network or
+// deliverable (still bounded by the engine's global read-deny), and no file_write, exec, network or
 // agent-spawning. The one source for the create and reactivate paths below.
 const PM_PERMISSIONS_JSON = JSON.stringify({
   file_read: '*',
   file_write: 'none',
-  file_delete: 'none',
   exec_allow: [],
   exec_deny: ['*'],
   network_domains: 'none',

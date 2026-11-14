@@ -13,7 +13,6 @@ const logger = createLogger('permissions');
 export const PRIMARY_AGENT_PERMISSIONS: PermissionManifest = {
   file_read: '*',
   file_write: '*',
-  file_delete: 'none',
   exec_allow: ['*'],
   exec_deny: [],
   shell_allow: ['*'],
@@ -31,8 +30,7 @@ const HELPER_COMMANDS = ['ls', 'cat', 'head', 'tail', 'grep', 'find', 'wc', 'ech
 export const DEFAULT_SUBAGENT_PERMISSIONS: PermissionManifest = {
   file_read: ['~/Projects/**', '/tmp/**'],
   file_write: ['~/Projects/**', '/tmp/**'],
-  file_delete: 'none',
-  // `mv`/`cp` so a delegated worker can place an artifact it produced; `file_delete` stays `'none'`.
+  // `mv`/`cp` so a delegated worker can place an artifact it produced.
   exec_allow: HELPER_COMMANDS,
   exec_deny: ['rm -rf /', 'rm -rf ~', 'sudo *', 'chmod 777 *'],
   shell_allow: HELPER_COMMANDS,
@@ -106,7 +104,6 @@ export function getAgentPermissions(agentId: string): PermissionManifest {
       return withArtifactPaths({
         file_read: parsed.file_read ?? DEFAULT_SUBAGENT_PERMISSIONS.file_read,
         file_write: parsed.file_write ?? DEFAULT_SUBAGENT_PERMISSIONS.file_write,
-        file_delete: parsed.file_delete ?? DEFAULT_SUBAGENT_PERMISSIONS.file_delete,
         exec_allow: parsed.exec_allow ?? DEFAULT_SUBAGENT_PERMISSIONS.exec_allow,
         exec_deny: parsed.exec_deny ?? DEFAULT_SUBAGENT_PERMISSIONS.exec_deny,
         // Stored manifests predate the shell class: falling back to the row's own `exec_allow` keeps

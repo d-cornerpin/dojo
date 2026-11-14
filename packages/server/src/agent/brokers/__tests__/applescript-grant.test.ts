@@ -35,7 +35,7 @@ import type { PermissionManifest } from '@dojo/shared';
 import { FXID } from '../../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const base = {
-  file_read: '*', file_write: '*', file_delete: 'none', exec_allow: [], exec_deny: [],
+  file_read: '*', file_write: '*', exec_allow: [], exec_deny: [],
   network_domains: 'none', max_processes: 1,
   can_spawn_agents: false, can_assign_permissions: false,
 } as const;

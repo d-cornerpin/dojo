@@ -32,7 +32,7 @@ const ORDINARY = path.join(data, 'toolbox-groups.json');
 beforeAll(() => {
   migrations.runMigrations();
   const db = connection.getDb();
-  const wide = JSON.stringify({ exec_allow: ['*'], exec_deny: [], file_read: '*', file_write: '*', file_delete: 'none', network_domains: '*', max_processes: 5, can_spawn_agents: false, can_assign_permissions: false, system_control: [] });
+  const wide = JSON.stringify({ exec_allow: ['*'], exec_deny: [], file_read: '*', file_write: '*', network_domains: '*', max_processes: 5, can_spawn_agents: false, can_assign_permissions: false, system_control: [] });
   const add = db.prepare("INSERT INTO agents (id, name, status, config, classification, permissions) VALUES (?, ?, 'idle', '{}', ?, ?)");
   add.run(MAIN, 'main', 'sensei', null);
   add.run(HEALER, 'healer', 'sensei', wide);

@@ -90,14 +90,14 @@ const SHM_SIBLING = path.join(dojoDir, 'data', 'dojo.db-shm');
 // refusal in this file can only have come from a GLOBAL deny or from the
 // resolver — never from an incidental allowlist miss.
 const wildcardManifest = JSON.stringify({
-  file_read: '*', file_write: '*', file_delete: 'none',
+  file_read: '*', file_write: '*',
   exec_allow: ['*'], exec_deny: [], network_domains: '*',
   max_processes: 10, can_spawn_agents: true, can_assign_permissions: true,
   system_control: ['*'],
 });
 const scopedManifest = JSON.stringify({
   file_read: ['~/Projects/**', '/tmp/**'], file_write: ['~/Projects/**', '/tmp/**'],
-  file_delete: 'none', exec_allow: ['ls', 'cat', 'echo'], exec_deny: ['rm -rf /'],
+  exec_allow: ['ls', 'cat', 'echo'], exec_deny: ['rm -rf /'],
   network_domains: ['example.com'], max_processes: 3, can_spawn_agents: false,
   can_assign_permissions: false, system_control: [],
 });

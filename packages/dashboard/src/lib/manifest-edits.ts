@@ -7,9 +7,6 @@ import { stableGrantsText } from '@dojo/shared';
 
 export interface ToolsPolicy { allow: string[]; deny: string[] }
 
-/** What the "All files" delete option actually writes. */
-const DELETE_TMP = '/tmp/**';
-
 /** The tool names the web toggles OWN. Anything else in the deny list belongs to
  *  the advanced field, and the two must not both claim one name. */
 const WEB_TOOLS = ['web_search', 'web_fetch', 'web_browse'];
@@ -18,7 +15,6 @@ const WEB_TOOLS = ['web_search', 'web_fetch', 'web_browse'];
 export interface LegacyAccess {
   readOn: boolean; readAll: boolean; readList: string;
   writeOn: boolean; writeAll: boolean; writeList: string;
-  deleteOn: boolean; deleteTmp: boolean; deleteList: string;
   execOn: boolean; execAll: boolean; execList: string; execDeny: string;
   searchOn: boolean; browseOn: boolean; domainsAll: boolean; domainsList: string;
   screenOn: boolean; mouseOn: boolean; keyboardOn: boolean; applescriptOn: boolean;
@@ -55,13 +51,9 @@ export function readLegacyAccess(
   shareProfile: boolean,
 ): LegacyAccess {
   const p = perms ?? {};
-  const del = p.file_delete;
   return {
     readOn: hasPath(p.file_read), readAll: isAll(p.file_read), readList: toList(p.file_read),
     writeOn: hasPath(p.file_write), writeAll: isAll(p.file_write), writeList: toList(p.file_write),
-    deleteOn: hasPath(del) && del !== 'none',
-    deleteTmp: Array.isArray(del) && del.length === 1 && del[0] === DELETE_TMP,
-    deleteList: toList(del),
     execOn: Array.isArray(p.exec_allow) && p.exec_allow.length > 0,
     execAll: Array.isArray(p.exec_allow) && p.exec_allow.includes('*'),
     execList: Array.isArray(p.exec_allow) ? p.exec_allow.filter((c) => c !== '*').join(', ') : '',
@@ -83,9 +75,9 @@ export function readLegacyAccess(
 
 // ── Build ──
 
-/** The TEN keys the old editor writes, named so the identity is checkable. */
+/** The NINE keys the old editor writes, named so the identity is checkable. */
 export interface LegacyManifest {
-  file_read: string[] | '*'; file_write: string[] | '*'; file_delete: string[] | 'none';
+  file_read: string[] | '*'; file_write: string[] | '*';
   exec_allow: string[]; exec_deny: string[];
   network_domains: string[] | '*' | 'none';
   max_processes: number; can_spawn_agents: boolean; can_assign_permissions: boolean;
@@ -98,7 +90,7 @@ export interface LegacyDocument {
   shareUserProfile: boolean;
 }
 
-/** The same ten keys `PermissionsEditor.buildOutput` writes, from the same rules; keys it never
+/** The same nine keys `PermissionsEditor.buildOutput` writes, from the same rules; keys it never
  *  writes (`shell_allow`, artifact paths) stay absent; the reader fills them on read. */
 export function buildLegacyAccess(s: LegacyAccess): LegacyDocument {
   const anyWeb = s.searchOn || s.browseOn;
@@ -117,7 +109,6 @@ export function buildLegacyAccess(s: LegacyAccess): LegacyDocument {
     permissions: {
       file_read: !s.readOn ? [] : s.readAll ? '*' : split(s.readList),
       file_write: !s.writeOn ? [] : s.writeAll ? '*' : split(s.writeList),
-      file_delete: !s.deleteOn ? 'none' : s.deleteTmp ? [DELETE_TMP] : split(s.deleteList),
       exec_allow: !s.execOn ? [] : s.execAll ? ['*'] : split(s.execList),
       exec_deny: split(s.execDeny),
       network_domains: !anyWeb ? 'none' : s.domainsAll ? '*' : split(s.domainsList),
@@ -152,7 +143,7 @@ export const programsAreEmpty = (s: LegacyAccess): boolean =>
 /** The folded state line for "What it may manage". */
 export function manageSummary(s: LegacyAccess): string {
   const parts: string[] = [];
-  if (s.readOn || s.writeOn || s.deleteOn) parts.push('Your files');
+  if (s.readOn || s.writeOn) parts.push('Your files');
   if (s.screenOn || s.mouseOn || s.keyboardOn || s.applescriptOn) parts.push('this Mac');
   if (s.spawnOn || s.assignOn) parts.push('other agents');
   return parts.length === 0 ? 'Nothing' : parts.join(', ');

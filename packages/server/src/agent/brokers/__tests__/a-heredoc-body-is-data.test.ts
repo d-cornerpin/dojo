@@ -16,14 +16,14 @@ const { authorizeExecShapedCall } = await import('../exec-seam.js');
 const { grantForManifest } = await import('../grants.js');
 
 const g = grantForManifest('agent-rules', {
-  file_read: '*', file_write: 'none', file_delete: 'none', exec_allow: ['cat', 'cat *', 'sqlite3 *'], exec_deny: [],
+  file_read: '*', file_write: 'none', exec_allow: ['cat', 'cat *', 'sqlite3 *'], exec_deny: [],
   network_domains: 'none', max_processes: 1, can_spawn_agents: false, can_assign_permissions: false, system_control: [],
 });
 const shell = (line: string) => authorizeExecShapedCall(g, 'shell', line);
 
 describe('a heredoc body is data', () => {
   const all = (deny: string[] = []) => grantForManifest('agent-all', {
-    file_read: '*', file_write: '*', file_delete: '*', exec_allow: ['*'], exec_deny: deny,
+    file_read: '*', file_write: '*', exec_allow: ['*'], exec_deny: deny,
     network_domains: '*', max_processes: 1, can_spawn_agents: false, can_assign_permissions: false, system_control: [],
   });
 
@@ -49,7 +49,7 @@ describe('a heredoc body is data', () => {
     `cat > /tmp/bin/rg <<'EOF'\n${body}\nEOF\nrg x`, `cat > /tmp/f <<'EOF'\n${body}\nEOF\n[[ -n x ]]`,
   ];
   const worker = grantForManifest('agent-worker', {
-    file_read: '*', file_write: '*', file_delete: '*', exec_allow: ['*'], exec_deny: [],
+    file_read: '*', file_write: '*', exec_allow: ['*'], exec_deny: [],
     network_domains: '*', max_processes: 1, can_spawn_agents: false, can_assign_permissions: false, system_control: [],
   });
 

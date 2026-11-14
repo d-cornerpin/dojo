@@ -5,7 +5,7 @@ import { permissionAlternativeFinder } from '../classifiers/permission.js';
 const subAgentManifest: PermissionManifest = {
   file_read: ['~/Projects/**', '/tmp/**'],
   file_write: ['~/Projects/**', '/tmp/**'],
-  file_delete: 'none',
+ 
   exec_allow: ['ls', 'cat', 'grep', 'node'],
   exec_deny: [],
   network_domains: 'none',
