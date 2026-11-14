@@ -7,6 +7,7 @@ import { v4 as uuidv4 } from 'uuid';
 import type Anthropic from '@anthropic-ai/sdk';
 import type { AgentStatus } from '@dojo/shared';
 import { getDb } from '../db/connection.js';
+import { getPrimaryAgentId, isPrimaryAgent } from '../config/platform.js';
 import { postAgentNotice } from './agent-notice.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
@@ -821,8 +822,6 @@ class AgentRuntime {
     errorMessage: string,
     pausedByLoop: boolean,
   ): Promise<void> {
-    const { isPrimaryAgent, getPrimaryAgentId } = await import('../config/platform.js');
-
     // The user sees the primary's own error banner; never notify the primary about itself.
     if (isPrimaryAgent(injuredAgentId)) return;
 
@@ -1234,6 +1233,10 @@ orphanedModelSweep.unref?.();
 export function runStartupRecoverySweep(): void {
   recoverStuckAgents();
   repairOrphanedModelPointers();
+  // A held-call card for the main agent has no consumer (its calls are never held): close it, never re-wake it.
+  getDb().prepare(`UPDATE healer_proposals SET status = 'auto_resolved', resolved_at = datetime('now'), result_summary = ?
+    WHERE agent_id = ? AND approval_token IS NOT NULL AND (status = 'pending' OR (status = 'approved' AND applied_at IS NULL))`,
+  ).run('Nothing waits on this request any more, so it was closed. Nothing was changed.', getPrimaryAgentId());
 }
 
 let runtimeInstance: AgentRuntime | null = null;
