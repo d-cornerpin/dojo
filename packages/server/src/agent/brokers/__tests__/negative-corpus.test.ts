@@ -581,7 +581,7 @@ describe('§10 — ONE deny list: the merge is a SUPERSET of both twins, proven'
     'secrets.yaml', 'secrets.yml', 'secrets.json',
     '.env', '.env.local', '.env.production', '.env.development',
     'id_rsa', 'id_ed25519', 'id_ecdsa', 'id_dsa',
-    '.npmrc', '.pypirc', '.netrc', 'credentials',
+    'authorized_keys', 'known_hosts', '.npmrc', '.pypirc', '.netrc', 'credentials',
   ];
 
   // FIELD FIX 3, Mac-belongs round (owner ruling OR-MAC-BELONGS-TO-THE-AGENT, 2026-10-31: "the Mac
@@ -636,8 +636,6 @@ describe('§10 — ONE deny list: the merge is a SUPERSET of both twins, proven'
   it('the ~/.ssh containment rule and its .pub carve-out both survive the merge', () => {
     expect(deniedTiers(path.join(sshDir, 'anything_at_all'))).toContain('sensitive');
     expect(deniedTiers(path.join(sshDir, 'anything_at_all.pub'))).not.toContain('sensitive');
-    expect(deniedTiers(path.join(sshDir, 'known_hosts'))).not.toContain('sensitive');
-    expect(deniedTiers(path.join(sshDir, 'authorized_keys'))).not.toContain('sensitive');
   });
 
   it('the cloud-credential locations survive the merge', () => {

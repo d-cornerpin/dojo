@@ -29,13 +29,13 @@ function globalDenyReason(kind: FsKind, tier: DenyTier, rawPath: string, ruleId:
  *  null when nothing denies. Both the lexical and resolved spellings are asked. */
 export function globalDeny(kind: FsKind, resource: ResolvedPath, viewer?: DenyViewerArg): Verdict | null {
   for (const tier of tiersForKind(kind)) {
-    const lexicalRule = denyRuleFor(resource.lexical, tier, viewer);
+    const lexicalRule = denyRuleFor(resource.lexical, tier, viewer, kind === 'fs_read');
     if (lexicalRule) {
       const basis = lexicalRule.since === 'legacy' ? 'ladder-parity' : 'bypass-hardening';
       return deny(basis, lexicalRule.id, globalDenyReason(kind, tier, resource.raw, lexicalRule.id));
     }
     if (resource.real !== resource.lexical) {
-      const realRule = denyRuleFor(resource.real, tier, viewer);
+      const realRule = denyRuleFor(resource.real, tier, viewer, kind === 'fs_read');
       if (realRule) {
         // The write tier has always resolved symlinks, so a link caught there is parity; a
         // link caught on the read tier is bypass hardening.

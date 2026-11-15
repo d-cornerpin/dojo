@@ -169,13 +169,6 @@ async function executeFileRead(
     return 'Error: Path must be absolute. Use ~ for home directory or provide a full path.';
   }
 
-  // Block secrets / SSH keys / cloud credentials (see isSensitivePath); the
-  // result must NEVER enter messages, secrets stay out of memory everywhere.
-  if (isSensitivePath(filePath)) {
-    auditLog(agentId, 'file_read', filePath, 'denied', 'sensitive path block list');
-    return `[BLOCKED] file_read refused: ${filePath} is on the sensitive-files block list (secrets.yaml, .env files, SSH keys, cloud credentials). The DOJO never echoes secret files into the conversation. If you need a value from this file, ask the user, those values live in process memory only.`;
-  }
-
   try {
     const stat = await effectFs.promises.stat(filePath).catch(() => null);
     if (!stat) {

@@ -50,14 +50,13 @@ export const SENSITIVE_BASENAMES: ReadonlySet<string> = new Set<string>([
   'id_ed25519',
   'id_ecdsa',
   'id_dsa',
+  'authorized_keys',
+  'known_hosts',
   '.npmrc',
   '.pypirc',
   '.netrc',
   'credentials',
 ]);
-
-/** Files under ~/.ssh that list public keys only, so they hold no secret. */
-const SSH_PUBLIC_LISTS: ReadonlySet<string> = new Set(['known_hosts', 'authorized_keys']);
 
 /** No glob matcher lives here: importing permissions.ts's would close a cycle, so the
  *  rows below express containment with plain string ops that match each legacy glob. */
@@ -113,9 +112,9 @@ export const DENY_RULES: readonly DenyRule[] = [
     id: 'ssh-directory-except-public-keys',
     tiers: ['sensitive'],
     since: 'legacy',
-    reason: 'everything under ~/.ssh is private key material except public keys and the host and authorized-key lists.',
+    reason: 'everything under ~/.ssh is private key material except the .pub half of a key pair.',
     test: ({ folded, base, home }) =>
-      folded.startsWith(path.join(home, '.ssh') + path.sep) && !base.endsWith('.pub') && !SSH_PUBLIC_LISTS.has(base),
+      folded.startsWith(path.join(home, '.ssh') + path.sep) && !base.endsWith('.pub'),
   },
   {
     id: 'aws-credentials',
@@ -219,9 +218,13 @@ function contextFor(absPath: string): DenyMatchContext {
 const bindsViewer = (rule: DenyRule, viewer?: DenyViewerArg): boolean =>
   !rule.exceptFor || viewer === undefined || (typeof viewer === 'function' ? viewer() : viewer) !== rule.exceptFor;
 
+/** Sensitive by name, but they list public keys only: a read returns them, every other door keeps them shut. */
+const SSH_PUBLIC_LISTS: ReadonlySet<string> = new Set(['known_hosts', 'authorized_keys']);
+
 /** The first rule that shuts `tier` on `absPath`, or null. */
-export function denyRuleFor(absPath: string, tier: DenyTier, viewer?: DenyViewerArg): DenyRule | null {
+export function denyRuleFor(absPath: string, tier: DenyTier, viewer?: DenyViewerArg, reading = false): DenyRule | null {
   const ctx = contextFor(absPath);
+  if (reading && tier === 'sensitive' && SSH_PUBLIC_LISTS.has(ctx.base)) return null;
   for (const rule of DENY_RULES) {
     if (rule.tiers.includes(tier) && rule.test(ctx) && bindsViewer(rule, viewer)) return rule;
   }
