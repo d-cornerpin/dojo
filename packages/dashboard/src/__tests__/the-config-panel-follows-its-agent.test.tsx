@@ -23,7 +23,7 @@ vi.mock('../lib/api', async () => {
 vi.mock('../hooks/useToast', async () => {
   const { fakeToast } = await import('./helpers/frames');
   const stub = fakeToast();
-  return { useToast: () => stub.value, ToastProvider: ({ children }: { children: ReactElement }) => children, ToastContainer: () => null };
+  return { useToast: () => stub.value, ToastProvider: ({ children }: { children: ReactElement }) => children };
 });
 
 vi.mock('../hooks/useWebSocket', async () => {

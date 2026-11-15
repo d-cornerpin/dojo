@@ -183,8 +183,7 @@ export function reclaimVaultArchiveSpace(): DiskReclaimResult {
 
     const activityId = `maintenance_vacuum_${Date.now()}`;
     const startedAt = new Date().toISOString();
-    // Rendered by ActiveJobsIndicator as an engine-managed row (no Stop button); reuses the 'compaction' kind
-    // so no dashboard/shared type changes are needed.
+    // Reuses the 'compaction' kind so no dashboard/shared type changes are needed.
     broadcast({
       type: 'engine:activity',
       data: { id: activityId, kind: 'compaction', agentId: null, label: 'Nightly maintenance: reclaiming disk space', startedAt, phase: 'start' },

@@ -51,7 +51,6 @@ vi.mock('../hooks/useToast', async () => {
   return {
     useToast: () => stub.value,
     ToastProvider: ({ children }: { children: ReactElement }) => children,
-    ToastContainer: () => null,
   };
 });
 
@@ -62,13 +61,11 @@ import { ActiveAgentProvider } from '../components/ActiveAgentProvider';
 import { RightDockProvider } from '../components/RightDockProvider';
 import { TechniqueSessionProvider } from '../components/TechniqueSessionProvider';
 import { OrbProvider } from '../components/orb/OrbProvider';
-import { ThemeProvider } from '../themes/ThemeProvider';
 
 /** Same nesting App.tsx puts every page in; see `every-major-page-mounts.test.tsx`. */
 const shell = (page: ReactElement) => (
   <MemoryRouter>
     <AuthProvider>
-      <ThemeProvider>
         <OrbProvider>
           <ActiveAgentProvider>
             <RightDockProvider>
@@ -78,7 +75,6 @@ const shell = (page: ReactElement) => (
             </RightDockProvider>
           </ActiveAgentProvider>
         </OrbProvider>
-      </ThemeProvider>
     </AuthProvider>
   </MemoryRouter>
 );

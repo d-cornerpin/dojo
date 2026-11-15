@@ -84,7 +84,7 @@ const handlers = {
       return { content, isError };
     }
 
-    // Tracked as a generation_job so the dashboard's ActiveJobsIndicator shows it;
+    // Tracked as a generation_job so the orb shows it;
     // image_create keeps its own delivery path, driven around the job lifecycle.
     const imgJobId = createImgJob({
       kind: 'image',

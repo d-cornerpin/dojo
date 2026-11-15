@@ -29,7 +29,12 @@ vi.mock('../lib/api', async () => {
 });
 
 import * as api from '../lib/api';
-import { ToastProvider, ToastContainer } from '../hooks/useToast';
+vi.mock('../hooks/useWebSocket', async () => {
+  const { fakeUseWebSocket } = await import('./helpers/frames');
+  return { useWebSocket: fakeUseWebSocket };
+});
+import { ToastProvider } from '../hooks/useToast';
+import { Dojo3Notifications } from '../components/Dojo3Notifications';
 import { TaskDetailPanel } from '../pages/Tracker';
 
 const task = {
@@ -67,7 +72,7 @@ const renderPanel = () => {
         onClose={() => {}}
         onUpdate={onUpdate}
       />
-      <ToastContainer />
+      <Dojo3Notifications />
     </ToastProvider>,
   );
   return onUpdate;

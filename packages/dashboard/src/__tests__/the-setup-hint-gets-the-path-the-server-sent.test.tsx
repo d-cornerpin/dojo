@@ -60,7 +60,6 @@ vi.mock('../hooks/useToast', async () => {
   return {
     useToast: () => stub.value,
     ToastProvider: ({ children }: { children: ReactElement }) => children,
-    ToastContainer: () => null,
   };
 });
 
@@ -71,7 +70,6 @@ import { ActiveAgentProvider } from '../components/ActiveAgentProvider';
 import { RightDockProvider } from '../components/RightDockProvider';
 import { TechniqueSessionProvider } from '../components/TechniqueSessionProvider';
 import { OrbProvider } from '../components/orb/OrbProvider';
-import { ThemeProvider } from '../themes/ThemeProvider';
 
 /** A fictional but realistically awkward path — the kind item D exists for. */
 const EXEC_PATH = '/Users/someone/.nvm/versions/node/v22.22.3/bin/node';
@@ -89,7 +87,6 @@ const mocked = () => vi.mocked(api);
 const shell = (page: ReactElement) => (
   <MemoryRouter initialEntries={['/settings?tab=channels']}>
     <AuthProvider>
-      <ThemeProvider>
         <OrbProvider>
           <ActiveAgentProvider>
             <RightDockProvider>
@@ -99,7 +96,6 @@ const shell = (page: ReactElement) => (
             </RightDockProvider>
           </ActiveAgentProvider>
         </OrbProvider>
-      </ThemeProvider>
     </AuthProvider>
   </MemoryRouter>
 );

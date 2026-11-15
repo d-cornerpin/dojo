@@ -298,17 +298,8 @@ export function createServer() {
       app.use('/assets/*', serveStatic({ root: './packages/dashboard/dist' }));
       app.use('/favicon.png', serveStatic({ root: './packages/dashboard/dist', path: '/favicon.png' }));
       app.use('/dojologo.svg', serveStatic({ root: './packages/dashboard/dist', path: '/dojologo.svg' }));
-      // Feng Shui theme files live in dashboard's public/themes/<id>/
-      // and are emitted to dist/themes/ at build time. ThemeProvider injects
-      // <link href="/themes/<id>/theme.css"> at runtime when the user picks a
-      // non-default theme. Without this handler, those requests fall through
-      // to the SPA fallback below, which returns index.html, the browser
-      // then tries to parse HTML as CSS and silently no-ops the theme switch.
-      app.use('/themes/*', serveStatic({ root: './packages/dashboard/dist' }));
-      // Voice mode chimes, same trap as the theme.css note above. Without
-      // these explicit handlers, /wake-chime.wav etc. fall through to the SPA
-      // fallback, which returns index.html, and the browser silently fails to
-      // decode HTML as audio. Affects every prod user (tunnel or local).
+      // Voice mode chimes. Without these explicit handlers, /wake-chime.wav etc. fall through to
+      // the SPA fallback, which returns index.html, and the browser fails to decode HTML as audio.
       app.use('/wake-chime.wav', serveStatic({ root: './packages/dashboard/dist', path: '/wake-chime.wav' }));
       app.use('/sleep-chime.wav', serveStatic({ root: './packages/dashboard/dist', path: '/sleep-chime.wav' }));
       app.use('/prompt-sent.wav', serveStatic({ root: './packages/dashboard/dist', path: '/prompt-sent.wav' }));

@@ -13,7 +13,7 @@ vi.mock('../lib/api', async () => {
 vi.mock('../hooks/useToast', async () => {
   const { fakeToast } = await import('./helpers/frames');
   const t = fakeToast();
-  return { useToast: () => t.value, ToastProvider: ({ children }: { children: ReactElement }) => children, ToastContainer: () => null };
+  return { useToast: () => t.value, ToastProvider: ({ children }: { children: ReactElement }) => children };
 });
 
 import { VoiceCatalogEditor, GenerationParamsEditor } from '../components/settings/ModelRows';

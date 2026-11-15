@@ -13,7 +13,7 @@ import { formatDate } from '../lib/dates';
 // Whether a demoted note is dimmed, gone, or the reply itself: four rules, shared with the server.
 import { renderWorkingNote } from '../lib/working-note-visibility';
 import { useWebSocket } from '../hooks/useWebSocket';
-import { ToolCallBlock, ToolCallCard, ToolResultBlock } from '../components/ToolCallBlock';
+import { ToolCallCard, ToolResultBlock } from '../components/ToolCallBlock';
 import { stripVoiceMarkers, stripVoiceMarkersForStream, parseMoodMarker } from '../lib/voice-markers';
 import { useDojoOrb } from '../components/orb/OrbProvider';
 import type { OrbEmotionName } from '../components/orb/dojoOrbEngine';

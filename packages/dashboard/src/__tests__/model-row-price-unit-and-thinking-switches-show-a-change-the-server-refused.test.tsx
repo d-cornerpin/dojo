@@ -8,7 +8,7 @@ const toasts = vi.hoisted(() => ({ calls: [] as Array<{ level: string; message: 
 vi.mock('../hooks/useToast', () => {
   const rec = (level: string) => (message: string) => { toasts.calls.push({ level, message }); };
   const value = { toasts: [], addToast: () => {}, addActionToast: () => {}, removeToast: () => {}, removeToastByKey: () => {}, info: rec('info'), success: rec('success'), warning: rec('warning'), error: rec('error') };
-  return { useToast: () => value, ToastProvider: ({ children }: { children: ReactElement }) => children, ToastContainer: () => null };
+  return { useToast: () => value, ToastProvider: ({ children }: { children: ReactElement }) => children };
 });
 vi.mock('../lib/api', async () => {
   const actual = await vi.importActual<Record<string, unknown>>('../lib/api');

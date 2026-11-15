@@ -29,7 +29,6 @@ import {
   formatDate,
   formatShortDateTime,
   formatTimeSince,
-  formatElapsed,
 } from '../../../dashboard/src/lib/dates';
 
 const ORIGINAL_TZ = process.env.TZ;
@@ -138,17 +137,6 @@ function ORIGINAL_formatTimeSince(dateStr: string): string {
   return `${Math.floor(seconds / 86400)}d ago`;
 }
 
-/** ORIGINAL `ActiveJobsIndicator.tsx:22-32` `elapsed`, verbatim at `9d51721`. */
-function ORIGINAL_elapsed(startedAt: string): string {
-  const start = new Date(startedAt.replace(' ', 'T') + 'Z').getTime();
-  if (!Number.isFinite(start)) return '';
-  const secs = Math.max(0, Math.floor((Date.now() - start) / 1000));
-  if (secs < 60) return `${secs}s`;
-  const mins = Math.floor(secs / 60);
-  const rem = secs % 60;
-  return `${mins}m ${rem}s`;
-}
-
 /** ORIGINAL `ContactsPanel.tsx:24-31` `fmtDate`, verbatim at `9d51721`. */
 function ORIGINAL_fmtDate(iso: string): string {
   try {
@@ -196,29 +184,6 @@ describe('T9 — folded duplicate: TaskCard formatTimeSince', () => {
   it('stays seconds-granular under a minute — it is NOT formatRelative', () => {
     const { zLess } = wireShapesFor(5);
     expect(formatTimeSince(zLess)).toBe('5s ago');
-  });
-});
-
-describe('T9 — folded duplicate: ActiveJobsIndicator elapsed', () => {
-  it('is byte-identical to the original on the Z-less wire shape, across every branch', () => {
-    for (const ageSec of AGES_SEC) {
-      const { zLess } = wireShapesFor(ageSec);
-      expect(formatElapsed(zLess), `age ${ageSec}s`).toBe(ORIGINAL_elapsed(zLess));
-    }
-  });
-
-  it('reads Z-less text as UTC (the two shapes of one instant agree)', () => {
-    const { zLess, withZ } = wireShapesFor(125);
-    expect(formatElapsed(zLess)).toBe(formatElapsed(withZ));
-  });
-
-  it('survives an already-Z value, which the original turned into NaN', () => {
-    // The original appended 'Z' unconditionally -> "…ZZ" -> Invalid Date -> ''. Routing through
-    // parseUtc makes the helper total over both shapes; this is a strict repair, not a
-    // behaviour change on the shape the route actually serves.
-    const { withZ } = wireShapesFor(45);
-    expect(ORIGINAL_elapsed(withZ)).toBe('');
-    expect(formatElapsed(withZ)).toBe('45s');
   });
 });
 

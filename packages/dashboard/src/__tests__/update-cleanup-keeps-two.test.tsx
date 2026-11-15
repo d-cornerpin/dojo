@@ -34,13 +34,11 @@ vi.mock('../hooks/useToast', async () => {
   return {
     useToast: () => stub.value,
     ToastProvider: ({ children }: { children: ReactElement }) => children,
-    ToastContainer: () => null,
   };
 });
 
 import * as api from '../lib/api';
 import { PlatformTab } from '../components/settings/PlatformTab';
-import { ThemeProvider } from '../themes/ThemeProvider';
 
 const mocked = () => vi.mocked(api);
 
@@ -65,7 +63,7 @@ afterEach(() => { vi.clearAllMocks(); });
 
 describe('the backups clean-up keeps what the server keeps', () => {
   it('the button names two, and a press asks the server to keep two', async () => {
-    render(<MemoryRouter><ThemeProvider><PlatformTab /></ThemeProvider></MemoryRouter>);
+    render(<MemoryRouter><PlatformTab /></MemoryRouter>);
     const button = await screen.findByRole('button', { name: /Clean up old backups/ });
     expect(button.textContent, 'the button says how many stay').toContain('keep most recent 2');
     fireEvent.click(button);

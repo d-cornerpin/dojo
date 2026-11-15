@@ -16,7 +16,12 @@
 
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent, type RenderResult } from '@testing-library/react';
-import { ToastProvider, ToastContainer } from '../hooks/useToast';
+vi.mock('../hooks/useWebSocket', async () => {
+  const { fakeUseWebSocket } = await import('./helpers/frames');
+  return { useWebSocket: fakeUseWebSocket };
+});
+import { ToastProvider } from '../hooks/useToast';
+import { Dojo3Notifications } from '../components/Dojo3Notifications';
 
 // The house pattern: mock the door, never reach a live server. The composer
 // itself only uploads on send, but the voice hook it mounts reads settings
@@ -41,7 +46,7 @@ const GB = 1024 ** 3;
 /** The real toast queue, so the assertion is on the words the owner sees. */
 const mount = (): RenderResult => render(
   <ToastProvider>
-    <ToastContainer />
+    <Dojo3Notifications />
     <Dojo3Composer agentId="primary" onSend={() => {}} />
   </ToastProvider>,
 );

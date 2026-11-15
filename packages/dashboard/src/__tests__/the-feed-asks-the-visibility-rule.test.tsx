@@ -55,7 +55,6 @@ import { ActiveAgentProvider } from '../components/ActiveAgentProvider';
 import { RightDockProvider } from '../components/RightDockProvider';
 import { TechniqueSessionProvider } from '../components/TechniqueSessionProvider';
 import { OrbProvider } from '../components/orb/OrbProvider';
-import { ThemeProvider } from '../themes/ThemeProvider';
 
 const ASKED = 'Please take a look at the thing.';
 const NOTE_TEXT = 'Sending the reply to the channel now.';
@@ -102,7 +101,6 @@ const noteBubbles = (root: HTMLElement, text: string): Element[] =>
 
 const shell = (page: ReactElement) => (
   <MemoryRouter>
-    <ThemeProvider>
       <OrbProvider>
         <ActiveAgentProvider>
           <RightDockProvider>
@@ -110,7 +108,6 @@ const shell = (page: ReactElement) => (
           </RightDockProvider>
         </ActiveAgentProvider>
       </OrbProvider>
-    </ThemeProvider>
   </MemoryRouter>
 );
 

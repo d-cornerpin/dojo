@@ -43,7 +43,7 @@ const toast = vi.hoisted(() => ({ calls: [] as Array<{ level: string; message: s
 vi.mock('../hooks/useToast', () => {
   const record = (level: string) => (message: string) => { toast.calls.push({ level, message }); };
   const value = { toasts: [], addToast: () => {}, addActionToast: () => {}, removeToast: () => {}, removeToastByKey: () => {}, info: record('info'), success: record('success'), warning: record('warning'), error: record('error') };
-  return { useToast: () => value, ToastProvider: ({ children }: { children: ReactElement }) => children, ToastContainer: () => null };
+  return { useToast: () => value, ToastProvider: ({ children }: { children: ReactElement }) => children };
 });
 
 import * as api from '../lib/api';

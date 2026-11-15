@@ -26,7 +26,12 @@ vi.mock('../lib/api', async () => {
 
 import * as api from '../lib/api';
 import { VoiceOpenerModelConfig } from '../components/RouterConfig';
-import { ToastProvider, ToastContainer } from '../hooks/useToast';
+vi.mock('../hooks/useWebSocket', async () => {
+  const { fakeUseWebSocket } = await import('./helpers/frames');
+  return { useWebSocket: fakeUseWebSocket };
+});
+import { ToastProvider } from '../hooks/useToast';
+import { Dojo3Notifications } from '../components/Dojo3Notifications';
 
 const REFUSAL = 'That model cannot speak the opener.';
 
@@ -41,7 +46,7 @@ const renderOpener = async () => {
   render(
     <ToastProvider>
       <VoiceOpenerModelConfig />
-      <ToastContainer />
+      <Dojo3Notifications />
     </ToastProvider>,
   );
   // Loaded: the card is up and the picker shows the stored model.

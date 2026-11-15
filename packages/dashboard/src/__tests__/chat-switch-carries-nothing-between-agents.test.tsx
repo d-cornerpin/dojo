@@ -40,7 +40,6 @@ vi.mock('../hooks/useToast', async () => {
   return {
     useToast: () => stub.value,
     ToastProvider: ({ children }: { children: ReactElement }) => children,
-    ToastContainer: () => null,
   };
 });
 
@@ -51,7 +50,6 @@ import { ActiveAgentProvider, useActiveAgent } from '../components/ActiveAgentPr
 import { RightDockProvider } from '../components/RightDockProvider';
 import { TechniqueSessionProvider } from '../components/TechniqueSessionProvider';
 import { OrbProvider } from '../components/orb/OrbProvider';
-import { ThemeProvider } from '../themes/ThemeProvider';
 
 /** The agent the provider defaults to, and the one we switch to. */
 const A = 'primary';
@@ -70,9 +68,9 @@ function SwitchTo() {
 
 const shell = (page: ReactElement) => (
   <MemoryRouter>
-    <AuthProvider><ThemeProvider><OrbProvider><ActiveAgentProvider>
+    <AuthProvider><OrbProvider><ActiveAgentProvider>
       <RightDockProvider><TechniqueSessionProvider>{page}<SwitchTo /></TechniqueSessionProvider></RightDockProvider>
-    </ActiveAgentProvider></OrbProvider></ThemeProvider></AuthProvider>
+    </ActiveAgentProvider></OrbProvider></AuthProvider>
   </MemoryRouter>
 );
 

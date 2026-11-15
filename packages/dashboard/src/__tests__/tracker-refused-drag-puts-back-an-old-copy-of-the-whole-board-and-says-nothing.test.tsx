@@ -35,7 +35,6 @@ vi.mock('../hooks/useToast', async () => {
   return {
     useToast: () => stub.value,
     ToastProvider: ({ children }: { children: ReactElement }) => children,
-    ToastContainer: () => null,
   };
 });
 

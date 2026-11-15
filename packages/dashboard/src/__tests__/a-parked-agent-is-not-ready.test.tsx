@@ -27,7 +27,7 @@ vi.mock('../hooks/useWebSocket', async () => {
 vi.mock('../hooks/useToast', async () => {
   const { fakeToast } = await import('./helpers/frames');
   const stub = fakeToast();
-  return { useToast: () => stub.value, ToastProvider: ({ children }: { children: ReactElement }) => children, ToastContainer: () => null };
+  return { useToast: () => stub.value, ToastProvider: ({ children }: { children: ReactElement }) => children };
 });
 
 import { AgentCard } from '../components/AgentCard';
@@ -80,14 +80,13 @@ describe('t148 r3 — the status pill of a parked agent', () => {
 import { waitFor, act } from '@testing-library/react';
 import * as api from '../lib/api';
 import { Agents } from '../pages/Agents';
-import { ThemeProvider } from '../themes/ThemeProvider';
 import { emitFrame, resetFrames } from './helpers/frames';
 
 describe('t148 r4 — the Agents page follows a park live', () => {
   it('a `paused` frame carrying the cause puts it on the pill; a later frame without it takes it off', async () => {
     resetFrames();
     (api.getAgents as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: true, data: [agent('idle', null)] });
-    render(<MemoryRouter><AuthProvider><ThemeProvider><ActiveAgentProvider><Agents /></ActiveAgentProvider></ThemeProvider></AuthProvider></MemoryRouter>);
+    render(<MemoryRouter><AuthProvider><ActiveAgentProvider><Agents /></ActiveAgentProvider></AuthProvider></MemoryRouter>);
     await waitFor(() => expect(document.querySelector('.status')).not.toBeNull());
     expect(document.querySelector('.status')!.textContent).toContain('Ready');
 

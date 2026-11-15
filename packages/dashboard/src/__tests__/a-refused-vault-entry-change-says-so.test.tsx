@@ -28,7 +28,12 @@ vi.mock('../lib/api', async () => {
 import * as api from '../lib/api';
 import type { VaultEntry } from '../lib/api';
 import { VaultEntryCard } from '../components/VaultEntryCard';
-import { ToastProvider, ToastContainer } from '../hooks/useToast';
+vi.mock('../hooks/useWebSocket', async () => {
+  const { fakeUseWebSocket } = await import('./helpers/frames');
+  return { useWebSocket: fakeUseWebSocket };
+});
+import { ToastProvider } from '../hooks/useToast';
+import { Dojo3Notifications } from '../components/Dojo3Notifications';
 
 const mocked = () => vi.mocked(api);
 
@@ -60,7 +65,7 @@ const mountOpen = (onUpdated = vi.fn(), onDeleted = vi.fn()) => {
   render(
     <ToastProvider>
       <VaultEntryCard entry={ENTRY} onUpdated={onUpdated} onDeleted={onDeleted} />
-      <ToastContainer />
+      <Dojo3Notifications />
     </ToastProvider>,
   );
   fireEvent.click(screen.getByText(ENTRY.content));

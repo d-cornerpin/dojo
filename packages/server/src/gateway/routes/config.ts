@@ -28,8 +28,7 @@ import { refuseBadClockTime, CLOCK_TIME_SETTING_KEYS } from '../../config/clock-
 import { refuseStaleWholeDocument } from './whole-document-guard.js';
 import { readUserProfile, readUserProfileForEditor, writeUserProfile, composeUserProfile, userProfileIsEngineSeeded } from '../../prompt/user-profile.js';
 import { ownerMailboxes } from '../../services/owner-mailboxes.js';
-import { TERMINAL_JOB_STATUSES, TERMINAL_JOB_STATUS_SQL } from '../../services/media-job-status.js';
-import { settleAskOnJobEnded } from '../../work/ask-settlement.js';
+import { TERMINAL_JOB_STATUS_SQL } from '../../services/media-job-status.js';
 
 
 interface ModelUsage {
@@ -963,53 +962,9 @@ configRouter.get('/models', (c) => {
   return c.json({ ok: true, data: models });
 });
 
-// POST /video-jobs/:id/cancel: stop an in-flight job. Best-effort
-// provider cancel, then mark the row 'cancelled'. The poller drops the
-// job on its next tick.
-configRouter.post('/video-jobs/:id/cancel', async (c) => {
-  const db = getDb();
-  const id = c.req.param('id');
-  const row = db.prepare(
-    'SELECT id, agent_id, provider_id, provider_job_id, prompt, status FROM video_jobs WHERE id = ?'
-  ).get(id) as { id: string; agent_id: string; provider_id: string; provider_job_id: string | null; prompt: string; status: string } | undefined;
-  if (!row) {
-    return c.json({ ok: false, error: 'Video job not found.' }, 404);
-  }
-  // The door refuses only a row that is genuinely FINISHED: asking "is it one of the two words I know"
-  // would leave an open row spelled any other way impossible for the owner to cancel.
-  if ((TERMINAL_JOB_STATUSES as readonly string[]).includes(row.status)) {
-    return c.json({ ok: false, error: `Job is already ${row.status}; nothing to cancel.` }, 409);
-  }
-
-  if (row.provider_job_id) {
-    try {
-      const { cancelProviderVideo } = await import('../../services/video-generation.js');
-      await cancelProviderVideo(row.provider_id, row.provider_job_id);
-    } catch { /* best effort, we still mark it cancelled locally */ }
-  }
-
-  db.prepare(
-    `UPDATE video_jobs SET status='cancelled', finished_at=datetime('now'), updated_at=datetime('now') WHERE id = ? AND status NOT IN (${TERMINAL_JOB_STATUS_SQL})`
-  ).run(id);
-  settleAskOnJobEnded(row.agent_id, id);   // the last job of a request called off settles it
-
-  try {
-    const { broadcast } = await import('../ws.js');
-    const active = db.prepare(
-      `SELECT COUNT(*) AS n FROM video_jobs WHERE status NOT IN (${TERMINAL_JOB_STATUS_SQL})`,
-    ).get() as { n: number };
-    broadcast({
-      type: 'video_job:update',
-      data: { id: row.id, agentId: row.agent_id, status: 'cancelled', prompt: row.prompt, activeCount: active.n },
-    });
-  } catch { /* best effort */ }
-
-  return c.json({ ok: true, data: { id, status: 'cancelled' } });
-});
-
 // GET /generation-jobs?status=active: list run-once media generation jobs
-// (image / audio / music). MERGED with video_jobs so the ActiveJobsIndicator
-// can fetch one list covering every generator. Each row is normalized with a
+// (image / audio / music). MERGED with video_jobs so the orb can
+// fetch one list covering every generator. Each row is normalized with a
 // `kind` field; video rows are tagged kind='video'.
 configRouter.get('/generation-jobs', (c) => {
   const db = getDb();
@@ -1059,47 +1014,6 @@ configRouter.get('/generation-jobs', (c) => {
     .sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)));
 
   return c.json({ ok: true, data });
-});
-
-// POST /generation-jobs/:id/cancel: stop an in-flight run-once job. The
-// worker honors the cancel via CAS on its next state transition (and skips
-// delivery if the asset finishes after the cancel lands).
-configRouter.post('/generation-jobs/:id/cancel', async (c) => {
-  const db = getDb();
-  const id = c.req.param('id');
-  const row = db.prepare(
-    'SELECT id, kind, agent_id, prompt, status FROM generation_jobs WHERE id = ?'
-  ).get(id) as { id: string; kind: string; agent_id: string; prompt: string; status: string } | undefined;
-  if (!row) {
-    return c.json({ ok: false, error: 'Generation job not found.' }, 404);
-  }
-  // Refuse only what is genuinely finished, as above.
-  if ((TERMINAL_JOB_STATUSES as readonly string[]).includes(row.status)) {
-    return c.json({ ok: false, error: `Job is already ${row.status}; nothing to cancel.` }, 409);
-  }
-
-  db.prepare(
-    `UPDATE generation_jobs SET status='cancelled', finished_at=datetime('now'), updated_at=datetime('now') WHERE id = ? AND status NOT IN (${TERMINAL_JOB_STATUS_SQL})`
-  ).run(id);
-  settleAskOnJobEnded(row.agent_id, id);   // as above
-
-  try {
-    const { broadcast } = await import('../ws.js');
-    const { countActiveGenerationJobs } = await import('../../services/generation-jobs.js');
-    broadcast({
-      type: 'generation_job:update',
-      data: {
-        id: row.id,
-        agentId: row.agent_id,
-        kind: row.kind as 'image' | 'audio' | 'music',
-        status: 'cancelled',
-        prompt: row.prompt,
-        activeCount: countActiveGenerationJobs(),
-      },
-    });
-  } catch { /* best effort */ }
-
-  return c.json({ ok: true, data: { id, status: 'cancelled' } });
 });
 
 // GET /pricing-sync/status: last LiteLLM price-index run (success/failure,

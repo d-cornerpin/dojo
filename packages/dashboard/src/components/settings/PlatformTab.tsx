@@ -6,7 +6,6 @@ import { useState, useEffect } from 'react';
 import * as api from '../../lib/api';
 import { useToast } from '../../hooks/useToast';
 import { RemoteAccessSettings } from './RemoteAccessSettings';
-import { useTheme } from '../../themes';
 import { MigrationExport } from '../MigrationExport';
 import { ImportWizard } from '../ImportWizard';
 import { StandardModels } from './StandardModels';
@@ -27,8 +26,6 @@ export const PlatformTab = () => {
       <SearchSettings />
       <MigrationSettings />
       <OrbQualitySettings />
-      {/* Feng Shui (theme) card is hidden here; the component stays for easy restore. */}
-      {/* <FengShuiSettings /> */}
       <ServerControlSettings />
     </div>
   );
@@ -197,40 +194,6 @@ const ServerControlSettings = () => {
           </>
         )}
       </div>
-    </div>
-  );
-};
-
-const FengShuiSettings = () => {
-  const { themeId, setTheme, themes } = useTheme();
-
-  return (
-    <div className="tile">
-      <div className="scard__title">Feng Shui</div>
-      <div className="scard__desc">
-        Choose the visual theme for your Dojo.
-      </div>
-
-      {themes.map(theme => {
-        const selected = themeId === theme.id;
-        return (
-          <div
-            key={theme.id}
-            role="radio"
-            aria-checked={selected}
-            tabIndex={0}
-            onClick={() => setTheme(theme.id)}
-            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setTheme(theme.id); } }}
-            className={`radio-card ${selected ? 'is-selected' : ''}`}
-          >
-            <span className="radio-card__dot" />
-            <div>
-              <div className="radio-card__name">{theme.name}</div>
-              <div className="radio-card__desc">{theme.description}</div>
-            </div>
-          </div>
-        );
-      })}
     </div>
   );
 };

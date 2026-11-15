@@ -39,7 +39,7 @@ vi.mock('../hooks/useWebSocket', async () => {
 vi.mock('../hooks/useToast', async () => {
   const { fakeToast } = await import('./helpers/frames');
   const stub = fakeToast();
-  return { useToast: () => stub.value, ToastProvider: ({ children }: { children: unknown }) => children, ToastContainer: () => null };
+  return { useToast: () => stub.value, ToastProvider: ({ children }: { children: unknown }) => children };
 });
 
 import * as api from '../lib/api';

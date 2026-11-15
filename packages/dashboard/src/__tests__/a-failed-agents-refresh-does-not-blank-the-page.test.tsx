@@ -25,14 +25,13 @@ vi.mock('../hooks/useWebSocket', async () => {
 vi.mock('../hooks/useToast', async () => {
   const { fakeToast } = await import('./helpers/frames');
   const stub = fakeToast();
-  return { useToast: () => stub.value, ToastProvider: ({ children }: { children: ReactElement }) => children, ToastContainer: () => null };
+  return { useToast: () => stub.value, ToastProvider: ({ children }: { children: ReactElement }) => children };
 });
 
 import * as api from '../lib/api';
 import { Agents } from '../pages/Agents';
 import { ActiveAgentProvider } from '../components/ActiveAgentProvider';
 import { AuthProvider } from '../hooks/useAuth';
-import { ThemeProvider } from '../themes/ThemeProvider';
 import { emitFrame, resetFrames } from './helpers/frames';
 
 const agent = {
@@ -46,7 +45,7 @@ const getAgents = () => api.getAgents as unknown as ReturnType<typeof vi.fn>;
 beforeEach(() => { resetFrames(); vi.clearAllMocks(); });
 
 const mount = () => render(
-  <MemoryRouter><AuthProvider><ThemeProvider><ActiveAgentProvider><Agents /></ActiveAgentProvider></ThemeProvider></AuthProvider></MemoryRouter>,
+  <MemoryRouter><AuthProvider><ActiveAgentProvider><Agents /></ActiveAgentProvider></AuthProvider></MemoryRouter>,
 );
 
 describe('a failed agents refresh does not blank the page', () => {

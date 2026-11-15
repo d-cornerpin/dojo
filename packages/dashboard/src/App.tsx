@@ -21,7 +21,6 @@ import { Costs } from './pages/Costs';
 import * as api from './lib/api';
 import { PostMigrationBanner } from './components/PostMigrationBanner';
 import { ReportPreviewCard } from './components/ReportPreviewCard';
-import { ThemeProvider } from './themes/ThemeProvider';
 import { OrbProvider } from './components/orb/OrbProvider';
 import { ActiveAgentProvider } from './components/ActiveAgentProvider';
 import { RightDockProvider } from './components/RightDockProvider';
@@ -89,8 +88,7 @@ const WebSocketShell = () => {
 
 // Shared chrome for every authenticated surface: the toast system.
 const DashboardChrome = () => (
-  // One toast queue feeds two surfaces: the dojo3 stage's orb-anchored cards
-  // (Dojo3Notifications) and the full-page corner ToastContainer.
+  // One toast queue, drawn by the dojo3 stage's orb-anchored cards (Dojo3Notifications).
   <ToastProvider>
     <SystemRestartOverlay />
     <Outlet />
@@ -319,7 +317,7 @@ export const GlobalAlerts = () => {
     return () => { unsub(); unsub2(); unsub3(); };
   }, [subscribe, toast, showOwnerCard, removeToastByKey]);
 
-  return null; // rendering is handled by ToastContainer
+  return null; // rendering is handled by Dojo3Notifications
 };
 
 // The server emits ui:navigate (from the open_page / open_settings tools); this
@@ -350,9 +348,7 @@ const NavigationHandler = () => {
 export const App = () => {
   return (
     <AuthProvider>
-      <ThemeProvider>
-        <AppRoutes />
-      </ThemeProvider>
+      <AppRoutes />
     </AuthProvider>
   );
 };

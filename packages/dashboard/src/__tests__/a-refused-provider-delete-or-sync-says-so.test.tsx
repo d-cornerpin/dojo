@@ -25,7 +25,12 @@ vi.mock('../lib/api', async () => {
 });
 
 import * as api from '../lib/api';
-import { ToastProvider, ToastContainer } from '../hooks/useToast';
+vi.mock('../hooks/useWebSocket', async () => {
+  const { fakeUseWebSocket } = await import('./helpers/frames');
+  return { useWebSocket: fakeUseWebSocket };
+});
+import { ToastProvider } from '../hooks/useToast';
+import { Dojo3Notifications } from '../components/Dojo3Notifications';
 import { ProvidersTab } from '../components/settings/ProvidersTab';
 
 const PROVIDER = {
@@ -43,7 +48,7 @@ const PROVIDER = {
 const renderTab = () => render(
   <ToastProvider>
     <ProvidersTab />
-    <ToastContainer />
+    <Dojo3Notifications />
   </ToastProvider>,
 );
 

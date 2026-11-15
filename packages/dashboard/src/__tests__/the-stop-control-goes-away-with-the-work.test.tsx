@@ -53,7 +53,6 @@ vi.mock('../hooks/useToast', async () => {
   return {
     useToast: () => stub.value,
     ToastProvider: ({ children }: { children: ReactElement }) => children,
-    ToastContainer: () => null,
   };
 });
 
@@ -64,7 +63,6 @@ import { ActiveAgentProvider } from '../components/ActiveAgentProvider';
 import { RightDockProvider } from '../components/RightDockProvider';
 import { TechniqueSessionProvider } from '../components/TechniqueSessionProvider';
 import { OrbProvider } from '../components/orb/OrbProvider';
-import { ThemeProvider } from '../themes/ThemeProvider';
 import { FX } from '../../../../deploy/checks/fixture-vocabulary.mjs';
 
 /** The agent the ActiveAgentProvider defaults to with no selection and no list. */
@@ -73,9 +71,9 @@ const AGENT = 'primary';
 /** App.tsx's own nesting, as `every-major-page-mounts.test.tsx` spells it. */
 const shell = (page: ReactElement) => (
   <MemoryRouter>
-    <AuthProvider><ThemeProvider><OrbProvider><ActiveAgentProvider>
+    <AuthProvider><OrbProvider><ActiveAgentProvider>
       <RightDockProvider><TechniqueSessionProvider>{page}</TechniqueSessionProvider></RightDockProvider>
-    </ActiveAgentProvider></OrbProvider></ThemeProvider></AuthProvider>
+    </ActiveAgentProvider></OrbProvider></AuthProvider>
   </MemoryRouter>
 );
 

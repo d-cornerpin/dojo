@@ -30,7 +30,6 @@ vi.mock('../hooks/useToast', async () => {
   return {
     useToast: () => stub.value,
     ToastProvider: ({ children }: { children: ReactElement }) => children,
-    ToastContainer: () => null,
   };
 });
 
@@ -38,9 +37,7 @@ import * as api from '../lib/api';
 import { Tracker } from '../pages/Tracker';
 import { Techniques } from '../pages/Techniques';
 import { InterAgentLane } from '../pages/InterAgentLane';
-import { ActiveJobsIndicator } from '../components/ActiveJobsIndicator';
 import { ActiveAgentProvider } from '../components/ActiveAgentProvider';
-import { ThemeProvider } from '../themes/ThemeProvider';
 import { AuthProvider } from '../hooks/useAuth';
 import { OrbProvider } from '../components/orb/OrbProvider';
 import { RightDockProvider } from '../components/RightDockProvider';
@@ -48,9 +45,9 @@ import { TechniqueSessionProvider } from '../components/TechniqueSessionProvider
 
 const shell = (page: ReactElement) => (
   <MemoryRouter>
-    <AuthProvider><ThemeProvider><OrbProvider><ActiveAgentProvider>
+    <AuthProvider><OrbProvider><ActiveAgentProvider>
       <RightDockProvider><TechniqueSessionProvider>{page}</TechniqueSessionProvider></RightDockProvider>
-    </ActiveAgentProvider></OrbProvider></ThemeProvider></AuthProvider>
+    </ActiveAgentProvider></OrbProvider></AuthProvider>
   </MemoryRouter>
 );
 
@@ -77,13 +74,6 @@ async function bump(ui: () => ReactElement, calls: () => number) {
 describe('a page re-asks for its current view after a reconnect', () => {
   it('Tracker refetches its tasks', async () => {
     const { atMount, after } = await bump(() => shell(<Tracker />), () => mocked().getTasks.mock.calls.length);
-    expect(atMount).toBe(1);
-    expect(after).toBe(2);
-  });
-
-  it('the active-jobs indicator refetches', async () => {
-    const { atMount, after } = await bump(
-      () => shell(<ActiveJobsIndicator agentId="primary" />), () => mocked().listActiveGenerationJobs.mock.calls.length);
     expect(atMount).toBe(1);
     expect(after).toBe(2);
   });

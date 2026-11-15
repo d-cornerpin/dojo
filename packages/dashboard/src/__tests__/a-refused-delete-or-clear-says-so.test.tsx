@@ -52,7 +52,8 @@ import { TaskCard } from '../components/TaskCard';
 import { AgentCard } from '../components/AgentCard';
 import { AuthProvider } from '../hooks/useAuth';
 import { ActiveAgentProvider } from '../components/ActiveAgentProvider';
-import { ToastProvider, ToastContainer } from '../hooks/useToast';
+import { ToastProvider } from '../hooks/useToast';
+import { Dojo3Notifications } from '../components/Dojo3Notifications';
 
 // A plain, non-recurring task: nothing special renders, so the delete affordance
 // is the only interactive thing the test drives.
@@ -102,7 +103,7 @@ describe('the task card delete', () => {
     render(
       <ToastProvider>
         <TaskCard task={task} onClick={() => {}} onDeleted={onDeleted} />
-        <ToastContainer />
+        <Dojo3Notifications />
       </ToastProvider>,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Delete task' }));
@@ -117,7 +118,7 @@ describe('the task card delete', () => {
     render(
       <ToastProvider>
         <TaskCard task={task} onClick={() => {}} onDeleted={onDeleted} />
-        <ToastContainer />
+        <Dojo3Notifications />
       </ToastProvider>,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Delete task' }));
@@ -142,7 +143,7 @@ describe('the agent card delete', () => {
             </ActiveAgentProvider>
           </AuthProvider>
         </MemoryRouter>
-        <ToastContainer />
+        <Dojo3Notifications />
       </ToastProvider>,
     );
 

@@ -30,7 +30,6 @@ vi.mock('../hooks/useToast', async () => {
   return {
     useToast: () => stub.value,
     ToastProvider: ({ children }: { children: ReactElement }) => children,
-    ToastContainer: () => null,
   };
 });
 
@@ -41,14 +40,13 @@ import { ActiveAgentProvider } from '../components/ActiveAgentProvider';
 import { RightDockProvider } from '../components/RightDockProvider';
 import { TechniqueSessionProvider } from '../components/TechniqueSessionProvider';
 import { OrbProvider } from '../components/orb/OrbProvider';
-import { ThemeProvider } from '../themes/ThemeProvider';
 
 const AGENT = 'primary';
 const shell = (page: ReactElement) => (
   <MemoryRouter>
-    <AuthProvider><ThemeProvider><OrbProvider><ActiveAgentProvider>
+    <AuthProvider><OrbProvider><ActiveAgentProvider>
       <RightDockProvider><TechniqueSessionProvider>{page}</TechniqueSessionProvider></RightDockProvider>
-    </ActiveAgentProvider></OrbProvider></ThemeProvider></AuthProvider>
+    </ActiveAgentProvider></OrbProvider></AuthProvider>
   </MemoryRouter>
 );
 

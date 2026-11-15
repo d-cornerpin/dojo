@@ -23,7 +23,6 @@ import { CollapseChevron } from '../components/CollapseToggle';
 import { formatDate, formatDateShort, parseUtc } from '../lib/dates';
 import { MigrationExport } from '../components/MigrationExport';
 import { ImportWizard } from '../components/ImportWizard';
-import { useTheme } from '../themes';
 import {
   getOrbQualityCached,
   refreshOrbQualityFromServer,

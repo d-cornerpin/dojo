@@ -27,7 +27,12 @@ vi.mock('../lib/api', async () => {
 
 import * as api from '../lib/api';
 import type { AgentGroup } from '../lib/api';
-import { ToastProvider, ToastContainer } from '../hooks/useToast';
+vi.mock('../hooks/useWebSocket', async () => {
+  const { fakeUseWebSocket } = await import('./helpers/frames');
+  return { useWebSocket: fakeUseWebSocket };
+});
+import { ToastProvider } from '../hooks/useToast';
+import { Dojo3Notifications } from '../components/Dojo3Notifications';
 import { GroupCard } from '../components/GroupCard';
 
 const GROUP: AgentGroup = {
@@ -45,7 +50,7 @@ const renderCard = () => {
   render(
     <ToastProvider>
       <GroupCard group={GROUP} agents={[]} models={[]} providerNameById={{}} onReload={onReload} />
-      <ToastContainer />
+      <Dojo3Notifications />
     </ToastProvider>,
   );
   return onReload;

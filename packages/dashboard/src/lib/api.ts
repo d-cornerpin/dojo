@@ -2183,7 +2183,7 @@ export const removeTwilioVoiceSafeCallerApi = async (address: string): Promise<A
 // Unified media-generation job (image / audio / music / video). The
 // /config/generation-jobs endpoint merges the run-once generation_jobs
 // table with the async video_jobs table and tags each row with a `kind`,
-// so the ActiveJobsIndicator can show one list across every generator.
+// so the orb can show one list across every generator.
 export interface GenJobDto {
   id: string;
   kind: 'image' | 'audio' | 'music' | 'video';
@@ -2203,18 +2203,6 @@ export interface GenJobDto {
 
 export const listActiveGenerationJobs = async (): Promise<ApiResponse<GenJobDto[]>> => {
   return request<GenJobDto[]>('/config/generation-jobs?status=active');
-};
-
-// Cancel routes by kind: video jobs live in the video poller, everything
-// else in the generation-jobs worker.
-export const cancelGenerationJob = async (
-  id: string,
-  kind: GenJobDto['kind'],
-): Promise<ApiResponse<{ id: string; status: string }>> => {
-  const base = kind === 'video' ? 'video-jobs' : 'generation-jobs';
-  return request<{ id: string; status: string }>(`/config/${base}/${encodeURIComponent(id)}/cancel`, {
-    method: 'POST',
-  });
 };
 
 // ── Problem reports ──

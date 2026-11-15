@@ -20,7 +20,7 @@ const toast = vi.hoisted(() => ({ calls: [] as Array<{ level: string; message: s
 vi.mock('../hooks/useToast', () => {
   const record = (level: string) => (message: string) => { toast.calls.push({ level, message }); };
   const value = { toasts: [], addToast: () => {}, addActionToast: () => {}, removeToast: () => {}, removeToastByKey: () => {}, info: record('info'), success: record('success'), warning: record('warning'), error: record('error') };
-  return { useToast: () => value, ToastProvider: ({ children }: { children: ReactElement }) => children, ToastContainer: () => null };
+  return { useToast: () => value, ToastProvider: ({ children }: { children: ReactElement }) => children };
 });
 vi.mock('../hooks/useWebSocket', async () => {
   const { fakeUseWebSocket } = await import('./helpers/frames');
@@ -32,7 +32,6 @@ import { AgentCard } from '../components/AgentCard';
 import { ActiveAgentProvider } from '../components/ActiveAgentProvider';
 import { AuthProvider } from '../hooks/useAuth';
 import { Agents } from '../pages/Agents';
-import { ThemeProvider } from '../themes/ThemeProvider';
 
 const agent = (over: Partial<AgentDetail> = {}): AgentDetail => ({
   id: 'a1', name: 'Kite', modelId: 'auto', status: 'idle', config: { orbHue: 172 }, agentType: 'standard', classification: 'ronin',
@@ -76,7 +75,7 @@ describe('the Unassigned drop zone', () => {
       data: [{ id: 'g1', name: 'Research', description: null, createdBy: 'me', color: '', memberCount: 1, createdAt: '' }],
     } as never);
     vi.mocked(api.assignAgentToGroupApi).mockResolvedValue({ ok: false, error: 'denied' } as never);
-    render(<MemoryRouter><AuthProvider><ThemeProvider><ActiveAgentProvider><Agents /></ActiveAgentProvider></ThemeProvider></AuthProvider></MemoryRouter>);
+    render(<MemoryRouter><AuthProvider><ActiveAgentProvider><Agents /></ActiveAgentProvider></AuthProvider></MemoryRouter>);
     await waitFor(() => expect(screen.getByText('Unassigned')).toBeTruthy());
     const ungrouped = screen.getByText('Unassigned').closest('section') as HTMLElement;
     fireEvent.drop(ungrouped, { dataTransfer: { getData: () => 'a1' } });

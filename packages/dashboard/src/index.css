@@ -516,22 +516,6 @@
     overflow-y: auto;
   }
 
-  .glass-toast {
-    background: rgb(var(--ui-on-base-ch) / 0.1);
-    backdrop-filter: blur(20px);
-    border: 1px solid rgb(var(--ui-on-base-ch) / 0.12);
-    border-radius: 12px;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgb(var(--ui-on-base-ch) / 0.08);
-    border-left: 3px solid;
-    animation: slideInRight 0.3s ease-out;
-  }
-  /* Three-tier toast classification (2026-05-05): info/success = green,
-     warning = orange, error = red. info and success are visual aliases. */
-  .glass-toast-info    { border-left-color: var(--cp-teal); }
-  .glass-toast-success { border-left-color: var(--cp-teal); }
-  .glass-toast-warning { border-left-color: var(--cp-amber); }
-  .glass-toast-error   { border-left-color: var(--cp-coral); }
-
   /* ════════════════════════════════════════
      UTILITIES
      ════════════════════════════════════════ */

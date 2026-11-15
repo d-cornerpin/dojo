@@ -170,23 +170,3 @@ export const ToolResultBlock = ({ content: raw, isError }: ToolResultBlockProps)
     </div>
   );
 };
-
-// ── Legacy ToolCallBlock (for live WS events during streaming) ──
-
-interface ToolCallBlockProps {
-  toolName: string;
-  args?: Record<string, unknown>;
-  result?: string;
-  isError?: boolean;
-}
-
-export const ToolCallBlock = ({ toolName, args, result, isError }: ToolCallBlockProps) => {
-  return (
-    <div>
-      {args && <ToolCallCard name={toolName} input={args} />}
-      {result !== undefined && (
-        <ToolResultBlock toolUseId="" content={result} isError={!!isError} />
-      )}
-    </div>
-  );
-};

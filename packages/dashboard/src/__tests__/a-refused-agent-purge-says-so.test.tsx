@@ -33,7 +33,6 @@ vi.mock('../hooks/useWebSocket', async () => {
 import * as api from '../lib/api';
 import { Agents } from '../pages/Agents';
 import { AuthProvider } from '../hooks/useAuth';
-import { ThemeProvider } from '../themes/ThemeProvider';
 import { ActiveAgentProvider } from '../components/ActiveAgentProvider';
 import { ToastProvider } from '../hooks/useToast';
 
@@ -61,13 +60,11 @@ const ENDED_AGENT = {
 const renderAgents = () => render(
   <MemoryRouter>
     <AuthProvider>
-      <ThemeProvider>
         <ActiveAgentProvider>
           <ToastProvider>
             <Agents />
           </ToastProvider>
         </ActiveAgentProvider>
-      </ThemeProvider>
     </AuthProvider>
   </MemoryRouter>,
 );
