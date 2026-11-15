@@ -1007,6 +1007,7 @@ async function main(): Promise<void> {
     // none wakes on a closed handle. Rows stay open and the next boot's resume adopts them.
     import('./services/video-poller-lifetime.js').then(m => m.stopVideoJobPoller()).catch(() => {});
     import('./services/tunnel.js').then(m => m.stopTunnel()).catch(() => {});
+    import('./voice/stt-service.js').then(m => m.stopWhisperServer()).catch(() => {});   // its child would outlive this process
     // STEP 3: close the gateway so server.close() can finish: the ws server owns its clients and an
     // upgraded socket keeps the http server open, which would stall until the supervisor SIGKILLs before
     // closeDb (gateway/close-servers.ts). `serve()` is always HTTP/1 here, so the cast is sound.
