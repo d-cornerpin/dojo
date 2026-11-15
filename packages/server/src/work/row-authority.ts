@@ -7,7 +7,8 @@
 //   * Editors of a row: its holder, its creator, the PM, and the main agent.
 // Move causes are a closed vocabulary (`MOVE_CAUSES`): assignee_gone (the holder's agent row is gone or
 // terminated, read from the DB), coordination (the HOLDER hands its own task to a peer) and user_requested
-// (the owner asked, proven structurally by `ownerAskedInThisTurn`). Blocked or declined work escalates.
+// (the owner asked, proven structurally by `ownerAskedInThisTurn`). Blocked or declined work escalates,
+// except when the main agent moves it.
 // Not this gate's business: the owner's dashboard routes (`by: 'owner'`) and engine subsystems, which have
 // their own fences; the PM's verbs are PM-only doors fenced by `PM_ONLY_WORK_OPS`.
 
@@ -246,9 +247,10 @@ export function checkMove(req: MoveRequest): MoveCheck {
     if (!owner.ok) return { ok: false, text: `Error: "user_requested" could not be confirmed: ${owner.why}. ${escalationPointer(req.actorId)}` };
     return { ok: true, facts: f, cause };
   }
-  // Blocked or declined work escalates to the owner; only the owner's word moves it.
+  // Blocked or declined work escalates to the owner; only the owner's word moves it. The main agent is not
+  // limited here: a live holder's work stays behind the cause checks above and below.
   const blocked = holdOf(f.id)?.kind === 'blocked';
-  if (blocked || wasDeclined(f.id)) {
+  if (!isPrimaryAgent(req.actorId) && (blocked || wasDeclined(f.id))) {
     return {
       ok: false,
       text: `Error: "${f.title}" is ${blocked ? 'blocked' : 'work an agent declined'}, `

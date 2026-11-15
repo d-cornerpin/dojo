@@ -146,12 +146,24 @@ afterEach(() => {
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 describe('B1 the reassign verb needs a cause the engine can check', () => {
-  it('RED: an agent cannot take a BLOCKED task for itself', async () => {
+  it('the main agent cannot take a BLOCKED task a live helper holds', async () => {
     seedTrackerTask(mockDb.current!, { id: TASK, title: TITLE, status: 'in_progress', agentId: WORKER, hold_kind: 'blocked', hold_reason: 'need the vendor key' });
-    const r = await reassign(MAIN, { assigned_to: MAIN, cause: 'coordination' });
-    expect(r.isError, r.content).toBe(true);
-    expect(r.content).toMatch(/escalates to the owner/);
+    const taken = await reassign(MAIN, { assigned_to: MAIN, cause: 'coordination' });
+    expect(taken.isError, taken.content).toBe(true);
+    expect(taken.content).toContain(`is held by agent ${WORKER}. Only its holder may hand it on.`);
+    const gone = await reassign(MAIN, { assigned_to: MAIN, cause: 'assignee_gone' });
+    expect(gone.content).toContain(`agent ${WORKER} is still live`);
     expect(rowOf().agent_id).toBe(WORKER);
+  });
+
+  it('the main agent moves blocked work whose holder is gone; a helper is still refused', async () => {
+    seedTrackerTask(mockDb.current!, { id: TASK, title: TITLE, status: 'in_progress', agentId: GONE, createdBy: PEER, hold_kind: 'blocked', hold_reason: 'need the vendor key' });
+    const helper = await reassign(PEER, { assigned_to: PEER, cause: 'assignee_gone' });
+    expect(helper.isError).toBe(true);
+    expect(helper.content).toMatch(/escalates to the owner/);
+    const r = await reassign(MAIN, { assigned_to: PEER, cause: 'assignee_gone' });
+    expect(r.isError, r.content).toBe(false);
+    expect(rowOf().agent_id).toBe(PEER);
   });
 
   it('RED: a move with no cause is refused and names the vocabulary', async () => {
