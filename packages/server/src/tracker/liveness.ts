@@ -3,7 +3,7 @@
 // MOVEMENT: tokens in or out (a model call's `cost_records` row); a request open on a live connection
 // (the abort registry; the stream watchdog cuts a dead one, so the clock does not run while one is open);
 // a tool started or finished (the agent's own assistant / tool `messages` rows). NOT movement: the status
-// heartbeat (`agent/v2/loop.ts` `startStatusHeartbeat` bumps `agents.updated_at` regardless), `audit_log`
+// heartbeat (`agent/v2/loop.ts` `startStatusHeartbeat` only broadcasts; it never writes the agent row), `audit_log`
 // rows, and inbound rows (a PM poke or the owner's words). A task's own movement is `work/task-freshness.ts`.
 // SILENT: one notice per incident through the owner-notice door, recorded on `agents.silent_notice`, which
 // decides the text, the card and the clear (the agent moving again). Not told: an agent the owner stopped,
