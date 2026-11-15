@@ -6,7 +6,6 @@ import { TIER_FALLBACK, getTierModels, type TierModelRow } from './tier-chain.js
 import { standingSkip, estimateRequestCost, type RoutedSkip } from './standing-filters.js';
 import { turnContext } from '../agent/turn-context.js';
 import { createLogger } from '../logger.js';
-import { getDailySpend } from '../costs/tracker.js';
 import { checkBudget } from '../costs/budget.js';
 import { standardModelRowId } from '../services/local-standard.js';
 import type { DimensionScore } from './types.js';

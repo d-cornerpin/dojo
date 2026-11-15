@@ -294,18 +294,6 @@ export interface PermissionManifest {
   system_control: string[];
 }
 
-export interface AgentMessage {
-  id: string;
-  fromAgent: string;
-  toAgent: string;
-  messageType: 'task' | 'result' | 'poke' | 'status' | 'chat';
-  content: string;
-  metadata: Record<string, unknown>;
-  readByRecipient: boolean;
-  createdAt: string;
-}
-
-
 export interface Project {
   id: string;
   title: string;
@@ -378,18 +366,4 @@ export interface Task {
   evidence: Array<{ kind: string; [k: string]: unknown }>;
   /** The hand-in waiting for a decision: its outcome, note and each proof item as one line. */
   handIn?: { outcome: 'finished' | 'cant_be_done'; note: string; proof: string[] } | null;
-}
-
-export interface CompletionAnnouncement {
-  agentId: string;
-  agentName: string;
-  taskId: string | null;
-  status: 'complete' | 'fallen' | 'blocked';
-  summary: string;
-  stats: {
-    tokensUsed: number;
-    cost: number;
-    durationSeconds: number;
-    toolCallsCount: number;
-  };
 }

@@ -229,10 +229,3 @@ export function startEmbedderWarmer(): void {
   warmTimer = setInterval(() => { void pinEmbedder(); }, WARM_INTERVAL_MS);
   if (typeof warmTimer.unref === 'function') warmTimer.unref();
 }
-
-export function stopEmbedderWarmer(): void {
-  if (warmTimer) {
-    clearInterval(warmTimer);
-    warmTimer = null;
-  }
-}

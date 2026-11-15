@@ -5,26 +5,21 @@ import { fileURLToPath } from 'node:url';
 import { DEFAULT_SOUL_MD, DEFAULT_PM_SOUL_MD, DEFAULT_TRAINER_SOUL_MD, DEFAULT_HEALER_SOUL_MD } from './templates.js';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
-import { toolDefinitions } from '../agent/tools/definitions.js';
 import { getFilteredTools } from '../agent/tools/surface.js';
 import { getAgentPermissions } from '../agent/manifest.js';
 import { isPrimaryAgent, isPMAgent, isTrainerAgent, isHealerAgent, getPrimaryAgentName, getPrimaryAgentId, getPMAgentName, getPMAgentId, getOwnerName, getTrainerAgentId, getTrainerAgentName, getHealerAgentId, getHealerAgentName} from '../config/platform.js';
 import type { TurnCounterparty } from '../agent/v2/counterparty.js';
-import { NO_REPLY_CLOSED_MARKER, WORKING_NOTE_PREFIX, INTERNAL_WORKING_NOTE_PREFIX, settingsPath, type Channel } from '@dojo/shared';
+import { NO_REPLY_CLOSED_MARKER, WORKING_NOTE_PREFIX, INTERNAL_WORKING_NOTE_PREFIX, settingsPath } from '@dojo/shared';
 import { isWorkVerb } from '../tools/work-verbs.js';
-import { getAgentGoogleAccessLevel, getGoogleWorkspaceConfig, isGoogleConnected, isEmailMonitoringEnabled, isEmailSendingEnabled } from '../google/auth.js';
-import { getAgentMicrosoftAccessLevel, getMsAccountType, getMicrosoftWorkspaceConfig, isMicrosoftConnected, isMsEmailMonitoringEnabled, isMsEmailSendingEnabled } from '../microsoft/auth.js';
+import { getAgentGoogleAccessLevel } from '../google/auth.js';
+import { getAgentMicrosoftAccessLevel, getMsAccountType, getMicrosoftWorkspaceConfig } from '../microsoft/auth.js';
 import { getChannelCapabilities, listIntegrationStatuses } from '../services/capability-registry.js';
 import { assembleGroupContext as _assembleGroupContext } from '../agent/groups.js';
-import { generateTechniqueIndex, generateDraftTechniqueContext } from '../techniques/index-builder.js';
 import { mayUseTechnique } from '../agent/access/read.js';
-import { getContextWindow } from '../agent/model.js';
 import { getModelCapabilities } from '../services/capabilities.js';
 import { getEffectiveVisionModel } from '../services/vision-model.js';
-import { isIMBridgeRunning } from '../services/imessage-bridge.js';
 import type { ReplyDestination } from '../agent/v2/reply-destination.js';
 import { resolveInbound } from '../agent/v2/inbound-channel.js';
-import { getTwilioConfig } from '../twilio/auth.js';
 
 import { generateToolIndex } from '../tools/categories.js';
 import { getAgentAlwaysLoadedTools, partitionToolsForApiCall } from '../tools/tool-docs.js';
@@ -420,26 +415,6 @@ function parsePhoneCallContext(content: string): PhoneCallContext {
   };
 }
 
-// True when the latest user-channel message is an iMessage, so iMessage-only guidance skips other turns.
-function isIMessageTurn(agentId: string): boolean {
-  try {
-    const db = getDb();
-    // Skip A2A and synthetic-system rows so the query sees the user-channel inbound.
-    const row = db.prepare(
-      `SELECT content FROM messages
-       WHERE agent_id = ?
-         AND role = 'user'
-         AND content NOT LIKE '[SOURCE: SYSTEM%'
-         AND content NOT LIKE '[A2A:%'
-         AND content NOT LIKE '[SOURCE: AGENT MESSAGE FROM%'
-       ORDER BY created_at DESC, rowid DESC
-       LIMIT 1`,
-    ).get(agentId) as { content: string } | undefined;
-    return !!row?.content?.includes('[SOURCE: IMESSAGE FROM');
-  } catch {
-    return false;
-  }
-}
 
 export function generateToolsGuidance_v2(agentId: string): string {
   const agentTools = getFilteredTools(agentId);

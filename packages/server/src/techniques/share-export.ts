@@ -20,14 +20,6 @@ import {
   type DependencyManifest,
 } from './dependencies.js';
 
-// Export refusal error; nothing throws it, since exportTechnique auto-resolves every violation.
-export class TechniqueExportValidationError extends Error {
-  constructor(public refusalText: string) {
-    super(refusalText);
-    this.name = 'TechniqueExportValidationError';
-  }
-}
-
 const logger = createLogger('technique-share-export');
 
 const PACKAGE_FORMAT = 'dojo-technique';

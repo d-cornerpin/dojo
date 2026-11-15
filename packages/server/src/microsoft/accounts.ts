@@ -7,7 +7,7 @@
 import crypto from 'node:crypto';
 import { getDb } from '../db/connection.js';
 import { patchAssignments } from '../db/patch.js';
-import { isSealedText, openSecretColumn, sealSecretColumn } from '../credentials/at-rest.js';
+import { openSecretColumn, sealSecretColumn } from '../credentials/at-rest.js';
 import { createLogger } from '../logger.js';
 import { bumpToolConfigGeneration } from '../agent/tool-config-generation.js';
 import { noteSignInExpired, signInRestored, accountRemoved } from '../services/account-owner-cards.js';

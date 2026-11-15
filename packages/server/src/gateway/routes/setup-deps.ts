@@ -4,7 +4,6 @@ import { Hono } from 'hono';
 import { execSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
 import { resolveProvision } from './setup-primary-id.js';

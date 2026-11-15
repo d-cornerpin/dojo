@@ -139,13 +139,6 @@ export function startStallSentinel(): void {
   timer.unref();
 }
 
-export function stopStallSentinel(): void {
-  if (timer) clearInterval(timer);
-  timer = null;
-  liveBreadcrumbs = [];
-  stallAlreadyReported = false;
-}
-
 /** Test seam: the sentinel's own state, so a clause can drive ticks without waiting on wall time. */
 export function resetSentinelForTest(): void {
   liveBreadcrumbs = [];

@@ -1,5 +1,5 @@
 
-import type { Agent, AgentDetail, AgentMessage, Briefing, CompletionAnnouncement, DagResponse, HealthData, LogEntry, Message, Model, PermissionManifest, Project, ProjectDetail, Provider, SearchResult, SetupStatus, Summary, SummaryDetail, Task } from './types.js';
+import type { AgentDetail, Briefing, DagResponse, HealthData, LogEntry, Message, Model, PermissionManifest, Project, Provider, SearchResult, SetupStatus, Summary, SummaryDetail, Task } from './types.js';
 
 export interface ApiSuccess<T> {
   ok: true;
@@ -58,7 +58,6 @@ export type EditProviderResponse = ApiResponse<Provider> & { revalidationRequire
 
 export type ProvidersListResponse = Provider[];
 export type ProviderResponse = Provider;
-export type ProviderModelsResponse = Model[];
 
 export type ModelsListResponse = Model[];
 
@@ -107,7 +106,6 @@ export interface CompactionResponse {
 }
 
 export type ProjectsListResponse = Project[];
-export type ProjectDetailResponse = ProjectDetail;
 export type TasksListResponse = Task[];
 export type TaskDetailResponse = Task;
 export interface CreateProjectRequest {
@@ -156,7 +154,6 @@ export interface UpdateTaskRequest {
 }
 export type CreateProjectResponse = { projectId: string; taskIds: string[] };
 
-export type AgentMessagesResponse = AgentMessage[];
 export interface CreateAgentRequest {
   name: string;
   systemPrompt: string;

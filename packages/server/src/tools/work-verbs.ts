@@ -12,8 +12,6 @@ export const WORK_VERBS = [
   'work_schedule',
 ] as const;
 
-export type WorkVerb = (typeof WORK_VERBS)[number];
-
 const WORK_VERB_SET: ReadonlySet<string> = new Set<string>(WORK_VERBS);
 
 export function isWorkVerb(name: string | undefined | null): boolean {

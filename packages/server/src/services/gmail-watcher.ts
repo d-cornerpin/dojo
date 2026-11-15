@@ -10,7 +10,7 @@ import { recordInboundMeta } from '../agent/v2/inbound-channel.js';
 import { insertInboundMessageIfAbsent } from '../work/ask-title.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
-import { getPrimaryAgentId, getOwnerName } from '../config/platform.js';
+import { getPrimaryAgentId } from '../config/platform.js';
 import { getAgentRuntime } from '../agent/runtime.js';
 import { googleRead } from '../google/client.js';
 import { GMAIL_BASE } from '../google/gmail-search.js';

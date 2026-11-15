@@ -9,13 +9,9 @@ import { getIMBridgeStatus, sendIMessage, startIMBridge, getDefaultSender, getSa
 import { withOutboundAsyncIfAbsent, PLATFORM_SENDER } from '../../agent/v2/outbound.js';
 import { getResourceInfo } from '../../services/resource-monitor.js';
 import { checkOllamaHealth, getOllamaStatus } from '../../services/ollama.js';
-import { getOllamaLock, getActiveOllamaModelsByProvider, getOllamaMaxConcurrent } from '../../services/ollama-lock.js';
+import { getOllamaLock, getActiveOllamaModelsByProvider } from '../../services/ollama-lock.js';
 import { getPresence, setPresence, isImessageEnabled, type PresenceStatus } from '../../services/presence.js';
-import {
-  getTunnelStatus, enableTunnel, disableTunnel, startTunnel, stopTunnel,
-  isCloudflaredInstalled, installCloudflared, setTunnelToken,
-  setNamedTunnelUrl, type TunnelMode,
-} from '../../services/tunnel.js';
+import { getTunnelStatus, enableTunnel, disableTunnel, isCloudflaredInstalled, installCloudflared, setTunnelToken, setNamedTunnelUrl, type TunnelMode } from '../../services/tunnel.js';
 
 // In-memory provider health tracking, updated by model.ts after successful calls
 const providerLastSuccess = new Map<string, string>();

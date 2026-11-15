@@ -134,12 +134,3 @@ export function parseTechniqueFreshRead(content: string | null | undefined): str
   const m = TECHNIQUE_FRESH_HEADER_RE.exec(content);
   return m ? m[1] : null;
 }
-
-
-// Twin of the literal NOT LIKE triplet in prompt/assembler.ts (isIMessageTurn, resolveInboundContext), kept
-// literal so check-sql-prepares.mjs can prepare it. Nothing reads or checks this list: change all three.
-export const PROMPT_HISTORY_EXCLUDED_PREFIXES: readonly string[] = [
-  '[SOURCE: SYSTEM',
-  '[A2A:',
-  '[SOURCE: AGENT MESSAGE FROM',
-];

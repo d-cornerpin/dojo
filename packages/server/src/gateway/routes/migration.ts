@@ -15,7 +15,6 @@ import { bindImportCardMarker } from '../../migration/import-recovery.js';
 import { getChecks, dismissMigration, isMigrationDismissed, runPostMigrationChecks, getLastManifest } from '../../migration/checks.js';
 import { buildCombinedInstaller } from '../../migration/dependency-script.js';
 import { stopAgentRunsForImport, resumeAgentsAfterFailedImport } from '../../migration/import-agents.js';
-import { closeDb } from '../../db/connection.js';
 import { reopenDatabaseAfterImport } from '../../migration/after-import.js';
 import { getDashboardPasswordHash, getJwtSecret } from '../../config/loader.js';
 import { broadcast } from '../ws.js';

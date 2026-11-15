@@ -34,7 +34,6 @@ vi.mock('../../../memory/embeddings.js', () => ({
   storeEmbedding: async () => { /* not exercised */ },
   refreshEmbedding: () => { /* not exercised */ },
   getEmbeddingStatus: () => ({}),
-  setEmbeddingConfig: () => undefined,
 }));
 const writer = vi.hoisted(() => ({ calls: 0 }));
 vi.mock('../../../memory/summarize.js', () => ({

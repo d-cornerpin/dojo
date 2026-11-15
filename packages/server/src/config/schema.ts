@@ -96,19 +96,6 @@ export const EditProviderSchema = z.object({
   );
 
 
-export const ModelDataSchema = z.object({
-  id: z.string(),
-  providerId: z.string(),
-  name: z.string(),
-  apiModelId: z.string(),
-  capabilities: z.array(z.string()),
-  contextWindow: z.number().nullable(),
-  inputCostPerM: z.number().nullable(),
-  outputCostPerM: z.number().nullable(),
-  isEnabled: z.boolean().default(false),
-});
-
-
 export const LoginSchema = z.object({
   password: z.string().min(1),
 });

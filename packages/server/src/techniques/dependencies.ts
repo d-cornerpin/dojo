@@ -100,8 +100,6 @@ export function writeDependencyManifest(dirPath: string, manifest: DependencyMan
 
 const URL_LIKE_RE = /^(?:https?:|mailto:|ftp:|file:|data:|tel:)/i;
 
-// A path with an extension, or an explicit-relative shell path; permissive on purpose, the contexts narrow it.
-const PATH_LIKE_RE = /(?:\.{1,2}\/)?(?:[A-Za-z0-9_.-]+\/)*[A-Za-z0-9_-]+\.[A-Za-z0-9]+|\.{1,2}\/[A-Za-z0-9_.-]+/g;
 
 const MARKDOWN_LINK_RE = /\[([^\]]*?)\]\(([^)\s]+)\)/g;
 const INLINE_CODE_RE = /`([^`]+?)`/g;

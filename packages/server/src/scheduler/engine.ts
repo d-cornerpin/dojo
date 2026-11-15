@@ -307,27 +307,3 @@ export function parseDaysOfWeek(s: string | null): Set<number> | null {
   }
   return out.size > 0 ? out : null;
 }
-
-const DAY_NAMES_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-
-export function formatRepeatPattern(
-  interval: number | null,
-  unit: string | null,
-  daysCSV: string | null = null,
-): string {
-  if (!interval || !unit) return '';
-  if (unit === 'weekdays') {
-    return interval === 1 ? 'Every weekday' : `Every ${interval} weekdays`;
-  }
-  if (unit === 'specific_days') {
-    const allowed = parseDaysOfWeek(daysCSV);
-    if (!allowed || allowed.size === 0) return 'Every (no days selected)';
-    if (allowed.size === 7) return 'Every day';
-    if (allowed.size === 5 && [1, 2, 3, 4, 5].every((n) => allowed.has(n))) return 'Every weekday';
-    if (allowed.size === 2 && allowed.has(0) && allowed.has(6)) return 'Every weekend';
-    const names = [...allowed].sort().map((n) => DAY_NAMES_SHORT[n]);
-    return `Every ${names.join(', ')}`;
-  }
-  if (interval === 1) return `Every ${unit.replace(/s$/, '')}`;
-  return `Every ${interval} ${unit}`;
-}

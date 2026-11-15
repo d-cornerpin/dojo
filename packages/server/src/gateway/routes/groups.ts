@@ -5,9 +5,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { createGroup, getGroups, getGroupDetail, updateGroup, findOtherGroupByName, deleteGroup, assignAgentToGroup, SYSTEM_GROUP_ID } from '../../agent/groups.js';
-import { createLogger } from '../../logger.js';
 
-const logger = createLogger('routes:groups');
 
 export const groupsRouter = new Hono();
 

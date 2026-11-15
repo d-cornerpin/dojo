@@ -1,7 +1,6 @@
 import { Hono } from 'hono';
 import { resolveOrCreateConversation } from '../../memory/conversations.js';
 import { v4 as uuidv4 } from 'uuid';
-import path from 'node:path';
 import { getDb } from '../../db/connection.js';
 import { SendMessageSchema } from '../../config/schema.js';
 import { createLogger } from '../../logger.js';
@@ -10,7 +9,6 @@ import { queueEmbedding } from '../../memory/embeddings.js';
 import { insertMessageIfAbsent } from '../../memory/message-store.js';
 import { insertInboundMessageIfAbsent } from '../../work/ask-title.js';
 import { archiveAgentConversation } from '../../vault/archive.js';
-import { replaceContextItems } from '../../memory/dag.js';
 import { broadcast } from '../ws.js';
 import type { Message } from '@dojo/shared';
 import { deriveOrigin, legacyOriginInputs, NEW_SESSION_DIVIDER} from '@dojo/shared';

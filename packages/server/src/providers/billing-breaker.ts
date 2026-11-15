@@ -1,7 +1,7 @@
 // Circuit breaker for PERMANENT provider failures (402 no balance, 401 rejected key, 403 refused), which
 // retrying cannot fix. After PERMANENT_FAILURES_TO_BREAK of them the provider is OPEN: the router and summary
-// writer skip it and the owner gets one card. It never decays; it closes only on `clearProviderBreaker` or a
-// genuine success. It never gates the last door: `mayDialProvider` admits a caller whose only provider this is,
+// writer skip it and the owner gets one card. It never decays; it closes only on a genuine success.
+// It never gates the last door: `mayDialProvider` admits a caller whose only provider this is,
 // so a single-provider box is told it is out of balance instead of going silent.
 
 import { createLogger } from '../logger.js';
@@ -150,21 +150,6 @@ export function mayDialProvider(providerId: string, isOnlyOption = false): boole
     return true;
   }
   return false;
-}
-
-/** The owner's manual retry; clears the counter too, or one more failure re-opens it at once. */
-export function clearProviderBreaker(providerId: string): boolean {
-  permanentFailureCounts.delete(providerId);
-  const wasOpen = openBreakers.delete(providerId);
-  logger.info('Provider breaker cleared by the owner', { providerId, wasOpen });
-  return wasOpen;
-}
-
-/** The status sentence while open (null otherwise); a caller given one must STOP, not loop. */
-export function pauseInsteadOfRetrying(providerId: string): string | null {
-  const open = openBreakers.get(providerId);
-  if (!open) return null;
-  return `Paused: ${cardText(open.providerId, open.reason)}`;
 }
 
 /**

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { calculateNextRun, formatRepeatPattern, type ScheduledTask } from '../engine.js';
+import { calculateNextRun, type ScheduledTask } from '../engine.js';
 
 function makeTask(overrides: Partial<ScheduledTask>): ScheduledTask {
   return {
@@ -91,20 +91,5 @@ describe('weekdays repeat unit', () => {
       run_count: 3,
     });
     expect(calculateNextRun(task)).toBeNull();
-  });
-});
-
-describe('formatRepeatPattern weekdays', () => {
-  it('formats interval=1 as "Every weekday"', () => {
-    expect(formatRepeatPattern(1, 'weekdays')).toBe('Every weekday');
-  });
-
-  it('formats interval>1 with the unit pluralized', () => {
-    expect(formatRepeatPattern(3, 'weekdays')).toBe('Every 3 weekdays');
-  });
-
-  it('still handles other units', () => {
-    expect(formatRepeatPattern(1, 'days')).toBe('Every day');
-    expect(formatRepeatPattern(2, 'hours')).toBe('Every 2 hours');
   });
 });

@@ -4,17 +4,7 @@ import { Hono } from 'hono';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createLogger } from '../../logger.js';
-import {
-  createTechnique,
-  getTechnique,
-  getTechniqueDetail,
-  listTechniques,
-  updateTechnique,
-  updateTechniqueInstructions,
-  publishTechnique,
-  deleteTechnique,
-  recordTechniqueUsage,
-} from '../../techniques/store.js';
+import { createTechnique, getTechnique, getTechniqueDetail, listTechniques, updateTechnique, updateTechniqueInstructions, publishTechnique, deleteTechnique } from '../../techniques/store.js';
 import { getVersions, getUsage } from '../../techniques/versioning.js';
 import { clearTrainerSession } from '../../techniques/trainer-agent.js';
 import { exportTechnique } from '../../techniques/share-export.js';

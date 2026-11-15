@@ -1582,11 +1582,6 @@ export function getDefaultSender(): string | null {
   return ownerIMessageRecord(getSafeSenders())?.address ?? null;
 }
 
-/** Address-only view for callers that just need the allowlist; prefer getSafeSenders() for names and descriptions. */
-export function getApprovedSenders(): string[] {
-  return getSafeSenders().map(s => s.address);
-}
-
 /** A WARN `owner-notice` entry records why a text did not reach the phone (Vitals log view). */
 const ownerNoticeLog = createLogger('owner-notice');
 

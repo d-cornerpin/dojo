@@ -99,11 +99,6 @@ export function techniqueGranted(grants: AccessGrants, techniqueId: string): boo
   return t === '*' || t.includes(techniqueId);
 }
 
-export function holdsAnyTechniqueGrant(grants: AccessGrants): boolean {
-  const t = techniqueGrantOf(grants);
-  return t === '*' || t.length > 0;
-}
-
 // Files, scratchpad, the sub-agent lifecycle (complete_task, send_to_agent) and the work tracker; nothing
 // reaches outside the dojo. 'Managing Other Agents' widens nothing: spawn_agent, kill_agent and
 // spawn_timeout_decision stay behind can_spawn_agents, update_agent and the group-editing verbs behind

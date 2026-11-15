@@ -24,11 +24,6 @@ export interface A2AEnvelope {
   origin?: 'engine';
 }
 
-// Terminal intents close the thread; only QUESTION, BLOCK or ASSIGN reopen it.
-export const TERMINAL_INTENTS: ReadonlySet<A2AIntent> = new Set([
-  'DELIVERABLE', 'FYI', 'COMPLETE', 'FAIL', 'ANSWER',
-]);
-
 // Not read by the wake rule: agent/a2a-transport.ts keeps its own set (FYI, STATUS); COMPLETE and FAIL wake.
 export const NO_WAKE_INTENTS: ReadonlySet<A2AIntent> = new Set([
   'FYI', 'STATUS', 'COMPLETE', 'FAIL',
@@ -38,15 +33,8 @@ export const REOPENING_INTENTS: ReadonlySet<A2AIntent> = new Set([
   'QUESTION', 'BLOCK', 'ASSIGN',
 ]);
 
-// Max delivered messages per thread before silent halt.
-export const MAX_HOPS_PER_THREAD = 8;
-
 export const DEDUP_SIMILARITY_THRESHOLD = 0.85;
 export const DEDUP_LOOKBACK = 3;
-
-export function isTerminalIntent(intent: A2AIntent): boolean {
-  return TERMINAL_INTENTS.has(intent);
-}
 
 export function isReopeningIntent(intent: A2AIntent): boolean {
   return REOPENING_INTENTS.has(intent);

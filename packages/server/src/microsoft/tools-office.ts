@@ -7,7 +7,6 @@ import path from 'node:path';
 import type { ToolDefinition } from '../agent/tools/types.js';
 import { getValidAccessToken } from './auth.js';
 import { logMicrosoftActivity } from './activity-log.js';
-import { broadcast } from '../gateway/ws.js';
 import { createLogger } from '../logger.js';
 import JSZip from 'jszip';
 import { homeDir } from '../home.js';
@@ -117,9 +116,6 @@ async function resolveOfficeEditTarget(
 
 const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 
-// Local Excel (.xlsx) editing via ExcelJS (the library office_create_spreadsheet uses): each Excel edit
-// handler checks for a local path first and otherwise runs the Graph path.
-const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function loadLocalWorkbook(absPath: string): Promise<any> {

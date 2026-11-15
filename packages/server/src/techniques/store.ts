@@ -19,7 +19,7 @@ import {
 } from './dependencies.js';
 // The reference -> row -> directory read lives in its own leaf so the executor's gate loop can run it before
 // minting a call's capability, without pulling this module's fs, embeddings and broadcast into every dispatch.
-import { getTechnique, resolveTechniqueRef, rowToTechnique, type TechniqueMetadata } from './technique-dir.js';
+import { getTechnique, rowToTechnique, type TechniqueMetadata } from './technique-dir.js';
 import { homeDir } from '../home.js';
 
 export { getTechnique, resolveTechniqueRef, techniqueDirectory } from './technique-dir.js';

@@ -14,7 +14,7 @@ import { getJwtSecret } from '../config/loader.js';
 import { createLogger } from '../logger.js';
 import { broadcast, onBroadcast } from '../gateway/ws.js';
 import { submitUserMessage } from '../gateway/routes/chat.js';
-import { transcribeBuffer, pcmFloatToWav, ensureSttReady, DEFAULT_STT_MODEL_KEY, parseSttModelKey, isWhisperBinaryAvailable } from './stt-service.js';
+import { transcribeBuffer, pcmFloatToWav, ensureSttReady, DEFAULT_STT_MODEL_KEY, parseSttModelKey } from './stt-service.js';
 import { synthesizeClauseStream, createClauseQueue, DEFAULT_VOICE, loadKokoro, isKokoroLoaded } from './tts-service.js';
 import { recordAtDoor, recordedId } from '../agent/v2/outbound.js';
 import { checkCustomVoiceUsable } from './custom-voices.js';
@@ -24,7 +24,7 @@ import { createCueExtractor } from './cue-parser.js';
 import { getDb } from '../db/connection.js';
 import { markSpokenAloud } from '../memory/message-store.js';
 import { getPrimaryAgentName } from '../config/platform.js';
-import { WHISPER_MODELS, KOKORO_MODEL_ID, type WhisperSize } from './model-manager.js';
+import { KOKORO_MODEL_ID } from './model-manager.js';
 import { predictTurnComplete, TURN_COMPLETE_THRESHOLD, warmUpSmartTurn } from './smart-turn.js';
 import type { WsEvent } from '@dojo/shared';
 import { stripNoReplySentinel } from '@dojo/shared';
@@ -203,9 +203,6 @@ function soundex(word: string): string {
   return (result + '0000').slice(0, 4);
 }
 
-function soundexPhrase(phrase: string): string {
-  return phrase.split(' ').filter(Boolean).map(soundex).join(' ');
-}
 
 // Intro words whisper often drops from a wake phrase; the core word alone still wakes, but only for
 // short utterances so incidental name mentions do not trigger.

@@ -18,7 +18,6 @@ vi.mock('../../../memory/embeddings.js', () => ({
   storeEmbedding: async () => { /* not exercised */ },
   refreshEmbedding: () => { /* not exercised */ },
   getEmbeddingStatus: () => ({}),
-  setEmbeddingConfig: () => undefined,
 }));
 
 import { runMigrations } from '../../../db/migrations.js';

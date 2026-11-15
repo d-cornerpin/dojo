@@ -17,10 +17,6 @@ const UPLOAD_DIR = path.join(homeDir(), '.dojo', 'uploads');
 // body limit.
 const MAX_FILE_SIZE = 1024 * 1024 * 1024;       // 1 GB
 const MAX_TOTAL_SIZE = 2 * 1024 * 1024 * 1024;  // 2 GB
-// Chunked upload: Cloudflare rejects request bodies over 100 MB, so the dashboard splits anything bigger
-// than this threshold into chunks assembled server-side; 25 MB leaves ~75 MB of headroom for the multipart
-// envelope.
-const CHUNK_THRESHOLD_BYTES = 25 * 1024 * 1024;
 const CHUNK_SESSION_IDLE_MS = 60 * 60 * 1000;   // sessions auto-expire after 1h idle
 
 const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);

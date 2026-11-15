@@ -85,16 +85,6 @@ export function parseToolCallsFromText(text: string, offeredNames?: string[]): {
   return { cleanText, toolCalls };
 }
 
-export function formatToolResultsForPrompt(results: Array<{ toolCallId: string; name: string; content: string; isError: boolean }>): string {
-  return results.map(r => {
-    return `<tool_result>
-<name>${r.name}</name>
-<result${r.isError ? ' error="true"' : ''}>${r.content}</result>
-</tool_result>`;
-  }).join('\n\n');
-}
-
-
 // Stand-ins for attachment blocks in HISTORY: history is packed into a text system prompt, so real
 // attachments cannot be re-sent. A marker keeps the turn count and context alignment intact.
 const HISTORY_IMAGE_PLACEHOLDER = '[image omitted by this connection]';

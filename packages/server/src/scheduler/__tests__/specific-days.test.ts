@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { calculateNextRun, formatRepeatPattern, type ScheduledTask } from '../engine.js';
+import { calculateNextRun, type ScheduledTask } from '../engine.js';
 
 function makeTask(overrides: Partial<ScheduledTask>): ScheduledTask {
   return {
@@ -95,28 +95,5 @@ describe('specific_days repeat unit', () => {
     // The important invariant is: this terminates rather than spinning.
     const next = calculateNextRun(task);
     expect(typeof next === 'string' || next === null).toBe(true);
-  });
-});
-
-describe('formatRepeatPattern specific_days', () => {
-  it('formats Mon+Wed', () => {
-    expect(formatRepeatPattern(1, 'specific_days', '1,3')).toBe('Every Mon, Wed');
-  });
-
-  it('detects weekdays shorthand', () => {
-    expect(formatRepeatPattern(1, 'specific_days', '1,2,3,4,5')).toBe('Every weekday');
-  });
-
-  it('detects weekend shorthand', () => {
-    expect(formatRepeatPattern(1, 'specific_days', '0,6')).toBe('Every weekend');
-  });
-
-  it('detects all-7-days as "Every day"', () => {
-    expect(formatRepeatPattern(1, 'specific_days', '0,1,2,3,4,5,6')).toBe('Every day');
-  });
-
-  it('handles no-days-selected gracefully', () => {
-    expect(formatRepeatPattern(1, 'specific_days', '')).toBe('Every (no days selected)');
-    expect(formatRepeatPattern(1, 'specific_days', null)).toBe('Every (no days selected)');
   });
 });

@@ -72,8 +72,6 @@ export const KOKORO_MODEL_ID = 'onnx-community/Kokoro-82M-v1.0-ONNX';
 export const MOONSHINE_CACHE_DIR = path.join(VOICE_ROOT, 'moonshine');
 export const MOONSHINE_MODEL_ID = 'onnx-community/moonshine-base-ONNX';
 
-export type MoonshineSize = 'base';
-
 /**
  * Files the ASR pipeline needs for Moonshine at dtype='q8' (transformers appends `_quantized` to the
  * encoder/decoder names; the merged decoder serves both initial and incremental decoding). Byte counts

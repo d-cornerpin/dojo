@@ -10,7 +10,6 @@ const POLL_INTERVAL_MS = 24 * 60 * 60 * 1000; // once a day
 const FIRST_CHECK_DELAY_MS = 60_000;          // settle after boot before the first check
 
 let pollTimer: ReturnType<typeof setInterval> | null = null;
-let firstCheckTimer: ReturnType<typeof setTimeout> | null = null;
 
 async function refresh(): Promise<void> {
   const { refreshUpdateCache } = await import('../gateway/routes/update.js');
@@ -41,23 +40,11 @@ export function startUpdateChecker(): void {
     });
   }, POLL_INTERVAL_MS);
 
-  firstCheckTimer = setTimeout(() => {
+  setTimeout(() => {
     refresh().catch(err => {
       logger.error('Update check cycle failed', {
         error: err instanceof Error ? err.message : String(err),
       });
     });
   }, FIRST_CHECK_DELAY_MS);
-}
-
-export function stopUpdateChecker(): void {
-  if (pollTimer) {
-    clearInterval(pollTimer);
-    pollTimer = null;
-    if (firstCheckTimer) {
-      clearTimeout(firstCheckTimer);
-      firstCheckTimer = null;
-    }
-    logger.info('Update checker stopped');
-  }
 }
