@@ -13,6 +13,7 @@ import { planOfProject } from './plan-store.js';
 import { msToUtcText, tsToMs } from './tracker-view.js';
 
 const OWNER_WORDS_EXCERPT_CHARS = 400;   // a display excerpt; history_get returns the whole message
+const EXCHANGE_EXCERPT_CHARS = 500;      // a question or an answer in the file, cut here
 const FRAME_TOKENS = 64;                 // the section headings and the left-out lines
 
 /** The owner's later words the engine recorded against this task or project: what a decision-type close is
@@ -67,9 +68,9 @@ function reviewLines(tasks: Array<{ id: string; title: string | null }>): Dated[
 /** The PM's questions about these tasks with their answers. */
 function exchangeLines(taskIds: string[]): Dated[] {
   return taskIds.flatMap((taskId) => pmQuestions(taskId).map((q) => {
-    const asked = `\n    ${msToUtcText(q.at)} you asked ${q.typed} about [${taskId}]: "${q.text.slice(0, 500)}"`;
+    const asked = `\n    ${msToUtcText(q.at)} you asked ${q.typed} about [${taskId}]: "${q.text.slice(0, EXCHANGE_EXCERPT_CHARS)}"`;
     const said = q.answers.map((a) => {
-      const words = extractPayloadFromA2AMessage(a.content) ?? a.content;
+      const words = (extractPayloadFromA2AMessage(a.content) ?? a.content).slice(0, EXCHANGE_EXCERPT_CHARS);
       return `\n      ${msToUtcText(a.at)} ${resolveAgentDisplayName(a.from) ?? a.from} answered: ${words}`;
     }).join('');
     const none = q.until > Date.now()
@@ -79,13 +80,14 @@ function exchangeLines(taskIds: string[]): Dated[] {
   }));
 }
 
-/** The newest of `lines` that fit in `room`, back in time order; and how many older ones did not. */
-function newestThatFit(lines: Dated[], room: number): { kept: string[]; left: number; omitted: number } {
+/** The newest of `lines` that fit in `room`, back in time order; and how many older ones did not. With `atLeastOne`
+ *  the newest line is kept even when it alone is over `room`. */
+function newestThatFit(lines: Dated[], room: number, atLeastOne = false): { kept: string[]; left: number; omitted: number } {
   const newest = [...lines].sort((a, b) => b.at - a.at);
   const kept: string[] = [];
   let left = room;
   for (const line of newest) {
-    if (estimateTokens(line.text) > left) break;
+    if (estimateTokens(line.text) > left && !(atLeastOne && kept.length === 0)) break;
     kept.push(line.text);
     left -= estimateTokens(line.text);
   }
@@ -97,7 +99,8 @@ function omittedLine(n: number, what: string, where: string): string {
 }
 
 /** The file of `workId`'s project, or of the task alone when it has none, inside `room` tokens: the project line and
- *  the owner's words always; then the newest reviews and questions (at most half of what is left); then the newest notes. Empty when there is none. */
+ *  the owner's words always; then the newest reviews and questions (the newest exchange always) and the newest notes,
+ *  each guaranteed half of what is left, and what one does not use goes to the other. Empty when there is none. */
 export function workFile(workId: string, room: number): string {
   const project = projectOf(workId);
   const taskRows = project ? getDb().prepare('SELECT id, title FROM work WHERE parent_id = ?').all(project.id) : [];
@@ -107,8 +110,11 @@ export function workFile(workId: string, room: number): string {
     ? `\n  Project "${project.title ?? project.id}" [${project.id}]: ${approach}${ownerWordsLines(project.id, 'project')}`
     : '';
   const space = room - FRAME_TOKENS - estimateTokens(head);
-  const timed = newestThatFit([...reviewLines(tasks), ...exchangeLines(project ? tasks.map((t) => t.id) : [workId])], Math.floor(space / 2));
-  const notes = newestThatFit(project ? noteLines(project.id) : [], space - (Math.floor(space / 2) - timed.left));
+  const half = Math.floor(space / 2);
+  const noteList = project ? noteLines(project.id) : [];
+  const spare = newestThatFit(noteList, half).left;
+  const timed = newestThatFit([...reviewLines(tasks), ...exchangeLines(project ? tasks.map((t) => t.id) : [workId])], space - half + spare, true);
+  const notes = newestThatFit(noteList, half - spare + timed.left);
   if (!project && timed.kept.length === 0) return '';
   const noteText = project
     ? `\n  The project's notes:${notes.kept.join('') || ' none'}`
