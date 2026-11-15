@@ -27,8 +27,9 @@ vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {} }));
 vi.mock('../summary-check.js', () => ({
   writeThenCheck: (p: unknown, write: (p: unknown) => unknown) => write(p),
   rewriteInstruction: () => '',
-  refuseFallbackOverFreeMemory: async () => null,   // t268: the small writer's free-memory gate (not this file's subject)
 }));
+// The small writer's free-memory gate (not this file's subject) reads the machine's Ollama: free memory is plenty here.
+vi.mock('../../agent/local-model-fit.js', async (orig) => ({ ...(await orig<object>()), freeWriterWindowTokens: async () => Number.MAX_SAFE_INTEGER }));
 
 interface Scripted { content: string; stopReason: string; outputRoom?: { sent: number; ceiling: number }; throws?: true }
 const script: Scripted[] = [];
