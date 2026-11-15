@@ -121,7 +121,7 @@ function toStored(r: MessageRowShape): StoredMessage {
 // Display kind uses `@dojo/shared`'s classifier, the same one the dashboard runs.
 
 function displayReady(text: string): string {
-  return stripNoReplySentinel(stripMoodMarker(text)).replace(LEADING_STAMP_RE, '');
+  return stripNoReplySentinel(stripMoodMarker(text)).trim().replace(LEADING_STAMP_RE, '');
 }
 
 function prepareContent(role: Role, content: string): { content: string; mood: string | null } {

@@ -143,14 +143,14 @@ describe('a cloud voice that breaks mid-reply continues in the local voice', () 
   it('a failure before any audio: the whole reply is spoken locally, with one notice', async () => {
     script = ['fail'];
     await speak('First part. ', 'Second part.');
-    expect(localSaid.join('')).toBe('First part.Second part.');
+    expect(localSaid.join('')).toBe('First part. Second part.');
     expect(types('voice:notice')).toHaveLength(1);
   });
 
   it('a failure after some audio, even mid-sentence: only what was not finished is said locally', async () => {
     script = ['ok', 'cut'];
     await speak('First part. ', 'Second part. ', 'Third part.');
-    expect(localSaid.join('')).toBe('Second part.Third part.');
+    expect(localSaid.join('')).toBe('Second part. Third part.');
     expect(types('voice:notice')).toHaveLength(1);
   });
 
