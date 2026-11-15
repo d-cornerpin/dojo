@@ -14,6 +14,7 @@ import { getDb } from '../db/connection.js';
 import { redactHandedCredentials } from '../credentials/secret-values.js';
 import { withUnit } from '../db/unit.js';
 import { createLogger } from '../logger.js';
+import { isPrimaryAgent } from '../config/platform.js';
 // `work/outcome.ts` declares the boundary's answer; re-exported here so callers keep one import path.
 import type { WorkEventKind } from './event-kinds.js';
 import { noSuchWorkDetail } from './outcome.js';
@@ -57,7 +58,7 @@ export function ownerHoldStands(workId: string, ownerActing: boolean): boolean {
   return !ownerActing && !!getDb().prepare(`SELECT 1 FROM work w WHERE w.id = ? AND ${heldByOwnerSql('w')}`).get(workId);
 }
 
-/** Who may reopen settled work. Anyone else is a confused model acting on a stale id. */
+/** Who may reopen settled work, besides the main agent (checked by id). Anyone else is a confused model acting on a stale id. */
 const REOPENERS: readonly Actor[] = ['owner', 'pm', 'engine'];
 
 /** Board work: tasks and projects, never a join piece; the scope of the `board_done_needs_decision`
@@ -199,10 +200,10 @@ export function transition(workId: string, input: TransitionInput): WorkOutcome 
   }
 
   // ── G8: reopening settled work needs an authority, or the engine pointing at something real (G6). ──
-  if (isTerminal(row.state) && !isTerminal(input.to) && !REOPENERS.includes(input.by)) {
+  if (isTerminal(row.state) && !isTerminal(input.to) && !REOPENERS.includes(input.by) && !(input.by === 'agent' && isPrimaryAgent(actorId))) {
     return {
       kind: 'refused', workId, reason: 'reopen-requires-authority',
-      detail: `reopening ${row.state} work needs the owner or the PM`,
+      detail: `reopening ${row.state} work needs the owner, the PM or the main agent`,
     };
   }
   // ── G9: board work ends only by a decision (`work/done/decide.ts`); workers hand in. ──
