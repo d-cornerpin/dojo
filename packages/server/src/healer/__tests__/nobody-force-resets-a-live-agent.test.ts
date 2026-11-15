@@ -47,6 +47,7 @@ import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 import { activeRuns } from '../../agent/shared-state.js';
 import { runAutoFixes } from '../auto-fix.js';
 import { runHealerSelfWatchdog } from '../healer-agent.js';
+import { compileDiagnosticReport } from '../diagnostic.js';
 
 const AGENT = FXID.n4;
 const HEALER = 'healer';
@@ -167,5 +168,19 @@ describe('T81d census row 15 — healer/healer-agent.ts\'s self-watchdog', () =>
     runHealerSelfWatchdog();
 
     expect(statusOf(HEALER)).toBe('working');
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+describe('the diagnostic report', () => {
+  const frozenCodes = (): string[] => compileDiagnosticReport().items.filter((i) => i.agentId === AGENT).map((i) => i.code);
+
+  it('does not call a healthy long turn frozen, and still reports a silent one', () => {
+    agedTo(AGENT, 'working', 20);
+    mockDb.current!.prepare("INSERT INTO messages (id, agent_id, role, content, created_at) VALUES ('m-1', ?, 'user', 'hi', ?)").run(AGENT, Date.now());
+    activeRuns.add(AGENT);
+    expect(frozenCodes()).not.toContain('STUCK_AGENT');
+    activeRuns.clear();
+    expect(frozenCodes()).toContain('STUCK_AGENT');
   });
 });

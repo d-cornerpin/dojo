@@ -23,6 +23,7 @@ import { taskScope, msToText } from '../work/tracker-view.js';
 // "What counts as orphaned" has ONE definition, shared with the version-gap reconciliation pass.
 import { ORPHANED_TASK_WHERE, ORPHANED_TASK_JOIN } from '../tracker/version-gap-reconcile.js';
 import { workingExpr } from '../work/done/hold.js';
+import { activeRuns } from '../agent/shared-state.js';
 
 const logger = createLogger('healer-diagnostic');
 
@@ -136,6 +137,7 @@ function getAgentStatusAnomalies(): DiagnosticItem[] {
   `).all() as Array<{ id: string; name: string; updated_at: string }>;
 
   for (const agent of stuck) {
+    if (activeRuns.has(agent.id)) continue;   // a run live in this process is working, however long the turn
     // Skip dormant agents unless their status was updated recently (a restart set them to working).
     const stuckUpdatedMs = new Date(agent.updated_at.includes('Z') ? agent.updated_at : agent.updated_at + 'Z').getTime();
     const stuckStatusRecent = (Date.now() - stuckUpdatedMs) < DORMANT_THRESHOLD_MS;
