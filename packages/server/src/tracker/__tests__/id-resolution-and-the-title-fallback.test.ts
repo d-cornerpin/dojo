@@ -130,6 +130,15 @@ describe('the refusal names the fallback, so a confused model is steered rather 
       .not.toContain('as a title either');
   });
 
+  it('names the promise tool, not "not found", for a commitment id', () => {
+    const r = resolveTaskId('cmt:0123456789ab', MINE);
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    const text = formatResolveError('task', 'cmt:0123456789ab', r);
+    expect(text).toContain('work_close_request');
+    expect(text).not.toContain('not found');
+  });
+
   it('leaves the other three refusal shapes exactly as they were', () => {
     expect(formatResolveError('task', '', { ok: false, reason: 'empty' }))
       .toBe('Error: task id is required.');

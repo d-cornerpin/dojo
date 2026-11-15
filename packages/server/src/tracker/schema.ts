@@ -669,6 +669,10 @@ export function formatResolveError(
         const what = input.trim().startsWith('piece:') ? 'a piece of a request' : 'a request';
         return `Error: '${input}' is ${what} from the person who asked, not a task, so no task call takes it. It ends when you answer them; reply with your normal message.`;
       }
+      // A `cmt:` id is a promise the agent made: it closes through the promise ledger, not a task verb.
+      if (kind === 'task' && /^cmt:/i.test(input.trim())) {
+        return `Error: '${input}' is a promise you made, not a task, so work_update does not take it. Close it with work_close_request(action='commitment', id, disposition='kept' or 'dropped').`;
+      }
       // A title-shaped input gets an explicit title-vs-id correction, or the floor model retries the same
       // title forever. Title resolution is scoped to the CALLER's own tasks.
       const titleShaped = /\s/.test(input.trim());
