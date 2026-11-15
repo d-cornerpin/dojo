@@ -1,17 +1,5 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// The PM's gauge and the provider-boundary validator must read ONE budget.
-//
-// Paid run H9: the compaction check said the PM's view was 98,153 tokens against a budget of
-// 98,963 (it fits, nothing to fold), and the same turn's boundary validator counted 100,187
-// against the SAME 98,963 and refused (`ASSEMBLY_VALIDATION_UNREPAIRABLE`), forcing a
-// mid-turn condense. Cause: the PM's lightweight assembly filled the whole of
-// `assemblyBudget - systemPrompt` with conversation and reserved nothing for what the loop
-// appends AFTER the fit (turn context, current time, hints) - the off-the-top reserve ladder
-// every other agent's assembly takes (`reserveLadderFor`). The view (the gauge) is that same
-// fit, so it reported "fits" for an array the loop then grew past the boundary.
-//
-// Fictional rows only.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// The PM's gauge and the provider-boundary validator read one budget: the PM's view leaves the room the loop
+// appends after the fit (the off-the-top reserve ladder every agent's assembly takes).
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';

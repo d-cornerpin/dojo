@@ -52,7 +52,7 @@ import { buildIntegrationStatusLane } from './integration-status-lane.js';
 import { getLatestBriefing } from './briefing.js';
 import { COMPILE_ORDER_PIECES_MARKER } from '../work/join-drive.js';
 import { pinnedContextSection } from '../vault/retrieval.js';
-import { isPMAgent } from '../config/platform.js';
+import { keepsNoSummaries, pmViewParts } from './pm-view.js';
 import { buildAssemblyContext, assembleSystemFromRegistry } from '../prompt/registry/assembler.js';
 import { MessageSlot, type AssemblyTurnState } from '../prompt/registry/types.js';
 import { turnBoundary } from '../agent/turn-state.js';
@@ -833,67 +833,29 @@ async function assembleMessageContext(
   const loopTailExtra = otherThreadsReserveExtra(agentId, liveTurnContext(agentId)?.conversationId ?? null, otherThreadsRoomTokens(maxTokens, systemPrompt));
   const ladder = reserveLadderFor(maxTokens - systemTokens, loopTailExtra);
   const offTheTop = ladder.offTheTop;
-  const contentBudget = Math.max(0, maxTokens - systemTokens - offTheTop);   // the PM's tail is fitted to this too: the loop's appends need room
-  // The PM agent gets a lightweight context: system prompt + its live conversation only (the tracker is its
-  // memory).
-  if (isPMAgent(agentId)) {
-    // The PM's tail grows and folds like every tail: `freshTailHorizon` (rows since the newest fold) plus the
-    // token trim. A window measured from the back would scroll and move the first message each call.
-    const horizon = freshTailHorizon(agentId, policy, 2 * (maxTokens - systemTokens));   // a token-bounded read
-    const freshTailRows = getRecentMessages(agentId, horizon.requestRows);
-    const freshTail = chargeTurnAttachments(agentId, modelId, horizon.keepFromSeq > 0   // its attachments in the fit
-      ? freshTailRows.filter((m) => (m.rowid ?? 0) >= horizon.keepFromSeq)
-      : freshTailRows, contentBudget);
-    const budgeted = budgetFreshTail(
-      freshTail, contentBudget, tailTrimBlockGroups(policy.freshTailCount),
-    );
-    const trimmed = freshTail.length - budgeted.length;
-    const outOfViewThroughSeq = Math.max(
-      trimmed > 0 ? (freshTail[trimmed - 1].rowid ?? 0) : 0,
-      horizon.unreadRows > 0 && horizon.keepFromSeq > 0 ? horizon.keepFromSeq - 1 : 0,
-    );
-    const pm = tailRender({ rows: budgeted, agentId, dropped: 0 });
-    tagMessageLanes(pm.messages, 'lane.pm-tail');
-    // The PM path returns the same shape as the main path: `applyIntegrityPass` normalises roles, strips a
-    // leading tool_result, repairs pairing and refuses a trailing assistant.
+  const contentBudget = Math.max(0, maxTokens - systemTokens - offTheTop);   // the PM's view is fitted to this too: the loop's appends need room
+  if (keepsNoSummaries(agentId)) {
+    const block = tailTrimBlockGroups(policy.freshTailCount);
+    const v = pmViewParts(agentId, turnContext, contentBudget, block);
+    const present = budgetFreshTail(v.present, v.room, block);
+    const pinned = estimateTokens(v.pinned) <= v.room - rowTokens(present) ? v.pinned : '';
+    const tail = budgetFreshTail(chargeTurnAttachments(agentId, modelId, v.tail, v.room), Math.max(0, v.room - rowTokens(present) - estimateTokens(pinned)), block);
+    const kept = [...tail, ...present];
+    // Nothing leaves this view unsummarised: what is not shown stays stored and found by search.
     if (dryRun) return { systemPrompt, systemVolatile: '', messages: [], reserveTokens: policy.toolAndOutputReserve,
-      view: viewOf({ budget: contentBudget, cached: 0, before: freshTail, kept: budgeted, outOfViewThroughSeq }, policy, systemTokens) };
-    const messages = applyIntegrityPass([...pm.messages], agentId);
-    const freshTailDropped = trimmed + horizon.unreadRows;
-    // One lane with its real grant and reason, so a receipt can tell "the PM has no lanes" from "unrecorded".
+      view: { ...viewOf({ budget: contentBudget, cached: 0, before: kept, kept, outOfViewThroughSeq: 0 }, policy, systemTokens), leavingThroughSeq: 0, leavingRows: 0, leavingTokens: 0 } };
+    const pm = tailRender({ rows: kept, agentId, dropped: 0 });
+    tagMessageLanes(pm.messages, 'lane.pm-tail');
+    const messages = applyIntegrityPass([...(pinned ? [tagMessageLane({ role: 'user' as const, content: pinned }, 'lane.vault')] : []), ...pm.messages], agentId);
     const report: AllocationReport = {
-      budgetTokens: contentBudget,
-      reservedTokens: 0,
-      spentTokens: renderTokens(messages),
-      offTheTopTokens: offTheTop,
-      grants: [{
-        id: 'lane.pm-tail',
-        slot: MessageSlot.FreshTail,
-        priority: LANE_PRIORITY['lane.fresh-tail'],
-        requested: pm.tokens,
-        granted: renderTokens(messages),
-        // The PM tail renders inline with no swallowed catch, so a failure throws rather than reading as silence.
-        status: messages.length > 0 ? 'admitted' : 'empty',
-        reason: `PM lightweight context: the tracker is its memory, so the tail is its only ` +
-          `lane (every row since the newest fold, ${freshTailDropped} row(s) out of view)`,
-      }],
-      admittedIds: messages.length > 0 ? ['lane.pm-tail'] : [],
-      overBudget: [],
+      budgetTokens: contentBudget, reservedTokens: 0, spentTokens: renderTokens(messages), offTheTopTokens: offTheTop,
+      grants: [{ id: 'lane.pm-tail', slot: MessageSlot.FreshTail, priority: LANE_PRIORITY['lane.fresh-tail'], requested: pm.tokens, granted: renderTokens(messages),
+        status: messages.length > 0 ? 'admitted' : 'empty', reason: `the board is its memory: pinned memories, ${tail.length} conversation row(s), ${present.length} row(s) of the present turn` }],
+      admittedIds: messages.length > 0 ? ['lane.pm-tail'] : [], overBudget: [],
     };
-    logger.debug('PM agent context assembled (lightweight)', {
-      agentId, systemTokens, messageCount: messages.length,
-    }, agentId);
-    return {
-      systemPrompt,
-      systemVolatile: '',
-      messages,
-      messageEntryIds: collectMessageLaneIds(messages),
-      freshTailDropped,
-      outOfViewThroughSeq,
-      reserveTokens: policy.toolAndOutputReserve,
-      allocation: report,
-      consumedOneShotFlags: {},
-    };
+    logger.debug('PM agent context assembled', { agentId, systemTokens, messageCount: messages.length, viewTokens: renderTokens(messages) }, agentId);
+    return { systemPrompt, systemVolatile: '', messages, messageEntryIds: collectMessageLaneIds(messages), freshTailDropped: 0, outOfViewThroughSeq: 0,
+      reserveTokens: policy.toolAndOutputReserve, allocation: report, consumedOneShotFlags: {} };
   }
 
   // The scaffolding lanes render unconditionally: a gate firing at session start and for five turns past the

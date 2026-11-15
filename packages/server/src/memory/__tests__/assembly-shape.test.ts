@@ -147,7 +147,7 @@ describe('F22 — the PM path returns the same shape', () => {
     // The report is not a stub: it names the lane, its cost, and its reason in words.
     const grant = pm.allocation!.grants.find((g) => g.id === 'lane.pm-tail');
     expect(grant).toBeDefined();
-    expect(grant!.reason).toMatch(/tracker is its memory/);
+    expect(grant!.reason).toMatch(/board is its memory/);
     expect(grant!.granted).toBeGreaterThan(0);
     expect(pm.allocation!.admittedIds).toEqual(['lane.pm-tail']);
   });

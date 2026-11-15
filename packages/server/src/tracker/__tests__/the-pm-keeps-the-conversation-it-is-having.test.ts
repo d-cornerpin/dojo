@@ -19,7 +19,7 @@ import { runMigrations } from '../../db/migrations.js';
 
 const PM = 'pm';                 // config/platform.ts: `pm_agent_id` defaults to 'pm'
 const MODEL = 'pm-chat-model';
-const REPORT_WORDS = 20;
+const REPORT_WORDS = 200;
 
 beforeEach(() => {
   mockDb.current = new Database(':memory:');

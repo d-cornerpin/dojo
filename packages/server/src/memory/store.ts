@@ -120,6 +120,25 @@ export function getRecentMessages(agentId: string, count: number, turnCutoff?: s
   return rows.map(rowToMessage);
 }
 
+/** A conversation row: inbound from agents or a person, or an own row of a conversation turn (partial index 218). */
+const CONVERSATION_ROW = "((role = 'user' AND lane IN ('a2a', 'owner')) OR subject_kind IN ('conv', 'a2a_thread'))";
+
+/** The view of an agent whose memory is its board (`memory/pm-view.ts`), oldest-first above the session boundary:
+ *  its conversation, front moving in whole blocks (`block` to `2 * block - 1` rows), and the present turn. */
+export function boardAgentRows(agentId: string, block: number, turnNumber: number | null, triggerId: string | null): { tail: Message[]; present: Message[] } {
+  const db = getDb();
+  const params = { agentId, turn: turnNumber, trigger: triggerId, boundary: getSessionBoundary(agentId) };
+  const where = `agent_id = @agentId AND ${CONVERSATION_ROW} AND (@boundary IS NULL OR created_at >= (unixepoch(@boundary) * 1000))
+    AND (@turn IS NULL OR turn_number IS NOT @turn)`;
+  const n = (db.prepare(`SELECT COUNT(*) AS n FROM messages WHERE ${where}`).get(params) as { n: number }).n;
+  const tail = db.prepare(`SELECT ${SELECT_COLS} FROM messages WHERE ${where} ORDER BY seq LIMIT -1 OFFSET @skip`)
+    .all({ ...params, skip: Math.max(0, Math.floor((n - block) / block) * block) }) as MessageRow[];
+  const present = db.prepare(`SELECT ${SELECT_COLS} FROM messages WHERE agent_id = @agentId AND turn_number = @turn
+    UNION SELECT ${SELECT_COLS} FROM messages WHERE id = @trigger AND agent_id = @agentId ORDER BY seq`).all(params) as MessageRow[];
+  const shown = new Set(tail.map((r) => r.id));
+  return { tail: tail.map(rowToMessage), present: present.filter((r) => !shown.has(r.id)).map(rowToMessage) };
+}
+
 /** Everything EXCEPT the newest `freshTailCount` rows, oldest-first. Must stay exactly complementary with
  *  `getRecentMessages` (same order, same window) or the tail-to-summary handoff drops or duplicates rows. */
 export function getMessagesOutsideFreshTail(agentId: string, freshTailCount: number): Message[] {
