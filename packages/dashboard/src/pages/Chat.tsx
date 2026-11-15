@@ -1,7 +1,7 @@
 import { useFollowGrowth } from '../hooks/useFollowGrowth';
 import { useState, useEffect, useRef, useCallback, useMemo, type ReactNode } from 'react';
 import type { Message } from '@dojo/shared';
-import type { ChatChunkEvent, ChatMessageEvent, ChatToolCallEvent, ChatToolResultEvent, ChatErrorEvent, ChatWorkingNoteEvent, WsEvent } from '@dojo/shared';
+import type { ChatChunkEvent, ChatReasoningChunkEvent, ChatMessageEvent, ChatToolCallEvent, ChatToolResultEvent, ChatErrorEvent, ChatWorkingNoteEvent, WsEvent } from '@dojo/shared';
 import { classifyMessageForDisplay, classifyTool, parseInboundChannel, stripInboundChannelMarker, parseOutboundRouting, channelOfSendTool, parseWorkingNote, isOwnerAlertSystemNote, stripSourceEnvelope, WORKING_NOTE_PREFIX, INTERNAL_WORKING_NOTE_PREFIX, NO_REPLY_CLOSED_MARKER } from '@dojo/shared';
 import type { MessageOrigin } from '@dojo/shared';
 import { summarizeToolTurn, deriveChipLabel, type ToolTurnSummary } from '../lib/tool-display';
@@ -599,16 +599,14 @@ export const Chat = ({ panel = null }: ChatProps) => {
 
   // The agent can lead a reply with a `((mood: NAME))` marker; we read it and emote the orb.
   const dojoOrb = useDojoOrb();
-  // turnKind / wordyMode mirror into refs so once-set-up WS closures read the CURRENT value.
-  const turnKindRef = useRef(turnKind);
-  turnKindRef.current = turnKind;
+  // wordyMode mirrors into a ref so once-set-up WS closures read the CURRENT value.
   const wordyModeRef = useRef(wordyMode);
   wordyModeRef.current = wordyMode;
   // Which conversation (agent + feed mode) is on screen now: a slow older page checks it on return.
   const viewKeyRef = useRef('');
   viewKeyRef.current = `${AGENT_ID}:${wordyMode}`;
-  // True when the turn's streamed output must NOT render for the user (inter-agent turn, wordy off).
-  const suppressStreamForTurn = () => turnKindRef.current === 'a2a' && !wordyModeRef.current;
+  // True when a stream frame belongs to an inter-agent turn and the owner has wordy off.
+  const hiddenStreamFrame = (e: { turnKind?: string }) => e.turnKind === 'a2a' && !wordyModeRef.current;
   const streamTextRef = useRef<Map<string, string>>(new Map());
   // De-dupe per (message, emotion): same-message chunks don't re-fire; a new message re-fires the mood.
   const lastEmotionKeyRef = useRef<string | null>(null);
@@ -844,7 +842,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
       const e = event as ChatChunkEvent;
       if (e.agentId !== agentIdRef.current) return;
       // Inter-agent turn (wordy off): no bubble; with no origin the filter would flash a2a text.
-      if (suppressStreamForTurn()) return;
+      if (hiddenStreamFrame(e)) return;
 
       const accum = (streamTextRef.current.get(e.messageId) ?? '') + e.content;
       streamTextRef.current.set(e.messageId, accum);
@@ -902,10 +900,10 @@ export const Chat = ({ panel = null }: ChatProps) => {
 
     // Reasoning deltas (DeepSeek, OpenRouter): update the streaming bubble or create a shell.
     const unsubReasoning = subscribe('chat:reasoning_chunk', (event: WsEvent) => {
-      const e = event as { type: 'chat:reasoning_chunk'; agentId: string; messageId: string; content: string; done: boolean };
+      const e = event as ChatReasoningChunkEvent;
       if (e.agentId !== agentIdRef.current) return;
       // Same as chat:chunk, inter-agent reasoning must not create a live bubble.
-      if (suppressStreamForTurn()) return;
+      if (hiddenStreamFrame(e)) return;
       setMessages((prev) => {
         const idx = prev.findIndex((m) => m.id === e.messageId);
         if (idx >= 0) {
@@ -938,7 +936,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
       const e = event as ChatToolCallEvent;
       if (e.agentId !== agentIdRef.current) return;
       // LIVE = RELOAD: inter-agent badges follow the text's suppression (else pills flash, reload hides).
-      if (suppressStreamForTurn()) return;
+      if (hiddenStreamFrame(e)) return;
       currentToolCallsRef.current.push({
         name: e.tool,
         args: e.args,
@@ -948,7 +946,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
     const unsubToolResult = subscribe('chat:tool_result', (event: WsEvent) => {
       const e = event as ChatToolResultEvent;
       if (e.agentId !== agentIdRef.current) return;
-      if (suppressStreamForTurn()) return;
+      if (hiddenStreamFrame(e)) return;
       const tc = currentToolCallsRef.current.find((t) => t.name === e.tool && !t.result);
       if (tc) {
         tc.result = e.result;

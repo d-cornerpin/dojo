@@ -303,3 +303,26 @@ describe('owner alerts in the default chat', () => {
     expect(container.textContent).not.toContain('internal bookkeeping row');
   });
 });
+
+describe('an inter-agent stream frame is hidden by the frame, not by a flag', () => {
+  const STREAMED = 'the peer agent is drafting its reply';
+  const streamFrame = (agentId: string, turnKind: 'a2a' | 'user') =>
+    emitFrame('chat:chunk', { agentId, messageId: 'live-stream', content: STREAMED, done: false, turnKind });
+
+  it('an a2a frame draws nothing with wordy off, and a user frame draws the text', async () => {
+    const view = await feed([user(ASKED), assistant(ANSWER)], false);
+    const agentId = vi.mocked(api.getChatHistory).mock.calls[0]?.[0] as string;
+    streamFrame(agentId, 'a2a');
+    await new Promise((r) => setTimeout(r, 50));
+    expect(view.container.textContent).not.toContain(STREAMED);
+    streamFrame(agentId, 'user');
+    await waitFor(() => expect(view.container.textContent).toContain(STREAMED));
+  });
+
+  it('wordy mode shows the a2a frame', async () => {
+    const view = await feed([user(ASKED), assistant(ANSWER)], true);
+    const agentId = vi.mocked(api.getChatHistory).mock.calls[0]?.[0] as string;
+    streamFrame(agentId, 'a2a');
+    await waitFor(() => expect(view.container.textContent).toContain(STREAMED));
+  });
+});

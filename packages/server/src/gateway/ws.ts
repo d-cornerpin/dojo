@@ -6,6 +6,7 @@ import type { WsEvent } from '@dojo/shared';
 import { deriveOrigin, BATCHABLE_EVENTS } from '@dojo/shared';
 import { readPersistedRow } from '../memory/message-store.js';
 import { recordDashboardDelivery } from '../agent/v2/outbound.js';
+import { turnContext } from '../agent/turn-context.js';
 import { afterCommit } from '../db/unit.js';
 
 const logger = createLogger('websocket');
@@ -181,6 +182,10 @@ export function stampPersistedRow(event: WsEvent): 'stamped' | 'orphan' | 'not-c
 }
 
 export function broadcast(event: WsEvent): void {
+  // Stream frames carry their turn's kind: the dashboard hides an inter-agent stream by the frame itself.
+  if (event.type === 'chat:chunk' || event.type === 'chat:reasoning_chunk' || event.type === 'chat:tool_call' || event.type === 'chat:tool_result') {
+    event.turnKind = turnContext(event.agentId)?.kind;
+  }
   // The persisted row + attribution ride on every chat:message uniformly (see the seam).
   stampPersistedRow(event);
 

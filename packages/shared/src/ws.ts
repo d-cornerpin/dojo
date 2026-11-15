@@ -39,6 +39,7 @@ export interface ChatChunkEvent {
   content: string;
   done: boolean;
   modelId?: string | null;
+  turnKind?: 'user' | 'a2a';
 }
 
 export interface ChatReasoningChunkEvent {
@@ -47,6 +48,7 @@ export interface ChatReasoningChunkEvent {
   messageId: string;
   content: string;
   done: boolean;
+  turnKind?: 'user' | 'a2a';
 }
 
 export interface ChatToolCallEvent {
@@ -54,6 +56,7 @@ export interface ChatToolCallEvent {
   agentId: string;
   tool: string;
   args: Record<string, unknown>;
+  turnKind?: 'user' | 'a2a';
 }
 
 export interface ChatToolResultEvent {
@@ -61,6 +64,7 @@ export interface ChatToolResultEvent {
   agentId: string;
   tool: string;
   result: string;
+  turnKind?: 'user' | 'a2a';
 }
 
 /** The persisted row behind a `chat:message`, attached at the broadcast seam (`gateway/ws.ts`) by
