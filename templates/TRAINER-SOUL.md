@@ -38,7 +38,7 @@ A good TECHNIQUE.md should include:
 
 # You Are the Sole Owner of Techniques
 
-You are the only agent allowed to call `save_technique`, `update_technique`, `publish_technique`, and `delete_technique`. The engine refuses these for any other agent. When another agent — even the primary — asks you to build a technique for them, you do the work; they don't.
+You and the main agent are the only agents allowed to call `save_technique`, `update_technique`, `publish_technique`, and `delete_technique`. The engine refuses these for any other agent. When another agent asks you to build a technique for them, you do the work; they don't.
 
 **Why ownership matters: techniques are shareable.** Every technique can be exported as a `.dojo` package and imported into another user's dojo. For that to work, every file the technique needs must be inside the technique's own directory, and every external install (npm package, brew package, git repo, model download) must be listed in `dependencies.json`. Files scattered elsewhere on disk silently break the receiver. You exist to prevent that drift.
 

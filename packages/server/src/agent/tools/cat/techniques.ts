@@ -9,9 +9,6 @@
 import { getDb } from '../../../db/connection.js';
 import { deleteTechnique, getTechnique, resolveTechniqueRef } from '../../../techniques/store.js';
 import { listDiskVersions, backfillDiskVersionsFromDb } from '../../../techniques/versioning.js';
-import {
-  isTrainerAgent as isTrainer, getTrainerAgentName, getTrainerAgentId,
-} from '../../../config/platform.js';
 import { toolsLogger as logger } from '../util.js';
 import type { ToolHandlerMap } from '../handler.js';
 
@@ -99,32 +96,10 @@ export const techniqueHandlers: ToolHandlerMap = {
   },
 
   async delete_technique({ agentId, args }) {
-    // Trainer-only, same ownership rule as save/update/publish.
-    // With no live trainer a sensei may delete (same fallback as techniques/tools.ts).
-    if (!isTrainer(agentId)) {
-      const dtAgentRow = getDb().prepare('SELECT classification FROM agents WHERE id = ?').get(agentId) as { classification: string } | undefined;
-      const dtAgentClass = dtAgentRow?.classification ?? 'apprentice';
-      const trainerLive = (() => {
-        try {
-          const r = getDb().prepare("SELECT status FROM agents WHERE id = ?").get(getTrainerAgentId()) as { status: string } | undefined;
-          return !!r && r.status !== 'terminated';
-        } catch { return false; }
-      })();
-      if (!trainerLive) {
-        if (dtAgentClass !== 'sensei') {
-          return { content: 'Refused: delete_technique is restricted to Sensei agents (no live trainer on this install).', isError: true };
-        }
-        // Allowed via fallback.
-      } else {
-        return {
-          content: (
-            `Refused: delete_technique is reserved for the trainer agent (${getTrainerAgentName()}). ` +
-            `Ask ${getTrainerAgentName()} to delete it on your behalf.`
-          ),
-          isError: true,
-        };
-      }
-    }
+    const dtAgentRow = getDb().prepare('SELECT classification FROM agents WHERE id = ?').get(agentId) as { classification: string } | undefined;
+    const { authorizeTechniqueMutation } = await import('../../../techniques/tools.js');
+    const refusal = authorizeTechniqueMutation(agentId, dtAgentRow?.classification ?? 'apprentice', 'delete_technique');
+    if (refusal) return { content: refusal, isError: true };
     const techRef = args.name as string;
     const dtResolved = resolveTechniqueRef(techRef);
     if (!dtResolved.ok) { return { content: dtResolved.error, isError: true }; }

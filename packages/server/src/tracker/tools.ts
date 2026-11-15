@@ -12,7 +12,7 @@ import { findTaskOriginChain, renderTaskOriginChain } from './origin-chain.js';
 import { engineProofLine } from '../work/done/proof.js';
 import { renderTaskStamps, renderStepFacts, type TaskStampFields } from './task-stamps.js';
 import { createLogger } from '../logger.js';
-import { createProject, getProject, createTask, getTask, listTasks, listProjects, updateTask, updateProject, resolveTaskId, resolveProjectId, formatResolveError, setTaskStatus, setTaskStatusResult, broadcastTaskSettled } from './schema.js';
+import { createProject, getProject, createTask, getTask, listTasks, listProjects, updateTask, updateProject, resolveTaskId, resolveProjectId, formatResolveError, setTaskStatusResult, broadcastTaskSettled } from './schema.js';
 import { ensurePMAgentRunning } from './pm-agent.js';
 import { injectTaskAssignmentNotification } from './notify.js';
 import { writeTaskLog } from './task-log.js';
@@ -1967,6 +1967,8 @@ export async function trackerRetask(
 ): Promise<string> {
   const rawTaskId = args.task_id;
   if (!rawTaskId) return 'Error: task_id is required.';
+  const isPM = isPMAgent(pmAgentId);
+  const sender = isPM ? 'PM' : 'main agent';
 
   const directive = (args.directive ?? '').trim();
   if (directive.length < 30) {
@@ -1992,7 +1994,7 @@ export async function trackerRetask(
     return `Error: task "${task.title}" (${taskId.slice(0, 8)}) is handed in and waits for a decision. Decide it instead: open its proof, then work_validate(action="decide", task_id="${taskId}", verdict="approve" or "send_back", reason).`;
   }
   if (!task.assigned_to) {
-    return `Error: task "${task.title}" (${taskId}) has no assigned agent, so there is nobody to retask. The PM does not move tasks (owner ruling): tell the main agent so it can give the task a holder.`;
+    return `Error: task "${task.title}" (${taskId}) has no assigned agent, so there is nobody to retask. The PM does not move tasks (owner ruling): ${isPM ? 'tell the main agent so it can give the task a holder' : 'give the task a holder first'}.`;
   }
 
   const targetStatus = args.target_status ?? 'in_progress';
@@ -2004,18 +2006,19 @@ export async function trackerRetask(
   // A retask lifts any hold but the owner's (the PM's verdict that the wait is not real), then moves through `transition()`.
   if (ownerHoldStands(taskId, false)) return `Refused: ${OWNER_HOLD_REFUSAL}`;
   clearHold(taskId, pmAgentId);
-  const updated = setTaskStatus(taskId, targetStatus as TrackerStatus, {
-    by: 'pm', actorId: pmAgentId,
-    reason: `PM retask: ${directive.slice(0, 200)}`,
+  const sr = setTaskStatusResult(taskId, targetStatus as TrackerStatus, {
+    by: isPM ? 'pm' : 'agent', actorId: pmAgentId,
+    reason: `${sender} retask: ${directive.slice(0, 200)}`,
   });
-  if (!updated) return `Error: task ${taskId} was deleted before retask could land.`;
+  if (!workSettled(sr.result)) return `Refused: the status of ${taskId} did not change (${sr.result.detail}).`;
+  if (!sr.task) return `Error: task ${taskId} was deleted before retask could land.`;
 
   const fresh = getTask(taskId);
   if (fresh) broadcast({ type: 'tracker:task_updated', data: fresh });
 
   writeTaskLog({
     taskId,
-    fromEntity: isPMAgent(pmAgentId) ? 'pm' : `agent:${pmAgentId}`,
+    fromEntity: isPM ? 'pm' : `agent:${pmAgentId}`,
     entryKind: 'directive',
     fromStatus: task.status,
     toStatus: targetStatus,
@@ -2029,11 +2032,11 @@ export async function trackerRetask(
   try {
     const { redriveWithoutReply } = await import('../agent/agent-notice.js');
     const body =
-      `PM retask on "${task.title}" (${taskId.slice(0, 8)}). Task is back to ${targetStatus}.\n\n` +
-      `PM directive: ${directive}\n\n` +
+      `${sender} retask on "${task.title}" (${taskId.slice(0, 8)}). Task is back to ${targetStatus}.\n\n` +
+      `${sender} directive: ${directive}\n\n` +
       `Task goal: ${task.goal ?? '(none recorded)'}\n\n` +
       `Do the work the directive describes. Don't just acknowledge; do the thing.`;
-    // A directive, not a question: it wakes the agent and owes the PM no reply.
+    // A directive, not a question: it wakes the agent and owes the sender no reply.
     redriven = await redriveWithoutReply({ toAgentId: task.assigned_to, fromAgentId: pmAgentId, content: body, taskId });
   } catch (err) {
     redriven = false;
@@ -2043,7 +2046,7 @@ export async function trackerRetask(
     }, pmAgentId);
   }
 
-  logger.info('Task retasked by PM', { taskId, pmAgentId, targetStatus, directiveLength: directive.length }, pmAgentId);
+  logger.info('Task retasked', { taskId, pmAgentId, targetStatus, directiveLength: directive.length }, pmAgentId);
   return (
     `[OK] Retasked "${task.title}" (${taskId}) from ${task.status} to ${targetStatus}. ` +
     (redriven ? `Directive delivered to ${task.assigned_to}.` : `Directive NOT delivered to ${task.assigned_to}.${REDRIVE_LATER}`)

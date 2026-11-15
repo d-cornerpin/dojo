@@ -267,8 +267,8 @@ export async function evaluateGate(gate: ToolGate, ctx: GateContext): Promise<Ga
             gate,
             verdict: denied(
               `pm-only:${gate.operation}`,
-              `${gate.operation} is restricted to the PM agent`,
-              `Permission denied: only the PM agent can call ${gate.operation}. If you think the engine or PM got it wrong, tell the PM why with send_to_agent(agent="${getPMAgentId()}", ...) instead.`,
+              `${gate.operation} is restricted to the PM agent and the main agent`,
+              `Permission denied: only the PM agent and the main agent can call ${gate.operation}. If you think the engine or PM got it wrong, tell the PM why with send_to_agent(agent="${getPMAgentId()}", ...) instead.`,
             ),
             resource: null,
             errorCode: 'PERMISSION_DENIED',

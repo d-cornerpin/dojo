@@ -172,7 +172,7 @@ const SYSTEM_ENTRIES: SystemInjection[] = [
     id: 'sys.trainer-awareness',
     target: 'system',
     slot: SystemSlot.TrainerAwareness,
-    reason: 'Primary only: names the Trainer agent (owns save_technique/update_technique).',
+    reason: 'Primary only: names the Trainer agent (owns the technique library; the main agent may write techniques too).',
     render: (ctx) => renderTrainerAwareness(ctx.agentId),
   },
   {
