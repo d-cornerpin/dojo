@@ -41,7 +41,6 @@ import { insertEmbeddingIfSourceAlive, embeddingSourceAliveSql } from '../embedd
 import { __resetSummaryWriterHealthForTests } from '../writer.js';
 import { runBackfill } from '../backfill.js';
 import { findContaminatedSummaries } from '../summary-rebuild.js';
-import { sweepStoredSummaryObligations } from '../summary-obligations.js';
 import { getDescendantMessages } from '../dag.js';
 
 const AGENT = 'agent-t140-note-knowledge';
@@ -109,12 +108,6 @@ describe('t140 — a not-yet-condensed note is never taken for knowledge', () =>
   it('NIGHTLY REBUILD: a note is never flagged for a rebuild (the replacement owns it)', async () => {
     const id = aNote();
     expect(findContaminatedSummaries().map((f) => f.id)).not.toContain(id);
-  });
-
-  it('OBLIGATIONS SWEEP: a note\'s text names no work, so the sweep never rewrites it (which would make it a leaf)', async () => {
-    const id = aNote();
-    sweepStoredSummaryObligations({ dryRun: false, agentId: AGENT });
-    expect((db().prepare('SELECT kind FROM summaries WHERE id = ?').get(id) as { kind: string }).kind).toBe('uncondensed');
   });
 
   it('EXPANSION: a note expands to exactly the rows it stands for', async () => {

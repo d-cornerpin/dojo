@@ -112,14 +112,6 @@ export async function declareDeliverableOnSchedule(taskId: string, judged?: Deli
   return shape;
 }
 
-/** Does this task owe a person a message when its runs close? The closer's only question. */
-export function taskOwesDeliverable(taskId: string): { owes: boolean; taskKind: string | null } {
-  const r = getDb().prepare('SELECT task_kind FROM work WHERE id = ?')
-    .get(taskId) as { task_kind: string | null } | undefined;
-  const kind = r?.task_kind ?? null;
-  return { owes: kind !== null && DELIVERABLE_OWING_TASK_KINDS.includes(kind), taskKind: kind };
-}
-
 /** A live recurring twin for the duplicate guard: matched on cadence, not anchor (a recreated twin's anchor
  *  differs), with no time window. A stopped or paused schedule never counts. */
 export function findLiveRecurringTwin(p: {

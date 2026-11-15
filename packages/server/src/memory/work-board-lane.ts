@@ -22,8 +22,6 @@ import {
 } from './task-list-words.js';
 
 export const ACTIVE_TASKS_LANE_ID = 'lane.active-tasks';
-export const ATTEMPT_LEDGER_ENTRY_ID = 'msg.attempt-ledger';
-export const ACTIVE_TASKS_ENTRY_ID = 'msg.active-tasks';
 
 export interface BoardTask {
   id: string;

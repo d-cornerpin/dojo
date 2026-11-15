@@ -56,9 +56,7 @@ vi.mock('../../db/connection.js', async () => {
 
 import { runMigrations } from '../../db/migrations.js';
 import { insertMessage } from '../../memory/message-store.js';
-import {
-  abandonUnservableAsks, unservableOpenAskCensus, askIdForMessage, openAsk,
-} from '../store.js';
+import { abandonUnservableAsks, askIdForMessage, openAsk } from '../store.js';
 import { selfWakeStandDown, humanAsksOpen } from '../work-reaper.js';
 import { FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
@@ -200,51 +198,6 @@ describe('the stand-down law counts only the tickets that exist', () => {
 });
 
 // ════════════════════════════════════════════════════════════════════════════════
-// 3 · THE STRUCTURAL INVARIANT — A CENSUS THAT MUST BE EMPTY
-// ════════════════════════════════════════════════════════════════════════════════
-
-describe('no open ask may exist that the platform\'s own rules make unservable', () => {
-  it('names an ask whose sender the platform is required to ignore', () => {
-    seedAskOnMessage({ agentId: AGENT, messageId: 'm-ig', conversationId: CONV, authorized: 0, openedAt: NOW });
-    expect(unservableOpenAskCensus().map((r) => r.cls)).toEqual(['ignored-sender']);
-  });
-
-  it('names an ask owed by a TERMINATED agent (TB3 §8.2, 7 measured)', () => {
-    seedAgent('dead', 'terminated', null);
-    seedConversation('conv-dead', 'dead');
-    seedAskOnMessage({ agentId: 'dead', messageId: 'm-d', conversationId: 'conv-dead', authorized: 1, openedAt: NOW });
-    expect(unservableOpenAskCensus().map((r) => r.cls)).toEqual(['dead-agent']);
-  });
-
-  it('names an ask BELOW its own agent\'s session boundary (TB3 §8.2, 11 measured)', () => {
-    seedAgent('reset', 'idle', '2026-08-01 00:00:00');
-    seedConversation('conv-reset', 'reset');
-    seedAskOnMessage({
-      agentId: 'reset', messageId: 'm-b1', conversationId: 'conv-reset', authorized: 1,
-      openedAt: Date.UTC(2026, 6, 1),   // a month BELOW the boundary
-    });
-    expect(unservableOpenAskCensus().map((r) => r.cls)).toEqual(['below-session-boundary']);
-  });
-
-  it('is EMPTY for a servable ask — the census is not simply naming everything', () => {
-    seedAskOnMessage({ agentId: AGENT, messageId: 'm-ok', conversationId: CONV, authorized: 1, openedAt: NOW });
-    expect(unservableOpenAskCensus()).toEqual([]);
-  });
-
-  it('is empty for a CLOSED ask of every unservable shape — it hunts OPEN obligations only', () => {
-    seedAgent('dead2', 'terminated', null);
-    seedConversation('conv-dead2', 'dead2');
-    const id = seedAskOnMessage({
-      agentId: 'dead2', messageId: 'm-d2', conversationId: 'conv-dead2', authorized: 1, openedAt: NOW,
-    });
-    mockDb.current!.prepare(
-      `UPDATE work SET state = 'abandoned', closed_at = ? WHERE id = ?`,
-    ).run(NOW, id);
-    expect(unservableOpenAskCensus()).toEqual([]);
-  });
-});
-
-// ════════════════════════════════════════════════════════════════════════════════
 // 4 · REMEDIATION — ONE REAPER, NAMED REASONS, A DENOMINATOR PER CLASS
 // ════════════════════════════════════════════════════════════════════════════════
 
@@ -264,13 +217,11 @@ describe('the unservable reaper closes the existing population with a named reas
 
   it('reports a DENOMINATOR per class, and the census is empty afterwards', () => {
     seedAllThree();
-    expect(unservableOpenAskCensus()).toHaveLength(3);
     const r = abandonUnservableAsks();
     expect(r.abandoned).toBe(3);
     expect(r.byClass['ignored-sender']).toBe(1);
     expect(r.byClass['dead-agent']).toBe(1);
     expect(r.byClass['below-session-boundary']).toBe(1);
-    expect(unservableOpenAskCensus()).toEqual([]);
   });
 
   it('every closure is a RECORDED move whose reason names its class', () => {

@@ -13,10 +13,6 @@ export function reportRepo(): string {
 const sameRepo = (a: string, b: string): boolean =>
   a.trim().toLowerCase() === b.trim().toLowerCase();
 
-export function reportRepoIsDefault(): boolean {
-  return sameRepo(reportRepo(), DOJO_REPORT_REPO_DEFAULT);
-}
-
 // `DOJO_DEV_BOX=1` marks a box that must never file on the default repository. The flag is latched (read
 // at load and on every call, it only ever closes), so no later environment write can lift the refusal.
 let devBoxSeen = process.env.DOJO_DEV_BOX === '1';

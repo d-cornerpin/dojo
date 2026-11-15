@@ -14,7 +14,7 @@ import {
 } from '../work/tracker-view.js';
 import { TERMINAL_STATE_NAMES } from '../work/terminal-states.js';
 import {
-  openTrackerProject, openTrackerTask, patchWork, appendWorkNotes,
+  openTrackerProject, openTrackerTask, patchWork,
   setTrackerStatus, type WorkPatch, type SetStatusInput,
 } from '../work/tracker-store.js';
 import { workSettled, noteUnsettled, type Actor } from '../work/store.js';
@@ -877,9 +877,3 @@ export function setTaskStatusResult(id: string, status: TrackerStatus, input: Se
 
 // The blocked-work disposal gate lives in `work/tracker-store.ts` on `setTrackerStatus`, the one status writer:
 // model-driven paths below these doors (`agent/spawner.ts` calls it directly) would bypass a guard placed here.
-
-export function addTaskNotes(id: string, notes: string): void {
-  const timestamp = new Date().toISOString();
-  appendWorkNotes(id, `[${timestamp}] ${notes}`);
-  logger.info('Task notes added', { taskId: id, notesLength: notes.length });
-}

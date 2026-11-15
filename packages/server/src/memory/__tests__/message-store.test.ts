@@ -26,10 +26,7 @@ vi.mock('../../db/connection.js', () => ({
   getDbPath: () => ':memory:',
 }));
 
-import {
-  insertMessage, insertEngineEvent, claimForTurn, markServed,
-  recentTail, byIds, unservedHead,
-} from '../message-store.js';
+import { insertMessage, insertEngineEvent, recentTail } from '../message-store.js';
 import {
   NO_REPLY_CLOSED_MARKER, WORKING_NOTE_PREFIX, INTERNAL_WORKING_NOTE_PREFIX,
   OWNER_ALERT_HEADS_UP_PREFIX, NEW_SESSION_DIVIDER,
@@ -425,13 +422,6 @@ describe('T8 — content is stored display-ready', () => {
     const s = insertMessage({ agentId: AGENT, role: 'system', content: prompt });
     expect(rowOf(s.id).content).toBe(prompt);
   });
-
-  it('never rewrites content after the insert (cache law)', () => {
-    const p = insertMessage({ agentId: AGENT, role: 'assistant', content: '((mood: calm)) stored once' });
-    const first = rowOf(p.id).content;
-    markServed([p.id], 9);
-    expect(rowOf(p.id).content).toBe(first);
-  });
 });
 
 describe('sanctioned readers', () => {
@@ -450,54 +440,6 @@ describe('sanctioned readers', () => {
   it('recentTail takes the NEWEST n and still returns them oldest-first', () => {
     for (let i = 0; i < 5; i++) insertMessage({ agentId: AGENT, role: 'user', content: `m${i}` });
     expect(recentTail(AGENT, { limit: 2 }).map(m => m.content)).toEqual(['m3', 'm4']);
-  });
-
-  it('byIds returns the requested rows and tolerates unknown ids', () => {
-    const a = insertMessage({ agentId: AGENT, role: 'user', content: 'a' });
-    const b = insertMessage({ agentId: AGENT, role: 'user', content: 'b' });
-    const got = byIds([a.id, 'no-such-id', b.id]);
-    expect(got.map(m => m.content).sort()).toEqual(['a', 'b']);
-    expect(byIds([])).toEqual([]);
-  });
-
-  it('unservedHead returns only rows no turn has claimed, oldest first', () => {
-    const a = insertMessage({ agentId: AGENT, role: 'user', content: 'first' });
-    const b = insertMessage({ agentId: AGENT, role: 'user', content: 'second' });
-    expect(unservedHead(AGENT).map(m => m.id)).toEqual([a.id, b.id]);
-
-    markServed([a.id], 4);
-    expect(unservedHead(AGENT).map(m => m.id)).toEqual([b.id]);
-  });
-});
-
-describe('claimForTurn / markServed', () => {
-  it('claimForTurn stamps the turn on unserved rows and returns what it claimed', () => {
-    const a = insertMessage({ agentId: AGENT, role: 'user', content: 'a' });
-    const b = insertMessage({ agentId: AGENT, role: 'user', content: 'b' });
-
-    const claimed = claimForTurn(AGENT, 11);
-    expect(claimed.map(m => m.id)).toEqual([a.id, b.id]);
-    expect(rowOf(a.id).served_by_turn).toBe(11);
-    expect(rowOf(b.id).turn_number).toBe(11);
-  });
-
-  it('a second claim finds nothing — a row is claimed once, never twice', () => {
-    insertMessage({ agentId: AGENT, role: 'user', content: 'only' });
-    expect(claimForTurn(AGENT, 1)).toHaveLength(1);
-    expect(claimForTurn(AGENT, 2)).toEqual([]);
-  });
-
-  it('markServed never rewrites content — the cache law, asserted', () => {
-    const p = insertMessage({ agentId: AGENT, role: 'user', content: 'original bytes' });
-    markServed([p.id], 9);
-    expect(rowOf(p.id).content).toBe('original bytes');
-    expect(rowOf(p.id).served_by_turn).toBe(9);
-  });
-
-  it('markServed on an empty list is a no-op, not a full-table update', () => {
-    const p = insertMessage({ agentId: AGENT, role: 'user', content: 'untouched' });
-    markServed([], 3);
-    expect(rowOf(p.id).served_by_turn).toBeNull();
   });
 });
 
@@ -553,11 +495,9 @@ describe('T6b — the four time columns are epoch-ms INTEGER', () => {
 
   it('the sweep vocabulary writes a number, and the IS NULL guards still read it', () => {
     const p = insertMessage({ agentId: AGENT, role: 'user', content: 'to sweep' });
-    expect(unservedHead(AGENT).map(m => m.id)).toContain(p.id);
     mockDb.current!.prepare(
       "UPDATE messages SET swept_at = (CAST(strftime('%s','now') AS INTEGER) * 1000) WHERE id = ?",
     ).run(p.id);
     expect(typeof rowOf(p.id).swept_at).toBe('number');
-    expect(unservedHead(AGENT).map(m => m.id)).not.toContain(p.id);
   });
 });

@@ -199,18 +199,14 @@ function verifiedReceiptFor(callId: string, agentId: string): boolean {
 }
 
 /** Tie this call's receipts to the task it was charged to, so a send made a turn before the close belongs to a task;
- *  the first tie wins, as at the gate (`receipts/store.ts:stampReceiptsTask`). */
+ *  the first tie wins. */
 function stampCallReceipts(callId: string, agentId: string, workId: string): void {
   getDb().prepare(`UPDATE tool_receipts SET task_id = ?, updated_at = datetime('now') WHERE call_id = ? AND agent_id = ? AND task_id IS NULL`)
     .run(workId, callId, agentId);
 }
 
-export function ledgerTouchedSince(workId: string, sinceMs: number): number {
-  return (getDb().prepare(`SELECT COUNT(*) AS n FROM work_ledger WHERE work_id = ? AND last_at > ? AND ${IS_ITEM}`).get(workId, sinceMs) as { n: number }).n;
-}
-
-/** Items this task touched for the FIRST time after `sinceMs`. The turn end's momentum reads this, not
- *  `ledgerTouchedSince`: re-touching is not progress, so a loop over the same items cannot keep a job continuing. */
+/** Items this task touched for the FIRST time after `sinceMs`. The turn end's momentum reads this, not a
+ *  touch count: re-touching is not progress, so a loop over the same items cannot keep a job continuing. */
 export function ledgerNewItemsSince(workId: string, sinceMs: number): number {
   return (getDb().prepare(`SELECT COUNT(*) AS n FROM work_ledger WHERE work_id = ? AND first_at > ? AND ${IS_ITEM}`).get(workId, sinceMs) as { n: number }).n;
 }

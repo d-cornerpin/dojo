@@ -39,8 +39,7 @@ vi.mock('../../db/connection.js', async () => {
 
 import { runMigrations } from '../../db/migrations.js';
 import {
-  annotateSummaryObligations, sweepStoredSummaryObligations,
-  SUMMARY_OBLIGATION_MARK, SUMMARY_NO_MATCH_MARK,
+  annotateSummaryObligations, SUMMARY_OBLIGATION_MARK, SUMMARY_NO_MATCH_MARK,
 } from '../summary-obligations.js';
 import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
@@ -62,17 +61,6 @@ function seedCommitment(
   ).run(id, agentId, id, state, title, Date.now() - 86_400_000, Date.now(), closedAt);
   return id;
 }
-
-function seedSummary(id: string, content: string, agentId: string = AGENT): void {
-  db().prepare(
-    `INSERT INTO summaries (id, agent_id, depth, kind, content, token_count,
-                            earliest_at, latest_at, descendant_count, created_at)
-     VALUES (?, ?, 0, 'leaf', ?, ?, datetime('now'), datetime('now'), 3, datetime('now'))`,
-  ).run(id, agentId, content, Math.ceil(content.length / 4));
-}
-
-const contentOf = (id: string): string =>
-  (db().prepare('SELECT content FROM summaries WHERE id = ?').get(id) as { content: string }).content;
 
 /** The commitment title the incident's agent actually carried, 87 times over. */
 const BOB_ROOF = "Email the roof quote to Bob (promise-bmshgzth1yw) once he sends his address. "
@@ -260,56 +248,5 @@ describe('an obligation naming a counterparty whose deliverable is unrecognisabl
     const once = annotateSummaryObligations(
       "- Still waiting on Bob's address before the walkthrough can be booked.", AGENT);
     expect(annotateSummaryObligations(once, AGENT)).toBe(once);
-  });
-});
-
-// ══════════════════════════════════════════════════════════════════════════════
-// §4 — THE ONE-TIME PASS IS READ BEFORE IT IS WRITTEN.
-// ══════════════════════════════════════════════════════════════════════════════
-describe('the stored-summary hygiene pass reports every line before it touches one', () => {
-  beforeEach(() => {
-    seedCommitment('abandoned', BOB_ROOF);
-    seedCommitment('abandoned', BOB_FENCE);
-  });
-
-  it('a dry run names the summary, the line and the finding, and writes nothing', () => {
-    seedSummary('sum_bob', STORED_BOB_LINES[4]);
-    seedSummary('sum_plain', 'The owner runs Acme Corp.');
-    const report = sweepStoredSummaryObligations({ dryRun: true });
-    expect(report.scanned).toBe(2);
-    expect(report.affected).toBe(1);
-    expect(report.ids).toEqual(['sum_bob']);
-    expect(report.candidates).toHaveLength(1);
-    expect(report.candidates[0].summaryId).toBe('sum_bob');
-    expect(report.candidates[0].agentId).toBe(AGENT);
-    expect(report.candidates[0].line).toBe(STORED_BOB_LINES[4]);
-    expect(report.candidates[0].finding).toContain('abandoned');
-    expect(contentOf('sum_bob')).toBe(STORED_BOB_LINES[4]);
-  });
-
-  it('applying it annotates exactly the rows the dry run named', () => {
-    seedSummary('sum_bob', STORED_BOB_LINES.join('\n'));
-    seedSummary('sum_plain', 'The owner runs Acme Corp.');
-    const report = sweepStoredSummaryObligations({ dryRun: false });
-    expect(report.affected).toBe(1);
-    expect(contentOf('sum_plain')).toBe('The owner runs Acme Corp.');
-    const lines = contentOf('sum_bob').split('\n');
-    expect(lines).toHaveLength(STORED_BOB_LINES.length);
-    for (const l of lines) expect(l).toContain(SUMMARY_OBLIGATION_MARK);
-  });
-
-  it('running it twice is a no-op the second time', () => {
-    seedSummary('sum_bob', STORED_BOB_LINES[4]);
-    expect(sweepStoredSummaryObligations({ dryRun: false }).affected).toBe(1);
-    expect(sweepStoredSummaryObligations({ dryRun: false }).affected).toBe(0);
-  });
-
-  it('each agent is resolved against its OWN spine only', () => {
-    seedCommitment('open', "Email the roof quote to Bob once he sends his address. "
-      + "Waiting on Bob's address before proceeding.", OTHER);
-    seedSummary('sum_mine', STORED_BOB_LINES[4], AGENT);
-    seedSummary('sum_theirs', STORED_BOB_LINES[4], OTHER);
-    const report = sweepStoredSummaryObligations({ dryRun: true });
-    expect(report.ids).toEqual(['sum_mine']);   // theirs is still OWED, so it stays as written
   });
 });

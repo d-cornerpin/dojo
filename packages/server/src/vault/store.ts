@@ -6,7 +6,6 @@ import { dominantMessageLineage } from '../memory/conversations.js';
 import { createLogger } from '../logger.js';
 import { embeddingModelKey } from '../memory/embedding-model.js';
 import { generateEmbedding, isEmbeddingBackendUnavailable, warnEmbeddingBackendAbsentOnce } from '../memory/embeddings.js';
-import { estimateTokens } from '../memory/budget.js';
 import { capEntryContent } from './entry-limit.js';
 export { capEntryContent, isOverEntryLimit, ownerEntryTooLongMessage, AGENT_ENTRY_CUT_NOTE } from './entry-limit.js';
 import { getHouseholdAgentIds, isPMAgent, isHealerAgent } from '../config/platform.js';
@@ -718,17 +717,6 @@ export async function findNearDuplicateEntry(
   return rows[0] ? { ...rowToEntry(rows[0]), similarity: best.similarity } : null;
 }
 
-
-export function updateRetrievalStats(entryIds: string[]): void {
-  if (entryIds.length === 0) return;
-  const db = getDb();
-  const stmt = db.prepare(
-    'UPDATE vault_entries SET retrieval_count = retrieval_count + 1, last_retrieved_at = datetime(\'now\') WHERE id = ?'
-  );
-  for (const id of entryIds) {
-    stmt.run(id);
-  }
-}
 
 
 // Scoped by agent (plus owner and household) because pinned entries are injected into every assembled

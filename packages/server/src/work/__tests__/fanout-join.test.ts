@@ -14,7 +14,6 @@
 //   3d  TTL fail-closed, exactly once, with no model involvement.
 //   3e  abandonment covers fan-out children — and an abandoned child fails the parent
 //       HONESTLY rather than compiling a lie out of the pieces that did land.
-//   3f  a failed-closed join re-opens for a late answer.
 //   3g  work state and conversation identity are SEPARATE fields on the same record.
 //   3h  a piece's result is a real field on the child, not a row in a fake namespace.
 //   3i  answered-by is an explicit edge (`result_delivery_id`), not string inference.
@@ -56,11 +55,11 @@ import {
   dueJoinsUnderClosedParent, JOIN_MAX_AGE_DAYS, transition,
 } from '../store.js';
 // SWEEP-A TB2 — the join's close is the settlement authority's now (DESIGN §1b, row 5).
-// `settleJoinDelivered` and `reopenJoinForLateAnswer` moved out of `work/store.ts` with the
+// `settleJoinDelivered` moved out of `work/store.ts` with the
 // decision they were making; the FACTS each clause below asserts are unchanged, only the
 // vocabulary is (`{verdict}` instead of `{kind}`), and each gained the tightening the
 // authority brings: the children must have settled and the receipt must postdate the join.
-import { settleAskOnJoin, reopenJoinForLateAnswer } from '../ask-settlement.js';
+import { settleAskOnJoin } from '../ask-settlement.js';
 import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const AGENT = FXID.n4;
@@ -626,55 +625,6 @@ describe('3d second arm: a deadline still expires when the parent ask has alread
     const ancient = Date.now() - (JOIN_MAX_AGE_DAYS + 1) * 24 * 60 * 60 * 1000;
     mockDb.current!.prepare('UPDATE work SET opened_at = ? WHERE id = ?').run(ancient, parent);
     expect(dueJoinsUnderClosedParent(Date.now()).map((j) => j.id)).not.toContain(parent);
-  });
-});
-
-// ════════════════════════════════════════════════════════════════════════
-// 3f — a failed-closed join re-opens for a late answer
-// ════════════════════════════════════════════════════════════════════════
-
-describe('3f: an answer arriving after the failure notice still reaches the owner, once', () => {
-  it('POSITIVE: the late answer reopens the failed join and closes it done, both moves recorded', () => {
-    const parent = seedClaimedAsk();
-    openDelegationJoin({
-      parentWorkId: parent, agentId: AGENT, replyConversationId: 'conv-1',
-      ttlAt: Date.now() - 1000, threads: [{ threadId: T1 }],
-    });
-    failJoinClosed(parent, { reason: 'TTL expired', expectedState: 'claimed' });
-    expect(row(parent)!.state).toBe('failed');
-
-    const d = seedDelivery('d-late', { channel: 'dashboard', conversation_id: 'conv-1' });
-    const r = reopenJoinForLateAnswer(parent, d, 'Ana answered after all');
-    expect((r as { verdict?: string }).verdict).toBe('closed');
-    const p = row(parent)!;
-    expect(p.state).toBe('done');
-    expect(p.result_delivery_id).toBe('d-late');
-    const kinds = events(parent).map((e) => e.kind);
-    expect(kinds.filter((k) => k === 'transition').length).toBeGreaterThanOrEqual(4);
-  });
-
-  it('NEGATIVE: a SECOND late answer does not re-deliver — the reopen is refused on a settled join', () => {
-    const parent = seedClaimedAsk();
-    openDelegationJoin({
-      parentWorkId: parent, agentId: AGENT, replyConversationId: 'conv-1',
-      ttlAt: Date.now() - 1000, threads: [{ threadId: T1 }],
-    });
-    failJoinClosed(parent, { reason: 'TTL expired', expectedState: 'claimed' });
-    reopenJoinForLateAnswer(parent, seedDelivery('d-late', { channel: 'dashboard', conversation_id: 'conv-1' }), 'first late answer');
-    const second = reopenJoinForLateAnswer(parent, seedDelivery('d-later', { channel: 'dashboard', conversation_id: 'conv-1' }), 'second late answer');
-    expect((second as { verdict?: string; kind?: string }).verdict ?? second.kind).not.toBe('closed');
-    expect(row(parent)!.result_delivery_id).toBe('d-late');
-  });
-
-  it('NEGATIVE: a join that never failed closed is not "reopened" by a late answer', () => {
-    const parent = seedClaimedAsk();
-    openDelegationJoin({
-      parentWorkId: parent, agentId: AGENT, replyConversationId: 'conv-1',
-      ttlAt: Date.now() + 60 * 60_000, threads: [{ threadId: T1 }],
-    });
-    const r = reopenJoinForLateAnswer(parent, seedDelivery('d-x', { channel: 'dashboard', conversation_id: 'conv-1' }), 'not a late answer');
-    expect((r as { kind?: string }).kind).toBe('refused');
-    expect(row(parent)!.state).toBe('claimed');
   });
 });
 

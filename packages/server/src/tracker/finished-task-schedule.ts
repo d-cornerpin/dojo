@@ -4,7 +4,7 @@ import { getDb } from '../db/connection.js';
 import { withUnit, afterCommit } from '../db/unit.js';
 import { broadcast } from '../gateway/ws.js';
 import { isTerminalName } from '../work/terminal-states.js';
-import { setTrackerStatus, resetRevertCount } from '../work/tracker-store.js';
+import { setTrackerStatus } from '../work/tracker-store.js';
 import { workSettled, isStateConflict, type WorkOutcome, type WorkPatchOutcome } from '../work/store.js';
 import { stateToStatus } from '../work/tracker-view.js';
 import { getTask } from './schema.js';

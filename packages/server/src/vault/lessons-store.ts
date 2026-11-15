@@ -15,7 +15,6 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 export const LESSON_LIFETIME_MS = 90 * DAY_MS;
 
 export const LESSON_COMPONENTS = ['technique', 'door_text', 'soul', 'engine'] as const;
-export type LessonComponent = (typeof LESSON_COMPONENTS)[number];
 
 /** A refusal that is the model's to read and fix. */
 export class LessonRefused extends Error {}

@@ -10,7 +10,7 @@ import {
 import { readerPoolAvailable, readerQuery } from './reader-pool.js';
 import { callModel } from '../agent/model.js';
 import { estimateTokens } from './budget.js';
-import { getSummary, getDescendantMessages, getSummariesByAgent } from './dag.js';
+import { getSummary, getDescendantMessages } from './dag.js';
 import { getLargeFile } from './large-files.js';
 import { clauseFor, requestForAnotherTurn } from './awaiting-own-turn.js';
 

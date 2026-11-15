@@ -43,8 +43,3 @@ export const WORK_EVENT_KINDS = [
 
 /** The type `appendWorkEvent`'s `kind` parameter is narrowed to: an off-list kind is refused at compile time. */
 export type WorkEventKind = (typeof WORK_EVENT_KINDS)[number];
-
-/** Is this string a declared kind? For boundaries where a kind arrives as data (no such boundary today). */
-export function isWorkEventKind(value: string): value is WorkEventKind {
-  return (WORK_EVENT_KINDS as readonly string[]).includes(value);
-}

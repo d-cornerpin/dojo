@@ -15,7 +15,7 @@ import { createLogger } from '../logger.js';
 import { createProject, getProject, createTask, getTask, listTasks, listProjects, updateTask, updateProject, resolveTaskId, resolveProjectId, formatResolveError, setTaskStatus, setTaskStatusResult, broadcastTaskSettled } from './schema.js';
 import { ensurePMAgentRunning } from './pm-agent.js';
 import { injectTaskAssignmentNotification } from './notify.js';
-import { writeTaskLog, listTaskLog } from './task-log.js';
+import { writeTaskLog } from './task-log.js';
 import { checkPlan, planRefusal, renderPlan, tasksFromPlan, explicitTasks, taskPlanMismatch } from '../work/plan.js';
 import { planOfProject } from '../work/plan-store.js';
 import { applyMeasureToTask, type MeasureReading } from './measure-gate.js';

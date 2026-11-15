@@ -60,7 +60,7 @@ import { exportReport } from '../export.js';
 import {
   renderIssueBody, renderIssueTitle, issueLabelsFor, REPORT_ISSUE_LABELS,
 } from '../issue-body.js';
-import { reportRepo, reportRepoIsDefault, assertPostableRepo, DOJO_REPORT_REPO_DEFAULT } from '../repo.js';
+import { reportRepo, assertPostableRepo, DOJO_REPORT_REPO_DEFAULT } from '../repo.js';
 
 const BRIEF: ReportBrief = {
   title: 'work_open refused a task the engine had just demanded',
@@ -252,10 +252,8 @@ describe('the issue title is short, prefixed, and made of one line', () => {
 describe('the target repository is one value, and a dev box may not file on the real one', () => {
   it('defaults to the Dojo\'s own tracker and says that it is the default', () => {
     expect(reportRepo()).toBe(DOJO_REPORT_REPO_DEFAULT);
-    expect(reportRepoIsDefault()).toBe(true);
     process.env.DOJO_REPORT_REPO = 'someone/elses-fork';
     expect(reportRepo()).toBe('someone/elses-fork');
-    expect(reportRepoIsDefault()).toBe(false);
   });
 
   it('a box with no dev flag may post to the real tracker', () => {

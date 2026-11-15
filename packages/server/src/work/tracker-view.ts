@@ -4,7 +4,6 @@
 
 import type { WorkEventKind } from './event-kinds.js';
 import type { WorkState } from './store.js';
-import { TERMINAL_STATE_NAMES } from './terminal-states.js';
 import { taskMovedAtSql } from './task-freshness.js';
 
 

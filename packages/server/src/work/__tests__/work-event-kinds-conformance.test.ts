@@ -39,7 +39,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
-import { WORK_EVENT_KINDS, isWorkEventKind, type WorkEventKind } from '../event-kinds.js';
+import { WORK_EVENT_KINDS, type WorkEventKind } from '../event-kinds.js';
 
 const SRC = path.join(__dirname, '..', '..');
 
@@ -277,7 +277,6 @@ describe('ARM 3 — the DECLARED list carries no unexplained value', () => {
     // row deletes the exemption, or this test goes red. Both halves are asserted here so the
     // discharge is a fact rather than a claim in a report.
     expect(DECLARED_WITHOUT_WRITER).not.toContain('floor_ghosted');
-    expect(isWorkEventKind('floor_ghosted')).toBe(true);
   });
 });
 
@@ -286,12 +285,5 @@ describe('the list itself', () => {
     expect([...WORK_EVENT_KINDS]).toEqual(sorted(WORK_EVENT_KINDS));
     expect(new Set(WORK_EVENT_KINDS).size).toBe(WORK_EVENT_KINDS.length);
     expect(WORK_EVENT_KINDS.length).toBe(34);
-  });
-
-  it('`isWorkEventKind` answers for every member and refuses a near-miss', () => {
-    for (const k of WORK_EVENT_KINDS) expect(isWorkEventKind(k)).toBe(true);
-    for (const k of ['', 'Opened', 'transitions', 'floor_ghost', 'observation']) {
-      expect(isWorkEventKind(k)).toBe(false);
-    }
   });
 });

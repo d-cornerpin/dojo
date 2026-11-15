@@ -11,7 +11,9 @@ vi.mock('../../db/connection.js', () => ({
 }));
 
 import { createWorkTable, seedTrackerTask } from './work-fixture.js';
-import { recordTouched, ledgerTotals, ledgerTouchedSince, ledgerNewItemsSince, ledgerWorkEntries, writeMeasured } from '../ledger-store.js';
+import {
+  recordTouched, ledgerTotals, ledgerNewItemsSince, ledgerWorkEntries, writeMeasured,
+} from '../ledger-store.js';
 
 const TASK = 'task-ledger-1';
 
@@ -30,7 +32,6 @@ describe('work_ledger', () => {
     expect(t.touched).toBe(2);
     expect(t.lastAt).toBe(2000);
     expect(t.byTool).toEqual([{ tool: 'gmail_label', n: 2 }]);
-    expect(ledgerTouchedSince(TASK, 1500)).toBe(1);
     const a = mockDb.current!.prepare('SELECT first_at, last_at FROM work_ledger WHERE work_id = ? AND item_key = ?').get(TASK, 'gmail:msg:a');
     expect(a).toEqual({ first_at: 1000, last_at: 2000 });
   });
@@ -75,7 +76,6 @@ describe('v3.5 field fix 3 (#6a): files and commands on the ledger', () => {
     expect(t.commands).toBe(2);
     expect(t.byTool).toEqual([{ tool: 'file_write', n: 1 }]);
     expect(ledgerNewItemsSince(TASK, 500)).toBe(1);
-    expect(ledgerTouchedSince(TASK, 1500)).toBe(0);
   });
   it('lists the file and command entries with their status, oldest first; mailbox items are counted, not listed', () => {
     recordTouched(TASK, 'gmail_label', ['gmail:msg:a'], 500);

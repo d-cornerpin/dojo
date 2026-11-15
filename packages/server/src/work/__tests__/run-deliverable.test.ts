@@ -22,9 +22,8 @@ vi.mock('../../db/connection.js', async () => {
 import { createWorkTable, seedTrackerTask } from './work-fixture.js';
 import { installJudgment } from '../../agent/decision-hooks.js';
 import {
-  declaredDeliverableShape, declareDeliverableOnSchedule, taskOwesDeliverable,
-  occurrenceOwesDeliverable, findLiveRecurringTwin, DELIVERABLE_OWING_TASK_KINDS,
-  DECLARATION_MARKER,
+  declaredDeliverableShape, declareDeliverableOnSchedule, occurrenceOwesDeliverable,
+  findLiveRecurringTwin, DELIVERABLE_OWING_TASK_KINDS, DECLARATION_MARKER,
 } from '../deliverable-declaration.js';
 
 const W = 'sched-1';
@@ -106,7 +105,6 @@ describe('ARM 1 — THE DECLARATION: decided once, from the DEFINITION, never fr
     modelSays(true);
     seedSchedule();
     expect((await declareDeliverableOnSchedule(W))?.shape).toBe('brief');
-    expect(taskOwesDeliverable(W)).toEqual({ owes: true, taskKind: 'brief' });
     const ev = mockDb.current!.prepare(
       `SELECT payload FROM work_events WHERE work_id = ? AND kind = 'audit'
         AND json_extract(payload, '$.marker') = ?`,
@@ -119,7 +117,6 @@ describe('ARM 1 — THE DECLARATION: decided once, from the DEFINITION, never fr
     modelSays(true);
     seedSchedule({ task_kind: 'reminder' });
     expect((await declareDeliverableOnSchedule(W))?.rule).toBe('already-declared');
-    expect(taskOwesDeliverable(W).taskKind).toBe('reminder');
     // A caller-supplied kind that is NOT on the list is a deliberate statement and is honoured.
     seedTrackerTask(mockDb.current!, {
       id: 'sched-2', title: 'Daily brief', status: 'on_deck', agentId: AGENT,
@@ -127,7 +124,6 @@ describe('ARM 1 — THE DECLARATION: decided once, from the DEFINITION, never fr
       description: 'send me a brief every day',
     });
     expect(await declareDeliverableOnSchedule('sched-2')).toBeNull();
-    expect(taskOwesDeliverable('sched-2')).toEqual({ owes: false, taskKind: 'chore' });
   });
 
   it('1g the closed inventory is exactly the list the kit mirrors', () => {

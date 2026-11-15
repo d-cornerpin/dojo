@@ -7,7 +7,7 @@ import { getDb } from '../db/connection.js';
 import { withUnit } from '../db/unit.js';
 import { createLogger } from '../logger.js';
 import { getCurrentToolCallId } from '../agent/turn-state.js';
-import { turnContext, noteTurnReceipt } from '../agent/turn-context.js';
+import { turnContext } from '../agent/turn-context.js';
 import { noteReceiptForOutbound } from '../agent/v2/outbound.js';
 
 // Bounds the sent_text copy (the pending-question header displays 300 chars).
@@ -130,7 +130,6 @@ export function writeToolReceipt(params: WriteReceiptParams): string {
     );
     });
 
-    noteTurnReceipt(agentId, receiptId);
     // Link the delivery this receipt proves; a no-op outside an outbound scope.
     noteReceiptForOutbound(receiptId);
 
@@ -147,34 +146,6 @@ export function writeToolReceipt(params: WriteReceiptParams): string {
   }
 
   return receiptId;
-}
-
-export function getReceiptsByIds(ids: string[]): ToolReceiptRow[] {
-  if (ids.length === 0) return [];
-  const db = getDb();
-  const placeholders = ids.map(() => '?').join(',');
-  return db.prepare(
-    `SELECT * FROM tool_receipts WHERE id IN (${placeholders})`
-  ).all(...ids) as ToolReceiptRow[];
-}
-
-/** Stamp task_id on unattached receipts only, so each attaches to the first task to complete. */
-export function stampReceiptsTask(ids: string[], taskId: string): void {
-  if (ids.length === 0) return;
-  try {
-    const db = getDb();
-    const stmt = db.prepare(
-      `UPDATE tool_receipts SET task_id = ?, updated_at = datetime('now') WHERE id = ? AND task_id IS NULL`
-    );
-    const tx = db.transaction((rows: string[]) => {
-      for (const id of rows) stmt.run(taskId, id);
-    });
-    tx(ids);
-  } catch (err) {
-    logger.warn('Failed to stamp task on receipts (non-fatal)', {
-      taskId, error: err instanceof Error ? err.message : String(err),
-    });
-  }
 }
 
 export function getReceiptsForTask(taskId: string): ToolReceiptRow[] {

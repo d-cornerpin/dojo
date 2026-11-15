@@ -17,7 +17,7 @@ vi.mock('../embeddings.js', () => ({
   storeEmbedding: async () => { /* not exercised */ },
   refreshEmbedding: () => { /* not exercised */ },
 }));
-vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: (e: unknown) => e, getWSStatus: () => ({}) }));
+vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: (e: unknown) => e }));
 vi.mock('../../tools/tool-docs.js', () => ({ measureAgentToolPayloadTokens: async () => 1000 }));
 vi.mock('../../vault/archive.js', () => ({
   archiveMessagesBeforeCompaction: vi.fn(() => 'archive-1'),

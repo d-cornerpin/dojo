@@ -12,8 +12,6 @@ import { subjectKindsBySeq, type SubjectKind } from './message-store.js';
 
 /** A condensed note merged across conversations (the last resort only). */
 export const SEVERAL_SUBJECTS = 'several';
-/** Notes written about more than one conversation before notes were per-conversation (migration 192). */
-export type RebuildState = 'legacy_mixed' | 'legacy_mixed_rebuild' | 'lineage_lost';
 
 type KeyedRow = Pick<Message, 'role' | 'conversationId' | 'a2aThreadId' | 'sourceAgentId' | 'origin'> & { subjectKind?: SubjectKind | null };
 

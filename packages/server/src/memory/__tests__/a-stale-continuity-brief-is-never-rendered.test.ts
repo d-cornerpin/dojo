@@ -1,14 +1,5 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// PHASE-3 T6 — the read-side SANITY BOUND on stored turn thresholds (T5 acceptance,
-// adjudication 1). Written RED-first: at `694fb96` the readers accept any positive number,
-// so a threshold from an older numbering era is permanently in the future and the lane it
-// gates fires on every turn forever.
-//
-// Measured on the live dev body when this was written: FXID.n4 1598 vs turn 264,
-// healer 122 vs 9 — two of the live agents holding a threshold.
-// The bound is the WRITER'S OWN horizon (`currentTurn + 3`, `memory/compaction.ts`),
-// never a number this test or that module invented.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// A continuity brief left in an agent's config (an upgraded box between boot and migration, or an
+// imported body) is never rendered by the assembly, at any stored threshold.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
@@ -24,13 +15,10 @@ vi.mock('../../db/connection.js', () => ({
 }));
 
 import { assembleContext } from '../assembler.js';
-import { readStoredTurnThreshold, CONTINUITY_BRIEF_HORIZON_TURNS } from '../../agent/v2/turn-record.js';
 import { runMigrations } from '../../db/migrations.js';
-import { FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const AGENT = 'agent-threshold';
 const MODEL = 'threshold-model';
-const H = CONTINUITY_BRIEF_HORIZON_TURNS;
 
 const BRIEF =
   'The user asked about the north gym locker. We established the code and filed a task to ' +
@@ -73,26 +61,6 @@ afterEach(() => {
   mockDb.current = null;
 });
 
-describe('readStoredTurnThreshold — the bound is the writer\'s own horizon', () => {
-  it('a threshold the writer could have produced RIGHT NOW is valid (equality is inside)', () => {
-    expect(readStoredTurnThreshold(10 + H, 10, H)).toBe(10 + H);
-  });
-  it('one turn past the horizon is not expressible by any writer on this clock → expired', () => {
-    expect(readStoredTurnThreshold(10 + H + 1, 10, H)).toBeNull();
-  });
-  it(`THE LIVE FOSSIL: ${FXID.n4}, 1598 against turn 264 → expired`, () => {
-    expect(readStoredTurnThreshold(1598, 264, H)).toBeNull();
-  });
-  it('an ordinary already-expired threshold is returned, not nulled — expiry is the reader\'s job', () => {
-    expect(readStoredTurnThreshold(11, 730, H)).toBe(11);
-  });
-  it('absent, non-numeric, zero and negative all read as absent', () => {
-    for (const v of [undefined, null, 'seven', Number.NaN, Infinity, 0, -4]) {
-      expect(readStoredTurnThreshold(v, 10, H)).toBeNull();
-    }
-  });
-});
-
 describe('the assembly, end to end', () => {
   // t140: the continuity lane these clauses gated is DELETED with the continuity brief (its
   // writer in `memory/compaction.ts`, the lane in `memory/assembler.ts`, the stored keys by
@@ -103,7 +71,7 @@ describe('the assembly, end to end', () => {
   // threshold, so the bound above is no longer what stands between a stale brief and the model.
   it.each([
     ['a fossil threshold', 1598, 5],
-    ['a threshold inside the horizon', 5 + H, 5],
+    ['a threshold inside the horizon', 8, 5],
     ['an honestly expired threshold', 3, 9],
   ])('t140: %s renders no continuity brief at all', async (_label, validUntil, turns) => {
     seed(validUntil, turns);

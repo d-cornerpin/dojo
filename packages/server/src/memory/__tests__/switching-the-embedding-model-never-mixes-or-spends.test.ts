@@ -2,9 +2,7 @@
 // SWITCHING THE EMBEDDING MODEL (owner ruling).
 //
 //  1. Search never mixes the vectors of two models, even when their widths are the same.
-//  2. A switch to a LOCAL model re-embeds the old memories in the background, at no cost.
-//  3. A switch to a PAID model re-embeds nothing by itself; the owner gets ONE notice (the existing
-//     `chat:error` card) saying how many memories still use the old model.
+//  2. A PAID model's vectors are never produced by the scheduled drain, only by the owner's own backfill.
 //
 // The embedding backend is a stubbed `fetch`; nothing leaves the process.
 // ════════════════════════════════════════════════════════════════════════════════════════
@@ -24,12 +22,9 @@ vi.mock('../../db/connection.js', () => ({
   getDbPath: () => ':memory:',
   closeDb: vi.fn(),
 }));
-const sent = vi.hoisted(() => [] as Array<Record<string, unknown>>);
-vi.mock('../../gateway/ws.js', () => ({ broadcast: (e: Record<string, unknown>) => { sent.push(e); } }));
-import { standingOwnerNotices } from '../../healer/owner-notice-kinds.js';
+vi.mock('../../gateway/ws.js', () => ({ broadcast: () => undefined }));
 
 import { runMigrations } from '../../db/migrations.js';
-import { setEmbeddingConfig } from '../embeddings.js';
 import { vectorSearch } from '../vector-search.js';
 import { runBackfill } from '../backfill.js';
 import { semanticSearch, createEntry } from '../../vault/store.js';
@@ -47,7 +42,6 @@ beforeEach(() => {
   mockDb.current = new Database(path.join(tmpDir, 'dojo.db'));
   mockDb.current.pragma('foreign_keys = ON');
   runMigrations();
-  sent.length = 0;
   fetchedModels = [];
   vi.stubGlobal('fetch', async (_url: string, init: { body: string }) => {
     fetchedModels.push(JSON.parse(init.body).model);
@@ -88,12 +82,6 @@ function seedOldMemories(n: number): void {
 }
 const modelsOf = (table: string): string[] =>
   (db().prepare(`SELECT DISTINCT embedding_model AS m FROM ${table} WHERE embedding IS NOT NULL`).all() as Array<{ m: string }>).map((r) => r.m);
-async function until(cond: () => boolean, ms = 3000): Promise<void> {
-  const end = Date.now() + ms;
-  while (!cond() && Date.now() < end) await new Promise((r) => setTimeout(r, 20));
-}
-const notices = (): Array<Record<string, unknown>> => sent.filter((e) => e.cardKey === 'embedding-switch' && e.severity === 'warning');
-const standing = () => standingOwnerNotices().filter((c) => c.cardKey === 'embedding-switch');
 
 describe('search never mixes two models', () => {
   it('after a switch, a same-width vector from the old model is not a hit (conversation and vault)', async () => {
@@ -115,54 +103,7 @@ describe('search never mixes two models', () => {
   });
 });
 
-describe('switching to a LOCAL model', () => {
-  it('re-embeds the old memories in the background and searches find them again', async () => {
-    seedOldMemories(3);
-    setEmbeddingConfig({ model: 'new-embedder' });
-    await until(() => modelsOf('embeddings').join() === 'ollama:new-embedder' && modelsOf('vault_entries').join() === 'ollama:new-embedder');
-    expect(modelsOf('embeddings')).toEqual(['ollama:new-embedder']);
-    expect(modelsOf('vault_entries')).toEqual(['ollama:new-embedder']);
-    expect((db().prepare('SELECT COUNT(*) AS c FROM embeddings').get() as { c: number }).c).toBe(3);
-    expect(new Set(fetchedModels)).toEqual(new Set(['new-embedder']));
-    expect(notices()).toEqual([]);
-    expect((await vectorSearch('harbour ledger', AGENT, { minSimilarity: 0.1 })).length).toBe(3);
-  });
-});
-
 describe('switching to a PAID model', () => {
-  it('re-embeds nothing, and says so once, with how many memories still use the old model', async () => {
-    seedOldMemories(3);   // 3 conversation vectors + 1 vault entry = 4 memories
-    setEmbeddingConfig({ provider: 'openai', baseUrl: 'https://embeddings.example.test/v1', model: 'big-hosted' });
-    await until(() => notices().length > 0);
-    await new Promise((r) => setTimeout(r, 200));   // nothing else may follow
-    expect(fetchedModels).toEqual([]);
-    expect(modelsOf('embeddings')).toEqual([OLD]);
-    expect(modelsOf('vault_entries')).toEqual([OLD]);
-    expect(notices()).toHaveLength(1);
-    // v3.5 field fix 3, review round L1 (OR-FIELD3 (c)): nothing is broken and nothing is billed until he chooses, and the
-    // card has no button to press, so it is INFORMATIONAL: a toast that leaves by itself, not re-derived on a reload.
-    expect(notices()[0]).toMatchObject({ type: 'chat:error', agentId: 'platform', severity: 'warning', retryable: false, cardClass: 'informational' });
-    expect(standing()).toEqual([]);
-    expect(String(notices()[0].error)).toMatch(/4 saved memories still use the old model/);
-    expect(String(notices()[0].error)).toMatch(/Switching the memory search model to a local one re-processes them automatically/);
-    expect(String(notices()[0].error)).toMatch(/search will not find them until they are re-processed/);
-    // Saving the same setting again is not a switch: no second notice.
-    setEmbeddingConfig({ model: 'big-hosted' });
-    await new Promise((r) => setTimeout(r, 200));
-    expect(notices()).toHaveLength(1);
-  });
-
-  it('when no memory is left on the old model, the end frame is sent (a toast still on screen leaves)', async () => {
-    seedOldMemories(2);
-    setEmbeddingConfig({ provider: 'openai', baseUrl: 'https://embeddings.example.test/v1', model: 'big-hosted' });
-    await until(() => notices().length > 0);
-    sent.length = 0;
-    await runBackfill({ includeStale: true });   // the owner re-processes them
-    await until(() => sent.some((e) => e.cardKey === 'embedding-switch' && e.severity === 'info'));
-    expect(standing()).toEqual([]);
-    expect(sent.some((e) => e.cardKey === 'embedding-switch' && e.severity === 'info')).toBe(true);   // the end frame
-    expect(modelsOf('vault_entries')).toEqual(['openai:big-hosted']);
-  });
 
   it('the scheduled drain leaves the old vectors alone; the owner\'s own backfill re-processes them', async () => {
     seedOldMemories(2);

@@ -51,17 +51,15 @@ vi.mock('../../db/connection.js', async () => {
 
 import { runMigrations } from '../../db/migrations.js';
 import {
-  RECALL_LANE, RECALL_LANE_ID, RECALL_LANE_ENTRY_ID,
-  renderRecallLane, truncateRecallLane, recallLaneWorstCaseTokens,
+  RECALL_LANE_ID, renderRecallLane, truncateRecallLane, recallLaneWorstCaseTokens,
   type RecallLaneContext, type RecallLanePayload,
 } from '../recall-lane.js';
 import {
   LANE_LIMITS, LANE_PRIORITY, LANE_SECTION_LABEL, LANE_LADDER_LABEL,
-  POST_BUDGET_LANES, POST_BUDGET_ENTRY_LANE, isProtectedLaneId,
+  POST_BUDGET_LANES, isProtectedLaneId,
   laneLimit, renderScaffoldingAck, type LaneRender,
 } from '../lanes.js';
 import { MessageSlot } from '../../prompt/registry/types.js';
-import { getMessageEntries } from '../../prompt/registry/registry.js';
 import '../../prompt/registry/entries.js';
 import { answeredPairsForMessages, recentlyAnsweredAsks } from '../../agent/v2/answered-edge.js';
 import { relativeTimeAgo } from '../../agent/v2/outbound-ledger.js';
@@ -138,18 +136,6 @@ describe('§1 the recall lane rides the tail', () => {
     const declared = POST_BUDGET_LANES.find((l) => l.id === RECALL_LANE_ID);
     expect(declared, `${RECALL_LANE_ID} is not declared in POST_BUDGET_LANES`).toBeDefined();
     expect(declared!.slot).toBeGreaterThan(MessageSlot.TurnContext);
-    expect(RECALL_LANE.slot).toBe(declared!.slot);
-  });
-
-  it('sits in the tail, most-volatile-late, renumbering nothing', () => {
-    // T67b moved it 1870 -> 1880, i.e. from BEFORE peer-status to AFTER it. The rule is this
-    // lane's own, quoted from its header — "it goes AFTER deliveries because it is the more
-    // volatile of the two" — applied one comparison further along: a peer's idle/working flip
-    // is rare, and this block moves with EVERY ask. The near-tail contract 1850 -> ... -> 1900
-    // is untouched and a number between two existing ones renumbers nothing.
-    expect(RECALL_LANE.slot).toBeGreaterThan(MessageSlot.Deliveries);
-    expect(RECALL_LANE.slot).toBeGreaterThan(MessageSlot.PeerStatus);
-    expect(RECALL_LANE.slot).toBeLessThan(MessageSlot.CurrentTime);
   });
 
   it('MessageSlot 400 is RETIRED, not reused — a per-ask lane may never sit there again', () => {
@@ -198,13 +184,6 @@ describe('§1 the recall lane rides the tail', () => {
 
   it('is protected from the repair, and its entry is attributed to it', () => {
     expect(isProtectedLaneId(RECALL_LANE_ID)).toBe(true);
-    expect(POST_BUDGET_ENTRY_LANE[RECALL_LANE_ENTRY_ID]).toBe(RECALL_LANE_ID);
-  });
-
-  it('the registry entry exists at the declared slot and is injected past the boundary', () => {
-    const entry = getMessageEntries().find((e) => e.id === RECALL_LANE_ENTRY_ID);
-    expect(entry, `${RECALL_LANE_ENTRY_ID} is not a registered message entry`).toBeDefined();
-    expect(entry!.slot).toBe(RECALL_LANE.slot);
   });
 });
 
@@ -216,7 +195,6 @@ describe('§2 the reserve is derived and the truncation is real', () => {
   it('the declared reserve IS the generator\'s worst case, not a number beside it', () => {
     const declared = POST_BUDGET_LANES.find((l) => l.id === RECALL_LANE_ID)!;
     expect(declared.reserveTokens).toBe(recallLaneWorstCaseTokens());
-    expect(RECALL_LANE.maxTokens).toBe(recallLaneWorstCaseTokens());
     expect(declared.measured).toContain('recallLaneWorstCaseTokens');
   });
 

@@ -310,22 +310,6 @@ export function updateCredential(
   return { ok: true, record: readRecord(row.id) };
 }
 
-/**
- * Replace only the description, never the encrypted columns: marks a junk value for re-entry while
- * keeping the row's record of what the slot was for.
- */
-export function annotateCredential(
-  serviceName: string,
-  description: string,
-): { ok: boolean; error?: string } {
-  const result = getDb().prepare(
-    "UPDATE agent_credentials SET description = ?, updated_at = datetime('now') WHERE service_name = ?",
-  ).run(description, serviceName);
-  if (result.changes === 0) return { ok: false, error: `No credential found for service "${serviceName}".` };
-  logger.info('Credential description annotated', { serviceName });
-  return { ok: true };
-}
-
 function readRecord(id: string): CredentialRecord {
   return rowToRecord(getDb().prepare(
     `SELECT id, service_name, description, encrypted_credentials, iv, auth_tag,

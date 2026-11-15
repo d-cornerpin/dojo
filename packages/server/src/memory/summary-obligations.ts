@@ -4,16 +4,10 @@
 // (`cmt:<hex>` or `promise-<runid>`); an id-less line needs obligation prose, a counterparty AND a deliverable on the
 // agent's own spine rows, and no open row. `work/obligation-memory.ts` is the ONE resolver.
 
-import { createLogger } from '../logger.js';
-import { getDb } from '../db/connection.js';
 import {
   obligationTags, obligationVerdict,
   idlessObligationVerdict, commitmentVocabularyFor, type RowVocabulary,
 } from '../work/obligation-memory.js';
-import { updateSummaryContent } from './dag.js';
-import { estimateTokens } from './budget.js';
-
-const logger = createLogger('summary-obligations');
 
 /** The opening of the engine's appended finding: one literal, so writer, idempotence check and tests agree. */
 export const SUMMARY_OBLIGATION_MARK = '[work state as of ';
@@ -115,51 +109,4 @@ export interface SummaryObligationCandidate {
   finding: string;
   /** This line already carried its finding and the pass is MOVING it; a relocation must show in the sweep. */
   relocated?: true;
-}
-
-export interface SummaryObligationSweep {
-  scanned: number;
-  affected: number;
-  ids: string[];
-  candidates: SummaryObligationCandidate[];
-}
-
-/** The one-time hygiene pass over stored summaries; `dryRun` reports what it would touch and writes nothing. */
-export function sweepStoredSummaryObligations(
-  opts: { dryRun: boolean; agentId?: string },
-): SummaryObligationSweep {
-  const db = getDb();
-  const rows = (opts.agentId
-    ? db.prepare('SELECT id, agent_id, content FROM summaries WHERE agent_id = ?').all(opts.agentId)
-    : db.prepare('SELECT id, agent_id, content FROM summaries').all()
-  ) as Array<{ id: string; agent_id: string; content: string }>;
-
-  const vocabByAgent = new Map<string, RowVocabulary[]>();
-  const ids: string[] = [];
-  const candidates: SummaryObligationCandidate[] = [];
-  for (const r of rows) {
-    if (!vocabByAgent.has(r.agent_id)) vocabByAgent.set(r.agent_id, commitmentVocabularyFor(r.agent_id));
-    const vocab = vocabByAgent.get(r.agent_id) ?? [];
-    for (const line of (r.content ?? '').split('\n')) {
-      const move = splitTrailingFinding(line);
-      if (move) {
-        candidates.push({
-          summaryId: r.id, agentId: r.agent_id, line: move.rest.trim(), finding: move.finding, relocated: true,
-        });
-        continue;
-      }
-      if (line.includes(SUMMARY_OBLIGATION_MARK) || line.includes(SUMMARY_NO_MATCH_MARK)) continue;
-      const finding = findingFor(line)
-        ?? (vocab.length > 0 ? idlessFindingFor(line, r.agent_id, vocab) : null);
-      if (finding) candidates.push({ summaryId: r.id, agentId: r.agent_id, line: line.trim(), finding });
-    }
-    const next = annotateSummaryObligations(r.content ?? '', r.agent_id);
-    if (next === r.content) continue;
-    ids.push(r.id);
-    if (!opts.dryRun) updateSummaryContent(r.id, next, estimateTokens(next));
-  }
-  logger.info('summary obligation hygiene pass', {
-    scanned: rows.length, affected: ids.length, lines: candidates.length, dryRun: opts.dryRun,
-  });
-  return { scanned: rows.length, affected: ids.length, ids, candidates };
 }

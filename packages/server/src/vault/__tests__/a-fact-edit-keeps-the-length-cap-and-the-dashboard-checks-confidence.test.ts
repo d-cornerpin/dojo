@@ -26,7 +26,6 @@ vi.mock('../../memory/embeddings.js', () => {
     storeEmbedding: async () => undefined,
     refreshEmbedding: () => undefined,
     getEmbeddingStatus: () => ({}),
-    setEmbeddingConfig: () => undefined,
   };
 });
 

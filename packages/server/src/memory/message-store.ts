@@ -363,32 +363,6 @@ export function insertEngineEventIfAbsent(e: EngineEventInput): Persisted | null
   return insertMessageIfAbsent(engineRow(e));
 }
 
-/** Claims every unclaimed row for the turn, oldest first; routing columns only (cache law). */
-export function claimForTurn(agentId: string, turnNumber: number): StoredMessage[] {
-  const db = getDb();
-  const claim = (aid: string, turn: number): StoredMessage[] => withUnit((): StoredMessage[] => {
-    const rows = db.prepare(`
-      SELECT ${SELECT_COLS} FROM messages
-      WHERE agent_id = ? AND served_by_turn IS NULL AND swept_at IS NULL
-      ORDER BY seq ASC
-    `).all(aid) as MessageRowShape[];
-    if (rows.length === 0) return [];
-    db.prepare(`
-      UPDATE messages SET served_by_turn = ?, turn_number = COALESCE(turn_number, ?)
-      WHERE agent_id = ? AND served_by_turn IS NULL AND swept_at IS NULL
-    `).run(turn, turn, aid);
-    return rows.map(r => toStored({ ...r, served_by_turn: turn, turn_number: r.turn_number ?? turn }));
-  });
-  return claim(agentId, turnNumber);
-}
-
-export function markServed(ids: string[], turnNumber: number): void {
-  if (ids.length === 0) return;
-  const db = getDb();
-  const stmt = db.prepare('UPDATE messages SET served_by_turn = ? WHERE id = ?');
-  withUnit(() => { for (const id of ids) stmt.run(turnNumber, id); });
-}
-
 // `chat_messages` stays the only human-facing accessor; anything rendered to a person reads the view.
 
 export function recentTail(
@@ -435,27 +409,7 @@ export function readPersistedRow(id: string): PersistedSnapshot | null {
   };
 }
 
-export function byIds(ids: string[]): StoredMessage[] {
-  if (ids.length === 0) return [];
-  const db = getDb();
-  const rows = db.prepare(`
-    SELECT ${SELECT_COLS} FROM messages
-    WHERE id IN (${ids.map(() => '?').join(',')}) ORDER BY seq ASC
-  `).all(...ids) as MessageRowShape[];
-  return rows.map(toStored);
-}
-
-export function unservedHead(agentId: string): StoredMessage[] {
-  const db = getDb();
-  const rows = db.prepare(`
-    SELECT ${SELECT_COLS} FROM messages
-    WHERE agent_id = ? AND served_by_turn IS NULL AND swept_at IS NULL
-    ORDER BY seq ASC
-  `).all(agentId) as MessageRowShape[];
-  return rows.map(toStored);
-}
-
-// UPDATEs and DELETEs against `messages`; with `claimForTurn` and `markServed` above, this file's whole list.
+// UPDATEs and DELETEs against `messages`: this file's whole list.
 
 /** Second chance at pickup for a row whose ingest left `conversation_id` NULL. Stamped apart from the serve
  *  claim, so the trigger row belongs to this conversation whether or not this turn won the serve race. */

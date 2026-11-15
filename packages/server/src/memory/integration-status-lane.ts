@@ -21,7 +21,6 @@ import { sessionBoundaryText } from './session-boundary.js';
 import { laneLimit, truncateWrappedText } from './lanes.js';
 
 export const INTEGRATION_STATUS_LANE_ID = 'lane.integration-status';
-export const INTEGRATION_STATUS_ENTRY_ID = 'msg.integration-status';
 
 export type IntegrationFamily = 'google' | 'microsoft' | 'plaud';
 
@@ -242,10 +241,6 @@ export async function buildIntegrationStatusLane(agentId: string): Promise<strin
   } catch {
     return null;   // a reader that cannot answer says nothing; it never guesses a state
   }
-}
-
-export async function integrationFactLines(agentId: string): Promise<string[]> {
-  try { return (await integrationRows(agentId)).map(integrationStatusLine); } catch { return []; }
 }
 
 async function integrationRows(agentId: string): Promise<IntegrationStatusRow[]> {

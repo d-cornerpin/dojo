@@ -6,7 +6,6 @@
 import type { ToolDefinition } from '../agent/tools/types.js';
 
 export const INSPECT_VIEWS = ['timeline', 'conversation', 'logs', 'state', 'schema', 'sql', 'code_search', 'code_read'] as const;
-export type InspectView = (typeof INSPECT_VIEWS)[number];
 
 const str = (description: string) => ({ type: 'string', description });
 const num = (description: string) => ({ type: 'number', description });

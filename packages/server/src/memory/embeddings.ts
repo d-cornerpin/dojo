@@ -15,23 +15,6 @@ function getEmbeddingConfig(): EmbeddingConfig {
   return readEmbeddingConfig();
 }
 
-export function setEmbeddingConfig(config: Partial<EmbeddingConfig>): void {
-  const current = getEmbeddingConfig();
-  const updated = { ...current, ...config };
-  const db = getDb();
-  db.prepare(`
-    INSERT INTO config (key, value, updated_at) VALUES ('embedding_config', ?, datetime('now'))
-    ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = datetime('now')
-  `).run(JSON.stringify(updated), JSON.stringify(updated));
-  // Switching the embedding model leaves vectors made by the old one; see embedding-switch.ts.
-  const before = embeddingModelKey(current);
-  if (before !== embeddingModelKey(updated)) {
-    void import('./embedding-switch.js').then((m) => m.handleEmbeddingModelSwitch(before)).catch((err) => {
-      logger.warn('Embedding model switch follow-up failed', { error: err instanceof Error ? err.message : String(err) });
-    });
-  }
-}
-
 // ── Backend absence, reported as a fact instead of guessed from prose ──
 //
 // The embedder is OPTIONAL and fires on every message, response and summary, so its absence must not be an ERROR

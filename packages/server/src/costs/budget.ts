@@ -1,6 +1,4 @@
-// Budget enforcement and owner alerts.
 
-import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { getDailySpend, agentPeriodSpend } from './spend.js';   // spend readers live in a leaf module

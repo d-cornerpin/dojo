@@ -17,14 +17,7 @@ import { V2_STUB_AFTER_TURNS, groupTail, type ContextView } from './assembler.js
 import { summaryWriterCandidates, eligibleSummaryWriters, ownModel, pickWriter, summaryRoom, writerPassedOver, spanWaitsForAWriter, summaryCallStarts } from './writer.js';
 import { ownerProgressFrame } from '../healer/owner-notices.js';
 import { supersedeUncondensedPlaceholders } from './uncondensed-head.js';
-import {
-  createLeafSummary,
-  createCondensedSummary,
-  getLeafSummariesNotCondensed,
-  getCompactedMessageIds,
-  getContextSummaries,
-  replaceContextItems,
-} from './dag.js';
+import { createLeafSummary, getCompactedMessageIds, replaceContextItems } from './dag.js';
 import { generateSummary } from './summarize.js';
 import { modelCharsPerToken } from '../services/token-density.js';
 import { LEAF_CHUNK_TOKENS, fullSpanTargetTokens, leafKeepCap, summaryShare, summaryTargetTokens } from './summary-target.js';

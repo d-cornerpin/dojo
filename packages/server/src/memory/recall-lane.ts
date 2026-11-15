@@ -4,7 +4,6 @@
 
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
-import { MessageSlot } from '../prompt/registry/types.js';
 import { getRecentMessages } from './store.js';
 import { type contextWindowPolicy } from './budget.js';
 import {
@@ -29,7 +28,6 @@ import { turnBoundary } from '../agent/turn-state.js';
 const logger = createLogger('recall-lane');
 
 export const RECALL_LANE_ID = 'lane.relevant-memory';
-export const RECALL_LANE_ENTRY_ID = 'msg.relevant-memory';
 
 const pairCap = () => laneLimit(RECALL_LANE_ID, 'rows', 'recallPairs');
 const msgRowCap = () => laneLimit(RECALL_LANE_ID, 'rows', 'minTailForRecall');
@@ -420,20 +418,6 @@ export function recallLaneWorstCaseTokens(): number {
   worstCase = render?.tokens ?? 0;
   return worstCase;
 }
-
-/** The lane in the shape lanes.ts declares. maxTokens is a getter: the worst case is derived by calling the
- *  renderer, and laneLimit throws on an undeclared key, so a load-time constant would be a boot crash. */
-export const RECALL_LANE: Lane<RecallLaneContext, RecallLanePayload> = {
-  id: RECALL_LANE_ID,
-  slot: MessageSlot.RecalledMemory,
-  // The post-budget sentinel the assembler records for a lane reserved off the top, not ranked by the fit.
-  priority: Number.MAX_SAFE_INTEGER,
-  minTokens: 0,
-  get maxTokens() { return recallLaneWorstCaseTokens(); },
-  render: renderRecallLane,
-  truncate: truncateRecallLane,
-};
-
 
 const RELEVANT_MEMORY_CACHE_MS = 60_000;
 

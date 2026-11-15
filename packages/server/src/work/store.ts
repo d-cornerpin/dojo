@@ -457,23 +457,6 @@ const UNSERVABLE_REASON: Readonly<Record<string, string>> = {
     + 'waiting set and the staleness sweep both floor on it, so nothing will ever pick it up',
 };
 
-export interface UnservableOpenAsk {
-  id: string; agentId: string; state: WorkState;
-  cls: string;
-}
-
-/** The invariant as a census: this must return nothing. Not a schema CHECK because every arm but
- *  `no-identity` needs a JOIN (to `messages` or `agents`), which CHECK constraints cannot reach. */
-export function unservableOpenAskCensus(agentId?: string): UnservableOpenAsk[] {
-  const scoped = agentId != null;
-  const rows = getDb().prepare(
-    `${UNSERVABLE_OPEN_ASK_SELECT}${scoped ? ' AND w.agent_id = ?' : ''} ORDER BY w.opened_at ASC`,
-  ).all(...(scoped ? [agentId] : [])) as Array<{
-    id: string; agent_id: string; state: WorkState; cls: string;
-  }>;
-  return rows.map((r) => ({ id: r.id, agentId: r.agent_id, state: r.state, cls: r.cls }));
-}
-
 export function abandonUnservableAsks(agentId?: string): {
   abandoned: number; ids: string[]; byClass: Record<string, number>;
 } {
@@ -518,8 +501,7 @@ export const JOIN_MAX_AGE_DAYS = 7;
  *  join fails closed. */
 export const JOIN_LIVENESS_MAX_TOTAL_MS = 4 * JOIN_TTL_MINUTES * 60_000;
 
-/** The only live A2A per-thread hop cap, keyed on `work.hop_count`; the classifier's `A2A_HOP_LIMIT`
- *  (`agent/v2/classifiers/a2a.ts`) sits in `a2aIntentValidator`, which has no production caller. */
+/** The A2A per-thread hop cap, keyed on `work.hop_count`. */
 export const THREAD_HOP_CAP = 8;
 
 /** How long a hop counts against the cap: eight hops inside a rolling window (`JOIN_TTL_MINUTES`, past

@@ -2,7 +2,6 @@
 import { createLogger } from '../logger.js';
 import { estimateTokens } from '../memory/budget.js';
 import { getDreamerAgentId } from '../config/platform.js';
-import { listTasks } from '../tracker/schema.js';
 import {
   getPinnedEntries,
   getUnfiledArchivesForAgent,
@@ -195,8 +194,7 @@ export function searchUnfiledArchives(
  * The prefix half of the vault pull: pinned and permanent entries only. No query, no clock, no write,
  * so it stays stable in the cached prefix. The query-driven half is in `memory/recall-lane.ts`.
  *
- * It does not apply `activeTaskSuppressor`: that reads the tracker, and a task edit would then change
- * bytes ahead of the whole conversation.
+ * It reads no tracker state: a task edit would then change bytes ahead of the whole conversation.
  */
 export function pinnedContextSection(
   agentId: string | undefined,
@@ -232,37 +230,6 @@ const VAULT_SECTION_TAIL =
   '\nYou can search for more memories with vault_search. You can save new knowledge with '
   + 'vault_remember. (These notes can be stale. For what tools/capabilities you have RIGHT '
   + 'NOW, trust your live tool list, not a memory like "I can\'t do X".)';
-
-/**
- * Drops 'procedure' and 'event' entries whose topic overlaps an in-progress task (overlap >= 0.45):
- * the tracker, not the vault, is the source of truth for active state. Permanent entries are kept.
- */
-export function activeTaskSuppressor(
-  agentId: string | undefined,
-): (entry: VaultEntry) => { suppressed: boolean; taskId?: string } {
-  const activeTaskTopics: Array<{ id: string; topic: Set<string> }> = [];
-  if (agentId) {
-    try {
-      const tasks = listTasks({ status: 'in_progress', assignedTo: agentId });
-      for (const t of tasks) {
-        const topicText = `${t.title} ${t.description ?? ''}`;
-        activeTaskTopics.push({ id: t.id, topic: significantTokensFor(topicText) });
-      }
-    } catch { /* tracker not available */ }
-  }
-  return (entry: VaultEntry) => {
-    if (activeTaskTopics.length === 0) return { suppressed: false };
-    if (entry.type !== 'procedure' && entry.type !== 'event') return { suppressed: false };
-    if (entry.isPermanent) return { suppressed: false }; // permanent entries are never suppressed
-    const entryTokens = significantTokensFor(entry.content);
-    if (entryTokens.size < 4) return { suppressed: false }; // too short to judge
-    for (const task of activeTaskTopics) {
-      const overlap = tokenOverlapRatio(entryTokens, task.topic);
-      if (overlap >= 0.45) return { suppressed: true, taskId: task.id };
-    }
-    return { suppressed: false };
-  };
-}
 
 /**
  * Surfaces the just-archived, unfiled session matched against the query, capped at `maxTokens` (and

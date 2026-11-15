@@ -64,7 +64,7 @@ export function readWork(agentId: string, sinceMs: number): Row[] {
   ).all(agentId, sinceMs, COLLECTOR_CAPS.work) as Row[];
 }
 
-/** A constructed seven-field record, never `getAllPlatformConfig()` (unredacted); `model_id` is nullable. */
+/** A constructed seven-field record, never the whole platform config (unredacted); `model_id` is nullable. */
 export function readSettings(agentId: string): SettingsFacts {
   const row = (getDb().prepare(
     `SELECT p.type AS provider_kind, p.behaves_like, p.first_chunk_timeout_ms, p.stream_idle_timeout_ms,

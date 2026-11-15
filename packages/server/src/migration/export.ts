@@ -7,7 +7,7 @@ import crypto from 'node:crypto';
 import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import archiver from 'archiver';
-import { getDb, getDbPath } from '../db/connection.js';
+import { getDb } from '../db/connection.js';
 import { copyTree } from './fs-copy.js';
 import { generateManifest, type ExportManifest } from './manifest.js';
 import { broadcast } from '../gateway/ws.js';

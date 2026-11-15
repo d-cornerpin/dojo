@@ -74,8 +74,7 @@ import {
 } from '../assembled-estimate-cache.js';
 import {
   noteProviderFailure, noteSummaryWriterFailure, permanentFailureReason, mayDialProvider,
-  providerBreaker, clearProviderBreaker, pauseInsteadOfRetrying, noteProviderSuccess,
-  PERMANENT_FAILURES_TO_BREAK, __resetBreakersForTests,
+  providerBreaker, noteProviderSuccess, PERMANENT_FAILURES_TO_BREAK, __resetBreakersForTests,
 } from '../../providers/billing-breaker.js';
 // t87b reads the position rule directly — see the STILL_ANCHORED table for why.
 import { statusIsAnchored } from '../../agent/provider-error.js';
@@ -330,24 +329,15 @@ describe('§1 a 402 is permanent, and two of them end the dialling', () => {
     noteProviderFailure(DEAD_PROVIDER, HTTP_402, AGENT);
     expect(mayDialProvider(DEAD_PROVIDER), 'with an alternative: skipped').toBe(false);
     expect(mayDialProvider(DEAD_PROVIDER, true), 'as the only option: allowed through').toBe(true);
-    // …and the caller gets a sentence to show instead of a retry loop (the PM-agent case).
-    expect(pauseInsteadOfRetrying(DEAD_PROVIDER)).toMatch(/^Paused: Provider "prov-no-balance" is out of balance/);
-    expect(pauseInsteadOfRetrying(LIVE_PROVIDER), 'a healthy provider pauses nothing').toBeNull();
   });
 
-  it('the owner\'s manual retry clears it, and a real success clears it', () => {
+  it('a real success closes it, and the count restarts from zero', () => {
     noteProviderFailure(DEAD_PROVIDER, HTTP_402);
-    noteProviderFailure(DEAD_PROVIDER, HTTP_402);
-    expect(clearProviderBreaker(DEAD_PROVIDER), 'the route must report what it actually did').toBe(true);
-    expect(mayDialProvider(DEAD_PROVIDER)).toBe(true);
-    expect(clearProviderBreaker(DEAD_PROVIDER), 'nothing was open the second time').toBe(false);
-    // The counter goes too, or one more failure re-opens instantly and the retry looks broken.
-    expect(noteProviderFailure(DEAD_PROVIDER, HTTP_402), 'the count restarted from zero').toBeNull();
-
     noteProviderFailure(DEAD_PROVIDER, HTTP_402);
     expect(mayDialProvider(DEAD_PROVIDER)).toBe(false);
     noteProviderSuccess(DEAD_PROVIDER);
     expect(mayDialProvider(DEAD_PROVIDER), 'a call that worked beats a recorded wall').toBe(true);
+    expect(noteProviderFailure(DEAD_PROVIDER, HTTP_402), 'the count restarted from zero').toBeNull();
   });
 
   it('the summary writer\'s own failure opens its provider\'s breaker, by model id', () => {

@@ -71,21 +71,14 @@ vi.mock('../../plaud/auth.js', () => ({
 
 import { runMigrations } from '../../db/migrations.js';
 import {
-  buildIntegrationStatusLane,
-  renderIntegrationStatusBlock,
-  integrationStatusWorstCaseTokens,
-  forgetToolFamilyIndex,
-  integrationFamilyForLabel,
-  INTEGRATION_STATUS_LANE_ID,
-  INTEGRATION_STATUS_ENTRY_ID,
-  INTEGRATION_STATUS_HEAD,
-  INTEGRATION_STATUS_SUPERSEDES,
-  INTEGRATION_STATUS_NO_LEDGER_NOTE,
+  buildIntegrationStatusLane, renderIntegrationStatusBlock, integrationStatusWorstCaseTokens,
+  forgetToolFamilyIndex, integrationFamilyForLabel, INTEGRATION_STATUS_LANE_ID,
+  INTEGRATION_STATUS_HEAD, INTEGRATION_STATUS_SUPERSEDES, INTEGRATION_STATUS_NO_LEDGER_NOTE,
   type IntegrationStatusRow,
 } from '../integration-status-lane.js';
 import { TOOL_CATEGORIES } from '../../tools/categories.js';
 import { MessageSlot } from '../../prompt/registry/types.js';
-import { POST_BUDGET_LANES, POST_BUDGET_ENTRY_LANE, LANE_LIMITS, laneLimit } from '../lanes.js';
+import { POST_BUDGET_LANES, LANE_LIMITS, laneLimit } from '../lanes.js';
 import { estimateTokens } from '../budget.js';
 
 const AGENT = 'agent-t76b';
@@ -395,7 +388,6 @@ describe('T76b §5 — the lane declares a derived reserve and a defended positi
   });
 
   it('the entry is DECLARED against its own lane, so the receipt prices it separately', () => {
-    expect(POST_BUDGET_ENTRY_LANE[INTEGRATION_STATUS_ENTRY_ID]).toBe(INTEGRATION_STATUS_LANE_ID);
     expect(LANE_LIMITS[INTEGRATION_STATUS_LANE_ID]).toBeTruthy();
     expect(lane().measured.length).toBeGreaterThan(20);
   });

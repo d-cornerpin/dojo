@@ -20,7 +20,7 @@ import { recordServingTurnByRowid } from '../memory/message-store.js';
 // file through its own graph, so importing it from there could read it before it is initialized.
 import { START_ACK_ORIGIN_INTENT } from '../memory/origin-intents.js';
 import {
-  appendWorkEvent, askIdForMessage, claimFailedJoinForLateAnswer, claimingTurnOf, isTerminal,
+  appendWorkEvent, askIdForMessage, claimingTurnOf, isTerminal,
   transition,
   type WorkState,
 } from './store.js';
@@ -779,19 +779,6 @@ export function settleAskOnJoin(
     actorId: p.actorId ?? 'a2a-join',
   });
 }
-
-/** An answer arrived after the join failed closed; it still reaches the owner once. `failed -> open` is the
- *  exactly-once guard (`claimFailedJoinForLateAnswer` owns it: one caller wins, the rest `conflict`). */
-export function reopenJoinForLateAnswer(
-  parentWorkId: string, deliveryId: string, reason: string,
-): AskSettlementOutcome | { kind: 'refused'; reason: string } {
-  const reopened = claimFailedJoinForLateAnswer(parentWorkId, deliveryId, reason);
-  if (reopened.kind !== 'applied') {
-    return { kind: 'refused', reason: reopened.kind === 'no_change' ? 'already-in-state' : reopened.reason };
-  }
-  return settleAskOnJoin(parentWorkId, { deliveryId, reason, basis: 'late-answer' });
-}
-
 
 export interface DeliveryCloseInput {
   agentId: string;

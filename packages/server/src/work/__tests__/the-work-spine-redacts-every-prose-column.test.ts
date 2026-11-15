@@ -49,7 +49,7 @@ vi.mock('../../tracker/notify.js', () => ({
 }));
 
 import { createTask, createProject, autoCreateAssignTask } from '../../tracker/schema.js';
-import { patchWork, appendWorkNotes } from '../tracker-store.js';
+import { patchWork } from '../tracker-store.js';
 import { createWorkTable } from './work-fixture.js';
 import {
   noteHandedCredentialValues, forgetHandedCredentialValues, redactedPlaceholderFor,
@@ -207,16 +207,6 @@ describe('§1 the tracker doors redact every prose column they bind', () => {
     // Still JSON, still readable by the PM.
     expect(() => JSON.parse(rowOf(id).evidence_json!)).not.toThrow();
     expect(sweepForValue(FAKE_A)).toEqual([]);
-  });
-
-  it('the NOTE-APPEND door has its own redaction (its CASE-append cannot go through patchWork)', () => {
-    noteHandedCredentialValues(AGENT, [FAKE_A]);
-    const id = createTask({ title: 'Ordinary task', createdBy: AGENT, assignedTo: AGENT, origin: ORIGIN });
-
-    appendWorkNotes(id, `2026-10-06: authenticated with ${FAKE_A}`);
-
-    expect(rowOf(id).notes!).not.toContain(FAKE_A);
-    expect(rowOf(id).notes!).toContain(redactedPlaceholderFor(AGENT, FAKE_A));
   });
 
   it('WHAT THE FIX MAY NOT COST: with no handed credential every column is byte-identical', () => {

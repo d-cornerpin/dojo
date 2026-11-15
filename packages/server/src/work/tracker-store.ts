@@ -12,7 +12,7 @@ import { currentTurnNumber } from '../agent/v2/turn-record.js';
 import { turnContext } from '../agent/turn-context.js';
 import { clearReferencesToWork } from './work-refs.js';
 import { redactHandedCredentials } from '../credentials/secret-values.js';
-import { noSuchWorkDetail, noteUnsettled, type WorkPatchOutcome } from './outcome.js';
+import { noSuchWorkDetail, type WorkPatchOutcome } from './outcome.js';
 import { transition, appendWorkEvent, type Actor, type WorkOutcome, type WorkState } from './store.js';
 import { statusToState, TRACKER_ROOT_KIND, SERVICE_ROOT_KIND, WORK_EVENT, type TrackerStatus } from './tracker-view.js';
 import { takeoverRefusal } from './row-authority.js';
@@ -318,18 +318,6 @@ export function patchWorkWhere(
   return getDb().prepare(
     `UPDATE work SET ${sets.join(', ')} WHERE ${where.column} = ?`,
   ).run(...values).changes;
-}
-
-/** Append a line to `notes` (the CASE keeps a first note from becoming `NULL || text`). */
-export function appendWorkNotes(id: string, entry: string): number {
-  // `notes` is a prose column with its own SQL shape, so it is redacted here, not via `patchWork`.
-  entry = scrubText(rowAgents(id), entry);
-  return getDb().prepare(`
-    UPDATE work SET
-      notes = CASE WHEN notes IS NULL THEN ? ELSE notes || char(10) || ? END,
-      updated_at = ?
-    WHERE id = ?
-  `).run(entry, entry, now(), id).changes;
 }
 
 /** Incremented in SQL, never assigned, so two racing fires cannot lose a count. */

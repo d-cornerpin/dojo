@@ -17,7 +17,7 @@ vi.mock('../../logger.js', () => {
 vi.mock('../../memory/embeddings.js', () => ({
   generateEmbedding: async () => { const v = new Float32Array(8); v[0] = 1; return v; },
   queueEmbedding: () => undefined, storeEmbedding: async () => undefined,
-  refreshEmbedding: () => undefined, getEmbeddingStatus: () => ({}), setEmbeddingConfig: () => undefined,
+  refreshEmbedding: () => undefined, getEmbeddingStatus: () => ({}),
 }));
 
 import { runMigrations } from '../../db/migrations.js';

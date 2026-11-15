@@ -139,7 +139,7 @@ import {
   cachedAssembledEstimate, __resetEstimateCacheForTests,
 } from '../assembled-estimate-cache.js';
 import {
-  noteProviderFailure, clearProviderBreaker, noteSummaryWriterFailure, permanentFailureReason,
+  noteProviderFailure, noteProviderSuccess, noteSummaryWriterFailure, permanentFailureReason,
   providerBreaker, __resetBreakersForTests,
 } from '../../providers/billing-breaker.js';
 import { classifyProviderError } from '../../agent/provider-error.js';
@@ -578,8 +578,8 @@ describe('§3 a failing compaction is a repairable defect, never a dead end', ()
     await checkAndCompact(AGENT, MODEL_64K, 65_536, { force: true });
     expect(compactionIsBraked(AGENT, true), 't268 round 5 (edited): waiting on a dead writer, never braked').toBe(false);
 
-    // The owner tops the account up. No dashboard button, no reset, no archive.
-    clearProviderBreaker(PROVIDER);
+    // The account is topped up and the next call to it succeeds.
+    noteProviderSuccess(PROVIDER);
 
     const before = held();
     await checkAndCompact(AGENT, MODEL_64K, 65_536, { force: true });

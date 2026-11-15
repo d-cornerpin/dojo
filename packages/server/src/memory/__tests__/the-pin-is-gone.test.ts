@@ -92,7 +92,7 @@ vi.mock('../../config/platform.js', () => ({
   getOwnerName: () => 'TestUser', getPrimaryAgentId: () => 'primary', getPrimaryAgentName: () => 'Primary',
   getPMAgentId: () => 'pm', getPMAgentName: () => 'PM',
   getTrainerAgentId: () => 'trainer', getTrainerAgentName: () => 'Trainer',
-  isSetupCompleted: () => true, setPlatformConfig: vi.fn(), getAllPlatformConfig: () => ({}),
+  isSetupCompleted: () => true, setPlatformConfig: vi.fn(),
   isPrimaryAgent: (id: string) => id === 'primary', isPMAgent: (id: string) => id === 'pm',
   isTrainerAgent: (id: string) => id === 'trainer',
   getHealerAgentId: () => 'healer', getHealerAgentName: () => 'Healer', isHealerAgent: (id: string) => id === 'healer',

@@ -134,7 +134,6 @@ vi.mock('../../config/platform.js', () => ({
   getTrainerAgentName: () => 'Trainer',
   isSetupCompleted: () => true,
   setPlatformConfig: vi.fn(),
-  getAllPlatformConfig: () => ({}),
   isPrimaryAgent: (id: string) => id === 'primary',
   isPMAgent: (id: string) => id === 'pm',
   isTrainerAgent: (id: string) => id === 'trainer',

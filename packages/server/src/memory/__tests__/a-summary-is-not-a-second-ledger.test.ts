@@ -46,9 +46,7 @@ vi.mock('../../db/connection.js', async () => {
 
 import { runMigrations } from '../../db/migrations.js';
 import { getDepthPrompt } from '../summarize.js';
-import {
-  annotateSummaryObligations, sweepStoredSummaryObligations, SUMMARY_OBLIGATION_MARK,
-} from '../summary-obligations.js';
+import { annotateSummaryObligations, SUMMARY_OBLIGATION_MARK } from '../summary-obligations.js';
 import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const AGENT = FXID.n4;
@@ -65,17 +63,6 @@ function seedCommitment(id: string, state: string, title: string): void {
      VALUES (?, 'commitment', ?, 'agent', 'tracker', ?, ?, 'tracker', 0, 0, ?, ?, ?, ?)`,
   ).run(id, AGENT, id, state, title, Date.now() - 86_400_000, Date.now(), closedAt);
 }
-
-function seedSummary(id: string, content: string): void {
-  db().prepare(
-    `INSERT INTO summaries (id, agent_id, depth, kind, content, token_count,
-                            earliest_at, latest_at, descendant_count, created_at)
-     VALUES (?, ?, 0, 'leaf', ?, ?, datetime('now'), datetime('now'), 3, datetime('now'))`,
-  ).run(id, AGENT, content, Math.ceil(content.length / 4));
-}
-
-const contentOf = (id: string): string =>
-  (db().prepare('SELECT content FROM summaries WHERE id = ?').get(id) as { content: string }).content;
 
 beforeEach(() => {
   const fresh = new Database(':memory:');
@@ -186,46 +173,5 @@ describe('a cited work id is resolved against the spine before the summary is st
     expect(out[0]).toBe('The owner asked for the fence quote on 2026-08-01.');
     expect(out[2]).toBe("The owner's favorite movie is Meet Joe Black.");
     expect(out[1]).toContain(SUMMARY_OBLIGATION_MARK);
-  });
-});
-
-// ══════════════════════════════════════════════════════════════════════════════
-// §3 — THE ONE-TIME BOUNDED HYGIENE. Measured before it is applied.
-// ══════════════════════════════════════════════════════════════════════════════
-describe('the stored-summary hygiene pass counts before it writes', () => {
-  beforeEach(() => {
-    seedCommitment(DEAD, 'abandoned', 'email the roof quote to Bob');
-  });
-
-  it('a dry run REPORTS the affected rows and writes nothing', () => {
-    seedSummary('sum_a', `- still owed: email Bob the roof quote [${DEAD}].`);
-    seedSummary('sum_b', 'The owner runs Acme Corp.');
-    const report = sweepStoredSummaryObligations({ dryRun: true });
-    expect(report.scanned).toBe(2);
-    expect(report.affected).toBe(1);
-    expect(report.ids).toEqual(['sum_a']);
-    expect(contentOf('sum_a')).toBe(`- still owed: email Bob the roof quote [${DEAD}].`);
-  });
-
-  it('applying it annotates exactly the rows the dry run named', () => {
-    seedSummary('sum_a', `- still owed: email Bob the roof quote [${DEAD}].`);
-    seedSummary('sum_b', 'The owner runs Acme Corp.');
-    const report = sweepStoredSummaryObligations({ dryRun: false });
-    expect(report.affected).toBe(1);
-    expect(contentOf('sum_a')).toContain(SUMMARY_OBLIGATION_MARK);
-    expect(contentOf('sum_b')).toBe('The owner runs Acme Corp.');
-  });
-
-  it('a summary with NO cited id is never touched — the two Bob rows are proof bodies, not targets', () => {
-    seedSummary('sum_bob', "- Two quotes are still parked, waiting on Bob's address.");
-    const report = sweepStoredSummaryObligations({ dryRun: true });
-    expect(report.affected).toBe(0);
-    expect(report.ids).toEqual([]);
-  });
-
-  it('running it twice is a no-op the second time', () => {
-    seedSummary('sum_a', `- still owed: email Bob the roof quote [${DEAD}].`);
-    expect(sweepStoredSummaryObligations({ dryRun: false }).affected).toBe(1);
-    expect(sweepStoredSummaryObligations({ dryRun: false }).affected).toBe(0);
   });
 });

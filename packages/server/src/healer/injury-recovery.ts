@@ -5,7 +5,6 @@ import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { sendAlert } from '../services/imessage-bridge.js';
-import { scrubTechnicalDetail } from '../agent/v2/error-format.js';
 import { classifyProviderErrorText } from '../agent/provider-error.js';
 import { DECLARED_PATIENCE_EXCEEDED_CODE } from '../agent/stream-patience.js';
 import { broadcast } from '../gateway/ws.js';
