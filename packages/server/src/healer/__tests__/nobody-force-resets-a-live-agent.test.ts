@@ -81,8 +81,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-  // A reset fires `import('./injury-recovery.js')` without awaiting it; let it land before the next
-  // test resets the module registry and imports the same graph again.
+  // A reset fires `import('./injury-recovery.js')` without awaiting it; let it land before the database closes.
   await vi.dynamicImportSettled();
   mockDb.current?.close();
   mockDb.current = null;

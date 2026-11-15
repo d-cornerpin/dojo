@@ -229,7 +229,7 @@ export function describeHeldAction(toolName: string, argsJson: string | null | u
   let [head, ...rest] = cmds.length === 1 ? cmds[0] : [];
   if (head === 'sudo') [head, ...rest] = rest.slice(Math.max(0, rest.findIndex((w) => !w?.startsWith('-'))));   // look through sudo to the command it runs
   const targets = rest.filter((w) => !w?.startsWith('-'));
-  if ((head === 'rm' || head === 'rmdir') && targets.length > 0 && targets.every((t) => t !== null)) {
+  if ((head === 'rm' || head === 'rmdir') && targets.length > 0 && targets.every((t) => t !== null && !t.startsWith('..'))) {
     return `Delete ${nameList((targets as string[]).map((t) => (/^[/~]/.test(t) ? t : `"${clip(t, 80)}" in the folder this command runs from`)))}${rest.some((w) => /^-[a-zA-Z]*[rR]|^--recursive$/.test(w ?? '')) ? ', including everything inside' : ''}. Deleted files do not go to the Trash and cannot be brought back.`;
   }
   const paths = [...new Set(cmds.flat().filter((w): w is string => !!w && /^(~|\.{0,2})\//.test(w)))];

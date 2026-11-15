@@ -188,3 +188,21 @@ describe('a receipt file is never visible half-written', () => {
     expect(() => JSON.parse(fs.readFileSync(path.join(dir, final), 'utf-8'))).not.toThrow();
   });
 });
+
+describe('the receipt sweep', () => {
+  it('removes an orphan temporary file left by a failed write along with the oldest receipts', async () => {
+    const mod = await freshReceipt();
+    configValue.current = 'meta';
+    const dir = path.join(process.env.DOJO_HOME ?? '', '.dojo', 'receipts', 'sweepbot');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, '1-t1-i1.json.tmp'), '{');
+    for (let i = 2; i < 210; i++) fs.writeFileSync(path.join(dir, `${i}-t1-i1.json`), '{}');
+    for (let i = 0; i < 20; i++) {
+      mod.writeContextReceipt({
+        agentId: 'sweepbot', modelId: 'm', turnNumber: 1, loopCount: i,
+        systemPrompt: 's', messages: [{ role: 'user', content: 'hi' }], useTools: false,
+      });
+    }
+    await vi.waitFor(() => expect(fs.existsSync(path.join(dir, '1-t1-i1.json.tmp'))).toBe(false));
+  });
+});

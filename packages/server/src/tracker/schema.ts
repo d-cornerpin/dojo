@@ -672,7 +672,7 @@ export function formatResolveError(
       // A `cmt:` id, or the bare 12 hex of one that is a commitment, is a promise the agent made: it closes through the promise ledger, not a task verb.
       const asked = input.trim().toLowerCase();
       if (kind === 'task' && (asked.startsWith('cmt:') || getDb().prepare("SELECT 1 FROM work WHERE kind = 'commitment' AND id = ?").get(`cmt:${asked}`))) {
-        return `Error: '${input}' is a promise you made, not a task, so work_update does not take it. Close it with work_close_request(action='commitment', id, disposition='kept' or 'dropped').`;
+        return `Error: '${input}' is a promise you made, not a task, so no task call takes it. Close it with work_close_request(action='commitment', id, disposition='kept' or 'dropped').`;
       }
       // A title-shaped input gets an explicit title-vs-id correction, or the floor model retries the same
       // title forever. Title resolution is scoped to the CALLER's own tasks.

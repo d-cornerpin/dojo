@@ -75,6 +75,7 @@ describe('a held Healer change', () => {
     const sentence = await held({ argv: ['rm', '-rf', long] });
     expect(sentence.length).toBeLessThanOrEqual(300);
     expect(sentence).toMatch(/^Delete \/Users\/example\/.*\.\.\..*file\.bin, including everything inside\. Deleted files do not go to the Trash/);
+    expect(await held({ argv: ['rm', '-rf', '../shared'] })).toBe(`${generic} It touches ../shared.`);
     expect(await held({ argv: ['rm', '-rf', 'build'] })).toBe(`Delete "build" in the folder this command runs from, including everything inside. ${GONE}`);
   });
 

@@ -88,7 +88,7 @@ export const DEADLINES: Readonly<Record<DeadlineId, Deadline>> = {
     // Read from the shared stuck-threshold table rather than restated, so the copies cannot drift.
     id: 'stuck_agent_threshold', ms: STUCK_AGENT_THRESHOLD_MINUTES * MIN,
     reason:
-      'An agent row reading `working` for longer than this is a dead process\'s row, not a long turn: comfortably above the 15-minute turn budget times up to four continuations plus overshoot, with the 30s heartbeat and the in-process activeRuns guard as the real safety.',
+      'An agent row reading `working` for longer than this is a dead process\'s row, not a long turn: comfortably above the 15-minute turn budget times up to four continuations plus overshoot, with the in-process activeRuns guard as the real safety: a run live in this process is never reaped.',
     carriedFrom: 'STUCK_AGENT_THRESHOLD_MINUTES = 75 — agent/stuck-thresholds.ts (was agent/runtime.ts until PHASE-6 T10)',
   },
   engine_event_expiry: {

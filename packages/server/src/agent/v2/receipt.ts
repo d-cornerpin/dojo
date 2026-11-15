@@ -381,7 +381,7 @@ export function writeContextReceipt(input: ReceiptInput): void {
 async function sweepOldReceipts(dir: string): Promise<void> {
   try {
     const files = (await fs.promises.readdir(dir))
-      .filter((f) => f.endsWith('.json'))
+      .filter((f) => /\.json(\.tmp)?$/.test(f))   // an orphan temp file from a failed write goes too
       .sort(); // timestamp-prefixed names sort oldest-first
     const excess = files.length - MAX_RECEIPTS_PER_AGENT;
     if (excess <= 0) return;

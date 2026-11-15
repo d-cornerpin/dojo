@@ -14,7 +14,7 @@ vi.mock('../../gateway/ws.js', () => ({ broadcast: vi.fn(), stampPersistedRow: (
 
 import { runMigrations } from '../../db/migrations.js';
 import '../decision-ask.js';
-import { __forgetResidencyForTests, decideTimeoutMs } from '../decide.js';
+import { __forgetResidencyForTests, decideTimeoutMs, LARGEST_TURN_CALL } from '../decide.js';
 import { deliverableJudged } from '../v2/classifiers/inbound-routing.js';
 import { installDecisionModel } from './decision-fake.js';
 
@@ -67,7 +67,7 @@ describe('a decision past its timeout', () => {
 
   it('a small warm call gets the 2.5 s floor; the largest per-turn call: about 5.2 s cold, 3.9 s warm', () => {
     expect(decideTimeoutMs(0, 1, true)).toBe(2_500);
-    expect(decideTimeoutMs(800, 9, false)).toBe(5_150);
-    expect(decideTimeoutMs(800, 9, true)).toBe(3_850);
+    expect(decideTimeoutMs(LARGEST_TURN_CALL.stateTokens, LARGEST_TURN_CALL.questions, false)).toBe(5_150);
+    expect(decideTimeoutMs(LARGEST_TURN_CALL.stateTokens, LARGEST_TURN_CALL.questions, true)).toBe(3_850);
   });
 });
