@@ -11,10 +11,9 @@
 // Re-verified at this task's own HEAD (#14 — a verdict is re-checked before it is acted on):
 //
 //   agent/provider-error.ts                    317 lines, ONE prose->class table
-//   non-test importers of it                   8   (errors · model · rate-limit-retry ·
-//                                                   tool-outcome · classifiers/errors ·
-//                                                   classifiers/provider · v2/recovery ·
-//                                                   healer/injury-recovery)
+//   non-test importers of it                   7   (errors · model · rate-limit-retry ·
+//                                                   tool-outcome · classifiers/provider ·
+//                                                   v2/recovery · healer/injury-recovery)
 //   surviving `classifyError` functions        2, BOTH delegating to it
 //     v2/recovery.ts        -> ClassifiedError (engine recovery kinds)
 //     healer/injury-recovery.ts -> string      (healer diagnostic buckets)

@@ -35,7 +35,6 @@ import {
   isRetryableProviderClass,
   type ProviderErrorFacts,
 } from '../provider-error.js';
-import { errorRecoveryClassifier } from '../v2/classifiers/errors.js';
 import { AgentError } from '../errors.js';
 import { classifyToolResult, toolErrorCodeForThrow, toolWasBlocked } from '../tool-outcome.js';
 import { DECLARED_PATIENCE_EXCEEDED_CODE } from '../stream-patience.js';
@@ -130,7 +129,6 @@ describe('provider errors — the status decides when the provider answered', ()
       400, 'invalid_request_error', 'prompt is too long: 250316 tokens > 200000 maximum',
     );
     expect(classifyProviderError(err).class).toBe('bad_request');
-    expect(errorRecoveryClassifier(err).kind).toBe('context_overflow');
   });
 
   it('THE FALSE NEGATIVE: a 429 whose body never says "429" or "rate_limit" is still a rate limit', () => {
