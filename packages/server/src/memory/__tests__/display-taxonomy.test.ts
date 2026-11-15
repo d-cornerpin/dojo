@@ -271,6 +271,12 @@ describe('[no-reply] sentinel', () => {
     expect(stripNoReplySentinel('All set.\n\n`[no-reply]`')).toBe('All set.');
     expect(stripNoReplySentinel('nothing here')).toBe('nothing here');
   });
+
+  it('takes the spellings a model drifts to', () => {
+    expect(isBareNoReplySentinel('[noreply]')).toBe(true);
+    expect(isBareNoReplySentinel('[no_reply]')).toBe(true);
+    expect(stripNoReplySentinel('All set. [no_reply]')).toBe('All set.');
+  });
 });
 
 describe('working-note and owner-alert matchers', () => {

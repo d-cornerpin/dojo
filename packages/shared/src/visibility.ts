@@ -80,7 +80,7 @@ export const NO_REPLY_CLOSED_MARKER =
   '[Agent ended turn without replying — conversation closed]';
 
 // The `[no-reply]` sentinel the AGENT emits: whole message, tail, or mid-text, markdown wrappers tolerated.
-const NO_REPLY_SENTINEL_BODY = String.raw`[\`*_]*\s*\[no-reply\]\s*[\`*_]*`;
+const NO_REPLY_SENTINEL_BODY = String.raw`[\`*_]*\s*\[no[-_]?reply\]\s*[\`*_]*`;
 export const NO_REPLY_BARE_RE = new RegExp(`^\\s*${NO_REPLY_SENTINEL_BODY}\\s*$`, 'i');
 export const NO_REPLY_TAIL_RE = new RegExp(`\\s*${NO_REPLY_SENTINEL_BODY}\\s*$`, 'i');
 
