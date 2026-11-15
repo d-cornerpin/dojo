@@ -116,6 +116,10 @@ function scannedFiles() {
 }
 
 // ── THE PRODUCT'S OWN VOCABULARY, READ RATHER THAN LISTED ───────────────────
+// Built-in service roles that are no longer in the defaults but still name rows on upgraded boxes
+// and appear in shipped migrations: product vocabulary, never a person's name.
+const RETIRED_ROLE_NAMES = ['Imaginer'];
+
 function roleNames() {
   const src = fs.readFileSync(path.join(ROOT, 'packages/server/src/config/platform.ts'), 'utf8');
   const names = [...src.matchAll(/get\('\w+_agent_name',\s*'([A-Za-z]+)'\)/g)].map((m) => m[1]);
@@ -125,7 +129,7 @@ function roleNames() {
       + 'vocabulary as a leak.');
     process.exit(1);
   }
-  return new Set(names.map((n) => n.toLowerCase()));
+  return new Set([...names, ...RETIRED_ROLE_NAMES].map((n) => n.toLowerCase()));
 }
 function publicSlug() {
   const src = fs.readFileSync(path.join(ROOT, 'packages/server/src/report/repo.ts'), 'utf8');
@@ -818,6 +822,7 @@ const FIX_NEEDLE_FILTERS = (roles) => [
   [['Vo'], 0, 'a 2-character name is filtered out'],
   [['Vex worth!'], 0, 'a name outside the allowed charset is filtered out'],
   [[...roles].slice(0, 1), 0, 'a ROLE name is never a roster needle'],
+  [RETIRED_ROLE_NAMES, 0, 'a RETIRED role name is never a roster needle'],
 ];
 
 // END NAMES-GATE TEST CORPUS
