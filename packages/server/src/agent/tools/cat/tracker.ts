@@ -384,6 +384,7 @@ const tableOfHandlers: ToolHandlerMap = {
     if (statusNotes) updateArgs.notes = statusNotes;
     if (args.resume_at) updateArgs.resume_at = args.resume_at;
     if (args.priority !== undefined) updateArgs.priority = args.priority;
+    if (args.user_quote !== undefined) updateArgs.user_quote = args.user_quote;
     content = trackerUpdateStatus(agentId, updateArgs);
     return { content, isError: isError || content.startsWith('Refused:') };
   },
@@ -690,6 +691,7 @@ const tableOfHandlers: ToolHandlerMap = {
       task_id: args.task_id as string,
       directive: args.directive as string,
       target_status: args.target_status as string | undefined,
+      user_quote: args.user_quote,
     });
     return { content, isError: /^(Refused|Error):/.test(content) };
   },

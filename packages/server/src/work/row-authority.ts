@@ -141,7 +141,7 @@ export function ownerAskedInThisTurn(agentId: string, quote: unknown): OwnerAskP
 
 const who = (id: string): string => `agent ${id}`;
 
-function escalationPointer(actorId: string): string {
+export function escalationPointer(actorId: string): string {
   if (!isPrimaryAgent(actorId)) {
     return `If it should happen anyway, tell the main agent (send_to_agent) so it can put the decision to ${getOwnerName()}.`;
   }

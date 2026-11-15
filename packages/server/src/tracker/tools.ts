@@ -27,7 +27,7 @@ import { declareDeliverableOnSchedule, declaredDeliverableShape, findLiveRecurri
 import { calculateNextRun, normalizeDbTimestamp, parseDaysOfWeek, wallToInstant, instantToWall, getBoxTimeZone, type ScheduledTask, type WallClock } from '../scheduler/engine.js';
 import { broadcast } from '../gateway/ws.js';
 import { isPMAgent, isPrimaryAgent } from '../config/platform.js';
-import { taskWriteRefusal } from '../work/row-authority.js';
+import { taskWriteRefusal, escalationPointer } from '../work/row-authority.js';
 import { turnContext, getWorkOriginForAgent } from '../agent/turn-context.js';
 import { WORK_EDITABLE_TASK_FIELDS } from '../agent/work-verb-schema.js';
 import { formatTimeForAgent } from '../services/format-time.js';
@@ -830,11 +830,13 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
     }
 
     { const no = taskWriteRefusal(agentId, taskId, 'change the status of'); if (no) return no; }   // only the task's holder, its creator, the PM and the main agent change it.
-    if (status && ownerHoldStands(taskId, false)) return `Refused: ${OWNER_HOLD_REFUSAL}`;
     // The prior status, for the task_log transition entry below (the row has moved once it is written).
     const db = getDb();
     const taskRow = db.prepare(`SELECT title, ${STATE_TO_STATUS_SQL('state')} as prior_status FROM work WHERE id = ?`).get(taskId) as { title: string; prior_status: string } | undefined;
     const priorStatus = holdOf(taskId)?.kind ?? taskRow?.prior_status ?? null;
+    if (status && ownerHoldStands(taskId, false) && !clearHold(taskId, agentId, args.user_quote)) {
+      return `Refused: ${OWNER_HOLD_REFUSAL} ${escalationPointer(agentId)}`;
+    }
 
     // Idempotency: a status call naming the status the task is already at changes nothing and says so, so
     // it is not read as real work. Only when status is the sole requested change; a call that also changes
@@ -1966,7 +1968,7 @@ const REDRIVE_LATER = ' The directive could not be delivered just now (it is log
 
 export async function trackerRetask(
   pmAgentId: string,
-  args: { task_id: string; directive: string; target_status?: string },
+  args: { task_id: string; directive: string; target_status?: string; user_quote?: unknown },
 ): Promise<string> {
   const rawTaskId = args.task_id;
   if (!rawTaskId) return 'Error: task_id is required.';
@@ -2007,8 +2009,9 @@ export async function trackerRetask(
   }
 
   // A retask lifts any hold but the owner's (the sender's verdict that the wait is not real), then moves through `transition()`.
-  if (ownerHoldStands(taskId, false)) return `Refused: ${OWNER_HOLD_REFUSAL}`;
-  clearHold(taskId, pmAgentId);
+  if (!clearHold(taskId, pmAgentId, args.user_quote) && ownerHoldStands(taskId, false)) {
+    return `Refused: ${OWNER_HOLD_REFUSAL} ${escalationPointer(pmAgentId)}`;
+  }
   const sr = setTaskStatusResult(taskId, targetStatus as TrackerStatus, {
     by: isPM ? 'pm' : 'agent', actorId: pmAgentId,
     reason: `${sender} retask: ${directive.slice(0, 200)}`,

@@ -53,7 +53,7 @@ const LEGAL: Record<WorkState, readonly WorkState[]> = {
   abandoned: ['open', 'claimed'],
 };
 
-export const OWNER_HOLD_REFUSAL = 'The owner put this task on hold. Only the owner can release it.';
+export const OWNER_HOLD_REFUSAL = 'The owner put this task on hold. Only the owner, or the main agent when the owner asks, can release it.';
 export function ownerHoldStands(workId: string, ownerActing: boolean): boolean {
   return !ownerActing && !!getDb().prepare(`SELECT 1 FROM work w WHERE w.id = ? AND ${heldByOwnerSql('w')}`).get(workId);
 }

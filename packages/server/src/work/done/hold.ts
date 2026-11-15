@@ -1,6 +1,7 @@
 // A HOLD: an Open or Working task on standby, paused (the asker has the ball) or blocked, with a one-line
 // reason. The state does not move; any change of state ends the hold (`transition()` clears the columns).
-// A hold the owner set only he lifts. The attribute door writes the columns and redacts the reason.
+// A hold the owner set only he lifts, or the main agent citing his words from this turn. The attribute
+// door writes the columns and redacts the reason.
 import { getDb } from '../../db/connection.js';
 import { withUnit } from '../../db/unit.js';
 import { appendAuditEntry } from '../audit-trail.js';
@@ -8,6 +9,8 @@ import { patchWork } from '../tracker-store.js';
 import { noteUnsettled, ownerHoldStands, OWNER_HOLD_REFUSAL } from '../store.js';
 import { taskScope } from '../tracker-view.js';
 import { workingExpr } from '../terminal-states.js';
+import { isPrimaryAgent } from '../../config/platform.js';
+import { ownerAskedInThisTurn } from '../row-authority.js';
 
 export type HoldKind = 'paused' | 'blocked';
 export interface Hold { kind: HoldKind; reason: string; at: number }
@@ -45,13 +48,15 @@ export function setHold(workId: string, kind: HoldKind, reason: string, by: stri
   });
 }
 
-/** Lift the hold. False when there was none. */
-export function clearHold(workId: string, by: string): boolean {
+/** Lift the hold. False when there was none, or it is the owner's and neither he nor his quoted ask lifts it. */
+export function clearHold(workId: string, by: string, ownerQuote?: unknown): boolean {
   return withUnit(() => {
     const was = holdOf(workId);
-    if (!was || ownerHoldStands(workId, byOwner(by))) return false;
+    const ownerAsked = ownerQuote !== undefined && isPrimaryAgent(by) && ownerAskedInThisTurn(by, ownerQuote).ok;
+    if (!was || ownerHoldStands(workId, byOwner(by) || ownerAsked)) return false;
     noteUnsettled(patchWork(workId, { hold_kind: null, hold_reason: null, hold_at: null, paused_until: null }), 'hold cleared', { taskId: workId });
-    appendAuditEntry(workId, by, { entryKind: 'hold_cleared', fromStatus: was.kind, reason: was.reason });
+    const note = ownerAsked ? `the owner asked: "${String(ownerQuote)}"` : null;
+    appendAuditEntry(workId, by, { entryKind: 'hold_cleared', fromStatus: was.kind, reason: was.reason, note });
     return true;
   });
 }
