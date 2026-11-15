@@ -240,9 +240,7 @@ export interface CheckAndCompactOptions {
   inTheBackground?: boolean;
 }
 
-/** `cannotHelp`: the condensation pass measured that it cannot help this summary set (all fit, or fewer than two
- *  notes of one depth can merge); the routine check holds off until the set changes (`context-gates.ts`). */
-export type CompactionResult = { leafCreated: number; condensedCreated: number; tokensReclaimed: number; lockBusy?: true; byRunningPass?: boolean; cannotHelp?: true };
+export type CompactionResult = { leafCreated: number; condensedCreated: number; tokensReclaimed: number; lockBusy?: true; byRunningPass?: boolean };
 
 const NO_COMPACTION: CompactionResult = { leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 };
 
@@ -299,11 +297,9 @@ async function runCheckAndCompact(
   const totalTokens = assembled.total;
   const budget = view.budgetTokens;
   const force = options?.force ?? false;
-  // THE TRIGGERS: forced (an overflow door or the owner's compact-now); rows leaving the view; the view dropping
-  // summaries the agent holds (condensation's case). A STARVED window (it cannot hold the system prompt) admits
-  // no summary whatever condensation does, so it is never condensation's case.
+  // THE TRIGGERS: forced (an overflow door or the owner's compact-now), or rows leaving the view. A STARVED window
+  // (it cannot hold the system prompt) admits no summary whatever condensation does, so it never condenses.
   const starved = view.budgetTokens === 0;
-  const summariesDropped = !starved && view.summaryRawTokens > view.summaryTokens;
   const leaving = force ? null : options?.leaving !== undefined ? options.leaving : leavingFromView(view);
   const outsideProtected = (): Message[] => {
     const compacted = getCompactedMessageIds(agentId);
@@ -324,10 +320,6 @@ async function runCheckAndCompact(
     if (leaving.cause === 'out-of-view' || compactionIsBraked(agentId, false)) return folded;
     const condensed = await condenseOnlyPass(agentId, modelId, turnModelId, contextWindow, budget, false, 0, options);
     return { ...folded, condensedCreated: condensed.condensedCreated, tokensReclaimed: condensed.tokensReclaimed };
-  }
-  if (!force && summariesDropped) {
-    if (compactionIsBraked(agentId, false)) return NO_COMPACTION;
-    return condenseOnlyPass(agentId, modelId, turnModelId, contextWindow, budget, false, 0, options);
   }
 
   if (force) {
@@ -412,7 +404,7 @@ async function runCheckAndCompact(
   }
 
   // No proactive leaf arm: `rowsLeavingView` and `leavingViewPass` fold rows as they leave the view.
-  logger.info('Compaction skipped: the view holds every summary and nothing is leaving it', {
+  logger.info('Compaction skipped: nothing is leaving the view', {
     assembledTokens: totalTokens, budgetTokens: budget,
   }, agentId);
   return { leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 };
@@ -466,10 +458,10 @@ async function condenseOnlyPass(
     logger.info('Compaction skipped: nothing outside the protected recent part, and every summary already fits', {
       assembledTokens: est.total, budgetTokens: budget, uncompactedOutsideTail: compactableRows,
     }, agentId);
-    return { ...NO_COMPACTION, cannotHelp: true };
+    return NO_COMPACTION;
   }
   // Only notes of one depth merge, where a writer is left for them; else the oldest leave the view whole.
-  if (condensableSummaries(agentId, { modelId, minFanout: DEFAULTS.condensedMinFanout }) < 2) return { ...NO_COMPACTION, cannotHelp: true };
+  if (condensableSummaries(agentId, { modelId, minFanout: DEFAULTS.condensedMinFanout }) < 2) return NO_COMPACTION;
   const condensation = await withCompactionActivity(agentId, () => condenseUntilFits(args));
   // Reclaimed is counted in summary tokens, not the gate's total (which reports the capped figure and cannot move):
   // what these tokens buy is oldest summaries not being dropped.

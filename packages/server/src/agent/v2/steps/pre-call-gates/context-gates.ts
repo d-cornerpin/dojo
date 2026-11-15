@@ -43,38 +43,25 @@ export async function runContextGates(
   routineMeasuredAtGate.set(agentId, dialModelId);
   const fill = await condenseForTheDialedModel({
     agentId, dialedModelId: dialModelId, contextWindow, writerModelId: configuredModelId, counterparty, measureOnly: replacing,
-    aPersonSpoke: state.loopCount === 1 && !!state.lastUserMessageId,
   });
   return proceed(fill === null ? state : advance(state, { lastContextRatio: fill }));
 }
 
-// A pass that answered "cannot help" for a summary set is not asked again until that set changes
-// (a note written or merged, a changed raw size) or a person speaks. No clock: the set is the signal.
-const cannotHelpFor = new Map<string, string>();
-const summarySetOf = (view: { summaryCount: number; summaryRawTokens: number }): string => `${view.summaryCount}:${view.summaryRawTokens}`;
-
-/** THE ROUTINE CHECK for the model a call will dial, on the gauge (the assembler's own dry run): rows
- *  about to leave the view, or summaries the view drops? Then fold and condense exactly those, in the
- *  background. Returns the view's fill (wanted / room), or null when it could not be measured. Never throws. */
+/** THE ROUTINE CHECK for the model a call will dial, on the gauge (the assembler's own dry run): rows about to
+ *  leave the view? Then fold exactly those, in the background; nothing else starts a run. Returns the view's fill
+ *  (wanted / room), or null when it could not be measured. Never throws. */
 export async function condenseForTheDialedModel(args: {
   agentId: string; dialedModelId: string; contextWindow: number; writerModelId: string;
   /** Unused: the gauge measures the system prompt itself. Kept for the call step's caller. */
   systemPromptTokens?: number;
   counterparty?: TurnCounterparty; measureOnly?: boolean;
-  /** The turn's first iteration on a person's fresh message: a "cannot help" answer is asked again. */
-  aPersonSpoke?: boolean;
 }): Promise<number | null> {
   const { agentId, dialedModelId, contextWindow, writerModelId } = args;
   try {
-    if (args.aPersonSpoke) cannotHelpFor.delete(agentId);
     const { view, total } = await estimateAssembledTokens(agentId, contextWindow, dialedModelId,
       { turnContext: args.counterparty ? { latestUserSource: null, counterparty: args.counterparty } : undefined });
     const leaving = leavingFromView(view);
-    const summariesDropped = view.summaryRawTokens > view.summaryTokens
-      && !(leaving === null && cannotHelpFor.get(agentId) === summarySetOf(view));   // it already said so for this set
-    if (!args.measureOnly && (leaving || summariesDropped)) {
-      condenseLeavingInBackground({ agentId, writerModelId, dialedModelId, contextWindow, leaving, summarySet: summarySetOf(view) });
-    }
+    if (!args.measureOnly && leaving) condenseLeavingInBackground({ agentId, writerModelId, dialedModelId, contextWindow, leaving });
     return view.budgetTokens > 0 ? total / view.budgetTokens : null;
   } catch (err) {
     logger.warn('v2: the routine condense check could not be measured', {
@@ -87,15 +74,13 @@ export async function condenseForTheDialedModel(args: {
 /** THE ROUTINE CONDENSE, one in flight per agent: folds exactly `leaving`, written by `writerModelId`'s
  *  writer; rows an assembly already took out of view are `out-of-view.ts`'s. Returns whether one started. */
 function condenseLeavingInBackground(args: {
-  agentId: string; writerModelId: string; dialedModelId: string; contextWindow: number; leaving: LeavingView | null;
-  /** The summary set the gate measured: a "cannot help" answer is recorded against it. */
-  summarySet: string;
+  agentId: string; writerModelId: string; dialedModelId: string; contextWindow: number; leaving: LeavingView;
 }): boolean {
-  const { agentId, writerModelId, dialedModelId, contextWindow, leaving, summarySet } = args;
+  const { agentId, writerModelId, dialedModelId, contextWindow, leaving } = args;
   if (backgroundDrains.has(agentId)) return false;
   backgroundDrains.add(agentId);
   logger.info('v2: condensing rows leaving the live view (fire-and-forget)', {
-    agentId, cause: leaving?.cause ?? 'summaries-dropped', rowsLeaving: leaving?.rowsLeaving ?? 0, throughSeq: leaving?.throughSeq ?? null,
+    agentId, cause: leaving.cause, rowsLeaving: leaving.rowsLeaving, throughSeq: leaving.throughSeq,
     dialedModelId, contextWindow,
   }, agentId);
   checkAndCompact(agentId, writerModelId, contextWindow, {
@@ -104,10 +89,8 @@ function condenseLeavingInBackground(args: {
     inTheBackground: true,
   })
     .then((result) => {
-      if (result.cannotHelp && leaving === null) cannotHelpFor.set(agentId, summarySet);
-      else if (!result.lockBusy) cannotHelpFor.delete(agentId);
       logger.info('v2: background condense complete', {
-        agentId, leafCreated: result.leafCreated, condensedCreated: result.condensedCreated, cause: leaving?.cause ?? 'summaries-dropped',
+        agentId, leafCreated: result.leafCreated, condensedCreated: result.condensedCreated, cause: leaving.cause,
       }, agentId);
     })
     .catch((err) => {

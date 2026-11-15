@@ -329,7 +329,7 @@ async function routineGate(): Promise<void> {
   const { view } = await estimateAssembledTokens(AGENT, WINDOW, MAIN);
   const leaving = leavingFromView(view);
   gate.checked += 1;
-  if (leaving || view.summaryRawTokens > view.summaryTokens) {
+  if (leaving) {
     gate.compacted += 1;
     await checkAndCompact(AGENT, MAIN, WINDOW, { leaving, dialedModelId: MAIN, inTheBackground: true });
   }
