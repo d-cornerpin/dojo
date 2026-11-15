@@ -1,6 +1,7 @@
 // WHO DECIDES a handed-in task: the PM, until two verdictless reviews or three send-backs; then the main agent
 // (another agent's task) or the owner (the main agent's own). A task the PM worked starts with the main agent.
-// Never a worker of the task (`workersOf`): then the owner. An open PM question about the hand-in holds it (`pmQuestions`).
+// Never a worker of the task (`workersOf`): then the owner. An open PM question keeps a hand-in out of the PM's reviews,
+// so none counts against it (`pmQuestions`); it delays the escalation and never reverses one.
 import { a2aThreadTokenMatchesSql } from '@dojo/shared';
 import { getDb } from '../../db/connection.js';
 import { getPMAgentId, getPrimaryAgentId } from '../../config/platform.js';
@@ -36,7 +37,7 @@ export function sendBacks(workId: string): Array<{ reason: string; at: number }>
 }
 
 /** The PM's questions tied to this row since its newest hand-in (or ever), oldest first. Each holds the hand-in until its answer;
- *  else one patience bound after the asked agent's next finished turn (of its newest 20); else `QUEUED_TURN_BOUND_MS`. */
+ *  else until `holdEnd`. */
 export function pmQuestions(workId: string, everAsked = false): Array<{ at: number; thread: string; asked: string; text: string; answeredAt: number | null; until: number }> {
   const pm = getPMAgentId();
   return (getDb().prepare(
@@ -46,10 +47,21 @@ export function pmQuestions(workId: string, everAsked = false): Array<{ at: numb
         AND (? OR unixepoch(r.created_at) >= (SELECT COALESCE(MAX(created_at), 0) FROM work_events WHERE work_id = r.task_id AND kind = 'handed_in') / 1000) ORDER BY r.rowid`,
   ).all(workId, pm, everAsked ? 1 : 0) as Array<{ at: number; thread: string; text: string; asked: string }>).map((q) => {
     const answeredAt = firstReplySince(pm, q.asked, q.thread, q.at);
-    const ended = answeredAt ?? (getDb().prepare('SELECT MIN(t) AS t FROM (SELECT unixepoch(ended_at) * 1000 AS t FROM turns WHERE agent_id = ? ORDER BY turn_number DESC LIMIT 20) WHERE t >= ?')
-      .get(q.asked, q.at) as { t: number | null }).t;
-    return { ...q, answeredAt, until: answeredAt ?? (ended !== null ? ended + patienceBoundMs(q.asked) : q.at + QUEUED_TURN_BOUND_MS) };
+    return { ...q, answeredAt, until: holdEnd(q.asked, q.at, answeredAt) };
   });
+}
+
+/** The fixed end of a question's hold: its answer; else one patience bound after the asked agent's first turn that
+ *  ended within `QUEUED_TURN_BOUND_MS` of it; else that bound. Never later than both together, and never moved. */
+function holdEnd(asked: string, at: number, answeredAt: number | null): number {
+  const latest = at + QUEUED_TURN_BOUND_MS + patienceBoundMs(asked);
+  if (answeredAt !== null) return Math.min(answeredAt, latest);
+  const ended = (getDb().prepare(`
+    SELECT MIN(unixepoch(ended_at)) * 1000 AS t
+      FROM turns
+     WHERE agent_id = ? AND ended_at IS NOT NULL AND unixepoch(ended_at) * 1000 BETWEEN ? AND ?
+  `).get(asked, at, at + QUEUED_TURN_BOUND_MS) as { t: number | null }).t;
+  return ended === null ? at + QUEUED_TURN_BOUND_MS : ended + patienceBoundMs(asked);
 }
 
 /** Until when the PM's questions hold this hand-in (0 when it asked none); it holds while this is in the future. */
@@ -60,8 +72,7 @@ export function whoDecides(workId: string): Decider | null {
   if (!workerOf(workId)) return null;
   const worked = workersOf(workId);
   const pm = getPMAgentId();
-  const pmStill = (pmMissesSinceHandIn(workId) < PM_ASKS_BEFORE_ESCALATION || questionsHoldUntil(workId) > Date.now())
-    && sendBacks(workId).length < SEND_BACKS_BEFORE_ESCALATION;
+  const pmStill = pmMissesSinceHandIn(workId) < PM_ASKS_BEFORE_ESCALATION && sendBacks(workId).length < SEND_BACKS_BEFORE_ESCALATION;
   if (!worked.has(pm) && pmStill) return { kind: 'agent', agentId: pm };
   const main = getPrimaryAgentId();
   return worked.has(main) ? { kind: 'owner' } : { kind: 'agent', agentId: main };

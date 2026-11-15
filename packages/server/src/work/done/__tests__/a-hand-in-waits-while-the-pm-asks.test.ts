@@ -12,7 +12,7 @@ vi.mock('../../../memory/embeddings.js', () => ({ generateEmbedding: async () =>
 vi.mock('../../../tracker/pm-agent.js', async (orig) => ({ ...(await orig<object>()), armDebouncedReview: vi.fn() }));
 vi.setConfig({ testTimeout: 240_000, hookTimeout: 240_000 });
 
-import { whoDecides } from '../who-decides.js';
+import { whoDecides, QUEUED_TURN_BOUND_MS } from '../who-decides.js';
 import { assembleContext } from '../../../memory/assembler.js';
 import { insertMessage } from '../../../memory/message-store.js';
 import { patienceBoundMs } from '../../../tracker/assignee-patience.js';
@@ -104,4 +104,31 @@ describe('a hand-in waits while the PM asks', () => {
     await review();
     expect(whoDecides(TASK), 'two verdictless reviews: the main agent decides').toEqual({ kind: 'agent', agentId: MAIN });
   });
+
+  it('the hold only delays: once the hand-in has gone to the main agent a late turn of the asked agent never takes it back', async () => {
+    await handedIn();
+    await review(async () => { await ask(WORKER, 'Which sheet holds the totals?'); });
+    const t = Date.now();
+    vi.spyOn(Date, 'now').mockReturnValue(t + QUEUED_TURN_BOUND_MS + 60_000);
+    await review();
+    await review();
+    expect(whoDecides(TASK), 'the question stopped holding at its deadline; two reviews passed it on').toEqual({ kind: 'agent', agentId: MAIN });
+    doneDb().prepare("INSERT INTO turns (agent_id, turn_number, kind, started_at, ended_at, exit_reason, answered) VALUES (?, 1, 'a2a', datetime('now'), datetime('now', '+45 minutes'), 'answered', 1)").run(WORKER);
+    vi.spyOn(Date, 'now').mockReturnValue(t + 46 * 60_000);
+    expect(whoDecides(TASK), 'the asked agent\'s long turn ending late does not bring the question back').toEqual({ kind: 'agent', agentId: MAIN });
+    expect((await call(MAIN, 'work_validate', { action: 'open_proof', task_id: TASK, item: 0 })).isError).toBe(false);
+    const r = await call(MAIN, 'work_validate', { action: 'decide', task_id: TASK, verdict: 'approve', reason: 'The report is in the shared folder' });
+    expect(r.isError, r.content).toBe(false);
+  });
+
+  it('a busy asked agent: the hold ends one bound after its first turn that ended after the question', async () => {
+    await handedIn();
+    await review(async () => { await ask(WORKER, 'Which sheet holds the totals?'); });
+    const turnEnds = doneDb().prepare("INSERT INTO turns (agent_id, turn_number, kind, started_at, ended_at, exit_reason, answered) VALUES (?, ?, 'a2a', datetime('now'), datetime('now', ?), 'answered', 1)");
+    turnEnds.run(WORKER, 1, '+60 seconds');
+    for (let n = 2; n <= 26; n += 1) turnEnds.run(WORKER, n, `+${60 + n * 10} seconds`);
+    vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 61_000 + patienceBoundMs(WORKER) + 2_000);
+    expect(await review(), 'twenty-five later turns do not stretch the hold').toContain(TASK);
+  });
 });
+
