@@ -59,7 +59,7 @@
 //   · `deploy/release.sh`.
 //
 // ── WHAT IS NOT A LEAK, AND WHY EACH EXEMPTION IS SAFE ──
-//   · THE SERVICE-AGENT ROLE NAMES (`Agent`, `PM`, `Trainer`, `Imaginer`, `Healer`, `Dreamer`) are
+//   · THE SERVICE-AGENT ROLE NAMES (`Agent`, `PM`, `Trainer`, `Healer`, `Dreamer`) are
 //     product vocabulary, and they are READ FROM `config/platform.ts`'s own defaults rather than
 //     listed here — so a renamed role cannot turn this gate into a false alarm, and a new role is
 //     covered the day it is declared.
@@ -625,7 +625,7 @@ const PATTERNS = [
      * `tools/index-notes.ts` carries a note that quotes the audit's old `row?.name === 'Dreamer'`
      * shape to record that it was removed — a clause that fires on that note tests the prose.
      */
-    re: /\b(?:agent|owner|primary|pm|trainer|healer|dreamer|imaginer|assignee|creator|counterparty|person|people|contact|user)\w*(?:\.|_|->)?(?:name|Name)\b\s*(?:===|!==|==|!=)\s*['"`]([A-Z][A-Za-z]{2,30})['"`]/g,
+    re: /\b(?:agent|owner|primary|pm|trainer|healer|dreamer|assignee|creator|counterparty|person|people|contact|user)\w*(?:\.|_|->)?(?:name|Name)\b\s*(?:===|!==|==|!=)\s*['"`]([A-Z][A-Za-z]{2,30})['"`]/g,
     why: 'logic that recognises an agent or a person by NAME breaks the day it is renamed; ask '
       + '`config/platform.ts` who somebody is instead',
     codeOnly: true,

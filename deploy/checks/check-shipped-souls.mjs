@@ -35,10 +35,10 @@
 //   3. every soul the platform SEEDS FROM is additionally named as a FLOOR, because a
 //      `templates/` directory that lost exactly those must not pass on the strength of its
 //      siblings. T59 widened that list from the two measured casualties to the full set: the
-//      Healer (0 bytes served live, against a 10,948-byte template) and the Imaginer (0 bytes,
-//      zero system rows) are now file-backed and seed from their templates exactly as the PM
-//      and Trainer do, and the Dreamer's template is read on every boot by
-//      `vault/maintenance.ts` to refresh its stored identity. All five are load-bearing;
+//      Healer (0 bytes served live, against a 10,948-byte template) is now file-backed and
+//      seeds from its template exactly as the PM and Trainer do, and the Dreamer's template is
+//      read on every boot by `vault/maintenance.ts` to refresh its stored identity. All four
+//      are load-bearing;
 //   4. presence is not enough — a shipped soul must clear a byte floor, and when the artifact
 //      was built from THIS tree (its embedded version matches the repo's) it must be
 //      BYTE-IDENTICAL to the repo template. That is the clause that refuses a truncated,
@@ -82,14 +82,14 @@ const artifactArg = argv.find((a) => !a.startsWith('-'));
 const MIN_SOUL_BYTES = 1024;
 
 // Named as a floor: EVERY soul the running platform seeds or refreshes from. W24 · W25
-// measured the first two reverting to an in-code stub; T59 measured the Healer and the
-// Imaginer serving ZERO bytes and moved both onto the same seeding door, and the Dreamer's
+// measured the first two reverting to an in-code stub; T59 measured the Healer
+// serving ZERO bytes and moved it onto the same seeding door, and the Dreamer's
 // identity row is rewritten from its template on every boot check. The rest of the list is
 // still DISCOVERED from `templates/`, so this can only ever ADD certainty, never cap it — the
 // discovery is what covers a soul added tomorrow, and this list is what refuses the specific
 // deletion of one we know a live agent depends on.
 const REQUIRED_SOULS = [
-  'PM-SOUL.md', 'TRAINER-SOUL.md', 'HEALER-SOUL.md', 'IMAGINER-SOUL.md', 'DREAMER-SOUL.md',
+  'PM-SOUL.md', 'TRAINER-SOUL.md', 'HEALER-SOUL.md', 'DREAMER-SOUL.md',
 ];
 
 // ── THE HAND-WRITTEN TOOL MANUALS — THE SAME DEFECT, MEASURED 2026-09-26 (T8) ──
@@ -112,8 +112,7 @@ const REQUIRED_SOULS = [
 // and each of the two commit messages names the other. Nothing else about the rule changes.)
 //
 // ── RETIRED 2026-09-26 (T85): `image_generate_internal.md` ──
-// It named a tool that does not exist. `imaginer/imaginer-agent.ts:63-64` records the tool being
-// unregistered ("it never worked"), there is no `name: 'image_generate_internal'` in the whole
+// It named a tool that does not exist. The tool was unregistered ("it never worked"), there is no `name: 'image_generate_internal'` in the whole
 // server source, and `tools/index-generator.ts:84-116` writes `~/.dojo/tools/<name>.md` ONLY for
 // names in `registryToolDefinitions()` — the override lookup (`:96-97`) lives inside that loop. So
 // the manual could not reach the one directory `tools/tool-doc-read.ts` reads from, and
