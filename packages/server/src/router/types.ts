@@ -40,16 +40,3 @@ export interface RouterConfig {
     isEnabled: boolean;
   }>;
 }
-
-export interface RouterLogEntry {
-  id: string;
-  agentId: string;
-  inputPreview: string | null;
-  dimensionScores: string;
-  rawScore: number;
-  tierId: string;
-  selectedModelId: string;
-  fallbackUsed: boolean;
-  latencyMs: number | null;
-  createdAt: string;
-}

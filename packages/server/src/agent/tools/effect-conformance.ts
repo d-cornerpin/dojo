@@ -64,10 +64,6 @@ export function leafFieldName(path: string): string {
   return last.replace(/\[\]$/, '');
 }
 
-export function schemaHasPath(def: Pick<ToolDefinition, 'input_schema'>, path: string): boolean {
-  return walkSchemaFields(def).some((f) => f.path === path);
-}
-
 /** Every field this definition declares as carrying credential material. */
 export function declaredSecretFields(def: Pick<ToolDefinition, 'fields'>): string[] {
   if (!def.fields) return [];

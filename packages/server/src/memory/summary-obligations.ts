@@ -101,12 +101,3 @@ function splitTrailingFinding(line: string): { rest: string; finding: string } |
   if (rest.length <= lead.length) return null;              // nothing but the finding on the line
   return { rest, finding: line.slice(at).trimEnd() };
 }
-
-export interface SummaryObligationCandidate {
-  summaryId: string;
-  agentId: string;
-  line: string;
-  finding: string;
-  /** This line already carried its finding and the pass is MOVING it; a relocation must show in the sweep. */
-  relocated?: true;
-}
