@@ -20,6 +20,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
+import path from 'node:path';
 
 const logs: Array<{ level: string; msg: string; data: Record<string, unknown> }> = [];
 const configValue: { current: string | null } = { current: null };
@@ -167,5 +168,23 @@ describe('T67 — an ENABLED writer that writes nothing is a warning, not a debu
     await new Promise((r) => setTimeout(r, 10));
     expect(mkdir).not.toHaveBeenCalled();
     expect(lossLines()).toHaveLength(0);
+  });
+});
+
+describe('a receipt file is never visible half-written', () => {
+  it('the bytes go to a temporary name and the receipt takes its final name whole', async () => {
+    const mod = await freshReceipt();
+    configValue.current = 'meta';
+    const written = vi.spyOn(fs.promises, 'writeFile');
+    mod.writeContextReceipt({
+      agentId: 'wholebot', modelId: 'm', turnNumber: 1, loopCount: 1,
+      systemPrompt: 's', messages: [{ role: 'user', content: 'hi' }], useTools: false,
+    });
+    await vi.waitFor(() => expect(written).toHaveBeenCalled());
+    const dir = path.dirname(String(written.mock.calls[0][0]));
+    expect(String(written.mock.calls[0][0]).endsWith('.json'), 'a reader lists *.json: nothing is written under that name').toBe(false);
+    await vi.waitFor(() => expect(fs.readdirSync(dir).filter((f) => f.endsWith('.json'))).toHaveLength(1));
+    const [final] = fs.readdirSync(dir).filter((f) => f.endsWith('.json'));
+    expect(() => JSON.parse(fs.readFileSync(path.join(dir, final), 'utf-8'))).not.toThrow();
   });
 });

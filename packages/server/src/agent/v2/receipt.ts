@@ -353,7 +353,8 @@ export function writeContextReceipt(input: ReceiptInput): void {
 
     void fs.promises
       .mkdir(dir, { recursive: true })
-      .then(() => fs.promises.writeFile(file, JSON.stringify(record, null, 2), 'utf-8'))
+      .then(() => fs.promises.writeFile(`${file}.tmp`, JSON.stringify(record, null, 2), 'utf-8'))
+      .then(() => fs.promises.rename(`${file}.tmp`, file))
       .then(() => {
         writesSinceSweep += 1;
         if (writesSinceSweep >= 20) {
