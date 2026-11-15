@@ -2018,6 +2018,7 @@ export async function trackerRetask(
 
   const fresh = getTask(taskId);
   if (fresh) broadcast({ type: 'tracker:task_updated', data: fresh });
+  const worker = fresh?.assignedTo ?? task.assigned_to;
 
   writeTaskLog({
     taskId,
@@ -2040,11 +2041,11 @@ export async function trackerRetask(
       `Task goal: ${task.goal ?? '(none recorded)'}\n\n` +
       `Do the work the directive describes. Don't just acknowledge; do the thing.`;
     // A directive, not a question: it wakes the agent and owes the sender no reply.
-    redriven = await redriveWithoutReply({ toAgentId: task.assigned_to, fromAgentId: pmAgentId, content: body, taskId });
+    redriven = await redriveWithoutReply({ toAgentId: worker, fromAgentId: pmAgentId, content: body, taskId });
   } catch (err) {
     redriven = false;
     logger.warn('Failed to deliver retask directive to agent', {
-      taskId, assignedTo: task.assigned_to,
+      taskId, assignedTo: worker,
       error: err instanceof Error ? err.message : String(err),
     }, pmAgentId);
   }
@@ -2052,7 +2053,7 @@ export async function trackerRetask(
   logger.info('Task retasked', { taskId, pmAgentId, targetStatus, directiveLength: directive.length }, pmAgentId);
   return (
     `[OK] Retasked "${task.title}" (${taskId}) from ${task.status} to ${targetStatus}. ` +
-    (redriven ? `Directive delivered to ${task.assigned_to}.` : `Directive NOT delivered to ${task.assigned_to}.${REDRIVE_LATER}`)
+    (redriven ? `Directive delivered to ${worker}.` : `Directive NOT delivered to ${worker}.${REDRIVE_LATER}`)
   );
 }
 

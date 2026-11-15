@@ -13,7 +13,7 @@
 
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
-import { isPMAgent, isPrimaryAgent, getOwnerName } from '../config/platform.js';
+import { isPMAgent, isPrimaryAgent, getOwnerName, getPrimaryAgentId } from '../config/platform.js';
 import { turnContext } from '../agent/turn-context.js';
 import { currentAddress } from '../agent/v2/turn-address.js';
 import { recordMove } from './move-record.js';
@@ -283,6 +283,20 @@ export function writeAssignee(workId: string, to: MoveTarget | { clear: true }):
   }
   return db.prepare('UPDATE work SET assignee_agent = NULL, assigned_to_group = ?, updated_at = ? WHERE id = ?')
     .run(to.groupId, at, workId).changes;
+}
+
+/** A terminated agent's work goes back to the agent that spawned it, else to the primary. */
+export function workerOfRecord(agentId: string): string {
+  const a = getDb().prepare('SELECT status, parent_agent FROM agents WHERE id = ?').get(agentId) as { status: string; parent_agent: string | null } | undefined;
+  if (!a || a.status !== 'terminated') return agentId;
+  return a.parent_agent ?? getPrimaryAgentId();
+}
+
+/** Work its holder `from` has ended on goes to `to`, filed as an engine move. */
+export function rehome(workId: string, from: string, to: string, door: string): void {
+  if (to !== from && writeAssignee(workId, { agentId: to }) > 0) {
+    recordMove({ taskId: workId, actor: 'engine', from, to: { agentId: to }, cause: 'assignee_gone', door });
+  }
 }
 
 export type MoveOutcome = { ok: true; from: string; to: MoveTarget; cause: MoveCause } | { ok: false; text: string };

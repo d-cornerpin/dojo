@@ -11,8 +11,7 @@ import { taskScope, STATE_TO_STATUS_SQL } from '../tracker-view.js';
 import { setTrackerStatus } from '../tracker-store.js';
 import { sendAgentMessage } from '../../agent/agent-bus.js';
 import { getPMAgentId, getPrimaryAgentId } from '../../config/platform.js';
-import { writeAssignee } from '../row-authority.js';
-import { recordMove } from '../move-record.js';
+import { workerOfRecord, rehome } from '../row-authority.js';
 import { isTerminal, noteUnsettled, ownerHoldStands, type WorkState } from '../store.js';
 import { latestHandIn, workerOf, OWNER_ID } from './record.js';
 import { settleProject } from './project-state.js';
@@ -64,21 +63,12 @@ export function onDecided(workId: string, decisionId: number): void {
     .catch((err: unknown) => logger.warn('decision: the schedule could not be stopped', { workId, error: String(err) }));
 }
 
-/** A terminated agent's work goes back to the agent that spawned it, else to the primary. */
-export function workerOfRecord(agentId: string): string {
-  const a = getDb().prepare('SELECT status, parent_agent FROM agents WHERE id = ?').get(agentId) as { status: string; parent_agent: string | null } | undefined;
-  if (!a || a.status !== 'terminated') return agentId;
-  return a.parent_agent ?? getPrimaryAgentId();
-}
-
 /** One hint to the worker of record, which works the row from here on: the owner's send-back as an engine hint in his
  *  name, an agent decider's as its own message. */
 function sendBackHint(workId: string, title: string | null, deciderId: string, reason: string): void {
   const worker = workerOf(workId);
   const to = workerOfRecord(worker);
-  if (to !== worker && writeAssignee(workId, { agentId: to }) > 0) {
-    recordMove({ taskId: workId, actor: 'engine', from: worker, to: { agentId: to }, cause: 'assignee_gone', door: 'send-back' });
-  }
+  rehome(workId, worker, to, 'send-back');
   const hint = `[Engine hint: "${title ?? workId}" [${workId}] was sent back${deciderId === OWNER_ID ? ' by the owner' : ''}${to !== worker ? ` (its worker ${worker} has ended, so it is yours now)` : ''}: ${reason}. `
     + 'Delivered work stays as it is; do only what the reason asks, then hand it in again with proof.]';
   if (deciderId !== OWNER_ID) sendAgentMessage(deciderId, to, 'status', hint, { taskId: workId, event: 'sent_back' });

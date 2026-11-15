@@ -13,11 +13,11 @@ import { turnContext } from '../agent/turn-context.js';
 import { clearReferencesToWork } from './work-refs.js';
 import { redactHandedCredentials } from '../credentials/secret-values.js';
 import { noSuchWorkDetail, type WorkPatchOutcome } from './outcome.js';
-import { transition, appendWorkEvent, type Actor, type WorkOutcome, type WorkState } from './store.js';
+import { transition, appendWorkEvent, isTerminal, type Actor, type WorkOutcome, type WorkState } from './store.js';
 import { statusToState, TRACKER_ROOT_KIND, SERVICE_ROOT_KIND, WORK_EVENT, type TrackerStatus } from './tracker-view.js';
-import { takeoverRefusal } from './row-authority.js';
+import { takeoverRefusal, rowFacts, rehome, workerOfRecord } from './row-authority.js';
 import { planJson, type Plan } from './plan-json.js';
-import { isSystemServiceAgent } from '../config/platform.js';
+import { isSystemServiceAgent, isPrimaryAgent } from '../config/platform.js';
 
 const logger = createLogger('tracker-store');
 
@@ -387,6 +387,9 @@ export function setTrackerStatus(
     note: input.note ?? null,
     actorId: input.actorId ?? undefined,
   });
+  // Reopened work its holder ended on goes to the main agent that reopened it, else to the worker of record.
+  const f = result.kind === 'applied' && isTerminal(result.value.from) && !isTerminal(to) ? rowFacts(id) : null;
+  if (f && !f.holderLive) rehome(id, f.holder, input.actorId && isPrimaryAgent(input.actorId) ? input.actorId : workerOfRecord(f.holder), 'reopen');
   return result;
 }
 
