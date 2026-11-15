@@ -1,3 +1,5 @@
+import { stripNoReplySentinel } from '@dojo/shared';
+
 const DELIVER_CUE_RE = /^\s*\(\(\s*deliver\s*:\s*[^)]*?\s*\)\)\s*/i;
 const PAUSE_MARKER_RE = /\s*\[(?:long\s+)?pause\]\s*/gi;
 /** Orb mood marker `((mood: NAME))`: drives the orb's emotion, never shown to the user.
@@ -14,9 +16,6 @@ export function parseMoodMarker(text: string): string | null {
   }
   return last;
 }
-/** Engine-control `[no-reply]` sentinel, optionally wrapped in markdown emphasis chars. */
-const NO_REPLY_MARKER_RE = /\s*[`*_]*\s*\[no-reply\]\s*[`*_]*\s*/gi;
-
 const TRAILING_PARTIAL_PAUSE_RE =
   /\s*\[(?:long(?:\s+(?:p(?:a(?:u(?:s(?:e)?)?)?)?)?)?|p(?:a(?:u(?:s(?:e)?)?)?)?)?$/i;
 const TRAILING_PARTIAL_NO_REPLY_RE =
@@ -26,7 +25,7 @@ export function stripVoiceMarkers(text: string): string {
   if (!text) return text;
   let out = text.replace(MOOD_MARKER_RE, '');
   out = out.replace(DELIVER_CUE_RE, '');
-  out = out.replace(NO_REPLY_MARKER_RE, '');
+  out = stripNoReplySentinel(out);
   out = out.replace(PAUSE_MARKER_RE, ' ');
   out = out.replace(/ {2,}/g, ' ');
   out = out.replace(/[ \t]+\n/g, '\n');

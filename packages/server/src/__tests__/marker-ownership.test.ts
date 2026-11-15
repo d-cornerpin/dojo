@@ -59,11 +59,7 @@ const MARKERS: Marker[] = [
     // model the sentinel writes it plainly and is untouched — the taxonomy classifies what the
     // engine emits, it never constrains the vocabulary the prompt teaches.
     pattern: /\\\[no-reply\\\]/,
-    allow: {
-      'dashboard/src/lib/voice-markers.ts':
-        'the client strip (stripVoiceMarkers) still carries its own copy, including the ' +
-        'streaming partial-prefix variant that has no server equivalent. SWEEP-E.',
-    },
+    allow: {},
   },
   {
     name: 'the orb mood marker regex',
