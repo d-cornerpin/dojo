@@ -5,10 +5,9 @@ import { getAgentRuntime } from '../../agent/runtime.js';
 import { liveWork, hasLiveWork, announceLiveWork } from '../../agent/live-work.js';
 // The third fact the stop door asks: a run still unwinding, when neither other fact can answer.
 import { isRunUnwinding } from '../../agent/shared-state.js';
-import { spawnAgent, terminateAgent } from '../../agent/spawner.js';
+import { terminateAgent } from '../../agent/spawner.js';
 import { stopAgent } from '../../agent/runtime.js';
 import { noteOwnerStop } from '../../migration/import-agents.js';
-import { getAgentMessages } from '../../agent/agent-bus.js';
 import { insertMessageIfAbsent } from '../../memory/message-store.js';
 import { refuseStaleWholeDocument } from './whole-document-guard.js';
 import { readAgentPromptSurface, writeAgentPromptSurface } from '../../prompt/agent-prompt-surface.js';
@@ -16,8 +15,8 @@ import { createLogger } from '../../logger.js';
 import { broadcast } from '../ws.js';
 import { isPrimaryAgent, getPrimaryAgentId, getHealerAgentId, getDreamerAgentId } from '../../config/platform.js';
 import { sanitizeMessagesOnModelChange } from '../../agent/model-switch.js';
-import type { AccessGrants, AgentDetail, Model, Message, AgentMessage } from '@dojo/shared';
-import { cloneGrants, deriveOrigin, legacyOriginInputs, NEW_SESSION_DIVIDER} from '@dojo/shared';
+import type { AccessGrants, AgentDetail, Model } from '@dojo/shared';
+import { cloneGrants, NEW_SESSION_DIVIDER } from '@dojo/shared';
 import { noteRouteFailure } from './route-failure.js';
 import { resolveChildScope } from '../../agent/scope.js';
 import { caseVariantClash, caseVariantClashMessage } from '../../agent/tool-helpers.js';
@@ -666,128 +665,6 @@ agentsRouter.post('/:id/purge', (c) => {
 
   logger.info('Agent permanently deleted', { agentId: id, ...swept });
   return c.json({ ok: true, data: { agentId: id, deleted: true } });
-});
-
-// POST /:id/message: send direct message to agent
-agentsRouter.post('/:id/message', async (c) => {
-  const id = c.req.param('id');
-  const body = await c.req.json().catch(() => null);
-
-  if (!body || typeof body.content !== 'string' || body.content.trim().length === 0) {
-    return c.json({ ok: false, error: 'content (string) is required' }, 400);
-  }
-
-  const db = getDb();
-  const agent = db.prepare('SELECT id, status FROM agents WHERE id = ?').get(id) as { id: string; status: string } | undefined;
-  if (!agent) {
-    return c.json({ ok: false, error: 'Agent not found' }, 404);
-  }
-
-  if (agent.status === 'terminated') {
-    return c.json({ ok: false, error: 'Agent is terminated' }, 400);
-  }
-
-  if (agent.status === 'working') {
-    return c.json({ ok: false, error: 'Agent is currently busy' }, 409);
-  }
-
-  const { content } = body;
-  const messageId = uuidv4();
-
-  // Persist as user message
-  insertMessageIfAbsent({ id: messageId, agentId: id, role: 'user', content });
-  // Broadcast the user row so an operator watching the chat sees the message the agent starts on
-  // (the dashboard's own send route in chat.ts does the same).
-  broadcast({
-    type: 'chat:message',
-    agentId: id,
-    message: {
-      id: messageId, agentId: id, role: 'user' as const, content,
-      tokenCount: null, modelId: null, cost: null, latencyMs: null,
-      createdAt: new Date().toISOString(),
-    },
-  });
-
-  // Trigger the agent runtime
-  const runtime = getAgentRuntime();
-  runtime.handleMessage(id, content).catch(err => {
-    logger.error('Agent message handling failed', {
-      agentId: id,
-      error: err instanceof Error ? err.message : String(err),
-    });
-  });
-
-  return c.json({ ok: true, data: { messageId, agentId: id } });
-});
-
-// GET /:id/messages: conversation history for this agent
-agentsRouter.get('/:id/messages', (c) => {
-  const id = c.req.param('id');
-  const db = getDb();
-
-  const agent = db.prepare('SELECT id FROM agents WHERE id = ?').get(id);
-  if (!agent) {
-    return c.json({ ok: false, error: 'Agent not found' }, 404);
-  }
-
-  const limit = parseInt(c.req.query('limit') ?? '100', 10);
-  const offset = parseInt(c.req.query('offset') ?? '0', 10);
-
-  // Two predicates: `lane = 'owner'` is whose traffic this is (human-only, since peer A2A and engine rows
-  // share the table); `retired_at IS NULL` only suppresses display of legacy pre-cutover inter-agent rows.
-  const rows = db.prepare(`
-    SELECT *, datetime(created_at/1000,'unixepoch') AS created_at FROM messages WHERE agent_id = ? AND retired_at IS NULL AND lane = 'owner'
-    ORDER BY created_at ASC
-    LIMIT ? OFFSET ?
-  `).all(id, limit, offset) as Array<Record<string, unknown>>;
-
-  const messages: Message[] = rows.map(row => ({
-    id: row.id as string,
-    agentId: row.agent_id as string,
-    role: row.role as Message['role'],
-    content: row.content as string,
-    tokenCount: row.token_count as number | null,
-    modelId: row.model_id as string | null,
-    cost: row.cost as number | null,
-    latencyMs: row.latency_ms as number | null,
-    createdAt: row.created_at as string,
-    // Carried so the dashboard can hide A2A-turn output and badge voice messages on reload, projected
-    // from the stamped lane and channel.
-    source: row.lane === 'a2a' ? 'a2a' : row.channel === 'voice' ? 'voice' : null,
-    // Canonical attribution for the dashboard's origin-based classifier. Same
-    // projection the memory store applies; structured columns win, legacy rows
-    // resolve via the marker shim inside deriveOrigin.
-    origin: deriveOrigin({
-      role: row.role as Message['role'],
-      content: (row.content as string | null) ?? null,
-      ...legacyOriginInputs(row.lane as string | null, row.channel as string | null),
-      sourceAgentId: (row.source_agent_id as string | null) ?? null,
-      a2aThreadId: (row.a2a_thread_id as string | null) ?? null,
-      a2aIntent: (row.a2a_intent as string | null) ?? null,
-      a2aRequiresResponse: (row.a2a_requires_response as number | null) ?? null,
-      inboundMeta: (row.inbound_meta as string | null) ?? null,
-      originIntent: (row.origin_intent as string | null) ?? null,
-    }),
-  }));
-
-  return c.json({ ok: true, data: messages });
-});
-
-// GET /:id/agent-messages: inter-agent messages
-agentsRouter.get('/:id/agent-messages', (c) => {
-  const id = c.req.param('id');
-  const db = getDb();
-
-  const agent = db.prepare('SELECT id FROM agents WHERE id = ?').get(id);
-  if (!agent) {
-    return c.json({ ok: false, error: 'Agent not found' }, 404);
-  }
-
-  const direction = (c.req.query('direction') ?? 'both') as 'sent' | 'received' | 'both';
-  const limit = parseInt(c.req.query('limit') ?? '50', 10);
-
-  const messages: AgentMessage[] = getAgentMessages(id, { direction, limit });
-  return c.json({ ok: true, data: messages });
 });
 
 function rowToAgentDetail(row: Record<string, unknown>): AgentDetail {

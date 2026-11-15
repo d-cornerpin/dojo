@@ -218,18 +218,6 @@ export function broadcast(event: WsEvent): void {
 
 // ── Status ──
 
-export function getWSStatus(): { connections: number; clients: Array<{ id: number; userId: string; connectedAt: number; missedPings: number }> } {
-  return {
-    connections: clients.size,
-    clients: Array.from(clients.values()).map(c => ({
-      id: c.id,
-      userId: c.userId,
-      connectedAt: c.connectedAt,
-      missedPings: c.missedPings,
-    })),
-  };
-}
-
 // ── Connection Management ──
 
 export function verifyAndTrackClient(ws: WSContext, url: string): boolean {

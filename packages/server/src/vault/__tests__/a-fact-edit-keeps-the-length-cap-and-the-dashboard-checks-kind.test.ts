@@ -1,4 +1,4 @@
-// Editing a saved fact keeps the length cap new facts get, and the dashboard checks kind and confidence.
+// Editing a saved fact keeps the length cap new facts get, and the dashboard checks confidence.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
@@ -45,7 +45,6 @@ async function seed(content = 'the blue binder holds the spare key'): Promise<st
   const e = await createEntry({ agentId: 'manual', agentName: 'Dashboard', type: 'fact', content, tags: [], isPinned: false, isPermanent: false, source: 'manual' });
   return e.id;
 }
-const count = (): number => (db().prepare('SELECT COUNT(*) AS n FROM vault_entries').get() as { n: number }).n;
 
 beforeEach(() => {
   mockDb.current = new Database(':memory:');
@@ -83,13 +82,6 @@ describe('a fact edit keeps the length cap', () => {
     expect(getEntry(id)!.content).toBe(before);
   });
 
-  it('the dashboard create door refuses a long memory plainly and saves nothing', async () => {
-    const res = await call('POST', '/entries', { content: 'z'.repeat(10_000), type: 'fact' });
-    expect(res.status).toBe(400);
-    expect(((await res.json()) as { error: string }).error).toMatch(/too long/i);
-    expect(count()).toBe(0);
-  });
-
   it('text under the cap is stored unchanged', async () => {
     const id = await seed();
     await call('PUT', `/entries/${id}`, { content: 'a short new fact' });
@@ -97,18 +89,7 @@ describe('a fact edit keeps the length cap', () => {
   });
 });
 
-describe('the dashboard checks kind and confidence', () => {
-  it('refuses an unknown kind and saves nothing', async () => {
-    const res = await call('POST', '/entries', { content: 'a fact', type: 'banana' });
-    expect(res.status).toBe(400);
-    expect(count()).toBe(0);
-  });
-
-  it.each(['fact', 'preference', 'decision', 'procedure', 'relationship', 'event', 'note'])('accepts kind %s', async (type) => {
-    const res = await call('POST', '/entries', { content: `a ${type} that is its own sentence`, type });
-    expect(res.status).toBe(200);
-  });
-
+describe('the dashboard checks confidence', () => {
   it.each([7, -1, 'high'])('refuses confidence %s and leaves the row alone', async (confidence) => {
     const id = await seed();
     const before = getEntry(id)!.confidence;

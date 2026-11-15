@@ -91,6 +91,7 @@ const send = (method: string, p: string, body?: unknown): Promise<Response> =>
 const post = (p: string, body?: unknown): Promise<Response> => send('POST', p, body);
 const patch = (p: string, body?: unknown): Promise<Response> => send('PATCH', p, body);
 const get = (p: string): Promise<Response> => send('GET', p);
+const provider = async (id: string): Promise<unknown> => ((await data(await get('/providers'))) as unknown as Array<{ id: string }>).find((p) => p.id === id);
 
 const json = async (r: Response): Promise<Record<string, unknown>> =>
   await r.json() as Record<string, unknown>;
@@ -129,7 +130,7 @@ describe('T64b — the manual form creates a provider carrying its own patience'
   it('CONTROL: a create that declares neither leaves both NULL', async () => {
     await post('/providers', MANUAL_BODY);
     expect(row()).toMatchObject({ first_chunk_timeout_ms: null, stream_idle_timeout_ms: null });
-    expect(await data(await get('/providers/local-ds4')))
+    expect(await provider('local-ds4'))
       .toMatchObject({ firstChunkTimeoutMs: null, streamIdleTimeoutMs: null });
   });
 
@@ -234,7 +235,7 @@ describe('T64b — CONTROL: providers that predate this are byte-identical', () 
       INSERT INTO providers (id, name, type, base_url, auth_type, is_validated, created_at, updated_at)
       VALUES ('anthropic', 'Anthropic', 'anthropic', NULL, 'api_key', 1, datetime('now'), datetime('now'))
     `).run();
-    expect(await data(await get('/providers/anthropic')))
+    expect(await provider('anthropic'))
       .toMatchObject({ firstChunkTimeoutMs: null, streamIdleTimeoutMs: null });
     expect(row('anthropic')).toMatchObject({ first_chunk_timeout_ms: null, stream_idle_timeout_ms: null });
   });

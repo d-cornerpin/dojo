@@ -31,7 +31,6 @@ vi.mock('../../google/auth.js', () => ({
   getGoogleWorkspaceConfig: vi.fn(),
   testGoogleAuth: vi.fn(),
   setGoogleConnected: vi.fn(),
-  setGoogleEnabled: vi.fn(),
   setEnabledServices: vi.fn(),
   buildAuthUrl: vi.fn(),
   exchangeCodeForTokens: (...args: unknown[]) => exchange(...args),

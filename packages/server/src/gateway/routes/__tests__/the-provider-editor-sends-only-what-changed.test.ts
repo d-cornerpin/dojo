@@ -198,10 +198,11 @@ describe('the measured reading is READ-ONLY — the platform observes, the form 
     db().prepare(
       "UPDATE providers SET measured_prefill_tokens_per_sec = 181.07, measured_prefill_at = datetime('now') WHERE id = 'local'",
     ).run();
-    const res = await configRouter.request('/providers/local');
+    const res = await configRouter.request('/providers');
     expect(res.status).toBe(200);
-    const body = await res.json() as { data: { measuredPrefillTokensPerSec: number; measuredPrefillAt: string } };
-    expect(body.data.measuredPrefillTokensPerSec).toBeCloseTo(181.07, 2);
-    expect(body.data.measuredPrefillAt).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+    const body = await res.json() as { data: Array<{ id: string; measuredPrefillTokensPerSec: number; measuredPrefillAt: string }> };
+    const local = body.data.find((p) => p.id === 'local')!;
+    expect(local.measuredPrefillTokensPerSec).toBeCloseTo(181.07, 2);
+    expect(local.measuredPrefillAt).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
   });
 });

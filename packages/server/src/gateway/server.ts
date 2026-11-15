@@ -24,7 +24,6 @@ import { createVncBridge } from '../screen-share/bridge.js';
 import { costsRouter } from './routes/costs.js';
 import { servicesRouter } from './routes/services.js';
 import { techniquesRouter } from './routes/techniques.js';
-import { controlRouter } from './routes/control.js';
 import { setupDepsRouter } from './routes/setup-deps.js';
 import { groupsRouter } from './routes/groups.js';
 import { taskRunsRouter } from './routes/task-runs.js';
@@ -257,7 +256,7 @@ export function createServer() {
 
   // Mount route groups
   app.route('/api/auth', authRouter);
-  app.route('/api/setup', setupRouter);     // /api/setup/status, /api/setup/password, /api/setup/complete
+  app.route('/api/setup', setupRouter);     // /api/setup/status, /api/setup/complete
   app.route('/api/setup', setupDepsRouter); // /api/setup/deps/*, /api/setup/ollama/*, /api/setup/permissions/*
   app.route('/api/config', configRouter); // /api/config/providers/*, /api/config/models/*, /api/config/identity/*
   app.route('/api/chat', chatRouter);     // /api/chat/:agentId/messages
@@ -270,9 +269,8 @@ export function createServer() {
   app.route('/api/router', routerRouter);  // /api/router/config, /api/router/test, etc.
   app.route('/api/screen-share', screenShareRouter); // /api/screen-share/status, /enable, /disable
   app.route('/api/canvas', canvasRouter); // GET /api/canvas (restore on mount), POST /api/canvas/status
-  app.route('/api/costs', costsRouter);    // /api/costs/summary, /api/costs/records, etc.
+  app.route('/api/costs', costsRouter);    // /api/costs/summary, /api/costs/budget
   app.route('/api/system', servicesRouter); // /api/system/watchdog, /api/system/resources, etc.
-  app.route('/api/control', controlRouter); // /api/control/mouse-click, /api/control/screen-read, etc.
   app.route('/api/groups', groupsRouter);   // /api/groups, /api/groups/:id
   app.route('/api/techniques', techniquesRouter); // /api/techniques, /api/techniques/:id
   app.route('/api/vault', vaultRouter);     // /api/vault/entries, /api/vault/dream, etc.

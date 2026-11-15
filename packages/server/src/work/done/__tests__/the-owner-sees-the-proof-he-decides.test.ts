@@ -1,4 +1,4 @@
-// The owner sees what he is asked to decide: a handed-in task's detail carries its outcome, note and each proof
+// The owner sees what he is asked to decide: a handed-in task on the board carries its outcome, note and each proof
 // item as one line, and its trail reads the hand-in. A task with no hand-in waiting carries none.
 import { describe, it, expect, vi } from 'vitest';
 
@@ -10,7 +10,7 @@ import type { Task } from '@dojo/shared';
 import { trackerRouter } from '../../../gateway/routes/tracker.js';
 import { freshBoard, handedIn, TASK } from './helpers/decision-world.js';
 
-const detail = async (): Promise<Task> => ((await (await trackerRouter.request(`/tasks/${TASK}`)).json()) as { data: Task }).data;
+const detail = async (): Promise<Task> => ((await (await trackerRouter.request('/tasks')).json()) as { data: Task[] }).data.find((t) => t.id === TASK)!;
 
 describe('the owner sees the proof he decides', () => {
   it('a handed-in task shows its outcome, note and each proof line; before the hand-in it shows none', async () => {

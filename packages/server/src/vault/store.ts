@@ -970,32 +970,6 @@ export function getConversation(id: string): VaultConversation | null {
   return row ? rowToConversation(row) : null;
 }
 
-export function listConversations(options?: {
-  agentId?: string;
-  processed?: boolean;
-  limit?: number;
-}): VaultConversation[] {
-  const db = getDb();
-  const conditions: string[] = [];
-  const params: unknown[] = [];
-
-  if (options?.agentId) {
-    conditions.push('agent_id = ?');
-    params.push(options.agentId);
-  }
-  if (options?.processed !== undefined) {
-    conditions.push('is_processed = ?');
-    params.push(options.processed ? 1 : 0);
-  }
-
-  const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-  const limit = options?.limit ?? 50;
-  params.push(limit);
-
-  const rows = db.prepare(`SELECT * FROM vault_conversations ${where} ORDER BY created_at DESC LIMIT ?`).all(...params) as VaultConversationRow[];
-  return rows.map(rowToConversation);
-}
-
 
 export function createDreamReport(params: {
   archivesProcessed: number;

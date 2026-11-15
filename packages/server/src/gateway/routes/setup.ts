@@ -1,14 +1,11 @@
 import { Hono } from 'hono';
-import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import { getDb } from '../../db/connection.js';
 import {
   getDashboardPasswordHash,
-  setDashboardPassword,
   getJwtSecret,
 } from '../../config/loader.js';
 import { isPastFirstRun, markFirstRunComplete } from '../../config/setup-state.js';
-import { LoginSchema } from '../../config/schema.js';
 import { createLogger } from '../../logger.js';
 import { getPrimaryAgentId } from '../../config/platform.js';
 import type { SetupStatus } from '@dojo/shared';
@@ -16,15 +13,13 @@ import type { AppEnv } from '../server.js';
 
 const logger = createLogger('setup');
 
-const SALT_ROUNDS = 12;
 const JWT_EXPIRY = '24h';
 
 const setupRouter = new Hono<AppEnv>();
 
 // Reachable without a token during first run only (a fresh box has no credential); isPastFirstRun() is the
-// one authority the auth middleware also consults. /password and /complete mint a JWT or overwrite the
-// password, so they also refuse on their own account. Read-only /status is always public (the login screen
-// reads it pre-token).
+// one authority the auth middleware also consults. /complete mints a JWT, so it also refuses on its own account.
+// Read-only /status is always public (the login screen reads it pre-token).
 
 setupRouter.get('/status', (c) => {
   const db = getDb();
@@ -53,27 +48,6 @@ setupRouter.get('/status', (c) => {
   };
 
   return c.json({ ok: true, data: status });
-});
-
-// POST /password: set password during setup (first-run only)
-setupRouter.post('/password', async (c) => {
-  if (isPastFirstRun()) {
-    // Past first run, a password change goes through the authenticated change-password flow, not this public
-    // route.
-    return c.json({ ok: false, error: 'Setup is already complete' }, 403);
-  }
-  const body = await c.req.json().catch(() => null);
-  const parsed = LoginSchema.safeParse(body);
-  if (!parsed.success) {
-    return c.json({ ok: false, error: 'Password is required' }, 400);
-  }
-
-  const { password } = parsed.data;
-  const hash = await bcrypt.hash(password, SALT_ROUNDS);
-  setDashboardPassword(hash);
-  logger.info('Dashboard password set via setup');
-
-  return c.json({ ok: true, data: { message: 'Password set' } });
 });
 
 // POST /complete: finalize setup, return JWT (first-run only)

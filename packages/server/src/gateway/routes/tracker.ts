@@ -1,11 +1,10 @@
 import { Hono } from 'hono';
-import { createProject, getProject, listProjects, createTask, getTask, listTasksPage, updateTask, closeProjectAndOpenTasks, resolveTaskId, formatResolveError, setTaskStatusResult, broadcastTaskSettled } from '../../tracker/schema.js';
+import { createProject, listProjects, createTask, getTask, listTasksPage, updateTask, closeProjectAndOpenTasks, resolveTaskId, formatResolveError, setTaskStatusResult, broadcastTaskSettled } from '../../tracker/schema.js';
 import { getDb } from '../../db/connection.js';
 import { taskScope, projectScope, type TrackerStatus } from '../../work/tracker-view.js';
 // The schedule's fire time has one writing module.
 import { setNextRun } from '../../work/next-run.js';
 import { armScheduleOnOwnerSave } from '../../tracker/finished-task-schedule.js';
-import { VERSION_GAP_REPORT_KEY } from '../../tracker/version-gap-reconcile.js';
 import { workSettled, isStateConflict, noteUnsettled } from '../../work/store.js';
 import { deleteTrackerRow } from '../../work/tracker-store.js';
 import { decide, type Verdict } from '../../work/done/decide.js';
@@ -70,18 +69,6 @@ trackerRouter.get('/projects', (c) => {
   const hidden = hiddenAgentIdSet();
   const projects = all.filter(p => !hidden.has(p.createdBy));
   return c.json({ ok: true, data: projects });
-});
-
-// GET /projects/:id: project detail with tasks
-trackerRouter.get('/projects/:id', (c) => {
-  const id = c.req.param('id');
-  const project = getProject(id);
-
-  if (!project) {
-    return c.json({ ok: false, error: 'Project not found' }, 404);
-  }
-
-  return c.json({ ok: true, data: project });
 });
 
 // POST /projects: create project
@@ -157,18 +144,6 @@ trackerRouter.get('/tasks', (c) => {
     ...(includeSystem ? {} : { hideAgentIds: hiddenAgentIdSet() }),
   });
   return c.json({ ok: true, data: page.tasks, closedHasOlder: page.closedHasOlder });
-});
-
-// GET /tasks/:id: task detail
-trackerRouter.get('/tasks/:id', (c) => {
-  const id = c.req.param('id');
-  const task = getTask(id);
-
-  if (!task) {
-    return c.json({ ok: false, error: 'Task not found' }, 404);
-  }
-
-  return c.json({ ok: true, data: task });
 });
 
 trackerRouter.post('/tasks/:id/observation', async (c) => {
@@ -625,16 +600,3 @@ trackerRouter.delete('/tasks/:id', (c) => {
 });
 
 export { trackerRouter };
-
-// The version-gap reconcile report: the detail behind the one plain line shown on first boot. It reads the
-// durable `config` record rather than re-running the scan, so the report is the same every time it is
-// opened.
-trackerRouter.get('/reconcile-report', (c) => {
-  try {
-    const row = getDb().prepare('SELECT value FROM config WHERE key = ?')
-      .get(VERSION_GAP_REPORT_KEY) as { value: string } | undefined;
-    return c.json({ ok: true, data: { report: row ? JSON.parse(row.value) : null } });
-  } catch (err) {
-    return routeFailure(c, logger, err, { status: 500 });
-  }
-});

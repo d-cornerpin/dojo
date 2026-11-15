@@ -254,10 +254,6 @@ export function setEmailSendingEnabled(enabled: boolean, slot: AccountSlot = 'ag
 }
 
 
-export function setGoogleEnabled(enabled: boolean, slot: AccountSlot = 'agent'): void {
-  updateGoogleAccount(ensureSlotAccount(slot).id, { enabled });
-}
-
 export function setGoogleConnected(connected: boolean, email?: string, slot: AccountSlot = 'agent'): void {
   const patch: Partial<Omit<GoogleAccount, 'id' | 'kind' | 'position'>> = { connected };
   if (email) patch.email = email;

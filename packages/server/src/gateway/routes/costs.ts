@@ -4,7 +4,7 @@
 
 import { Hono } from 'hono';
 import { createLogger } from '../../logger.js';
-import { getCostSummary, getCostRecords, getCacheStats } from '../../costs/tracker.js';
+import { getCostSummary } from '../../costs/tracker.js';
 import { getBudgets, setGlobalBudget, setAgentBudget } from '../../costs/budget.js';
 import { releaseClearedBudgetStops } from '../../agent/v2/honest-stop-lock.js';
 
@@ -26,37 +26,6 @@ costsRouter.get('/summary', (c) => {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error('Failed to get cost summary', { error: msg });
-    return c.json({ ok: false, error: msg }, 500);
-  }
-});
-
-// GET /records, paginated cost records
-costsRouter.get('/records', (c) => {
-  const agentId = c.req.query('agentId') ?? undefined;
-  const modelId = c.req.query('modelId') ?? undefined;
-  const limit = parseInt(c.req.query('limit') ?? '50', 10);
-  const offset = parseInt(c.req.query('offset') ?? '0', 10);
-
-  try {
-    const result = getCostRecords({ agentId, modelId, limit, offset });
-    return c.json({ ok: true, data: result });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    logger.error('Failed to get cost records', { error: msg });
-    return c.json({ ok: false, error: msg }, 500);
-  }
-});
-
-// GET /cache, per-provider prompt-cache hit stats over the last N calls (C28 Part 2)
-costsRouter.get('/cache', (c) => {
-  const limit = parseInt(c.req.query('limit') ?? '200', 10);
-
-  try {
-    const stats = getCacheStats(Number.isFinite(limit) ? limit : 200);
-    return c.json({ ok: true, data: stats });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    logger.error('Failed to get cache stats', { error: msg });
     return c.json({ ok: false, error: msg }, 500);
   }
 });

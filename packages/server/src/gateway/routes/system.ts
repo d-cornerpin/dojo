@@ -1,15 +1,12 @@
 import { Hono } from 'hono';
 import os from 'node:os';
-import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../../db/connection.js';
 import { readLogEntries } from '../../logger.js';
-import { insertMessageIfAbsent } from '../../memory/message-store.js';
 import { broadcast } from '../ws.js';
 import { getPrimaryAgentId } from '../../config/platform.js';
 import { assertPublicHttpTarget } from '../../agent/net-guard.js';
 import { toolDocsStatus } from '../../tools/doc-freshness.js';
 import type { HealthData, LogEntry } from '@dojo/shared';
-import { NEW_SESSION_DIVIDER } from '@dojo/shared';
 import { noteRouteFailure, routeFailure } from './route-failure.js';
 import { createLogger } from '../../logger.js';
 
@@ -93,21 +90,6 @@ systemRouter.get('/system/watchers', async (c) => {
   }
 });
 
-// GET /system/time: current server time and timezone
-systemRouter.get('/system/time', (c) => {
-  const now = new Date();
-  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-  const offset = -now.getTimezoneOffset(); // minutes from UTC
-  return c.json({
-    ok: true,
-    data: {
-      utc: now.toISOString(),
-      timezone: tz,
-      offset,
-    },
-  });
-});
-
 // og-preview fetches a URL server-side for every link in rendered (possibly untrusted) messages, so it must
 // refuse private targets (SSRF). agent/net-guard.ts is the one owner of that judgement; each redirect hop is
 // re-checked.
@@ -177,76 +159,6 @@ systemRouter.get('/og-preview', async (c) => {
     noteRouteFailure(c, logger, err);
     return c.json({ ok: true, data: { url, title: null, description: null, image: null } });
   }
-});
-
-// POST /system/reset-idle-sessions: bulk reset of every idle agent (working, paused and terminated are
-// skipped), returning a count breakdown.
-systemRouter.post('/system/reset-idle-sessions', async (c) => {
-  const db = getDb();
-  const idle = db.prepare("SELECT id, name FROM agents WHERE status = 'idle'").all() as Array<{ id: string; name: string }>;
-  const total = (db.prepare("SELECT COUNT(*) as c FROM agents WHERE status NOT IN ('terminated')").get() as { c: number }).c;
-
-  let reset = 0;
-  const errors: Array<{ agentId: string; error: string }> = [];
-
-  // Same archive and boundary logic as the reset_session tool (agent/tools/cat/session.ts), inlined here.
-  const { archiveAgentConversation } = await import('../../vault/archive.js');
-
-  for (const agent of idle) {
-    try {
-      // force=true: a session-boundary reset always archives the pre-reset tail, even if an earlier unprocessed
-      // archive exists.
-      try { archiveAgentConversation(agent.id, true); } catch { /* archive is best-effort */ }
-      const now = new Date();
-      const boundary = now.toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
-      db.prepare(
-        // Clear the session-scoped scratchpad, as agents.ts and reset_session do, so all reset paths behave alike.
-        "UPDATE agents SET session_started_at = ?, updated_at = ?, config = json_remove(COALESCE(config, '{}'), '$.scratchpad') WHERE id = ?",
-      ).run(boundary, boundary, agent.id);
-
-      // Carry a fired-but-undelivered reminder/scheduler event across the reset
-      // boundary so it survives (engine-event queries gate created_at >=
-      // session_started_at). Unclaimed deliverable engine rows only.
-      try {
-        const { rehomeUnclaimedEngineEvents } = await import('../../agent/v2/counterparty.js');
-        rehomeUnclaimedEngineEvents(agent.id, boundary);
-      } catch { /* best-effort carry-over, never block the reset */ }
-
-      // Forget the loaded tool docs and the turn-continuity scratch, as every other session reset does.
-      await (await import('../../agent/session-forget.js')).forgetSessionScratch(agent.id);
-
-      // The row's created_at is stamped at insert, at or after `boundary`, so the divider lands inside the new
-      // session for every `created_at >= session_started_at` query.
-      const markerId = uuidv4();
-      insertMessageIfAbsent({ id: markerId, agentId: agent.id, role: 'system', content: NEW_SESSION_DIVIDER });
-      try {
-        broadcast({
-          type: 'chat:message',
-          agentId: agent.id,
-          message: {
-            id: markerId,
-            agentId: agent.id,
-            role: 'system',
-            content: NEW_SESSION_DIVIDER,
-            tokenCount: null,
-            modelId: null,
-            cost: null,
-            latencyMs: null,
-            createdAt: boundary,
-          },
-        });
-      } catch { /* best effort */ }
-      reset++;
-    } catch (err) {
-      errors.push({ agentId: agent.id, error: err instanceof Error ? err.message : String(err) });
-    }
-  }
-
-  const busy = total - reset - errors.length;
-  return c.json({
-    ok: true,
-    data: { reset, busy, errors: errors.length, total, errorDetails: errors },
-  });
 });
 
 // POST /system/debug-toast: fire a chat:error broadcast to exercise the dashboard's three-tier toasts.

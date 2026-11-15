@@ -15,7 +15,7 @@ import {
   deleteTechnique,
   recordTechniqueUsage,
 } from '../../techniques/store.js';
-import { getVersions, getVersion, restoreVersion, getUsage } from '../../techniques/versioning.js';
+import { getVersions, getUsage } from '../../techniques/versioning.js';
 import { clearTrainerSession } from '../../techniques/trainer-agent.js';
 import { exportTechnique } from '../../techniques/share-export.js';
 import { importTechnique } from '../../techniques/share-import.js';
@@ -137,38 +137,11 @@ techniquesRouter.get('/:id/versions', (c) => {
   return c.json({ ok: true, data: versions });
 });
 
-// GET /:id/versions/:versionId: get specific version
-techniquesRouter.get('/:id/versions/:versionId', (c) => {
-  const versionId = c.req.param('versionId');
-  const version = getVersion(versionId);
-  if (!version) return c.json({ ok: false, error: 'Version not found' }, 404);
-  return c.json({ ok: true, data: version });
-});
-
-// POST /:id/versions/:versionId/restore: restore a version
-techniquesRouter.post('/:id/versions/:versionId/restore', (c) => {
-  const id = c.req.param('id');
-  const versionId = c.req.param('versionId');
-  const restored = restoreVersion(id, versionId);
-  if (!restored) return c.json({ ok: false, error: 'Failed to restore version' }, 400);
-  return c.json({ ok: true, data: { restored: true } });
-});
-
 // GET /:id/usage: usage log
 techniquesRouter.get('/:id/usage', (c) => {
   const id = c.req.param('id');
   const usage = getUsage(id);
   return c.json({ ok: true, data: usage });
-});
-
-// GET /:id/files: file tree
-techniquesRouter.get('/:id/files', (c) => {
-  const id = c.req.param('id');
-  const technique = getTechnique(id);
-  if (!technique) return c.json({ ok: false, error: 'Technique not found' }, 404);
-
-  const detail = getTechniqueDetail(id);
-  return c.json({ ok: true, data: detail?.files ?? [] });
 });
 
 // GET /:id/files/*: read a file
@@ -201,21 +174,6 @@ techniquesRouter.put('/:id/files/*', async (c) => {
   fs.mkdirSync(path.dirname(fullPath), { recursive: true });
   fs.writeFileSync(fullPath, body.content, 'utf-8');
 
-  return c.json({ ok: true, data: { path: filePath } });
-});
-
-// DELETE /:id/files/*: delete a file
-techniquesRouter.delete('/:id/files/*', (c) => {
-  const id = c.req.param('id');
-  const technique = getTechnique(id);
-  if (!technique) return c.json({ ok: false, error: 'Technique not found' }, 404);
-
-  const filePath = c.req.path.replace(`/api/techniques/${id}/files/`, '');
-  const fullPath = path.join(technique.directoryPath, filePath);
-
-  if (!fs.existsSync(fullPath)) return c.json({ ok: false, error: 'File not found' }, 404);
-
-  fs.unlinkSync(fullPath);
   return c.json({ ok: true, data: { path: filePath } });
 });
 

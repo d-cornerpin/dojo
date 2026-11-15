@@ -14,7 +14,6 @@ import {
   exchangeCodeForTokens,
   getFlowForState,
   clearOAuthFlow,
-  testMicrosoftAuth,
   disconnectMicrosoft,
   disconnectMicrosoftAccount,
   setEnabledMsServices,
@@ -193,13 +192,6 @@ microsoftRouter.post('/disconnect', (c) => {
   const slot = parseSlot(c.req.query('slot'));
   disconnectMicrosoft(slot);
   return c.json({ ok: true, data: { slot } });
-});
-
-// POST /api/microsoft/test?slot=agent|user
-microsoftRouter.post('/test', async (c) => {
-  const slot = parseSlot(c.req.query('slot'));
-  const auth = await testMicrosoftAuth(slot);
-  return c.json({ ok: true, data: { working: auth.authenticated, email: auth.email, slot } });
 });
 
 // PUT /api/microsoft/services?slot=agent|user  (or ?accountId=)

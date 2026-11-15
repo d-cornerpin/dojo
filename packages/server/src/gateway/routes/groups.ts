@@ -30,14 +30,6 @@ groupsRouter.get('/', (c) => {
   return c.json({ ok: true, data: getGroups() });
 });
 
-// GET /:id (group detail with members)
-groupsRouter.get('/:id', (c) => {
-  const id = c.req.param('id');
-  const group = getGroupDetail(id);
-  if (!group) return c.json({ ok: false, error: 'Group not found' }, 404);
-  return c.json({ ok: true, data: group });
-});
-
 // PUT /:id (update group)
 groupsRouter.put('/:id', async (c) => {
   const id = c.req.param('id');

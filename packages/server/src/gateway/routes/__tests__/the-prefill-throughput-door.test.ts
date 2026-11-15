@@ -81,6 +81,7 @@ const send = (method: string, p: string, body?: unknown): Promise<Response> =>
 const post = (p: string, body?: unknown): Promise<Response> => send('POST', p, body);
 const patch = (p: string, body?: unknown): Promise<Response> => send('PATCH', p, body);
 const get = (p: string): Promise<Response> => send('GET', p);
+const provider = async (id: string): Promise<unknown> => ((await data(await get('/providers'))) as unknown as Array<{ id: string }>).find((p) => p.id === id);
 
 const json = async (r: Response): Promise<Record<string, unknown>> =>
   await r.json() as Record<string, unknown>;
@@ -111,7 +112,7 @@ describe('T81b — the manual form creates a provider carrying its own prefill t
   it('CONTROL: a create that declares nothing leaves it NULL', async () => {
     await post('/providers', MANUAL_BODY);
     expect(row()).toMatchObject({ prefill_tokens_per_sec: null });
-    expect(await data(await get('/providers/local-ds4'))).toMatchObject({ prefillTokensPerSec: null });
+    expect(await provider('local-ds4')).toMatchObject({ prefillTokensPerSec: null });
   });
 
   it('refuses zero — there is no uncapped sentinel here', async () => {
@@ -228,7 +229,7 @@ describe('T81b — CONTROL: providers that predate this are byte-identical', () 
       INSERT INTO providers (id, name, type, base_url, auth_type, is_validated, created_at, updated_at)
       VALUES ('anthropic', 'Anthropic', 'anthropic', NULL, 'api_key', 1, datetime('now'), datetime('now'))
     `).run();
-    expect(await data(await get('/providers/anthropic'))).toMatchObject({ prefillTokensPerSec: null });
+    expect(await provider('anthropic')).toMatchObject({ prefillTokensPerSec: null });
     expect(row('anthropic')).toMatchObject({ prefill_tokens_per_sec: null });
   });
 

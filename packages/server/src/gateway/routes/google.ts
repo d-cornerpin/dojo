@@ -5,9 +5,6 @@ import type { AppEnv } from '../server.js';
 import { createLogger } from '../../logger.js';
 import {
   getGoogleWorkspaceConfig,
-  testGoogleAuth,
-  setGoogleConnected,
-  setGoogleEnabled,
   setEnabledServices,
   buildAuthUrl,
   exchangeCodeForTokens,
@@ -203,21 +200,6 @@ googleRouter.post('/disconnect', (c) => {
   const slot = parseSlot(c.req.query('slot'));
   disconnectGoogle(slot);
   return c.json({ ok: true, data: { slot } });
-});
-
-// POST /api/google/test?slot=agent|user (test a slot's connection)
-googleRouter.post('/test', async (c) => {
-  const slot = parseSlot(c.req.query('slot'));
-  const auth = await testGoogleAuth(slot);
-  if (auth.authenticated) {
-    setGoogleConnected(true, auth.email ?? undefined, slot);
-    setGoogleEnabled(true, slot);
-  }
-
-  return c.json({
-    ok: true,
-    data: { working: auth.authenticated, email: auth.email, slot },
-  });
 });
 
 // PUT /api/google/services?slot=agent|user  (or ?accountId=): enable/disable

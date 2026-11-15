@@ -434,19 +434,6 @@ configRouter.get('/providers', (c) => {
   return c.json({ ok: true, data: providers });
 });
 
-// GET /providers/:id
-configRouter.get('/providers/:id', (c) => {
-  const db = getDb();
-  const id = c.req.param('id');
-  const row = db.prepare('SELECT * FROM providers WHERE id = ?').get(id) as Record<string, unknown> | undefined;
-
-  if (!row) {
-    return c.json({ ok: false, error: 'Provider not found' }, 404);
-  }
-
-  return c.json({ ok: true, data: rowToProvider(row) });
-});
-
 // POST /providers
 configRouter.post('/providers', async (c) => {
   const body = await c.req.json().catch(() => null);
@@ -967,22 +954,6 @@ configRouter.post('/providers/:id/validate', async (c) => {
 });
 
 
-// GET /providers/:id/models
-configRouter.get('/providers/:id/models', (c) => {
-  const db = getDb();
-  const providerId = c.req.param('id');
-
-  const existing = db.prepare('SELECT id FROM providers WHERE id = ?').get(providerId);
-  if (!existing) {
-    return c.json({ ok: false, error: 'Provider not found' }, 404);
-  }
-
-  const rows = db.prepare('SELECT * FROM models WHERE provider_id = ? ORDER BY name').all(providerId) as Array<Record<string, unknown>>;
-  const models: Model[] = rows.map(rowToModel);
-
-  return c.json({ ok: true, data: models });
-});
-
 // GET /models (all enabled models)
 configRouter.get('/models', (c) => {
   const db = getDb();
@@ -990,37 +961,6 @@ configRouter.get('/models', (c) => {
   const models: Model[] = rows.map(rowToModel);
 
   return c.json({ ok: true, data: models });
-});
-
-// GET /video-jobs?status=active (list video generation jobs). With status=active returns only
-// in-flight jobs (queued/polling) for the ActiveJobsIndicator; otherwise the most recent jobs.
-configRouter.get('/video-jobs', (c) => {
-  const db = getDb();
-  const statusFilter = c.req.query('status');
-  const rows = statusFilter === 'active'
-    ? db.prepare(
-        // "active" means NOT terminal (services/media-job-status.ts holds the census).
-        `SELECT id, agent_id, model_id, provider_id, prompt, title, status, started_at, updated_at, finished_at, duration_seconds, cost_usd, error FROM video_jobs WHERE status NOT IN (${TERMINAL_JOB_STATUS_SQL}) ORDER BY started_at DESC`
-      ).all()
-    : db.prepare(
-        "SELECT id, agent_id, model_id, provider_id, prompt, title, status, started_at, updated_at, finished_at, duration_seconds, cost_usd, error FROM video_jobs ORDER BY started_at DESC LIMIT 50"
-      ).all();
-  const data = (rows as Array<Record<string, unknown>>).map((r) => ({
-    id: r.id,
-    agentId: r.agent_id,
-    modelId: r.model_id,
-    providerId: r.provider_id,
-    prompt: r.prompt,
-    title: r.title,
-    status: r.status,
-    startedAt: r.started_at,
-    updatedAt: r.updated_at,
-    finishedAt: r.finished_at,
-    durationSeconds: r.duration_seconds,
-    costUsd: r.cost_usd,
-    error: r.error,
-  }));
-  return c.json({ ok: true, data });
 });
 
 // POST /video-jobs/:id/cancel: stop an in-flight job. Best-effort
@@ -1845,34 +1785,6 @@ configRouter.put('/models/:id/voice-catalog', async (c) => {
   return c.json({ ok: true, data: rowToModel(row) });
 });
 
-// POST /models/:id/refresh-capabilities: force a fresh capability probe for one model. Useful
-// when a new capability vocabulary is added and existing rows are stale. The normal boot backfill
-// only touches rows whose normalized caps are empty; this endpoint always re-probes.
-configRouter.post('/models/:id/refresh-capabilities', async (c) => {
-  const id = c.req.param('id');
-  const db = getDb();
-  const exists = db.prepare('SELECT id FROM models WHERE id = ?').get(id);
-  if (!exists) return c.json({ ok: false, error: 'Model not found' }, 404);
-
-  try {
-    // Clear the row so probeAndStoreCapabilities unconditionally overwrites it, guaranteeing a fresh read.
-    db.prepare("UPDATE models SET capabilities = '[]', updated_at = datetime('now') WHERE id = ?").run(id);
-    const { probeAndStoreCapabilities } = await import('../../services/capabilities.js');
-    const caps = await probeAndStoreCapabilities(id);
-    const row = db.prepare('SELECT * FROM models WHERE id = ?').get(id) as Record<string, unknown>;
-    logger.info('Model capabilities refreshed', { modelId: id, capabilities: caps });
-    // A refresh can newly reveal (or revoke) vision capability; re-run the obvious-fallback check so the
-    // platform-wide fallback stays sensible.
-    try {
-      const { autoConfigureFallbackVisionModelIfObvious } = await import('../../services/vision-model.js');
-      autoConfigureFallbackVisionModelIfObvious();
-    } catch { /* best-effort */ }
-    return c.json({ ok: true, data: rowToModel(row), capabilities: caps });
-  } catch (err) {
-    return routeFailure(c, logger, err, { status: 500, prefix: 'Capability refresh failed: ' });
-  }
-});
-
 // PATCH /models/:id/num-ctx: set or clear the per-model Ollama num_ctx override
 // (null clears it; 512 to 2_097_152; only Ollama translates it at call time).
 configRouter.patch('/models/:id/num-ctx', async (c) => {
@@ -2331,17 +2243,6 @@ configRouter.put('/settings/:key', async (c) => {
   }
 
   return c.json({ ok: true, data: { key, value: body.value } });
-});
-
-// GET /settings: get all settings
-configRouter.get('/settings', (c) => {
-  const db = getDb();
-  const rows = db.prepare('SELECT key, value FROM config').all() as Array<{ key: string; value: string }>;
-  const settings: Record<string, string> = {};
-  for (const row of rows) {
-    settings[row.key] = row.value;
-  }
-  return c.json({ ok: true, data: settings });
 });
 
 const PROMPTS_DIR = path.join(homeDir(), '.dojo', 'prompts');

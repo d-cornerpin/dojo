@@ -13,7 +13,6 @@ import {
   createContact,
   updateContact,
   deleteContact,
-  describeContacts,
   countContacts,
   type ContactInput,
 } from '../../contacts/store.js';
@@ -56,17 +55,6 @@ contactsRouter.get('/', (c) => {
     : listContacts({ limit, offset, sortBy, sortDir });
   const total = countContacts(trimmedQ || undefined);
   return c.json({ ok: true, data: { count: records.length, total, contacts: records.map(serialize) } });
-});
-
-contactsRouter.get('/describe', (c) => {
-  return c.json({ ok: true, data: describeContacts() });
-});
-
-contactsRouter.get('/:id', (c) => {
-  const id = c.req.param('id');
-  const record = getContactById(id);
-  if (!record) return c.json({ ok: false, error: 'Contact not found.' }, 404);
-  return c.json({ ok: true, data: serialize(record) });
 });
 
 function parseBodyToInput(body: Record<string, unknown>): ContactInput {

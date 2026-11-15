@@ -139,10 +139,6 @@ export function providerBreaker(providerId: string): OpenBreaker | null {
   return openBreakers.get(providerId) ?? null;
 }
 
-export function openBreakers_readonly(): readonly OpenBreaker[] {
-  return [...openBreakers.values()];
-}
-
 /** `isOnlyOption` is the last-door carve-out: a caller with no alternative is admitted. */
 export function mayDialProvider(providerId: string, isOnlyOption = false): boolean {
   const open = openBreakers.get(providerId);

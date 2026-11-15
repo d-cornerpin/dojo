@@ -8,9 +8,8 @@ import { getDb } from '../../db/connection.js';
 import { getIMBridgeStatus, sendIMessage, startIMBridge, getDefaultSender, getSafeSenders, findSafeSenderByAddress } from '../../services/imessage-bridge.js';
 import { withOutboundAsyncIfAbsent, PLATFORM_SENDER } from '../../agent/v2/outbound.js';
 import { getResourceInfo } from '../../services/resource-monitor.js';
-import { checkOllamaHealth, getOllamaStatus, listOllamaModels } from '../../services/ollama.js';
+import { checkOllamaHealth, getOllamaStatus } from '../../services/ollama.js';
 import { getOllamaLock, getActiveOllamaModelsByProvider, getOllamaMaxConcurrent } from '../../services/ollama-lock.js';
-import { getWSStatus } from '../ws.js';
 import { getPresence, setPresence, isImessageEnabled, type PresenceStatus } from '../../services/presence.js';
 import {
   getTunnelStatus, enableTunnel, disableTunnel, startTunnel, stopTunnel,
@@ -37,7 +36,7 @@ export function recordProviderSuccess(providerId: string, call?: { modelId?: str
   providerLastSuccess.set(providerId, new Date().toISOString());
   providerErrorCounts.set(providerId, 0);
   // A call that actually worked is the only evidence that beats a recorded permanent failure, so it
-  // closes the breaker too. (The owner's manual retry is `POST /api/services/providers/:id/clear-breaker`.)
+  // closes the breaker too.
   noteProviderSuccess(providerId);
   if (call?.purpose !== 'memory_summarize') clearOn({ kind: 'writer-answered', providerKey: providerId, modelId: call?.modelId });   // a summary call's own outcome speaks for itself
 }
@@ -52,7 +51,7 @@ export function recordProviderError(providerId: string): void {
   }
 }
 import { getProviderCredential } from '../../config/loader.js';
-import { noteProviderSuccess, clearProviderBreaker, openBreakers_readonly } from '../../providers/billing-breaker.js';
+import { noteProviderSuccess } from '../../providers/billing-breaker.js';
 import { clearOn } from '../../memory/writer.js';
 import { routeFailure } from './route-failure.js';
 import { homeDir } from '../../home.js';
@@ -242,19 +241,6 @@ servicesRouter.get('/resources', async (c) => {
   });
 });
 
-// GET /ollama/models (list Ollama models)
-servicesRouter.get('/ollama/models', async (c) => {
-  const baseUrl = c.req.query('baseUrl') ?? undefined;
-  const models = await listOllamaModels(baseUrl);
-  return c.json({ ok: true, data: models });
-});
-
-// GET /ollama/status (Ollama status)
-servicesRouter.get('/ollama/status', (c) => {
-  const status = getOllamaStatus();
-  return c.json({ ok: true, data: status });
-});
-
 // GET /ollama/lock (Ollama concurrency lock status, per provider)
 servicesRouter.get('/ollama/lock', (c) => {
   const lockStatus = getOllamaLock().getStatus();
@@ -280,11 +266,6 @@ servicesRouter.get('/ollama/lock', (c) => {
   });
 });
 
-// GET /ws-status (WebSocket connection info)
-servicesRouter.get('/ws-status', (c) => {
-  return c.json({ ok: true, data: getWSStatus() });
-});
-
 // GET /presence (user presence status)
 servicesRouter.get('/presence', (c) => {
   return c.json({
@@ -295,20 +276,6 @@ servicesRouter.get('/presence', (c) => {
       imessageConfigured: isImessageEnabled(),
     },
   });
-});
-
-// GET /providers/breakers lists open breakers for the Health card. POST /providers/:id/clear-breaker
-// is the owner's manual retry: it clears the wall and answers whether anything WAS open.
-servicesRouter.get('/providers/breakers', (c) => {
-  return c.json({ ok: true, data: { breakers: openBreakers_readonly() } });
-});
-
-servicesRouter.post('/providers/:id/clear-breaker', (c) => {
-  const providerId = c.req.param('id');
-  const wasOpen = clearProviderBreaker(providerId);
-  clearOn({ kind: 'writer-answered', providerKey: providerId });   // the owner's retry is a waiting summary writer's too
-  logger.info('Provider breaker cleared from the dashboard', { providerId, wasOpen });
-  return c.json({ ok: true, data: { providerId, wasOpen } });
 });
 
 servicesRouter.post('/presence', async (c) => {

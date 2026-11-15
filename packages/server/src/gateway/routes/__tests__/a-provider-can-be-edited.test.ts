@@ -113,6 +113,7 @@ const send = (method: string, p: string, body?: unknown): Promise<Response> =>
 const patch = (p: string, body?: unknown): Promise<Response> => send('PATCH', p, body);
 const post = (p: string, body?: unknown): Promise<Response> => send('POST', p, body);
 const get = (p: string): Promise<Response> => send('GET', p);
+const provider = async (id: string): Promise<unknown> => ((await data(await get('/providers'))) as unknown as Array<{ id: string }>).find((p) => p.id === id);
 
 const json = async (r: Response): Promise<Record<string, unknown>> =>
   await r.json() as Record<string, unknown>;
@@ -376,7 +377,7 @@ describe('T66b — a rename is display-only: the id is the key everywhere', () =
     expect(db.prepare('SELECT model_id FROM agents WHERE id = ?').get(FXID.n4))
       .toEqual({ model_id: 'm-local' });
     expect(getProviderCredential('local-ds4')).toBe('sk-original-key');
-    expect(await data(await get('/providers/local-ds4')))
+    expect(await provider('local-ds4'))
       .toMatchObject({ id: 'local-ds4', name: 'Completely Different Name', baseUrl: 'http://127.0.0.1:8123/v1' });
   });
 });

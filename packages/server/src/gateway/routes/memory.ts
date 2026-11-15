@@ -20,8 +20,8 @@ import {
   updateBriefing,
 } from '../../memory/briefing.js';
 import { memorySearch } from '../../memory/retrieval.js';
-import { getEmbeddingStatus, setEmbeddingConfig } from '../../memory/embeddings.js';
-import { runBackfill, isBackfillRunning, getBackfillProgress } from '../../memory/backfill.js';
+import { getEmbeddingStatus } from '../../memory/embeddings.js';
+import { isBackfillRunning, getBackfillProgress } from '../../memory/backfill.js';
 import { vectorSearch } from '../../memory/vector-search.js';
 import { taskScope, projectScope, msToText } from '../../work/tracker-view.js';
 import { deleteTrackerRow, detachChildren } from '../../work/tracker-store.js';
@@ -385,37 +385,6 @@ memoryRouter.get('/embeddings/status', (c) => {
         backfillProgress,
       },
     });
-  } catch (err) {
-    return routeFailure(c, logger, err, { status: 500 });
-  }
-});
-
-// POST /embeddings/backfill: trigger embedding backfill
-memoryRouter.post('/embeddings/backfill', async (c) => {
-  try {
-    if (isBackfillRunning()) {
-      return c.json({ ok: false, error: 'Backfill is already running' }, 409);
-    }
-
-    // Run backfill in background
-    runBackfill({ includeStale: true }).catch(err => {
-      logger.error('Backfill failed', {
-        error: err instanceof Error ? err.message : String(err),
-      });
-    });
-
-    return c.json({ ok: true, data: { started: true } });
-  } catch (err) {
-    return routeFailure(c, logger, err, { status: 500 });
-  }
-});
-
-// PUT /embeddings/config: update embedding configuration
-memoryRouter.put('/embeddings/config', async (c) => {
-  try {
-    const body = await c.req.json();
-    setEmbeddingConfig(body);
-    return c.json({ ok: true, data: getEmbeddingStatus() });
   } catch (err) {
     return routeFailure(c, logger, err, { status: 500 });
   }

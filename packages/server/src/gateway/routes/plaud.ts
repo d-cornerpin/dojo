@@ -11,20 +11,12 @@ import {
   startPlaudLogin,
   cancelPlaudLogin,
   plaudLogout,
-  refreshPlaudAccountInfo,
 } from '../../plaud/auth.js';
 
 export const plaudRouter = new Hono<AppEnv>();
 
 plaudRouter.get('/status', (c) => {
   return c.json({ ok: true, data: getPlaudStatus() });
-});
-
-// Force-refresh the connection state from Plaud (runs `plaud me`). Useful
-// when the dashboard wants to verify the token is still valid.
-plaudRouter.post('/refresh', async (c) => {
-  const info = await refreshPlaudAccountInfo();
-  return c.json({ ok: true, data: { connected: Boolean(info), email: info?.email ?? null } });
 });
 
 plaudRouter.post('/connect', async (c) => {

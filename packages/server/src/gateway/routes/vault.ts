@@ -7,25 +7,18 @@ import type { AppEnv } from '../server.js';
 import { createLogger } from '../../logger.js';
 import {
   listEntries,
-  getEntry,
-  createEntry,
   isOverEntryLimit,
   ownerEntryTooLongMessage,
   updateEntry,
   markObsolete,
   deleteEntry,
-  listConversations,
-  getConversation,
   getVaultStats,
   getDreamReports,
   getLatestDreamReport,
   bulkDiscardUnprocessedConversations,
 } from '../../vault/store.js';
 import { runDreamingCycle, getDreamingConfig, setDreamingConfig, DREAM_MODES } from '../../vault/maintenance.js';
-import { extractFromConversation, storeExtractedMemories } from '../../vault/extraction.js';
-import { markConversationProcessed } from '../../vault/store.js';
 import { routeFailure } from './route-failure.js';
-import { VAULT_ENTRY_TYPES } from '../../vault/tools.js';
 import { getDb } from '../../db/connection.js';
 import { refuseSmallMainModel, refuseUnfitLocalModel } from '../../agent/main-model-floor.js';
 import { refuseBadClockTime } from '../../config/clock-time.js';
@@ -47,44 +40,6 @@ vaultRouter.get('/entries', (c) => {
 
   const entries = listEntries({ type: type ?? undefined, agentId: agentId ?? undefined, tag: tag ?? undefined, pinned, permanent, search: search ?? undefined, limit });
   return c.json({ ok: true, data: entries });
-});
-
-vaultRouter.get('/entries/:id', (c) => {
-  const entry = getEntry(c.req.param('id'));
-  if (!entry) return c.json({ ok: false, error: 'Entry not found' }, 404);
-  return c.json({ ok: true, data: entry });
-});
-
-vaultRouter.post('/entries', async (c) => {
-  const body = await c.req.json();
-  const { content, type, tags, pin, permanent } = body;
-
-  if (!content || !type) {
-    return c.json({ ok: false, error: 'content and type are required' }, 400);
-  }
-  if (typeof type !== 'string' || !VAULT_ENTRY_TYPES.includes(type)) {
-    return c.json({ ok: false, error: `type must be one of: ${VAULT_ENTRY_TYPES.join(', ')}` }, 400);
-  }
-
-  if (typeof content === 'string' && isOverEntryLimit(content)) {
-    return c.json({ ok: false, error: ownerEntryTooLongMessage(content) }, 400);
-  }
-
-  try {
-    const entry = await createEntry({
-      agentId: 'manual',
-      agentName: 'Dashboard',
-      type,
-      content,
-      tags: tags ?? [],
-      isPinned: pin ?? false,
-      isPermanent: permanent ?? false,
-      source: 'manual',
-    });
-    return c.json({ ok: true, data: entry });
-  } catch (err) {
-    return routeFailure(c, logger, err, { status: 500 });
-  }
 });
 
 vaultRouter.put('/entries/:id', async (c) => {
@@ -122,33 +77,6 @@ vaultRouter.delete('/entries/:id', (c) => {
 
 // ── Conversations ──
 
-vaultRouter.get('/conversations', (c) => {
-  const agentId = c.req.query('agent');
-  const processed = c.req.query('processed');
-  const limit = parseInt(c.req.query('limit') ?? '50', 10);
-
-  const conversations = listConversations({
-    agentId: agentId ?? undefined,
-    processed: processed !== undefined ? processed === 'true' : undefined,
-    limit,
-  });
-
-  // Don't send full message bodies in list view -- too large
-  const stripped = conversations.map(conv => ({
-    ...conv,
-    messages: undefined,
-    messagePreview: `${conv.messageCount} messages, ${conv.tokenCount} tokens`,
-  }));
-
-  return c.json({ ok: true, data: stripped });
-});
-
-vaultRouter.get('/conversations/:id', (c) => {
-  const conv = getConversation(c.req.param('id'));
-  if (!conv) return c.json({ ok: false, error: 'Conversation not found' }, 404);
-  return c.json({ ok: true, data: conv });
-});
-
 // Bulk-discard unprocessed conversation archives. Provides a fast path
 // for users who have built up a backlog of junk archives and want to
 // reset the Dreamer queue without waiting for it to grind through them.
@@ -175,40 +103,6 @@ vaultRouter.post('/conversations/discard', async (c) => {
   const deleted = bulkDiscardUnprocessedConversations(filter);
   logger.info('Bulk-discarded unprocessed archives', { deleted, filter });
   return c.json({ ok: true, data: { deleted } });
-});
-
-vaultRouter.post('/conversations/:id/process', async (c) => {
-  const conv = getConversation(c.req.param('id'));
-  if (!conv) return c.json({ ok: false, error: 'Conversation not found' }, 404);
-  if (conv.isProcessed) return c.json({ ok: false, error: 'Already processed' }, 400);
-
-  const config = getDreamingConfig();
-  const modelId = config.modelId;
-  if (!modelId) return c.json({ ok: false, error: 'No dreaming model configured' }, 400);
-
-  try {
-    let parsedMessages: Array<{ role: string; content: string; createdAt?: string }>;
-    try {
-      parsedMessages = JSON.parse(conv.messages);
-    } catch (err) {
-      return routeFailure(c, logger, err, { status: 500, message: 'Failed to parse archived messages' });
-    }
-
-    const formatted = parsedMessages.map(m => {
-      const role = (m.role ?? 'unknown').toUpperCase();
-      const ts = m.createdAt ? ` [${m.createdAt}]` : '';
-      return `[${role}${ts}] ${m.content}`;
-    }).join('\n\n---\n\n');
-
-    const result = await extractFromConversation(formatted, modelId, config.dreamMode);
-    const stored = await storeExtractedMemories(result.memories, conv.agentId, conv.agentName, conv.id);
-
-    markConversationProcessed(conv.id);
-
-    return c.json({ ok: true, data: { memoriesExtracted: stored, techniquesFound: result.techniqueCandidates.length } });
-  } catch (err) {
-    return routeFailure(c, logger, err, { status: 500 });
-  }
 });
 
 // ── Stats ──

@@ -3,7 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
 import { broadcast } from '../ws.js';
-import { getHealerConfig, setHealerConfig, scheduleHealingCycle, runHealingCycle, sendHealerReport, getHealerLogContent, HEALER_MODES } from '../../healer/healer-agent.js';
+import { getHealerConfig, setHealerConfig, scheduleHealingCycle, runHealingCycle, sendHealerReport, HEALER_MODES } from '../../healer/healer-agent.js';
 import { getPrimaryAgentId } from '../../config/platform.js';
 import { getAgentRuntime } from '../../agent/runtime.js';
 import { insertEngineEventIfAbsent } from '../../memory/message-store.js';
@@ -124,12 +124,6 @@ healerRouter.post('/run', async (c) => {
   } catch (err) {
     return routeFailure(c, logger, err, { status: 500 });
   }
-});
-
-// GET /report (current healer log content)
-healerRouter.get('/report', (c) => {
-  const content = getHealerLogContent();
-  return c.json({ ok: true, data: { content, hasContent: content !== null } });
 });
 
 // POST /report/send (email the healer report and archive the log)

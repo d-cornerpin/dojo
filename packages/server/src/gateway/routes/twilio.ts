@@ -458,16 +458,3 @@ twilioRouter.delete('/safe-senders/voice/:address', (c) => {
 });
 
 // ── Recent calls ──
-
-twilioRouter.get('/calls/recent', (c) => {
-  const rawLimit = Number(c.req.query('limit') ?? 50);
-  const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(200, Math.floor(rawLimit))) : 50;
-  const rows = getDb().prepare(`
-    SELECT id, call_sid, direction, from_number, to_number, status, handler,
-           started_at, ended_at, duration_seconds, agent_id, transcript, ended_reason
-    FROM twilio_call_log
-    ORDER BY started_at DESC
-    LIMIT ?
-  `).all(limit) as Array<Record<string, unknown>>;
-  return c.json({ ok: true, data: { calls: rows } });
-});

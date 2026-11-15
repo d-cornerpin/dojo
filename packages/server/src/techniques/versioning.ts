@@ -1,12 +1,9 @@
-// Technique versioning: disk snapshots and restore.
+// Technique versioning: disk snapshots.
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
-import { broadcast } from '../gateway/ws.js';
-import { getTechnique } from './store.js';
 
 const logger = createLogger('technique-versioning');
 
@@ -76,56 +73,6 @@ export function getVersions(techniqueId: string): TechniqueVersion[] {
   `).all(techniqueId) as Array<Record<string, unknown>>;
 
   return rows.map(rowToVersion);
-}
-
-export function getVersion(versionId: string): TechniqueVersion | null {
-  const db = getDb();
-  const row = db.prepare('SELECT * FROM technique_versions WHERE id = ?').get(versionId) as Record<string, unknown> | undefined;
-  if (!row) return null;
-  return rowToVersion(row);
-}
-
-export function restoreVersion(techniqueId: string, versionId: string): boolean {
-  const version = getVersion(versionId);
-  if (!version || version.techniqueId !== techniqueId) return false;
-
-  const technique = getTechnique(techniqueId);
-  if (!technique) return false;
-
-  // Write the old TECHNIQUE.md content
-  const mdPath = path.join(technique.directoryPath, 'TECHNIQUE.md');
-  fs.writeFileSync(mdPath, version.techniqueMd, 'utf-8');
-
-  // Increment version and create a new snapshot recording the restore
-  const db = getDb();
-  const newVersion = technique.version + 1;
-  db.prepare("UPDATE techniques SET version = ?, updated_at = datetime('now') WHERE id = ?").run(newVersion, techniqueId);
-
-  const filesSnapshot = version.filesSnapshot;
-  const changeSummary = `Restored from version ${version.versionNumber}`;
-  const createdAt = new Date().toISOString();
-  db.prepare(`
-    INSERT INTO technique_versions (id, technique_id, version_number, technique_md, changed_by, change_summary, files_snapshot, created_at)
-    VALUES (?, ?, ?, ?, 'system', ?, ?, datetime('now'))
-  `).run(
-    uuidv4(), techniqueId, newVersion, version.techniqueMd,
-    changeSummary,
-    JSON.stringify(filesSnapshot),
-  );
-
-  // Disk snapshot for the new (restored) version so the file history is
-  // continuous: versions/TECHNIQUE_v{newVersion}.md will match the restored content.
-  writeDiskVersionSnapshot(technique.directoryPath, newVersion, version.techniqueMd, {
-    changedBy: 'system',
-    changeSummary,
-    createdAt,
-  });
-
-  logger.info('Technique version restored', { techniqueId, restoredFrom: version.versionNumber, newVersion });
-
-  broadcast({ type: 'technique:updated', data: { id: techniqueId, name: technique.name, version: newVersion } });
-
-  return true;
 }
 
 /**
