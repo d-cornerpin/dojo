@@ -1081,12 +1081,10 @@ describe('runV2Turn integration', () => {
     expect(assistantMsgs.length).toBeGreaterThan(1);
   });
 
-  it('PRESERVATION: no-results detector nudges after 2 consecutive empty turns, breaks after a 3rd', async () => {
-    // v2/loop.ts:1194-1232, when every tool result in a turn contains
-    // "No results found" / "not in memory" for two consecutive iterations,
-    // a steer fires telling the model to switch tactics. If the
-    // third iteration is STILL all-no-results, the loop breaks with a
-    // NO_RESULTS chat:error. This pins both transitions.
+  it('the dead-end floor: different calls that all come back empty or refused steer once, then end the turn', async () => {
+    // When every tool result of a pass is empty ("No results found" / "not in memory") or refused
+    // ([BLOCKED]) for two passes in a row, a steer fires; two more such passes end the turn with a
+    // NO_RESULTS chat:error. Each call differs, so the repeat rule never sees them.
     let modelCallCount = 0;
     callModelSpy.mockImplementation(async () => {
       modelCallCount++;
@@ -1102,12 +1100,9 @@ describe('runV2Turn integration', () => {
         stopReason: 'tool_use',
       };
     });
-    executeToolSpy.mockImplementation(async (_agentId, toolCall) => ({
-      toolCallId: toolCall.id,
-      name: toolCall.name,
-      content: `No results found for "${toolCall.arguments.pattern}".`,
-      isError: false,
-    }));
+    executeToolSpy.mockImplementation(async (_agentId, toolCall) => (modelCallCount % 2 === 0
+      ? { toolCallId: toolCall.id, name: toolCall.name, content: '[BLOCKED] exec refused: not permitted.', isError: true }
+      : { toolCallId: toolCall.id, name: toolCall.name, content: `No results found for "${toolCall.arguments.pattern}".`, isError: false }));
 
     await runV2Turn('primary');
 

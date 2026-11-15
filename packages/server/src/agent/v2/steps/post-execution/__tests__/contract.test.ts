@@ -10,7 +10,7 @@
 //   INPUTS      `(state, ctx)` — the turn's state, and everything else the span
 //               read from the driver, passed explicitly. Measured, not guessed:
 //               the span's free identifiers are `state`, `agentId`,
-//               `turnNumber`, `result`, `turnToolResults` plus module imports.
+//               `turnNumber`, `turnToolResults` plus module imports.
 //   OUTPUT      a `StepOutcome` — the advanced state and ONE directive.
 //   TRANSITION  the driver advances `phase` INTO the step (through `advance`,
 //               so `validate()` runs); the step never writes `phase` itself.
@@ -28,30 +28,20 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { WsEvent } from '@dojo/shared';
 import { advance, initState, type AgentTurnState, type ToolResultRecord } from '../../../state.js';
-import { enqueueSteer, steerFired, steerFireCount } from '../../../steer-queue.js';
+import { steerFired } from '../../../steer-queue.js';
 import {
   runPostExecution,
   POST_EXECUTION_PHASE,
   type PostExecutionContext,
 } from '../index.js';
 
-// The spinning floor delivers through `persistEngineSteer`, which writes a
+// The dead-end floor delivers through `persistEngineSteer`, which writes a
 // dashboard row through the single message writer. This test is about the
 // STEP's contract, not that row (RC-19's own test owns it), so the writer is
 // stubbed rather than reached — a unit test must not open the dev database.
 vi.mock('../../../../../memory/message-store.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../../../memory/message-store.js')>()),
   insertMessageIfAbsent: () => null,
-}));
-
-// Same rule, second reader: the spinning-floor branch asks
-// `agentCanSelfCompleteById`, which SELECTs from `agents`. Before the suite had its
-// own home (T74b) that query ran against the developer's live database and found a
-// real table, so the case passed on one machine and nowhere else. The step's contract
-// does not depend on the answer — only on being given one.
-vi.mock('../../../../tools/util.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../../../tools/util.js')>()),
-  agentCanSelfCompleteById: () => false,
 }));
 
 function freshState(): AgentTurnState {
@@ -112,100 +102,51 @@ function errorCodes(events: WsEvent[]): string[] {
 
 describe('postExecution step — inputs, output, and the recorded transition', () => {
   it('runs in the phase the driver advanced into, and NEVER writes `phase` itself', () => {
-    // The exit-request channel exists because a mid-body `phase` write does not
-    // survive the next transition. The step therefore has no business writing it,
-    // on ANY path — including the three that ask to leave the loop.
+    const empty = [toolResult({ content: 'No results found for "x".' })];
+    const nudged = runPostExecution(stateInStep({ deadEndPasses: 1 }), makeCtx({ turnToolResults: empty }));
     const paths: Array<[string, AgentTurnState, PostExecutionContext]> = [
       ['proceed', stateInStep(), makeCtx()],
+      ['continue (dead-end nudge)', stateInStep({ deadEndPasses: 1 }), makeCtx({ turnToolResults: empty })],
+      ['exit (dead-end)', advance(stateInStep({ deadEndPasses: 1 }), { steerQueue: nudged.state.steerQueue }), makeCtx({ turnToolResults: empty })],
     ];
-
     for (const [label, state, ctx] of paths) {
-      const outcome = runPostExecution(state, ctx);
-      expect(outcome.state.phase, label).toBe(POST_EXECUTION_PHASE);
+      expect(runPostExecution(state, ctx).state.phase, label).toBe(POST_EXECUTION_PHASE);
     }
   });
 });
 
-describe('postExecution step — the exit-request channel', () => {
-  it('asks to CONTINUE on the no-results floor, then to EXIT when it fires again', () => {
-    const empty = [toolResult({ content: 'No results found for "x".' })];
+describe('postExecution step — the dead-end floor', () => {
+  const empty = [toolResult({ content: 'No results found for "x".' })];
+  const refused = [toolResult({ content: '[BLOCKED] not permitted', isError: true })];
 
-    const first = runPostExecution(
-      stateInStep({ consecutiveNoResultTools: 1 }),
-      makeCtx({ turnToolResults: empty }),
-    );
+  it('asks to CONTINUE on the second dead-end pass, then to EXIT when it comes again', () => {
+    const first = runPostExecution(stateInStep({ deadEndPasses: 1 }), makeCtx({ turnToolResults: empty }));
     expect(first.directive).toBe('continue');
-    expect(steerFired(first.state.steerQueue, 'no-results')).toBe(true);
+    expect(steerFired(first.state.steerQueue, 'dead-end')).toBe(true);
     // The floor resets its own counter when it nudges.
-    expect(first.state.consecutiveNoResultTools).toBe(0);
+    expect(first.state.deadEndPasses).toBe(0);
 
-    const { ctx, events } = ctxWithEvents({ turnToolResults: empty });
-    const second = runPostExecution(
-      advance(stateInStep({ consecutiveNoResultTools: 1 }), { steerQueue: first.state.steerQueue }),
-      ctx,
-    );
+    const { ctx, events } = ctxWithEvents({ turnToolResults: refused });
+    const second = runPostExecution(advance(stateInStep({ deadEndPasses: 1 }), { steerQueue: first.state.steerQueue }), ctx);
     expect(second.directive).toBe('exit');
     if (second.directive !== 'exit') throw new Error('unreachable');
-    expect(second.reason).toBe('no-results');
+    expect(second.reason).toBe('dead-end');
     expect(errorCodes(events)).toEqual(['NO_RESULTS']);
   });
 
-  it('nudges on the spinning floor WITHOUT asking to exit — a nudge is not an exit', () => {
-    // Four denials carried in plus one blocked result this batch = 5, the
-    // classifier's PERMISSION_DENIAL_THRESHOLD. The engine asks the model before
-    // it breaks: the steer goes out and the loop keeps running.
-    const outcome = runPostExecution(
-      stateInStep({ consecutivePermissionDenials: 4 }),
-      makeCtx({ turnToolResults: [toolResult({ content: '[BLOCKED] not permitted', isError: true })] }),
-    );
+  it('a refused call and an empty one in the same pass are one dead end; a real result resets it', () => {
+    const mixed = runPostExecution(stateInStep(), makeCtx({ turnToolResults: [...empty, ...refused] }));
+    expect(mixed.state.deadEndPasses).toBe(1);
+    expect(mixed.directive).toBe('proceed');
 
-    expect(outcome.directive).toBe('proceed');
-    expect(outcome.state.consecutivePermissionDenials).toBe(5);
-    expect(steerFireCount(outcome.state.steerQueue, 'spinning')).toBe(1);
+    const real = runPostExecution(stateInStep({ deadEndPasses: 1 }), makeCtx({ turnToolResults: [...empty, toolResult()] }));
+    expect(real.state.deadEndPasses).toBe(0);
   });
 
-  it('asks to EXIT when the spinning nudge cap is reached, and names why', () => {
-    let queue = freshState().steerQueue;
-    for (const atLoop of [1, 2, 3]) {
-      queue = enqueueSteer(queue, { floor: 'spinning', content: 'n', key: `loop-${atLoop}`, atLoop });
-    }
-    const capped = advance(stateInStep({ consecutivePermissionDenials: 4 }), { steerQueue: queue });
-    expect(steerFireCount(capped.steerQueue, 'spinning')).toBe(3);
-
-    const outcome = runPostExecution(
-      capped,
-      makeCtx({ turnToolResults: [toolResult({ content: '[BLOCKED] not permitted', isError: true })] }),
-    );
-
-    expect(outcome.directive).toBe('exit');
-    if (outcome.directive !== 'exit') throw new Error('unreachable');
-    expect(outcome.reason).toBe('spinning-nudge-cap');
-    // No fourth nudge was queued on the way out.
-    expect(steerFireCount(outcome.state.steerQueue, 'spinning')).toBe(3);
-  });
-});
-
-describe('postExecution step — the counters it owns', () => {
-  it('adds the whole blocked batch to the denial counter, and zeroes it on any non-blocked batch', () => {
-    const blocked = Array.from({ length: 3 }, (_, i) =>
-      toolResult({ toolCallId: `tc-${i}`, content: '[BLOCKED] not permitted', isError: true }),
-    );
-    const up = runPostExecution(stateInStep({ consecutivePermissionDenials: 1 }), makeCtx({ turnToolResults: blocked }));
-    expect(up.state.consecutivePermissionDenials).toBe(4);
-
-    const down = runPostExecution(stateInStep({ consecutivePermissionDenials: 4 }), makeCtx());
-    expect(down.state.consecutivePermissionDenials).toBe(0);
-  });
-
-  it('counts a no-result batch up and a real result back to zero', () => {
-    const empty = runPostExecution(
-      stateInStep(),
-      makeCtx({ turnToolResults: [toolResult({ content: 'not in memory' })] }),
-    );
-    expect(empty.state.consecutiveNoResultTools).toBe(1);
-    expect(empty.directive).toBe('proceed');
-
-    const real = runPostExecution(stateInStep({ consecutiveNoResultTools: 1 }), makeCtx());
-    expect(real.state.consecutiveNoResultTools).toBe(0);
+  it('the steer never names complete_task, which most agents cannot call', () => {
+    const out = runPostExecution(stateInStep({ deadEndPasses: 1 }), makeCtx({ turnToolResults: refused }));
+    const steer = out.state.steerQueue.fired.find((e) => e.floor === 'dead-end');
+    expect(steer?.content).toContain('empty or refused');
+    expect(steer?.content).not.toContain('complete_task');
   });
 });

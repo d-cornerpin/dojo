@@ -112,9 +112,8 @@ export interface AgentTurnState {
 
   recoveryStreak: RecoveryStreak | null;
   outputTokensEscalated: number;          // the extra output room asked of the NEXT call, in tokens; 0 = none
-  consecutivePermissionDenials: number;
   truncationRetryCount: number;
-  consecutiveNoResultTools: number;       // tracks "No results found" / "not in memory" returns
+  deadEndPasses: number;                  // passes in a row whose every call came back empty or refused
   retriedEmptyResponse: boolean;          // the silent empty-response retry has fired this turn
 
   /** The checkpoint window the turn is in: its last pass before it, its clock and the job's mark; null is the first. */
@@ -232,9 +231,8 @@ export function initState(params: InitStateParams): AgentTurnState {
 
     recoveryStreak: null,
     outputTokensEscalated: 0,
-    consecutivePermissionDenials: 0,
     truncationRetryCount: 0,
-    consecutiveNoResultTools: 0,
+    deadEndPasses: 0,
     retriedEmptyResponse: false,
 
     checkpointWindow: null,
@@ -293,9 +291,6 @@ export function validate(state: AgentTurnState): void {
   // outputTokensEscalated is bounded where it is spent (the model call); here it need only be a sane count.
   if (!Number.isFinite(state.outputTokensEscalated) || state.outputTokensEscalated < 0) {
     throw new StateValidationError(`outputTokensEscalated invalid: ${state.outputTokensEscalated}`);
-  }
-  if (state.consecutivePermissionDenials > 20) {
-    throw new StateValidationError(`runaway permission denials: ${state.consecutivePermissionDenials}`);
   }
   if (state.recoveryStreak && state.recoveryStreak.count > 10) {
     throw new StateValidationError(`recovery streak runaway: ${state.recoveryStreak.kind} count=${state.recoveryStreak.count}`);

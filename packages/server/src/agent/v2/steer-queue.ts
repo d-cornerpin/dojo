@@ -10,8 +10,7 @@ export type SteerFloorId =
   | 'reminder-silence'
   | 'start-ack' | 'start-ack-reminder' | 'owed-interrupt' | 'promise-floor'
   | 'a2a-handoff-floor' | 'a2a-missed-reply' | 'going-idle-in-progress'
-  | 'output-grind' | 'empty-response' | 'spinning'
-  | 'no-results' | 'add-notes-stop'
+  | 'output-grind' | 'empty-response' | 'dead-end' | 'add-notes-stop'
   | 'tracker-stop-directive' | 'tracker-scaffold' | 'hoarding-advisory'
   | 'redundant-closeout' | 'near-duplicate-reply';
 
@@ -51,9 +50,7 @@ export const STEER_PRECEDENCE: readonly SteerFloorSpec[] = [
   // Above empty-response: a call that burned its whole output budget must not be diagnosed as an empty one.
   { id: 'output-grind',          priority: 39, why: 'the model spent its whole output budget reasoning, with no tool call and no answer' },
   { id: 'empty-response',        priority: 40, why: 'the model returned nothing, twice' },
-  { id: 'spinning',              priority: 43, why: 'no progress across iterations' },
-
-  { id: 'no-results',            priority: 45, why: 'consecutive searches returning nothing' },
+  { id: 'dead-end',              priority: 43, why: 'consecutive passes whose every call came back empty or refused' },
   // Priority 60 (compaction-recap, retired) is never reused.
   { id: 'add-notes-stop',        priority: 61, why: 'went quiet after a note with the task still open' },
 
@@ -115,7 +112,7 @@ export function steerFiredAny(q: SteerQueue, floors: readonly SteerFloorId[]): b
   return q.fired.some((e) => floors.includes(e.floor));
 }
 
-/** How many times this floor has steered this turn: the counter latch (`spinning`). */
+/** How many times this floor has steered this turn: the counter latch of a laddered floor. */
 export function steerFireCount(q: SteerQueue, floor: SteerFloorId): number {
   return q.fired.reduce((n, e) => (e.floor === floor ? n + 1 : n), 0);
 }

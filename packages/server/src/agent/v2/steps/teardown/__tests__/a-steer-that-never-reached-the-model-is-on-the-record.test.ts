@@ -152,7 +152,7 @@ describe('a steer written and never delivered says so at the boundary', () => {
     // queue. The record has to say which of the two happened, or "undelivered" is one word
     // for two different failures.
     const state = queueWith((q) => {
-      let out = enqueueSteer(q, { floor: 'spinning', content: '[System: spinning]', atLoop: 2 });
+      let out = enqueueSteer(q, { floor: 'dead-end', content: '[System: dead end]', atLoop: 2 });
       for (let i = 0; i < 3; i++) out = markSteerAttempted(out, nextSteer(out)!);
       return out;
     });
@@ -160,7 +160,7 @@ describe('a steer written and never delivered says so at the boundary', () => {
     await finalizeTurnRecord(state, ctxFor(turnCtxFor()));
 
     expect(markers()[0].steers).toEqual([
-      { floor: 'spinning', priority: 43, at_loop: 2, attempts: 3, how: 'abandoned' },
+      { floor: 'dead-end', priority: 43, at_loop: 2, attempts: 3, how: 'abandoned' },
     ]);
   });
 
@@ -216,7 +216,7 @@ describe('CONTROLS: the record never fires on a turn that has nothing to report'
   it('no ask to hang a row on → the LOG LINE still lands, and no row is invented', async () => {
     // The T41 rider's own disposition, kept: a turn with no ask keeps the log alone.
     const state = queueWith((q) =>
-      enqueueSteer(q, { floor: 'spinning', content: 'nudge', atLoop: 1 }));
+      enqueueSteer(q, { floor: 'dead-end', content: 'nudge', atLoop: 1 }));
 
     await finalizeTurnRecord(state, ctxFor(turnCtxFor(), { triggerWorkId: null }));
 

@@ -173,8 +173,9 @@ describe('the declared precedence table', () => {
     // FIELD FIX 3 AUDIT ROUND (#11) ADDS 31-33: `redundant-closeout`, `near-duplicate-reply` and
     // `prose-decline`, the three floors that used to NULL the agent's reply and now steer it once.
     // 32: `tracker-closeout` went with the close-out gate.
-    // The repeat rule replaced `thrash-gate`, `thrash-drift` and `repetition`.
-    expect(STEER_PRECEDENCE.length).toBe(28);
+    // The repeat rule replaced `thrash-gate`, `thrash-drift` and `repetition`; `dead-end` replaced
+    // `spinning` and `no-results`.
+    expect(STEER_PRECEDENCE.length).toBe(27);
     for (const id of ['redundant-closeout', 'near-duplicate-reply']) {
       expect(STEER_PRECEDENCE.filter((f) => f.id === id).length).toBe(1);
     }
@@ -243,11 +244,11 @@ describe('per-floor latches, keyed on QUEUE ENTRIES', () => {
     expect(blocked).toBe(q);
   });
 
-  it('a COUNTER latch (spinning) fires more than once and reports its own count', () => {
+  it('a COUNTER latch fires more than once and reports its own count', () => {
     let q = emptySteerQueue();
-    q = enqueueSteer(q, { floor: 'spinning', content: 's1', key: 'loop-1', atLoop: 1 });
-    q = enqueueSteer(q, { floor: 'spinning', content: 's2', key: 'loop-2', atLoop: 2 });
-    expect(steerFireCount(q, 'spinning')).toBe(2);
+    q = enqueueSteer(q, { floor: 'dead-end', content: 's1', key: 'loop-1', atLoop: 1 });
+    q = enqueueSteer(q, { floor: 'dead-end', content: 's2', key: 'loop-2', atLoop: 2 });
+    expect(steerFireCount(q, 'dead-end')).toBe(2);
   });
 
   it('TWO FLOORS NEVER SHARE A LATCH — the tracker pair, whose one flag disarmed either', () => {
@@ -332,7 +333,7 @@ describe('delivered-to-model is RECORDED, not assumed', () => {
 
   it('a scope that matches nothing pending is a no-op, not a rebuild', () => {
     const q = enqueueSteer(emptySteerQueue(), { floor: 'add-notes-stop', content: 'r', atLoop: 1 });
-    expect(clearSteerQueueFor(q, ['spinning'])).toBe(q);
+    expect(clearSteerQueueFor(q, ['dead-end'])).toBe(q);
   });
 });
 

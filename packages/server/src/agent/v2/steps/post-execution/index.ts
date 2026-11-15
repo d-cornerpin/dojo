@@ -1,5 +1,5 @@
-// Post-execution floors (permission-denial and no-results counters, spinning nudge). A module
-// cannot break its caller's loop, so each exit is a StepOutcome directive the driver honours.
+// The dead-end floor: a pass whose every call came back empty or refused. A module cannot break its
+// caller's loop, so the exit is a StepOutcome directive the driver honours.
 // The logger keeps component name `v2-loop`: operators grep the structured log sink by it.
 
 import type { WsEvent } from '@dojo/shared';
@@ -10,10 +10,8 @@ import {
   type ToolResultRecord,
   type TurnPhase,
 } from '../../state.js';
-import { steerFired, steerFireCount } from '../../steer-queue.js';
+import { steerFired } from '../../steer-queue.js';
 import { persistEngineSteer } from '../../engine-steer.js';
-import { progressClassifier, buildSpinningNudge } from '../../classifiers/progress.js';
-import { agentCanSelfCompleteById } from '../../../tools/util.js';
 import { continueLoop, proceed, requestExit, type StepOutcome } from '../step-outcome.js';
 import { userWords, currentAddress } from '../../turn-address.js';
 
@@ -23,7 +21,7 @@ const logger = createLogger('v2-loop');
 export const POST_EXECUTION_PHASE: TurnPhase = 'postExecution';
 
 /** Why this step asked the driver to leave the loop. */
-export type PostExecutionExitReason = 'no-results' | 'spinning-nudge-cap';
+export type PostExecutionExitReason = 'dead-end';
 
 export interface PostExecutionContext {
   readonly agentId: string;
@@ -40,94 +38,50 @@ export interface PostExecutionContext {
 export function runPostExecution(state: AgentTurnState, ctx: PostExecutionContext): StepOutcome {
   const { agentId, turnNumber, turnToolResults, broadcast } = ctx;
 
-  // Permission denial counter
-  const allBlocked = turnToolResults.every((tr) => tr.isError && tr.content.includes('[BLOCKED]'));
-  if (allBlocked && turnToolResults.length > 0) {
-    state = advance(state, {
-      consecutivePermissionDenials: state.consecutivePermissionDenials + turnToolResults.length,
-    });
-  } else if (turnToolResults.length > 0) {
-    state = advance(state, { consecutivePermissionDenials: 0 });
-  }
-
-  // Search tools that keep returning "No results found" / "not in memory": nudge once, then exit NO_RESULTS.
-  const allNoResults =
+  // Every call came back empty ("No results found", "not in memory") or refused ([BLOCKED]): two such passes
+  // in a row steer once, then two more end the turn.
+  const deadEnd =
     turnToolResults.length > 0 &&
     turnToolResults.every(
-      (tr) =>
-        tr.content.includes('No results found') ||
-        tr.content.includes('not in memory'),
+      (tr) => tr.isError
+        ? tr.content.includes('[BLOCKED]')
+        : tr.content.includes('No results found') || tr.content.includes('not in memory'),
     );
-  if (allNoResults && turnToolResults.every((tr) => !tr.isError)) {
-    const nextNoResultsCount = state.consecutiveNoResultTools + 1;
-    if (nextNoResultsCount >= 2) {
-      if (!steerFired(state.steerQueue, 'no-results')) {
-        logger.warn('v2: consecutive empty search results, nudging on next iteration', {
+  if (deadEnd) {
+    const nextDeadEnds = state.deadEndPasses + 1;
+    if (nextDeadEnds >= 2) {
+      if (!steerFired(state.steerQueue, 'dead-end')) {
+        logger.warn('v2: consecutive dead-end passes, nudging on next iteration', {
           loopCount: state.loopCount,
-          consecutiveNoResultTools: nextNoResultsCount,
+          deadEndPasses: nextDeadEnds,
         }, agentId);
         // The steer's latch lives on its queue entry; the counter reset is a separate `advance`.
         state = persistEngineSteer(state, {
-          agentId, turnNumber, floor: 'no-results', atLoop: state.loopCount,
+          agentId, turnNumber, floor: 'dead-end', atLoop: state.loopCount,
           content:
-            '[System: Multiple searches returned no results. The information may not exist in memory. ' +
+            '[System: Your last calls all came back empty or refused. What you need may not be there, or may not be open to you. ' +
             `Try responding based on what you already know, or ask ${userWords(currentAddress(agentId))} for clarification.]`,
         }, { broadcast });
-        state = advance(state, { consecutiveNoResultTools: 0 });
+        state = advance(state, { deadEndPasses: 0 });
         return continueLoop(state);
       }
-      // Already nudged, break with NO_RESULTS error
-      logger.warn('v2: breaking tool loop, still no results after nudge', {
+      // Already nudged, break with the NO_RESULTS card
+      logger.warn('v2: breaking tool loop, still dead ends after nudge', {
         loopCount: state.loopCount,
       }, agentId);
       broadcast({
         type: 'chat:error', cardClass: 'informational',
         agentId,
-        error: 'Agent stopped, searches kept coming up empty. The info may not be in memory yet.',
+        error: 'Agent stopped: its calls kept coming back empty or refused.',
         code: 'NO_RESULTS',
         severity: 'warning',
         retryable: true,
       });
-      return requestExit(state, 'no-results' satisfies PostExecutionExitReason);
+      return requestExit(state, 'dead-end' satisfies PostExecutionExitReason);
     }
-    state = advance(state, { consecutiveNoResultTools: nextNoResultsCount });
+    state = advance(state, { deadEndPasses: nextDeadEnds });
   } else if (turnToolResults.length > 0) {
-    state = advance(state, { consecutiveNoResultTools: 0 });
-  }
-
-  // Spinning detection: the engine asks the model before breaking.
-  const progressDecision = progressClassifier({
-    toolCallsExecutedThisTurn: state.toolCallsExecutedThisTurn,
-    // Both zeros are deliberate. Nothing produces consecutiveSmallDeltas. The no-results floor above resets
-    // or exits at 2, below the classifier's threshold of 3, so passing that counter would be dead.
-    consecutiveSmallDeltas: 0,
-    consecutivePermissionDenials: state.consecutivePermissionDenials,
-    consecutiveNoResultTools: 0,
-    // The spinning nudge count is read off the steer queue's own fire count; the queue is the latch.
-    spinningNudgeCount: steerFireCount(state.steerQueue, 'spinning'),
-    loopCount: state.loopCount,
-  });
-  if (!progressDecision.progressing) {
-    if (progressDecision.signals?.includes('nudge cap')) {
-      logger.warn('v2: spinning nudge cap reached, breaking', { agentId }, agentId);
-      return requestExit(state, 'spinning-nudge-cap' satisfies PostExecutionExitReason);
-    }
-    // Names complete_task only for agents that can self-complete; others are told to explain the block.
-    const nudgeText = buildSpinningNudge({
-      toolCallsExecutedThisTurn: state.toolCallsExecutedThisTurn,
-      consecutiveSmallDeltas: 0,
-      consecutivePermissionDenials: state.consecutivePermissionDenials,
-      consecutiveNoResultTools: 0,
-      spinningNudgeCount: steerFireCount(state.steerQueue, 'spinning'),
-      loopCount: state.loopCount,
-    }, agentCanSelfCompleteById(agentId));
-    // Sent as an engine steer so the model actually hears the question and the dashboard keeps its row.
-    // Keyed per loop: this floor is deliberately not one-shot (capped by MAX_SPINNING_NUDGES).
-    state = persistEngineSteer(
-      state,
-      { agentId, content: nudgeText, turnNumber, floor: 'spinning', key: `loop-${state.loopCount}`, atLoop: state.loopCount },
-      { broadcast },
-    );
+    state = advance(state, { deadEndPasses: 0 });
   }
 
   return proceed(state);

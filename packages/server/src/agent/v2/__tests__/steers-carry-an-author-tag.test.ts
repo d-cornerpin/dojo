@@ -38,7 +38,7 @@ describe('t196 (A4) - the seam: nothing untagged reaches the queue', () => {
 
   it('an already-tagged steer is left byte-identical', () => {
     for (const content of ['[System: do the thing.]', '[Engine: do the thing.]', '[System] do the thing']) {
-      const q = enqueueSteer(EMPTY, { floor: 'spinning', content, atLoop: 1 });
+      const q = enqueueSteer(EMPTY, { floor: 'dead-end', content, atLoop: 1 });
       expect(nextSteer(q)!.content).toBe(content);
     }
   });

@@ -45,9 +45,7 @@ describe('initState', () => {
     expect(s.loopCount).toBe(0);
     expect(s.toolCallsExecutedThisTurn).toBe(0);
     expect(s.outputTokensEscalated).toBe(0);
-    expect(s.consecutivePermissionDenials).toBe(0);
-    // PHASE-4 T3: `spinningNudgeCount` is a queue fire count now, so the counter that
-    // starts at zero is the queue itself — no entries, no latches, nothing delivered.
+    expect(s.deadEndPasses).toBe(0);
     expect(s.steerQueue.pending.length).toBe(0);
     expect(s.steerQueue.fired.length).toBe(0);
     expect(s.steerQueue.delivered.length).toBe(0);
@@ -92,11 +90,6 @@ describe('validate', () => {
 
   it('a long moving job has no step or call ceiling', () => {
     expect(() => validate({ ...freshState(), toolCallsExecutedThisTurn: 250, loopCount: 600 })).not.toThrow();
-  });
-
-  it('throws on runaway permission denials', () => {
-    const s = { ...freshState(), consecutivePermissionDenials: 25 };
-    expect(() => validate(s)).toThrow(/permission denials/);
   });
 
   it('throws on recovery streak runaway', () => {
