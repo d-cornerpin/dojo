@@ -19,7 +19,7 @@ import { deliverableJudged } from '../v2/classifiers/inbound-routing.js';
 import { installDecisionModel } from './decision-fake.js';
 
 beforeEach(() => { mockDb.current = new Database(':memory:'); runMigrations(mockDb.current); installDecisionModel(mockDb.current); __forgetResidencyForTests(); });
-afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); mockDb.current?.close(); mockDb.current = null; });
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); mockDb.current?.close(); mockDb.current = null; });
 
 describe('a decision past its timeout', () => {
   it('a small cold call is given the floor plus the load time, and when that clock runs out the rule answers', async () => {
@@ -52,6 +52,17 @@ describe('a decision past its timeout', () => {
     await vi.waitFor(() => expect(sent).toHaveBeenCalledTimes(2));
     clocks[1]();
     expect(await later).toBe(false);
+  });
+
+  it('a call that has waited in the line longer than one large call may take is never sent and its rule answers', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const sent = vi.fn(() => new Promise<Response>((r) => setTimeout(() => r(Response.json({ answers: { asked: { noul: 0.95 } }, usage: {} })), 3_000)));
+    vi.stubGlobal('fetch', sent);
+    const asked = ['agent-t', 'agent-u', 'agent-v'].map((a) => deliverableJudged(a, 'Here is the finished report.', false));
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(await Promise.all(asked)).toEqual([true, true, false]);
+    expect(sent).toHaveBeenCalledTimes(2);
+    vi.useRealTimers();
   });
 
   it('a small warm call gets the 2.5 s floor; the largest per-turn call: about 5.2 s cold, 3.9 s warm', () => {

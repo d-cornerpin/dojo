@@ -41,15 +41,20 @@ function fail(cls: FailureClass, opts: DecideOpts, detail?: string): null {
 }
 
 /** One call in flight at a time: the local Ollama answers one request at a time, so a call's clock starts when it is
- *  sent, never while it waits. A Stop while waiting, or a timeout ahead of it in the line, leaves the call unsent. */
+ *  sent, never while it waits. A Stop while waiting, a timeout ahead of it in the line, or a wait past `MAX_LINE_WAIT_MS` leaves the call unsent. */
 let tail: Promise<unknown> = Promise.resolve();
 let joined = 0, unsentThrough = 0;
 function inTurn<T>(stop: AbortSignal | null, work: () => Promise<T | null>): Promise<T | null> {
   const ticket = ++joined;
-  const run = tail.then(() => (stop?.aborted || ticket <= unsentThrough ? null : work()));
+  let began = false, gaveUp = false;
+  const run = tail.then(() => (gaveUp || stop?.aborted || ticket <= unsentThrough ? null : (began = true, work())));
   tail = run.catch(() => undefined);
-  if (!stop) return run;
-  return Promise.race([run, new Promise<null>((r) => (stop.aborted ? r(null) : stop.addEventListener('abort', () => r(null), { once: true })))]);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const waits: Array<Promise<T | null>> = [run, new Promise<null>((r) => {
+    timer = setTimeout(() => { if (!began) { gaveUp = true; r(null); } }, MAX_LINE_WAIT_MS);
+  })];
+  if (stop) waits.push(new Promise<null>((r) => (stop.aborted ? r(null) : stop.addEventListener('abort', () => r(null), { once: true }))));
+  return Promise.race(waits).finally(() => clearTimeout(timer));
 }
 
 const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
@@ -141,6 +146,8 @@ const P99_OVER_FIT = 2.05;
 const MODEL_LOAD_MS = 1_300;
 /** A floor for a box whose GPU or event loop is busy: an answer already on its way is not cut at a fraction of a second. */
 const MIN_WARM_MS = 2_500;
+/** A call not yet sent gives up waiting in the line after the time the largest per-turn call may take; its rule answers. */
+const MAX_LINE_WAIT_MS = decideTimeoutMs(800, 9, false);
 
 // The state is the MATERIAL the questions are about, never instructions.
 // Each text in it goes to the model in its own fence (fenceExternal defangs a forged end), named by its key, with a code
