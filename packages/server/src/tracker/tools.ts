@@ -870,8 +870,8 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
 
     // 'on_deck' is reserved for tasks with a future scheduled_start (the scheduler owns the move to
     // in_progress). Explicit moves to 'on_deck' on tasks without one are refused so work is not parked
-    // where nothing wakes it.
-    if (status === 'on_deck' && !isPMAgent(agentId)) {
+    // where nothing wakes it; the PM and the main agent may park work anywhere.
+    if (status === 'on_deck' && !isPMAgent(agentId) && !isPrimaryAgent(agentId)) {
       const sched = db.prepare(
         `SELECT ${msToText('scheduled_start')} AS scheduled_start, repeat_interval, ${msToText('next_run_at')} AS next_run_at FROM work WHERE id = ?`
       ).get(taskId) as { scheduled_start: string | null; repeat_interval: number | null; next_run_at: string | null } | undefined;

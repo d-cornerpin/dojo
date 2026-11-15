@@ -48,9 +48,9 @@ const LEGAL: Record<WorkState, readonly WorkState[]> = {
   sent_back: ['open', 'claimed', 'handed_in', 'done', 'failed', 'abandoned'],
   handed_in: ['open', 'claimed', 'sent_back', 'done', 'failed', 'abandoned'],
   blocked:   ['open', 'claimed', 'done', 'failed', 'abandoned'],
-  done:      ['open'],
-  failed:    ['open', 'abandoned'],
-  abandoned: ['open'],
+  done:      ['open', 'claimed'],
+  failed:    ['open', 'claimed', 'abandoned'],
+  abandoned: ['open', 'claimed'],
 };
 
 export const OWNER_HOLD_REFUSAL = 'The owner put this task on hold. Only the owner can release it.';
