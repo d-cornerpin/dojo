@@ -183,7 +183,6 @@ vi.mock('../../../memory/assembler.js', () => ({
 // Test world: primary='primary', dreamer='dreamer', all helper roles absent.
 vi.mock('../../../config/platform.js', () => ({
   clearPlatformConfigCache: vi.fn(),
-  getPlatformName: () => 'Dojo',
   getOwnerName: () => 'TestUser',
   getPrimaryAgentId: () => 'primary',
   getPrimaryAgentName: () => 'Primary',

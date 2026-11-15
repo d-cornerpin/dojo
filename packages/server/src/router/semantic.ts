@@ -192,7 +192,7 @@ export async function classifyTierSemantic(query: string): Promise<SemanticResul
   return rank(sims, CENTROID_VERSION);
 }
 
-// Embed a query as the classifier does (label collector and probe store this); null on failure.
+// Embed a query as the classifier does (the label collector stores this); null on failure.
 export async function embedQuery(query: string): Promise<Float32Array | null> {
   const trimmed = query.trim();
   if (!trimmed) return null;

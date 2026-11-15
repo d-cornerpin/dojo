@@ -37,7 +37,7 @@ vi.mock('../../db/connection.js', async () => {
 vi.mock('../../gateway/ws.js', () => ({ broadcast: broadcastSpy, stampPersistedRow: vi.fn() }));
 vi.mock('../../agent/runtime.js', () => ({ getAgentRuntime: () => ({ handleMessage: async () => undefined }) }));
 vi.mock('../../config/platform.js', () => ({
-  clearPlatformConfigCache: vi.fn(), getPlatformName: () => 'Dojo',
+  clearPlatformConfigCache: vi.fn(),
   getOwnerName: () => 'Test Owner', getPrimaryAgentId: () => 'primary', getPrimaryAgentName: () => 'Primary',
   getPMAgentId: () => 'pm', getPMAgentName: () => 'PM',
   getTrainerAgentId: () => 'trainer', getTrainerAgentName: () => 'Trainer',

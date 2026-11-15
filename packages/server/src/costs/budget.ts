@@ -1,3 +1,4 @@
+// Budget enforcement and owner alerts.
 
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';

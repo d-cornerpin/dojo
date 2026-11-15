@@ -4,7 +4,6 @@
 // Labels come from independent signals, never from the router's own past tier
 // choices (that would re-bake existing bias). Sources:
 //   - 'implicit_under': under-routing signal (cheap tier was too weak)
-//   - 'probe_down':     over-routing confirmed by a low-confidence shadow probe
 //   - 'correction':     explicit user correction (future)
 // ════════════════════════════════════════
 
@@ -16,7 +15,7 @@ import type { Tier } from './exemplars.js';
 
 const logger = createLogger('router-labels');
 
-export type LabelSource = 'implicit_under' | 'probe_down' | 'correction';
+export type LabelSource = 'implicit_under' | 'correction';
 
 export async function recordLabel(
   agentId: string | null,

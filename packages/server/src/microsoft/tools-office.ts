@@ -116,7 +116,6 @@ async function resolveOfficeEditTarget(
 
 const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 
-
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function loadLocalWorkbook(absPath: string): Promise<any> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

@@ -215,7 +215,6 @@ const MAX_MESSAGE_CHARS = 1500;
 // bookends).
 const MAX_ARCHIVE_BODY_CHARS = 8000;
 
-
 // Hard ceiling: raw archive text never exceeds 35% of the model's window, leaving the rest for the system
 // prompt, tools and tool-call accumulation.
 const BATCH_BUDGET_CAP_RATIO = 0.35;
@@ -246,9 +245,6 @@ function extractAssistantText(content: string): string {
   }
   return parts.join('\n');
 }
-
-
-
 
 function truncateMessageContent(content: string): string {
   if (content.length <= MAX_MESSAGE_CHARS) return content;
@@ -520,7 +516,6 @@ function batchArchives(unprocessed: VaultConversation[], contextWindow: number):
 
   return batches;
 }
-
 
 // Builds the cycle message for the permanent Dreamer; vault state and archive data go in the user message
 // because the system prompt is fixed.
@@ -1435,7 +1430,6 @@ export async function recoverDreamerFromContextOverflow(
 
   return true;
 }
-
 
 // After the setup wizard, a Dreamer processes the user's "About You" profile (USER.md): long-term facts go
 // to the vault, and the profile is trimmed to what is needed every turn.

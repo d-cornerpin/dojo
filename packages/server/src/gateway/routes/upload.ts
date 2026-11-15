@@ -117,7 +117,7 @@ uploadRouter.post('/:agentId', async (c) => {
   }
 });
 
-// Chunked upload, for files over CHUNK_THRESHOLD_BYTES (so tunnel requests stay under Cloudflare's 100 MB
+// Chunked upload, for files the dashboard splits up (so tunnel requests stay under Cloudflare's 100 MB
 // cap). Flow: POST /upload/start/:agentId {filename, mimeType, size} allocates a session and returns
 // {uploadId}; POST /upload/chunk/:agentId/:uploadId/:chunkIndex appends the bytes to the session's `.part`
 // file (chunks must arrive in order, one at a time); POST /upload/finish/:agentId/:uploadId checks the

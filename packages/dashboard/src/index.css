@@ -44,7 +44,7 @@
     /* ── Foreground / UI accent over the page bg ──
        This is the "ink" color that contrasts with the page background: sumi
        ink (dark), never white. Consumed via Tailwind utilities text-ui/X,
-       bg-ui/X, border-ui/X, ring-ui/X — and via the
+       bg-ui/X, border-ui/X, ring-ui/X, and via the
        rgb(var(--ui-on-base-ch) / X) channel pattern in CSS rules. Every
        text/border/glass token derives from this one value. */
     --ui-on-base-ch: 30 28 25;
@@ -244,7 +244,7 @@
      GLASS SIDEBAR — translucent, blobs visible through it
      ════════════════════════════════════════ */
 
-  /* Sidebar — translucent, page blobs visible through it. Uses the canonical
+  /* Sidebar: translucent, page blobs visible through it. Uses the canonical
      --glass-input-bg / --glass-input-border vars. */
   .glass-sidebar {
     background: var(--glass-input-bg);
@@ -300,7 +300,7 @@
     background: var(--glass-input-border);
   }
 
-  /* Modal / dropdown background — opaque enough to read text against, built
+  /* Modal / dropdown background: opaque enough to read text against, built
      via the channel pattern. */
   .glass-modal-bg {
     background: rgb(var(--cp-bg-secondary-ch) / 0.95);

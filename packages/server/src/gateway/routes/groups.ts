@@ -6,7 +6,6 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { createGroup, getGroups, getGroupDetail, updateGroup, findOtherGroupByName, deleteGroup, assignAgentToGroup, SYSTEM_GROUP_ID } from '../../agent/groups.js';
 
-
 export const groupsRouter = new Hono();
 
 // POST / (create a group)

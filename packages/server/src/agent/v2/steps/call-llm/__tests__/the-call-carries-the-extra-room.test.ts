@@ -51,7 +51,7 @@ function ctxFor(): CallLLMContext {
     turnCtx: { agentId: AGENT, conversationId: 'conv-1' } as CallLLMContext['turnCtx'],
     turnNumber: 1, db: null as unknown as CallLLMContext['db'],
     counterparty: { kind: 'user', id: 'owner', displayName: 'Owner' } as unknown as CallLLMContext['counterparty'],
-    isA2ATurn: false, isAutoRouted: false, selection: { modelId: 'test-model', routerTier: null, excludedModels: [] },   // t212: chosen in `assemble`
+    isA2ATurn: false, isAutoRouted: false, selection: { modelId: 'test-model', routerTier: null, excludedModels: [] },   // chosen in `assemble`
     messages: [{ role: 'user', content: 'go' }] as unknown as CallLLMContext['messages'],
     systemPrompt: 'you are an agent',
     assembled: { systemEntryIds: [], messageEntryIds: [], allocation: null, freshTailDropped: 0, systemVolatile: '', reserveTokens: 0 } as unknown as CallLLMContext['assembled'],

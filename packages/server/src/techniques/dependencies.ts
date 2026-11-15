@@ -100,7 +100,6 @@ export function writeDependencyManifest(dirPath: string, manifest: DependencyMan
 
 const URL_LIKE_RE = /^(?:https?:|mailto:|ftp:|file:|data:|tel:)/i;
 
-
 const MARKDOWN_LINK_RE = /\[([^\]]*?)\]\(([^)\s]+)\)/g;
 const INLINE_CODE_RE = /`([^`]+?)`/g;
 // Fenced blocks are never scanned for references; they are only stripped before the inline scan.

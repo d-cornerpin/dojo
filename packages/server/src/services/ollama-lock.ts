@@ -100,7 +100,7 @@ class OllamaModelLock {
         // Slot exists from an earlier call with nothing running on it: take it.
         existingSlot.activeRequests = 1;
         logger.debug('Ollama lock acquired (existing idle slot)', { providerId, modelName });
-        this.broadcastStatus();
+        this.logQueueWarnings();
         return;
       }
 
@@ -114,7 +114,7 @@ class OllamaModelLock {
         const timer = setTimeout(() => {
           const idx = existingSlot.waiters.findIndex(w => w.resolve === resolve);
           if (idx !== -1) existingSlot.waiters.splice(idx, 1);
-          this.broadcastStatus();
+          this.logQueueWarnings();
           reject(new Error(
             `Ollama request timed out after ${Math.round(timeoutMs / 1000)}s waiting behind a long ` +
             `prefill on the same model (${modelName}) on provider ${providerId} — the earlier ` +
@@ -123,7 +123,7 @@ class OllamaModelLock {
           ));
         }, timeoutMs);
         existingSlot.waiters.push({ providerId, modelName, resolve, reject, queuedAt: Date.now(), timer });
-        this.broadcastStatus();
+        this.logQueueWarnings();
       });
     }
 
@@ -135,7 +135,7 @@ class OllamaModelLock {
         slotsUsedOnProvider: providerSlots.length + 1,
         maxSlots: this.maxConcurrentModels,
       });
-      this.broadcastStatus();
+      this.logQueueWarnings();
       return;
     }
 
@@ -145,7 +145,7 @@ class OllamaModelLock {
       idleSlot.modelName = modelName;
       idleSlot.activeRequests = 1;
       idleSlot.waiters = []; // defensive: an idle slot (0 active) can never carry same-model waiters, see `release`
-      this.broadcastStatus();
+      this.logQueueWarnings();
       return;
     }
 
@@ -163,7 +163,7 @@ class OllamaModelLock {
       const timer = setTimeout(() => {
         const idx = this.queue.findIndex(q => q.resolve === resolve);
         if (idx !== -1) this.queue.splice(idx, 1);
-        this.broadcastStatus();
+        this.logQueueWarnings();
         reject(new Error(
           `Ollama model swap timed out after ${Math.round(sameModelQueueTimeoutMs(declaredFirstChunkMs) / 1000)}s ` +
           `on provider ${providerId} — other model(s) (${currentModels}) still in use. ` +
@@ -172,7 +172,7 @@ class OllamaModelLock {
       }, sameModelQueueTimeoutMs(declaredFirstChunkMs));
 
       this.queue.push({ providerId, modelName, resolve, reject, queuedAt: Date.now(), timer });
-      this.broadcastStatus();
+      this.logQueueWarnings();
     });
   }
 
@@ -205,7 +205,7 @@ class OllamaModelLock {
       }
     }
 
-    this.broadcastStatus();
+    this.logQueueWarnings();
   }
 
   /** How much is in flight on `providerId` now: its slots' requests plus the unslotted local work. */
@@ -279,7 +279,7 @@ class OllamaModelLock {
   // Last-known offending providers, so the warning logs only when the set changes.
   private lastWarningKey = '';
 
-  private broadcastStatus(): void {
+  private logQueueWarnings(): void {
     const status = this.getStatus();
 
     if (this.queue.length > 0) {

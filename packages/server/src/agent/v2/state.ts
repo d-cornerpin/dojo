@@ -1,3 +1,4 @@
+// One turn's state, replaced whole through advance() and validated on every transition.
 
 import type { ToolCall } from '@dojo/shared';
 import { emptySteerQueue, type SteerQueue } from './steer-queue.js';

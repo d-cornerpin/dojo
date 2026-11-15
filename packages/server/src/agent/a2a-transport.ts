@@ -24,7 +24,17 @@ import { ACCESS_CHANNELS, type AccessChannel } from '@dojo/shared';
 import { type DeliveryInput } from './v2/deliveries.js';
 import { recordAtDoor, withOutboundAsync, recordedId } from './v2/outbound.js';
 // The join lives in `work`; everything here is transport: it lands pieces and relays answers.
-import { THREAD_HOP_CAP, isTerminal, findJoinChildByThread, findFailedJoinForThread, childrenForThread, landPiece, settlePieceWithoutResult, repointJoinPieceToHandOff, joinState, joinPieces, dueJoins, openJoins, dueJoinsUnderClosedParent, compilePendingJoins, failJoinClosed, clearJoinCompilePending, claimFailedJoinForLateAnswer, threadHopCountInWindow, bumpThreadHopCount, hopWindowLapsed, extendJoinTtl, JOIN_LIVENESS_MAX_TOTAL_MS, type JoinState, type JoinPiece } from '../work/store.js';
+import {
+  THREAD_HOP_CAP, isTerminal,
+  findJoinChildByThread, findFailedJoinForThread, childrenForThread,
+  landPiece, settlePieceWithoutResult, repointJoinPieceToHandOff,
+  joinState, joinPieces, dueJoins, openJoins,
+  dueJoinsUnderClosedParent,
+  compilePendingJoins, failJoinClosed, clearJoinCompilePending,
+  claimFailedJoinForLateAnswer, threadHopCountInWindow, bumpThreadHopCount, hopWindowLapsed,
+  extendJoinTtl, JOIN_LIVENESS_MAX_TOTAL_MS,
+  type JoinState, type JoinPiece,
+} from '../work/store.js';
 import { relayOutcomeSentence, type JoinRelayOutcome, joinFailureNotice, joinFailureReason } from './join-failure-notice.js';
 import { deferJoinRelay, takeDeferredJoinRelays } from './deferred-join-relay.js';
 // The join's close is the settlement authority's, never this module's, as elsewhere.

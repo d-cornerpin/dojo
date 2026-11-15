@@ -203,7 +203,6 @@ function soundex(word: string): string {
   return (result + '0000').slice(0, 4);
 }
 
-
 // Intro words whisper often drops from a wake phrase; the core word alone still wakes, but only for
 // short utterances so incidental name mentions do not trigger.
 const WAKE_INTRO_WORDS = new Set(['hey', 'hi', 'yo', 'ok', 'okay', 'hello']);

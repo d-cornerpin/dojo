@@ -75,7 +75,7 @@ vi.mock('../../../../../memory/compaction.js', async () => {
   };
 });
 vi.mock('../../../../../config/platform.js', () => ({
-  clearPlatformConfigCache: vi.fn(), getPlatformName: () => 'Dojo',
+  clearPlatformConfigCache: vi.fn(),
   getOwnerName: () => 'TestUser', getPrimaryAgentId: () => 'primary', getPrimaryAgentName: () => 'Primary',
   getPMAgentId: () => 'pm', getPMAgentName: () => 'PM',
   getTrainerAgentId: () => 'trainer', getTrainerAgentName: () => 'Trainer',

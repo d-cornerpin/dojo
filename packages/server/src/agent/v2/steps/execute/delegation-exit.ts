@@ -3,7 +3,7 @@
 
 import { JOIN_TTL_MINUTES, openDelegationJoin, threadHopCount, type DelegationThread } from '../../../../work/store.js';
 import { broadcast } from '../../../../gateway/ws.js';
-import { type AgentTurnState } from '../../state.js';
+import type { AgentTurnState } from '../../state.js';
 import { persistEngineSteer } from '../../engine-steer.js';
 import { steerFired } from '../../steer-queue.js';
 import { userWords, replyChannelWords } from '../../turn-address.js';

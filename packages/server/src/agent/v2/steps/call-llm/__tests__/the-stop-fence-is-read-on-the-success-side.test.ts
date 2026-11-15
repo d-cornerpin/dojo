@@ -103,7 +103,7 @@ function ctxFor(overrides: Partial<CallLLMContext> = {}): CallLLMContext {
     counterparty: { kind: 'user', id: 'owner', displayName: 'Owner' } as unknown as CallLLMContext['counterparty'],
     isA2ATurn: false,
     isAutoRouted: false,
-    selection: { modelId: 'test-model', routerTier: null, excludedModels: [] },   // t212: chosen in `assemble`
+    selection: { modelId: 'test-model', routerTier: null, excludedModels: [] },   // chosen in `assemble`
     messages: [{ role: 'user', content: 'compare the options for me' }] as unknown as CallLLMContext['messages'],
     systemPrompt: 'you are an agent',
     assembled: {

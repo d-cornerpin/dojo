@@ -88,7 +88,7 @@ vi.mock('../../services/imessage-bridge.js', () => ({
   getTurnScopedImRecipient: () => null, getDefaultSender: () => null,
 }));
 vi.mock('../../config/platform.js', () => ({
-  clearPlatformConfigCache: vi.fn(), getPlatformName: () => 'Dojo',
+  clearPlatformConfigCache: vi.fn(),
   getOwnerName: () => 'TestUser', getPrimaryAgentId: () => 'primary', getPrimaryAgentName: () => 'Primary',
   getPMAgentId: () => 'pm', getPMAgentName: () => 'PM',
   getTrainerAgentId: () => 'trainer', getTrainerAgentName: () => 'Trainer',

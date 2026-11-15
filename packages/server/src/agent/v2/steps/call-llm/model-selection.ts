@@ -2,7 +2,6 @@
 // Auto-routed: the locked model mid-task, else the router's pick from the newest rows
 // (`router/routing-view.ts`). A pick that cannot hold the agent's instructions and tools is passed over
 // before anything is built for it; when none holds, `no-pick-holds.ts` names why.
-// The shadow probe needs the tier, confidence and whether the decision was fresh, so they ride along.
 
 import { advance, type AgentTurnState } from '../../state.js';
 import { createLogger } from '../../../../logger.js';

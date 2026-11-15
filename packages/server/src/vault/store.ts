@@ -717,8 +717,6 @@ export async function findNearDuplicateEntry(
   return rows[0] ? { ...rowToEntry(rows[0]), similarity: best.similarity } : null;
 }
 
-
-
 // Scoped by agent (plus owner and household) because pinned entries are injected into every assembled
 // context and must not leak across agents.
 export function getPinnedEntries(agentId?: string): VaultEntry[] {
