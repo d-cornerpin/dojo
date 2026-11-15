@@ -1,6 +1,8 @@
 // One formatter for every block that says WHEN. It renders the recorded instant, never "3 hours ago", so the bytes
 // do not change with the clock (cache prefix). Its own module: importing it from the assembler closes a cycle.
 
+import { MOOD_MARKER_SOURCE } from '@dojo/shared';
+
 /** `messages.created_at` is epoch-ms INTEGER while `deliveries.created_at` is TEXT; both convert here, once. */
 export function normalizeCreatedAtUtc(createdAt: string | number): string | null {
   if (typeof createdAt === 'number') {
@@ -22,12 +24,14 @@ export function renderMessageTimeStamp(createdAt: string | number | null | undef
 
 /** A stamp the model echoed at the start of its reply: the shape `renderMessageTimeStamp` writes (month-name with an
  *  optional UTC offset, or ISO date and time), a leading run of them. A bracket with no clock time is real content. */
-const LEADING_TIME_STAMP_RE =
-  /^\s*\[(?:(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s\d{1,2},\s\d{4},\s\d{1,2}:\d{2}[\s\u202F\u00A0]?(?:AM|PM)(?: UTC[+-]\d{2}:\d{2})?|\d{4}-\d{2}-\d{2}[T ]\d{1,2}:\d{2}(?::\d{2})?[\s\u202F\u00A0]?(?:AM|PM|UTC|Z)?)\]\s*/;
+const STAMP_SOURCE =
+  String.raw`\[(?:(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s\d{1,2},\s\d{4},\s\d{1,2}:\d{2}[\s\u202F\u00A0]?(?:AM|PM)(?: UTC[+-]\d{2}:\d{2})?|\d{4}-\d{2}-\d{2}[T ]\d{1,2}:\d{2}(?::\d{2})?[\s\u202F\u00A0]?(?:AM|PM|UTC|Z)?)\]\s*`;
+// A leading mood marker is kept: the stamp behind it is what goes.
+const LEADING_TIME_STAMP_RE = new RegExp(String.raw`^\s*((?:${MOOD_MARKER_SOURCE}\s*)?)` + STAMP_SOURCE, 'i');
 
 export function stripLeadingTimeStamp(text: string): string {
   let out = text;
-  while (LEADING_TIME_STAMP_RE.test(out)) out = out.replace(LEADING_TIME_STAMP_RE, '');
+  while (LEADING_TIME_STAMP_RE.test(out)) out = out.replace(LEADING_TIME_STAMP_RE, '$1');
   return out;
 }
 

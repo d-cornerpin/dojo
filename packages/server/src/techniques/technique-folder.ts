@@ -1,5 +1,5 @@
-// The one "resolve inside this folder" check: the export never follows an entry out of a technique
-// folder (reported as a skipped link); agent writes and reads are not limited to it. A leaf (fs, path only).
+// The one "resolve inside this folder" check, links resolved: the technique export, the upload store and the
+// public share route never follow an entry out of their folder. A leaf (fs, path only).
 
 import fs from 'node:fs';
 import path from 'node:path';

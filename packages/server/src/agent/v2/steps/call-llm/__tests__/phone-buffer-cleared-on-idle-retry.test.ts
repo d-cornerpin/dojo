@@ -37,6 +37,11 @@ vi.mock('../../../../../home.js', async () => {
   };
 });
 
+// The live call the streamed sentences are queued to; null means no call session.
+const spoken: string[] = [];
+const callSession: { current: { isEnded: () => boolean; queueAgentSay: (t: string) => void } | null } = { current: null };
+vi.mock('../../../../../twilio/call-session.js', () => ({ getCallSession: () => callSession.current }));
+
 const mockDb: { current: Database.Database | null } = { current: null };
 
 vi.mock('../../../../../db/connection.js', async () => {
@@ -78,7 +83,7 @@ const REST = ', and the second half.';
 // `script` is consumed one entry per chat request, so a case can say "stall, then answer" —
 // which is what proves the retry grant actually reaches a second attempt. The last entry
 // repeats once the script runs out.
-type Behaviour = 'complete' | 'half-then-stall' | 'half-then-close';
+type Behaviour = 'complete' | 'half-then-stall' | 'half-then-close' | 'echoes-a-stamp';
 const script: { openai: Behaviour[]; anthropic: Behaviour[] } = { openai: [], anthropic: [] };
 const requests = { openai: 0, anthropic: 0 };
 /** Sockets deliberately left hanging; destroyed in afterAll so the server can close. */
@@ -102,6 +107,13 @@ const oaChunk = (delta: Record<string, unknown>, finish: string | null = null): 
 
 const serveOpenAI = (res: http.ServerResponse, mode: Behaviour): void => {
   res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
+  if (mode === 'echoes-a-stamp') {
+    res.write(oaChunk({ role: 'assistant', content: '[Jul 16, 2026, 10:58 PM] Saved. ' }));
+    res.write(oaChunk({ content: 'All done. ' }));
+    res.write(oaChunk({}, 'stop'));
+    res.end('data: [DONE]\n\n');
+    return;
+  }
   res.write(oaChunk({ role: 'assistant', content: HALF }));
   if (mode === 'half-then-stall') { stalled.push(res); return; } // ...and then nothing, ever.
   if (mode === 'half-then-close') { res.end(); return; } // hang up mid-answer: no finish signal
@@ -274,5 +286,16 @@ describe('T65b — the phone buffer is cleared on the idle retry', () => {
     (i.turnCtx as unknown as { phoneStreamFlushedAny: boolean }).phoneStreamFlushedAny = true;   // a sentence was already spoken
     await expect(callWithRetryAndFallback({ modelId: 'm-local' } as unknown as AgentTurnState, 'm-local', i)).rejects.toThrow(/without a finish signal/);
     expect(requests.openai, 'no second request: the spoken part cannot be recalled').toBe(1);
+  });
+
+  it('an echoed time stamp at the start of the reply is never queued to be spoken', async () => {
+    script.openai = ['echoes-a-stamp'];
+    seedOpenAI(6_000, 5_000);
+    spoken.length = 0;
+    callSession.current = { isEnded: () => false, queueAgentSay: (t) => { spoken.push(t); } };
+    await callWithRetryAndFallback({ modelId: 'm-local' } as unknown as AgentTurnState, 'm-local', inputs());
+    await vi.waitFor(() => expect(spoken.length).toBeGreaterThan(0));
+    expect(spoken[0]).toBe('Saved.');
+    callSession.current = null;
   });
 });

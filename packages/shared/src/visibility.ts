@@ -96,7 +96,7 @@ export function stripNoReplySentinel(text: string): string {
 }
 
 // `((mood: NAME))` leads a reply and animates the orb; it is stripped before display or speech.
-const MOOD_MARKER_SOURCE = String.raw`\(\(\s*mood\s*:\s*[a-z]+\s*\)\)`;
+export const MOOD_MARKER_SOURCE = String.raw`\(\(\s*mood\s*:\s*[a-z]+\s*\)\)`;
 
 export function parseMoodMarker(text: string): string | null {
   if (!text) return null;

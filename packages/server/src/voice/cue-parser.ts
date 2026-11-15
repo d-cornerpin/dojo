@@ -45,8 +45,10 @@ export function createCueExtractor(): CueExtractor {
       if (couldBeIncompleteCue(buffer)) {
         return { content: '', description: null };
       }
-      resolved = true;
       const parsed = parseDeliveryCue(buffer);
+      // Blank or cue-only so far: an echoed time stamp may still follow, so keep holding.
+      if (parsed.body.trim() === '') return { content: '', description: null };
+      resolved = true;
       buffer = '';
       return { content: parsed.body, description: parsed.description };
     },

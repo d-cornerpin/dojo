@@ -5,6 +5,7 @@ import { createNodeWebSocket } from '@hono/node-ws';
 import { ZodError } from 'zod';
 import fs from 'node:fs';
 import path from 'node:path';
+import { insideFolder } from '../techniques/technique-folder.js';
 import { authMiddleware } from './middleware/auth.js';
 import { authRouter } from './routes/auth.js';
 import { configRouter } from './routes/config.js';
@@ -97,12 +98,9 @@ export function createServer() {
     const relMatch = pathname.match(/^\/share\/[^/]+\/(.*)$/);
     const rel = relMatch ? relMatch[1] : '';
     const shareDir = path.join(OUT_DIR, slug);
-    const fullPath = rel ? path.join(shareDir, rel) : path.join(shareDir, 'index.html');
-    // Block traversal, fullPath must stay inside shareDir.
-    const resolved = path.resolve(fullPath);
-    if (!resolved.startsWith(path.resolve(shareDir) + path.sep) && resolved !== path.resolve(shareDir)) {
-      return c.json({ ok: false, error: 'invalid path' }, 400);
-    }
+    // The file must stay inside shareDir after links are resolved.
+    const resolved = insideFolder(shareDir, rel || 'index.html');
+    if (!resolved) return c.json({ ok: false, error: 'invalid path' }, 400);
     if (!fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) {
       return c.json({ ok: false, error: 'not found' }, 404);
     }

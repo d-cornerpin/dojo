@@ -23,6 +23,7 @@ import type { PromptTurnContext } from '../../../../prompt/assembler.js';
 import { reassembleForFitIfNeeded, estimateAssembledArrayTokens } from './reassemble-for-fit.js';
 import { forgetTurnArray } from './append-only-turn.js';
 import { SystemPromptTooLargeError } from '../../../../memory/budget.js';
+import { stripLeadingTimeStamp } from '../../../../memory/message-stamp.js';
 import { freeFallbackDown } from './free-fallback-down.js';
 import { createLogger } from '../../../../logger.js';
 
@@ -135,7 +136,9 @@ export async function callWithRetryAndFallback(
             let m: RegExpExecArray | null;
             while ((m = re.exec(turnCtx.phoneStreamBuffer)) !== null) {
               const end = m.index + m[0].length;
-              const part = turnCtx.phoneStreamBuffer.slice(last, end).trim();
+              // An echoed time stamp opens the reply, so only the first spoken part carries it.
+              const raw = turnCtx.phoneStreamBuffer.slice(last, end);
+              const part = (turnCtx.phoneStreamFlushedAny || flushParts.length > 0 ? raw : stripLeadingTimeStamp(raw)).trim();
               if (part) flushParts.push(part);
               last = end;
             }

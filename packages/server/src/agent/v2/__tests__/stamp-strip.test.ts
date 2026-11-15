@@ -1,15 +1,5 @@
-// ════════════════════════════════════════
-// Leading time-stamp mimicry strip (2026-07-16)
-//
-// Pins the fix for the observed production line "[Jul 16, 2026, 10:58 PM]
-// Saved." emitted the night the per-message stamps shipped: a leading run of
-// assembler-format bracket-times is context markup and must be stripped from
-// model output at the persist source; genuine bracketed content survives.
-// ════════════════════════════════════════
-
 import { describe, it, expect } from 'vitest';
-import { stripLeadingTimeStamp } from '../../../memory/message-stamp.js';
-import { renderMessageTimeStamp } from '../../../memory/message-stamp.js';
+import { stripLeadingTimeStamp, renderMessageTimeStamp } from '../../../memory/message-stamp.js';
 
 describe('stripLeadingTimeStamp', () => {
   it('strips the observed production shape', () => {
@@ -43,5 +33,9 @@ describe('stripLeadingTimeStamp', () => {
 
   it('handles a stamp-only message (becomes empty for the caller to null out)', () => {
     expect(stripLeadingTimeStamp('[Jul 16, 2026, 10:58 PM] ').trim()).toBe('');
+  });
+
+  it('sees past a leading mood marker and keeps the marker', () => {
+    expect(stripLeadingTimeStamp('((mood: warm)) [Jul 16, 2026, 10:58 PM] Done.')).toBe('((mood: warm)) Done.');
   });
 });

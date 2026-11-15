@@ -107,7 +107,7 @@ describe('§5 an unfinished cue at stream end is handed back, not swallowed', ()
 });
 
 describe('§6 a cue split one character at a time resolves exactly once', () => {
-  it('emits the description once and keeps the space that arrives after the cue', () => {
+  it('emits the description once, with the first spoken word', () => {
     const e = createCueExtractor();
     const text = '((deliver: gentle)) Okay';
 
@@ -118,13 +118,26 @@ describe('§6 a cue split one character at a time resolves exactly once', () => 
       content += r.content;
       if (r.description !== null) descriptions.push(r.description);
     }
-    // The space after the cue arrives after the cue has resolved, so it is kept;
-    // the flush contributes nothing once resolved.
+    // The cue resolves with the first word after it; the flush contributes nothing once resolved.
     const end = e.flush();
     content += end.content;
     if (end.description !== null) descriptions.push(end.description);
 
     expect(descriptions).toEqual(['gentle']);
-    expect(content).toBe(' Okay');
+    expect(content).toBe('Okay');
+  });
+});
+
+describe('§7 an echoed time stamp after a blank or cue-only start is never spoken', () => {
+  it('a blank first chunk, then a stamp and a sentence', () => {
+    const e = createCueExtractor();
+    expect(e.consume('\n')).toEqual({ content: '', description: null });
+    expect(e.consume('[Jul 16, 2026, 10:58 PM] Done.')).toEqual({ content: 'Done.', description: null });
+  });
+
+  it('a cue first, then a stamp and a sentence', () => {
+    const e = createCueExtractor();
+    expect(e.consume('((deliver: warm)) ')).toEqual({ content: '', description: null });
+    expect(e.consume('[Jul 16, 2026, 10:58 PM] Done.')).toEqual({ content: 'Done.', description: 'warm' });
   });
 });
