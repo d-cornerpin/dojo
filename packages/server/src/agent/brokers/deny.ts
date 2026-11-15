@@ -50,13 +50,14 @@ export const SENSITIVE_BASENAMES: ReadonlySet<string> = new Set<string>([
   'id_ed25519',
   'id_ecdsa',
   'id_dsa',
-  'authorized_keys',
-  'known_hosts',
   '.npmrc',
   '.pypirc',
   '.netrc',
   'credentials',
 ]);
+
+/** Files under ~/.ssh that list public keys only, so they hold no secret. */
+const SSH_PUBLIC_LISTS: ReadonlySet<string> = new Set(['known_hosts', 'authorized_keys']);
 
 /** No glob matcher lives here: importing permissions.ts's would close a cycle, so the
  *  rows below express containment with plain string ops that match each legacy glob. */
@@ -112,9 +113,9 @@ export const DENY_RULES: readonly DenyRule[] = [
     id: 'ssh-directory-except-public-keys',
     tiers: ['sensitive'],
     since: 'legacy',
-    reason: 'everything under ~/.ssh is private key material except the .pub half of a key pair.',
+    reason: 'everything under ~/.ssh is private key material except public keys and the host and authorized-key lists.',
     test: ({ folded, base, home }) =>
-      folded.startsWith(path.join(home, '.ssh') + path.sep) && !base.endsWith('.pub'),
+      folded.startsWith(path.join(home, '.ssh') + path.sep) && !base.endsWith('.pub') && !SSH_PUBLIC_LISTS.has(base),
   },
   {
     id: 'aws-credentials',
