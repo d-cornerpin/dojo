@@ -41,7 +41,7 @@ function unknownCalls(text: string): string[] {
 describe('a hint names only calls that exist', () => {
   it('the PM-only refusal', async () => {
     const [gate] = gatesForCall('work_validate', { action: 'retask' }).filter((g) => g.kind === 'pm_only_operation');
-    const out = await evaluateGate(gate, { agentId: 'primary', name: 'work_validate', args: { action: 'retask' }, resolveRef: () => null });
+    const out = await evaluateGate(gate, { agentId: 'helper-1', name: 'work_validate', args: { action: 'retask' }, resolveRef: () => null });
     const text = out.verdict.allowed ? '' : out.verdict.blockedMessage ?? '';
     expect(unknownCalls(text)).toEqual([]);
     expect(text).toContain('send_to_agent(');

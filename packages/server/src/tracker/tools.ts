@@ -1957,7 +1957,7 @@ export function trackerEditProject(agentId: string, args: Record<string, unknown
 
 const REDRIVE_LATER = ' The directive could not be delivered just now (it is logged); the task is back in play and the PM sweep re-drives it on its schedule.';
 
-// PM-only: an open task's worker is told to redo it with a directive (at least 30 characters). Refused on a
+// PM or main agent: an open task's worker is told to redo it with a directive (at least 30 characters). Refused on a
 // cancelled task, a handed-in one (that is decided instead) and one with no worker. Moves the task to in_progress
 // or on_deck through `transition()`, logs the directive on its trail, and wakes the worker with it, owing no reply.
 
@@ -2015,7 +2015,7 @@ export async function trackerRetask(
 
   writeTaskLog({
     taskId,
-    fromEntity: 'pm',
+    fromEntity: isPMAgent(pmAgentId) ? 'pm' : `agent:${pmAgentId}`,
     entryKind: 'directive',
     fromStatus: task.status,
     toStatus: targetStatus,

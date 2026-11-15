@@ -261,7 +261,7 @@ export async function evaluateGate(gate: ToolGate, ctx: GateContext): Promise<Ga
       };
 
     case 'pm_only_operation':
-      return isPMAgent(agentId)
+      return isPMAgent(agentId) || isPrimaryAgent(agentId)
         ? skip(gate)
         : {
             gate,

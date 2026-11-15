@@ -29,16 +29,16 @@ import {
   emptyDependencyManifest,
 } from './dependencies.js';
 import { VERSIONS_SUBDIR } from './versioning.js';
-import { getTrainerAgentId, getTrainerAgentName, isTrainerAgent } from '../config/platform.js';
+import { getTrainerAgentId, getTrainerAgentName, isTrainerAgent, isPrimaryAgent } from '../config/platform.js';
 import { mayUseTechnique } from '../agent/access/read.js';
 
 const logger = createLogger('technique-tools');
 
 // Authorization for technique-mutating tools (save/update/publish/delete): null when allowed, else a refusal
-// string. The trainer is always allowed; with no live trainer any sensei-class caller is (otherwise every
+// string. The trainer and the main agent are always allowed; with no live trainer any sensei-class caller is (otherwise every
 // mutation would be refused); everyone else is redirected to the trainer.
 function authorizeTechniqueMutation(agentId: string, classification: string, verb: string): string | null {
-  if (isTrainerAgent(agentId)) return null;
+  if (isTrainerAgent(agentId) || isPrimaryAgent(agentId)) return null;
 
   // No live trainer: allow sensei-class callers so the feature still works on a trainer-less install.
   try {

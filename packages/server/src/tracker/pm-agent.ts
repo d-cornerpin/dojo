@@ -75,7 +75,7 @@ export const PM_ALLOWED_WORK_OPS: readonly WorkOp[] = [
 
 const PM_ALLOWED_WORK_OPS_SET: ReadonlySet<string> = new Set<string>(PM_ALLOWED_WORK_OPS);
 
-/** Operations only the PM may perform, whichever verb carries them. Deciding is not one of them: the
+/** Operations only the PM and the main agent may perform, whichever verb carries them. Deciding is not one of them: the
  *  decision door itself says who decides (`work/done/who-decides.ts`). */
 export const PM_ONLY_WORK_OPS: ReadonlySet<string> = new Set<string>(['work_validate:retask']);
 

@@ -1025,7 +1025,7 @@ export function renderPmAwareness(agentId: string): string | null {
   return null;
 }
 
-/** The `trainer-awareness` slot (primary only): names the Trainer, who owns technique saves; null without one. */
+/** The `trainer-awareness` slot (primary only): names the Trainer, who owns the technique library; null without one. */
 export function renderTrainerAwareness(agentId: string): string | null {
   if (!isPrimaryAgent(agentId)) return null;
   try {
@@ -1034,7 +1034,7 @@ export function renderTrainerAwareness(agentId: string): string | null {
     const db = getDb();
     const trainerAgent = db.prepare('SELECT id, status FROM agents WHERE id = ?').get(trainerId) as { id: string; status: string } | undefined;
     if (trainerAgent && trainerAgent.status !== 'terminated') {
-      return `## Trainer: ${trainerName}\n\n${trainerName} (ID: ${trainerId}) is the dedicated Trainer agent, owns the technique library. \`save_technique\` and \`update_technique\` are reserved for ${trainerName}; if you want a technique created or edited, send ${trainerName} a message describing what you want and they'll do it. Message via \`send_to_agent(agent="${trainerId}", ...)\`.`;
+      return `## Trainer: ${trainerName}\n\n${trainerName} (ID: ${trainerId}) is the dedicated Trainer agent, owns the technique library. you may save, update and publish techniques yourself, or send ${trainerName} a message describing what you want and they'll do it. Message via \`send_to_agent(agent="${trainerId}", ...)\`.`;
     }
   } catch { /* Trainer may not be configured */ }
   return null;

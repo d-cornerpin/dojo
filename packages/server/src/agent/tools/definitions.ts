@@ -2022,7 +2022,7 @@ export const toolDefinitions: ToolDefinition[] = [
   // ── Technique Tools ──
   {
     name: 'save_technique',
-    description: '**TRAINER AGENT ONLY.** Save a reusable technique to the dojo. Other agents calling this get refused with a redirect to the trainer.\n\nThe trainer owns techniques because techniques are SHAREABLE: when one user exports a technique to another user, every support file, dependency, and external resource has to travel with it. A technique whose TECHNIQUE.md references `~/Documents/random.py` (a file the main agent dropped somewhere arbitrary) is broken on every other machine. Centralizing creation in the trainer is what keeps techniques portable by construction.\n\nWhen you (as another agent) want a technique built, send the trainer a message describing what you want, with the contents of any custom files inline. They\'ll create the technique correctly.\n\n**File-reference validation runs at save time.** Every path TECHNIQUE.md references must EITHER exist inside the technique\'s support directory (pass it in `files`) OR be declared in `dependencies` as a repo / asset / manual step that the importing trainer will fetch. References that don\'t resolve cause a structured refusal.\n\n**Drafts vs publish:** techniques save as DRAFT by default. Drafts can\'t be loaded with `use_technique`. Pass publish=true whenever the user expects it usable right away.',
+    description: '**TRAINER AGENT AND MAIN AGENT ONLY.** Save a reusable technique to the dojo. Other agents calling this get refused with a redirect to the trainer.\n\nThe trainer owns techniques because techniques are SHAREABLE: when one user exports a technique to another user, every support file, dependency, and external resource has to travel with it. A technique whose TECHNIQUE.md references `~/Documents/random.py` (a file the main agent dropped somewhere arbitrary) is broken on every other machine. Centralizing creation in the trainer is what keeps techniques portable by construction.\n\nWhen you (as another sub-agent) want a technique built, send the trainer a message describing what you want, with the contents of any custom files inline. They\'ll create the technique correctly.\n\n**File-reference validation runs at save time.** Every path TECHNIQUE.md references must EITHER exist inside the technique\'s support directory (pass it in `files`) OR be declared in `dependencies` as a repo / asset / manual step that the importing trainer will fetch. References that don\'t resolve cause a structured refusal.\n\n**Drafts vs publish:** techniques save as DRAFT by default. Drafts can\'t be loaded with `use_technique`. Pass publish=true whenever the user expects it usable right away.',
     effects: [
       { kind: 'fs_write', from: 'args.files[].path' },
       { kind: 'net', from: 'args.dependencies.repos[].url' },
@@ -2140,7 +2140,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'publish_technique',
-    description: 'Publish a draft technique, making it available to all agents. **Trainer agent only**, non-trainer callers get refused with a redirect.',
+    description: 'Publish a draft technique, making it available to all agents. **Trainer agent and main agent only**, other callers get refused with a redirect.',
     effects: [{ kind: 'fs_write', from: 'derived:the technique directory named by args.name' }],
     input_schema: {
       type: 'object',
@@ -2152,7 +2152,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'update_technique',
-    description: 'Update a technique\'s display name, description, instructions, files, or dependency manifest. Instruction changes create a version snapshot; metadata-only changes (display_name / description / dependencies) do not. **Trainer agent only**, non-trainer callers get refused with a redirect.\n\nFile-reference validation runs the same way as save_technique: if `instructions` references a path that isn\'t in the support dir AND isn\'t declared in dependencies, the update is refused.',
+    description: 'Update a technique\'s display name, description, instructions, files, or dependency manifest. Instruction changes create a version snapshot; metadata-only changes (display_name / description / dependencies) do not. **Trainer agent and main agent only**, other callers get refused with a redirect.\n\nFile-reference validation runs the same way as save_technique: if `instructions` references a path that isn\'t in the support dir AND isn\'t declared in dependencies, the update is refused.',
     effects: [
       { kind: 'fs_write', from: 'args.name', via: 'technique_dir', scope: { at: 'argTree' } },
       { kind: 'net', from: 'args.dependencies.repos[].url' },

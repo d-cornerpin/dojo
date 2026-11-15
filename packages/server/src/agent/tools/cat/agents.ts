@@ -84,7 +84,7 @@ async function resolveSpawnSquad(opts: {
     if (!ref.ok) return { error: ref.error };
     const grp = db.prepare('SELECT id, name, created_by FROM agent_groups WHERE id = ?').get(ref.id) as { id: string; name: string; created_by: string | null } | undefined;
     if (!grp) return { error: `Squad "${opts.explicitGroupId}" doesn't exist. Omit group_id to auto-create a squad, or pass one you created.` };
-    const ownsIt = grp.created_by === opts.callerAgentId;
+    const ownsIt = grp.created_by === opts.callerAgentId || isPrimaryAgent(opts.callerAgentId);
     const projectStamped = !!db.prepare(`SELECT 1 FROM work w WHERE ${projectScope('w')} AND w.group_id = ? LIMIT 1`).get(ref.id);
     if (!ownsIt && !projectStamped) {
       return { error: `You can only spawn into a squad you created or a project's squad. "${grp.name}" is neither. Omit group_id to auto-create your own squad.` };
