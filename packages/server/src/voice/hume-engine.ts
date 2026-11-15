@@ -32,6 +32,7 @@ interface SdkSocket {
 interface SdkAudioMessage {
   type: 'audio';
   audio: string;
+  text: string;
   generationId: string;
   isLastChunk: boolean;
   chunkIndex?: number;
@@ -48,6 +49,13 @@ type SdkMessage = SdkAudioMessage | SdkTimestampMessage;
 function isAudioMessage(m: unknown): m is SdkAudioMessage {
   return typeof m === 'object' && m !== null && (m as { type?: string }).type === 'audio'
     && typeof (m as SdkAudioMessage).audio === 'string';
+}
+
+/** The SDK's error frame is `{ code?, error?, message? }` with no `type`. */
+function isErrorFrame(m: unknown): boolean {
+  const f = m as { type?: string; error?: unknown; message?: unknown } | null;
+  return typeof f === 'object' && f !== null && f.type !== 'audio' && f.type !== 'timestamp'
+    && (f.error !== undefined || f.message !== undefined);
 }
 
 function getClient(): HumeClient | null {
@@ -143,6 +151,8 @@ export interface HumeStreamSessionOpts {
   /** Speed multiplier. 1.0 default; extreme values can destabilise output. */
   speed?: number;
   contextGenerationId?: string;
+  /** Also report an error frame or an unrequested hang-up through onError (the dashboard voice re-drives the reply locally). */
+  reportDrops?: boolean;
 }
 
 /**
@@ -156,15 +166,18 @@ export class HumeStreamSession {
   private speed: number | undefined;
   private generationId: string | null = null;
   private contextGenerationId: string | undefined;
+  private reportDrops: boolean;
   private closed = false;
   /** A frame carried `isLastChunk` (per text snippet, not end of stream). */
   private sawLastChunk = false;
   /** The socket 'close' event fired, so close() can resolve as soon as Hume hangs up. */
   private sawSocketClose = false;
 
-  /** Decoded PCM, wrapped as WAV, with whether it ends a pushed utterance. voice-ws.ts forwards these to the browser. */
-  onWav: ((wav: Buffer, isLastChunk: boolean) => void) | null = null;
-  /** Fatal failure (socket error, provider error frame, hang-up before close): the caller should fall back to the local engine. */
+  /** Decoded PCM, wrapped as WAV. voice-ws.ts forwards these straight to the browser. */
+  onWav: ((wav: Buffer) => void) | null = null;
+  /** Hume finished sending the audio for one snippet of pushed text (its `text`). */
+  onSnippetDone: ((text: string) => void) | null = null;
+  /** Fatal socket error: the caller should fall back to the local engine. */
   onError: ((err: Error) => void) | null = null;
   onClose: (() => void) | null = null;
 
@@ -173,6 +186,7 @@ export class HumeStreamSession {
     this.description = opts.description && opts.description.length > 0 ? opts.description : undefined;
     this.speed = opts.speed;
     this.contextGenerationId = opts.contextGenerationId;
+    this.reportDrops = opts.reportDrops === true;
   }
 
   async open(): Promise<void> {
@@ -259,17 +273,18 @@ export class HumeStreamSession {
       // tail audio for several hundred ms, and dropping those frames cuts off the last clause.
       // The SDK stops calling this once the socket is actually closed.
       const m = args[0] as SdkMessage;
-      if ((m as { type?: string }).type === 'error') {
-        this.onError?.(new Error(String((m as { message?: unknown }).message ?? 'Hume error frame')));
+      if (this.reportDrops && isErrorFrame(m)) {
+        this.onError?.(new Error('Hume error frame'));
         return;
       }
       if (!isAudioMessage(m)) return;
       this.generationId = m.generationId;
+      if (m.isLastChunk) this.onSnippetDone?.(m.text);
       try {
         const f32 = decodeHumePcm(m.audio);
         if (f32.length === 0) return;
         const wav = pcmFloatToWav(f32, HUME_SAMPLE_RATE);
-        this.onWav?.(wav, m.isLastChunk);
+        this.onWav?.(wav);
         if (m.isLastChunk) this.sawLastChunk = true;
       } catch (err) {
         logger.warn('Hume audio decode failed', { error: err instanceof Error ? err.message : String(err) });
@@ -283,7 +298,7 @@ export class HumeStreamSession {
     });
     this.socket.on('close', () => {
       this.sawSocketClose = true;
-      if (!this.closed) this.onError?.(new Error('Hume hung up mid-stream'));
+      if (this.reportDrops && !this.closed) this.onError?.(new Error('Hume hung up mid-stream'));
       this.onClose?.();
     });
   }

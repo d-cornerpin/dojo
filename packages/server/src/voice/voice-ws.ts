@@ -287,7 +287,8 @@ function sendBinary(ws: WSContext, buf: Buffer): void {
   try { ws.send(buf as unknown as ArrayBuffer); } catch { /* ignore */ }
 }
 
-// Release a voice client when a reply is finished or cannot be spoken: sends the terminal tts_end + listening frames (with the tunnel-insurance repeats) so the orb never hangs.
+// Release a voice client when a reply is finished or cannot be spoken: sends the terminal tts_end +
+// listening frames (with the tunnel-insurance repeats) so the orb never hangs.
 function releaseVoiceClient(session: VoiceSession, messageId: string): void {
   sendJson(session.ws, { type: 'voice:tts_end', agentId: session.agentId, messageId });
   sendJson(session.ws, { type: 'voice:state', agentId: session.agentId, state: 'listening' });
@@ -295,6 +296,15 @@ function releaseVoiceClient(session: VoiceSession, messageId: string): void {
     setTimeout(() => {
       try { sendJson(session.ws, { type: 'voice:tts_end', agentId: session.agentId, messageId }); } catch { /* ignore */ }
     }, i * 120);
+  }
+}
+
+// Frees a cloud burst's slots on the session and re-arms the proactive watcher the burst had paused.
+function retireBurst(session: VoiceSession, abort: AbortController): void {
+  if (session.activeTts?.abort === abort) session.activeTts = null;
+  session.activeBurstPush = null;
+  if (sessions.has(session.ws) && !session.unsubscribeProactive) {
+    session.unsubscribeProactive = subscribeProactiveWatcher(session);
   }
 }
 
@@ -1140,6 +1150,7 @@ function startTtsForAgent(
       agentId: session.agentId, recipientId: 'owner', messageId, detail: 'local',
     }), 'voice: local TTS spoke', { agentId: session.agentId, messageId });
     logger.info('TTS streaming started', { agentId: session.agentId, messageId, voice: effectiveVoice });
+    if (opts?.forceLocal) notifyCloudVoiceFallbackOnce(session);
     sendJson(session.ws, { type: 'voice:tts_start', agentId: session.agentId, messageId });
     sendJson(session.ws, { type: 'voice:state', agentId: session.agentId, state: 'speaking' });
     void (async () => {
@@ -1436,6 +1447,7 @@ function startCloudTtsBurst(session: VoiceSession, initialContent?: string): voi
     voiceProvider: session.cloudVoiceProvider,
     description: session.cloudDescription ?? undefined,
     speed: session.cloudSpeed,
+    reportDrops: true,
   });
   // Engine-agnostic push handle. Hume is not open for the first 100-300ms and hume.push would drop text,
   // so pre-open pushes (e.g. the loop's filler) are buffered and drained once open() resolves.
@@ -1469,15 +1481,53 @@ function startCloudTtsBurst(session: VoiceSession, initialContent?: string): voi
     } catch { /* burst already closing */ }
   };
 
-  // Every utterance pushed to Hume, and how many of them Hume has finished sending audio for; a failure
-  // re-drives the unfinished ones through the local voice. Each push is flushed so one push is one snippet.
-  const said: string[] = [];
-  let spoken = 0;
-  const say = (text: string): void => { said.push(text); hume.push(text); hume.flush(); };
-  hume.onWav = (wav, isLastChunk) => {
+  // Text pushed to Hume whose audio Hume has not finished; a failure re-drives it through the local voice.
+  // Each push is flushed, and Hume reports the text of each snippet it finishes. A snippet that does not
+  // match the front of the pending text leaves it in place, so a sentence is re-said rather than skipped.
+  let unspoken = '';
+  const say = (text: string): void => {
+    unspoken += `${unspoken ? ' ' : ''}${text}`;
+    hume.push(text);
+    hume.flush();
+  };
+  hume.onWav = (wav) => {
     if (abort.signal.aborted) return;
     sendBinary(session.ws, wav);
-    if (isLastChunk) spoken++;
+  };
+  hume.onSnippetDone = (text) => {
+    const t = text.trim();
+    const i = unspoken.indexOf(t);
+    if (t && i >= 0 && unspoken.slice(0, i).trim() === '') unspoken = unspoken.slice(i + t.length).trimStart();
+  };
+  let toolsInFlight = 0;
+  let bubbleDoneSeen = false;
+  let finishing = false;
+  let lastMessageId = '';
+  let bracketPending = '';
+
+  // A cloud failure hands the rest of the reply to the local voice, same session: the text Hume has not
+  // finished, then the live chunks the local burst hears from here on. Nothing left to say and the reply
+  // finished: just release the client.
+  hume.onError = (err) => {
+    if (abort.signal.aborted) return;
+    abort.abort();
+    unsubscribe();
+    // Held text (a word or a control mark split across chunks) joins with no separator so the local
+    // burst sees it whole once the next chunk arrives.
+    const held = sanitizer.flushUnsafe() + bracketPending;
+    const unsaid = `${unspoken ? `${unspoken} ` : ''}${held}`;
+    if (!unsaid && finishing) {
+      logger.warn('Cloud TTS failed after the reply was spoken', { error: err.message }, session.agentId);
+      releaseVoiceClient(session, messageId);
+      retireBurst(session, abort);
+      return;
+    }
+    logger.warn('Cloud TTS failed mid-reply, continuing in the local voice', { error: err.message }, session.agentId);
+    const replay: WsEvent[] = finishing
+      ? [{ type: 'agent:status', agentId: session.agentId, status: 'idle' }]
+      : bubbleDoneSeen && toolsInFlight === 0
+        ? [{ type: 'chat:chunk', agentId: session.agentId, messageId: lastMessageId, content: '', done: true }] : [];
+    startTtsForAgent(session, unsaid || undefined, { forceLocal: true, replayEvents: replay });
   };
 
   // Subscribe to chat:chunk synchronously: the proactive watcher unsubscribes when it triggers this
@@ -1495,21 +1545,16 @@ function startCloudTtsBurst(session: VoiceSession, initialContent?: string): voi
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       unsubscribe();
-      if (session.activeTts && session.activeTts.abort === abort) session.activeTts = null;
-      session.activeBurstPush = null;
+      retireBurst(session, abort);
       // Barge-in or session close already tore this burst down; do not re-drive an abandoned turn.
       if (abort.signal.aborted || !sessions.has(session.ws)) {
         logger.info('Cloud TTS open failed after abort/close, not re-driving', { error: msg }, session.agentId);
-        if (sessions.has(session.ws) && !session.unsubscribeProactive) {
-          session.unsubscribeProactive = subscribeProactiveWatcher(session);
-        }
         return;
       }
       // A transient open failure on a correctly configured cloud voice: re-drive THIS burst through
       // local, replaying the buffered events, and tell the user once. session.ttsEngine is untouched so
       // the next turn retries cloud.
       logger.warn('Cloud TTS open failed, falling back to local voice for this burst', { error: msg }, session.agentId);
-      notifyCloudVoiceFallbackOnce(session);
       const buffered = pendingEvents.splice(0);
       startTtsForAgent(session, initialContent, { forceLocal: true, replayEvents: buffered });
       return;
@@ -1522,6 +1567,8 @@ function startCloudTtsBurst(session: VoiceSession, initialContent?: string): voi
       try { say(buffered); } catch { /* ignore */ }
     }
     preOpenBuffer.length = 0;
+    // A send failure during the drain already handed the reply to the local voice.
+    if (abort.signal.aborted) return;
     // Drained pre-open content needs startStreaming so the dashboard leaves 'thinking'.
     if (hadBuffered) startStreaming();
     if (session.activeBurstPush) {
@@ -1538,10 +1585,6 @@ function startCloudTtsBurst(session: VoiceSession, initialContent?: string): voi
     let bubbleChars = 0;
     const QUIET_CLOSE_MS = 4000;
     let quietTimer: ReturnType<typeof setTimeout> | null = null;
-    let toolsInFlight = 0;
-    let bubbleDoneSeen = false;
-    let finishing = false;
-    let lastMessageId = '';
 
     const cancelQuietTimer = (): void => {
       if (quietTimer) { clearTimeout(quietTimer); quietTimer = null; }
@@ -1560,17 +1603,11 @@ function startCloudTtsBurst(session: VoiceSession, initialContent?: string): voi
         // A failure or barge-in already handed the session on; this burst must not touch what replaced it.
         if (abort.signal.aborted) return;
         releaseVoiceClient(session, messageId);
-        if (session.activeTts && session.activeTts.abort === abort) {
-          session.activeTts = null;
-        }
-        session.activeBurstPush = null;
         if (session.unsubscribeChunk) {
           session.unsubscribeChunk();
           session.unsubscribeChunk = null;
         }
-        if (sessions.has(session.ws) && !session.unsubscribeProactive) {
-          session.unsubscribeProactive = subscribeProactiveWatcher(session);
-        }
+        retireBurst(session, abort);
       });
     };
     const armQuietTimer = (): void => {
@@ -1591,7 +1628,6 @@ function startCloudTtsBurst(session: VoiceSession, initialContent?: string): voi
     // A ((deliver: ...)) cue overrides Hume's description for this turn; without one the baseline
     // description (voice.cloud_voice_description) stays, even if blank. Same bracket buffer as the local
     // pushContent.
-    let bracketPending = '';
     const pushContent = (raw: string): void => {
       let combined = bracketPending + raw;
       let depth = 0;
@@ -1703,31 +1739,6 @@ function startCloudTtsBurst(session: VoiceSession, initialContent?: string): voi
         finishStream('chat_error');
         return;
       }
-    };
-
-    // A cloud failure hands the rest of the reply to the local voice, same session: everything Hume has not
-    // finished (a cut utterance included, so it is said whole), then the live chunks the local burst hears
-    // from here on. Nothing left to say and the reply finished: just release the client.
-    hume.onError = (err) => {
-      if (abort.signal.aborted) return;
-      abort.abort();
-      unsubscribe();
-      const unsaid = [...said.slice(spoken), sanitizer.flushUnsafe(), bracketPending].join(' ').trim();
-      if (!unsaid && finishing) {
-        logger.warn('Cloud TTS failed after the reply was spoken', { error: err.message }, session.agentId);
-        releaseVoiceClient(session, messageId);
-        if (session.activeTts?.abort === abort) session.activeTts = null;
-        session.activeBurstPush = null;
-        if (sessions.has(session.ws) && !session.unsubscribeProactive) {
-          session.unsubscribeProactive = subscribeProactiveWatcher(session);
-        }
-        return;
-      }
-      logger.warn('Cloud TTS failed mid-reply, continuing in the local voice', { error: err.message }, session.agentId);
-      notifyCloudVoiceFallbackOnce(session);
-      const replay: WsEvent[] = finishing || (bubbleDoneSeen && toolsInFlight === 0)
-        ? [{ type: 'chat:chunk', agentId: session.agentId, messageId: lastMessageId, content: '', done: true }] : [];
-      startTtsForAgent(session, unsaid ? `${unsaid} ` : undefined, { forceLocal: true, replayEvents: replay });
     };
 
     // Process the proactive watcher's initial chunk, then the events buffered during hume.open(), then

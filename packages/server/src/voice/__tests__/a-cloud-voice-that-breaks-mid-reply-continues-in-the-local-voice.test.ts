@@ -6,28 +6,35 @@ import type { WsEvent } from '@dojo/shared';
 const bus = new Set<(e: WsEvent) => void>();
 const emit = (e: WsEvent): void => { for (const h of [...bus]) h(e); };
 
-// The cloud stand-in: each pushed utterance succeeds, goes silent-and-fails, or is cut part-way.
-type Step = 'ok' | 'fail' | 'cut';
+// The cloud stand-in: each pushed utterance finishes ('ok'), fails with no audio ('fail'), is cut
+// part-way ('cut'), or is split into two snippets with the failure after the first ('split').
+type Step = 'ok' | 'fail' | 'cut' | 'split';
 let script: Step[] = [];
-let failOpen = false;
+let pushes = 0;
 
 vi.mock('hume', () => ({ HumeClient: class {} }));
 vi.mock('../hume-engine.js', () => ({
   isHumeConfigured: () => true,
   HumeStreamSession: class {
-    onWav: ((wav: Buffer, last: boolean) => void) | null = null;
+    onWav: ((wav: Buffer) => void) | null = null;
+    onSnippetDone: ((text: string) => void) | null = null;
     onError: ((e: Error) => void) | null = null;
     private pending = '';
-    private n = 0;
-    async open(): Promise<void> { if (failOpen) throw new Error('refused'); }
+    async open(): Promise<void> {}
     push(t: string): void { this.pending += t; }
     flush(): void {
-      if (!this.pending) return;
+      const text = this.pending;
+      if (!text) return;
       this.pending = '';
-      const step = script[this.n++] ?? 'ok';
+      const step = script[pushes++] ?? 'ok';
       setTimeout(() => {
-        if (step === 'ok') this.onWav?.(Buffer.from('cloud'), true);
-        if (step === 'cut') { this.onWav?.(Buffer.from('cloud'), false); this.onError?.(new Error('dropped')); }
+        if (step === 'ok') { this.onWav?.(Buffer.from('cloud')); this.onSnippetDone?.(text); }
+        if (step === 'split') {
+          const cut = text.indexOf('.') + 1;
+          this.onWav?.(Buffer.from('cloud')); this.onSnippetDone?.(text.slice(0, cut));
+          this.onError?.(new Error('dropped'));
+        }
+        if (step === 'cut') { this.onWav?.(Buffer.from('cloud')); this.onError?.(new Error('dropped')); }
         if (step === 'fail') this.onError?.(new Error('quota'));
       }, 0);
     }
@@ -35,6 +42,7 @@ vi.mock('../hume-engine.js', () => ({
     async close(): Promise<void> {}
   },
 }));
+vi.mock('../../agent/runtime.js', () => ({ preemptAgentForUrgentMessage: () => {} }));
 
 const localSaid: string[] = [];
 let localBroken = false;
@@ -105,8 +113,10 @@ beforeEach(() => {
   closeVoiceSession(ws as never);
   bus.clear();
   sent = []; binaries = 0; localSaid.length = 0;
-  script = []; failOpen = false; localBroken = false;
+  script = []; pushes = 0; localBroken = false;
 });
+
+const replyEnds = async (): Promise<void> => { emit(idle()); await localReplyEnded(); };
 
 describe('a cloud voice that breaks mid-reply continues in the local voice', () => {
   it('a failure before any audio: the whole reply is spoken locally, with one notice', async () => {
@@ -115,36 +125,62 @@ describe('a cloud voice that breaks mid-reply continues in the local voice', () 
     emit(chunk('First part. '));
     await settle();
     emit(chunk('Second part.', true));
-    emit(idle());
-    await localReplyEnded();
+    await replyEnds();
     expect(localSaid.join('')).toBe('First part.Second part.');
     expect(types('voice:notice')).toHaveLength(1);
   });
 
-  it('a failure after some audio: only the sentences not yet spoken are said locally', async () => {
-    script = ['ok', 'fail'];
+  it('a failure after some audio, even mid-sentence: only what was not finished is said locally', async () => {
+    script = ['ok', 'cut'];
     await openCloudSession();
     emit(chunk('First part. '));
     await settle();
     emit(chunk('Second part. '));
     await settle();
     emit(chunk('Third part.', true));
-    emit(idle());
-    await localReplyEnded();
+    await replyEnds();
     expect(localSaid.join('')).toBe('Second part.Third part.');
     expect(types('voice:notice')).toHaveLength(1);
   });
 
-  it('a sentence cut part-way is said whole in the local voice, and earlier ones are not repeated', async () => {
-    script = ['ok', 'cut'];
+  it('an utterance Hume split into two snippets: the unfinished half is said, nothing is skipped', async () => {
+    script = ['split'];
     await openCloudSession();
-    emit(chunk('First part. '));
+    emit(chunk('First half. Second half.', true));
+    await replyEnds();
+    expect(localSaid.join(' ')).toBe('Second half.');
+  });
+
+  it('a word split across chunks at the failure is spoken as one word', async () => {
+    script = ['fail'];
+    await openCloudSession();
+    emit(chunk('First part. Sec'));
     await settle();
-    emit(chunk('Second part.', true));
+    emit(chunk('ond part.', true));
+    await replyEnds();
+    expect(localSaid.join(' ')).toContain('Second part.');
+    expect(localSaid.join(' ')).not.toContain('Sec ond');
+  });
+
+  it('a control mark split across the failure is still stripped', async () => {
+    script = ['fail'];
+    await openCloudSession();
+    emit(chunk('Hello there. [no-re'));
     await settle();
+    emit(chunk('ply]', true));
+    await replyEnds();
+    expect(localSaid.join(' ')).toBe('Hello there.');
+  });
+
+  it('a reply that finished before the break releases the orb at once, with no notice', async () => {
+    script = ['fail'];
+    await openCloudSession();
+    emit(chunk('Short.', true));
     emit(idle());
+    await settle();
     await localReplyEnded();
-    expect(localSaid.join('')).toBe('Second part.');
+    expect(types('voice:notice')).toHaveLength(1);
+    expect(types('voice:state').at(-1)?.state).toBe('listening');
   });
 
   it('control: a reply the cloud speaks in full is not also said locally', async () => {
@@ -153,16 +189,20 @@ describe('a cloud voice that breaks mid-reply continues in the local voice', () 
     emit(chunk('Only part.', true));
     await settle();
     expect(localSaid).toEqual([]);
-    expect(types('voice:state').at(-1)?.state).toBe('speaking');
+    expect(types('voice:notice')).toHaveLength(0);
   });
 
-  it('a cloud voice that refuses to connect speaks the whole reply locally', async () => {
-    failOpen = true;
+  it('a barge-in during the fallback stops the local voice', async () => {
+    script = ['fail'];
     await openCloudSession();
-    emit(chunk('Only part.', true));
+    emit(chunk('First part. '));
+    await settle();
+    await handleVoiceMessage(ws as never, JSON.stringify({ type: 'barge_in' }));
+    const before = [...localSaid];
+    emit(chunk('More text here. ', true));
     emit(idle());
-    await localReplyEnded();
-    expect(localSaid.join('')).toBe('Only part.');
+    await settle();
+    expect(localSaid).toEqual(before);
   });
 
   it('when the local voice cannot speak either, the failure shows as before', async () => {
