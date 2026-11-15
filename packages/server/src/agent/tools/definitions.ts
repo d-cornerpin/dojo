@@ -2617,7 +2617,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'dashboard_navigate',
-    description: 'Navigate the user\'s dashboard to a top-level page. Use when the user asks you to take them somewhere ("show me the cost dashboard", "open the tracker", "pull up my agents"). Only moves the UI for a user who has the dashboard open; changes nothing on its own. For the Settings page use open_settings instead. Pages: chat (main conversation), agents (agent roster), techniques (saved workflows), tracker (tasks + projects), memory (vault + memories), costs (spend dashboard), health (system health).',
+    description: 'Navigate the user\'s dashboard to a top-level page. Use when the user asks you to take them somewhere ("show me the Ledger", "open the tracker", "pull up my agents"). Only moves the UI for a user who has the dashboard open; changes nothing on its own. For the Settings page use open_settings instead. Pages: chat (main conversation), agents (agent roster), techniques (saved workflows), tracker (tasks + projects), memory (the Vault: memories), costs (the Ledger: spend), health (Vitals: system health).',
     effects: [],
     input_schema: {
       type: 'object',

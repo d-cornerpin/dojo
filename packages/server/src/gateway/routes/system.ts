@@ -194,8 +194,7 @@ systemRouter.post('/system/restart', async (c) => {
 
   // Defer the exit so this response can flush.
   setTimeout(() => {
-    // eslint-disable-next-line no-console
-    console.log('[system/restart] exiting on user request');
+    logger.info('Exiting on the user\'s restart request');
     process.exit(0);
   }, 300);
 

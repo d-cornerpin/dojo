@@ -30,7 +30,7 @@ export function resolveReplyDestination(params: ResolveReplyDestinationParams): 
   if (state.inboundChannel === 'dashboard' && personAskedHere === true) return 'dashboard';
 
   // Layer 2: away promotes only to iMessage (Teams and email need a recipient context proactive turns
-  // lack) and outranks affinity; typing on the dashboard flips presence back (gateway/routes/chat.ts).
+  // lack) and outranks affinity; presence is the owner's setting, a dashboard message does not change it.
   const base: ReplyDestination = 'dashboard';
   if (presence === 'away' && imessageBridgeConfigured) {
     return 'imessage';

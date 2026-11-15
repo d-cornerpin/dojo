@@ -148,7 +148,7 @@ For each batch:
 
 2. **Extract durable signal as vault entries.** What counts as durable signal:
    - **Decisions**: a choice was made, and it has implications beyond this one task. Always include the why.
-   - **Procedures**: a multi-step way of doing something that worked, and would work again next time. (If it's reusable, also flag it for the Trainer — see below.)
+   - **Procedures**: a multi-step way of doing something that worked, and would work again next time.
    - **Facts**: a stable piece of information about the user, their businesses, their projects, their tools.
    - **Events**: something happened on a specific date that future agents might need to reference.
    - **Corrections / standing instructions**: the user explicitly told an agent to always or never do something. These do NOT go in SOUL.md (you never edit it); capture them as a PINNED VERBATIM vault entry per the EXCEPTION at the top ("always X" / "never X").
@@ -196,7 +196,7 @@ For each batch:
 
 6. **Done.** Call `complete_task` with a one-line summary: how many archives processed, how many discarded, how many entries added, what kind.
 
-You do NOT have access to `send_to_agent` or `list_agents`. Memory curation does not spawn other agent work. If you notice a reusable procedure worth turning into a technique, just store it as a `procedure`-type vault entry — the user can decide later if they want to lift it into a Trainer-built technique.
+You do NOT have access to `send_to_agent` or `list_agents`. Memory curation does not spawn other agent work. The engine, not you, finds repeated work and sends it to the Trainer; a reusable procedure you notice is stored as a `procedure`-type vault entry and nothing more.
 
 # Lessons from rough tasks
 

@@ -39,7 +39,7 @@ Every dojo needs discipline. The Planner watches the tracker board, pokes agents
 Your agents can learn new moves and save them as reusable techniques. The Trainer helps you build these — step by step — so any agent in the dojo can pick them up and execute. Other agents can even send the Trainer new moves they've discovered in the field. Train once, fight forever.
 
 **The Dreamer**
-Every night at 3 AM, the dojo dreams. A temporary agent wakes up, reads through every conversation from the day, and pulls out the knowledge that matters — facts, decisions, preferences, procedures, relationships. It locks them into the vault so your agents never forget. The Dreamer also spots reusable techniques buried in conversations and hands them to the Trainer for refinement. When the first-run dream fires after setup, it even optimizes your agent's personality file and your profile to cut the fat — less tokens wasted, same firepower.
+Every night at 3 AM, the dojo dreams. The Dreamer wakes up, reads through every conversation from the day, and pulls out the knowledge that matters — facts, decisions, preferences, procedures, relationships. It locks them into the vault so your agents never forget. The engine also finds work that keeps repeating and sends it to the Trainer to turn into techniques. When the first-run dream fires after setup, it even optimizes your agent's personality file and your profile to cut the fat — less tokens wasted, same firepower.
 
 **Squads**
 Need a research team? Form a squad. Need five agents hitting different APIs at once? Form a squad. Agents work in parallel, share context, and clean up when they're done. No dead weight.
@@ -58,7 +58,7 @@ Need a research team? Form a squad. Need five agents hitting different APIs at o
 
 **Multi-Provider AI** — Anthropic, OpenAI, OpenRouter, Ollama. Cloud models, local models, or both. The smart router picks the best fighter for each round automatically.
 
-**Technique System** — Your agents learn moves and save them. Research techniques. Deployment techniques. Monitoring techniques. Build them with the Trainer, publish them, equip them on any agent. The Dreamer discovers new techniques in the wild and sends them to the Trainer for refinement.
+**Technique System** — Your agents learn moves and save them. Research techniques. Deployment techniques. Monitoring techniques. Build them with the Trainer, publish them, equip them on any agent. The engine spots work that keeps repeating and sends it to the Trainer for refinement.
 
 **Project Tracker** — Kanban board. Scheduled tasks. Recurring missions. Dependency chains. The Planner watches everything and hits agents with a poke if they stall. Even the Dreamer uses the tracker — nobody gets a free pass.
 
@@ -143,7 +143,7 @@ Open `http://localhost:3000` (dev) or `http://localhost:3001` (production). Bow 
 
 - Everything stored locally in `~/.dojo/`
 - API keys encrypted at rest
-- No telemetry. No cloud sync. No analytics. No phone home.
+- No telemetry. No analytics. These go out of your Mac: calls to the model providers you pick, messages on your channels, web searches and pages your agents open, checks for updates and model prices, the dashboard if you switch on remote access, and a file when an agent makes a public link for it.
 - **Your dojo. Your data. Your rules.**
 
 ## Tech Stack
