@@ -929,7 +929,7 @@ export async function sendHealerReport(): Promise<{ ok: boolean; error?: string 
       const refused = /authenticat|credential|invalid_grant|unauthori[sz]ed|expired|\b401\b/i.test(result);
       return { ok: false, error: refused
         ? `The sign-in for the agent's ${google ? 'Google' : 'Microsoft'} account${sender.email ? ` (${sender.email})` : ''} was refused or has expired. Reconnect it in Settings → Channels.`
-        : `The report could not be emailed. The mail service said: ${result.replace(/^Error:?\s*/, '')}` };
+        : `The report could not be emailed: ${result.replace(/^Error:?\s*/, '')}` };
     }
 
     // Email sent successfully, archive the log

@@ -41,20 +41,30 @@ const say = (tool: string, args: Record<string, unknown>) => describeHeldAction(
 const GONE = 'Deleted files do not go to the Trash and cannot be brought back.';
 
 describe('a held Healer change', () => {
-  it('names the real targets, claims file or folder only as the call says, and looks through sudo', () => {
-    expect(say('exec', { argv: ['rm', '-rf', '/Users/example/Library/Application Support/Old App'] })).toBe(`Delete /Users/example/Library/Application Support/Old App and everything inside it. ${GONE}`);
-    expect(say('exec', { argv: ['rm', '--recursive', '/tmp/x'] })).toBe(`Delete /tmp/x and everything inside it. ${GONE}`);
+  it('names the real targets, from argv or a quoted shell line, and looks through sudo', () => {
+    const app = '/Users/example/Library/Application Support/Foo';
+    expect(say('exec', { argv: ['rm', '-rf', app] })).toBe(`Delete ${app}, including everything inside. ${GONE}`);
+    expect(say('shell', { script: `rm -rf "${app}"` })).toBe(`Delete ${app}, including everything inside. ${GONE}`);
     expect(say('exec', { argv: ['rm', '/tmp/a.log', '/tmp/b.log'] })).toBe(`Delete /tmp/a.log, /tmp/b.log. ${GONE}`);
-    expect(say('exec', { argv: ['sudo', '-n', 'rm', '-r', '/var/old'] })).toBe(`Delete /var/old and everything inside it. ${GONE}`);
+    expect(say('exec', { argv: ['sudo', '-n', 'rm', '-r', '/var/old'] })).toBe(`Delete /var/old, including everything inside. ${GONE}`);
   });
 
-  it('a call it cannot read into parts says so plainly and shows the paths it found', () => {
-    expect(say('shell', { script: 'find /Users/example/project -name "*.log" | xargs rm' })).toBe('Run a command line on this Mac that can delete or overwrite files. It touches /Users/example/project.');
-    expect(say('exec', { argv: ['git', 'clean', '-fdx', '/Users/example/project'] })).toBe('Run a command on this Mac that can delete or overwrite files. It touches /Users/example/project.');
+  it('never names a target it cannot read exactly: escapes and globs stay generic, a redirect or several commands only say what they touch', () => {
+    const generic = 'Run a command on this Mac that can delete or overwrite files.';
+    expect(say('shell', { script: 'rm -rf /a/b\\ c' })).toBe(generic);
+    expect(say('shell', { script: 'rm -rf /tmp/x/*' })).toBe(generic);
+    expect(say('shell', { script: 'rm -rf /tmp/x > /dev/null' })).toBe(`${generic} It touches /tmp/x, /dev/null.`);
+    expect(say('shell', { script: 'cd /a && rm -rf build' })).toBe(`${generic.replace('command', 'command line')} It touches /a.`);
+    expect(say('shell', { script: 'find /Users/example/project -name "*.log" | xargs rm' })).toBe(`${generic.replace('command', 'command line')} It touches /Users/example/project.`);
+    expect(say('exec', { argv: ['git', 'clean', '-fdx', '/Users/example/project'] })).toBe(`${generic} It touches /Users/example/project.`);
     expect(say('file_write', { path: '/Users/example/.dojo/prompts/SOUL.md', content: 'x' })).toBe('Change the file "SOUL.md" in /Users/example/.dojo/prompts. It holds an agent\'s identity or the Dojo\'s settings, and its current contents would change.');
   });
 
-  it('stays short however many targets there are', () => expect(say('exec', { argv: ['rm', ...Array.from({ length: 40 }, (_, i) => `/tmp/long-file-name-${i}`)] }).length).toBeLessThanOrEqual(300));
+  it('a long list is cut by whole targets, ends with the count and keeps the warning', () => {
+    const t = say('exec', { argv: ['rm', ...Array.from({ length: 40 }, (_, i) => `/tmp/long-file-name-${i}`)] });
+    expect(t).toMatch(/\/tmp\/long-file-name-\d+ and \d+ more\. Deleted files do not go to the Trash and cannot be brought back\.$/);
+    expect(t.length).toBeLessThanOrEqual(300);
+  });
 
   it('the card and the text carry the sentence once, plain, with no first person or raw call', async () => {
     presence.away = true;

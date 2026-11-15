@@ -85,7 +85,7 @@ export function renameOwnerInProfile(previous: string, next: string): void {
   const p = userProfilePath();
   if (!fs.existsSync(p)) return;
   const md = fs.readFileSync(p, 'utf-8');
-  const updated = md.split('\n').map((l) => (l === UNSET_NAME_LINE || l === `- Name: ${previous.trim()}` ? `- Name: ${next.trim()}` : l)).join('\n');
+  const updated = md.split('\n').map((l) => (l.trimEnd() === UNSET_NAME_LINE || l.trimEnd() === `- Name: ${previous.trim()}` ? `- Name: ${next.trim()}` : l)).join('\n');
   if (updated !== md) writeUserProfile(updated, 'engine');
 }
 

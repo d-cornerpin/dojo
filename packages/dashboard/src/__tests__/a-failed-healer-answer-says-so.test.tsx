@@ -89,4 +89,16 @@ describe('the Healer card when the answer comes back failed', () => {
     expect(await screen.findByText('(approved, waiting on Healer)')).toBeTruthy();
     expect(screen.getByText('Restart the thing')).toBeTruthy();
   });
+
+  it('a held-change card says what it would do once, not twice', async () => {
+    const what = 'Delete /tmp/old, including everything inside.';
+    vi.mocked(api.getHealerProposals).mockResolvedValueOnce({ ok: true, data: [{
+      id: 'p2', title: 'A cleanup change is waiting for your OK', description: `It would: ${what}`, proposed_fix: what,
+      severity: 'warning', category: 'destructive_action', status: 'pending', confidence: 80,
+      created_at: '2026-01-01 00:00:00', resolved_at: null, applied_at: null, evidence_json: null, user_note: null,
+    }] } as never);
+    render(<HealerVitals />);
+    await screen.findByText('A cleanup change is waiting for your OK');
+    expect(screen.getAllByText(/It would:/)).toHaveLength(1);
+  });
 });

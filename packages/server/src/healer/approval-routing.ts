@@ -16,6 +16,7 @@ import { resolveRealPathHardened, isProtectedIdentityPath } from '../agent/permi
 import { withOutboundAsyncIfAbsent, PLATFORM_SENDER } from '../agent/v2/outbound.js';
 import { homeDir } from '../home.js';
 import { execCallText } from '../agent/brokers/exec-seam.js';
+import { execSimpleCommands, commandWords } from '../agent/exec-grammar.js';
 import { healerApprovalText, healerApprovalBody } from '../agent/engine-lines.js';
 import { tellAgentWhatDojoSent } from '../agent/dojo-voice.js';
 import { getPrimaryAgentId } from '../config/platform.js';
@@ -200,35 +201,34 @@ export interface FileHealerApprovalResult {
   queued: boolean;
 }
 
-const FILE_EDIT_TOOLS = ['file_write', 'file_patch', 'file_append'];
+/** Whole items that fit the room, then "and N more": a long list never cuts a path, and the sentence after it stays. */
+function nameList(items: string[], room = 160): string {
+  let n = 1;
+  while (n < items.length && items.slice(0, n + 1).join(', ').length <= room) n++;
+  return items.slice(0, n).join(', ') + (n < items.length ? ` and ${items.length - n} more` : '');
+}
 
-const MAX_WHAT_CHARS = 300;
-const PATH_IN_TEXT = /(?:~|\.{1,2})?\/[^\s"'|;&<>]+/g;
+/** A shell word as written, quotes off; null when it holds an escape, a variable, a glob, a redirect or other syntax. */
+const unquote = (w: string): string | null => { const v = /^(["'])(.*)\1$/.exec(w)?.[2] ?? w;
+  return /[\\$`*?[\]{}()"'<>|;&]/.test(v) ? null : v; };
 
-/** One plain sentence for a held call: what will be done, to what, and what it affects. Built from the call itself. */
+/** One plain sentence for a held call: what will be done, to what, and what it affects. It names only what it can read exactly (argv as given, a shell line through the engine's splitter). */
 export function describeHeldAction(toolName: string, argsJson: string | null | undefined): string {
   let args: Record<string, unknown> = {};
   try { args = JSON.parse(argsJson ?? '{}') as Record<string, unknown>; } catch { /* an unreadable call reads as the general case */ }
   const filePath = typeof args.path === 'string' ? args.path : '';
-  let what: string;
-  if (filePath && FILE_EDIT_TOOLS.includes(toolName)) {
-    what = `Change the file "${path.basename(filePath)}" in ${path.dirname(filePath)}. It holds an agent's identity or the Dojo's settings, and its current contents would change.`;
-  } else {
-    // The parts come from argv when the call has it; a plain command line is split only when it has no shell syntax.
-    const text = execCallText(toolName, args) ?? '';
-    const all = Array.isArray(args.argv) && args.argv.every((e) => typeof e === 'string') ? (args.argv as string[])
-      : text && !SHELL_META_RE.test(text) ? text.trim().split(/\s+/) : null;
-    const parts = all?.[0] === 'sudo' ? all.slice(1 + all.slice(1).findIndex((t) => !t.startsWith('-'))) : all;   // look through sudo to the command it runs
-    const targets = (parts ?? []).slice(1).filter((t) => !t.startsWith('-'));
-    if (parts && (parts[0] === 'rm' || parts[0] === 'rmdir') && targets.length > 0) {
-      const recursive = parts.some((t) => /^-[a-zA-Z]*[rR]|^--recursive$/.test(t));
-      what = `Delete ${targets.join(', ')}${recursive ? ' and everything inside it' : ''}. Deleted files do not go to the Trash and cannot be brought back.`;
-    } else {
-      const touched = [...new Set(parts ? targets.filter((t) => /^(~|\.{0,2}\/)/.test(t)) : text.match(PATH_IN_TEXT) ?? [])].slice(0, 3);
-      what = `Run a ${parts ? 'command' : 'command line'} on this Mac that can delete or overwrite files.${touched.length ? ` It touches ${touched.join(', ')}.` : ''}`;
-    }
+  if (filePath && /^file_(write|patch|append)$/.test(toolName)) {
+    return `Change the file "${path.basename(filePath)}" in ${path.dirname(filePath)}. It holds an agent's identity or the Dojo's settings, and its current contents would change.`;
   }
-  return what.length > MAX_WHAT_CHARS ? `${what.slice(0, MAX_WHAT_CHARS - 3)}...` : what;
+  const cmds: Array<Array<string | null>> = Array.isArray(args.argv) ? [args.argv as string[]] : execSimpleCommands(execCallText(toolName, args) ?? '').map((c) => commandWords(c).map(unquote));
+  let [head, ...rest] = cmds.length === 1 ? cmds[0] : [];
+  if (head === 'sudo') [head, ...rest] = rest.slice(Math.max(0, rest.findIndex((w) => !w?.startsWith('-'))));   // look through sudo to the command it runs
+  const targets = rest.filter((w) => !w?.startsWith('-'));
+  if ((head === 'rm' || head === 'rmdir') && targets.length > 0 && targets.every((t) => t !== null)) {
+    return `Delete ${nameList(targets as string[])}${rest.some((w) => /^-[a-zA-Z]*[rR]|^--recursive$/.test(w ?? '')) ? ', including everything inside' : ''}. Deleted files do not go to the Trash and cannot be brought back.`;
+  }
+  const paths = [...new Set(cmds.flat().filter((w): w is string => !!w && /^(~|\.{0,2})\//.test(w)))];
+  return `Run a command${cmds.length > 1 ? ' line' : ''} on this Mac that can delete or overwrite files.${paths.length ? ` It touches ${nameList(paths)}.` : ''}`;
 }
 
 /**
