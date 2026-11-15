@@ -20,7 +20,15 @@ const CLOCK = /\d{4}-\d\d-\d\d(T[\d:.]+Z?)?|\b\d{1,2}:\d\d(:\d\d)?(\s?[AP]M)?|\b
 
 /** Per call, how many times each result came back. */
 type Counts = Map<string, Map<string, number>>;
-interface Window { ref: TurnContext; turn: number; before: Counts; now: Counts; stopAt: Map<string, number>; refused: Map<string, number>; fresh: number }
+interface Window {
+  ref: TurnContext;
+  turn: number;
+  before: Counts;
+  now: Counts;
+  stopAt: Map<string, number>;
+  refused: Map<string, number>;
+  fresh: number;
+}
 const windows = new Map<string, Window>();
 
 // Stable JSON with keys sorted at every depth; a JSON.stringify replacer array would erase nested keys.
@@ -61,8 +69,9 @@ function keyOf(tool: string, args: unknown): string {
 }
 const nextStop = (n: number): number => RUNGS.find((r) => r > n) ?? Math.floor(n / 100) * 100 + 100;
 const stopOf = (w: Window, key: string): number => w.stopAt.get(key) ?? RUNGS[0];
-const seenWords = (key: string, n: number): string => SENDS.has(key.slice(0, key.indexOf(':')))
-  ? `${n} messages have gone to this recipient`
+const isSend = (key: string): boolean => SENDS.has(key.slice(0, key.indexOf(':')));
+const seenWords = (key: string, n: number): string => isSend(key)
+  ? `this would be message ${n} to this recipient`
   : `this exact call has returned the same result ${n} times`;
 const WAYS = `Use what you have or do something different. If repeating it is really what the job needs, call ${LIFT_TOOL} with a one-line reason, then make the call again.`;
 
@@ -74,7 +83,9 @@ function windowAt(agentId: string, ref: TurnContext): Window {
   const turn = ref.turnNumber ?? 0;
   const before: Counts = w?.turn === turn - 1 ? w.now : new Map();
   const stopAt = new Map([...(w?.stopAt ?? [])].filter(([key]) => before.has(key)));
-  const next: Window = { ref, turn, before, now: new Map(), stopAt, refused: new Map(), fresh: 0 };
+  const next: Window = {
+    ref, turn, before, now: new Map(), stopAt, refused: new Map(), fresh: 0,
+  };
   windows.set(agentId, next);
   return next;
 }
@@ -90,18 +101,21 @@ function timesSeen(w: Window, key: string): number {
   return most;
 }
 
+/** The count a stop is judged on: a send is stopped before it goes out, so the one about to go counts. */
+const due = (w: Window, key: string): number => timesSeen(w, key) + (isSend(key) ? 1 : 0);
+
 /** The refusal for a stopped call, which does not run; null when it may run. */
 export function repeatStopRefusal(agentId: string, turn: TurnContext, tool: string, args: unknown): string | null {
   const w = windowAt(agentId, turn);
   const key = keyOf(tool, args);
-  const n = timesSeen(w, key);
+  const n = due(w, key);
   if (n < stopOf(w, key)) return null;
   w.refused.set(key, (w.refused.get(key) ?? 0) + 1);
   return `[Engine: not run. ${seenWords(key, n)}, so the engine stopped it; a plain retry does not lift the stop. ${WAYS}]`;
 }
 
 /** Counts an executed call's result, and a work call's result new to the window as the job moving; returns
- *  the stop notice when this result reaches the call's next stop. */
+ *  the stop notice when this result reaches the call's next stop (a send is stopped before it runs instead). */
 export function noteRepeatResult(agentId: string, turn: TurnContext, tool: string, args: unknown, fp: string, work: boolean): string | null {
   const w = windowAt(agentId, turn);
   const key = keyOf(tool, args);
@@ -111,7 +125,7 @@ export function noteRepeatResult(agentId: string, turn: TurnContext, tool: strin
   w.now.set(key, results);
   const n = (results.get(same) ?? 0) + (w.before.get(key)?.get(same) ?? 0);
   if (n === 1 && work) w.fresh += 1;
-  if (n !== stopOf(w, key)) return null;
+  if (isSend(key) || n !== stopOf(w, key)) return null;
   logger.warn('v2: repeat rule stopped a call', { agentId, call: key.slice(0, 160), times: n }, agentId);
   return `\n\n[Engine: ${seenWords(key, n)}, so the engine has stopped this call; asking again will not change the answer. ${WAYS}]`;
 }
@@ -138,13 +152,15 @@ export function liftRepeatStops(agentId: string, reason: unknown): { content: st
   if (typeof reason !== 'string' || !reason.trim()) {
     return { content: `${LIFT_TOOL} needs a one-line reason: why running the stopped call again is useful. Nothing was lifted.`, isError: true };
   }
+  const nothing = { content: 'Nothing is stopped right now, so there is nothing to continue.', isError: false };
   const w = windows.get(agentId);
-  const stopped = w ? [...new Set([...w.now.keys(), ...w.before.keys()])].filter((key) => timesSeen(w, key) >= stopOf(w, key)) : [];
-  if (!w || stopped.length === 0) return { content: 'Nothing is stopped right now, so there is nothing to continue.', isError: false };
+  if (!w) return nothing;
+  const stopped = [...new Set([...w.now.keys(), ...w.before.keys()])].filter((key) => due(w, key) >= stopOf(w, key));
+  if (stopped.length === 0) return nothing;
   const lifted = stopped.map((key) => {
-    w.stopAt.set(key, nextStop(timesSeen(w, key)));
+    w.stopAt.set(key, nextStop(due(w, key)));
     w.refused.delete(key);
-    return `${key.slice(0, key.indexOf(':'))} until the same result has come back ${stopOf(w, key)} times`;
+    return `${key.slice(0, key.indexOf(':'))} (stopped again at ${stopOf(w, key)})`;
   });
   logger.info('v2: repeat stop lifted', { agentId, calls: stopped.map((key) => key.slice(0, 160)), reason }, agentId);
   return { content: `Continuing: ${lifted.join(', ')}.`, isError: false };

@@ -156,15 +156,19 @@ describe('the same call with the same result stops until the agent chooses to co
     expect(ran('gmail_search')).toBe(13);
   });
 
-  it('the 4th send to one agent is stopped whatever it says; a send to another agent is its own count', async () => {
+  it('the 4th send to one agent is refused whatever it says, lifted the same way, then the 8th; another agent is its own count', async () => {
     let thread = 0;
     toolSpy.mockImplementation(() => ({ content: `[A2A:FYI] Message delivered on thread ${(thread++).toString(16).padStart(8, '0')}.`, isError: false }));
     const ask = (to: string, n: number): Call => ({ name: 'send_to_agent', arguments: { agent: to, intent: 'FYI', message: `status note number ${n}` } });
-    const seen = await turn(MAIN, [ask(HELPER, 1), ask(HELPER, 2), ask(HELPER, 3), ask(HELPER, 4), ask(HELPER, 5), ask(PM, 6), lift('the helper asked for each part separately'), ask(HELPER, 7)]);
-    expect(seen[3]).toContain('stopped');
-    expect(seen[4]).toContain(NOT_RUN);
-    expect(seen[5]).not.toContain(NOT_RUN);
-    expect(ran('send_to_agent')).toBe(6);
+    const toHelper = [1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => ask(HELPER, n));
+    const seen = await turn(MAIN, [...toHelper.slice(0, 4), ask(PM, 1), lift('the helper asked for each part separately'), ...toHelper.slice(4)]);
+    const sentTo = (agent: string): number => toolSpy.mock.calls.filter(([tc]) => (tc as Call).arguments.agent === agent).length;
+    expect(seen[3], 'the 4th send did not go out').toContain(NOT_RUN);
+    expect(seen[4]).not.toContain(NOT_RUN);
+    expect(seen[5]).toMatch(/^Continuing/);
+    expect(seen[10], 'the 8th send did not go out').toContain(NOT_RUN);
+    expect(sentTo(HELPER)).toBe(7);
+    expect(sentTo(PM)).toBe(1);
   });
 
   it('a call made once a turn, turn after turn, is never stopped', async () => {
