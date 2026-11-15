@@ -157,8 +157,10 @@ export function openCatchUps(): string[] {
 export function replacePlaceholdersInBackground(agentId: string): boolean {
   try {
     releaseChangedKeptRows(agentId);
+    // An agent that keeps no summaries never folds its old placeholders, so a catch-up it had is over.
+    if (keepsNoSummaries(agentId)) { writeCatchUp(agentId, null); return false; }
     endCatchUpIfDone(agentId);
-    if (keepsNoSummaries(agentId) || backgroundDrains.has(agentId) || !hasUncondensedPlaceholders(agentId) || agentBusy(agentId) || pickWriter(agentId) === null) return false;
+    if (backgroundDrains.has(agentId) || !hasUncondensedPlaceholders(agentId) || agentBusy(agentId) || pickWriter(agentId) === null) return false;
   } catch { return false; }
   backgroundDrains.add(agentId);
   replaceUncondensedPlaceholders(agentId, { yieldTo: () => agentBusy(agentId) })
