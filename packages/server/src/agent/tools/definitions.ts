@@ -1045,7 +1045,7 @@ export const toolDefinitions: ToolDefinition[] = [
             type: 'object',
             properties: {
               kind: { type: 'string', enum: ['file', 'delivery', 'command', 'receipt', 'measure', 'remainder', 'failure', 'withdrawal'], description: 'What kind of record this is.' },
-              ref: { type: 'string', description: 'The record: a file path, a delivery id, a command as you ran it, an audit id, a receipt id, a message id, or for a remainder what is left.' },
+              ref: { type: 'string', description: 'The record: a file path, a delivery id, a command as you ran it, a receipt id, a message id, or for a remainder what is left.' },
               reason: { type: 'string', description: 'kind="remainder" only: why those items are left (15+ characters).' },
             },
             required: ['kind', 'ref'],

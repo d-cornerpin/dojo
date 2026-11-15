@@ -43,6 +43,13 @@ function audit(id: string, o: { agent?: string; action?: string; target: string;
     sqlTime(o.at ?? Date.now()));
 }
 
+function failedReceipt(id: string): void {
+  doneDb().prepare(
+    `INSERT INTO tool_receipts (id, agent_id, tool, tier, verified, basis, recipient, detail, created_at)
+     VALUES (?, ?, 'file_write', 1, 0, 'provider-id', NULL, '{"error":"no such file"}', ?)`,
+  ).run(id, WORKER, sqlTime(Date.now()));
+}
+
 function message(id: string, o: { agent?: string; role?: string; lane?: string; content: string; from?: string | null; channel?: string | null; sender?: string | null; at?: number }): void {
   const at = Math.floor((o.at ?? Date.now()) / 1000) * 1000;
   doneDb().prepare(
@@ -222,10 +229,17 @@ describe('a hand-in proof must be real and this task\'s', () => {
   });
 
   it('refuses a failure item on a finished hand-in', () => {
-    audit('a-fail', { action: 'exec', target: 'convert report.md', result: 'error', detail: 'exit 2 | stderr: no such file' });
-    const why = refusal(finished([{ kind: 'failure', ref: 'a-fail' }]));
-    expect(why).toContain('a-fail');
+    failedReceipt('r-fail');
+    const why = refusal(finished([{ kind: 'failure', ref: 'r-fail' }]));
+    expect(why).toContain('r-fail');
     expect(why).toMatch(/only for a can't be done hand-in/);
+  });
+
+  it('a failed receipt proves a can\'t be done hand-in; an audit id is not a proof record', () => {
+    failedReceipt('r-ok');
+    expect(cantBeDone([{ kind: 'failure', ref: 'r-ok' }]).ok).toBe(true);
+    audit('a-err', { action: 'exec', target: 'convert report.md', result: 'error', detail: 'exit 2' });
+    expect(refusal(cantBeDone([{ kind: 'failure', ref: 'a-err' }]))).toContain('a-err');
   });
 
   it('refuses a withdrawal written by someone who is not the asker', () => {
@@ -263,8 +277,8 @@ describe('a hand-in proof must be real and this task\'s', () => {
   });
 
   it('refuses the same record cited twice in one hand-in, whatever the kind', () => {
-    audit('a-exit2', { action: 'exec', target: 'convert report.md', result: 'error', detail: 'exit 2' });
-    expect(refusal(cantBeDone([{ kind: 'failure', ref: 'a-exit2' }, { kind: 'failure', ref: 'a-exit2' }])))
+    failedReceipt('r-exit2');
+    expect(refusal(cantBeDone([{ kind: 'failure', ref: 'r-exit2' }, { kind: 'failure', ref: 'r-exit2' }])))
       .toMatch(/already listed in this hand-in/);
   });
 

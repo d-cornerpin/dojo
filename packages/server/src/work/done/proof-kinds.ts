@@ -216,13 +216,6 @@ function remainder(ctx: ProofContext, ref: string, input: ProofItemInput): Facts
 }
 
 function failure(ctx: ProofContext, ref: string): Facts | string {
-  const a = getDb().prepare('SELECT agent_id, action_type, target, result, detail, created_at FROM audit_log WHERE id = ?')
-    .get(ref) as { agent_id: string; action_type: string; target: string | null; result: string; detail: string | null; created_at: string } | undefined;
-  if (a) {
-    if (a.result !== 'denied' && a.result !== 'error') return 'did not fail';
-    return ownRow(ctx, a.agent_id, sqlTimeMs(a.created_at))
-      ?? { source: 'audit', action: a.action_type, target: a.target ?? '', result: a.result, error: excerpt(a.detail), at: a.created_at };
-  }
   const r = receiptRow(ref);
   if (!r) return '';
   const error = receiptError(r.detail);
