@@ -104,25 +104,8 @@ const ENTRIES = [
 // THE DATED ALLOWLIST
 // ════════════════════════════════════════
 // Every entry: the path, the DATE it was added, the OWNER that will resolve it,
-// and the reason it survives today. Seeded at the PHASE-1 exit (2026-07-28) with
-// the five files the walk has reported since Phase 0 — re-derived at 41fcabb by
-// running this walk, not copied from the Phase-0 note.
-//
-// None of them is a Phase-1 product change: `git log --oneline 4e95125..41fcabb`
-// touches none of these five files. They predate the phase and each is already
-// booked to a sweep IN WRITING, which is why the owner column is a citation
-// rather than a guess.
-const ALLOWLIST = [
-  {
-    path: 'packages/server/src/agent/v2/classifiers/index.ts',
-    date: '2026-07-28',
-    owner: 'PHASE-6',
-    reason:
-      'A five-line barrel over the classifier modules. SWEEP-G.md:31 books "the agent/v2 classifiers ' +
-      '(PHASE-6)". Deleting the barrel alone would save five lines and pre-empt the decomposition that ' +
-      'decides what the module boundary should be.',
-  },
-];
+// and the reason it survives today. Empty: every production file is reached.
+const ALLOWLIST = [];
 
 const IN_SCOPE = /^(?:packages\/[^/]+\/src\/|watchdog\/src\/).*\.(?:ts|tsx)$/;
 const IS_TEST = (rel) => /(?:^|\/)__tests__\//.test(rel) || /\.(?:test|spec)\.tsx?$/.test(rel);
