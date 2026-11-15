@@ -122,17 +122,13 @@ function takeSnapshot(
   try {
     fs.mkdirSync(backupsDir, { recursive: true });
 
-    const migNumber = (f: string): number => {
-      const n = parseInt(f.slice(0, f.indexOf('_')), 10);
-      return Number.isFinite(n) ? n : 0;
-    };
-    const lastApplied = allFiles
-      .filter(f => !pending.includes(f))
-      .reduce((max, f) => Math.max(max, migNumber(f)), 0);
-    const target = allFiles.reduce((max, f) => Math.max(max, migNumber(f)), 0);
+    // Progress is a position along the chain (applied count of chain length), never the highest number:
+    // files numbered below an applied 9xx bridge file are added after it.
+    const lastApplied = allFiles.length - pending.length;
+    const target = allFiles.length;
     // Timestamped because VACUUM INTO refuses to overwrite an existing file.
     const stamp = at.replace(/[:.]/g, '-').slice(0, 19);
-    const backupPath = path.join(backupsDir, `dojo-pre-${lastApplied}-to-${target}-${stamp}.db`);
+    const backupPath = path.join(backupsDir, `dojo-pre-${lastApplied}-of-${target}-${stamp}.db`);
     try { fs.rmSync(backupPath, { force: true }); } catch { /* nothing to remove */ }
 
     const started = Date.now();
@@ -150,14 +146,15 @@ function takeSnapshot(
 
     // Keep the newest 2 plus the update-in-progress baseline: of the snapshots whose target this box has not
     // reached yet, the one from the lowest applied level. A crash loop re-snapshots the broken state on every
-    // boot and would otherwise prune the one good copy. A file whose name does not parse is never pinned.
+    // boot and would otherwise prune the one good copy. A file whose name does not parse (a hand-made one, or
+    // one named by number in the older `-to-` form) is never pinned and goes by age.
     const KEEP_NEWEST = 2;
     try {
       const backups = fs.readdirSync(backupsDir)
         .filter(f => f.startsWith('dojo-pre-') && f.endsWith('.db'))
         .map(f => {
           const full = path.join(backupsDir, f);
-          const named = /^dojo-pre-(\d+)-to-(\d+)-/.exec(f);
+          const named = /^dojo-pre-(\d+)-of-(\d+)-/.exec(f);
           return {
             full,
             from: named ? Number(named[1]) : null,

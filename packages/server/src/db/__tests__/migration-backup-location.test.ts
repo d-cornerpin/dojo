@@ -116,7 +116,7 @@ describe('pre-migration backup: destination', () => {
 
     const mine = restorePoints(path.join(scratch, 'backups'));
     expect(mine).toHaveLength(1);
-    expect(mine[0]).toMatch(/^dojo-pre-\d+-to-\d+-.*\.db$/);
+    expect(mine[0]).toMatch(/^dojo-pre-\d+-of-\d+-.*\.db$/);
 
     // A real snapshot, openable and consistent.
     const snap = new Database(path.join(scratch, 'backups', mine[0]!), { readonly: true });
