@@ -2,11 +2,11 @@
 // (another agent's task) or the owner (the main agent's own). A task the PM worked starts with the main agent.
 // Never a worker of the task (`workersOf`): then the owner. An open PM question keeps a hand-in out of the PM's reviews,
 // so none counts against it (`pmQuestions`); it delays the escalation and never reverses one.
-import { a2aThreadTokenMatchesSql } from '@dojo/shared';
+import { REPLY_NEEDED_INTENTS, a2aThreadTokenMatchesSql } from '@dojo/shared';
 import { getDb } from '../../db/connection.js';
 import { getPMAgentId, getPrimaryAgentId } from '../../config/platform.js';
 import { turnContext } from '../../agent/turn-context.js';
-import { firstReplySince } from '../../memory/message-store.js';
+import { repliesSince, type ThreadReply } from '../../memory/message-store.js';
 import { patienceBoundMs } from '../../tracker/assignee-patience.js';
 import { AUDIT_KIND } from '../audit-trail.js';
 import { taskScope } from '../tracker-view.js';
@@ -36,24 +36,48 @@ export function sendBacks(workId: string): Array<{ reason: string; at: number }>
   ).all(workId) as Array<{ reason: string; at: number }>);
 }
 
-/** The PM's questions tied to this row since its newest hand-in (or ever), oldest first. Each holds the hand-in until its answer;
- *  else until `holdEnd`. */
-export function pmQuestions(workId: string, everAsked = false): Array<{ at: number; thread: string; asked: string; text: string; answeredAt: number | null; until: number }> {
+export interface PMQuestion {
+  at: number;
+  thread: string;
+  /** The recipient as the model typed it; `asked` is the agent the question was delivered to. */
+  typed: string;
+  asked: string | null;
+  text: string;
+  /** The replies on its thread from its sending until the next question on that thread. */
+  answers: ThreadReply[];
+  until: number;
+}
+
+/** The PM's questions tied to this row since its newest hand-in (or ever), oldest first. Who was asked and who
+ *  answered are read from the thread itself, never from a name. */
+export function pmQuestions(workId: string, everAsked = false): PMQuestion[] {
   const pm = getPMAgentId();
-  return (getDb().prepare(
-    `SELECT unixepoch(r.created_at) * 1000 AS at, r.thread_id AS thread, COALESCE(r.sent_text, '') AS text, COALESCE((SELECT id FROM agents WHERE id = r.recipient),
-       (SELECT id FROM agents WHERE lower(name) = lower(r.recipient) ORDER BY created_at DESC LIMIT 1), r.recipient) AS asked
-       FROM tool_receipts r WHERE r.task_id = ? AND r.agent_id = ? AND r.thread_id IS NOT NULL AND json_extract(r.detail, '$.intent') IN ('QUESTION', 'BLOCK')
-        AND (? OR unixepoch(r.created_at) >= (SELECT COALESCE(MAX(created_at), 0) FROM work_events WHERE work_id = r.task_id AND kind = 'handed_in') / 1000) ORDER BY r.rowid`,
-  ).all(workId, pm, everAsked ? 1 : 0) as Array<{ at: number; thread: string; text: string; asked: string }>).map((q) => {
-    const answeredAt = firstReplySince(pm, q.asked, q.thread, q.at);
-    return { ...q, answeredAt, until: holdEnd(q.asked, q.at, answeredAt) };
+  const rows = getDb().prepare(`
+    SELECT unixepoch(r.created_at) * 1000 AS at,
+           r.thread_id AS thread,
+           COALESCE(r.recipient, '') AS typed,
+           COALESCE(r.sent_text, '') AS text,
+           COALESCE(json_extract(r.detail, '$.intent'), '') AS intent,
+           (SELECT d.agent_id FROM messages d
+             WHERE d.a2a_thread_id = r.thread_id AND d.source_agent_id = r.agent_id AND d.agent_id <> r.agent_id
+             ORDER BY d.seq LIMIT 1) AS asked
+      FROM tool_receipts r
+     WHERE r.task_id = ? AND r.agent_id = ? AND r.thread_id IS NOT NULL
+       AND (? OR unixepoch(r.created_at) >= (
+             SELECT COALESCE(MAX(created_at), 0) / 1000 FROM work_events WHERE work_id = r.task_id AND kind = 'handed_in'))
+     ORDER BY r.created_at, r.rowid
+  `).all(workId, pm, everAsked ? 1 : 0) as Array<Omit<PMQuestion, 'answers' | 'until'> & { intent: string }>;
+  const asks = rows.filter((q) => REPLY_NEEDED_INTENTS.has(q.intent));
+  return asks.map(({ intent: _intent, ...q }) => {
+    const next = asks.find((o) => o.thread === q.thread && o.at > q.at)?.at ?? Infinity;
+    const answers = repliesSince(pm, q.thread, q.at).filter((a) => a.at < next);
+    return { ...q, answers, until: holdEnd(q.asked, q.at, answers[0]?.at ?? null) };
   });
 }
 
 /** The fixed end of a question's hold: its answer; else one patience bound after the asked agent's first turn that
  *  ended within `QUEUED_TURN_BOUND_MS` of it; else that bound. Never later than both together, and never moved. */
-function holdEnd(asked: string, at: number, answeredAt: number | null): number {
+function holdEnd(asked: string | null, at: number, answeredAt: number | null): number {
   const latest = at + QUEUED_TURN_BOUND_MS + patienceBoundMs(asked);
   if (answeredAt !== null) return Math.min(answeredAt, latest);
   const ended = (getDb().prepare(`

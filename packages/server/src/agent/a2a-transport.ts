@@ -14,7 +14,7 @@ import { postAgentNotice } from './agent-notice.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getAgentRuntime } from './runtime.js';
-import { deliveredResult, firstReplySince, insertMessageIfAbsent, insertEngineEventIfAbsent, type EngineEventWork } from '../memory/message-store.js';
+import { deliveredResult, repliesSince, insertMessageIfAbsent, insertEngineEventIfAbsent, type EngineEventWork } from '../memory/message-store.js';
 import { resolveOrCreateConversation } from '../memory/conversations.js';
 import { isSenderAuthorized } from './v2/channel-auth.js';
 import { unfenceExternal } from '../tools/external-content.js';
@@ -491,7 +491,7 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
       !!latchRow && !!latchRow.last_intent && isReopeningIntent(latchRow.last_intent as A2AIntent);
     if (senderOwesReply) {
       // Did the RECEIVER reply inside the cooldown? One table, so a reply cannot be missed.
-      if (firstReplySince(envelope.fromAgent, target.id, threadId, Date.now() - AWAITING_REPLY_COOLDOWN_MS) === null) {
+      if (repliesSince(envelope.fromAgent, threadId, Date.now() - AWAITING_REPLY_COOLDOWN_MS).length === 0) {
         logDrop(envelope, 'AWAITING_REPLY');
         return { delivered: false, reason: 'AWAITING_REPLY', threadId };
       }

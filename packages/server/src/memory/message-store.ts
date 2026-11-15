@@ -648,9 +648,17 @@ export function deleteAllForAgent(agentId: string): number {
   return db.prepare(`DELETE FROM messages WHERE agent_id = ?`).run(agentId).changes;
 }
 
-/** When `replierId` first answered `askerId` on `threadId` at or after `sinceMs` (epoch ms), in the asker's store. */
-export function firstReplySince(askerId: string, replierId: string, threadId: string, sinceMs: number): number | null {
-  return (getDb().prepare('SELECT MIN(created_at) AS at FROM messages WHERE agent_id = ? AND source_agent_id = ? AND a2a_thread_id = ? AND created_at >= ?').get(askerId, replierId, threadId, sinceMs) as { at: number | null }).at;
+export interface ThreadReply { id: string; from: string; content: string; at: number }
+
+/** The replies on `threadId` in `askerId`'s store since `sinceMs` (epoch ms), oldest first: rows from anyone but the asker. */
+export function repliesSince(askerId: string, threadId: string, sinceMs: number): ThreadReply[] {
+  return getDb().prepare(`
+    SELECT id, source_agent_id AS "from", content, created_at AS at
+      FROM messages
+     WHERE agent_id = ? AND a2a_thread_id = ? AND source_agent_id IS NOT NULL AND source_agent_id <> ?
+       AND created_at >= ?
+     ORDER BY rowid
+  `).all(askerId, threadId, askerId, sinceMs) as ThreadReply[];
 }
 
 // Add no by-agent conversation wipe: `deleteAllForAgent` is for teardown only, where erasing everything is meant.

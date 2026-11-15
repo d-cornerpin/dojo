@@ -240,13 +240,12 @@ export function taskFile(id: string, room: number): string {
   }
   const directive = listTaskLog(id, { limit: 1, kinds: ['directive'] })[0]?.reason;
   const tasks = p ? (db.prepare('SELECT id FROM work WHERE parent_id = ?').all(p.id) as Array<{ id: string }>).map((r) => r.id) : [id];
-  const answersTo = (q: { thread: string; asked: string }): Array<{ id: string; content: string }> => (db.prepare('SELECT id, content FROM messages WHERE a2a_thread_id = ? AND agent_id = ? AND source_agent_id = ? ORDER BY seq')
-    .all(q.thread, pm, q.asked) as Array<{ id: string; content: string }>).map((a) => ({ id: a.id, content: extractPayloadFromA2AMessage(a.content) ?? a.content }));
-  const qs = tasks.flatMap((t) => pmQuestions(t, true).map((q) => ({ ...q, t, answers: answersTo(q) })));
+  const nameOf = (id: string): string => (db.prepare('SELECT name FROM agents WHERE id = ?').get(id) as { name: string } | undefined)?.name ?? id;
+  const qs = tasks.flatMap((t) => pmQuestions(t, true).map((q) => ({ ...q, t, answers: q.answers.map((a) => ({ ...a, content: extractPayloadFromA2AMessage(a.content) ?? a.content })) })));
   // The newest answers stay whole; older ones are cut to their first line.
   const said = new Map(qs.flatMap((q) => q.answers).reverse().map((a) => [a.id, fits(a.content) ? a.content : `${a.content.split('\n')[0]}... (history_get(id="${a.id}") returns it whole)`]));
-  const exchange = qs.map((q) => `\n    To ${q.asked} about [${q.t}] (${msToUtcText(q.at)}): "${q.text.slice(0, 500)}"`
-    + (q.answers.map((a) => `\n      Answer: ${said.get(a.id)}`).join('') || (q.until > Date.now() ? `\n      Waiting for an answer until ${msToUtcText(q.until)}` : '\n      No answer')));
+  const exchange = qs.map((q) => `\n    To ${q.typed} about [${q.t}] (${msToUtcText(q.at)}): "${q.text.slice(0, 500)}"`
+    + (q.answers.map((a) => `\n      ${nameOf(a.from)} answered: ${said.get(a.id)}`).join('') || (q.until > Date.now() ? `\n      Waiting for an answer until ${msToUtcText(q.until)}` : '\n      No answer')));
   return `${file}${directive ? `\n  Last instruction given: ${directive}` : ''}${qs.length > 0 ? `\n  Your questions about ${p ? 'the project' : 'it'} and the answers:${exchange.join('')}` : ''}`;
 }
 
