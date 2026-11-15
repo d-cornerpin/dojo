@@ -98,12 +98,7 @@ const MARKERS: Marker[] = [
     owner: OWNER,
     exports: ['OWNER_ALERT_HEADS_UP_PREFIX', 'OWNER_ALERT_PROJECT_ATTENTION_PREFIX', 'OWNER_ALERT_SYSTEM_PREFIXES', 'isOwnerAlertSystemNote'],
     pattern: /['"`](Heads up:|\[tracker:project_needs_attention\])/,
-    allow: {
-      'dashboard/src/pages/Chat.tsx':
-        'OWNER_ALERT_SYSTEM_PREFIXES is still declared client-side. The canonical list is now ' +
-        'in @dojo/shared and the three server write sites take their prefix FROM it; SWEEP-E ' +
-        'deletes the client copy when it re-points the render.',
-    },
+    allow: {},
   },
   {
     name: 'the New Session divider literal',

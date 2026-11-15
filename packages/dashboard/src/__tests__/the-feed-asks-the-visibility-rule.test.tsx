@@ -290,3 +290,16 @@ describe('R4 in the live window — no refresh, no remount', () => {
     await waitFor(() => expect(noteBubbles(view.container, NOTE_TEXT)).toHaveLength(1));
   });
 });
+
+describe('owner alerts in the default chat', () => {
+  const sys = (content: string): Row => ({ id: `s${seq}`, role: 'system', content, createdAt: at() });
+
+  it('a "Heads up:" row and a "Dojo:" row draw as notes; an ordinary system row does not', async () => {
+    const { container } = await feed([
+      user(ASKED), sys('Heads up: the nightly job failed.'), sys('Dojo: the update is ready.'), sys('internal bookkeeping row'),
+    ], false);
+    await waitFor(() => expect(container.textContent).toContain('Dojo: the update is ready.'));
+    expect(container.textContent).toContain('Heads up: the nightly job failed.');
+    expect(container.textContent).not.toContain('internal bookkeeping row');
+  });
+});

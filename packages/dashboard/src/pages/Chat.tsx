@@ -2,7 +2,7 @@ import { useFollowGrowth } from '../hooks/useFollowGrowth';
 import { useState, useEffect, useRef, useCallback, useMemo, type ReactNode } from 'react';
 import type { Message } from '@dojo/shared';
 import type { ChatChunkEvent, ChatMessageEvent, ChatToolCallEvent, ChatToolResultEvent, ChatErrorEvent, ChatWorkingNoteEvent, WsEvent } from '@dojo/shared';
-import { classifyMessageForDisplay, classifyTool, parseInboundChannel, stripInboundChannelMarker, parseOutboundRouting, channelOfSendTool, parseWorkingNote, WORKING_NOTE_PREFIX, INTERNAL_WORKING_NOTE_PREFIX, NO_REPLY_CLOSED_MARKER } from '@dojo/shared';
+import { classifyMessageForDisplay, classifyTool, parseInboundChannel, stripInboundChannelMarker, parseOutboundRouting, channelOfSendTool, parseWorkingNote, isOwnerAlertSystemNote, stripSourceEnvelope, WORKING_NOTE_PREFIX, INTERNAL_WORKING_NOTE_PREFIX, NO_REPLY_CLOSED_MARKER } from '@dojo/shared';
 import type { MessageOrigin } from '@dojo/shared';
 import { summarizeToolTurn, deriveChipLabel, type ToolTurnSummary } from '../lib/tool-display';
 import { inboundBadge, inboundSenderName, outboundBadge, withoutFence } from '../lib/channel-display';
@@ -111,23 +111,6 @@ function parseMessageContent(raw: string): { text: string; blocks?: ContentBlock
   }
   return { text: raw };
 }
-
-// Default chat hides system rows; only these render. Never add [VALIDATION CHECK]: raw task ids.
-// CONTRACT: each server write site (scheduler/runner.ts, agent/destructive-gate.ts,
-// tracker/tools.ts) prefixes its note with these exact strings; strip any [SOURCE: …] first.
-const OWNER_ALERT_SYSTEM_PREFIXES = [
-  'Heads up:',                         // scheduler failed-final-run + approval-expiry notes
-  '[tracker:project_needs_attention]', // project fell short (fail-open notice)
-] as const;
-
-// Strip notifyPrimaryAgent's envelope so the alert marker is start-anchored (completion lines stay hidden).
-const stripSourceEnvelope = (content: string): string =>
-  content.replace(/^\[SOURCE:[^\]]*\]\s*/, '');
-
-const isOwnerAlertSystemNote = (content: string): boolean => {
-  const body = stripSourceEnvelope(content.trim());
-  return OWNER_ALERT_SYSTEM_PREFIXES.some((prefix) => body.startsWith(prefix));
-};
 
 // Owner-facing text: drop the SOURCE envelope and internal tracker tag; plain notes pass through.
 const ownerAlertDisplayText = (content: string): string =>
