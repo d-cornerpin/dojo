@@ -66,7 +66,6 @@ vi.mock('../../../../../router/selector.js', () => ({
   selectModel: () => ({ modelId: routerPick.modelId, tier: 'standard' }),
   logRouterDecision: () => undefined,
 }));
-vi.mock('../../../../../router/probe.js', () => ({ maybeProbe: () => undefined }));
 
 // The ONE assembler this fix reuses. A spy, never a second trimmer: every assertion below is
 // either "it was never called again" (the short-circuit controls) or "it was called with the
@@ -93,8 +92,7 @@ function ctxFor(overrides: Partial<CallLLMContext> = {}): CallLLMContext {
     isA2ATurn: false,
     isAutoRouted: false,
     // t212: the model is chosen in `assemble` before the build; the call step reads this selection.
-    selection: { modelId: routerPick.modelId, routerTier: 'standard', routerConfidence: 0.9, routerFreshDecision: true, excludedModels: [] },
-    lastUserMessageContent: 'hello',
+    selection: { modelId: routerPick.modelId, routerTier: 'standard', excludedModels: [] },
     messages: [{ role: 'user', content: 'hello' }] as unknown as CallLLMContext['messages'],
     systemPrompt: `you are ${FXID.n4}`,
     assembled: {
@@ -186,7 +184,7 @@ describe('T82a fix wave — the router\'s pick re-checks the budget it was assem
 
     const out = await runCallLLM(freshState(), ctxFor({
       isAutoRouted: false,
-      selection: { modelId: 'pinned-model', routerTier: null, routerConfidence: 0, routerFreshDecision: false, excludedModels: [] },
+      selection: { modelId: 'pinned-model', routerTier: null, excludedModels: [] },
       messages: [{ role: 'user', content: 'hi' }] as unknown as CallLLMContext['messages'],
       volatileFrom: 1,
     }));
@@ -206,7 +204,7 @@ describe('T82a fix wave — the router\'s pick re-checks the budget it was assem
 
     await runCallLLM(freshState(), ctxFor({
       isAutoRouted: false,
-      selection: { modelId: 'pinned-model', routerTier: null, routerConfidence: 0, routerFreshDecision: false, excludedModels: [] },
+      selection: { modelId: 'pinned-model', routerTier: null, excludedModels: [] },
       messages: [{ role: 'user', content: 'hi' }] as unknown as CallLLMContext['messages'],
       volatileFrom: 1,
     }));

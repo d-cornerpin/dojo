@@ -15,9 +15,6 @@ import { toolOpKey, PROGRESS_WORK_OPS } from '../../tools/work-verbs.js';
 
 import { statusHeartbeats } from '../shared-state.js';
 
-// Side-effect import: registers the runtime getter that self-continuation handleMessage() calls need.
-import { getAgentRuntime } from '../runtime.js';
-
 import { advance } from './state.js';
 import { canonicalToolSignature } from './classifiers/loop.js';
 import { runPostExecution } from './steps/post-execution/index.js';
@@ -225,7 +222,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
       turnCtx.state = advance(turnCtx.state!, { phase: 'callLLM' });
       const callLLMContext: CallLLMContext = {
         agentId, turnCtx, turnNumber, db,
-        counterparty, isA2ATurn, isAutoRouted, lastUserMessageContent, selection,
+        counterparty, isA2ATurn, isAutoRouted, selection,
         messages, systemPrompt, assembled: ctx, modelContext: mctx, volatileFrom,
         steerAwaitingConfirm, assemblyTurnContext,
         revertTriggerStampOnAbort,

@@ -75,7 +75,6 @@ vi.mock('../../../../../router/selector.js', () => ({
   selectModel: () => ({ modelId: 'test-model', tier: 'standard' }),
   logRouterDecision: () => undefined,
 }));
-vi.mock('../../../../../router/probe.js', () => ({ maybeProbe: () => undefined }));
 
 const revertTriggerStampOnAbortSpy = vi.fn();
 
@@ -88,9 +87,8 @@ function ctxFor(overrides: Partial<CallLLMContext> = {}): CallLLMContext {
     counterparty: { kind: 'user', id: 'owner', displayName: 'Owner' } as unknown as CallLLMContext['counterparty'],
     isA2ATurn: false,
     isAutoRouted: false,
-    lastUserMessageContent: 'hello',
     // t212: the model is chosen (and built for) in `assemble`; the call step reads the selection.
-    selection: { modelId: 'test-model', routerTier: null, routerConfidence: 0, routerFreshDecision: false, excludedModels: [] },
+    selection: { modelId: 'test-model', routerTier: null, excludedModels: [] },
     messages: [{ role: 'user', content: 'hello' }] as unknown as CallLLMContext['messages'],
     systemPrompt: `you are ${FXID.n4}`,
     assembled: {

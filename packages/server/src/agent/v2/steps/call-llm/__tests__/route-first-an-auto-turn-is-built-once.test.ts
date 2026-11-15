@@ -71,7 +71,6 @@ vi.mock('../../../outbound-ledger.js', async (importOriginal) => ({
 vi.mock('../../../../../memory/deliveries-lane.js', () => ({ renderDeliveriesLaneMessage: () => null }));
 vi.mock('../../../../../work/obligations.js', () => ({ buildOpenWorkInjection: () => null }));
 vi.mock('../../../receipt.js', () => ({ writeContextReceipt: () => undefined }));
-vi.mock('../../../../../router/probe.js', () => ({ maybeProbe: () => undefined }));
 
 /** The tier the router decides. Scripted: which tier is classification's business, not this file's. */
 const route = vi.hoisted(() => ({ tier: 'light' as 'light' | 'standard' | 'heavy' }));
@@ -141,7 +140,7 @@ async function oneIteration(configured: string): Promise<void> {
   state = advance(assembled.state, { phase: CALL_LLM_PHASE });
   const ctx: CallLLMContext = {
     agentId: AGENT, turnCtx: tc, turnNumber: 31, db: db(), counterparty: OWNER as unknown as CallLLMContext['counterparty'],
-    isA2ATurn: false, isAutoRouted, lastUserMessageContent: ASK, selection: assembled.selection,
+    isA2ATurn: false, isAutoRouted, selection: assembled.selection,
     messages: assembled.messages, systemPrompt: assembled.systemPrompt, assembled: assembled.assembled,
     modelContext: assembled.modelContext, volatileFrom: assembled.volatileFrom, steerAwaitingConfirm: assembled.steerAwaitingConfirm,
     assemblyTurnContext: assembled.assemblyTurnContext, revertTriggerStampOnAbort: () => undefined,

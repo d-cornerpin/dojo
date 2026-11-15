@@ -41,7 +41,6 @@ export interface CallLLMContext {
   readonly counterparty: TurnCounterparty;
   readonly isA2ATurn: boolean;
   readonly isAutoRouted: boolean;
-  readonly lastUserMessageContent: string | null;
   /** The model `assemble` chose and built this iteration for, with the router's facts. */
   readonly selection: ModelSelection;
   /** The assembled call, as `assemble` left it. The injections append to this array. */
@@ -65,7 +64,7 @@ export type CallLLMOutcome =
 export async function runCallLLM(stateIn: AgentTurnState, ctxIn: CallLLMContext): Promise<CallLLMOutcome> {
   const {
     agentId, turnCtx, turnNumber, counterparty, isA2ATurn, isAutoRouted,
-    lastUserMessageContent, assembled: assembledIn, modelContext: mctx,
+    assembled: assembledIn, modelContext: mctx,
     steerAwaitingConfirm, assemblyTurnContext, revertTriggerStampOnAbort,
   } = ctxIn;
   let state = stateIn;
@@ -78,7 +77,7 @@ export async function runCallLLM(stateIn: AgentTurnState, ctxIn: CallLLMContext)
   const messageId = uuidv4();
   state = advance(state, { currentMessageId: messageId });
 
-  const { routerTier, routerConfidence, routerFreshDecision, excludedModels, modelId: pick } = ctxIn.selection;
+  const { routerTier, excludedModels, modelId: pick } = ctxIn.selection;
   // The array built for this pick plus this iteration's tail must fit the pick's window, output cap and
   // provider ceiling; if not, the one assembler rebuilds it (shared with `model-call.ts`'s fallback ladder).
   const reassembly = await reassembleForFitIfNeeded({
@@ -107,32 +106,6 @@ export async function runCallLLM(stateIn: AgentTurnState, ctxIn: CallLLMContext)
   state = called.state;
   const { result } = called;
   const modelId = called.modelId;
-
-  // Low-confidence shadow probe: best effort, off by default, only for a fresh text-only router decision.
-  if (
-    isAutoRouted && routerFreshDecision && routerTier &&
-    result.toolCalls.length === 0 && result.content
-  ) {
-    const probeTier = routerTier;
-    const probeConfidence = routerConfidence;
-    const probeContent = result.content;
-    const probeMsgs = messages as Array<{ role: string; content: string | object[] }>;
-    const probeQuery = lastUserMessageContent ?? '';
-    void (async () => {
-      try {
-        const { maybeProbe } = await import('../../../../router/probe.js');
-        maybeProbe({
-          agentId,
-          systemPrompt,
-          messages: probeMsgs as Array<{ role: 'user' | 'assistant'; content: string | object[] }>,
-          tier: probeTier as 'light' | 'standard' | 'heavy',
-          confidence: probeConfidence,
-          query: probeQuery,
-          realAnswer: probeContent,
-        });
-      } catch { /* best effort */ }
-    })();
-  }
 
   // Pin the auto-routed model for the rest of the turn so tool follow-up calls use the same model.
   if (isAutoRouted && !state.lockedModelId && result.toolCalls.length > 0) {

@@ -13,8 +13,6 @@ const logger = createLogger('v2-loop');
 export interface ModelSelection {
   readonly modelId: string;
   readonly routerTier: string | null;
-  readonly routerConfidence: number;
-  readonly routerFreshDecision: boolean;
   /** Picks passed over this iteration; the fallback ladder never offers them again. */
   readonly excludedModels: string[];
 }
@@ -41,8 +39,6 @@ export async function selectModel(stateIn: AgentTurnState, input: SelectModelInp
   let state = stateIn;
   let modelId = configuredModelId;
   let routerTier: string | null = null;
-  let routerConfidence = 0;
-  let routerFreshDecision = false;
   const excludedModels: string[] = [];
 
   if (isAutoRouted && state.lockedModelId && state.loopCount > 1) {
@@ -57,8 +53,6 @@ export async function selectModel(stateIn: AgentTurnState, input: SelectModelInp
     const view = routingView(agentId, { conversationId: input.conversationId, query: input.lastUserMessageContent });
     const decision = await decideTier(view, agentId, input.lastUserMessageContent);
     routerTier = decision.tier;
-    routerConfidence = decision.confidence;
-    routerFreshDecision = true;
     const selected = selector.selectModel(decision.tier, agentId, undefined, ['tools']);
     if (!selected) {
       const { tellOwnerNoPickHolds } = await import('./no-pick-holds.js');
@@ -92,5 +86,5 @@ export async function selectModel(stateIn: AgentTurnState, input: SelectModelInp
     }
   }
   state = advance(state, { modelId, routerTier });
-  return { state, selection: { modelId, routerTier, routerConfidence, routerFreshDecision, excludedModels } };
+  return { state, selection: { modelId, routerTier, excludedModels } };
 }

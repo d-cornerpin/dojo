@@ -66,7 +66,6 @@ vi.mock('../../../../runtime.js', () => ({ enforceModelCapabilities: async () =>
 vi.mock('../../../../../router/decide.js', () => ({
   decideTier: async () => ({ tier: 'light', method: 'semantic', confidence: 0.9, scores: [], rawScore: 0, latencyMs: 1, headVersion: null, queryPreview: '' }),
 }));
-vi.mock('../../../../../router/probe.js', () => ({ maybeProbe: () => undefined }));
 
 import { runMigrations } from '../../../../../db/migrations.js';
 import { insertMessage } from '../../../../../memory/message-store.js';
@@ -125,7 +124,7 @@ async function callStep(): Promise<Awaited<ReturnType<typeof runCallLLM>>> {
     turnCtx: { agentId: AGENT, conversationId: null } as unknown as CallLLMContext['turnCtx'],
     turnNumber: 21, db: db(),
     counterparty: { kind: 'user', name: 'the owner', relation: 'owner', channel: 'dashboard', senderId: null, threadId: null } as unknown as CallLLMContext['counterparty'],
-    isA2ATurn: false, isAutoRouted: true, lastUserMessageContent: 'Is the north dock open?', selection: routed.selection,
+    isA2ATurn: false, isAutoRouted: true, selection: routed.selection,
     messages: assembled.messages as CallLLMContext['messages'], systemPrompt: assembled.systemPrompt, assembled,
     modelContext: {} as CallLLMContext['modelContext'], volatileFrom: assembled.messages.length, steerAwaitingConfirm: null,
     assemblyTurnContext: turnCtx, revertTriggerStampOnAbort: () => {},

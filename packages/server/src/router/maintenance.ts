@@ -11,7 +11,6 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { isAutoRouterInUse } from './gating.js';
 import { countLabels } from './labels.js';
-import { resetProbeBudget } from './probe.js';
 
 const logger = createLogger('router-maintenance');
 
@@ -42,9 +41,6 @@ function setConfig(key: string, value: string): void {
 
 async function runCycle(): Promise<void> {
   try {
-    // Each cycle refreshes the probe budget regardless of whether we train.
-    resetProbeBudget();
-
     if (!isAutoRouterInUse()) return; // dormant when no agent is on auto-router
 
     const total = countLabels();
@@ -87,19 +83,8 @@ export function startRouterMaintenance(): void {
   timer = setInterval(() => { void runCycle(); }, CHECK_INTERVAL_MS);
   if (typeof timer.unref === 'function') timer.unref();
   // A delayed first tick so it never piles onto cold boot. A one-shot: clear it
-  // when it fires, and stopRouterMaintenance can reach it otherwise.
+  // when it fires.
   kickoff = setTimeout(() => { kickoff = null; void runCycle(); }, 5 * 60 * 1000);
   if (typeof kickoff.unref === 'function') kickoff.unref();
   logger.info('Router maintenance loop started (sparse, gated)');
-}
-
-export function stopRouterMaintenance(): void {
-  if (timer) {
-    clearInterval(timer);
-    timer = null;
-  }
-  if (kickoff) {
-    clearTimeout(kickoff);
-    kickoff = null;
-  }
 }

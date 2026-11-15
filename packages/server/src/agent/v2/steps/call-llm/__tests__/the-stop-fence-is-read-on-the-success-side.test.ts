@@ -77,7 +77,6 @@ vi.mock('../../../../../router/selector.js', () => ({
   selectModel: () => ({ modelId: 'test-model', tier: 'standard' }),
   logRouterDecision: () => undefined,
 }));
-vi.mock('../../../../../router/probe.js', () => ({ maybeProbe: () => undefined }));
 vi.mock('../../../../../memory/assembler.js', () => ({
   assembleContext: vi.fn().mockResolvedValue({
     systemPrompt: 'you are an agent', messages: [{ role: 'user', content: 'hello' }],
@@ -104,8 +103,7 @@ function ctxFor(overrides: Partial<CallLLMContext> = {}): CallLLMContext {
     counterparty: { kind: 'user', id: 'owner', displayName: 'Owner' } as unknown as CallLLMContext['counterparty'],
     isA2ATurn: false,
     isAutoRouted: false,
-    selection: { modelId: 'test-model', routerTier: null, routerConfidence: 0, routerFreshDecision: false, excludedModels: [] },   // t212: chosen in `assemble`
-    lastUserMessageContent: 'compare the options for me',
+    selection: { modelId: 'test-model', routerTier: null, excludedModels: [] },   // t212: chosen in `assemble`
     messages: [{ role: 'user', content: 'compare the options for me' }] as unknown as CallLLMContext['messages'],
     systemPrompt: 'you are an agent',
     assembled: {
