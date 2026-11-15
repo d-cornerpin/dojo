@@ -75,8 +75,7 @@ const DEDUP_LOOKBACK = 3;
 function isNoWakeIntent(intent: A2AIntent): boolean { return NO_WAKE_INTENTS.has(intent); }
 function isReopeningIntent(intent: A2AIntent): boolean { return REOPENING_INTENTS.has(intent); }
 
-// Re-export for callers that need these (tools.ts)
-export { isNoWakeIntent, isReopeningIntent, type A2AIntent };
+export { isNoWakeIntent, type A2AIntent };
 
 const logger = createLogger('a2a-transport');
 
