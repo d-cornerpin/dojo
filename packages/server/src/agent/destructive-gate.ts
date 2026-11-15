@@ -69,6 +69,7 @@ export function isDestructiveCall(
 
 /** What a main-agent call would destroy, or null: the one question its warn-once hurdle asks. */
 export function wouldWreck(toolName: string, args: Record<string, unknown>): string | null {
+  if (toolName === 'vault_discard_archives') return 'permanently delete saved conversation archives from the Dojo\'s memory';
   if (toolName === 'kill_agent') {
     const target = resolveAgentRef(typeof args.agent_id === 'string' ? args.agent_id : null);
     const row = target.ok ? getDb().prepare('SELECT classification FROM agents WHERE id = ?').get(target.id) as { classification: string } | undefined : undefined;
