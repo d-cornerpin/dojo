@@ -90,7 +90,9 @@ export function isBareNoReplySentinel(text: string): boolean {
 
 export function stripNoReplySentinel(text: string): string {
   if (!text) return text;
-  return text.replace(new RegExp(`\\s*${NO_REPLY_SENTINEL_BODY}\\s*`, 'gi'), '');
+  // A mark between two words leaves one space, so "word[no-reply]word" does not glue.
+  return text.replace(new RegExp(`\\s*${NO_REPLY_SENTINEL_BODY}\\s*`, 'gi'), (m, at: number, whole: string) =>
+    /\w/.test(whole[at - 1] ?? '') && /\w/.test(whole[at + m.length] ?? '') ? ' ' : '');
 }
 
 // `((mood: NAME))` leads a reply and animates the orb; it is stripped before display or speech.

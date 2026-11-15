@@ -89,3 +89,20 @@ describe('a chunk edge that falls on a space', () => {
     expect(pushed.join('')).toContain('Let me check that.');
   });
 });
+
+describe('a control mark between two words', () => {
+  it('leaves one space in the local voice', async () => {
+    await open({});
+    emit(chunk('Hello [no-reply]world', true)); emit(idle());
+    await vi.waitFor(() => expect(localSaid.length).toBeGreaterThan(0));
+    expect(localSaid.join(' ')).toContain('Hello world');
+  });
+
+  it('leaves one space in the cloud voice', async () => {
+    await open({ cloudVoice: 'v1' });
+    await handleVoiceMessage(ws as never, JSON.stringify({ type: 'config', ttsEngine: 'cloud' }));
+    emit(chunk('Hello [no-reply]world', true)); emit(idle());
+    await vi.waitFor(() => expect(pushed.length).toBeGreaterThan(0));
+    expect(pushed.join('')).toContain('Hello world');
+  });
+});
