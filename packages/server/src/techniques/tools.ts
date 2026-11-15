@@ -59,7 +59,7 @@ export function authorizeTechniqueMutation(agentId: string, classification: stri
   return (
     `Refused: ${verb} is reserved for the trainer agent (${trainerName}). ` +
     `Techniques are owned by ${trainerName} so that support files, dependency manifests, and file-reference integrity all stay in one place — when techniques get shared, that ownership is what makes the package portable. ` +
-    `Send a message to ${trainerName} describing what you want built (include any custom scripts/files in the message body or via shared-files), and they'll create / edit the technique on your behalf.`
+    `Send a message to ${trainerName} describing what you want built (include any custom scripts/files in the message body or via shared-files), and they'll make the change on your behalf (create, edit or delete).`
   );
 }
 

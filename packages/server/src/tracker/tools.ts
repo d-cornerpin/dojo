@@ -2003,7 +2003,7 @@ export async function trackerRetask(
     return `Error: target_status="${targetStatus}" is not allowed for retask. Use 'in_progress' (default) or 'on_deck'.`;
   }
 
-  // A retask lifts any hold but the owner's (the PM's verdict that the wait is not real), then moves through `transition()`.
+  // A retask lifts any hold but the owner's (the sender's verdict that the wait is not real), then moves through `transition()`.
   if (ownerHoldStands(taskId, false)) return `Refused: ${OWNER_HOLD_REFUSAL}`;
   clearHold(taskId, pmAgentId);
   const sr = setTaskStatusResult(taskId, targetStatus as TrackerStatus, {
@@ -2026,8 +2026,8 @@ export async function trackerRetask(
     reason: directive,
   });
 
-  // Deliver the PM's directive to the assigned agent as an engine event plus a wake; the PM has already
-  // moved the status, so a failed delivery only adds the re-drive note to the reply.
+  // Deliver the directive to the assigned agent as an engine event plus a wake; the status has already
+  // moved, so a failed delivery only adds the re-drive note to the reply.
   let redriven = true;
   try {
     const { redriveWithoutReply } = await import('../agent/agent-notice.js');

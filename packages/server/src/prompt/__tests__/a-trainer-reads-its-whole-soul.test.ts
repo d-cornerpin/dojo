@@ -111,7 +111,7 @@ describe('the Trainer runs on its whole soul', () => {
     expect(soul.length).toBeGreaterThan(7_000);
     // Sections the stored stub does not have at all — the ownership rule, the save-time
     // reference check, the dependency manifest, the import protocol, the vault rule.
-    expect(soul).toContain('# You Are the Sole Owner of Techniques');
+    expect(soul).toContain('# You Own Techniques (With the Main Agent)');
     expect(soul).toContain('# File-Reference Integrity (Enforced at Save)');
     expect(soul).toContain('# Dependency Manifest');
     expect(soul).toContain('# Importing a Technique');
@@ -146,7 +146,7 @@ describe('the Trainer runs on its whole soul', () => {
 
     const soul = getSoulContent(TRAINER);
 
-    expect(soul).toContain('# You Are the Sole Owner of Techniques');
+    expect(soul).toContain('# You Own Techniques (With the Main Agent)');
     expect(soul).not.toContain('{{');
     expect(fs.readFileSync(path.join(PROMPTS, 'TRAINER-SOUL.md'), 'utf-8')).toBe(soul);
     expect(readAgentPromptSurface(TRAINER)).toBe(soul);
@@ -158,7 +158,7 @@ describe('the Trainer runs on its whole soul', () => {
     expect(soul?.reseedUnsubstituted).toBe(true);
     expect(soul?.spawnTruth).toBe(false);
     // The declared fallback is the SHIPPED template, substituted — not the in-code stub.
-    expect(soul!.fallback).toContain('# You Are the Sole Owner of Techniques');
+    expect(soul!.fallback).toContain('# You Own Techniques (With the Main Agent)');
     expect(soul!.fallback).not.toContain('{{');
   });
 

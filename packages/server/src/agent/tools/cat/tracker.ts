@@ -681,19 +681,17 @@ const tableOfHandlers: ToolHandlerMap = {
   },
 
   async "work_validate:retask"({ agentId, args }) {
-    let content = '';
-    let isError = false;
     const trErr = checkRequired([
       { name: 'task_id', value: args.task_id, type: 'string' },
       { name: 'directive', value: args.directive, type: 'string' },
     ]);
-    if (trErr) { content = trErr; isError = true; return { content, isError }; }
-    content = await trackerRetask(agentId, {
+    if (trErr) return { content: trErr, isError: true };
+    const content = await trackerRetask(agentId, {
       task_id: args.task_id as string,
       directive: args.directive as string,
       target_status: args.target_status as string | undefined,
     });
-    return { content, isError };
+    return { content, isError: /^(Refused|Error):/.test(content) };
   },
 
   async "work_schedule:pause"({ agentId, args }) {

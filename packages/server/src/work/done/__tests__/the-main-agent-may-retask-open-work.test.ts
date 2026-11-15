@@ -40,6 +40,7 @@ describe('who may retask open work', () => {
     expect(stateOf()).toBe('done');
     const r = await retask(MAIN);
     expect(r.content).toContain(`is held by agent ${WORKER}, a live agent, and only`);
+    expect(r.isError).toBe(true);
     expect(stateOf()).toBe('done');
   });
 });
