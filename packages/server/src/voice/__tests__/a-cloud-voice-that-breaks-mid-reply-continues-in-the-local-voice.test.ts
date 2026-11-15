@@ -300,6 +300,9 @@ describe('what is spoken from the streamed chunks', () => {
     it(`the ${voice} voice leaves one space where a control mark was taken out`, async () => {
       expect(await spoken(open, ['Hello [no-reply]world'])).toContain('Hello world');
     });
+    it(`the ${voice} voice keeps the space when a chunk ends right after the mark`, async () => {
+      expect(await spoken(open, ['Hello [no-reply]', 'world'])).toContain('Hello world');
+    });
     it(`the ${voice} voice drops a time stamp echoed at the start`, async () => {
       const said = await spoken(open, [`${STAMP} Done.`]);
       expect(said).toContain('Done.');

@@ -1074,8 +1074,9 @@ async function fireFastOpener(session: VoiceSession, transcript: string): Promis
 function stripEngineControlMarkers(text: string): string {
   if (!text) return text;
   // stripNoReplySentinel is shared with the engine so both agree on what the sentinel looks like.
-  // Runs of spaces are collapsed afterwards.
-  return stripNoReplySentinel(text).replace(/ {2,}/g, ' ');
+  // Runs of spaces are collapsed afterwards. The probe letter makes a mark that ends the chunk leave its
+  // word-gap space, so the next chunk's first word does not glue to this one's last.
+  return stripNoReplySentinel(`${text}x`).slice(0, -1).replace(/ {2,}/g, ' ');
 }
 
 // Open a TTS burst for the agent's chat:chunk stream. Called after a voice prompt is submitted, and by
