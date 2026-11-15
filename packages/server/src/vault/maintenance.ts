@@ -215,8 +215,6 @@ const MAX_MESSAGE_CHARS = 1500;
 // bookends).
 const MAX_ARCHIVE_BODY_CHARS = 8000;
 
-// Cap on a compressed tool_result one-liner (tool messages themselves are dropped by preprocessMessages).
-const MAX_TOOL_RESULT_CHARS = 200;
 
 // Hard ceiling: raw archive text never exceeds 35% of the model's window, leaving the rest for the system
 // prompt, tools and tool-call accumulation.
@@ -249,69 +247,8 @@ function extractAssistantText(content: string): string {
   return parts.join('\n');
 }
 
-// Compresses a tool_use / tool_result payload into a one-liner (the action plus a tiny shape hint).
-function summarizeToolBlock(block: Record<string, unknown>): string | null {
-  if (block.type === 'tool_use') {
-    const name = String(block.name ?? 'tool');
-    const input = block.input as Record<string, unknown> | undefined;
-    const summary = summarizeToolInput(name, input);
-    return summary ? `[tool_use ${name}${summary}]` : `[tool_use ${name}]`;
-  }
-  if (block.type === 'tool_result') {
-    const raw = typeof block.content === 'string'
-      ? block.content
-      : Array.isArray(block.content)
-      ? (block.content as Array<{ type?: string; text?: string }>)
-          .map(b => (b.type === 'text' ? (b.text ?? '') : `[${b.type ?? 'block'}]`))
-          .filter(Boolean)
-          .join(' ')
-      : '';
-    const isError = block.is_error === true;
-    if (raw.length === 0) return `[tool_result${isError ? ' ERROR' : ''} (empty)]`;
-    const oneLine = raw.replace(/\s+/g, ' ').trim();
-    const head = oneLine.slice(0, MAX_TOOL_RESULT_CHARS);
-    const note = oneLine.length > MAX_TOOL_RESULT_CHARS ? `…+${oneLine.length - MAX_TOOL_RESULT_CHARS}c` : '';
-    return `[tool_result${isError ? ' ERROR' : ''} ${head}${note}]`;
-  }
-  if (block.type === 'image') return '[image]';
-  if (block.type === 'document') return '[document]';
-  return null;
-}
 
-function summarizeToolInput(name: string, input: Record<string, unknown> | undefined): string {
-  if (!input) return '';
-  const fields: string[] = [];
-  for (const key of ['path', 'file_path', 'url', 'query', 'agent', 'agent_id', 'task_id', 'name', 'shape_type', 'presentation_id', 'image_url', 'drive_file_id']) {
-    if (key in input && typeof input[key] === 'string') {
-      const val = input[key] as string;
-      const trimmed = val.length > 80 ? val.slice(0, 80) + '…' : val;
-      fields.push(`${key}=${JSON.stringify(trimmed)}`);
-      if (fields.length >= 2) break;
-    }
-  }
-  return fields.length > 0 ? ` ${fields.join(' ')}` : '';
-}
 
-// Assistant content can be a JSON-encoded array of content blocks; summarize each block instead of feeding
-// raw JSON.
-function compressContentBlocks(content: string): string {
-  if (!content) return content;
-  const trimmed = content.trim();
-  if (!trimmed.startsWith('[') && !trimmed.startsWith('{')) return content;
-  let parsed: unknown;
-  try { parsed = JSON.parse(trimmed); } catch { return content; }
-  if (!Array.isArray(parsed)) return content;
-  const parts: string[] = [];
-  for (const blk of parsed as Array<Record<string, unknown>>) {
-    if (blk?.type === 'text' && typeof blk.text === 'string') {
-      parts.push(blk.text);
-    } else {
-      const summary = summarizeToolBlock(blk);
-      if (summary) parts.push(summary);
-    }
-  }
-  return parts.join('\n');
-}
 
 function truncateMessageContent(content: string): string {
   if (content.length <= MAX_MESSAGE_CHARS) return content;
@@ -584,17 +521,6 @@ function batchArchives(unprocessed: VaultConversation[], contextWindow: number):
   return batches;
 }
 
-function buildDreamerInitialMessage(batchText: string, batchIndex: number, totalBatches: number): string {
-  const batchNote = totalBatches > 1
-    ? `\n\nNote: This is batch ${batchIndex + 1} of ${totalBatches}. Focus on these archives only. More batches will be processed after you finish.\n`
-    : '';
-
-  return `Here are the conversation archives to process. Extract all knowledge into the vault using vault_remember, then call complete_task when done.${batchNote}
-
-${batchText}
-
-Begin by creating a tracker project, then process each archive systematically.`;
-}
 
 // Builds the cycle message for the permanent Dreamer; vault state and archive data go in the user message
 // because the system prompt is fixed.
@@ -921,8 +847,6 @@ export async function runDreamingCycle(): Promise<{ dreamerId: string | null }> 
     contextWindow,
     batches: batches.length,
   });
-
-  broadcast({ type: 'dream:started', data: { mode: config.dreamMode, archives: unprocessed.length, batches: batches.length } });
 
   const stats = getVaultStats();
 
@@ -1509,16 +1433,6 @@ export async function recoverDreamerFromContextOverflow(
 
   wakeupDreamer(noticedMessage);
 
-  broadcast({
-    type: 'dream:recovery',
-    data: {
-      reason: 'context_overflow',
-      newSubBatchCount: newBatches.length,
-      currentIndex: state.currentIndex,
-      totalBatches: state.batches.length,
-    },
-  });
-
   return true;
 }
 
@@ -1791,12 +1705,4 @@ export function scheduleDreamingCycle(): void {
     // Reschedule for next day
     scheduleDreamingCycle();
   }, delay);
-}
-
-export function cancelDreamingSchedule(): void {
-  if (dreamTimer) {
-    clearTimeout(dreamTimer);
-    dreamTimer = null;
-    logger.info('Dreaming schedule cancelled');
-  }
 }

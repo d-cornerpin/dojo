@@ -4,7 +4,6 @@
 // or queues until a slot idles.
 
 import { createLogger } from '../logger.js';
-import { broadcast } from '../gateway/ws.js';
 import { getDb } from '../db/connection.js';
 import { isLocalOllamaBaseUrl } from './num-ctx-calculator.js';
 
@@ -323,11 +322,6 @@ class OllamaModelLock {
       }
       this.lastWarningKey = offenderKey;
     }
-
-    broadcast({
-      type: 'ollama:status',
-      data: status,
-    });
   }
 }
 

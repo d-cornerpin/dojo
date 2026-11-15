@@ -7,7 +7,6 @@ import path from 'node:path';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { getProviderCredential, setProviderCredential } from '../config/loader.js';
-import { broadcast } from '../gateway/ws.js';
 import { homeDir } from '../home.js';
 
 const logger = createLogger('tunnel');
@@ -70,7 +69,6 @@ function armTunnelStartDeadline(label: string): void {
     logger.warn('Tunnel start deadline reached', { tunnelError, quietForMs: quietFor, aliveForMs: aliveFor });
     clearStartWatch();
     stopTunnel();
-    broadcastStatus();
   };
   watch.timer = setTimeout(tick, TUNNEL_START_QUIET_MS);
   watch.timer.unref?.();
@@ -313,13 +311,6 @@ export function installCloudflared(): { ok: boolean; error?: string } {
 
 // ── Tunnel Management ──
 
-function broadcastStatus(): void {
-  broadcast({
-    type: 'system:tunnel_status',
-    data: getTunnelStatus(),
-  });
-}
-
 /**
  * The user-entered named-tunnel URL. A named tunnel's URL lives in Cloudflare's dashboard, not in
  * cloudflared's logs, so the user types it in once and it is persisted here.
@@ -377,7 +368,6 @@ export function startTunnel(mode?: TunnelMode, port?: number): { ok: boolean; er
   tunnelError = null;
   tunnelUrl = null;
   restartAttempted = false;
-  broadcastStatus();
 
   if (tunnelMode === 'quick') {
     return startQuickTunnel(dashboardPort);
@@ -415,7 +405,6 @@ function startQuickTunnel(port: number): { ok: boolean; error?: string } {
         // A healthy URL means Cloudflare is no longer throttling; reset the cross-boot backoff counter.
         clearQuickTunnelBackoff();
         logger.info('Quick tunnel active', { url: tunnelUrl });
-        broadcastStatus();
 
         // The new remote dashboard address is texted to the owner, whose old link is now dead.
         // 'notice' reaches the phone without the "[CRITICAL]" prefix.
@@ -438,7 +427,6 @@ function startQuickTunnel(port: number): { ok: boolean; error?: string } {
       tunnelError = err.message;
       tunnelProcess = null;
       logger.error('Tunnel process error', { error: err.message });
-      broadcastStatus();
     });
 
     proc.on('exit', (code) => {
@@ -484,7 +472,6 @@ function startQuickTunnel(port: number): { ok: boolean; error?: string } {
           logger.error('Tunnel exited', { code, output: tail });
         }
       }
-      broadcastStatus();
     });
 
     armTunnelStartDeadline('Tunnel');
@@ -493,7 +480,6 @@ function startQuickTunnel(port: number): { ok: boolean; error?: string } {
   } catch (err) {
     tunnelStatus = 'error';
     tunnelError = err instanceof Error ? err.message : String(err);
-    broadcastStatus();
     return { ok: false, error: tunnelError };
   }
 }
@@ -503,7 +489,6 @@ function startNamedTunnel(): { ok: boolean; error?: string } {
   if (!token) {
     tunnelStatus = 'error';
     tunnelError = 'No tunnel token configured';
-    broadcastStatus();
     return { ok: false, error: 'No tunnel token configured. Add your Cloudflare tunnel token first.' };
   }
 
@@ -530,7 +515,6 @@ function startNamedTunnel(): { ok: boolean; error?: string } {
           tunnelStartedAt = Date.now();
           tunnelUrl = null; // URL is configured on Cloudflare's side
           logger.info('Named tunnel active');
-          broadcastStatus();
         }
       }
     };
@@ -547,7 +531,6 @@ function startNamedTunnel(): { ok: boolean; error?: string } {
       tunnelError = err.message;
       tunnelProcess = null;
       logger.error('Named tunnel process error', { error: err.message });
-      broadcastStatus();
     });
 
     proc.on('exit', (code) => {
@@ -575,7 +558,6 @@ function startNamedTunnel(): { ok: boolean; error?: string } {
         tunnelError = formatTunnelExitError(code, tail);
         logger.error('Named tunnel exited', { code, output: tail });
       }
-      broadcastStatus();
     });
 
     armTunnelStartDeadline('Named tunnel');
@@ -584,7 +566,6 @@ function startNamedTunnel(): { ok: boolean; error?: string } {
   } catch (err) {
     tunnelStatus = 'error';
     tunnelError = err instanceof Error ? err.message : String(err);
-    broadcastStatus();
     return { ok: false, error: tunnelError };
   }
 }
@@ -611,7 +592,6 @@ export function stopTunnel(): void {
   tunnelUrl = null;
   tunnelError = null;
   tunnelStartedAt = null;
-  broadcastStatus();
   logger.info('Tunnel stopped');
 }
 

@@ -4,7 +4,6 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { storeEmbedding } from './embeddings.js';
 import { embeddingModelKey, embeddingIsLocal } from './embedding-model.js';
-import { broadcast } from '../gateway/ws.js';
 
 const logger = createLogger('backfill');
 
@@ -95,11 +94,6 @@ export async function runBackfill(opts?: { includeStale?: boolean }): Promise<{ 
 
     logger.info(`Backfill started: embedding ${items.length} item(s) this run (cap ${BACKFILL_PER_RUN_CAP})`);
 
-    broadcast({
-      type: 'backfill:progress',
-      data: { ...backfillProgress, status: 'running' },
-    });
-
     const batchSize = 10;
 
     // storeEmbedding is best-effort: it swallows every failure and returns void,
@@ -129,22 +123,13 @@ export async function runBackfill(opts?: { includeStale?: boolean }): Promise<{ 
         }
       }
 
-      // Broadcast progress every batch
+      // Log progress every few batches
       if (i % (batchSize * 5) === 0 || i + batchSize >= items.length) {
-        broadcast({
-          type: 'backfill:progress',
-          data: { ...backfillProgress, status: 'running' },
-        });
         logger.info(`Backfill progress: ${backfillProgress.completed}/${backfillProgress.total} (${backfillProgress.failed} failed)`);
       }
     }
 
     logger.info(`Backfill completed: ${backfillProgress.completed} embedded, ${backfillProgress.failed} failed, ${backfillProgress.total} total`);
-
-    broadcast({
-      type: 'backfill:progress',
-      data: { ...backfillProgress, status: 'complete' },
-    });
 
     if (includeStale) {   // the vault's entries are memories too
       const { reembedStaleVaultEntries } = await import('../vault/embedding-refresh.js');

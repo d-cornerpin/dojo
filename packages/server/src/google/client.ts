@@ -5,7 +5,6 @@ import { openAgentCall, STOPPED_BY_USER } from '../agent/abortable-call.js';
 import { getValidAccessTokenForAccount } from './auth.js';
 import { getGoogleAccount } from './accounts.js';
 import { logGoogleActivity } from './activity-log.js';
-import { broadcast } from '../gateway/ws.js';
 import { recordAtDoor, inOutboundScope, recordedId } from '../agent/v2/outbound.js';
 
 const logger = createLogger('google-client');
@@ -167,11 +166,6 @@ export function googleWrite(
       gwsCommand: result.apiEndpoint,
       success: result.ok,
       error: result.error,
-    });
-
-    broadcast({
-      type: 'google:activity',
-      data: { agentId, agentName, action, actionType: 'write', details: { ...details, account: accountId } },
     });
 
     // The door records only a send. This one function carries gmail_send/reply/forward (a person

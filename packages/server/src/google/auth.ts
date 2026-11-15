@@ -16,7 +16,6 @@ import {
   type GoogleAccount,
 } from './accounts.js';
 import { createLogger } from '../logger.js';
-import { broadcast } from '../gateway/ws.js';
 import { classifyTokenRefreshFailure } from '../services/oauth-refresh-classify.js';
 
 const logger = createLogger('google-auth');
@@ -259,11 +258,6 @@ export function setGoogleConnected(connected: boolean, email?: string, slot: Acc
   if (email) patch.email = email;
   if (connected) patch.lastVerifiedAt = new Date().toISOString();
   updateGoogleAccount(ensureSlotAccount(slot).id, patch);
-  if (connected) {
-    broadcast({ type: 'google:connected', data: { email: email ?? '', slot } });
-  } else {
-    broadcast({ type: 'google:disconnected', data: { slot } });
-  }
 }
 
 export function setEnabledServices(services: Partial<GoogleWorkspaceConfig['enabledServices']>, slot: AccountSlot = 'agent'): void {
@@ -339,7 +333,6 @@ function benchGoogleAccount(acc: GoogleAccount | null, accountId: string): void 
   const wasConnected = acc?.connected ?? false;
   updateGoogleAccount(accountId, { connected: false });
   if (!wasConnected) return; // already benched, nothing to repeat
-  broadcast({ type: 'google:disconnected', data: { slot: acc?.kind ?? 'agent' } });
   // No platform text for an expired sign-in: the dashboard card stays and the agent sees the disconnected
   // integration in its prompt.
   noteGoogleSignInExpired(accountId, expiredWords(acc));
@@ -424,7 +417,6 @@ export async function attemptGoogleReconnect(accountId: string): Promise<'reconn
   const token = await refreshAccessTokenForAccount(accountId);
   if (!token) return 'still-down';
   updateGoogleAccount(accountId, { connected: true, lastVerifiedAt: new Date().toISOString() });
-  broadcast({ type: 'google:connected', data: { email: acc.email ?? '', slot: acc.kind } });
   logger.info('Google account reconnected on recovery probe', { accountId, slot: acc.kind, email: acc.email ?? null });
   return 'reconnected';
 }
@@ -562,7 +554,6 @@ export async function exchangeCodeForTokens(code: string, redirectUri: string, c
       enabled: true,
       lastVerifiedAt: new Date().toISOString(),
     });
-    broadcast({ type: 'google:connected', data: { email, slot } });
 
     // Soft warning if the same email is connected as both an agent and a user account (not a refusal:
     // testing and recovery are legitimate); logged as a breadcrumb for support.
@@ -633,7 +624,6 @@ export function disconnectGoogle(slot: AccountSlot = 'agent'): void {
       grantedScopes: null,
     });
   }
-  broadcast({ type: 'google:disconnected', data: { slot } });
   logger.info('Google Workspace disconnected', { slot });
 }
 
@@ -653,7 +643,6 @@ export function disconnectGoogleAccount(accountId: string): void {
   } else {
     deleteGoogleAccount(acc.id);
   }
-  broadcast({ type: 'google:disconnected', data: { slot: acc.kind } });
   logger.info('Google account disconnected', { accountId, kind: acc.kind, position: acc.position });
 }
 

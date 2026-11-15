@@ -4,7 +4,6 @@
 // it, setters create on demand) and token resolution is keyed by account id. Mirrors google/auth.ts.
 
 import crypto from 'node:crypto';
-import { broadcast } from '../gateway/ws.js';
 import { createLogger } from '../logger.js';
 import { widestIntegrationLevel } from '../agent/access/read.js';
 import { classifyTokenRefreshFailure } from '../services/oauth-refresh-classify.js';
@@ -189,11 +188,6 @@ export function setMicrosoftConnected(connected: boolean, email?: string, accoun
   if (accountType) patch.accountType = accountType;
   if (connected) patch.lastVerifiedAt = new Date().toISOString();
   updateMicrosoftAccount(ensureSlotAccount(slot).id, patch);
-  if (connected) {
-    broadcast({ type: 'microsoft:connected', data: { email: email ?? '', slot } });
-  } else {
-    broadcast({ type: 'microsoft:disconnected', data: { slot } });
-  }
 }
 
 export function setEnabledMsServices(services: Partial<MicrosoftWorkspaceConfig['enabledServices']>, slot: AccountSlot = 'agent'): void {
@@ -281,7 +275,6 @@ function benchMicrosoftAccount(acc: MicrosoftAccount | null, accountId: string):
   const wasConnected = acc?.connected ?? false;
   updateMicrosoftAccount(accountId, { connected: false });
   if (!wasConnected) return; // already benched, nothing to repeat
-  broadcast({ type: 'microsoft:disconnected', data: { slot: acc?.kind ?? 'agent' } });
   // No platform text for an expired sign-in: the dashboard card stays and the agent sees the disconnected
   // integration in its prompt and tells the owner.
   noteMicrosoftSignInExpired(accountId, expiredWords(acc));
@@ -362,7 +355,6 @@ export async function attemptMicrosoftReconnect(accountId: string): Promise<'rec
   const token = await refreshAccessTokenForAccount(accountId);
   if (!token) return 'still-down';
   updateMicrosoftAccount(accountId, { connected: true, lastVerifiedAt: new Date().toISOString() });
-  broadcast({ type: 'microsoft:connected', data: { email: acc.email ?? '', slot: acc.kind } });
   logger.info('Microsoft account reconnected on recovery probe', { accountId, slot: acc.kind, email: acc.email ?? null });
   // The sign-in card ends in updateMicrosoftAccount (connected: true); no all-clear text is sent.
   return 'reconnected';
@@ -507,7 +499,6 @@ export async function exchangeCodeForTokens(code: string, redirectUri: string, c
       lastVerifiedAt: new Date().toISOString(),
     });
     if (accountType === 'msa') setEnabledMsServicesForAccount(accountId, { teams: false });
-    broadcast({ type: 'microsoft:connected', data: { email, slot } });
 
     // Same-email soft warning across kinds.
     if (email) {
@@ -568,7 +559,6 @@ export function disconnectMicrosoft(slot: AccountSlot = 'agent'): void {
       lastVerifiedAt: null, enabledServices: null,
     });
   }
-  broadcast({ type: 'microsoft:disconnected', data: { slot } });
   logger.info('Microsoft 365 disconnected', { slot });
 }
 
@@ -584,7 +574,6 @@ export function disconnectMicrosoftAccount(accountId: string): void {
   } else {
     deleteMicrosoftAccount(acc.id);
   }
-  broadcast({ type: 'microsoft:disconnected', data: { slot: acc.kind } });
   logger.info('Microsoft account disconnected', { accountId, kind: acc.kind, position: acc.position });
 }
 

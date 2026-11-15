@@ -3,7 +3,6 @@ import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { withUnit } from '../db/unit.js';
 import { createLogger } from '../logger.js';
-import { broadcast } from '../gateway/ws.js';
 import { getPrimaryAgentId, getPMAgentId, getTrainerAgentId, getHealerAgentId, getDreamerAgentId } from '../config/platform.js';
 import { patchWorkWhere } from '../work/tracker-store.js';
 
@@ -71,8 +70,6 @@ export function createGroup(name: string, description: string | null, createdBy:
   `).run(id, name, description, createdBy, color);
 
   logger.info('Group created', { id, name, createdBy });
-
-  broadcast({ type: 'group:created', data: { id, name } });
 
   return { id, name, description, createdBy, color, memberCount: 0, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
 }
@@ -163,7 +160,6 @@ export function deleteGroup(id: string): boolean {
 
   if (result.changes > 0) {
     logger.info('Group deleted', { id });
-    broadcast({ type: 'group:deleted', data: { id } });
   }
 
   return result.changes > 0;

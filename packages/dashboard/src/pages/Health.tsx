@@ -10,8 +10,7 @@ import { HealerVitals } from '../components/HealerVitals';
 import { WatcherCards } from '../components/WatcherCards';
 import { copyTextToClipboard } from '../lib/clipboard';
 
-// There is no server-push health feed: 'system:health' / 'provider:status' are
-// never emitted, so a mount-time snapshot would go stale; we poll on this cadence.
+// There is no server-push health feed, so a mount-time snapshot would go stale; we poll on this cadence.
 
 const HEALTH_POLL_INTERVAL_MS = 20_000;
 

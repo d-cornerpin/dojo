@@ -5,7 +5,6 @@ import { exec } from 'node:child_process';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { createLogger } from '../logger.js';
-import { broadcast } from '../gateway/ws.js';
 import { bumpToolConfigGeneration } from '../agent/tool-config-generation.js';
 import { homeDir } from '../home.js';
 
@@ -72,14 +71,12 @@ export function installOfficePackages(): void {
     installStatus = 'installed';
     installError = null;
     bumpToolConfigGeneration(); // refresh any list cached before packages resolved
-    broadcast({ type: 'microsoft:office_packages', data: { status: 'installed' } });
     logger.info('Office packages already installed');
     return;
   }
 
   installStatus = 'installing';
   installError = null;
-  broadcast({ type: 'microsoft:office_packages', data: { status: 'installing' } });
 
   logger.info('Installing Office packages: docx, xlsx, pptxgenjs');
 
@@ -99,7 +96,6 @@ export function installOfficePackages(): void {
         installStatus = 'failed';
         installError = err.message;
         logger.error('Office package install failed', { error: err.message, stderr });
-        broadcast({ type: 'microsoft:office_packages', data: { status: 'failed', error: err.message } });
         return;
       }
 
@@ -110,12 +106,10 @@ export function installOfficePackages(): void {
         installError = null;
         bumpToolConfigGeneration(); // office create/edit tools enter the surface
         logger.info('Office packages installed successfully');
-        broadcast({ type: 'microsoft:office_packages', data: { status: 'installed' } });
       } else {
         installStatus = 'failed';
         installError = 'Packages installed but not resolvable';
         logger.error('Office packages installed but not resolvable');
-        broadcast({ type: 'microsoft:office_packages', data: { status: 'failed', error: installError } });
       }
     },
   );

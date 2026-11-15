@@ -1,5 +1,5 @@
 
-import type { Agent, AgentMessage, AgentStatus, CompletionAnnouncement, HealthData, LogEntry, Message, MessageRole, Project, Task } from './types.js';
+import type { Agent, AgentStatus, LogEntry, Message, MessageRole, Project, Task } from './types.js';
 import type { DisplayKind, MessageLane, VisibilityTier } from './visibility.js';
 
 export interface AgentStatusEvent {
@@ -194,11 +194,6 @@ export interface LogEntryEvent {
   entry: LogEntry;
 }
 
-export interface SystemHealthEvent {
-  type: 'system:health';
-  data: HealthData;
-}
-
 export interface MemoryCompactionEvent {
   type: 'memory:compaction';
   agentId: string;
@@ -219,20 +214,10 @@ export interface AgentCreatedEvent {
   data: Agent;
 }
 
-export interface AgentCompletedEvent {
-  type: 'agent:completed';
-  data: CompletionAnnouncement;
-}
-
 export interface AgentTerminatedEvent {
   type: 'agent:terminated';
   agentId: string;
   reason: string;
-}
-
-export interface AgentMessageEvent {
-  type: 'agent:message';
-  data: AgentMessage;
 }
 
 export interface TrackerTaskUpdatedEvent {
@@ -243,20 +228,6 @@ export interface TrackerTaskUpdatedEvent {
 export interface TrackerProjectUpdatedEvent {
   type: 'tracker:project_updated';
   data: Project;
-}
-
-export interface TrackerPokeEvent {
-  type: 'tracker:poke';
-  data: { taskId: string; agentId: string; pokeType: string };
-}
-
-export interface ProviderStatusEvent {
-  type: 'provider:status';
-  data: {
-    providerId: string;
-    healthy: boolean;
-    error?: string;
-  };
 }
 
 export interface ResourceWarningEvent {
@@ -334,7 +305,7 @@ export interface HealerProposalEvent {
     // Stamped by the engine so a later surface can decide from the live frame whether this proposal is
     // urgent and which lane it belongs to.
     urgency?: 'routine' | 'urgent';
-    surface?: 'vitals' | 'toast' | 'imessage';
+    surface?: 'vitals' | 'imessage';
   };
 }
 
@@ -373,20 +344,14 @@ export type WsEvent =
   | ChatToolResultEvent
   | ChatErrorEvent
   | LogEntryEvent
-  | SystemHealthEvent
   | MemoryCompactionEvent
   | MemoryBriefingEvent
   | AgentCreatedEvent
-  | AgentCompletedEvent
   | AgentTerminatedEvent
-  | AgentMessageEvent
   | TrackerTaskUpdatedEvent
   | TrackerProjectUpdatedEvent
-  | TrackerPokeEvent
-  | ProviderStatusEvent
   | ResourceWarningEvent
   | SystemDepInstalledEvent
-  | OllamaStatusEvent
   | TechniqueCreatedEvent
   | TechniquePublishedEvent
   | TechniqueUpdatedEvent
@@ -407,13 +372,6 @@ export type WsEvent =
   | DockCollapseEvent
   | CanvasUpdatedEvent
   | UiNavigateEvent
-  | GoogleConnectedEvent
-  | GoogleDisconnectedEvent
-  | GoogleActivityEvent
-  | MicrosoftConnectedEvent
-  | MicrosoftDisconnectedEvent
-  | MicrosoftOfficePackagesEvent
-  | MicrosoftActivityEvent
   | PlaudAuthUrlEvent
   | PlaudConnectedEvent
   | PlaudDisconnectedEvent
@@ -422,16 +380,9 @@ export type WsEvent =
   | GithubConnectedEvent
   | GithubDisconnectedEvent
   | GithubConnectFailedEvent
-  | GroupCreatedEvent
-  | GroupDeletedEvent
-  | BackfillProgressEvent
-  | DreamStartedEvent
   | DreamCompleteEvent
-  | DreamRecoveryEvent
   | TaskRunStartedEvent
   | TaskRunCompleteEvent
-  | TrackerTaskLogEvent
-  | SystemTunnelStatusEvent
   | MigrationDepsetupEvent
   | SystemRestartEvent;
 
@@ -481,20 +432,6 @@ export interface UiNavigateEvent {
     path: string;
     tab?: string;
     section?: string;
-  };
-}
-
-export interface OllamaStatusEvent {
-  type: 'ollama:status';
-  data: {
-    maxConcurrentModels: number;
-    slots: Array<{ providerId: string; modelName: string; activeRequests: number }>;
-    queuedRequests: number;
-    queuedModels: Array<{ providerId: string; modelName: string }>;
-    // A same-model pileup (several requests for the IDENTICAL model on one provider) differs from
-    // `queuedRequests`/`queuedModels` (DIFFERENT models contending for one slot).
-    sameModelWaiters: number;
-    sameModelWaitingModels: Array<{ providerId: string; modelName: string; count: number }>;
   };
 }
 
@@ -622,53 +559,6 @@ export interface VoiceSleepDetectedEvent {
 
 // Integration events: `slot` is a plain string ('agent' | 'user' today) so new accounts keep the wire shape.
 
-export interface GoogleConnectedEvent {
-  type: 'google:connected';
-  data: { email: string; slot: string };
-}
-
-export interface GoogleDisconnectedEvent {
-  type: 'google:disconnected';
-  data: { slot: string };
-}
-
-export interface GoogleActivityEvent {
-  type: 'google:activity';
-  data: {
-    agentId: string;
-    agentName: string;
-    action: string;
-    actionType: string;
-    details: Record<string, unknown>;
-  };
-}
-
-export interface MicrosoftConnectedEvent {
-  type: 'microsoft:connected';
-  data: { email: string; slot: string };
-}
-
-export interface MicrosoftDisconnectedEvent {
-  type: 'microsoft:disconnected';
-  data: { slot: string };
-}
-
-export interface MicrosoftOfficePackagesEvent {
-  type: 'microsoft:office_packages';
-  data: { status: 'installed' | 'installing' | 'failed'; error?: string };
-}
-
-export interface MicrosoftActivityEvent {
-  type: 'microsoft:activity';
-  data: {
-    agentId: string;
-    agentName: string;
-    action: string;
-    actionType: string;
-    details: Record<string, unknown>;
-  };
-}
-
 // Plaud auth events: fields are top level (not under `data`), matching plaud/auth.ts and PlaudSettings.
 
 export interface PlaudAuthUrlEvent {
@@ -720,33 +610,7 @@ export interface GithubConnectFailedEvent {
 }
 
 
-export interface GroupCreatedEvent {
-  type: 'group:created';
-  data: { id: string; name: string };
-}
-
-export interface GroupDeletedEvent {
-  type: 'group:deleted';
-  data: { id: string };
-}
-
-
-export interface BackfillProgressEvent {
-  type: 'backfill:progress';
-  data: {
-    total: number;
-    completed: number;
-    failed: number;
-    status: 'running' | 'complete';
-  };
-}
-
 // Dreamer: dream:complete fields vary by exit path (skipped or a real run), so all are optional.
-
-export interface DreamStartedEvent {
-  type: 'dream:started';
-  data: { mode: string; archives: number; batches: number };
-}
 
 export interface DreamCompleteEvent {
   type: 'dream:complete';
@@ -762,17 +626,6 @@ export interface DreamCompleteEvent {
   };
 }
 
-export interface DreamRecoveryEvent {
-  type: 'dream:recovery';
-  data: {
-    reason: string;
-    newSubBatchCount: number;
-    currentIndex: number;
-    totalBatches: number;
-  };
-}
-
-
 export interface TaskRunStartedEvent {
   type: 'task:run_started';
   data: { taskId: string; runId: string; agentId: string };
@@ -784,25 +637,7 @@ export interface TaskRunCompleteEvent {
 }
 
 
-export interface TrackerTaskLogEvent {
-  type: 'tracker:task_log';
-  data: { taskId: string; entryKind: string; fromEntity: string };
-}
-
 // ── Cloudflare tunnel status (mirrors services/tunnel.ts TunnelStatus) ──
-
-export interface SystemTunnelStatusEvent {
-  type: 'system:tunnel_status';
-  data: {
-    enabled: boolean;
-    mode: 'named' | 'quick';
-    status: 'inactive' | 'starting' | 'active' | 'error';
-    url: string | null;
-    error: string | null;
-    startedAt: number | null;
-    cloudflaredInstalled: boolean;
-  };
-}
 
 // Migration dependency-installer stream: stdout line by line, then a terminal frame with the exit result.
 
@@ -842,18 +677,14 @@ export const EVENT_BATCHABLE: Record<WsEvent['type'], boolean> = {
   'chat:workingnote': false,
   'agent:status': true,
   'log:entry': true,
-  'ollama:status': true,
 
   'chat:source_updated': false,
   'interagent:message': false,
   'chat:error': false,
-  'system:health': false,
   'memory:compaction': false,
   'memory:briefing': false,
   'agent:created': false,
-  'agent:completed': false,
   'agent:terminated': false,
-  'agent:message': false,
   'healer:proposal': false,
   // A consent decision the owner must make: batching would delay the card behind an unrelated flush.
   'report:pending': false,
@@ -867,9 +698,6 @@ export const EVENT_BATCHABLE: Record<WsEvent['type'], boolean> = {
   'engine:activity': false,
   'tracker:task_updated': false,
   'tracker:project_updated': false,
-  'tracker:poke': false,
-  'tracker:task_log': false,
-  'provider:status': false,
   'resource:warning': false,
   'system:dep_installed': false,
   'technique:created': false,
@@ -893,13 +721,6 @@ export const EVENT_BATCHABLE: Record<WsEvent['type'], boolean> = {
   'dock:collapse': false,
   'canvas:updated': false,
   'ui:navigate': false,
-  'google:connected': false,
-  'google:disconnected': false,
-  'google:activity': false,
-  'microsoft:connected': false,
-  'microsoft:disconnected': false,
-  'microsoft:office_packages': false,
-  'microsoft:activity': false,
   'plaud:auth_url': false,
   'plaud:connected': false,
   'plaud:disconnected': false,
@@ -909,15 +730,9 @@ export const EVENT_BATCHABLE: Record<WsEvent['type'], boolean> = {
   'github:connected': false,
   'github:disconnected': false,
   'github:connect_failed': false,
-  'group:created': false,
-  'group:deleted': false,
-  'backfill:progress': false,
-  'dream:started': false,
   'dream:complete': false,
-  'dream:recovery': false,
   'task:run_started': false,
   'task:run_complete': false,
-  'system:tunnel_status': false,
   'system:restart': false,
 };
 

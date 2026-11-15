@@ -4,7 +4,6 @@
 // can move without the callers changing.
 
 import { createLogger } from '../logger.js';
-import { broadcast } from '../gateway/ws.js';
 import {
   appendAuditEntry, readAuditTrail, workExists, type TrailRow,
 } from '../work/audit-trail.js';
@@ -90,10 +89,6 @@ export function writeTaskLog(input: TaskLogEntryInput): string | null {
       return null;
     }
     const id = appendAuditEntry(input.taskId, input.fromEntity, input);
-    broadcast({
-      type: 'tracker:task_log',
-      data: { taskId: input.taskId, entryKind: input.entryKind, fromEntity: input.fromEntity },
-    });
     return String(id);
   } catch (err) {
     logger.warn('writeTaskLog failed (non-fatal)', {

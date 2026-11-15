@@ -739,22 +739,6 @@ export async function completeAgent(
     status: isPersistent ? 'idle' : 'terminated',
   });
 
-  broadcast({
-    type: 'agent:completed',
-    data: {
-      agentId,
-      agentName: agent.name,
-      taskId: agent.task_id,
-      status,
-      summary,
-      stats: {
-        tokensUsed: messageStats.total_tokens,
-        cost: costStats.total_cost,
-        durationSeconds,
-        toolCallsCount: toolStats.count,
-      },
-    },
-  });
 }
 
 // ── Extend a held agent's timeout ──

@@ -6,7 +6,6 @@ import { openAgentCall, STOPPED_BY_USER } from '../agent/abortable-call.js';
 import { getValidAccessTokenForAccount } from './auth.js';
 import { getMicrosoftAccount } from './accounts.js';
 import { logMicrosoftActivity } from './activity-log.js';
-import { broadcast } from '../gateway/ws.js';
 import { recordAtDoor, inOutboundScope, recordedId } from '../agent/v2/outbound.js';
 
 const logger = createLogger('ms-client');
@@ -29,7 +28,7 @@ function graphTimeoutForBody(body: unknown): number {
 
 /**
  * URL prefix for a calendar operation from the calendar_id form: undefined is me/ (default mailbox),
- * "<uuid>" is me/calendars/{id}/ (own and accepted shares), "user@x.com" is users/{email}/calendar/
+ * "<uuid>" is me/calendars/{id}/ (own and accepted shares), "user@example.com" is users/{email}/calendar/
  * (delegate access via Calendars.ReadWrite.Shared). The caller appends 'events' and the like.
  */
 export function calendarPrefix(calendarId: string | undefined): string {
@@ -177,11 +176,6 @@ export function msGraphWrite(
       apiEndpoint: result.apiEndpoint,
       success: result.ok,
       error: result.error,
-    });
-
-    broadcast({
-      type: 'microsoft:activity',
-      data: { agentId, agentName, action, actionType: 'write', details: { ...details, account: accountId } },
     });
 
     // Only a send is recorded at the door: the outbound scope the send tool opened separates sends (a
