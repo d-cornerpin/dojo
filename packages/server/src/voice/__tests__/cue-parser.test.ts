@@ -141,3 +141,25 @@ describe('§7 an echoed time stamp after a blank or cue-only start is never spok
     expect(e.consume('[Jul 16, 2026, 10:58 PM] Done.')).toEqual({ content: 'Done.', description: 'warm' });
   });
 });
+
+describe('§8 an echoed time stamp behind a mood marker is never spoken', () => {
+  const STAMP = '[Nov 15, 2026, 3:04 PM]';
+  const spoken = (chunks: string[]): string => {
+    const e = createCueExtractor();
+    return chunks.map((c) => e.consume(c).content).join('') + e.flush().content;
+  };
+
+  it('the mood marker split across chunks, then the stamp, then the sentence', () => {
+    expect(spoken(['((', 'mood: warm)) ', STAMP, ' Done.'])).toBe('((mood: warm)) Done.');
+    expect(spoken([`((mood: warm)) ${STAMP} Done.`])).toBe('((mood: warm)) Done.');
+  });
+
+  it('the same after a delivery cue (the cloud voice)', () => {
+    expect(spoken(['((deliver: warm)) ', '((', 'mood: warm)) ', STAMP, ' Done.'])).toBe('((mood: warm)) Done.');
+    expect(spoken([`((deliver: warm)) ((mood: warm)) ${STAMP} Done.`])).toBe('((mood: warm)) Done.');
+  });
+
+  it('a reply with no mood marker is released at once', () => {
+    expect(createCueExtractor().consume('Done.')).toEqual({ content: 'Done.', description: null });
+  });
+});
