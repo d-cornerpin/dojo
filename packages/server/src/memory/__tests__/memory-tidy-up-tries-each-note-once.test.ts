@@ -17,7 +17,8 @@ vi.mock('../../logger.js', async (orig) => {
   const at = (message: string): void => { logs.push(message); };
   return { ...actual, createLogger: () => ({ debug: at, info: at, warn: at, error: at }) };
 });
-vi.mock('../../agent/local-model-fit.js', async (orig) => ({ ...(await orig<object>()), freeWriterWindowTokens: async () => Number.MAX_SAFE_INTEGER }));
+const mem = vi.hoisted(() => ({ free: Number.MAX_SAFE_INTEGER }));
+vi.mock('../../agent/local-model-fit.js', async (orig) => ({ ...(await orig<object>()), freeWriterWindowTokens: async () => mem.free }));
 vi.mock('../embeddings.js', () => ({
   generateEmbedding: async () => new Float32Array([1, 0, 0, 0]),
   queueEmbedding: () => undefined, storeEmbedding: async () => undefined, refreshEmbedding: () => undefined,
@@ -28,12 +29,15 @@ vi.mock('../writer.js', async (orig) => {
   const actual = await orig<typeof import('../writer.js')>();
   return { ...actual, markWaiting: (...a: Parameters<typeof actual.markWaiting>) => (marks.fail ? undefined : actual.markWaiting(...a)) };
 });
-const writer = vi.hoisted(() => ({ calls: [] as Array<{ modelId: string; content: string; rewrite: boolean }>, ratio: 0.9 }));
+const writer = vi.hoisted(() => ({ calls: [] as Array<{ modelId: string; content: string; rewrite: boolean }>, ratio: 0.9, ratios: null as number[] | null }));
 vi.mock('../../agent/model.js', () => ({
   callModel: async (p: { modelId: string; systemPrompt: string; messages: Array<{ content: string }> }) => {
     const content = p.messages[0].content;
-    writer.calls.push({ modelId: p.modelId, content, rewrite: p.systemPrompt.includes('REWRITE:') });
-    const text = `${content.includes('BAD') ? 'PENDING ' : ''}${'w'.repeat(Math.floor(content.length * writer.ratio))}`;
+    const rewrite = p.systemPrompt.includes('REWRITE:');
+    const job = writer.calls.filter((c) => !c.rewrite).length - (rewrite ? 1 : 0);   // a job's rewrite answers like its first
+    const ratio = writer.ratios ? writer.ratios[job % writer.ratios.length] : writer.ratio;
+    writer.calls.push({ modelId: p.modelId, content, rewrite });
+    const text = `${content.includes('BAD') ? 'PENDING ' : ''}${'w'.repeat(Math.floor(content.length * ratio))}`;
     return { content: text, toolCalls: [], usage: {}, stopReason: 'stop' };
   },
   getContextWindow: () => 128_000,
@@ -51,6 +55,7 @@ import { __resetSummaryWriterHealthForTests, clearOn } from '../writer.js';
 import { STANDARD_DECISION_MODEL, STANDARD_WRITER_MODEL } from '../../services/local-standard.js';
 import { condenseForTheDialedModel } from '../../agent/v2/steps/pre-call-gates/context-gates.js';
 import { backgroundDrains } from '../../agent/shared-state.js';
+import { mergeUntriedNotes } from '../merge-notes.js';
 
 const AGENT = 'agent-lived-in';
 const OWN = 'model-own-128k';
@@ -69,20 +74,22 @@ function seed(leaves: number, lone?: { depth: number; chars: number }, bad: read
   db().prepare(`INSERT INTO models (id, provider_id, api_model_id, name, context_window, max_output_tokens, capabilities, is_enabled, input_cost_per_m, output_cost_per_m)
     VALUES ('model-local-writer', 'p-local', ?, 'Writer', 32000, 4096, '["text"]', 1, 0, 0)`).run(STANDARD_WRITER_MODEL.tag);
   db().prepare("INSERT INTO agents (id, name, status, model_id, config) VALUES (?, 'Depot Keeper', 'idle', ?, '{}')").run(AGENT, OWN);
-  let turn = 0;
-  const row = (role: 'user' | 'assistant', content: string): string =>
-    insertMessage({ agentId: AGENT, role, lane: 'owner', senderId: role === 'user' ? 'owner' : undefined, content, turnNumber: ++turn }).id;
-  const day = (i: number): string => `2026-09-${String(1 + (i % 28)).padStart(2, '0')} 09:00:00`;
   if (lone) {
     const id = createLeafSummary(AGENT, 'x'.repeat(lone.chars), Math.ceil(lone.chars / 4), [row('user', 'old ask'), row('assistant', 'old answer')], day(0), day(0)).id;
     db().prepare('UPDATE summaries SET depth = ?, kind = ? WHERE id = ?').run(lone.depth, 'condensed', id);
   }
-  for (let i = 0; i < leaves; i++) {
-    const text = bad.includes(i) ? `BAD ${NOTE(i)}` : NOTE(i);
-    createLeafSummary(AGENT, text, Math.ceil(text.length / 4), [row('user', `ask ${i}`), row('assistant', `answer ${i}`)], day(i + 1), day(i + 1));
-  }
+  for (let i = 0; i < leaves; i++) addLeaf(i, bad.includes(i) ? `BAD ${NOTE(i)}` : NOTE(i));
   for (let i = 0; i < 6; i++) row(i % 2 === 0 ? 'user' : 'assistant', `live line ${i}`);
   rebuildContextItems(AGENT);
+}
+
+let turns = 0;
+const row = (role: 'user' | 'assistant', content: string): string =>
+  insertMessage({ agentId: AGENT, role, lane: 'owner', senderId: role === 'user' ? 'owner' : undefined, content, turnNumber: ++turns }).id;
+const day = (i: number): string => new Date(Date.UTC(2026, 8, 1) + i * 3_600_000).toISOString();
+/** One more leaf note, the `i`th of this agent's history, over its own two rows. */
+function addLeaf(i: number, text: string): string {
+  return createLeafSummary(AGENT, text, Math.ceil(text.length / 4), [row('user', `ask ${i}`), row('assistant', `answer ${i}`)], day(i + 1), day(i + 1)).id;
 }
 
 /** One model call's routine gate, as a turn runs it, with its background run allowed to land. */
@@ -110,7 +117,7 @@ const mergeJobs = (): Array<{ modelId: string; notes: string[] }> => writer.call
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['Date'] });
   vi.setSystemTime(Date.UTC(2026, 9, 20, 6, 0, 0));
-  writer.calls = []; writer.ratio = 0.9; marks.fail = false; logs.length = 0;
+  writer.calls = []; writer.ratio = 0.9; writer.ratios = null; marks.fail = false; mem.free = Number.MAX_SAFE_INTEGER; logs.length = 0; turns = 0;
   vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: { body?: string }) => {
     const { state } = JSON.parse(init?.body ?? '{}') as { state: { summary: string } };
     return Response.json({ answers: { stated_current: { noul: state.summary.includes('PENDING') ? 0.91 : 0.05 } } });
@@ -126,14 +133,14 @@ const topLevelAt = (depth: number): number => (db().prepare('SELECT COUNT(*) AS 
 const checksNotKept = (): number => (db().prepare("SELECT COUNT(*) AS n FROM summary_checks WHERE outcome = 'not_kept'").get() as { n: number }).n;
 
 describe('the memory tidy-up tries each note once', () => {
-  it('merges that come back at 90% of their input: each note is offered once, to the own model only, and then never again', async () => {
+  it('merges that come back at 90% of their input: each note is offered at most twice, to the own model only, and then never again', async () => {
     seed(12, { depth: 3, chars: 36_000 });
     await checkAndCompact(AGENT, OWN, WINDOW, { force: true });
     const jobs = mergeJobs();
     expect(jobs.length, 'non-vacuity: the writer was asked to merge').toBeGreaterThan(0);
     const offers = new Map<string, number>();
     for (const j of jobs) for (const n of j.notes) offers.set(n, (offers.get(n) ?? 0) + 1);
-    expect([...offers.values()].filter((n) => n > 1), 'no note is offered twice at its depth').toEqual([]);
+    expect([...offers.values()].filter((n) => n > 2), 'no note is offered more than twice at its depth').toEqual([]);
     expect(jobs.filter((j) => j.modelId !== OWN), 'a refused merge is not handed to the local writer').toEqual([]);
     expect(writer.calls.length, 'each job is an answer and at most one rewrite').toBeLessThanOrEqual(2 * jobs.length);
 
@@ -176,6 +183,38 @@ describe('the memory tidy-up tries each note once', () => {
     marks.fail = true;
     seed(12, { depth: 3, chars: 36_000 });
     await checkAndCompact(AGENT, OWN, WINDOW, { force: true });
-    expect(mergeJobs().length, 'six pairs, one job each').toBe(6);
+    expect(mergeJobs().length, 'twelve leaves: eleven pairs, each newer note given one more partner').toBe(11);
+  });
+
+  it('steady use, a writer keeping 0.30 to 0.46 of its input, 256 leaves one at a time: two offers at most, and a bounded cost per leaf', async () => {
+    writer.ratios = [0.30, 0.38, 0.46, 0.34, 0.42];
+    seed(0, { depth: 9, chars: 36_000 });
+    const plain = 'The crew counted the bays and filed the manifests for the night shift. '.repeat(70);
+    for (let i = 0; i < 256; i++) { addLeaf(i, plain); await mergeUntriedNotes(AGENT, OWN); }
+    const offers = new Map<string, number>();
+    for (const j of mergeJobs()) for (const n of j.notes) offers.set(n, (offers.get(n) ?? 0) + 1);
+    expect(Math.max(...offers.values()), 'offers of any one note at its depth').toBeLessThanOrEqual(2);
+    expect(writer.calls.length / 256, 'writer calls per new leaf').toBeLessThanOrEqual(3);
+  });
+
+  it('a note the summary check refuses, then sixteen fresh leaves one at a time: the bad note is offered at most twice', async () => {
+    writer.ratio = 0.35;
+    seed(0, { depth: 9, chars: 36_000 });
+    const bad = addLeaf(0, `BAD ${NOTE(0)}`);
+    for (let i = 1; i <= 16; i++) { addLeaf(i, NOTE(i)); await mergeUntriedNotes(AGENT, OWN); }
+    expect(checksNotKept(), 'non-vacuity: the check refused it').toBeGreaterThan(0);
+    expect(mergeJobs().filter((j) => j.notes.includes(bad)).length).toBeLessThanOrEqual(2);
+  });
+
+  it('a refusal for the memory free now marks no note, and a later run with memory free merges the same notes', async () => {
+    writer.ratio = 0.35;
+    seed(2, { depth: 3, chars: 36_000 });
+    mem.free = 6_000;   // the prompt fits, the pair does not
+    const first = await mergeUntriedNotes(AGENT, 'model-local-writer');
+    expect(logs.some((l) => l.startsWith('SUMMARY_REFUSED a fallback summary on the Dojo')), 'non-vacuity: refused for memory').toBe(true);
+    expect(first.created).toBe(0);
+    expect(db().prepare("SELECT COUNT(*) AS n FROM healer_state WHERE scope = 'writer_wait.cannot-hold'").get(), 'no note is marked').toEqual({ n: 0 });
+    mem.free = Number.MAX_SAFE_INTEGER;
+    expect((await mergeUntriedNotes(AGENT, 'model-local-writer')).created).toBe(1);
   });
 });

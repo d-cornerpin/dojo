@@ -234,7 +234,7 @@ async function replaceUnderLock(agentId: string, opts: { abortSignal?: AbortSign
       if (!summary.ok) {
         if (summary.stopped) { stopped = true; break; }
         if (summary.checkFailed) { checkFailed = true; break; }
-        if (summary.tooBig) { if (!summary.noRoom) markWaiting(agentId, writer, spanKeyOf(source), 'cannot-hold'); continue; }
+        if (summary.tooBig) { if (!summary.noRoom && !summary.forNow) markWaiting(agentId, writer, spanKeyOf(source), 'cannot-hold'); continue; }
         if (abortBlamesWriter(opts.abortSignal)) failedWriter = writer;
         continue;
       }

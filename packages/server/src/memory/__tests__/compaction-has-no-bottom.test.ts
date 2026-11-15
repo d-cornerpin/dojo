@@ -329,17 +329,22 @@ describe('§1 a forced pass merges notes of one depth, level over level, while t
    * every turn, for ever. THE MUTANT: make a merge need four notes (`find((b) => b.length >= 4)`
    * in `merge-notes.ts`) and this clause goes RED on the "fits" row.
    */
-  it('THE BACKLOG SHAPE: three oversized summaries below the fanout floor now condense: a pair merges, the third waits for a peer', async () => {
+  it('THE BACKLOG SHAPE: three oversized summaries below the fanout floor: the agent holds less, the turn proceeds, and the note left out is named', async () => {
     seedSummaries(3, 1, 20_000);
     const before = held();
     expect(before, 'non-vacuity: the fixture must really be over budget').toBeGreaterThan(await admitted());
 
     const result = await checkAndCompact(AGENT, MODEL_64K, 65_536, { force: true });
 
-    expect(result.condensedCreated, 'three below the floor must produce a parent').toBeGreaterThan(0);
-    expect(held(), 'and what the agent holds shrinks').toBeLessThan(before);
+    expect(result.condensedCreated, 'a pair of the three is merged').toBeGreaterThan(0);
     expect(calls.length, 'at the cost of exactly one model call').toBe(1);
     expect(calls[0].depth, 'written one level up from its parents').toBe(2);
+    expect(held(), 'the agent holds less than before').toBeLessThan(before);
+    expect(compactionIsBraked(AGENT, true), 'the emergency pass does not dead-end: the next one may run').toBe(false);
+    expect(compactionFailureReason(AGENT), 'and nothing is reported as failing').toBeNull();
+    const { assembleContext } = await import('../assembler.js');
+    const text = JSON.stringify((await assembleContext(AGENT, MODEL_64K)).messages);
+    expect(text, 'the note left out of view is named, with the tool that finds it').toMatch(/older summar(y is|ies are) not shown here[^)]*history_search/);
   });
 
   /**

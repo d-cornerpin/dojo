@@ -1,7 +1,7 @@
 // Merges an agent's top-level notes, each note once at its depth: notes of one depth (a conversation's own first,
 // `subjectBatches`) become one parent at depth + 1, until no depth holds two notes the writer has not refused. A
-// merge the keep rule refuses (`summary-whole.ts`) marks each of its notes refused for that writer (`writer.ts`), so
-// no note is offered to it twice. A note alone at its depth stays whole; the summaries lane shows it or names it.
+// pair refused for its own sake (too long for the keep rule, or failed its check) rests its OLDER note for that writer
+// (`writer.ts`), so a note is offered at most twice at a depth. A note left alone stays whole, shown or named.
 // Merges go to the pass's own writer only.
 
 import { createLogger } from '../logger.js';
@@ -12,7 +12,7 @@ import { KEPT_WHOLE_KIND } from './kept-row-view.js';
 import { generateSummary, condensedSummaryInput, type SummaryResult } from './summarize.js';
 import { mergeTargetTokens } from './summary-target.js';
 import { modelCharsPerToken } from '../services/token-density.js';
-import { markWaiting, spanKeyOf, waiting, writerPassedOver } from './writer.js';
+import { markWaiting, spanKeyOf, waiting } from './writer.js';
 import { subjectBatches } from './summary-subject.js';
 import { summaryWriterUnavailable } from './compaction-brakes.js';
 
@@ -41,8 +41,8 @@ function nextBatch(agentId: string, writer: string, tried: ReadonlySet<string>):
   return null;
 }
 
-/** Merge until no depth holds two untried notes. A verdict on a batch (too long, failed its check) leaves its notes
- *  tried and the run goes on; the run ends when the writer cannot answer, on the owner's Stop, or on an abort. */
+/** Merge until no depth holds two untried notes. A verdict on a pair rests its older note and the run goes on; a
+ *  refusal about the writer ends the run with no note marked, as do the owner's Stop and an abort. */
 export async function mergeUntriedNotes(agentId: string, writer: string, abortSignal?: AbortSignal): Promise<MergeOutcome> {
   const out: MergeOutcome = { created: 0, tokensReclaimed: 0, stage: null, detail: null };
   const tried = new Set<string>();
@@ -50,7 +50,6 @@ export async function mergeUntriedNotes(agentId: string, writer: string, abortSi
   const ended = (stage: RefusedStage, detail: string): MergeOutcome => (out.created > 0 ? out : { ...out, stage, detail });
   for (let batch = nextBatch(agentId, writer, tried); batch && !abortSignal?.aborted; batch = nextBatch(agentId, writer, tried)) {
     if (summaryWriterUnavailable(agentId, writer)) return ended('summary_writer_unavailable', writer);
-    for (const s of batch) tried.add(s.id);
     const content = condensedSummaryInput(batch);
     const depth = batch[0].depth + 1;
     let summary: SummaryResult;
@@ -72,12 +71,13 @@ export async function mergeUntriedNotes(agentId: string, writer: string, abortSi
       out.tokensReclaimed += Math.max(0, batch.reduce((t, s) => t + s.tokenCount, 0) - summary.tokenCount);
     } else if (summary.stopped) {
       return out;
-    } else if (summary.tooBig && !summary.noRoom) {
-      for (const s of batch) markWaiting(agentId, writer, spanKeyOf([s]), 'cannot-hold');
-    } else if (!summary.checkFailed) {   // the check's verdict is held by `summary-check.ts`; anything else is the writer's
+    } else if ((summary.tooBig && !summary.noRoom && !summary.forNow) || summary.checkFailed) {
+      tried.add(batch[0].id);   // a verdict on the pair: its older note rests; the newer gets one more partner
+      markWaiting(agentId, writer, spanKeyOf([batch[0]]), 'cannot-hold');
+    } else {   // about the writer and the moment (no memory free, not answering, an empty answer): no note is marked
       logger.warn('SUMMARY_REFUSED a merge was left unmerged', { depth, parentCount: batch.length, reason: summary.reason }, agentId);
       refusal = summary.reason;
-      if (summary.noRoom || writerPassedOver(writer, agentId)) break;   // the writer cannot answer now
+      break;
     }
     await new Promise<void>((resolve) => { setImmediate(resolve); });   // the reads are synchronous: the loop is served between merges
   }

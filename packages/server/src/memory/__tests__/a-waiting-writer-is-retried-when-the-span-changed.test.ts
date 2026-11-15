@@ -1,7 +1,8 @@
 // A writer that cannot hold a span waits for that span (its key is the rows' ids and contents), and is asked again
-// when the span changes: a merge marks each of its notes, a placeholder splits to its halves, a single row is kept
-// whole behind its pointer, and none is dialled again until a note or row changes, or the agent gets a writer that
-// has not refused it. Bounded dial counts with one writer: a pair 1; four notes 2 (two pairs); a four-row placeholder 1 + 2 + 4.
+// when the span changes: a refused merge rests the older note of its pair, a placeholder splits to its halves, a single
+// row is kept whole behind its pointer, and none is dialled again until a note or row changes, or the agent gets a
+// writer that has not refused it. Bounded dial counts with one writer: a pair 1; four notes 3 (each newer note one more
+// partner); a four-row placeholder 1 + 2 + 4.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
@@ -81,22 +82,19 @@ describe('t269 I1 — a merge no writer can write is dialled once, then left who
     expect(outs.map((o) => o?.stage)).toEqual([null, null, null, null, null]);
   });
 
-  it('…until a note of the pair changes: then it is tried again with its next untried peer', async () => {
+  it('…until the note that rests changes: then the pair is tried again', async () => {
     const a = leaf('UNWRITABLE note one'); leaf('UNWRITABLE note two');
     await condense(); await condense();
     expect(writer.dials).toBe(1);
     updateSummaryContent(a, 'note one, edited by the owner', 8);
     await condense();
-    expect(writer.dials, 'its refused partner is not offered again').toBe(1);
-    leaf('note three');
-    await condense();
     expect(writer.dials).toBe(2);
   });
 
-  it('four notes: one dial per pair, then none', async () => {
+  it('four notes: each older note rests, each newer one gets one more partner (3 dials), then none', async () => {
     for (let i = 0; i < 4; i += 1) leaf(`UNWRITABLE note ${i}`);
     for (let i = 0; i < 4; i += 1) await condense();
-    expect(writer.dials).toBe(2);
+    expect(writer.dials).toBe(3);
   });
 
   it('a save that signals a model change re-offers nothing the same writer refused', async () => {

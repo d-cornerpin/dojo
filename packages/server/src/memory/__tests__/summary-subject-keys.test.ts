@@ -84,4 +84,10 @@ describe('subjectBatches — the condensation batches', () => {
     const tried = new Set(['a1', 'a2', 'a3']);
     expect(subjectBatches(rows, 2, (r) => !tried.has(r.id)).filter((b) => b.length > 1)).toEqual([]);
   });
+
+  it('a stuck pair in one conversation does not stop the lone notes of others crossing, in pairs', () => {
+    const rows = [{ id: 'a1', subjectKey: 'a' }, { id: 'a2', subjectKey: 'a' }, ...['b', 'c', 'd'].map((k) => ({ id: `${k}1`, subjectKey: k }))];
+    const stuck = new Set(['a1', 'a2']);
+    expect(subjectBatches(rows, 2, (r) => !stuck.has(r.id)).map((b) => b.map((r) => r.id))).toEqual([['b1', 'c1'], ['d1']]);
+  });
 });

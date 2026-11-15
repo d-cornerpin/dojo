@@ -109,8 +109,8 @@ const QUEUED_STATE = 'legacy_mixed_rebuild';
 
 /** Condensation batches of the notes `usable` admits: a conversation's notes merge with its own first; older mixed
  *  notes merge only with notes in the SAME state (a note queued for rebuild never joins them, or its rebuild would never
- *  reach it). Only when no conversation holds two notes, usable or not, do batches cross conversations, never taking a
- *  queued note, so the climb ends. */
+ *  reach it). Only when no such batch is left do the conversations holding exactly ONE note cross, never with a queued
+ *  note, so the climb ends. */
 export function subjectBatches<T extends { subjectKey?: string | null; rebuildState?: string | null }>(rows: readonly T[], size: number, usable: (r: T) => boolean = () => true): T[][] {
   const groups = new Map<string, T[]>();
   for (const r of rows) {
@@ -118,9 +118,8 @@ export function subjectBatches<T extends { subjectKey?: string | null; rebuildSt
     groups.set(g, [...(groups.get(g) ?? []), r]);
   }
   const within = [...groups.values()].flatMap((g) => chunksOf(g.filter(usable), size)).filter((b) => b.length > 1);
-  if (within.length > 0 || [...groups.values()].some((g) => g.length > 1)) return within;
-  const free = rows.filter((r) => r.rebuildState !== QUEUED_STATE && usable(r));
-  return chunksOf(free, size);
+  if (within.length > 0) return within;
+  return chunksOf([...groups.values()].filter((g) => g.length === 1).map((g) => g[0]).filter((r) => r.rebuildState !== QUEUED_STATE && usable(r)), size);
 }
 
 function chunksOf<T>(rows: readonly T[], size: number): T[][] {

@@ -152,7 +152,7 @@ export async function refuseFallbackOverFreeMemory(
     return NO_ROOM;
   }
   logger.warn('SUMMARY_REFUSED a fallback summary on the Dojo\'s writer needs more window than the memory free now holds; the span is halved', { free }, agentId);
-  return { ok: false, reason: 'the memory free now cannot hold this span for the Dojo\'s writer', tooBig: true };
+  return { ok: false, reason: 'the memory free now cannot hold this span for the Dojo\'s writer', tooBig: true, forNow: true };   // the moment's memory, not the span
 }
 
 /** What a settled summary call says about its writer: an answer frees it, a failure marks it waiting for this agent.

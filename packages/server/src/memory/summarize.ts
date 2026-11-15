@@ -167,7 +167,7 @@ ${contextBlock}`;
  */
 export type SummaryResult =
   | { ok: true; text: string; tokenCount: number }
-  | { ok: false; reason: string; stopped?: true; tooBig?: true; noRoom?: true; checkFailed?: true };   // see writer.ts, summary-check.ts
+  | { ok: false; reason: string; stopped?: true; tooBig?: true; noRoom?: true; forNow?: true; checkFailed?: true };   // see writer.ts, summary-check.ts
 
 /**
  * An empty or aborted body is a refusal, not a summary: this path reclaims rows, so an empty string kept as a
