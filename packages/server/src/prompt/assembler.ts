@@ -1034,7 +1034,7 @@ export function renderTrainerAwareness(agentId: string): string | null {
     const db = getDb();
     const trainerAgent = db.prepare('SELECT id, status FROM agents WHERE id = ?').get(trainerId) as { id: string; status: string } | undefined;
     if (trainerAgent && trainerAgent.status !== 'terminated') {
-      return `## Trainer: ${trainerName}\n\n${trainerName} (ID: ${trainerId}) is the dedicated Trainer agent, owns the technique library. You may save, update and publish techniques yourself, or send ${trainerName} a message describing what you want and they'll do it. Message via \`send_to_agent(agent="${trainerId}", ...)\`.`;
+      return `## Trainer: ${trainerName}\n\n${trainerName} (ID: ${trainerId}) is the dedicated Trainer agent, owns the technique library. You may save, update, publish and delete techniques yourself, or send ${trainerName} a message describing what you want and they'll do it. Message via \`send_to_agent(agent="${trainerId}", ...)\`.`;
     }
   } catch { /* Trainer may not be configured */ }
   return null;
