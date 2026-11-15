@@ -41,7 +41,6 @@ import { checkAndCompact, estimateAssembledTokens, leavingFromView } from '../co
 import { __resetBrakesForTests } from '../compaction-brakes.js';
 import { runMigrations } from '../../db/migrations.js';
 import { runDeltas, discontinuities, renderTable, abridge, type TurnSnapshot } from './prefix-instrument.js';
-import { pruneOldPMMessages } from '../../tracker/pm-agent.js';
 
 const PM = 'pm';
 const MODEL = 't206-fold-model';
@@ -103,7 +102,6 @@ describe('t206 §2 — over a long run the PM prefix moves only at folds', () =>
       reviewCycle();
       const folded = await foldIfLeaving();
       if (folded) folds += 1;
-      pruneOldPMMessages(PM);
       const ctx = await assembleContext(PM, MODEL);
       snaps.push({ turn: t, messages: JSON.parse(JSON.stringify(ctx.messages)), entryIds: ctx.messageEntryIds, note: folded ? 'fold' : '' });
     }

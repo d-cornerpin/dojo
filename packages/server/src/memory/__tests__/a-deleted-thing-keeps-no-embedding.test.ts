@@ -61,7 +61,7 @@ import { storeEmbedding } from '../embeddings.js';
 import { EMBEDDING_SOURCE_TABLES, type EmbeddingSourceType } from '../embedding-sources.js';
 import { vectorSearch } from '../vector-search.js';
 import {
-  deleteAllForAgent, deleteAgentDebrisBefore,
+  deleteAllForAgent,
 } from '../message-store.js';
 
 const AGENT = 'agent-emb';
@@ -108,19 +108,11 @@ afterEach(() => {
 const db = (): Database.Database => mockDb.current!;
 
 function seedMessage(id: string, role = 'user', lane = 'owner'): string {
-  // t123 added the `lane` parameter: `deleteAgentDebrisBefore` spares the owner lane, so a
-  // census of the delete doors cannot be written without being able to seed a laned row. The
-  // default is `'owner'` because that is the COLUMN's own default — `lane TEXT NOT NULL DEFAULT
-  // 'owner'` (migration 127) — so a seeded row matches what the real write path produces when
-  // the caller declares no lane. Note what that means and why it is not a convenience: the lane
-  // default FAILS OPEN to owner-visible, which is the v3.4 structural item behind this cluster.
+  // The lane defaults to the column's own default, 'owner'.
   db().prepare('INSERT INTO messages (id, agent_id, role, lane, content) VALUES (?, ?, ?, ?, ?)')
     .run(id, AGENT, role, lane, `a message long enough to be embedded: ${id}`);
   return id;
 }
-
-const rowExists = (id: string): boolean =>
-  (db().prepare('SELECT COUNT(*) AS c FROM messages WHERE id = ?').get(id) as { c: number }).c > 0;
 
 function seedSummary(id: string): string {
   db().prepare(`
@@ -194,37 +186,6 @@ describe('§2 every real message-delete door takes the embedding with it', () =>
     expect(embCount('message', id)).toBe(1);
     deleteAllForAgent(AGENT);
     expect(embCount('message', id), 'the embedding died with its message').toBe(0);
-  });
-
-  it('deleteAgentDebrisBefore (the project manager\'s bounded history)', async () => {
-    // `'events'` explicitly: this clause is about the row the pruner DOES remove, and after
-    // t123 that is turn debris, never the owner lane. Seeding it owner-lane would have made the
-    // clause assert the opposite of the contract while still reading as if it passed.
-    const older = seedMessage('m-older', 'user', 'events');
-    const cutoff = seedMessage('m-cutoff');
-    await storeEmbedding('message', older, AGENT, 'content long enough to embed for real');
-    expect(embCount('message', older)).toBe(1);
-    deleteAgentDebrisBefore(AGENT, cutoff);
-    expect(embCount('message', older), 'the trimmed message took its embedding').toBe(0);
-  });
-
-  // t123 renamed the door above (`deleteForAgentBefore`) and gave it an owner-lane spare, so
-  // this file's census gains the other half of that contract: the row it now KEEPS must keep
-  // its embedding too. Without this clause the rename would be covered in one direction only —
-  // "the deleted row's embedding dies" stays green even if the spare silently stopped working.
-  it('deleteAgentDebrisBefore SPARES the owner lane, and a spared row keeps its embedding', async () => {
-    const ownerRow = seedMessage('m-owner', 'user', 'owner');
-    const debris = seedMessage('m-debris', 'assistant', 'events');
-    const cutoff = seedMessage('m-cutoff-2');
-    await storeEmbedding('message', ownerRow, AGENT, 'content long enough to embed for real');
-    await storeEmbedding('message', debris, AGENT, 'content long enough to embed for real');
-
-    deleteAgentDebrisBefore(AGENT, cutoff);
-
-    expect(rowExists(ownerRow), 'the owner-lane row survived the pruner').toBe(true);
-    expect(embCount('message', ownerRow), 'and kept its embedding, so history_search can still find it').toBe(1);
-    expect(rowExists(debris), 'the turn debris was pruned').toBe(false);
-    expect(embCount('message', debris), 'and took its embedding with it').toBe(0);
   });
 });
 

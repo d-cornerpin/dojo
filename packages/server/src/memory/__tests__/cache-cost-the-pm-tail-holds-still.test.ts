@@ -34,7 +34,6 @@ import { assembleContext, measureView } from '../assembler.js';
 import { createLeafSummary } from '../dag.js';
 import { runMigrations } from '../../db/migrations.js';
 import { diffTurns, type TurnSnapshot } from './prefix-instrument.js';
-import { pruneOldPMMessages } from '../../tracker/pm-agent.js';
 
 const PM = 'pm';                 // config/platform.ts: `pm_agent_id` defaults to 'pm'
 const MODEL = 't206-pm-model';
@@ -157,30 +156,6 @@ describe('t206 §1 — the PM tail grows between folds instead of sliding', () =
     const d = diffTurns(atFold, next);
     expect(d.droppedFromFront).toBe(0);
     expect(d.appendOnly, `the prefix moved at message ${d.firstMovedIndex} (${d.firstMovedLane})`).toBe(true);
-  });
-
-  it('1d — the 60-second pruner never deletes a row the view still shows', async () => {
-    // More than the pruner's own floor of rows, with the older half folded: the pruner may clear
-    // the folded engine reports, and must leave every row past the boundary where it is.
-    for (let i = 0; i < 40; i += 1) reviewTurn();
-    const folded = (db().prepare('SELECT id FROM messages WHERE agent_id = ? ORDER BY seq ASC LIMIT 30')
-      .all(PM) as Array<{ id: string }>);
-    createLeafSummary(PM, 'The first ten review cycles, condensed.', 80, folded.map((r) => r.id),
-      '2026-07-25 00:00:00', '2026-07-25 00:30:00');
-
-    const before = await snap('before the sweep');
-    pruneOldPMMessages(PM);
-    reviewTurn();
-    const after = await snap('after the sweep and one more cycle');
-
-    const d = diffTurns(before, after);
-    expect(d.droppedFromFront, 'the pruner deleted rows inside the view').toBe(0);
-    expect(d.appendOnly, `the prefix moved at message ${d.firstMovedIndex} (${d.firstMovedLane})`).toBe(true);
-    // CONTROL: the sweep still clears the folded engine reports it exists to clear.
-    const foldedReportsLeft = (db().prepare(
-      "SELECT COUNT(*) AS c FROM messages WHERE agent_id = ? AND lane = 'events' AND content LIKE 'Tracker review 1 --%'",
-    ).get(PM) as { c: number }).c;
-    expect(foldedReportsLeft, 'the pruner no longer clears folded engine reports').toBe(0);
   });
 
   it('1e — the gauge (t194 measureView) measures the grown tail the assembly sends', async () => {

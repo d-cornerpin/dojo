@@ -648,29 +648,6 @@ export function deleteAllForAgent(agentId: string): number {
   return db.prepare(`DELETE FROM messages WHERE agent_id = ?`).run(agentId).changes;
 }
 
-/** Deletes dependent summary links explicitly, in one transaction: FK enforcement is OFF for the migration
- *  chain (`runSqlMigrations`), so the cascade cannot be relied on. */
-export function deleteAgentDebrisBefore(agentId: string, cutoffId: string): number {
-  const db = getDb();
-  // The owner-lane spare is a clause of the DELETE: the cutoff is a seq, so a lane filter on cutoff selection
-  // would step over owner rows. This prunes the PM's `events` debris and keeps the human conversation, which a
-  // hard DELETE could never recover.
-  const txn = (aid: string, cid: string): number => withUnit((): number => {
-    db.prepare(`
-      DELETE FROM summary_messages
-      WHERE message_id IN (
-        SELECT id FROM messages WHERE agent_id = ? AND seq < (SELECT seq FROM messages WHERE id = ?)
-          AND lane <> 'owner'
-      )
-    `).run(aid, cid);
-    return db.prepare(
-      `DELETE FROM messages WHERE agent_id = ? AND seq < (SELECT seq FROM messages WHERE id = ?)
-         AND lane <> 'owner'`,
-    ).run(aid, cid).changes;
-  });
-  return txn(agentId, cutoffId);
-}
-
 // Add no by-agent conversation wipe: `deleteAllForAgent` is for teardown only, where erasing everything is meant.
 
 /** Scoped by `origin_intent`, so it can never reach ordinary peer A2A traffic. */

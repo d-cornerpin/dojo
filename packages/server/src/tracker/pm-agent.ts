@@ -15,8 +15,7 @@ import { workingExpr } from '../work/terminal-states.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getAgentRuntime } from '../agent/runtime.js';
-import { deleteAgentDebrisBefore, insertEngineEventIfAbsent } from '../memory/message-store.js';
-import { freshTailHorizon } from '../memory/tail-horizon.js';
+import { insertEngineEventIfAbsent } from '../memory/message-store.js';
 import { contextWindowPolicy } from '../memory/budget.js';
 import { agentTurnWindow } from '../router/router-window.js';
 import { serviceAgentModelId } from '../agent/main-model-floor.js';
@@ -255,7 +254,6 @@ export async function runPMReview(): Promise<void> {
     if (waiting.length + stalled.length === 0) return;
     const pm = getDb().prepare('SELECT model_id, status FROM agents WHERE id = ?').get(pmId) as { model_id: string | null; status: string } | undefined;
     if (!pm?.model_id || pm.status === 'terminated') { recordMisses(pmId, held, 'the project manager could not run its review'); return; }
-    pruneOldPMMessages(pmId);
     const room = reviewLedgerRoomTokens(contextWindowPolicy(agentTurnWindow(pmId, pm.model_id), { toolPayloadTokens: 0 }).assemblyBudgetTokens, waiting.length);
     const blocks = [...waiting.map((id, i) => handInBlock(id, i + 1, room)), ...stalled.map((id, i) => stallBlock(id, waiting.length + i + 1))];
     const report = `Tracker review -- ${waiting.length} hand-in(s) wait for your decision, ${stalled.length} stalled task(s).\n\n${blocks.join('\n\n')}\n\n`
@@ -286,52 +284,3 @@ export async function runPMReview(): Promise<void> {
     }
   }
 }
-
-// How many recent PM engine rows to keep, a FLOOR: the PM's tail is every row since its newest fold, often more
-// than this, so the pruner also stops at the fold boundary and removes only rows a fold took out of view.
-export const PM_MAX_MESSAGES = 60;
-
-/** Prune old PM engine rows to bound the table, never at or past the fold boundary: the cut is the older of
- *  the newest `PM_MAX_MESSAGES` rows and the boundary. */
-export function pruneOldPMMessages(pmId: string): void {
-  const db = getDb();
-  try {
-    const modelId = (db.prepare('SELECT model_id FROM agents WHERE id = ?').get(pmId) as { model_id: string | null } | undefined)?.model_id ?? '';
-    const horizon = freshTailHorizon(pmId, contextWindowPolicy(agentTurnWindow(pmId, modelId), { toolPayloadTokens: 0 }));
-    if (horizon.keepFromSeq <= 0 || horizon.anchorSeq <= 0) return;
-
-    // The Nth most recent message (none: too few rows to prune), then the older of it and the boundary.
-    const floorRow = db.prepare('SELECT seq FROM messages WHERE agent_id = ? ORDER BY seq DESC LIMIT 1 OFFSET ?')
-      .get(pmId, PM_MAX_MESSAGES) as { seq: number } | undefined;
-    if (!floorRow) return;
-    const cutSeq = Math.min(floorRow.seq, horizon.anchorSeq);
-
-    // Tool-pair aware: a kept window must not start with an orphaned 'tool' result (providers reject it), so
-    // walk forward to the first non-tool row, never past the boundary row. Keeping fewer rows is safe: the
-    // tracker is the PM's memory.
-    const cutoff = db.prepare(`
-      SELECT id FROM messages
-      WHERE agent_id = ?
-        AND seq >= ?
-        AND seq <= ?
-        AND role != 'tool'
-      ORDER BY seq ASC
-      LIMIT 1
-    `).get(pmId, cutSeq, horizon.anchorSeq) as { id: string } | undefined;
-
-    if (!cutoff) return;
-
-    // The summary link rows and the messages go together inside `deleteAgentDebrisBefore`, in one transaction;
-    // that function keeps its explicit first delete even though the reference cascades since migration 130.
-    const deleted = deleteAgentDebrisBefore(pmId, cutoff.id);
-
-    if (deleted > 0) {
-      logger.debug('Pruned old PM messages', { pmId, deleted, kept: PM_MAX_MESSAGES });
-    }
-  } catch (err) {
-    logger.warn('Failed to prune PM messages', {
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
-}
-
