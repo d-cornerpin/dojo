@@ -142,7 +142,7 @@ Open `http://localhost:3000` (dev) or `http://localhost:3001` (production). Bow 
 ## Data & Privacy
 
 - Everything stored locally in `~/.dojo/`
-- API keys encrypted at rest
+- API keys are kept in a file only your Mac account can open, and agents are refused if they try to read it; saved logins are encrypted
 - No telemetry. No analytics. These go out of your Mac: calls to the model providers you pick, messages on your channels, web searches and pages your agents open, checks for updates and model prices, the dashboard if you switch on remote access, and a file when an agent makes a public link for it.
 - **Your dojo. Your data. Your rules.**
 
