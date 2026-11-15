@@ -26,7 +26,7 @@ import { linkLaterInstruction } from './later-instruction.js';
 import { declareDeliverableOnSchedule, declaredDeliverableShape, findLiveRecurringTwin, DELIVERABLE_OWING_TASK_KINDS } from '../work/deliverable-declaration.js';
 import { calculateNextRun, normalizeDbTimestamp, parseDaysOfWeek, wallToInstant, instantToWall, getBoxTimeZone, type ScheduledTask, type WallClock } from '../scheduler/engine.js';
 import { broadcast } from '../gateway/ws.js';
-import { isPMAgent } from '../config/platform.js';
+import { isPMAgent, isPrimaryAgent } from '../config/platform.js';
 import { taskWriteRefusal } from '../work/row-authority.js';
 import { turnContext, getWorkOriginForAgent } from '../agent/turn-context.js';
 import { WORK_EDITABLE_TASK_FIELDS } from '../agent/work-verb-schema.js';
@@ -1000,8 +1000,10 @@ export function trackerAddNotes(agentId: string, args: Record<string, unknown>):
     if (!rawTaskId) return 'Error: taskId is required';
 
     const resolved = resolveTaskId(rawTaskId, agentId);
-    if (!resolved.ok) return formatResolveError('task', rawTaskId, resolved);
-    const taskId = resolved.id;
+    const project = resolved.ok ? null : resolveProjectId(rawTaskId, agentId);
+    if (!resolved.ok && !project?.ok) return formatResolveError('task', rawTaskId, resolved);
+    if (project?.ok && !isPMAgent(agentId) && !isPrimaryAgent(agentId)) return "Refused: a project's notes are written by the project manager or the main agent.";
+    const taskId = resolved.ok ? resolved.id : project?.ok ? project.id : rawTaskId;
 
     const notes = args.notes as string;
     if (!notes) return 'Error: notes is required';

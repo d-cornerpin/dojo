@@ -5,6 +5,8 @@
 //   vi.mock('../../../services/imessage-bridge.js', async (orig) => ({ ...(await orig()), sendAlert: texts }));
 import { vi } from 'vitest';
 import { doneDb } from './done-db.js';
+import { openTurnContext, endTurnContext } from '../../../../agent/turn-context.js';
+import type { TurnAddress } from '../../../../agent/v2/turn-address.js';
 
 export const MIN = 60_000;
 
@@ -71,4 +73,24 @@ export function resetLadderWorld(): void {
   cards.length = 0;
   texts.mockClear();
   Object.assign(turn, { asked: 'ran', queued: 'ran', during: () => {} });
+}
+
+let turnNo = 0;
+/** One PM turn as the runtime runs it: its own bag, answering `thread` when it is an agent's message. */
+export async function pmTurn(pmId: string, act: () => Promise<void>, thread: string | null = null): Promise<void> {
+  const ctx = openTurnContext(pmId);
+  ctx.turnNumber = ++turnNo;
+  if (thread) ctx.address = { kind: 'agent', threadId: thread } as TurnAddress;
+  try { await act(); } finally { endTurnContext(pmId); }
+}
+
+const reports = (pmId: string): number => (doneDb().prepare("SELECT COUNT(*) AS n FROM messages WHERE agent_id = ? AND origin_intent = 'pm_review'").get(pmId) as { n: number }).n;
+
+/** A review whose PM turn runs `act`; returns its report, or '' when nothing waited for one. */
+export async function review(pmId: string, act: () => Promise<void> = async () => {}): Promise<string> {
+  const before = reports(pmId);
+  turn.during = async (agentId) => { if (agentId === pmId) await pmTurn(pmId, act); };
+  await (await import('../../../../tracker/pm-agent.js')).runPMReview();   // at call time: the runtime mock loads this file
+  turn.during = () => {};
+  return reports(pmId) > before ? lastReport(pmId) : '';
 }

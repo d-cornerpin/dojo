@@ -836,20 +836,23 @@ async function assembleMessageContext(
   const contentBudget = Math.max(0, maxTokens - systemTokens - offTheTop);   // the PM's view is fitted to this too: the loop's appends need room
   if (keepsNoSummaries(agentId)) {
     const block = tailTrimBlockGroups(policy.freshTailCount);
-    const v = pmViewParts(agentId, turnContext, contentBudget, block);
+    const v = await pmViewParts(agentId, turnContext, contentBudget, block);
     const present = budgetFreshTail(v.present, v.room, block);
-    const pinned = estimateTokens(v.pinned) <= v.room - rowTokens(present) ? v.pinned : '';
-    const tail = budgetFreshTail(chargeTurnAttachments(agentId, modelId, v.tail, v.room), Math.max(0, v.room - rowTokens(present) - estimateTokens(pinned)), block);
+    const file = estimateTokens(v.file) <= v.room - rowTokens(present) ? v.file : '';
+    const pinned = estimateTokens(v.pinned) <= v.room - rowTokens(present) - estimateTokens(file) ? v.pinned : '';
+    const tail = budgetFreshTail(chargeTurnAttachments(agentId, modelId, v.tail, v.room), Math.max(0, v.room - rowTokens(present) - estimateTokens(file) - estimateTokens(pinned)), block);
     const kept = [...tail, ...present];
     // Nothing leaves this view unsummarised: what is not shown stays stored and found by search.
     if (dryRun) return { systemPrompt, systemVolatile: '', messages: [], reserveTokens: policy.toolAndOutputReserve,
       view: { ...viewOf({ budget: contentBudget, cached: 0, before: kept, kept, outOfViewThroughSeq: 0 }, policy, systemTokens), leavingThroughSeq: 0, leavingRows: 0, leavingTokens: 0 } };
-    const pm = tailRender({ rows: kept, agentId, dropped: 0 });
+    const [pm, now] = [tailRender({ rows: tail, agentId, dropped: 0 }), tailRender({ rows: present, agentId, dropped: 0 })];
     tagMessageLanes(pm.messages, 'lane.pm-tail');
-    const messages = applyIntegrityPass([...(pinned ? [tagMessageLane({ role: 'user' as const, content: pinned }, 'lane.vault')] : []), ...pm.messages], agentId);
+    tagMessageLanes(now.messages, 'lane.pm-tail');
+    const text = (t: string, lane: string): LaneMessage[] => (t ? [tagMessageLane({ role: 'user' as const, content: t }, lane)] : []);
+    const messages = applyIntegrityPass([...text(pinned, 'lane.vault'), ...pm.messages, ...text(file, 'lane.pm-tail'), ...now.messages], agentId);
     const report: AllocationReport = {
       budgetTokens: contentBudget, reservedTokens: 0, spentTokens: renderTokens(messages), offTheTopTokens: offTheTop,
-      grants: [{ id: 'lane.pm-tail', slot: MessageSlot.FreshTail, priority: LANE_PRIORITY['lane.fresh-tail'], requested: pm.tokens, granted: renderTokens(messages),
+      grants: [{ id: 'lane.pm-tail', slot: MessageSlot.FreshTail, priority: LANE_PRIORITY['lane.fresh-tail'], requested: pm.tokens + now.tokens, granted: renderTokens(messages),
         status: messages.length > 0 ? 'admitted' : 'empty', reason: `the board is its memory: pinned memories, ${tail.length} conversation row(s), ${present.length} row(s) of the present turn` }],
       admittedIds: messages.length > 0 ? ['lane.pm-tail'] : [], overBudget: [],
     };

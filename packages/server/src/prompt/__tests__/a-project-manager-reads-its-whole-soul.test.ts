@@ -125,7 +125,7 @@ describe('the PM runs on its whole soul', () => {
     expect(soul).toContain('# Deciding hand-ins');
     expect(soul).toContain('An approval is refused until every item has been opened by you');
     expect(soul).toContain('the directive says NOT to repeat it');
-    expect(soul).toContain('# Vault, Review Continuity');
+    expect(soul).toContain('A decision later work must respect goes on its project with `work_note`');
   });
 
   it('every placeholder is substituted — the model is never shown a `{{…}}`', () => {

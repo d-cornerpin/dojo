@@ -10,13 +10,16 @@ import { heldDeliveryLine } from './owed-delivery.js';
 import { readLaterMessages } from '../memory/task-list-words.js';
 import { getDb } from '../db/connection.js';
 import { writeAgentStatus } from '../agent/agent-status.js';
-import { taskScope, holdWordsSql, heldByOwnerSql } from '../work/tracker-view.js';
+import { taskScope, holdWordsSql, heldByOwnerSql, msToUtcText } from '../work/tracker-view.js';
+import { planOfProject, planStepLineOf } from '../work/plan-store.js';
+import { listTaskLog, listTaskNotes } from './task-log.js';
 import { workingExpr } from '../work/terminal-states.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getAgentRuntime } from '../agent/runtime.js';
 import { insertEngineEventIfAbsent } from '../memory/message-store.js';
-import { contextWindowPolicy } from '../memory/budget.js';
+import { extractPayloadFromA2AMessage } from '../agent/a2a-transport.js';
+import { contextWindowPolicy, estimateTokens } from '../memory/budget.js';
 import { agentTurnWindow } from '../router/router-window.js';
 import { serviceAgentModelId } from '../agent/main-model-floor.js';
 import { getPrimaryAgentId, getPMAgentId, getPMAgentName, isSetupCompleted } from '../config/platform.js';
@@ -26,9 +29,9 @@ import { workOperation, type WorkOp } from '../tools/work-verbs.js';
 const OWNER_WORDS_EXCERPT_CHARS = 400;   // a display excerpt; history_get returns the whole message
 
 /** The owner's later words the engine recorded against this task: what a decision-type close is judged on. */
-function ownerWordsLines(taskId: string): string {
+function ownerWordsLines(taskId: string, what = 'task'): string {
   const laters = readLaterMessages(taskId);
-  if (laters.length === 0) return '\n  Owner words recorded on this task: none';
+  if (laters.length === 0) return `\n  Owner words recorded on this ${what}: none`;
   const shown = laters.map((m) => {
     const id = (m.messageId ?? '').slice(0, 8);
     if (m.words === null) return `    message ${id}: no longer stored`;
@@ -36,7 +39,7 @@ function ownerWordsLines(taskId: string): string {
     const cut = flat.length > OWNER_WORDS_EXCERPT_CHARS ? `${flat.slice(0, OWNER_WORDS_EXCERPT_CHARS)}… (history_get(id="${m.messageId}") returns it whole)` : flat;
     return `    message ${id}: "${cut}"`;
   });
-  return `\n  Owner words recorded on this task (sent while it was open; the turn that answered them touched it):\n${shown.join('\n')}`;
+  return `\n  Owner words recorded on this ${what} (sent while it was open; the turn that answered them touched it):\n${shown.join('\n')}`;
 }
 
 const logger = createLogger('pm-agent');
@@ -215,11 +218,40 @@ function handInBlock(id: string, n: number, roomTokens: number): string {
     + `${h?.scope === 'run' ? ' (one run of a recurring task; the schedule goes on whatever you decide)' : ''}.\n  Goal: ${w.goal ?? '(none recorded)'}\n  Note: ${h?.note ?? '(none)'}\n`
     + (items.length > 0 ? `  Proof (open each item before approving):\n${proofLines(items).map((l, i) => `    ${i}. ${l}`).join('\n')}` : '  Proof: none.')
     + `\n  Sent back so far: ${backs.length === 0 ? 'never' : backs.map((b) => `"${b.reason}"`).join('; ')}`
-    + `${validationMeasureLines(id, roomTokens)}${heldDeliveryLine(id)}${ownerWordsLines(id)}`;
+    + `${validationMeasureLines(id, roomTokens)}${heldDeliveryLine(id)}${ownerWordsLines(id)}${taskFile(id, roomTokens)}`;
+}
+
+/** The board's file of a task and its project, its notes and answers inside `room`: the plan and this step, the project's
+ *  notes and owner words, earlier reviews on the project, the last instruction, the PM's questions and their answers. */
+export function taskFile(id: string, room: number): string {
+  const db = getDb(), pm = getPMAgentId();
+  const p = db.prepare('SELECT p.id, p.title FROM work t JOIN work p ON p.id = t.parent_id WHERE t.id = ?').get(id) as { id: string; title: string | null } | undefined;
+  let left = room;
+  const fits = (text: string): boolean => { const t = estimateTokens(text); if (t > left) return false; left -= t; return true; };
+  let file = '';
+  if (p) {
+    const notes = listTaskNotes(p.id).reverse(), shown = notes.findIndex((n) => !fits(n.note ?? '')), kept = shown < 0 ? notes : notes.slice(0, shown);
+    const reviews = db.prepare(`SELECT w.title, e.kind, json_extract(e.payload, '$.verdict') AS verdict, json_extract(e.payload, '$.reason') AS reason FROM work_events e JOIN work w ON w.id = e.work_id
+      WHERE w.parent_id = ? AND e.work_id <> ? AND (e.kind = 'decided' OR json_extract(e.payload, '$.entry_kind') = 'directive') ORDER BY e.id DESC`).all(p.id, id) as Array<{ title: string; kind: string; verdict: string | null; reason: string | null }>;
+    file += `\n  Project "${p.title ?? p.id}" [${p.id}]: ${planOfProject(p.id)?.approach ?? '(no plan)'}\n  This step: ${planStepLineOf(id) ?? '(no plan step)'}`
+      + `\n  The project's notes, newest first:${kept.map((n) => `\n    ${n.createdAt}: ${n.note}`).join('') || ' none'}${kept.length < notes.length ? `\n    ${notes.length - kept.length} older notes: work_update(action="get", id="${p.id}")` : ''}`
+      + ownerWordsLines(p.id, 'project')
+      + `\n  Earlier reviews on the project, newest first:${reviews.map((r) => `\n    "${r.title}" ${r.kind === 'decided' ? (r.verdict === 'approve' ? 'approved' : 'sent back') : 'retasked'}: ${(r.reason ?? '').split('\n')[0]}`).join('') || ' none'}`;
+  }
+  const directive = listTaskLog(id, { limit: 1, kinds: ['directive'] })[0]?.reason;
+  const tasks = p ? (db.prepare('SELECT id FROM work WHERE parent_id = ?').all(p.id) as Array<{ id: string }>).map((r) => r.id) : [id];
+  const answersTo = (q: { thread: string; asked: string }): Array<{ id: string; content: string }> => (db.prepare('SELECT id, content FROM messages WHERE a2a_thread_id = ? AND agent_id = ? AND source_agent_id = ? ORDER BY seq')
+    .all(q.thread, pm, q.asked) as Array<{ id: string; content: string }>).map((a) => ({ id: a.id, content: extractPayloadFromA2AMessage(a.content) ?? a.content }));
+  const qs = tasks.flatMap((t) => pmQuestions(t, true).map((q) => ({ ...q, t, answers: answersTo(q) })));
+  // The newest answers stay whole; older ones are cut to their first line.
+  const said = new Map(qs.flatMap((q) => q.answers).reverse().map((a) => [a.id, fits(a.content) ? a.content : `${a.content.split('\n')[0]}... (history_get(id="${a.id}") returns it whole)`]));
+  const exchange = qs.map((q) => `\n    To ${q.asked} about [${q.t}] (${msToUtcText(q.at)}): "${q.text.slice(0, 500)}"`
+    + (q.answers.map((a) => `\n      Answer: ${said.get(a.id)}`).join('') || (q.until > Date.now() ? `\n      Waiting for an answer until ${msToUtcText(q.until)}` : '\n      No answer')));
+  return `${file}${directive ? `\n  Last instruction given: ${directive}` : ''}${qs.length > 0 ? `\n  Your questions about ${p ? 'the project' : 'it'} and the answers:${exchange.join('')}` : ''}`;
 }
 
 /** One stall the ladder marked: the hint did not move it, so the PM may give the worker one directive. */
-function stallBlock(id: string, n: number): string {
+function stallBlock(id: string, n: number, room: number): string {
   const w = getDb().prepare(`SELECT w.title, ${holdWordsSql('w')} AS hold FROM work w WHERE w.id = ?`).get(id) as { title: string | null; hold: string };
   const refused = (getDb().prepare(
     `SELECT payload FROM work_events WHERE work_id = ? AND kind = 'hand_in_refused'
@@ -227,7 +259,7 @@ function stallBlock(id: string, n: number): string {
   ).all(id, id) as Array<{ payload: string }>).map((r) => (JSON.parse(r.payload) as { reasons?: string[] }).reasons?.join(' ') ?? '');
   return `${n}. STALLED: "${w.title ?? id}" [${id}], worked by ${workerOf(id)}, has made no progress past its patience bound since the engine's hint.`
     + `${w.hold ? ` It is held: ${w.hold}.` : ''}`
-    + (refused.length > 0 ? `\n  Its refused hand-ins:\n${refused.map((r, i) => `    ${i + 1}. ${r}`).join('\n')}` : '');
+    + (refused.length > 0 ? `\n  Its refused hand-ins:\n${refused.map((r, i) => `    ${i + 1}. ${r}`).join('\n')}` : '') + taskFile(id, room);
 }
 
 /** One review miss on each row this review held that is still waiting on the same hand-in, unless it asked about it. */
@@ -254,7 +286,7 @@ export async function runPMReview(): Promise<void> {
     const pm = getDb().prepare('SELECT model_id, status FROM agents WHERE id = ?').get(pmId) as { model_id: string | null; status: string } | undefined;
     if (!pm?.model_id || pm.status === 'terminated') { recordMisses(pmId, held, 'the project manager could not run its review'); return; }
     const room = reviewLedgerRoomTokens(contextWindowPolicy(agentTurnWindow(pmId, pm.model_id), { toolPayloadTokens: 0 }).assemblyBudgetTokens, waiting.length);
-    const blocks = [...waiting.map((id, i) => handInBlock(id, i + 1, room)), ...stalled.map((id, i) => stallBlock(id, waiting.length + i + 1))];
+    const blocks = [...waiting.map((id, i) => handInBlock(id, i + 1, room)), ...stalled.map((id, i) => stallBlock(id, waiting.length + i + 1, room))];
     const report = `Tracker review -- ${waiting.length} hand-in(s) wait for your decision, ${stalled.length} stalled task(s).\n\n${blocks.join('\n\n')}\n\n`
       + '[Engine hint: for each HANDED IN row, open its proof with work_validate(action="open_proof", task_id, item=N), then work_validate(action="decide", task_id, '
       + 'verdict="approve", reason="<one line: how the proof meets the goal>"), or verdict="send_back" with the reason naming what is missing. A measured task is met when its '

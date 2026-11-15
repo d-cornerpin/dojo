@@ -1,6 +1,7 @@
 // A hand-in waits while the project manager asks about it (the owner's back-and-forth with several agents): each
 // question is tied to the hand-in when it is sent; while one is open the hand-in is in no review and no review
-// counts against it; once every question is answered the PM decides it. An asked agent that ends a turn without
+// counts against it; the turn an answer starts shows the hand-in's file with the question, and once every question
+// is answered the review shows the whole exchange and the PM decides it. An asked agent that ends a turn without
 // answering releases it one patience bound later, and then the ordinary rule applies.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
@@ -11,24 +12,16 @@ vi.mock('../../../memory/embeddings.js', () => ({ generateEmbedding: async () =>
 vi.mock('../../../tracker/pm-agent.js', async (orig) => ({ ...(await orig<object>()), armDebouncedReview: vi.fn() }));
 vi.setConfig({ testTimeout: 240_000, hookTimeout: 240_000 });
 
-import { runPMReview } from '../../../tracker/pm-agent.js';
 import { whoDecides } from '../who-decides.js';
+import { assembleContext } from '../../../memory/assembler.js';
+import type { TurnCounterparty } from '../../../agent/v2/counterparty.js';
 import { insertMessage } from '../../../memory/message-store.js';
-import { openTurnContext, endTurnContext } from '../../../agent/turn-context.js';
-import type { TurnAddress } from '../../../agent/v2/turn-address.js';
 import { patienceBoundMs } from '../../../tracker/assignee-patience.js';
 import { freshBoard, handedIn, call, deliveredToOwner, stateOf, PM, MAIN, WORKER, OTHER, TASK } from './helpers/decision-world.js';
 import { doneDb } from './helpers/done-db.js';
-import { pmCanRun, turn, entries, lastReport, resetLadderWorld } from './helpers/ladder-world.js';
+import { pmCanRun, turn, entries, resetLadderWorld, pmTurn, review as reviewBy } from './helpers/ladder-world.js';
 
-let turnNo = 0;
-/** One PM turn as the runtime runs it: its own bag, answering `thread` when it is an agent's message. */
-async function pmTurn(act: () => Promise<void>, thread: string | null = null): Promise<void> {
-  const ctx = openTurnContext(PM);
-  ctx.turnNumber = ++turnNo;
-  if (thread) ctx.address = { kind: 'agent', threadId: thread } as TurnAddress;
-  try { await act(); } finally { endTurnContext(PM); }
-}
+const review = (act?: () => Promise<void>): Promise<string> => reviewBy(PM, act);
 
 const ask = async (agent: string, payload: string): Promise<string> => {
   const r = await call(PM, 'send_to_agent', { agent, intent: 'QUESTION', payload });
@@ -47,18 +40,7 @@ async function unrelatedHandIn(i: number): Promise<string> {
   return id;
 }
 
-const reports = (): number => (doneDb().prepare("SELECT COUNT(*) AS n FROM messages WHERE agent_id = ? AND origin_intent = 'pm_review'").get(PM) as { n: number }).n;
-
-/** A review whose PM turn runs `act`; returns its report, or '' when nothing waited for one. */
-async function review(act: () => Promise<void> = async () => {}): Promise<string> {
-  const before = reports();
-  turn.during = async (agentId) => { if (agentId === PM) await pmTurn(act); };
-  await runPMReview();
-  turn.during = () => {};
-  return reports() > before ? lastReport(PM) : '';
-}
-
-beforeEach(() => { resetLadderWorld(); turnNo = 0; freshBoard(); pmCanRun(PM); });
+beforeEach(() => { resetLadderWorld(); freshBoard(); pmCanRun(PM); });
 afterEach(() => vi.restoreAllMocks());
 
 describe('a hand-in waits while the PM asks', () => {
@@ -78,14 +60,21 @@ describe('a hand-in waits while the PM asks', () => {
     expect(entries(TASK, 'review_miss')).toBe(0);
     expect(whoDecides(TASK)).toEqual({ kind: 'agent', agentId: PM });
 
-    let w2 = '', m = '';
+    let w2 = '', m = '', seen = '';
     turn.during = async (agentId) => {
       if (agentId !== PM) return;
-      await pmTurn(async () => { w2 = await ask(OTHER, 'Did the March export finish on your side?'); m = await ask(MAIN, 'Did the owner ask for March to be left out?'); }, w1);
       turn.during = () => {};
+      await pmTurn(PM, async () => {
+        const view = await assembleContext(PM, 'm', { latestUserSource: null, isA2ATurn: true, counterparty: { kind: 'agent', threadId: w1 } as TurnCounterparty });
+        seen = JSON.stringify(view.messages);
+        w2 = await ask(OTHER, 'Did the March export finish on your side?');
+        m = await ask(MAIN, 'Did the owner ask for March to be left out?');
+      }, w1);
     };
     expect((await answer(WORKER, w1, 'Sheet 3. The March rows are missing; the export failed.')).isError).toBe(false);
     await vi.waitFor(() => { if (!m) throw new Error('the answer turn has not asked yet'); });
+    expect(seen, 'the answer turn shows the question it answers, by the hand-in it is tied to').toContain('Which sheet holds the totals, and were the March rows included?');
+    expect(seen, 'and the hand-in itself').toContain(`[${TASK}]`);
     const tied = doneDb().prepare("SELECT COUNT(*) AS n FROM tool_receipts WHERE agent_id = ? AND task_id = ? AND thread_id IN (?, ?)").get(PM, TASK, w2, m) as { n: number };
     expect(tied.n, 'both new questions are tied to the hand-in the turn answered about').toBe(2);
 
@@ -99,6 +88,9 @@ describe('a hand-in waits while the PM asks', () => {
       expect(r.isError, r.content).toBe(false);
     });
     expect(report, 'every answer is in: the hand-in is the PM\'s again').toContain(TASK);
+    for (const words of ['were the March rows included?', 'the export failed', 'Did the March export finish', 'I stopped it', 'Did the owner ask for March', 'The owner wants March included.']) {
+      expect(report, 'the review shows the whole exchange').toContain(words);
+    }
     expect(stateOf()).toBe('sent_back');
   });
 

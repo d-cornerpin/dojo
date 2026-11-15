@@ -34,16 +34,16 @@ export function sendBacks(workId: string): Array<{ reason: string; at: number }>
   ).all(workId) as Array<{ reason: string; at: number }>);
 }
 
-/** The PM's questions tied to this row since its newest hand-in, oldest first. Each holds the hand-in until its answer;
+/** The PM's questions tied to this row since its newest hand-in (or ever), oldest first. Each holds the hand-in until its answer;
  *  else one patience bound after the asked agent's next finished turn (of its newest 20); else `QUEUED_TURN_BOUND_MS`. */
-export function pmQuestions(workId: string): Array<{ at: number; thread: string; asked: string; text: string; answeredAt: number | null; until: number }> {
+export function pmQuestions(workId: string, everAsked = false): Array<{ at: number; thread: string; asked: string; text: string; answeredAt: number | null; until: number }> {
   const pm = getPMAgentId();
   return (getDb().prepare(
     `SELECT unixepoch(r.created_at) * 1000 AS at, r.thread_id AS thread, COALESCE(r.sent_text, '') AS text, COALESCE((SELECT id FROM agents WHERE id = r.recipient),
        (SELECT id FROM agents WHERE lower(name) = lower(r.recipient) ORDER BY created_at DESC LIMIT 1), r.recipient) AS asked
        FROM tool_receipts r WHERE r.task_id = ? AND r.agent_id = ? AND r.thread_id IS NOT NULL AND json_extract(r.detail, '$.intent') IN ('QUESTION', 'BLOCK')
-        AND unixepoch(r.created_at) >= (SELECT COALESCE(MAX(created_at), 0) FROM work_events WHERE work_id = r.task_id AND kind = 'handed_in') / 1000 ORDER BY r.rowid`,
-  ).all(workId, pm) as Array<{ at: number; thread: string; text: string; asked: string }>).map((q) => {
+        AND (? OR unixepoch(r.created_at) >= (SELECT COALESCE(MAX(created_at), 0) FROM work_events WHERE work_id = r.task_id AND kind = 'handed_in') / 1000) ORDER BY r.rowid`,
+  ).all(workId, pm, everAsked ? 1 : 0) as Array<{ at: number; thread: string; text: string; asked: string }>).map((q) => {
     const answeredAt = firstReplySince(pm, q.asked, q.thread, q.at);
     const ended = answeredAt ?? (getDb().prepare('SELECT MIN(t) AS t FROM (SELECT unixepoch(ended_at) * 1000 AS t FROM turns WHERE agent_id = ? ORDER BY turn_number DESC LIMIT 20) WHERE t >= ?')
       .get(q.asked, q.at) as { t: number | null }).t;
@@ -76,9 +76,12 @@ export function decidedBy(agentId: string): string[] {
  *  else, of the hand-ins the sender decides now, the only one, the one the recipient works, or the one it names. */
 export function askedAbout(agentId: string, recipientId: string, payload: string, threadId: string): string | null {
   const ctx = turnContext(agentId), answering = ctx?.address?.kind === 'agent' ? ctx.address.threadId : ctx?.root?.kind === 'a2a' ? ctx.root.id : null;
-  const tied = getDb().prepare('SELECT task_id FROM tool_receipts WHERE task_id IS NOT NULL AND agent_id = ? AND thread_id IN (?, ?) ORDER BY created_at DESC LIMIT 1')
-    .get(agentId, threadId, answering) as { task_id: string } | undefined;
-  if (tied) return tied.task_id;
+  const tied = tiedTask(agentId, threadId, answering);
+  if (tied) return tied;
   const mine = decidedBy(agentId);
   return mine.length === 1 ? mine[0] : mine.find((id) => workersOf(id).has(recipientId)) ?? mine.find((id) => payload.includes(id.slice(0, 8))) ?? null;
 }
+
+/** The task a send of `agentId` on one of these threads was tied to, the newest. */
+export const tiedTask = (agentId: string, thread: string, other: string | null = null): string | null => (getDb().prepare(
+  'SELECT task_id FROM tool_receipts WHERE task_id IS NOT NULL AND agent_id = ? AND thread_id IN (?, ?) ORDER BY created_at DESC LIMIT 1').get(agentId, thread, other) as { task_id: string } | undefined)?.task_id ?? null;

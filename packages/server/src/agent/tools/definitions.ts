@@ -1112,7 +1112,7 @@ export const toolDefinitions: ToolDefinition[] = [
     input_schema: {
       type: 'object',
       properties: {
-        task_id: { type: 'string', description: 'The task ID to append notes to.' },
+        task_id: { type: 'string', description: 'The task or project ID to append notes to.' },
         notes: { type: 'string', description: 'The note text to append (will be prefixed with a timestamp).' },
       },
       required: ['task_id', 'notes'],
