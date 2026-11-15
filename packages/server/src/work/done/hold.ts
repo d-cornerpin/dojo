@@ -35,15 +35,17 @@ const holdable = (workId: string): boolean => !!getDb().prepare(
   `SELECT 1 FROM work w WHERE w.id = ? AND ${workingExpr('w', true)} AND ${taskScope('w')}`,
 ).get(workId);
 
-/** Hold an Open or Working task. `pausedUntilMs` is when a pause lifts by itself. */
-export function setHold(workId: string, kind: HoldKind, reason: string, by: string, pausedUntilMs: number | null = null): HoldResult {
+/** Hold an Open or Working task. `pausedUntilMs` is when a pause lifts by itself; `ownerQuote` as in clearHold. */
+export function setHold(workId: string, kind: HoldKind, reason: string, by: string, pausedUntilMs: number | null = null, ownerQuote?: unknown): HoldResult {
   const line = reason.trim();
   if (!line || /[\r\n]/.test(line)) return { ok: false, why: `a ${kind} hold needs its reason in one line` };
   return withUnit((): HoldResult => {
-    if (ownerHoldStands(workId, byOwner(by))) return { ok: false, why: OWNER_HOLD_REFUSAL };
+    const ownerAsked = ownerAskedToLift(by, ownerQuote);
+    if (ownerHoldStands(workId, byOwner(by) || ownerAsked)) return { ok: false, why: OWNER_HOLD_REFUSAL };
     if (!holdable(workId)) return { ok: false, why: 'only an Open or Working task can be held' };
     noteUnsettled(patchWork(workId, { hold_kind: kind, hold_reason: line, hold_at: Date.now(), paused_until: kind === 'paused' ? pausedUntilMs : null }), 'hold set', { taskId: workId });
-    appendAuditEntry(workId, by, { entryKind: 'hold_set', toStatus: kind, reason: holdOf(workId)?.reason ?? '' });
+    const note = ownerAsked ? `the owner asked: "${String(ownerQuote)}"` : null;
+    appendAuditEntry(workId, by, { entryKind: 'hold_set', toStatus: kind, reason: holdOf(workId)?.reason ?? '', note });
     return { ok: true };
   });
 }

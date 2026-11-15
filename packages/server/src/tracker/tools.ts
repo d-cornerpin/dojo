@@ -910,9 +910,8 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
         + (hold === 'paused' ? 'name what you are waiting for (e.g. "waiting for the vendor to send the tracking number").'
           : 'name the obstacle (e.g. "need API key for service X").');
     }
-    if (liftsOwnerHold) clearHold(taskId, agentId, args.user_quote);   // only now that the call goes through
     if (hold) {
-      const held = setHold(taskId, hold, holdReason, agentId, resumeAt);
+      const held = setHold(taskId, hold, holdReason, agentId, resumeAt, args.user_quote);
       if (!held.ok) return `Refused: ${taskId} was not put on hold (${held.why}).`;
     } else if (status && status === taskRow?.prior_status) {
       clearHold(taskId, agentId);   // already there: only the hold lifts (a move lifts it in transition())
@@ -935,6 +934,7 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
     }
 
     if (statusUpdate) {
+      if (liftsOwnerHold) clearHold(taskId, agentId, args.user_quote);   // the move below refuses an owner-held row
       const sr = setTaskStatusResult(taskId, statusUpdate as TrackerStatus, {
         by: callerIsPM ? 'pm' : 'agent', actorId: agentId,
         reason: `work_update(action="status") -> ${String(statusUpdate)}`,

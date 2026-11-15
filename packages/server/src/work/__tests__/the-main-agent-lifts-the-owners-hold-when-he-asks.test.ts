@@ -99,6 +99,7 @@ describe('the main agent lifts the owner\'s hold when he asks', () => {
   it.each([
     ['a status it already has', { status: 'paused', notes: 'still waiting on the owner here' }, /^\[NO-OP\]/],
     ['a hold with no real reason', { status: 'blocked', notes: 'short' }, /^Error: /],
+    ['a hold the store refuses', { status: 'blocked', notes: 'waiting on the vendor\nand on the bank too' }, /^Refused: /],
   ])('with the owner\'s words, %s changes nothing and keeps his hold', async (_label, change, reply) => {
     const id = ownerHeldTask(MAIN);
     ownerTurn(MAIN, OWNER_WORDS);
@@ -108,6 +109,20 @@ describe('the main agent lifts the owner\'s hold when he asks', () => {
     expect(content).toMatch(reply);
     expect(holdOf(id)).toMatchObject({ kind: 'paused', reason: 'the owner wants to look first' });
     expect(holdClears(id)).toHaveLength(0);
+  });
+
+  it('with the owner\'s words, his hold gives way to the main agent\'s own and the trail records his ask', async () => {
+    const id = ownerHeldTask(MAIN);
+    ownerTurn(MAIN, OWNER_WORDS);
+    const content = toolResultOf(await executeTool(MAIN, {
+      id: `call-${++n}`, name: 'work_update',
+      arguments: { action: 'status', task_id: id, status: 'blocked', notes: 'need the vendor login first', user_quote: OWNER_WORDS },
+    })).content;
+    expect(content).toMatch(/^\[OK\]/);
+    expect(holdOf(id)).toMatchObject({ kind: 'blocked', reason: 'need the vendor login first' });
+    const notes = (connection.getDb().prepare('SELECT payload FROM work_events WHERE work_id = ? AND kind = ?').all(id, AUDIT_KIND) as Array<{ payload: string }>)
+      .map((e) => (JSON.parse(e.payload) as { note: string | null }).note);
+    expect(notes.some((note) => note?.includes(OWNER_WORDS))).toBe(true);
   });
 
   it('a quote the owner never said is refused', async () => {
