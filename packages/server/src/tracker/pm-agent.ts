@@ -3,7 +3,7 @@ import { validationMeasureLines, reviewLedgerRoomTokens } from './job-loop-facts
 import { primaryReady } from '../agent/primary-ready.js';
 import { proofLines } from '../work/done/proof.js';
 import { latestHandIn, workerOf } from '../work/done/record.js';
-import { whoDecides, sendBacks, REVIEW_MISS_ENTRY } from '../work/done/who-decides.js';
+import { decidedBy, pmQuestions, questionsHoldUntil, sendBacks, REVIEW_MISS_ENTRY, QUEUED_TURN_BOUND_MS } from '../work/done/who-decides.js';
 import { LADDER_ENTRY } from '../work/done/ladder.js';
 import { appendAuditEntry } from '../work/audit-trail.js';
 import { heldDeliveryLine } from './owed-delivery.js';
@@ -179,8 +179,7 @@ const REVIEW_DEBOUNCE_MS = 10_000;
 let reviewTimer: ReturnType<typeof setTimeout> | null = null;
 let reviewing = false;
 let rungWhileReviewing = false;
-/** How long a review waits for a queued PM turn before it counts as one that never ran. */
-const QUEUED_TURN_BOUND_MS = 30 * 60_000;
+let reviewStartedAt = 0;
 const errText = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
 /** The PM's one wake: a hand-in or a ladder mark arms it, and a burst of them becomes one review. */
@@ -194,8 +193,7 @@ export function armDebouncedReview(taskId: string, why: string): void {
 }
 
 function waitingForPM(pmId: string): string[] {
-  const rows = getDb().prepare(`SELECT w.id FROM work w WHERE ${taskScope('w')} AND w.state = 'handed_in' ORDER BY w.updated_at`).all() as Array<{ id: string }>;
-  return rows.map((r) => r.id).filter((id) => { const d = whoDecides(id); return d?.kind === 'agent' && d.agentId === pmId; }).slice(0, 10);
+  return decidedBy(pmId).filter((id) => questionsHoldUntil(id) <= Date.now()).slice(0, 10);
 }
 
 function markedStalls(pmId: string): string[] {
@@ -232,10 +230,10 @@ function stallBlock(id: string, n: number): string {
     + (refused.length > 0 ? `\n  Its refused hand-ins:\n${refused.map((r, i) => `    ${i + 1}. ${r}`).join('\n')}` : '');
 }
 
-/** One review miss on each row this review held that is still waiting on the same hand-in. */
+/** One review miss on each row this review held that is still waiting on the same hand-in, unless it asked about it. */
 function recordMisses(pmId: string, held: ReadonlyMap<string, number>, why: string): void {
   for (const [id, handInId] of held) {
-    if (latestHandIn(id)?.eventId !== handInId) continue;
+    if (latestHandIn(id)?.eventId !== handInId || pmQuestions(id).some((q) => q.at >= reviewStartedAt)) continue;
     const still = getDb().prepare("SELECT 1 FROM work WHERE id = ? AND state = 'handed_in'").get(id);
     if (still) appendAuditEntry(id, pmId, { entryKind: REVIEW_MISS_ENTRY, reason: why });
   }
@@ -247,6 +245,7 @@ export async function runPMReview(): Promise<void> {
   if (reviewing) { rungWhileReviewing = true; return; }
   reviewing = true;
   const pmId = getPMAgentId();
+  reviewStartedAt = Math.floor(Date.now() / 1000) * 1000;   // receipts are stamped to the second
   let held = new Map<string, number>();
   try {
     const waiting = waitingForPM(pmId), stalled = markedStalls(pmId);

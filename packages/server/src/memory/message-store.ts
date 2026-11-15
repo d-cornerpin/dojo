@@ -648,6 +648,11 @@ export function deleteAllForAgent(agentId: string): number {
   return db.prepare(`DELETE FROM messages WHERE agent_id = ?`).run(agentId).changes;
 }
 
+/** When `replierId` first answered `askerId` on `threadId` at or after `sinceMs` (epoch ms), in the asker's store. */
+export function firstReplySince(askerId: string, replierId: string, threadId: string, sinceMs: number): number | null {
+  return (getDb().prepare('SELECT MIN(created_at) AS at FROM messages WHERE agent_id = ? AND source_agent_id = ? AND a2a_thread_id = ? AND created_at >= ?').get(askerId, replierId, threadId, sinceMs) as { at: number | null }).at;
+}
+
 // Add no by-agent conversation wipe: `deleteAllForAgent` is for teardown only, where erasing everything is meant.
 
 /** Scoped by `origin_intent`, so it can never reach ordinary peer A2A traffic. */

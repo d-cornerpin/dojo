@@ -9,11 +9,11 @@ import { doneDb } from './done-db.js';
 export const MIN = 60_000;
 
 /** The stand-in runtime: what the PM's review turn did (`ran`, or `queued` then how the queued turn ended). */
-export const turn: { asked: 'ran' | 'queued' | 'not-run'; queued: 'ran' | 'not-run'; during: () => void | Promise<void> } = { asked: 'ran', queued: 'ran', during: () => {} };
+export const turn: { asked: 'ran' | 'queued' | 'not-run'; queued: 'ran' | 'not-run'; during: (agentId: string) => void | Promise<void> } = { asked: 'ran', queued: 'ran', during: () => {} };
 export function runtimeMock(): { getAgentRuntime: () => unknown } {
   return {
     getAgentRuntime: () => ({
-      handleMessage: async () => { await turn.during(); return turn.asked; },
+      handleMessage: async (agentId: string) => { await turn.during(agentId); return turn.asked; },
       whenQueuedRunEnds: async () => turn.queued,
     }),
   };

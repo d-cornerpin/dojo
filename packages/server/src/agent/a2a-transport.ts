@@ -14,7 +14,7 @@ import { postAgentNotice } from './agent-notice.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getAgentRuntime } from './runtime.js';
-import { deliveredResult, insertMessageIfAbsent, insertEngineEventIfAbsent, type EngineEventWork } from '../memory/message-store.js';
+import { deliveredResult, firstReplySince, insertMessageIfAbsent, insertEngineEventIfAbsent, type EngineEventWork } from '../memory/message-store.js';
 import { resolveOrCreateConversation } from '../memory/conversations.js';
 import { isSenderAuthorized } from './v2/channel-auth.js';
 import { unfenceExternal } from '../tools/external-content.js';
@@ -475,7 +475,7 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
 
   // A wake-intent re-ask whose last delivery was THIS sender's own unanswered wake-intent inside
   // the cooldown is an impatient re-ping: it drops with AWAITING_REPLY until the receiver replies.
-  const AWAITING_REPLY_COOLDOWN = '-15 minutes';
+  const AWAITING_REPLY_COOLDOWN_MS = 15 * 60_000;
   const isEngineEnvelope = envelope.fromAgent === 'system' || envelope.origin === 'engine';
   if (isReopeningIntent(effectiveIntent) && !isEngineEnvelope) {
     // The gate: last delivery was this sender's own wake-intent in the cooldown; the read confirms.
@@ -484,23 +484,14 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
        WHERE thread_id = @threadId
          AND last_sender = @senderId
          AND updated_at >= datetime('now', @window)
-    `).get({ threadId, senderId: envelope.fromAgent, window: AWAITING_REPLY_COOLDOWN }) as
+    `).get({ threadId, senderId: envelope.fromAgent, window: `-${AWAITING_REPLY_COOLDOWN_MS / 1000} seconds` }) as
       | { last_intent: string | null }
       | undefined;
     const senderOwesReply =
       !!latchRow && !!latchRow.last_intent && isReopeningIntent(latchRow.last_intent as A2AIntent);
     if (senderOwesReply) {
       // Did the RECEIVER reply inside the cooldown? One table, so a reply cannot be missed.
-      const receiverReplied = db.prepare(`
-        SELECT 1 AS hit FROM messages
-         WHERE agent_id = @senderId AND source_agent_id = @receiverId
-           AND a2a_thread_id = @threadId
-           AND created_at >= (unixepoch('now', @window) * 1000)
-        LIMIT 1
-      `).get({ senderId: envelope.fromAgent, receiverId: target.id, threadId, window: AWAITING_REPLY_COOLDOWN }) as
-        | { hit: number }
-        | undefined;
-      if (!receiverReplied) {
+      if (firstReplySince(envelope.fromAgent, target.id, threadId, Date.now() - AWAITING_REPLY_COOLDOWN_MS) === null) {
         logDrop(envelope, 'AWAITING_REPLY');
         return { delivered: false, reason: 'AWAITING_REPLY', threadId };
       }

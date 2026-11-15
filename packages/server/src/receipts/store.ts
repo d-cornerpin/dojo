@@ -51,6 +51,7 @@ export interface WriteReceiptParams {
   providerId?: string | null;   // Gmail message id, Twilio SID, Graph/event id, ...
   threadId?: string | null;
   recipient?: string | null;
+  taskId?: string | null;
   // Bounded copy of WHAT was sent; never a secret.
   sentText?: string | null;
   // Status / anomaly data only, never bodies or secrets.
@@ -89,7 +90,7 @@ export interface ToolReceiptRow {
 export function writeToolReceipt(params: WriteReceiptParams): string {
   const {
     agentId, tool, tier, verified, basis,
-    providerId = null, threadId = null, recipient = null,
+    providerId = null, threadId = null, recipient = null, taskId = null,
     sentText = null, detail = null, sim = false, skipAudit = false,
   } = params;
 
@@ -119,13 +120,13 @@ export function writeToolReceipt(params: WriteReceiptParams): string {
     db.prepare(`
       INSERT INTO tool_receipts (
         id, agent_id, tool, tier, verified, basis,
-        provider_id, thread_id, recipient, detail, audit_id, sim,
+        provider_id, thread_id, recipient, task_id, detail, audit_id, sim,
         conv_key, turn_number, sent_text, call_id, root_kind, root_id,
         created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
     `).run(
       receiptId, agentId, tool, tier, verified ? 1 : 0, basis,
-      providerId, threadId, recipient, detailJson, auditId, sim ? 1 : 0,
+      providerId, threadId, recipient, taskId, detailJson, auditId, sim ? 1 : 0,
       convKey, turnNumber, boundedSentText, liveCallId, liveRoot?.kind ?? null, liveRoot?.id ?? null,
     );
     });

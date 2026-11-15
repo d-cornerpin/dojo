@@ -8,6 +8,7 @@ vi.mock('../../db/connection.js', async () => (await import('../../work/done/__t
 vi.mock('../../gateway/ws.js', async () => (await import('../../work/done/__tests__/helpers/ladder-world.js')).wsMock());
 vi.mock('../../agent/runtime.js', async () => (await import('../../work/done/__tests__/helpers/ladder-world.js')).runtimeMock());
 vi.mock('../../tracker/pm-agent.js', async (orig) => ({ ...(await orig<object>()), armDebouncedReview: vi.fn() }));
+vi.mock('../embeddings.js', () => ({ generateEmbedding: async () => { throw new Error('no embeddings here'); }, queueEmbedding: () => {}, storeEmbedding: async () => {}, refreshEmbedding: () => {} }));
 vi.setConfig({ testTimeout: 240_000, hookTimeout: 240_000 });
 
 import { runPMReview } from '../../tracker/pm-agent.js';

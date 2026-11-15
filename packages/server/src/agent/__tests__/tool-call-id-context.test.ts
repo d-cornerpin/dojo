@@ -41,7 +41,7 @@ beforeEach(() => {
     );
     CREATE TABLE tool_receipts (
       id TEXT PRIMARY KEY, agent_id TEXT, tool TEXT, tier INTEGER, verified INTEGER,
-      basis TEXT, provider_id TEXT, thread_id TEXT, recipient TEXT, detail TEXT,
+      basis TEXT, provider_id TEXT, thread_id TEXT, recipient TEXT, task_id TEXT, detail TEXT,
       audit_id TEXT, sim INTEGER, conv_key TEXT, turn_number INTEGER, sent_text TEXT,
       call_id TEXT, root_kind TEXT, root_id TEXT, created_at TEXT, updated_at TEXT
     );

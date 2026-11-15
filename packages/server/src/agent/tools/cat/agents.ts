@@ -19,6 +19,7 @@ import { renameAgent } from '../../../prompt/agent-rename.js';
 import { mismatchWarning } from '../assignment-capability.js';
 import { coerceNumberArg } from '../pagination.js';
 import { writeToolReceipt } from '../../../receipts/store.js';
+import { askedAbout } from '../../../work/done/who-decides.js';
 import { taskScope, projectScope } from '../../../work/tracker-view.js';
 import { patchWork } from '../../../work/tracker-store.js';
 import { engineHandIn, handInOnAssignReply } from '../../../work/done/hand-in.js';
@@ -570,7 +571,7 @@ export const agentsHandlers: ToolHandlerMap = {
                 );
                 // A delivered send is a real delivery: the receipt grounds "I told <agent>"
                 // across turns. skipAudit because the auditLog row above is the provenance row.
-                const sendReceiptId = writeToolReceipt({ agentId, tool: 'send_to_agent', tier: 1, verified: true, basis: 'provider-id', providerId: result.threadId, threadId: result.threadId, recipient: agentRef, sentText: payload, detail: { intent: effectiveIntent }, skipAudit: true });
+                const sendReceiptId = writeToolReceipt({ agentId, tool: 'send_to_agent', tier: 1, verified: true, basis: 'provider-id', providerId: result.threadId, threadId: result.threadId, recipient: agentRef, taskId: askedAbout(agentId, targetCheck?.id ?? agentRef, payload, result.threadId), sentText: payload, detail: { intent: effectiveIntent }, skipAudit: true });
                 // This door wrote only the reply mark, audit row and receipt, never a
                 // `deliveries` row. It is written THROUGH `recordAtDoor`, the one ledger
                 // writer, so inside an outbound scope it folds into that scope's single row
