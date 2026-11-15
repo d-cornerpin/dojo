@@ -299,10 +299,16 @@ function releaseVoiceClient(session: VoiceSession, messageId: string): void {
   }
 }
 
-// Frees a cloud burst's slots on the session and re-arms the proactive watcher the burst had paused.
+// Frees a finished burst's slots on the session and re-arms the proactive watcher it had paused. A burst
+// that is no longer the current one (barge-in, a newer reply) leaves its successor's slots alone.
 function retireBurst(session: VoiceSession, abort: AbortController): void {
-  if (session.activeTts?.abort === abort) session.activeTts = null;
+  if (session.activeTts?.abort !== abort) return;
+  session.activeTts = null;
   session.activeBurstPush = null;
+  if (session.unsubscribeChunk) {
+    session.unsubscribeChunk();
+    session.unsubscribeChunk = null;
+  }
   if (sessions.has(session.ws) && !session.unsubscribeProactive) {
     session.unsubscribeProactive = subscribeProactiveWatcher(session);
   }
@@ -1195,19 +1201,8 @@ function startTtsForAgent(
         sendJson(session.ws, { type: 'voice:state', agentId: session.agentId, state: 'error', detail: 'tts_failed' });
       } finally {
         cancelQuietTimer();
-        if (session.activeTts && session.activeTts.abort === abort) {
-          session.activeTts = null;
-        }
         if (session.splitter === splitter) session.splitter = null;
-        session.activeBurstPush = null;
-        if (session.unsubscribeChunk) {
-          session.unsubscribeChunk();
-          session.unsubscribeChunk = null;
-        }
-        // Re-arm the proactive watcher unless the WS already closed.
-        if (sessions.has(session.ws) && !session.unsubscribeProactive) {
-          session.unsubscribeProactive = subscribeProactiveWatcher(session);
-        }
+        retireBurst(session, abort);
       }
     })();
   };
@@ -1447,7 +1442,6 @@ function startCloudTtsBurst(session: VoiceSession, initialContent?: string): voi
     voiceProvider: session.cloudVoiceProvider,
     description: session.cloudDescription ?? undefined,
     speed: session.cloudSpeed,
-    reportDrops: true,
   });
   // Engine-agnostic push handle. Hume is not open for the first 100-300ms and hume.push would drop text,
   // so pre-open pushes (e.g. the loop's filler) are buffered and drained once open() resolves.
@@ -1485,11 +1479,7 @@ function startCloudTtsBurst(session: VoiceSession, initialContent?: string): voi
   // Each push is flushed, and Hume reports the text of each snippet it finishes. A snippet that does not
   // match the front of the pending text leaves it in place, so a sentence is re-said rather than skipped.
   let unspoken = '';
-  const say = (text: string): void => {
-    unspoken += `${unspoken ? ' ' : ''}${text}`;
-    hume.push(text);
-    hume.flush();
-  };
+  const say = (text: string): void => { unspoken += `${unspoken ? ' ' : ''}${text}`; hume.push(text); hume.flush(); };
   hume.onWav = (wav) => {
     if (abort.signal.aborted) return;
     sendBinary(session.ws, wav);
@@ -1504,17 +1494,21 @@ function startCloudTtsBurst(session: VoiceSession, initialContent?: string): voi
   let finishing = false;
   let lastMessageId = '';
   let bracketPending = '';
+  // The setup after open is synchronous; a failure inside it waits until every pushed text and buffered
+  // event is accounted for, then takes the normal path below.
+  const setup: { done: boolean; error: Error | null } = { done: false, error: null };
 
   // A cloud failure hands the rest of the reply to the local voice, same session: the text Hume has not
   // finished, then the live chunks the local burst hears from here on. Nothing left to say and the reply
   // finished: just release the client.
   hume.onError = (err) => {
     if (abort.signal.aborted) return;
+    if (!setup.done) { setup.error = err; return; }
     abort.abort();
     unsubscribe();
-    // Held text (a word or a control mark split across chunks) joins with no separator so the local
-    // burst sees it whole once the next chunk arrives.
-    const held = sanitizer.flushUnsafe() + bracketPending;
+    // Held raw text (a word, URL, delivery cue or control mark split across chunks), in stream order, joins
+    // with no separator so the local burst sees it whole once the next chunk arrives.
+    const held = sanitizer.takeRaw() + cueExtractor.held() + bracketPending;
     const unsaid = `${unspoken ? `${unspoken} ` : ''}${held}`;
     if (!unsaid && finishing) {
       logger.warn('Cloud TTS failed after the reply was spoken', { error: err.message }, session.agentId);
@@ -1529,6 +1523,7 @@ function startCloudTtsBurst(session: VoiceSession, initialContent?: string): voi
         ? [{ type: 'chat:chunk', agentId: session.agentId, messageId: lastMessageId, content: '', done: true }] : [];
     startTtsForAgent(session, unsaid || undefined, { forceLocal: true, replayEvents: replay });
   };
+  hume.onDrop = hume.onError;
 
   // Subscribe to chat:chunk synchronously: the proactive watcher unsubscribes when it triggers this
   // burst, so events during the hume.open() handshake would otherwise have no listener.
@@ -1567,8 +1562,6 @@ function startCloudTtsBurst(session: VoiceSession, initialContent?: string): voi
       try { say(buffered); } catch { /* ignore */ }
     }
     preOpenBuffer.length = 0;
-    // A send failure during the drain already handed the reply to the local voice.
-    if (abort.signal.aborted) return;
     // Drained pre-open content needs startStreaming so the dashboard leaves 'thinking'.
     if (hadBuffered) startStreaming();
     if (session.activeBurstPush) {
@@ -1603,10 +1596,6 @@ function startCloudTtsBurst(session: VoiceSession, initialContent?: string): voi
         // A failure or barge-in already handed the session on; this burst must not touch what replaced it.
         if (abort.signal.aborted) return;
         releaseVoiceClient(session, messageId);
-        if (session.unsubscribeChunk) {
-          session.unsubscribeChunk();
-          session.unsubscribeChunk = null;
-        }
         retireBurst(session, abort);
       });
     };
@@ -1753,6 +1742,8 @@ function startCloudTtsBurst(session: VoiceSession, initialContent?: string): voi
     }
     handler = handleEvent;
     session.unsubscribeChunk = unsubscribe;
+    setup.done = true;
+    if (setup.error) hume.onError?.(setup.error);
   })();
 }
 

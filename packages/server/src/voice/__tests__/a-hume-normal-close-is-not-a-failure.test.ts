@@ -28,10 +28,10 @@ const audio = (text: string, isLastChunk: boolean) => ({
 });
 
 async function openSession(): Promise<{ s: InstanceType<typeof HumeStreamSession>; errors: string[]; done: string[] }> {
-  const s = new HumeStreamSession({ voiceId: 'v', reportDrops: true });
+  const s = new HumeStreamSession({ voiceId: 'v' });
   const errors: string[] = [];
   const done: string[] = [];
-  s.onError = (e) => errors.push(e.message);
+  s.onDrop = (e) => errors.push(e.message);
   s.onSnippetDone = (t) => done.push(t);
   await s.open();
   return { s, errors, done };

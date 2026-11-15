@@ -28,6 +28,8 @@ export interface CueExtractor {
   // Release text still held at stream end (an unclosed cue was not a cue). Call before the sanitizer
   // flush so the released body rides the same bubble out to TTS.
   flush(): { content: string; description: string | null };
+  // The raw text still held while a cue is incomplete.
+  held(): string;
 }
 
 export function createCueExtractor(): CueExtractor {
@@ -52,6 +54,7 @@ export function createCueExtractor(): CueExtractor {
       buffer = '';
       return { content: parsed.body, description: parsed.description };
     },
+    held: () => buffer,
   };
 }
 

@@ -92,6 +92,9 @@ export class StreamingSpeechBuffer {
     return this.takeClauses(minLen);
   }
 
+  /** Take the raw text still held (a word, URL or marker split across chunks). */
+  takeRaw(): string { const text = this.buffer; this.buffer = ''; return text; }
+
   /** Flush everything regardless of unbalanced markdown. */
   flushUnsafe(): string {
     const text = this.buffer;
