@@ -278,9 +278,7 @@ export class HumeStreamSession {
       this.generationId = m.generationId;
       try {
         const f32 = decodeHumePcm(m.audio);
-        if (f32.length === 0) return;
-        const wav = pcmFloatToWav(f32, HUME_SAMPLE_RATE);
-        this.onWav?.(wav);
+        if (f32.length > 0) this.onWav?.(pcmFloatToWav(f32, HUME_SAMPLE_RATE));
         if (m.isLastChunk) {
           this.sawLastChunk = true;
           this.onSnippetDone?.(m.text);

@@ -51,6 +51,7 @@ vi.mock('../hume-engine.js', () => ({
 }));
 vi.mock('../../agent/runtime.js', () => ({ preemptAgentForUrgentMessage: () => {} }));
 
+let heard = '';
 const localSaid: string[] = [];
 let localBroken = false;
 vi.mock('../tts-service.js', async (orig) => ({
@@ -63,7 +64,7 @@ vi.mock('../tts-service.js', async (orig) => ({
   },
 }));
 vi.mock('../stt-service.js', () => ({
-  transcribeBuffer: vi.fn(), ensureSttReady: async () => {}, DEFAULT_STT_MODEL_KEY: 'moonshine-base',
+  transcribeBuffer: async () => ({ text: heard, durationMs: 1 }), ensureSttReady: async () => {}, DEFAULT_STT_MODEL_KEY: 'moonshine-base',
   parseSttModelKey: () => ({ kind: 'moonshine' }), pcmFloatToWav: () => Buffer.from('local'),
 }));
 vi.mock('../smart-turn.js', () => ({ predictTurnComplete: vi.fn(), TURN_COMPLETE_THRESHOLD: 0.5, warmUpSmartTurn: async () => {} }));
@@ -90,7 +91,7 @@ vi.mock('../../logger.js', () => {
 });
 
 const jwt = (await import('jsonwebtoken')).default;
-const { verifyAndOpenVoiceSession, handleVoiceMessage, closeVoiceSession } = await import('../voice-ws.js');
+const { verifyAndOpenVoiceSession, handleVoiceMessage, closeVoiceSession, pushVoiceFiller } = await import('../voice-ws.js');
 
 const A = 'agent-1';
 const chunk = (content: string, done = false): WsEvent => ({ type: 'chat:chunk', agentId: A, messageId: 'm1', content, done });
@@ -177,6 +178,19 @@ describe('a cloud voice that breaks mid-reply continues in the local voice', () 
     expect(said()).toBe('Hello there.');
   });
 
+  it('a filler already pushed with a half-streamed delivery cue: the cue is still not spoken aloud', async () => {
+    await openCloudSession();
+    emit(chunk('((deliver: warm'));
+    await settle();
+    pushVoiceFiller(A, 'One moment.');
+    live?.onError?.(new Error('dropped'));
+    emit(chunk('ly)) Hello there.', true));
+    emit(idle());
+    await localReplyEnded();
+    expect(said()).toContain('Hello there.');
+    expect(said()).not.toContain('deliver');
+  });
+
   it('a send that fails during the setup still hands over the whole reply, buffered chunks included', async () => {
     script = ['send'];
     await openCloudSession();
@@ -229,6 +243,28 @@ describe('a cloud voice that breaks mid-reply continues in the local voice', () 
     emit(chunk('Later words.', true));
     await settle();
     expect(pushed.join(' ')).toContain('Later words.');
+  });
+
+  it('the sleep phrase during a local reply leaves proactive messages spoken afterwards', async () => {
+    const hear = async (text: string): Promise<void> => {
+      heard = text;
+      await handleVoiceMessage(ws as never, Buffer.from(new Float32Array(8000).buffer));
+      await handleVoiceMessage(ws as never, JSON.stringify({ type: 'utterance_end' }));
+    };
+    let release = (): void => {};
+    gate = new Promise<void>((r) => { release = r; });
+    verifyAndOpenVoiceSession(ws as never, `/voice?token=${jwt.sign({ userId: 'u1' }, 'secret')}&agentId=${A}`);
+    await handleVoiceMessage(ws as never, JSON.stringify({ type: 'config', wakeWordEnabled: true }));
+    await hear('hey agent');
+    await new Promise((r) => setTimeout(r, 260));
+    emit(chunk('First part. ', true));
+    await settle();
+    await hear('stop listening');
+    release();
+    await settle();
+    emit(chunk('A proactive message.', true));
+    emit(idle());
+    await vi.waitFor(() => expect(said()).toContain('A proactive message.'));
   });
 
   it('when the local voice cannot speak either, the failure shows as before', async () => {

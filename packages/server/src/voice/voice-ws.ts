@@ -904,10 +904,7 @@ async function handleUtteranceEnd(session: VoiceSession): Promise<void> {
         });
         sendJson(session.ws, { type: 'voice:state', agentId: session.agentId, state: 'passive' });
         // Also cancel any in-flight TTS, sleep means "shut up".
-        if (session.activeTts) {
-          session.activeTts.abort.abort();
-          session.activeTts = null;
-        }
+        stopSpeaking(session);
         return;
       }
     }
@@ -1506,10 +1503,11 @@ function startCloudTtsBurst(session: VoiceSession, initialContent?: string): voi
     if (!setup.done) { setup.error = err; return; }
     abort.abort();
     unsubscribe();
-    // Held raw text (a word, URL, delivery cue or control mark split across chunks), in stream order, joins
-    // with no separator so the local burst sees it whole once the next chunk arrives.
-    const held = sanitizer.takeRaw() + cueExtractor.held() + bracketPending;
-    const unsaid = `${unspoken ? `${unspoken} ` : ''}${held}`;
+    // Held raw text (a word, URL or control mark split across chunks) joins with no separator so the
+    // local burst sees it whole once the next chunk arrives.
+    // An incomplete opening cue leads, so the local burst's cue extractor still sees it at the start.
+    const held = sanitizer.takeRaw() + bracketPending;
+    const unsaid = `${cueExtractor.held()}${unspoken ? `${unspoken} ` : ''}${held}`;
     if (!unsaid && finishing) {
       logger.warn('Cloud TTS failed after the reply was spoken', { error: err.message }, session.agentId);
       releaseVoiceClient(session, messageId);
@@ -1768,8 +1766,8 @@ function subscribeProactiveWatcher(session: VoiceSession): () => void {
   return unsubscribe;
 }
 
-function bargeIn(session: VoiceSession): void {
-  logger.info('Voice barge-in', { agentId: session.agentId });
+// Cuts the burst in flight (if any) and hands the session back to the proactive watcher.
+function stopSpeaking(session: VoiceSession): void {
   if (session.activeTts) {
     session.activeTts.abort.abort();
     sendJson(session.ws, { type: 'voice:tts_end', agentId: session.agentId, messageId: session.activeTts.messageId, interrupted: true });
@@ -1788,6 +1786,11 @@ function bargeIn(session: VoiceSession): void {
   if (sessions.has(session.ws) && !session.unsubscribeProactive) {
     session.unsubscribeProactive = subscribeProactiveWatcher(session);
   }
+}
+
+function bargeIn(session: VoiceSession): void {
+  logger.info('Voice barge-in', { agentId: session.agentId });
+  stopSpeaking(session);
   // Also cancel the in-flight model call, or the agent keeps generating a reply the user is overriding.
   // preemptAgentForUrgentMessage aborts cleanly; stopAgent would inject a stop marker, wrong for a
   // redirect.
