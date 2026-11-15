@@ -37,7 +37,6 @@ export async function runBackfill(): Promise<{ completed: number; failed: number
   const model = embeddingModelKey();
   // Another model's vector is re-made only on a local embedder (it costs nothing); otherwise any vector counts as done.
   const local = readEmbeddingConfig().provider === 'ollama';
-  if (!local) logger.debug('Embedding model is not local: vectors made by another model are not re-made automatically', { model });
   const current = local ? model : null;
 
   try {
