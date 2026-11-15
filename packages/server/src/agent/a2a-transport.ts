@@ -4,7 +4,7 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
-import { liveAgentsNamed, liveAgentNamesNear } from './tool-helpers.js';
+import { liveAgentsNamed, liveAgentNamesNear, resolveAgentDisplayName } from './tool-helpers.js';
 import { activeRuns } from './shared-state.js';
 import { endedMidRun } from './ended-mid-run.js';
 import { patienceFloorFor } from '../tracker/assignee-patience.js';
@@ -845,16 +845,6 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
 /** Give the steered compile a real chance before the engine relays the pieces itself. */
 const COMPILE_GRACE_SECONDS = 60;
 const JOIN_BOOT_BATCH = 50;
-
-/** Display name for an agent id; rows sometimes hold a display name, so a non-UUID is usable. */
-function resolveAgentDisplayName(idOrName: string | null | undefined): string | null {
-  if (!idOrName) return null;
-  try {
-    const row = getDb().prepare('SELECT name FROM agents WHERE id = ?').get(idOrName) as { name?: string } | undefined;
-    if (row?.name) return row.name;
-  } catch { /* best effort */ }
-  return /^[0-9a-f-]{32,}$/i.test(idOrName) ? null : idOrName;
-}
 
 /** Short quote of the owner's ask for the fail-closed notice; leading markers stripped. */
 function questionSnippet(content: string): string {

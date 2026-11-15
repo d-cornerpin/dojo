@@ -94,6 +94,16 @@ export function resolveAgentRef(value: string | undefined | null, context?: stri
   };
 }
 
+/** Display name for an agent id; rows sometimes hold a display name, so a non-UUID is usable. */
+export function resolveAgentDisplayName(idOrName: string | null | undefined): string | null {
+  if (!idOrName) return null;
+  try {
+    const row = getDb().prepare('SELECT name FROM agents WHERE id = ?').get(idOrName) as { name?: string } | undefined;
+    if (row?.name) return row.name;
+  } catch { /* best effort */ }
+  return /^[0-9a-f-]{32,}$/i.test(idOrName) ? null : idOrName;
+}
+
 export interface LiveAgentByName { id: string; name: string; status: string; created_at: string }
 
 /** Live agents named `name`, any case, newest first; rowid breaks ties so tool and transport pick alike. */

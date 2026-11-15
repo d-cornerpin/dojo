@@ -6,7 +6,8 @@ import { getDb } from '../db/connection.js';
 import { estimateTokens } from '../memory/budget.js';
 import { readLaterMessages } from '../memory/task-list-words.js';
 import { listTaskNotes } from '../tracker/task-log.js';
-import { AUDIT_KIND } from './audit-trail.js';
+import { resolveAgentDisplayName } from '../agent/tool-helpers.js';
+import { readAuditTrail } from './audit-trail.js';
 import { pmQuestions } from './done/who-decides.js';
 import { planOfProject } from './plan-store.js';
 import { msToUtcText, tsToMs } from './tracker-view.js';
@@ -43,64 +44,50 @@ export function projectOf(workId: string): { id: string; title: string | null } 
   return row ?? null;
 }
 
-/** One line of the file with its time, and the shorter form it takes when it does not fit whole. */
-interface Dated { at: number; text: string; short: string }
+/** One line of the file, with its time. */
+interface Dated { at: number; text: string }
 
 function noteLines(projectId: string): Dated[] {
-  return listTaskNotes(projectId).map((n) => {
-    const text = `\n    ${n.createdAt}: ${n.note}`;
-    return { at: tsToMs(n.createdAt) ?? 0, text, short: text };
-  });
+  return listTaskNotes(projectId).map((n) => ({
+    at: tsToMs(n.createdAt) ?? 0,
+    text: `\n    ${n.createdAt}: ${n.note}`,
+  }));
 }
 
-/** Every decision and instruction given on the project's tasks. */
-function reviewLines(projectId: string): Dated[] {
-  const rows = getDb().prepare(`
-    SELECT w.title, e.kind, e.created_at AS at,
-           json_extract(e.payload, '$.verdict') AS verdict,
-           COALESCE(json_extract(e.payload, '$.reason'), '') AS reason
-      FROM work_events e
-      JOIN work w ON w.id = e.work_id
-     WHERE w.parent_id = ?
-       AND (e.kind = 'decided' OR (e.kind = '${AUDIT_KIND}' AND json_extract(e.payload, '$.entry_kind') = 'directive'))
-  `).all(projectId) as Array<{ title: string | null; kind: string; at: number; verdict: string | null; reason: string }>;
-  return rows.map((r) => {
-    const what = r.kind === 'decided' ? (r.verdict === 'approve' ? 'approved' : 'sent back') : 'retasked';
-    const text = `\n    ${msToUtcText(r.at)} "${r.title ?? ''}" ${what}: ${r.reason.split('\n')[0]}`;
-    return { at: r.at, text, short: text };
-  });
+/** Every decision and instruction given on these tasks, from their audit trails. */
+function reviewLines(tasks: Array<{ id: string; title: string | null }>): Dated[] {
+  const trail = (id: string) => readAuditTrail(id, { limit: Number.MAX_SAFE_INTEGER, kinds: ['decided', 'directive'] });
+  return tasks.flatMap((t) => trail(t.id).map((r) => {
+    const what = r.entry_kind === 'directive' ? 'retasked' : r.action_taken === 'approve' ? 'approved' : 'sent back';
+    const reason = (r.reason ?? '').split('\n')[0];
+    return { at: tsToMs(r.created_at) ?? 0, text: `\n    ${r.created_at} "${t.title ?? t.id}" ${what}: ${reason}` };
+  }));
 }
 
-/** The PM's questions about these tasks with their answers; the short form keeps each answer's first line. */
+/** The PM's questions about these tasks with their answers. */
 function exchangeLines(taskIds: string[]): Dated[] {
-  const nameOf = (id: string): string =>
-    (getDb().prepare('SELECT name FROM agents WHERE id = ?').get(id) as { name: string } | undefined)?.name ?? id;
   return taskIds.flatMap((taskId) => pmQuestions(taskId).map((q) => {
     const asked = `\n    ${msToUtcText(q.at)} you asked ${q.typed} about [${taskId}]: "${q.text.slice(0, 500)}"`;
-    const said = (cut: boolean): string => q.answers.map((a) => {
+    const said = q.answers.map((a) => {
       const words = extractPayloadFromA2AMessage(a.content) ?? a.content;
-      const first = words.split('\n')[0];
-      const shown = cut && first !== words ? `${first}... (history_get(id="${a.id}") returns it whole)` : words;
-      return `\n      ${msToUtcText(a.at)} ${nameOf(a.from)} answered: ${shown}`;
+      return `\n      ${msToUtcText(a.at)} ${resolveAgentDisplayName(a.from) ?? a.from} answered: ${words}`;
     }).join('');
     const none = q.until > Date.now()
       ? `\n      waiting for an answer until ${msToUtcText(q.until)}`
       : '\n      no answer';
-    const at = q.answers[q.answers.length - 1]?.at ?? q.at;
-    return { at, text: asked + (said(false) || none), short: asked + (said(true) || none) };
+    return { at: q.answers[q.answers.length - 1]?.at ?? q.at, text: asked + (said || none) };
   }));
 }
 
-/** The newest of `lines` that fit in `room`, whole or short, back in time order; and how many older ones did not. */
+/** The newest of `lines` that fit in `room`, back in time order; and how many older ones did not. */
 function newestThatFit(lines: Dated[], room: number): { kept: string[]; left: number; omitted: number } {
   const newest = [...lines].sort((a, b) => b.at - a.at);
   const kept: string[] = [];
   let left = room;
   for (const line of newest) {
-    const text = estimateTokens(line.text) <= left ? line.text : line.short;
-    if (estimateTokens(text) > left) break;
-    kept.push(text);
-    left -= estimateTokens(text);
+    if (estimateTokens(line.text) > left) break;
+    kept.push(line.text);
+    left -= estimateTokens(line.text);
   }
   return { kept: kept.reverse(), left, omitted: newest.length - kept.length };
 }
@@ -113,15 +100,14 @@ function omittedLine(n: number, what: string, where: string): string {
  *  the owner's words always; then the newest notes; then the newest reviews and questions. Empty when there is none. */
 export function workFile(workId: string, room: number): string {
   const project = projectOf(workId);
-  const taskRows = project ? getDb().prepare('SELECT id FROM work WHERE parent_id = ?').all(project.id) : [];
-  const tasks = project ? (taskRows as Array<{ id: string }>).map((r) => r.id) : [workId];
+  const taskRows = project ? getDb().prepare('SELECT id, title FROM work WHERE parent_id = ?').all(project.id) : [];
+  const tasks = taskRows as Array<{ id: string; title: string | null }>;
   const approach = project ? planOfProject(project.id)?.approach ?? '(no plan)' : '';
   const head = project
     ? `\n  Project "${project.title ?? project.id}" [${project.id}]: ${approach}${ownerWordsLines(project.id, 'project')}`
     : '';
   const notes = newestThatFit(project ? noteLines(project.id) : [], room - FRAME_TOKENS - estimateTokens(head));
-  const reviews = project ? reviewLines(project.id) : [];
-  const timed = newestThatFit([...reviews, ...exchangeLines(tasks)], notes.left);
+  const timed = newestThatFit([...reviewLines(tasks), ...exchangeLines(project ? tasks.map((t) => t.id) : [workId])], notes.left);
   if (!project && timed.kept.length === 0) return '';
   const noteText = project
     ? `\n  The project's notes:${notes.kept.join('') || ' none'}`
