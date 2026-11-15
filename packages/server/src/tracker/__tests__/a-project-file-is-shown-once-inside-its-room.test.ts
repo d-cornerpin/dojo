@@ -19,6 +19,8 @@ import { pmCanRun, resetLadderWorld, review } from '../../work/done/__tests__/he
 
 const PROJECT = 'proj-totals';
 const APPROACH = 'Build the totals report one sheet a step.';
+// Enough exchanges (each answer cut at its excerpt length) that the room is truly exceeded.
+const HISTORY = 40;
 const taskId = (n: number): string => `sheet-task-${String(n).padStart(2, '0')}`;
 
 function seedProject(tasks: number): void {
@@ -57,9 +59,9 @@ describe('a project file is shown once inside its room', () => {
   });
 
   it("a long project's file keeps its notes and newest exchange, leaves out the oldest, and stays inside its room", async () => {
-    seedProject(13);
+    seedProject(HISTORY + 1);
     expect((await call(MAIN, 'work_note', { task_id: PROJECT, notes: 'Decision: every total follows the fiscal calendar.' })).isError).toBe(false);
-    for (let n = 1; n <= 12; n += 1) {
+    for (let n = 1; n <= HISTORY; n += 1) {
       const from = marks();
       await handIn(taskId(n));
       let thread = '';
@@ -69,16 +71,16 @@ describe('a project file is shown once inside its room', () => {
       });
       await call(WORKER, 'send_to_agent', { agent: PM, intent: 'ANSWER', payload: `Answer ${n}: ${'rows twelve to forty came from the March export, the rest from April. '.repeat(12)}`, thread_id: thread });
       await review(PM, async () => { await call(PM, 'work_validate', { action: 'decide', task_id: taskId(n), verdict: 'send_back', reason: `Sheet ${n}: ${'the April rows are missing their totals. '.repeat(6)}` }); });
-      ageSince(from, 13 - n);
+      ageSince(from, HISTORY + 1 - n);
     }
-    await handIn(taskId(13));
+    await handIn(taskId(HISTORY + 1));
     const report = await review(PM);
     const file = fileOf(report);
     const room = reviewLedgerRoomTokens(contextWindowPolicy(agentTurnWindow(PM, 'm'), { toolPayloadTokens: 0 }).assemblyBudgetTokens, 2);
     expect(estimateTokens(file), 'the file is inside its room').toBeLessThanOrEqual(room);
     expect(file, 'the past decision').toContain('Decision: every total follows the fiscal calendar.');
-    expect(file, 'the newest exchange').toContain('Question 12:');
-    expect(file, 'the newest answer').toContain('Answer 12:');
+    expect(file, 'the newest exchange').toContain(`Question ${HISTORY}:`);
+    expect(file, 'the newest answer').toContain(`Answer ${HISTORY}:`);
     expect(file, 'the oldest exchange is left out first').not.toContain('Question 1:');
     expect(file).toContain('older lines left out');
   });
