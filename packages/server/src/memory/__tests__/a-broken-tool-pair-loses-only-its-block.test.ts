@@ -136,6 +136,16 @@ describe('a broken tool pair loses only its block', () => {
     for (const t of ['hello', 'hi', 'still there?', 'yes']) expect(said(out)).toContain(t);
   });
 
+  it('d2. a first row holding a result with no call keeps its text, and no result leads the context', async () => {
+    row('user', [result('ghost'), text('FIRST-ROW-QUESTION')]);
+    row('assistant', 'the answer');
+    row('user', 'and then?');
+    const out = await assemble();
+    expect(blocksOf(out[0]).filter((b) => b.type === 'tool_result')).toEqual([]);
+    expect(said(out)).toContain('FIRST-ROW-QUESTION');
+    expect(said(out)).toContain('the answer');
+  });
+
   it('e. a well-formed history renders every row in stored order', async () => {
     row('user', 'read two files');
     row('assistant', [text('reading'), use('a'), use('b')]);

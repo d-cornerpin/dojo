@@ -231,21 +231,6 @@ function applyIntegrityPass(messages: LoopMsg[], agentId: string, markerText = E
     }, agentId);
   }
 
-  if (merged.length > 0 && merged[0].role === 'user' && Array.isArray(merged[0].content)) {
-    const firstBlocks = merged[0].content as unknown as Array<Record<string, unknown>>;
-    const filtered = firstBlocks.filter(b => b.type !== 'tool_result');
-    if (filtered.length < firstBlocks.length) {
-      logger.warn('Stripped tool_result blocks from first context message', {
-        droppedCount: firstBlocks.length - filtered.length,
-      }, agentId);
-      if (filtered.length === 0) {
-        merged.shift();
-      } else {
-        merged[0] = { ...merged[0], content: filtered as unknown as Anthropic.ContentBlockParam[] };
-      }
-    }
-  }
-
   // Providers reject a trailing assistant message. Append a neutral engine line instead of popping it: popping
   // deletes the agent's newest delivered answer and the model re-delivers it.
   if (merged.length > 0 && merged[merged.length - 1].role === 'assistant') {
