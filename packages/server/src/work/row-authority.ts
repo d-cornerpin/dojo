@@ -20,6 +20,7 @@ import { currentAddress } from '../agent/v2/turn-address.js';
 import { recordMove } from './move-record.js';
 import { isTerminal, type Actor, type WorkState } from './store.js';
 import { holdOf } from './done/hold.js';
+import { normalizeQuote, ownerSaidSince } from '../tracker/owner-words.js';
 
 const logger = createLogger('row-authority');
 
@@ -103,16 +104,9 @@ function wasDeclined(id: string): boolean {
 const isEditor = (f: RowFacts, actorId: string): boolean =>
   isOwn(f, actorId) || actorId === f.creator || isPMAgent(actorId) || isPrimaryAgent(actorId);
 
-// "The user asked", structurally: the turn serves an inbound ask (set by the engine at trigger claim), that
-// message opened an ASK row for this agent (only when the ingest stamp says the owner lane asked,
-// `memory/message-store.ts`), and the cited `user_quote` appears verbatim in it or a later owner ask there.
-
-export function normalizeQuote(s: string): string {
-  return s.toLowerCase().replace(/[‘’]/g, "'").replace(/[“”]/g, '"')
-    .replace(/\s+/g, ' ').trim().replace(/^["'`]+|["'`]+$/g, '').replace(/[.!?,;:]+$/g, '').trim();
-}
-
-export type OwnerAskProof = { ok: true; messageId: string } | { ok: false; why: string };
+// "The owner asked", for this turn: the turn serves an inbound message, and the cited `user_quote` is a whole
+// sentence the owner himself wrote in it or since (`tracker/owner-words.ts` decides whose words count).
+export type OwnerAskProof = { ok: true } | { ok: false; why: string };
 
 export function ownerAskedInThisTurn(agentId: string, quote: unknown): OwnerAskProof {
   const q = typeof quote === 'string' ? normalizeQuote(quote) : '';
@@ -121,22 +115,12 @@ export function ownerAskedInThisTurn(agentId: string, quote: unknown): OwnerAskP
   if (!root || root.kind !== 'ask' || !root.sourceMessageId) {
     return { ok: false, why: 'this turn is not answering a message from the owner, so the owner\'s ask cannot be checked' };
   }
-  const db = getDb();
-  const rootMsg = db.prepare('SELECT conversation_id, created_at FROM messages WHERE id = ?')
-    .get(root.sourceMessageId) as { conversation_id: string | null; created_at: unknown } | undefined;
+  const rootMsg = getDb().prepare('SELECT sent_at FROM messages WHERE id = ?').get(root.sourceMessageId) as
+    { sent_at: number } | undefined;
   if (!rootMsg) return { ok: false, why: 'the message this turn is answering could not be found' };
-  const asks = db.prepare(
-    `SELECT m.id AS id, m.content AS content FROM messages m
-       JOIN work a ON a.kind = 'ask' AND a.root_id = m.id AND a.agent_id = ?
-      WHERE m.agent_id = ? AND m.role = 'user'
-        AND (m.id = ? OR (m.conversation_id IS ? AND m.created_at >= ?))`,
-  ).all(agentId, agentId, root.sourceMessageId, rootMsg.conversation_id, rootMsg.created_at) as
-    Array<{ id: string; content: string }>;
-  if (asks.length === 0) return { ok: false, why: 'the message this turn is answering is not an ask from the owner' };
-  const hit = asks.find((m) => normalizeQuote(m.content ?? '').includes(q));
-  return hit
-    ? { ok: true, messageId: hit.id }
-    : { ok: false, why: 'the quoted words are not in the owner\'s message this turn is answering' };
+  return ownerSaidSince(rootMsg.sent_at, q, agentId)
+    ? { ok: true }
+    : { ok: false, why: 'the quoted words are not a whole sentence the owner wrote in the message this turn is answering' };
 }
 
 const who = (id: string): string => `agent ${id}`;

@@ -100,6 +100,8 @@ function applySchema(db: Database.Database): void {
       turn_number INTEGER, task_id TEXT, run_id TEXT, conv_key TEXT DEFAULT NULL,
       provenance TEXT NOT NULL DEFAULT 'live',
       swept_at TEXT, served_by_turn INTEGER, answer_message_id TEXT,
+      channel TEXT, source_agent_id TEXT, a2a_thread_id TEXT, a2a_intent TEXT, a2a_requires_response INTEGER,
+      inbound_meta TEXT, sent_at INTEGER NOT NULL DEFAULT 0,
       created_at INTEGER NOT NULL DEFAULT 0
     );
   `);
@@ -124,8 +126,9 @@ const reassign = (actor: string, args: Record<string, unknown>) =>
 /** A turn of `agent` that is answering the owner's message `words` — the structural "owner asked". */
 function ownerTurn(agent: string, words: string): void {
   const db = mockDb.current!;
-  db.prepare("INSERT INTO messages (id, agent_id, conversation_id, role, content, created_at) VALUES ('msg-owner-1', ?, 'conv-1', 'user', ?, 1000)")
-    .run(agent, words);
+  db.prepare(`INSERT INTO messages (id, agent_id, conversation_id, role, content, channel, inbound_meta, sent_at, created_at)
+              VALUES ('msg-owner-1', ?, 'conv-1', 'user', ?, 'dashboard', ?, 1000, 1000)`)
+    .run(agent, words, JSON.stringify({ channel: 'dashboard', accountKind: 'agent', authorized: true, relation: 'owner' }));
   db.prepare(`INSERT INTO work (id, kind, agent_id, requester, root_kind, root_id, state, intent, wakes, closes_thread, opened_at, updated_at)
               VALUES ('ask-owner-1', 'ask', ?, 'owner', 'ask', 'msg-owner-1', 'claimed', 'ask', 1, 0, 1000, 1000)`).run(agent);
   openTurnContext(agent).root = { kind: 'ask', id: 'msg-owner-1', sourceMessageId: 'msg-owner-1', conversationId: 'conv-1' };
@@ -213,12 +216,12 @@ describe('B1 the reassign verb needs a cause the engine can check', () => {
     expect(rowOf().agent_id).toBe(WORKER);
   });
 
-  it('"user_requested" lands when this turn answers the owner and the quote is in their message', async () => {
+  it('"user_requested" lands when this turn answers the owner and the quote is his whole sentence', async () => {
     seedTrackerTask(mockDb.current!, { id: TASK, title: TITLE, status: 'blocked', agentId: WORKER });
     ownerTurn(MAIN, OWNER_WORDS);
     const wrong = await reassign(MAIN, { assigned_to: PEER, cause: 'user_requested', user_quote: 'move everything to me' });
     expect(wrong.isError, 'words the owner did not write prove nothing').toBe(true);
-    const r = await reassign(MAIN, { assigned_to: PEER, cause: 'user_requested', user_quote: '"give the ledger task to the other worker"' });
+    const r = await reassign(MAIN, { assigned_to: PEER, cause: 'user_requested', user_quote: `"${OWNER_WORDS}"` });
     expect(r.isError, r.content).toBe(false);
     expect(rowOf().agent_id).toBe(PEER);
     expect(reassignmentsOf()[0]!.payload.reason).toContain('cause=user_requested');

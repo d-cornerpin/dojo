@@ -8,7 +8,11 @@
 import { deriveOrigin, legacyOriginInputs, stripInboundChannelMarker, type InboundMeta } from '@dojo/shared';
 import { getDb } from '../db/connection.js';
 import { WORK_EVENT } from '../work/tracker-view.js';
-import { normalizeQuote } from '../work/row-authority.js';
+
+export function normalizeQuote(s: string): string {
+  return s.toLowerCase().replace(/[‘’]/g, "'").replace(/[“”]/g, '"')
+    .replace(/\s+/g, ' ').trim().replace(/^["'`]+|["'`]+$/g, '').replace(/[.!?,;:]+$/g, '').trim();
+}
 
 interface Row {
   content: string; lane: string; channel: string; source_agent_id: string | null;
@@ -67,7 +71,8 @@ function askedAt(taskId: string, kind: string): number | null {
   return r.at;
 }
 
-function ownerSaidSince(atMs: number, q: string, agentId: string): boolean {
+/** Did the owner write `q` (normalised) as a whole message or sentence to this agent at or after `atMs`? */
+export function ownerSaidSince(atMs: number, q: string, agentId: string): boolean {
   const floor = Math.floor(atMs / 1000) * 1000;   // `sent_at`'s default is second-resolution
   const rows = getDb().prepare(
     `SELECT ${ROW_COLS} FROM messages WHERE ${PERSON_INBOUND} AND agent_id = ? AND sent_at >= ?`,

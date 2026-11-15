@@ -56,8 +56,8 @@ function ownerHeldTask(holder: string): string {
 function ownerTurn(agent: string, words: string): void {
   const msg = `msg-${++n}`;
   const db = connection.getDb();
-  db.prepare("INSERT INTO messages (id, agent_id, conversation_id, role, content, created_at) VALUES (?, ?, 'conv-1', 'user', ?, ?)")
-    .run(msg, agent, words, Date.now());
+  db.prepare("INSERT INTO messages (id, agent_id, conversation_id, role, content, channel, inbound_meta, created_at) VALUES (?, ?, 'conv-1', 'user', ?, 'dashboard', ?, ?)")
+    .run(msg, agent, words, JSON.stringify({ channel: 'dashboard', accountKind: 'agent', authorized: true, relation: 'owner' }), Date.now());
   db.prepare(`INSERT INTO work (id, kind, agent_id, requester, root_kind, root_id, state, intent, wakes, closes_thread, opened_at, updated_at)
               VALUES (?, 'ask', ?, 'owner', 'ask', ?, 'claimed', 'ask', 1, 0, ?, ?)`).run(`ask-${msg}`, agent, msg, Date.now(), Date.now());
   openTurnContext(agent).root = { kind: 'ask', id: msg, sourceMessageId: msg, conversationId: 'conv-1' };
