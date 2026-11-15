@@ -53,7 +53,6 @@ beforeEach(() => {
 describe('the reminder lane asks the same owner question', () => {
   const reminderSend = async (recipient: string): Promise<string> => {
     const state = {
-      sendsPerAgentThisTurn: {}, thrashGatedSignatures: [], thrashGateRefusalCount: 0,
       structuringToolCalledThisTurn: false, steerQueue: { pending: [], fired: [] }, heavyLoadsThisTurn: 0, lastContextRatio: 0,
       loopCount: 0, compileGateSatisfied: true, compileOwedAskIds: [],
     };
@@ -92,7 +91,6 @@ describe('the reminder lane asks the same owner question', () => {
 describe('the reminder lane reads the turn address for where the reminder lands', () => {
   const refusalWith = (address: unknown): string => {
     const state = {
-      sendsPerAgentThisTurn: {}, thrashGatedSignatures: [], thrashGateRefusalCount: 0,
       structuringToolCalledThisTurn: false, steerQueue: { pending: [], fired: [] }, heavyLoadsThisTurn: 0, lastContextRatio: 0,
       loopCount: 0, compileGateSatisfied: true, compileOwedAskIds: [],
     };

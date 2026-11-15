@@ -119,6 +119,6 @@ export function unchangedReceipt(serviceName: string, descriptionChanged: boolea
     `no stored value was destroyed.${note} The credential is saved and ready to use: call ` +
     `credential_get(service_name="${serviceName}") at the moment you make the API call. ` +
     `Do NOT send this value again — it is already stored, and repeating an identical write is ` +
-    `what the engine's identical-call brake stops.`
+    `what the engine's repeat rule stops.`
   );
 }

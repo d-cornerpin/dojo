@@ -4,7 +4,7 @@
 //   rearm_refused           a re-arm was refused
 //   floor_ghosted           a floor's steer went unanswered
 //   stall_escalated         the stall ladder brought in the PM or the main agent (`work/done/ladder.ts`)
-//   identical_call_refused  a turn that claimed it ended on the identical-call brake
+//   identical_call_refused  a turn that claimed it had a call refused by the repeat rule
 //   destructive_hold        a turn that claimed it had a destructive call held for approval
 //   task_failed             the task itself ended failed (its helper errored out, or the reaper gave up on it)
 // The last two are tied to the task by the `claim_turn` event that recorded which turn took it.

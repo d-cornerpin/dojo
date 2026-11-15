@@ -61,8 +61,6 @@ import { insertEngineEventIfAbsent } from '../../../memory/message-store.js';
 import { turnBoundary } from '../../turn-state.js';
 import { initState, type AgentTurnState } from '../state.js';
 import { nextSteer } from '../steer-queue.js';
-import { runThrashGate } from '../steps/pre-call-gates/thrash-gate.js';
-import type { PreCallGatesContext } from '../steps/pre-call-gates/index.js';
 import { runHandoffFloors } from '../steps/post-call-classify/handoff-floors.js';
 import type { PostCallClassifyContext, PostCallScratch } from '../steps/post-call-classify/index.js';
 import { openTrackerTask } from '../../../work/tracker-store.js';
@@ -124,23 +122,6 @@ function baseState(over: Partial<AgentTurnState> = {}): AgentTurnState {
   };
 }
 
-function gatesCtx(over: Partial<PreCallGatesContext> = {}): PreCallGatesContext {
-  return {
-    agentId: AGENT,
-    turnNumber: TURN,
-    contextWindow: 200000,
-    contextModelId: MODEL,
-    configuredModelId: MODEL,
-    isAutoRouted: false,
-    counterparty: { kind: 'user' } as PreCallGatesContext['counterparty'],
-    engineBlockEscapeHatch: 'If this looks wrong, say so.',
-    broadcast: broadcastSpy,
-    stashContinuationIfHuman: () => {},
-    detectTaskThrashing: () => ({ thrashing: false }),
-    ...over,
-  } as PreCallGatesContext;
-}
-
 beforeEach(() => {
   vi.clearAllMocks();
   turnBoundary.delete(AGENT);
@@ -160,44 +141,44 @@ afterEach(() => {
 // §0 · THE MEASUREMENT — what each channel actually delivers, driven end to end.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
-/**
- * A REAL steer, taken from a real floor rather than transcribed: the thrash gate's, because
- * it is the longest of the seven and the one whose old comment claimed the loudest that the
- * events row was the model-visible half.
- */
-function aRealSteer(): string {
-  const out = runThrashGate(baseState({ loopCount: 5 }), gatesCtx({
-    detectTaskThrashing: () => ({ thrashing: true, toolName: 'file_read', signature: 'file_read:{"path":"/a"}', count: 4 }),
-  }));
+/** The reminder-silence floor, driven for one reminder: the steer it files and the work row behind it. */
+async function reminderSteer(text: string): Promise<string> {
+  const taskId = openTrackerTask({
+    title: 'Reminder', description: text, status: 'in_progress',
+    assignedTo: AGENT, createdBy: AGENT,
+    origin: { kind: 'agent', sourceMessageId: null, turn: TURN, convKey: 'ck-1' },
+  });
+  const out = await runHandoffFloors(baseState({ loopCount: 3 }), classifyCtx({
+    turnCtx: { conversationId: 'conv-1', root: null, servedWork: { taskKind: 'reminder', taskId } },
+  } as unknown as Partial<PostCallClassifyContext>), emptyReply());
   const queued = nextSteer(out.state.steerQueue);
-  expect(queued, 'the gate must file a steer, or every measurement below is vacuous').toBeTruthy();
+  expect(queued, 'the floor must file a steer, or every measurement below is vacuous').toBeTruthy();
   return queued!.content;
 }
+
+/** A REAL steer, taken from a real floor rather than transcribed, long enough for the lane's cut to reach. */
+const A_LONG_REMINDER = 'Call the clinic about the follow-up, ask whether the prescription needs refilling, '
+  + 'and check whether the Thursday 4pm slot still works before you confirm it';
+const aRealSteer = (): Promise<string> => reminderSteer(A_LONG_REMINDER);
 
 /** Put a steer on the second channel, exactly as the seven sites used to. */
 function onTheEventsLane(content: string): void {
   insertEngineEventIfAbsent({
     work: null, id: 'sc-rider', agentId: AGENT, content,
-    sourceAgentId: null, originIntent: 'thrash_gate', turnNumber: TURN,
+    sourceAgentId: null, originIntent: 'reminder_silence_floor', turnNumber: TURN,
   });
 }
 
 describe('§0 the two channels, measured against the real assembler', () => {
-  it('the thrash gate fires: the queue carries the steer VERBATIM', () => {
-    const out = runThrashGate(baseState({ loopCount: 5 }), gatesCtx({
-      detectTaskThrashing: () => ({ thrashing: true, toolName: 'file_read', signature: 'file_read:{"path":"/a"}', count: 4 }),
-    }));
-    const queued = nextSteer(out.state.steerQueue);
-    expect(queued, 'the gate must file a steer, or this measurement is vacuous').toBeTruthy();
-
+  it('the floor fires: the queue carries the steer VERBATIM', async () => {
+    const steer = await aRealSteer();
     // The exact bytes the model receives from channel 1 — `msg.pending-nudge` renders the
     // steer with nothing added and nothing cut.
-    const msg = renderMessageEntry('msg.pending-nudge', { pendingSteer: queued!.content } as unknown as AssemblyContext);
+    const msg = renderMessageEntry('msg.pending-nudge', { pendingSteer: steer } as unknown as AssemblyContext);
     expect(msg!.role).toBe('user');
-    expect(msg!.content).toBe(queued!.content);
-    expect(queued!.content).toContain('[Engine thrash gate]');
-    expect(queued!.content).toContain('Your next action MUST be one of');
-    expect(queued!.content).toContain('(d) Send the user a specific question');
+    expect(msg!.content).toBe(steer);
+    expect(steer).toContain('This turn is delivering a reminder');
+    expect(steer).toContain(A_LONG_REMINDER);
   });
 
   it('the rider is INVISIBLE on the turn it is written — the tail cutoff excludes it', async () => {
@@ -205,20 +186,20 @@ describe('§0 the two channels, measured against the real assembler', () => {
     // the fact that decides the keeper — the second channel cannot reach the extra model
     // call a floor's own `continueLoop` was spent to buy.
     turnBoundary.set(AGENT, new Date(Date.now() - 1000).toISOString());
-    onTheEventsLane(aRealSteer());
-    expect(await riderLine('thrash_gate')).toBeNull();
+    onTheEventsLane(await aRealSteer());
+    expect(await riderLine('reminder_silence_floor')).toBeNull();
   });
 
   it('the rider delivers a TRUNCATED ECHO on a later turn, never the steer', async () => {
-    const steer = aRealSteer();
+    const steer = await aRealSteer();
     onTheEventsLane(steer);
 
     // A later turn: no boundary of its own yet, so the row is in the tail.
-    const line = await riderLine('thrash_gate');
+    const line = await riderLine('reminder_silence_floor');
     expect(line, 'the events lane must carry the row, or this measurement is vacuous').not.toBeNull();
 
     const cap = laneLimit('lane.events', 'chars', 'gist');
-    const gist = line!.slice(line!.indexOf(': thrash_gate] ') + ': thrash_gate] '.length);
+    const gist = line!.slice(line!.indexOf(': reminder_silence_floor] ') + ': reminder_silence_floor] '.length);
     const body = steer.replace(/^\s*\[[^\]]*\]\s*/, '').replace(/\s+/g, ' ').trim();
 
     // It is the steer's own bytes, cut at the lane's declared cap: a strict prefix, so the
@@ -226,15 +207,15 @@ describe('§0 the two channels, measured against the real assembler', () => {
     expect(body.startsWith(gist)).toBe(true);
     expect(gist.length).toBeLessThanOrEqual(cap);
     expect(body.length).toBeGreaterThan(gist.length);
-    // And what the cut removes is the instruction's operative tail.
-    expect(body).toContain('Your next action MUST be one of');
-    expect(gist).not.toContain('(d) Send the user a specific question');
+    // And what the cut removes is the instruction's operative tail: the reminder itself.
+    expect(body).toContain(A_LONG_REMINDER);
+    expect(gist).not.toContain(A_LONG_REMINDER);
   });
 
   it('the lane FRAMES whatever it carries as a notice, not as an order', async () => {
     // The removal argument is not only about the cut. A steer that arrives here arrives
     // under a header telling the model these are things it is merely AWARE of.
-    onTheEventsLane(aRealSteer());
+    onTheEventsLane(await aRealSteer());
     const seen = await whatTheModelReceives();
     expect(seen).toContain('EVENTS & NOTICES (things that happened');
     // t141: the head's "surface one to the owner" steer is deleted (OR-V333-SET 7); the frame
@@ -259,75 +240,6 @@ function rows(): Array<{ role: string; lane: string; origin_intent: string | nul
     .prepare("SELECT role, lane, origin_intent, content FROM messages WHERE agent_id = ? AND id != 'sc-u1'")
     .all(AGENT) as Array<{ role: string; lane: string; origin_intent: string | null; content: string }>;
 }
-
-describe('§1 thrash-drift', () => {
-  const drift = (): ReturnType<typeof runThrashGate> => runThrashGate(
-    baseState({ loopCount: 12, thrashGateActivatedAtLoopCount: 0 }),
-    gatesCtx(),
-  );
-
-  it('the queue still delivers the drift nudge, verbatim and unchanged', () => {
-    const queued = nextSteer(drift().state.steerQueue);
-    expect(queued!.floor).toBe('thrash-drift');
-    expect(queued!.content).toContain('[Engine hint] The engine thrash gate has been active for 12 iterations');
-    expect(queued!.content).toContain('work_update(action="status")');
-    expect(renderMessageEntry('msg.pending-nudge', { pendingSteer: queued!.content } as unknown as AssemblyContext)!.content)
-      .toBe(queued!.content);
-  });
-
-  it('the model receives NOTHING from the second channel on a later turn', async () => {
-    const steer = nextSteer(drift().state.steerQueue)!.content;
-    const body = steer.replace(/^\s*\[[^\]]*\]\s*/, '').replace(/\s+/g, ' ').trim();
-    expect(await riderLine('thrash_drift')).toBeNull();
-    // Not merely un-labelled: the text itself is absent from everything the model is handed.
-    expect(await whatTheModelReceives()).not.toContain(body.slice(0, 120));
-  });
-
-  it('the record survives the removal: a role=system row carries the steer\'s own bytes', () => {
-    const steer = nextSteer(drift().state.steerQueue)!.content;
-    const written = rows();
-    expect(written.filter((r) => r.origin_intent === 'thrash_drift')).toEqual([]);
-    const durable = written.filter((r) => r.role === 'system' && r.content === steer);
-    expect(durable.length, 'the steer must still leave a durable row — a removal is not a blind spot').toBe(1);
-  });
-});
-
-describe('§1 thrash-gate', () => {
-  const SIG = 'file_read:{"path":"/a"}';
-  const gate = (): ReturnType<typeof runThrashGate> => runThrashGate(
-    baseState({ loopCount: 5 }),
-    gatesCtx({ detectTaskThrashing: () => ({ thrashing: true, toolName: 'file_read', signature: SIG, count: 4 }) }),
-  );
-
-  it('the queue still delivers the gate steer, verbatim and still KEYED on the signature', () => {
-    const out = gate();
-    const queued = nextSteer(out.state.steerQueue);
-    expect(queued!.floor).toBe('thrash-gate');
-    // The key is the whole bound at this site — a second gated signature is a second fact.
-    expect(queued!.key).toBe(SIG);
-    expect(queued!.content).toContain('[Engine thrash gate]');
-    expect(queued!.content).toContain('(d) Send the user a specific question');
-    expect(renderMessageEntry('msg.pending-nudge', { pendingSteer: queued!.content } as unknown as AssemblyContext)!.content)
-      .toBe(queued!.content);
-    // …and the gate's own state still latches, which is what stops the second fire.
-    expect(out.state.thrashGatedSignatures).toEqual([SIG]);
-    expect(out.state.thrashGateActivatedAtLoopCount).toBe(5);
-  });
-
-  it('the model receives NOTHING from the second channel on a later turn', async () => {
-    const steer = nextSteer(gate().state.steerQueue)!.content;
-    const body = steer.replace(/^\s*\[[^\]]*\]\s*/, '').replace(/\s+/g, ' ').trim();
-    expect(await riderLine('thrash_gate')).toBeNull();
-    expect(await whatTheModelReceives()).not.toContain(body.slice(0, 120));
-  });
-
-  it('the record survives the removal: a role=system row carries the steer\'s own bytes', () => {
-    const steer = nextSteer(gate().state.steerQueue)!.content;
-    const written = rows();
-    expect(written.filter((r) => r.origin_intent === 'thrash_gate')).toEqual([]);
-    expect(written.filter((r) => r.role === 'system' && r.content === steer).length).toBe(1);
-  });
-});
 
 // ── The two delegation-and-delivery floors, driven ────────────────────────────────────────
 // Neither had a driven harness of its own, so one is built here rather than asserted from

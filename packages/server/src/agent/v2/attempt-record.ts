@@ -1,5 +1,5 @@
 // Cross-turn attempt record: FAILING tool calls by canonical signature, in the DB, because the
-// in-memory loop detector sees only within one turn and dies with it. Only failures are
+// in-memory repeat rule sees only this turn and the one before, and dies with the process. Only failures are
 // recorded (a SUCCEEDING repeat is routine, and a success clears the record); tool health
 // itself is `tool-outcomes.ts`, which this function also feeds.
 

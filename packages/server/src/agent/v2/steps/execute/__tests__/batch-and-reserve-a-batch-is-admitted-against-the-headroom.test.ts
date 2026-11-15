@@ -54,7 +54,6 @@ import { contextWindowPolicy, estimateTokens } from '../../../../../memory/budge
 import { assemblyTokens } from '../../../../../memory/assembly-validation.js';
 import { findToolResult } from '../../../../../memory/kept-results.js';
 import { advance, initState } from '../../../state.js';
-import type { RepeatCallState } from '../../../identical-call-brake.js';
 import { runExecute, EXECUTE_PHASE, type ExecuteContext } from '../index.js';
 // t277: the REAL admission door, loaded at collection (this file mocks tools/index.js, so a plain import
 // would be the mock). It used to be fetched inside `runBatch`, i.e. inside every clause's timeout.
@@ -122,7 +121,6 @@ function ctxFor(toolCalls: ToolCall[]): ExecuteContext {
     persistRoutingMarker: vi.fn(),
     engineStartAckDeliveredThisTurn: false,
     deferredDeliveredByAck: false,
-    identicalCallState: new Map() as RepeatCallState,
     refusedOnceSigs: new Set<string>(),
     startAckArmed: false,
     startAckArmedAtMs: Date.now(),

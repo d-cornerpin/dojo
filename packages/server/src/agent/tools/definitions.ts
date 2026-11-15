@@ -203,6 +203,17 @@ export const toolDefinitions: ToolDefinition[] = [
     concurrency: 'safe',
   },
   {
+    name: 'continue_repeating',
+    description: 'Run again a call the engine stopped because it kept bringing back the same result. Give a one-line reason why repeating it is still useful.',
+    effects: [],
+    input_schema: {
+      type: 'object',
+      properties: { reason: { type: 'string', description: 'Why running the stopped call again is useful, in one line.' } },
+      required: ['reason'],
+    },
+    concurrency: 'serial',
+  },
+  {
     name: 'file_read',
     description: `Read the contents of a file at the given absolute path. For text files, returns line-numbered content. Use optional offset (line number, 0-indexed) and limit (line count, default 5000) to read a long file page by page. One call returns at most ~${Math.round(V2_MAX_TOOL_RESULT_TOKENS / 1000)}K tokens (about ${Math.round(V2_MAX_TOOL_RESULT_TOKENS * 4 / 2000)} pages of text); a longer file comes back as a page that ends with a "continue at offset N" line, so keep reading from that offset until the end-of-file line shows. For images (PNG, JPEG, GIF, WEBP) and PDFs, returns content for vision (paging not applicable). Example: file_read({ path: "/Users/me/foo.html" }).`,
     effects: [{ kind: 'fs_read', from: 'args.path' }],

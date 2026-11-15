@@ -224,6 +224,9 @@ describe('T54 — CONTROL: bookkeeping filtering is otherwise unmoved', () => {
     // `channel_inspect` and `cost_summary` in the T54 pin: the agent's answer is what the owner
     // reads, and an investigation of ten looks would be ten chips of exactly the noise T54 removed.
     'dojo_inspect',
+    // `continue_repeating` lifts the engine's repeat stop on the agent's own call: a Meta tool like
+    // `load_tool_docs`, on the record as a tool call with its reason, and no chip for the owner.
+    'continue_repeating',
   ];
 
   // NAMES THAT LEFT THE HIDDEN SET AFTER T54, each one argued here (same history rule as above:

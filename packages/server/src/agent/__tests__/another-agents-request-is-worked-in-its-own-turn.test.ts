@@ -100,7 +100,6 @@ function ctx(): PreflightContext {
     setAgentStatus: vi.fn(),
     startStatusHeartbeat: vi.fn(),
     stopStatusHeartbeat: vi.fn(),
-    detectTaskThrashing: vi.fn(() => ({ thrashing: false })),
     engineBlockEscapeHatch: 'escape-hatch',
     engineStartAckAfterMs: 30_000,
   };

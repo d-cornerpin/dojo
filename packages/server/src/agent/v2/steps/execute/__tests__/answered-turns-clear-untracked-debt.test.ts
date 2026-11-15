@@ -104,7 +104,6 @@ function executeCtx(
     triggerRow: null, triggerWorkId: null, triggerConversationId: CONVERSATION_ID,
     turnStartedAt: new Date().toISOString(), persistRoutingMarker: () => undefined,
     engineStartAckDeliveredThisTurn: false, deferredDeliveredByAck: false,
-    identicalCallState: {} as ExecuteContext['identicalCallState'],
     refusedOnceSigs: new Set<string>(),
     startAckArmed: false, startAckArmedAtMs: 0,
     fireStartAckIfOwed: async () => undefined,

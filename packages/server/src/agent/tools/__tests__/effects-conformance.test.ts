@@ -105,16 +105,16 @@ describe('effects-declaration conformance walk (PHASE-5 T1)', () => {
   // the same check T3's `shell` earned.
   // t200 moves both by ONE the same way: `tool_result_read`, a core definition with no twin.
   // v3.5 inspect C1 moves both by ONE more: `dojo_inspect`, a core definition with no twin.
-  it('the census is T0\'s 320 static definitions + T3\'s `shell` + T77b\'s two drafts + DOJO-REPORT\'s `dojo_report` + t200\'s `tool_result_read` + K34\'s `lesson_record` + `dojo_inspect`, 119 user_ twins, 446 at runtime', () => {
-    expect(BASE.length).toBe(327);
+  it('the census is T0\'s 320 static definitions + T3\'s `shell` + T77b\'s two drafts + DOJO-REPORT\'s `dojo_report` + t200\'s `tool_result_read` + K34\'s `lesson_record` + `dojo_inspect` + `continue_repeating`, 119 user_ twins, 447 at runtime', () => {
+    expect(BASE.length).toBe(328);
     expect(BASE.filter((d) => d.name === 'dojo_inspect')).toHaveLength(1);
     expect(BASE.filter((d) => d.name === 'tool_result_read')).toHaveLength(1);
     expect(BASE.filter((d) => d.name === 'shell')).toHaveLength(1);
     expect(BASE.filter((d) => d.name === 'gmail_draft' || d.name === 'outlook_draft')).toHaveLength(2);
     expect(BASE.filter((d) => d.name === 'dojo_report')).toHaveLength(1);
     expect(TWINS.length).toBe(119);
-    expect(ALL.length).toBe(446);
-    expect(new Set(ALL.map((d) => d.name)).size).toBe(446);
+    expect(ALL.length).toBe(447);
+    expect(new Set(ALL.map((d) => d.name)).size).toBe(447);
   });
 
   it('EVERY definition declares its effects, and every declaration is well formed', () => {
@@ -321,8 +321,8 @@ describe('effects-declaration conformance walk (PHASE-5 T1)', () => {
     // t200: core 113 → 114 and runtime 443 → 444, `tool_result_read`, the same shape.
     // K34: core 114 → 115 and runtime 444 → 445, `lesson_record` (the Dreamer's door), no twin.
     // v3.5 inspect C1: core 115 → 116 and runtime 445 → 446, `dojo_inspect`, no twin.
-    expect(toolDefinitions.length).toBe(116);
-    expect(ALL.length).toBe(446);
+    expect(toolDefinitions.length).toBe(117);
+    expect(ALL.length).toBe(447);
 
     const core = new Set(toolDefinitions.map((d) => d.name));
     const outsideCore = ALL.filter((d) => !core.has(d.name));

@@ -18,7 +18,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { ToolCall } from '@dojo/shared';
 import { advance, initState, type AgentTurnState } from '../../../state.js';
-import type { RepeatCallState } from '../../../identical-call-brake.js';
 import { runExecute, EXECUTE_PHASE, type ExecuteContext, type ExecuteOutcome } from '../index.js';
 import { stopAgent } from '../../../../runtime.js';
 import { stopWaiterCount } from '../../../../stop-waiters.js';
@@ -78,7 +77,6 @@ function ctxFor(toolCalls: ToolCall[]): ExecuteContext {
     persistRoutingMarker: vi.fn(),
     engineStartAckDeliveredThisTurn: false,
     deferredDeliveredByAck: false,
-    identicalCallState: new Map() as RepeatCallState,
     refusedOnceSigs: new Set<string>(),
     startAckArmed: false,
     startAckArmedAtMs: Date.now(),

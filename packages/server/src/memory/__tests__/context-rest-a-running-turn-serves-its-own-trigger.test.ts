@@ -186,7 +186,6 @@ describe('t207 D8 — the claim records the trigger', () => {
     agentId: AGENT,
     startStatusHeartbeat: () => undefined,
     stopStatusHeartbeat: () => undefined,
-    detectTaskThrashing: () => ({ thrashing: false }),
     engineBlockEscapeHatch: '',
     engineStartAckAfterMs: 0,
   } as unknown as PreflightContext);

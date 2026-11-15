@@ -38,7 +38,6 @@ function stateAt(loopCount: number, ageMs = 0): AgentTurnState {
 
 const ctx = {
   agentId: AGENT, turnNumber: 1, configuredModelId: 'm', stashContinuationIfHuman: vi.fn(),
-  detectTaskThrashing: () => ({ thrashing: false }),
 } as unknown as PreCallGatesContext;
 const gate = (state: AgentTurnState) => runPreCallGates(state, ctx);
 

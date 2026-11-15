@@ -91,7 +91,7 @@ describe('THE ONE-SLOT LOSS', () => {
     let q = emptySteerQueue();
     q = enqueueSteer(q, { floor: 'ungrounded-claim', content: 'first', atLoop: 1 });
     q = enqueueSteer(q, { floor: 'silent-closeout', content: 'second', atLoop: 1 });
-    q = enqueueSteer(q, { floor: 'repetition', content: 'third', atLoop: 1 });
+    q = enqueueSteer(q, { floor: 'add-notes-stop', content: 'third', atLoop: 1 });
 
     // Iteration 1 delivers exactly one entry; two survive untouched.
     const one = nextSteer(q)!;
@@ -110,8 +110,8 @@ describe('THE ONE-SLOT LOSS', () => {
   it('FIFO within one priority band (the tiebreak is arrival, and it is deterministic)', () => {
     let q = emptySteerQueue();
     // Two keyed entries of the SAME floor share a priority; the earlier one wins.
-    q = enqueueSteer(q, { floor: 'thrash-gate', content: 'sig-A', key: 'A', atLoop: 1 });
-    q = enqueueSteer(q, { floor: 'thrash-gate', content: 'sig-B', key: 'B', atLoop: 1 });
+    q = enqueueSteer(q, { floor: 'empty-response', content: 'sig-A', key: 'A', atLoop: 1 });
+    q = enqueueSteer(q, { floor: 'empty-response', content: 'sig-B', key: 'B', atLoop: 1 });
     expect(nextSteer(q)!.content).toBe(sys('sig-A'));
   });
 });
@@ -173,7 +173,8 @@ describe('the declared precedence table', () => {
     // FIELD FIX 3 AUDIT ROUND (#11) ADDS 31-33: `redundant-closeout`, `near-duplicate-reply` and
     // `prose-decline`, the three floors that used to NULL the agent's reply and now steer it once.
     // 32: `tracker-closeout` went with the close-out gate.
-    expect(STEER_PRECEDENCE.length).toBe(31);
+    // The repeat rule replaced `thrash-gate`, `thrash-drift` and `repetition`.
+    expect(STEER_PRECEDENCE.length).toBe(28);
     for (const id of ['redundant-closeout', 'near-duplicate-reply']) {
       expect(STEER_PRECEDENCE.filter((f) => f.id === id).length).toBe(1);
     }
@@ -210,8 +211,8 @@ describe('the declared precedence table', () => {
   it('a truth guard outranks a silence floor outranks loop health outranks advice', () => {
     const p = (id: string) => STEER_PRECEDENCE.find((f) => f.id === id)!.priority;
     expect(p('ungrounded-claim')).toBeLessThan(p('silent-closeout'));
-    expect(p('silent-closeout')).toBeLessThan(p('repetition'));
-    expect(p('repetition')).toBeLessThan(p('hoarding-advisory'));
+    expect(p('silent-closeout')).toBeLessThan(p('add-notes-stop'));
+    expect(p('add-notes-stop')).toBeLessThan(p('hoarding-advisory'));
   });
 });
 
@@ -310,8 +311,8 @@ describe('delivered-to-model is RECORDED, not assumed', () => {
   });
 
   it('a ladder giving up abandons ITS OWN waiting entries, on the record', () => {
-    let q = enqueueSteer(emptySteerQueue(), { floor: 'repetition', content: 'r', atLoop: 1 });
-    q = clearSteerQueueFor(q, ['repetition']);
+    let q = enqueueSteer(emptySteerQueue(), { floor: 'add-notes-stop', content: 'r', atLoop: 1 });
+    q = clearSteerQueueFor(q, ['add-notes-stop']);
     expect(q.pending).toEqual([]);
     expect(q.abandoned.map((e) => e.content)).toEqual([sys('r')]);
   });
@@ -330,7 +331,7 @@ describe('delivered-to-model is RECORDED, not assumed', () => {
   });
 
   it('a scope that matches nothing pending is a no-op, not a rebuild', () => {
-    const q = enqueueSteer(emptySteerQueue(), { floor: 'repetition', content: 'r', atLoop: 1 });
+    const q = enqueueSteer(emptySteerQueue(), { floor: 'add-notes-stop', content: 'r', atLoop: 1 });
     expect(clearSteerQueueFor(q, ['spinning'])).toBe(q);
   });
 });

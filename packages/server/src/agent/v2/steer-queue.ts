@@ -10,8 +10,8 @@ export type SteerFloorId =
   | 'reminder-silence'
   | 'start-ack' | 'start-ack-reminder' | 'owed-interrupt' | 'promise-floor'
   | 'a2a-handoff-floor' | 'a2a-missed-reply' | 'going-idle-in-progress'
-  | 'output-grind' | 'empty-response' | 'thrash-gate' | 'thrash-drift' | 'spinning'
-  | 'repetition' | 'no-results' | 'add-notes-stop'
+  | 'output-grind' | 'empty-response' | 'spinning'
+  | 'no-results' | 'add-notes-stop'
   | 'tracker-stop-directive' | 'tracker-scaffold' | 'hoarding-advisory'
   | 'redundant-closeout' | 'near-duplicate-reply';
 
@@ -51,11 +51,8 @@ export const STEER_PRECEDENCE: readonly SteerFloorSpec[] = [
   // Above empty-response: a call that burned its whole output budget must not be diagnosed as an empty one.
   { id: 'output-grind',          priority: 39, why: 'the model spent its whole output budget reasoning, with no tool call and no answer' },
   { id: 'empty-response',        priority: 40, why: 'the model returned nothing, twice' },
-  { id: 'thrash-gate',           priority: 41, why: 'a tool signature is now refused' },
-  { id: 'thrash-drift',          priority: 42, why: 'signature-varying spiral accruing to the hard limit' },
   { id: 'spinning',              priority: 43, why: 'no progress across iterations' },
 
-  { id: 'repetition',            priority: 44, why: 'two identical responses in a row' },
   { id: 'no-results',            priority: 45, why: 'consecutive searches returning nothing' },
   // Priority 60 (compaction-recap, retired) is never reused.
   { id: 'add-notes-stop',        priority: 61, why: 'went quiet after a note with the task still open' },

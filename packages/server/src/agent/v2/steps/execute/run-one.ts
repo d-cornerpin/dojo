@@ -1,6 +1,5 @@
 // The executor choke point: one tool call, start to finish. The once-guard and the identical-call brake
-// sit here, on either side of the single `executeTool` call. `identicalCallSignature` (brake) and
-// `canonicalToolSignature` (thrash gate, cross-turn record) are distinct on purpose: never unify them.
+// sit here, on either side of the single `executeTool` call.
 
 import type { ToolCall } from '@dojo/shared';
 import { refusalForTerminated } from '../../../ended-mid-run.js';
@@ -8,9 +7,8 @@ import { broadcast } from '../../../../gateway/ws.js';
 import { isPrimaryAgent } from '../../../../config/platform.js';
 import { classifyToolResult } from '../../../tool-outcome.js';
 import { executeTool, toolResultOf } from '../../../tools/index.js';
-import { RECENT_TOOL_WINDOW, loopDetector } from '../../classifiers/loop.js';
-import { checkIdenticalCallRefusal, identicalCallSignature, isSignatureTerminal, recordIdenticalCallResult } from '../../identical-call-brake.js';
-import { bumpLoopSignature } from '../../state.js';
+import { LIFT_TOOL, fingerprint, identicalCallSignature, isSignatureTerminal, noteRepeatResult, repeatStopRefusal } from '../../identical-call-brake.js';
+import { markToolsLoaded } from '../../../../tools/tool-session-set.js';
 import { createLogger } from '../../../../logger.js';
 import { FIRE_AND_FORGET_GEN_TOOLS, SEND_TO_PEOPLE_SET } from './tool-sets.js';
 import { wordsStepRefusal } from './media-words-step.js';
@@ -26,17 +24,16 @@ const logger = createLogger('v2-loop');
 /** One call; the scratch carries what every call in the response shares (state, signatures, flags). */
 export async function runOneToolCall(tc: ToolCall, ctx: ExecuteContext, sc: ExecuteScratch): Promise<PendingToolResult> {
   const {
-    agentId, turnCtx, triggerRow, hasUnansweredUser, counterparty, identicalCallState,
+    agentId, turnCtx, triggerRow, hasUnansweredUser, counterparty,
     startAckArmed, startAckArmedAtMs, engineStartAckDeliveredThisTurn, fireStartAckIfOwed,
     engineStartAckAfterMs,
   } = ctx;
   const ENGINE_START_ACK_AFTER_MS = engineStartAckAfterMs;
   const onceGuardExecuted = sc.onceGuardExecuted;
-  let { state, recentSigs } = sc;
+  let { state } = sc;
   /** Every return goes through here so the shared scratch is written back exactly once per call. */
   const done = (r: PendingToolResult): PendingToolResult => {
     sc.state = state;
-    sc.recentSigs = recentSigs;
     return r;
   };
 
@@ -45,35 +42,21 @@ export async function runOneToolCall(tc: ToolCall, ctx: ExecuteContext, sc: Exec
   if (ended) return done(ended);
 
 
-  // On an A2A turn the send is the only reply (its text is suppressed), so it is exempt from the loop and
-  // thrash gates; the turn ends after an executed send (`index.ts`), so the exemption cannot loop.
+  // On an A2A turn the send is the only reply (its text is suppressed), so it is exempt from the repeat
+  // rule; the turn ends after an executed send (`index.ts`), so the exemption cannot loop.
   const isA2AReplyTool =
     counterparty.kind === 'agent' && (tc.name === 'send_to_agent' || tc.name === 'broadcast_to_group');
-
-  const loopCheck = loopDetector(tc, recentSigs);
-  recentSigs = bumpLoopSignature(recentSigs, loopCheck.signature, RECENT_TOOL_WINDOW);
-  if (loopCheck.decision === 'block' && !isA2AReplyTool) {
-    try {
-      broadcast({ type: 'chat:tool_call', agentId, tool: tc.name, args: tc.arguments });
-      broadcast({ type: 'chat:tool_result', agentId, tool: tc.name, result: loopCheck.refusalMessage!.slice(0, 500) });
-    } catch { /* best effort */ }
-    return done({
-      toolCallId: tc.id,
-      name: tc.name,
-      content: loopCheck.refusalMessage!,
-      isError: true,
-    });
-  }
+  const brakeSig = identicalCallSignature(tc.name, tc.arguments);
 
   // Once-per-response guard, pre-execution half.
   const isNonIdempotent = FIRE_AND_FORGET_GEN_TOOLS.has(tc.name) || SEND_TO_PEOPLE_SET.has(tc.name);
-  if (isNonIdempotent && onceGuardExecuted.has(loopCheck.signature)) {
+  if (isNonIdempotent && onceGuardExecuted.has(brakeSig)) {
     return done({
       toolCallId: tc.id,
       name: tc.name,
       content:
         `Already executed in this response: an identical ${tc.name} call ran moments ago and its side effect is real ` +
-        `(${onceGuardExecuted.get(loopCheck.signature)}). It was NOT run again; re-running would duplicate the ` +
+        `(${onceGuardExecuted.get(brakeSig)}). It was NOT run again; re-running would duplicate the ` +
         `send/generation. Reference the first result. If you genuinely intend a second identical ${tc.name}, ` +
         `issue it in your NEXT response.`,
       isError: true,
@@ -81,7 +64,7 @@ export async function runOneToolCall(tc: ToolCall, ctx: ExecuteContext, sc: Exec
   }
 
   // The gates that can refuse this call before it runs; a refusal is returned as the call's result.
-  const gated = runRefusalGates(state, tc, ctx, isA2AReplyTool);
+  const gated = runRefusalGates(state, tc, ctx);
   state = gated.state;
   sc.state = state;
   if (gated.refusal) return done(gated.refusal);
@@ -103,11 +86,10 @@ export async function runOneToolCall(tc: ToolCall, ctx: ExecuteContext, sc: Exec
     }
   }
   let toolResult;
-  // Identical-call brake, pre-execution half: an exact call that failed REFUSE_AT times is not run again.
-  const brakeSig = identicalCallSignature(tc.name, tc.arguments);
+  // Identical-call brake, pre-execution half: a stopped call is not run again until the agent lifts the stop.
   const refusal = turnCtx.toolPhaseEndedBySpinBrake
     ? '[Engine: the tool phase for this turn ended after an identical call was refused repeatedly. No further tools will run this turn. Answer in text with what you have.]'
-    : wordsStepRefusal(turnCtx, tc.name) ?? checkIdenticalCallRefusal(identicalCallState, brakeSig);
+    : wordsStepRefusal(turnCtx, tc.name) ?? (isA2AReplyTool ? null : repeatStopRefusal(agentId, turnCtx, tc.name, tc.arguments));
   try {
     if (refusal) {
       // Only the spin-brake terminal arm is marked TIMEOUT; the per-signature arm is unmarked on purpose.
@@ -119,7 +101,7 @@ export async function runOneToolCall(tc: ToolCall, ctx: ExecuteContext, sc: Exec
         logger.warn('v2: identical-call brake refused re-execution', {
           agentId, tool: tc.name, sig: brakeSig.slice(0, 120),
         }, agentId);
-        if (isSignatureTerminal(identicalCallState, brakeSig)) {
+        if (isSignatureTerminal(agentId, turnCtx, tc.name, tc.arguments)) {
           // Resubmitted unchanged past the terminal count: nothing real is blocked, stop paying for it.
           turnCtx.toolPhaseEndedBySpinBrake = true;
           logger.warn('v2: spin brake TERMINAL, tool phase ended for this turn (identical refused call resubmitted repeatedly)', {
@@ -137,14 +119,16 @@ export async function runOneToolCall(tc: ToolCall, ctx: ExecuteContext, sc: Exec
     // Once-guard, post-result half: a successful non-idempotent call registers its signature.
     if ((FIRE_AND_FORGET_GEN_TOOLS.has(tc.name) || SEND_TO_PEOPLE_SET.has(tc.name)) && toolResult.isError !== true) {
       const preview = typeof toolResult.content === 'string' ? toolResult.content.slice(0, 140) : 'executed';
-      onceGuardExecuted.set(loopCheck.signature, preview);
+      onceGuardExecuted.set(brakeSig, preview);
     }
-    // Brake, post-result half: count identical failures, append the notice at WARN_AT; success resets.
-    {
-      const errText = typeof toolResult.content === 'string' ? toolResult.content : JSON.stringify(toolResult.content ?? '');
-      const brakeNotice = recordIdenticalCallResult(identicalCallState, brakeSig, toolResult.isError === true, errText);
+    // Brake, post-result half: count an executed call's result, content blocks included; at a stop the notice
+    // offers the lift tool, which joins the session's tools then.
+    if (!refusal && !isA2AReplyTool) {
+      const blocks = (tc as unknown as Record<string, unknown>).__contentBlocks;
+      const brakeNotice = noteRepeatResult(agentId, turnCtx, tc.name, tc.arguments, fingerprint(toolResult.content, blocks));
       if (brakeNotice && typeof toolResult.content === 'string') {
         toolResult = { ...toolResult, content: toolResult.content + brakeNotice };
+        markToolsLoaded(agentId, [LIFT_TOOL]);
       }
     }
     // Transfer content blocks from the tool call (set by file_read for images/PDFs)

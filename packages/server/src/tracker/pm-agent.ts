@@ -71,7 +71,7 @@ const PM_ALLOWED_OTHER_TOOLS: readonly string[] = [
   'send_to_agent', 'broadcast_to_group', 'list_agents', 'list_groups',
   // The PM's own prompt names `vault_get`, so the gate must allow it (read-only).
   'vault_search', 'vault_get', 'vault_remember', 'history_search', 'history_get',
-  'load_tool_docs', 'get_current_time', 'tool_result_read',
+  'load_tool_docs', 'get_current_time', 'tool_result_read', 'continue_repeating',
   // Read-only artifact verification for close-out validation: confirm the deliverable, never write or exec.
   'file_read', 'file_list',
 ];

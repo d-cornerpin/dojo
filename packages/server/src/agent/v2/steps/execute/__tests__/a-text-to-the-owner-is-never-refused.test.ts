@@ -61,7 +61,6 @@ describe('a text to the owner is never refused', () => {
   });
 
   const freshState = () => ({
-    sendsPerAgentThisTurn: {}, thrashGatedSignatures: [], thrashGateRefusalCount: 0,
     structuringToolCalledThisTurn: false, steerQueue: { pending: [], fired: [] }, heavyLoadsThisTurn: 0, lastContextRatio: 0,
     loopCount: 0, compileGateSatisfied: true, compileOwedAskIds: [],
   });

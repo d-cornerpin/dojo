@@ -117,7 +117,6 @@ function gate(window: number): Promise<unknown> {
     engineBlockEscapeHatch: '[escape hatch]',
     broadcast: () => { /* not the subject */ },
     stashContinuationIfHuman: vi.fn(),
-    detectTaskThrashing: vi.fn(() => ({ thrashing: false })),
   } as unknown as PreCallGatesContext;
   return runPreCallGates(s, ctx);
 }

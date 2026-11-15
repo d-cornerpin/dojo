@@ -2,21 +2,15 @@
 // gates, assemble, model call, classify, execute, post-execution; then finalize, recovery and teardown).
 
 import { createLogger } from '../../logger.js';
-import { getDb } from '../../db/connection.js';
 import { broadcast } from '../../gateway/ws.js';
-// classifyTool is the canonical, test-covered effect classifier; a hand list here would drift from the registry.
-import { classifyTool } from '@dojo/shared';
 // recordError is not called here: handleMessage's catch calls it, and a second count trips the pause early.
 import { openTurnContext, turnContext, endTurnContext, type TurnContext } from '../turn-context.js';
 // agent-status.ts owns the agents.status transition; never re-export setAgentStatus from this module.
 import { setAgentStatus } from '../agent-status.js';
-// Gates match `toolOpKey(name, args)`: the operation id for a work verb, the plain name otherwise.
-import { toolOpKey, PROGRESS_WORK_OPS } from '../../tools/work-verbs.js';
 
 import { statusHeartbeats } from '../shared-state.js';
 
 import { advance } from './state.js';
-import { canonicalToolSignature } from './classifiers/loop.js';
 import { runPostExecution } from './steps/post-execution/index.js';
 import { runExecute } from './steps/execute/index.js';
 import { TEARDOWN_PHASE, runTurnRecovery, runTurnTeardown } from './steps/teardown/index.js';
@@ -36,98 +30,6 @@ const STATUS_HEARTBEAT_INTERVAL_MS = 30_000;
 const STALE_TASK_WINDOW_MINUTES = 30;
 // Start-ack floor on the person's wait: a turn still working after 30s owes an ack; quick lookups stay quiet.
 const ENGINE_START_ACK_AFTER_MS = 30000;
-// Task-thrash detector: the same canonical call (canonicalToolSignature, so varying one parameter cannot slip
-// past) DUPLICATE_SIG_LIMIT times with no progress is thrashing. The window is turn identity (this turn and
-// THRASH_TURN_WINDOW before it, as auto-continued spirals span the boundary), never load-dependent wall clock.
-const THRASH_TURN_WINDOW = 1; // current turn and this many before it
-const DUPLICATE_SIG_LIMIT = 4;
-
-// Exported only so tests drive the real detector; production reaches it through
-// `PreCallGatesContext.detectTaskThrashing`, because a step must never import the loop.
-export function detectTaskThrashing(agentId: string): {
-  thrashing: boolean;
-  toolName?: string;
-  signature?: string;
-  count?: number;
-} {
-  try {
-    const db = getDb();
-    // Rows with a NULL turn_number fall out of the window, which fails safe (a detector can only under-count).
-    const minTurn = (turnContext(agentId)?.turnNumber ?? 0) - THRASH_TURN_WINDOW;
-    const rows = db.prepare(`
-      SELECT content FROM messages
-      WHERE agent_id = ? AND role = 'assistant'
-        AND turn_number >= ?
-      ORDER BY created_at ASC, rowid ASC
-    `).all(agentId, minTurn) as Array<{ content: string }>;
-
-    // Progress is success-aware: a failed tool_use (per the window's tool_result rows) counts toward thrash,
-    // never as progress.
-    const failedToolUseIds = new Set<string>();
-    try {
-      const toolRows = db.prepare(`
-        SELECT content FROM messages
-        WHERE agent_id = ? AND role = 'tool'
-          AND turn_number >= ?
-      `).all(agentId, minTurn) as Array<{ content: string }>;
-      for (const tr of toolRows) {
-        let blocks: unknown;
-        try { blocks = JSON.parse(tr.content); } catch { continue; }
-        if (!Array.isArray(blocks)) continue;
-        for (const b of blocks) {
-          const blk = b as { type?: string; tool_use_id?: string; is_error?: boolean };
-          if (blk?.type === 'tool_result' && blk.is_error && blk.tool_use_id) {
-            failedToolUseIds.add(blk.tool_use_id);
-          }
-        }
-      }
-    } catch { /* best effort, without result rows, fall back to name-based */ }
-
-    const counts = new Map<string, { count: number; toolName: string }>();
-    let madeProgress = false;
-    for (const row of rows) {
-      let blocks: unknown;
-      try { blocks = JSON.parse(row.content); } catch { continue; }
-      if (!Array.isArray(blocks)) continue;
-      for (const b of blocks) {
-        if (!b || typeof b !== 'object') continue;
-        const block = b as { type?: string; id?: string; name?: string; input?: Record<string, unknown> };
-        if (block.type !== 'tool_use') continue;
-        const name = String(block.name ?? '');
-        if (!name) continue;
-        const failed = block.id != null && failedToolUseIds.has(String(block.id));
-        // Progress: a status flip, step completion, note, complete_task, or a successful effectful action
-        // (classifyTool). An identical effectful re-run still trips loopDetector on its own signature.
-        if (
-          !failed && (
-            PROGRESS_WORK_OPS.has(toolOpKey(name, block.input)) ||
-            name === 'complete_task' ||
-            classifyTool(name, block.input) === 'effectful-action'
-          )
-        ) {
-          madeProgress = true;
-          continue;
-        }
-        const sig = canonicalToolSignature(name, block.input);
-        const cur = counts.get(sig) ?? { count: 0, toolName: name };
-        counts.set(sig, { count: cur.count + 1, toolName: name });
-      }
-    }
-    if (madeProgress) return { thrashing: false };
-    let topSig = '';
-    let topCount = 0;
-    let topName = '';
-    for (const [sig, v] of counts) {
-      if (v.count > topCount) { topCount = v.count; topSig = sig; topName = v.toolName; }
-    }
-    if (topCount >= DUPLICATE_SIG_LIMIT) {
-      return { thrashing: true, toolName: topName, signature: topSig, count: topCount };
-    }
-    return { thrashing: false };
-  } catch {
-    return { thrashing: false };
-  }
-}
 
 function startStatusHeartbeat(agentId: string): void {
   const existing = statusHeartbeats.get(agentId);
@@ -168,7 +70,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
   // before the main `try`, so neither finalize nor teardown runs.
   const preflight = await runPreflight(turnCtx, {
     agentId,
-    setAgentStatus, startStatusHeartbeat, stopStatusHeartbeat, detectTaskThrashing,
+    setAgentStatus, startStatusHeartbeat, stopStatusHeartbeat,
     engineStartAckAfterMs: ENGINE_START_ACK_AFTER_MS,
   });
   if (preflight.directive === 'abandon') return;
@@ -180,7 +82,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
     hasUnansweredUser, isA2ATurn, pendingEngineEvent, isEngineTurn, settledContextWakeTurn,
     isNotificationTurn, a2aReplyContext, a2aReplyAssignMessageId, counterparty, turnNumber,
     turnStartedAt, reArmIfStrandedNoAnswer, stashContinuationIfHuman, persistRoutingMarker,
-    persistAndBroadcastSystemRow, noteTerminalAnswer, identicalCallState,
+    persistAndBroadcastSystemRow, noteTerminalAnswer,
     refusedOnceSigs, deliverEngineUserAck, counterpartyIsAgentSender, startAckArmed,
     startAckArmedAtMs, startAckRepliedNow, fireStartAckIfOwed, finalizeContext,
     teardownContext, preCallGatesContext,
@@ -274,7 +176,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
         turnStartedAt, persistRoutingMarker,
         engineStartAckDeliveredThisTurn: turnCtx.engineStartAckDeliveredThisTurn,
         deferredDeliveredByAck: turnCtx.deferredDeliveredByAck,
-        identicalCallState, refusedOnceSigs,
+        refusedOnceSigs,
         startAckArmed, startAckArmedAtMs, fireStartAckIfOwed,
         result, messageId, persistedContent, interAgentTurn, hasXmlFallbackTools,
         effectiveModelIdForPersist,
@@ -288,7 +190,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
 
       turnCtx.state = advance(turnCtx.state!, { phase: 'postExecution' });
       const postExecution = runPostExecution(turnCtx.state!, {
-        agentId, turnNumber, result, turnToolResults, broadcast,
+        agentId, turnNumber, turnToolResults, broadcast,
       });
       turnCtx.state = postExecution.state;
       if (postExecution.directive === 'exit') break;

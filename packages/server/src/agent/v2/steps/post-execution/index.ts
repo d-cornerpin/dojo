@@ -1,4 +1,4 @@
-// Post-execution floors (repetition, permission-denial and no-results counters, spinning nudge). A module
+// Post-execution floors (permission-denial and no-results counters, spinning nudge). A module
 // cannot break its caller's loop, so each exit is a StepOutcome directive the driver honours.
 // The logger keeps component name `v2-loop`: operators grep the structured log sink by it.
 
@@ -7,7 +7,6 @@ import { createLogger } from '../../../../logger.js';
 import {
   advance,
   type AgentTurnState,
-  type ModelCallResult,
   type ToolResultRecord,
   type TurnPhase,
 } from '../../state.js';
@@ -24,13 +23,11 @@ const logger = createLogger('v2-loop');
 export const POST_EXECUTION_PHASE: TurnPhase = 'postExecution';
 
 /** Why this step asked the driver to leave the loop. */
-export type PostExecutionExitReason = 'stuck-repeating' | 'no-results' | 'spinning-nudge-cap';
+export type PostExecutionExitReason = 'no-results' | 'spinning-nudge-cap';
 
 export interface PostExecutionContext {
   readonly agentId: string;
   readonly turnNumber: number;
-  /** THIS iteration's model result. Read, never written. */
-  readonly result: Pick<ModelCallResult, 'content' | 'toolCalls'>;
   /** THIS iteration's tool results, in execution order. Read, never written. */
   readonly turnToolResults: readonly ToolResultRecord[];
   readonly broadcast: (event: WsEvent) => void;
@@ -41,46 +38,7 @@ export interface PostExecutionContext {
  * the returned outcome carries the last value.
  */
 export function runPostExecution(state: AgentTurnState, ctx: PostExecutionContext): StepOutcome {
-  const { agentId, turnNumber, result, turnToolResults, broadcast } = ctx;
-
-  // Same text and same tool calls as last iteration means stuck: nudge once, then exit STUCK_REPEATING.
-  // The loopDetector catches repeated tool calls; this also catches repeated text-only responses.
-  const currentResponseSig =
-    (result.content ?? '') +
-    '|' +
-    result.toolCalls
-      .map((tc) => `${tc.name}:${JSON.stringify(tc.arguments)}`)
-      .sort()
-      .join(',');
-  if (state.lastResponseSig === currentResponseSig) {
-    if (!steerFired(state.steerQueue, 'repetition')) {
-      logger.warn('v2: agent repeating itself, nudging on next iteration', {
-        loopCount: state.loopCount,
-      }, agentId);
-      // complete_task is not available to every agent, so the steer names work_update instead.
-      state = persistEngineSteer(state, {
-        agentId, turnNumber, floor: 'repetition', atLoop: state.loopCount,
-        content:
-          '[System: You are repeating yourself, your last two responses were identical. ' +
-          'Try a different approach. If the task is complete, record it with its result (e.g. work_update(action="status")). ' +
-          'If you need help, explain what you are stuck on.]',
-      }, { broadcast });
-      return continueLoop(state);
-    }
-    logger.warn('v2: breaking tool loop, agent still repeating after nudge', {
-      loopCount: state.loopCount,
-    }, agentId);
-    broadcast({
-      type: 'chat:error', cardClass: 'informational',
-      agentId,
-      error: 'Agent got stuck repeating itself. Send a follow-up to redirect it.',
-      code: 'STUCK_REPEATING',
-      severity: 'warning',
-      retryable: true,
-    });
-    return requestExit(state, 'stuck-repeating' satisfies PostExecutionExitReason);
-  }
-  state = advance(state, { lastResponseSig: currentResponseSig });
+  const { agentId, turnNumber, turnToolResults, broadcast } = ctx;
 
   // Permission denial counter
   const allBlocked = turnToolResults.every((tr) => tr.isError && tr.content.includes('[BLOCKED]'));

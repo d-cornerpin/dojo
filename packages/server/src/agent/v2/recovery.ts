@@ -162,7 +162,8 @@ export async function recoverFromError(
  *  trigger or last response differs. Cheap, no DB query. */
 export function computeInputsFingerprint(state: AgentTurnState): string {
   const trigger = state.lastUserMessageContent?.slice(0, 200) ?? '';
-  const lastResp = state.lastResponseSig ?? '';
+  const r = state.lastResponse;
+  const lastResp = r ? `${r.content ?? ''}|${r.toolCalls.map((tc) => `${tc.name}:${JSON.stringify(tc.arguments)}`).sort().join(',')}` : '';
   let h = 0;
   const seed = `${trigger}|${lastResp}`;
   for (let i = 0; i < seed.length; i++) {

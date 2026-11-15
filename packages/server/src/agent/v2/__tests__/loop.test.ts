@@ -1,15 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import {
-  canonicalToolSignature,
-  loopDetector,
-  RECENT_TOOL_WINDOW,
-  MAX_REPEATS_BEFORE_BREAK,
-} from '../classifiers/loop.js';
-import type { ToolCall } from '@dojo/shared';
-
-function tc(name: string, args: Record<string, unknown>, id = 'tc'): ToolCall {
-  return { id, name, arguments: args };
-}
+import { canonicalToolSignature } from '../classifiers/loop.js';
 
 describe('canonicalToolSignature', () => {
   it('produces a stable signature for the same op', () => {
@@ -18,12 +8,7 @@ describe('canonicalToolSignature', () => {
     expect(sig1).toBe(sig2);
   });
 
-  // 2026-09-22 OWNER RULING — this assertion is INVERTED on purpose. It used to
-  // read "strips prose fields (caption, message, etc.)". The prose allow-list is
-  // deleted: a different caption is a different ask, and the allow-list is what
-  // collapsed five distinct `user_gmail_search` date ranges into one signature on
-  // the owner's box. Re-running the same operation under varied prose is caught by
-  // the thrash ladder's DRIFT arms, not by pretending the args were equal.
+  // Owner ruling: a different caption is a different ask, so no prose field is stripped.
   it('does NOT strip prose fields — a different caption is a different call', () => {
     const sig1 = canonicalToolSignature('show_to_user', { file: 'a.png', caption: 'first try' });
     const sig2 = canonicalToolSignature('show_to_user', { file: 'a.png', caption: 'second try, with more words' });
@@ -100,10 +85,7 @@ describe('canonicalToolSignature', () => {
     expect(sig1).not.toBe(sig2);
   });
 
-  // The structural guarantee the thrash gate's message now rests on: it may say
-  // "you already have the result" only because a signature match IS full-args
-  // identity. If a key can vanish from the signature, that sentence becomes a lie
-  // again — which is the defect the owner hit.
+  // A signature match is full-args identity: no key may vanish from it.
   it('⚠ EVERY ARGUMENT KEY APPEARS IN THE SIGNATURE (no allow-list, no exceptions)', () => {
     const args: Record<string, unknown> = {
       caption: 'c', message: 'm', content: 'k', text: 't', payload: 'p',
@@ -185,126 +167,9 @@ describe('canonicalToolSignature', () => {
   it('a different `reason` on the same search is also a different call now', () => {
     // Inverted from "still strips non-query prose fields for search tools". The
     // old worry was an agent disguising a duplicate by varying `reason`; the
-    // measured cost of guarding against it was refusing real work, and the drift
-    // arms of the thrash ladder catch signature-varying dodges by design.
+    // measured cost of guarding against it was refusing real work.
     const sig1 = canonicalToolSignature('vault_search', { query: 'same query', reason: 'first try' });
     const sig2 = canonicalToolSignature('vault_search', { query: 'same query', reason: 'second try' });
     expect(sig1).not.toBe(sig2);
-  });
-});
-
-describe('loopDetector', () => {
-  it('returns ok for the first call', () => {
-    const result = loopDetector(tc('file_read', { path: '/foo' }), []);
-    expect(result.decision).toBe('ok');
-    expect(result.repeatCount).toBe(1);
-  });
-
-  it('returns ok for the second call', () => {
-    const sig = canonicalToolSignature('file_read', { path: '/foo' });
-    const result = loopDetector(tc('file_read', { path: '/foo' }), [sig]);
-    expect(result.decision).toBe('ok');
-    expect(result.repeatCount).toBe(2);
-  });
-
-  it('returns ok for the third call (threshold not yet hit)', () => {
-    const sig = canonicalToolSignature('file_read', { path: '/foo' });
-    const result = loopDetector(tc('file_read', { path: '/foo' }), [sig, sig]);
-    expect(result.decision).toBe('ok');
-    expect(result.repeatCount).toBe(3);
-  });
-
-  it('blocks the FOURTH call (3 prior + this one = exceeds threshold)', () => {
-    const sig = canonicalToolSignature('file_read', { path: '/foo' });
-    const result = loopDetector(tc('file_read', { path: '/foo' }), [sig, sig, sig]);
-    expect(result.decision).toBe('block');
-    expect(result.repeatCount).toBe(4);
-    expect(result.refusalMessage).toContain('STOP');
-    expect(result.refusalMessage).toContain('file_read');
-  });
-
-  it('does not block when sigs are different and tool count is under MAX_SAME_TOOL_CALLS', () => {
-    const sigs = [
-      canonicalToolSignature('file_read', { path: '/a' }),
-      canonicalToolSignature('file_read', { path: '/b' }),
-      canonicalToolSignature('file_read', { path: '/c' }),
-    ];
-    const result = loopDetector(tc('file_read', { path: '/d' }), sigs);
-    expect(result.decision).toBe('ok');
-  });
-
-  // Regression: legitimate batch operations (e.g. update_agent run
-  // against N sub-agents in a row) must NOT be blocked. Each call has
-  // distinct args so the per-signature 3-strike check doesn't fire. The
-  // blanket same-tool threshold I added in v2.2.2 was too coarse and
-  // killed real work, removed in 2026-05-06.
-  it('does not block legitimate batch operations across many sub-agents', () => {
-    const sigs = [
-      canonicalToolSignature('update_agent', { agent_id: 'a1', name: 'Alpha' }),
-      canonicalToolSignature('update_agent', { agent_id: 'a2', name: 'Beta' }),
-      canonicalToolSignature('update_agent', { agent_id: 'a3', name: 'Gamma' }),
-      canonicalToolSignature('update_agent', { agent_id: 'a4', name: 'Delta' }),
-      canonicalToolSignature('update_agent', { agent_id: 'a5', name: 'Epsilon' }),
-    ];
-    // 6th distinct call to update_agent, must NOT be blocked.
-    const result = loopDetector(
-      tc('update_agent', { agent_id: 'a6', name: 'Zeta' }),
-      sigs,
-    );
-    expect(result.decision).toBe('ok');
-  });
-
-  it('does not block exploratory tool calls with distinct args', () => {
-    // Memory grep with 5 different patterns, was previously blocked by the
-    // same-tool threshold. After removing that, this is allowed. The proper
-    // remedy for history_search thrashing is the v2.2.2 fix that gives results
-    // their IDs + a copy-pasteable history_get(id="…") hint, so the
-    // agent has a clean recovery path instead of needing to thrash.
-    const sigs = [
-      canonicalToolSignature('history_search', { pattern: 'Deck Brief, Pulse Analytics' }),
-      canonicalToolSignature('history_search', { pattern: 'Deck Brief.*Pulse Analytics' }),
-      canonicalToolSignature('history_search', { pattern: 'DECK BRIEF.*Pulse Analytics' }),
-      canonicalToolSignature('history_search', { pattern: 'PITCH_KEY_LINE' }),
-      canonicalToolSignature('history_search', { pattern: 'Pulse Analytics.*COVER' }),
-    ];
-    const result = loopDetector(
-      tc('history_search', { pattern: 'Brand launch campaign.*Pulse' }),
-      sigs,
-    );
-    expect(result.decision).toBe('ok');
-  });
-
-  // v2.7.25 regression, the owner reported a vault_search sweep getting
-  // blocked: 4 related-but-distinct phrasings hit the 3-repeat threshold
-  // because the global PROSE_FIELDS set dropped `query` from the
-  // signature. For search tools query is the operation; this test pins
-  // the fix so it doesn't regress.
-  it('does not block vault_search with distinct query phrasings (the user-reported case)', () => {
-    const sigs = [
-      canonicalToolSignature('vault_search', { query: 'iMessage delivery issues communication protocol', mode: 'semantic' }),
-      canonicalToolSignature('vault_search', { query: 'imessage protocol reply send delivery failure bridge', mode: 'semantic' }),
-      canonicalToolSignature('vault_search', { query: 'iMessage delivery failure broken bridge troubleshooting not receiving replies', mode: 'semantic' }),
-    ];
-    const result = loopDetector(
-      tc('vault_search', { query: 'inbound iMessage from Alex gets an imessage_send', mode: 'semantic' }),
-      sigs,
-    );
-    expect(result.decision).toBe('ok');
-  });
-
-  it('STILL blocks vault_search when the EXACT same query is repeated 4+ times', () => {
-    // Loop detection should still catch a true loop, same query, same
-    // mode, over and over. The fix only opens up DISTINCT phrasings.
-    const sig = canonicalToolSignature('vault_search', { query: 'identical query', mode: 'semantic' });
-    const result = loopDetector(
-      tc('vault_search', { query: 'identical query', mode: 'semantic' }),
-      [sig, sig, sig],
-    );
-    expect(result.decision).toBe('block');
-  });
-
-  it('exposes constants matching v1', () => {
-    expect(RECENT_TOOL_WINDOW).toBe(8);
-    expect(MAX_REPEATS_BEFORE_BREAK).toBe(3);
   });
 });

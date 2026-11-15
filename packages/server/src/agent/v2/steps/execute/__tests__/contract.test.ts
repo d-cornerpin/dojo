@@ -26,19 +26,12 @@
 //    the cap had no test anywhere in either repo.
 // 3. IT HAS THE MOST WAYS OUT OF ANY TRANCHE — six, against `assemble`'s one and
 //    `callLLM`'s two — so the exit census is this contract's centre of gravity.
-//
-// ── AND ONE LANDMINE, WRITTEN DOWN SO IT CANNOT BE TIDIED AWAY ──
-// `identicalCallSignature` (the brake's) and `canonicalToolSignature` (the thrash
-// gate's / the cross-turn record's) STAY DISTINCT — Global Constraints names
-// unifying them as a documented landmine, because one edit would silently move two
-// different thresholds. Both live in this span; a clause below pins them apart.
 // ════════════════════════════════════════
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import path from 'node:path';
 import type { ToolCall } from '@dojo/shared';
 import { advance, initState, type AgentTurnState } from '../../../state.js';
-import type { RepeatCallState } from '../../../identical-call-brake.js';
 import {
   runExecute,
   EXECUTE_PHASE,
@@ -117,7 +110,6 @@ function ctxFor(over: Partial<ExecuteContext> = {}): ExecuteContext {
     persistRoutingMarker: persistRoutingMarkerSpy,
     engineStartAckDeliveredThisTurn: false,
     deferredDeliveredByAck: false,
-    identicalCallState: new Map() as RepeatCallState,
     refusedOnceSigs: new Set<string>(),
     startAckArmed: false,
     startAckArmedAtMs: Date.now(),
@@ -257,18 +249,6 @@ describe('PHASE-6 CUT 7: the `execute` step\'s contract', () => {
     expect(executeToolSpy).not.toHaveBeenCalled();
     if (out.directive === 'abandon') throw new Error('unreachable');
     expect(String(out.state.toolResults[0].content)).toContain('No further tools will run this turn');
-  });
-
-  it('THE A2A SEND CAP IS CARRIED, at its verbatim value: the sixth send to one recipient is refused', async () => {
-    const sends = [1, 2, 3, 4, 5, 6].map((n) =>
-      call('send_to_agent', { to_agent: 'alice', message: `ask number ${n}` }, `tc-${n}`));
-    const out = await runExecute(freshState(), ctxFor({ result: modelResult(sends) }));
-
-    expect(executeToolSpy.mock.calls.filter((c) => (c[1] as ToolCall).name === 'send_to_agent')).toHaveLength(5);
-    if (out.directive === 'abandon') throw new Error('unreachable');
-    const refusals = out.state.toolResults.filter((r) => String(r.content).includes('already sent'));
-    expect(refusals).toHaveLength(1);
-    expect(String(refusals[0].content)).toContain('5 messages this turn');
   });
 
   it('A STOP MID-BATCH FILLS THE REMAINING CALLS AND LEAVES THE AGENT IDLE', async () => {

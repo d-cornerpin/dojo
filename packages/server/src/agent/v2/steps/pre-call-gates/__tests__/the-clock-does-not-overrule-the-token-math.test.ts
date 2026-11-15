@@ -187,7 +187,6 @@ function makeCtx(): PreCallGatesContext & { events: WsEvent[] } {
     engineBlockEscapeHatch: '[escape hatch]',
     broadcast: (event: WsEvent) => { events.push(event); },
     stashContinuationIfHuman: vi.fn(),
-    detectTaskThrashing: vi.fn(() => ({ thrashing: false })),
   } as unknown as PreCallGatesContext;
   return Object.assign(ctx, { events });
 }

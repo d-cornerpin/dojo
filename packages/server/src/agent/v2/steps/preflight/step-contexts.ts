@@ -49,7 +49,7 @@ export function runStepContexts(
   sc: PreflightScratch,
   input: StepContextsInputs,
 ): StepContextsOutputs {
-  const { agentId, stopStatusHeartbeat, detectTaskThrashing } = ctx;
+  const { agentId, stopStatusHeartbeat } = ctx;
   const {
     db, turnNumber, counterparty, chosenConvKey,
     chosenConversationId, turnStartedAt, settledContextWakeTurn, isA2ATurn, isEngineTurn,
@@ -76,11 +76,10 @@ export function runStepContexts(
   });
 
   // Runs once per iteration, so the per-iteration fields must be read at call time, never snapshotted.
-  // `detectTaskThrashing` is passed in rather than imported so a step never imports the driver.
   const preCallGatesContext = (): PreCallGatesContext => ({
     agentId, turnNumber, contextWindow, contextModelId, configuredModelId, isAutoRouted,
     counterparty,
-    broadcast, stashContinuationIfHuman, detectTaskThrashing,
+    broadcast, stashContinuationIfHuman,
   });
 
   return { finalizeContext, teardownContext, preCallGatesContext };

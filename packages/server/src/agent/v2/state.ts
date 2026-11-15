@@ -110,22 +110,13 @@ export interface AgentTurnState {
    *  taken before the answer would let that answer close an ask it never addressed. */
   owedInterruptSubjectsRecorded: boolean;
 
-  recentToolSignatures: string[];
-
   recoveryStreak: RecoveryStreak | null;
   outputTokensEscalated: number;          // the extra output room asked of the NEXT call, in tokens; 0 = none
   consecutivePermissionDenials: number;
   truncationRetryCount: number;
   consecutiveNoResultTools: number;       // tracks "No results found" / "not in memory" returns
-  lastResponseSig: string | null;         // canonical signature of last model response (for repetition detection)
   retriedEmptyResponse: boolean;          // the silent empty-response retry has fired this turn
 
-  // Signatures the thrash detector tripped on; matching calls are refused until a status transition.
-  thrashGatedSignatures: string[];
-  // Refusals since the last transition; at THRASH_GATE_BREAKER_LIMIT the engine auto-blocks the task.
-  thrashGateRefusalCount: number;
-  // loopCount when the gate first armed; the drift detector auto-blocks if no transition follows.
-  thrashGateActivatedAtLoopCount: number | null;
   /** The checkpoint window the turn is in: its last pass before it, its clock and the job's mark; null is the first. */
   checkpointWindow: { readonly atLoop: number; readonly atMs: number; readonly mark: number } | null;
   // ── Trigger context (read once at preflight) ──
@@ -138,8 +129,6 @@ export interface AgentTurnState {
   readonly inboundContext: ChannelInboundContext | null;
 
   sentToAgentThisTurn: boolean;
-  /** Sends per lowercased recipient, capped (A2A_SEND_CAP_PER_RECIPIENT) against reworded re-send loops. */
-  sendsPerAgentThisTurn: Record<string, number>;
   // A user-facing reply surfaced this turn: silence floors stand down, later text is not promoted to answer.
   surfacedReplyThisTurn: boolean;
   lastAssistantTextForIM: string | null;
@@ -181,7 +170,7 @@ export interface AgentTurnState {
    *  it rides the state each step returns, so no step can drop it before the turn is recorded. */
   engineCutExit: TurnExitReason | null;
 
-  /** The identical-call brake refused a call. Derived after the batch in steps/execute/index.ts
+  /** The repeat rule refused a call. Derived after the batch in steps/execute/index.ts
    *  because parallel runOne callbacks clobber each other's state writes. */
   identicalCallRefusedThisTurn: boolean;
 
@@ -241,19 +230,13 @@ export function initState(params: InitStateParams): AgentTurnState {
     owedInterruptGrant: null,
     owedInterruptSubjectsRecorded: false,
 
-    recentToolSignatures: [],
-
     recoveryStreak: null,
     outputTokensEscalated: 0,
     consecutivePermissionDenials: 0,
     truncationRetryCount: 0,
     consecutiveNoResultTools: 0,
-    lastResponseSig: null,
     retriedEmptyResponse: false,
 
-    thrashGatedSignatures: [],
-    thrashGateRefusalCount: 0,
-    thrashGateActivatedAtLoopCount: null,
     checkpointWindow: null,
 
     triggeredByIMessage: params.triggeredByIMessage,
@@ -264,7 +247,6 @@ export function initState(params: InitStateParams): AgentTurnState {
     inboundContext: params.inboundContext,
 
     sentToAgentThisTurn: false,
-    sendsPerAgentThisTurn: {},
     surfacedReplyThisTurn: false,
     lastAssistantTextForIM: null,
     explicitSendThisTurn: {},
@@ -325,19 +307,4 @@ export function validate(state: AgentTurnState): void {
   if (state.toolCalls.length > 100) {
     throw new StateValidationError(`unreasonable tool call batch: ${state.toolCalls.length}`);
   }
-  if (state.recentToolSignatures.length > 50) {
-    throw new StateValidationError(`recentToolSignatures overflow (should be windowed): ${state.recentToolSignatures.length}`);
-  }
-}
-
-export function bumpLoopSignature(
-  signatures: string[],
-  newSignature: string,
-  windowSize: number,
-): string[] {
-  const next = [...signatures, newSignature];
-  if (next.length > windowSize) {
-    return next.slice(-windowSize);
-  }
-  return next;
 }

@@ -8,7 +8,6 @@ import type { TurnContext } from '../../../turn-context.js';
 import type { InboundChannel } from '../../inbound-channel.js';
 import type { TurnCounterparty, WaitingConversation } from '../../counterparty.js';
 import type { UnrepliedAssign } from '../../../a2a-replies.js';
-import type { RepeatCallState } from '../../identical-call-brake.js';
 import { preflightProceed, type PreflightOutcome } from '../step-outcome.js';
 import { runTurnTrigger } from './turn-trigger.js';
 import { runInboundAndAbort } from './inbound-and-abort.js';
@@ -30,7 +29,6 @@ export interface PreflightContext {
   readonly setAgentStatus: (agentId: string, status: AgentStatus) => void;
   readonly startStatusHeartbeat: (agentId: string) => void;
   readonly stopStatusHeartbeat: (agentId: string) => void;
-  readonly detectTaskThrashing: (agentId: string) => { thrashing: boolean; toolName?: string; signature?: string; count?: number };
   readonly engineStartAckAfterMs: number;
 }
 
@@ -92,7 +90,6 @@ export interface PreflightOutputs {
   readonly persistRoutingMarker: (label: string) => void;
   readonly persistAndBroadcastSystemRow: (content: string) => string;
   readonly noteTerminalAnswer: (rowId: string, surface: string) => void;
-  readonly identicalCallState: RepeatCallState;
   readonly refusedOnceSigs: Set<string>;
   readonly deliverEngineUserAck: (
     text: string, originIntent?: string | null, reuseId?: string | null, displayKind?: DisplayKind | null,
@@ -159,7 +156,7 @@ export async function runPreflight(
 
   const {
     reArmIfStrandedNoAnswer, stashContinuationIfHuman, persistRoutingMarker,
-    persistAndBroadcastSystemRow, noteTerminalAnswer, identicalCallState,
+    persistAndBroadcastSystemRow, noteTerminalAnswer,
     refusedOnceSigs, deliverEngineUserAck,
   } = runTurnClosures(turnCtx, ctx, sc, {
     counterparty, chosenConvKey, chosenConversationId, turnNumber, revertTriggerStampOnAbort,
@@ -194,7 +191,7 @@ export async function runPreflight(
     a2aReplyAssignMessageId,
     counterparty, turnNumber, turnStartedAt,
     reArmIfStrandedNoAnswer, stashContinuationIfHuman, persistRoutingMarker,
-    persistAndBroadcastSystemRow, noteTerminalAnswer, identicalCallState,
+    persistAndBroadcastSystemRow, noteTerminalAnswer,
     refusedOnceSigs, deliverEngineUserAck,
     counterpartyIsAgentSender, startAckArmed, startAckArmedAtMs, startAckRepliedNow,
     fireStartAckIfOwed,

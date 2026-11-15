@@ -31,6 +31,7 @@ import { EMAIL_SEARCH_TOOL } from '../../tools/unified-read.js';
 import { getEffectiveAudioGenModel } from '../../services/audio-gen-model.js';
 import { getModelVoiceCatalog, defaultVoiceCatalogFor, formatVoiceCatalog } from '../../services/voice-catalog.js';
 import { RESULT_READ_TOOL } from '../../memory/tool-result-view.js';
+import { LIFT_TOOL } from '../v2/identical-call-brake.js';
 
 
 /** Owner-facing controls; the strip is advice, so executeToolInner re-checks THIS SAME constant, and
@@ -157,9 +158,12 @@ function computeFilteredTools(agentId: string): ToolDefinition[] {
       if (def) filtered.push(def);
     }
   }
-  // The pointer reader names the agent's OWN results; every agent holds it, deny still wins.
-  const reader = toolDefinitions.find((t) => t.name === RESULT_READ_TOOL);
-  if (reader && !filtered.includes(reader) && !toolsPolicy.deny.includes(RESULT_READ_TOOL)) filtered.push(reader);
+  // The pointer reader names the agent's OWN results, and the repeat rule's lift its own stopped calls;
+  // every agent holds both, deny still wins.
+  for (const name of [RESULT_READ_TOOL, LIFT_TOOL]) {
+    const def = toolDefinitions.find((t) => t.name === name);
+    if (def && !filtered.includes(def) && !toolsPolicy.deny.includes(name)) filtered.push(def);
+  }
 
   const hasFileRead = manifest.file_read === '*' || (Array.isArray(manifest.file_read) && manifest.file_read.length > 0);
   const hasFileWrite = manifest.file_write === '*' || (Array.isArray(manifest.file_write) && manifest.file_write.length > 0);

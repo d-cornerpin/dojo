@@ -328,7 +328,6 @@ describe('T83 live chain — NOTIFICATION TURN: real classification → runAssem
       agentId: AGENT,
         startStatusHeartbeat: () => { /* not exercised */ },
       stopStatusHeartbeat: () => { /* not exercised */ },
-      detectTaskThrashing: () => ({ thrashing: false }),
       engineBlockEscapeHatch: '',
       engineStartAckAfterMs: 0,
     };

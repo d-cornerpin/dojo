@@ -22,10 +22,9 @@
 // It is the loop's FIRST step, so it is the only one that can refuse an iteration
 // outright: seven of the `while` body's exits live here, and every one of them is
 // a guard with an incident behind it (a user pressing stop, a preempting wake, the
-// thrash breaker, the auto-continuation cap, the turn-time budget, and the
-// compaction gate's emergency and impossible arms). The clause that matters most
-// is therefore the ORDER: a turn that has been stopped must not go on to run the
-// thrash detector or spend a token estimate on a context it will never assemble.
+// turn-time budget, and the compaction gate). The clause that matters most is
+// therefore the ORDER: a turn that has been stopped must not go on to park or
+// spend a token estimate on a context it will never assemble.
 // ════════════════════════════════════════
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -33,7 +32,6 @@ import type { WsEvent } from '@dojo/shared';
 import { advance, initState, type AgentTurnState } from '../../../state.js';
 import type { TurnCounterparty } from '../../../counterparty.js';
 import { stoppedAgents, preemptedAgents, pendingWakeups, backgroundDrains } from '../../../../shared-state.js';
-import { steerFired } from '../../../steer-queue.js';
 import {
   runPreCallGates,
   PRE_CALL_GATES_PHASE,
@@ -44,7 +42,7 @@ import {
 // ── The step's outside world ──
 // Every mock below stands in for a DOOR the span already went through; none of
 // them changes a decision. A unit test must not open the dev database, and the
-// thrash detector and the token estimator are both DB readers.
+// token estimator is a DB reader.
 const checkAndCompactSpy = vi.fn(async () => ({ leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 }));
 /** t194: the gauge — the assembler's own dry run — as the gate reads it: `tail` wanted of a 200,000 room. */
 const gauge = (tail: number) => ({
@@ -144,7 +142,6 @@ function makeCtx(overrides: Partial<PreCallGatesContext> = {}): PreCallGatesCont
     engineBlockEscapeHatch: '[escape hatch]',
     broadcast: (event: WsEvent) => { events.push(event); },
     stashContinuationIfHuman: vi.fn(),
-    detectTaskThrashing: vi.fn(() => ({ thrashing: false })),
     ...overrides,
   } as PreCallGatesContext;
   return Object.assign(ctx, { events });
@@ -290,7 +287,7 @@ describe('the exit-request channel — seven ways out, each with a name', () => 
 });
 
 describe('A STEP THAT ASKS TO EXIT STOPS', () => {
-  it('a stopped turn runs NO later gate — no thrash detection, no token estimate, no drain', async () => {
+  it('a stopped turn runs NO later gate — no park, no token estimate, no drain', async () => {
     // The failure mode this clause exists to catch: a step that asks to leave and
     // then keeps executing its remaining gates. Every counter below would move.
     stoppedAgents.add(AGENT);
@@ -299,7 +296,6 @@ describe('A STEP THAT ASKS TO EXIT STOPS', () => {
     const out = await runPreCallGates(stateInStep({ loopCount: 5 }), ctx);
 
     expect(out.directive).toBe('exit');
-    expect(ctx.detectTaskThrashing).not.toHaveBeenCalled();
     expect(estimateAssembledTokensSpy).not.toHaveBeenCalled();
     expect(rowsLeavingViewSpy).not.toHaveBeenCalled();
     expect(checkAndCompactSpy).not.toHaveBeenCalled();
@@ -337,26 +333,6 @@ describe('the numbers this tranche must not move (bounds copied verbatim)', () =
       expect(pendingWakeups.has(AGENT)).toBe(true);
       pendingWakeups.clear();
     }
-  });
-
-  it('the thrash drift ladder still nudges once at 8 and blocks at 24, and the PM is exempt from both', async () => {
-    const nudged = await runPreCallGates(
-      stateInStep({ loopCount: 9, thrashGateActivatedAtLoopCount: 1 }), makeCtx(),
-    );
-    // Soft drift NEVER blocks: one steer, and the turn goes on.
-    expect(nudged.directive).toBe('proceed');
-    expect(steerFired(nudged.state.steerQueue, 'thrash-drift')).toBe(true);
-
-    // A second visit does not re-fire it — the nudge is one-shot and the drift
-    // window is deliberately NOT reset.
-    const again = await runPreCallGates(nudged.state, makeCtx());
-    expect(again.state.steerQueue.fired.filter((e) => e.floor === 'thrash-drift')).toHaveLength(1);
-
-    // Below the soft threshold nothing fires at all.
-    const quiet = await runPreCallGates(
-      stateInStep({ loopCount: 8, thrashGateActivatedAtLoopCount: 1 }), makeCtx(),
-    );
-    expect(steerFired(quiet.state.steerQueue, 'thrash-drift')).toBe(false);
   });
 });
 

@@ -1,6 +1,5 @@
 // The gates that can refuse a call before it runs: the reminder-delivery lane, the main agent's warn-once
-// hurdle, the A2A re-send cap, the thrash gate and the compile gate, plus the hoarding advisory, which
-// refuses nothing. A refusal comes back as `{ state, refusal }` and `run-one.ts` returns it as the call's result.
+// hurdle and the compile gate, plus the hoarding advisory, which refuses nothing. A refusal comes back as `{ state, refusal }` and `run-one.ts` returns it as the call's result.
 
 import { broadcast } from '../../../../gateway/ws.js';
 import { isPrimaryAgent } from '../../../../config/platform.js';
@@ -9,15 +8,13 @@ import { identicalCallSignature } from '../../identical-call-brake.js';
 import { isOwnerIMessageRecipient } from '../../../../services/safe-senders.js';
 import { toolOpKey } from '../../../../tools/work-verbs.js';
 import { LOADING_GATE_THRESHOLD, isStructuringTool } from '../../classifiers/hoarding.js';
-import { canonicalToolSignature } from '../../classifiers/loop.js';
 import { persistEngineSteer } from '../../engine-steer.js';
 import { compileOwedGateDecision } from '../../compile-owed-gate.js';
 import { advance, type AgentTurnState } from '../../state.js';
 import { steerFired } from '../../steer-queue.js';
-import { replyChannelWords, userWords } from '../../turn-address.js';
+import { replyChannelWords } from '../../turn-address.js';
 import { liveAddress } from '../../turn-address-live.js';
 import { createLogger } from '../../../../logger.js';
-import { A2A_SEND_CAP_PER_RECIPIENT } from './tool-sets.js';
 import type { ToolCall } from '@dojo/shared';
 import type { ExecuteContext, PendingToolResult } from './index.js';
 
@@ -42,7 +39,6 @@ export function runRefusalGates(
   state: AgentTurnState,
   tc: ToolCall,
   ctx: ExecuteContext,
-  isA2AReplyTool: boolean,
 ): { state: AgentTurnState; refusal: PendingToolResult | null } {
   const { agentId, turnNumber, turnCtx, refusedOnceSigs } = ctx;
 
@@ -75,60 +71,6 @@ export function runRefusalGates(
     }
   }
 
-  // A2A re-send cap per recipient per turn: replies are async, and a model re-sending reworded asks
-  // defeats the signature dedup. The cap sits well above any genuine multi-send.
-  if (tc.name === 'send_to_agent' || tc.name === 'broadcast_to_group') {
-    const a = (tc.arguments ?? {}) as Record<string, unknown>;
-    const recip = String(
-      a.to_agent ?? a.agent ?? a.to ?? a.recipient ?? a.group ?? a.group_id ?? '',
-    ).trim().toLowerCase();
-    if (recip && (state.sendsPerAgentThisTurn[recip] ?? 0) >= A2A_SEND_CAP_PER_RECIPIENT) {
-      const refusal =
-        `Refused: you have already sent "${recip}" ${A2A_SEND_CAP_PER_RECIPIENT} messages this turn. ` +
-        `Inter-agent replies are asynchronous: "${recip}" answers on its own next turn, and its reply arrives then. ` +
-        `A re-sent or reworded ask does not get a faster reply.`;
-      try {
-        broadcast({ type: 'chat:tool_call', agentId, tool: tc.name, args: tc.arguments });
-        broadcast({ type: 'chat:tool_result', agentId, tool: tc.name, result: refusal.slice(0, 500) });
-      } catch { /* best effort */ }
-      logger.info('v2: A2A re-send cap, recipient over per-turn cap', {
-        agentId, recipient: recip, cap: A2A_SEND_CAP_PER_RECIPIENT,
-      }, agentId);
-      return { state, refusal: { toolCallId: tc.id, name: tc.name, content: refusal, isError: true } };
-    }
-  }
-
-  // Thrash gate: refuses only the exact (tool, args) signature the detector caught. The message may say the
-  // result is already here only because `canonicalToolSignature` carries every argument (thrash-gate.ts).
-  if (state.thrashGatedSignatures.length > 0 && !isA2AReplyTool) {
-    const thisSig = canonicalToolSignature(tc.name, tc.arguments);
-    if (state.thrashGatedSignatures.includes(thisSig)) {
-      const argsPart = thisSig.includes(':') ? thisSig.slice(thisSig.indexOf(':') + 1) : '{}';
-      const refusal =
-        `BLOCKED by engine thrash gate, \`${tc.name}(${argsPart})\` is refused. ` +
-        `You've already called this tool with these exact arguments; the first call's result is in this conversation.\n\n` +
-        `Pick a different next action:\n` +
-        `  (a) Continue the work from that result: the next item or step, or \`${tc.name}\` with DIFFERENT args (a different id / target) if you have more to read.\n` +
-        `  (b) Call work_update(action="status", status='blocked', notes='<specific obstacle>') if you genuinely cannot proceed.\n` +
-        `  (c) Send ${userWords(turnCtx.address)} a direct question if you need clarification.\n` +
-        `  (d) Only if the work is done: work_update(action="hand_in", outcome="finished", proof=[...], note='...').`;
-      state = advance(state, { thrashGateRefusalCount: state.thrashGateRefusalCount + 1 });
-      logger.warn('v2: thrash gate refused tool call', {
-        toolName: tc.name, signature: thisSig,
-        refusalCount: state.thrashGateRefusalCount,
-      }, agentId);
-      try {
-        broadcast({ type: 'chat:tool_call', agentId, tool: tc.name, args: tc.arguments });
-        broadcast({ type: 'chat:tool_result', agentId, tool: tc.name, result: refusal.slice(0, 500) });
-      } catch { /* best effort */ }
-      return { state, refusal: {
-        toolCallId: tc.id,
-        name: tc.name,
-        content: refusal,
-        isError: true,
-      } };
-    }
-  }
   // Hoarding advisory, never a block: after many unscaffolded heavy loads with context near compaction,
   // nudge once to write sources down before compaction summarizes them. Skip the call that structures.
   if (

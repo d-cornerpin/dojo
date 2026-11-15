@@ -25,6 +25,7 @@ export const SEND_TO_PEOPLE: readonly string[] = [
 // Base names only: user_ send twins fall to the parity list below; read twins to the Trainer's read-deny.
 export const SEND_TO_PEOPLE_NA: Readonly<Record<string, string>> = {
   'load_tool_docs': 'meta: loads a tool schema',
+  'continue_repeating': 'meta: lifts the engine\'s repeat stop on the agent\'s own call',
   'dojo_report': 'files a platform problem report for the owner to approve; sends nothing itself',
   'file_*': 'local filesystem, not a comms channel',
   'exec': 'runs a local program (argv, no shell), not a comms channel',

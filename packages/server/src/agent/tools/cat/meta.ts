@@ -1,4 +1,4 @@
-// META: one tool, `load_tool_docs`; the label is `tools/categories.ts`'s, not ours.
+// META: `load_tool_docs`, and the repeat rule's lift; the label is `tools/categories.ts`'s, not ours.
 // Category modules must NOT import `agent/tools.ts` (the rule IS the split), so the
 // list comes from the `surface.js` leaf. The `tool-docs.js` lazy load is pinned-sanctioned.
 
@@ -8,8 +8,12 @@ import { describeNameFailure } from '../../../tools/name-help.js';
 import { getFilteredTools } from '../surface.js';
 import { getAllToolDefinitions } from '../definitions.js';
 import { LOAD_TOOL_DOCS_MAX_PER_CALL, loadToolDocsOverflowRefusal } from '../../../tools/tool-session-set.js';
+import { liftRepeatStops } from '../../v2/identical-call-brake.js';
 
 export const metaHandlers: ToolHandlerMap = {
+  async continue_repeating({ agentId, args }) {
+    return liftRepeatStops(agentId, args.reason);
+  },
   async load_tool_docs({ agentId, args }) {
     let content: string = '';
     let isError = false;

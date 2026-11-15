@@ -1,10 +1,8 @@
-// Hand-picked tool sets and the A2A cap the execute step decides with; each is closed on purpose.
+// Hand-picked tool sets the execute step decides with; each is closed on purpose.
 
 import { SEND_TO_PEOPLE } from '../../../sensei-policy.js';
 
 export const SEND_TO_PEOPLE_SET: ReadonlySet<string> = new Set(SEND_TO_PEOPLE);
-/** Max A2A sends to one recipient per turn; well above any genuine multi-send, so it catches loops only. */
-export const A2A_SEND_CAP_PER_RECIPIENT = 5;
 // Async media generators delivered later by a background pipeline: the turn ends after one, bar the words
 // step. Closed set tied to the delivery wiring; 'effectful-action' is far broader.
 export const FIRE_AND_FORGET_GEN_TOOLS = new Set([
@@ -19,6 +17,7 @@ export const TRIVIAL_TOOLS = new Set([
   'get_current_time',
   'convert_time',
   'load_tool_docs',
+  'continue_repeating',
   'complete_task',
   'vault_search',
   'vault_get',

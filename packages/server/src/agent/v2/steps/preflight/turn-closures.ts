@@ -10,7 +10,6 @@ import { insertMessageIfAbsent } from '../../../../memory/message-store.js';
 import { resolveRecipientDisplay } from '../../../../contacts/resolve-recipient.js';
 import { continuationContext } from '../../../turn-state.js';
 import type { TurnContext } from '../../../turn-context.js';
-import { type RepeatCallState } from '../../identical-call-brake.js';
 import type { TurnCounterparty } from '../../counterparty.js';
 import { withOutboundAsync } from '../../outbound.js';
 import { engineMayRouteTo } from '../../../access/engine-route.js';
@@ -32,7 +31,6 @@ export interface TurnClosuresOutputs {
   readonly persistRoutingMarker: (label: string) => void;
   readonly persistAndBroadcastSystemRow: (content: string) => string;
   readonly noteTerminalAnswer: (rowId: string, surface: string) => void;
-  readonly identicalCallState: RepeatCallState;
   readonly refusedOnceSigs: Set<string>;
   readonly deliverEngineUserAck: (
     text: string, originIntent?: string | null, reuseId?: string | null, displayKind?: DisplayKind | null,
@@ -106,8 +104,6 @@ export function runTurnClosures(
     sc.terminalAnswerRowId = rowId;
     logger.debug('v2: truthful-answer key set', { agentId, rowId, surface }, agentId);
   };
-  // Consecutive identical failing tool calls this turn, keyed by call signature (identical-call-brake.ts).
-  const identicalCallState: RepeatCallState = new Map();
   // Calls refused once this turn (reminder lane, main-agent hurdle); the identical repeat proceeds.
   const refusedOnceSigs = new Set<string>();
 
@@ -229,7 +225,7 @@ export function runTurnClosures(
 
   return {
     reArmIfStrandedNoAnswer, stashContinuationIfHuman, persistRoutingMarker,
-    persistAndBroadcastSystemRow, noteTerminalAnswer, identicalCallState,
+    persistAndBroadcastSystemRow, noteTerminalAnswer,
     refusedOnceSigs, deliverEngineUserAck,
   };
 }

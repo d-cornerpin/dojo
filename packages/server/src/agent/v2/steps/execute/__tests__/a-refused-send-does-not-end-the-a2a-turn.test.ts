@@ -8,7 +8,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { ToolCall } from '@dojo/shared';
 import { advance, initState, type AgentTurnState } from '../../../state.js';
-import type { RepeatCallState } from '../../../identical-call-brake.js';
 import { runExecute, EXECUTE_PHASE, type ExecuteContext } from '../index.js';
 
 const executeToolSpy = vi.fn();
@@ -39,12 +38,12 @@ vi.mock('../../../../../db/connection.js', () => ({ getDb: () => fakeDb }));
 
 const AGENT = 'agent-primary-a2a';
 
-function ctxFor(toolCalls: ToolCall[]): ExecuteContext {
+function ctxFor(toolCalls: ToolCall[], toolPhaseEnded = false): ExecuteContext {
   return {
     agentId: AGENT,
     turnCtx: {
       agentId: AGENT, convKey: 'ck-a2a', conversationId: 'conv-a2a', servedWork: undefined,
-      toolPhaseEndedBySpinBrake: false, anyToolStartedThisTurn: false,
+      toolPhaseEndedBySpinBrake: toolPhaseEnded, anyToolStartedThisTurn: false,
       startAckSteerRequested: false, startAckSteerArmedThisTurn: false,
     } as unknown as ExecuteContext['turnCtx'],
     turnNumber: 6560,
@@ -62,7 +61,6 @@ function ctxFor(toolCalls: ToolCall[]): ExecuteContext {
     persistRoutingMarker: vi.fn(),
     engineStartAckDeliveredThisTurn: false,
     deferredDeliveredByAck: false,
-    identicalCallState: new Map() as RepeatCallState,
     refusedOnceSigs: new Set<string>(),
     startAckArmed: false,
     startAckArmedAtMs: Date.now(),
@@ -97,8 +95,8 @@ beforeEach(() => {
 
 describe('fix #7: only an executed send ends the A2A turn', () => {
 
-  it('the per-recipient cap refusal does not end the turn either', async () => {
-    const out = await runExecute(stateWith({ sendsPerAgentThisTurn: { pm: 5 } }), ctxFor([send()]));
+  it('a send refused because the tool phase ended does not end the turn either', async () => {
+    const out = await runExecute(stateWith(), ctxFor([send()], true));
     expect(sendsExecuted()).toBe(0);
     expect(out.directive).not.toBe('exit');
   });

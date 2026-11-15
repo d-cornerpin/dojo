@@ -1,5 +1,5 @@
-// The preCallGates step: the checks before a model call, in order (stop/preempt, thrash, time budget,
-// context condense). Driver-owned functions arrive through the context, so no step imports `loop.ts`.
+// The preCallGates step: the checks before a model call, in order (stop/preempt, time budget, context
+// condense). Driver-owned functions arrive through the context, so no step imports `loop.ts`.
 // The logger keeps the component name `v2-loop`: operators grep the structured log by it.
 
 import type { WsEvent } from '@dojo/shared';
@@ -9,7 +9,6 @@ import { type AgentTurnState, type TurnPhase } from '../../state.js';
 import { latchEngineCut } from '../../engine-exit.js';
 import type { TurnCounterparty } from '../../counterparty.js';
 import { proceed, requestExit, type StepOutcome } from '../step-outcome.js';
-import { runThrashGate } from './thrash-gate.js';
 import { runTurnTimeBudget } from './turn-budget.js';
 import { runContextGates } from './context-gates.js';
 
@@ -22,7 +21,6 @@ export const PRE_CALL_GATES_PHASE: TurnPhase = 'preCallGates';
 export type PreCallGatesExitReason =
   | 'stopped-by-user'
   | 'preempted'
-  | 'thrash-auto-block'
   | 'turn-time-budget';
 
 export interface PreCallGatesContext {
@@ -32,20 +30,14 @@ export interface PreCallGatesContext {
   readonly contextModelId: string;
   readonly configuredModelId: string;
   readonly isAutoRouted: boolean;
-  /** Who this turn is for: the thrash block's user-origin test and the context gate's measure read it. */
+  /** Who this turn is for: the context gate's measure reads it. */
   readonly counterparty: TurnCounterparty;
   readonly broadcast: (event: WsEvent) => void;
   /** A closure over driver state; passed as a value, it keeps its live bindings. */
   readonly stashContinuationIfHuman: () => void;
-  readonly detectTaskThrashing: (agentId: string) => {
-    thrashing: boolean;
-    toolName?: string;
-    signature?: string;
-    count?: number;
-  };
 }
 
-/** The order is the contract: a stopped turn must not run the thrash detector or measure a context. */
+/** The order is the contract: a stopped turn must not park or measure a context. */
 export async function runPreCallGates(
   state: AgentTurnState,
   ctx: PreCallGatesContext,
@@ -64,10 +56,7 @@ export async function runPreCallGates(
     return requestExit(latchEngineCut(state, 'preempt'), 'preempted' satisfies PreCallGatesExitReason);
   }
 
-  const thrash = runThrashGate(state, ctx);
-  if (thrash.directive !== 'proceed') return thrash;
-
-  const budget = await runTurnTimeBudget(thrash.state, ctx);
+  const budget = await runTurnTimeBudget(state, ctx);
   if (budget.directive !== 'proceed') return budget;
 
   const context = await runContextGates(budget.state, ctx);

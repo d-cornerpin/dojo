@@ -11,7 +11,7 @@ import { advance, type AgentTurnState } from '../../state.js';
 import { isStopFenced } from '../../../shared-state.js';
 import type { TurnContext } from '../../../turn-context.js';
 import type { TurnCounterparty } from '../../counterparty.js';
-import { anyIdenticalCallRefused, type RepeatCallState } from '../../identical-call-brake.js';
+import { anyIdenticalCallRefused } from '../../identical-call-brake.js';
 import { latchEngineCut } from '../../engine-exit.js';
 import { createLogger } from '../../../../logger.js';
 import { runOneToolCall } from './run-one.js';
@@ -64,7 +64,6 @@ export interface ExecuteContext {
    *  `anyToolStartedThisTurn` lives on the turn bag instead because a timer callback reads it. */
   readonly engineStartAckDeliveredThisTurn: boolean;
   readonly deferredDeliveredByAck: boolean;
-  readonly identicalCallState: RepeatCallState;
   readonly refusedOnceSigs: Set<string>;
   readonly startAckArmed: boolean;
   readonly startAckArmedAtMs: number;
@@ -84,7 +83,6 @@ export interface ExecuteContext {
 /** What the whole response shares across its calls: this step's own scratch, made and used in one run. */
 export interface ExecuteScratch {
   state: AgentTurnState;
-  recentSigs: string[];
   readonly onceGuardExecuted: Map<string, string>;
   calledCompleteTask: boolean;
   calledFireAndForgetGen: boolean;
@@ -100,7 +98,7 @@ export type ExecuteOutcome =
   | { readonly directive: 'exit'; readonly state: AgentTurnState; readonly reason: string };
 
 export async function runExecute(state: AgentTurnState, ctx: ExecuteContext): Promise<ExecuteOutcome> {
-  const { agentId, result, counterparty, identicalCallState } = ctx;
+  const { agentId, result, counterparty } = ctx;
 
   const batches = partitionTools(result.toolCalls);
   const turnToolResults: PendingToolResult[] = [];
@@ -111,10 +109,9 @@ export async function runExecute(state: AgentTurnState, ctx: ExecuteContext): Pr
   // Once-per-response guard: a non-idempotent signature (generation, people send) runs at most once per
   // response; a repeat gets a note naming the first run. Repeats across responses belong to the brake.
   const onceGuardExecuted = new Map<string, string>();
-  let recentSigs = state.recentToolSignatures;
 
   const sc: ExecuteScratch = {
-    state, recentSigs, onceGuardExecuted, calledCompleteTask, calledFireAndForgetGen,
+    state, onceGuardExecuted, calledCompleteTask, calledFireAndForgetGen,
     a2aSendsExecuted: 0,
   };
   const runOne = (tc: ToolCall): Promise<PendingToolResult> => runOneToolCall(tc, ctx, sc);
@@ -166,19 +163,17 @@ export async function runExecute(state: AgentTurnState, ctx: ExecuteContext): Pr
   // The response's results are admitted together against the turn's room before anything reads them.
   await admitBatchToRoom(ctx, turnToolResults);
   state = sc.state;
-  recentSigs = sc.recentSigs;
   calledCompleteTask = sc.calledCompleteTask;
   calledFireAndForgetGen = sc.calledFireAndForgetGen;
 
   // The brake's refusals are read off its own ledger (parallel `runOne` callbacks clobber `state` writes).
   // A mid-batch stop latches engineCut 'stop' (first writer wins): the turn records the owner's stop.
   state = advance(state, {
-    recentToolSignatures: recentSigs,
     toolResults: state.toolResults.concat(turnToolResults.map((r) => ({
       ...r, arguments: result.toolCalls.find((tc) => tc.id === r.toolCallId)?.arguments,
     }))),
     identicalCallRefusedThisTurn:
-      state.identicalCallRefusedThisTurn || anyIdenticalCallRefused(identicalCallState),
+      state.identicalCallRefusedThisTurn || anyIdenticalCallRefused(agentId, ctx.turnCtx),
   });
   if (stoppedMidBatch) state = latchEngineCut(state, 'stop');
 

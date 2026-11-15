@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  initState, advance, validate, bumpLoopSignature, StateValidationError, type AgentTurnState,
+  initState, advance, validate, StateValidationError, type AgentTurnState,
 } from '../state.js';
 
 function freshState(): AgentTurnState {
@@ -110,18 +110,5 @@ describe('validate', () => {
     }));
     const s = { ...freshState(), toolCalls: longBatch };
     expect(() => validate(s)).toThrow(/unreasonable tool call batch/);
-  });
-});
-
-describe('bumpLoopSignature', () => {
-  it('appends the new signature', () => {
-    const result = bumpLoopSignature(['a', 'b'], 'c', 8);
-    expect(result).toEqual(['a', 'b', 'c']);
-  });
-
-  it('windows to size when overflowing', () => {
-    const result = bumpLoopSignature(['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'], 'i', 8);
-    expect(result).toEqual(['b', 'c', 'd', 'e', 'f', 'g', 'h', 'i']);
-    expect(result.length).toBe(8);
   });
 });

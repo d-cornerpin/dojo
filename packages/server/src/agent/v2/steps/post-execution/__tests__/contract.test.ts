@@ -91,7 +91,6 @@ function makeCtx(overrides: Partial<PostExecutionContext> = {}): PostExecutionCo
   return {
     agentId: 'primary',
     turnNumber: 3,
-    result: { content: 'here you go', toolCalls: [] },
     turnToolResults: [toolResult()],
     broadcast: (event: WsEvent) => { events.push(event); },
     ...overrides,
@@ -112,34 +111,12 @@ function errorCodes(events: WsEvent[]): string[] {
 }
 
 describe('postExecution step — inputs, output, and the recorded transition', () => {
-  it('takes (state, ctx) and returns the advanced state with exactly one directive', () => {
-    const before = stateInStep();
-    const outcome = runPostExecution(before, makeCtx());
-
-    expect(outcome.directive).toBe('proceed');
-    expect(outcome.state.lastResponseSig).not.toBeNull();
-    // The input state is not mutated — every transition is a replacement.
-    expect(before.lastResponseSig).toBeNull();
-  });
-
   it('runs in the phase the driver advanced into, and NEVER writes `phase` itself', () => {
     // The exit-request channel exists because a mid-body `phase` write does not
     // survive the next transition. The step therefore has no business writing it,
     // on ANY path — including the three that ask to leave the loop.
     const paths: Array<[string, AgentTurnState, PostExecutionContext]> = [
       ['proceed', stateInStep(), makeCtx()],
-      [
-        'continue (repetition nudge)',
-        stateInStep({ lastResponseSig: 'same|' }),
-        makeCtx({ result: { content: 'same', toolCalls: [] } }),
-      ],
-      [
-        'exit (repetition)',
-        advance(stateInStep({ lastResponseSig: 'same|' }), {
-          steerQueue: enqueueSteer(freshState().steerQueue, { floor: 'repetition', content: 'x', atLoop: 1 }),
-        }),
-        makeCtx({ result: { content: 'same', toolCalls: [] } }),
-      ],
     ];
 
     for (const [label, state, ctx] of paths) {
@@ -150,53 +127,6 @@ describe('postExecution step — inputs, output, and the recorded transition', (
 });
 
 describe('postExecution step — the exit-request channel', () => {
-  it('asks to CONTINUE on the repetition floor\'s one-shot nudge, and the nudge is queued', () => {
-    const state = stateInStep({ lastResponseSig: 'same|' });
-    const outcome = runPostExecution(state, makeCtx({ result: { content: 'same', toolCalls: [] } }));
-
-    expect(outcome.directive).toBe('continue');
-    expect(steerFired(outcome.state.steerQueue, 'repetition')).toBe(true);
-    // `continue` skipped the rest of the body, so the signature was NOT re-recorded.
-    expect(outcome.state.lastResponseSig).toBe('same|');
-  });
-
-  it('asks to EXIT once the repetition nudge has already fired, and names why', () => {
-    const nudged = advance(stateInStep({ lastResponseSig: 'same|' }), {
-      steerQueue: enqueueSteer(freshState().steerQueue, { floor: 'repetition', content: 'x', atLoop: 1 }),
-    });
-    const { ctx, events } = ctxWithEvents({ result: { content: 'same', toolCalls: [] } });
-    const outcome = runPostExecution(nudged, ctx);
-
-    expect(outcome.directive).toBe('exit');
-    if (outcome.directive !== 'exit') throw new Error('unreachable');
-    expect(outcome.reason).toBe('stuck-repeating');
-    expect(errorCodes(events)).toEqual(['STUCK_REPEATING']);
-  });
-
-  it('A STEP THAT ASKS TO EXIT STOPS — it does not run its remaining gates on the way out', () => {
-    // The failure mode in one clause. The inputs below would move BOTH later
-    // counters if the step kept going: five blocked results drive
-    // `consecutivePermissionDenials`, and the same batch would reset
-    // `consecutiveNoResultTools`. The repetition floor exits before either.
-    const nudged = advance(
-      stateInStep({ lastResponseSig: 'same|', consecutivePermissionDenials: 2, consecutiveNoResultTools: 1 }),
-      { steerQueue: enqueueSteer(freshState().steerQueue, { floor: 'repetition', content: 'x', atLoop: 1 }) },
-    );
-    const blocked = Array.from({ length: 5 }, (_, i) =>
-      toolResult({ toolCallId: `tc-${i}`, content: '[BLOCKED] not permitted', isError: true }),
-    );
-
-    const outcome = runPostExecution(nudged, makeCtx({
-      result: { content: 'same', toolCalls: [] },
-      turnToolResults: blocked,
-    }));
-
-    expect(outcome.directive).toBe('exit');
-    expect(outcome.state.consecutivePermissionDenials).toBe(2);
-    expect(outcome.state.consecutiveNoResultTools).toBe(1);
-    expect(steerFireCount(outcome.state.steerQueue, 'spinning')).toBe(0);
-  });
-
   it('asks to CONTINUE on the no-results floor, then to EXIT when it fires again', () => {
     const empty = [toolResult({ content: 'No results found for "x".' })];
 
@@ -277,27 +207,5 @@ describe('postExecution step — the counters it owns', () => {
 
     const real = runPostExecution(stateInStep({ consecutiveNoResultTools: 1 }), makeCtx());
     expect(real.state.consecutiveNoResultTools).toBe(0);
-  });
-
-  it('records the response signature from text AND tool calls, order-independently', () => {
-    const twoCalls = {
-      content: 'checking',
-      toolCalls: [
-        { id: 'b', name: 'file_read', arguments: { path: '/b' } },
-        { id: 'a', name: 'file_read', arguments: { path: '/a' } },
-      ],
-    };
-    const first = runPostExecution(stateInStep(), makeCtx({ result: twoCalls }));
-    const reordered = {
-      content: 'checking',
-      toolCalls: [twoCalls.toolCalls[1], twoCalls.toolCalls[0]],
-    };
-    const second = runPostExecution(
-      stateInStep({ lastResponseSig: first.state.lastResponseSig }),
-      makeCtx({ result: reordered }),
-    );
-    // Same two calls in the other order IS the same response — the signature sorts.
-    expect(second.directive).toBe('continue');
-    expect(steerFired(second.state.steerQueue, 'repetition')).toBe(true);
   });
 });

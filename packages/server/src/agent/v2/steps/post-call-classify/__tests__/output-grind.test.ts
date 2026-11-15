@@ -258,7 +258,6 @@ describe('TB8 JOB 1 — the grind rung: detect, steer once, then the existing su
     // truncation, and diagnosing it as a plain empty response is what cost three full
     // output budgets and a nudge naming the wrong thing.
     expect(spec!.priority).toBeLessThan(p('empty-response'));
-    expect(spec!.priority).toBeLessThan(p('thrash-gate'));
   });
 });
 

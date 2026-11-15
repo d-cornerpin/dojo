@@ -51,7 +51,6 @@ const preflightCtx = (): PreflightContext => ({
   agentId: AGENT,
   startStatusHeartbeat: () => undefined,
   stopStatusHeartbeat: () => undefined,
-  detectTaskThrashing: () => ({ thrashing: false }),
   engineBlockEscapeHatch: '',
   engineStartAckAfterMs: 0,
 } as unknown as PreflightContext);

@@ -248,7 +248,6 @@ async function classify(): Promise<TurnContext> {
     agentId: WORKER,
     startStatusHeartbeat: () => undefined,
     stopStatusHeartbeat: () => undefined,
-    detectTaskThrashing: () => ({ thrashing: false }),
     engineBlockEscapeHatch: '',
     engineStartAckAfterMs: 0,
   } as unknown as PreflightContext;

@@ -182,8 +182,8 @@ export const CLOSING_WORK_OPS: ReadonlySet<string> = new Set([
   'work_update:hand_in',
 ]);
 
-/** Forward progress on open work: what resets the thrash counter, and what the compile gate lets through
- *  besides the reply. Closing a project is not in it: that is not working the thing being looped on. */
+/** Forward progress on open work: what the compile gate lets through besides the reply. Closing a project
+ *  is not in it: that is not working the task itself. */
 export const PROGRESS_WORK_OPS: ReadonlySet<string> = new Set([
   'work_update:status',
   'work_update:hand_in',

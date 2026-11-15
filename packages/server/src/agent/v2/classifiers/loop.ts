@@ -1,9 +1,5 @@
-// Loop detector: blocks a tool call whose canonical signature repeats MAX_REPEATS times in the window.
-
-import type { ToolCall } from '@dojo/shared';
-
-export const RECENT_TOOL_WINDOW = 8;       // calls remembered per turn
-export const MAX_REPEATS_BEFORE_BREAK = 3; // identical signatures allowed before blocking
+// Two text identities: near-duplicate reply text, and the canonical tool signature that keys persisted rows
+// (destructive approvals, the cross-turn attempt record).
 
 // Token-set Jaccard catches reworded repeats cheaply; short replies stay exact ("Done." twice is legit).
 export function isNearDuplicateText(a: string | null | undefined, b: string | null | undefined): boolean {
@@ -20,15 +16,6 @@ export function isNearDuplicateText(a: string | null | undefined, b: string | nu
   return jaccard >= 0.9;
 }
 
-export type LoopDecision = 'ok' | 'block';
-
-export interface LoopCheckResult {
-  decision: LoopDecision;
-  signature: string;        // canonical sig of this call (caller appends to window)
-  repeatCount: number;      // how many times this sig appeared in the window (incl. current)
-  refusalMessage?: string;  // populated when decision === 'block'
-}
-
 /** 32-bit FNV-1a, hex: tells a capped value from a same-head, same-length twin. Never a security hash. */
 function fnv1a32(s: string): string {
   let h = 0x811c9dc5;
@@ -43,15 +30,11 @@ const LONG_VALUE_CHARS = 80;
 const VALUE_PREFIX_CHARS = 60;
 const ARRAY_HEAD_ITEMS = 5;
 
-// "A successful mutating call is forward progress": decided at the detectTaskThrashing call site.
-
 /** Identity = tool name + EVERY argument key, keys sorted: same signature only when
  *  the model asked for the same work (no allow-list). Runs of 6+ digits become '*' so a
  *  re-rendered artifact counts as one operation; residual: distinct all-numeric ids also
  *  collapse, none on the live surface pass such an id. Long values and array tails are
- *  CAPPED with a digest of the rest, never dropped, so tail differences stay distinct.
- *  Varied-argument spinning is not caught here: the turn checkpoints at its window's end unless its
- *  job moved, and at 200 tool calls or 500 passes even when it did (steps/post-call-classify/job-turn-end.ts). */
+ *  CAPPED with a digest of the rest, never dropped, so tail differences stay distinct. */
 export function canonicalToolSignature(
   name: string,
   args: Record<string, unknown> | undefined,
@@ -88,27 +71,4 @@ export function canonicalToolSignature(
     }
   }
   return `${name}:${JSON.stringify(normalized)}`;
-}
-
-export function loopDetector(
-  call: ToolCall,
-  recentSignatures: string[],
-): LoopCheckResult {
-  const signature = canonicalToolSignature(call.name, call.arguments);
-  const repeatCount = recentSignatures.filter((s) => s === signature).length;
-  if (repeatCount >= MAX_REPEATS_BEFORE_BREAK) {
-    return {
-      decision: 'block',
-      signature,
-      repeatCount: repeatCount + 1,
-      refusalMessage:
-        `STOP, you have called \`${call.name}\` ${repeatCount + 1} times with substantially-similar arguments in the last few turns. ` +
-        `The person you are talking to does not need more verification. The previous result is the answer; trust it. ` +
-        `Respond to the person you are talking to with TEXT now, do NOT call this tool again, and do NOT call related verification tools (file_read, exec, ls, etc.) on the same artifact. ` +
-        `If you genuinely need different information, ask the person you are talking to a direct question instead.`,
-    };
-  }
-
-  // Only an identical signature blocks; a same-tool-name count would stop legitimate batches.
-  return { decision: 'ok', signature, repeatCount: repeatCount + 1 };
 }

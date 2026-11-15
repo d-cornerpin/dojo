@@ -10,7 +10,7 @@ export const TOOL_CATEGORIES: Array<{ label: string; tools: string[] }> = [
     label: 'Meta',
     // `dojo_report` joins the category every agent already holds, so it is default-granted with no new
     // label. Appended, never reordered: the label string is part of the cached prefix.
-    tools: ['load_tool_docs', 'dojo_report'],
+    tools: ['load_tool_docs', 'dojo_report', 'continue_repeating'],
   },
   {
     label: 'File & System',

@@ -48,7 +48,6 @@ function ctxFor(): ExecuteContext {
     triggerRow: null, triggerWorkId: null, triggerConversationId: null,
     turnStartedAt: new Date().toISOString(), persistRoutingMarker: () => undefined,
     engineStartAckDeliveredThisTurn: false, deferredDeliveredByAck: false,
-    identicalCallState: {} as ExecuteContext['identicalCallState'], refusedOnceSigs: new Set<string>(),
     startAckArmed: false, startAckArmedAtMs: 0, fireStartAckIfOwed: async () => undefined,
     result: { toolCalls: [] } as unknown as ExecuteContext['result'],
     messageId: 'resp-9', persistedContent: null, interAgentTurn: false, hasXmlFallbackTools: false,

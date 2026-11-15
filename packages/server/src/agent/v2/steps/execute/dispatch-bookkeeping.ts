@@ -1,10 +1,9 @@
-// The moment of dispatch: the tool-call broadcast, A2A send accounting, gate flags, and the other agents'
+// The moment of dispatch: the tool-call broadcast, the A2A send flag, gate flags, and the other agents'
 // destructive-action hold. A held call comes back as `{ state, refusal }`, the refusal being its result.
 
 import { isHealerAgent, isPrimaryAgent } from '../../../../config/platform.js';
 import { broadcast } from '../../../../gateway/ws.js';
 import { fileHealerApprovalProposal, markHealerProposalAppliedBySignature, maybeAutoApproveHealerScratch, type EngineSeverity } from '../../../../healer/approval-routing.js';
-import { CLOSING_WORK_OPS, toolOpKey } from '../../../../tools/work-verbs.js';
 import { consumeApproval, isDestructiveCall, manifestPermitsDestructiveCall, requestApproval } from '../../../destructive-gate.js';
 import { isStructuringTool } from '../../classifiers/hoarding.js';
 import { canonicalToolSignature } from '../../classifiers/loop.js';
@@ -28,31 +27,6 @@ export async function recordDispatchAndHold(
   } catch { /* best effort */ }
   if (tc.name === 'send_to_agent' || tc.name === 'broadcast_to_group') {
     state = advance(state, { sentToAgentThisTurn: true });
-    // Count sends per recipient for the A2A re-send cap in refusal-gates.ts.
-    const a = (tc.arguments ?? {}) as Record<string, unknown>;
-    const recip = String(
-      a.to_agent ?? a.agent ?? a.to ?? a.recipient ?? a.group ?? a.group_id ?? '',
-    ).trim().toLowerCase();
-    if (recip) {
-      state = advance(state, {
-        sendsPerAgentThisTurn: {
-          ...state.sendsPerAgentThisTurn,
-          [recip]: (state.sendsPerAgentThisTurn[recip] ?? 0) + 1,
-        },
-      });
-    }
-  }
-  // Any tracker status change or hand-in is forward progress, the wrap-up the thrash gate wanted: clear it.
-  if (
-    CLOSING_WORK_OPS.has(toolOpKey(tc.name, tc.arguments)) &&
-    (state.thrashGatedSignatures.length > 0 || state.thrashGateRefusalCount > 0 || state.thrashGateActivatedAtLoopCount !== null)
-  ) {
-    state = advance(state, {
-      thrashGatedSignatures: [],
-      thrashGateRefusalCount: 0,
-      thrashGateActivatedAtLoopCount: null,
-    });
-    logger.info('v2: thrash gate cleared on tracker transition', { agentId, tool: tc.name }, agentId);
   }
   // The post-compaction recall flag is only cleared here: recall stays an on-demand tool, never
   // auto-injected (an injection bloats the fresh tail and re-triggers compaction).
