@@ -119,7 +119,7 @@ export const workingTaskOrder = (a: string): string =>
 export const WORK_EVENT = {
   /** The owner was asked about this row (the stall ladder's card). Payload: `{ thread_id }`. */
   validationEscalated: 'validation_escalated',
-  /** `revert_count = 0`: a reset is a marker the count reads past, since a count cannot be assigned. */
+  /** Written by no code now; a box upgraded from an older build can hold these, and the revert count reads past the last one. */
   revertReset: 'revert_reset',
   activity: 'activity',
 } as const satisfies Record<string, WorkEventKind>;

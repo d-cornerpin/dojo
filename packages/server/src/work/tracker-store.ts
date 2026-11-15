@@ -416,13 +416,6 @@ export function stampTicket(workId: string, f: {
   });
 }
 
-
-/** `revert_count = 0`. A count cannot be assigned, so a reset is a marker the count reads past,
- *  which also keeps the history. */
-export function resetRevertCount(id: string, actorId: string, reason: string): void {
-  appendWorkEvent(id, WORK_EVENT.revertReset, actorId, { reason });
-}
-
 /** `validation_escalated_at` + `validation_thread_id`, as one event. */
 export function recordValidationEscalation(id: string, actorId: string, threadId: string | null): void {
   appendWorkEvent(id, WORK_EVENT.validationEscalated, actorId, { thread_id: threadId });
