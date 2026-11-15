@@ -147,7 +147,7 @@ for (const [label, names] of HAND_LISTS) {
 }
 
 // ── (b) coverage-critical derived predicates ──
-// The thrash-progress + close-out "did a side effect this turn" predicates are
+// The close-out "did a side effect this turn" predicate is
 // now classifyTool === 'effectful-action' (was a hand list missing every
 // _ms/user_/upload variant). This canary spans exactly the families that drift.
 const CANARY = [
@@ -284,9 +284,8 @@ let sigProbeNames = 0;
       contentErrors.push(
         `the loop signature DROPPED argument(s): ${dropped.slice(0, 20).join(', ')}` +
         `${dropped.length > 20 ? ` (+${dropped.length - 20} more)` : ''}. ` +
-        `Distinct calls then collapse to one signature, the thrash gate refuses genuine work, and its ` +
-        `message claims "you already have the result from the first call" — a sentence that is only true ` +
-        `when a signature match IS full-args identity. Fix canonicalToolSignature; do not add a carve-out set.`,
+        `Distinct calls then collapse to one signature, and a destructive approval or the cross-turn ` +
+        `attempt record takes one call for another. Fix canonicalToolSignature; do not add a carve-out set.`,
       );
     }
   }
