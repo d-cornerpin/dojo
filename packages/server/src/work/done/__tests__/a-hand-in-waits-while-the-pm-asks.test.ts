@@ -58,6 +58,8 @@ describe('a hand-in waits while the PM asks', () => {
     expect(entries(TASK, 'review_miss')).toBe(0);
     expect(whoDecides(TASK)).toEqual({ kind: 'agent', agentId: PM });
 
+    // A second hand-in waits too, worked by the agent asked next: only the thread can tie the next questions to P.
+    await unrelatedHandIn(41);
     let w2 = '', m = '', seen = '';
     turn.during = async (agentId) => {
       if (agentId !== PM) return;
