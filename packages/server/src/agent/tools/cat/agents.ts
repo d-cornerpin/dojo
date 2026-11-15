@@ -13,7 +13,7 @@
 import { getDb } from '../../../db/connection.js';
 import { broadcast } from '../../../gateway/ws.js';
 import { writeAgentStatus } from '../../agent-status.js';
-import { isPrimaryAgent, isHealerAgent } from '../../../config/platform.js';
+import { isPrimaryAgent, isHealerAgent, isPMAgent } from '../../../config/platform.js';
 import { readAgentPromptSurface, writeAgentPromptSurface } from '../../../prompt/agent-prompt-surface.js';
 import { renameAgent } from '../../../prompt/agent-rename.js';
 import { mismatchWarning } from '../assignment-capability.js';
@@ -571,7 +571,7 @@ export const agentsHandlers: ToolHandlerMap = {
                 );
                 // A delivered send is a real delivery: the receipt grounds "I told <agent>"
                 // across turns. skipAudit because the auditLog row above is the provenance row.
-                const taskId = askedAbout(agentId, targetCheck?.id ?? agentRef, payload, result.threadId);
+                const taskId = isPMAgent(agentId) ? askedAbout(agentId, targetCheck?.id ?? agentRef, payload, result.threadId) : null;   // only the PM's questions hold a hand-in
                 const sendReceiptId = writeToolReceipt({
                   agentId, tool: 'send_to_agent', tier: 1, verified: true, basis: 'provider-id',
                   providerId: result.threadId, threadId: result.threadId, recipient: agentRef, taskId,
