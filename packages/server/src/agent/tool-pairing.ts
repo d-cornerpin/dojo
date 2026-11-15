@@ -1,11 +1,10 @@
-// The tool_use ⇄ tool_result pairing repair, at the provider boundary.
+// The tool_use ⇄ tool_result pairing repair: the one place a block nothing pairs is stripped, run on the
+// assembled context (`memory/assembler.ts` applyIntegrityPass) and again at the provider boundary.
 // Every chat API enforces both directions: each `tool_use` has a matching `tool_result` in a
 // following user message, each `tool_result` references a `tool_use` above it, and a violation
 // is a 400. The walk asks whether a message CARRIES a tool_result, never whether it is pure:
 // a mixed carrier (results plus the user's own next message) must still be read, or the repair
 // creates the violation it exists to prevent. A user message with no tool_result still stops the walk.
-// `memory/assembler.ts` sanitizeToolBlocks is a second copy of this rule, right only because
-// mergeConsecutiveRoles runs first; keep them consistent.
 
 export type PairedMessage = { role: string; content: unknown };
 

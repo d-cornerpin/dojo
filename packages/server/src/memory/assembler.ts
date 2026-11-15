@@ -760,7 +760,7 @@ function demotedNarrationByRow(rows: readonly Message[]): Map<string, string> {
 /** Convert stored rows into the emitted messages. The lane's cost is the row cost (the unit
  *  `budgetFreshTail` spends); the stamp/parse difference rides inside the post-budget reserve. */
 function tailRender(payload: TailPayload): LaneRender<TailPayload> {
-  let rows = sanitizeToolPairs(payload.rows);
+  let rows = hoistToolResults(payload.rows);
   const narration = demotedNarrationByRow(rows);
   rows = stubOldToolResults(rows, payload.agentId);
   const labels = labelRows(payload.agentId, rows);
@@ -1723,140 +1723,46 @@ function budgetFreshTail(
   return includedGroups.flatMap(g => (keptTokens > availableTokens ? g.messages.map((m) => overRoomRowView(m, availableTokens)) : g.messages));
 }
 
-function sanitizeToolPairs(messages: Message[]): Message[] {
-  interface Annotated {
-    msg: Message;
-    toolUseIds: string[];   // IDs from tool_use blocks (assistant messages)
-    toolResultIds: string[]; // IDs from tool_result blocks (tool messages)
-  }
-
-  const annotated: Annotated[] = messages.map((msg) => {
-    const toolUseIds: string[] = [];
-    const toolResultIds: string[] = [];
-
+/** Move each tool-result row to just after the row that made its calls, so a pair renders back to back and
+ *  the rows that sat between follow it. It deletes nothing: `repairToolPairing` strips a block nothing pairs. */
+function hoistToolResults(rows: Message[]): Message[] {
+  const idsOf = (msg: Message, type: 'tool_use' | 'tool_result'): string[] => {
     try {
-      const parsed = JSON.parse(msg.content);
-      if (Array.isArray(parsed)) {
-        for (const block of parsed) {
-          if (block.type === 'tool_use' && block.id) {
-            toolUseIds.push(block.id);
-          }
-          if (block.type === 'tool_result' && block.tool_use_id) {
-            toolResultIds.push(block.tool_use_id);
-          }
-        }
-      }
+      const parsed: unknown = JSON.parse(msg.content);
+      if (!Array.isArray(parsed)) return [];
+      return parsed
+        .filter((b: { type?: string }) => b.type === type)
+        .map((b: { id?: string; tool_use_id?: string }) => (type === 'tool_use' ? b.id : b.tool_use_id))
+        .filter((id): id is string => typeof id === 'string' && id.length > 0);
     } catch {
+      return [];
     }
-
-    return { msg, toolUseIds, toolResultIds };
-  });
-
-  // Pairing never deletes conversation: each unmatched tool_use finds its tool_result and REORDERS, so a valid
-  // pair emits back to back and the messages between emit after it. Only genuine brokenness is dropped
-  // (unmatched tool_use, partial parallel match, orphaned tool_result).
-
-  const consumed = new Array<boolean>(annotated.length).fill(false);
-  const dropped = new Array<boolean>(annotated.length).fill(false);
-  const outOrder: number[] = [];
-
-  for (let i = 0; i < annotated.length; i++) {
-    if (consumed[i] || dropped[i]) continue;
-    const entry = annotated[i];
-    if (entry.toolUseIds.length === 0) {
-      outOrder.push(i);
-      consumed[i] = true;
-      continue;
+  };
+  const useIds = rows.map((msg) => idsOf(msg, 'tool_use'));
+  const resultIds = rows.map((msg) => (msg.role === 'tool' ? idsOf(msg, 'tool_result') : []));
+  const taken = new Set<number>();
+  const out: Message[] = [];
+  const take = (k: number): void => {
+    out.push(rows[k]);
+    taken.add(k);
+  };
+  for (let i = 0; i < rows.length; i++) {
+    if (taken.has(i)) continue;
+    take(i);
+    const pending = new Set(useIds[i]);
+    let last = i;
+    for (let j = i + 1; j < rows.length && pending.size > 0; j++) {
+      if (taken.has(j) || !resultIds[j].some((id) => pending.has(id))) continue;
+      take(j);
+      last = j;
+      for (const id of resultIds[j]) pending.delete(id);
     }
-
-    const useIdSet = new Set(entry.toolUseIds);
-
-    let resultIdx = -1;
-    const betweenIdx: number[] = [];
-    for (let j = i + 1; j < annotated.length; j++) {
-      if (consumed[j] || dropped[j]) continue;
-      const cand = annotated[j];
-      if (cand.msg.role === 'tool' && cand.toolResultIds.length > 0) {
-        const matched = cand.toolResultIds.some((id) => useIdSet.has(id));
-        if (matched) {
-          resultIdx = j;
-          break;
-        }
-        betweenIdx.push(j);
-        continue;
-      }
-      betweenIdx.push(j);
-    }
-
-    if (resultIdx === -1) {
-      // No matching tool_result ahead: the tool_use is genuinely unanswered, so drop it; deferred rows stay.
-      dropped[i] = true;
-      continue;
-    }
-
-    // Every use_id must have a matching result_id in the chosen tool message; a partial parallel match is a
-    // mismatch.
-    const resultIdSet = new Set(annotated[resultIdx].toolResultIds);
-    const allMatched = entry.toolUseIds.every((id) => resultIdSet.has(id));
-    if (!allMatched) {
-      dropped[i] = true;
-      dropped[resultIdx] = true;
-      continue;
-    }
-
-    outOrder.push(i);
-    consumed[i] = true;
-    outOrder.push(resultIdx);
-    consumed[resultIdx] = true;
-    for (const k of betweenIdx) {
-      if (consumed[k] || dropped[k]) continue;
-      const deferredEntry = annotated[k];
-      if (deferredEntry.toolUseIds.length > 0) continue;                       // its own pairing pass
-      if (deferredEntry.msg.role === 'tool' && deferredEntry.toolResultIds.length > 0) continue; // pass two
-      outOrder.push(k);
-      consumed[k] = true;
+    // The ordinary rows the pair spanned follow it at once; tool rows among them keep their own place.
+    for (let k = i + 1; k < last; k++) {
+      if (!taken.has(k) && useIds[k].length === 0 && resultIds[k].length === 0) take(k);
     }
   }
-
-  for (let i = 0; i < annotated.length; i++) {
-    if (!consumed[i] && !dropped[i]) {
-      outOrder.push(i);
-      consumed[i] = true;
-    }
-  }
-
-  // Pass two: drop a tool_result the nearest kept tool_use before it does not match (pairs are adjacent now).
-  const keepOut = new Array<boolean>(outOrder.length).fill(true);
-  for (let oi = 0; oi < outOrder.length; oi++) {
-    const entry = annotated[outOrder[oi]];
-    if (entry.msg.role !== 'tool' || entry.toolResultIds.length === 0) continue;
-    let matchedToKeptUse = false;
-    for (let oj = oi - 1; oj >= 0; oj--) {
-      if (!keepOut[oj]) continue;
-      const prev = annotated[outOrder[oj]];
-      if (prev.toolUseIds.length === 0) continue;
-      const useIdSet = new Set(prev.toolUseIds);
-      if (entry.toolResultIds.some((id) => useIdSet.has(id))) {
-        matchedToKeptUse = true;
-      }
-      break;
-    }
-    if (!matchedToKeptUse) keepOut[oi] = false;
-  }
-
-  const result = outOrder.filter((_, oi) => keepOut[oi]).map((oi) => annotated[oi].msg);
-
-  const droppedCount = annotated.length - result.length;
-  if (droppedCount > 0) {
-    const droppedDetails = annotated
-      .map((a, i) => (dropped[i] || !consumed[i]) ? `[${i}] role=${a.msg.role} useIds=${a.toolUseIds.join(',')} resultIds=${a.toolResultIds.join(',')}` : null)
-      .filter(Boolean);
-    logger.warn(`Dropped ${droppedCount} genuinely broken tool message(s) while sanitizing tool pairs`, {
-      details: droppedDetails.slice(0, 10),
-    });
-  }
-
-  return result;
+  return out;
 }
 
 function parseMessageContent(
