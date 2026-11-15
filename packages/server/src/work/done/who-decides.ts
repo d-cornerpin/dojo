@@ -1,6 +1,7 @@
 // WHO DECIDES a handed-in task: the PM, until two verdictless reviews or three send-backs; then the main agent
 // (another agent's task) or the owner (the main agent's own). A task the PM worked starts with the main agent.
 // Never a worker of the task (`workersOf`): then the owner. An open PM question about the hand-in holds it (`pmQuestions`).
+import { a2aThreadTokenMatchesSql } from '@dojo/shared';
 import { getDb } from '../../db/connection.js';
 import { getPMAgentId, getPrimaryAgentId } from '../../config/platform.js';
 import { turnContext } from '../../agent/turn-context.js';
@@ -75,13 +76,26 @@ export function decidedBy(agentId: string): string[] {
 /** The hand-in a send is about, from records only: the one its thread, or the thread the turn answers, is tied to;
  *  else, of the hand-ins the sender decides now, the only one, the one the recipient works, or the one it names. */
 export function askedAbout(agentId: string, recipientId: string, payload: string, threadId: string): string | null {
-  const ctx = turnContext(agentId), answering = ctx?.address?.kind === 'agent' ? ctx.address.threadId : ctx?.root?.kind === 'a2a' ? ctx.root.id : null;
-  const tied = tiedTask(agentId, threadId, answering);
+  const tied = tiedTask(agentId, threadId) ?? tiedTask(agentId, answeredThread(agentId));
   if (tied) return tied;
   const mine = decidedBy(agentId);
   return mine.length === 1 ? mine[0] : mine.find((id) => workersOf(id).has(recipientId)) ?? mine.find((id) => payload.includes(id.slice(0, 8))) ?? null;
 }
 
-/** The task a send of `agentId` on one of these threads was tied to, the newest. */
-export const tiedTask = (agentId: string, thread: string, other: string | null = null): string | null => (getDb().prepare(
-  'SELECT task_id FROM tool_receipts WHERE task_id IS NOT NULL AND agent_id = ? AND thread_id IN (?, ?) ORDER BY created_at DESC LIMIT 1').get(agentId, thread, other) as { task_id: string } | undefined)?.task_id ?? null;
+/** The thread the agent's live turn answers: the root's full id, else the address's short token. */
+export function answeredThread(agentId: string): string | null {
+  const ctx = turnContext(agentId);
+  if (ctx?.root?.kind === 'a2a') return ctx.root.id;
+  return ctx?.address?.kind === 'agent' ? ctx.address.threadId : null;
+}
+
+/** The task the newest send of `agentId` on `thread` (a full id or its short token) was tied to. */
+export function tiedTask(agentId: string, thread: string | null): string | null {
+  if (!thread) return null;
+  const row = getDb().prepare(`
+    SELECT task_id FROM tool_receipts
+     WHERE task_id IS NOT NULL AND agent_id = ? AND (thread_id = ? OR ${a2aThreadTokenMatchesSql('thread_id')})
+     ORDER BY created_at DESC LIMIT 1
+  `).get(agentId, thread, thread, thread) as { task_id: string } | undefined;
+  return row?.task_id ?? null;
+}

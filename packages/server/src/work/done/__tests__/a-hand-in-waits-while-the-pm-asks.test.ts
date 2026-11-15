@@ -14,12 +14,11 @@ vi.setConfig({ testTimeout: 240_000, hookTimeout: 240_000 });
 
 import { whoDecides } from '../who-decides.js';
 import { assembleContext } from '../../../memory/assembler.js';
-import type { TurnCounterparty } from '../../../agent/v2/counterparty.js';
 import { insertMessage } from '../../../memory/message-store.js';
 import { patienceBoundMs } from '../../../tracker/assignee-patience.js';
 import { freshBoard, handedIn, call, deliveredToOwner, stateOf, PM, MAIN, WORKER, OTHER, TASK } from './helpers/decision-world.js';
 import { doneDb } from './helpers/done-db.js';
-import { pmCanRun, turn, entries, resetLadderWorld, pmTurn, review as reviewBy } from './helpers/ladder-world.js';
+import { pmCanRun, turn, entries, resetLadderWorld, pmTurn, answerCounterparty, review as reviewBy } from './helpers/ladder-world.js';
 
 const review = (act?: () => Promise<void>): Promise<string> => reviewBy(PM, act);
 
@@ -65,11 +64,11 @@ describe('a hand-in waits while the PM asks', () => {
       if (agentId !== PM) return;
       turn.during = () => {};
       await pmTurn(PM, async () => {
-        const view = await assembleContext(PM, 'm', { latestUserSource: null, isA2ATurn: true, counterparty: { kind: 'agent', threadId: w1 } as TurnCounterparty });
+        const view = await assembleContext(PM, 'm', { latestUserSource: null, isA2ATurn: true, counterparty: await answerCounterparty(w1, WORKER) });
         seen = JSON.stringify(view.messages);
         w2 = await ask(OTHER, 'Did the March export finish on your side?');
         m = await ask(MAIN, 'Did the owner ask for March to be left out?');
-      }, w1);
+      }, w1, WORKER);
     };
     expect((await answer(WORKER, w1, 'Sheet 3. The March rows are missing; the export failed.')).isError).toBe(false);
     await vi.waitFor(() => { if (!m) throw new Error('the answer turn has not asked yet'); });

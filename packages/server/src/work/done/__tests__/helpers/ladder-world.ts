@@ -6,7 +6,8 @@
 import { vi } from 'vitest';
 import { doneDb } from './done-db.js';
 import { openTurnContext, endTurnContext } from '../../../../agent/turn-context.js';
-import type { TurnAddress } from '../../../../agent/v2/turn-address.js';
+import type { TurnCounterparty } from '../../../../agent/v2/counterparty.js';
+import { a2aThreadShort } from '@dojo/shared';
 
 export const MIN = 60_000;
 
@@ -76,11 +77,23 @@ export function resetLadderWorld(): void {
 }
 
 let turnNo = 0;
-/** One PM turn as the runtime runs it: its own bag, answering `thread` when it is an agent's message. */
-export async function pmTurn(pmId: string, act: () => Promise<void>, thread: string | null = null): Promise<void> {
+/** The counterparty the preflight builds for an agent's message on `thread`: it carries the thread's short token.
+ *  Loaded at call time, as below: the runtime mock loads this file. */
+export const answerCounterparty = async (thread: string, from: string): Promise<TurnCounterparty> => (await import('../../../../agent/v2/counterparty.js')).resolveTurnCounterparty({
+  isA2ATurn: true, a2aFromName: from, a2aThreadShort: a2aThreadShort(thread),
+  triggerContent: null, triggerLane: null, triggerChannel: null, triggerInboundMeta: null, inboundChannel: null,
+});
+
+/** One PM turn as the runtime runs it: its own bag, addressed to the agent whose message on `thread` it answers. */
+export async function pmTurn(pmId: string, act: () => Promise<void>, thread: string | null = null, from = 'another agent'): Promise<void> {
   const ctx = openTurnContext(pmId);
   ctx.turnNumber = ++turnNo;
-  if (thread) ctx.address = { kind: 'agent', threadId: thread } as TurnAddress;
+  if (thread) {
+    ctx.address = (await import('../../../../agent/v2/turn-address.js')).computeTurnAddress({
+      counterparty: await answerCounterparty(thread, from), isEngineTurn: false, isNotificationTurn: false, inboundChannel: null,
+      inboundContext: null, presence: 'in_dojo', imessageBridgeConfigured: false, ownerAffinityChannel: null, autoRoutes: false,
+    });
+  }
   try { await act(); } finally { endTurnContext(pmId); }
 }
 

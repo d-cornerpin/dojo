@@ -6,7 +6,7 @@ import { isPMAgent } from '../config/platform.js';
 import { pinnedContextSection } from '../vault/retrieval.js';
 import { turnContext as liveTurnContext } from '../agent/turn-context.js';
 import { patienceBoundMs } from '../tracker/assignee-patience.js';
-import { tiedTask } from '../work/done/who-decides.js';
+import { answeredThread, tiedTask } from '../work/done/who-decides.js';
 import type { PromptTurnContext } from '../prompt/assembler.js';
 import { boardAgentRows } from './store.js';
 import { contextOverflowSince } from './compaction.js';
@@ -22,7 +22,7 @@ export async function pmViewParts(agentId: string, turnContext: PromptTurnContex
   const { tail, present } = boardAgentRows(agentId, block, live?.turnNumber ?? null, turnContext?.engineEventKeepFullId ?? live?.triggerMessageId ?? null);
   // For one patience bound after a forced pass the view fits half its budget, so the retry assembles a smaller one.
   const room = contextOverflowSince(agentId, Date.now() - patienceBoundMs(agentId)) ? Math.floor(contentBudget / 2) : contentBudget;
-  const task = turnContext?.counterparty?.kind === 'agent' && turnContext.counterparty.threadId ? tiedTask(agentId, turnContext.counterparty.threadId) : null;
+  const task = turnContext?.counterparty?.kind === 'agent' ? tiedTask(agentId, answeredThread(agentId) ?? turnContext.counterparty.threadId) : null;
   const file = task ? `The task this message is about, [${task}]:${(await import('../tracker/pm-agent.js')).taskFile(task, Math.floor(room / 4))}` : '';
   return { pinned: pinnedContextSection(agentId).section, tail, file, present, room };
 }
