@@ -110,6 +110,8 @@ export class CallSession {
   private speechSynthRunning = false;
   // Bumped on barge-in: sentences still queued or being synthesized under an older generation are dropped.
   private speechGeneration = 0;
+  /** Set by the TTS bridge once the cloud voice has failed on this call; the call then stays local. */
+  private voiceState = { cloudDown: false };
 
   // Running transcript stitched at the end into twilio_call_log.transcript.
   private transcript: Array<{ at: string; speaker: 'caller' | 'agent'; text: string }> = [];
@@ -514,7 +516,7 @@ export class CallSession {
         }
         try {
           const { synthesizeForTwilio } = await import('./tts-bridge.js');
-          const pcm = await synthesizeForTwilio(item.text);
+          const pcm = await synthesizeForTwilio(item.text, this.voiceState);
           if (!pcm) {
             // No engine could speak it: skip the sentence.
             logger.warn('TTS produced no audio for sentence (skipped)', {

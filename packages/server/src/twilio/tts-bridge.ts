@@ -62,17 +62,20 @@ async function loadSettings(): Promise<TtsSettings> {
  * Synthesize one utterance: mono Float32 PCM for the call session's μ-law encoder, or `null` if no engine
  * could speak it (CallSession.drainSpeechTexts then skips the sentence). A failing cloud voice hands the
  * whole sentence to the local voice, so the caller hears the rest of the reply; the cloud audio is only
- * returned complete, so a sentence is never half cloud and half local.
+ * returned complete, so a sentence is never half cloud and half local. `call.cloudDown` (one per call, set
+ * on the first failure) keeps the rest of that call on the local voice, so a dead provider costs one wait.
  */
 export async function synthesizeForTwilio(
   text: string,
+  call: { cloudDown: boolean } = { cloudDown: false },
 ): Promise<{ pcm: Float32Array; sampleRate: number } | null> {
   const settings = await loadSettings();
-  if (settings.engine === 'cloud') {
+  if (settings.engine === 'cloud' && !call.cloudDown) {
     try {
       return await synthesizeCloud(text, settings);
     } catch (err) {
-      logger.warn('Hume TTS failed on live call, speaking this sentence in the local voice', {
+      call.cloudDown = true;
+      logger.warn('Hume TTS failed on live call, the rest of the call uses the local voice', {
         error: err instanceof Error ? err.message : String(err),
         textPreview: text.slice(0, 60),
       });
