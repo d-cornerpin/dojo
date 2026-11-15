@@ -52,7 +52,7 @@ import { selfWakeStandDown } from '../work/work-reaper.js';
 import { recordFloorGhost } from './v2/floor-ghost.js';
 // A2A protocol constants inlined to avoid runtime imports from @dojo/shared, which points
 // at .ts source and cannot load in production without a TS loader; types stay type-only.
-import type { A2AIntent, A2AEnvelope, A2ADropReason, ToolCall, ChannelKind } from '@dojo/shared';
+import { REPLY_NEEDED_INTENTS, type A2AIntent, type A2AEnvelope, type A2ADropReason, type ToolCall, type ChannelKind } from '@dojo/shared';
 import { resolveRecipientDisplay } from '../contacts/resolve-recipient.js';
 import { engineHandIn } from '../work/done/hand-in.js';
 import { compileAskerFromMeta } from '../work/compile-asker.js';
@@ -62,7 +62,6 @@ import type { ToolOutcome } from './tool-outcome.js';
 import { homeDir } from '../home.js';
 import { servedRequestThreadFrom } from './a2a-own-turn.js';
 
-const REOPENING_INTENTS = new Set<A2AIntent>(['QUESTION', 'BLOCK', 'ASSIGN']);
 const REPLY_INTENTS = new Set<A2AIntent>(['ANSWER', 'DELIVERABLE', 'COMPLETE', 'FAIL']);   // the answer-class intents
 
 // Only FYI and STATUS are ambient no-wake. COMPLETE and FAIL must wake: the assigner has a next
@@ -73,7 +72,7 @@ import { SEMANTIC_DEDUP_THRESHOLD as DEDUP_SIMILARITY_THRESHOLD } from '../memor
 const DEDUP_LOOKBACK = 3;
 
 function isNoWakeIntent(intent: A2AIntent): boolean { return NO_WAKE_INTENTS.has(intent); }
-function isReopeningIntent(intent: A2AIntent): boolean { return REOPENING_INTENTS.has(intent); }
+function isReopeningIntent(intent: A2AIntent): boolean { return REPLY_NEEDED_INTENTS.has(intent); }
 
 export { isNoWakeIntent, type A2AIntent };
 

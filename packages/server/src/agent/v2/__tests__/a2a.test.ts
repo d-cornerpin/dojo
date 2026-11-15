@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
-  a2aReplyEnforcer, parseA2ATrigger, REPLY_NEEDED_INTENTS,
+  a2aReplyEnforcer, parseA2ATrigger,
 } from '../classifiers/a2a.js';
+import { REPLY_NEEDED_INTENTS } from '@dojo/shared';
 
 describe('a2aReplyEnforcer', () => {
   const base = {

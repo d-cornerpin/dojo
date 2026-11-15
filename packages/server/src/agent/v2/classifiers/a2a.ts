@@ -1,10 +1,7 @@
 // A2A intent rules live in engine code, not prompt prose: weak models forget
 // prompt rules. The missed-reply nudge and the trigger parser.
 
-import { A2A_ENVELOPE_RE } from '@dojo/shared';
-
-/** Intents that wake the receiver and expect a reply. */
-export const REPLY_NEEDED_INTENTS = new Set(['QUESTION', 'ASSIGN', 'BLOCK']);
+import { A2A_ENVELOPE_RE, REPLY_NEEDED_INTENTS } from '@dojo/shared';
 
 export interface A2AReplyEnforcerInput {
   triggeredByReplyNeededIntent: boolean;

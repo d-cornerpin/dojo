@@ -6,11 +6,9 @@ import {
 } from '@dojo/shared';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
+import { REPLY_NEEDED_INTENTS } from '@dojo/shared';
 
 const logger = createLogger('a2a-replies');
-
-/** Inbound A2A intents that put the receiver on the hook for a reply. */
-const REPLY_NEEDED_INTENTS = new Set(['QUESTION', 'ASSIGN', 'BLOCK']);
 
 export interface UnrepliedAssign {
   messageId: string;

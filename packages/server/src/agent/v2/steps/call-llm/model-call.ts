@@ -116,7 +116,7 @@ export async function callWithRetryAndFallback(
         abortSignal: abortController.signal,
         onChunk: (chunk) => {
           if (abortController.signal.aborted) return;
-          // Inter-agent turns never stream to the user's chat, where their persisted row is hidden.
+          // Agent-to-agent reply text is never streamed into the owner's chat, wordy or not; the client hides their reasoning and tool frames (`turnKind`) outside wordy mode.
           if (!isA2ATurn && counterparty.kind !== 'agent') {
             broadcast({
               type: 'chat:chunk',

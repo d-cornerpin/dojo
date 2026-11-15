@@ -23,6 +23,9 @@ export interface A2AEnvelope {
   origin?: 'engine';
 }
 
+/** Intents that put the receiver on the hook for a reply; they also reopen a closed thread. */
+export const REPLY_NEEDED_INTENTS: ReadonlySet<string> = new Set(['QUESTION', 'ASSIGN', 'BLOCK']);
+
 export type A2ADropReason =
   | 'TERMINAL_THREAD_CLOSED'
   | 'SEMANTIC_DUPLICATE'
