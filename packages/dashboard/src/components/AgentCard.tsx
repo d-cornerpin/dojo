@@ -135,8 +135,7 @@ export const AgentCard = ({ agent, models, providerNameById, onModelChanged, ind
   };
   const isAuto = agent.modelId === 'auto';
 
-  const isWorking = agent.status === 'working';
-  // The Stop button is offered by the RULE, not by `isWorking`: a background media job
+  // The Stop button is offered by the RULE, not by the status: a background media job
   // outlives its turn, so an agent reading `idle` can still have work the button would cut.
   const stop = stopAffordance(agent);
   const isTerminated = agent.status === 'terminated';

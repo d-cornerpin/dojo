@@ -409,8 +409,6 @@ async function pollAccount(view: MicrosoftAccountView): Promise<void> {
 
     if (newCount > 0) {
       const runtime = getAgentRuntime();
-      const { getOwnerName } = await import('../config/platform.js');
-      const ownerName = getOwnerName();
       // Neutral trigger nudge: the per-email messages above carry the real framing.
       const summary = newCount === 1
         ? `[SOURCE: OUTLOOK NOTIFICATION] New email in ${notifyAccount}. Details above — act on it as the framing there indicates.`

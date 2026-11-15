@@ -76,7 +76,6 @@ export function runFrequentAutoFixes(): void {
   logger.debug('Frequent auto-fix sweep firing');
   try {
     const db = getDb();
-    const now = Date.now();
 
     // Long-paused agents (status='paused' for >30 min).
     const longPaused = db.prepare(`

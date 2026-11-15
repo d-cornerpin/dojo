@@ -577,7 +577,6 @@ export const Chat = ({ panel = null }: ChatProps) => {
   const [agentName, setAgentName] = useState('');
   const [modelNames, setModelNames] = useState<Record<string, string>>({});
   const [messages, setMessages] = useAgentState<ChatMessage[]>(AGENT_ID, []);
-  const [input, setInput] = useState('');
   const [isWorking, setIsWorking] = useAgentState(AGENT_ID, false);
   // Turn kind from agent:status; 'a2a' turns stay composer-quiet (no dots/stop) unless wordy is on.
   const [turnKind, setTurnKind] = useAgentState<'user' | 'a2a'>(AGENT_ID, 'user');

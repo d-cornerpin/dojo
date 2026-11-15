@@ -86,9 +86,6 @@ function alertMissedRuns(taskRow: Record<string, unknown>, missedSlots: number):
   const db = getDb();
   const taskId = taskRow.id as string;
   const taskTitle = taskRow.title as string;
-  const nextRunAt = taskRow.next_run_at as string;
-  const lastRunAt = taskRow.last_run_at as string | null;
-  const anchorTime = taskRow.anchor_time as string | null;
   const repeatInterval = taskRow.repeat_interval as number | null;
   const repeatUnit = taskRow.repeat_unit as string | null;
 

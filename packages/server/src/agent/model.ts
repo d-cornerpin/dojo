@@ -457,22 +457,17 @@ function getModelInfo(modelId: string): { providerId: string; apiModelId: string
   }
 
   let capabilities: string[] = [];
-  let capabilitiesValid = false;
   if (row.capabilities) {
     try {
       const parsed = JSON.parse(row.capabilities);
       if (Array.isArray(parsed)) {
         capabilities = parsed.filter(c => typeof c === 'string');
-        capabilitiesValid = true;
       }
     } catch {
       // Invalid JSON, treat as text-only for safety rather than enabling everything
       logger.warn('Model has invalid capabilities JSON, defaulting to text-only', { modelId });
       capabilities = ['text'];
-      capabilitiesValid = false;
     }
-  } else {
-    capabilitiesValid = false;
   }
 
   return {
@@ -2470,9 +2465,6 @@ async function dialModel(params: ModelCallParams): Promise<ModelCallResult> {
 
     let fullText = '';
     const toolCalls: ToolCall[] = [];
-    let currentToolName = '';
-    let currentToolInput = '';
-    let currentToolId = '';
 
     stream.on('text', (text) => {
       anthWatchdog.bump();

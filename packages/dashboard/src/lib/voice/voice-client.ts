@@ -133,7 +133,6 @@ export class VoiceClient {
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private listeners: { [K in keyof VoiceClientEvents]?: Set<any> } = {};
-  private lastError: string | null = null;
 
   // User mute: mic tracks off (OS indicators clear) and VAD paused; TTS playback keeps running.
   private muted = false;
@@ -232,7 +231,6 @@ export class VoiceClient {
 
   async start(): Promise<void> {
     if (this.isActive()) return;
-    this.lastError = null;
     // A fresh session always starts unmuted; a carried mute reads as a broken mic.
     if (this.muted) {
       this.muted = false;
@@ -371,7 +369,6 @@ export class VoiceClient {
 
   private fail(detail: string, err?: unknown): void {
     const message = err instanceof Error ? err.message : String(err ?? detail);
-    this.lastError = message;
     this.setState('error');
     this.emit('error', `${detail}: ${message}`);
     console.error('[voice]', detail, err);

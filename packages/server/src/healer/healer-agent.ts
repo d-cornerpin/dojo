@@ -100,7 +100,6 @@ function buildHealerCycleMessage(opts: BuildCycleMessageOptions): BuildCycleMess
   const { reportText, approvedSection, autoFixCount, contextWindow } = opts;
 
   // Budget calculation mirrors Dreamer's batchArchives (vault/maintenance.ts).
-  const overheadChars = HEALER_CONTEXT_OVERHEAD_TOKENS * CHARS_PER_TOKEN;
   const availableTokens = contextWindow - HEALER_CONTEXT_OVERHEAD_TOKENS;
   const rawBudget = Math.max(0, availableTokens / HEALER_PROCESSING_GROWTH_FACTOR);
   const ratioCap = contextWindow * HEALER_BATCH_BUDGET_CAP_RATIO;

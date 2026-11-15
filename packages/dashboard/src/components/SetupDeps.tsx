@@ -96,7 +96,6 @@ export const SetupDeps = ({ onReady }: { onReady?: (ready: boolean) => void }) =
   const [pullError, setPullError] = useState<string | null>(null);
   const [pullProgress, setPullProgress] = useState<{ completed: number; total: number; status: string } | null>(null);
   const [manualModel, setManualModel] = useState('');
-  const [configured, setConfigured] = useState(false);
 
   const [pullElapsed, setPullElapsed] = useState(0);
   // Next waits for every required dep and stays blocked while a model pulls.
@@ -157,7 +156,6 @@ export const SetupDeps = ({ onReady }: { onReady?: (ready: boolean) => void }) =
       setPhase('models');
       loadInstalledModels();
       await request(`${API}/ollama/auto-configure`, { method: 'POST' });
-      setConfigured(true);
     }
 
     return d;
@@ -206,7 +204,6 @@ export const SetupDeps = ({ onReady }: { onReady?: (ready: boolean) => void }) =
       if (r.ok) {
         setDeps(d => ({ ...d, nomic: 'installed' }));
         await request(`${API}/ollama/auto-configure`, { method: 'POST' });
-        setConfigured(true);
       } else {
         setDeps(d => ({ ...d, nomic: 'failed' }));
         setDepErrors(e => ({ ...e, nomic: r.error }));
@@ -305,7 +302,6 @@ export const SetupDeps = ({ onReady }: { onReady?: (ready: boolean) => void }) =
     });
     if (r.ok) {
       await request(`${API}/ollama/auto-configure`, { method: 'POST' });
-      setConfigured(true);
       await loadInstalledModels();
     } else {
       setPullError(r.error);

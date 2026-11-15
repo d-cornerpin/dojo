@@ -280,7 +280,6 @@ export function onAgentInjured(agentId: string, errorMessage: string, code?: str
     const healerRow = db.prepare("SELECT value FROM config WHERE key = 'healer_agent_id'").get() as { value: string } | undefined;
     if (healerRow && agentId === healerRow.value) {
       logger.warn('Healer agent is injured, alerting user directly (cannot self-heal)', { agentId });
-      const agent = db.prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
       // iMessage and dashboard share one plain-English wording; the raw provider error stays in logs.
       const userMsg = told.HEALER_BROKEN_WORDS;
       if (told.tellOwner('healer-broken', userMsg)) void sendAlert(userMsg, 'critical', { kind: 'broken-agent', agentId }); // until it recovers

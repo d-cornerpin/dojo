@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import type { AccessGrants, AgentDetail, IntegrationLevel } from '@dojo/shared';
 import { ACCESS_CHANNELS } from '@dojo/shared';
 import * as api from '../lib/api';

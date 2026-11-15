@@ -60,10 +60,8 @@ export const Setup = () => (
 
 const SetupWizard = () => {
   const [currentStep, setCurrentStep] = useState<Step>('welcome');
-  const [depsReady, setDepsReady] = useState(false);
   const [stepReady, setStepReady] = useState<Record<string, boolean>>({});
   const [visitedSteps, setVisitedSteps] = useState<Set<Step>>(new Set(['welcome']));
-  const navigate = useNavigate();
   const stageRef = useRef<HTMLDivElement>(null);
   const dojoOrb = useDojoOrb();
 
@@ -107,7 +105,7 @@ const SetupWizard = () => {
   const isNextDisabled = gatedSteps.includes(currentStep) && !stepReady[currentStep];
 
   // Stable callbacks for step onReady props (prevents infinite re-render loops)
-  const onDepsReady = useCallback((ready: boolean) => { setDepsReady(ready); markReady('dependencies', ready); }, [markReady]);
+  const onDepsReady = useCallback((ready: boolean) => markReady('dependencies', ready), [markReady]);
   const onProviderReady = useCallback((r: boolean) => markReady('provider', r), [markReady]);
   const onProfileReady = useCallback((r: boolean) => markReady('your-profile', r), [markReady]);
   const onPrimaryReady = useCallback((r: boolean) => markReady('primary-agent', r), [markReady]);
@@ -367,9 +365,7 @@ const ProviderStep = ({ onReady, onCloudProviderChange }: { onReady?: (ready: bo
   const [baseUrl, setBaseUrl] = useState('');
   const [status, setStatus] = useState<'idle' | 'validating' | 'valid' | 'invalid'>('idle');
   const [error, setError] = useState<string | null>(null);
-  const [providerId, setProviderId] = useState<string | null>(null);
   const [hasCloudProvider, setHasCloudProvider] = useState(false);
-  const [showConfirm, setShowConfirm] = useState(false);
   const [providers, setProviders] = useState<Provider[]>([]);
 
   const presetConfig = (() => {
@@ -431,7 +427,6 @@ const ProviderStep = ({ onReady, onCloudProviderChange }: { onReady?: (ready: bo
       return;
     }
 
-    setProviderId(id);
     const valResult = await api.validateProvider(id);
     if (valResult.ok && valResult.data.valid) {
       setStatus('valid');

@@ -44,7 +44,7 @@ export function runRefusalGates(
   ctx: ExecuteContext,
   isA2AReplyTool: boolean,
 ): { state: AgentTurnState; refusal: PendingToolResult | null } {
-  const { agentId, turnNumber, turnCtx, counterparty, refusedOnceSigs } = ctx;
+  const { agentId, turnNumber, turnCtx, refusedOnceSigs } = ctx;
 
   const warning = hurdle(agentId, tc, refusedOnceSigs);
   if (warning) return { state, refusal: warning };

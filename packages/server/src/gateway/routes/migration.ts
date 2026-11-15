@@ -41,7 +41,7 @@ migrationRouter.post('/export', async (c) => {
     }
 
     logger.info('Export requested');
-    const { filePath, manifest } = await createExport(body.password);
+    const { filePath } = await createExport(body.password);
 
     const fs = await import('node:fs');
     const stat = fs.statSync(filePath);

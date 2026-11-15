@@ -741,7 +741,6 @@ export const agentsHandlers: ToolHandlerMap = {
       return { content, isError };
     }
 
-    const bcThreadId = args.thread_id as string | undefined;
     const sent: string[] = [];
     const sentIds = new Set<string>();
 

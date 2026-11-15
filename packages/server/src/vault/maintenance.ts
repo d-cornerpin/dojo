@@ -1433,7 +1433,6 @@ export async function recoverDreamerFromContextOverflow(
 // After the setup wizard, a Dreamer processes the user's "About You" profile (USER.md): long-term facts go
 // to the vault, and the profile is trimmed to what is needed every turn.
 export async function runFirstRunProfileBootstrap(): Promise<{ dreamerId: string | null }> {
-  const config = getDreamingConfig();
   const modelId = dreamerModelId();
   if (!modelId) {
     logger.warn('No model available for first-run profile bootstrap');
@@ -1455,8 +1454,6 @@ export async function runFirstRunProfileBootstrap(): Promise<{ dreamerId: string
     logger.info('USER.md too short, skipping first-run profile bootstrap');
     return { dreamerId: null };
   }
-
-  const db = getDb();
 
   logger.info('Spawning first-run Dreamer to bootstrap profile into vault');
 

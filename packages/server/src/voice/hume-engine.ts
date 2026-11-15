@@ -162,8 +162,6 @@ export class HumeStreamSession {
   private generationId: string | null = null;
   private contextGenerationId: string | undefined;
   private closed = false;
-  /** A frame carried `isLastChunk` (per text snippet, not end of stream). */
-  private sawLastChunk = false;
   /** The socket 'close' event fired, so close() can resolve as soon as Hume hangs up. */
   private sawSocketClose = false;
 
@@ -280,7 +278,6 @@ export class HumeStreamSession {
         const f32 = decodeHumePcm(m.audio);
         if (f32.length > 0) this.onWav?.(pcmFloatToWav(f32, HUME_SAMPLE_RATE));
         if (m.isLastChunk) {
-          this.sawLastChunk = true;
           this.onSnippetDone?.(m.text);
         }
       } catch (err) {

@@ -630,7 +630,6 @@ export async function trackerCreateTask(agentId: string, args: Record<string, un
     }
 
     if (scheduledStart) {
-      const db = getDb();
       const repeatInterval = args.repeat_interval as number | undefined;
       const repeatUnit = args.repeat_unit as string | undefined;
       const repeatEndType = (args.repeat_end_type as string | undefined) ?? 'never';

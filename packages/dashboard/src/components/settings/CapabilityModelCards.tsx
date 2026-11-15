@@ -345,7 +345,6 @@ const HealerEditor = ({ models, config, refresh }: { models: Model[]; config: He
   // provider-isolation flags, read with the config; the save path re-reads them for the banner.
   const providerSharedWithPrimary = config.providerSharedWithPrimary ?? false;
   const primaryProviderName = config.primaryProviderName ?? null;
-  const healerProviderName = config.healerProviderName ?? null;
   const toast = useToast();
   const mounted = useRef(true);
   useEffect(() => () => { mounted.current = false; }, []);

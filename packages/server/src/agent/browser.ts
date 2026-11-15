@@ -3,7 +3,7 @@
 // Playwright-backed web_browse tool
 // ════════════════════════════════════════
 
-import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
+import { chromium, type Browser, type Page } from 'playwright';
 import { createLogger } from '../logger.js';
 import { callModel } from './model.js';
 import { getEffectiveVisionModel } from '../services/vision-model.js';
@@ -51,7 +51,6 @@ function checkRateLimit(agentId: string): boolean {
 
 export class BrowserSession {
   private browser: Browser | null = null;
-  private context: BrowserContext | null = null;
   private page: Page | null = null;
   private launching: Promise<Page> | null = null;
   private agentId: string;
@@ -91,7 +90,6 @@ export class BrowserSession {
       logger.info('Browser disconnected', {}, this.agentId);
       if (this.browser === browser) {
         this.browser = null;
-        this.context = null;
         this.page = null;
       }
     });
@@ -103,14 +101,12 @@ export class BrowserSession {
       });
       const page = await context.newPage();
       this.browser = browser;
-      this.context = context;
       this.page = page;
       return page;
     } catch (err) {
       // A context/page failure must not leave a Chromium that close() can never reach.
       await browser.close().catch(() => {});
       this.browser = null;
-      this.context = null;
       this.page = null;
       throw err;
     }
@@ -281,7 +277,6 @@ export class BrowserSession {
         // Best-effort close
       }
       this.browser = null;
-      this.context = null;
       this.page = null;
     }
     return 'Browser session closed.';

@@ -79,11 +79,6 @@ export const VoiceTab = () => {
   const [cloudDescription, setCloudDescription] = useState('');
   const [cloudSpeed, setCloudSpeed] = useState(1.0);
 
-  const refreshHumeStatus = async () => {
-    const r = await api.getHumeStatus();
-    if (r.ok) setHumeKeySet(r.data.keySet);
-  };
-
   const refreshHumeVoices = async () => {
     setHumeVoicesLoading(true);
     setHumeVoicesError(null);

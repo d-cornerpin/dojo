@@ -51,7 +51,7 @@ export function runStepContexts(
 ): StepContextsOutputs {
   const { agentId, stopStatusHeartbeat, detectTaskThrashing } = ctx;
   const {
-    db, turnNumber, counterparty, counterpartyIsAgentSender, chosenConvKey,
+    db, turnNumber, counterparty, chosenConvKey,
     chosenConversationId, turnStartedAt, settledContextWakeTurn, isA2ATurn, isEngineTurn,
     triggerWorkId, inboundChannel, inboundContext, contextWindow, contextModelId,
     configuredModelId, isAutoRouted, noteTerminalAnswer, persistRoutingMarker,

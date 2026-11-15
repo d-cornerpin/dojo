@@ -77,7 +77,6 @@ export class CallSession {
   private readonly logRowId: string;
   private started = false;
   private ended = false;
-  private endReason: string | null = null;
   private agentId: string | null = null;
   private startedAt = Date.now();
   private maxDurationTimer: ReturnType<typeof setTimeout> | null = null;
@@ -595,7 +594,6 @@ export class CallSession {
   end(reason: string): void {
     if (this.ended) return;
     this.ended = true;
-    this.endReason = reason;
     if (this.maxDurationTimer) {
       clearTimeout(this.maxDurationTimer);
       this.maxDurationTimer = null;

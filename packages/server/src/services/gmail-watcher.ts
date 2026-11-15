@@ -448,8 +448,6 @@ async function pollAccount(view: GoogleAccountView): Promise<void> {
 
     if (newCount > 0) {
       const runtime = getAgentRuntime();
-      const { getOwnerName } = await import('../config/platform.js');
-      const ownerName = getOwnerName();
       // Neutral trigger nudge: the per-email messages above carry the real framing, so this must not contradict them.
       const summary = newCount === 1
         ? `[SOURCE: GMAIL NOTIFICATION] New email in ${notifyAccount}. Details above — act on it as the framing there indicates.`

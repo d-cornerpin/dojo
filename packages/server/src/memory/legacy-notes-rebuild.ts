@@ -152,7 +152,6 @@ function deleteSubtree(id: string): void {
 }
 
 async function rebuildAgent(agentId: string, units: readonly Unit[], stats: LegacyRebuildStats): Promise<void> {
-  const db = getDb();
   if (agentBusy(agentId)) { stats.waiting[agentId] = 'the agent is mid-turn'; return; }
   const ready: Unit[] = [];
   for (const unit of units) {

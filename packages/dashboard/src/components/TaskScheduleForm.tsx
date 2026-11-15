@@ -105,7 +105,6 @@ export const TaskScheduleForm = ({ value, onChange }: TaskScheduleFormProps) => 
     } else {
       // Default to 1 hour from now in LOCAL time (for the datetime-local input)
       const future = new Date(Date.now() + 3600000);
-      const localIso = toLocalIso(future);
       update({ scheduledStart: future.toISOString() });
       // We store UTC but display local; the dateTimeValue getter converts.
     }

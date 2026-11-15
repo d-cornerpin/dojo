@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { AgentDetail, Model, PermissionManifest } from '@dojo/shared';
-import type { WsEvent, AgentCreatedEvent, AgentStatusEvent, AgentTerminatedEvent } from '@dojo/shared';
+import type { WsEvent, AgentStatusEvent, AgentTerminatedEvent } from '@dojo/shared';
 import * as api from '../lib/api';
 import { formatDateShort } from '../lib/dates';
 import { useWebSocket } from '../hooks/useWebSocket';

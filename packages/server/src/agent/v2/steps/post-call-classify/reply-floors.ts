@@ -193,7 +193,7 @@ export async function runReplyFloors(
   ctx: PostCallClassifyContext,
   sc: PostCallScratch,
 ): Promise<StepOutcome> {
-  const { agentId, counterparty, db, result, triggerRow, turnNumber, turnStartedAt } = ctx;
+  const { agentId, db, result, triggerRow, turnNumber } = ctx;
   const { deliberateSurfaceTurn, interAgentTurn } = sc;
   const { persistedContent } = sc;
   await askReplyClaims(state, ctx, persistedContent);
