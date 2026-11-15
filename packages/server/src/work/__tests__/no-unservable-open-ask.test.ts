@@ -224,7 +224,7 @@ describe('the unservable reaper closes the existing population with a named reas
     expect(r.byClass['below-session-boundary']).toBe(1);
   });
 
-  it('a CLOSED ask is not hunted — the reaper takes OPEN obligations only', () => {
+  it('a closed ask is not hunted: the reaper takes open obligations only', () => {
     seedAgent('dead2', 'terminated', null);
     seedConversation('conv-dead2', 'dead2');
     const id = seedAskOnMessage({

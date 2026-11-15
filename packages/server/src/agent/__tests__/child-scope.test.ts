@@ -233,7 +233,7 @@ describe('C — a malformed manifest REFUSES, it never silently downgrades', () 
     }
   });
 
-  it('ACCEPTS every shape a real stored manifest takes — the positive half', () => {
+  it('accepts every shape a real stored manifest takes', () => {
     // Measured on the live body: `'{}'` (40 of 56 agents), full manifests, partial legacy manifests with
     // no `system_control` key, and the scalar `system_control: '*'` spelling. A schema that refused any
     // of these would take working agents off the air.

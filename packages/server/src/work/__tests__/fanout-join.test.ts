@@ -629,7 +629,7 @@ describe('3d second arm: a deadline still expires when the parent ask has alread
 });
 
 // ════════════════════════════════════════════════════════════════════════
-// 3f — a failed-closed join re-opens for a late answer (the claim, then the settlement, as a2a-transport runs them)
+// 3f: a failed-closed join re-opens for a late answer (the claim, then the settlement)
 // ════════════════════════════════════════════════════════════════════════
 
 function lateAnswer(parent: string, deliveryId: string, reason: string): { claimed: boolean; verdict?: string } {
@@ -661,7 +661,7 @@ describe('3f: an answer arriving after the failure notice still reaches the owne
     expect(kinds.filter((k) => k === 'transition').length).toBeGreaterThanOrEqual(4);
   });
 
-  it('NEGATIVE: a SECOND late answer does not re-deliver — the reopen is refused on a settled join', () => {
+  it('a second late answer does not re-deliver: the reopen is refused on a settled join', () => {
     const parent = failedJoin();
     lateAnswer(parent, seedDelivery('d-late', { channel: 'dashboard', conversation_id: 'conv-1' }), 'first late answer');
     const second = lateAnswer(parent, seedDelivery('d-later', { channel: 'dashboard', conversation_id: 'conv-1' }), 'second late answer');

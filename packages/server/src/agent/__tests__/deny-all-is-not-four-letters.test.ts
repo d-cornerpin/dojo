@@ -108,7 +108,7 @@ describe('A — `none` stays `none` through the artifact-path widening', () => {
     expect(scoped.file_write).toBe('*');
   });
 
-  it('survives the whole create/spawn path — `resolveChildScope`, as the route calls it', () => {
+  it('survives the create/spawn path through `resolveChildScope`', () => {
     // `POST /api/agents` and `spawner.ts` both reach the spread through here, and this is the
     // object that gets JSON-serialized into the new agent's row: a char array here is a char array ON DISK.
     const resolved = resolveChildScope(
