@@ -15,7 +15,7 @@ const logger = createLogger('vault-archive');
 // token-burn loop. True means drop the archive silently, as for a dreamer-ignored agent.
 function shouldSkipServiceAgent(agentId: string): boolean {
   if (isSystemServiceAgent(agentId)) {
-    logger.debug('Skipping archive: service agent (Dreamer/Trainer/Healer/PM/Imaginer)', { agentId });
+    logger.debug('Skipping archive: service agent (Dreamer/Trainer/Healer/PM)', { agentId });
     return true;
   }
   return false;

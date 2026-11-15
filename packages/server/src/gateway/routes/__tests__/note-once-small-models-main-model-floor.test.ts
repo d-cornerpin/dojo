@@ -49,7 +49,6 @@ vi.mock('../../../config/platform.js', () => ({
   getPrimaryAgentId: () => 'primary-not-under-test',
   getHealerAgentId: () => null,
   getDreamerAgentId: () => null,
-  getImaginerAgentId: () => null,
   isTrainerAgent: () => false,
 }));
 

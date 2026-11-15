@@ -624,7 +624,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'slides_add_image_from_local_path',
-    description: 'Insert an image from a LOCAL file path (e.g., an image just delivered by Imaginer at ~/.dojo/uploads/<agent>/...) into a slide. Uploads the file to Drive internally and embeds it in one call — you don\'t have to chain drive_upload + slides_add_image_from_drive yourself. Returns the slide image_id and the Drive file_id (so you can reuse the same upload across multiple slides without re-uploading).',
+    description: 'Insert an image from a LOCAL file path (e.g., an image just made by image_create at ~/.dojo/uploads/<agent>/...) into a slide. Uploads the file to Drive internally and embeds it in one call — you don\'t have to chain drive_upload + slides_add_image_from_drive yourself. Returns the slide image_id and the Drive file_id (so you can reuse the same upload across multiple slides without re-uploading).',
     effects: [{ kind: 'fs_read', from: 'args.file_path' }],
     input_schema: {
       type: 'object',

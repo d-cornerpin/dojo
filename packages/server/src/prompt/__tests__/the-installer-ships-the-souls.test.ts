@@ -187,10 +187,10 @@ describe('the installer proves the souls shipped', () => {
     expect(r.out).toContain('HEALER-SOUL.md');
   });
 
-  it('RED: IMAGINER-SOUL.md shipped as a stub refuses — presence is not enough', () => {
-    const r = runGate([buildArtifact('stub-imaginer', { truncate: ['IMAGINER-SOUL.md'] }), '--require-artifact']);
+  it('RED: DREAMER-SOUL.md shipped as a stub refuses — presence is not enough', () => {
+    const r = runGate([buildArtifact('stub-dreamer', { truncate: ['DREAMER-SOUL.md'] }), '--require-artifact']);
     expect(r.code).toBe(1);
-    expect(r.out).toContain('IMAGINER-SOUL.md');
+    expect(r.out).toContain('DREAMER-SOUL.md');
   });
 
   it('RED: a repo that DELETED a floor soul cannot pass on the strength of its siblings', () => {
@@ -198,7 +198,7 @@ describe('the installer proves the souls shipped', () => {
     // templates directory is missing the file, which is what the named floor exists to catch.
     const src = fs.readFileSync(path.join(REPO_ROOT, 'deploy/checks/check-shipped-souls.mjs'), 'utf8');
     const floor = /const REQUIRED_SOULS = \[([\s\S]*?)\];/.exec(src)?.[1] ?? '';
-    for (const f of ['PM-SOUL.md', 'TRAINER-SOUL.md', 'HEALER-SOUL.md', 'IMAGINER-SOUL.md', 'DREAMER-SOUL.md']) {
+    for (const f of ['PM-SOUL.md', 'TRAINER-SOUL.md', 'HEALER-SOUL.md', 'DREAMER-SOUL.md']) {
       expect(floor, `${f} must be a NAMED floor, not only discovered`).toContain(f);
     }
     // …and every named floor must actually be a file the repo ships, or the gate asserts a ghost.

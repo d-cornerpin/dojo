@@ -4,7 +4,7 @@ import { getDb } from '../db/connection.js';
 import { withUnit } from '../db/unit.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
-import { getPrimaryAgentId, getPMAgentId, getTrainerAgentId, getImaginerAgentId, getHealerAgentId, getDreamerAgentId } from '../config/platform.js';
+import { getPrimaryAgentId, getPMAgentId, getTrainerAgentId, getHealerAgentId, getDreamerAgentId } from '../config/platform.js';
 import { patchWorkWhere } from '../work/tracker-store.js';
 
 const logger = createLogger('groups');
@@ -261,11 +261,10 @@ export function ensureSystemGroup(): void {
   const primaryId = getPrimaryAgentId();
   const pmId = getPMAgentId();
   const trainerId = getTrainerAgentId();
-  const imaginerId = getImaginerAgentId();
   const healerId = getHealerAgentId();
   const dreamerId = getDreamerAgentId();
 
-  for (const agentId of [primaryId, pmId, trainerId, imaginerId, healerId, dreamerId]) {
+  for (const agentId of [primaryId, pmId, trainerId, healerId, dreamerId]) {
     const agent = db.prepare('SELECT id, group_id FROM agents WHERE id = ?').get(agentId) as { id: string; group_id: string | null } | undefined;
     if (agent && agent.group_id !== SYSTEM_GROUP_ID) {
       db.prepare("UPDATE agents SET group_id = ?, updated_at = datetime('now') WHERE id = ?").run(SYSTEM_GROUP_ID, agentId);

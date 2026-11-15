@@ -14,7 +14,7 @@ import { refuseStaleWholeDocument } from './whole-document-guard.js';
 import { readAgentPromptSurface, writeAgentPromptSurface } from '../../prompt/agent-prompt-surface.js';
 import { createLogger } from '../../logger.js';
 import { broadcast } from '../ws.js';
-import { isPrimaryAgent, getPrimaryAgentId, getHealerAgentId, getDreamerAgentId, getImaginerAgentId } from '../../config/platform.js';
+import { isPrimaryAgent, getPrimaryAgentId, getHealerAgentId, getDreamerAgentId } from '../../config/platform.js';
 import { sanitizeMessagesOnModelChange } from '../../agent/model-switch.js';
 import type { AccessGrants, AgentDetail, Model, Message, AgentMessage } from '@dojo/shared';
 import { cloneGrants, deriveOrigin, legacyOriginInputs, NEW_SESSION_DIVIDER} from '@dojo/shared';
@@ -121,9 +121,6 @@ agentsRouter.patch('/:id/model', async (c) => {
   } else if (id === getDreamerAgentId()) {
     upsert.run('dreaming_model_id', modelId);
     logger.info('Synced dreaming_model_id config key', { modelId });
-  } else if (id === getImaginerAgentId()) {
-    upsert.run('imaginer_image_model', modelId);
-    logger.info('Synced imaginer_image_model config key', { modelId });
   }
 
   // Return updated agent
@@ -796,14 +793,7 @@ agentsRouter.get('/:id/agent-messages', (c) => {
 function rowToAgentDetail(row: Record<string, unknown>): AgentDetail {
   const db = getDb();
   const agentId = row.id as string;
-  let modelId = row.model_id as string | null;
-
-  // Imaginer has no "brain" model, the agent card should show the image
-  // generation model, which is stored in the config table, not agents.model_id.
-  if (agentId === getImaginerAgentId()) {
-    const cfgRow = db.prepare("SELECT value FROM config WHERE key = 'imaginer_image_model'").get() as { value: string } | undefined;
-    if (cfgRow?.value) modelId = cfgRow.value;
-  }
+  const modelId = row.model_id as string | null;
 
   // Get message count
   const msgCount = (db.prepare('SELECT COUNT(*) as count FROM messages WHERE agent_id = ?').get(agentId) as { count: number }).count;

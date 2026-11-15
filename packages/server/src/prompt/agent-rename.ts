@@ -38,7 +38,6 @@ export const ROLE_NAME_TO_ID_KEY: Readonly<Record<string, string>> = {
   primary_agent_name: 'primary_agent_id',
   pm_agent_name: 'pm_agent_id',
   trainer_agent_name: 'trainer_agent_id',
-  imaginer_agent_name: 'imaginer_agent_id',
   healer_agent_name: 'healer_agent_id',
   dreamer_agent_name: 'dreamer_agent_id',
 };

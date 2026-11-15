@@ -194,7 +194,7 @@ export const DENY_RULES: readonly DenyRule[] = [
     exceptFor: 'main',
     reason:
       'only the main agent edits a Dojo soul; the glob covers every sensei soul ' +
-      '(PM/TRAINER/HEALER/DREAMER/IMAGINER-SOUL.md), not only SOUL.md.',
+      '(PM/TRAINER/HEALER/DREAMER-SOUL.md), not only SOUL.md.',
     // Folding the pattern as well as the value keeps the legacy behaviour on a
     // case-SENSITIVE volume, where only the exact spelling matched.
     // The Dojo's own souls only, under ~/.dojo/prompts (assembler.ts PROMPTS_DIR): a

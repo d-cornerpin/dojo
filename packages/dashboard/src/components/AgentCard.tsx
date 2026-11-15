@@ -21,11 +21,10 @@ interface AgentCardProps {
 let _senseiRoles: Record<string, string> | null = null;
 async function getSenseiRoles(): Promise<Record<string, string>> {
   if (_senseiRoles) return _senseiRoles;
-  const [primary, pm, trainer, imaginer, healer, dreamer] = await Promise.all([
+  const [primary, pm, trainer, healer, dreamer] = await Promise.all([
     api.getSetting('primary_agent_id'),
     api.getSetting('pm_agent_id'),
     api.getSetting('trainer_agent_id'),
-    api.getSetting('imaginer_agent_id'),
     api.getSetting('healer_agent_id'),
     api.getSetting('dreamer_agent_id'),
   ]);
@@ -33,7 +32,6 @@ async function getSenseiRoles(): Promise<Record<string, string>> {
   if (primary.ok && primary.data.value) _senseiRoles[primary.data.value] = 'Dojo Master · Main Agent';
   if (pm.ok && pm.data.value) _senseiRoles[pm.data.value] = 'Dojo Planner · Task Agent';
   if (trainer.ok && trainer.data.value) _senseiRoles[trainer.data.value] = 'Dojo Trainer · Technique Agent';
-  if (imaginer.ok && imaginer.data.value) _senseiRoles[imaginer.data.value] = 'Dojo Imaginer · Image Agent';
   if (healer.ok && healer.data.value) _senseiRoles[healer.data.value] = 'Dojo Healer · Health Agent';
   if (dreamer.ok && dreamer.data.value) _senseiRoles[dreamer.data.value] = 'Dojo Dreamer · Memory Agent';
   return _senseiRoles;

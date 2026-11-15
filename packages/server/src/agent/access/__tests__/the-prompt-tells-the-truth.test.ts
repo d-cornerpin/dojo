@@ -62,7 +62,6 @@ vi.mock('../../../config/platform.js', async () => {
     isPMAgent: (id: string) => id === 'pm',
     isHealerAgent: () => false,
     isTrainerAgent: () => false,
-    isImaginerAgent: () => false,
     getPrimaryAgentId: () => 'primary',
     getPrimaryAgentName: () => 'Primary',
     getOwnerName: () => FX.n11,

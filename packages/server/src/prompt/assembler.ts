@@ -2,13 +2,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { DEFAULT_SOUL_MD, DEFAULT_PM_SOUL_MD, DEFAULT_TRAINER_SOUL_MD, DEFAULT_HEALER_SOUL_MD, DEFAULT_IMAGINER_SOUL_MD } from './templates.js';
+import { DEFAULT_SOUL_MD, DEFAULT_PM_SOUL_MD, DEFAULT_TRAINER_SOUL_MD, DEFAULT_HEALER_SOUL_MD } from './templates.js';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { toolDefinitions } from '../agent/tools/definitions.js';
 import { getFilteredTools } from '../agent/tools/surface.js';
 import { getAgentPermissions } from '../agent/manifest.js';
-import { isPrimaryAgent, isPMAgent, isTrainerAgent, isHealerAgent, isImaginerAgent, getPrimaryAgentName, getPrimaryAgentId, getPMAgentName, getPMAgentId, getOwnerName, getTrainerAgentId, getTrainerAgentName, getHealerAgentId, getHealerAgentName, getImaginerAgentName} from '../config/platform.js';
+import { isPrimaryAgent, isPMAgent, isTrainerAgent, isHealerAgent, getPrimaryAgentName, getPrimaryAgentId, getPMAgentName, getPMAgentId, getOwnerName, getTrainerAgentId, getTrainerAgentName, getHealerAgentId, getHealerAgentName} from '../config/platform.js';
 import type { TurnCounterparty } from '../agent/v2/counterparty.js';
 import { NO_REPLY_CLOSED_MARKER, WORKING_NOTE_PREFIX, INTERNAL_WORKING_NOTE_PREFIX, settingsPath, type Channel } from '@dojo/shared';
 import { isWorkVerb } from '../tools/work-verbs.js';
@@ -61,14 +61,13 @@ function substitutePlatformNames(md: string): string {
   return md
     .replace(/\{\{pm_agent_name\}\}/g, () => getPMAgentName())
     .replace(/\{\{trainer_agent_name\}\}/g, () => getTrainerAgentName())
-    .replace(/\{\{imaginer_agent_name\}\}/g, () => getImaginerAgentName())
     .replace(/\{\{primary_agent_name\}\}/g, () => getPrimaryAgentName())
     .replace(/\{\{owner_name\}\}/g, () => getOwnerName());
 }
 
 /** Placeholders filled by `substitutePlatformNames`; the re-seed detector and conformance test share it. */
 export const PLATFORM_SOUL_PLACEHOLDERS = [
-  'pm_agent_name', 'trainer_agent_name', 'imaginer_agent_name', 'primary_agent_name', 'owner_name',
+  'pm_agent_name', 'trainer_agent_name', 'primary_agent_name', 'owner_name',
 ] as const;
 
 // `{{agent_name}}` is the agent's own name, filled at assembly time on every turn and never written to disk,
@@ -156,17 +155,6 @@ export function healerSoulDefaultFrom(
   );
 }
 
-export function imaginerSoulDefaultFrom(
-  read: (file: string) => string | null,
-  warn: (msg: string, meta?: Record<string, unknown>) => void,
-): string {
-  return shippedSoulDefaultFrom(
-    'IMAGINER-SOUL.md', DEFAULT_IMAGINER_SOUL_MD,
-    'no account of how image_create actually runs, and no rule about which tools it must not call',
-    read, warn,
-  );
-}
-
 function pmSoulDefault(): string {
   return pmSoulDefaultFrom(readPlatformTemplate, (msg, meta) => logger.error(msg, meta));
 }
@@ -177,10 +165,6 @@ function trainerSoulDefault(): string {
 
 function healerSoulDefault(): string {
   return healerSoulDefaultFrom(readPlatformTemplate, (msg, meta) => logger.error(msg, meta));
-}
-
-function imaginerSoulDefault(): string {
-  return imaginerSoulDefaultFrom(readPlatformTemplate, (msg, meta) => logger.error(msg, meta));
 }
 
 function ensurePromptsDir(): void {
@@ -248,7 +232,6 @@ export function soulFileForAgent(agentId: string): AgentSoulFile | null {
   if (isPMAgent(agentId)) return { file: 'PM-SOUL.md', fallback: pmSoulDefault(), spawnTruth: false, reseedUnsubstituted: true };
   if (isTrainerAgent(agentId)) return { file: 'TRAINER-SOUL.md', fallback: trainerSoulDefault(), spawnTruth: false, reseedUnsubstituted: true };
   if (isHealerAgent(agentId)) return { file: 'HEALER-SOUL.md', fallback: healerSoulDefault(), spawnTruth: false, reseedUnsubstituted: true };
-  if (isImaginerAgent(agentId)) return { file: 'IMAGINER-SOUL.md', fallback: imaginerSoulDefault(), spawnTruth: false, reseedUnsubstituted: true };
   const perAgent = `${agentId.toUpperCase()}-SOUL.md`;
   if (fs.existsSync(path.join(PROMPTS_DIR, perAgent))) return { file: perAgent, fallback: '', spawnTruth: true };
   return null;
@@ -992,7 +975,7 @@ export function renderVisionCapBanner(agentId: string, modelId: string): string 
         `**Your current model does NOT support image input${fallbackUsable ? '; the platform has a fallback vision model configured' : ', and NO fallback vision model is configured'}.**\n\n` +
         `What this means for you:\n` +
         fallbackSection +
-        `- \`image_create\` (the Imaginer) delivers the generated image to the USER; you never see the pixels. Describe what you asked it to create, not what you "see" in the result.\n` +
+        `- \`image_create\` delivers the generated image to the USER; you never see the pixels. Describe what you asked it to create, not what you "see" in the result.\n` +
         `- Never claim to see anything beyond what a description explicitly states.`
       );
     }

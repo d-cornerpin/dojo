@@ -49,7 +49,7 @@ const SUMMARY_CONTAMINATION_PATTERNS: RegExp[] = [
   /Process the archives below/i,
   /Full archive list \(\d+ total\)/i,
   /This is batch \d+ of \d+\b/i,
-  /You are the (Dreamer|Trainer|Healer|PM|Imaginer)\b/i,
+  /You are the (Dreamer|Trainer|Healer|PM)\b/i,
   /\[CONTINUITY BRIEF/i,
   // Shape from @dojo/shared; membership in this contamination list stays local.
   new RegExp(NEW_SESSION_DIVIDER.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),

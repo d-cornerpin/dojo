@@ -135,11 +135,6 @@ export const HEALER_AGENT_ALWAYS_LOADED = [
   'dojo_inspect',
 ];
 
-// Imaginer agent: its image model is called directly by image_create, so the set is minimal.
-export const IMAGINER_AGENT_ALWAYS_LOADED = [
-  ...DEFAULT_ALWAYS_LOADED_TOOLS,
-];
-
 // Sub-agents (ronin / apprentice): common defaults; a listed tool the agent may not call is dropped.
 export const SUB_AGENT_ALWAYS_LOADED = [
   ...DEFAULT_ALWAYS_LOADED_TOOLS,
@@ -408,7 +403,7 @@ function getDefaultForAgent(agentId: string): string[] {
     const db = getDb();
 
     const configRows = db.prepare(
-      "SELECT key, value FROM config WHERE key IN ('primary_agent_id', 'pm_agent_id', 'trainer_agent_id', 'imaginer_agent_id')",
+      "SELECT key, value FROM config WHERE key IN ('primary_agent_id', 'pm_agent_id', 'trainer_agent_id')",
     ).all() as Array<{ key: string; value: string }>;
     const configMap: Record<string, string> = {};
     for (const r of configRows) configMap[r.key] = r.value;
@@ -416,7 +411,6 @@ function getDefaultForAgent(agentId: string): string[] {
     if (agentId === (configMap['primary_agent_id'] ?? getPrimaryAgentId())) return PRIMARY_AGENT_ALWAYS_LOADED;
     if (agentId === (configMap['pm_agent_id'] ?? 'pm')) return PM_AGENT_ALWAYS_LOADED;
     if (agentId === (configMap['trainer_agent_id'] ?? 'trainer')) return TRAINER_AGENT_ALWAYS_LOADED;
-    if (agentId === (configMap['imaginer_agent_id'] ?? 'imaginer')) return IMAGINER_AGENT_ALWAYS_LOADED;
 
     const healerRow = db.prepare("SELECT value FROM config WHERE key = 'healer_agent_id'").get() as { value: string } | undefined;
     if (healerRow && agentId === healerRow.value) return HEALER_AGENT_ALWAYS_LOADED;

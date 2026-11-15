@@ -41,7 +41,6 @@ const PRIMARY = 'main-agent';
 const PM = 'pm-agent';
 const TRAINER = 'trainer-agent';
 const HEALER = 'healer-agent';
-const IMAGINER = 'imaginer-agent';
 const OWNER_SOUL = 'The owner wrote this identity during setup. Keep it exactly.\n';
 const EDIT = 'An older version of this soul, edited by hand.\n';
 
@@ -53,7 +52,7 @@ function setConfig(key: string, value: string): void {
 }
 
 const FILES: Array<[string, string]> = [
-  [PM, 'PM-SOUL.md'], [TRAINER, 'TRAINER-SOUL.md'], [HEALER, 'HEALER-SOUL.md'], [IMAGINER, 'IMAGINER-SOUL.md'],
+  [PM, 'PM-SOUL.md'], [TRAINER, 'TRAINER-SOUL.md'], [HEALER, 'HEALER-SOUL.md'],
 ];
 
 beforeEach(async () => {
@@ -67,7 +66,6 @@ beforeEach(async () => {
   setConfig('pm_agent_name', 'ProjectManager');
   setConfig('trainer_agent_id', TRAINER);
   setConfig('healer_agent_id', HEALER);
-  setConfig('imaginer_agent_id', IMAGINER);
   setConfig('owner_name', 'Owner');
   const platform = await import('../../config/platform.js');
   platform.clearPlatformConfigCache();

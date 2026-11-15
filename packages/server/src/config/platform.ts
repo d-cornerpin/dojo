@@ -12,7 +12,7 @@ let householdCache: string[] | null = null;
 function loadCache(): void {
   try {
     const db = getDb();
-    const rows = db.prepare("SELECT key, value FROM config WHERE key IN ('platform_name', 'owner_name', 'primary_agent_id', 'primary_agent_name', 'pm_agent_id', 'pm_agent_name', 'trainer_agent_id', 'trainer_agent_name', 'imaginer_agent_id', 'imaginer_agent_name', 'healer_agent_id', 'healer_agent_name', 'dreamer_agent_id', 'dreamer_agent_name', 'household_agent_ids', 'setup_completed')").all() as Array<{ key: string; value: string }>;
+    const rows = db.prepare("SELECT key, value FROM config WHERE key IN ('platform_name', 'owner_name', 'primary_agent_id', 'primary_agent_name', 'pm_agent_id', 'pm_agent_name', 'trainer_agent_id', 'trainer_agent_name', 'healer_agent_id', 'healer_agent_name', 'dreamer_agent_id', 'dreamer_agent_name', 'household_agent_ids', 'setup_completed')").all() as Array<{ key: string; value: string }>;
     cache = {};
     for (const row of rows) {
       cache[row.key] = row.value;
@@ -78,15 +78,6 @@ export function getTrainerAgentName(): string {
 }
 
 
-export function getImaginerAgentId(): string {
-  return get('imaginer_agent_id', 'imaginer');
-}
-
-export function getImaginerAgentName(): string {
-  return get('imaginer_agent_name', 'Imaginer');
-}
-
-
 // The spawn gate: an absent flag reads false, so nothing spawns. Not for deciding what the network may
 // reach; that question fails the other way and lives in ./setup-state.ts (isPastFirstRun).
 export function isSetupCompleted(): boolean {
@@ -120,10 +111,6 @@ export function isPMAgent(agentId: string): boolean {
 
 export function isTrainerAgent(agentId: string): boolean {
   return agentId === getTrainerAgentId();
-}
-
-export function isImaginerAgent(agentId: string): boolean {
-  return agentId === getImaginerAgentId();
 }
 
 
@@ -187,8 +174,7 @@ export function isSystemServiceAgent(agentId: string): boolean {
   return isDreamerAgent(agentId)
     || isTrainerAgent(agentId)
     || isHealerAgent(agentId)
-    || isPMAgent(agentId)
-    || isImaginerAgent(agentId);
+    || isPMAgent(agentId);
 }
 
 /** Resolved IDs of every service agent. Used by bulk-cleanup queries. */
@@ -198,12 +184,11 @@ export function getSystemServiceAgentIds(): string[] {
     getTrainerAgentId(),
     getHealerAgentId(),
     getPMAgentId(),
-    getImaginerAgentId(),
   ];
 }
 
 // Meta-role agents (PM, Healer, Dreamer) whose tasks are hidden from the tracker view by default, and
-// for whom autoCreateAssignTask creates no tracker rows. Trainer and Imaginer are deliberately not here.
+// for whom autoCreateAssignTask creates no tracker rows. The Trainer is deliberately not here.
 export function getDashboardHiddenAgentIds(): Set<string> {
   const ids = new Set<string>();
   try {

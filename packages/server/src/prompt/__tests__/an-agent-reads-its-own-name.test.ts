@@ -81,7 +81,6 @@ const PRIMARY = 'primary-one';
 const PM = 'pm-one';
 const TRAINER = 'trainer-one';
 const HEALER = 'healer';
-const IMAGINER = 'imaginer';
 const SUB = 'sub-one';
 
 const TOKEN = `{{${AGENT_SOUL_PLACEHOLDER}}}`;
@@ -121,8 +120,6 @@ beforeEach(async () => {
   setConfig('trainer_agent_name', 'Dojo Trainer');
   setConfig('healer_agent_id', HEALER);
   setConfig('healer_agent_name', 'Healer');
-  setConfig('imaginer_agent_id', IMAGINER);
-  setConfig('imaginer_agent_name', 'Imaginer');
   setConfig('owner_name', 'the owner');
   const platform = await import('../../config/platform.js');
   platform.clearPlatformConfigCache();
@@ -130,7 +127,6 @@ beforeEach(async () => {
   seedAgent(PM, 'Dojo Planner');
   seedAgent(TRAINER, 'Dojo Trainer');
   seedAgent(HEALER, 'Healer');
-  seedAgent(IMAGINER, 'Imaginer');
 });
 
 afterEach(() => {
@@ -251,7 +247,7 @@ describe('§3 the closed vocabulary — nothing ships a token this module cannot
   it('no soul the platform SEEDS FROM reaches a model with a `{{` left in it', () => {
     // The behavioural half of the census, driven through the real door for every file-backed
     // identity the platform ships. `{{` in a rendered prompt is the defect's own signature.
-    for (const id of [PRIMARY, PM, TRAINER, HEALER, IMAGINER]) {
+    for (const id of [PRIMARY, PM, TRAINER, HEALER]) {
       const rendered = getSoulContent(id);
       expect(rendered.length, `${id} rendered nothing`).toBeGreaterThan(200);
       expect(rendered, `${id} still carries an unsubstituted placeholder`).not.toContain('{{');

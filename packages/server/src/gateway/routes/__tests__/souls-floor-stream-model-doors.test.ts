@@ -1,6 +1,6 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 // t209 — the 32K main-model floor (owner decision 13) at the doors t202 left open:
-// the update_agent and spawn tools, and the healer, vault (dreamer), PM, trainer and imaginer
+// the update_agent and spawn tools, and the healer, vault (dreamer), PM and trainer
 // model setters. Each must refuse a model under 32K as an agent's MAIN model, in plain words,
 // before writing anything. Re-saving the model an agent is already on is never refused, and a
 // helper-only dial (a model with no window, auto) stays allowed.
@@ -87,11 +87,9 @@ beforeEach(async () => {
   setConfig('primary_agent_id', 'main-agent');
   setConfig('healer_agent_id', 'healer-agent');
   setConfig('dreamer_agent_id', 'dreamer-agent');
-  setConfig('imaginer_agent_id', 'imaginer-agent');
   seedAgent('main-agent', 'big');
   seedAgent('healer-agent', 'big');
   seedAgent('dreamer-agent', 'big');
-  seedAgent('imaginer-agent', 'big');
   coldImport1.clearPlatformConfigCache();
 });
 
@@ -126,7 +124,7 @@ describe('the service-agent model setters refuse a model under 32K', () => {
     expect(modelOf('dreamer-agent')).toBe('big');
   });
 
-  for (const key of ['healer_model_id', 'dreaming_model_id', 'pm_agent_model', 'trainer_agent_model', 'imaginer_brain_model']) {
+  for (const key of ['healer_model_id', 'dreaming_model_id', 'pm_agent_model', 'trainer_agent_model']) {
     it(`settings route: ${key} refuses a small model and accepts a big one or none-declared`, async () => {
       const res = await configRouter.request(`/settings/${key}`, json('PUT', { value: 'tiny' }));
       expect(res.status).toBe(400);

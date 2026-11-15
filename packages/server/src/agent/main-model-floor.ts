@@ -59,7 +59,7 @@ export function passesMainModelFloor(modelId: string): boolean { return refuseSm
 
 /** Config keys picking a service agent's MAIN model; the settings route guards these before writing. */
 export const MAIN_MODEL_SETTING_KEYS: readonly string[] = [
-  'healer_model_id', 'dreaming_model_id', 'pm_agent_model', 'trainer_agent_model', 'imaginer_brain_model',
+  'healer_model_id', 'dreaming_model_id', 'pm_agent_model', 'trainer_agent_model',
 ];
 
 /** Config keys picking a LOCAL model the memory-fit gate judges: main models above plus the engine jobs. */

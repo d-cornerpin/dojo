@@ -14,7 +14,7 @@
 // account connectivity and the FA-TS2 primary-only strip. Measured on the dev body through
 // that function, 2026-08-15, seven live agents:
 //     FX.n4 407 tools · Healer 242 · FX.n6 241 · HarnessBot 240 · Dreamer 168 ·
-//     Imaginer 156 · FXUP.n5 47 — and FX.n5 holds no tool from the declared `Web`,
+//     FXUP.n5 47 — and FX.n5 holds no tool from the declared `Web`,
 //     `Communication`, `Gmail`, `Google Calendar` or `Google Drive / Docs / Sheets`
 //     categories. The incident's premise is a property of the grants, and it is readable.
 // VERDICT: PASS. Nothing here is hard-coded per agent; the tests below prove that by moving

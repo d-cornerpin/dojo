@@ -614,7 +614,7 @@ configRouter.post('/providers', async (c) => {
 function forgetModelReferences(modelId: string): void {
   const db = getDb();
   db.prepare('DELETE FROM router_tier_models WHERE model_id = ?').run(modelId);
-  for (const key of ['pm_agent_model', 'dreaming_model_id', 'imaginer_image_model', 'imaginer_brain_model']) {
+  for (const key of ['pm_agent_model', 'dreaming_model_id']) {
     db.prepare('DELETE FROM config WHERE key = ? AND value = ?').run(key, modelId);
   }
 }
@@ -1653,7 +1653,7 @@ function agentsOnModel(modelId: string): Array<{ id: string; name: string }> {
 
 // DELETE /models/:id: remove a model from the DB. Checks for active usage
 // by agents first and refuses (409) while a live agent uses it. Removes from router tiers,
-// clears config references (PM model, dreamer model, imaginer model).
+// clears config references (PM model, dreamer model).
 configRouter.delete('/models/:id', async (c) => {
   const id = c.req.param('id');
   const db = getDb();
@@ -2227,7 +2227,7 @@ configRouter.put('/settings/:key', async (c) => {
     if (refused) return c.json({ ok: false, error: refused }, 400);
   }
 
-  // `<role>_agent_name` is the display name for the primary / PM / trainer / imaginer / healer / dreamer:
+  // `<role>_agent_name` is the display name for the primary / PM / trainer / healer / dreamer:
   // `config/platform.ts`'s getters read this key, not the `agents` row, and `substitutePlatformNames`
   // bakes it into the stored soul at seed time. So a rename goes through the one door that writes the
   // row, writes this key and re-fills the souls. The generic upsert below still runs and is idempotent.
@@ -2269,7 +2269,7 @@ configRouter.put('/settings/:key', async (c) => {
 
   if (key === 'router.context_window') await (await import('../../agent/v2/honest-stop-lock.js')).noteModelsChanged();   // the router window changed; no-fit locks get another look
 
-  const platformKeys = ['platform_name', 'owner_name', 'primary_agent_id', 'primary_agent_name', 'pm_agent_id', 'pm_agent_name', 'trainer_agent_id', 'trainer_agent_name', 'imaginer_agent_id', 'imaginer_agent_name', 'setup_completed'];
+  const platformKeys = ['platform_name', 'owner_name', 'primary_agent_id', 'primary_agent_name', 'pm_agent_id', 'pm_agent_name', 'trainer_agent_id', 'trainer_agent_name', 'setup_completed'];
   if (platformKeys.includes(key)) {
     const { clearPlatformConfigCache } = await import('../../config/platform.js');
     clearPlatformConfigCache();
@@ -2328,10 +2328,6 @@ configRouter.put('/settings/:key', async (c) => {
     const { getDreamerAgentId } = await import('../../config/platform.js');
     db.prepare("UPDATE agents SET model_id = ?, updated_at = datetime('now') WHERE id = ?")
       .run(body.value, getDreamerAgentId());
-  } else if (key === 'imaginer_image_model') {
-    const { getImaginerAgentId } = await import('../../config/platform.js');
-    db.prepare("UPDATE agents SET model_id = ?, updated_at = datetime('now') WHERE id = ?")
-      .run(body.value, getImaginerAgentId());
   }
 
   return c.json({ ok: true, data: { key, value: body.value } });

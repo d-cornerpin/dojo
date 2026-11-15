@@ -21,13 +21,11 @@ vi.mock('../../../../gateway/ws.js', () => ({ broadcast: vi.fn() }));
 vi.mock('../../../../config/platform.js', () => ({
   isPrimaryAgent: (id: string) => id === 'primary',
   isPMAgent: (id: string) => id === 'pm',
-  isImaginerAgent: () => false,
   isDreamerAgent: () => false,
   isHealerAgent: () => false,
   getPrimaryAgentId: () => 'primary',
   getPMAgentId: () => 'pm',
   getTrainerAgentId: () => 'trainer',
-  getImaginerAgentId: () => 'imaginer',
   getHealerAgentId: () => 'healer',
   getDreamerAgentId: () => 'dreamer',
   getOwnerName: () => 'the owner',

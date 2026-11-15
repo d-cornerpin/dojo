@@ -359,7 +359,7 @@ const AssistantBubble = ({
         {/* No msg.toolCalls render path: tool_use blocks render via the hasToolUse path
             above, so live-streamed calls cannot attach to the next bubble (the duplicate). */}
 
-        {/* Image / PDF attachments (e.g. Imaginer-generated images). In the
+        {/* Image / PDF attachments (e.g. generated images). In the
             dojo3 chat these render as prototype .media cards (poster + meta);
             audio and non-previewable files stay as the existing chips. */}
         {msg.attachments && msg.attachments.length > 0 && (

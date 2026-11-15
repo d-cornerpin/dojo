@@ -56,7 +56,7 @@ function getImageUrl(att: Attachment): string {
 }
 
 // Near-full-screen image viewer used for every chat image (user uploads,
-// iMessage attachments, and Imaginer-generated images). ~90% viewport,
+// iMessage attachments, and generated images). ~90% viewport,
 // dark backdrop, top-right Download + Close controls, Esc closes,
 // D triggers download, clicking outside the image closes too.
 const ImageLightbox = ({

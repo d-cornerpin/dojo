@@ -48,11 +48,9 @@ vi.mock('../../../config/platform.js', () => ({
   isPMAgent: () => false,
   isTrainerAgent: () => false,
   isHealerAgent: () => false,
-  isImaginerAgent: () => false,
   getPrimaryAgentId: () => 'primary-not-under-test',
   getHealerAgentId: () => null,
   getDreamerAgentId: () => null,
-  getImaginerAgentId: () => null,
 }));
 // The create route kicks the fresh agent into a run; the run itself is not under test.
 vi.mock('../../../agent/runtime.js', () => ({

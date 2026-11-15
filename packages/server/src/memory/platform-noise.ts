@@ -31,7 +31,7 @@ export const PLATFORM_NOISE_PATTERNS: RegExp[] = [
   /^\s*Full archive list \(\d+ total\)/i,
   /^\s*This is batch \d+ of \d+/i,
   /^\s*# Identity\s*$/m,
-  /^\s*You are the (Dreamer|Trainer|Healer|PM|Imaginer)\b/i,
+  /^\s*You are the (Dreamer|Trainer|Healer|PM)\b/i,
 
   // Transient status lines from `agent/v2/recovery.ts`, never a bare `Heads up:` (other owner alerts are memory).
   // Every spelling stays because stored rows carry them.

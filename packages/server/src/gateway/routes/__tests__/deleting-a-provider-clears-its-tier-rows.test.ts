@@ -9,9 +9,8 @@
 // model whose name is a bare uuid, and a later `PUT /api/router/tiers/:tierId/models`
 // re-inserts the ghost with FKs back ON, 500ing the whole save.
 //
-// The single-model delete (`DELETE /models/:id`) already clears the tier rows AND all four
-// config keys (`pm_agent_model`, `dreaming_model_id`, `imaginer_image_model`,
-// `imaginer_brain_model`, config.ts:1811-1816). The provider delete clears only two of those
+// The single-model delete (`DELETE /models/:id`) already clears the tier rows AND both
+// config keys (`pm_agent_model`, `dreaming_model_id`). The provider delete clears only one of those
 // keys and never touches the tier rows. This file pins the provider delete to do both, via the
 // shared `forgetModelReferences` helper, and pins the `PRAGMA foreign_keys` guard so a throw
 // cannot leave enforcement off for the shared connection.
@@ -106,7 +105,7 @@ const seed = (): void => {
   db.prepare("INSERT INTO router_tier_models (tier_id, model_id, priority) VALUES ('standard', 'm3', 1)").run();
   db.prepare("INSERT INTO router_tier_models (tier_id, model_id, priority) VALUES ('light', 'm2', 0)").run();
   db.prepare("INSERT INTO config (key, value) VALUES ('dreaming_model_id', 'm1')").run();
-  db.prepare("INSERT INTO config (key, value) VALUES ('imaginer_image_model', 'm2')").run();
+  db.prepare("INSERT INTO config (key, value) VALUES ('pm_agent_model', 'm2')").run();
   db.prepare("INSERT INTO agents (id, name, model_id, status, config) VALUES ('a1', 'Agent One', 'm1', 'idle', '{}')").run();
 };
 
@@ -126,7 +125,7 @@ describe('S07/F3 — deleting a provider clears its tier rows and model referenc
     const res = await del('/providers/p1');
     expect(res.status).toBe(200);
     expect(mockDb.current!.prepare('SELECT value FROM config WHERE key = ?').get('dreaming_model_id')).toBeUndefined();
-    expect(mockDb.current!.prepare('SELECT value FROM config WHERE key = ?').get('imaginer_image_model')).toBeUndefined();
+    expect(mockDb.current!.prepare('SELECT value FROM config WHERE key = ?').get('pm_agent_model')).toBeUndefined();
     expect(mockDb.current!.prepare('SELECT model_id FROM agents WHERE id = ?').get('a1')).toEqual({ model_id: null });
   });
 

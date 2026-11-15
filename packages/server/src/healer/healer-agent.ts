@@ -1,5 +1,5 @@
 // Healer self-healing orchestrator: compile the diagnostic, run auto-fixes, then wake the permanent Healer
-// agent for Tier 2-3 analysis. The Healer is a permanent resident of Masters (like the Trainer and Imaginer):
+// agent for Tier 2-3 analysis. The Healer is a permanent resident of Masters (like the Trainer):
 // idle between cycles, woken when a cycle fires.
 
 import { HELD_CONSENT_EXPIRY_NOTE_TEXT } from '../agent/engine-lines.js';
@@ -34,7 +34,6 @@ import {
   isPrimaryAgent,
   isPMAgent,
   isTrainerAgent,
-  isImaginerAgent,
 } from '../config/platform.js';
 import { homeDir } from '../home.js';
 import { nextDailyRunDelayMs } from '../config/clock-time.js';
@@ -770,7 +769,6 @@ function agentRoleLabel(agentId?: string, agentName?: string): string {
   if (isPrimaryAgent(agentId)) return 'Main Agent';
   if (isPMAgent(agentId)) return 'PM Agent';
   if (isTrainerAgent(agentId)) return 'Trainer Agent';
-  if (isImaginerAgent(agentId)) return 'Imaginer Agent';
   if (agentId === 'healer') return 'Healer Agent';
   // Sub-agents: just say "sub-agent", no user-specific names
   return 'Sub-Agent';

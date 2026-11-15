@@ -1,12 +1,12 @@
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
-import { getPMAgentId, getTrainerAgentId, getHealerAgentId, getImaginerAgentId } from '../config/platform.js';
+import { getPMAgentId, getTrainerAgentId, getHealerAgentId } from '../config/platform.js';
 import { soulFileForAgent, readSoulFile, writeSoulFile } from './assembler.js';
 
 const logger = createLogger('shipped-souls');
 
 /**
- * Replaces the PM, Trainer, Healer and Imaginer souls on disk with the shipped template, once per version.
+ * Replaces the PM, Trainer and Healer souls on disk with the shipped template, once per version.
  * The primary's SOUL.md is never listed; an unreadable version replaces nothing.
  */
 export function refreshShippedSoulsOnce(version: string): string[] {
@@ -16,7 +16,7 @@ export function refreshShippedSoulsOnce(version: string): string[] {
     | { value: string } | undefined;
   if (seen?.value === version) return [];
   const replaced: string[] = [];
-  for (const id of [getPMAgentId(), getTrainerAgentId(), getHealerAgentId(), getImaginerAgentId()]) {
+  for (const id of [getPMAgentId(), getTrainerAgentId(), getHealerAgentId()]) {
     const soul = soulFileForAgent(id);
     if (!soul || soul.file === 'SOUL.md' || !soul.fallback) continue;
     // `readSoulFile` seeds an absent file with the shipped version, which is already what is wanted.

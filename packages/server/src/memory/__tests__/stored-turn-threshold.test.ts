@@ -5,7 +5,7 @@
 // gates fires on every turn forever.
 //
 // Measured on the live dev body when this was written: FXID.n4 1598 vs turn 264,
-// healer 122 vs 9, imaginer 19 vs 0 — three of the five agents holding a threshold.
+// healer 122 vs 9 — two of the live agents holding a threshold.
 // The bound is the WRITER'S OWN horizon (`currentTurn + 3`, `memory/compaction.ts`),
 // never a number this test or that module invented.
 // ════════════════════════════════════════════════════════════════════════════════════════

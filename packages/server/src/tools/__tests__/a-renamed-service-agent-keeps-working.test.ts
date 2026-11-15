@@ -3,7 +3,7 @@
 //
 // THE RULE (owner, 2026-09-26, verbatim): *"nothing about your code should be reliant on any specific
 // agent names"*. Users name their agents whatever they like; the platform ships DEFAULT names
-// (`config/platform.ts:62-174` — `Agent`, `PM`, `Trainer`, `Imaginer`, `Healer`, `Dreamer`) and every
+// (`config/platform.ts:62-174` — `Agent`, `PM`, `Trainer`, `Healer`, `Dreamer`) and every
 // one of them is a config value the owner can change in the Settings panel. A comparison against the
 // display-name LITERAL therefore breaks two ways at once, and both are real:
 //
@@ -194,9 +194,9 @@ describe('§2c the dashboard-hidden set is resolved by config id, never by displ
     expect(getDashboardHiddenAgentIds().has('healer')).toBe(true);
   });
 
-  it('the set still holds all three roles, and still excludes Trainer and Imaginer by charter', () => {
+  it('the set still holds all three roles, and still excludes the Trainer by charter', () => {
     for (const [k, v] of [['pm_agent_id', 'pm'], ['healer_agent_id', 'healer'], ['dreamer_agent_id', 'dreamer'],
-      ['trainer_agent_id', 'trainer'], ['imaginer_agent_id', 'imaginer']]) setConfig(k, v);
+      ['trainer_agent_id', 'trainer']]) setConfig(k, v);
     const hidden = getDashboardHiddenAgentIds();
     expect([...hidden].sort()).toEqual(['dreamer', 'healer', 'pm']);
   });

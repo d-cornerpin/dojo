@@ -51,7 +51,6 @@ vi.mock('../../config/platform.js', () => ({
   isPMAgent: () => false,
   isTrainerAgent: () => false,
   isHealerAgent: () => false,
-  isImaginerAgent: () => false,
   getPrimaryAgentName: () => 'Primary',
   getPrimaryAgentId: () => 'primary-1',
   getPMAgentName: () => 'PM',
@@ -60,7 +59,6 @@ vi.mock('../../config/platform.js', () => ({
   getTrainerAgentName: () => 'Trainer',
   getHealerAgentId: () => 'h-1',
   getHealerAgentName: () => 'Healer',
-  getImaginerAgentName: () => 'Imaginer',
 }));
 vi.mock('../../db/connection.js', () => ({
   getDb: () => { throw new Error('no DB in this suite'); },

@@ -60,13 +60,11 @@ vi.mock('../../config/platform.js', () => ({
   isPMAgent: () => false,
   isHealerAgent: () => false,
   isTrainerAgent: () => false,
-  isImaginerAgent: () => false,
   isDreamerAgent: () => false,
   getPrimaryAgentId: () => 'primary',
   getPrimaryAgentName: () => FX.n4,
   getHealerAgentId: () => 'healer',
   getDreamerAgentId: () => 'dreamer',
-  getImaginerAgentId: () => 'imaginer',
 }));
 
 // `handleMessage` must return a PROMISE: the positive control runs far enough

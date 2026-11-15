@@ -219,7 +219,7 @@ async function dialImage(req: GenerateImageRequest, slot: AgentCallSlot): Promis
     'Content-Type': 'application/json',
     'Authorization': `Bearer ${credential}`,
     'HTTP-Referer': 'https://dojo.dev',
-    'X-Title': 'Dojo Agent Platform - Imaginer',
+    'X-Title': 'Dojo Agent Platform - Image Generation',
   };
 
   let response: Response;
