@@ -30,9 +30,9 @@ ${summary.content}
 </summary>`;
 }
 
-/** The line that says older summaries were left out. Empty when none were. */
+/** The line that says older summaries were left out, and the tool that finds them. Empty when none were. */
 function omittedLine(n: number): string {
-  return n > 0 ? `(${n} older ${n === 1 ? 'summary is' : 'summaries are'} not shown here, to fit; they are still stored.)${JOIN}` : '';
+  return n > 0 ? `(${n} older ${n === 1 ? 'summary is' : 'summaries are'} not shown here, to fit; they are still stored, and history_search finds them if you have it.)${JOIN}` : '';
 }
 
 function blockText(xmls: string[], omitted: number): string {

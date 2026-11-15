@@ -115,6 +115,7 @@ describe('t210 — the newest summary reaches the model whole', () => {
     expect(shown.length).toBeLessThan(62);
     expect(shown, 'the shown set is the newest run').toEqual(all.slice(62 - shown.length));
     expect(text).toMatch(/\d+ older summar(y is|ies are) not shown here/);
+    expect(text, 'and the line names the tool that finds them').toMatch(/not shown here[^)]*history_search/);
   });
 
   it('two large newest summaries over the ceiling together: the newest is whole and the older yields whole', async () => {
