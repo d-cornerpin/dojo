@@ -5,6 +5,7 @@ import { getDb } from '../db/connection.js';
 import { effectiveContextWindow, resolveNumCtx } from './model.js';
 import { refuseUnfitLocalModel } from './local-model-fit.js';
 import { createLogger } from '../logger.js';
+import { tellOwner, ownerConditionCleared } from '../healer/owner-notices.js';
 const logger = createLogger('main-model-floor');
 
 /** The floor, in tokens. "32K" models are advertised as 32,000 or 32,768; both pass. */
@@ -70,6 +71,58 @@ export function cheapestAgentModel(exclude: readonly string[] = []): string | nu
     `SELECT id FROM models WHERE is_enabled = 1 AND id NOT IN (${exclude.map(() => '?').join(',')}) AND capabilities NOT LIKE '%generation%' AND capabilities NOT LIKE '%embedding%' AND capabilities NOT LIKE '%"decision"%' ORDER BY COALESCE(input_cost_per_m, 1e18) ASC, id ASC`,
   ).all(...exclude) as Array<{ id: string }>;
   return rows.find((m) => refuseSmallMainModel(m.id) === null)?.id ?? null;
+}
+
+/** Moves every live agent on one of `modelIds` (and the project manager's and dreamer's settings) to the cheapest
+ *  big-enough model; with none, the agents are left without a model and counted. */
+export function reassignAffectedAgents(modelIds: string[], fallbackId = cheapestAgentModel(modelIds)): { agentsMoved: number; agentsWithoutModel: number } {
+  const db = getDb();
+  let reassigned = 0;
+
+
+  for (const mid of modelIds) {
+    const result = db.prepare(
+      "UPDATE agents SET model_id = ?, updated_at = datetime('now') WHERE model_id = ? AND status != 'terminated'"
+    ).run(fallbackId, mid);
+    reassigned += result.changes;
+
+    const pmModel = db.prepare("SELECT value FROM config WHERE key = 'pm_agent_model'").get() as { value: string } | undefined;
+    if (pmModel?.value === mid && fallbackId) {
+      db.prepare("UPDATE config SET value = ?, updated_at = datetime('now') WHERE key = 'pm_agent_model'").run(fallbackId);
+    }
+
+    const dreamerModel = db.prepare("SELECT value FROM config WHERE key = 'dreaming_model_id'").get() as { value: string } | undefined;
+    if (dreamerModel?.value === mid && fallbackId) {
+      db.prepare("UPDATE config SET value = ?, updated_at = datetime('now') WHERE key = 'dreaming_model_id'").run(fallbackId);
+    }
+  }
+
+  return fallbackId ? { agentsMoved: reassigned, agentsWithoutModel: 0 } : { agentsMoved: 0, agentsWithoutModel: reassigned };
+}
+
+/** Live agents on a model known to be under the floor; an unknown window is not small. */
+export function agentsUnderFloor(): Array<{ name: string; modelId: string; modelName: string }> {
+  const rows = getDb().prepare("SELECT name, model_id AS modelId FROM agents WHERE status != 'terminated' AND model_id IS NOT NULL ORDER BY name").all() as Array<{ name: string; modelId: string }>;
+  return rows.flatMap((r) => { const w = windowOf(r.modelId); return w && w.window < MAIN_MODEL_MIN_WINDOW ? [{ ...r, modelName: w.name }] : []; });
+}
+
+/** At start: each live agent on a too-small model moves to the cheapest big-enough model that is switched on, and the
+ *  owner gets one card naming them; with no such model they stay and the card says who needs a pick. Nothing to do
+ *  once nobody is under the floor, so every start may run it. */
+export function moveAgentsOffSmallModels(): void {
+  const small = agentsUnderFloor();
+  const to = cheapestAgentModel(['auto']);   // the router is no model to move an agent onto
+  if (small.length === 0 || to) ownerConditionCleared('smallmodel:stuck');
+  if (small.length === 0) return;
+  if (!to) {
+    const names = small.map((a) => `${a.name} (${a.modelName})`).join(', ');
+    tellOwner('smallmodel:stuck', `${names} ${small.length === 1 ? 'is' : 'are'} on a model whose memory window is too small to hold a conversation, and no bigger model is switched on to move ${small.length === 1 ? 'it' : 'them'} to. Switch on a model with a bigger memory window in Settings, or pick one on the agent's detail page.`);
+    return;
+  }
+  reassignAffectedAgents([...new Set(small.map((a) => a.modelId))], to);
+  const toName = (getDb().prepare('SELECT name FROM models WHERE id = ?').get(to) as { name: string }).name;
+  ownerConditionCleared('smallmodel:moved');   // a new move is a new telling
+  tellOwner('smallmodel:moved', `The Dojo moved ${small.map((a) => `${a.name} (from ${a.modelName})`).join(', ')} to ${toName}, because a model with so small a memory window cannot hold a conversation. You can pick a different model for any agent on its detail page.`);
 }
 
 /** The model a service agent is created or reactivated on: its setting, else the main agent's. One under the floor

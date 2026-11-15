@@ -180,9 +180,7 @@ export interface ChatErrorEvent {
     // The agent's model window cannot hold its system prompt (`budget.ts` SystemPromptTooLargeError).
     // It does not clear itself: `retryable: false` and `severity: 'error'` keep the card until the tool list
     // shrinks or the agent moves to a bigger-window model.
-    | 'WINDOW_TOO_SMALL'
-    // An agent already on a model under the 32K main-model floor: nothing changes, the person is told once.
-    | 'MAIN_MODEL_SMALL';
+    | 'WINDOW_TOO_SMALL';
   severity?: 'info' | 'warning' | 'error';
   retryable?: boolean;
   /** An owner card whose words can change while it stands is matched by this condition key. */

@@ -23,7 +23,7 @@ import { servedOwnerNotices } from '../../healer/owner-notice-kinds.js';
 import { writeOobeSoul } from '../../prompt/soul-rerun.js';
 import { isPastFirstRun } from '../../config/setup-state.js';
 import { refuseUnfitLocalModel } from '../../agent/local-model-fit.js';
-import { refuseAgentModel, refuseSmallMainModel, passesMainModelFloor, cheapestAgentModel, windowOf, MAIN_MODEL_SETTING_KEYS, LOCAL_MODEL_SETTING_KEYS } from '../../agent/main-model-floor.js';
+import { refuseAgentModel, refuseSmallMainModel, passesMainModelFloor, reassignAffectedAgents, windowOf, MAIN_MODEL_SETTING_KEYS, LOCAL_MODEL_SETTING_KEYS } from '../../agent/main-model-floor.js';
 import { parsePrice } from '../../services/price-per-million.js';
 import { refuseBadClockTime, CLOCK_TIME_SETTING_KEYS } from '../../config/clock-time.js';
 import { refuseStaleWholeDocument } from './whole-document-guard.js';
@@ -61,32 +61,6 @@ function getModelUsage(modelId: string): ModelUsage {
   }
 
   return { modelId, modelName: model?.name ?? modelId, usedBy };
-}
-
-function reassignAffectedAgents(modelIds: string[]): { agentsMoved: number; agentsWithoutModel: number } {
-  const db = getDb();
-  let reassigned = 0;
-
-  const fallbackId = cheapestAgentModel(modelIds);
-
-  for (const mid of modelIds) {
-    const result = db.prepare(
-      "UPDATE agents SET model_id = ?, updated_at = datetime('now') WHERE model_id = ? AND status != 'terminated'"
-    ).run(fallbackId, mid);
-    reassigned += result.changes;
-
-    const pmModel = db.prepare("SELECT value FROM config WHERE key = 'pm_agent_model'").get() as { value: string } | undefined;
-    if (pmModel?.value === mid && fallbackId) {
-      db.prepare("UPDATE config SET value = ?, updated_at = datetime('now') WHERE key = 'pm_agent_model'").run(fallbackId);
-    }
-
-    const dreamerModel = db.prepare("SELECT value FROM config WHERE key = 'dreaming_model_id'").get() as { value: string } | undefined;
-    if (dreamerModel?.value === mid && fallbackId) {
-      db.prepare("UPDATE config SET value = ?, updated_at = datetime('now') WHERE key = 'dreaming_model_id'").run(fallbackId);
-    }
-  }
-
-  return fallbackId ? { agentsMoved: reassigned, agentsWithoutModel: 0 } : { agentsMoved: 0, agentsWithoutModel: reassigned };
 }
 
 const logger = createLogger('config-routes');

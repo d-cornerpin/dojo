@@ -56,6 +56,7 @@ const KINDS: Record<string, Kind> = {
   watcher: action((id) => watcherCardStands(id), { critical: true }),
   'import-failed-not-running': action(() => importCardStands(), { critical: true, dismissed: () => importCardDismissed() }),
   ollama: { cls: () => (heldOllamaVersion() !== null ? 'action' : 'informational'), stands: () => heldOllamaVersion() !== null },
+  smallmodel: { cls: (key) => (key === 'smallmodel:stuck' ? 'action' : 'informational'), stands: () => true },
   fitunchecked: informational,
   lessons: informational,
 };

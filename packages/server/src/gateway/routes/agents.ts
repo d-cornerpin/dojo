@@ -34,7 +34,6 @@ import { auditLog } from '../../agent/tools/util.js';
 import { parkedCauseOf } from '../../agent/v2/honest-stop-lock.js';
 import { SilentWindowMinutesSchema } from '../../config/schema.js';
 import { refuseAgentModel } from '../../agent/main-model-floor.js';
-import { noteSmallMainModelOnce } from '../../agent/main-model-notice.js';
 
 const logger = createLogger('agents-routes');
 
@@ -64,7 +63,6 @@ agentsRouter.get('/:id', (c) => {
     return c.json({ ok: false, error: 'Agent not found' }, 404);
   }
 
-  noteSmallMainModelOnce(id, row.model_id as string | null);   // told once, never stopped
   const agent = rowToAgentDetail(row);
   // `effectiveScope` is what getAgentPermissions returns (defaults, identity rules and the artifact dir
   // applied); `permissions` stays the stored blob. `effectiveGrants` is what the agent may reach.

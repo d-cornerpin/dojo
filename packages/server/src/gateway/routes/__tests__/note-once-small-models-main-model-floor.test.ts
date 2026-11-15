@@ -240,23 +240,3 @@ describe('POST /setup/provision-agent — the name-clash door', () => {
     expect(nameOf('first')).toBe('helper');
   });
 });
-
-describe('an existing agent on a small model gets the existing notice, once', () => {
-  it('opening the agent shows one chat:error warning, not one per open, and nothing is changed', async () => {
-    seedAgent('legacy', 'tiny');
-    await agentsRouter.request('/legacy', { method: 'GET' });
-    await agentsRouter.request('/legacy', { method: 'GET' });
-    const frames = broadcastSpy.mock.calls.map((c) => c[0] as { type?: string; code?: string; severity?: string; agentId?: string })
-      .filter((f) => f.type === 'chat:error' && f.code === 'MAIN_MODEL_SMALL');
-    expect(frames).toHaveLength(1);
-    expect(frames[0].severity).toBe('warning');
-    expect(frames[0].agentId).toBe('legacy');
-    expect(modelOf('legacy')).toBe('tiny');
-  });
-
-  it('an agent on an ordinary model gets no notice', async () => {
-    seedAgent('fine', 'big');
-    await agentsRouter.request('/fine', { method: 'GET' });
-    expect(broadcastSpy.mock.calls.map((c) => (c[0] as { code?: string }).code)).not.toContain('MAIN_MODEL_SMALL');
-  });
-});
