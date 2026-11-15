@@ -7,6 +7,7 @@ import { inlineHtmlAssets } from '../../services/canvas-html.js';
 import { renderOfficeToHtml, isOfficeRenderable } from '../../services/office-render.js';
 import { routeFailure } from './route-failure.js';
 import { homeDir } from '../../home.js';
+import { insideFolder } from '../../techniques/technique-folder.js';
 
 const logger = createLogger('upload');
 
@@ -34,11 +35,14 @@ export interface UploadedFile {
   category: 'image' | 'pdf' | 'text' | 'office' | 'audio' | 'video' | 'unknown';
 }
 
-function ensureUploadDir(agentId: string): string {
-  const dir = path.join(UPLOAD_DIR, agentId);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
+/** The agent's upload folder, or null when `agentId` (a URL param) would name a place outside the upload root. */
+function agentUploadDir(agentId: string): string | null {
+  return insideFolder(UPLOAD_DIR, agentId);
+}
+
+function ensureUploadDir(agentId: string): string | null {
+  const dir = agentUploadDir(agentId);
+  if (dir) fs.mkdirSync(dir, { recursive: true });
   return dir;
 }
 
@@ -82,6 +86,7 @@ uploadRouter.post('/:agentId', async (c) => {
     }
 
     const dir = ensureUploadDir(agentId);
+    if (!dir) return c.json({ ok: false, error: 'invalid path' }, 400);
     const uploaded: UploadedFile[] = [];
 
     for (const file of files) {
@@ -167,6 +172,7 @@ uploadRouter.post('/start/:agentId', async (c) => {
 
   const uploadId = uuidv4();
   const dir = ensureUploadDir(agentId);
+  if (!dir) return c.json({ ok: false, error: 'invalid path' }, 400);
   const safeFilename = body.filename.replace(/[^a-zA-Z0-9._-]/g, '_');
   const partPath = path.join(dir, `${Date.now()}_${safeFilename}.part`);
 
@@ -320,13 +326,9 @@ export function cleanupOldUploads(): void {
 uploadRouter.get('/file/:agentId/:filename', async (c) => {
   const agentId = c.req.param('agentId');
   const filename = c.req.param('filename');
-  const agentDir = path.resolve(UPLOAD_DIR, agentId);
-  const filePath = path.resolve(agentDir, filename);
-
-  // Both params may carry an encoded separator: the file must stay inside the agent's own folder.
-  if (!agentDir.startsWith(UPLOAD_DIR + path.sep) || !filePath.startsWith(agentDir + path.sep)) {
-    return c.json({ ok: false, error: 'invalid path' }, 400);
-  }
+  const agentDir = agentUploadDir(agentId);
+  const filePath = agentDir && insideFolder(agentDir, filename);
+  if (!filePath) return c.json({ ok: false, error: 'invalid path' }, 400);
   if (!fs.existsSync(filePath)) {
     return c.json({ ok: false, error: 'File not found' }, 404);
   }

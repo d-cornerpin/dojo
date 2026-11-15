@@ -22,7 +22,7 @@ vi.mock('../../agent/access/read.js', () => ({ mayUseTechnique: vi.fn(() => true
 
 import { runMigrations } from '../../db/migrations.js';
 import { createTechnique, TECHNIQUES_DIR } from '../store.js';
-import { insideTechniqueDir } from '../technique-folder.js';
+import { insideFolder } from '../technique-folder.js';
 import { executeUpdateTechnique } from '../tools.js';
 
 let tmp: string;
@@ -59,14 +59,14 @@ describe('createTechnique supporting-file paths', () => {
   });
 });
 
-describe('insideTechniqueDir shapes', () => {
+describe('insideFolder shapes', () => {
   it('refuses empty, dot, parent, absolute and nested-escape names', () => {
     const d = path.join(tmp, 'tech');
     fs.mkdirSync(d);
     for (const bad of ['', '.', '..', '../x', 'a/../../x', path.join(tmp, 'x'), 'a\0b']) {
-      expect(insideTechniqueDir(d, bad), JSON.stringify(bad)).toBeNull();
+      expect(insideFolder(d, bad), JSON.stringify(bad)).toBeNull();
     }
-    expect(insideTechniqueDir(d, 'a/b.md')).toBe(path.join(d, 'a', 'b.md'));
+    expect(insideFolder(d, 'a/b.md')).toBe(path.join(d, 'a', 'b.md'));
   });
 
   it('refuses a path that goes through a link pointing outside', () => {
@@ -74,7 +74,7 @@ describe('insideTechniqueDir shapes', () => {
     const outside = path.join(tmp, 'outside');
     fs.mkdirSync(d); fs.mkdirSync(outside);
     fs.symlinkSync(outside, path.join(d, 'link'));
-    expect(insideTechniqueDir(d, 'link/file.txt')).toBeNull();
+    expect(insideFolder(d, 'link/file.txt')).toBeNull();
   });
 });
 

@@ -1,6 +1,6 @@
 // The disk reads and writes the technique package export and import do. Only share-export.ts and
 // share-import.ts import it, both reached only from the dashboard's technique route; no tool dispatch
-// reaches it. Paths inside a technique folder go through insideTechniqueDir.
+// reaches it. Paths inside a technique folder go through insideFolder.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -8,7 +8,7 @@ import type AdmZip from 'adm-zip';
 import { createLogger } from '../logger.js';
 import { isBinaryFile } from './scrub.js';
 import type { DependencyManifest } from './dependencies.js';
-import { insideTechniqueDir } from './technique-folder.js';
+import { insideFolder } from './technique-folder.js';
 
 const logger = createLogger('technique-share-disk');
 
@@ -44,7 +44,7 @@ export function collectTechniqueFiles(dirPath: string): { entries: FileEntry[]; 
 
       // A link is never followed: it could point at a file anywhere on the box. It is skipped and
       // reported, and a path that does not resolve inside the technique folder is treated the same.
-      if (entry.isSymbolicLink() || insideTechniqueDir(dirPath, relPath) === null) {
+      if (entry.isSymbolicLink() || insideFolder(dirPath, relPath) === null) {
         skippedLinks.push(relPath);
         continue;
       }

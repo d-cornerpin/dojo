@@ -16,7 +16,7 @@ function realOfNearestExisting(p: string): string | null {
   }
 }
 
-export function insideTechniqueDir(dirPath: string, rel: string): string | null {
+export function insideFolder(dirPath: string, rel: string): string | null {
   if (typeof rel !== 'string' || rel === '' || rel.includes('\0') || path.isAbsolute(rel)) return null;
   const root = path.resolve(dirPath);
   const resolved = path.resolve(root, rel);
