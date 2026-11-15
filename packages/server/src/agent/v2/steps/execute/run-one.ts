@@ -90,7 +90,8 @@ export async function runOneToolCall(tc: ToolCall, ctx: ExecuteContext, sc: Exec
   // Identical-call brake, pre-execution half: a stopped call is not run again until the agent lifts the stop.
   const refusal = turnCtx.toolPhaseEndedBySpinBrake
     ? '[Engine: the tool phase for this turn ended after an identical call was refused repeatedly. No further tools will run this turn. Answer in text with what you have.]'
-    : wordsStepRefusal(turnCtx, tc.name) ?? (isA2AReplyTool ? null : repeatStopRefusal(agentId, turnCtx, tc.name, tc.arguments));
+    : wordsStepRefusal(turnCtx, tc.name)
+      ?? (isA2AReplyTool ? null : repeatStopRefusal(agentId, turnCtx, tc.name, tc.arguments));
   try {
     if (refusal) {
       // Only the spin-brake terminal arm is marked TIMEOUT; the per-signature arm is unmarked on purpose.
