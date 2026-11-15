@@ -143,9 +143,10 @@ export function withdrawCatchUpProgress(agentId: string): void {
   } catch { /* best effort */ }
 }
 
-/** The agents whose catch-up record is open (the boot resumes each). */
+/** The live agents whose catch-up record is open (the boot resumes each). */
 export function openCatchUps(): string[] {
-  return (getDb().prepare(`SELECT key FROM config WHERE key LIKE '${CATCH_UP}%'`).all() as Array<{ key: string }>).map(({ key }) => key.slice(CATCH_UP.length));
+  return (getDb().prepare(`SELECT key FROM config WHERE key LIKE '${CATCH_UP}%'
+    AND substr(key, ${CATCH_UP.length + 1}) NOT IN (SELECT id FROM agents WHERE status = 'terminated')`).all() as Array<{ key: string }>).map(({ key }) => key.slice(CATCH_UP.length));
 }
 
 // ── The background folder: replaces placeholders with real summaries of exactly their rows.
