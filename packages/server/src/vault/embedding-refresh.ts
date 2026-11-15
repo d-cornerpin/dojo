@@ -1,4 +1,4 @@
-// Re-embeds vault entries whose vector is missing or was made by another embedding model.
+// Re-embeds vault entries whose vector is missing.
 
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
@@ -9,20 +9,10 @@ const logger = createLogger('vault-embedding-refresh');
 
 // Entries with a NULL embedding never match a semantic vault_search, so re-embed them (best effort, up to `limit`).
 export async function reembedNullVaultEntries(limit = 200): Promise<number> {
-  return reembedVaultEntries('embedding IS NULL', limit);
-}
-
-// Re-embeds entries with another model's vector (or none); callers loop until none are left
-// (see memory/embedding-switch.ts).
-export async function reembedStaleVaultEntries(limit = 200): Promise<number> {
-  return reembedVaultEntries('(embedding IS NULL OR embedding_model IS NOT ?)', limit, [embeddingModelKey()]);
-}
-
-async function reembedVaultEntries(where: string, limit: number, whereParams: unknown[] = []): Promise<number> {
   const db = getDb();
   const rows = db.prepare(
-    `SELECT id, content FROM vault_entries WHERE ${where} AND is_obsolete = 0 LIMIT ?`,
-  ).all(...whereParams, limit) as Array<{ id: string; content: string }>;
+    'SELECT id, content FROM vault_entries WHERE embedding IS NULL AND is_obsolete = 0 LIMIT ?',
+  ).all(limit) as Array<{ id: string; content: string }>;
   let fixed = 0;
   for (const row of rows) {
     try {

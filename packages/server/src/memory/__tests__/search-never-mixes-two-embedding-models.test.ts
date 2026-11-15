@@ -1,8 +1,8 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
-// SWITCHING THE EMBEDDING MODEL (owner ruling).
+// A box whose stored vectors name a different model than the one in use (a restored or imported copy).
 //
 //  1. Search never mixes the vectors of two models, even when their widths are the same.
-//  2. A PAID model's vectors are never produced by the scheduled drain, only by the owner's own backfill.
+//  2. The scheduled drain fills only memories with no vector; it never re-processes another model's.
 //
 // The embedding backend is a stubbed `fetch`; nothing leaves the process.
 // ════════════════════════════════════════════════════════════════════════════════════════
@@ -86,7 +86,6 @@ const modelsOf = (table: string): string[] =>
 describe('search never mixes two models', () => {
   it('after a switch, a same-width vector from the old model is not a hit (conversation and vault)', async () => {
     seedOldMemories(1);
-    // Save the new setting without the switch follow-up, as a box would look right after the save.
     db().prepare("UPDATE config SET value = ? WHERE key = 'embedding_config'")
       .run(JSON.stringify({ provider: 'ollama', model: 'new-embedder' }));
     expect(await vectorSearch('harbour ledger', AGENT, { minSimilarity: 0.1 })).toEqual([]);
@@ -103,16 +102,13 @@ describe('search never mixes two models', () => {
   });
 });
 
-describe('switching to a PAID model', () => {
-
-  it('the scheduled drain leaves the old vectors alone; the owner\'s own backfill re-processes them', async () => {
+describe('the scheduled drain', () => {
+  it('leaves another model\'s vectors alone', async () => {
     seedOldMemories(2);
     db().prepare("UPDATE config SET value = ? WHERE key = 'embedding_config'")
-      .run(JSON.stringify({ provider: 'openai', baseUrl: 'https://embeddings.example.test/v1', model: 'big-hosted' }));
-    await runBackfill();                                   // the drain on a paid model
+      .run(JSON.stringify({ provider: 'ollama', model: 'new-embedder' }));
+    await runBackfill();
     expect(fetchedModels).toEqual([]);
     expect(modelsOf('embeddings')).toEqual([OLD]);
-    await runBackfill({ includeStale: true });             // the owner asked
-    expect(modelsOf('embeddings')).toEqual(['openai:big-hosted']);
   });
 });

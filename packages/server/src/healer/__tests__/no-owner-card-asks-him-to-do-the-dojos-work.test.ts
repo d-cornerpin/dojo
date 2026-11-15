@@ -29,7 +29,7 @@ afterEach(() => { mockDb.current?.close(); mockDb.current = null; });
 describe('no owner card asks him to do the Dojo\'s work', () => {
   it('every card kind with a sentence builder, and every fixed card text', () => {
     const sentences: Record<string, string | null> = {
-      ...Object.fromEntries(['stuck', 'stall', 'nofit', 'budgetstop', 'healer-missing', 'embedding-switch', 'fitunchecked', 'healer-broken']
+      ...Object.fromEntries(['stuck', 'stall', 'nofit', 'budgetstop', 'healer-missing', 'fitunchecked', 'healer-broken']
         .map((kind) => [kind, notices.wordsOf(`${kind}:a-1`)]).filter(([, w]) => w !== '')),
       ...Object.fromEntries(Object.entries(notices).filter(([name, v]) => /_WORDS$/.test(name) && typeof v === 'string')),
       paused: pausedWords('a-1'),

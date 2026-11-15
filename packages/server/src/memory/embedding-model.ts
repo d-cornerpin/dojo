@@ -1,5 +1,4 @@
-// Which embedding model is in use, and whether it costs money. A leaf (database access only) so the readers,
-// writers and the switch handler ask one question. Every stored vector carries its model's key and a search
+// Which embedding model is in use. A leaf (database access only) so the readers and writers ask one question. Every stored vector carries its model's key and a search
 // scores only vectors with the current key: widths can match across models, so width cannot tell them apart.
 import { getDb } from '../db/connection.js';
 
@@ -34,37 +33,4 @@ export function readEmbeddingConfig(): EmbeddingConfig {
 /** The label stamped on each vector and compared at search time. */
 export function embeddingModelKey(cfg: Pick<EmbeddingConfig, 'provider' | 'model'> = readEmbeddingConfig()): string {
   return `${cfg.provider}:${cfg.model}`;
-}
-
-/** True when using this embedder costs nothing: Ollama, or an OpenAI-compatible endpoint on this machine or a
- *  private network address. Anything else counts as paid (the safe direction). */
-export function embeddingIsLocal(cfg: Pick<EmbeddingConfig, 'provider' | 'baseUrl'> = readEmbeddingConfig()): boolean {
-  if (cfg.provider === 'ollama') return true;
-  try {
-    const host = new URL(cfg.baseUrl).hostname.replace(/^\[|\]$/g, '');
-    if (host === 'localhost' || host.endsWith('.local') || host === '::1') return true;
-    const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
-    if (!v4) return false;
-    const [a, b] = [Number(v4[1]), Number(v4[2])];
-    return a === 127 || a === 10 || (a === 192 && b === 168) || (a === 172 && b >= 16 && b <= 31);
-  } catch {
-    return false;
-  }
-}
-
-/** How many memories (conversation, summary and technique vectors, plus live vault entries) were made by another model. */
-export function countMemoriesOnOtherModels(): number {
-  const db = getDb();
-  const key = embeddingModelKey();
-  const one = (sql: string): number => (db.prepare(sql).get(key) as { c: number }).c;
-  return one('SELECT COUNT(*) AS c FROM embeddings WHERE embedding_model IS NOT ?')
-    + one('SELECT COUNT(*) AS c FROM vault_entries WHERE embedding IS NOT NULL AND is_obsolete = 0 AND embedding_model IS NOT ?');
-}
-
-/** The owner card's words while memories still use a model that is no longer the embedding model. */
-export function embeddingSwitchWords(count: number): string {
-  return `The memory search model was changed to a paid one. ${count} saved ${count === 1 ? 'memory still uses' : 'memories still use'} the old model, `
-    + 'so search will not find them until they are re-processed. '
-    + 'They were not re-processed automatically because that would spend your money. New memories use the new model. '
-    + 'Switching the memory search model to a local one re-processes them automatically, at no cost.';
 }

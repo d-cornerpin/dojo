@@ -10,7 +10,6 @@ import { scrubTechnicalDetail } from '../agent/v2/error-format.js';
 import { taskMovedAtSql } from '../work/task-freshness.js';
 import { msToUtcText, holdWordsSql } from '../work/tracker-view.js';
 import { workingExpr } from '../work/terminal-states.js';
-import { countMemoriesOnOtherModels, embeddingSwitchWords } from '../memory/embedding-model.js';
 import { STANDARD_MODELS_MISSING_WORDS, uncheckedFitWords, OLLAMA_LIMIT_FAILED_WORDS, OLLAMA_TOO_OLD_WORDS, OLLAMA_DOWN_WORDS } from './local-model-notice-words.js';
 import { kindOf } from './owner-notice-kinds.js';
 export { STANDARD_MODELS_MISSING_WORDS, uncheckedFitWords, OLLAMA_LIMIT_FAILED_WORDS, OLLAMA_TOO_OLD_WORDS, OLLAMA_DOWN_WORDS };
@@ -101,7 +100,6 @@ export function wordsOf(key: string): string {
     : kind === 'nofit' ? (isAutoAgent(id) ? autoNoFitWords : noFitWords)(nameOf(id))
     : kind === 'budgetstop' ? budgetStopWords(id)
     : kind === 'healer-missing' ? healerMissingWords(nameOf(id))
-    : kind === 'embedding-switch' ? embeddingSwitchWords(countMemoriesOnOtherModels())
     : kind === 'fitunchecked' ? uncheckedFitWords((getDb().prepare('SELECT name FROM models WHERE id = ?').get(id) as { name: string } | undefined)?.name ?? id)
     : kind === 'healer-broken' ? HEALER_BROKEN_WORDS
     : '';

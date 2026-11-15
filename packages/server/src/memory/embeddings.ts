@@ -152,8 +152,6 @@ export async function storeEmbedding(
   sourceId: string,
   agentId: string | null,
   content: string,
-  // Set only by the re-embed after a model switch: a row made by another model is replaced.
-  opts?: { replaceStale?: boolean },
 ): Promise<void> {
   try {
     if (content.trim().length < 20) return;
@@ -162,23 +160,9 @@ export async function storeEmbedding(
     const model = embeddingModelKey();
 
     const db = getDb();
-    const existing = db.prepare(
-      'SELECT id, embedding_model AS model FROM embeddings WHERE source_type = ? AND source_id = ?'
-    ).all(sourceType, sourceId) as Array<{ id: string; model: string | null }>;
-    // `embeddings` has no unique key per source: an embed in flight across a model switch can land an old-model row
-    // beside a current one. The re-embed treats the source as done once ONE current row exists and removes stale rows.
-    const hasCurrent = existing.some((r) => r.model === model);
-    const dropStale = (): void => {
-      db.prepare('DELETE FROM embeddings WHERE source_type = ? AND source_id = ? AND embedding_model IS NOT ?').run(sourceType, sourceId, model);
-    };
-    if (existing.length > 0 && !opts?.replaceStale) return;
-    if (hasCurrent) { if (opts?.replaceStale) dropStale(); return; }
+    if (db.prepare('SELECT 1 FROM embeddings WHERE source_type = ? AND source_id = ?').get(sourceType, sourceId)) return;
 
     const embedding = await generateEmbedding(content);
-
-    // The replaced rows go in the same synchronous step as the new one lands (no await between),
-    // and only when the new one is written: a failed embed leaves the old rows in place.
-    if (existing.length > 0) dropStale();
 
     // GUARDED WRITE: the `await` above is the orphan class's whole mechanism; see `embedding-sources.ts`.
     const written = insertEmbeddingIfSourceAlive(db, {

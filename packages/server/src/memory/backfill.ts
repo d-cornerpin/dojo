@@ -1,9 +1,9 @@
-// Generates embeddings for rows that have none: the boot drain and the owner-requested re-embed.
+// Generates embeddings for rows that have none: the scheduled drain.
 
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { storeEmbedding } from './embeddings.js';
-import { embeddingModelKey, embeddingIsLocal } from './embedding-model.js';
+import { embeddingModelKey } from './embedding-model.js';
 
 const logger = createLogger('backfill');
 
@@ -25,11 +25,7 @@ export function getBackfillProgress(): typeof backfillProgress {
 // The same floor `storeEmbedding` applies, so a row it would skip is never picked (and never counted failed).
 const LONG_ENOUGH = (t: string): string => `length(trim(${t}.content, char(9, 10, 13, 32))) >= 20`;
 
-/**
- * `includeStale` also takes rows embedded by a different model than the current one and replaces them.
- * Unset, it is on only when the current model is local; the backfill route and embedding switch pass true.
- */
-export async function runBackfill(opts?: { includeStale?: boolean }): Promise<{ completed: number; failed: number; total: number }> {
+export async function runBackfill(): Promise<{ completed: number; failed: number; total: number }> {
   if (backfillRunning) {
     throw new Error('Backfill is already running');
   }
@@ -38,13 +34,7 @@ export async function runBackfill(opts?: { includeStale?: boolean }): Promise<{ 
   backfillProgress = { total: 0, completed: 0, failed: 0 };
 
   const db = getDb();
-  const includeStale = opts?.includeStale ?? embeddingIsLocal();   // a paid model is never spent on without the owner's say
   const model = embeddingModelKey();
-  // A row to do: no vector yet, or (when asked) a vector made by another model.
-  const todo = includeStale ? '(e.id IS NULL OR e.embedding_model IS NOT ?)' : 'e.id IS NULL';
-  const todoParams: unknown[] = includeStale ? [model] : [];
-  // A re-embed run goes newest first (likeliest to be asked about); the plain drain goes oldest first.
-  const dir = includeStale ? 'DESC' : 'ASC';
 
   try {
     // Un-embedded messages with sufficient content, capped to the per-run budget.
@@ -52,20 +42,20 @@ export async function runBackfill(opts?: { includeStale?: boolean }): Promise<{ 
       SELECT m.id, m.agent_id, m.content
       FROM messages m
       LEFT JOIN embeddings e ON e.source_type = 'message' AND e.source_id = m.id
-      WHERE ${todo} AND ${LONG_ENOUGH('m')}
-      ORDER BY m.created_at ${dir}
+      WHERE e.id IS NULL AND ${LONG_ENOUGH('m')}
+      ORDER BY m.created_at
       LIMIT ?
-    `).all(...todoParams, BACKFILL_PER_RUN_CAP) as Array<{ id: string; agent_id: string; content: string }>;
+    `).all(BACKFILL_PER_RUN_CAP) as Array<{ id: string; agent_id: string; content: string }>;
 
     // Collect un-embedded summaries (also capped, oldest first).
     const summaries = db.prepare(`
       SELECT s.id, s.agent_id, s.content
       FROM summaries s
       LEFT JOIN embeddings e ON e.source_type = 'summary' AND e.source_id = s.id
-      WHERE ${todo} AND s.kind != 'uncondensed' AND ${LONG_ENOUGH('s')}
-      ORDER BY s.created_at ${dir}
+      WHERE e.id IS NULL AND s.kind != 'uncondensed' AND ${LONG_ENOUGH('s')}
+      ORDER BY s.created_at
       LIMIT ?
-    `).all(...todoParams, BACKFILL_PER_RUN_CAP) as Array<{ id: string; agent_id: string; content: string }>;
+    `).all(BACKFILL_PER_RUN_CAP) as Array<{ id: string; agent_id: string; content: string }>;
 
     // Un-embedded techniques: intent surface only (name, description, tags), since recall matches
     // the ask against what a technique is for.
@@ -73,16 +63,16 @@ export async function runBackfill(opts?: { includeStale?: boolean }): Promise<{ 
       SELECT t.id, t.name, t.description, t.tags
       FROM techniques t
       LEFT JOIN embeddings e ON e.source_type = 'technique' AND e.source_id = t.id
-      WHERE ${todo}
-      ORDER BY t.created_at ${dir}
+      WHERE e.id IS NULL
+      ORDER BY t.created_at
       LIMIT ?
-    `).all(...todoParams, BACKFILL_PER_RUN_CAP) as Array<{ id: string; name: string; description: string | null; tags: string | null }>;
+    `).all(BACKFILL_PER_RUN_CAP) as Array<{ id: string; name: string; description: string | null; tags: string | null }>;
 
     // One combined per-run budget; messages first so a deep message backlog drains before the tails.
     const messageItems = messages.map(m => ({ type: 'message' as const, id: m.id, agentId: m.agent_id, content: m.content }));
     const summaryItems = summaries.map(s => ({ type: 'summary' as const, id: s.id, agentId: s.agent_id, content: s.content }));
     const items: Array<{ type: 'message' | 'summary' | 'technique'; id: string; agentId: string | null; content: string }> = [
-      ...(includeStale ? [...summaryItems, ...messageItems] : [...messageItems, ...summaryItems]),
+      ...messageItems, ...summaryItems,
       ...techniques.map(t => {
         let tags: string[] = [];
         try { tags = JSON.parse(t.tags ?? '[]'); } catch { /* malformed tags column */ }
@@ -106,7 +96,7 @@ export async function runBackfill(opts?: { includeStale?: boolean }): Promise<{ 
       // Process batch sequentially to avoid overwhelming the embedding API
       for (const item of batch) {
         try {
-          await storeEmbedding(item.type, item.id, item.agentId, item.content, { replaceStale: includeStale });
+          await storeEmbedding(item.type, item.id, item.agentId, item.content);
           if (stored.get(item.type, item.id, model)) {
             backfillProgress.completed++;
           } else {
@@ -131,13 +121,8 @@ export async function runBackfill(opts?: { includeStale?: boolean }): Promise<{ 
 
     logger.info(`Backfill completed: ${backfillProgress.completed} embedded, ${backfillProgress.failed} failed, ${backfillProgress.total} total`);
 
-    if (includeStale) {   // the vault's entries are memories too
-      const { reembedStaleVaultEntries } = await import('../vault/embedding-refresh.js');
-      while (await reembedStaleVaultEntries() > 0) { /* until none are left or none can be done */ }
-    }
     return { ...backfillProgress };
   } finally {
     backfillRunning = false;
-    if (includeStale) void import('./embedding-switch.js').then((m) => m.embeddingSwitchSettled());
   }
 }
