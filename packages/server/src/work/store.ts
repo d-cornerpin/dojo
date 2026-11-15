@@ -44,7 +44,7 @@ export { TERMINAL_STATES, isTerminal };
 const LEGAL: Record<WorkState, readonly WorkState[]> = {
   open:      ['claimed', 'handed_in', 'blocked', 'done', 'failed', 'abandoned'],
   claimed:   ['open', 'handed_in', 'blocked', 'done', 'failed', 'abandoned'],
-  sent_back: ['open', 'claimed', 'handed_in', 'abandoned'],
+  sent_back: ['open', 'claimed', 'handed_in', 'done', 'failed', 'abandoned'],
   handed_in: ['open', 'claimed', 'sent_back', 'done', 'failed', 'abandoned'],
   blocked:   ['open', 'claimed', 'done', 'failed', 'abandoned'],
   done:      ['open'],
