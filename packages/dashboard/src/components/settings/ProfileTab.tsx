@@ -1,6 +1,6 @@
 // ── Settings → The Profile tab: the owner profile and the identity files behind it.
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import * as api from '../../lib/api';
 import { useGuardedLoad } from '../../lib/load-guard';
 
@@ -11,6 +11,8 @@ const PROVIDER_LABEL: Record<OwnerMailboxRow['provider'], string> = { google: 'G
 export const ProfileTab = () => {
   const [userName, setUserName] = useState('');
   const [userProfile, setUserProfile] = useState('');
+  const profileNow = useRef(userProfile);   // what the box holds when an await returns, not when it began
+  profileNow.current = userProfile;
   const [savingName, setSavingName] = useState(false);
   const [savedName, setSavedName] = useState(false);
   const [savingProfile, setSavingProfile] = useState(false);
@@ -37,7 +39,7 @@ export const ProfileTab = () => {
     setSavingName(true);
     setSavedName(false);
     const result = await api.setSetting('owner_name', userName.trim());
-    if (result.ok) { setSavedName(true); setTimeout(() => setSavedName(false), 2000); if (userProfile === loadedProfile) profileLoad.reload(); }   // the profile's name line follows; an edit in progress is left alone
+    if (result.ok) { setSavedName(true); setTimeout(() => setSavedName(false), 2000); if (profileNow.current === loadedProfile) profileLoad.reload(); }   // the profile's name line follows; an edit in progress is left alone
     setSavingName(false);
   };
 

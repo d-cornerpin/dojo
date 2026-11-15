@@ -129,3 +129,21 @@ describe('a failed profile save keeps what the owner typed', () => {
     await screen.findByDisplayValue('NEWER PROFILE');
   });
 });
+
+describe('a name save never replaces profile text typed while it ran', () => {
+  it('the profile box keeps what was typed during the save', async () => {
+    fns.getSetting.mockResolvedValue(ok({ key: 'owner_name', value: 'Sam' }));
+    fns.getIdentity.mockResolvedValue(ok({ content: 'SAVED PROFILE', mailboxes: [] }));
+    let finish: (v: unknown) => void = () => undefined;
+    fns.setSetting.mockReturnValue(new Promise((r) => { finish = r; }));
+    render(<ProfileTab />);
+    const box = await screen.findByDisplayValue('SAVED PROFILE');
+    fireEvent.click(screen.getAllByText('Save')[0]);
+    fireEvent.change(box, { target: { value: 'TYPED DURING THE SAVE' } });
+    fns.getIdentity.mockClear();
+    finish(ok({}));
+    await waitFor(() => expect(screen.queryByText('Saving...')).toBeNull());
+    expect(fns.getIdentity).not.toHaveBeenCalled();
+    expect(screen.getByDisplayValue('TYPED DURING THE SAVE')).toBeTruthy();
+  });
+});

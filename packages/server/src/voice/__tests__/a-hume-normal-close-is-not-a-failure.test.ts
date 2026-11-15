@@ -47,6 +47,18 @@ describe('a Hume reply that ends normally is not a failure', () => {
     expect(errors).toEqual([]);
   });
 
+  it('a final frame with no audio still counts its snippet as done, and sends no sound', async () => {
+    const { s, errors, done } = await openSession();
+    const wavs: unknown[] = [];
+    s.onWav = (w) => wavs.push(w);
+    s.push('Done.');
+    fire('message', { ...audio('Done.', true), audio: '' });
+    expect(done).toEqual(['Done.']);
+    expect(wavs).toEqual([]);
+    await s.close();
+    expect(errors).toEqual([]);
+  });
+
   it('a hang-up we did not ask for is an error', async () => {
     const { errors } = await openSession();
     fire('close');

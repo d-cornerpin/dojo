@@ -2070,7 +2070,10 @@ configRouter.put('/settings/:key', async (c) => {
     INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
   `).run(key, body.value);
-  if (key === 'owner_name') renameOwnerInProfile(previousName, body.value);
+  if (key === 'owner_name') {
+    try { renameOwnerInProfile(previousName, body.value); }   // the name is saved either way; an unreadable USER.md keeps its old line
+    catch (err) { logger.warn('The owner name was saved but USER.md could not be updated', { error: err instanceof Error ? err.message : String(err) }); }
+  }
 
   // Mirror channel safe-sender lists into the contacts store so a name the user
   // just trusted (e.g. "Alex" on the iMessage list) resolves when they later
