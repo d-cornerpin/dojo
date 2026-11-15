@@ -59,9 +59,10 @@ async function loadSettings(): Promise<TtsSettings> {
 }
 
 /**
- * Synthesize one utterance: mono Float32 PCM for the call session's μ-law encoder, or `null` if the
- * configured engine failed. No cross-engine fallback: CallSession.drainSpeechTexts skips the sentence,
- * since a brief gap beats a mid-reply voice swap.
+ * Synthesize one utterance: mono Float32 PCM for the call session's μ-law encoder, or `null` if no engine
+ * could speak it (CallSession.drainSpeechTexts then skips the sentence). A failing cloud voice hands the
+ * whole sentence to the local voice, so the caller hears the rest of the reply; the cloud audio is only
+ * returned complete, so a sentence is never half cloud and half local.
  */
 export async function synthesizeForTwilio(
   text: string,
@@ -71,11 +72,10 @@ export async function synthesizeForTwilio(
     try {
       return await synthesizeCloud(text, settings);
     } catch (err) {
-      logger.error('Hume TTS failed on live call (sentence skipped, no fallback)', {
+      logger.warn('Hume TTS failed on live call, speaking this sentence in the local voice', {
         error: err instanceof Error ? err.message : String(err),
         textPreview: text.slice(0, 60),
       });
-      return null;
     }
   }
   return synthesizeLocal(text, settings);
@@ -98,7 +98,7 @@ async function synthesizeLocal(text: string, settings: TtsSettings): Promise<{ p
 /**
  * Drive a one-shot Hume burst: push the utterance, collect WAV chunks until Hume signals `isLastChunk`
  * (or the socket closes), and stitch their PCM into one Float32 buffer at HUME_SAMPLE_RATE (48 kHz).
- * Throws on any failure; synthesizeForTwilio then skips the sentence.
+ * Throws on any failure, an error frame or hang-up included; synthesizeForTwilio then uses the local voice.
  */
 async function synthesizeCloud(text: string, settings: TtsSettings): Promise<{ pcm: Float32Array; sampleRate: number }> {
   if (!settings.cloudVoice) {
@@ -118,6 +118,7 @@ async function synthesizeCloud(text: string, settings: TtsSettings): Promise<{ p
   let humeError: Error | null = null;
   hume.onWav = (wav: Buffer) => { chunks.push(wav); };
   hume.onError = (err: Error) => { humeError = err; };
+  hume.onDrop = hume.onError;
 
   await hume.open();
   try {

@@ -496,8 +496,8 @@ export class CallSession {
 
   /**
    * Single-flight drain over `pendingSpeechTexts`: synthesizes one sentence at a time, pushing PCM in order.
-   * Sentences from before the latest barge-in are dropped. A TTS failure skips the sentence instead of
-   * falling back to another engine (no mid-reply voice swap).
+   * Sentences from before the latest barge-in are dropped. A failing cloud voice is covered inside the
+   * bridge (local voice); a sentence no engine can speak is skipped.
    */
   private async drainSpeechTexts(): Promise<void> {
     if (this.speechSynthRunning) return;
@@ -516,15 +516,14 @@ export class CallSession {
           const { synthesizeForTwilio } = await import('./tts-bridge.js');
           const pcm = await synthesizeForTwilio(item.text);
           if (!pcm) {
-            // Real engine failure (socket error, missing voice config): skip the sentence rather than
-            // swap engines, since a mid-reply voice swap is worse than a brief gap.
+            // No engine could speak it: skip the sentence.
             logger.warn('TTS produced no audio for sentence (skipped)', {
               callSid: this.callSid, textPreview: item.text.slice(0, 60),
             });
             continue;
           }
-          // Re-check generation after synth: the caller may have spoken meanwhile, so drop the audio.
-          if (item.generation < this.speechGeneration) {
+          // Re-check after synth: the caller may have spoken or hung up meanwhile, so drop the audio.
+          if (item.generation < this.speechGeneration || this.ended) {
             logger.info('TTS dropped post-synth (stale generation)', {
               callSid: this.callSid, textPreview: item.text.slice(0, 60),
             });
@@ -533,7 +532,7 @@ export class CallSession {
           this.ttsQueue.push(pcm);
           if (this.started && !this.ttsTimer) this.kickTtsPump();
         } catch (err) {
-          logger.warn('TTS for call utterance failed (skipped, no fallback)', {
+          logger.warn('TTS for call utterance failed (skipped)', {
             callSid: this.callSid, error: err instanceof Error ? err.message : String(err),
             textPreview: item.text.slice(0, 60),
           });
