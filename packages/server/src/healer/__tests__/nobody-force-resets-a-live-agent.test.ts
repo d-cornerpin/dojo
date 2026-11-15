@@ -44,6 +44,9 @@ vi.mock('../../gateway/ws.js', () => ({ broadcast: vi.fn() }));
 
 import { runMigrations } from '../../db/migrations.js';
 import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
+import { activeRuns } from '../../agent/shared-state.js';
+import { runAutoFixes } from '../auto-fix.js';
+import { runHealerSelfWatchdog } from '../healer-agent.js';
 
 const AGENT = FXID.n4;
 const HEALER = 'healer';
@@ -73,11 +76,10 @@ beforeEach(() => {
   mockDb.current = db;
   runMigrations();
   seed(db);
-  vi.resetModules();
+  activeRuns.clear();
 });
 
 afterEach(async () => {
-  vi.useRealTimers();
   // A reset fires `import('./injury-recovery.js')` without awaiting it; let it land before the next
   // test resets the module registry and imports the same graph again.
   await vi.dynamicImportSettled();
@@ -88,8 +90,6 @@ afterEach(async () => {
 // ════════════════════════════════════════════════════════════════════════════
 describe('T81d census row 17 — healer/auto-fix.ts\'s fixStuckAgent', () => {
   it('RED: a stuck-looking row with a live activeRuns entry survives the auto-fix sweep untouched', async () => {
-    const { activeRuns } = await import('../../agent/shared-state.js');
-    const { runAutoFixes } = await import('../auto-fix.js');
     agedTo(AGENT, 'working', 20); // stale by the STUCK_AGENT diagnostic's own clock
     activeRuns.add(AGENT); // ...but THIS process still knows the turn is live
 
@@ -104,7 +104,6 @@ describe('T81d census row 17 — healer/auto-fix.ts\'s fixStuckAgent', () => {
   });
 
   it('a genuinely dead-process row (no activeRuns entry) is still reset — the guard narrows, never widens', async () => {
-    const { runAutoFixes } = await import('../auto-fix.js');
     agedTo(AGENT, 'working', 20);
     // activeRuns is untouched here — nothing in this process claims the run is live.
 
@@ -119,7 +118,6 @@ describe('T81d census row 17 — healer/auto-fix.ts\'s fixStuckAgent', () => {
   });
 
   it('a non-stuck row (fresh updated_at) is untouched regardless of activeRuns — the diagnostic gate still applies first', async () => {
-    const { runAutoFixes } = await import('../auto-fix.js');
     // status is 'working' but updated_at is fresh (default NOW on insert) — the STUCK_AGENT
     // diagnostic would never have produced this item in real life; this asserts the fixer
     // itself does not force a reset just because it was CALLED, only because the item said so.
@@ -137,51 +135,36 @@ describe('T81d census row 17 — healer/auto-fix.ts\'s fixStuckAgent', () => {
 // ════════════════════════════════════════════════════════════════════════════
 describe('T81d census row 15 — healer/healer-agent.ts\'s self-watchdog', () => {
   it('RED: a stuck-looking Healer row with a live activeRuns entry survives the self-watchdog untouched', async () => {
-    const { activeRuns } = await import('../../agent/shared-state.js');
-    const { startHealerSelfWatchdog } = await import('../healer-agent.js');
     agedTo(HEALER, 'working', 15); // past HEALER_WORKING_STUCK_MINUTES (10)
     activeRuns.add(HEALER); // ...but THIS process still knows the Healer's cycle is live
 
-    vi.useFakeTimers();
-    startHealerSelfWatchdog();
-    await vi.advanceTimersByTimeAsync(30_000); // the watchdog's own initial-run delay
+    runHealerSelfWatchdog();
 
     expect(statusOf(HEALER), 'a live Healer cycle must not be force-reset to idle').toBe('working');
   });
 
   it('a genuinely dead-process Healer row (no activeRuns entry) is still reset', async () => {
-    const { startHealerSelfWatchdog } = await import('../healer-agent.js');
     agedTo(HEALER, 'working', 15);
 
-    vi.useFakeTimers();
-    startHealerSelfWatchdog();
-    await vi.advanceTimersByTimeAsync(30_000);
+    runHealerSelfWatchdog();
 
     expect(statusOf(HEALER)).toBe('idle');
   });
 
   it('CONTROL: the Healer\'s error/paused resets are untouched — this guard is scoped to the working+stale branch only', async () => {
-    const { activeRuns } = await import('../../agent/shared-state.js');
-    const { startHealerSelfWatchdog } = await import('../healer-agent.js');
     mockDb.current!.prepare("UPDATE agents SET status = 'error' WHERE id = ?").run(HEALER);
     activeRuns.add(HEALER); // even with a live entry, error/paused still reset — no false safety
 
-    vi.useFakeTimers();
-    startHealerSelfWatchdog();
-    await vi.advanceTimersByTimeAsync(30_000);
+    runHealerSelfWatchdog();
 
     expect(statusOf(HEALER), 'the guard must not widen into protecting error/paused too').toBe('idle');
   });
 
   it('CONTROL: a healthy (non-stale) Healer row is left alone regardless of activeRuns', async () => {
-    const { activeRuns } = await import('../../agent/shared-state.js');
-    const { startHealerSelfWatchdog } = await import('../healer-agent.js');
     agedTo(HEALER, 'working', 2); // well under HEALER_WORKING_STUCK_MINUTES
     activeRuns.add(HEALER);
 
-    vi.useFakeTimers();
-    startHealerSelfWatchdog();
-    await vi.advanceTimersByTimeAsync(30_000);
+    runHealerSelfWatchdog();
 
     expect(statusOf(HEALER)).toBe('working');
   });
