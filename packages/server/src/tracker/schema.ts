@@ -780,7 +780,7 @@ export function listTasksPage(
   return { tasks: [...open, ...closed.slice(0, TASK_CLOSED_PAGE)].map(mapTaskRow), closedHasOlder: closed.length > TASK_CLOSED_PAGE };
 }
 
-/** Patch a task's editable columns. Status is not one of them: a status change goes through `setTaskStatus`,
+/** Patch a task's editable columns. Status is not one of them: a status change goes through `setTaskStatusResult`,
  *  which is `transition()` and says who and why. */
 export function updateTask(id: string, updates: Partial<{
   assignedTo: string | null;
@@ -857,21 +857,8 @@ export function updateTask(id: string, updates: Partial<{
 
 /**
  * Change a task's status: THE tracker's status door, `transition()` with the tracker's vocabulary outside and
- * the spine's inside. Returns the refreshed `Task`, or `null` when the gate refused (logged with its gate
- * name); callers that must tell the model WHY use `setTaskStatusResult`.
+ * the spine's inside. Hands the caller the gate's own verdict so it can be steered on.
  */
-export function setTaskStatus(id: string, status: TrackerStatus, input: SetStatusInput): Task | null {
-  const r = setTrackerStatus(id, status, input);
-  if (!workSettled(r)) {
-    logger.warn('task status change refused', { taskId: id, status, result: r });
-    return null;
-  }
-  const task = getTask(id);
-  if (task) broadcast({ type: 'tracker:task_updated', data: task });
-  return task;
-}
-
-/** The same call, handing the caller the gate's own verdict so it can be steered on. */
 export function setTaskStatusResult(id: string, status: TrackerStatus, input: SetStatusInput) {
   const r = setTrackerStatus(id, status, input);
   const task = getTask(id);
