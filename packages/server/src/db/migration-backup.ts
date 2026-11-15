@@ -148,9 +148,9 @@ function takeSnapshot(
       dbBytes,
     };
 
-    // Keep the newest 2 plus this episode's pinned baseline: of snapshots toward the same TARGET, the one
-    // from the lowest applied level. A crash loop re-snapshots the broken state on every boot and would
-    // otherwise prune the one good copy. A file whose name does not parse is never pinned.
+    // Keep the newest 2 plus the update-in-progress baseline: of the snapshots whose target this box has not
+    // reached yet, the one from the lowest applied level. A crash loop re-snapshots the broken state on every
+    // boot and would otherwise prune the one good copy. A file whose name does not parse is never pinned.
     const KEEP_NEWEST = 2;
     try {
       const backups = fs.readdirSync(backupsDir)
@@ -167,7 +167,7 @@ function takeSnapshot(
         })
         .sort((a, b) => b.mtimeMs - a.mtimeMs);
       const baseline = backups
-        .filter(b => b.to === target && b.from !== null)
+        .filter(b => b.to !== null && b.to > lastApplied && b.from !== null)
         .reduce<(typeof backups)[number] | null>(
           (lowest, b) => (
             !lowest || b.from! < lowest.from!

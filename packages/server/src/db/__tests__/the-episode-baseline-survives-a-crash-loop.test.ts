@@ -159,3 +159,23 @@ describe('the cap is still a cap', () => {
     expect(snapshots().filter((f) => f.startsWith('dojo-pre-109-to-900'))).toHaveLength(1);
   });
 });
+
+describe('an update that lands across several starts keeps its first copy, even when the target moves', () => {
+  const AT_901 = '901_next.sql';
+  const LONG_CHAIN = [...CHAIN, AT_901];
+
+  it('POSITIVE: three starts inside one unfinished update keep the first copy; once it finishes the newest two rule applies', () => {
+    boot('2026-08-29T17:37:41.000Z', [AT_135, AT_900]);                        // the update's first copy: 109 to 900
+    vi.setSystemTime(new Date('2026-08-29T17:37:52.000Z'));
+    ensurePreChainBackup(db, LONG_CHAIN, [AT_900, AT_901]);                   // a newer release arrives before 900 landed
+    vi.setSystemTime(new Date('2026-08-29T17:38:03.000Z'));
+    ensurePreChainBackup(db, LONG_CHAIN, [AT_900, AT_901]);
+    expect(snapshots().filter((f) => f.startsWith('dojo-pre-109-to-900'))).toHaveLength(1);
+    expect(snapshots()).toHaveLength(3);
+
+    vi.setSystemTime(new Date('2026-08-30T09:00:00.000Z'));
+    ensurePreChainBackup(db, [...LONG_CHAIN, '902_more.sql'], ['902_more.sql']);   // the update finished at 901
+    expect(snapshots()).toHaveLength(2);
+    expect(snapshots().some((f) => f.startsWith('dojo-pre-109-to-900'))).toBe(false);
+  });
+});
