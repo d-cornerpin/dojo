@@ -235,7 +235,7 @@ function seedWorld(db: Database.Database): void {
   ).run(PRIMARY);
   // A second agent: the delegate in the delegated shapes, the sender in the A2A-originated one.
   db.prepare(
-    "INSERT INTO agents (id, name, model_id, status, config, classification) VALUES ('helper', 'Helper', 'test-model', 'idle', '{}', 'worker'), ('helper-2', 'Second Helper', 'test-model', 'idle', '{}', 'worker')",
+    "INSERT INTO agents (id, name, model_id, status, config, classification) VALUES ('helper', 'Helper', 'test-model', 'idle', '{}', 'worker')",
   ).run();
 }
 
@@ -929,15 +929,14 @@ describe('t139 R-V333-5 — "You there?" never resumes a paused task', () => {
 
 /** One owner ask fanned out to two helpers, both pieces delivered: the ask is left
  *  compile-pending, exactly as the engine leaves it. Returns nothing; reads the spine after. */
-/** Two pieces to one helper; a second fan-out in the next turn goes to another (four sends to one would be stopped). */
-async function fanOutAndLand(msgId: string, ask: string, tag: string, helper = { id: 'helper', name: 'Helper' }): Promise<void> {
+async function fanOutAndLand(msgId: string, ask: string, tag: string): Promise<void> {
   ownerSays(msgId, ask);
   script([
     { toolCalls: [
-      call(`${tag}-a`, 'send_to_agent', { agent: helper.name, intent: 'ASSIGN', payload: `${tag}: collect part one.` }),
-      call(`${tag}-b`, 'send_to_agent', { agent: helper.name, intent: 'ASSIGN', payload: `${tag}: collect part two.` }),
+      call(`${tag}-a`, 'send_to_agent', { agent: 'Helper', intent: 'ASSIGN', payload: `${tag}: collect part one.` }),
+      call(`${tag}-b`, 'send_to_agent', { agent: 'Helper', intent: 'ASSIGN', payload: `${tag}: collect part two.` }),
     ] },
-    { content: `Asked ${helper.name} for both parts of ${tag}.` },
+    { content: `Asked Helper for both parts of ${tag}.` },
   ]);
   await runV2Turn(PRIMARY);
   const threads = (mockDb.current!.prepare(
@@ -947,7 +946,7 @@ async function fanOutAndLand(msgId: string, ask: string, tag: string, helper = {
   for (const thread of threads) {
     const back = await deliverA2AMessage({
       intent: 'DELIVERABLE', threadId: thread, requiresResponse: false,
-      payload: `${tag} part result.`, toAgent: PRIMARY, fromAgent: helper.id,
+      payload: `${tag} part result.`, toAgent: PRIMARY, fromAgent: 'helper',
     });
     expect(back.delivered).toBe(true);
   }
@@ -991,7 +990,7 @@ describe('t139 — the delegate-reply link has recorded facts behind it, or it i
     await fanOutAndLand('msg-two-a', 'Compare the two caterer quote sets and pick one.', 'JOBA');
     // (Round 1 slept 1.1 s here: the delegation exit's whole-second lower bound made two turns
     // inside one second share their sends. Fixed at the root in round 2 — hand-up 4.)
-    await fanOutAndLand('msg-two-b', 'Compare the two venue quote sets and pick one.', 'JOBB', { id: 'helper-2', name: 'Second Helper' });
+    await fanOutAndLand('msg-two-b', 'Compare the two venue quote sets and pick one.', 'JOBB');
     const owed = mockDb.current!.prepare(
       "SELECT COUNT(*) AS n FROM work WHERE agent_id = ? AND kind = 'ask' AND compile_pending = 1",
     ).get(PRIMARY) as { n: number };

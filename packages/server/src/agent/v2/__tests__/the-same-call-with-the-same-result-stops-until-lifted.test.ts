@@ -171,6 +171,14 @@ describe('the same call with the same result stops until the agent chooses to co
     expect(sentTo(PM)).toBe(1);
   });
 
+  it('two sends to one agent in each of three turns all go out: sends count within the turn', async () => {
+    toolSpy.mockImplementation(() => ({ content: '[A2A:FYI] Message delivered.', isError: false }));
+    const note = (n: number): Call => ({ name: 'send_to_agent', arguments: { agent: HELPER, intent: 'FYI', message: `update ${n}` } });
+    for (let t = 0; t < 3; t++) await turn(MAIN, [note(2 * t), note(2 * t + 1)]);
+    expect(ran('send_to_agent')).toBe(6);
+    expect(results(MAIN).some((r) => r.includes(NOT_RUN))).toBe(false);
+  });
+
   it('a call made once a turn, turn after turn, is never stopped', async () => {
     for (let i = 0; i < 6; i++) await turn(MAIN, [search]);
     expect(ran('gmail_search')).toBe(6);

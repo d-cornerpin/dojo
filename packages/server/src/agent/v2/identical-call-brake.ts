@@ -1,7 +1,7 @@
 // The one repeat rule, for every agent: when the same call brings back the same result a 4th time the engine
 // stops that call, and it runs again only after the agent calls `continue_repeating` with a reason; the next
 // stops are at 8, 20, 50, 100 and every further 100. The same call with a new result is work and never counts.
-// A send to an agent counts per recipient, whatever its wording. The window is this turn and the one before.
+// A send to an agent counts per recipient within the turn, whatever its wording; other calls count over two turns.
 
 import { createHash } from 'node:crypto';
 import { createLogger } from '../../logger.js';
@@ -90,10 +90,10 @@ function windowAt(agentId: string, ref: TurnContext): Window {
   return next;
 }
 
-/** The most times one result of this call came back in the window. */
+/** The most times one result of this call came back in the window; a send counts within this turn only. */
 function timesSeen(w: Window, key: string): number {
   const now = w.now.get(key);
-  const before = w.before.get(key);
+  const before = isSend(key) ? undefined : w.before.get(key);
   let most = 0;
   for (const fp of new Set([...(now?.keys() ?? []), ...(before?.keys() ?? [])])) {
     most = Math.max(most, (now?.get(fp) ?? 0) + (before?.get(fp) ?? 0));
