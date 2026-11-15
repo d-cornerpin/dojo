@@ -66,6 +66,18 @@ describe('a held Healer change', () => {
     expect(t.length).toBeLessThanOrEqual(300);
   });
 
+  it('a held call is described on the card by what it says: quoted tilde, odd argv, a very long or a relative target', async () => {
+    const held = async (args: Record<string, unknown>) => { freshDoneDb(); runMigrations(); await hold('exec', args, 'destructive shell command'); return card().proposed_fix; };
+    const generic = 'Run a command on this Mac that can delete or overwrite files.';
+    expect(await held({ command: 'rm -rf "~/x"' })).toBe(generic);
+    expect(await held({ argv: ['rm', 5] })).toBe(generic);
+    const long = `/Users/example/${'deep-folder-name/'.repeat(40)}file.bin`;
+    const sentence = await held({ argv: ['rm', '-rf', long] });
+    expect(sentence.length).toBeLessThanOrEqual(300);
+    expect(sentence).toMatch(/^Delete \/Users\/example\/.*\.\.\..*file\.bin, including everything inside\. Deleted files do not go to the Trash/);
+    expect(await held({ argv: ['rm', '-rf', 'build'] })).toBe(`Delete "build" in the folder this command runs from, including everything inside. ${GONE}`);
+  });
+
   it('the card and the text carry the sentence once, plain, with no first person or raw call', async () => {
     presence.away = true;
     const { proposalId } = await hold('exec', { argv: ['rm', '/tmp/a.log'] }, 'destructive shell command', 'critical');

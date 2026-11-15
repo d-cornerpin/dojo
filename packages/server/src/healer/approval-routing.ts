@@ -201,16 +201,21 @@ export interface FileHealerApprovalResult {
   queued: boolean;
 }
 
-/** Whole items that fit the room, then "and N more": a long list never cuts a path, and the sentence after it stays. */
-function nameList(items: string[], room = 160): string {
+/** A string over `room` characters, cut in the middle with "..." so its start and end both show. */
+const clip = (s: string, room: number): string => (s.length <= room ? s : `${s.slice(0, room / 2 - 2)}...${s.slice(1 - room / 2)}`);
+
+/** Whole items that fit the room (one over-long item is clipped), then "and N more": the sentence after it stays. */
+function nameList(all: string[], room = 160): string {
+  const items = all.map((s) => clip(s, room));
   let n = 1;
   while (n < items.length && items.slice(0, n + 1).join(', ').length <= room) n++;
   return items.slice(0, n).join(', ') + (n < items.length ? ` and ${items.length - n} more` : '');
 }
 
-/** A shell word as written, quotes off; null when it holds an escape, a variable, a glob, a redirect or other syntax. */
-const unquote = (w: string): string | null => { const v = /^(["'])(.*)\1$/.exec(w)?.[2] ?? w;
-  return /[\\$`*?[\]{}()"'<>|;&]/.test(v) ? null : v; };
+/** A shell word as written, quotes off; null when it holds an escape, a variable, a glob, a redirect or other syntax,
+ *  or is a quoted `~` (the shell does not expand it there, so it is no home path). */
+const unquote = (w: string): string | null => { const q = /^(["'])(.*)\1$/.exec(w); const v = q?.[2] ?? w;
+  return (q && v.startsWith('~')) || /[\\$`*?[\]{}()"'<>|;&]/.test(v) ? null : v; };
 
 /** One plain sentence for a held call: what will be done, to what, and what it affects. It names only what it can read exactly (argv as given, a shell line through the engine's splitter). */
 export function describeHeldAction(toolName: string, argsJson: string | null | undefined): string {
@@ -218,14 +223,14 @@ export function describeHeldAction(toolName: string, argsJson: string | null | u
   try { args = JSON.parse(argsJson ?? '{}') as Record<string, unknown>; } catch { /* an unreadable call reads as the general case */ }
   const filePath = typeof args.path === 'string' ? args.path : '';
   if (filePath && /^file_(write|patch|append)$/.test(toolName)) {
-    return `Change the file "${path.basename(filePath)}" in ${path.dirname(filePath)}. It holds an agent's identity or the Dojo's settings, and its current contents would change.`;
+    return `Change the file "${clip(path.basename(filePath), 80)}" in ${clip(path.dirname(filePath), 80)}. It holds an agent's identity or the Dojo's settings, and its current contents would change.`;
   }
-  const cmds: Array<Array<string | null>> = Array.isArray(args.argv) ? [args.argv as string[]] : execSimpleCommands(execCallText(toolName, args) ?? '').map((c) => commandWords(c).map(unquote));
+  const cmds: Array<Array<string | null>> = Array.isArray(args.argv) ? (args.argv.every((w) => typeof w === 'string') ? [args.argv as string[]] : []) : execSimpleCommands(execCallText(toolName, args) ?? '').map((c) => commandWords(c).map(unquote));
   let [head, ...rest] = cmds.length === 1 ? cmds[0] : [];
   if (head === 'sudo') [head, ...rest] = rest.slice(Math.max(0, rest.findIndex((w) => !w?.startsWith('-'))));   // look through sudo to the command it runs
   const targets = rest.filter((w) => !w?.startsWith('-'));
   if ((head === 'rm' || head === 'rmdir') && targets.length > 0 && targets.every((t) => t !== null)) {
-    return `Delete ${nameList(targets as string[])}${rest.some((w) => /^-[a-zA-Z]*[rR]|^--recursive$/.test(w ?? '')) ? ', including everything inside' : ''}. Deleted files do not go to the Trash and cannot be brought back.`;
+    return `Delete ${nameList((targets as string[]).map((t) => (/^[/~]/.test(t) ? t : `"${clip(t, 80)}" in the folder this command runs from`)))}${rest.some((w) => /^-[a-zA-Z]*[rR]|^--recursive$/.test(w ?? '')) ? ', including everything inside' : ''}. Deleted files do not go to the Trash and cannot be brought back.`;
   }
   const paths = [...new Set(cmds.flat().filter((w): w is string => !!w && /^(~|\.{0,2})\//.test(w)))];
   return `Run a command${cmds.length > 1 ? ' line' : ''} on this Mac that can delete or overwrite files.${paths.length ? ` It touches ${nameList(paths)}.` : ''}`;
