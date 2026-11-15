@@ -2,7 +2,7 @@ import { useFollowGrowth } from '../hooks/useFollowGrowth';
 import { useState, useEffect, useRef, useCallback, useMemo, type ReactNode } from 'react';
 import type { Message } from '@dojo/shared';
 import type { ChatChunkEvent, ChatReasoningChunkEvent, ChatMessageEvent, ChatToolCallEvent, ChatToolResultEvent, ChatErrorEvent, ChatWorkingNoteEvent, WsEvent } from '@dojo/shared';
-import { classifyMessageForDisplay, classifyTool, parseInboundChannel, stripInboundChannelMarker, parseOutboundRouting, channelOfSendTool, parseWorkingNote, isOwnerAlertSystemNote, stripSourceEnvelope, WORKING_NOTE_PREFIX, INTERNAL_WORKING_NOTE_PREFIX, NO_REPLY_CLOSED_MARKER } from '@dojo/shared';
+import { classifyMessageForDisplay, classifyTool, parseInboundChannel, stripInboundChannelMarker, parseOutboundRouting, channelOfSendTool, parseWorkingNote, isOwnerAlertSystemNote, stripSourceEnvelope, OWNER_ALERT_PROJECT_ATTENTION_PREFIX, WORKING_NOTE_PREFIX, INTERNAL_WORKING_NOTE_PREFIX, NO_REPLY_CLOSED_MARKER } from '@dojo/shared';
 import type { MessageOrigin } from '@dojo/shared';
 import { summarizeToolTurn, deriveChipLabel, type ToolTurnSummary } from '../lib/tool-display';
 import { inboundBadge, inboundSenderName, outboundBadge, withoutFence } from '../lib/channel-display';
@@ -113,10 +113,10 @@ function parseMessageContent(raw: string): { text: string; blocks?: ContentBlock
 }
 
 // Owner-facing text: drop the SOURCE envelope and internal tracker tag; plain notes pass through.
-const ownerAlertDisplayText = (content: string): string =>
-  stripSourceEnvelope(content.trim())
-    .replace(/^\[tracker:project_needs_attention\]\s*/, '')
-    .trim();
+const ownerAlertDisplayText = (content: string): string => {
+  const body = stripSourceEnvelope(content.trim());
+  return (body.startsWith(OWNER_ALERT_PROJECT_ATTENTION_PREFIX) ? body.slice(OWNER_ALERT_PROJECT_ATTENTION_PREFIX.length) : body).trim();
+};
 
 // Dimmed, collapsed rendering for a demoted note: quieter than the owner-alert bubble, expands on click.
 const WorkingNoteBubble = ({ text }: { text: string }) => {
