@@ -200,28 +200,35 @@ export interface FileHealerApprovalResult {
   queued: boolean;
 }
 
-const FILE_EDIT_VERB: Record<string, string> = { file_write: 'replaced', file_patch: 'edited', file_append: 'added to' };
+const FILE_EDIT_TOOLS = ['file_write', 'file_patch', 'file_append'];
+
+const MAX_WHAT_CHARS = 300;
+const PATH_IN_TEXT = /(?:~|\.{1,2})?\/[^\s"'|;&<>]+/g;
 
 /** One plain sentence for a held call: what will be done, to what, and what it affects. Built from the call itself. */
 export function describeHeldAction(toolName: string, argsJson: string | null | undefined): string {
   let args: Record<string, unknown> = {};
   try { args = JSON.parse(argsJson ?? '{}') as Record<string, unknown>; } catch { /* an unreadable call reads as the general case */ }
   const filePath = typeof args.path === 'string' ? args.path : '';
-  if (filePath && FILE_EDIT_VERB[toolName]) {
-    return `Change the file "${path.basename(filePath)}" in ${path.dirname(filePath)}. It holds an agent's identity or the Dojo's settings, and its current contents would be ${FILE_EDIT_VERB[toolName]}.`;
+  let what: string;
+  if (filePath && FILE_EDIT_TOOLS.includes(toolName)) {
+    what = `Change the file "${path.basename(filePath)}" in ${path.dirname(filePath)}. It holds an agent's identity or the Dojo's settings, and its current contents would change.`;
+  } else {
+    // The parts come from argv when the call has it; a plain command line is split only when it has no shell syntax.
+    const text = execCallText(toolName, args) ?? '';
+    const all = Array.isArray(args.argv) && args.argv.every((e) => typeof e === 'string') ? (args.argv as string[])
+      : text && !SHELL_META_RE.test(text) ? text.trim().split(/\s+/) : null;
+    const parts = all?.[0] === 'sudo' ? all.slice(1 + all.slice(1).findIndex((t) => !t.startsWith('-'))) : all;   // look through sudo to the command it runs
+    const targets = (parts ?? []).slice(1).filter((t) => !t.startsWith('-'));
+    if (parts && (parts[0] === 'rm' || parts[0] === 'rmdir') && targets.length > 0) {
+      const recursive = parts.some((t) => /^-[a-zA-Z]*[rR]|^--recursive$/.test(t));
+      what = `Delete ${targets.join(', ')}${recursive ? ' and everything inside it' : ''}. Deleted files do not go to the Trash and cannot be brought back.`;
+    } else {
+      const touched = [...new Set(parts ? targets.filter((t) => /^(~|\.{0,2}\/)/.test(t)) : text.match(PATH_IN_TEXT) ?? [])].slice(0, 3);
+      what = `Run a ${parts ? 'command' : 'command line'} on this Mac that can delete or overwrite files.${touched.length ? ` It touches ${touched.join(', ')}.` : ''}`;
+    }
   }
-  const command = execCallText(toolName, args);
-  const tokens = command ? command.trim().split(/\s+/) : [];
-  const targets = tokens.slice(1).filter((t) => !t.startsWith('-'));
-  if ((tokens[0] === 'rm' || tokens[0] === 'rmdir') && targets.length > 0 && !SHELL_META_RE.test(command ?? '')) {
-    const folders = tokens[0] === 'rmdir' || tokens.some((t) => /^-[a-zA-Z]*[rR]/.test(t));
-    const list = targets.join(', ');
-    return folders
-      ? `Delete ${targets.length === 1 ? 'the folder' : 'the folders'} ${list} and everything inside. Deleted files do not go to the Trash and cannot be brought back.`
-      : `Delete ${targets.length === 1 ? 'the file' : 'the files'} ${list}. Deleted files do not go to the Trash and cannot be brought back.`;
-  }
-  if (tokens[0]) return `Run a "${path.basename(tokens[0])}" command on this Mac. It could delete or overwrite the files it touches.`;
-  return 'Make a change on this Mac that could delete or overwrite something.';
+  return what.length > MAX_WHAT_CHARS ? `${what.slice(0, MAX_WHAT_CHARS - 3)}...` : what;
 }
 
 /**

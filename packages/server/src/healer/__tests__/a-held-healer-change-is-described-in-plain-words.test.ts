@@ -1,16 +1,11 @@
 // A held Healer change reaches the owner in plain words: the Vitals card and the text message carry the same
 // sentence about what will be done and what it affects, with no first person and no raw tool call.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import Database from 'better-sqlite3';
 
-const mockDb: { current: Database.Database | null } = { current: null };
-vi.mock('../../db/connection.js', () => ({ getDb: () => mockDb.current!, closeDb: vi.fn(), getDbPath: () => ':memory:' }));
+vi.mock('../../db/connection.js', async () => (await import('../../work/done/__tests__/helpers/done-db.js')).connectionMock());
 vi.mock('../../gateway/ws.js', () => ({ broadcast: () => undefined, stampPersistedRow: (e: unknown) => e }));
 const presence = vi.hoisted(() => ({ away: false }));
-vi.mock('../../services/presence.js', () => ({
-  getPresence: () => (presence.away ? 'away' : 'in_dojo'),
-  isImessageEnabled: () => presence.away,
-}));
+vi.mock('../../services/presence.js', () => ({ getPresence: () => (presence.away ? 'away' : 'in_dojo'), isImessageEnabled: () => presence.away }));
 const texts = vi.hoisted(() => ({ sent: [] as string[] }));
 vi.mock('../../services/imessage-bridge.js', () => ({
   getDefaultSender: () => 'owner-number',
@@ -19,54 +14,72 @@ vi.mock('../../services/imessage-bridge.js', () => ({
 vi.mock('../../agent/dojo-voice.js', () => ({ tellAgentWhatDojoSent: () => undefined }));
 
 const { runMigrations } = await import('../../db/migrations.js');
-const { fileHealerApprovalProposal } = await import('../approval-routing.js');
+const { freshDoneDb, doneDb } = await import('../../work/done/__tests__/helpers/done-db.js');
+const { fileHealerApprovalProposal, describeHeldAction } = await import('../approval-routing.js');
+const { approvedProposals, approvedProposalsSection } = await import('../healer-agent.js');
+const { resolveHealerProposal } = await import('../../gateway/routes/healer.js');
+const { consumeApproval } = await import('../../agent/destructive-gate.js');
+const { canonicalToolSignature } = await import('../../agent/v2/classifiers/loop.js');
 
 const FIRST_PERSON = /\b(I|I'm|I've|I'll|me|my)\b/;
 const RAW_CALL = /exec\(|file_write\(|[{}]|"command"|"argv"|\bscript\b/;
 
 const hold = (toolName: string, args: Record<string, unknown>, kind: string, engineSeverity: 'critical' | null = null) =>
   fileHealerApprovalProposal({
-    agentId: 'healer', agentName: 'Healer', toolName, signature: 'sig', kind,
+    agentId: 'healer', agentName: 'Healer', toolName, signature: canonicalToolSignature(toolName, args), kind,
     heldDirectDestructiveCall: true, engineSeverity, argsJson: JSON.stringify(args),
   });
-const card = () => mockDb.current!.prepare('SELECT title, description, proposed_fix FROM healer_proposals').get() as { title: string; description: string; proposed_fix: string };
+const card = () => doneDb().prepare('SELECT title, description, proposed_fix FROM healer_proposals').get() as { title: string; description: string; proposed_fix: string };
 
 beforeEach(() => {
-  mockDb.current = new Database(':memory:');
+  freshDoneDb();
   runMigrations();
   presence.away = false;
   texts.sent = [];
 });
+const say = (tool: string, args: Record<string, unknown>) => describeHeldAction(tool, JSON.stringify(args));
+const GONE = 'Deleted files do not go to the Trash and cannot be brought back.';
 
 describe('a held Healer change', () => {
-  it('a folder delete reads as what it deletes, on the card', async () => {
-    await hold('exec', { argv: ['rm', '-rf', '/tmp/old-cache'] }, 'destructive shell command');
+  it('names the real targets, claims file or folder only as the call says, and looks through sudo', () => {
+    expect(say('exec', { argv: ['rm', '-rf', '/Users/example/Library/Application Support/Old App'] })).toBe(`Delete /Users/example/Library/Application Support/Old App and everything inside it. ${GONE}`);
+    expect(say('exec', { argv: ['rm', '--recursive', '/tmp/x'] })).toBe(`Delete /tmp/x and everything inside it. ${GONE}`);
+    expect(say('exec', { argv: ['rm', '/tmp/a.log', '/tmp/b.log'] })).toBe(`Delete /tmp/a.log, /tmp/b.log. ${GONE}`);
+    expect(say('exec', { argv: ['sudo', '-n', 'rm', '-r', '/var/old'] })).toBe(`Delete /var/old and everything inside it. ${GONE}`);
+  });
+
+  it('a call it cannot read into parts says so plainly and shows the paths it found', () => {
+    expect(say('shell', { script: 'find /Users/example/project -name "*.log" | xargs rm' })).toBe('Run a command line on this Mac that can delete or overwrite files. It touches /Users/example/project.');
+    expect(say('exec', { argv: ['git', 'clean', '-fdx', '/Users/example/project'] })).toBe('Run a command on this Mac that can delete or overwrite files. It touches /Users/example/project.');
+    expect(say('file_write', { path: '/Users/example/.dojo/prompts/SOUL.md', content: 'x' })).toBe('Change the file "SOUL.md" in /Users/example/.dojo/prompts. It holds an agent\'s identity or the Dojo\'s settings, and its current contents would change.');
+  });
+
+  it('stays short however many targets there are', () => expect(say('exec', { argv: ['rm', ...Array.from({ length: 40 }, (_, i) => `/tmp/long-file-name-${i}`)] }).length).toBeLessThanOrEqual(300));
+
+  it('the card and the text carry the sentence once, plain, with no first person or raw call', async () => {
+    presence.away = true;
+    const { proposalId } = await hold('exec', { argv: ['rm', '/tmp/a.log'] }, 'destructive shell command', 'critical');
     const c = card();
-    expect(c.proposed_fix).toBe('Delete the folder /tmp/old-cache and everything inside. Deleted files do not go to the Trash and cannot be brought back.');
-    expect(c.description).toContain(c.proposed_fix);
-    for (const t of [c.title, c.description, c.proposed_fix]) {
+    for (const t of [c.title, c.description, c.proposed_fix, texts.sent[0]]) {
       expect(t).not.toMatch(FIRST_PERSON);
       expect(t).not.toMatch(RAW_CALL);
     }
-  });
-
-  it('an edit to a settings file names the file and what happens to it', async () => {
-    await hold('file_write', { path: '/Users/example/.dojo/prompts/SOUL.md', content: 'x' }, 'edit to an owner identity or config file');
-    expect(card().proposed_fix).toBe('Change the file "SOUL.md" in /Users/example/.dojo/prompts. It holds an agent\'s identity or the Dojo\'s settings, and its current contents would be replaced.');
-  });
-
-  it('a command it cannot read in detail still says it could delete or overwrite, without the call', async () => {
-    await hold('shell', { script: 'find . -name "*.log" | xargs rm' }, 'destructive shell command');
-    expect(card().proposed_fix).toBe('Run a "find" command on this Mac. It could delete or overwrite the files it touches.');
-  });
-
-  it('the text message carries the same sentence as the card, with the reply code', async () => {
-    presence.away = true;
-    const { proposalId } = await hold('exec', { command: 'rm /tmp/a.log' }, 'destructive shell command', 'critical');
-    expect(texts.sent).toHaveLength(1);
-    expect(texts.sent[0]).toContain(card().proposed_fix);
+    expect(c.description.match(/It would:/g)).toHaveLength(1);
+    expect(texts.sent[0]).toContain(c.proposed_fix);
     expect(texts.sent[0]).toContain(`yes ${proposalId.slice(0, 8)}`);
-    expect(texts.sent[0]).not.toMatch(FIRST_PERSON);
-    expect(texts.sent[0]).not.toMatch(RAW_CALL);
+  });
+
+  it('after the owner approves, the Healer is told the exact call, and re-running it is granted once', async () => {
+    vi.useFakeTimers();
+    const args = { argv: ['rm', '-rf', '/tmp/old cache'] };
+    const { proposalId } = await hold('exec', args, 'destructive shell command');
+    expect(resolveHealerProposal({ id: proposalId, action: 'approve' }).ok).toBe(true);
+    const told = approvedProposalsSection(approvedProposals());
+    expect(told).toContain(`tool exec, arguments ${JSON.stringify(args)}`);
+    expect(told).not.toContain('Delete /tmp');
+    const sig = canonicalToolSignature('exec', args);
+    expect(consumeApproval('healer', sig, JSON.stringify(args))).toBe(true);
+    expect(consumeApproval('healer', sig, JSON.stringify(args))).toBe(false);
+    vi.useRealTimers();
   });
 });

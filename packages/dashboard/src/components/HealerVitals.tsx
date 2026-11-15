@@ -119,9 +119,11 @@ export const HealerVitals = () => {
                         <span className="text-sm font-medium text-ui/90">{p.title}</span>
                       </div>
                       <p className="text-xs text-ui/55 mb-1">{p.description}</p>
-                      <p className="text-xs text-ui/70">
-                        <span className="text-cp-amber">{p.category === 'destructive_action' ? 'It would:' : 'Suggested fix:'}</span> {p.proposed_fix}
-                      </p>
+                      {p.category !== 'destructive_action' && (
+                        <p className="text-xs text-ui/70">
+                          <span className="text-cp-amber">Suggested fix:</span> {p.proposed_fix}
+                        </p>
+                      )}
                       {(() => {
                         if (!p.evidence_json) return null;
                         let bullets: string[] = [];

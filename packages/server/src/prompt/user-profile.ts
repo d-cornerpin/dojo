@@ -80,6 +80,15 @@ export function writeUserProfile(content: string, by: 'dashboard' | 'oobe' | 'en
   logger.info('owner profile written', { by, chars: content.length });
 }
 
+/** The `- Name:` line follows an owner-name edit only while it holds the previous name or the placeholder; a line the owner rewrote stays. */
+export function renameOwnerInProfile(previous: string, next: string): void {
+  const p = userProfilePath();
+  if (!fs.existsSync(p)) return;
+  const md = fs.readFileSync(p, 'utf-8');
+  const updated = md.split('\n').map((l) => (l === UNSET_NAME_LINE || l === `- Name: ${previous.trim()}` ? `- Name: ${next.trim()}` : l)).join('\n');
+  if (updated !== md) writeUserProfile(updated, 'engine');
+}
+
 export interface OwnerProfileFields {
   readonly userName?: string;
   readonly userRole?: string;

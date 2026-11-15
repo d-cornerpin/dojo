@@ -27,7 +27,7 @@ import { refuseAgentModel, refuseSmallMainModel, passesMainModelFloor, cheapestA
 import { parsePrice } from '../../services/price-per-million.js';
 import { refuseBadClockTime, CLOCK_TIME_SETTING_KEYS } from '../../config/clock-time.js';
 import { refuseStaleWholeDocument } from './whole-document-guard.js';
-import { readUserProfile, readUserProfileForEditor, writeUserProfile, composeUserProfile, userProfileIsEngineSeeded } from '../../prompt/user-profile.js';
+import { readUserProfile, readUserProfileForEditor, writeUserProfile, composeUserProfile, userProfileIsEngineSeeded, renameOwnerInProfile } from '../../prompt/user-profile.js';
 import { ownerMailboxes } from '../../services/owner-mailboxes.js';
 import { TERMINAL_JOB_STATUS_SQL } from '../../services/media-job-status.js';
 
@@ -2066,10 +2066,12 @@ configRouter.put('/settings/:key', async (c) => {
     }
   }
 
+  const previousName = key === 'owner_name' ? (db.prepare("SELECT value FROM config WHERE key = 'owner_name'").get() as { value: string } | undefined)?.value ?? '' : '';
   db.prepare(`
     INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
   `).run(key, body.value);
+  if (key === 'owner_name') renameOwnerInProfile(previousName, body.value);
 
   // Mirror channel safe-sender lists into the contacts store so a name the user
   // just trusted (e.g. "Alex" on the iMessage list) resolves when they later

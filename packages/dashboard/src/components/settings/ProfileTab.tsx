@@ -37,7 +37,7 @@ export const ProfileTab = () => {
     setSavingName(true);
     setSavedName(false);
     const result = await api.setSetting('owner_name', userName.trim());
-    if (result.ok) { setSavedName(true); setTimeout(() => setSavedName(false), 2000); }
+    if (result.ok) { setSavedName(true); setTimeout(() => setSavedName(false), 2000); if (userProfile === loadedProfile) profileLoad.reload(); }   // the profile's name line follows; an edit in progress is left alone
     setSavingName(false);
   };
 

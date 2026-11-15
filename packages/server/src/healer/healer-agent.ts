@@ -531,25 +531,8 @@ export async function runHealingCycle(): Promise<{ diagnosticId: string; autoFix
       } else if (!healerState) {
         logger.warn('Healer agent not found after ensureHealerAgentRunning, skipping LLM trigger');
       } else {
-        // Approved and not yet applied (applied_at filters out earlier executions), and under the re-wake cap.
-        // After executing, the Healer MUST call healer_mark_applied(proposal_id) or it is shown again next cycle.
-        const approved = db.prepare(`
-          SELECT id, title, proposed_fix, fix_action, rewake_count, approval_token FROM healer_proposals
-          WHERE status = 'approved' AND applied_at IS NULL AND rewake_count < ?
-        `).all(MAX_APPROVAL_REWAKES) as Array<{ id: string; title: string; proposed_fix: string; fix_action: string | null; rewake_count: number; approval_token: string | null }>;
-
-        let approvedSection = '';
-        if (approved.length > 0) {
-          approvedSection = '\n\n═══ APPROVED PROPOSALS, execute these, then call healer_mark_applied(proposal_id) ═══\n' +
-            approved.map((p) =>
-              // A token-bearing proposal is a live destructive call the owner approved: the Healer must RE-RUN
-              // the exact same tool call (the engine lets it through once), not just acknowledge it.
-              p.approval_token
-                ? `[ID: ${p.id.slice(0, 8)}] ${p.title}\n   The owner approved this sensitive action. Re-run this exact action now to carry it out: ${p.proposed_fix}`
-                : `[ID: ${p.id.slice(0, 8)}] ${p.title}\n   Fix: ${p.proposed_fix}`
-            ).join('\n') +
-            '\n═══ END APPROVED ═══';
-        }
+        const approved = approvedProposals();
+        const approvedSection = approvedProposalsSection(approved);
 
         // Build the cycle message and enforce a hard length ceiling BEFORE delivering it: lowest-priority sections
         // drop first (approved proposals are KEPT; the report is trimmed first, its collectors already capped).
@@ -734,10 +717,7 @@ export function scheduleHealingCycle(): void {
 const HEALER_LOG_PATH = path.join(homeDir(), '.dojo', 'logs', 'healer-report.log');
 const HEALER_ARCHIVE_DIR = path.join(homeDir(), '.dojo', 'logs', 'healer-archives');
 
-/**
- * Map an agent name to a generic role label for external reports (the dev team does not know the user's
- * agent names).
- */
+/** A generic role label for an agent (never its given name), for the Healer's log and report lines. */
 function agentRoleLabel(agentId?: string, agentName?: string): string {
   if (!agentId) return 'unknown agent';
   if (isPrimaryAgent(agentId)) return 'Main Agent';
@@ -890,6 +870,25 @@ export function archiveHealerLog(): string | null {
   }
 }
 
+/** Approved, unapplied proposals under the re-wake cap; a token-bearing one is re-run by the Healer from its exact call, never from the owner's sentence. */
+export function approvedProposals() {
+  return getDb().prepare(`
+    SELECT id, title, proposed_fix, rewake_count, approval_token, approval_signature, approval_args_json FROM healer_proposals
+    WHERE status = 'approved' AND applied_at IS NULL AND rewake_count < ?
+  `).all(MAX_APPROVAL_REWAKES) as Array<{ id: string; title: string; proposed_fix: string; rewake_count: number; approval_token: string | null; approval_signature: string | null; approval_args_json: string | null }>;
+}
+
+export function approvedProposalsSection(approved: ReturnType<typeof approvedProposals>): string {
+  if (approved.length === 0) return '';
+  return '\n\n═══ APPROVED PROPOSALS, execute these, then call healer_mark_applied(proposal_id) ═══\n' +
+    approved.map((p) =>
+      p.approval_token
+        ? `[ID: ${p.id.slice(0, 8)}] ${p.title}\n   The owner approved this sensitive action. Re-run this exact tool call now to carry it out: tool ${p.approval_signature?.split(':')[0] ?? 'unknown'}, arguments ${p.approval_args_json ?? p.proposed_fix}`
+        : `[ID: ${p.id.slice(0, 8)}] ${p.title}\n   Fix: ${p.proposed_fix}`
+    ).join('\n') +
+    '\n═══ END APPROVED ═══';
+}
+
 /** Emails the healer report from the agent mailbox to the owner's first connected mailbox, then archives the log. */
 export async function sendHealerReport(): Promise<{ ok: boolean; error?: string }> {
   const logContent = getHealerLogContent();
@@ -897,16 +896,16 @@ export async function sendHealerReport(): Promise<{ ok: boolean; error?: string 
     return { ok: false, error: 'No healer report to send. Run a healing cycle first.' };
   }
 
-  // Determine which email service is available
-  const { isGoogleConnected } = await import('../google/auth.js');
-  const { isMicrosoftConnected } = await import('../microsoft/auth.js');
-
-  const hasGoogle = isGoogleConnected();
-  const hasMicrosoft = isMicrosoftConnected();
-
-  if (!hasGoogle && !hasMicrosoft) {
-    return { ok: false, error: 'NO_EMAIL_CONFIGURED' };
-  }
+  // The agent's first account whose sending switch is on (else the first connected, so the tool names the switch).
+  const { listGoogleAccounts } = await import('../google/accounts.js');
+  const { listMicrosoftAccounts } = await import('../microsoft/accounts.js');
+  const connected = [
+    ...listGoogleAccounts('agent').map((a) => ({ a, google: true })),
+    ...listMicrosoftAccounts('agent').map((a) => ({ a, google: false })),
+  ].filter((x) => x.a.connected);
+  const picked = connected.find((x) => x.a.sendEmail) ?? connected[0];
+  if (!picked) return { ok: false, error: 'NO_EMAIL_CONFIGURED' };
+  const { a: sender, google } = picked;
 
   // Gather platform context for the report
   const db = getDb();
@@ -922,28 +921,15 @@ export async function sendHealerReport(): Promise<{ ok: boolean; error?: string 
   const body = `DOJO Healer Report\nVersion: ${version}\nPlatform: ${platform}\nActive Agents: ${agentCount}\nModels: ${modelList}\n\n${'─'.repeat(50)}\n\n${logContent}\n\n${'─'.repeat(50)}\n\nThis report was generated by the DOJO Healer agent.`;
 
   try {
-    if (hasGoogle) {
-      const { executeGoogleWriteTool } = await import('../google/tools-write.js');
-      const result = await executeGoogleWriteTool('gmail_send', {
-        to: recipient,
-        subject,
-        body,
-      }, 'healer', 'Healer');
-
-      if (result.startsWith('Error')) {
-        return { ok: false, error: result };
-      }
-    } else if (hasMicrosoft) {
-      const { executeMicrosoftWriteTool } = await import('../microsoft/tools-write.js');
-      const result = await executeMicrosoftWriteTool('outlook_send', {
-        to: recipient,
-        subject,
-        body,
-      }, 'healer', 'Healer');
-
-      if (result.startsWith('Error')) {
-        return { ok: false, error: result };
-      }
+    const mail = { to: recipient, subject, body, account: sender.email };
+    const result = google
+      ? await (await import('../google/tools-write.js')).executeGoogleWriteTool('gmail_send', mail, 'healer', 'Healer')
+      : await (await import('../microsoft/tools-write.js')).executeMicrosoftWriteTool('outlook_send', mail, 'healer', 'Healer');
+    if (result.startsWith('Error')) {
+      const refused = /authenticat|credential|invalid_grant|unauthori[sz]ed|expired|\b401\b/i.test(result);
+      return { ok: false, error: refused
+        ? `The sign-in for the agent's ${google ? 'Google' : 'Microsoft'} account${sender.email ? ` (${sender.email})` : ''} was refused or has expired. Reconnect it in Settings → Channels.`
+        : `The report could not be emailed. The mail service said: ${result.replace(/^Error:?\s*/, '')}` };
     }
 
     // Email sent successfully, archive the log

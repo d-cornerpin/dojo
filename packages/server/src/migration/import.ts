@@ -292,8 +292,6 @@ async function runImport(
 
     // Clear caches so they reload from the restored files.
     clearSecretsCache();
-    const { clearPlatformConfigCache } = await import('../config/platform.js');
-    clearPlatformConfigCache();
 
     // Preserve the current session's auth (password and JWT secret) so the user stays logged in.
     if (currentAuth) {
@@ -311,6 +309,7 @@ async function runImport(
 
     broadcastProgress('restart', 90, 'Restarting services...');
     await restartServices();   // from here the import is COMMITTED: nothing below rolls it back
+    (await import('../config/platform.js')).clearPlatformConfigCache();   // after the migrations, so a renamed key is not read stale
     clearImportCard();
 
     // Post-migration checks (manifest cached first for later re-checks). The import is committed: a failure
