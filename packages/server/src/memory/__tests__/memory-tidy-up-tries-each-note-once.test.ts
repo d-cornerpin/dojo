@@ -29,7 +29,7 @@ vi.mock('../writer.js', async (orig) => {
   const actual = await orig<typeof import('../writer.js')>();
   return { ...actual, markWaiting: (...a: Parameters<typeof actual.markWaiting>) => (marks.fail ? undefined : actual.markWaiting(...a)) };
 });
-const writer = vi.hoisted(() => ({ calls: [] as Array<{ modelId: string; content: string; rewrite: boolean }>, ratio: 0.9, ratios: null as number[] | null }));
+const writer = vi.hoisted(() => ({ calls: [] as Array<{ modelId: string; content: string; rewrite: boolean }>, ratio: 0.9, ratios: null as number[] | null, empty: false }));
 vi.mock('../../agent/model.js', () => ({
   callModel: async (p: { modelId: string; systemPrompt: string; messages: Array<{ content: string }> }) => {
     const content = p.messages[0].content;
@@ -37,7 +37,7 @@ vi.mock('../../agent/model.js', () => ({
     const job = writer.calls.filter((c) => !c.rewrite).length - (rewrite ? 1 : 0);   // a job's rewrite answers like its first
     const ratio = writer.ratios ? writer.ratios[job % writer.ratios.length] : writer.ratio;
     writer.calls.push({ modelId: p.modelId, content, rewrite });
-    const text = `${content.includes('BAD') ? 'PENDING ' : ''}${'w'.repeat(Math.floor(content.length * ratio))}`;
+    const text = writer.empty ? '' : `${content.includes('BAD') ? 'PENDING ' : ''}${'w'.repeat(Math.floor(content.length * ratio))}`;
     return { content: text, toolCalls: [], usage: {}, stopReason: 'stop' };
   },
   getContextWindow: () => 128_000,
@@ -51,7 +51,7 @@ import { createLeafSummary } from '../dag.js';
 import { insertMessage } from '../message-store.js';
 import { __resetBrakesForTests, LOW_YIELD_BACKOFF_MS } from '../compaction-brakes.js';
 import { __resetEstimateCacheForTests } from '../assembled-estimate-cache.js';
-import { __resetSummaryWriterHealthForTests, clearOn } from '../writer.js';
+import { __resetSummaryWriterHealthForTests, clearOn, writerPassedOver } from '../writer.js';
 import { STANDARD_DECISION_MODEL, STANDARD_WRITER_MODEL } from '../../services/local-standard.js';
 import { condenseForTheDialedModel } from '../../agent/v2/steps/pre-call-gates/context-gates.js';
 import { backgroundDrains } from '../../agent/shared-state.js';
@@ -117,7 +117,7 @@ const mergeJobs = (): Array<{ modelId: string; notes: string[] }> => writer.call
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['Date'] });
   vi.setSystemTime(Date.UTC(2026, 9, 20, 6, 0, 0));
-  writer.calls = []; writer.ratio = 0.9; writer.ratios = null; marks.fail = false; mem.free = Number.MAX_SAFE_INTEGER; logs.length = 0; turns = 0;
+  writer.calls = []; writer.ratio = 0.9; writer.ratios = null; writer.empty = false; marks.fail = false; mem.free = Number.MAX_SAFE_INTEGER; logs.length = 0; turns = 0;
   vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: { body?: string }) => {
     const { state } = JSON.parse(init?.body ?? '{}') as { state: { summary: string } };
     return Response.json({ answers: { stated_current: { noul: state.summary.includes('PENDING') ? 0.91 : 0.05 } } });
@@ -130,6 +130,7 @@ afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); mockDb.current?.clo
 
 /** Top-level notes at `depth`, and the check outcomes recorded. */
 const topLevelAt = (depth: number): number => (db().prepare('SELECT COUNT(*) AS n FROM summaries WHERE agent_id = ? AND depth = ? AND id NOT IN (SELECT parent_id FROM summary_parents)').get(AGENT, depth) as { n: number }).n;
+const restingNotes = (): number => (db().prepare("SELECT COUNT(*) AS n FROM healer_state WHERE scope = 'writer_wait.cannot-hold'").get() as { n: number }).n;
 const checksNotKept = (): number => (db().prepare("SELECT COUNT(*) AS n FROM summary_checks WHERE outcome = 'not_kept'").get() as { n: number }).n;
 
 describe('the memory tidy-up tries each note once', () => {
@@ -193,17 +194,29 @@ describe('the memory tidy-up tries each note once', () => {
     for (let i = 0; i < 256; i++) { addLeaf(i, plain); await mergeUntriedNotes(AGENT, OWN); }
     const offers = new Map<string, number>();
     for (const j of mergeJobs()) for (const n of j.notes) offers.set(n, (offers.get(n) ?? 0) + 1);
+    expect(restingNotes(), 'non-vacuity: some pairs were refused').toBeGreaterThan(0);
     expect(Math.max(...offers.values()), 'offers of any one note at its depth').toBeLessThanOrEqual(2);
     expect(writer.calls.length / 256, 'writer calls per new leaf').toBeLessThanOrEqual(3);
   });
 
-  it('a note the summary check refuses, then sixteen fresh leaves one at a time: the bad note is offered at most twice', async () => {
+  it('a note the summary check refuses as the newer of its pair, then sixteen fresh leaves one at a time: it gets one more partner and no third', async () => {
     writer.ratio = 0.35;
     seed(0, { depth: 9, chars: 36_000 });
-    const bad = addLeaf(0, `BAD ${NOTE(0)}`);
-    for (let i = 1; i <= 16; i++) { addLeaf(i, NOTE(i)); await mergeUntriedNotes(AGENT, OWN); }
+    addLeaf(0, NOTE(0));
+    const bad = addLeaf(1, `BAD ${NOTE(1)}`);
+    for (let i = 2; i <= 17; i++) { addLeaf(i, NOTE(i)); await mergeUntriedNotes(AGENT, OWN); }
     expect(checksNotKept(), 'non-vacuity: the check refused it').toBeGreaterThan(0);
-    expect(mergeJobs().filter((j) => j.notes.includes(bad)).length).toBeLessThanOrEqual(2);
+    const partners = new Set(mergeJobs().filter((j) => j.notes.includes(bad)).map((j) => j.notes.join()));   // a refused pair is written once more with the check's reasons
+    expect(partners.size, 'its partners: the first, then one more').toBe(2);
+  });
+
+  it('an empty answer marks no note and the writer as not answering, so a later run does not dial it again', async () => {
+    writer.empty = true;
+    seed(2, { depth: 3, chars: 36_000 });
+    expect((await mergeUntriedNotes(AGENT, OWN)).created).toBe(0);
+    expect(writer.calls.length, 'non-vacuity: the writer was dialled').toBeGreaterThan(0);
+    expect(restingNotes(), 'no note is marked').toBe(0);
+    expect(writerPassedOver(OWN, AGENT), 'the writer is marked not answering').toBe(true);
   });
 
   it('a refusal for the memory free now marks no note, and a later run with memory free merges the same notes', async () => {
