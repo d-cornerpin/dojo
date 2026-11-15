@@ -210,7 +210,7 @@ function applyIntegrityPass(messages: LoopMsg[], agentId: string, markerText = E
     break;
   }
 
-  const merged = mergeConsecutiveRoles(dropEmptyMessages(messages));
+  let merged = mergeConsecutiveRoles(dropEmptyMessages(messages));
 
   // Self-heal: drop orphaned tool blocks (loud warning if over half). `repairToolPairing` is the array-level
   // repair, the same one the provider boundary runs.
@@ -230,6 +230,7 @@ function applyIntegrityPass(messages: LoopMsg[], agentId: string, markerText = E
       agentId,
     }, agentId);
   }
+  if (pairingRepair.droppedMessages > 0) merged = mergeConsecutiveRoles(merged);   // a dropped row can leave two of one role side by side
 
   // Providers reject a trailing assistant message. Append a neutral engine line instead of popping it: popping
   // deletes the agent's newest delivered answer and the model re-delivers it.

@@ -128,13 +128,13 @@ describe('a broken tool pair loses only its block', () => {
     expect(out.map((m) => m.role)).toEqual(['user', 'assistant', 'user', 'assistant', 'user']);
   });
 
-  it('f. a row of only unanswered calls leaves no message, not even its working note', async () => {
+  it('f. a row of only unanswered calls leaves no message, not even its working note, and the roles still alternate', async () => {
     row('user', 'look it up');
     row('system', '[working-note] NOTE-BESIDE-THE-CALL');
     row('assistant', [use('gone')]);
     row('user', 'never mind');
     const out = await assemble();
-    expect(out.filter((m) => m.role === 'assistant')).toEqual([]);
+    expect(out.map((m) => m.role)).toEqual(['user']);
     expect(said(out)).not.toContain('NOTE-BESIDE-THE-CALL');
   });
 
