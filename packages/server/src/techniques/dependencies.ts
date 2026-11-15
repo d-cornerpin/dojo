@@ -8,6 +8,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { homeDir } from '../home.js';
+import { isSensitivePath } from '../agent/path-guards.js';
 
 export const DEPENDENCY_MANIFEST_FILENAME = 'dependencies.json';
 export const DEPENDENCY_MANIFEST_VERSION = 1;
@@ -262,26 +263,10 @@ export interface AutoResolveResult {
   filesToBundle: Array<{ relPath: string; absSourcePath: string }>;
 }
 
-// Twin of `isSensitivePath` (agent/path-guards.ts); keep in sync. A false negative leaks secrets, a false
-// positive only costs one extra manual_step entry.
-function isSensitiveForBundling(absPath: string): boolean {
-  const base = path.basename(absPath);
-  const SENSITIVE = new Set([
-    'secrets.yaml', 'secrets.yml', 'secrets.json',
-    '.env', '.env.local', '.env.production', '.env.development',
-    'id_rsa', 'id_ed25519', 'id_ecdsa', 'id_dsa',
-    'authorized_keys', 'known_hosts',
-    '.npmrc', '.pypirc', '.netrc', 'credentials',
-  ]);
-  if (SENSITIVE.has(base)) return true;
-  const home = homeDir();
-  if (absPath.startsWith(path.join(home, '.ssh') + path.sep) && !base.endsWith('.pub')) return true;
-  if (absPath === path.join(home, '.aws', 'credentials')) return true;
-  if (absPath.startsWith(path.join(home, '.config', 'gcloud') + path.sep)) return true;
-  if (absPath === path.join(home, '.kube', 'config')) return true;
-  if (absPath.startsWith(path.join(home, '.dojo') + path.sep) && base.startsWith('secret')) return true;
-  return false;
-}
+// The platform's sensitive list, plus all of ~/.ssh: an imported authorized_keys or public key would hand login
+// to the exporter, so no file from that folder crosses the share boundary.
+const isSensitiveForBundling = (absPath: string): boolean =>
+  isSensitivePath(absPath) || absPath.startsWith(path.join(homeDir(), '.ssh') + path.sep);
 
 // Resolve a raw reference to an absolute source path on disk, or null when it does not point at a locatable
 // path (a URL-like string, or a relative path under the technique dir that is already known to be missing).
