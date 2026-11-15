@@ -14,7 +14,7 @@ import { getDb } from '../../../db/connection.js';
 import { broadcast } from '../../../gateway/ws.js';
 import { friendlyDbError } from '../../tool-helpers.js';
 import { getFreshDiagnosticSnapshot } from '../../../healer/diagnostic.js';
-import { isHealerAgent } from '../../../config/platform.js';
+import { isHealerAgent, isPrimaryAgent } from '../../../config/platform.js';
 import type { ToolHandlerMap } from '../handler.js';
 
 export const healerHandlers: ToolHandlerMap = {
@@ -113,7 +113,7 @@ export const healerHandlers: ToolHandlerMap = {
   async healer_recent_actions({ agentId, args }) {
     // Returns only (timestamp, category, agent, result), no descriptions, capped: the Healer's
     // prompt must not grow unbounded.
-    if (!isHealerAgent(agentId)) {
+    if (!isHealerAgent(agentId) && !isPrimaryAgent(agentId)) {
       return { content: 'This tool is only available to the Healer agent.', isError: true };
     }
     const limit = Math.min(50, Math.max(1, (args.limit as number | undefined) ?? 20));
@@ -154,7 +154,7 @@ export const healerHandlers: ToolHandlerMap = {
   },
 
   async healer_action_detail({ agentId, args }) {
-    if (!isHealerAgent(agentId)) {
+    if (!isHealerAgent(agentId) && !isPrimaryAgent(agentId)) {
       return { content: 'This tool is only available to the Healer agent.', isError: true };
     }
     const actionId = (args.action_id as string | undefined)?.trim();
@@ -201,7 +201,7 @@ export const healerHandlers: ToolHandlerMap = {
 
   async healer_mark_applied({ agentId, args }) {
     // Closes the loop so the Vitals dashboard shows pending, approved and applied as three states.
-    if (!isHealerAgent(agentId)) {
+    if (!isHealerAgent(agentId) && !isPrimaryAgent(agentId)) {
       return { content: 'This tool is only available to the Healer agent.', isError: true };
     }
     const proposalId = (args.proposal_id as string | undefined)?.trim();

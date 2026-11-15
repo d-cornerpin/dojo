@@ -7,7 +7,7 @@ import {
   executeVaultRemember, executeVaultSearch, executeVaultForget, executeVaultExpand, executeVaultUpdate,
 } from '../../../vault/tools.js';
 import { getPinnedEntries, getSessionContextEntries, deleteConversation } from '../../../vault/store.js';
-import { isDreamerAgent } from '../../../config/platform.js';
+import { isDreamerAgent, isPrimaryAgent } from '../../../config/platform.js';
 import { recordLesson, LessonRefused } from '../../../vault/lessons-store.js';
 import { auditLog, toolsLogger as logger } from '../util.js';
 import type { ToolHandlerMap } from '../handler.js';
@@ -76,9 +76,8 @@ export const vaultHandlers: ToolHandlerMap = {
   },
 
   async vault_discard_archives({ agentId, args }) {
-    // Dreamer-only; the permission gate should prevent the call, and this
-    // refuses it anyway so a stray caller gets an error, not a silent write.
-    if (!isDreamerAgent(agentId)) {
+    // The Dreamer and the main agent only; any other caller gets an error, not a silent delete.
+    if (!isDreamerAgent(agentId) && !isPrimaryAgent(agentId)) {
       return { content: 'Error: vault_discard_archives is Dreamer-only.', isError: true };
     }
     const archiveIds = (args.archive_ids as unknown[] | undefined)?.filter((id): id is string => typeof id === 'string') ?? [];
@@ -109,8 +108,8 @@ export const vaultHandlers: ToolHandlerMap = {
   },
 
   async lesson_record({ agentId, args }) {
-    // Dreamer-only; the one door into the lessons table (vault/lessons-store.ts validates).
-    if (!isDreamerAgent(agentId)) return { content: 'Error: lesson_record is Dreamer-only.', isError: true };
+    // The Dreamer and the main agent only; the one door into the lessons table (vault/lessons-store.ts validates).
+    if (!isDreamerAgent(agentId) && !isPrimaryAgent(agentId)) return { content: 'Error: lesson_record is Dreamer-only.', isError: true };
     try {
       const { id, renewed } = await recordLesson({
         taskId: String(args.task_id ?? ''), cue: String(args.cue ?? ''), lesson: String(args.lesson ?? ''),
