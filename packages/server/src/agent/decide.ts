@@ -26,17 +26,21 @@ export const MAX_DECISION_BODY_BYTES = 64 * 1024;
 /** Models this process saw answer: resident until any call of theirs fails, after which the next call gets the load time. */
 const resident = new Set<string>();
 export function __forgetResidencyForTests(): void { resident.clear(); }
-/** Failures are logged once per class per minute: a down Ollama on a busy box is one line, not one per turn. */
+/** Failures are logged once per class per minute: a down Ollama on a busy box is one line, not one per turn.
+ *  The line says how many of that class were left out since the last one. */
 const LOG_EVERY_MS = 60_000;
 const lastLogged = new Map<string, number>();
+const leftOut = new Map<string, number>();
 
 export type FailureClass = 'too_many_questions' | 'too_large' | 'http' | 'timeout' | 'transport' | 'parse' | 'stopped';
 function fail(cls: FailureClass, opts: DecideOpts, detail?: string): null {
   const now = Date.now();
   if (now - (lastLogged.get(cls) ?? 0) >= LOG_EVERY_MS) {
     lastLogged.set(cls, now);
-    logger.warn(cls === 'too_large' ? 'decide() refused a request as too large; the rule decides' : 'decide() returned no answer; the rule decides', { failure: cls, purpose: opts.purpose, detail });
-  }
+    const suppressed = leftOut.get(cls);
+    leftOut.delete(cls);
+    logger.warn(cls === 'too_large' ? 'decide() refused a request as too large; the rule decides' : 'decide() returned no answer; the rule decides', { failure: cls, purpose: opts.purpose, detail, suppressed });
+  } else leftOut.set(cls, (leftOut.get(cls) ?? 0) + 1);
   return null;
 }
 
