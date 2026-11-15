@@ -2392,7 +2392,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'vault_discard_archives',
-    description: 'Permanently delete one or more conversation archives from vault_conversations WITHOUT extracting any vault entries from them. Use when the conversations are junk (test runs, error spam, repetitive nonsense, ephemeral chatter) that does not need to be remembered. Unlike complete_task on a Dreamer batch (which marks archives as processed because real work was done), this tool throws the archives away unread. Returns the number of archives actually deleted. Dreamer-only.',
+    description: 'Permanently delete one or more conversation archives from vault_conversations WITHOUT extracting any vault entries from them. Use when the conversations are junk (test runs, error spam, repetitive nonsense, ephemeral chatter) that does not need to be remembered. Unlike complete_task on a Dreamer batch (which marks archives as processed because real work was done), this tool throws the archives away unread. Returns the number of archives actually deleted. For the Dreamer and the main agent only.',
     effects: [],
     input_schema: {
       type: 'object',
@@ -2413,7 +2413,7 @@ export const toolDefinitions: ToolDefinition[] = [
 
   {
     name: 'lesson_record',
-    description: 'Record ONE lesson from a rough task listed in your ROUGH TASKS batch. A lesson is a cue (the situation that should bring it to mind), the lesson in one sentence, the ids of that task\'s own timeline events that show it, a confidence from 0 to 1, and which component should change. It is kept for 90 days; a lesson with a cue we already hold renews instead of duplicating. Not a vault entry: never use vault_remember for these. Refuses an event id that is not in the task\'s timeline. Dreamer-only.',
+    description: 'Record ONE lesson from a rough task listed in your ROUGH TASKS batch. A lesson is a cue (the situation that should bring it to mind), the lesson in one sentence, the ids of that task\'s own timeline events that show it, a confidence from 0 to 1, and which component should change. It is kept for 90 days; a lesson with a cue we already hold renews instead of duplicating. Not a vault entry: never use vault_remember for these. Refuses an event id that is not in the task\'s timeline. For the Dreamer and the main agent only.',
     effects: [],
     input_schema: {
       type: 'object',

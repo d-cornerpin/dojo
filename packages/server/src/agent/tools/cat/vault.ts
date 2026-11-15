@@ -78,7 +78,7 @@ export const vaultHandlers: ToolHandlerMap = {
   async vault_discard_archives({ agentId, args }) {
     // The Dreamer and the main agent only; any other caller gets an error, not a silent delete.
     if (!isDreamerAgent(agentId) && !isPrimaryAgent(agentId)) {
-      return { content: 'Error: vault_discard_archives is Dreamer-only.', isError: true };
+      return { content: 'Error: vault_discard_archives is for the Dreamer and the main agent only.', isError: true };
     }
     const archiveIds = (args.archive_ids as unknown[] | undefined)?.filter((id): id is string => typeof id === 'string') ?? [];
     const reason = (args.reason as string | undefined)?.trim() || '(no reason given)';
@@ -109,7 +109,7 @@ export const vaultHandlers: ToolHandlerMap = {
 
   async lesson_record({ agentId, args }) {
     // The Dreamer and the main agent only; the one door into the lessons table (vault/lessons-store.ts validates).
-    if (!isDreamerAgent(agentId) && !isPrimaryAgent(agentId)) return { content: 'Error: lesson_record is Dreamer-only.', isError: true };
+    if (!isDreamerAgent(agentId) && !isPrimaryAgent(agentId)) return { content: 'Error: lesson_record is for the Dreamer and the main agent only.', isError: true };
     try {
       const { id, renewed } = await recordLesson({
         taskId: String(args.task_id ?? ''), cue: String(args.cue ?? ''), lesson: String(args.lesson ?? ''),

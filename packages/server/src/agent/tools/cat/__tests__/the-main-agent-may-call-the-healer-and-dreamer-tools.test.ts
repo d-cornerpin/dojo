@@ -34,15 +34,15 @@ afterAll(() => {
 });
 
 const CALLS: Array<{ name: string; args: Record<string, unknown>; answer: string; refusal: string }> = [
-  { name: 'healer_recent_actions', args: {}, answer: 'No Healer actions in the last 24h.', refusal: 'only available to the Healer' },
-  { name: 'healer_action_detail', args: { action_id: 'abc' }, answer: 'No Healer action found', refusal: 'only available to the Healer' },
-  { name: 'healer_mark_applied', args: { proposal_id: 'abc' }, answer: 'No proposal found', refusal: 'only available to the Healer' },
-  { name: 'vault_discard_archives', args: { archive_ids: ['nope'], reason: 'junk' }, answer: 'Discarded 0 archives', refusal: 'Dreamer-only' },
+  { name: 'healer_recent_actions', args: {}, answer: 'No Healer actions in the last 24h.', refusal: 'only available to the Healer and the main agent.' },
+  { name: 'healer_action_detail', args: { action_id: 'abc' }, answer: 'No Healer action found', refusal: 'only available to the Healer and the main agent.' },
+  { name: 'healer_mark_applied', args: { proposal_id: 'abc' }, answer: 'No proposal found', refusal: 'only available to the Healer and the main agent.' },
+  { name: 'vault_discard_archives', args: { archive_ids: ['nope'], reason: 'junk' }, answer: 'Discarded 0 archives', refusal: 'is for the Dreamer and the main agent only.' },
   {
     name: 'lesson_record',
     args: { task_id: 'no-such-task', cue: 'c', lesson: 'l', evidence_event_ids: [1], confidence: 0.5, component: 'engine' },
     answer: 'no task no-such-task',
-    refusal: 'Dreamer-only',
+    refusal: 'is for the Dreamer and the main agent only.',
   },
 ];
 
@@ -54,6 +54,7 @@ describe('the main agent may call the Healer and Dreamer tools', () => {
     const content = await call(MAIN, name, args);
     expect(content).toContain(answer);
     expect(content).not.toContain(refusal);
+    expect(content).not.toMatch(/-only\.|only available to the Healer agent/);
   });
 
   it.each(CALLS)('a helper is still refused $name', async ({ name, args, refusal }) => {

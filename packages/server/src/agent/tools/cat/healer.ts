@@ -114,7 +114,7 @@ export const healerHandlers: ToolHandlerMap = {
     // Returns only (timestamp, category, agent, result), no descriptions, capped: the Healer's
     // prompt must not grow unbounded.
     if (!isHealerAgent(agentId) && !isPrimaryAgent(agentId)) {
-      return { content: 'This tool is only available to the Healer agent.', isError: true };
+      return { content: 'This tool is only available to the Healer and the main agent.', isError: true };
     }
     const limit = Math.min(50, Math.max(1, (args.limit as number | undefined) ?? 20));
     const sinceHours = Math.min(168, Math.max(1, (args.since_hours as number | undefined) ?? 24));
@@ -155,7 +155,7 @@ export const healerHandlers: ToolHandlerMap = {
 
   async healer_action_detail({ agentId, args }) {
     if (!isHealerAgent(agentId) && !isPrimaryAgent(agentId)) {
-      return { content: 'This tool is only available to the Healer agent.', isError: true };
+      return { content: 'This tool is only available to the Healer and the main agent.', isError: true };
     }
     const actionId = (args.action_id as string | undefined)?.trim();
     if (!actionId) {
@@ -202,7 +202,7 @@ export const healerHandlers: ToolHandlerMap = {
   async healer_mark_applied({ agentId, args }) {
     // Closes the loop so the Vitals dashboard shows pending, approved and applied as three states.
     if (!isHealerAgent(agentId) && !isPrimaryAgent(agentId)) {
-      return { content: 'This tool is only available to the Healer agent.', isError: true };
+      return { content: 'This tool is only available to the Healer and the main agent.', isError: true };
     }
     const proposalId = (args.proposal_id as string | undefined)?.trim();
     if (!proposalId) {
