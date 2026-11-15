@@ -60,7 +60,7 @@ import { writeGrants } from '../../access/materialize.js';
 import { ACCESS_CHANNELS, MOST_RESTRICTIVE_GRANTS, techniqueGrantOf } from '@dojo/shared';
 import type { AccessChannel, AccessGrants } from '@dojo/shared';
 import type { ToolHandlerMap } from '../handler.js';
-import { refuseSmallMainModel, refuseUnfitLocalModel } from '../../main-model-floor.js';
+import { refuseAgentModel } from '../../main-model-floor.js';
 import { workingExpr } from '../../../work/terminal-states.js';
 
 // Mandatory squad resolution for agent spawns: every agent-spawned agent lands in
@@ -892,7 +892,7 @@ export const agentsHandlers: ToolHandlerMap = {
         if (!model) { content = `Error: no model matches "${newModelId}". Call list_models for valid names and ids.`; isError = true; return { content, isError }; }
         if (!model.is_enabled) { content = `Error: Model "${model.name}" is disabled. Enable it in Settings → Models first.`; isError = true; return { content, isError }; }
         resolvedModel = model;
-        const refused = await refuseUnfitLocalModel(model.id, target.model_id, 'agent', () => refuseSmallMainModel(model.id, target.model_id));
+        const refused = await refuseAgentModel(model.id, target.model_id);
         if (refused) { content = `Error: ${refused}`; isError = true; return { content, isError }; }
       }
 

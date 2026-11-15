@@ -20,7 +20,7 @@ import {
 import { runDreamingCycle, getDreamingConfig, setDreamingConfig, DREAM_MODES } from '../../vault/maintenance.js';
 import { routeFailure } from './route-failure.js';
 import { getDb } from '../../db/connection.js';
-import { refuseSmallMainModel, refuseUnfitLocalModel } from '../../agent/main-model-floor.js';
+import { refuseAgentModel } from '../../agent/main-model-floor.js';
 import { refuseBadClockTime } from '../../config/clock-time.js';
 
 const logger = createLogger('vault-routes');
@@ -152,7 +152,7 @@ vaultRouter.put('/dream/config', async (c) => {
   // Then the memory fit: a local model that will not fit in this box's memory is refused too.
   const newModel = typeof body.modelId === 'string' ? body.modelId : null;
   const current = (getDb().prepare('SELECT model_id FROM agents WHERE id = ?').get(getDreamerAgentId()) as { model_id: string | null } | undefined)?.model_id;
-  const refused = await refuseUnfitLocalModel(newModel, current, 'agent', () => refuseSmallMainModel(newModel, current));
+  const refused = await refuseAgentModel(newModel, current);
   if (refused) return c.json({ ok: false, error: refused }, 400);
 
   const badTime = body.dreamTime === undefined ? null : refuseBadClockTime(body.dreamTime);

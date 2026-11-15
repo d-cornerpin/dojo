@@ -18,7 +18,7 @@ import { attachIdleBound } from '../../child-idle-bound.js';
 import { automationPermissionStatus } from './automation-probe.js';
 import { getOllamaModelInfo } from '../../services/ollama.js';
 // The 32K floor for an agent's MAIN model.
-import { refuseSmallMainModel, refuseUnfitLocalModel } from '../../agent/main-model-floor.js';
+import { refuseAgentModel, refuseSmallMainModel } from '../../agent/main-model-floor.js';
 import { localModelFit } from '../../agent/local-model-fit.js';
 // A create/rename name must not mint a second agent the case-insensitive lookup cannot tell apart.
 import { caseVariantClash, caseVariantClashMessage } from '../../agent/tool-helpers.js';
@@ -451,7 +451,7 @@ setupDepsRouter.post('/provision-agent', async (c) => {
   // The 32K floor for an agent's MAIN model, asked before anything is written; re-running setup on the model
   // an existing agent already has is never refused. A local model that will not fit in memory is refused the
   // same way.
-  const refused = await refuseUnfitLocalModel(modelId, existing?.model_id ?? null, 'agent', () => refuseSmallMainModel(modelId, existing?.model_id ?? null));
+  const refused = await refuseAgentModel(modelId, existing?.model_id);
   if (refused) return c.json({ ok: false, error: refused }, 400);
 
   if (existing) {

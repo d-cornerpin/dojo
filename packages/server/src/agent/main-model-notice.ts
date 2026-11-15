@@ -3,7 +3,7 @@
 import { getDb } from '../db/connection.js';
 import { broadcast } from '../gateway/ws.js';
 import { createLogger } from '../logger.js';
-import { MAIN_MODEL_MIN_WINDOW, smallMainModelMessage, windowOf } from './main-model-floor.js';
+import { refuseSmallMainModel } from './main-model-floor.js';
 
 const logger = createLogger('main-model-floor');
 
@@ -13,8 +13,8 @@ const logger = createLogger('main-model-floor');
 export function noteSmallMainModelOnce(agentId: string, modelId: string | null | undefined): boolean {
   if (!modelId) return false;
   try {
-    const w = windowOf(modelId);
-    if (!w || w.window >= MAIN_MODEL_MIN_WINDOW) return false;
+    const tooSmall = refuseSmallMainModel(modelId);
+    if (!tooSmall) return false;
     const db = getDb();
     const key = `small_main_model_noticed:${agentId}`;
     const seen = db.prepare('SELECT value FROM config WHERE key = ?').get(key) as { value: string } | undefined;
@@ -23,13 +23,11 @@ export function noteSmallMainModelOnce(agentId: string, modelId: string | null |
       INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
     `).run(key, modelId);
-    logger.warn('This agent\'s main model is under the 32K floor; it keeps running', {
-      modelId, window: w.window,
-    }, agentId);
+    logger.warn('This agent\'s main model is under the 32K floor; it keeps running', { modelId }, agentId);
     broadcast({
       type: 'chat:error', cardClass: 'informational',
       agentId,
-      error: `${smallMainModelMessage(w.name, w.window)} This agent keeps working as it is; the notice is shown once.`,
+      error: `${tooSmall} This agent keeps working as it is; the notice is shown once.`,
       code: 'MAIN_MODEL_SMALL',
       severity: 'warning',
       retryable: false,

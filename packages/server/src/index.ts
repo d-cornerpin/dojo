@@ -20,6 +20,7 @@ import { getPrimaryAgentId, getPrimaryAgentName, setPlatformConfig, HOUSEHOLD_AG
 import { recordBootAttempt, markMigrationsRan, confirmHealthy, readMarker, synthesizeMigrationBootEpisode } from './update-state.js';
 import { probeFsCaseInsensitive, setFsCaseInsensitive } from './agent/path-guards.js';
 import { homeDir } from './home.js';
+import { refuseSmallMainModel } from './agent/main-model-floor.js';
 import { startStallSentinel } from './observability/stall-sentinel.js';
 import { terminateReaderPool, warmReaderPool } from './memory/reader-pool.js';
 import { scheduleFtsHealthCheck, stopFtsRepair } from './memory/fts-health.js';
@@ -145,8 +146,7 @@ function ensurePrimaryAgent(): void {
            AND m.capabilities NOT LIKE '%generation%'
            AND m.capabilities NOT LIKE '%embedding%'
          ORDER BY m.name ASC
-         LIMIT 1
-      `).get() as { id: string } | undefined)?.id ?? null;
+      `).all() as Array<{ id: string }>).find((m) => !refuseSmallMainModel(m.id))?.id ?? null;   // the floor, like every agent door
 
   db.prepare(`
     INSERT INTO agents (id, name, model_id, system_prompt_path, status, config, created_by, created_by_kind,

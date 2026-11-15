@@ -3,8 +3,7 @@
 
 import { getDb } from '../db/connection.js';
 import { effectiveContextWindow, resolveNumCtx } from './model.js';
-// The memory-fit gate rides every door this floor guards: exported here so each door asks both.
-export { refuseUnfitLocalModel } from './local-model-fit.js';
+import { refuseUnfitLocalModel } from './local-model-fit.js';
 
 /** The floor, in tokens. "32K" models are advertised as 32,000 or 32,768; both pass. */
 export const MAIN_MODEL_MIN_WINDOW = 32_000;
@@ -48,11 +47,27 @@ export function smallMainModelMessage(name: string, window: number): string {
 export function refuseSmallMainModel(
   modelId: string | null | undefined,
   currentModelId?: string | null,
+  numCtxOverride?: number | null,
 ): string | null {
   if (!modelId || modelId === currentModelId) return null;
-  const w = windowOf(modelId);
+  const w = windowOf(modelId, numCtxOverride);
   if (!w || w.window >= MAIN_MODEL_MIN_WINDOW) return null;
   return smallMainModelMessage(w.name, w.window);
+}
+
+/** THE door check for choosing a model for an agent: memory fit first (so a refusal names the true reason), then the
+ *  floor. Null means the model may be set. Every route, tool and spawn that picks an agent's model asks this. */
+export async function refuseAgentModel(modelId: string | null | undefined, currentModelId?: string | null): Promise<string | null> {
+  return refuseUnfitLocalModel(modelId, currentModelId, 'agent', () => refuseSmallMainModel(modelId, currentModelId));
+}
+
+/** The model a service agent is created or reactivated on: its setting, else the main agent's. One under the floor
+ *  becomes 'auto' (the router offers only models that clear it), so a service agent never starts on a small model. */
+export function serviceAgentModelId(settingKey: string, primaryId: string): string | null {
+  const db = getDb();
+  const picked = (db.prepare('SELECT value FROM config WHERE key = ?').get(settingKey) as { value: string } | undefined)?.value
+    ?? (db.prepare('SELECT model_id FROM agents WHERE id = ?').get(primaryId) as { model_id: string | null } | undefined)?.model_id ?? null;
+  return picked && refuseSmallMainModel(picked) ? 'auto' : picked;
 }
 
 export function passesMainModelFloor(modelId: string): boolean { return refuseSmallMainModel(modelId) === null; }

@@ -1,5 +1,5 @@
 // A spawned agent with no model named takes its parent's; when that model is under the 32K floor the spawn is
-// refused with the floor's sentence, whatever model the parent itself keeps. The main agent's spawn proceeds with it as a warning.
+// refused with the floor's sentence, whatever model the parent itself keeps, the main agent included.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
@@ -35,9 +35,15 @@ describe('a child never inherits a model under 32K', () => {
     expect(mockDb.current!.prepare("SELECT COUNT(*) AS n FROM agents WHERE id != 'parent'").get()).toEqual({ n: 0 });
   });
 
-  it('the main agent spawns anyway, warned', async () => {
+  it('the main agent is refused too', async () => {
     primary.id = 'parent';
-    const r = await spawnAgent({ parentId: 'parent', name: 'Helper', systemPrompt: 'Sort files.', autoStart: false } as never);
-    expect(r.warnings.join(' ')).toMatch(/too small for an agent's main model/);
+    await expect(spawnAgent({ parentId: 'parent', name: 'Helper', systemPrompt: 'Sort files.', autoStart: false } as never)).rejects.toThrow(/too small for an agent's main model/);
+  });
+
+  it('a big model named by the caller is accepted', async () => {
+    mockDb.current!.prepare(`INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, is_enabled)
+      VALUES ('m-big', 'cloud', 'Big', 'big', '["chat","tools"]', 128000, 1)`).run();
+    const r = await spawnAgent({ parentId: 'parent', name: 'Helper', systemPrompt: 'Sort files.', modelId: 'm-big', autoStart: false } as never);
+    expect(r.warnings).toEqual([]);
   });
 });

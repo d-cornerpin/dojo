@@ -22,7 +22,8 @@ import { dismissOwnerNotice, ownerToldOf } from '../../healer/owner-notices.js';
 import { servedOwnerNotices } from '../../healer/owner-notice-kinds.js';
 import { writeOobeSoul } from '../../prompt/soul-rerun.js';
 import { isPastFirstRun } from '../../config/setup-state.js';
-import { refuseSmallMainModel, refuseUnfitLocalModel, passesMainModelFloor, smallMainModelMessage, windowOf, MAIN_MODEL_MIN_WINDOW, MAIN_MODEL_SETTING_KEYS, LOCAL_MODEL_SETTING_KEYS } from '../../agent/main-model-floor.js';
+import { refuseUnfitLocalModel } from '../../agent/local-model-fit.js';
+import { refuseAgentModel, refuseSmallMainModel, passesMainModelFloor, windowOf, MAIN_MODEL_SETTING_KEYS, LOCAL_MODEL_SETTING_KEYS } from '../../agent/main-model-floor.js';
 import { parsePrice } from '../../services/price-per-million.js';
 import { refuseBadClockTime, CLOCK_TIME_SETTING_KEYS } from '../../config/clock-time.js';
 import { refuseStaleWholeDocument } from './whole-document-guard.js';
@@ -1721,9 +1722,8 @@ configRouter.patch('/models/:id/num-ctx', async (c) => {
   const db = getDb();
   // An agent's model may not be narrowed under the floor every door that sets a main model enforces.
   const after = windowOf(id, override);
-  if (after && after.window < after.now && after.window < MAIN_MODEL_MIN_WINDOW && agentsOnModel(id).length > 0) {
-    return c.json({ ok: false, error: smallMainModelMessage(after.name, after.window) }, 409);
-  }
+  const narrowed = after && after.window < after.now && agentsOnModel(id).length > 0 ? refuseSmallMainModel(id, null, override) : null;
+  if (narrowed) return c.json({ ok: false, error: narrowed }, 409);
   if (db.prepare("UPDATE models SET num_ctx_override = ?, updated_at = datetime('now') WHERE id = ?").run(override, id).changes === 0) {
     return c.json({ ok: false, error: 'Model not found' }, 404);
   }
@@ -2048,8 +2048,7 @@ configRouter.put('/settings/:key', async (c) => {
   // key. Refused before any write; re-saving the stored value never is.
   if (LOCAL_MODEL_SETTING_KEYS.includes(key)) {
     const current = (db.prepare('SELECT value FROM config WHERE key = ?').get(key) as { value: string } | undefined)?.value;
-    const main = MAIN_MODEL_SETTING_KEYS.includes(key);   // memory first, so a refusal names the true reason
-    const refused = await refuseUnfitLocalModel(body.value, current, main ? 'agent' : 'job', () => (main ? refuseSmallMainModel(body.value, current) : null));
+    const refused = await (MAIN_MODEL_SETTING_KEYS.includes(key) ? refuseAgentModel(body.value, current) : refuseUnfitLocalModel(body.value, current, 'job'));
     if (refused) return c.json({ ok: false, error: refused }, 400);
   }
 

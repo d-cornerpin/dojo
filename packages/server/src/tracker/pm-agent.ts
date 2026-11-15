@@ -19,6 +19,7 @@ import { deleteAgentDebrisBefore, insertEngineEventIfAbsent } from '../memory/me
 import { freshTailHorizon } from '../memory/tail-horizon.js';
 import { contextWindowPolicy } from '../memory/budget.js';
 import { agentTurnWindow } from '../router/router-window.js';
+import { serviceAgentModelId } from '../agent/main-model-floor.js';
 import { getPrimaryAgentId, getPMAgentId, getPMAgentName, isSetupCompleted } from '../config/platform.js';
 import { workOperation, type WorkOp } from '../tools/work-verbs.js';
 
@@ -130,12 +131,7 @@ export function ensurePMAgentRunning(): void {
     return;
   }
 
-  const pmModelSetting = db.prepare("SELECT value FROM config WHERE key = 'pm_agent_model'").get() as { value: string } | undefined;
-  let modelId: string | null = pmModelSetting?.value ?? null;
-  if (!modelId) {
-    const primary = db.prepare('SELECT model_id FROM agents WHERE id = ?').get(primaryId) as { model_id: string | null } | undefined;
-    modelId = primary?.model_id ?? null;
-  }
+  const modelId = serviceAgentModelId('pm_agent_model', primaryId);   // never a model under the floor
 
   if (pm) {
     const reactivatePermissions = PM_PERMISSIONS_JSON;

@@ -33,7 +33,7 @@ import { writeGrants } from '../../agent/access/materialize.js';
 import { auditLog } from '../../agent/tools/util.js';
 import { parkedCauseOf } from '../../agent/v2/honest-stop-lock.js';
 import { SilentWindowMinutesSchema } from '../../config/schema.js';
-import { refuseSmallMainModel, refuseUnfitLocalModel } from '../../agent/main-model-floor.js';
+import { refuseAgentModel } from '../../agent/main-model-floor.js';
 import { noteSmallMainModelOnce } from '../../agent/main-model-notice.js';
 
 const logger = createLogger('agents-routes');
@@ -91,7 +91,7 @@ agentsRouter.patch('/:id/model', async (c) => {
 
   const { modelId } = body;
 
-  const refused = await refuseUnfitLocalModel(modelId, agent.model_id, 'agent', () => refuseSmallMainModel(modelId, agent.model_id));   // small-model floor and local memory fit
+  const refused = await refuseAgentModel(modelId, agent.model_id);
   if (refused) return c.json({ ok: false, error: refused }, 400);
 
   if (modelId === 'auto') {
@@ -139,7 +139,7 @@ agentsRouter.post('/', async (c) => {
     return c.json({ ok: false, error: 'name must not be blank' }, 400);
   }
 
-  const refused = typeof body.modelId === 'string' ? await refuseUnfitLocalModel(body.modelId, null, 'agent', () => refuseSmallMainModel(body.modelId)) : null;   // before any write
+  const refused = typeof body.modelId === 'string' ? await refuseAgentModel(body.modelId) : null;   // before any write
   if (refused) return c.json({ ok: false, error: refused }, 400);
   try {
     const db = getDb();
@@ -317,7 +317,7 @@ agentsRouter.put('/:id', async (c) => {
     return c.json({ ok: false, error: 'Request body required' }, 400);
   }
 
-  const refused = typeof body.modelId === 'string' ? await refuseUnfitLocalModel(body.modelId, agent.model_id, 'agent', () => refuseSmallMainModel(body.modelId, agent.model_id)) : null;   // before the rename
+  const refused = typeof body.modelId === 'string' ? await refuseAgentModel(body.modelId, agent.model_id) : null;   // before the rename
   if (refused) return c.json({ ok: false, error: refused }, 400);
 
   // A new name that differs from another live agent's only by capitals is refused with the other 400

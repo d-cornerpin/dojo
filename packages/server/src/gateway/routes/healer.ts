@@ -9,7 +9,7 @@ import { getAgentRuntime } from '../../agent/runtime.js';
 import { insertEngineEventIfAbsent } from '../../memory/message-store.js';
 import { grantApprovalForSignature } from '../../agent/destructive-gate.js';
 import { routeFailure } from './route-failure.js';
-import { refuseSmallMainModel, refuseUnfitLocalModel } from '../../agent/main-model-floor.js';
+import { refuseAgentModel } from '../../agent/main-model-floor.js';
 import { refuseBadClockTime } from '../../config/clock-time.js';
 
 const logger = createLogger('healer-routes');
@@ -31,7 +31,7 @@ healerRouter.post('/config', async (c) => {
   const { getHealerAgentId } = await import('../../config/platform.js');
   const newModel = typeof body.modelId === 'string' ? body.modelId : null;
   const current = (getDb().prepare('SELECT model_id FROM agents WHERE id = ?').get(getHealerAgentId()) as { model_id: string | null } | undefined)?.model_id;
-  const refused = await refuseUnfitLocalModel(newModel, current, 'agent', () => refuseSmallMainModel(newModel, current));
+  const refused = await refuseAgentModel(newModel, current);
   if (refused) return c.json({ ok: false, error: refused }, 400);
 
   const badTime = body.healerTime === undefined ? null : refuseBadClockTime(body.healerTime);

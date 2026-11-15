@@ -4,6 +4,7 @@ import { deleteAllForAgent } from '../memory/message-store.js';
 import { createLogger } from '../logger.js';
 import { getPrimaryAgentId, getTrainerAgentId, getTrainerAgentName, isSetupCompleted } from '../config/platform.js';
 import { SEND_TO_PEOPLE } from '../agent/sensei-policy.js';
+import { serviceAgentModelId } from '../agent/main-model-floor.js';
 import { googleReadToolDefinitions } from '../google/tools-read.js';
 import { microsoftReadToolDefinitions } from '../microsoft/tools-read.js';
 
@@ -77,12 +78,7 @@ export function ensureTrainerAgentRunning(): void {
     return;
   }
 
-  const trainerModelSetting = db.prepare("SELECT value FROM config WHERE key = 'trainer_agent_model'").get() as { value: string } | undefined;
-  let modelId: string | null = trainerModelSetting?.value ?? null;
-  if (!modelId) {
-    const primary = db.prepare('SELECT model_id FROM agents WHERE id = ?').get(primaryId) as { model_id: string | null } | undefined;
-    modelId = primary?.model_id ?? null;
-  }
+  const modelId = serviceAgentModelId('trainer_agent_model', primaryId);   // never a model under the floor
 
   if (trainer) {
     db.prepare(`

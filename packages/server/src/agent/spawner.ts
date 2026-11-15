@@ -158,15 +158,14 @@ export async function spawnAgent(params: SpawnParams): Promise<{ agentId: string
     throw new Error(`Spawn denied: ${spawnCheck.reason}`);
   }
 
-  // Low memory and a too-small model refuse any other parent; the main agent's spawn proceeds with a warning.
+  // Low memory refuses any other parent; the main agent's spawn proceeds with a warning.
   const parentIsPrimary = isPrimaryAgent(parentId);
   const warnings: string[] = [];
-  const refuseOrWarn = (reason: string, refusal = reason): void => {
-    if (!parentIsPrimary) throw new Error(refusal);
-    warnings.push(reason);
-  };
   const resourceCheck = canSpawnAgent();
-  if (!resourceCheck.allowed) refuseOrWarn(resourceCheck.reason ?? 'Insufficient memory', `Spawn denied: ${resourceCheck.reason}`);
+  if (!resourceCheck.allowed) {
+    if (!parentIsPrimary) throw new Error(`Spawn denied: ${resourceCheck.reason}`);
+    warnings.push(resourceCheck.reason ?? 'Insufficient memory');
+  }
 
   const parent = db.prepare('SELECT * FROM agents WHERE id = ?').get(parentId) as {
     id: string;
@@ -200,9 +199,9 @@ export async function spawnAgent(params: SpawnParams): Promise<{ agentId: string
   }
 
   const resolvedModelId = modelId === 'auto' ? 'auto' : (modelId ?? parent.model_id);
-  // The floor applies to the model the child runs, inherited too; the fit check to a named one. Loaded on demand.
-  const refused = resolvedModelId && resolvedModelId !== 'auto' ? await import('./main-model-floor.js').then(async (f) => f.refuseSmallMainModel(resolvedModelId) ?? await f.refuseUnfitLocalModel(modelId, parent.model_id, 'agent')) : null;
-  if (refused) refuseOrWarn(refused);
+  // The child's model, inherited or named, meets the same check as every other door (any parent, the main agent too).
+  const refused = resolvedModelId ? await import('./main-model-floor.js').then((f) => f.refuseAgentModel(resolvedModelId)) : null;
+  if (refused) throw new Error(`Spawn denied: ${refused}`);
   if (!resolvedModelId) {
     throw new Error('No model specified and parent has no model configured');
   }

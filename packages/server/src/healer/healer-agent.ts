@@ -36,6 +36,7 @@ import {
   isTrainerAgent,
 } from '../config/platform.js';
 import { homeDir } from '../home.js';
+import { serviceAgentModelId } from '../agent/main-model-floor.js';
 import { nextDailyRunDelayMs } from '../config/clock-time.js';
 import { ownerConditionsOnHealerSeen } from './owner-notices.js';
 
@@ -342,17 +343,7 @@ export function ensureHealerAgentRunning(): void {
     return;
   }
 
-  // Resolve model: use healer_model_id config if set, else primary agent's model
-  const healerModelRow = db.prepare(
-    "SELECT value FROM config WHERE key = 'healer_model_id'",
-  ).get() as { value: string } | undefined;
-  let modelId: string | null = healerModelRow?.value ?? null;
-  if (!modelId) {
-    const primary = db.prepare('SELECT model_id FROM agents WHERE id = ?').get(primaryId) as
-      | { model_id: string | null }
-      | undefined;
-    modelId = primary?.model_id ?? null;
-  }
+  const modelId = serviceAgentModelId('healer_model_id', primaryId);   // never a model under the floor
 
   if (existing) {
     // Reactivate from terminated

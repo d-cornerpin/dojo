@@ -39,6 +39,7 @@ import { homeDir } from '../home.js';
 import { fenceExternal } from '../tools/external-content.js';
 import { nextDailyRunDelayMs } from '../config/clock-time.js';
 import { isFiller, beginFillerPass } from './filler.js';
+import { serviceAgentModelId } from '../agent/main-model-floor.js';
 import { settleFiller } from '../memory/shape-judgment.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -657,15 +658,7 @@ export function ensureDreamerAgentRunning(): void {
     return;
   }
 
-  // Resolve model: dreaming_model_id, else primary agent's model
-  const modelRow = db.prepare("SELECT value FROM config WHERE key = 'dreaming_model_id'").get() as { value: string } | undefined;
-  let modelId: string | null = modelRow?.value ?? null;
-  if (!modelId) {
-    const primary = db.prepare('SELECT model_id FROM agents WHERE id = ?').get(primaryId) as
-      | { model_id: string | null }
-      | undefined;
-    modelId = primary?.model_id ?? null;
-  }
+  const modelId = serviceAgentModelId('dreaming_model_id', primaryId);   // never a model under the floor
 
   const systemPrompt = loadDreamerSoulPrompt();
 
