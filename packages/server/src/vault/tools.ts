@@ -109,7 +109,6 @@ export async function executeVaultRemember(
   const type = args.type as string;
   const tags = (args.tags as string[]) ?? [];
   const pin = (args.pin as boolean) ?? false;
-  // A standing instruction kept word for word and pinned is permanent unless the caller says otherwise.
   const permanent = (args.permanent as boolean | undefined) ?? (pin && args.verbatim === true);
   const verbatim = (args.verbatim as boolean) ?? false;
   // After a near-duplicate bounce the model sets this to assert the fact is different, overriding the bounce.
