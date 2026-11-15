@@ -97,7 +97,7 @@ function omittedLine(n: number, what: string, where: string): string {
 }
 
 /** The file of `workId`'s project, or of the task alone when it has none, inside `room` tokens: the project line and
- *  the owner's words always; then the newest notes; then the newest reviews and questions. Empty when there is none. */
+ *  the owner's words always; then the newest reviews and questions (at most half of what is left); then the newest notes. Empty when there is none. */
 export function workFile(workId: string, room: number): string {
   const project = projectOf(workId);
   const taskRows = project ? getDb().prepare('SELECT id, title FROM work WHERE parent_id = ?').all(project.id) : [];
@@ -106,8 +106,9 @@ export function workFile(workId: string, room: number): string {
   const head = project
     ? `\n  Project "${project.title ?? project.id}" [${project.id}]: ${approach}${ownerWordsLines(project.id, 'project')}`
     : '';
-  const notes = newestThatFit(project ? noteLines(project.id) : [], room - FRAME_TOKENS - estimateTokens(head));
-  const timed = newestThatFit([...reviewLines(tasks), ...exchangeLines(project ? tasks.map((t) => t.id) : [workId])], notes.left);
+  const space = room - FRAME_TOKENS - estimateTokens(head);
+  const timed = newestThatFit([...reviewLines(tasks), ...exchangeLines(project ? tasks.map((t) => t.id) : [workId])], Math.floor(space / 2));
+  const notes = newestThatFit(project ? noteLines(project.id) : [], space - (Math.floor(space / 2) - timed.left));
   if (!project && timed.kept.length === 0) return '';
   const noteText = project
     ? `\n  The project's notes:${notes.kept.join('') || ' none'}`
