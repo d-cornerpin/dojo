@@ -7,7 +7,6 @@ import { getDb } from '../../db/connection.js';
 import { getPMAgentId, getPrimaryAgentId } from '../../config/platform.js';
 import { turnContext } from '../../agent/turn-context.js';
 import { repliesSince, type ThreadReply } from '../../memory/message-store.js';
-import { patienceBoundMs } from '../../tracker/assignee-patience.js';
 import { AUDIT_KIND } from '../audit-trail.js';
 import { taskScope } from '../tracker-view.js';
 import { workerOf, workersOf } from './record.js';
@@ -40,54 +39,34 @@ export function sendBacks(workId: string): Array<{ reason: string; at: number }>
 export interface PMQuestion {
   at: number;
   thread: string;
-  /** The recipient as the model typed it; `asked` is the agent the question was delivered to. */
+  /** The recipient as the model typed it. */
   typed: string;
-  asked: string | null;
   text: string;
   /** The replies on its thread from its sending until the next question on that thread. */
   answers: ThreadReply[];
+  /** It holds its hand-in until its first answer, or `QUEUED_TURN_BOUND_MS` after it was asked. */
   until: number;
 }
 
-/** The PM's questions tied to this row since its newest hand-in (or ever), oldest first. Who was asked and who
- *  answered are read from the thread itself, never from a name. */
-export function pmQuestions(workId: string, everAsked = false): PMQuestion[] {
+/** The PM's questions tied to this row, oldest first; the answers are read from each question's own thread. */
+export function pmQuestions(workId: string): PMQuestion[] {
   const pm = getPMAgentId();
   const rows = getDb().prepare(`
-    SELECT unixepoch(r.created_at) * 1000 AS at,
-           r.thread_id AS thread,
-           COALESCE(r.recipient, '') AS typed,
-           COALESCE(r.sent_text, '') AS text,
-           COALESCE(json_extract(r.detail, '$.intent'), '') AS intent,
-           (SELECT d.agent_id FROM messages d
-             WHERE d.a2a_thread_id = r.thread_id AND d.source_agent_id = r.agent_id AND d.agent_id <> r.agent_id
-             ORDER BY d.seq LIMIT 1) AS asked
-      FROM tool_receipts r
-     WHERE r.task_id = ? AND r.agent_id = ? AND r.thread_id IS NOT NULL
-       AND (? OR unixepoch(r.created_at) >= (
-             SELECT COALESCE(MAX(created_at), 0) / 1000
-               FROM work_events
-              WHERE work_id = r.task_id AND kind = 'handed_in'))
-     ORDER BY r.created_at, r.rowid
-  `).all(workId, pm, everAsked ? 1 : 0) as Array<Omit<PMQuestion, 'answers' | 'until'> & { intent: string }>;
+    SELECT unixepoch(created_at) * 1000 AS at,
+           thread_id AS thread,
+           COALESCE(recipient, '') AS typed,
+           COALESCE(sent_text, '') AS text,
+           COALESCE(json_extract(detail, '$.intent'), '') AS intent
+      FROM tool_receipts
+     WHERE task_id = ? AND agent_id = ? AND thread_id IS NOT NULL
+     ORDER BY created_at, rowid
+  `).all(workId, pm) as Array<Omit<PMQuestion, 'answers' | 'until'> & { intent: string }>;
   const asks = rows.filter((q) => REPLY_NEEDED_INTENTS.has(q.intent));
   return asks.map(({ intent: _intent, ...q }) => {
     const next = asks.find((o) => o.thread === q.thread && o.at > q.at)?.at ?? Infinity;
     const answers = repliesSince(pm, q.thread, q.at).filter((a) => a.at < next);
-    return { ...q, answers, until: holdEnd(q.asked, q.at, answers[0]?.at ?? null) };
+    return { ...q, answers, until: answers[0]?.at ?? q.at + QUEUED_TURN_BOUND_MS };
   });
-}
-
-/** The fixed end of a question's hold: one patience bound after the asked agent's first turn that ended within
- *  `QUEUED_TURN_BOUND_MS` of it, else that bound; sooner if it was answered. Once passed, it never moves. */
-function holdEnd(asked: string | null, at: number, answeredAt: number | null): number {
-  const ended = (getDb().prepare(`
-    SELECT MIN(unixepoch(ended_at)) * 1000 AS t
-      FROM turns
-     WHERE agent_id = ? AND ended_at IS NOT NULL AND unixepoch(ended_at) * 1000 BETWEEN ? AND ?
-  `).get(asked, at, at + QUEUED_TURN_BOUND_MS) as { t: number | null }).t;
-  const end = ended === null ? at + QUEUED_TURN_BOUND_MS : ended + patienceBoundMs(asked);
-  return answeredAt === null ? end : Math.min(answeredAt, end);
 }
 
 /** Until when the PM's questions hold this hand-in (0 when it asked none); it holds while this is in the future. */

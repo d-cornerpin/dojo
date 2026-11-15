@@ -1,8 +1,8 @@
 // A hand-in waits while the project manager asks about it (the owner's back-and-forth with several agents): each
 // question is tied to the hand-in when it is sent; while one is open the hand-in is in no review and no review
 // counts against it; the turn an answer starts shows the hand-in's file with the question, and once every question
-// is answered the review shows the whole exchange and the PM decides it. An asked agent that ends a turn without
-// answering releases it one patience bound later, and then the ordinary rule applies.
+// is answered the review shows the whole exchange and the PM decides it. A question no one answers releases it 30
+// minutes after it was asked, and then the ordinary rule applies.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 vi.mock('../../../db/connection.js', async () => (await import('./helpers/done-db.js')).connectionMock());
@@ -15,7 +15,6 @@ vi.setConfig({ testTimeout: 240_000, hookTimeout: 240_000 });
 import { whoDecides, QUEUED_TURN_BOUND_MS } from '../who-decides.js';
 import { assembleContext } from '../../../memory/assembler.js';
 import { insertMessage } from '../../../memory/message-store.js';
-import { patienceBoundMs } from '../../../tracker/assignee-patience.js';
 import { freshBoard, handedIn, call, deliveredToOwner, stateOf, PM, MAIN, WORKER, OTHER, TASK } from './helpers/decision-world.js';
 import { doneDb } from './helpers/done-db.js';
 import { pmCanRun, turn, entries, resetLadderWorld, pmTurn, answerCounterparty, review as reviewBy } from './helpers/ladder-world.js';
@@ -93,42 +92,33 @@ describe('a hand-in waits while the PM asks', () => {
     expect(stateOf()).toBe('sent_back');
   });
 
-  it('an asked agent that ends a turn without answering releases the hand-in one bound later', async () => {
+  it('an asked agent that never answers releases the hand-in 30 minutes after the question', async () => {
     await handedIn();
     await review(async () => { await ask(WORKER, 'Which sheet holds the totals?'); });
     expect(await review(), 'held while the question is open').not.toContain(TASK);
-    doneDb().prepare("INSERT INTO turns (agent_id, turn_number, kind, started_at, ended_at, exit_reason, answered) VALUES (?, 1, 'a2a', datetime('now'), datetime('now'), 'answered', 1)").run(WORKER);
-    vi.spyOn(Date, 'now').mockReturnValue(Date.now() + patienceBoundMs(WORKER) + 2_000);
-    expect(await review(), 'one bound after the asked agent\'s turn the hand-in is back').toContain(TASK);
+    const t = Date.now();
+    vi.spyOn(Date, 'now').mockReturnValue(t + QUEUED_TURN_BOUND_MS - 60_000);
+    expect(await review(), 'still held a minute before the bound').not.toContain(TASK);
+    vi.spyOn(Date, 'now').mockReturnValue(t + QUEUED_TURN_BOUND_MS + 2_000);
+    expect(await review(), 'past the bound the hand-in is back').toContain(TASK);
     expect(whoDecides(TASK)).toEqual({ kind: 'agent', agentId: PM });
     await review();
     expect(whoDecides(TASK), 'two verdictless reviews: the main agent decides').toEqual({ kind: 'agent', agentId: MAIN });
   });
 
-  it('the hold only delays: once the hand-in has gone to the main agent a late turn of the asked agent never takes it back', async () => {
+  it('the hold only delays: once the hand-in has gone to the main agent a late answer never takes it back', async () => {
     await handedIn();
-    await review(async () => { await ask(WORKER, 'Which sheet holds the totals?'); });
-    const t = Date.now();
-    vi.spyOn(Date, 'now').mockReturnValue(t + QUEUED_TURN_BOUND_MS + 60_000);
+    let thread = '';
+    await review(async () => { thread = await ask(WORKER, 'Which sheet holds the totals?'); });
+    vi.spyOn(Date, 'now').mockReturnValue(Date.now() + QUEUED_TURN_BOUND_MS + 60_000);
     await review();
     await review();
-    expect(whoDecides(TASK), 'the question stopped holding at its deadline; two reviews passed it on').toEqual({ kind: 'agent', agentId: MAIN });
-    doneDb().prepare("INSERT INTO turns (agent_id, turn_number, kind, started_at, ended_at, exit_reason, answered) VALUES (?, 1, 'a2a', datetime('now'), datetime('now', '+45 minutes'), 'answered', 1)").run(WORKER);
-    vi.spyOn(Date, 'now').mockReturnValue(t + 46 * 60_000);
-    expect(whoDecides(TASK), 'the asked agent\'s long turn ending late does not bring the question back').toEqual({ kind: 'agent', agentId: MAIN });
+    expect(whoDecides(TASK), 'the question stopped holding at its bound; two reviews passed it on').toEqual({ kind: 'agent', agentId: MAIN });
+    expect((await answer(WORKER, thread, 'Sheet 3 holds the totals.')).isError).toBe(false);
+    expect(whoDecides(TASK), 'a late answer does not bring it back').toEqual({ kind: 'agent', agentId: MAIN });
     expect((await call(MAIN, 'work_validate', { action: 'open_proof', task_id: TASK, item: 0 })).isError).toBe(false);
     const r = await call(MAIN, 'work_validate', { action: 'decide', task_id: TASK, verdict: 'approve', reason: 'The report is in the shared folder' });
     expect(r.isError, r.content).toBe(false);
-  });
-
-  it('a busy asked agent: the hold ends one bound after its first turn that ended after the question', async () => {
-    await handedIn();
-    await review(async () => { await ask(WORKER, 'Which sheet holds the totals?'); });
-    const turnEnds = doneDb().prepare("INSERT INTO turns (agent_id, turn_number, kind, started_at, ended_at, exit_reason, answered) VALUES (?, ?, 'a2a', datetime('now'), datetime('now', ?), 'answered', 1)");
-    turnEnds.run(WORKER, 1, '+60 seconds');
-    for (let n = 2; n <= 26; n += 1) turnEnds.run(WORKER, n, `+${60 + n * 10} seconds`);
-    vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 61_000 + patienceBoundMs(WORKER) + 2_000);
-    expect(await review(), 'twenty-five later turns do not stretch the hold').toContain(TASK);
   });
 });
 

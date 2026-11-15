@@ -75,7 +75,7 @@ function reviewLines(projectId: string): Dated[] {
 function exchangeLines(taskIds: string[]): Dated[] {
   const nameOf = (id: string): string =>
     (getDb().prepare('SELECT name FROM agents WHERE id = ?').get(id) as { name: string } | undefined)?.name ?? id;
-  return taskIds.flatMap((taskId) => pmQuestions(taskId, true).map((q) => {
+  return taskIds.flatMap((taskId) => pmQuestions(taskId).map((q) => {
     const asked = `\n    ${msToUtcText(q.at)} you asked ${q.typed} about [${taskId}]: "${q.text.slice(0, 500)}"`;
     const said = (cut: boolean): string => q.answers.map((a) => {
       const words = extractPayloadFromA2AMessage(a.content) ?? a.content;
