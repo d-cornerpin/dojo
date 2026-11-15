@@ -52,6 +52,7 @@ vi.mock('../../gateway/ws.js', () => ({ broadcast: () => { /* no-op */ } }));
 
 import { runMigrations } from '../../db/migrations.js';
 import { resolveTaskId, formatResolveError } from '../schema.js';
+import { openCommitment } from '../../work/store.js';
 import { FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const MINE = FXID.n4;
@@ -131,10 +132,11 @@ describe('the refusal names the fallback, so a confused model is steered rather 
   });
 
   it('names the promise tool, not "not found", for a commitment id', () => {
-    const r = resolveTaskId('cmt:0123456789ab', MINE);
+    const id = openCommitment({ agentId: MINE, description: 'send the roof quote', conversationId: null, turnNumber: 1, sourceMessageId: null }) as string;
+    const r = resolveTaskId(id, MINE);
     expect(r.ok).toBe(false);
     if (r.ok) return;
-    const text = formatResolveError('task', 'cmt:0123456789ab', r);
+    const text = formatResolveError('task', id, r);
     expect(text).toContain('work_close_request');
     expect(text).not.toContain('not found');
   });

@@ -70,6 +70,7 @@ function applySchema(db: Database.Database): void {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
     INSERT INTO agents (id, name, status) VALUES ('a1', 'Agent One', 'idle');
+    CREATE TABLE IF NOT EXISTS conversations (id TEXT PRIMARY KEY, channel TEXT, counterparty_name TEXT, counterparty_id TEXT);
     CREATE TABLE IF NOT EXISTS deliveries (
       id TEXT PRIMARY KEY, agent_id TEXT, outcome TEXT, tool TEXT, created_at INTEGER
     );

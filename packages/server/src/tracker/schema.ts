@@ -17,7 +17,7 @@ import {
   openTrackerProject, openTrackerTask, patchWork,
   setTrackerStatus, type WorkPatch, type SetStatusInput,
 } from '../work/tracker-store.js';
-import { workSettled, noteUnsettled, type Actor } from '../work/store.js';
+import { workSettled, noteUnsettled, findObligationByTypedId, type Actor } from '../work/store.js';
 import { writeAssignee } from '../work/row-authority.js';
 import { isTerminalName } from '../work/terminal-states.js';
 import { decide } from '../work/done/decide.js';
@@ -573,6 +573,8 @@ export type IdResolution =
       /** True when the TITLE fallback also ran and found nothing, so the message never claims a lookup that did
        *  not happen. Only meaningful on `not_found`. */
       triedTitle?: boolean;
+      /** The typed id is this agent's own open promise (`findObligationByTypedId`), not a task. */
+      promise?: boolean;
     };
 
 function resolveIdIn(kind: 'task' | 'project', idOrPrefix: string, agentId?: string): IdResolution {
@@ -606,10 +608,11 @@ function resolveIdIn(kind: 'task' | 'project', idOrPrefix: string, agentId?: str
   // into a retry loop on the same string (pinned in `__tests__/id-resolution-and-the-title-fallback.test.ts`).
   // Ask rows (kind='ask') sit outside TASK_WHERE/PROJECT_WHERE by construction. The refusal says the title
   // was tried too (`triedTitle`), so a model learns both routes failed.
+  const promise = kind === 'task' && !!agentId && !!findObligationByTypedId(agentId, input);
   if (agentId) {
     const byTitle = resolveByTitleScoped(kind, input, agentId);
     if (byTitle) return byTitle;
-    return { ok: false, reason: 'not_found', triedTitle: true };
+    return { ok: false, reason: 'not_found', triedTitle: true, promise };
   }
   return { ok: false, reason: 'not_found', triedTitle: false };
 }
@@ -669,9 +672,8 @@ export function formatResolveError(
         const what = input.trim().startsWith('piece:') ? 'a piece of a request' : 'a request';
         return `Error: '${input}' is ${what} from the person who asked, not a task, so no task call takes it. It ends when you answer them; reply with your normal message.`;
       }
-      // A `cmt:` id, or the bare 12 hex of one that is a commitment, is a promise the agent made: it closes through the promise ledger, not a task verb.
-      const asked = input.trim().toLowerCase();
-      if (kind === 'task' && (asked.startsWith('cmt:') || getDb().prepare("SELECT 1 FROM work WHERE kind = 'commitment' AND id = ?").get(`cmt:${asked}`))) {
+      // The agent's own open promise closes through the promise ledger, not a task verb.
+      if (resolution.promise) {
         return `Error: '${input}' is a promise you made, not a task, so no task call takes it. Close it with work_close_request(action='commitment', id, disposition='kept' or 'dropped').`;
       }
       // A title-shaped input gets an explicit title-vs-id correction, or the floor model retries the same
