@@ -20,7 +20,7 @@ const CLOCK = /\d{4}-\d\d-\d\d(T[\d:.]+Z?)?|\b\d{1,2}:\d\d(:\d\d)?(\s?[AP]M)?|\b
 
 /** Per call, how many times each result came back. */
 type Counts = Map<string, Map<string, number>>;
-interface Window { ref: TurnContext; turn: number; before: Counts; now: Counts; stopAt: Map<string, number>; refused: Map<string, number> }
+interface Window { ref: TurnContext; turn: number; before: Counts; now: Counts; stopAt: Map<string, number>; refused: Map<string, number>; fresh: number }
 const windows = new Map<string, Window>();
 
 // Stable JSON with keys sorted at every depth; a JSON.stringify replacer array would erase nested keys.
@@ -74,7 +74,7 @@ function windowAt(agentId: string, ref: TurnContext): Window {
   const turn = ref.turnNumber ?? 0;
   const before: Counts = w?.turn === turn - 1 ? w.now : new Map();
   const stopAt = new Map([...(w?.stopAt ?? [])].filter(([key]) => before.has(key)));
-  const next: Window = { ref, turn, before, now: new Map(), stopAt, refused: new Map() };
+  const next: Window = { ref, turn, before, now: new Map(), stopAt, refused: new Map(), fresh: 0 };
   windows.set(agentId, next);
   return next;
 }
@@ -100,8 +100,9 @@ export function repeatStopRefusal(agentId: string, turn: TurnContext, tool: stri
   return `[Engine: not run. ${seenWords(key, n)}, so the engine stopped it; a plain retry does not lift the stop. ${WAYS}]`;
 }
 
-/** Counts an executed call's result; returns the stop notice when this result reaches the call's next stop. */
-export function noteRepeatResult(agentId: string, turn: TurnContext, tool: string, args: unknown, fp: string): string | null {
+/** Counts an executed call's result, and a work call's result new to the window as the job moving; returns
+ *  the stop notice when this result reaches the call's next stop. */
+export function noteRepeatResult(agentId: string, turn: TurnContext, tool: string, args: unknown, fp: string, work: boolean): string | null {
   const w = windowAt(agentId, turn);
   const key = keyOf(tool, args);
   const results = w.now.get(key) ?? new Map<string, number>();
@@ -109,9 +110,16 @@ export function noteRepeatResult(agentId: string, turn: TurnContext, tool: strin
   results.set(same, (results.get(same) ?? 0) + 1);
   w.now.set(key, results);
   const n = (results.get(same) ?? 0) + (w.before.get(key)?.get(same) ?? 0);
+  if (n === 1 && work) w.fresh += 1;
   if (n !== stopOf(w, key)) return null;
   logger.warn('v2: repeat rule stopped a call', { agentId, call: key.slice(0, 160), times: n }, agentId);
   return `\n\n[Engine: ${seenWords(key, n)}, so the engine has stopped this call; asking again will not change the answer. ${WAYS}]`;
+}
+
+/** How many work results new to the window this turn has brought back: the job's momentum. */
+export function freshResults(agentId: string, turn: TurnContext | undefined): number {
+  const w = windows.get(agentId);
+  return w && w.ref === turn ? w.fresh : 0;
 }
 
 /** True once a signature has been refused TERMINAL_AT times; the loop then ends the turn's tool phase. */

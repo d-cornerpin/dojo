@@ -39,10 +39,16 @@ import { runMigrations } from '../../../../../db/migrations.js';
 import { trackerHandlers } from '../../../../tools/cat/tracker.js';
 import { recordTouched, recordMeasured } from '../../../../../work/ledger-store.js';
 import { recordContinued } from '../../../../../work/job-momentum.js';
-import { noteTurnCalls as chargeEffortCalls } from '../../../../../work/job-momentum.js';
 import { armTimerWake, beginJobRun, carryJobWork, endJobCarry, endJobRun } from '../../../../../work/task-freshness.js';
 import { advance, initState, type AgentTurnState } from '../../../state.js';
 import { runPostCallClassify, type PostCallClassifyContext } from '../index.js';
+import { noteRepeatResult } from '../../../identical-call-brake.js';
+import { openTurnContext, turnContext } from '../../../../turn-context.js';
+/** The repeat rule counting this turn's calls: a successful result new to the window moves the job. */
+function chargeEffortCalls(calls: ToolCall[], turn: { succeeded: () => boolean }): void {
+  const bag = turnContext(AGENT) ?? openTurnContext(AGENT);
+  for (const c of calls) noteRepeatResult(AGENT, bag, c.name, c.arguments, 'result', turn.succeeded());
+}
 
 const AGENT = 'agent-continued-job';
 const MEASURE = { tool: 'gmail_search', args: { query: 'in:inbox -label:Done' }, unit: 'messages' };
@@ -80,6 +86,7 @@ async function continuedTurn(taskId: string, text: string, work: { from: number;
   over: Partial<Record<string, unknown>> = {},
   more: { earlier?: ToolCall[]; earlierFailed?: ToolCall[]; withThisLine?: ToolCall[] } = {}): Promise<AgentTurnState> {
   turnNumber += 1;
+  openTurnContext(AGENT).turnNumber = turnNumber;
   lastStart = Math.max(Date.now(), lastStart + 1000);
   armTimerWake(AGENT);
   beginJobRun(AGENT, 'timer');
@@ -115,7 +122,7 @@ async function continuedTurn(taskId: string, text: string, work: { from: number;
   if (work) {
     const label = { id: `tc-${work.from}`, name: 'gmail_label', arguments: { message_ids: Array.from({ length: work.n }, (_, i) => `m${work.from + i}`), add: ['Done'] } } as ToolCall;
     await toolPass([label]);
-    chargeEffortCalls(taskId, [label], { startMs: lastStart, succeeded: () => true });
+    chargeEffortCalls([label], { succeeded: () => true });
     recordTouched(taskId, 'gmail_label', Array.from({ length: work.n }, (_, i) => `gmail:msg:m${work.from + i}`), lastStart + 1);
   }
   for (const c of more.earlier ?? []) await toolPass([c]);   // each in a pass of its own

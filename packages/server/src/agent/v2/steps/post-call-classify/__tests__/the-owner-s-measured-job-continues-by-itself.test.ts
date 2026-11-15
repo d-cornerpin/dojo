@@ -37,11 +37,17 @@ vi.mock('../../../../a2a-transport.js', () => ({ deliverA2AMessage: deliverA2A, 
 import { runMigrations } from '../../../../../db/migrations.js';
 import { trackerHandlers } from '../../../../tools/cat/tracker.js';
 import { recordTouched } from '../../../../../work/ledger-store.js';
-import { noteTurnCalls as chargeEffortCalls } from '../../../../../work/job-momentum.js';
 import { endJobCarry } from '../../../../../work/task-freshness.js';
 import { advance, initState, type AgentTurnState } from '../../../state.js';
 import { runGoingIdle } from '../going-idle.js';
 import type { PostCallClassifyContext, PostCallScratch } from '../index.js';
+import { noteRepeatResult } from '../../../identical-call-brake.js';
+import { endTurnContext, openTurnContext, turnContext } from '../../../../turn-context.js';
+/** The repeat rule counting this turn's calls: a successful result new to the window moves the job. */
+function chargeEffortCalls(calls: ToolCall[], turn: { succeeded: () => boolean }): void {
+  const bag = turnContext(AGENT) ?? openTurnContext(AGENT);
+  for (const c of calls) noteRepeatResult(AGENT, bag, c.name, c.arguments, 'result', turn.succeeded());
+}
 
 const AGENT = 'agent-owner-job';
 const MEASURE = { tool: 'gmail_search', args: { query: 'in:inbox -label:Done' }, unit: 'messages' };
@@ -66,7 +72,7 @@ beforeEach(() => {
   endJobCarry(AGENT);
   stash.mockClear();
 });
-afterEach(() => { vi.useRealTimers(); });
+afterEach(() => { vi.useRealTimers(); endTurnContext(AGENT); });
 
 describe('ruling 1: an owner asks for a measured job — reply delivered, then the job continues by itself', () => {
   it('the replied owner turn ends as replied turns end; a `continued` is recorded; the next turn runs from the park\'s wake; no PM check-in', async () => {
@@ -78,7 +84,7 @@ describe('ruling 1: an owner asks for a measured job — reply delivered, then t
     let state: AgentTurnState = advance(initState({ agentId: AGENT, turnNumber: 3, lastUserMessageContent: 'please sort my inbox' } as unknown as Parameters<typeof initState>[0]),
       { loopCount: 1, modelId: 'test-model' });
     const label = { id: 'tc-1', name: 'gmail_label', arguments: { message_ids: ['a', 'b'], add: ['Done'] } } as ToolCall;
-    chargeEffortCalls(id, [label], { startMs: state.turnStartMs, succeeded: () => true });
+    chargeEffortCalls([label], { succeeded: () => true });
     recordTouched(id, 'gmail_label', ['gmail:msg:a', 'gmail:msg:b'], state.turnStartMs + 1);
     state = advance(state, { toolCalls: [label], toolResults: [{ toolCallId: 'tc-1', name: 'gmail_label', isError: false, content: '[OK]' } as AgentTurnState['toolResults'][number]] });
 

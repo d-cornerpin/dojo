@@ -375,26 +375,21 @@ describe('t173 (i-c): the thread scope keeps the job\'s own tool rows and still 
   });
 });
 
-describe('t173 (ii): CHAINED parks — every continuation in the chain carries the job\'s origin', () => {
-  it('park, park, park: three continuations, each records the thread and each view holds the ASSIGN', async () => {
+describe('t173 (ii): a continuation that moves nothing carries the job\'s origin and ends the chain', () => {
+  it('park, then a still continuation: it records the thread and holds the ASSIGN, then records the stall instead of parking again', async () => {
     const { taskId } = await assignedJob();
     await noticeTurn(taskId, 'notice-chain', 80);
     loggerErrorSpy.mockClear();
 
-    const seen: Array<{ turn: number; rec: ReturnType<typeof turnRow>; text: string; zero: boolean }> = [];
-    for (const reads of [80, 80, 0]) {   // the first two park again (the chain), the last one finishes
-      loggerErrorSpy.mockClear();
-      const { turn, firstCall } = await continuationTurn(reads);
-      seen.push({ turn, rec: turnRow(turn), text: firstView(firstCall).text, zero: zeroMessagesLogged() });
-    }
-    expect(seen.map((s) => s.rec.exit_reason).slice(0, 2), 'the first two continuations parked again').toEqual(['iteration_cap', 'iteration_cap']);
-    for (const s of seen) {
-      expect(s.rec.subject_kind, `turn ${s.turn}`).toBe('a2a_thread');
-      expect(s.rec.subject_id, `turn ${s.turn}`).toBe(THREAD);
-      expect(s.rec.root_id, `turn ${s.turn}`).toBe(THREAD);
-      expect(s.zero, `turn ${s.turn}: no zero-messages fallback`).toBe(false);
-      expect(occurrences(s.text, ASSIGN_TEXT), `turn ${s.turn}: the request, once`).toBe(1);
-    }
+    const { turn, firstCall } = await continuationTurn(80);
+    const rec = turnRow(turn);
+    expect(rec.subject_kind).toBe('a2a_thread');
+    expect(rec.subject_id).toBe(THREAD);
+    expect(rec.root_id).toBe(THREAD);
+    expect(zeroMessagesLogged(), 'no zero-messages fallback').toBe(false);
+    expect(occurrences(firstView(firstCall).text, ASSIGN_TEXT), 'the request, once').toBe(1);
+    expect(beginJobRun(WORKER, 'drain'), 'no further continuation is owed').toBe(false);
+    expect(mockDb.current!.prepare("SELECT 1 FROM work_events WHERE work_id = ? AND kind = 'stalled'").get(taskId)).toBeTruthy();
   });
 });
 

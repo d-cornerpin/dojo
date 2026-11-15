@@ -7,7 +7,8 @@ import { taskScope, workingTaskOrder } from '../../../../work/tracker-view.js';
 import { parseMeasure, type Measure } from '../../../../work/measure.js';
 import { ledgerNewItemsSince, recordMeasured } from '../../../../work/ledger-store.js';
 import { jobCarriedIds, runCarriesJob } from '../../../../work/task-freshness.js';
-import { lastTurnEnd, novelCallsInTurn } from '../../../../work/job-momentum.js';
+import { lastTurnEnd } from '../../../../work/job-momentum.js';
+import { freshResults } from '../../identical-call-brake.js';
 import { toolOpKey } from '../../../../tools/work-verbs.js';
 import { normalizeTaskStatus } from '../../../../tracker/task-status-words.js';
 import type { AgentTurnState } from '../../state.js';
@@ -46,12 +47,12 @@ function measureOf(json: string | null): Measure | null {
   try { const p = parseMeasure(JSON.parse(json)); return p.ok ? p.measure : null; } catch { return null; }
 }
 
-/** The records now, no count. Momentum: a new item touched, a new call that succeeded, or the task opened. */
+/** The records now, no count. Momentum: a new item touched, a work result new to the window, or the task opened. */
 function storedFacts(state: AgentTurnState, agentId: string, db: Database): JobAtPassEnd | null {
   const task = jobTaskOf(agentId, db);
   if (!task) return null;
   const touchedThisTurn = ledgerNewItemsSince(task.id, state.turnStartMs);
-  const novelCallsThisTurn = novelCallsInTurn(task.id, state.turnStartMs);
+  const novelCallsThisTurn = freshResults(agentId, turnContext(agentId));
   const openedThisTurn = !!db.prepare(`SELECT 1 FROM work_events WHERE work_id = ? AND kind = 'opened' AND created_at >= ? LIMIT 1`).get(task.id, state.turnStartMs);
   const measure = measureOf(task.measureJson);
   return {

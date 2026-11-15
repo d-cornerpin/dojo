@@ -1,7 +1,8 @@
 // At the end of a checkpoint window (75 steps or 15 minutes) a turn whose job moved takes another
 // window; a turn whose job did not, that has no job, or that a person is waiting behind parks once for a
-// continuation, as does any turn past 200 tool calls or 500 passes. Driven through the real pre-call
-// gates on a real migrated database; the job's movement is recorded by the real momentum recorder.
+// continuation, as does any turn past 200 tool calls or 500 passes. A continuation whose window moved
+// nothing does not park again: its task records the stall. Driven through the real pre-call gates on a
+// real migrated database; the job's movement is recorded by the real repeat rule.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
@@ -17,10 +18,11 @@ vi.mock('../../../../../memory/compaction.js', () => ({
 
 import { runMigrations } from '../../../../../db/migrations.js';
 import { pendingWakeups } from '../../../../shared-state.js';
-import { endTurnContext, openTurnContext } from '../../../../turn-context.js';
+import { endTurnContext, openTurnContext, turnContext } from '../../../../turn-context.js';
 import { advance, initState, type AgentTurnState } from '../../../state.js';
 import { runPreCallGates, type PreCallGatesContext } from '../index.js';
-import { noteTurnCalls } from '../../../../../work/job-momentum.js';
+import { noteRepeatResult } from '../../../../v2/identical-call-brake.js';
+import { beginJobRun, carryJobWork, endJobCarry } from '../../../../../work/task-freshness.js';
 import { insertMessage } from '../../../../../memory/message-store.js';
 import { getWaitingHumanConversations } from '../../../counterparty.js';
 
@@ -49,8 +51,11 @@ function seedClaimedTask(): void {
   ).run(TASK, AGENT, TASK, now - 60_000, now - 60_000);
 }
 
-const aNewCallSucceeded = (state: AgentTurnState, n: number): void =>
-  noteTurnCalls(TASK, [{ name: 'file_read', arguments: { path: `/archive/${state.turnStartMs}-${n}.txt` } }], { startMs: state.turnStartMs, succeeded: () => true });
+/** A work call this turn whose result the window has not seen: the job moved. */
+const aNewCallSucceeded = (state: AgentTurnState, n: number): void => {
+  const turn = turnContext(AGENT) ?? openTurnContext(AGENT);
+  noteRepeatResult(AGENT, turn, 'file_read', { path: `/archive/${state.turnStartMs}-${n}.txt` }, 'new batch', true);
+};
 
 beforeEach(() => {
   mockDb.current = new Database(':memory:');
@@ -58,7 +63,7 @@ beforeEach(() => {
   mockDb.current.prepare(`INSERT INTO agents (id, name, status, created_at) VALUES (?, 'Worker', 'working', datetime('now', '-1 day'))`).run(AGENT);
   pendingWakeups.clear();
 });
-afterEach(() => { mockDb.current?.close(); mockDb.current = null; pendingWakeups.clear(); endTurnContext(AGENT); });
+afterEach(() => { mockDb.current?.close(); mockDb.current = null; pendingWakeups.clear(); endTurnContext(AGENT); endJobCarry(AGENT); });
 
 describe('a window renews only while the job moves and nobody waits', () => {
   it('a moving job passes 75 steps and 15 minutes without a park, and a still window after it parks', async () => {
@@ -129,4 +134,29 @@ describe('a window renews only while the job moves and nobody waits', () => {
       expect(pendingWakeups.has(AGENT)).toBe(true);
     }
   });
+
+  it('a continuation whose window moved nothing ends without parking, and its task records the stall', async () => {
+    seedClaimedTask();
+    carryJobWork(AGENT, [TASK]);
+    expect((await gate(stateAt(76))).directive, 'the first still window parks').toBe('exit');
+    pendingWakeups.clear();
+    expect(beginJobRun(AGENT, 'drain'), 'its continuation runs').toBe(true);
+    const ended = await gate(stateAt(76));
+    expect(ended).toMatchObject({ directive: 'exit', reason: 'turn-time-budget' });
+    expect(pendingWakeups.has(AGENT), 'no further continuation').toBe(false);
+    expect(mockDb.current!.prepare("SELECT 1 FROM work_events WHERE work_id = ? AND kind = 'stalled'").get(TASK)).toBeTruthy();
+  });
+
+  it('a continuation whose window moved parks for the next one', async () => {
+    seedClaimedTask();
+    carryJobWork(AGENT, [TASK]);
+    await gate(stateAt(76));
+    pendingWakeups.clear();
+    expect(beginJobRun(AGENT, 'drain')).toBe(true);
+    const state = advance(stateAt(10), { toolCallsExecutedThisTurn: 200, checkpointWindow: { atLoop: 9, atMs: Date.now(), mark: 0 } });
+    aNewCallSucceeded(state, 1);
+    expect(await gate(state)).toMatchObject({ directive: 'exit', reason: 'turn-time-budget' });
+    expect(pendingWakeups.has(AGENT)).toBe(true);
+  });
+
 });

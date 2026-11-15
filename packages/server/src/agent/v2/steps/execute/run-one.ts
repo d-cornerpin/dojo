@@ -9,6 +9,7 @@ import { classifyToolResult } from '../../../tool-outcome.js';
 import { executeTool, toolResultOf } from '../../../tools/index.js';
 import { LIFT_TOOL, fingerprint, identicalCallSignature, isSignatureTerminal, noteRepeatResult, repeatStopRefusal } from '../../identical-call-brake.js';
 import { markToolsLoaded } from '../../../../tools/tool-session-set.js';
+import { isTrackerFamilyCall } from '../../../../tools/work-verbs.js';
 import { createLogger } from '../../../../logger.js';
 import { FIRE_AND_FORGET_GEN_TOOLS, SEND_TO_PEOPLE_SET } from './tool-sets.js';
 import { wordsStepRefusal } from './media-words-step.js';
@@ -125,7 +126,8 @@ export async function runOneToolCall(tc: ToolCall, ctx: ExecuteContext, sc: Exec
     // offers the lift tool, which joins the session's tools then.
     if (!refusal && !isA2AReplyTool) {
       const blocks = (tc as unknown as Record<string, unknown>).__contentBlocks;
-      const brakeNotice = noteRepeatResult(agentId, turnCtx, tc.name, tc.arguments, fingerprint(toolResult.content, blocks));
+      const work = !toolResult.isError && tc.name !== LIFT_TOOL && !isTrackerFamilyCall(tc.name, tc.arguments);
+      const brakeNotice = noteRepeatResult(agentId, turnCtx, tc.name, tc.arguments, fingerprint(toolResult.content, blocks), work);
       if (brakeNotice && typeof toolResult.content === 'string') {
         toolResult = { ...toolResult, content: toolResult.content + brakeNotice };
         markToolsLoaded(agentId, [LIFT_TOOL]);

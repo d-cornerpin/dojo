@@ -9,8 +9,7 @@ import { TRIVIAL_TOOLS } from './tool-sets.js';
 import type { ExecuteContext } from './index.js';
 import { getDb } from '../../../../db/connection.js';
 import { taskScope, workingTaskOrder } from '../../../../work/tracker-view.js';
-import { noteTurnCalls } from '../../../../work/job-momentum.js';
-import { recordCallsTouched, succeededIn, type RoundResult } from '../../../../work/ledger-store.js';
+import { recordCallsTouched, type RoundResult } from '../../../../work/ledger-store.js';
 import type { ToolEffect } from '../../../tools/types.js';
 import { jobTaskOf } from '../post-call-classify/job-turn-end.js';
 import { heldExpr, workingExpr } from '../../../../work/done/hold.js';
@@ -83,11 +82,10 @@ export function countTrackerWorkThisIteration(
       }
     }
   }
-  // This iteration's work calls, on the agent's current claimed task: what they touched, and which were new.
+  // This iteration's work calls, on the agent's current claimed task: what they touched.
   if (chargeableCallsInThisIter.length > 0) {
     const claimedTaskId = taskToCharge(agentId);
     if (claimedTaskId) {
-      noteTurnCalls(claimedTaskId, chargeableCallsInThisIter, { startMs: state.turnStartMs, succeeded: succeededIn(roundResults) });
       recordCallsTouched(claimedTaskId, chargeableCallsInThisIter, roundResults, effectsOf, agentId); // what this round's successes touched
     }
   }

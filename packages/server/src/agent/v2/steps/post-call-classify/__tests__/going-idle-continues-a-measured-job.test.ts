@@ -35,12 +35,18 @@ vi.mock('../../../../../work/job-continuation.js', async (orig) => ({ ...(await 
 import { runMigrations } from '../../../../../db/migrations.js';
 import { trackerHandlers } from '../../../../tools/cat/tracker.js';
 import { recordTouched } from '../../../../../work/ledger-store.js';
-import { noteTurnCalls as chargeEffortCalls } from '../../../../../work/job-momentum.js';
 import { armTimerWake, beginJobRun, endJobCarry, endJobRun } from '../../../../../work/task-freshness.js';
 import { advance, initState, type AgentTurnState } from '../../../state.js';
 import { runGoingIdle } from '../going-idle.js';
 import { taskMovedAtSql } from '../../../../../work/task-freshness.js';
 import type { PostCallClassifyContext, PostCallScratch } from '../index.js';
+import { noteRepeatResult } from '../../../identical-call-brake.js';
+import { openTurnContext, turnContext } from '../../../../turn-context.js';
+/** The repeat rule counting this turn's calls: a successful result new to the window moves the job. */
+function chargeEffortCalls(calls: ToolCall[], turn: { succeeded: () => boolean }): void {
+  const bag = turnContext(AGENT) ?? openTurnContext(AGENT);
+  for (const c of calls) noteRepeatResult(AGENT, bag, c.name, c.arguments, 'result', turn.succeeded());
+}
 
 const AGENT = 'agent-d1';
 const MEASURE = { tool: 'gmail_search', args: { query: 'in:inbox -label:Done' }, unit: 'messages' };
@@ -79,6 +85,7 @@ let lastTurnStartMs = 0;
  *  otherwise open two in the same millisecond, which no turn boundary can tell apart). */
 function freshTurn(): AgentTurnState {
   turnNumber += 1;
+  openTurnContext(AGENT).turnNumber = turnNumber;
   lastTurnStartMs = Math.max(Date.now(), lastTurnStartMs + 1000);
   return advance(initState({ agentId: AGENT, turnNumber, lastUserMessageContent: null } as unknown as Parameters<typeof initState>[0]),
     { loopCount: 1, modelId: 'test-model', turnStartMs: lastTurnStartMs });
@@ -87,7 +94,7 @@ function freshTurn(): AgentTurnState {
 /** This turn's calls and their results, as the loop records them, and what the execute step's charge
  *  site does with them: the effort meter's novel-vs-repeat charge and the ledger's touched items. */
 function ranCalls(state: AgentTurnState, taskId: string, calls: ToolCall[], touched: string[] = [], failed = false): AgentTurnState {
-  chargeEffortCalls(taskId, calls, { startMs: state.turnStartMs, succeeded: () => !failed });
+  chargeEffortCalls(calls, { succeeded: () => !failed });
   if (touched.length > 0 && !failed) recordTouched(taskId, 'gmail_label', touched, state.turnStartMs + 1);
   return advance(state, {
     toolCalls: [...state.toolCalls, ...calls],

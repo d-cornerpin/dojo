@@ -1,5 +1,6 @@
 // The one place a turn parks itself: at the end of a checkpoint window a moving job renews it unless a person is
 // waiting; otherwise the turn checkpoints (token-math compaction check, tracker note, park for a fresh continuation).
+// A continuation whose window moved nothing does not park again: its task records the stall for the ladder.
 
 import { createLogger } from '../../../../logger.js';
 import { agentTurnWindow } from '../../../../router/router-window.js';
@@ -7,11 +8,13 @@ import { checkAndCompact } from '../../../../memory/compaction.js';
 import { isStopFenced } from '../../../shared-state.js';
 import { getDb } from '../../../../db/connection.js';
 import { advance, type AgentTurnState } from '../../state.js';
-import { jobProgressMark, turnWindow } from '../post-call-classify/job-turn-end.js';
+import { jobProgressMark, jobTaskOf, turnWindow } from '../post-call-classify/job-turn-end.js';
 import { proceed, requestExit, type StepOutcome } from '../step-outcome.js';
 import { latchEngineCut } from '../../engine-exit.js';
 import { noteEngineCheckpoint } from '../../../../work/engine-checkpoint-note.js';
 import { parkJob } from '../../../../work/job-continuation.js';
+import { recordStalled } from '../../../../work/job-momentum.js';
+import { runCarriesJob } from '../../../../work/task-freshness.js';
 import type { PreCallGatesContext, PreCallGatesExitReason } from './index.js';
 
 const logger = createLogger('v2-loop');
@@ -29,6 +32,12 @@ export async function runTurnTimeBudget(
     return proceed(advance(state, { checkpointWindow: { atLoop: state.loopCount - 1, atMs: Date.now(), mark: jobProgressMark(state, agentId, getDb()) } }));
   }
   if (window === 'checkpoint') {
+    if (runCarriesJob(agentId) && jobProgressMark(state, agentId, getDb()) <= (state.checkpointWindow?.mark ?? 0)) {
+      const task = jobTaskOf(agentId, getDb());
+      if (task) recordStalled(task.id, { remaining: task.stored, turnNumber });
+      logger.info('v2 checkpoint: a continuation that moved nothing ends without parking', { agentId, turnNumber, taskId: task?.id }, agentId);
+      return requestExit(latchEngineCut(state, 'iteration_cap'), 'turn-time-budget' satisfies PreCallGatesExitReason);
+    }
     const elapsedMin = Math.round((Date.now() - state.turnStartMs) / 60000);
     const effectiveModel =
       state.modelId === '__auto__' ? configuredModelId : state.modelId;

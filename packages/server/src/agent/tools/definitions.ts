@@ -434,7 +434,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'history_search',
-    description: 'Search through conversation history and memory summaries using full-text search or pattern matching. Returns matching messages and summaries with context. Example: history_search({ pattern: "budget meeting", limit: 10 }).\n\nResult format: each line starts with `[id=<short> <timestamp>] (role) <snippet>`. When a snippet is truncated, the line ends with `[snippet only, call history_get(id="…") for full N-char message]`, DO this rather than retrying history_search with a different pattern. Repeating history_search with variations of the same query when the snippet is already present will be loop-blocked. Use history_get to get the FULL message body once you have a hit.',
+    description: 'Search through conversation history and memory summaries using full-text search or pattern matching. Returns matching messages and summaries with context. Example: history_search({ pattern: "budget meeting", limit: 10 }).\n\nResult format: each line starts with `[id=<short> <timestamp>] (role) <snippet>`. When a snippet is truncated, the line ends with `[snippet only, call history_get(id="…") for full N-char message]`, DO this rather than retrying history_search with a different pattern. Use history_get to get the FULL message body once you have a hit.',
     effects: [],
     input_schema: {
       type: 'object',
