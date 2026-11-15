@@ -256,6 +256,12 @@ export const EFFECT_IMPORT_EXCLUSIONS = [
     residual: 'the walk itself is not facade-carried; it reads directory listings only (names and types, never contents) under the path the gates just allowed.',
   },
   {
+    file: 'work/done/file-facts.ts',
+    klass: 'honest-label',
+    why: 'A file proof item is read when the engine checks a hand-in, outside any tool call\'s capability. Before the read the worker\'s own file_read permission is checked for that exact path (agent/permissions.ts checkPermission), so only a file the worker may read is hashed.',
+    residual: 'the read itself is not facade-carried; it stats and hashes one path the gate has just allowed, and keeps at most an 8 KB excerpt.',
+  },
+  {
     file: 'agent/image-prep.ts',
     klass: 'honest-label',
     why: 'PART 4. Image preparation runs on the platform\'s own ingest timing, outside the dispatch that produced the image.',
