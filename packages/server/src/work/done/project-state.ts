@@ -4,7 +4,8 @@
 import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
 import { transition, isTerminal, type WorkState } from '../store.js';
-import { taskScope } from '../tracker-view.js';
+import { taskScope, projectScope } from '../tracker-view.js';
+import { tellOwner } from '../../healer/owner-notices.js';
 import { deliveryForCompletedChildren } from '../tracker-store.js';
 import { recordDecisionReceipt, deliveryIdOf } from '../../agent/v2/deliveries.js';
 import { unitOrRollback, recordAdjudication } from './record.js';
@@ -22,6 +23,16 @@ export function deriveProjectState(projectId: string): 'done' | 'abandoned' | 'w
   return (c.done ?? 0) > 0 ? 'done' : 'abandoned';
 }
 
+/** One card when a project ends with tasks cancelled or closed as can't be done: it names them. Never a text. */
+export function tellUnfinishedTasks(projectId: string): void {
+  const left = getDb().prepare(
+    `SELECT p.title AS project, t.title, t.state FROM work p JOIN work t ON t.parent_id = p.id
+      WHERE p.id = ? AND ${projectScope('p')} AND ${taskScope('t')} AND t.state IN ('failed', 'abandoned') ORDER BY t.opened_at`,
+  ).all(projectId) as Array<{ project: string | null; title: string | null; state: string }>;
+  if (left.length > 0) tellOwner(`projectend:${projectId}`, `The project "${left[0].project ?? 'Untitled'}" ended with ${left.length === 1 ? 'a task' : `${left.length} tasks`} not done: `
+    + `${left.map((t) => `"${t.title ?? 'Untitled'}" (${t.state === 'failed' ? 'could not be done' : 'cancelled'})`).join(', ')}.`);
+}
+
 /** Move a still-open project to its derived end, if its tasks have one. True when it moved. */
 export function settleProject(projectId: string): boolean {
   const derived = deriveProjectState(projectId);
@@ -37,5 +48,6 @@ export function settleProject(projectId: string): boolean {
     });
   });
   if (r.kind !== 'applied') logger.warn('project did not settle on its tasks', { projectId, derived, outcome: r });
+  else if (derived === 'done') tellUnfinishedTasks(projectId);   // every task cancelled is the owner's own call
   return r.kind === 'applied';
 }

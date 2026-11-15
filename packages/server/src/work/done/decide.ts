@@ -12,6 +12,7 @@ import { ownerQuoteProof } from '../../tracker/owner-words.js';
 import { recordDecisionReceipt, deliveryIdOf } from '../../agent/v2/deliveries.js';
 import { transition, appendWorkEvent, isTerminal, type Actor, type WorkOutcome, type WorkState } from '../store.js';
 import { taskScope, projectScope } from '../tracker-view.js';
+import { tellUnfinishedTasks } from './project-state.js';
 import { latestHandIn, workersOf, unitOrRollback, recordAdjudication, OWNER_ID } from './record.js';
 import { openedEveryItem } from './open-proof.js';
 import { proofDelivery } from './proof.js';
@@ -140,6 +141,7 @@ export function decide(input: DecideInput): DecideResult {
       const child = applyDecision(t.id, t.state, to === 'done' ? 'abandoned' : to, { ...p, reason: `closed with its project: ${reason}`, outcome: 'cant_be_done', run: false });
       if (child.kind !== 'applied') unclosed.push(t.id);
     }
+    if (input.verdict !== 'cancel') tellUnfinishedTasks(row.id);   // the owner's own cancel of a project is not news to him
   }
   const words: Partial<Record<WorkState, string>> = { done: 'Done', failed: "Closed: couldn't be done", sent_back: 'Sent back to its worker', abandoned: 'Cancelled', open: 'decided for this run; the schedule goes on' };
   const left = unclosed.length > 0 ? ` Not closed with it: ${unclosed.join(', ')}.` : '';
