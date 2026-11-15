@@ -32,6 +32,7 @@ export const TITLE_INSTRUCTION = [
   '- 3 to 8 words, describing WHAT IS BEING ASKED.',
   '- Never copy values out of the message: no keys, tokens, passwords, account',
   '  numbers, addresses, phone numbers, or quoted text.',
+  '- A message that only says thanks or acknowledges something is titled "Thanks".',
   '- Reply with the title only. No quotes, no punctuation at the end, no prose.',
 ].join('\n');
 
