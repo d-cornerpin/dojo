@@ -1,7 +1,8 @@
 // The memory tidy-up offers each note to the writer once at its depth, and an idle agent then pays nothing.
 // A lived-in agent whose writer cannot shrink its notes enough (every merge comes back at 90% of its input) is
 // driven through the owner's compact-now and then many turns and idle cycles with no rows leaving the view.
-// Only the provider call is a stand-in; the gate, the compactor, the writer choice and the keep rule are real.
+// Only the provider calls are stand-ins (the writer, and the decision model the summary check asks, which fails a
+// summary saying PENDING); the gate, the compactor, the writer choice, the keep rule and the check are real.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
@@ -22,16 +23,18 @@ vi.mock('../embeddings.js', () => ({
   queueEmbedding: () => undefined, storeEmbedding: async () => undefined, refreshEmbedding: () => undefined,
 }));
 vi.mock('../../gateway/ws.js', () => ({ broadcast: () => undefined, stampPersistedRow: (e: unknown) => e }));
-vi.mock('../summary-check.js', async (orig) => ({
-  ...(await orig<typeof import('../summary-check.js')>()),
-  writeThenCheck: (p: unknown, write: (p: unknown) => unknown) => write(p),
-}));
+const marks = vi.hoisted(() => ({ fail: false }));
+vi.mock('../writer.js', async (orig) => {
+  const actual = await orig<typeof import('../writer.js')>();
+  return { ...actual, markWaiting: (...a: Parameters<typeof actual.markWaiting>) => (marks.fail ? undefined : actual.markWaiting(...a)) };
+});
 const writer = vi.hoisted(() => ({ calls: [] as Array<{ modelId: string; content: string; rewrite: boolean }>, ratio: 0.9 }));
 vi.mock('../../agent/model.js', () => ({
   callModel: async (p: { modelId: string; systemPrompt: string; messages: Array<{ content: string }> }) => {
     const content = p.messages[0].content;
     writer.calls.push({ modelId: p.modelId, content, rewrite: p.systemPrompt.includes('REWRITE:') });
-    return { content: 'w'.repeat(Math.floor(content.length * writer.ratio)), toolCalls: [], usage: {}, stopReason: 'stop' };
+    const text = `${content.includes('BAD') ? 'PENDING ' : ''}${'w'.repeat(Math.floor(content.length * writer.ratio))}`;
+    return { content: text, toolCalls: [], usage: {}, stopReason: 'stop' };
   },
   getContextWindow: () => 128_000,
   getModelOutputCap: () => 8192,
@@ -45,7 +48,7 @@ import { insertMessage } from '../message-store.js';
 import { __resetBrakesForTests, LOW_YIELD_BACKOFF_MS } from '../compaction-brakes.js';
 import { __resetEstimateCacheForTests } from '../assembled-estimate-cache.js';
 import { __resetSummaryWriterHealthForTests, clearOn } from '../writer.js';
-import { STANDARD_WRITER_MODEL } from '../../services/local-standard.js';
+import { STANDARD_DECISION_MODEL, STANDARD_WRITER_MODEL } from '../../services/local-standard.js';
 import { condenseForTheDialedModel } from '../../agent/v2/steps/pre-call-gates/context-gates.js';
 import { backgroundDrains } from '../../agent/shared-state.js';
 
@@ -55,12 +58,14 @@ const WINDOW = 128_000;
 const db = (): Database.Database => mockDb.current!;
 const NOTE = (i: number): string => `Note ${i}: the crew counted bay ${i}, filed manifest M-${1000 + i} and logged seal S-${2000 + i}. `.repeat(70);
 
-/** `leaves` leaf notes over old rows, optionally one lone deep note, then a short live tail nothing pushes out. */
-function seed(leaves: number, lone?: { depth: number; chars: number }): void {
+/** `leaves` leaf notes over old rows (those in `bad` carry what fails the check once merged), optionally one lone deep
+ *  note, then a short live tail nothing pushes out. */
+function seed(leaves: number, lone?: { depth: number; chars: number }, bad: readonly number[] = []): void {
   db().prepare("INSERT INTO providers (id, name, type, auth_type, base_url) VALUES ('p-own', 'Own', 'openai-compatible', 'api_key', 'http://127.0.0.1:1/v1')").run();
   db().prepare(`INSERT INTO models (id, provider_id, api_model_id, name, context_window, max_output_tokens, capabilities, is_enabled, input_cost_per_m, output_cost_per_m)
     VALUES (?, 'p-own', 'own', 'Own', ?, 8192, '["text","tools"]', 1, 0.1, 0.4)`).run(OWN, WINDOW);
-  db().prepare("INSERT INTO providers (id, name, type, auth_type, base_url) VALUES ('p-local', 'Local', 'ollama', 'none', 'http://127.0.0.1:11434')").run();
+  db().prepare("INSERT INTO providers (id, name, type, auth_type, base_url, is_validated) VALUES ('p-local', 'Local', 'ollama', 'none', 'http://127.0.0.1:11434', 1)").run();
+  db().prepare("INSERT INTO models (id, provider_id, name, api_model_id, capabilities, is_enabled) VALUES ('model-decision', 'p-local', ?, ?, '[\"decision\"]', 1)").run(STANDARD_DECISION_MODEL.tag, STANDARD_DECISION_MODEL.tag);
   db().prepare(`INSERT INTO models (id, provider_id, api_model_id, name, context_window, max_output_tokens, capabilities, is_enabled, input_cost_per_m, output_cost_per_m)
     VALUES ('model-local-writer', 'p-local', ?, 'Writer', 32000, 4096, '["text"]', 1, 0, 0)`).run(STANDARD_WRITER_MODEL.tag);
   db().prepare("INSERT INTO agents (id, name, status, model_id, config) VALUES (?, 'Depot Keeper', 'idle', ?, '{}')").run(AGENT, OWN);
@@ -73,7 +78,8 @@ function seed(leaves: number, lone?: { depth: number; chars: number }): void {
     db().prepare('UPDATE summaries SET depth = ?, kind = ? WHERE id = ?').run(lone.depth, 'condensed', id);
   }
   for (let i = 0; i < leaves; i++) {
-    createLeafSummary(AGENT, NOTE(i), Math.ceil(NOTE(i).length / 4), [row('user', `ask ${i}`), row('assistant', `answer ${i}`)], day(i + 1), day(i + 1));
+    const text = bad.includes(i) ? `BAD ${NOTE(i)}` : NOTE(i);
+    createLeafSummary(AGENT, text, Math.ceil(text.length / 4), [row('user', `ask ${i}`), row('assistant', `answer ${i}`)], day(i + 1), day(i + 1));
   }
   for (let i = 0; i < 6; i++) row(i % 2 === 0 ? 'user' : 'assistant', `live line ${i}`);
   rebuildContextItems(AGENT);
@@ -104,12 +110,20 @@ const mergeJobs = (): Array<{ modelId: string; notes: string[] }> => writer.call
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['Date'] });
   vi.setSystemTime(Date.UTC(2026, 9, 20, 6, 0, 0));
-  writer.calls = []; writer.ratio = 0.9; logs.length = 0;
+  writer.calls = []; writer.ratio = 0.9; marks.fail = false; logs.length = 0;
+  vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: { body?: string }) => {
+    const { state } = JSON.parse(init?.body ?? '{}') as { state: { summary: string } };
+    return Response.json({ answers: { stated_current: { noul: state.summary.includes('PENDING') ? 0.91 : 0.05 } } });
+  }));
   mockDb.current = new Database(':memory:');
   runMigrations();
   __resetBrakesForTests(); __resetEstimateCacheForTests(); __resetSummaryWriterHealthForTests();
 });
-afterEach(() => { vi.useRealTimers(); mockDb.current?.close(); mockDb.current = null; });
+afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); mockDb.current?.close(); mockDb.current = null; });
+
+/** Top-level notes at `depth`, and the check outcomes recorded. */
+const topLevelAt = (depth: number): number => (db().prepare('SELECT COUNT(*) AS n FROM summaries WHERE agent_id = ? AND depth = ? AND id NOT IN (SELECT parent_id FROM summary_parents)').get(AGENT, depth) as { n: number }).n;
+const checksNotKept = (): number => (db().prepare("SELECT COUNT(*) AS n FROM summary_checks WHERE outcome = 'not_kept'").get() as { n: number }).n;
 
 describe('the memory tidy-up tries each note once', () => {
   it('merges that come back at 90% of their input: each note is offered once, to the own model only, and then never again', async () => {
@@ -136,5 +150,32 @@ describe('the memory tidy-up tries each note once', () => {
     expect(writer.calls, 'nothing is paid for it').toEqual([]);
     await checkAndCompact(AGENT, OWN, WINDOW, { force: true });
     expect(writer.calls, 'and even the forced pass dials nothing for it').toEqual([]);
+  });
+
+  it('a merge the summary check refuses is passed over: the other notes still merge, and a later run makes no call for it', async () => {
+    writer.ratio = 0.35;
+    seed(4, { depth: 3, chars: 36_000 }, [0]);
+    await checkAndCompact(AGENT, OWN, WINDOW, { force: true });
+    expect(checksNotKept(), 'non-vacuity: the check refused the pair holding the bad note').toBe(1);
+    expect(topLevelAt(1), 'the other pair merged').toBe(1);
+    expect(topLevelAt(0), 'the refused pair stays whole').toBe(2);
+    const paid = writer.calls.length;
+    await checkAndCompact(AGENT, OWN, WINDOW, { force: true });
+    expect(writer.calls.length, 'the refused pair is not dialled again').toBe(paid);
+  });
+
+  it('a writer that keeps 0.35 of its input compresses a backlog of twelve leaves', async () => {
+    writer.ratio = 0.35;
+    seed(12, { depth: 3, chars: 36_000 });
+    await checkAndCompact(AGENT, OWN, WINDOW, { force: true });
+    expect(topLevelAt(0), 'every leaf was merged').toBe(0);
+    expect(topLevelAt(1) + topLevelAt(2), 'into notes a level or more up').toBeGreaterThan(0);
+  });
+
+  it('when a refusal cannot be recorded, each pair is still dialled once and the run ends', async () => {
+    marks.fail = true;
+    seed(12, { depth: 3, chars: 36_000 });
+    await checkAndCompact(AGENT, OWN, WINDOW, { force: true });
+    expect(mergeJobs().length, 'six pairs, one job each').toBe(6);
   });
 });

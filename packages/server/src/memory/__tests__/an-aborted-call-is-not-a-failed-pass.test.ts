@@ -74,6 +74,7 @@ import { __resetEstimateCacheForTests } from '../assembled-estimate-cache.js';
 import { __resetBreakersForTests } from '../../providers/billing-breaker.js';
 import { __resetSummaryWriterHealthForTests } from '../writer.js';
 import { clearOn } from '../writer.js';
+import { heldSummaryTokens } from './helpers/held-summary-tokens.js';
 
 const AGENT = 'agent-t168-aborted';
 const PROVIDER = 'prov-t168';
@@ -124,10 +125,7 @@ function seedSummaries(count: number, tokensEach: number): void {
 /** A model that writes what it was asked for. */
 const writes = (c: ModelCall): { content: string } => ({ content: 's'.repeat((c.utilityTargetTokens ?? 500) * 4) });
 
-/** The raw tokens of the summaries in the agent's view items. */
-const held = (): number => (mockDb.current!.prepare(
-  "SELECT COALESCE(SUM(s.token_count), 0) AS t FROM summaries s JOIN context_items ci ON ci.item_id = s.id WHERE ci.agent_id = ? AND ci.item_type = 'summary'",
-).get(AGENT) as { t: number }).t;
+const held = (): number => heldSummaryTokens(mockDb.current!, AGENT);
 
 beforeEach(() => {
   const db = new Database(':memory:');

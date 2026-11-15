@@ -1,7 +1,7 @@
 // A writer that cannot hold a span waits for that span (its key is the rows' ids and contents), and is asked again
 // when the span changes: a merge marks each of its notes, a placeholder splits to its halves, a single row is kept
 // whole behind its pointer, and none is dialled again until a note or row changes, or the agent gets a writer that
-// has not refused it. Bounded dial counts with one writer: a pair 1; a batch of four 1; a four-row placeholder 1 + 2 + 4.
+// has not refused it. Bounded dial counts with one writer: a pair 1; four notes 2 (two pairs); a four-row placeholder 1 + 2 + 4.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
@@ -93,9 +93,17 @@ describe('t269 I1 — a merge no writer can write is dialled once, then left who
     expect(writer.dials).toBe(2);
   });
 
-  it('a batch of four: 1 dial, then none', async () => {
+  it('four notes: one dial per pair, then none', async () => {
     for (let i = 0; i < 4; i += 1) leaf(`UNWRITABLE note ${i}`);
     for (let i = 0; i < 4; i += 1) await condense();
+    expect(writer.dials).toBe(2);
+  });
+
+  it('a save that signals a model change re-offers nothing the same writer refused', async () => {
+    leaf('UNWRITABLE note one'); leaf('UNWRITABLE note two');
+    await condense();
+    clearOn({ kind: 'own-model-changed', agentId: AGENT });
+    await condense();
     expect(writer.dials).toBe(1);
   });
 });

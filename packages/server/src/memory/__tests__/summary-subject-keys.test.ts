@@ -78,4 +78,10 @@ describe('subjectBatches — the condensation batches', () => {
   it('a note queued for rebuild is left out of the last resort', () => {
     expect(subjectBatches([subj('a'), subj('b', 'legacy_mixed_rebuild')], 5)).toEqual([[{ subjectKey: 'a' }]]);
   });
+
+  it('tried notes still count for crossing: a conversation holding four notes, three tried, never crosses to a lone one', () => {
+    const rows = [...['a1', 'a2', 'a3', 'a4'].map((id) => ({ id, subjectKey: 'a' })), { id: 'b1', subjectKey: 'b' }];
+    const tried = new Set(['a1', 'a2', 'a3']);
+    expect(subjectBatches(rows, 2, (r) => !tried.has(r.id)).filter((b) => b.length > 1)).toEqual([]);
+  });
 });

@@ -139,6 +139,7 @@ import {
   providerBreaker, __resetBreakersForTests,
 } from '../../providers/billing-breaker.js';
 import { classifyProviderError } from '../../agent/provider-error.js';
+import { heldSummaryTokens } from './helpers/held-summary-tokens.js';
 
 const AGENT = 'agent-no-bottom';
 const PROVIDER = 'prov-under-test';
@@ -252,9 +253,7 @@ async function admitted(): Promise<number> {
 }
 
 /** The raw cost of the summaries the agent actually holds. */
-const held = (): number => (mockDb.current!.prepare(
-  "SELECT COALESCE(SUM(s.token_count), 0) AS t FROM summaries s JOIN context_items ci ON ci.item_id = s.id WHERE ci.agent_id = ? AND ci.item_type = 'summary'",
-).get(AGENT) as { t: number }).t;
+const held = (): number => heldSummaryTokens(mockDb.current!, AGENT);
 
 /** The depth of every summary in the DAG, deepest first. */
 function depthsWritten(): number[] {
@@ -330,16 +329,15 @@ describe('§1 a forced pass merges notes of one depth, level over level, while t
    * every turn, for ever. THE MUTANT: make a merge need four notes (`find((b) => b.length >= 4)`
    * in `merge-notes.ts`) and this clause goes RED on the "fits" row.
    */
-  it('THE BACKLOG SHAPE: three oversized summaries below the fanout floor now condense, and fit', async () => {
+  it('THE BACKLOG SHAPE: three oversized summaries below the fanout floor now condense: a pair merges, the third waits for a peer', async () => {
     seedSummaries(3, 1, 20_000);
-    const budget = await admitted();
-    expect(held(), 'non-vacuity: the fixture must really be over budget').toBeGreaterThan(budget);
+    const before = held();
+    expect(before, 'non-vacuity: the fixture must really be over budget').toBeGreaterThan(await admitted());
 
     const result = await checkAndCompact(AGENT, MODEL_64K, 65_536, { force: true });
 
-    expect(result.condensedCreated, 'three below the floor must produce one parent').toBeGreaterThan(0);
-    expect(held(), 'and the assembler must now admit every summary this agent holds')
-      .toBeLessThanOrEqual(await admitted());
+    expect(result.condensedCreated, 'three below the floor must produce a parent').toBeGreaterThan(0);
+    expect(held(), 'and what the agent holds shrinks').toBeLessThan(before);
     expect(calls.length, 'at the cost of exactly one model call').toBe(1);
     expect(calls[0].depth, 'written one level up from its parents').toBe(2);
   });

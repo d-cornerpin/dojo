@@ -7,8 +7,8 @@
 // reached depth 72 in about 18 hours, and at depth 9+ about 3% of the leaves' specific facts
 // survived.
 //
-// This file drives the REAL merge loop (`mergeUntriedNotes`) and the real DAG over 100 folds — one
-// new leaf per fold, each followed by the merge a leaf fold runs — with a
+// This file drives the REAL merge loop (`mergeUntriedNotes`) and the real DAG over 100 folds (one
+// new leaf per fold, each followed by the merge a leaf fold runs) with a
 // writer that keeps every fact it is shown as long as its target has room for it. Only the model
 // call is replaced.
 //

@@ -100,6 +100,7 @@ import { mergeUntriedNotes } from '../merge-notes.js';
 import { forcedCompactionOptions, __resetBrakesForTests } from '../compaction-brakes.js';
 import { __resetEstimateCacheForTests } from '../assembled-estimate-cache.js';
 import { __resetBreakersForTests } from '../../providers/billing-breaker.js';
+import { heldSummaryTokens } from './helpers/held-summary-tokens.js';
 
 const AGENT = 'agent-no-bottom';
 const PROVIDER = 'prov-under-test';
@@ -186,9 +187,7 @@ function seedSummaries(count: number, depth: number, tokensEach: number): void {
 }
 
 /** The raw cost of the summaries the agent actually holds. */
-const held = (): number => (mockDb.current!.prepare(
-  "SELECT COALESCE(SUM(s.token_count), 0) AS t FROM summaries s JOIN context_items ci ON ci.item_id = s.id WHERE ci.agent_id = ? AND ci.item_type = 'summary'",
-).get(AGENT) as { t: number }).t;
+const held = (): number => heldSummaryTokens(mockDb.current!, AGENT);
 
 beforeEach(() => {
   const db = new Database(':memory:');
@@ -260,9 +259,9 @@ describe('t140 round 6 — the forced pass is bounded by the turn\'s patience', 
     expect((opts as { maxChunksPerRun?: number }).maxChunksPerRun, 'no chunk cap on the forced pass').toBeUndefined();
   });
 
-  it('merging has no per-run call cap: sixty leaves at four per merge make fifteen merges at depth 1 in one run', async () => {
+  it('merging has no per-run call cap: sixty leaves in pairs make thirty merges at depth 1 in one run', async () => {
     seedSummaries(60, 0, 2_000);
     await mergeUntriedNotes(AGENT, MODEL_64K);
-    expect(calls.filter((c) => c.depth === 1).length, 'all fifteen of the first depth\'s merges').toBe(15);
+    expect(calls.filter((c) => c.depth === 1).length, 'all thirty of the first depth\'s merges').toBe(30);
   });
 });

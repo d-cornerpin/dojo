@@ -12,42 +12,45 @@ import { KEPT_WHOLE_KIND } from './kept-row-view.js';
 import { generateSummary, condensedSummaryInput, type SummaryResult } from './summarize.js';
 import { mergeTargetTokens } from './summary-target.js';
 import { modelCharsPerToken } from '../services/token-density.js';
-import { markWaiting, spanKeyOf, waiting } from './writer.js';
+import { markWaiting, spanKeyOf, waiting, writerPassedOver } from './writer.js';
 import { subjectBatches } from './summary-subject.js';
 import { summaryWriterUnavailable } from './compaction-brakes.js';
 
 const logger = createLogger('merge-notes');
 
-/** Notes per merge: a conversation's notes are cut oldest first into groups of this size. */
-const BATCH = 4;
+/** Notes per merge: a pair may keep about 0.4 of its input under the keep rule, which real merges reach. */
+const BATCH = 2;
 
 export type RefusedStage = 'summary_writer_unavailable' | 'summariser_refused' | 'summariser_threw';
 
-/** `stage` is set only when a run that merged nothing ended on a refusal that names no note. */
+/** `stage` is set only when a run that merged nothing met a refusal, or a writer that could not answer. */
 export interface MergeOutcome { created: number; tokensReclaimed: number; stage: RefusedStage | null; detail: string | null }
 
 const refusedBy = (writer: string, note: Summary): boolean => waiting(note.agentId, writer, spanKeyOf([note])) === 'cannot-hold';
 
-/** The shallowest group of two or more top-level notes of one depth that `writer` has not refused. */
-function nextBatch(agentId: string, writer: string): Summary[] | null {
+/** The shallowest group of two or more top-level notes of one depth not yet tried: neither refused by `writer` nor
+ *  in this run's `tried`, which bounds the run even if a mark could not be written. */
+function nextBatch(agentId: string, writer: string, tried: ReadonlySet<string>): Summary[] | null {
   const depths = getDb().prepare('SELECT DISTINCT depth FROM summaries WHERE agent_id = ? AND id NOT IN (SELECT parent_id FROM summary_parents) ORDER BY depth')
     .all(agentId) as Array<{ depth: number }>;
   for (const { depth } of depths) {
-    const peers = getLeafSummariesNotCondensed(agentId, depth)
-      .filter((s) => s.kind !== UNCONDENSED_KIND && s.kind !== KEPT_WHOLE_KIND && !refusedBy(writer, s));
-    const batch = subjectBatches(peers, BATCH).find((b) => b.length >= 2);
+    const peers = getLeafSummariesNotCondensed(agentId, depth).filter((s) => s.kind !== UNCONDENSED_KIND && s.kind !== KEPT_WHOLE_KIND);
+    const batch = subjectBatches(peers, BATCH, (s) => !tried.has(s.id) && !refusedBy(writer, s)).find((b) => b.length >= 2);
     if (batch) return batch;
   }
   return null;
 }
 
-/** Merge until no depth holds two untried notes. A run ends early on the owner's Stop, an abort, or a refusal that
- *  names no note (the pass outcome tells it; the next leaf fold tries again). */
+/** Merge until no depth holds two untried notes. A verdict on a batch (too long, failed its check) leaves its notes
+ *  tried and the run goes on; the run ends when the writer cannot answer, on the owner's Stop, or on an abort. */
 export async function mergeUntriedNotes(agentId: string, writer: string, abortSignal?: AbortSignal): Promise<MergeOutcome> {
   const out: MergeOutcome = { created: 0, tokensReclaimed: 0, stage: null, detail: null };
+  const tried = new Set<string>();
+  let refusal: string | null = null;   // a writer's refusal of a batch: told when the run merged nothing
   const ended = (stage: RefusedStage, detail: string): MergeOutcome => (out.created > 0 ? out : { ...out, stage, detail });
-  for (let batch = nextBatch(agentId, writer); batch && !abortSignal?.aborted; batch = nextBatch(agentId, writer)) {
+  for (let batch = nextBatch(agentId, writer, tried); batch && !abortSignal?.aborted; batch = nextBatch(agentId, writer, tried)) {
     if (summaryWriterUnavailable(agentId, writer)) return ended('summary_writer_unavailable', writer);
+    for (const s of batch) tried.add(s.id);
     const content = condensedSummaryInput(batch);
     const depth = batch[0].depth + 1;
     let summary: SummaryResult;
@@ -71,11 +74,12 @@ export async function mergeUntriedNotes(agentId: string, writer: string, abortSi
       return out;
     } else if (summary.tooBig && !summary.noRoom) {
       for (const s of batch) markWaiting(agentId, writer, spanKeyOf([s]), 'cannot-hold');
-    } else {
+    } else if (!summary.checkFailed) {   // the check's verdict is held by `summary-check.ts`; anything else is the writer's
       logger.warn('SUMMARY_REFUSED a merge was left unmerged', { depth, parentCount: batch.length, reason: summary.reason }, agentId);
-      return ended('summariser_refused', summary.reason);
+      refusal = summary.reason;
+      if (summary.noRoom || writerPassedOver(writer, agentId)) break;   // the writer cannot answer now
     }
     await new Promise<void>((resolve) => { setImmediate(resolve); });   // the reads are synchronous: the loop is served between merges
   }
-  return out;
+  return refusal === null ? out : ended('summariser_refused', refusal);
 }
