@@ -877,7 +877,7 @@ export const PrimaryAgentStep = ({ onReady }: { onReady?: (ready: boolean) => vo
       if (!res.ok) { setError(res.error ?? 'Failed to save the agent settings'); return; }
     }
     // Generate identity files (SOUL.md etc.)
-    const userNameResult = await api.getSetting('user_name');
+    const userNameResult = await api.getSetting('owner_name');
     const userName = userNameResult.ok ? userNameResult.data.value ?? '' : '';
     const identityResult = await api.generateIdentity({
       agentName: agentName.trim(),

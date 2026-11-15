@@ -22,7 +22,7 @@ export const YourProfileStep = ({ onReady }: { onReady?: (ready: boolean) => voi
     let cancelled = false;
     (async () => {
       const [nameRes, idRes] = await Promise.all([
-        api.getSetting('user_name'),
+        api.getSetting('owner_name'),
         api.getIdentity('USER.md'),
       ]);
       if (cancelled) return;
@@ -42,7 +42,7 @@ export const YourProfileStep = ({ onReady }: { onReady?: (ready: boolean) => voi
     setError(null);
     const calls: Array<() => Promise<{ ok: boolean; error?: string }>> = [];
     if (userName.trim()) {
-      calls.push(() => api.setSetting('user_name', userName.trim()), () => api.setSetting('owner_name', userName.trim()));
+      calls.push(() => api.setSetting('owner_name', userName.trim()));
     }
     if (aboutYou.trim()) calls.push(() => api.updateIdentity('USER.md', aboutYou.trim()));
     for (const call of calls) {

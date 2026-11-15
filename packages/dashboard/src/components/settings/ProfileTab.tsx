@@ -18,7 +18,7 @@ export const ProfileTab = () => {
   const [saveError, setSaveError] = useState<string | null>(null);
   // Both reads go through the shared load guard (lib/load-guard.ts): a failed read is never an empty
   // name or an empty profile, and nothing is offered to save on top of one.
-  const nameLoad = useGuardedLoad<string | null>('user_name', async (key) => {
+  const nameLoad = useGuardedLoad<string | null>('owner_name', async (key) => {
     const r = await api.getSetting(key);
     return r.ok ? { ok: true as const, data: r.data.value } : r;
   });
@@ -33,10 +33,10 @@ export const ProfileTab = () => {
   useEffect(() => { if (loadedProfile !== null) setUserProfile(loadedProfile); }, [profileLoad.settled]);
 
   const handleSaveName = async () => {
-    if (!nameLoad.canSave('user_name')) return;
+    if (!nameLoad.canSave('owner_name')) return;
     setSavingName(true);
     setSavedName(false);
-    const result = await api.setSetting('user_name', userName.trim());
+    const result = await api.setSetting('owner_name', userName.trim());
     if (result.ok) { setSavedName(true); setTimeout(() => setSavedName(false), 2000); }
     setSavingName(false);
   };

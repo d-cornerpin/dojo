@@ -82,7 +82,7 @@ describe('a failed read leaves no editor and no write', () => {
   });
 
   it('Profile: no About You editor, no Save', async () => {
-    fns.getSetting.mockResolvedValue(ok({ key: 'user_name', value: 'Sam' }));
+    fns.getSetting.mockResolvedValue(ok({ key: 'owner_name', value: 'Sam' }));
     fns.getIdentity.mockResolvedValue(FAIL);
     const { container } = render(<ProfileTab />);
     await screen.findByText('Retry');
@@ -93,7 +93,7 @@ describe('a failed read leaves no editor and no write', () => {
 
 describe('a good read saves on top of what was read', () => {
   it('Profile names the text it was built on', async () => {
-    fns.getSetting.mockResolvedValue(ok({ key: 'user_name', value: 'Sam' }));
+    fns.getSetting.mockResolvedValue(ok({ key: 'owner_name', value: 'Sam' }));
     fns.getIdentity.mockResolvedValue(ok({ content: 'REAL PROFILE', mailboxes: [] }));
     fns.updateIdentity.mockResolvedValue(ok({}));
     render(<ProfileTab />);
@@ -115,7 +115,7 @@ describe('a good read saves on top of what was read', () => {
 
 describe('a failed profile save keeps what the owner typed', () => {
   it('the typed profile stays, and the saved text loads only on request', async () => {
-    fns.getSetting.mockResolvedValue(ok({ key: 'user_name', value: 'Sam' }));
+    fns.getSetting.mockResolvedValue(ok({ key: 'owner_name', value: 'Sam' }));
     fns.getIdentity.mockResolvedValue(ok({ content: 'SAVED PROFILE', mailboxes: [] }));
     fns.updateIdentity.mockResolvedValue({ ok: false, error: 'This document changed since you loaded it, so it was not saved.' });
     render(<ProfileTab />);
