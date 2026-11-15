@@ -8,7 +8,6 @@ import type {
   EditProviderResponse,
   ProviderResponse,
   ProvidersListResponse,
-  ProviderModelsResponse,
   ModelsListResponse,
   IdentityFileResponse,
   GenerateIdentityRequest,
@@ -26,7 +25,6 @@ import type {
   InjectMemoryResponse,
   CompactionResponse,
   ProjectsListResponse,
-  ProjectDetailResponse,
   CreateProjectRequest,
   CreateProjectResponse,
   TasksListResponse,
@@ -34,7 +32,6 @@ import type {
   CreateTaskRequest,
   UpdateTaskRequest,
   CreateAgentRequest,
-  AgentMessagesResponse,
   GenerationParamSpec,
   VoiceOption,
   InterAgentMessage,
@@ -2003,10 +2000,9 @@ export interface HealerProposal {
   // captured for the stale-proposal sweep. Null for legacy rows.
   diagnostic_code?: string | null;
   // D-B step 3: engine-derived urgency + delivery surface, stamped at file time
-  // (approval-routing.ts). Empty/NULL on legacy rows. The dashboard re-presents the
-  // urgent+toast consent toast on load from these (App.tsx GlobalAlerts).
+  // (approval-routing.ts). Empty/NULL on legacy rows.
   urgency?: 'routine' | 'urgent' | null;
-  surface?: 'vitals' | 'toast' | 'imessage' | null;
+  surface?: 'vitals' | 'imessage' | null;
 }
 
 export interface HealerAction {

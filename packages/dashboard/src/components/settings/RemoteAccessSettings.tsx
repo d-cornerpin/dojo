@@ -196,7 +196,7 @@ export const RemoteAccessSettings = () => {
                   <div className="text-[10px] text-ui/25 space-y-0.5">
                     <p>5. In Cloudflare, click into your tunnel &rarr; <span className="font-mono">Published application routes</span> tab &rarr; <span className="font-mono">Add a route</span></p>
                     <p>6. Subdomain: <span className="font-mono">dojo</span> (or anything). Domain: pick from the dropdown (one of your Cloudflare-managed domains). Service type: <span className="font-mono">HTTP</span> (NOT HTTPS). URL: <span className="font-mono">localhost:3001</span></p>
-                    <p>7. Save. Your Dojo is now reachable at <span className="font-mono">https://subdomain.yourdomain.com</span>.</p>
+                    <p>7. Save. Your Dojo is now reachable at <span className="font-mono">https://subdomain.example.com</span>.</p>
                     <p>8. Paste that final URL below so the dashboard and the agent can show/use it.</p>
                   </div>
                   <input

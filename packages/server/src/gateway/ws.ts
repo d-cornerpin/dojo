@@ -216,8 +216,6 @@ export function broadcast(event: WsEvent): void {
   });
 }
 
-// ── Status ──
-
 // ── Connection Management ──
 
 export function verifyAndTrackClient(ws: WSContext, url: string): boolean {

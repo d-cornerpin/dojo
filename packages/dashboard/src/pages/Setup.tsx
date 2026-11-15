@@ -1603,7 +1603,7 @@ export const IMessageStep = ({ onReady }: { onReady?: (ready: boolean) => void }
               <label className="text-xs text-ui/40 block">Phone number or Apple ID</label>
               <input type="text" value={newAddress}
                 onChange={(e) => setNewAddress(e.target.value)}
-                placeholder="+15551234567 or user@icloud.com"
+                placeholder="+15551234567 or user@example.com"
                 className="glass-input w-full font-mono text-sm" />
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">

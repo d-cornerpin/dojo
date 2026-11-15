@@ -25,7 +25,7 @@ const logger = createLogger('healer-approval-routing');
 export type EngineSeverity = 'critical' | 'warning' | 'info';
 
 export type HealerApprovalUrgency = 'routine' | 'urgent';
-export type HealerApprovalSurface = 'vitals' | 'toast' | 'imessage';
+export type HealerApprovalSurface = 'vitals' | 'imessage';
 
 export interface HealerApprovalRouting {
   urgency: HealerApprovalUrgency;
@@ -34,7 +34,7 @@ export interface HealerApprovalRouting {
 
 /**
  * Pure surface selector (no model judgment, no I/O): 'imessage' only when engine severity is CRITICAL,
- * the owner is away and iMessage is enabled; everything else queues in Vitals. 'toast' is never produced.
+ * the owner is away and iMessage is enabled; everything else queues in Vitals.
  * Expiry keys on surface: 'imessage' uses the 60-minute gate clock (destructive-gate.ts), the rest 14 days.
  */
 export function selectHealerApprovalRouting(input: {

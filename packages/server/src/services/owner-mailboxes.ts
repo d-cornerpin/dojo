@@ -6,7 +6,7 @@ import { listMicrosoftAccounts } from '../microsoft/accounts.js';
 /** One bare email address (one @, a dot after it, no spaces, angle brackets, commas or semicolons). */
 const BARE_EMAIL = /^[^\s@<>,;]+@[^\s@<>,;]+\.[^\s@<>,;]+$/;
 /** The address, trimmed and lowercased, when the WHOLE string is a bare email address; else null. No fuzzy matching:
- *  'own-er@x.com' and 'owner@x.com' are two addresses, so a From address compares exactly. */
+ *  'own-er@example.com' and 'owner@example.com' are two addresses, so a From address compares exactly. */
 export function cleanEmailAddress(candidate: unknown): string | null {
   if (typeof candidate !== 'string') return null;
   const address = candidate.trim().toLowerCase();

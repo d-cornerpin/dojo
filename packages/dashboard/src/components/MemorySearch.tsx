@@ -172,7 +172,7 @@ export const MemorySearch = ({ agentId, onSelectResult }: MemorySearchProps) => 
               title={
                 embeddingsAvailable
                   ? 'Search by meaning using vector embeddings'
-                  : 'No embeddings available, run backfill first'
+                  : 'Not available yet: the Dojo is still building embeddings for your memories'
               }
               className={`px-2.5 py-1 text-xs rounded transition-colors ${
                 mode === 'semantic'

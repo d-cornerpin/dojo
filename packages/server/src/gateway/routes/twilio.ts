@@ -456,5 +456,3 @@ twilioRouter.delete('/safe-senders/voice/:address', (c) => {
   `).run('twilio_voice_approved_callers', JSON.stringify(next));
   return c.json({ ok: true, data: { totalSenders: next.length } });
 });
-
-// ── Recent calls ──

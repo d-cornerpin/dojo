@@ -16,9 +16,6 @@ import { workingExpr } from '../work/done/hold.js';
 
 const logger = createLogger('version-gap');
 
-/** The durable sink. Logs rotate; a report the owner can open must not. */
-export const VERSION_GAP_REPORT_KEY = 'version_gap_reconcile_last';
-
 // Single source of the orphaned-task predicate; healer/diagnostic.ts and healer/auto-fix.ts import it.
 
 /**
@@ -179,17 +176,6 @@ export async function runVersionGapReconcile(): Promise<ReconcileResult> {
   }
 
   const result: ReconcileResult = { ...scan, repaired, at: new Date().toISOString() };
-
-  try {
-    getDb().prepare(
-      `INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
-       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
-    ).run(VERSION_GAP_REPORT_KEY, JSON.stringify(result));
-  } catch (err) {
-    logger.warn('Could not record the version-gap reconcile report', {
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
 
   logger.info('Version-gap reconcile complete', {
     projectsExamined: result.projectsExamined, tasksExamined: result.tasksExamined,

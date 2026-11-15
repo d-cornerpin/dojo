@@ -71,7 +71,7 @@ export interface ChannelSafeSendersProps {
   channelLabel: string;
   /** Help text describing what the list does for this channel. */
   description: string;
-  /** Placeholder text for the address input (e.g., "name@gmail.com" or "user@org.com"). */
+  /** Placeholder text for the address input (e.g., "name@example.com"). */
   addressPlaceholder: string;
 }
 

@@ -16,8 +16,7 @@ import {
 
 const logger = createLogger('vault-bounded-reads');
 
-// How many of the newest vault entries one semantic search may SCORE (~0.0065 ms per entry, measured by
-// scripts/t98-measure-chunked-vault-scan.mjs); twice `FTS_CANDIDATE_ROWS`, far above a real vault.
+// How many of the newest vault entries one semantic search may SCORE (~0.0065 ms per entry, measured); twice `FTS_CANDIDATE_ROWS`, far above a real vault.
 export const VAULT_CANDIDATE_ROWS = 100_000;
 
 // Rowids per candidate chunk: scoring runs on the main thread, so this bounds each loop stall.

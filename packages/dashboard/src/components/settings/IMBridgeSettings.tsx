@@ -422,7 +422,7 @@ export const IMBridgeSettings = () => {
                   type="text"
                   value={newAddress}
                   onChange={(e) => setNewAddress(e.target.value)}
-                  placeholder="+15551234567 or user@icloud.com"
+                  placeholder="+15551234567 or user@example.com"
                   autoFocus
                   className="glass-input w-full font-mono text-sm"
                 />

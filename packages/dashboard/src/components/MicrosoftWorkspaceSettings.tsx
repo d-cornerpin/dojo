@@ -234,7 +234,7 @@ export const MicrosoftWorkspaceSettings = () => {
                 configKey="teams_approved_senders"
                 channelLabel="Teams"
                 description="Senders the agent is allowed to AUTO-reply to via Teams DMs. Teams DMs from anyone NOT on the list still show as notifications, but the agent won't auto-reply without your approval. Available only on Entra (work/school) accounts."
-                addressPlaceholder="name@org.com"
+                addressPlaceholder="name@example.com"
               />
             )}
           </>

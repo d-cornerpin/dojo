@@ -23,7 +23,7 @@ describe('the iMessage setup step', () => {
     const onReady = vi.fn();
     render(<IMessageStep onReady={onReady} />);
     fireEvent.click(screen.getAllByRole('button')[0]); // enable the bridge
-    fireEvent.change(await screen.findByPlaceholderText('+15551234567 or user@icloud.com'), { target: { value: '+15550001111' } });
+    fireEvent.change(await screen.findByPlaceholderText('+15551234567 or user@example.com'), { target: { value: '+15550001111' } });
     fireEvent.click(screen.getByRole('button', { name: 'Add sender' }));
     fireEvent.click(screen.getByRole('button', { name: /Save & Test iMessage/ }));
     await screen.findByText(/locked/);

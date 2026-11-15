@@ -12,7 +12,7 @@ let householdCache: string[] | null = null;
 function loadCache(): void {
   try {
     const db = getDb();
-    const rows = db.prepare("SELECT key, value FROM config WHERE key IN ('platform_name', 'owner_name', 'primary_agent_id', 'primary_agent_name', 'pm_agent_id', 'pm_agent_name', 'trainer_agent_id', 'trainer_agent_name', 'healer_agent_id', 'healer_agent_name', 'dreamer_agent_id', 'dreamer_agent_name', 'household_agent_ids', 'setup_completed')").all() as Array<{ key: string; value: string }>;
+    const rows = db.prepare("SELECT key, value FROM config WHERE key IN ('owner_name', 'primary_agent_id', 'primary_agent_name', 'pm_agent_id', 'pm_agent_name', 'trainer_agent_id', 'trainer_agent_name', 'healer_agent_id', 'healer_agent_name', 'dreamer_agent_id', 'dreamer_agent_name', 'household_agent_ids', 'setup_completed')").all() as Array<{ key: string; value: string }>;
     cache = {};
     for (const row of rows) {
       cache[row.key] = row.value;
@@ -92,12 +92,6 @@ export function setPlatformConfig(key: string, value: string): void {
     ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = datetime('now')
   `).run(key, value, value);
   clearPlatformConfigCache();
-}
-
-
-export function getAllPlatformConfig(): Record<string, string> {
-  if (!cacheLoaded) loadCache();
-  return { ...cache };
 }
 
 

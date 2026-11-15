@@ -34,7 +34,7 @@ export function parseAddressList(header: string | null | undefined): MailAddress
 }
 
 /** Where one of `ownAddresses` sits in the To/Cc pair, by EXACT equality of trimmed, lower-cased addresses (a look-alike
- *  such as `own-er@x.com` is not `owner@x.com`). To wins over Cc. */
+ *  such as `own-er@example.com` is not `owner@example.com`). To wins over Cc. */
 export function placeMailbox(
   ownAddresses: readonly string[],
   to: readonly MailAddress[],

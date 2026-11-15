@@ -151,7 +151,7 @@ export function addressesMatch(a: string, b: string): boolean {
   if (!na || !nb) return false;
   if (na === nb) return true;
   // Substring fallback only for "phone-ish" addresses (no @ on either side).
-  // Email matching is exact to avoid alice@x.com matching alice.smith@x.com.
+  // Email matching is exact to avoid alice@example.com matching alice.smith@example.com.
   if (na.includes('@') || nb.includes('@')) return false;
   return na.includes(nb) || nb.includes(na);
 }

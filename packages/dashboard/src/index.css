@@ -30,7 +30,7 @@
      * Tailwind uses: rgb(var(--cp-amber-ch) / <alpha-value>)
      * CSS rules use:  var(--cp-amber) which resolves to rgb(channels)
      *
-     * Theme authors: set the -ch variables, the named vars derive from them.
+     * The named vars derive from the -ch variables.
      */
 
     /* Background surfaces */
@@ -42,15 +42,11 @@
     --cp-sidebar: rgb(var(--cp-sidebar-ch));
 
     /* ── Foreground / UI accent over the page bg ──
-       This is the "ink" color that contrasts with the page background.
-       White (255 255 255) on dark themes, black (0 0 0) on light themes.
-       Consumed via Tailwind utilities text-ui/X, bg-ui/X, border-ui/X,
-       ring-ui/X — and via the rgb(var(--ui-on-base-ch) / X) channel
-       pattern in CSS rules. Override in a light theme to flip the entire
-       foreground/border/inset system in one line. */
-    /* v3 ships a single readable light look: sumi ink (dark), never white.
-       Every text/border/glass token derives from this, so the baked-in
-       default is correct with zero theme CSS loaded. */
+       This is the "ink" color that contrasts with the page background: sumi
+       ink (dark), never white. Consumed via Tailwind utilities text-ui/X,
+       bg-ui/X, border-ui/X, ring-ui/X — and via the
+       rgb(var(--ui-on-base-ch) / X) channel pattern in CSS rules. Every
+       text/border/glass token derives from this one value. */
     --ui-on-base-ch: 30 28 25;
 
     /* Accent palette */
@@ -103,11 +99,9 @@
     --overlay-dark: rgba(0, 0, 0, 0.88);
 
     /* ── Page background gradient ──
-       Champagne by default so the body never flashes the old dark gradient
-       before the active theme loads or during page transitions. This is the
-       :root base (used by the default theme, which loads no extra CSS), and it
-       matches the app shell (.dojo3-backdrop), which is champagne regardless of
-       theme. Non-default themes can still override --bg-gradient in their CSS. */
+       Champagne, so the body never flashes a dark gradient before the app
+       shell paints or during page transitions. It matches the app shell
+       (.dojo3-backdrop). */
     --bg-gradient: linear-gradient(135deg, #faf6ee 0%, #f0e6d2 25%, #f5ebd9 50%, #ede4d4 75%, #faf6ee 100%);
 
     /* ── Gradient blobs ── */
@@ -116,9 +110,8 @@
     --blob-3-color: #ec4899;
 
     /* ── Glass surfaces ──
-       Built from --ui-on-base-ch via the channel pattern, so a light theme
-       that flips --ui-on-base-ch to "0 0 0" automatically makes all glass
-       surfaces dark-on-light instead of light-on-dark. */
+       Built from --ui-on-base-ch via the channel pattern, so every glass
+       surface follows the ink color. */
     --glass-bg: rgb(var(--ui-on-base-ch) / 0.08);
     --glass-bg-hover: rgb(var(--ui-on-base-ch) / 0.12);
     --glass-border: rgb(var(--ui-on-base-ch) / 0.15);
@@ -251,11 +244,8 @@
      GLASS SIDEBAR — translucent, blobs visible through it
      ════════════════════════════════════════ */
 
-  /* Sidebar — translucent, page blobs visible through it. v2.5.x: was
-     hardcoded white-alpha; now uses the canonical --glass-input-bg /
-     --glass-border vars so a theme can override. The white-alpha values
-     themselves still assume a dark base — see "Light themes and
-     dark-alpha" in FENG-SHUI-THEME-SPEC.md for the path forward. */
+  /* Sidebar — translucent, page blobs visible through it. Uses the canonical
+     --glass-input-bg / --glass-input-border vars. */
   .glass-sidebar {
     background: var(--glass-input-bg);
     backdrop-filter: blur(30px);
@@ -265,7 +255,7 @@
   }
 
   /* Mobile top bar — translucent header on phones. Background tints with
-     the page bg, so it themes via the channel pattern. */
+     the page bg, via the channel pattern. */
   .glass-topbar {
     background: rgb(var(--cp-bg-ch) / 0.85);
     backdrop-filter: blur(16px);
@@ -310,10 +300,8 @@
     background: var(--glass-input-border);
   }
 
-  /* Modal / dropdown background — opaque enough to read text against, but
-     themed via the channel pattern so a new Feng Shui theme can change it.
-     Replaces the hardcoded `bg-[#1a1a2e]` literals that used to appear in
-     migration modals and vault dropdowns. */
+  /* Modal / dropdown background — opaque enough to read text against, built
+     via the channel pattern. */
   .glass-modal-bg {
     background: rgb(var(--cp-bg-secondary-ch) / 0.95);
     backdrop-filter: blur(24px);
@@ -353,10 +341,7 @@
     outline: none;
     cursor: pointer;
     appearance: none;
-    /* Chevron stroke is white-on-dark. SVG background-image URLs can't read
-       CSS vars, so themes that need a different chevron color should
-       override this `background-image` rule entirely in their theme.css.
-       (Light themes will need a black-stroke version of the SVG.) */
+    /* SVG background-image URLs can't read CSS vars, so the chevron stroke is a literal. */
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none'%3E%3Cpath d='M3 4.5L6 7.5L9 4.5' stroke='rgba(255,255,255,0.4)' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
     background-repeat: no-repeat;
     background-position: right 12px center;
@@ -933,10 +918,6 @@
   from { opacity: 0; transform: translateY(8px) scale(0.97); }
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
-@keyframes slideInRight {
-  from { opacity: 0; transform: translateX(20px); }
-  to { opacity: 1; transform: translateX(0); }
-}
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
@@ -988,9 +969,9 @@
    ════════════════════════════════════════ */
 
 .dojo3-stage {
-  /* light theme so native form popups (the <select> options list, autofill,
+  /* light color scheme so native form popups (the <select> options list, autofill,
      scrollbars) render light to match the cream stage instead of inheriting
-     the legacy :root { color-scheme: dark } and rendering as a dark menu */
+     the :root { color-scheme: dark } and rendering as a dark menu */
   color-scheme: light;
   --dojo3-orb-size: clamp(96px, 10vw, 140px);
   --dojo3-orb-top: clamp(26px, 4vh, 48px);
@@ -1850,10 +1831,9 @@
      clamp()/calc() would parse to NaN and park the orb at the top. */
   --dojo3-orb-top: 40px;
   --dojo3-orb-size: 104px;
-  /* Flip the channel that drives every Tailwind `text-ui/*`, `bg-ui/*`, and the
-     glass-* surfaces from the legacy dark-theme white to the dojo's dark ink, so
-     the wizard's existing step markup reads correctly on the cream stage (the
-     light-theme flip the token system was built for). */
+  /* Set the channel that drives every Tailwind `text-ui/*`, `bg-ui/*`, and the
+     glass-* surfaces to the dojo's dark ink, so the wizard's step markup reads
+     correctly on the cream stage. */
   --ui-on-base-ch: 61 50 38;
 }
 @media (max-width: 768px) {

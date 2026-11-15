@@ -3,8 +3,8 @@
 // An uncertain compare returns false: a possible duplicate reply, never a silent drop.
 import { getDb } from '../db/connection.js';
 
-// Strip formatting only for phone-like ids: hyphen-stripping emails made a-b@x.com and
-// ab@x.com compare equal, suppressing a reply that should have been sent.
+// Strip formatting only for phone-like ids: hyphen-stripping emails made a-b@example.com and
+// ab@example.com compare equal, suppressing a reply that should have been sent.
 export function normRecipientId(s: unknown): string {
   const raw = String(s ?? '').trim().toLowerCase();
   return /^[\d\s()+.-]+$/.test(raw) ? raw.replace(/[\s()+.-]/g, '') : raw;

@@ -380,18 +380,6 @@ describe('C6b the owner hears ONE plain line, through the agent', () => {
     await runVersionGapReconcile();
     expect(notices.length).toBe(0);
   });
-
-  it('the detail is recorded durably, where a surface can open it', async () => {
-    const { runVersionGapReconcile, VERSION_GAP_REPORT_KEY } = await import('../version-gap-reconcile.js');
-    const db = mockDb.current!;
-    seedProject(db, 'p-empty', []);
-    await runVersionGapReconcile();
-    const row = db.prepare('SELECT value FROM config WHERE key = ?').get(VERSION_GAP_REPORT_KEY) as { value: string } | undefined;
-    expect(row, 'logs rotate; the report is the sink').toBeDefined();
-    const parsed = JSON.parse(row!.value);
-    expect(parsed.projectsExamined).toBe(1);
-    expect(parsed.findings.length).toBe(1);
-  });
 });
 
 describe('C7 the healer and this pass do not hold two copies of one predicate', () => {
