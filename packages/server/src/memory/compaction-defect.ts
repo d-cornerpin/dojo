@@ -1,8 +1,8 @@
 // A compaction that ends over budget with nothing to show is told to two audiences. Whoever repairs the
 // platform gets one ERROR line per pass naming the refusing stage and its numbers. The owner gets a card ONLY
 // when the reason is theirs to fix (the summary writer model is down or unusable), once per outage; when the
-// provider breaker is open it already cards that outage, so this file stays quiet. Platform defects (nothing
-// left to condense, every summary at the floor, the run hit its bound) are logged, never carded.
+// provider breaker is open it already cards that outage, so this file stays quiet. Platform defects (a pass
+// that won nothing over budget) are logged, never carded.
 
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
@@ -27,7 +27,6 @@ export interface CompactionPassFacts {
   summaryTokens?: number;
   admittedSummaryTokens?: number;
   compactableRows?: number;
-  topLevelSummaries?: number;
   /** The summary-WRITER model, so a writer-caused failure can name and clear itself. */
   modelId?: string;
   /** No writer of the agent's order could run, so the span waits: still told, never braked. */
@@ -78,7 +77,7 @@ export function reportCompactionDefect(
     tokensBefore: facts?.tokensBefore ?? null, tokensReclaimed: result.tokensReclaimed,
     leafCreated: result.leafCreated, condensedCreated: result.condensedCreated,
     summaryTokens: facts?.summaryTokens ?? null, admittedSummaryTokens: facts?.admittedSummaryTokens ?? null,
-    compactableRows: facts?.compactableRows ?? null, topLevelSummaries: facts?.topLevelSummaries ?? null,
+    compactableRows: facts?.compactableRows ?? null,
     summaryWriterModelId: facts?.modelId ?? null, providerBreakerOpen: breaker?.reason ?? null,
     repairableByTheOwner: REPAIRABLE_BY_THE_OWNER.has(stage),
   }, agentId);

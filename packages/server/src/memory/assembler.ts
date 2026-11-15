@@ -540,7 +540,7 @@ function summariesCeilingFor(contentBudget: number): number {
 export interface ContextView {
   /** The content budget, the live conversation's room in it, the tools/output reserve, the system prompt. */
   budgetTokens: number; tailRoomTokens: number; reserveTokens: number; systemTokens: number;
-  /** Summaries admitted and standing, in their stored units (`condense-until-fits.ts`'s FITS). */
+  /** Summaries admitted and standing, in their stored units. */
   summaryTokens: number; summaryRawTokens: number; summaryCount: number;
   /** The live conversation before the token trim, and what the trim kept (the lane's grant). */
   tailTokens: number; tailKeptTokens: number; tailKeptRows: number;

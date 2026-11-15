@@ -115,7 +115,7 @@ import { classifyProviderError } from '../../agent/provider-error.js';
 import { replaceUncondensedPlaceholders } from '../out-of-view.js';
 import * as coldImport1 from '../out-of-view.js';
 import { createLeafSummary } from '../dag.js';
-import { condenseUntilFits } from '../condense-until-fits.js';
+import { mergeUntriedNotes } from '../merge-notes.js';
 import { getArchiveHighWaterMark } from '../../vault/archive.js';
 import { recordPermanentFailure } from '../../providers/billing-breaker.js';
 import * as coldImport2 from '../writer.js';
@@ -366,7 +366,7 @@ describe('t140 round 3 — the brake and a busy lock', () => {
 });
 
 describe('t140 round 3 — condensation never merges a placeholder', () => {
-  it('a condensation pass under pressure merges the real summaries and leaves every placeholder where its replacement can find it', async () => {
+  it('a merge pass merges the real summaries and leaves every placeholder where its replacement can find it', async () => {
     writers.mode = { [OWN]: 'empty', [CHEAP]: 'empty', [NEXT]: 'empty' };
     seedACut();
     await door();
@@ -375,11 +375,7 @@ describe('t140 round 3 — condensation never merges a placeholder', () => {
     __resetSummaryWriterHealthForTests(); mockDb.current!.prepare("DELETE FROM healer_state WHERE scope LIKE 'writer_wait.%'").run();
     for (let i = 0; i < 3; i++) createLeafSummary(AGENT, `Real summary ${i}: the crew counted the depot.`, 40, [], '2026-01-01T00:00:00.000Z', '2026-01-01T00:01:00.000Z');
     compaction.rebuildContextItems(AGENT);
-    await condenseUntilFits({
-      agentId: AGENT, modelId: CHEAP, minFanout: 2, targetTokens: 500,
-      measure: async () => ({ total: 999_999, summaryTokens: 0 }),   // never fits: condense all it may
-      rebuild: () => compaction.rebuildContextItems(AGENT),
-    });
+    await mergeUntriedNotes(AGENT, CHEAP);
     const merged = (sql: string) => (db().prepare(sql).get(AGENT) as { n: number }).n;
     expect(merged("SELECT COUNT(*) AS n FROM summaries s WHERE s.agent_id = ? AND s.content LIKE 'Real summary%' AND s.id IN (SELECT parent_id FROM summary_parents)"),
       'precondition: the pass did condense the real summaries').toBeGreaterThan(0);

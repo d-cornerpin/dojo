@@ -1,7 +1,7 @@
 // A writer that cannot hold a span waits for that span (its key is the rows' ids and contents), and is asked again
-// when the span changes: a pair is dialled once, a batch splits to its halves, a single row is kept whole behind its
-// pointer, and none is dialled again until a note or row changes, or the agent gets a writer that has not refused it.
-// Bounded dial counts with one writer: a pair 1; a batch of four 1 + 2; a four-row placeholder 1 + 2 + 4.
+// when the span changes: a merge marks each of its notes, a placeholder splits to its halves, a single row is kept
+// whole behind its pointer, and none is dialled again until a note or row changes, or the agent gets a writer that
+// has not refused it. Bounded dial counts with one writer: a pair 1; a batch of four 1; a four-row placeholder 1 + 2 + 4.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
@@ -39,13 +39,11 @@ import { writeUncondensedPlaceholders, replaceUncondensedPlaceholders } from '..
 import { replacePlaceholdersInBackground } from '../out-of-view.js';
 import { runMigrations } from '../../db/migrations.js';
 import { createLeafSummary, updateSummaryContent } from '../dag.js';
-import { condenseUntilFits } from '../condense-until-fits.js';
-import { rebuildContextItems } from '../compaction.js';
+import { mergeUntriedNotes } from '../merge-notes.js';
 import { STANDARD_WRITER_MODEL } from '../../services/local-standard.js';
 import { insertMessage } from '../message-store.js';
 import { findToolResult } from '../kept-results.js';
-import { __resetSummaryWriterHealthForTests, markWaiting, clearOn, providerOf } from '../writer.js';
-import { condensableSummaries } from '../condense-until-fits.js';
+import { __resetSummaryWriterHealthForTests, markWaiting, clearOn, providerOf, pickWriter } from '../writer.js';
 
 const AGENT = 'agent-t269-unwritable';
 const db = (): Database.Database => mockDb.current!;
@@ -71,10 +69,8 @@ function leaf(text: string): string {
   const at = new Date(ms).toISOString();
   return createLeafSummary(AGENT, text, Math.ceil(text.length / 4), [`m-${n}`], at, at).id;
 }
-const condense = () => condenseUntilFits({
-  agentId: AGENT, modelId: 'm-w', minFanout: 4,
-  measure: async () => ({ total: 1_000_000, summaryTokens: 0 }), rebuild: () => rebuildContextItems(AGENT),
-});
+/** A merge run with the writer a compaction pass would pick; none runs when no writer can. */
+const condense = async () => { const w = pickWriter(AGENT); return w ? mergeUntriedNotes(AGENT, w) : null; };
 
 describe('t269 I1 — a merge no writer can write is dialled once, then left whole', () => {
   it('a pair: 1 dial, then no dial and no refusal on every later pass', async () => {
@@ -82,22 +78,25 @@ describe('t269 I1 — a merge no writer can write is dialled once, then left who
     const outs = [];
     for (let i = 0; i < 5; i += 1) outs.push(await condense());
     expect(writer.dials).toBe(1);
-    expect(outs.map((o) => o.refusedStage)).toEqual([null, null, null, null, null]);
+    expect(outs.map((o) => o?.stage)).toEqual([null, null, null, null, null]);
   });
 
-  it('…until a note of the pair changes: then it is tried again', async () => {
+  it('…until a note of the pair changes: then it is tried again with its next untried peer', async () => {
     const a = leaf('UNWRITABLE note one'); leaf('UNWRITABLE note two');
     await condense(); await condense();
     expect(writer.dials).toBe(1);
     updateSummaryContent(a, 'note one, edited by the owner', 8);
     await condense();
+    expect(writer.dials, 'its refused partner is not offered again').toBe(1);
+    leaf('note three');
+    await condense();
     expect(writer.dials).toBe(2);
   });
 
-  it('a batch of four: 1 + 2 halves = 3 dials, then none', async () => {
+  it('a batch of four: 1 dial, then none', async () => {
     for (let i = 0; i < 4; i += 1) leaf(`UNWRITABLE note ${i}`);
     for (let i = 0; i < 4; i += 1) await condense();
-    expect(writer.dials).toBe(3);
+    expect(writer.dials).toBe(1);
   });
 });
 
@@ -191,20 +190,11 @@ describe('t269 fix round 2: the mark is the writers\' verdict, and a change of w
     expect(parents(), 'tried by the writer that was out, and merged').toBe(1);
   });
 
-  it('every candidate writer cut it: marked, and no writer is dialled again', async () => {
+  it('the own model cut it: marked, not handed to the small writer, and not dialled again', async () => {
     smallWriter();   // the own model, then the Dojo's small writer
     leaf('UNWRITABLE note one'); leaf('UNWRITABLE note two');
     for (let i = 0; i < 4; i += 1) await condense();
-    expect(writer.dials, 'each of the two candidates once').toBe(2);
-  });
-});
-
-describe('t269 fix round 2 — a span no writer is left for is not counted as mergeable (N2)', () => {
-  it('a marked pair: condensableSummaries is 0, so the condense-only pass returns before any activity or brake', async () => {
-    leaf('UNWRITABLE note one'); leaf('UNWRITABLE note two');
-    expect(condensableSummaries(AGENT, { modelId: 'm-w', minFanout: 4 })).toBe(2);
-    await condense();
-    expect(condensableSummaries(AGENT, { modelId: 'm-w', minFanout: 4 })).toBe(0);
+    expect(writer.dials, 'the own model once').toBe(1);
   });
 });
 

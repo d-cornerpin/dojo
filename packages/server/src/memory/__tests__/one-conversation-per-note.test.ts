@@ -9,7 +9,7 @@
 // current, OR-TRACKER-1), and rendered the note with no conversation on it.
 //
 // THE DOORS: a migrated DB; the real compaction entry (`checkAndCompact` with the leaving span the
-// gate computes), the real condenser (`condenseUntilFits`), the real assembler, the real nightly job
+// gate computes), the real merge loop (`mergeUntriedNotes`), the real assembler, the real nightly job
 // (`runSummaryRebuildBatch`). Only the model is scripted: it records what it was sent.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
@@ -62,7 +62,7 @@ vi.mock('../../agent/model.js', () => ({
 import { runMigrations } from '../../db/migrations.js';
 import { insertMessage } from '../message-store.js';
 import { checkAndCompact, rebuildContextItems } from '../compaction.js';
-import { condenseUntilFits } from '../condense-until-fits.js';
+import { mergeUntriedNotes } from '../merge-notes.js';
 import { createLeafSummary } from '../dag.js';
 import { assembleContext } from '../assembler.js';
 import { renderInstant } from '../message-stamp.js';
@@ -220,12 +220,7 @@ describe('t144 — a condensed note never crosses conversations', () => {
         createLeafSummary(AGENT, `Leaf of ${conv}: seals logged.`, 600, half.map((r) => r.id), new Date(half[0].at).toISOString(), new Date(half[half.length - 1].at).toISOString());
       }
     }
-    let measured = 0;
-    await condenseUntilFits({
-      agentId: AGENT, modelId: WRITER, minFanout: 4, targetTokens: 1000,
-      measure: async () => ({ total: 10_000, summaryTokens: measured++ === 0 ? 0 : 1e9 }),
-      rebuild: () => rebuildContextItems(AGENT),
-    });
+    await mergeUntriedNotes(AGENT, WRITER);
     const parents = db().prepare("SELECT id FROM summaries WHERE agent_id = ? AND depth = 1").all(AGENT) as Array<{ id: string }>;
     expect(parents.length).toBe(2);
     for (const p of parents) {

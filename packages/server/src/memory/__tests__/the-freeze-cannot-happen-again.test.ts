@@ -67,7 +67,6 @@ import {
 // `compactionFailureReason` (a stage to repair, not a state to live in), and
 // `incompressibleCardText` has no successor — a no-yield pass shows NO card at all.
 import { compactionFailureReason, compactionFailingCardText } from '../compaction-defect.js';
-import { condensableSummaries } from '../condense-until-fits.js';
 import {
   cachedAssembledEstimate, cachedToolPayloadTokens,
   __resetEstimateCacheForTests, type AssembledEstimate,
@@ -409,12 +408,13 @@ describe('§2 the forced path has a brake and NO terminal state', () => {
     const { __resetEstimateCacheForTests: resetEst } = await import('../assembled-estimate-cache.js');
     resetEst();
     seedBox({ messages: 40, summaryTokens: 86_000 });
-    expect(condensableSummaries(AGENT), '43 top-level summaries can always merge').toBeGreaterThan(1);
+    const peers = (mockDb.current!.prepare('SELECT COUNT(*) AS n FROM summaries WHERE agent_id = ? AND depth = 0 AND id NOT IN (SELECT parent_id FROM summary_parents)').get(AGENT) as { n: number }).n;
+    expect(peers, '43 top-level notes of one depth: a merge pass has peers to merge (compaction-has-no-bottom §1 drives it)').toBeGreaterThan(1);
 
     // A pass that won nothing while over budget is a defect named by the STAGE that refused…
     expect(notePassOutcome(AGENT, true, { leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 },
-      { assembledTokens: 114_000, budgetTokens: 50_000, stage: 'bounded_without_progress' })).toBeTruthy();
-    expect(compactionFailureReason(AGENT)).toBe('bounded_without_progress');
+      { assembledTokens: 114_000, budgetTokens: 50_000, stage: 'summariser_refused' })).toBeTruthy();
+    expect(compactionFailureReason(AGENT)).toBe('summariser_refused');
 
     // …and a pass that WON clears it, whatever the summaries say — the counterexample, pinned.
     __resetBrakesForTests();

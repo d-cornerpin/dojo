@@ -74,8 +74,8 @@ export async function writeWhole(a: WholeArgs): Promise<SummaryResult> {
   const firstTokens = tok(first.text);
   const firstDropped = dropped(first.text);
   if (firstTokens <= allowed && firstDropped.length === 0) return { ok: true, text: first.text, tokenCount: estimateTokens(first.text) };
-  // A MERGE that came out too long is `tooBig` like a cut one: callers halve the batch and record the refusal
-  // (`writer.ts`) so the same group is not dialled again. A leaf longer than its input stays a plain refusal.
+  // A MERGE that came out too long is `tooBig` like a cut one: its notes are marked refused (`merge-notes.ts`), so
+  // none is offered to that writer again. A leaf longer than its input stays a plain refusal.
   const tooLong = (): SummaryResult => ({ ok: false, reason: merge ? 'the summary came out longer than it may be kept' : 'the summary came out longer than its input', ...(merge ? { tooBig: true as const } : {}) });
   const keepFirst = (why: string): SummaryResult => {
     if (keepable(first.text)) return { ok: true, text: first.text, tokenCount: estimateTokens(first.text) };

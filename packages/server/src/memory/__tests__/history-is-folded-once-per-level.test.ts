@@ -7,8 +7,8 @@
 // reached depth 72 in about 18 hours, and at depth 9+ about 3% of the leaves' specific facts
 // survived.
 //
-// This file drives the REAL condenser (`condenseUntilFits`) and the real DAG over 100 folds — one
-// new leaf per fold, every fold under pressure (the view never admits all the notes) — with a
+// This file drives the REAL merge loop (`mergeUntriedNotes`) and the real DAG over 100 folds — one
+// new leaf per fold, each followed by the merge a leaf fold runs — with a
 // writer that keeps every fact it is shown as long as its target has room for it. Only the model
 // call is replaced.
 //
@@ -49,7 +49,9 @@ const passes = new Map<string, number>();
 const writer = vi.hoisted(() => ({
   /** 'greedy': the adversary of fix round 1 — it always writes as much as may be kept (1.5 × its target). */
   mode: 'faithful' as 'faithful' | 'greedy',
+  calls: 0,
   write: async (p: { depth: number; targetTokens: number; content: string }) => {
+    writer.calls += 1;
     if (writer.mode === 'greedy') {
       // Every fact it is shown (newest first, as many as fit), padded to the most it may write.
       const room = Math.ceil(p.targetTokens * 1.5) * 4;
@@ -76,9 +78,8 @@ vi.mock('../summarize.js', async (importOriginal) => ({ ...(await importOriginal
 
 import { runMigrations } from '../../db/migrations.js';
 import { createLeafSummary } from '../dag.js';
-import { condenseUntilFits } from '../condense-until-fits.js';
+import { mergeUntriedNotes } from '../merge-notes.js';
 import { condensedSummaryInput } from '../summarize.js';
-import { rebuildContextItems } from '../compaction.js';
 
 const AGENT = 'agent-t269-fold';
 const MODEL = 'm-t269-writer';
@@ -120,17 +121,13 @@ function topLevel(): Array<{ depth: number; content: string }> {
 async function runFolds(folds = FOLDS, factsPerLeaf = FACTS_PER_LEAF): Promise<void> {
   for (let n = 0; n < folds; n += 1) {
     foldOneLeaf(n, factsPerLeaf);
-    await condenseUntilFits({
-      agentId: AGENT, modelId: MODEL, minFanout: 4,
-      // Under pressure on every fold: the view admits less than the agent holds.
-      measure: async () => ({ total: 1_000_000, summaryTokens: 0 }),
-      rebuild: () => rebuildContextItems(AGENT),
-    });
+    await mergeUntriedNotes(AGENT, MODEL);
   }
 }
 
 beforeEach(() => {
   writer.mode = 'faithful';
+  writer.calls = 0;
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
   mockDb.current = db;
@@ -187,32 +184,27 @@ describe('t269 cause 1 — condensation is hierarchical: each note is merged int
     expect(topTokens(), 'after 50 folds').toBeLessThanOrEqual(bound());
     for (let n = 50; n < FOLDS; n += 1) {
       foldOneLeaf(n, 200);
-      await condenseUntilFits({ agentId: AGENT, modelId: MODEL, minFanout: 4, measure: async () => ({ total: 1_000_000, summaryTokens: 0 }), rebuild: () => rebuildContextItems(AGENT) });
+      await mergeUntriedNotes(AGENT, MODEL);
     }
     expect(topTokens(), 'after 100 folds').toBeLessThanOrEqual(bound());
   });
 
   it('a lone note is never re-summarised into a smaller copy of itself', async () => {
     foldOneLeaf(0);
-    const out = await condenseUntilFits({
-      agentId: AGENT, modelId: MODEL, minFanout: 4,
-      measure: async () => ({ total: 1_000_000, summaryTokens: 0 }),
-      rebuild: () => rebuildContextItems(AGENT),
-    });
-    expect(out.modelCalls, 'no writer call for a lone note').toBe(0);
-    expect(out.refusedStage, 'and nothing to repair: it leaves the view whole when the view has no room').toBeNull();
+    const out = await mergeUntriedNotes(AGENT, MODEL);
+    expect(writer.calls, 'no writer call for a lone note').toBe(0);
+    expect(out.stage, 'and nothing to repair: it leaves the view whole when the view has no room').toBeNull();
     expect(topLevel().map((s) => s.depth)).toEqual([0]);
   });
 
   it('notes of different depths are not merged into each other', async () => {
     // Two leaves merge into one depth-1 note; a third leaf beside it stays a leaf.
     foldOneLeaf(0); foldOneLeaf(1);
-    await condenseUntilFits({ agentId: AGENT, modelId: MODEL, minFanout: 4,
-      measure: async () => ({ total: 1_000_000, summaryTokens: 0 }), rebuild: () => rebuildContextItems(AGENT) });
+    await mergeUntriedNotes(AGENT, MODEL);
     foldOneLeaf(2);
-    const out = await condenseUntilFits({ agentId: AGENT, modelId: MODEL, minFanout: 4,
-      measure: async () => ({ total: 1_000_000, summaryTokens: 0 }), rebuild: () => rebuildContextItems(AGENT) });
-    expect(out.modelCalls).toBe(0);
+    const before = writer.calls;
+    await mergeUntriedNotes(AGENT, MODEL);
+    expect(writer.calls).toBe(before);
     expect(topLevel().map((s) => s.depth).sort()).toEqual([0, 1]);
   });
 });

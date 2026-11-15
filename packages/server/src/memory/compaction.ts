@@ -2,7 +2,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { MIN_COMPACTABLE_ROWS, compactionDoor, compactionIsBraked, notePassOutcome, progressed,
   summaryWriterUnavailable } from './compaction-brakes.js';
-import { condenseUntilFits, condensableSummaries, rawContextSummaryTokens, type CondensationOutcome } from './condense-until-fits.js';
+import { mergeUntriedNotes, type MergeOutcome } from './merge-notes.js';
 import { cachedAssembledEstimate } from './assembled-estimate-cache.js';
 export { forcedCompactionOptions } from './compaction-brakes.js';   // the emergency path's bounds, published where its callers already look
 import { createLogger } from '../logger.js';
@@ -47,8 +47,7 @@ export function isNonConversationForSummary(content: string | null | undefined):
 export const NO_CONVERSATION_PLACEHOLDER = '(system/inter-agent activity, no user conversation in this span)';
 
 // ── THE GAUGE: what the next model call will actually be sent ──
-// The assembler's own dry run (`measureView`) is the one measure that the condense trigger, the pressure pass
-// and condense-until-fits read.
+// The assembler's own dry run (`measureView`) is the one measure that the condense trigger and the pressure pass read.
 
 /** Where the newest group starts: what the trim keeps whatever happens (a tool result with its call). */
 function newestGroupSeq(agentId: string): number {
@@ -77,7 +76,7 @@ export async function estimateAssembledTokens(
   const { measureView } = await import('./assembler.js');
   // A window that cannot hold the system prompt admits nothing: an empty view (see `window-starvation-card.ts`).
   const view = await measureView(agentId, model, { contextWindow, turnContext: opts?.turnContext }).catch((err: unknown) => {
-    if (err instanceof SystemPromptTooLargeError) return { ...EMPTY_VIEW, summaryRawTokens: rawContextSummaryTokens(agentId), protectedFromSeq: newestGroupSeq(agentId) };
+    if (err instanceof SystemPromptTooLargeError) return { ...EMPTY_VIEW, protectedFromSeq: newestGroupSeq(agentId) };
     throw err;
   });
   return {
@@ -146,8 +145,6 @@ export function scrubTechniqueContentForSummary(messageContent: string): string 
 
 const DEFAULTS = {
   leafChunkTokens: LEAF_CHUNK_TOKENS,
-  // The fanout is the batch SIZE, not a floor: `condense-until-fits.ts` condenses 2, 3 or even 1.
-  condensedMinFanout: 4,
 };
 
 export function getLeafChunkTokens(): number {
@@ -297,9 +294,8 @@ async function runCheckAndCompact(
   const totalTokens = assembled.total;
   const budget = view.budgetTokens;
   const force = options?.force ?? false;
-  // THE TRIGGERS: forced (an overflow door or the owner's compact-now), or rows leaving the view. A STARVED window
-  // (it cannot hold the system prompt) admits no summary whatever condensation does, so it never condenses.
-  const starved = view.budgetTokens === 0;
+  // THE TRIGGERS: forced (an overflow door or the owner's compact-now), or rows leaving the view. Notes are merged
+  // right after a fold that wrote a leaf, and in a forced pass, while the view leaves a summary out (`mergeIfItCanHelp`).
   const leaving = force ? null : options?.leaving !== undefined ? options.leaving : leavingFromView(view);
   const outsideProtected = (): Message[] => {
     const compacted = getCompactedMessageIds(agentId);
@@ -317,21 +313,20 @@ async function runCheckAndCompact(
 
   if (!force && leaving) {
     const folded = await leavingViewPass(agentId, modelId, contextWindow, leaving, options);
-    if (leaving.cause === 'out-of-view' || compactionIsBraked(agentId, false)) return folded;
-    const condensed = await condenseOnlyPass(agentId, modelId, turnModelId, contextWindow, budget, false, 0, options);
-    return { ...folded, condensedCreated: condensed.condensedCreated, tokensReclaimed: condensed.tokensReclaimed };
+    if (leaving.cause === 'out-of-view' || folded.leafCreated === 0) return folded;
+    const merged = await mergePass(agentId, modelId, contextWindow, turnModelId, false, 0, options);
+    return { ...folded, condensedCreated: merged.condensedCreated, tokensReclaimed: merged.tokensReclaimed };
   }
 
   if (force) {
     const guardUncompactedCount = uncompactedOutsideFloor;
     // Minimum-yield floor: after a low-yield run, back off for a while (`compaction-brakes.ts`).
     if (compactionIsBraked(agentId, force)) return NO_COMPACTION;
-    // Nothing left at the leaf is the case for condensation: the pass below runs no archive and no leaf
-    // chunking, and a pass that reclaims nothing arms the backoff through `notePassOutcome`.
+    // Nothing left at the leaf: the pass below only merges notes, with no archive and no leaf chunking.
     if (guardUncompactedCount < MIN_COMPACTABLE_ROWS) {
-      if (options?.untilItFits) return foldOldestProtectedGroup({ agentId, protectedFromSeq: view.protectedFromSeq, condensed: await condenseOnlyPass(agentId, modelId, turnModelId, contextWindow, budget, force, guardUncompactedCount, options),
+      if (options?.untilItFits) return foldOldestProtectedGroup({ agentId, protectedFromSeq: view.protectedFromSeq, condensed: await mergePass(agentId, modelId, contextWindow, turnModelId, force, guardUncompactedCount, options),
         fold: async (throughSeq) => (await leavingViewPass(agentId, modelId, contextWindow, { cause: 'out-of-view', throughSeq, rowsLeaving: 0 }, options)).leafCreated });   // never a dead end
-      return condenseOnlyPass(agentId, modelId, turnModelId, contextWindow, budget, force, guardUncompactedCount, options);
+      return mergePass(agentId, modelId, contextWindow, turnModelId, force, guardUncompactedCount, options);
     }
 
     logger.info('Running full reactive compaction', {
@@ -368,22 +363,25 @@ async function runCheckAndCompact(
       (writer, left) => runLeafCompaction(agentId, writer, contextWindow,
         { abortSignal: options?.abortSignal, left, throughSeq: view.protectedFromSeq - 1, floorRows: 1 }), options?.abortSignal));
     const leafCreated = leaf.leafCreated;
-    modelId = leaf.writer;   // the writer that wrote (or the last one tried) writes the condensation too
-    const condensation = starved ? null : await condenseUntilFits(condenseArgs(agentId, modelId, turnModelId, contextWindow, options?.abortSignal));
-    const condensedCreated = condensation?.condensedCreated ?? 0;
-    rebuildContextItems(agentId);
+    modelId = leaf.writer;   // the writer that wrote (or the last one tried) writes the merges too
+    const merged = await mergeIfItCanHelp(agentId, modelId, contextWindow, turnModelId, options?.abortSignal);
+    const condensedCreated = merged?.created ?? 0;
     // The prefix has just been rewritten: the one instant retiring reasoning costs no cache reuse.
     if (leafCreated > 0) { ageOutReplayedReasoning(agentId); stubOldToolResultsAtBoundary(agentId); }
 
-    const tokensAfter = demand((await measured(agentId, contextWindow, turnModelId)).view);
+    const after = (await measured(agentId, contextWindow, turnModelId)).view;
+    const tokensAfter = demand(after);
     const tokensReclaimed = tokensBefore - tokensAfter;
 
     const result = { leafCreated, condensedCreated, tokensReclaimed: Math.max(tokensReclaimed, 0) };
 
-    // The stage the condenser named travels with the numbers, so a pass that reclaimed nothing says which refused.
+    // The stage the merge named travels with the numbers, so a pass that reclaimed nothing says which refused.
     const waiting = spanWaitsForAWriter(agentId);   // with no writer able to run, the pass is a wait, never a brake
     const lowYield = result.tokensReclaimed < 2000 && result.leafCreated <= 1;
-    if (!isStopFenced(agentId)) notePassOutcome(agentId, Boolean(force), result, { ...passFacts(condensation, budget, guardUncompactedCount, agentId, modelId), assembledTokens: tokensAfter, tokensBefore, waiting, lowYield }, options?.abortSignal);
+    if (!isStopFenced(agentId)) notePassOutcome(agentId, Boolean(force), result, {
+      stage: merged?.stage ?? null, detail: merged?.detail ?? null, budgetTokens: budget, compactableRows: guardUncompactedCount, modelId,
+      summaryTokens: after.summaryRawTokens, admittedSummaryTokens: after.summaryTokens, assembledTokens: tokensAfter, tokensBefore, waiting, lowYield,
+    }, options?.abortSignal);
     broadcast({
       type: 'memory:compaction',
       agentId,
@@ -410,73 +408,43 @@ async function runCheckAndCompact(
   return { leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 };
 }
 
-// ── The recursion's call-site helpers ──
-// The policy lives in `memory/condense-until-fits.ts`; it takes the single estimate and `rebuildContextItems`
-// as arguments, so there is never a second estimator.
-
 /** THE single estimate, memoised on the facts that move it (`assembled-estimate-cache.ts`). */
 async function measured(agentId: string, contextWindow: number, turnModelId: string): Promise<Awaited<ReturnType<typeof estimateAssembledTokens>>> {
   return await cachedAssembledEstimate(agentId, contextWindow, turnModelId,
     () => estimateAssembledTokens(agentId, contextWindow, turnModelId)) as Awaited<ReturnType<typeof estimateAssembledTokens>>;
 }
 
-function condenseArgs(
-  agentId: string, modelId: string, turnModelId: string, contextWindow: number,
-  abortSignal?: AbortSignal,
-): Parameters<typeof condenseUntilFits>[0] {
-  return {
-    agentId, modelId,
-    minFanout: DEFAULTS.condensedMinFanout,
-    abortSignal,
-    measure: () => measured(agentId, contextWindow, turnModelId),
-    rebuild: () => rebuildContextItems(agentId),
-  };
+/** Merges the untried notes while that can help: only when the view, rebuilt over any fresh leaf, leaves a summary
+ *  out. A starved window admits no summary whatever a merge does. Null when no merge ran. */
+async function mergeIfItCanHelp(
+  agentId: string, writer: string, contextWindow: number, turnModelId: string, abortSignal?: AbortSignal,
+): Promise<MergeOutcome | null> {
+  rebuildContextItems(agentId);
+  const { view } = await measured(agentId, contextWindow, turnModelId);
+  if (view.budgetTokens === 0 || view.summaryRawTokens <= view.summaryTokens) return null;
+  const merged = await mergeUntriedNotes(agentId, writer, abortSignal);
+  rebuildContextItems(agentId);
+  return merged;
 }
 
-function passFacts(
-  condensation: CondensationOutcome | null, budgetTokens: number,
-  compactableRows: number, agentId: string, modelId: string,
-): Parameters<typeof notePassOutcome>[3] {
-  return {
-    stage: condensation?.refusedStage ?? null, detail: condensation?.refusedDetail ?? null,
-    assembledTokens: condensation?.assembledTotalAfter, budgetTokens,
-    summaryTokens: condensation?.summaryTokensAfter, admittedSummaryTokens: condensation?.admittedSummaryTokens,
-    compactableRows, topLevelSummaries: condensableSummaries(agentId, { modelId, minFanout: DEFAULTS.condensedMinFanout }), modelId,
-  };
-}
-
-/** The leaf-less pass: over budget with nothing raw left to fold, so condensation only
- *  (no archive, no leaf chunking). */
-async function condenseOnlyPass(
-  agentId: string, modelId: string, turnModelId: string, contextWindow: number,
-  budget: number, force: boolean, compactableRows: number, options?: CheckAndCompactOptions,
+/** The merge step on its own (no archive, no leaf chunking). Only a pass that merged, or ended on a refusal that
+ *  names no note, is an outcome: a merge refused for length is remembered per note (`merge-notes.ts`). */
+async function mergePass(
+  agentId: string, writer: string, contextWindow: number, turnModelId: string,
+  force: boolean, compactableRows: number, options?: CheckAndCompactOptions,
 ): Promise<CompactionResult> {
-  const args = condenseArgs(agentId, modelId, turnModelId, contextWindow, options?.abortSignal);
-  // Asked before any summary call, so a tail-bloated agent with nothing to fold costs no writer work.
-  const est = await args.measure() as Awaited<ReturnType<typeof estimateAssembledTokens>>;
-  if (rawContextSummaryTokens(agentId) <= est.summaryTokens || est.view.budgetTokens === 0) {
-    logger.info('Compaction skipped: nothing outside the protected recent part, and every summary already fits', {
-      assembledTokens: est.total, budgetTokens: budget, uncompactedOutsideTail: compactableRows,
-    }, agentId);
-    return NO_COMPACTION;
+  const merged = await withCompactionActivity(agentId, () => mergeIfItCanHelp(agentId, writer, contextWindow, turnModelId, options?.abortSignal));
+  if (!merged) return NO_COMPACTION;
+  const result = { leafCreated: 0, condensedCreated: merged.created, tokensReclaimed: merged.tokensReclaimed };
+  if ((merged.created > 0 || merged.stage) && !isStopFenced(agentId)) {
+    const { total, view } = await measured(agentId, contextWindow, turnModelId);
+    notePassOutcome(agentId, force, result, {
+      stage: merged.stage, detail: merged.detail, assembledTokens: total, budgetTokens: view.budgetTokens,
+      summaryTokens: view.summaryRawTokens, admittedSummaryTokens: view.summaryTokens, compactableRows, modelId: writer, waiting: spanWaitsForAWriter(agentId),
+    }, options?.abortSignal);
   }
-  // Only notes of one depth merge, where a writer is left for them; else the oldest leave the view whole.
-  if (condensableSummaries(agentId, { modelId, minFanout: DEFAULTS.condensedMinFanout }) < 2) return NO_COMPACTION;
-  const condensation = await withCompactionActivity(agentId, () => condenseUntilFits(args));
-  // Reclaimed is counted in summary tokens, not the gate's total (which reports the capped figure and cannot move):
-  // what these tokens buy is oldest summaries not being dropped.
-  const result = {
-    leafCreated: 0, condensedCreated: condensation.condensedCreated,
-    tokensReclaimed: Math.max(condensation.summaryTokensBefore - condensation.summaryTokensAfter, 0),
-  };
-  if (!isStopFenced(agentId)) notePassOutcome(agentId, force, result, { ...passFacts(condensation, budget, compactableRows, agentId, modelId), waiting: spanWaitsForAWriter(agentId) }, options?.abortSignal);
   broadcast({ type: 'memory:compaction', agentId, ...result });
-  logger.info('Condensation-only compaction complete', {
-    ...result, levels: condensation.levels, modelCalls: condensation.modelCalls,
-    deepestDepth: condensation.deepestDepth, fits: condensation.fits,
-    summaryTokens: condensation.summaryTokensAfter, admittedSummaryTokens: condensation.admittedSummaryTokens,
-    assembledTokens: condensation.assembledTotalAfter, budgetTokens: budget,
-  }, agentId);
+  logger.info('Merge pass complete', { ...result, stage: merged.stage }, agentId);
   return result;
 }
 

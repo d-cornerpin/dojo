@@ -112,6 +112,23 @@ beforeEach(() => {
 afterEach(() => { vi.useRealTimers(); mockDb.current?.close(); mockDb.current = null; });
 
 describe('the memory tidy-up tries each note once', () => {
+  it('merges that come back at 90% of their input: each note is offered once, to the own model only, and then never again', async () => {
+    seed(12, { depth: 3, chars: 36_000 });
+    await checkAndCompact(AGENT, OWN, WINDOW, { force: true });
+    const jobs = mergeJobs();
+    expect(jobs.length, 'non-vacuity: the writer was asked to merge').toBeGreaterThan(0);
+    const offers = new Map<string, number>();
+    for (const j of jobs) for (const n of j.notes) offers.set(n, (offers.get(n) ?? 0) + 1);
+    expect([...offers.values()].filter((n) => n > 1), 'no note is offered twice at its depth').toEqual([]);
+    expect(jobs.filter((j) => j.modelId !== OWN), 'a refused merge is not handed to the local writer').toEqual([]);
+    expect(writer.calls.length, 'each job is an answer and at most one rewrite').toBeLessThanOrEqual(2 * jobs.length);
+
+    const paid = writer.calls.length;
+    await idleStretch();
+    await checkAndCompact(AGENT, OWN, WINDOW, { force: true });
+    expect(writer.calls.length, 'nothing new left the view: the writer is never called again').toBe(paid);
+  });
+
   it('a lone oversized old note at its own depth starts no run and costs nothing', async () => {
     seed(1, { depth: 4, chars: 40_000 });
     await idleStretch();

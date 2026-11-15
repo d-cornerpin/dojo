@@ -45,7 +45,7 @@ import { clearOn } from '../writer.js';
 import { rebuildContextItems } from '../compaction.js';
 import { pickWriter } from '../writer.js';
 import { createLeafSummary } from '../dag.js';
-import { condenseUntilFits } from '../condense-until-fits.js';
+import { mergeUntriedNotes } from '../merge-notes.js';
 import { __resetBrakesForTests, compactionIsBraked } from '../compaction-brakes.js';
 import { __resetBreakersForTests } from '../../providers/billing-breaker.js';
 import { backgroundDrains } from '../../agent/shared-state.js';
@@ -129,8 +129,7 @@ describe('N-B: on a 16 GB box the small writer never fits a summary; it is refus
   it('a condensation batch on the small writer with no room: refused, and no other model is asked', async () => {
     markWaiting(AGENT, OWN, '', 'not-answering');   // the agent's own model is not answering: the small writer is next
     const content = 'Earlier summary: the crew counted the depot. '.repeat(200);
-    // t269: condensation hands a batch to each writer of the order itself (`condense-until-fits.ts`); the small
-    // writer is the order's last, so its `noRoom` answer is the batch's (the pair walk this called is deleted).
+    // A merge goes to the pass's own writer only (`merge-notes.ts`): here the small writer, so its `noRoom` is the merge's.
     const r = await generateSummary({ content, depth: 1, targetTokens: 2_000, agentId: AGENT, modelId: WRITER });
     expect(r).toMatchObject({ ok: false, noRoom: true });
     expect(writers.calls).toEqual([]);
@@ -195,14 +194,7 @@ describe('N-C: the free memory counts what loaded models really hold', () => {
   });
 });
 
-// ════════════════════════════════════════════════════════════════════════════════════════
-// v3.5 field fix 3, owner box evidence (owner-box-imessage-2026-11-04.txt): COMPACTION_DEFECT stage `summariser_refused`,
-// detail "the memory free now cannot hold a summary on the Dojo's writer", on a box whose resolved writer was a CLOUD
-// model (DeepSeek, the old Settings pick). The memory gate (`writer.ts`) never judged the cloud model: it
-// returns null for every model but the Dojo's own (local) writer. The pair walk (`condense-until-fits.ts`) asked the
-// cloud writer first (it answered "cannot hold this input"), then the small writer (no room), and the defect line kept
-// only the LAST writer's reason, so the record blamed the local writer's memory for a cloud writer's verdict.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// The memory gate (`writer.ts`) judges only the Dojo's own local writer; a cloud own model is never refused for local memory.
 describe('a cloud own-model writer is never refused for local memory', () => {
   it('CONTROL: on a 16 GB box with no room for the small writer, the agent\'s own cloud model is dialled and writes', async () => {
     writers.unreachable.clear();
@@ -211,7 +203,7 @@ describe('a cloud own-model writer is never refused for local memory', () => {
     expect(writers.calls).toEqual([OWN]);
   });
 
-  it('the pair walk\'s refusal names the own model\'s verdict, not only the small writer\'s memory', async () => {
+  it('a pair the own model cannot hold: not dialled, not handed to the small writer, and not offered again', async () => {
     writers.unreachable.clear();
     seed(2);
     const ids = (db().prepare('SELECT id FROM messages WHERE agent_id = ? ORDER BY seq').all(AGENT) as Array<{ id: string }>).map((r) => r.id);
@@ -219,9 +211,10 @@ describe('a cloud own-model writer is never refused for local memory', () => {
     createLeafSummary(AGENT, big, 30_000, [ids[0]], '2026-07-01 00:00:00', '2026-07-01 00:00:01');
     createLeafSummary(AGENT, big, 30_000, [ids[1]], '2026-07-01 00:00:02', '2026-07-01 00:00:03');
     rebuildContextItems(AGENT);
-    const out = await condenseUntilFits({ agentId: AGENT, modelId: OWN, minFanout: 2, measure: async () => ({ total: 200_000, summaryTokens: 0 }), rebuild: () => rebuildContextItems(AGENT) });
-    expect(out.condensedCreated).toBe(0);
+    const out = await mergeUntriedNotes(AGENT, OWN);
+    expect(out.created).toBe(0);
+    expect(out.stage, 'remembered per note, not reported as the writer refusing').toBeNull();
     expect(writers.calls, 'neither writer was dialled').toEqual([]);
-    expect(out.refusedDetail ?? '', 'the own model is named with its own verdict').toContain(`${OWN}: the summary writer cannot hold this input`);
+    expect(await mergeUntriedNotes(AGENT, OWN), 'and the pair is not offered again').toEqual({ created: 0, tokensReclaimed: 0, stage: null, detail: null });
   });
 });

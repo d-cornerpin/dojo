@@ -3,7 +3,7 @@
 //
 // The witness (a user's box, one agent): a summariser call was cut by an abort. `writeSummary`
 // logged "SUMMARY_REFUSED summarizer produced no usable text" with the reason "summarizer call
-// was aborted before it finished", `condense-until-fits` named the stage `summariser_refused`,
+// was aborted before it finished", the condenser named the stage `summariser_refused`,
 // and `notePassOutcome` armed the force-binding brake for fifteen minutes. From then on every
 // emergency pass — forced ones included — was skipped ("backing off after a pass that reclaimed
 // nothing"), while the agent's context grew past its budget. The brake is evidence that the
@@ -11,7 +11,7 @@
 // about the writer.
 //
 // What is real here: the migrated in-memory DB, `checkAndCompact` and its whole trigger, the
-// real condenser, `summarize.ts` (`writeSummary`, `unusableOutput`, `settleSummaryCall`), the
+// real merge loop, `summarize.ts` (`writeSummary`, `unusableOutput`, `settleSummaryCall`), the
 // real brake and the real defect report. ONLY the model call is scripted, through the seam
 // `summarize.ts` itself dials (`callModel`) — and the abort is made the way the world makes it:
 // the pass's own signal is aborted while the call is in flight, and the call returns empty.
@@ -70,7 +70,6 @@ import { runMigrations } from '../../db/migrations.js';
 import { checkAndCompact, rebuildContextItems } from '../compaction.js';
 import { compactionIsBraked, __resetBrakesForTests } from '../compaction-brakes.js';
 import { compactionFailureReason, compactionFailingCardText } from '../compaction-defect.js';
-import { rawContextSummaryTokens } from '../condense-until-fits.js';
 import { __resetEstimateCacheForTests } from '../assembled-estimate-cache.js';
 import { __resetBreakersForTests } from '../../providers/billing-breaker.js';
 import { __resetSummaryWriterHealthForTests } from '../writer.js';
@@ -125,6 +124,11 @@ function seedSummaries(count: number, tokensEach: number): void {
 /** A model that writes what it was asked for. */
 const writes = (c: ModelCall): { content: string } => ({ content: 's'.repeat((c.utilityTargetTokens ?? 500) * 4) });
 
+/** The raw tokens of the summaries in the agent's view items. */
+const held = (): number => (mockDb.current!.prepare(
+  "SELECT COALESCE(SUM(s.token_count), 0) AS t FROM summaries s JOIN context_items ci ON ci.item_id = s.id WHERE ci.agent_id = ? AND ci.item_type = 'summary'",
+).get(AGENT) as { t: number }).t;
+
 beforeEach(() => {
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
@@ -152,12 +156,12 @@ describe('t168 (i) an aborted summariser call leaves no brake, and the next forc
   it('the turn cancels the pass mid-call: no brake, no defect, no card, no stage on file', async () => {
     const ctl = new AbortController();
     script = () => { ctl.abort(); return { content: '' }; };   // cut in flight, returns nothing
-    const before = rawContextSummaryTokens(AGENT);
+    const before = held();
 
     await checkAndCompact(AGENT, MODEL, WINDOW, { force: true, abortSignal: ctl.signal });
 
     expect(modelCalls, 'non-vacuity: the summariser really was dialled and really was cut').toBeGreaterThan(0);
-    expect(rawContextSummaryTokens(AGENT), 'and nothing was reclaimed').toBe(before);
+    expect(held(), 'and nothing was reclaimed').toBe(before);
     expect(compactionIsBraked(AGENT, true), 'a cancelled call is not evidence the writer cannot write').toBe(false);
     expect(compactionIsBraked(AGENT, false)).toBe(false);
     expect(compactionFailureReason(AGENT), 'no failing stage is recorded').toBeNull();
@@ -170,7 +174,7 @@ describe('t168 (i) an aborted summariser call leaves no brake, and the next forc
     script = () => { ctl.abort(); return { content: '' }; };
     await checkAndCompact(AGENT, MODEL, WINDOW, { force: true, abortSignal: ctl.signal });
     const callsAfterAbort = modelCalls;
-    const before = rawContextSummaryTokens(AGENT);
+    const before = held();
 
     script = writes;
     // t268 round 5 (edited): the cut call left its writer not answering, and nothing comes after it in the order, so a
@@ -181,7 +185,7 @@ describe('t168 (i) an aborted summariser call leaves no brake, and the next forc
 
     expect(brakeSkips(), 'the pass was not skipped by a brake').toEqual([]);
     expect(modelCalls, 'it dialled the writer again').toBeGreaterThan(callsAfterAbort);
-    expect(rawContextSummaryTokens(AGENT), 'and condensed').toBeLessThan(before);
+    expect(held(), 'and condensed').toBeLessThan(before);
   });
 
   it('a FULL reactive pass (raw rows to fold, not only summaries) cancelled mid-call arms neither brake', async () => {

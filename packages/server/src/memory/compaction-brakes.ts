@@ -21,7 +21,6 @@ export const LOW_YIELD_BACKOFF_MS = 15 * 60_000;
 export const MIN_COMPACTABLE_ROWS = 6;
 /** A pass reclaiming less than this counts as reclaiming nothing. */
 export const FORCED_YIELD_FLOOR_TOKENS = 1_000;
-const FLOOR_STAGES: ReadonlySet<string> = new Set(['nothing_left_to_condense']);
 
 interface PassResult { leafCreated: number; condensedCreated: number; tokensReclaimed: number }
 /** What the door answers: the pass's counts, and when the lock was busy, which way that was settled. */
@@ -118,7 +117,7 @@ export function notePassOutcome(
   }
   if (cancelled) return null;
   if (!facts?.waiting) armBackoff(agentId, force && gainedNothing, stage === 'summary_writer_unavailable' ? facts?.modelId ?? null : null);
-  if ((!stage || FLOOR_STAGES.has(stage)) && !overBudget) return null;
+  if (!stage && !overBudget) return null;
   return reportCompactionDefect(agentId, stage ?? 'no_yield', facts, result);
 }
 

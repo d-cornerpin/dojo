@@ -8,9 +8,9 @@
 // patience, or the transport's standing one) — the same bound the out-of-view fold has had since
 // round 5. Inside it the pass folds as much as it can; what is left continues next turn, as before.
 // A writer that is answering is never cut by a clock of ours; one that is not is ended by its own
-// transport's patience. Condensation stays finite by its level count (a backstop, kept).
+// transport's patience. Merging stays finite by its notes: each is offered once at its depth.
 //
-// THE DOORS: `forcedCompactionOptions` → the real `checkAndCompact`; the real `condenseUntilFits`.
+// THE DOORS: `forcedCompactionOptions` → the real `checkAndCompact`; the real `mergeUntriedNotes`.
 // The fixture is `compaction-has-no-bottom.test.ts`'s (t91), copied. Fake clock where time matters.
 //
 // ── t91's fixture header, kept for the harness's context ──
@@ -95,10 +95,10 @@ vi.mock('../summarize.js', async (importOriginal) => {
 });
 
 import { runMigrations } from '../../db/migrations.js';
-import { checkAndCompact, estimateAssembledTokens, rebuildContextItems } from '../compaction.js';
-import { condenseUntilFits, rawContextSummaryTokens } from '../condense-until-fits.js';
+import { checkAndCompact, rebuildContextItems } from '../compaction.js';
+import { mergeUntriedNotes } from '../merge-notes.js';
 import { forcedCompactionOptions, __resetBrakesForTests } from '../compaction-brakes.js';
-import { cachedAssembledEstimate, __resetEstimateCacheForTests } from '../assembled-estimate-cache.js';
+import { __resetEstimateCacheForTests } from '../assembled-estimate-cache.js';
 import { __resetBreakersForTests } from '../../providers/billing-breaker.js';
 
 const AGENT = 'agent-no-bottom';
@@ -186,7 +186,9 @@ function seedSummaries(count: number, depth: number, tokensEach: number): void {
 }
 
 /** The raw cost of the summaries the agent actually holds. */
-const held = (): number => rawContextSummaryTokens(AGENT);
+const held = (): number => (mockDb.current!.prepare(
+  "SELECT COALESCE(SUM(s.token_count), 0) AS t FROM summaries s JOIN context_items ci ON ci.item_id = s.id WHERE ci.agent_id = ? AND ci.item_type = 'summary'",
+).get(AGENT) as { t: number }).t;
 
 beforeEach(() => {
   const db = new Database(':memory:');
@@ -258,16 +260,9 @@ describe('t140 round 6 — the forced pass is bounded by the turn\'s patience', 
     expect((opts as { maxChunksPerRun?: number }).maxChunksPerRun, 'no chunk cap on the forced pass').toBeUndefined();
   });
 
-  it('condensation has no per-run call cap: a level that needs fifteen calls makes fifteen', async () => {
+  it('merging has no per-run call cap: sixty leaves at four per merge make fifteen merges at depth 1 in one run', async () => {
     seedSummaries(60, 0, 2_000);
-    const callsAtEachMeasure: number[] = [];   // `measure` runs once before the climb and once after each level
-    await condenseUntilFits({
-      agentId: AGENT, modelId: MODEL_64K, minFanout: 4, targetTokens: 2_000,
-      measure: () => { callsAtEachMeasure.push(calls.length); return cachedAssembledEstimate(AGENT, 65_536, MODEL_64K, () => estimateAssembledTokens(AGENT, 65_536, MODEL_64K)); },
-      rebuild: () => rebuildContextItems(AGENT),
-    });
-    // Sixty leaves at a fanout of four: the FIRST level is fifteen batches. A cap stopping it at twelve
-    // would leave three batches for the next level, so the count when the first level ends tells.
-    expect(callsAtEachMeasure[1], 'the first level made all fifteen of its calls').toBe(15);
+    await mergeUntriedNotes(AGENT, MODEL_64K);
+    expect(calls.filter((c) => c.depth === 1).length, 'all fifteen of the first depth\'s merges').toBe(15);
   });
 });
