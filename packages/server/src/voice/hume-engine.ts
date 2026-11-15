@@ -162,9 +162,9 @@ export class HumeStreamSession {
   /** The socket 'close' event fired, so close() can resolve as soon as Hume hangs up. */
   private sawSocketClose = false;
 
-  /** Decoded PCM, wrapped as WAV. voice-ws.ts forwards these straight to the browser. */
-  onWav: ((wav: Buffer) => void) | null = null;
-  /** Fatal socket error: the caller should fall back to the local engine. */
+  /** Decoded PCM, wrapped as WAV, with whether it ends a pushed utterance. voice-ws.ts forwards these to the browser. */
+  onWav: ((wav: Buffer, isLastChunk: boolean) => void) | null = null;
+  /** Fatal failure (socket error, provider error frame, hang-up before close): the caller should fall back to the local engine. */
   onError: ((err: Error) => void) | null = null;
   onClose: (() => void) | null = null;
 
@@ -259,13 +259,17 @@ export class HumeStreamSession {
       // tail audio for several hundred ms, and dropping those frames cuts off the last clause.
       // The SDK stops calling this once the socket is actually closed.
       const m = args[0] as SdkMessage;
+      if ((m as { type?: string }).type === 'error') {
+        this.onError?.(new Error(String((m as { message?: unknown }).message ?? 'Hume error frame')));
+        return;
+      }
       if (!isAudioMessage(m)) return;
       this.generationId = m.generationId;
       try {
         const f32 = decodeHumePcm(m.audio);
         if (f32.length === 0) return;
         const wav = pcmFloatToWav(f32, HUME_SAMPLE_RATE);
-        this.onWav?.(wav);
+        this.onWav?.(wav, m.isLastChunk);
         if (m.isLastChunk) this.sawLastChunk = true;
       } catch (err) {
         logger.warn('Hume audio decode failed', { error: err instanceof Error ? err.message : String(err) });
@@ -279,6 +283,7 @@ export class HumeStreamSession {
     });
     this.socket.on('close', () => {
       this.sawSocketClose = true;
+      if (!this.closed) this.onError?.(new Error('Hume hung up mid-stream'));
       this.onClose?.();
     });
   }
