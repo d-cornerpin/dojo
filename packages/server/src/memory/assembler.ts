@@ -214,7 +214,7 @@ function applyIntegrityPass(messages: LoopMsg[], agentId: string, markerText = E
 
   // Self-heal: drop orphaned tool blocks (loud warning if over half). `repairToolPairing` is the array-level
   // repair, the same one the provider boundary runs.
-  const preSanitizeCount = merged.length;
+  const prePairingCount = merged.length;
   const pairingRepair = repairToolPairing(merged as unknown as PairedMessage[]);
   if (pairingRepair.strippedToolUse > 0 || pairingRepair.strippedToolResult > 0) {
     logger.warn('Sanitized orphaned tool blocks from context', {
@@ -223,9 +223,9 @@ function applyIntegrityPass(messages: LoopMsg[], agentId: string, markerText = E
       droppedMessages: pairingRepair.droppedMessages,
     }, agentId);
   }
-  if (merged.length < preSanitizeCount / 2 && preSanitizeCount > 4) {
+  if (merged.length < prePairingCount / 2 && prePairingCount > 4) {
     logger.error('tool-pairing repair dropped over half the context, possible bug', {
-      before: preSanitizeCount,
+      before: prePairingCount,
       after: merged.length,
       agentId,
     }, agentId);
@@ -745,10 +745,10 @@ function demotedNarrationByRow(rows: readonly Message[]): Map<string, string> {
 /** Convert stored rows into the emitted messages. The lane's cost is the row cost (the unit
  *  `budgetFreshTail` spends); the stamp/parse difference rides inside the post-budget reserve. */
 function tailRender(payload: TailPayload): LaneRender<TailPayload> {
-  let rows = hoistToolResults(payload.rows);
-  const narration = demotedNarrationByRow(rows);
-  rows = stubOldToolResults(rows, payload.agentId);
-  const labels = labelRows(payload.agentId, rows);
+  const { rows: paired, silent } = hoistToolResults(payload.rows);
+  const narration = demotedNarrationByRow(paired);
+  const rows = stubOldToolResults(paired, payload.agentId);
+  const labels = labelRows(payload.agentId, rows.filter((m) => !silent.has(m.id)));
   const messages: LaneMessage[] = [];
   // The served owner message(s), verbatim, ahead of the live rows they precede and only when not otherwise in
   // view, so exactly once. It wears the standard row label plus a pronoun-free phrase.
@@ -765,7 +765,7 @@ function tailRender(payload: TailPayload): LaneRender<TailPayload> {
     if (msg.role === 'tool') {
       messages.push({ role: 'user', content: parsed as Anthropic.ContentBlockParam[] });
     } else if (msg.role === 'user' || msg.role === 'assistant') {
-      const said = msg.role === 'assistant' ? narration.get(msg.id) : undefined;   // the demoted working note (demotedNarrationByRow)
+      const said = msg.role === 'assistant' && !silent.has(msg.id) ? narration.get(msg.id) : undefined;   // the demoted working note (demotedNarrationByRow)
       const own = said !== undefined && Array.isArray(parsed) ? [{ type: 'text' as const, text: said }, ...parsed] : parsed;
       const out: LaneMessage = { role: msg.role, content: labelContent(own, labels.get(msg.id) ?? null) };
       // A row whose reasoning was retired at a compaction boundary renders without it for ever after: the stamp is
@@ -1709,23 +1709,25 @@ function budgetFreshTail(
 }
 
 /** Move each tool-result row to just after the row that made its calls, so a pair renders back to back and
- *  the rows that sat between follow it. It deletes nothing: `repairToolPairing` strips a block nothing pairs. */
-function hoistToolResults(rows: Message[]): Message[] {
-  const idsOf = (msg: Message, type: 'tool_use' | 'tool_result'): string[] => {
+ *  the rows that sat between follow it. It deletes nothing: `repairToolPairing` strips a block nothing pairs.
+ *  `silent` names the rows made only of calls nothing answered: they say nothing once stripped, so they get no
+ *  label or working note and the repair leaves no message for them. */
+function hoistToolResults(rows: Message[]): { rows: Message[]; silent: Set<string> } {
+  const ids = rows.map((msg) => {
+    let blocks: Array<{ type?: string; id?: unknown; tool_use_id?: unknown }> = [];
     try {
       const parsed: unknown = JSON.parse(msg.content);
-      if (!Array.isArray(parsed)) return [];
-      return parsed
-        .filter((b: { type?: string }) => b.type === type)
-        .map((b: { id?: string; tool_use_id?: string }) => (type === 'tool_use' ? b.id : b.tool_use_id))
-        .filter((id): id is string => typeof id === 'string' && id.length > 0);
-    } catch {
-      return [];
-    }
-  };
-  const useIds = rows.map((msg) => idsOf(msg, 'tool_use'));
-  const resultIds = rows.map((msg) => (msg.role === 'tool' ? idsOf(msg, 'tool_result') : []));
+      if (Array.isArray(parsed)) blocks = parsed;
+    } catch { /* plain text: no tool blocks */ }
+    const of = (type: string, key: 'id' | 'tool_use_id'): string[] => blocks
+      .filter((b) => b.type === type)
+      .map((b) => b[key])
+      .filter((id): id is string => typeof id === 'string' && id.length > 0);
+    const use = of('tool_use', 'id');
+    return { use, result: msg.role === 'tool' ? of('tool_result', 'tool_use_id') : [], callsOnly: use.length > 0 && use.length === blocks.length };
+  });
   const taken = new Set<number>();
+  const silent = new Set<string>();
   const out: Message[] = [];
   const take = (k: number): void => {
     out.push(rows[k]);
@@ -1734,20 +1736,21 @@ function hoistToolResults(rows: Message[]): Message[] {
   for (let i = 0; i < rows.length; i++) {
     if (taken.has(i)) continue;
     take(i);
-    const pending = new Set(useIds[i]);
+    const pending = new Set(ids[i].use);
     let last = i;
     for (let j = i + 1; j < rows.length && pending.size > 0; j++) {
-      if (taken.has(j) || !resultIds[j].some((id) => pending.has(id))) continue;
+      if (taken.has(j) || !ids[j].result.some((id) => pending.has(id))) continue;
       take(j);
       last = j;
-      for (const id of resultIds[j]) pending.delete(id);
+      for (const id of ids[j].result) pending.delete(id);
     }
+    if (ids[i].callsOnly && last === i) silent.add(rows[i].id);
     // The ordinary rows the pair spanned follow it at once; tool rows among them keep their own place.
     for (let k = i + 1; k < last; k++) {
-      if (!taken.has(k) && useIds[k].length === 0 && resultIds[k].length === 0) take(k);
+      if (!taken.has(k) && ids[k].use.length === 0 && ids[k].result.length === 0) take(k);
     }
   }
-  return out;
+  return { rows: out, silent };
 }
 
 function parseMessageContent(
