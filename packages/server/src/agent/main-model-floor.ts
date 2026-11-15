@@ -58,7 +58,8 @@ export function refuseSmallMainModel(
 }
 
 /** THE door check for choosing a model for an agent: memory fit first (so a refusal names the true reason), then the
- *  floor. Null means the model may be set. Every route, tool and spawn that picks an agent's model asks this. */
+ *  floor. Null means the model may be set. Every route and tool that picks an agent's model asks this; a spawn asks its
+ *  two parts itself, since its model may be 'auto'. */
 export async function refuseAgentModel(modelId: string | null | undefined, currentModelId?: string | null): Promise<string | null> {
   return refuseUnfitLocalModel(modelId, currentModelId, 'agent', () => refuseSmallMainModel(modelId, currentModelId));
 }
@@ -66,7 +67,7 @@ export async function refuseAgentModel(modelId: string | null | undefined, curre
 /** The one pick for "this agent needs another model": cheapest enabled text model outside `exclude` that clears the floor. */
 export function cheapestAgentModel(exclude: readonly string[] = []): string | null {
   const rows = getDb().prepare(
-    `SELECT id FROM models WHERE is_enabled = 1 AND id NOT IN (${exclude.map(() => '?').join(',')}) AND capabilities NOT LIKE '%generation%' AND capabilities NOT LIKE '%embedding%' AND capabilities NOT LIKE '%"decision"%' ORDER BY input_cost_per_m ASC, id ASC`,
+    `SELECT id FROM models WHERE is_enabled = 1 AND id NOT IN (${exclude.map(() => '?').join(',')}) AND capabilities NOT LIKE '%generation%' AND capabilities NOT LIKE '%embedding%' AND capabilities NOT LIKE '%"decision"%' ORDER BY COALESCE(input_cost_per_m, 1e18) ASC, id ASC`,
   ).all(...exclude) as Array<{ id: string }>;
   return rows.find((m) => refuseSmallMainModel(m.id) === null)?.id ?? null;
 }

@@ -117,6 +117,12 @@ export function setDreamCycleOpen(open: boolean): void {
 }
 
 
+/** The model the Dreamer runs: its agent row's (a replacement may differ from the setting), else the setting, else a default. */
+function dreamerModelId(): string | null {
+  const row = getDb().prepare('SELECT a.model_id FROM agents a JOIN models m ON m.id = a.model_id WHERE a.id = ?').get(getDreamerAgentId()) as { model_id: string } | undefined;
+  return row?.model_id ?? getDreamingConfig().modelId ?? getDefaultDreamModel();
+}
+
 function getDefaultDreamModel(): string | null {
   const db = getDb();
   // Must be a text-capable model: media-generation/embedding models cost 0 and would win the cost tiebreak.
@@ -771,7 +777,7 @@ export async function runDreamingCycle(): Promise<{ dreamerId: string | null }> 
     });
   }
 
-  const modelId = config.modelId ?? getDefaultDreamModel();
+  const modelId = dreamerModelId();
   if (!modelId) {
     logger.warn('No model available for dreaming cycle');
     return { dreamerId: null };
@@ -1048,7 +1054,7 @@ async function wakeNextBatchFromDb(primaryId: string, state: PendingBatchState |
   const queueMeta = getUnprocessedConversationMeta();
   if (queueMeta.length === 0) return false;
 
-  const modelId = state?.modelId ?? getDreamingConfig().modelId ?? getDefaultDreamModel();
+  const modelId = state?.modelId ?? dreamerModelId();
   if (!modelId) {
     logger.warn('No model available to continue dream cycle from DB');
     return false;
@@ -1428,7 +1434,7 @@ export async function recoverDreamerFromContextOverflow(
 // to the vault, and the profile is trimmed to what is needed every turn.
 export async function runFirstRunProfileBootstrap(): Promise<{ dreamerId: string | null }> {
   const config = getDreamingConfig();
-  const modelId = config.modelId ?? getDefaultDreamModel();
+  const modelId = dreamerModelId();
   if (!modelId) {
     logger.warn('No model available for first-run profile bootstrap');
     return { dreamerId: null };
