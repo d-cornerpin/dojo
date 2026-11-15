@@ -20,6 +20,9 @@ export function renderMessageTimeStamp(createdAt: string | number | null | undef
   return instant === null ? null : `[${instant}]`;
 }
 
+/** A stamp in the shape `renderMessageTimeStamp` writes, at the start of text: a model that echoes it is stripped. */
+export const LEADING_STAMP_RE = /^\s*\[[A-Z][a-z]{2} \d{1,2}, \d{4}, \d{2}:\d{2}\s[AP]M UTC[+-]\d{2}:\d{2}\]\s*/;
+
 export function renderInstant(createdAt: string | number | null | undefined): string | null {
   if (!createdAt) return null;
   const iso = normalizeCreatedAtUtc(createdAt);

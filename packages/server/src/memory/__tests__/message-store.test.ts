@@ -31,6 +31,7 @@ import {
   NO_REPLY_CLOSED_MARKER, WORKING_NOTE_PREFIX, INTERNAL_WORKING_NOTE_PREFIX,
   OWNER_ALERT_HEADS_UP_PREFIX, NEW_SESSION_DIVIDER,
 } from '@dojo/shared';
+import { renderMessageTimeStamp } from '../message-stamp.js';
 import { runMigrations } from '../../db/migrations.js';
 import { FX } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
@@ -376,6 +377,14 @@ describe('T8 — content is stored display-ready', () => {
     expect(String(row.content)).not.toContain('((mood:');
     expect(String(row.content)).not.toContain('[no-reply]');
     expect(row.content).toBe(`${WORKING_NOTE_PREFIX}Let me check that.`);
+  });
+
+  it('a time stamp the model echoed at the start of its reply is not kept; a user row is untouched', () => {
+    const stamp = renderMessageTimeStamp(Date.UTC(2026, 10, 14, 15, 5))!;
+    const a = insertMessage({ agentId: AGENT, role: 'assistant', content: `${stamp} Here is the answer.` });
+    expect(rowOf(a.id).content).toBe('Here is the answer.');
+    const u = insertMessage({ agentId: AGENT, role: 'user', content: `${stamp} what I typed` });
+    expect(rowOf(u.id).content).toBe(`${stamp} what I typed`);
   });
 
   it('a surviving [no-reply] sentinel never reaches storage', () => {
