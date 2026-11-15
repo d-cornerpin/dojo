@@ -97,9 +97,8 @@ export function createServer() {
     const pathname = url.pathname;
     const relMatch = pathname.match(/^\/share\/[^/]+\/(.*)$/);
     const rel = relMatch ? relMatch[1] : '';
-    const shareDir = path.join(OUT_DIR, slug);
-    // The file must stay inside shareDir after links are resolved.
-    const resolved = insideFolder(shareDir, rel || 'index.html');
+    // The file must stay inside the shares root after links are resolved, the share's own folder included.
+    const resolved = insideFolder(OUT_DIR, `${slug}/${rel || 'index.html'}`);
     if (!resolved) return c.json({ ok: false, error: 'invalid path' }, 400);
     if (!fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) {
       return c.json({ ok: false, error: 'not found' }, 404);

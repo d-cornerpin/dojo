@@ -160,9 +160,11 @@ export async function storeEmbedding(
     const model = embeddingModelKey();
 
     const db = getDb();
-    if (db.prepare('SELECT 1 FROM embeddings WHERE source_type = ? AND source_id = ?').get(sourceType, sourceId)) return;
+    if (db.prepare('SELECT 1 FROM embeddings WHERE source_type = ? AND source_id = ? AND embedding_model = ?').get(sourceType, sourceId, model)) return;
 
     const embedding = await generateEmbedding(content);
+    // A vector another model made for this source is replaced in the same step the new one lands.
+    db.prepare('DELETE FROM embeddings WHERE source_type = ? AND source_id = ? AND embedding_model IS NOT ?').run(sourceType, sourceId, model);
 
     // GUARDED WRITE: the `await` above is the orphan class's whole mechanism; see `embedding-sources.ts`.
     const written = insertEmbeddingIfSourceAlive(db, {

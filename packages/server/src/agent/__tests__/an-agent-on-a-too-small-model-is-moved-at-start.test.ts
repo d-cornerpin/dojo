@@ -19,7 +19,9 @@ vi.mock('../../gateway/ws.js', () => ({
 }));
 
 import { runMigrations } from '../../db/migrations.js';
+import { tellOwner } from '../../healer/owner-notices.js';
 import { moveAgentsOffSmallModels } from '../main-model-floor.js';
+import { standingOwnerNotices } from '../../healer/owner-notice-kinds.js';
 
 const db = (): Database.Database => mockDb.current!;
 const seedModel = (id: string, window: number | null, enabled = 1, cost = 1): void => {
@@ -82,9 +84,11 @@ describe('an agent on a too-small model, at start', () => {
     moveAgentsOffSmallModels();
     expect(frames).toHaveLength(1);
     seedModel('cheap', 64_000);
+    expect(db().prepare("SELECT 1 FROM healer_state WHERE key = 'smallmodel:stuck'").all()).toHaveLength(1);   // told
     moveAgentsOffSmallModels();
     expect(modelOf('main')).toBe('cheap');
     expect(frames.filter((f) => f.cardKey === 'smallmodel:moved')).toHaveLength(1);
+    expect(db().prepare("SELECT 1 FROM healer_state WHERE key = 'smallmodel:stuck'").all()).toEqual([]);
   });
 
   it('an agent on a model of unknown size is left alone and no card is filed', () => {
@@ -93,5 +97,31 @@ describe('an agent on a too-small model, at start', () => {
     moveAgentsOffSmallModels();
     expect(modelOf('main')).toBe('unknown');
     expect(frames).toHaveLength(0);
+  });
+
+  it('an agent parked because its small model could not hold it is moved and no longer parked', async () => {
+    seedModel('cheap', 64_000);
+    seedAgent('main', 'tiny', 'paused');
+    db().prepare("UPDATE agents SET last_error = '[no_model_fits] none of its models can hold it' WHERE id = 'main'").run();
+    tellOwner('nofit:main', 'main cannot run');
+    moveAgentsOffSmallModels();
+    await vi.waitFor(() => expect((db().prepare("SELECT status FROM agents WHERE id = 'main'").get() as { status: string }).status).not.toBe('paused'));
+    expect(standingOwnerNotices().map((n) => n.cardKey)).not.toContain('nofit:main');
+  });
+
+  it('the moved card says when the new model is a paid one', () => {
+    seedModel('paid', 64_000, 1, 3);
+    seedAgent('main', 'tiny');
+    moveAgentsOffSmallModels();
+    expect(frames[0].error).toContain('to Model paid, which is a paid model, because');
+  });
+
+  it('the router sentinel is never the pick, and a service setting follows its agent', () => {
+    seedModel('cheap', 64_000);
+    db().prepare("INSERT INTO config (key, value) VALUES ('healer_model_id', 'tiny')").run();
+    seedAgent('main', 'tiny');
+    moveAgentsOffSmallModels();
+    expect(modelOf('main')).toBe('cheap');
+    expect((db().prepare("SELECT value FROM config WHERE key = 'healer_model_id'").get() as { value: string }).value).toBe('cheap');
   });
 });

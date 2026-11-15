@@ -2,7 +2,7 @@
 // A box whose stored vectors name a different model than the one in use (a restored or imported copy).
 //
 //  1. Search never mixes the vectors of two models, even when their widths are the same.
-//  2. The scheduled drain fills only memories with no vector; it never re-processes another model's.
+//  2. The scheduled drain makes a vector for every memory with none from the current model (a local embedder only).
 //
 // The embedding backend is a stubbed `fetch`; nothing leaves the process.
 // ════════════════════════════════════════════════════════════════════════════════════════
@@ -103,10 +103,27 @@ describe('search never mixes two models', () => {
 });
 
 describe('the scheduled drain', () => {
-  it('leaves another model\'s vectors alone', async () => {
-    seedOldMemories(2);
+  it('re-makes a vector another model made, and leaves a current one alone', async () => {
+    seedOldMemories(1);
     db().prepare("UPDATE config SET value = ? WHERE key = 'embedding_config'")
       .run(JSON.stringify({ provider: 'ollama', model: 'new-embedder' }));
+    db().prepare('INSERT INTO messages (id, agent_id, role, lane, content) VALUES (?, ?, ?, ?, ?)')
+      .run('msg-current', AGENT, 'user', 'owner', 'a message long enough, already embedded by the current model');
+    db().prepare(`INSERT INTO embeddings (id, source_type, source_id, agent_id, content_preview, embedding, dimensions, embedding_model, created_at)
+                  VALUES ('emb-current', 'message', 'msg-current', ?, 'p', ?, 4, 'ollama:new-embedder', datetime('now'))`)
+      .run(AGENT, Buffer.from(new Float32Array(VEC).buffer));
+    await runBackfill();
+    expect(fetchedModels).toEqual(['new-embedder']);
+    expect(modelsOf('embeddings')).toEqual(['ollama:new-embedder']);
+    expect(db().prepare("SELECT COUNT(*) AS c FROM embeddings WHERE source_id = 'msg-0'").get()).toEqual({ c: 1 });
+    expect(db().prepare("SELECT id FROM embeddings WHERE source_id = 'msg-current'").get()).toEqual({ id: 'emb-current' });
+    expect((await vectorSearch('a message long enough', AGENT, { minSimilarity: 0.1 })).length).toBeGreaterThan(0);
+  });
+
+  it('leaves another model\'s vectors alone when the embedder is not local', async () => {
+    seedOldMemories(1);
+    db().prepare("UPDATE config SET value = ? WHERE key = 'embedding_config'")
+      .run(JSON.stringify({ provider: 'openai', baseUrl: 'https://embeddings.example.test/v1', model: 'big-hosted' }));
     await runBackfill();
     expect(fetchedModels).toEqual([]);
     expect(modelsOf('embeddings')).toEqual([OLD]);

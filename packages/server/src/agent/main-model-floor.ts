@@ -5,6 +5,7 @@ import { getDb } from '../db/connection.js';
 import { effectiveContextWindow, resolveNumCtx } from './model.js';
 import { refuseUnfitLocalModel } from './local-model-fit.js';
 import { createLogger } from '../logger.js';
+import { sanitizeMessagesOnModelChange } from './model-switch.js';
 import { tellOwner, ownerConditionCleared } from '../healer/owner-notices.js';
 const logger = createLogger('main-model-floor');
 
@@ -66,35 +67,29 @@ export async function refuseAgentModel(modelId: string | null | undefined, curre
 }
 
 /** The one pick for "this agent needs another model": cheapest enabled text model outside `exclude` that clears the floor. */
-export function cheapestAgentModel(exclude: readonly string[] = []): string | null {
+export function cheapestAgentModel(exclude: readonly string[] = []): string | null {   // never the router sentinel, which is no model
   const rows = getDb().prepare(
-    `SELECT id FROM models WHERE is_enabled = 1 AND id NOT IN (${exclude.map(() => '?').join(',')}) AND capabilities NOT LIKE '%generation%' AND capabilities NOT LIKE '%embedding%' AND capabilities NOT LIKE '%"decision"%' ORDER BY COALESCE(input_cost_per_m, 1e18) ASC, id ASC`,
+    `SELECT id FROM models WHERE is_enabled = 1 AND id != 'auto' AND id NOT IN (${exclude.map(() => '?').join(',')}) AND capabilities NOT LIKE '%generation%' AND capabilities NOT LIKE '%embedding%' AND capabilities NOT LIKE '%"decision"%' ORDER BY COALESCE(input_cost_per_m, 1e18) ASC, id ASC`,
   ).all(...exclude) as Array<{ id: string }>;
   return rows.find((m) => refuseSmallMainModel(m.id) === null)?.id ?? null;
 }
 
-/** Moves every live agent on one of `modelIds` (and the project manager's and dreamer's settings) to the cheapest
- *  big-enough model; with none, the agents are left without a model and counted. */
+/** Moves every live agent on one of `modelIds` (and the service agents' model settings) to the cheapest big-enough
+ *  model, with the effects of any model change; with none, the agents are left without a model and counted. */
 export function reassignAffectedAgents(modelIds: string[], fallbackId = cheapestAgentModel(modelIds)): { agentsMoved: number; agentsWithoutModel: number } {
   const db = getDb();
   let reassigned = 0;
-
-
+  const movedIds = fallbackId ? (db.prepare(`SELECT id FROM agents WHERE model_id IN (${modelIds.map(() => '?').join(',')}) AND status != 'terminated'`).all(...modelIds) as Array<{ id: string }>).map((a) => a.id) : [];
   for (const mid of modelIds) {
     const result = db.prepare(
       "UPDATE agents SET model_id = ?, updated_at = datetime('now') WHERE model_id = ? AND status != 'terminated'"
     ).run(fallbackId, mid);
     reassigned += result.changes;
-
-    const pmModel = db.prepare("SELECT value FROM config WHERE key = 'pm_agent_model'").get() as { value: string } | undefined;
-    if (pmModel?.value === mid && fallbackId) {
-      db.prepare("UPDATE config SET value = ?, updated_at = datetime('now') WHERE key = 'pm_agent_model'").run(fallbackId);
-    }
-
-    const dreamerModel = db.prepare("SELECT value FROM config WHERE key = 'dreaming_model_id'").get() as { value: string } | undefined;
-    if (dreamerModel?.value === mid && fallbackId) {
-      db.prepare("UPDATE config SET value = ?, updated_at = datetime('now') WHERE key = 'dreaming_model_id'").run(fallbackId);
-    }
+    if (fallbackId) db.prepare(`UPDATE config SET value = ?, updated_at = datetime('now') WHERE value = ? AND key IN (${MAIN_MODEL_SETTING_KEYS.map(() => '?').join(',')})`).run(fallbackId, mid, ...MAIN_MODEL_SETTING_KEYS);
+  }
+  for (const id of movedIds) {   // the effects every model change has: a new model's tool ids, a no-fit park looked at again
+    sanitizeMessagesOnModelChange(id);
+    void import('./v2/honest-stop-lock.js').then((m) => m.noteModelsChanged(id));
   }
 
   return fallbackId ? { agentsMoved: reassigned, agentsWithoutModel: 0 } : { agentsMoved: 0, agentsWithoutModel: reassigned };
@@ -111,7 +106,7 @@ export function agentsUnderFloor(): Array<{ name: string; modelId: string; model
  *  once nobody is under the floor, so every start may run it. */
 export function moveAgentsOffSmallModels(): void {
   const small = agentsUnderFloor();
-  const to = cheapestAgentModel(['auto']);   // the router is no model to move an agent onto
+  const to = cheapestAgentModel();
   if (small.length === 0 || to) ownerConditionCleared('smallmodel:stuck');
   if (small.length === 0) return;
   if (!to) {
@@ -120,9 +115,9 @@ export function moveAgentsOffSmallModels(): void {
     return;
   }
   reassignAffectedAgents([...new Set(small.map((a) => a.modelId))], to);
-  const toName = (getDb().prepare('SELECT name FROM models WHERE id = ?').get(to) as { name: string }).name;
+  const target = getDb().prepare('SELECT name, input_cost_per_m AS cost FROM models WHERE id = ?').get(to) as { name: string; cost: number | null };
   ownerConditionCleared('smallmodel:moved');   // a new move is a new telling
-  tellOwner('smallmodel:moved', `The Dojo moved ${small.map((a) => `${a.name} (from ${a.modelName})`).join(', ')} to ${toName}, because a model with so small a memory window cannot hold a conversation. You can pick a different model for any agent on its detail page.`);
+  tellOwner('smallmodel:moved', `The Dojo moved ${small.map((a) => `${a.name} (from ${a.modelName})`).join(', ')} to ${target.name}${(target.cost ?? 0) > 0 ? ', which is a paid model' : ''}, because a model with so small a memory window cannot hold a conversation. You can pick a different model for any agent on its detail page.`);
 }
 
 /** The model a service agent is created or reactivated on: its setting, else the main agent's. One under the floor
@@ -132,7 +127,7 @@ export function serviceAgentModelId(settingKey: string, primaryId: string): stri
   const picked = (db.prepare('SELECT value FROM config WHERE key = ?').get(settingKey) as { value: string } | undefined)?.value
     || (db.prepare('SELECT model_id FROM agents WHERE id = ?').get(primaryId) as { model_id: string | null } | undefined)?.model_id || null;
   if (!picked || !refuseSmallMainModel(picked)) return picked;
-  const replacement = cheapestAgentModel([picked, 'auto']) ?? 'auto';
+  const replacement = cheapestAgentModel([picked]) ?? 'auto';
   logger.warn('A service agent\'s model is under the 32K floor; replaced', { settingKey, from: picked, to: replacement });
   return replacement;
 }

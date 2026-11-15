@@ -1,9 +1,9 @@
-// Generates embeddings for rows that have none: the scheduled drain.
+// Generates embeddings for sources with no vector from the current model: the scheduled drain.
 
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { storeEmbedding } from './embeddings.js';
-import { embeddingModelKey } from './embedding-model.js';
+import { embeddingModelKey, readEmbeddingConfig } from './embedding-model.js';
 
 const logger = createLogger('backfill');
 
@@ -35,38 +35,42 @@ export async function runBackfill(): Promise<{ completed: number; failed: number
 
   const db = getDb();
   const model = embeddingModelKey();
+  // Another model's vector is re-made only on a local embedder (it costs nothing); otherwise any vector counts as done.
+  const local = readEmbeddingConfig().provider === 'ollama';
+  if (!local) logger.debug('Embedding model is not local: vectors made by another model are not re-made automatically', { model });
+  const current = local ? model : null;
 
   try {
     // Un-embedded messages with sufficient content, capped to the per-run budget.
     const messages = db.prepare(`
       SELECT m.id, m.agent_id, m.content
       FROM messages m
-      LEFT JOIN embeddings e ON e.source_type = 'message' AND e.source_id = m.id
+      LEFT JOIN embeddings e ON e.source_type = 'message' AND e.source_id = m.id AND e.embedding_model = COALESCE(?, e.embedding_model)
       WHERE e.id IS NULL AND ${LONG_ENOUGH('m')}
       ORDER BY m.created_at
       LIMIT ?
-    `).all(BACKFILL_PER_RUN_CAP) as Array<{ id: string; agent_id: string; content: string }>;
+    `).all(current, BACKFILL_PER_RUN_CAP) as Array<{ id: string; agent_id: string; content: string }>;
 
     // Collect un-embedded summaries (also capped, oldest first).
     const summaries = db.prepare(`
       SELECT s.id, s.agent_id, s.content
       FROM summaries s
-      LEFT JOIN embeddings e ON e.source_type = 'summary' AND e.source_id = s.id
+      LEFT JOIN embeddings e ON e.source_type = 'summary' AND e.source_id = s.id AND e.embedding_model = COALESCE(?, e.embedding_model)
       WHERE e.id IS NULL AND s.kind != 'uncondensed' AND ${LONG_ENOUGH('s')}
       ORDER BY s.created_at
       LIMIT ?
-    `).all(BACKFILL_PER_RUN_CAP) as Array<{ id: string; agent_id: string; content: string }>;
+    `).all(current, BACKFILL_PER_RUN_CAP) as Array<{ id: string; agent_id: string; content: string }>;
 
     // Un-embedded techniques: intent surface only (name, description, tags), since recall matches
     // the ask against what a technique is for.
     const techniques = db.prepare(`
       SELECT t.id, t.name, t.description, t.tags
       FROM techniques t
-      LEFT JOIN embeddings e ON e.source_type = 'technique' AND e.source_id = t.id
+      LEFT JOIN embeddings e ON e.source_type = 'technique' AND e.source_id = t.id AND e.embedding_model = COALESCE(?, e.embedding_model)
       WHERE e.id IS NULL
       ORDER BY t.created_at
       LIMIT ?
-    `).all(BACKFILL_PER_RUN_CAP) as Array<{ id: string; name: string; description: string | null; tags: string | null }>;
+    `).all(current, BACKFILL_PER_RUN_CAP) as Array<{ id: string; name: string; description: string | null; tags: string | null }>;
 
     // One combined per-run budget; messages first so a deep message backlog drains before the tails.
     const messageItems = messages.map(m => ({ type: 'message' as const, id: m.id, agentId: m.agent_id, content: m.content }));

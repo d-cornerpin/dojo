@@ -333,7 +333,11 @@ async function main(): Promise<void> {
   // 3a-c. One time: an upgraded box keeps its owner (services/owner-star-upgrade.ts).
   await (await import('./services/owner-star-upgrade.js')).starTheOwnersAtBoot();
 
-  (await import('./agent/main-model-floor.js')).moveAgentsOffSmallModels();   // an agent on a too-small model is moved, the owner told once
+  try {
+    (await import('./agent/main-model-floor.js')).moveAgentsOffSmallModels();   // an agent on a too-small model is moved, the owner told once
+  } catch (err) {
+    logger.warn('Moving agents off a too-small model failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
+  }
 
   try {
     const { seedGoogleAccountsFromConfig } = await import('./google/accounts.js');

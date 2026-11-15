@@ -30,6 +30,14 @@ describe('public share route', () => {
     expect((await app.request('/share/demo/')).status).toBe(200);
   });
 
+  it('refuses a share whose own folder is a link pointing outside', async () => {
+    const outsideDir = path.join(OUT_DIR, '..', 'elsewhere');
+    fs.mkdirSync(outsideDir, { recursive: true });
+    fs.writeFileSync(path.join(outsideDir, 'index.html'), 'private');
+    fs.symlinkSync(outsideDir, path.join(OUT_DIR, 'linked'));
+    expect((await app.request('/share/linked/index.html')).status).toBe(400);
+  });
+
   it('refuses a link inside the share that points outside it', async () => {
     const res = await app.request('/share/demo/leak.txt');
     expect(res.status).toBe(400);
