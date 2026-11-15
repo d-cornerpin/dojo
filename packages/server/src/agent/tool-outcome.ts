@@ -2,7 +2,7 @@
 // "the platform refused" and "the tool broke" are different facts, not prose.
 // Classification reads `errorCode` and `isError`: a verdict from prose would move arms on a reword.
 import type {
-  OutcomeApplied, OutcomeFailed, OutcomeRefused, ToolErrorCode, ToolResult,
+  LiveOutcome, OutcomeApplied, OutcomeFailed, OutcomeRefused, ToolErrorCode, ToolResult,
   ToolSeamReason,
 } from '@dojo/shared';
 import { providerFactsOf } from './provider-error.js';
@@ -32,6 +32,9 @@ export type ToolOutcome =
   | OutcomeApplied<ToolResult>
   | (OutcomeRefused<ToolSeamReason> & { readonly result: ToolResult })
   | (OutcomeFailed<ToolSeamReason> & { readonly result: ToolResult });
+
+/** Compile probe: breaks first if a non-live arm is ever added to `ToolOutcome`. */
+export type ToolOutcomeIsLive = ToolOutcome extends LiveOutcome<ToolResult, ToolSeamReason> ? true : never;
 
 export function toolResultOf(o: ToolOutcome): ToolResult {
   return o.kind === 'applied' ? o.value : o.result;

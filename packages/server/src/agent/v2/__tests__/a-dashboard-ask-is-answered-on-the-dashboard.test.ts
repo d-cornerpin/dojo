@@ -24,6 +24,7 @@ const ownerOnDashboard: TurnCounterparty = {
   kind: 'user', name: 'Owner Example', relation: 'owner', channel: 'dashboard',
   senderId: null, threadId: null, senderIsAgent: false,
 };
+const ownerOnIMessage: TurnCounterparty = { ...ownerOnDashboard, channel: 'imessage', senderId: '+15550100' };
 
 function addr(over: Partial<ComputeTurnAddressInput> & { counterparty: TurnCounterparty }) {
   return computeTurnAddress({ autoRoutes: true,
@@ -65,6 +66,13 @@ describe('the owner ruling: a dashboard ask while marked away', () => {
 });
 
 describe('controls: every other case is unchanged', () => {
+
+  it('an iMessage ask still replies by iMessage (in the dojo, away, and with affinity)', () => {
+    for (const presence of ['in_dojo', 'away'] as const) {
+      const a = addr({ counterparty: ownerOnIMessage, inboundChannel: 'imessage', presence, ownerAffinityChannel: 'imessage' });
+      expect(a.deliveryChannel).toBe('imessage');
+    }
+  });
 
   it('RC-10 intent kept: an ENGINE turn whose reply defaults to the dashboard still follows affinity to iMessage', () => {
     const a = addr({ counterparty: ownerOnDashboard, isEngineTurn: true, inboundChannel: 'dashboard', ownerAffinityChannel: 'imessage' });

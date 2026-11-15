@@ -108,6 +108,22 @@ describe('A — `none` stays `none` through the artifact-path widening', () => {
     expect(scoped.file_write).toBe('*');
   });
 
+  it('survives the whole create/spawn path — `resolveChildScope`, as the route calls it', () => {
+    // `POST /api/agents` and `spawner.ts` both reach the spread through here, and this is the
+    // object that gets JSON-serialized into the new agent's row: a char array here is a char array ON DISK.
+    const resolved = resolveChildScope(
+      { file_read: 'none', file_write: 'none' },
+      PRIMARY_AGENT_PERMISSIONS,
+      AGENT,
+    );
+    expect(resolved.ok).toBe(true);
+    if (!resolved.ok) return;
+    expect(resolved.manifest.file_write).toBe('none');
+    expect(resolved.manifest.file_read).toBe('none');
+    const stored = JSON.parse(JSON.stringify(resolved.manifest)) as PermissionManifest;
+    expect(stored.file_write).toBe('none');
+  });
+
   it('a child of a deny-all parent cannot be widened past it', () => {
     // The subset rule still bounds the child: `pathSubset` reads `'none'` as
     // "nothing", so a parent of nothing can hand out nothing.

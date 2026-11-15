@@ -218,13 +218,23 @@ describe('assertPublicHttpTarget — schemes and junk', () => {
   });
 });
 
-describe('isPrivateAddress / privateAddressClass', () => {
+describe('privateAddressClass', () => {
   it('names the class it blocked on', () => {
     expect(privateAddressClass('127.0.0.1')).toMatch(/loopback/i);
     expect(privateAddressClass('169.254.169.254')).toMatch(/link-local|metadata/i);
     expect(privateAddressClass('10.0.0.5')).toMatch(/private/i);
     expect(privateAddressClass('fc00::1')).toMatch(/unique-local|private/i);
     expect(privateAddressClass('93.184.216.34')).toBeNull();
+  });
+
+  it('fails closed on anything that is not an IP address', () => {
+    expect(privateAddressClass('example.com')).not.toBeNull();
+    expect(privateAddressClass('')).not.toBeNull();
+    expect(privateAddressClass('999.999.999.999')).not.toBeNull();
+  });
+
+  it('strips an IPv6 zone id before judging (fe80::1%en0)', () => {
+    expect(privateAddressClass('fe80::1%en0')).not.toBeNull();
   });
 });
 

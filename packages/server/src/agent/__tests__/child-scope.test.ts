@@ -233,6 +233,22 @@ describe('C — a malformed manifest REFUSES, it never silently downgrades', () 
     }
   });
 
+  it('ACCEPTS every shape a real stored manifest takes — the positive half', () => {
+    // Measured on the live body: `'{}'` (40 of 56 agents), full manifests, partial legacy manifests with
+    // no `system_control` key, and the scalar `system_control: '*'` spelling. A schema that refused any
+    // of these would take working agents off the air.
+    for (const good of [
+      '{}',
+      JSON.stringify(PRIMARY_AGENT_PERMISSIONS),
+      JSON.stringify(DEFAULT_SUBAGENT_PERMISSIONS),
+      '{"file_read":"*","file_write":"none","exec_allow":[],"exec_deny":["*"],"network_domains":"none","can_spawn_agents":false,"can_assign_permissions":false}',
+      '{"system_control":"*"}',
+      '{"system_control":["*","applescript"]}',
+    ]) {
+      expect(validateManifest(JSON.parse(good)).ok, good.slice(0, 60)).toBe(true);
+    }
+  });
+
   it('a spawn that names NOTHING gets the decided default, not a refusal', () => {
     const resolved = resolveChildScope(undefined, PRIMARY_AGENT_PERMISSIONS, CHILD);
     expect(resolved.ok).toBe(true);

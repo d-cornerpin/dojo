@@ -215,13 +215,25 @@ describe('the unservable reaper closes the existing population with a named reas
     });
   };
 
-  it('reports a DENOMINATOR per class, and the census is empty afterwards', () => {
+  it('reports a DENOMINATOR per class', () => {
     seedAllThree();
     const r = abandonUnservableAsks();
     expect(r.abandoned).toBe(3);
     expect(r.byClass['ignored-sender']).toBe(1);
     expect(r.byClass['dead-agent']).toBe(1);
     expect(r.byClass['below-session-boundary']).toBe(1);
+  });
+
+  it('a CLOSED ask is not hunted — the reaper takes OPEN obligations only', () => {
+    seedAgent('dead2', 'terminated', null);
+    seedConversation('conv-dead2', 'dead2');
+    const id = seedAskOnMessage({
+      agentId: 'dead2', messageId: 'm-d2', conversationId: 'conv-dead2', authorized: 1, openedAt: NOW,
+    });
+    mockDb.current!.prepare(
+      `UPDATE work SET state = 'abandoned', closed_at = ? WHERE id = ?`,
+    ).run(NOW, id);
+    expect(abandonUnservableAsks().abandoned).toBe(0);
   });
 
   it('every closure is a RECORDED move whose reason names its class', () => {

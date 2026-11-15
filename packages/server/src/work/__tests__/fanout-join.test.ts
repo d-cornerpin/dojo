@@ -52,7 +52,7 @@ import {
   openDelegationJoin, findJoinChildByThread, landPiece, settlePieceWithoutResult,
   joinState, joinPieces, dueJoins, failJoinClosed,
   threadHopCount, bumpThreadHopCount, THREAD_HOP_CAP,
-  dueJoinsUnderClosedParent, JOIN_MAX_AGE_DAYS, transition,
+  dueJoinsUnderClosedParent, JOIN_MAX_AGE_DAYS, transition, claimFailedJoinForLateAnswer,
 } from '../store.js';
 // SWEEP-A TB2 — the join's close is the settlement authority's now (DESIGN §1b, row 5).
 // `settleJoinDelivered` moved out of `work/store.ts` with the
@@ -625,6 +625,58 @@ describe('3d second arm: a deadline still expires when the parent ask has alread
     const ancient = Date.now() - (JOIN_MAX_AGE_DAYS + 1) * 24 * 60 * 60 * 1000;
     mockDb.current!.prepare('UPDATE work SET opened_at = ? WHERE id = ?').run(ancient, parent);
     expect(dueJoinsUnderClosedParent(Date.now()).map((j) => j.id)).not.toContain(parent);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════
+// 3f — a failed-closed join re-opens for a late answer (the claim, then the settlement, as a2a-transport runs them)
+// ════════════════════════════════════════════════════════════════════════
+
+function lateAnswer(parent: string, deliveryId: string, reason: string): { claimed: boolean; verdict?: string } {
+  const claim = claimFailedJoinForLateAnswer(parent, deliveryId, reason);
+  if (claim.kind !== 'applied') return { claimed: false };
+  return { claimed: true, verdict: settleAskOnJoin(parent, { deliveryId, reason, basis: 'late-answer' }).verdict };
+}
+
+describe('3f: an answer arriving after the failure notice still reaches the owner, once', () => {
+  const failedJoin = (): string => {
+    const parent = seedClaimedAsk();
+    openDelegationJoin({
+      parentWorkId: parent, agentId: AGENT, replyConversationId: 'conv-1',
+      ttlAt: Date.now() - 1000, threads: [{ threadId: T1 }],
+    });
+    failJoinClosed(parent, { reason: 'TTL expired', expectedState: 'claimed' });
+    expect(row(parent)!.state).toBe('failed');
+    return parent;
+  };
+
+  it('POSITIVE: the late answer reopens the failed join and closes it done, both moves recorded', () => {
+    const parent = failedJoin();
+    const d = seedDelivery('d-late', { channel: 'dashboard', conversation_id: 'conv-1' });
+    expect(lateAnswer(parent, d, 'Ana answered after all')).toEqual({ claimed: true, verdict: 'closed' });
+    const p = row(parent)!;
+    expect(p.state).toBe('done');
+    expect(p.result_delivery_id).toBe('d-late');
+    const kinds = events(parent).map((e) => e.kind);
+    expect(kinds.filter((k) => k === 'transition').length).toBeGreaterThanOrEqual(4);
+  });
+
+  it('NEGATIVE: a SECOND late answer does not re-deliver — the reopen is refused on a settled join', () => {
+    const parent = failedJoin();
+    lateAnswer(parent, seedDelivery('d-late', { channel: 'dashboard', conversation_id: 'conv-1' }), 'first late answer');
+    const second = lateAnswer(parent, seedDelivery('d-later', { channel: 'dashboard', conversation_id: 'conv-1' }), 'second late answer');
+    expect(second.claimed).toBe(false);
+    expect(row(parent)!.result_delivery_id).toBe('d-late');
+  });
+
+  it('NEGATIVE: a join that never failed closed is not "reopened" by a late answer', () => {
+    const parent = seedClaimedAsk();
+    openDelegationJoin({
+      parentWorkId: parent, agentId: AGENT, replyConversationId: 'conv-1',
+      ttlAt: Date.now() + 60 * 60_000, threads: [{ threadId: T1 }],
+    });
+    expect(lateAnswer(parent, seedDelivery('d-x', { channel: 'dashboard', conversation_id: 'conv-1' }), 'not a late answer').claimed).toBe(false);
+    expect(row(parent)!.state).toBe('claimed');
   });
 });
 
