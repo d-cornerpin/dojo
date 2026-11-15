@@ -31,6 +31,7 @@ import {
   summaryWriterCandidates, EVERY_AGENT, FOLD_IN_TURN_LIMIT, FOLD_STOPPED_BY_OWNER,
 } from './writer.js';
 import { compactionFailureReason, noteCompactionRecovered, reportCompactionDefect } from './compaction-defect.js';
+import { keepsNoSummaries } from './pm-view.js';
 import type { Message } from '@dojo/shared';
 
 const logger = createLogger('memory-out-of-view');
@@ -157,7 +158,7 @@ export function replacePlaceholdersInBackground(agentId: string): boolean {
   try {
     releaseChangedKeptRows(agentId);
     endCatchUpIfDone(agentId);
-    if (backgroundDrains.has(agentId) || !hasUncondensedPlaceholders(agentId) || agentBusy(agentId) || pickWriter(agentId) === null) return false;
+    if (keepsNoSummaries(agentId) || backgroundDrains.has(agentId) || !hasUncondensedPlaceholders(agentId) || agentBusy(agentId) || pickWriter(agentId) === null) return false;
   } catch { return false; }
   backgroundDrains.add(agentId);
   replaceUncondensedPlaceholders(agentId, { yieldTo: () => agentBusy(agentId) })

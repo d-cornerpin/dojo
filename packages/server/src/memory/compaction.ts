@@ -25,6 +25,7 @@ import { authoredInputLines, fitInputToBudget, resultForSummary, resultText } fr
 import { annotateSummaryObligations } from './summary-obligations.js';
 import { archiveMessagesBeforeCompaction, isDreamerIgnored, getArchiveHighWaterMark } from '../vault/archive.js';
 import { isSystemServiceAgent } from '../config/platform.js';
+import { keepsNoSummaries } from './pm-view.js';
 import { lastCompactionDividerAt, isStopFenced } from '../agent/shared-state.js';
 import { summaryPartyTag } from './party-label.js';
 import { groupBySubject, conversationLabels } from './summary-subject.js';
@@ -254,8 +255,9 @@ export async function checkAndCompact(
   options?: CheckAndCompactOptions,
 ): Promise<CompactionResult> {
   const run = (): Promise<CompactionResult> => runCheckAndCompact(agentId, modelId, contextWindow, options);
+  if (options?.force) forcedPassAt.set(agentId, Date.now());
+  if (keepsNoSummaries(agentId)) return NO_COMPACTION;   // its view trims instead (`pm-view.ts`)
   if (options?.force) {
-    forcedPassAt.set(agentId, Date.now());
     return (await compactionDoor(agentId, run, { abortSignal: options.abortSignal, inTurn: options.inTurn, measure: async () => { const m = await measured(agentId, contextWindow, options.dialedModelId ?? modelId); return { assembledTokens: m.total, budgetTokens: m.view.budgetTokens }; } }))!;
   }
   const result = await compactionDoor(agentId, run);
