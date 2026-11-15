@@ -320,8 +320,13 @@ export function cleanupOldUploads(): void {
 uploadRouter.get('/file/:agentId/:filename', async (c) => {
   const agentId = c.req.param('agentId');
   const filename = c.req.param('filename');
-  const filePath = path.join(UPLOAD_DIR, agentId, filename);
+  const agentDir = path.resolve(UPLOAD_DIR, agentId);
+  const filePath = path.resolve(agentDir, filename);
 
+  // Both params may carry an encoded separator: the file must stay inside the agent's own folder.
+  if (!agentDir.startsWith(UPLOAD_DIR + path.sep) || !filePath.startsWith(agentDir + path.sep)) {
+    return c.json({ ok: false, error: 'invalid path' }, 400);
+  }
   if (!fs.existsSync(filePath)) {
     return c.json({ ok: false, error: 'File not found' }, 404);
   }
