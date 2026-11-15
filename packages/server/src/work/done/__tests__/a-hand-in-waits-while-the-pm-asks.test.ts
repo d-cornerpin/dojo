@@ -120,5 +120,19 @@ describe('a hand-in waits while the PM asks', () => {
     const r = await call(MAIN, 'work_validate', { action: 'decide', task_id: TASK, verdict: 'approve', reason: 'The report is in the shared folder' });
     expect(r.isError, r.content).toBe(false);
   });
+
+  it('a PM that asks again after every answer still lets the hand-in escalate: only the first 30 minutes of questions hold it', async () => {
+    await handedIn();
+    let thread = '';
+    await review(async () => { thread = await ask(WORKER, 'Which sheet holds the totals?'); });
+    expect((await answer(WORKER, thread, 'Sheet 3.')).isError).toBe(false);
+    // The hand-in reached the PM more than 30 minutes ago.
+    doneDb().prepare("UPDATE work_events SET created_at = created_at - ? WHERE work_id = ? AND kind = 'handed_in'").run(QUEUED_TURN_BOUND_MS + 60_000, TASK);
+    const askAgain = async (): Promise<void> => { thread = await ask(WORKER, `And the next sheet? (${Date.now()})`); };
+    await pmTurn(PM, askAgain, thread, WORKER);
+    expect(await review(askAgain), 'a question after the window does not hold it').toContain(TASK);
+    await review(askAgain);
+    expect(whoDecides(TASK), 'two reviews that only asked again: the main agent decides').toEqual({ kind: 'agent', agentId: MAIN });
+  });
 });
 

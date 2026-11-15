@@ -9,7 +9,7 @@ import { turnContext } from '../../agent/turn-context.js';
 import { repliesSince, type ThreadReply } from '../../memory/message-store.js';
 import { AUDIT_KIND } from '../audit-trail.js';
 import { taskScope } from '../tracker-view.js';
-import { workerOf, workersOf } from './record.js';
+import { latestHandIn, workerOf, workersOf } from './record.js';
 
 export type Decider = { kind: 'agent'; agentId: string } | { kind: 'owner' };
 
@@ -69,9 +69,16 @@ export function pmQuestions(workId: string): PMQuestion[] {
   });
 }
 
-/** Until when the PM's questions hold this hand-in (0 when it asked none); it holds while this is in the future. */
+/** The questions that hold this hand-in: those asked within `QUEUED_TURN_BOUND_MS` of its reaching the PM, so a
+ *  PM that keeps asking still lets it escalate within twice that bound. */
+export function holdingQuestions(workId: string): PMQuestion[] {
+  const handAt = Math.floor((latestHandIn(workId)?.at ?? 0) / 1000) * 1000;   // receipts are stamped to the second
+  return pmQuestions(workId).filter((q) => q.at >= handAt && q.at < handAt + QUEUED_TURN_BOUND_MS);
+}
+
+/** Until when the PM's questions hold this hand-in (0 when none does); it holds while this is in the future. */
 export function questionsHoldUntil(workId: string): number {
-  return Math.max(0, ...pmQuestions(workId).map((q) => q.until));
+  return Math.max(0, ...holdingQuestions(workId).map((q) => q.until));
 }
 
 /** The decider for this row now; null when there is no such row. */

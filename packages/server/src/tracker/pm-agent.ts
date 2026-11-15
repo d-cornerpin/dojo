@@ -4,7 +4,7 @@ import { primaryReady } from '../agent/primary-ready.js';
 import { proofLines } from '../work/done/proof.js';
 import { latestHandIn, workerOf } from '../work/done/record.js';
 import {
-  decidedBy, pmQuestions, questionsHoldUntil, sendBacks, REVIEW_MISS_ENTRY, QUEUED_TURN_BOUND_MS,
+  decidedBy, holdingQuestions, questionsHoldUntil, sendBacks, REVIEW_MISS_ENTRY, QUEUED_TURN_BOUND_MS,
 } from '../work/done/who-decides.js';
 import { LADDER_ENTRY } from '../work/done/ladder.js';
 import { appendAuditEntry } from '../work/audit-trail.js';
@@ -229,7 +229,7 @@ function stallBlock(id: string, n: number): string {
 /** One review miss on each row this review held that is still waiting on the same hand-in, unless it asked about it. */
 function recordMisses(pmId: string, held: ReadonlyMap<string, number>, why: string): void {
   for (const [id, handInId] of held) {
-    if (latestHandIn(id)?.eventId !== handInId || pmQuestions(id).some((q) => q.at >= reviewStartedAt)) continue;
+    if (latestHandIn(id)?.eventId !== handInId || holdingQuestions(id).some((q) => q.at >= reviewStartedAt)) continue;
     const still = getDb().prepare("SELECT 1 FROM work WHERE id = ? AND state = 'handed_in'").get(id);
     if (still) appendAuditEntry(id, pmId, { entryKind: REVIEW_MISS_ENTRY, reason: why });
   }

@@ -18,12 +18,13 @@ export function workerOf(workId: string): string {
   return r?.w ?? '';
 }
 
-/** The newest hand-in of a row (or the one with this event id) and its event id, or null. */
-export function latestHandIn(workId: string, eventId?: number): (HandInRecord & { eventId: number }) | null {
+/** The newest hand-in of a row (or the one with this event id), its event id and time, or null. */
+export function latestHandIn(workId: string, eventId?: number): (HandInRecord & { eventId: number; at: number }) | null {
   const e = getDb().prepare(
-    "SELECT id, payload FROM work_events WHERE work_id = ? AND kind = 'handed_in' AND (? IS NULL OR id = ?) ORDER BY id DESC LIMIT 1",
-  ).get(workId, eventId ?? null, eventId ?? null) as { id: number; payload: string } | undefined;
-  return e ? { ...(JSON.parse(e.payload) as HandInRecord), eventId: e.id } : null;
+    `SELECT id, payload, created_at AS at FROM work_events
+      WHERE work_id = ? AND kind = 'handed_in' AND (? IS NULL OR id = ?) ORDER BY id DESC LIMIT 1`,
+  ).get(workId, eventId ?? null, eventId ?? null) as { id: number; payload: string; at: number } | undefined;
+  return e ? { ...(JSON.parse(e.payload) as HandInRecord), eventId: e.id, at: e.at } : null;
 }
 
 /** SQL, one `?` (epoch ms): the row under alias `a` was handed in, by its worker or for it, since then. */
