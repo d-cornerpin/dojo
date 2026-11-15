@@ -48,11 +48,15 @@ export function setHold(workId: string, kind: HoldKind, reason: string, by: stri
   });
 }
 
+/** The main agent may lift the owner's hold only on the owner's own words this turn. */
+export const ownerAskedToLift = (by: string, quote: unknown): boolean =>
+  quote !== undefined && isPrimaryAgent(by) && ownerAskedInThisTurn(by, quote).ok;
+
 /** Lift the hold. False when there was none, or it is the owner's and neither he nor his quoted ask lifts it. */
 export function clearHold(workId: string, by: string, ownerQuote?: unknown): boolean {
   return withUnit(() => {
     const was = holdOf(workId);
-    const ownerAsked = ownerQuote !== undefined && isPrimaryAgent(by) && ownerAskedInThisTurn(by, ownerQuote).ok;
+    const ownerAsked = ownerAskedToLift(by, ownerQuote);
     if (!was || ownerHoldStands(workId, byOwner(by) || ownerAsked)) return false;
     noteUnsettled(patchWork(workId, { hold_kind: null, hold_reason: null, hold_at: null, paused_until: null }), 'hold cleared', { taskId: workId });
     const note = ownerAsked ? `the owner asked: "${String(ownerQuote)}"` : null;

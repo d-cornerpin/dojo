@@ -31,7 +31,7 @@ import { taskWriteRefusal, escalationPointer } from '../work/row-authority.js';
 import { turnContext, getWorkOriginForAgent } from '../agent/turn-context.js';
 import { WORK_EDITABLE_TASK_FIELDS } from '../agent/work-verb-schema.js';
 import { formatTimeForAgent } from '../services/format-time.js';
-import { setHold, clearHold, holdOf, workingExpr } from '../work/done/hold.js';
+import { setHold, clearHold, ownerAskedToLift, holdOf, workingExpr } from '../work/done/hold.js';
 
 const logger = createLogger('tracker-tools');
 
@@ -834,9 +834,11 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
     const db = getDb();
     const taskRow = db.prepare(`SELECT title, ${STATE_TO_STATUS_SQL('state')} as prior_status FROM work WHERE id = ?`).get(taskId) as { title: string; prior_status: string } | undefined;
     const priorStatus = holdOf(taskId)?.kind ?? taskRow?.prior_status ?? null;
-    if (status && ownerHoldStands(taskId, false) && !clearHold(taskId, agentId, args.user_quote)) {
+    const liftsOwnerHold = !!status && ownerHoldStands(taskId, false);
+    if (liftsOwnerHold && !ownerAskedToLift(agentId, args.user_quote)) {
       return `Refused: ${OWNER_HOLD_REFUSAL} ${escalationPointer(agentId)}`;
     }
+    const lifted = liftsOwnerHold ? '\nThe owner\'s hold on it is lifted.' : '';
 
     // Idempotency: a status call naming the status the task is already at changes nothing and says so, so
     // it is not read as real work. Only when status is the sole requested change; a call that also changes
@@ -903,12 +905,13 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
     const hold = status === 'paused' || status === 'blocked' ? status : null;
     const holdReason = typeof args.notes === 'string' ? args.notes.trim() : '';
     const resumeAt = hold === 'paused' && typeof args.resume_at === 'string' ? tsToMs(args.resume_at) : null;
+    if (hold && holdReason.length < 15) {
+      return `Error: status="${hold}" requires a clear reason in \`notes\` (minimum 15 characters): `
+        + (hold === 'paused' ? 'name what you are waiting for (e.g. "waiting for the vendor to send the tracking number").'
+          : 'name the obstacle (e.g. "need API key for service X").');
+    }
+    if (liftsOwnerHold) clearHold(taskId, agentId, args.user_quote);   // only now that the call goes through
     if (hold) {
-      if (holdReason.length < 15) {
-        return `Error: status="${hold}" requires a clear reason in \`notes\` (minimum 15 characters): `
-          + (hold === 'paused' ? 'name what you are waiting for (e.g. "waiting for the vendor to send the tracking number").'
-            : 'name the obstacle (e.g. "need API key for service X").');
-      }
       const held = setHold(taskId, hold, holdReason, agentId, resumeAt);
       if (!held.ok) return `Refused: ${taskId} was not put on hold (${held.why}).`;
     } else if (status && status === taskRow?.prior_status) {
@@ -927,7 +930,7 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
       if (task && !priority) broadcast({ type: 'tracker:task_updated', data: task });
       linkLaterInstruction(agentId, taskId);
       return `[OK] task_id=${taskId} | status=${task?.status ?? 'in_progress'}, ${hold}: ${holdReason}\n\n`
-        + `Task held: ${taskRow?.title ?? taskId}. It is still yours: hand it in when it is finished or cannot be done.`
+        + `Task held: ${taskRow?.title ?? taskId}. It is still yours: hand it in when it is finished or cannot be done.${lifted}`
         + (resumeAt ? `\nAuto-resumes: ${formatTimeForAgent(resumeAt)}` : '');
     }
 
@@ -986,7 +989,7 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
     parts.push(`Priority: ${task.priority}`);
 
     linkLaterInstruction(agentId, taskId);
-    return parts.join('\n');
+    return parts.join('\n') + lifted;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error('trackerUpdateStatus failed', { error: msg }, agentId);

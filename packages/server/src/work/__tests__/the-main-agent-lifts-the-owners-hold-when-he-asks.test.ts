@@ -89,10 +89,25 @@ describe('the main agent lifts the owner\'s hold when he asks', () => {
     ownerTurn(MAIN, OWNER_WORDS);
     const content = await resume(MAIN, id, OWNER_WORDS);
     expect(content).toMatch(/^\[OK\]/);
+    expect(content).toContain('The owner\'s hold on it is lifted.');
     expect(holdOf(id)).toBeNull();
     const [entry] = holdClears(id);
     expect(entry.actor).toBe(MAIN);
     expect(entry.note).toContain(OWNER_WORDS);
+  });
+
+  it.each([
+    ['a status it already has', { status: 'paused', notes: 'still waiting on the owner here' }, /^\[NO-OP\]/],
+    ['a hold with no real reason', { status: 'blocked', notes: 'short' }, /^Error: /],
+  ])('with the owner\'s words, %s changes nothing and keeps his hold', async (_label, change, reply) => {
+    const id = ownerHeldTask(MAIN);
+    ownerTurn(MAIN, OWNER_WORDS);
+    const content = toolResultOf(await executeTool(MAIN, {
+      id: `call-${++n}`, name: 'work_update', arguments: { action: 'status', task_id: id, user_quote: OWNER_WORDS, ...change },
+    })).content;
+    expect(content).toMatch(reply);
+    expect(holdOf(id)).toMatchObject({ kind: 'paused', reason: 'the owner wants to look first' });
+    expect(holdClears(id)).toHaveLength(0);
   });
 
   it('a quote the owner never said is refused', async () => {
