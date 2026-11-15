@@ -23,7 +23,7 @@ import { servedOwnerNotices } from '../../healer/owner-notice-kinds.js';
 import { writeOobeSoul } from '../../prompt/soul-rerun.js';
 import { isPastFirstRun } from '../../config/setup-state.js';
 import { refuseUnfitLocalModel } from '../../agent/local-model-fit.js';
-import { refuseAgentModel, refuseSmallMainModel, passesMainModelFloor, windowOf, MAIN_MODEL_SETTING_KEYS, LOCAL_MODEL_SETTING_KEYS } from '../../agent/main-model-floor.js';
+import { refuseAgentModel, refuseSmallMainModel, passesMainModelFloor, cheapestAgentModel, windowOf, MAIN_MODEL_SETTING_KEYS, LOCAL_MODEL_SETTING_KEYS } from '../../agent/main-model-floor.js';
 import { parsePrice } from '../../services/price-per-million.js';
 import { refuseBadClockTime, CLOCK_TIME_SETTING_KEYS } from '../../config/clock-time.js';
 import { refuseStaleWholeDocument } from './whole-document-guard.js';
@@ -67,24 +67,7 @@ function reassignAffectedAgents(modelIds: string[]): { agentsMoved: number; agen
   const db = getDb();
   let reassigned = 0;
 
-  // Fallback: the first enabled TEXT-capable model outside the affected set (media-generation and
-  // embedding models cost 0 and would otherwise win the cost order). The cheapest that clears the 32K
-  // main-model floor wins; if none does, the agent is left with no model rather than a too-small one.
-  let candidates: Array<{ id: string }>;
-  try {
-    const placeholders = modelIds.map(() => '?').join(',');
-    candidates = db.prepare(
-      `SELECT id FROM models WHERE is_enabled = 1 AND id NOT IN (${placeholders}) AND capabilities NOT LIKE '%generation%' AND capabilities NOT LIKE '%embedding%' AND capabilities NOT LIKE '%"decision"%' ORDER BY input_cost_per_m ASC, id ASC`
-    ).all(...modelIds) as Array<{ id: string }>;
-  } catch {
-    // If query fails, try without the exclusion
-    candidates = db.prepare(
-      `SELECT id FROM models WHERE is_enabled = 1 AND capabilities NOT LIKE '%generation%' AND capabilities NOT LIKE '%embedding%' AND capabilities NOT LIKE '%"decision"%' ORDER BY input_cost_per_m ASC, id ASC`
-    ).all() as Array<{ id: string }>;
-  }
-  const fallback = candidates.find(m => passesMainModelFloor(m.id));
-
-  const fallbackId = fallback?.id ?? null;
+  const fallbackId = cheapestAgentModel(modelIds);
 
   for (const mid of modelIds) {
     const result = db.prepare(
@@ -1793,8 +1776,18 @@ configRouter.patch('/models/:id/limits', async (c) => {
     contextWindow: 'context_window',
   };
   const sets = updates.map(([name]) => `${COLUMN[name]} = ?`).join(', ');
-  db.prepare(`UPDATE models SET ${sets}, updated_at = datetime('now') WHERE id = ?`)
-    .run(...updates.map(([, v]) => v), id);
+  // A window narrowed under the floor while agents run on the model is refused (as at num-ctx) and rolled back.
+  const before = windowOf(id);
+  let narrowed: string | null = null;
+  try {
+    db.transaction(() => {
+      db.prepare(`UPDATE models SET ${sets}, updated_at = datetime('now') WHERE id = ?`).run(...updates.map(([, v]) => v), id);
+      const after = windowOf(id);
+      narrowed = before && after && after.window < before.window && agentsOnModel(id).length > 0 ? refuseSmallMainModel(id) : null;
+      if (narrowed) throw new Error(narrowed);
+    })();
+  } catch (err) { if (!narrowed) throw err; }
+  if (narrowed) return c.json({ ok: false, error: narrowed }, 409);
 
   const row = db.prepare('SELECT * FROM models WHERE id = ?').get(id) as Record<string, unknown>;
   logger.info('Model limits updated', { modelId: id, ...Object.fromEntries(updates) });
@@ -2047,8 +2040,13 @@ configRouter.put('/settings/:key', async (c) => {
   // The 32K main-model floor for a service agent's MAIN model, and the memory fit for every local-model
   // key. Refused before any write; re-saving the stored value never is.
   if (LOCAL_MODEL_SETTING_KEYS.includes(key)) {
-    const current = (db.prepare('SELECT value FROM config WHERE key = ?').get(key) as { value: string } | undefined)?.value;
-    const refused = await (MAIN_MODEL_SETTING_KEYS.includes(key) ? refuseAgentModel(body.value, current) : refuseUnfitLocalModel(body.value, current, 'job'));
+    const agentKey = MAIN_MODEL_SETTING_KEYS.includes(key);   // judged against what its agent runs on, not the stored setting
+    const platform = await import('../../config/platform.js');
+    const agentIds: Record<string, () => string> = { healer_model_id: platform.getHealerAgentId, dreaming_model_id: platform.getDreamerAgentId, pm_agent_model: platform.getPMAgentId, trainer_agent_model: platform.getTrainerAgentId };
+    const current = agentKey
+      ? (db.prepare('SELECT model_id FROM agents WHERE id = ?').get(agentIds[key]?.()) as { model_id: string | null } | undefined)?.model_id
+      : (db.prepare('SELECT value FROM config WHERE key = ?').get(key) as { value: string } | undefined)?.value;
+    const refused = await (agentKey ? refuseAgentModel(body.value, current) : refuseUnfitLocalModel(body.value, current, 'job'));
     if (refused) return c.json({ ok: false, error: refused }, 400);
   }
 

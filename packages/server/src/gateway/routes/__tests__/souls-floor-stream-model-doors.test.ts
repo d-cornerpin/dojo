@@ -178,6 +178,23 @@ describe('the spawn door refuses a model under 32K, the main agent included', ()
   });
 });
 
+describe('a small model cannot come back through a re-save of its setting', () => {
+  it('config holds a small value while the agent row is on a big model: the same PUT is refused and the row stays', async () => {
+    setConfig('healer_model_id', 'tiny');
+    const res = await configRouter.request('/settings/healer_model_id', json('PUT', { value: 'tiny' }));
+    expect(res.status).toBe(400);
+    expect(modelOf('healer-agent')).toBe('big');
+  });
+
+  it('narrowing a window under 32K through the limits route is refused while an agent runs on the model, and nothing is written', async () => {
+    const res = await configRouter.request('/models/big/limits', json('PATCH', { contextWindow: 8_192 }));
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ ok: false, error: expect.stringMatching(PLAIN) });
+    expect(db().prepare("SELECT context_window FROM models WHERE id = 'big'").pluck().get()).toBe(128_000);
+    expect((await configRouter.request('/models/big/limits', json('PATCH', { contextWindow: 64_000 }))).status).toBe(200);
+  });
+});
+
 describe('a model deleted from under agents is replaced by one that passes the floor', () => {
   it('the cheapest replacement is skipped when it is under 32K', async () => {
     db().prepare("UPDATE models SET input_cost_per_m = 0 WHERE id = 'tiny'").run();

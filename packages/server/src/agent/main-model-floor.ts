@@ -4,6 +4,8 @@
 import { getDb } from '../db/connection.js';
 import { effectiveContextWindow, resolveNumCtx } from './model.js';
 import { refuseUnfitLocalModel } from './local-model-fit.js';
+import { createLogger } from '../logger.js';
+const logger = createLogger('main-model-floor');
 
 /** The floor, in tokens. "32K" models are advertised as 32,000 or 32,768; both pass. */
 export const MAIN_MODEL_MIN_WINDOW = 32_000;
@@ -61,13 +63,24 @@ export async function refuseAgentModel(modelId: string | null | undefined, curre
   return refuseUnfitLocalModel(modelId, currentModelId, 'agent', () => refuseSmallMainModel(modelId, currentModelId));
 }
 
+/** The one pick for "this agent needs another model": cheapest enabled text model outside `exclude` that clears the floor. */
+export function cheapestAgentModel(exclude: readonly string[] = []): string | null {
+  const rows = getDb().prepare(
+    `SELECT id FROM models WHERE is_enabled = 1 AND id NOT IN (${exclude.map(() => '?').join(',')}) AND capabilities NOT LIKE '%generation%' AND capabilities NOT LIKE '%embedding%' AND capabilities NOT LIKE '%"decision"%' ORDER BY input_cost_per_m ASC, id ASC`,
+  ).all(...exclude) as Array<{ id: string }>;
+  return rows.find((m) => refuseSmallMainModel(m.id) === null)?.id ?? null;
+}
+
 /** The model a service agent is created or reactivated on: its setting, else the main agent's. One under the floor
- *  becomes 'auto' (the router offers only models that clear it), so a service agent never starts on a small model. */
+ *  is replaced by the cheapest model that clears it ('auto' when none does), so it never starts on a small model. */
 export function serviceAgentModelId(settingKey: string, primaryId: string): string | null {
   const db = getDb();
   const picked = (db.prepare('SELECT value FROM config WHERE key = ?').get(settingKey) as { value: string } | undefined)?.value
-    ?? (db.prepare('SELECT model_id FROM agents WHERE id = ?').get(primaryId) as { model_id: string | null } | undefined)?.model_id ?? null;
-  return picked && refuseSmallMainModel(picked) ? 'auto' : picked;
+    || (db.prepare('SELECT model_id FROM agents WHERE id = ?').get(primaryId) as { model_id: string | null } | undefined)?.model_id || null;
+  if (!picked || !refuseSmallMainModel(picked)) return picked;
+  const replacement = cheapestAgentModel([picked, 'auto']) ?? 'auto';
+  logger.warn('A service agent\'s model is under the 32K floor; replaced', { settingKey, from: picked, to: replacement });
+  return replacement;
 }
 
 export function passesMainModelFloor(modelId: string): boolean { return refuseSmallMainModel(modelId) === null; }

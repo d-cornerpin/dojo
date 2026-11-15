@@ -1,5 +1,5 @@
 // A service agent created at boot takes its setting's model, else the main agent's; one under the 32K floor
-// becomes the auto-router (which offers only models that clear it), and a big one is kept.
+// is replaced by the cheapest model that clears it, and a big one is kept.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
@@ -34,10 +34,10 @@ const seedPrimary = (modelId: string): void => {
 };
 
 describe('a service agent never starts on a model under 32K', () => {
-  it('inheriting a small main model becomes auto', () => {
+  it('inheriting a small main model becomes the cheapest model that clears the floor', () => {
     seedPrimary('m-small');
     ensureTrainerAgentRunning();
-    expect(trainerModel()).toBe('auto');
+    expect(trainerModel()).toBe('m-big');
   });
 
   it('a big main model is inherited as it is', () => {
@@ -46,10 +46,28 @@ describe('a service agent never starts on a model under 32K', () => {
     expect(trainerModel()).toBe('m-big');
   });
 
-  it('a stored small setting becomes auto as well', () => {
+  it('a stored small setting is replaced the same way', () => {
     seedPrimary('m-big');
     db().prepare("INSERT INTO config (key, value) VALUES ('trainer_agent_model', 'm-small')").run();
     ensureTrainerAgentRunning();
-    expect(trainerModel()).toBe('auto');
+    expect(trainerModel()).toBe('m-big');
+  });
+});
+
+describe('the replacement for a small model', () => {
+  it('is the cheapest model that clears the floor', () => {
+    db().prepare(`INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, is_enabled, input_cost_per_m)
+      VALUES ('m-cheap', 'cloud', 'Cheap', 'cheap', '["chat","tools"]', 64000, 1, 0.1)`).run();
+    db().prepare("UPDATE models SET input_cost_per_m = 5 WHERE id = 'm-big'").run();
+    seedPrimary('m-small');
+    ensureTrainerAgentRunning();
+    expect(trainerModel()).toBe('m-cheap');
+  });
+
+  it('an empty stored setting is ignored', () => {
+    seedPrimary('m-big');
+    db().prepare("INSERT INTO config (key, value) VALUES ('trainer_agent_model', '')").run();
+    ensureTrainerAgentRunning();
+    expect(trainerModel()).toBe('m-big');
   });
 });

@@ -199,9 +199,12 @@ export async function spawnAgent(params: SpawnParams): Promise<{ agentId: string
   }
 
   const resolvedModelId = modelId === 'auto' ? 'auto' : (modelId ?? parent.model_id);
-  // The child's model, inherited or named, meets the same check as every other door (any parent, the main agent too).
-  const refused = resolvedModelId ? await import('./main-model-floor.js').then((f) => f.refuseAgentModel(resolvedModelId)) : null;
-  if (refused) throw new Error(`Spawn denied: ${refused}`);
+  // The size floor refuses any parent's child; a named model too big for memory warns the main agent. Loaded on demand.
+  const tooSmall = resolvedModelId ? await import('./main-model-floor.js').then((f) => f.refuseSmallMainModel(resolvedModelId)) : null;
+  if (tooSmall) throw new Error(`Spawn denied: ${tooSmall}`);
+  const unfit = modelId && modelId !== 'auto' ? await import('./local-model-fit.js').then((f) => f.refuseUnfitLocalModel(modelId, parent.model_id, 'agent')) : null;
+  if (unfit && !parentIsPrimary) throw new Error(`Spawn denied: ${unfit}`);
+  if (unfit) warnings.push(unfit);
   if (!resolvedModelId) {
     throw new Error('No model specified and parent has no model configured');
   }
