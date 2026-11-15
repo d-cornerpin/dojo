@@ -134,7 +134,7 @@ function getDefaultDreamModel(): string | null {
       CASE WHEN api_model_id LIKE '%sonnet%' THEN 0
            WHEN api_model_id LIKE '%gpt-4o%' THEN 1
            ELSE 2 END,
-      input_cost_per_m ASC, id ASC
+      COALESCE(input_cost_per_m, 1e18) ASC, id ASC
     LIMIT 1
   `).get() as { id: string } | undefined;
   return model?.id ?? null;

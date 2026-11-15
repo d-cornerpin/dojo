@@ -103,8 +103,10 @@ describe('the Setup screen cannot remove the pair', () => {
     expect(Object.fromEntries(listed.data.map((m) => [m.name, m.protected]))).toMatchObject({
       [STANDARD_DECISION_MODEL.tag]: true, [STANDARD_WRITER_MODEL.tag]: true, 'other:1b': false,
     });
-    const res = await setupDepsRouter.request(`/ollama/models/${encodeURIComponent(STANDARD_WRITER_MODEL.tag)}`, { method: 'DELETE' });
-    expect(res.status).toBe(409);
+    for (const model of [STANDARD_WRITER_MODEL, STANDARD_DECISION_MODEL]) {
+      const res = await setupDepsRouter.request(`/ollama/models/${encodeURIComponent(model.tag)}`, { method: 'DELETE' });
+      expect(res.status).toBe(409);
+    }
     expect(ollama.calls).not.toContain('/api/delete');
     const other = await setupDepsRouter.request('/ollama/models/other%3A1b', { method: 'DELETE' });
     expect(other.status).toBe(200);

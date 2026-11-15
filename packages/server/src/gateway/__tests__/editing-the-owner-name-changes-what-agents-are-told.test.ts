@@ -53,6 +53,13 @@ describe('editing the owner name', () => {
     expect(fs.readFileSync(file, 'utf-8')).toContain('- Name: Mr Handwritten');
   });
 
+  it('saves the name even when USER.md cannot be read', async () => {
+    fs.mkdirSync(`${HOME}/.dojo/prompts/USER.md`, { recursive: true });
+    const res = await save('owner_name', 'Alex');
+    expect(res.status).toBe(200);
+    expect(stored('owner_name')).toBe('Alex');
+  });
+
   it('migration 217 moves a name saved under the old key onto owner_name, the later edit winning', () => {
     const db = doneDb();
     const put = db.prepare('INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)');
