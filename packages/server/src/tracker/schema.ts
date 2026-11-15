@@ -608,11 +608,10 @@ function resolveIdIn(kind: 'task' | 'project', idOrPrefix: string, agentId?: str
   // into a retry loop on the same string (pinned in `__tests__/id-resolution-and-the-title-fallback.test.ts`).
   // Ask rows (kind='ask') sit outside TASK_WHERE/PROJECT_WHERE by construction. The refusal says the title
   // was tried too (`triedTitle`), so a model learns both routes failed.
-  const promise = kind === 'task' && !!agentId && !!findObligationByTypedId(agentId, input);
   if (agentId) {
     const byTitle = resolveByTitleScoped(kind, input, agentId);
     if (byTitle) return byTitle;
-    return { ok: false, reason: 'not_found', triedTitle: true, promise };
+    return { ok: false, reason: 'not_found', triedTitle: true, promise: kind === 'task' && !!findObligationByTypedId(agentId, input) };
   }
   return { ok: false, reason: 'not_found', triedTitle: false };
 }

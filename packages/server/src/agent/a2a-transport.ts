@@ -53,8 +53,6 @@ import { joinWakeFooter } from './a2a-join-footer.js';
 import { currentTurnNumber } from './v2/turn-record.js';
 import { selfWakeStandDown } from '../work/work-reaper.js';
 import { recordFloorGhost } from './v2/floor-ghost.js';
-// A2A protocol constants inlined to avoid runtime imports from @dojo/shared, which points
-// at .ts source and cannot load in production without a TS loader; types stay type-only.
 import { REPLY_NEEDED_INTENTS, type A2AIntent, type A2AEnvelope, type A2ADropReason, type ToolCall, type ChannelKind } from '@dojo/shared';
 import { resolveRecipientDisplay } from '../contacts/resolve-recipient.js';
 import { engineHandIn } from '../work/done/hand-in.js';
@@ -751,8 +749,7 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
   // Inter-agent traffic leaves `chat:message` ENTIRELY: a peer (or engine-origin) A2A delivery
   // broadcasts on the dedicated `interagent:message` lane, never the human chat feed, so no
   // visibility tier is needed to hide it, the store separation makes it structural. The row
-  // above is still the SOLE delivery vehicle; this broadcast is dashboard-only. @dojo/shared
-  // is type-only imported here (packaged-runtime import trap), so the payload is built raw.
+  // above is still the SOLE delivery vehicle; this broadcast is dashboard-only.
   broadcast({
     type: 'interagent:message',
     agentId: target.id,
