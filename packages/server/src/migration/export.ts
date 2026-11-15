@@ -41,7 +41,7 @@ function broadcastProgress(stage: string, progress: number, message: string): vo
   broadcast({
     type: 'migration:progress',
     data: { stage, progress, message },
-  } as any);
+  });
 }
 
 // Stream-encrypt a file to payload.enc and return the sha256 of the whole output (salt+iv+ciphertext)

@@ -31,7 +31,7 @@ function broadcastProgress(stage: string, progress: number, message: string): vo
   broadcast({
     type: 'migration:progress',
     data: { stage, progress, message },
-  } as any);
+  });
 }
 
 

@@ -888,7 +888,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
           };
           if (e.done) {
             updated.isStreaming = false;
-            updated.modelId = (e as any).modelId ?? null;
+            updated.modelId = e.modelId ?? null;
             updated.toolCalls = toolCallsSnapshot ?? undefined;
             if (pinnedToBottomRef.current) requestAnimationFrame(() => scrollToBottom());
           }
@@ -910,7 +910,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
               role: 'assistant' as const,
               content: e.content,
               createdAt: new Date().toISOString(),
-              modelId: (e as any).modelId ?? null,
+              modelId: e.modelId ?? null,
               isStreaming: !e.done,
             },
           ];
