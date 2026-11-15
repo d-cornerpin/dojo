@@ -101,7 +101,6 @@ export async function recordDispatchAndHold(
             toolName: tc.name,
             signature: gateSig,
             kind: destructiveKind,
-            callDescription,
             argsJson: JSON.stringify(tc.arguments ?? {}),
             heldDirectDestructiveCall: true,
             engineSeverity: diagnosticSeverity(db),

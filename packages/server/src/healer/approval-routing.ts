@@ -15,7 +15,8 @@ import { broadcast } from '../gateway/ws.js';
 import { resolveRealPathHardened, isProtectedIdentityPath } from '../agent/permissions.js';
 import { withOutboundAsyncIfAbsent, PLATFORM_SENDER } from '../agent/v2/outbound.js';
 import { homeDir } from '../home.js';
-import { healerApprovalText } from '../agent/engine-lines.js';
+import { execCallText } from '../agent/brokers/exec-seam.js';
+import { healerApprovalText, healerApprovalBody } from '../agent/engine-lines.js';
 import { tellAgentWhatDojoSent } from '../agent/dojo-voice.js';
 import { getPrimaryAgentId } from '../config/platform.js';
 
@@ -182,7 +183,6 @@ export interface FileHealerApprovalInput {
   toolName: string;
   signature: string;
   kind: string;
-  callDescription: string;
   /** True for a live gate hold; recorded only, routing uses engine severity plus presence. */
   heldDirectDestructiveCall: boolean;
   engineSeverity?: EngineSeverity | null;
@@ -198,6 +198,30 @@ export interface FileHealerApprovalResult {
   refusal: string;
   /** True when filed cleanly (a non-error "queued" result); false only when filing failed. */
   queued: boolean;
+}
+
+const FILE_EDIT_VERB: Record<string, string> = { file_write: 'replaced', file_patch: 'edited', file_append: 'added to' };
+
+/** One plain sentence for a held call: what will be done, to what, and what it affects. Built from the call itself. */
+export function describeHeldAction(toolName: string, argsJson: string | null | undefined): string {
+  let args: Record<string, unknown> = {};
+  try { args = JSON.parse(argsJson ?? '{}') as Record<string, unknown>; } catch { /* an unreadable call reads as the general case */ }
+  const filePath = typeof args.path === 'string' ? args.path : '';
+  if (filePath && FILE_EDIT_VERB[toolName]) {
+    return `Change the file "${path.basename(filePath)}" in ${path.dirname(filePath)}. It holds an agent's identity or the Dojo's settings, and its current contents would be ${FILE_EDIT_VERB[toolName]}.`;
+  }
+  const command = execCallText(toolName, args);
+  const tokens = command ? command.trim().split(/\s+/) : [];
+  const targets = tokens.slice(1).filter((t) => !t.startsWith('-'));
+  if ((tokens[0] === 'rm' || tokens[0] === 'rmdir') && targets.length > 0 && !SHELL_META_RE.test(command ?? '')) {
+    const folders = tokens[0] === 'rmdir' || tokens.some((t) => /^-[a-zA-Z]*[rR]/.test(t));
+    const list = targets.join(', ');
+    return folders
+      ? `Delete ${targets.length === 1 ? 'the folder' : 'the folders'} ${list} and everything inside. Deleted files do not go to the Trash and cannot be brought back.`
+      : `Delete ${targets.length === 1 ? 'the file' : 'the files'} ${list}. Deleted files do not go to the Trash and cannot be brought back.`;
+  }
+  if (tokens[0]) return `Run a "${path.basename(tokens[0])}" command on this Mac. It could delete or overwrite the files it touches.`;
+  return 'Make a change on this Mac that could delete or overwrite something.';
 }
 
 /**
@@ -228,18 +252,13 @@ export async function fileHealerApprovalProposal(
 
   const proposalId = uuidv4();
   const token = uuidv4();
-  // Severity is the Vitals badge tone: red for the texted class, amber for a quiet consent. Copy is
-  // engine-fixed plain language (never model-authored); the raw command rides in proposed_fix.
+  // Severity is the Vitals badge tone: red for the texted class, amber for a quiet consent. The wording is
+  // engine-fixed plain language (never model-authored); the exact call rides in approval_args_json.
   const severity = routing.surface === 'imessage' ? 'critical' : 'warning';
   const title = 'A cleanup change is waiting for your OK';
-  const description =
-    'Your self-healing helper wants to delete or change something outside its ' +
-    'normal temporary work area, so it paused and is checking with you first. ' +
-    'Nothing has been changed yet. If you decline, nothing happens and everything ' +
-    'stays exactly as it is. If you are not sure, it is safe to decline; you can ' +
-    'always ask for it again later. My suggestion: approve it only if you recognize ' +
-    'this as something you asked for.';
-  const proposedFix = `Run this action: ${input.callDescription}`;
+  const what = describeHeldAction(input.toolName, input.argsJson);
+  const description = healerApprovalBody(what);
+  const proposedFix = what;
   const evidence = JSON.stringify([
     'It paused on its own because this kind of change can delete or overwrite files.',
     'Nothing will happen unless you approve it. Declining leaves everything as it is.',
@@ -305,7 +324,7 @@ export async function fileHealerApprovalProposal(
   // Owner away with iMessage on: text the request. The proposal already stands in Vitals, so a send
   // failure is fail-open (logged, never lost).
   if (routing.surface === 'imessage') {
-    await sendHealerApprovalRequestOverIMessage(proposalId);
+    await sendHealerApprovalRequestOverIMessage(proposalId, what);
   }
 
   // A NON-error "queued" result so the turn continues: tell the agent to move on, not wait. If the owner
@@ -353,10 +372,10 @@ export function markHealerProposalAppliedBySignature(agentId: string, signature:
  * id (first 8 chars of the proposal id); a bare yes/no is ordinary chat. Refreshes notified_at on send.
  * The bridge is imported dynamically so loop.ts -> approval-routing.ts never statically links it.
  */
-async function sendHealerApprovalRequestOverIMessage(proposalId: string): Promise<void> {
+async function sendHealerApprovalRequestOverIMessage(proposalId: string, what: string): Promise<void> {
   const shortId = proposalId.slice(0, 8);
   // Labelled "Dojo:" (never "I"); the main agent is told what was sent, below.
-  const text = healerApprovalText(shortId);
+  const text = healerApprovalText(shortId, what);
 
   try {
     const bridge = await import('../services/imessage-bridge.js');

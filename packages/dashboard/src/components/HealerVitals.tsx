@@ -119,21 +119,9 @@ export const HealerVitals = () => {
                         <span className="text-sm font-medium text-ui/90">{p.title}</span>
                       </div>
                       <p className="text-xs text-ui/55 mb-1">{p.description}</p>
-                      {/* A destructive-action consent shows plain language above; the raw
-                          command/path sits behind a details expander so a non-technical
-                          owner is never shown a raw path as the question. */}
-                      {p.category === 'destructive_action' ? (
-                        <details className="mt-0.5">
-                          <summary className="text-[11px] text-ui/40 cursor-pointer hover:text-ui/60 select-none">
-                            Show the exact command
-                          </summary>
-                          <pre className="mt-1 text-[11px] text-ui/70 whitespace-pre-wrap break-all bg-ui/[0.04] rounded p-2 border border-ui/[0.06]">{p.proposed_fix}</pre>
-                        </details>
-                      ) : (
-                        <p className="text-xs text-ui/70">
-                          <span className="text-cp-amber">Suggested fix:</span> {p.proposed_fix}
-                        </p>
-                      )}
+                      <p className="text-xs text-ui/70">
+                        <span className="text-cp-amber">{p.category === 'destructive_action' ? 'It would:' : 'Suggested fix:'}</span> {p.proposed_fix}
+                      </p>
                       {(() => {
                         if (!p.evidence_json) return null;
                         let bullets: string[] = [];

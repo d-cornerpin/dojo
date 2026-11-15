@@ -21,7 +21,7 @@ beforeEach(() => { told.length = 0; });
 
 describe('every engine line is the Dojo speaking', () => {
   it('the Healer approval iMessage is labelled and never "I"', () => {
-    const t = healerApprovalText('ab12cd34');
+    const t = healerApprovalText('ab12cd34', 'Delete the folder /tmp/old and everything inside.');
     expect(t.startsWith('Dojo:')).toBe(true);
     expect(t).not.toMatch(FIRST_PERSON);
     expect(t).toContain('yes ab12cd34');

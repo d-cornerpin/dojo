@@ -3,10 +3,15 @@
 
 import { dojoVoice } from './dojo-voice-label.js';
 
-export function healerApprovalText(shortId: string): string {
+/** The card and the text share this body: what the paused change would do, and that declining is safe. */
+export function healerApprovalBody(what: string): string {
+  return `The self-healing helper paused before a change on this Mac that could delete or overwrite something. It would: ${what} `
+    + 'Nothing has changed yet. If this is not something you asked for, or you are not sure, it is safe to decline: everything stays exactly as it is.';
+}
+
+export function healerApprovalText(shortId: string, what: string): string {
   return dojoVoice(
-    'The self-healing helper needs your OK before it makes a change on this Mac that could delete or '
-    + 'overwrite something. Nothing has changed yet.\n\n'
+    `${healerApprovalBody(what)}\n\n`
     + `Reply "yes ${shortId}" to approve or "no ${shortId}" to decline. The code in the reply tells the Dojo which change it is.`,
   );
 }
