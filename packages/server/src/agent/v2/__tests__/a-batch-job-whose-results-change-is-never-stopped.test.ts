@@ -1,6 +1,7 @@
 // The owner's mailbox job, through the real turn entry (`runV2Turn`): the same search, run hundreds of
 // times, each time bringing back the next batch, is work. Nothing stops it, nothing steers it, and every
-// checkpoint window sees the job moving, so the turn parks for its continuation instead of ending.
+// checkpoint window sees the job moving, so the turn parks and its continuation finishes the job, even
+// when the agent's only in-progress task is an unrelated one, so the continuation carries no task.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
@@ -53,20 +54,32 @@ import { runMigrations } from '../../../db/migrations.js';
 import { submitUserMessage } from '../../../gateway/routes/chat.js';
 import { openTrackerTask } from '../../../work/tracker-store.js';
 import { pendingWakeups } from '../../shared-state.js';
+import { beginJobRun, endJobCarry, endJobRun } from '../../../work/task-freshness.js';
 
 const AGENT = 'agent-mail';
 type Call = { name: string; arguments: Record<string, unknown> };
 
-/** One turn of `calls`, one per model response, then a plain reply. Returns every tool result it got. */
+/** The owner asks, and the model makes `calls`, one per response, across as many turns as the job takes. */
 async function turn(calls: Call[]): Promise<string[]> {
   expect((await submitUserMessage(AGENT, 'Archive everything older than a year.')).ok).toBe(true);
+  const planned = [...calls];
   let pass = 0;
   callModelSpy.mockImplementation(async () => {
-    const call = calls[pass++];
-    const toolCalls = call ? [{ id: `c-${pass}`, ...call }] : [];
+    const call = planned.shift();
+    const toolCalls = call ? [{ id: `c-${++pass}`, ...call }] : [];
     return { content: call ? '' : 'All done.', toolCalls, inputTokens: 1, outputTokens: 1, stopReason: call ? 'tool_use' : 'end_turn' };
   });
   await runV2Turn(AGENT);
+  return results();
+}
+
+/** The park's continuation, started the way the runtime starts it: from the park's own wake. */
+async function continuation(): Promise<void> {
+  expect(beginJobRun(AGENT, 'drain'), 'the park queued its continuation').toBe(true);
+  try { await runV2Turn(AGENT); } finally { endJobRun(AGENT); }
+}
+
+function results(): string[] {
   const rows = mockDb.current!.prepare("SELECT content FROM messages WHERE agent_id = ? AND role = 'tool' ORDER BY rowid").all(AGENT) as Array<{ content: string }>;
   return rows.flatMap((r) => (JSON.parse(r.content) as Array<{ content: string }>).map((b) => b.content));
 }
@@ -81,18 +94,18 @@ beforeEach(() => {
               VALUES ('m', 'p', 'M', 'm-1', '["tools"]', 200000, 1)`).run();
   db.prepare(`INSERT INTO agents (id, name, model_id, status, config, classification) VALUES (?, 'Mail', 'm', 'idle', '{}', 'sensei')`).run(AGENT);
   db.prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('primary_agent_id', ?)").run(AGENT);
-  openTrackerTask({
-    title: 'Archive old mail', status: 'in_progress', assignedTo: AGENT, createdBy: AGENT,
-    origin: { kind: 'agent', sourceMessageId: null, turn: 1, convKey: null },
+  openTrackerTask({   // the main agent's other work, not tied to the owner's ask
+    title: 'Renew the car insurance', status: 'in_progress', assignedTo: AGENT, createdBy: AGENT,
+    origin: { kind: 'agent', sourceMessageId: null, turn: 0, convKey: null },
   });
   callModelSpy.mockReset();
   toolSpy.mockReset();
   pendingWakeups.clear();
 });
-afterEach(() => { mockDb.current?.close(); mockDb.current = null; pendingWakeups.clear(); });
+afterEach(() => { mockDb.current?.close(); mockDb.current = null; pendingWakeups.clear(); endJobCarry(AGENT); });
 
 describe('a batch job whose results change is never stopped', () => {
-  it('200 identical searches, each bringing back the next batch, all run and the job parks to continue', async () => {
+  it('300 identical searches, each bringing back the next batch, all run: the turn parks at 200 and its continuation finishes', async () => {
     let batch = 0;
     toolSpy.mockImplementation(() => {
       batch += 1;
@@ -100,12 +113,14 @@ describe('a batch job whose results change is never stopped', () => {
       return { content: `Found 50 messages (ids ${ids}, ...). ${(10_000 - batch * 50).toLocaleString('en-US')} left in the inbox.`, isError: false };
     });
     const search: Call = { name: 'gmail_search', arguments: { query: 'in:inbox older_than:1y', max_results: 50 } };
-    const seen = await turn(Array.from({ length: 260 }, () => search));
+    await turn(Array.from({ length: 300 }, () => search));
     expect(toolSpy).toHaveBeenCalledTimes(200);
-    expect(seen.filter((r) => r.includes('[Engine')), 'no stop, no refusal').toEqual([]);
+    expect(pendingWakeups.has(AGENT), 'every window moved, so the turn parked for its continuation').toBe(true);
+    await continuation();
+    expect(toolSpy).toHaveBeenCalledTimes(300);
+    expect(results().filter((r) => r.includes('[Engine')), 'no stop, no refusal').toEqual([]);
     const steers = mockDb.current!.prepare("SELECT content FROM messages WHERE agent_id = ? AND role = 'system'").all(AGENT);
     expect(steers, 'no steer').toEqual([]);
-    expect(pendingWakeups.has(AGENT), 'every window moved, so the turn parked for its continuation').toBe(true);
   });
 
   it('five searches over five date ranges are five different calls and all run', async () => {

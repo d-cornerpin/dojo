@@ -159,4 +159,22 @@ describe('a window renews only while the job moves and nobody waits', () => {
     expect(pendingWakeups.has(AGENT)).toBe(true);
   });
 
+
+  it('a continuation that carries no task parks again while its results are new, and ends when they stop', async () => {
+    carryJobWork(AGENT, [], [], { kind: 'ask', messageId: 'owner-ask' });   // the owner's job, no task tied to it
+    await gate(stateAt(76));
+    pendingWakeups.clear();
+    expect(beginJobRun(AGENT, 'drain'), 'its continuation runs').toBe(true);
+    const moving = advance(stateAt(10), { toolCallsExecutedThisTurn: 200, checkpointWindow: { atLoop: 9, atMs: Date.now(), mark: 0 } });
+    aNewCallSucceeded(moving, 1);
+    expect(await gate(moving)).toMatchObject({ directive: 'exit', reason: 'turn-time-budget' });
+    expect(pendingWakeups.has(AGENT), 'the moving continuation parks for the next one').toBe(true);
+
+    pendingWakeups.clear();
+    endTurnContext(AGENT);
+    expect(beginJobRun(AGENT, 'drain')).toBe(true);
+    expect(await gate(stateAt(76))).toMatchObject({ directive: 'exit', reason: 'turn-time-budget' });
+    expect(pendingWakeups.has(AGENT), 'a still continuation does not park').toBe(false);
+  });
+
 });

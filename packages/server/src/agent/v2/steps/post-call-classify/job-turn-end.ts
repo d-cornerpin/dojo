@@ -61,10 +61,10 @@ function storedFacts(state: AgentTurnState, agentId: string, db: Database): JobA
   };
 }
 
-/** The job's momentum as one count that only grows within a turn. */
+/** The job's momentum as one count that only grows within a turn; with no task, the repeat rule's own count. */
 export function jobProgressMark(state: AgentTurnState, agentId: string, db: Database): number {
   const f = storedFacts(state, agentId, db);
-  return f ? f.touchedThisTurn + f.novelCallsThisTurn + (f.openedThisTurn ? 1 : 0) : 0;
+  return f ? f.touchedThisTurn + f.novelCallsThisTurn + (f.openedThisTurn ? 1 : 0) : freshResults(agentId, turnContext(agentId));
 }
 
 /** May the turn take pass `loopCount + ahead`? Open inside the window (75 passes, 15 minutes); at its end it
