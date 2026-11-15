@@ -650,7 +650,8 @@ export function deleteAllForAgent(agentId: string): number {
 
 export interface ThreadReply { id: string; from: string; content: string; at: number }
 
-/** The replies on `threadId` in `askerId`'s store since `sinceMs` (epoch ms), oldest first: rows from anyone but the asker. */
+/** The replies on `threadId` in `askerId`'s store since `sinceMs` (epoch ms), oldest first: rows from anyone but
+ *  the asker. */
 export function repliesSince(askerId: string, threadId: string, sinceMs: number): ThreadReply[] {
   return getDb().prepare(`
     SELECT id, source_agent_id AS "from", content, created_at AS at

@@ -2,7 +2,8 @@
 // sweep (`runLadder`, the scheduler's `ladder` clock). Clocks are the worker's patience bound.
 //   1. A Working task with no progress for one bound: one hint to its worker.
 //   2. Still nothing one bound after the hint, or a third refused hand-in: the PM's next report names it.
-//      A hand-in the PM still decides is put before it again one bound after its last review or its questions' hold.
+//      A hand-in the PM still decides is put before it again one bound after its last review, or after its
+//      questions stop holding it.
 //   3. A hand-in the PM did not decide after two reviews, or a task sent back three times: the main agent
 //      is woken to decide another agent's task.
 //   4. The owner's card, never a text: for the main agent's own task, for a decision the main agent let
@@ -90,7 +91,8 @@ function ladderStep(workId: string, now: number): LadderStep {
     const old = now - handAt >= OWNER_FLOOR_MS;
     if (decider?.kind === 'owner') return asked(handAt) ? { reached: 4, due: null } : { reached: 3, due: owner(old) };
     if (decider?.agentId === getPMAgentId()) {
-      const last = Math.max(handAt, newest(evs, (e) => e.entry === REVIEW_MISS_ENTRY || e.entry === LADDER_ENTRY.pm, handAt)?.at ?? 0, questionsHoldUntil(workId));
+      const lastMark = newest(evs, (e) => e.entry === REVIEW_MISS_ENTRY || e.entry === LADDER_ENTRY.pm, handAt)?.at ?? 0;
+      const last = Math.max(handAt, lastMark, questionsHoldUntil(workId));
       return { reached: 2, due: now - last >= patienceBoundMs(decider.agentId) ? 'pm' : null };
     }
     const told = newest(evs, isEntry(LADDER_ENTRY.decider), handAt);

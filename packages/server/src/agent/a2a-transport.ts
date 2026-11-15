@@ -8,13 +8,17 @@ import { liveAgentsNamed, liveAgentNamesNear } from './tool-helpers.js';
 import { activeRuns } from './shared-state.js';
 import { endedMidRun } from './ended-mid-run.js';
 import { patienceFloorFor } from '../tracker/assignee-patience.js';
-import { A2A_THREAD_SHORT_LENGTH, a2aThreadShort, a2aThreadShortLegacy, extractPayloadFromA2AMessage, OWNER_ALERT_DOJO_PREFIX } from '@dojo/shared';
+import {
+  A2A_THREAD_SHORT_LENGTH, a2aThreadShort, a2aThreadShortLegacy, extractPayloadFromA2AMessage, OWNER_ALERT_DOJO_PREFIX,
+} from '@dojo/shared';
 import { tellAgentWhatDojoSent } from './dojo-voice.js';
 import { postAgentNotice } from './agent-notice.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getAgentRuntime } from './runtime.js';
-import { deliveredResult, repliesSince, insertMessageIfAbsent, insertEngineEventIfAbsent, type EngineEventWork } from '../memory/message-store.js';
+import {
+  deliveredResult, repliesSince, insertMessageIfAbsent, insertEngineEventIfAbsent, type EngineEventWork,
+} from '../memory/message-store.js';
 import { resolveOrCreateConversation } from '../memory/conversations.js';
 import { isSenderAuthorized } from './v2/channel-auth.js';
 import { a2aPayloadForModel } from '../tools/inbound-fences.js';

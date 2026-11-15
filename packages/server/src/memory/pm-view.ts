@@ -18,12 +18,17 @@ export const keepsNoSummaries = (agentId: string): boolean => isPMAgent(agentId)
 export interface PMViewParts { pinned: string; tail: Message[]; file: string; present: Message[]; room: number }
 
 /** The parts in trim priority, kept longest first: the present turn, the file, the pinned memories, the tail. */
-export function pmViewParts(agentId: string, turnContext: PromptTurnContext | undefined, contentBudget: number, block: number): PMViewParts {
+export function pmViewParts(
+  agentId: string, turnContext: PromptTurnContext | undefined, contentBudget: number, block: number,
+): PMViewParts {
   const live = liveTurnContext(agentId);
-  const { tail, present } = boardAgentRows(agentId, block, live?.turnNumber ?? null, turnContext?.engineEventKeepFullId ?? live?.triggerMessageId ?? null);
+  const trigger = turnContext?.engineEventKeepFullId ?? live?.triggerMessageId ?? null;
+  const { tail, present } = boardAgentRows(agentId, block, live?.turnNumber ?? null, trigger);
   // For one patience bound after a forced pass the view fits half its budget, so the retry assembles a smaller one.
-  const room = contextOverflowSince(agentId, Date.now() - patienceBoundMs(agentId)) ? Math.floor(contentBudget / 2) : contentBudget;
-  const task = turnContext?.counterparty?.kind === 'agent' ? tiedTask(agentId, answeredThread(agentId) ?? turnContext.counterparty.threadId) : null;
+  const forced = contextOverflowSince(agentId, Date.now() - patienceBoundMs(agentId));
+  const room = forced ? Math.floor(contentBudget / 2) : contentBudget;
+  const thread = answeredThread(agentId) ?? turnContext?.counterparty?.threadId ?? null;
+  const task = turnContext?.counterparty?.kind === 'agent' ? tiedTask(agentId, thread) : null;
   const file = task ? `The task this message is about, [${task}]:${workFile(task, Math.floor(room / 4))}` : '';
   return { pinned: pinnedContextSection(agentId).section, tail, file, present, room };
 }

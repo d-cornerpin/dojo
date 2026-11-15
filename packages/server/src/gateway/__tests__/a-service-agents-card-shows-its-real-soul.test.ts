@@ -7,7 +7,7 @@
 // ── THE MECHANISM, AS MEASURED ──
 // `GET /agents/:id/system-prompt` served, for every NON-primary agent,
 //   `SELECT content FROM messages WHERE agent_id=? AND role='system' ORDER BY rowid ASC LIMIT 1`
-// — first-system-row ARCHAEOLOGY. The engine writes `NO_REPLY_CLOSED_MARKER` as a `role='system'` row, so
+// That is first-system-row ARCHAEOLOGY. The engine writes `NO_REPLY_CLOSED_MARKER` as a `role='system'` row, so
 // the oldest system row can be that marker, and the card renders an
 // engine marker as the agent's identity.
 //

@@ -3,7 +3,9 @@ import { validationMeasureLines, reviewLedgerRoomTokens } from './job-loop-facts
 import { primaryReady } from '../agent/primary-ready.js';
 import { proofLines } from '../work/done/proof.js';
 import { latestHandIn, workerOf } from '../work/done/record.js';
-import { decidedBy, pmQuestions, questionsHoldUntil, sendBacks, REVIEW_MISS_ENTRY, QUEUED_TURN_BOUND_MS } from '../work/done/who-decides.js';
+import {
+  decidedBy, pmQuestions, questionsHoldUntil, sendBacks, REVIEW_MISS_ENTRY, QUEUED_TURN_BOUND_MS,
+} from '../work/done/who-decides.js';
 import { LADDER_ENTRY } from '../work/done/ladder.js';
 import { appendAuditEntry } from '../work/audit-trail.js';
 import { heldDeliveryLine } from './owed-delivery.js';
@@ -220,7 +222,8 @@ function stallBlock(id: string, n: number): string {
   ).all(id, id) as Array<{ payload: string }>).map((r) => (JSON.parse(r.payload) as { reasons?: string[] }).reasons?.join(' ') ?? '');
   return `${n}. STALLED: "${w.title ?? id}" [${id}], worked by ${workerOf(id)}, has made no progress past its patience bound since the engine's hint.`
     + `${w.hold ? ` It is held: ${w.hold}.` : ''}`
-    + (refused.length > 0 ? `\n  Its refused hand-ins:\n${refused.map((r, i) => `    ${i + 1}. ${r}`).join('\n')}` : '') + taskLines(id);
+    + (refused.length > 0 ? `\n  Its refused hand-ins:\n${refused.map((r, i) => `    ${i + 1}. ${r}`).join('\n')}` : '')
+    + taskLines(id);
 }
 
 /** One review miss on each row this review held that is still waiting on the same hand-in, unless it asked about it. */
@@ -248,7 +251,8 @@ export async function runPMReview(): Promise<void> {
     if (!pm?.model_id || pm.status === 'terminated') { recordMisses(pmId, held, 'the project manager could not run its review'); return; }
     // One file per project (or per task with none), each in its own room beside the blocks.
     const subjects = [...new Set([...waiting, ...stalled].map((id) => projectOf(id)?.id ?? id))];
-    const budget = contextWindowPolicy(agentTurnWindow(pmId, pm.model_id), { toolPayloadTokens: 0 }).assemblyBudgetTokens;
+    const policy = contextWindowPolicy(agentTurnWindow(pmId, pm.model_id), { toolPayloadTokens: 0 });
+    const budget = policy.assemblyBudgetTokens;
     const room = reviewLedgerRoomTokens(budget, waiting.length + stalled.length + subjects.length);
     const files = subjects.map((id) => workFile(id, room)).filter((f) => f.length > 0);
     const blocks = [

@@ -571,7 +571,8 @@ export const agentsHandlers: ToolHandlerMap = {
                 );
                 // A delivered send is a real delivery: the receipt grounds "I told <agent>"
                 // across turns. skipAudit because the auditLog row above is the provenance row.
-                const sendReceiptId = writeToolReceipt({ agentId, tool: 'send_to_agent', tier: 1, verified: true, basis: 'provider-id', providerId: result.threadId, threadId: result.threadId, recipient: agentRef, taskId: askedAbout(agentId, targetCheck?.id ?? agentRef, payload, result.threadId), sentText: payload, detail: { intent: effectiveIntent }, skipAudit: true });
+                const taskId = askedAbout(agentId, targetCheck?.id ?? agentRef, payload, result.threadId);
+                const sendReceiptId = writeToolReceipt({ agentId, tool: 'send_to_agent', tier: 1, verified: true, basis: 'provider-id', providerId: result.threadId, threadId: result.threadId, recipient: agentRef, taskId, sentText: payload, detail: { intent: effectiveIntent }, skipAudit: true });
                 // This door wrote only the reply mark, audit row and receipt, never a
                 // `deliveries` row. It is written THROUGH `recordAtDoor`, the one ledger
                 // writer, so inside an outbound scope it folds into that scope's single row

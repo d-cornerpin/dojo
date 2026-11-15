@@ -1,7 +1,7 @@
 // WHO DECIDES a handed-in task: the PM, until two verdictless reviews or three send-backs; then the main agent
 // (another agent's task) or the owner (the main agent's own). A task the PM worked starts with the main agent.
-// Never a worker of the task (`workersOf`): then the owner. An open PM question keeps a hand-in out of the PM's reviews,
-// so none counts against it (`pmQuestions`); it delays the escalation and never reverses one.
+// Never a worker of the task (`workersOf`): then the owner. An open PM question keeps a hand-in out of the PM's
+// reviews, so none counts against it (`pmQuestions`): it delays the escalation and never reverses one.
 import { REPLY_NEEDED_INTENTS, a2aThreadTokenMatchesSql } from '@dojo/shared';
 import { getDb } from '../../db/connection.js';
 import { getPMAgentId, getPrimaryAgentId } from '../../config/platform.js';
@@ -17,7 +17,8 @@ export type Decider = { kind: 'agent'; agentId: string } | { kind: 'owner' };
 const PM_ASKS_BEFORE_ESCALATION = 2;
 export const SEND_BACKS_BEFORE_ESCALATION = 3;
 export const REVIEW_MISS_ENTRY = 'review_miss';
-export const QUEUED_TURN_BOUND_MS = 30 * 60_000;   // the wait for an agent turn that never runs: a queued review, an answer
+/** The wait for an agent's turn that never runs: a queued review, or the turn that answers a question. */
+export const QUEUED_TURN_BOUND_MS = 30 * 60_000;
 
 /** The PM's reviews of this row since its newest hand-in that gave no verdict. */
 function pmMissesSinceHandIn(workId: string): number {
@@ -64,7 +65,9 @@ export function pmQuestions(workId: string, everAsked = false): PMQuestion[] {
       FROM tool_receipts r
      WHERE r.task_id = ? AND r.agent_id = ? AND r.thread_id IS NOT NULL
        AND (? OR unixepoch(r.created_at) >= (
-             SELECT COALESCE(MAX(created_at), 0) / 1000 FROM work_events WHERE work_id = r.task_id AND kind = 'handed_in'))
+             SELECT COALESCE(MAX(created_at), 0) / 1000
+               FROM work_events
+              WHERE work_id = r.task_id AND kind = 'handed_in'))
      ORDER BY r.created_at, r.rowid
   `).all(workId, pm, everAsked ? 1 : 0) as Array<Omit<PMQuestion, 'answers' | 'until'> & { intent: string }>;
   const asks = rows.filter((q) => REPLY_NEEDED_INTENTS.has(q.intent));
@@ -75,21 +78,22 @@ export function pmQuestions(workId: string, everAsked = false): PMQuestion[] {
   });
 }
 
-/** The fixed end of a question's hold: its answer; else one patience bound after the asked agent's first turn that
- *  ended within `QUEUED_TURN_BOUND_MS` of it; else that bound. Never later than both together, and never moved. */
+/** The fixed end of a question's hold: one patience bound after the asked agent's first turn that ended within
+ *  `QUEUED_TURN_BOUND_MS` of it, else that bound; sooner if it was answered. Once passed, it never moves. */
 function holdEnd(asked: string | null, at: number, answeredAt: number | null): number {
-  const latest = at + QUEUED_TURN_BOUND_MS + patienceBoundMs(asked);
-  if (answeredAt !== null) return Math.min(answeredAt, latest);
   const ended = (getDb().prepare(`
     SELECT MIN(unixepoch(ended_at)) * 1000 AS t
       FROM turns
      WHERE agent_id = ? AND ended_at IS NOT NULL AND unixepoch(ended_at) * 1000 BETWEEN ? AND ?
   `).get(asked, at, at + QUEUED_TURN_BOUND_MS) as { t: number | null }).t;
-  return ended === null ? at + QUEUED_TURN_BOUND_MS : ended + patienceBoundMs(asked);
+  const end = ended === null ? at + QUEUED_TURN_BOUND_MS : ended + patienceBoundMs(asked);
+  return answeredAt === null ? end : Math.min(answeredAt, end);
 }
 
 /** Until when the PM's questions hold this hand-in (0 when it asked none); it holds while this is in the future. */
-export const questionsHoldUntil = (workId: string): number => Math.max(0, ...pmQuestions(workId).map((q) => q.until));
+export function questionsHoldUntil(workId: string): number {
+  return Math.max(0, ...pmQuestions(workId).map((q) => q.until));
+}
 
 /** The decider for this row now; null when there is no such row. */
 export function whoDecides(workId: string): Decider | null {
@@ -104,8 +108,13 @@ export function whoDecides(workId: string): Decider | null {
 
 /** The hand-ins `agentId` decides now, oldest first. */
 export function decidedBy(agentId: string): string[] {
-  const rows = getDb().prepare(`SELECT w.id FROM work w WHERE ${taskScope('w')} AND w.state = 'handed_in' ORDER BY w.updated_at`).all() as Array<{ id: string }>;
-  return rows.map((r) => r.id).filter((id) => { const d = whoDecides(id); return d?.kind === 'agent' && d.agentId === agentId; });
+  const rows = getDb().prepare(
+    `SELECT w.id FROM work w WHERE ${taskScope('w')} AND w.state = 'handed_in' ORDER BY w.updated_at`,
+  ).all() as Array<{ id: string }>;
+  return rows.map((r) => r.id).filter((id) => {
+    const d = whoDecides(id);
+    return d?.kind === 'agent' && d.agentId === agentId;
+  });
 }
 
 /** The hand-in a send is about, from records only: the one its thread, or the thread the turn answers, is tied to;
@@ -114,7 +123,10 @@ export function askedAbout(agentId: string, recipientId: string, payload: string
   const tied = tiedTask(agentId, threadId) ?? tiedTask(agentId, answeredThread(agentId));
   if (tied) return tied;
   const mine = decidedBy(agentId);
-  return mine.length === 1 ? mine[0] : mine.find((id) => workersOf(id).has(recipientId)) ?? mine.find((id) => payload.includes(id.slice(0, 8))) ?? null;
+  if (mine.length === 1) return mine[0];
+  return mine.find((id) => workersOf(id).has(recipientId))
+    ?? mine.find((id) => payload.includes(id.slice(0, 8)))
+    ?? null;
 }
 
 /** The thread the agent's live turn answers: the root's full id, else the address's short token. */

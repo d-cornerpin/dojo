@@ -14,7 +14,8 @@ import { msToUtcText, tsToMs } from './tracker-view.js';
 const OWNER_WORDS_EXCERPT_CHARS = 400;   // a display excerpt; history_get returns the whole message
 const FRAME_TOKENS = 64;                 // the section headings and the left-out lines
 
-/** The owner's later words the engine recorded against this task or project: what a decision-type close is judged on. */
+/** The owner's later words the engine recorded against this task or project: what a decision-type close is
+ *  judged on. */
 export function ownerWordsLines(workId: string, what = 'task'): string {
   const laters = readLaterMessages(workId);
   if (laters.length === 0) return `\n  Owner words recorded on this ${what}: none`;
@@ -27,7 +28,8 @@ export function ownerWordsLines(workId: string, what = 'task'): string {
       : flat;
     return `    message ${id}: "${cut}"`;
   });
-  return `\n  Owner words recorded on this ${what} (sent while it was open; the turn that answered them touched it):\n${shown.join('\n')}`;
+  const why = 'sent while it was open; the turn that answered them touched it';
+  return `\n  Owner words recorded on this ${what} (${why}):\n${shown.join('\n')}`;
 }
 
 /** The project a task belongs to, or the work itself when it is a project; null for a task with none. */
@@ -81,7 +83,9 @@ function exchangeLines(taskIds: string[]): Dated[] {
       const shown = cut && first !== words ? `${first}... (history_get(id="${a.id}") returns it whole)` : words;
       return `\n      ${msToUtcText(a.at)} ${nameOf(a.from)} answered: ${shown}`;
     }).join('');
-    const none = q.until > Date.now() ? `\n      waiting for an answer until ${msToUtcText(q.until)}` : '\n      no answer';
+    const none = q.until > Date.now()
+      ? `\n      waiting for an answer until ${msToUtcText(q.until)}`
+      : '\n      no answer';
     const at = q.answers[q.answers.length - 1]?.at ?? q.at;
     return { at, text: asked + (said(false) || none), short: asked + (said(true) || none) };
   }));
@@ -101,21 +105,23 @@ function newestThatFit(lines: Dated[], room: number): { kept: string[]; left: nu
   return { kept: kept.reverse(), left, omitted: newest.length - kept.length };
 }
 
-const omittedLine = (n: number, what: string, where: string): string => (n > 0 ? `\n    ${n} older ${what} left out (${where})` : '');
+function omittedLine(n: number, what: string, where: string): string {
+  return n > 0 ? `\n    ${n} older ${what} left out (${where})` : '';
+}
 
 /** The file of `workId`'s project, or of the task alone when it has none, inside `room` tokens: the project line and
  *  the owner's words always; then the newest notes; then the newest reviews and questions. Empty when there is none. */
 export function workFile(workId: string, room: number): string {
   const project = projectOf(workId);
-  const tasks = project
-    ? (getDb().prepare('SELECT id FROM work WHERE parent_id = ?').all(project.id) as Array<{ id: string }>).map((r) => r.id)
-    : [workId];
+  const taskRows = project ? getDb().prepare('SELECT id FROM work WHERE parent_id = ?').all(project.id) : [];
+  const tasks = project ? (taskRows as Array<{ id: string }>).map((r) => r.id) : [workId];
+  const approach = project ? planOfProject(project.id)?.approach ?? '(no plan)' : '';
   const head = project
-    ? `\n  Project "${project.title ?? project.id}" [${project.id}]: ${planOfProject(project.id)?.approach ?? '(no plan)'}`
-      + ownerWordsLines(project.id, 'project')
+    ? `\n  Project "${project.title ?? project.id}" [${project.id}]: ${approach}${ownerWordsLines(project.id, 'project')}`
     : '';
   const notes = newestThatFit(project ? noteLines(project.id) : [], room - FRAME_TOKENS - estimateTokens(head));
-  const timed = newestThatFit([...(project ? reviewLines(project.id) : []), ...exchangeLines(tasks)], notes.left);
+  const reviews = project ? reviewLines(project.id) : [];
+  const timed = newestThatFit([...reviews, ...exchangeLines(tasks)], notes.left);
   if (!project && timed.kept.length === 0) return '';
   const noteText = project
     ? `\n  The project's notes:${notes.kept.join('') || ' none'}`

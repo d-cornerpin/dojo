@@ -796,6 +796,76 @@ function tailRender(payload: TailPayload): LaneRender<TailPayload> {
   return { messages, tokens: rowTokens(payload.rows) + rowTokens(payload.served ?? []), payload };
 }
 
+/** The PM's view (`memory/pm-view.ts`), fitted in trim priority: the present turn, the task's file, the pinned
+ *  memories, then the conversation tail. Nothing leaves it unsummarised: what is not shown stays stored. */
+function assemblePMView(a: {
+  agentId: string; modelId: string; systemPrompt: string; systemTokens: number; turnContext?: PromptTurnContext;
+  policy: ReturnType<typeof contextWindowPolicy>; contentBudget: number; offTheTop: number; dryRun: boolean;
+}): AssembledContext {
+  const { agentId, policy } = a;
+  const block = tailTrimBlockGroups(policy.freshTailCount);
+  const v = pmViewParts(agentId, a.turnContext, a.contentBudget, block);
+  const present = budgetFreshTail(v.present, v.room, block);
+  let left = v.room - rowTokens(present);
+  const file = estimateTokens(v.file) <= left ? v.file : '';
+  left -= estimateTokens(file);
+  const pinned = estimateTokens(v.pinned) <= left ? v.pinned : '';
+  left -= estimateTokens(pinned);
+  const conversation = chargeTurnAttachments(agentId, a.modelId, v.tail, v.room);
+  const tail = budgetFreshTail(conversation, Math.max(0, left), block);
+  if (a.dryRun) {
+    const kept = [...tail, ...present];
+    const fit = { budget: a.contentBudget, cached: 0, before: kept, kept, outOfViewThroughSeq: 0 };
+    const view = viewOf(fit, policy, a.systemTokens);
+    return {
+      systemPrompt: a.systemPrompt, systemVolatile: '', messages: [], reserveTokens: policy.toolAndOutputReserve,
+      view: { ...view, leavingThroughSeq: 0, leavingRows: 0, leavingTokens: 0 },
+    };
+  }
+  const past = tailRender({ rows: tail, agentId, dropped: 0 });
+  const now = tailRender({ rows: present, agentId, dropped: 0 });
+  tagMessageLanes(past.messages, 'lane.pm-tail');
+  tagMessageLanes(now.messages, 'lane.pm-tail');
+  const text = (t: string, lane: string): LaneMessage[] =>
+    (t ? [tagMessageLane({ role: 'user' as const, content: t }, lane)] : []);
+  const messages = applyIntegrityPass(
+    [...text(pinned, 'lane.vault'), ...past.messages, ...text(file, 'lane.pm-tail'), ...now.messages], agentId,
+  );
+  const spent = renderTokens(messages);
+  const report: AllocationReport = {
+    budgetTokens: a.contentBudget,
+    reservedTokens: 0,
+    spentTokens: spent,
+    offTheTopTokens: a.offTheTop,
+    grants: [{
+      id: 'lane.pm-tail',
+      slot: MessageSlot.FreshTail,
+      priority: LANE_PRIORITY['lane.fresh-tail'],
+      requested: past.tokens + now.tokens,
+      granted: spent,
+      status: messages.length > 0 ? 'admitted' : 'empty',
+      reason: `the board is its memory: pinned memories, ${tail.length} conversation row(s), `
+        + `${present.length} row(s) of the present turn`,
+    }],
+    admittedIds: messages.length > 0 ? ['lane.pm-tail'] : [],
+    overBudget: [],
+  };
+  logger.debug('PM agent context assembled', {
+    agentId, systemTokens: a.systemTokens, messageCount: messages.length, viewTokens: spent,
+  }, agentId);
+  return {
+    systemPrompt: a.systemPrompt,
+    systemVolatile: '',
+    messages,
+    messageEntryIds: collectMessageLaneIds(messages),
+    freshTailDropped: 0,
+    outOfViewThroughSeq: 0,
+    reserveTokens: policy.toolAndOutputReserve,
+    allocation: report,
+    consumedOneShotFlags: {},
+  };
+}
+
 async function assembleMessageContext(
   agentId: string,
   modelId: string,
@@ -833,32 +903,10 @@ async function assembleMessageContext(
   const loopTailExtra = otherThreadsReserveExtra(agentId, liveTurnContext(agentId)?.conversationId ?? null, otherThreadsRoomTokens(maxTokens, systemPrompt));
   const ladder = reserveLadderFor(maxTokens - systemTokens, loopTailExtra);
   const offTheTop = ladder.offTheTop;
-  const contentBudget = Math.max(0, maxTokens - systemTokens - offTheTop);   // the PM's view is fitted to this too: the loop's appends need room
+  // The PM's view is fitted to this too: the loop's appends need room.
+  const contentBudget = Math.max(0, maxTokens - systemTokens - offTheTop);
   if (keepsNoSummaries(agentId)) {
-    const block = tailTrimBlockGroups(policy.freshTailCount);
-    const v = pmViewParts(agentId, turnContext, contentBudget, block);
-    const present = budgetFreshTail(v.present, v.room, block);
-    const file = estimateTokens(v.file) <= v.room - rowTokens(present) ? v.file : '';
-    const pinned = estimateTokens(v.pinned) <= v.room - rowTokens(present) - estimateTokens(file) ? v.pinned : '';
-    const tail = budgetFreshTail(chargeTurnAttachments(agentId, modelId, v.tail, v.room), Math.max(0, v.room - rowTokens(present) - estimateTokens(file) - estimateTokens(pinned)), block);
-    const kept = [...tail, ...present];
-    // Nothing leaves this view unsummarised: what is not shown stays stored and found by search.
-    if (dryRun) return { systemPrompt, systemVolatile: '', messages: [], reserveTokens: policy.toolAndOutputReserve,
-      view: { ...viewOf({ budget: contentBudget, cached: 0, before: kept, kept, outOfViewThroughSeq: 0 }, policy, systemTokens), leavingThroughSeq: 0, leavingRows: 0, leavingTokens: 0 } };
-    const [pm, now] = [tailRender({ rows: tail, agentId, dropped: 0 }), tailRender({ rows: present, agentId, dropped: 0 })];
-    tagMessageLanes(pm.messages, 'lane.pm-tail');
-    tagMessageLanes(now.messages, 'lane.pm-tail');
-    const text = (t: string, lane: string): LaneMessage[] => (t ? [tagMessageLane({ role: 'user' as const, content: t }, lane)] : []);
-    const messages = applyIntegrityPass([...text(pinned, 'lane.vault'), ...pm.messages, ...text(file, 'lane.pm-tail'), ...now.messages], agentId);
-    const report: AllocationReport = {
-      budgetTokens: contentBudget, reservedTokens: 0, spentTokens: renderTokens(messages), offTheTopTokens: offTheTop,
-      grants: [{ id: 'lane.pm-tail', slot: MessageSlot.FreshTail, priority: LANE_PRIORITY['lane.fresh-tail'], requested: pm.tokens + now.tokens, granted: renderTokens(messages),
-        status: messages.length > 0 ? 'admitted' : 'empty', reason: `the board is its memory: pinned memories, ${tail.length} conversation row(s), ${present.length} row(s) of the present turn` }],
-      admittedIds: messages.length > 0 ? ['lane.pm-tail'] : [], overBudget: [],
-    };
-    logger.debug('PM agent context assembled', { agentId, systemTokens, messageCount: messages.length, viewTokens: renderTokens(messages) }, agentId);
-    return { systemPrompt, systemVolatile: '', messages, messageEntryIds: collectMessageLaneIds(messages), freshTailDropped: 0, outOfViewThroughSeq: 0,
-      reserveTokens: policy.toolAndOutputReserve, allocation: report, consumedOneShotFlags: {} };
+    return assemblePMView({ agentId, modelId, systemPrompt, systemTokens, turnContext, policy, contentBudget, offTheTop, dryRun: !!dryRun });
   }
 
   // The scaffolding lanes render unconditionally: a gate firing at session start and for five turns past the
