@@ -82,7 +82,6 @@ vi.mock('../outbound-ledger.js', async (importOriginal) => ({
 vi.mock('../../../memory/deliveries-lane.js', () => ({ renderDeliveriesLaneMessage: () => null }));
 vi.mock('../../../work/obligations.js', () => ({ buildOpenWorkInjection: () => null }));
 vi.mock('../receipt.js', () => ({ writeContextReceipt: () => undefined }));
-vi.mock('../../../router/probe.js', () => ({ maybeProbe: () => undefined }));
 vi.mock('../../../router/decide.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../router/decide.js')>()),
   decideTier: async () => ({ tier: 'heavy', method: 'semantic', confidence: 0.9, scores: [], rawScore: 0, latencyMs: 1, headVersion: null, queryPreview: '' }),
@@ -162,7 +161,7 @@ async function oneTurn(configured: string): Promise<string> {
   state = advance(assembled.state, { phase: CALL_LLM_PHASE });
   const ctx: CallLLMContext = {
     agentId: AGENT, turnCtx: tc, turnNumber: 91, db: db(), counterparty: OWNER as unknown as CallLLMContext['counterparty'],
-    isA2ATurn: false, isAutoRouted, lastUserMessageContent: ASK, selection: assembled.selection,
+    isA2ATurn: false, isAutoRouted, selection: assembled.selection,
     messages: assembled.messages, systemPrompt: assembled.systemPrompt, assembled: assembled.assembled,
     modelContext: assembled.modelContext, volatileFrom: assembled.volatileFrom, steerAwaitingConfirm: assembled.steerAwaitingConfirm,
     assemblyTurnContext: assembled.assemblyTurnContext, revertTriggerStampOnAbort: () => undefined,

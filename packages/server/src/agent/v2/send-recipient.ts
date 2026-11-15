@@ -5,7 +5,6 @@
 // Both read the turn's address (turn-address.ts); A2A is not here, send_to_agent names its peer.
 
 import type { ChannelKind, ToolResult } from '@dojo/shared';
-import { turnContext } from '../turn-context.js';
 import { outboundChannelForTool, outboundRecipientForTool } from './outbound.js';
 import { describeAddressee, deliveryLabel, type TurnAddress } from './turn-address.js';
 import { resolveRecipientDisplay } from '../../contacts/resolve-recipient.js';

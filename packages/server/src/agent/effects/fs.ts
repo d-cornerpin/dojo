@@ -37,11 +37,6 @@ export function statSync(target: fs.PathLike): fs.Stats {
   return fs.statSync(target);
 }
 
-export function lstatSync(target: fs.PathLike): fs.Stats {
-  check('fs_stat', target);
-  return fs.lstatSync(target);
-}
-
 // ── Reads ───────────────────────────────────────────────────────────────────
 
 export function readFileSync(target: fs.PathLike, encoding: BufferEncoding): string;
@@ -72,15 +67,6 @@ export function writeFileSync(
   fs.writeFileSync(target, data, options);
 }
 
-export function appendFileSync(
-  target: fs.PathLike,
-  data: string | Uint8Array,
-  options?: fs.WriteFileOptions,
-): void {
-  check('fs_write', target);
-  fs.appendFileSync(target, data, options);
-}
-
 /** `mkdir -p` under a path this call is authorized to write. */
 export function mkdirSync(target: fs.PathLike, options?: fs.MakeDirectoryOptions): void {
   check('fs_mkdir', target);
@@ -94,23 +80,11 @@ export function copyFileSync(src: fs.PathLike, dest: fs.PathLike): void {
   fs.copyFileSync(src, dest);
 }
 
-/** A rename removes one name and creates another; both are writes. */
-export function renameSync(from: fs.PathLike, to: fs.PathLike): void {
-  check('fs_write', from);
-  check('fs_write', to);
-  fs.renameSync(from, to);
-}
-
 // ── Removals ────────────────────────────────────────────────────────────────
 
 export function unlinkSync(target: fs.PathLike): void {
   check('fs_delete', target);
   fs.unlinkSync(target);
-}
-
-export function rmSync(target: fs.PathLike, options?: fs.RmOptions): void {
-  check('fs_delete', target);
-  fs.rmSync(target, options);
 }
 
 // WRITE A FILE ATOMICALLY: temp sibling then rename (atomic on one filesystem), so a

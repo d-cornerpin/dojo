@@ -55,8 +55,8 @@ import {
 } from '@dojo/shared';
 import { deriveLegacyGrants } from '../derive.js';
 import {
-  getAccessGrants, forgetAccessGrants, mayUseChannel, channelTierFor, hasChannelMaster,
-  integrationLevelFor, holdsCredentialGrant, toolCategoryGranted,
+  getAccessGrants, forgetAccessGrants, mayUseChannel, channelTierFor, integrationLevelFor,
+  holdsCredentialGrant, toolCategoryGranted,
 } from '../read.js';
 import { materializeAccessGrants, writeGrantsIfAbsent } from '../materialize.js';
 import { channelForTool, CHANNEL_TOOLS } from '../channels.js';
@@ -184,8 +184,6 @@ describe('owner ruling 3 — the snapshot reproduces today’s effective access'
   it('every non-sensei agent gets a master switch, and it is OFF', () => {
     const g = deriveLegacyGrants('worker');
     expect(g.channels.master).toBe(false);
-    expect(hasChannelMaster('worker')).toBe(true);
-    expect(hasChannelMaster(FXID.n6)).toBe(false);
   });
 
   it('Plaud and the credential vault are snapshot as they are today: everyone', () => {

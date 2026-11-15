@@ -1,12 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  initState,
-  advance,
-  validate,
-  bumpRecoveryStreak,
-  bumpLoopSignature,
-  StateValidationError,
-  type AgentTurnState,
+  initState, advance, validate, bumpLoopSignature, StateValidationError, type AgentTurnState,
 } from '../state.js';
 
 function freshState(): AgentTurnState {
@@ -116,23 +110,6 @@ describe('validate', () => {
     }));
     const s = { ...freshState(), toolCalls: longBatch };
     expect(() => validate(s)).toThrow(/unreasonable tool call batch/);
-  });
-});
-
-describe('bumpRecoveryStreak', () => {
-  it('starts a fresh streak when prev is null', () => {
-    expect(bumpRecoveryStreak(null, 'vision_mismatch'))
-      .toEqual({ kind: 'vision_mismatch', count: 1 });
-  });
-
-  it('increments same-kind streak', () => {
-    expect(bumpRecoveryStreak({ kind: 'vision_mismatch', count: 2 }, 'vision_mismatch'))
-      .toEqual({ kind: 'vision_mismatch', count: 3 });
-  });
-
-  it('resets on different kind', () => {
-    expect(bumpRecoveryStreak({ kind: 'vision_mismatch', count: 2 }, 'context_overflow'))
-      .toEqual({ kind: 'context_overflow', count: 1 });
   });
 });
 

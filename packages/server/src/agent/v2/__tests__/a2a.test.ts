@@ -1,18 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import type { ToolCall } from '@dojo/shared';
 import {
-  a2aReplyEnforcer,
-  a2aIntentValidator,
-  parseA2ATrigger,
-  REPLY_NEEDED_INTENTS,
-  TERMINAL_INTENTS,
-  REOPEN_INTENTS,
-  A2A_HOP_LIMIT,
+  a2aReplyEnforcer, parseA2ATrigger, REPLY_NEEDED_INTENTS,
 } from '../classifiers/a2a.js';
-
-function tc(args: Record<string, unknown>, name = 'send_to_agent'): ToolCall {
-  return { id: 'tc_a2a', name, arguments: args };
-}
 
 describe('a2aReplyEnforcer', () => {
   const base = {
@@ -57,81 +46,6 @@ describe('a2aReplyEnforcer', () => {
   });
 });
 
-describe('a2aIntentValidator', () => {
-  const base = {
-    call: tc({ agent: 'b', intent: 'QUESTION', message: 'hi' }),
-    threadIsClosed: false,
-    hopCount: 0,
-  };
-
-  it('returns ok for non-A2A tool calls', () => {
-    const r = a2aIntentValidator({ ...base, call: tc({ path: '/x' }, 'file_read') });
-    expect(r.decision).toBe('ok');
-  });
-
-  it('rejects send_to_agent without intent', () => {
-    const r = a2aIntentValidator({ ...base, call: tc({ agent: 'b', message: 'hi' }) });
-    expect(r.decision).toBe('reject');
-    if (r.decision === 'reject') {
-      expect(r.reason).toContain('intent');
-    }
-  });
-
-  it('rejects send_to_agent with empty intent', () => {
-    const r = a2aIntentValidator({ ...base, call: tc({ agent: 'b', intent: '', message: 'hi' }) });
-    expect(r.decision).toBe('reject');
-  });
-
-  it('accepts valid send_to_agent', () => {
-    const r = a2aIntentValidator(base);
-    expect(r.decision).toBe('ok');
-  });
-
-  it('rejects terminal intent on closed thread', () => {
-    const r = a2aIntentValidator({
-      ...base,
-      call: tc({ agent: 'b', intent: 'ANSWER', thread_id: 'thr-1', message: 'k' }),
-      threadIsClosed: true,
-    });
-    expect(r.decision).toBe('reject');
-    if (r.decision === 'reject') {
-      expect(r.reason).toContain('closed');
-    }
-  });
-
-  it('allows QUESTION/BLOCK/ASSIGN to reopen a closed thread', () => {
-    for (const intent of ['QUESTION', 'BLOCK', 'ASSIGN']) {
-      const r = a2aIntentValidator({
-        ...base,
-        call: tc({ agent: 'b', intent, thread_id: 'thr-1', message: 'k' }),
-        threadIsClosed: true,
-      });
-      expect(r.decision).toBe('ok');
-    }
-  });
-
-  it('rejects when hop count reaches the limit', () => {
-    const r = a2aIntentValidator({ ...base, hopCount: A2A_HOP_LIMIT });
-    expect(r.decision).toBe('reject');
-    if (r.decision === 'reject') {
-      expect(r.reason).toContain('hop limit');
-    }
-  });
-
-  it('accepts when hop count is just under the limit', () => {
-    const r = a2aIntentValidator({ ...base, hopCount: A2A_HOP_LIMIT - 1 });
-    expect(r.decision).toBe('ok');
-  });
-
-  it('also validates broadcast_to_group', () => {
-    const r = a2aIntentValidator({
-      ...base,
-      call: tc({ group_id: 'g1', message: 'hi' }, 'broadcast_to_group'),
-    });
-    expect(r.decision).toBe('reject');
-  });
-});
-
 describe('parseA2ATrigger', () => {
   it('returns null for null input', () => {
     expect(parseA2ATrigger(null)).toBeNull();
@@ -167,7 +81,5 @@ describe('parseA2ATrigger', () => {
     expect(REPLY_NEEDED_INTENTS.has('ASSIGN')).toBe(true);
     expect(REPLY_NEEDED_INTENTS.has('BLOCK')).toBe(true);
     expect(REPLY_NEEDED_INTENTS.has('FYI')).toBe(false);
-    expect(TERMINAL_INTENTS.has('ANSWER')).toBe(true);
-    expect(REOPEN_INTENTS.has('QUESTION')).toBe(true);
   });
 });

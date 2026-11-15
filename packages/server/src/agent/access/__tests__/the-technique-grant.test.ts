@@ -61,13 +61,11 @@ import { runMigrations } from '../../../db/migrations.js';
 import { generateTechniqueIndex } from '../../../techniques/index-builder.js';
 import { executeTechniqueRead, executeListTechniques } from '../../../techniques/tools.js';
 import { renderEquippedTechniques } from '../../../prompt/assembler.js';
-import { forgetAccessGrants, mayUseTechnique, techniqueGrantFor, holdsTechniqueGrant } from '../read.js';
+import { forgetAccessGrants, mayUseTechnique } from '../read.js';
 import { deriveLegacyGrants } from '../derive.js';
 import { grantExcesses, mergeGrants, clampGrantsTo, grantsDelta, validateGrants } from '../authorize.js';
 import { ACCESS_PRESETS } from '../presets.js';
-import {
-  MOST_RESTRICTIVE_GRANTS, cloneGrants, techniqueGrantOf, techniqueGranted, holdsAnyTechniqueGrant,
-} from '@dojo/shared';
+import { MOST_RESTRICTIVE_GRANTS, cloneGrants, techniqueGrantOf, techniqueGranted } from '@dojo/shared';
 import type { AccessGrants } from '@dojo/shared';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -130,13 +128,11 @@ describe('the techniques section of the grants object', () => {
     const g = pre as unknown as AccessGrants;
     expect(techniqueGrantOf(g)).toBe('*');
     expect(techniqueGranted(g, 'anything')).toBe(true);
-    expect(holdsAnyTechniqueGrant(g)).toBe(true);
   });
 
   it('ruling 2\'s default grants NONE — a standing procedure is granted explicitly', () => {
     expect(MOST_RESTRICTIVE_GRANTS.techniques).toEqual([]);
     expect(techniqueGranted(MOST_RESTRICTIVE_GRANTS, 'alpha')).toBe(false);
-    expect(holdsAnyTechniqueGrant(MOST_RESTRICTIVE_GRANTS)).toBe(false);
   });
 
   it('the A1 SNAPSHOT answers `\'*\'`, because that is what HEAD measured', () => {
@@ -145,14 +141,11 @@ describe('the techniques section of the grants object', () => {
     // honest snapshot of "which techniques does this agent hold" is therefore
     // "all of them", which is what makes A4 invisible to the 111 live rows.
     agent('anyone');
-    expect(techniqueGrantFor('anyone')).toBe('*');
     expect(mayUseTechnique('anyone', 'alpha')).toBe(true);
-    expect(holdsTechniqueGrant('anyone')).toBe(true);
   });
 
   it('a row stored BEFORE A4 (no key at all) still holds everything', () => {
     agentWithPreA4Grants('legacy');
-    expect(techniqueGrantFor('legacy')).toBe('*');
     expect(mayUseTechnique('legacy', 'beta')).toBe(true);
   });
 });

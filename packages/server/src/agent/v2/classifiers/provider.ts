@@ -3,7 +3,7 @@
 // instead of injuring it and waiting for a human. Returns null when the
 // error is not recoverable: those go through other recovery-cascade paths.
 
-import type { ErrorKind, ErrorContext } from '../error-format.js';
+import type { ErrorContext } from '../error-format.js';
 import { AssemblyValidationError } from '../../../memory/assembly-validation.js';
 import {
   classifyProviderErrorText,

@@ -39,7 +39,7 @@ vi.mock('../../logger.js', () => ({
   }),
 }));
 
-import { assertPublicHttpTarget, NetGuardError, isPrivateAddress, privateAddressClass } from '../net-guard.js';
+import { assertPublicHttpTarget, NetGuardError, privateAddressClass } from '../net-guard.js';
 import { webFetch } from '../web-tools.js';
 
 /** DNS answer shape `dns.lookup(host, { all: true })` returns. */
@@ -225,16 +225,6 @@ describe('isPrivateAddress / privateAddressClass', () => {
     expect(privateAddressClass('10.0.0.5')).toMatch(/private/i);
     expect(privateAddressClass('fc00::1')).toMatch(/unique-local|private/i);
     expect(privateAddressClass('93.184.216.34')).toBeNull();
-  });
-
-  it('fails closed on anything that is not an IP address', () => {
-    expect(isPrivateAddress('example.com')).toBe(true);
-    expect(isPrivateAddress('')).toBe(true);
-    expect(isPrivateAddress('999.999.999.999')).toBe(true);
-  });
-
-  it('strips an IPv6 zone id before judging (fe80::1%en0)', () => {
-    expect(isPrivateAddress('fe80::1%en0')).toBe(true);
   });
 });
 

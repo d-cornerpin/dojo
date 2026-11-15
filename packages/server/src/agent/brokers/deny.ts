@@ -8,8 +8,6 @@ import { homeDir } from '../../home.js';
 /** The doors a rule can shut. One row may shut several. */
 export type DenyTier = 'sensitive' | 'global_read' | 'global_write';
 
-export const DENY_TIERS: readonly DenyTier[] = ['sensitive', 'global_read', 'global_write'];
-
 /** Where a rule came from: the pre-merge lists, or a row added after them. */
 export type DenyProvenance = 'legacy' | 'added';
 
@@ -220,16 +218,6 @@ function contextFor(absPath: string): DenyMatchContext {
 const bindsViewer = (rule: DenyRule, viewer?: DenyViewerArg): boolean =>
   !rule.exceptFor || viewer === undefined || (typeof viewer === 'function' ? viewer() : viewer) !== rule.exceptFor;
 
-export function deniedTiers(absPath: string, viewer?: DenyViewerArg): DenyTier[] {
-  const ctx = contextFor(absPath);
-  const out = new Set<DenyTier>();
-  for (const rule of DENY_RULES) {
-    if (!rule.test(ctx) || !bindsViewer(rule, viewer)) continue;
-    for (const tier of rule.tiers) out.add(tier);
-  }
-  return DENY_TIERS.filter((t) => out.has(t));
-}
-
 /** The first rule that shuts `tier` on `absPath`, or null. */
 export function denyRuleFor(absPath: string, tier: DenyTier, viewer?: DenyViewerArg): DenyRule | null {
   const ctx = contextFor(absPath);
@@ -259,11 +247,6 @@ export function containsSensitiveLocation(absPath: string): boolean {
     const loc = foldPath(path.join(homeDir(), rel));
     return loc === here || loc.startsWith(prefix);
   });
-}
-
-/** fs_read consults read AND sensitive, the union the pre-merge read doors already formed. */
-export function isDeniedResource(absPath: string, kind: 'fs_read' | 'fs_write'): boolean {
-  return tiersForKind(kind).some((tier) => denyRuleFor(absPath, tier) !== null);
 }
 
 /** True when the id names a resource denied for EVERY agent regardless of manifest.

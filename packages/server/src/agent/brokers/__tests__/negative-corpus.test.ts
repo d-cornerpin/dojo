@@ -133,10 +133,28 @@ import { setFsCaseInsensitive, isSensitivePath } from '../../path-guards.js';
 import {
   resolvePathArg, resolveCommandArg, resolveUrlArg,
 } from '../resolve.js';
-import { authorize } from '../index.js';
-import { grantForManifest } from '../grants.js';
-import { isDeniedResource, DENY_RULES, deniedTiers } from '../deny.js';
+import {
+  authorizeFs, authorizeProc, authorizeArgv, authorizeAppleScript, authorizeNet, authorizeSpawn,
+} from '../index.js';
+import { grantForManifest, type Grant } from '../grants.js';
+import { DENY_RULES, denyRuleFor, tiersForKind, type DenyTier, type DenyViewerArg } from '../deny.js';
+import type { BrokerEffect, Verdict } from '../types.js';
 import { pmMayCall } from '../../../tracker/pm-agent.js';
+
+/** The corpus asks every effect kind through its own authorizer, as the callers do. */
+async function authorize(grant: Grant, effect: BrokerEffect): Promise<Verdict> {
+  switch (effect.kind) {
+    case 'fs_read':
+    case 'fs_write': return authorizeFs(grant, effect.kind, effect.resource, effect.surface ?? 'tool');
+    case 'shell': return authorizeProc(grant, effect.resource, true);
+    case 'proc': return authorizeArgv(grant, effect.resource);
+    case 'applescript': return authorizeAppleScript(grant, effect.resource);
+    case 'net': return authorizeNet(grant, effect.resource);
+    case 'spawn': return authorizeSpawn(grant);
+  }
+}
+const deniedTiers = (absPath: string, viewer?: DenyViewerArg) => (['sensitive', 'global_read', 'global_write'] as DenyTier[]).filter((t) => denyRuleFor(absPath, t, viewer) !== null);
+const isDeniedResource = (absPath: string, kind: 'fs_read' | 'fs_write') => tiersForKind(kind).some((t) => denyRuleFor(absPath, t) !== null);
 
 // The fixture home lives on whatever the runner's tmpdir is; probe it for real
 // rather than assuming, exactly as boot does.

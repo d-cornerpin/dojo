@@ -1,18 +1,14 @@
-// One door: authorize(grant, effect) takes a GRANT (rows, deny before allow) and an EFFECT
-// (kind + resolved resource) and returns a verdict naming the rule it used. Async because
-// only `net` needs I/O: DNS to answer the SSRF question.
+// The brokers' public surface: it re-exports each effect's own authorizer (fs, proc, applescript,
+// net, exec-seam) with the grant and deny-rule helpers, and defines the two grant checks that
+// have no file of their own (`authorizeSpawn`, `authorizeSystemControl`). Each caller picks the
+// authorizer for its effect; there is no single dispatching door.
 
-import { authorizeFs } from './fs.js';
-import { authorizeProc, authorizeArgv } from './proc.js';
-import { authorizeAppleScript } from './applescript.js';
-import { authorizeNet } from './net.js';
 import { evaluateRules, type Grant } from './grants.js';
 import { allow, deny, type Verdict } from './types.js';
-import type { BrokerEffect } from './types.js';
 
 export type { Verdict, BrokerEffect, VerdictBasis } from './types.js';
 export type { Grant, GrantRule, GrantEffectKind, GrantMode } from './grants.js';
-export { grantFor, grantForManifest, syncGrantRules, forgetGrant, projectManifestToRules } from './grants.js';
+export { grantFor, grantForManifest, syncGrantRules, projectManifestToRules } from './grants.js';
 export {
   resolvePathArg, resolveCommandArg, resolveArgvArg, resolveUrlArg, resolveFixedHost,
   type ResolvedPath, type ResolvedCommand, type ResolvedArgv, type ResolvedUrl, type Resolution,
@@ -29,7 +25,7 @@ export {
 } from './exec-seam.js';
 export { authorizeNet, authorizeNetDomain } from './net.js';
 export {
-  DENY_RULES, deniedTiers, denyRuleFor, isDeniedResource, tiersForKind,
+  DENY_RULES, denyRuleFor, tiersForKind,
   isSensitivePath,
   type DenyRule, type DenyTier,
 } from './deny.js';
@@ -53,23 +49,3 @@ export function authorizeSystemControl(grant: Grant, category: string, toolName:
 /** THE SYSTEM-CONTROL CLASSES, declared rather than inferred from a string compare:
  *  the enumeration every gated tool maps onto, held by `system-control.test.ts`. */
 export const SYSTEM_CONTROL_CLASSES = ['mouse', 'keyboard', 'screen', 'applescript'] as const;
-export type SystemControlClass = (typeof SYSTEM_CONTROL_CLASSES)[number];
-
-/** THE DOOR. */
-export async function authorize(grant: Grant, effect: BrokerEffect): Promise<Verdict> {
-  switch (effect.kind) {
-    case 'fs_read':
-    case 'fs_write':
-      return authorizeFs(grant, effect.kind, effect.resource, effect.surface ?? 'tool');
-    case 'shell':
-      return authorizeProc(grant, effect.resource, true);
-    case 'proc':
-      return authorizeArgv(grant, effect.resource);
-    case 'applescript':
-      return authorizeAppleScript(grant, effect.resource);
-    case 'net':
-      return authorizeNet(grant, effect.resource);
-    case 'spawn':
-      return authorizeSpawn(grant);
-  }
-}

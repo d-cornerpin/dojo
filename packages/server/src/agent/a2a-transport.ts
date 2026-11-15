@@ -17,7 +17,6 @@ import { getAgentRuntime } from './runtime.js';
 import { deliveredResult, insertMessageIfAbsent, insertEngineEventIfAbsent, type EngineEventWork } from '../memory/message-store.js';
 import { resolveOrCreateConversation } from '../memory/conversations.js';
 import { isSenderAuthorized } from './v2/channel-auth.js';
-import { isPrimaryAgent } from '../config/platform.js';
 import { unfenceExternal } from '../tools/external-content.js';
 import { a2aPayloadForModel } from '../tools/inbound-fences.js';
 import { mayUseChannel } from './access/read.js';
@@ -25,17 +24,7 @@ import { ACCESS_CHANNELS, type AccessChannel } from '@dojo/shared';
 import { type DeliveryInput } from './v2/deliveries.js';
 import { recordAtDoor, withOutboundAsync, recordedId } from './v2/outbound.js';
 // The join lives in `work`; everything here is transport: it lands pieces and relays answers.
-import {
-  JOIN_TTL_MINUTES, THREAD_HOP_CAP, isTerminal,
-  findJoinChildByThread, findFailedJoinForThread, childrenForThread,
-  landPiece, settlePieceWithoutResult, repointJoinPieceToHandOff,
-  joinState, joinPieces, dueJoins, openJoins,
-  dueJoinsUnderClosedParent,
-  compilePendingJoins, failJoinClosed, clearJoinCompilePending,
-  claimFailedJoinForLateAnswer, threadHopCountInWindow, bumpThreadHopCount, hopWindowLapsed,
-  extendJoinTtl, JOIN_LIVENESS_MAX_TOTAL_MS,
-  type JoinState, type JoinPiece,
-} from '../work/store.js';
+import { THREAD_HOP_CAP, isTerminal, findJoinChildByThread, findFailedJoinForThread, childrenForThread, landPiece, settlePieceWithoutResult, repointJoinPieceToHandOff, joinState, joinPieces, dueJoins, openJoins, dueJoinsUnderClosedParent, compilePendingJoins, failJoinClosed, clearJoinCompilePending, claimFailedJoinForLateAnswer, threadHopCountInWindow, bumpThreadHopCount, hopWindowLapsed, extendJoinTtl, JOIN_LIVENESS_MAX_TOTAL_MS, type JoinState, type JoinPiece } from '../work/store.js';
 import { relayOutcomeSentence, type JoinRelayOutcome, joinFailureNotice, joinFailureReason } from './join-failure-notice.js';
 import { deferJoinRelay, takeDeferredJoinRelays } from './deferred-join-relay.js';
 // The join's close is the settlement authority's, never this module's, as elsewhere.
@@ -55,7 +44,6 @@ import { recordFloorGhost } from './v2/floor-ghost.js';
 // at .ts source and cannot load in production without a TS loader; types stay type-only.
 import type { A2AIntent, A2AEnvelope, A2ADropReason, ToolCall, ChannelKind } from '@dojo/shared';
 import { resolveRecipientDisplay } from '../contacts/resolve-recipient.js';
-import { taskScope } from '../work/tracker-view.js';
 import { engineHandIn } from '../work/done/hand-in.js';
 import { compileAskerFromMeta } from '../work/compile-asker.js';
 import { deliveryLabel } from './v2/turn-address.js';
@@ -64,9 +52,6 @@ import type { ToolOutcome } from './tool-outcome.js';
 import { homeDir } from '../home.js';
 import { servedRequestThreadFrom } from './a2a-own-turn.js';
 
-// Terminal intents CLOSE the thread (prevent acknowledgement replies).
-// But closing the thread and waking the receiver are INDEPENDENT concepts.
-const TERMINAL_INTENTS = new Set<A2AIntent>(['DELIVERABLE', 'FYI', 'COMPLETE', 'FAIL', 'ANSWER']);
 const REOPENING_INTENTS = new Set<A2AIntent>(['QUESTION', 'BLOCK', 'ASSIGN']);
 const REPLY_INTENTS = new Set<A2AIntent>(['ANSWER', 'DELIVERABLE', 'COMPLETE', 'FAIL']);   // the answer-class intents
 
@@ -77,12 +62,11 @@ const NO_WAKE_INTENTS = new Set<A2AIntent>(['FYI', 'STATUS']);
 import { SEMANTIC_DEDUP_THRESHOLD as DEDUP_SIMILARITY_THRESHOLD } from '../memory/dedup-threshold.js';   // the one shared number
 const DEDUP_LOOKBACK = 3;
 
-function isTerminalIntent(intent: A2AIntent): boolean { return TERMINAL_INTENTS.has(intent); }
 function isNoWakeIntent(intent: A2AIntent): boolean { return NO_WAKE_INTENTS.has(intent); }
 function isReopeningIntent(intent: A2AIntent): boolean { return REOPENING_INTENTS.has(intent); }
 
 // Re-export for callers that need these (tools.ts)
-export { isTerminalIntent, isNoWakeIntent, isReopeningIntent, type A2AIntent };
+export { isNoWakeIntent, isReopeningIntent, type A2AIntent };
 
 const logger = createLogger('a2a-transport');
 
@@ -870,8 +854,6 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
 // closed. The engine guarantees: a lone piece is relayed, a fan-out compiles at zero, the
 // reaper sends one honest notice, a late answer still lands.
 
-/** How long an unanswered join may stay open before the engine fails it closed. */
-const JOIN_TTL_MS = JOIN_TTL_MINUTES * 60_000;
 /** Give the steered compile a real chance before the engine relays the pieces itself. */
 const COMPILE_GRACE_SECONDS = 60;
 const JOIN_BOOT_BATCH = 50;

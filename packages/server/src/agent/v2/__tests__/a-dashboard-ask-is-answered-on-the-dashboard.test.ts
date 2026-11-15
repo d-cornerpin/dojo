@@ -17,14 +17,13 @@
 
 import { describe, it, expect } from 'vitest';
 import type { TurnCounterparty } from '../counterparty.js';
-import { computeTurnAddress, renderReplyGoesTo, renderTailRestatement, type ComputeTurnAddressInput } from '../turn-address.js';
+import { computeTurnAddress, renderTailRestatement, type ComputeTurnAddressInput } from '../turn-address.js';
 import { affinityPromotionRefusedNoBasis } from '../owner-affinity.js';
 
 const ownerOnDashboard: TurnCounterparty = {
   kind: 'user', name: 'Owner Example', relation: 'owner', channel: 'dashboard',
   senderId: null, threadId: null, senderIsAgent: false,
 };
-const ownerOnIMessage: TurnCounterparty = { ...ownerOnDashboard, channel: 'imessage', senderId: '+15550100' };
 
 function addr(over: Partial<ComputeTurnAddressInput> & { counterparty: TurnCounterparty }) {
   return computeTurnAddress({ autoRoutes: true,
@@ -38,8 +37,6 @@ describe('a dashboard ask with owner affinity on iMessage', () => {
     const a = addr({ counterparty: ownerOnDashboard, inboundChannel: 'dashboard', ownerAffinityChannel: 'imessage' });
     expect(a.deliveryChannel).toBe('dashboard');
     expect(a.routed).toBe(false);
-    expect(renderReplyGoesTo(a)).toMatch(/by the dashboard|in the dashboard|dashboard/);
-    expect(renderReplyGoesTo(a)).not.toMatch(/iMessage/);
     expect(renderTailRestatement(a)).toBeNull();
   });
 
@@ -55,7 +52,6 @@ describe('the owner ruling: a dashboard ask while marked away', () => {
     const a = addr({ counterparty: ownerOnDashboard, inboundChannel: 'dashboard', presence: 'away' });
     expect(a.deliveryChannel).toBe('dashboard');
     expect(a.routed).toBe(false);
-    expect(renderReplyGoesTo(a)).not.toMatch(/iMessage/);
     expect(renderTailRestatement(a)).toBeNull();
   });
 
@@ -69,13 +65,6 @@ describe('the owner ruling: a dashboard ask while marked away', () => {
 });
 
 describe('controls: every other case is unchanged', () => {
-  it('an iMessage ask still replies by iMessage (in the dojo, away, and with affinity)', () => {
-    for (const presence of ['in_dojo', 'away'] as const) {
-      const a = addr({ counterparty: ownerOnIMessage, inboundChannel: 'imessage', presence, ownerAffinityChannel: 'imessage' });
-      expect(a.deliveryChannel).toBe('imessage');
-      expect(renderReplyGoesTo(a)).toMatch(/iMessage/);
-    }
-  });
 
   it('RC-10 intent kept: an ENGINE turn whose reply defaults to the dashboard still follows affinity to iMessage', () => {
     const a = addr({ counterparty: ownerOnDashboard, isEngineTurn: true, inboundChannel: 'dashboard', ownerAffinityChannel: 'imessage' });

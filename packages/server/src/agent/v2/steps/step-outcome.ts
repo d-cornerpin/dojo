@@ -3,8 +3,6 @@
 
 import type { AgentTurnState } from '../state.js';
 
-export type StepDirective = 'proceed' | 'continue' | 'exit' | 'abandon';
-
 /** The driver assigns `state` before honouring the directive, so an exiting step's transitions survive. */
 export type StepOutcome =
   | { readonly directive: 'proceed'; readonly state: AgentTurnState }

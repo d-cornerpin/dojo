@@ -23,8 +23,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 
 import {
   openTurnContext, turnContext, endTurnContext, turnConversationScope,
-  getWorkOriginForAgent, noteTurnReceipt, getTurnReceipts,
-  getRecallBudgetUsed, addRecallBudgetUsed, openTurnContextAgents,
+  getWorkOriginForAgent, getRecallBudgetUsed, addRecallBudgetUsed, openTurnContextAgents,
 } from '../turn-context.js';
 
 import {
@@ -44,7 +43,7 @@ const THE_TURN_OWNS = [
   'agentId',
   'kind', 'convKey', 'conversationId', 'modelRequestId',
   'address',   // 3.5: who this turn talks to and where the reply lands; computed once in preflight, read by delivery, the assembler and the send tools
-  'turnNumber', 'root', 'servedWork', 'triggerMessageId', 'receiptIds', 'recallTokens',
+  'turnNumber', 'root', 'servedWork', 'triggerMessageId', 'recallTokens',
   'pickupSeq',   // t145: the message-sequence high-water at pickup, read by the delegate-reply link (tracker-store)
   'jobParked',   // t159 G2: written by `parkJob` (work/), read by `turnParkedTheJob` (v2/engine-exit): a published fact
 ];
@@ -162,14 +161,12 @@ describe('PHASE-6 T1: TurnContext — what the turn owns', () => {
     const first = openTurnContext(FXID.n4);
     first.kind = 'a2a';
     first.turnNumber = 41;
-    noteTurnReceipt(FXID.n4, 'r1');
     addRecallBudgetUsed(FXID.n4, 900);
 
     const second = openTurnContext(FXID.n4);
     expect(second).not.toBe(first);
     expect(second.kind).toBeUndefined();
     expect(second.turnNumber).toBeUndefined();
-    expect(getTurnReceipts(FXID.n4)).toEqual([]);
     expect(getRecallBudgetUsed(FXID.n4)).toBe(0);
   });
 
@@ -218,8 +215,6 @@ describe('PHASE-6 T1: TurnContext — what the turn owns', () => {
     // driven for a peer through the a2a transport does exactly this), and that entry
     // then survived until whenever that agent next went idle. Answering "no turn" is the
     // same answer `turnNumber` already gave for the same call.
-    noteTurnReceipt('nobody', 'r1');
-    expect(getTurnReceipts('nobody')).toEqual([]);
     expect(addRecallBudgetUsed('nobody', 500)).toBe(0);
     expect(getRecallBudgetUsed('nobody')).toBe(0);
     expect(openTurnContextAgents()).toEqual([]);

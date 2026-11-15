@@ -51,19 +51,6 @@ export function validateManifest(raw: unknown): ParseResult {
   return { ok: true, manifest: parsed.data };
 }
 
-// A malformed stored manifest is a REFUSAL here, never a silent downgrade.
-// The manifest.ts reader may default on a READ; a spawn must not inherit an unchosen scope.
-export function parseStoredManifest(raw: string | null | undefined): ParseResult {
-  if (raw === null || raw === undefined || raw === '') return { ok: false, reason: 'manifest is empty' };
-  let value: unknown;
-  try {
-    value = JSON.parse(raw);
-  } catch (err) {
-    return { ok: false, reason: `manifest is not valid JSON (${err instanceof Error ? err.message : String(err)})` };
-  }
-  return validateManifest(value);
-}
-
 export { artifactPathFor };
 
 // Decided default: the parent's scope MINUS the danger set, applied only when the spawn names no manifest.

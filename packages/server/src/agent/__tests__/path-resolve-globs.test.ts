@@ -18,12 +18,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { homeDir } from '../../home.js';
 import {
-  expandTilde,
-  resolveHomePath,
-  canonicalizeAgentPath,
-  matchAgentGlob,
-  matchAgentPathGlob,
-  matchesAnyPathGlob,
+  expandTilde, resolveHomePath, canonicalizeAgentPath, matchAgentGlob, matchAgentPathGlob,
 } from '../path-resolve.js';
 import { setFsCaseInsensitive } from '../fs-case.js';
 
@@ -128,15 +123,5 @@ describe('matchAgentPathGlob folds case with the filesystem, not the platform', 
     expect(matchAgentPathGlob('~/.dojo/*.YAML', '~/.dojo/Secrets.yaml')).toBe(false);
     // The lower-case glob does not match a capitalised value either.
     expect(matchAgentPathGlob('~/.dojo/secrets.yaml', '~/.dojo/Secrets.yaml')).toBe(false);
-  });
-});
-
-describe('matchesAnyPathGlob', () => {
-  it('is true when any pattern matches', () => {
-    expect(matchesAnyPathGlob(['/q', '/a/*'], '/a/z')).toBe(true);
-  });
-
-  it('is false for an empty pattern list', () => {
-    expect(matchesAnyPathGlob([], '/a')).toBe(false);
   });
 });

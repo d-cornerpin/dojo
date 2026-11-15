@@ -1,6 +1,4 @@
-// One turn's state, replaced whole through advance() and validated on every transition.
 
-import type Anthropic from '@anthropic-ai/sdk';
 import type { ToolCall } from '@dojo/shared';
 import { emptySteerQueue, type SteerQueue } from './steer-queue.js';
 // Type-only, so this module stays a leaf and turn-record.ts's database handle never becomes an edge.
@@ -329,18 +327,6 @@ export function validate(state: AgentTurnState): void {
   if (state.recentToolSignatures.length > 50) {
     throw new StateValidationError(`recentToolSignatures overflow (should be windowed): ${state.recentToolSignatures.length}`);
   }
-}
-
-export function bumpRecoveryStreak(
-  current: RecoveryStreak | null,
-  kind: string,
-): RecoveryStreak {
-  if (!current || current.kind !== kind) return { kind, count: 1 };
-  return { kind, count: current.count + 1 };
-}
-
-export function clearRecoveryStreak(): null {
-  return null;
 }
 
 export function bumpLoopSignature(

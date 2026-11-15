@@ -15,8 +15,6 @@ describe('the broker exports only helpers something calls', () => {
   });
   it('the helpers that ARE used are still exported', () => {
     expect(typeof deny.isSensitivePath).toBe('function');
-    expect(typeof deny.isDeniedResource).toBe('function');
-    expect(typeof deny.deniedTiers).toBe('function');
     expect(typeof index.isSensitivePath).toBe('function');
     expect(typeof resolve.resolvePathArg).toBe('function');
   });

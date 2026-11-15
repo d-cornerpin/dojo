@@ -168,12 +168,6 @@ export function relationWords(relation: Relation): string {
   }
 }
 
-/** The reply sentence shared by the turn block and the per-step restatement; null with no human recipient. */
-export function renderReplyGoesTo(addr: TurnAddress): string | null {
-  if (addr.kind !== 'person') return null;
-  return `Your written reply goes to ${addr.name} (${relationWords(addr.relation)}) by ${deliveryLabel(addr.deliveryChannel)}.`;
-}
-
 /** The line re-sent at the tail of every model call, after the cache breakpoint; routed replies only. */
 export function renderTailRestatement(addr: TurnAddress | null | undefined): string | null {
   if (!addr || !addr.routed) return null;
@@ -202,11 +196,6 @@ export function currentAddress(agentId: string): TurnAddress | undefined {
 /** The delivery channel in words; the dashboard wording when there is no address. */
 export function replyChannelWords(addr: TurnAddress | undefined): string {
   return deliveryLabel(addr?.deliveryChannel ?? 'dashboard');
-}
-
-/** "Pat Example by iMessage" for a person turn; null when no human is on the other end. */
-export function addresseeByChannel(addr: TurnAddress | undefined): string | null {
-  return addr?.kind === 'person' ? `${addr.name} by ${deliveryLabel(addr.deliveryChannel)}` : null;
 }
 
 /** The addressee's name on a person turn, else "the user"; `cap` starts a sentence. */

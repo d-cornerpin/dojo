@@ -14,8 +14,7 @@
 
 import { describe, it, expect } from 'vitest';
 import {
-  defaultChildScope, resolveChildScope, validateManifest, parseStoredManifest,
-  scopeExcesses, artifactPathFor,
+  defaultChildScope, resolveChildScope, validateManifest, scopeExcesses, artifactPathFor,
 } from '../scope.js';
 import { PRIMARY_AGENT_PERMISSIONS, DEFAULT_SUBAGENT_PERMISSIONS } from '../manifest.js';
 import { grantForManifest } from '../brokers/grants.js';
@@ -231,32 +230,6 @@ describe('C — a malformed manifest REFUSES, it never silently downgrades', () 
   it('refuses a non-object, and says what it got', () => {
     for (const bad of ['a string', 42, true, ['an', 'array']]) {
       expect(validateManifest(bad).ok).toBe(false);
-    }
-  });
-
-  it('refuses malformed stored TEXT rather than falling back', () => {
-    // The distinction the module exists for: `getAgentPermissions` catching a
-    // JSON error and returning the default is right for a READ and wrong for a
-    // SPAWN, because a child then carries a scope nobody chose.
-    for (const bad of ['not json', '{"file_read":', '', null, undefined]) {
-      expect(parseStoredManifest(bad as string | null).ok, String(bad)).toBe(false);
-    }
-  });
-
-  it('ACCEPTS every shape a real stored manifest takes — the positive half', () => {
-    // Measured on the live body: `'{}'` (40 of 56 agents), full manifests,
-    // partial legacy manifests with no `system_control` key, and the scalar
-    // `system_control: '*'` spelling. A schema that refused any of these would
-    // take working agents off the air.
-    for (const good of [
-      '{}',
-      JSON.stringify(PRIMARY_AGENT_PERMISSIONS),
-      JSON.stringify(DEFAULT_SUBAGENT_PERMISSIONS),
-      '{"file_read":"*","file_write":"none","exec_allow":[],"exec_deny":["*"],"network_domains":"none","can_spawn_agents":false,"can_assign_permissions":false}',
-      '{"system_control":"*"}',
-      '{"system_control":["*","applescript"]}',
-    ]) {
-      expect(parseStoredManifest(good).ok, good.slice(0, 60)).toBe(true);
     }
   });
 

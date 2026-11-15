@@ -12,14 +12,7 @@
 //  - pickArg: picks first defined value, returns undefined when nothing matches
 
 import { describe, it, expect } from 'vitest';
-import {
-  checkRequired,
-  friendlyDbError,
-  pickArg,
-  isTerminalAgentStatus,
-  isTerminalTaskStatus,
-  type FieldSpec,
-} from '../tool-helpers.js';
+import { checkRequired, friendlyDbError, isTerminalTaskStatus, type FieldSpec } from '../tool-helpers.js';
 
 describe('checkRequired', () => {
   it('returns null when all fields are valid', () => {
@@ -155,42 +148,6 @@ describe('friendlyDbError', () => {
     expect(result.startsWith('gmail_send')).toBe(true);
   });
 });
-
-describe('pickArg', () => {
-  it('returns the first defined value', () => {
-    expect(pickArg<string>({ a: 'x', b: 'y' }, 'a', 'b')).toBe('x');
-    expect(pickArg<string>({ b: 'y' }, 'a', 'b')).toBe('y');
-  });
-
-  it('returns undefined when nothing matches', () => {
-    expect(pickArg<string>({}, 'a', 'b')).toBeUndefined();
-    expect(pickArg<string>({ c: 'z' }, 'a', 'b')).toBeUndefined();
-  });
-
-  it('treats null as defined (only undefined skips)', () => {
-    // We want to distinguish "not passed" from "passed as null".
-    // A consumer can decide what to do with null; we shouldn't paper over it.
-    expect(pickArg<string | null>({ a: null }, 'a', 'b')).toBeNull();
-  });
-
-  it('handles falsy values correctly', () => {
-    expect(pickArg<number>({ a: 0 }, 'a', 'b')).toBe(0);
-    expect(pickArg<string>({ a: '' }, 'a', 'b')).toBe('');
-    expect(pickArg<boolean>({ a: false }, 'a', 'b')).toBe(false);
-  });
-});
-
-describe('isTerminalAgentStatus', () => {
-  it('only "terminated" is terminal', () => {
-    expect(isTerminalAgentStatus('terminated')).toBe(true);
-    expect(isTerminalAgentStatus('idle')).toBe(false);
-    expect(isTerminalAgentStatus('working')).toBe(false);
-    expect(isTerminalAgentStatus('error')).toBe(false);
-    expect(isTerminalAgentStatus(null)).toBe(false);
-    expect(isTerminalAgentStatus(undefined)).toBe(false);
-  });
-});
-
 
 describe('isTerminalTaskStatus', () => {
   it('"complete" and "fallen" are terminal; others are not', () => {

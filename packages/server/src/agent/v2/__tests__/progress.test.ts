@@ -1,9 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import {
-  progressClassifier,
-  buildSpinningNudge,
-  PROGRESS_THRESHOLDS,
-} from '../classifiers/progress.js';
+import { progressClassifier, buildSpinningNudge } from '../classifiers/progress.js';
 
 const baseProgress = {
   toolCallsExecutedThisTurn: 5,
@@ -51,15 +47,10 @@ describe('progressClassifier', () => {
   it('hits the nudge cap when spinningNudgeCount maxed out', () => {
     const r = progressClassifier({
       ...baseProgress,
-      spinningNudgeCount: PROGRESS_THRESHOLDS.MAX_SPINNING_NUDGES,
+      spinningNudgeCount: 3,
     });
     expect(r.progressing).toBe(false);
     if (!r.progressing) expect(r.reason).toContain('nudge cap');
-  });
-
-  it('thresholds match v1 expectations', () => {
-    expect(PROGRESS_THRESHOLDS.PERMISSION_DENIAL_THRESHOLD).toBe(5);
-    expect(PROGRESS_THRESHOLDS.MAX_SPINNING_NUDGES).toBe(3);
   });
 });
 

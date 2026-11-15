@@ -20,7 +20,6 @@ import { runMigrations } from '../../db/migrations.js';
 import '../decision-ask.js';
 import { installDecisionModel, scriptDecisions, yes } from './decision-fake.js';
 import { detectCredentialContent } from '../../vault/credential-gate.js';
-import { isPrivateAddress } from '../net-guard.js';
 import { isSudoLine, mentionsPrivilegeToken } from '../brokers/sudo-policy.js';
 
 const SRC = fileURLToPath(new URL('../../', import.meta.url));
@@ -98,8 +97,6 @@ describe('a decision model installed changes no gate\'s answer and is never call
     const calls = scriptDecisions(() => yes(0.0));
     expect(detectCredentialContent('api_key: shppa_FAKE_a1b2c3d4e5f6')).toBe('credential-shaped key/value');
     expect(detectCredentialContent('the tunnel is named and self-hosted')).toBeNull();
-    expect(isPrivateAddress('10.0.0.5')).toBe(true);
-    expect(isPrivateAddress('93.184.216.34')).toBe(false);
     expect(isSudoLine('sudo rm -rf /')).toBe(true);
     expect(mentionsPrivilegeToken('please run sudo for me')).toBe(true);
     expect(calls).toHaveLength(0);

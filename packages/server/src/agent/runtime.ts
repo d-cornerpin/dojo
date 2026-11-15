@@ -16,7 +16,6 @@ import { cancelAgentGenerationJobs } from '../services/generation-jobs.js';
 import { notifyUserStop } from './stop-waiters.js';
 import { insertMessageIfAbsent } from '../memory/message-store.js';
 import { tagMessageLane } from '../memory/message-lane-tag.js';
-import { prepareImageForModel } from './image-prep.js';
 import { rectifyAttachment } from './input-rectification.js';
 import { runV2Turn } from './v2/loop.js';
 import { writeAgentStatus } from './agent-status.js';
@@ -308,7 +307,6 @@ import { currentTurnNumber, markTurnsTerminated } from './v2/turn-record.js';
 
 import { turnBoundary, forceA2ATurn, a2aTurnRetries, lastTurnWasA2A, MAX_DRAIN_STUCK } from './turn-state.js';
 import { a2aRetryBudgetFor } from './a2a-patience.js';
-import { turnContext } from './turn-context.js';
 import { bumpDrainLadder, clearDrainLadder, DRAIN_LADDER_UNREADABLE } from './drain-state.js';
 import { contextOverflowSince } from '../memory/compaction.js';
 import { replacePlaceholdersInBackground } from '../memory/out-of-view.js';
@@ -319,21 +317,6 @@ import { attachmentFenceOf, bracketed, droppedAttachmentNote } from '../tools/in
 import { userWords, currentAddress } from './v2/turn-address.js';
 import { workingExpr } from '../work/done/hold.js';
 
-
-const STATUS_HEARTBEAT_INTERVAL_MS = 30_000;
-
-export function startStatusHeartbeat(agentId: string): void {
-  const existing = statusHeartbeats.get(agentId);
-  if (existing) clearInterval(existing);
-  const timer = setInterval(() => {
-    try {
-      broadcast({ type: 'agent:status', agentId, status: 'working', turnKind: turnContext(agentId)?.kind ?? 'user' });
-      // Keep updated_at fresh mid-turn: else the reaper idles the row and spawns a second concurrent turn.
-      getDb().prepare("UPDATE agents SET updated_at = datetime('now') WHERE id = ? AND status = 'working'").run(agentId);
-    } catch { /* best effort */ }
-  }, STATUS_HEARTBEAT_INTERVAL_MS);
-  statusHeartbeats.set(agentId, timer);
-}
 
 export function stopStatusHeartbeat(agentId: string): void {
   const timer = statusHeartbeats.get(agentId);

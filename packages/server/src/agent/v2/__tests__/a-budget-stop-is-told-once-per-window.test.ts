@@ -199,7 +199,6 @@ vi.mock('../../../config/platform.js', () => ({
   getTrainerAgentName: () => 'Trainer',
   isSetupCompleted: () => true,
   setPlatformConfig: vi.fn(),
-  getAllPlatformConfig: () => ({}),
   isPrimaryAgent: (id: string) => id === 'primary',
   isPMAgent: (id: string) => id === 'pm',
   isTrainerAgent: (id: string) => id === 'trainer',
@@ -283,7 +282,6 @@ vi.mock('../../../services/presence.js', () => ({
 vi.mock('../../../router/decide.js', () => ({
   decideTier: async () => ({ tier: 'light', method: 'semantic', confidence: 0.9, scores: [], rawScore: 0, latencyMs: 1, headVersion: null, queryPreview: '' }),
 }));
-vi.mock('../../../router/probe.js', () => ({ maybeProbe: () => undefined }));
 vi.mock('../../../tools/tool-docs.js', async () => {
   const actual = await vi.importActual<typeof import('../../../tools/tool-docs.js')>('../../../tools/tool-docs.js');
   return { ...actual, measureAgentToolPayloadTokens: async () => toolPayload.tokens };

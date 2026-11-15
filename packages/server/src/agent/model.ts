@@ -16,7 +16,6 @@ import {
   type StreamPatience,
 } from './stream-patience.js';
 import { scheduleRateLimitRetry } from './rate-limit-retry.js';
-import { toolDefinitions } from './tools/definitions.js';
 import { getFilteredTools } from './tools/surface.js';
 import type { ToolDefinition } from './tools/types.js';
 import { estimateRequestTokens, reasoningRidesThisTurn, effectiveDivisor } from '../memory/budget.js';

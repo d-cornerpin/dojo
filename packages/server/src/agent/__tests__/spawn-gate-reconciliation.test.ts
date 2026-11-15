@@ -82,7 +82,7 @@ vi.mock('../../memory/message-store.js', () => ({
 }));
 vi.mock('../../vault/archive.js', () => ({ archiveAgentConversation: vi.fn() }));
 vi.mock('../../work/tracker-store.js', () => ({
-  setTrackerStatus: vi.fn(), patchWork: vi.fn(), appendWorkNotes: vi.fn(),
+  setTrackerStatus: vi.fn(), patchWork: vi.fn(),
 }));
 vi.mock('../../work/done/proof.js', () => ({ proofDelivery: vi.fn() }));
 vi.mock('../../work/store.js', () => ({ workSettled: vi.fn() }));

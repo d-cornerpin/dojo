@@ -38,7 +38,7 @@ const shell = async (who: string, line: string) => brokers.authorizeExecShapedCa
 const readFile = async (who: string, p: string) => {
   const r = resolvePathArg(p);
   if (!r.ok) throw new Error(r.reason);
-  return brokers.authorize(brokers.grantFor(who), { kind: 'fs_read', resource: r.value });
+  return brokers.authorizeFs(brokers.grantFor(who), 'fs_read', r.value, 'tool');
 };
 const message = (v: { allowed: boolean; blockedMessage?: string | null; reason?: string }): string => (v.allowed ? '' : v.blockedMessage ?? v.reason ?? '');
 

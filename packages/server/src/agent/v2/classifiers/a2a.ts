@@ -1,21 +1,10 @@
 // A2A intent rules live in engine code, not prompt prose: weak models forget
-// prompt rules. Two classifiers: the missed-reply nudge, the pre-execution validator.
+// prompt rules. The missed-reply nudge and the trigger parser.
 
 import { A2A_ENVELOPE_RE } from '@dojo/shared';
-import type { ToolCall } from '@dojo/shared';
 
 /** Intents that wake the receiver and expect a reply. */
 export const REPLY_NEEDED_INTENTS = new Set(['QUESTION', 'ASSIGN', 'BLOCK']);
-
-/** Intents that close the thread (no further messages expected). */
-export const TERMINAL_INTENTS = new Set(['ANSWER', 'DELIVERABLE', 'COMPLETE', 'FAIL', 'FYI']);
-
-/** Intents allowed to reopen a closed thread. */
-export const REOPEN_INTENTS = new Set(['QUESTION', 'BLOCK', 'ASSIGN']);
-
-/** Maximum hop depth for a single A2A exchange chain. */
-export const A2A_HOP_LIMIT = 5;
-
 
 export interface A2AReplyEnforcerInput {
   triggeredByReplyNeededIntent: boolean;
@@ -78,64 +67,6 @@ export function a2aReplyEnforcer(input: A2AReplyEnforcerInput): A2AReplyDecision
     );
   }
   return { decision: 'nudge', reason: 'agent received reply-needed intent but did not send_to_agent', nudgeText };
-}
-
-export interface A2AIntentValidatorInput {
-  call: ToolCall;
-  threadIsClosed: boolean;
-  /** How many hops deep is this A2A chain? (sender count along the chain.) */
-  hopCount: number;
-}
-
-export type A2AIntentValidatorResult =
-  | { decision: 'ok' }
-  | { decision: 'reject'; reason: string };
-
-// Validates a send_to_agent call pre-execution; a reject surfaces as a synthetic tool result.
-export function a2aIntentValidator(input: A2AIntentValidatorInput): A2AIntentValidatorResult {
-  if (input.call.name !== 'send_to_agent' && input.call.name !== 'broadcast_to_group') {
-    return { decision: 'ok' }; // not an A2A call
-  }
-  const args = (input.call.arguments ?? {}) as Record<string, unknown>;
-  const intent = args.intent;
-
-  // Rule 1: intent is required
-  if (typeof intent !== 'string' || intent.length === 0) {
-    return {
-      decision: 'reject',
-      reason:
-        'send_to_agent requires an `intent` parameter. Pick one: QUESTION, ASSIGN, BLOCK, ' +
-        'ANSWER, DELIVERABLE, COMPLETE, FAIL, FYI, STATUS. See your tool index for guidance ' +
-        'on which intent applies.',
-    };
-  }
-
-  // Rule 2: closed-thread protection
-  const threadId = args.thread_id;
-  if (typeof threadId === 'string' && threadId.length > 0 && input.threadIsClosed) {
-    if (!REOPEN_INTENTS.has(intent)) {
-      return {
-        decision: 'reject',
-        reason:
-          `Thread ${threadId} is closed (a terminal intent was sent earlier). ` +
-          `Only QUESTION, BLOCK, or ASSIGN can reopen a closed thread. ` +
-          `Use one of those if you need to re-engage, or omit thread_id to start a fresh thread.`,
-      };
-    }
-  }
-
-  // Rule 3: hop limit
-  if (input.hopCount >= A2A_HOP_LIMIT) {
-    return {
-      decision: 'reject',
-      reason:
-        `A2A hop limit reached (${A2A_HOP_LIMIT}). This exchange chain is too deep — ` +
-        `end the conversation here, summarize via complete_task or vault_remember if you need ` +
-        `to preserve findings. Continued back-and-forth is almost always an acknowledgment loop.`,
-    };
-  }
-
-  return { decision: 'ok' };
 }
 
 export function parseA2ATrigger(content: string | null): {

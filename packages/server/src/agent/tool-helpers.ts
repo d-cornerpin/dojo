@@ -39,13 +39,6 @@ export function checkRequired(fields: FieldSpec[]): string | null {
   return null;
 }
 
-export function pickArg<T>(args: Record<string, unknown>, ...keys: string[]): T | undefined {
-  for (const k of keys) {
-    if (args[k] !== undefined) return args[k] as T;
-  }
-  return undefined;
-}
-
 export function friendlyDbError(err: unknown, context?: string): string {
   const msg = err instanceof Error ? err.message : String(err);
   const prefix = context ? `${context}: ` : '';
@@ -164,10 +157,6 @@ export function resolveGroupRef(value: string | undefined | null, context?: stri
     ok: false,
     error: `Group "${value}" doesn't exist. Use list_groups to see existing groups, or create_agent_group to make a new one.`,
   };
-}
-
-export function isTerminalAgentStatus(status: string | null | undefined): boolean {
-  return status === 'terminated';
 }
 
 export function isTerminalTaskStatus(status: string | null | undefined): boolean {

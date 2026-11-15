@@ -56,11 +56,3 @@ export function rectifyAttachment(att: AttachmentInput): RectificationResult | n
   }
   return null;
 }
-
-export function registerRectifier(fn: Rectifier): () => void {
-  RECTIFIERS.unshift(fn); // new rectifiers take precedence (specific before generic)
-  return () => {
-    const idx = RECTIFIERS.indexOf(fn);
-    if (idx >= 0) RECTIFIERS.splice(idx, 1);
-  };
-}

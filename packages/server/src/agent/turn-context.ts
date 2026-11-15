@@ -45,8 +45,6 @@ export interface TurnContext {
 
   triggerMessageId: string | null | undefined;
 
-  receiptIds: string[];
-
   recallTokens: number;
 
   startAckTimer: ReturnType<typeof setTimeout> | null;
@@ -119,7 +117,6 @@ export function openTurnContext(agentId: string): TurnContext {
     root: undefined,
     servedWork: undefined,
     triggerMessageId: undefined,
-    receiptIds: [],
     recallTokens: 0,
     startAckTimer: null,
     phoneStreamBuffer: '',
@@ -188,14 +185,6 @@ export function getWorkOriginForAgent(agentId: string, kind: WorkOrigin['kind'])
     turn: ctx?.turnNumber ?? null,
     convKey: ctx?.convKey ?? null,
   };
-}
-
-export function noteTurnReceipt(agentId: string, receiptId: string): void {
-  openContexts.get(agentId)?.receiptIds.push(receiptId);
-}
-
-export function getTurnReceipts(agentId: string): string[] {
-  return openContexts.get(agentId)?.receiptIds ?? [];
 }
 
 export function getRecallBudgetUsed(agentId: string): number {

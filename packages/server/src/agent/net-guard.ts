@@ -123,11 +123,6 @@ export function privateAddressClass(ip: string): string | null {
   return 'not an IP address';
 }
 
-/** True when `ip` is loopback / private / link-local / metadata / ULA / junk. */
-export function isPrivateAddress(ip: string): boolean {
-  return privateAddressClass(ip) !== null;
-}
-
 /** Refuse `raw` unless it is an http(s) URL whose host resolves entirely to public
  *  addresses. Returns the normalised href and the RESOLVED address so a caller can
  *  pin it: `fetch` alone re-resolves DNS, so a hostile server can answer public here

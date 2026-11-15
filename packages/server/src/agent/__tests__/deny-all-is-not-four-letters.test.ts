@@ -56,7 +56,7 @@ vi.mock('../../config/platform.js', () => ({
   isPrimaryAgent: () => false,
 }));
 import { PRIMARY_AGENT_PERMISSIONS, artifactPathFor, artifactDirFor } from '../manifest.js';
-import { defaultChildScope, resolveChildScope, parseStoredManifest, scopeExcesses } from '../scope.js';
+import { defaultChildScope, resolveChildScope, scopeExcesses } from '../scope.js';
 import { projectManifestToRules, grantForManifest } from '../brokers/grants.js';
 import { authorizeFs } from '../brokers/fs.js';
 import { resolvePathArg } from '../brokers/resolve.js';
@@ -106,29 +106,6 @@ describe('A — `none` stays `none` through the artifact-path widening', () => {
     const scoped = defaultChildScope(PRIMARY_AGENT_PERMISSIONS, AGENT);
     expect(scoped.file_read).toBe('*');
     expect(scoped.file_write).toBe('*');
-  });
-
-  it('survives the whole create/spawn path — `resolveChildScope`, as the route calls it', () => {
-    // `POST /api/agents` (gateway/routes/agents.ts) and `spawner.ts` both reach
-    // the spread through here, and this is the object that gets JSON-serialized
-    // into the new agent's row — so a char array here is a char array ON DISK.
-    const resolved = resolveChildScope(
-      { file_read: 'none', file_write: 'none' },
-      PRIMARY_AGENT_PERMISSIONS,
-      AGENT,
-    );
-    expect(resolved.ok).toBe(true);
-    if (!resolved.ok) return;
-    expect(resolved.manifest.file_write).toBe('none');
-    expect(resolved.manifest.file_read).toBe('none');
-
-    // And what would land in the row round-trips as the same scalar, rather than
-    // as four one-letter allow patterns.
-    const stored = JSON.parse(JSON.stringify(resolved.manifest)) as PermissionManifest;
-    expect(stored.file_write).toBe('none');
-    const reparsed = parseStoredManifest(JSON.stringify(stored));
-    expect(reparsed.ok).toBe(true);
-    if (reparsed.ok) expect(reparsed.manifest.file_write).toBe('none');
   });
 
   it('a child of a deny-all parent cannot be widened past it', () => {

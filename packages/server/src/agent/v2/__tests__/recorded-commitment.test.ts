@@ -9,10 +9,7 @@
 
 import { describe, it, expect } from 'vitest';
 import {
-  BOARD_KINDS,
-  decideUncommittedPromise,
-  detectRecordedCommitmentClaim,
-  uncommittedPromiseSteer,
+  decideUncommittedPromise, detectRecordedCommitmentClaim, uncommittedPromiseSteer,
 } from '../recorded-commitment.js';
 import { FXID } from '../../../../../../deploy/checks/fixture-vocabulary.mjs';
 
@@ -146,12 +143,5 @@ describe('PHASE-6 T-PROMISE: the decision — the LEDGER fires it, never the tex
     expect(steer).toMatch(/^\[System:/);
     expect(steer).toMatch(/work_open\(kind="commitment"\)/);
     expect(steer).toMatch(/tell the person you are talking to\s+plainly that it is NOT recorded/i);
-  });
-
-  it('`ask` is NOT a board kind, and the exclusion is what lets this floor fire at all', () => {
-    // `openAsk` writes one for the user's own inbound on this same turn, every time.
-    expect([...BOARD_KINDS].sort()).toEqual(['commitment', 'project', 'task']);
-    expect(BOARD_KINDS).not.toContain('ask');
-    expect(BOARD_KINDS).not.toContain('occurrence');
   });
 });

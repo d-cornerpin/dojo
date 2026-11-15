@@ -23,7 +23,7 @@ import { countTrackerWorkThisIteration } from './tracker-counting.js';
 import { runTrackerFloors } from './tracker-floors.js';
 import { endAfterGenerator } from './media-words-step.js';
 import { runDelegationTurnEnd } from './delegation-exit.js';
-import { proceed, requestExit, type StepOutcome } from '../step-outcome.js';
+import { proceed, requestExit } from '../step-outcome.js';
 
 const logger = createLogger('v2-loop');
 

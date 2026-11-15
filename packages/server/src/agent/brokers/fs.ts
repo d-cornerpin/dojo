@@ -70,7 +70,7 @@ export function shareDeny(resource: ResolvedPath, toolName: string): Verdict | n
   return null;
 }
 
-/** `authorize(grant, {kind: fs_*, resource})`. `surface: 'share'` additionally asks the
+/** The fs authorizer. `surface: 'share'` additionally asks the
  *  sensitive tier, what the share/pdf call sites do on top of the read permission. */
 export function authorizeFs(
   grant: Grant,

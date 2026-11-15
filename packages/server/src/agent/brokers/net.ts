@@ -30,7 +30,7 @@ export function authorizeNetDomain(grant: Grant, domain: string): Verdict {
   return deny('ladder-parity', 'network-unconfigured', 'Network access not configured');
 }
 
-/** `authorize(grant, {kind:'net', resource})`: the manifest half, then the public-internet half. */
+/** The net authorizer: the manifest half, then the public-internet half. */
 export async function authorizeNet(grant: Grant, resource: ResolvedUrl): Promise<Verdict> {
   const domainVerdict = authorizeNetDomain(grant, resource.hostname);
   if (!domainVerdict.allowed) return domainVerdict;

@@ -8,10 +8,6 @@ import type { ToolDefinition, ToolEffect } from './types.js';
 import type { ToolHandler } from './handler.js';
 import { handlerFor } from './handlers.js';
 
-/** THE ONE ORDERING AUTHORITY: family order as getAllToolDefinitions() declares it, never Map
- * insertion order; registry-order.test.ts pins it byte-identical so the cache golden cannot move. */
-export const TOOL_EMISSION_ORDER_SOURCE = 'agent/tools.ts getAllToolDefinitions()';
-
 export interface ToolRegistryEntry {
   /** The definition itself, by reference; never a copy, so this entry cannot drift. */
   def: ToolDefinition;

@@ -6,7 +6,6 @@
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
 import { createLogger } from '../logger.js';
 import { callModel } from './model.js';
-import { getDb } from '../db/connection.js';
 import { getEffectiveVisionModel } from '../services/vision-model.js';
 import { assertPublicHttpTarget } from './net-guard.js';
 import { isPrimaryAgent } from '../config/platform.js';

@@ -6,7 +6,6 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   rectifyAttachment,
-  registerRectifier,
   type AttachmentInput,
 } from '../input-rectification.js';
 
@@ -73,45 +72,5 @@ describe('rectifyAttachment — image branch (lifts v2.3.18 behavior)', () => {
       category: 'image',
     };
     expect(rectifyAttachment(att)).toBeNull();
-  });
-});
-
-describe('registerRectifier', () => {
-  it('new rectifier takes precedence over built-ins (unshift order)', () => {
-    let called = false;
-    const unregister = registerRectifier((att) => {
-      called = true;
-      return {
-        kept: true,
-        mediaType: 'image/jpeg',
-        data: Buffer.from('xx'),
-        freshlyApplied: true,
-        agentNote: 'test rectifier ran',
-      };
-    });
-    try {
-      const att = mkImage();
-      const result = rectifyAttachment(att);
-      expect(called).toBe(true);
-      expect(result!.agentNote).toBe('test rectifier ran');
-    } finally {
-      unregister();
-    }
-    // After unregister, the built-in image rectifier handles it again.
-    const att2 = mkImage('after.png');
-    const result2 = rectifyAttachment(att2);
-    expect(result2!.agentNote).toBeUndefined(); // built-in returns no note for under-budget
-  });
-
-  it('rectifier that returns null falls through to the next', () => {
-    const unregister = registerRectifier(() => null);
-    try {
-      const att = mkImage();
-      const result = rectifyAttachment(att);
-      expect(result).not.toBeNull();
-      expect(result!.kept).toBe(true); // image rectifier still handled it
-    } finally {
-      unregister();
-    }
   });
 });

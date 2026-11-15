@@ -65,26 +65,6 @@ export function currentTurnNumber(agentId: string): number {
   }
 }
 
-/** The continuity brief's window, in turns. */
-export const CONTINUITY_BRIEF_HORIZON_TURNS = 3;
-
-/** A stored `currentTurn + horizon` threshold, or null (expired) when invalid or above that bound, which
- * no writer could store. Equality stays valid: a threshold written this instant reads back at the bound. */
-export function readStoredTurnThreshold(
-  raw: unknown,
-  currentTurn: number,
-  horizonTurns: number,
-): number | null {
-  if (typeof raw !== 'number' || !Number.isFinite(raw) || raw <= 0) return null;
-  if (raw > currentTurn + horizonTurns) {
-    logger.warn('stored turn threshold is beyond the writer\'s own horizon; reading it as expired', {
-      stored: raw, currentTurn, horizonTurns,
-    });
-    return null;
-  }
-  return raw;
-}
-
 /** How the turn ended. `answered` is passed, never inferred: an exit reason does not prove a reply. */
 export function finalizeTurn(
   agentId: string,

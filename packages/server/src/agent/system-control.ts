@@ -11,7 +11,6 @@ import os from 'node:os';
 import { createLogger } from '../logger.js';
 import { callModel } from './model.js';
 import { openAgentCall } from './abortable-call.js';
-import { getDb } from '../db/connection.js';
 import { getEffectiveVisionModel } from '../services/vision-model.js';
 import {
   clickArgv, moveArgv, keyComboArgv, typeTextArgv, screencaptureArgv,

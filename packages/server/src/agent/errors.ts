@@ -2,7 +2,6 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { sendAlert } from '../services/imessage-bridge.js';
-import { isPrimaryAgent } from '../config/platform.js';
 import type { ProviderErrorFacts } from './provider-error.js';
 import { writeAgentStatus } from './agent-status.js';
 import {

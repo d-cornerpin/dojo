@@ -73,10 +73,3 @@ export function buildSpinningNudge(input: ProgressInput, canSelfComplete: boolea
     stuckAdvice
   );
 }
-
-export const PROGRESS_THRESHOLDS = {
-  SMALL_DELTA_THRESHOLD,
-  PERMISSION_DENIAL_THRESHOLD,
-  NO_RESULTS_THRESHOLD,
-  MAX_SPINNING_NUDGES,
-} as const;

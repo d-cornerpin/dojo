@@ -4,7 +4,7 @@
 import type { AccessChannel, AccessGrants, AccountKind, IntegrationLevel, ToolGrants } from '@dojo/shared';
 import {
   channelTierOf, mayReachChannel, foldCredentialGrant,
-  categoryGranted, providerLevelOf, techniqueGrantOf, techniqueGranted, holdsAnyTechniqueGrant,
+  categoryGranted, providerLevelOf, techniqueGranted,
   mayReachOthersOn as mayReachOthersOnIn,
 } from '@dojo/shared';
 import { getDb } from '../../db/connection.js';
@@ -86,10 +86,6 @@ export function mayReachOthersOn(agentId: string, channel: AccessChannel): boole
   return mayReachOthersOnIn(getAccessGrants(agentId), channel);
 }
 
-export function hasChannelMaster(agentId: string): boolean {
-  return getAccessGrants(agentId).channels.master !== null;
-}
-
 // ── Integrations ──
 
 export function integrationLevelFor(
@@ -154,14 +150,6 @@ export function toolCategoryGranted(agentId: string, tool: string): boolean {
 
 // ── Techniques ──
 
-export function techniqueGrantFor(agentId: string): string[] | '*' {
-  return techniqueGrantOf(getAccessGrants(agentId));
-}
-
 export function mayUseTechnique(agentId: string, techniqueId: string): boolean {
   return techniqueGranted(getAccessGrants(agentId), techniqueId);
-}
-
-export function holdsTechniqueGrant(agentId: string): boolean {
-  return holdsAnyTechniqueGrant(getAccessGrants(agentId));
 }

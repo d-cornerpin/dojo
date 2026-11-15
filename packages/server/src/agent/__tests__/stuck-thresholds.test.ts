@@ -32,12 +32,14 @@
 
 import { describe, it, expect } from 'vitest';
 import {
-  STUCK_THRESHOLDS, STUCK_THRESHOLD_IDS,
+  STUCK_THRESHOLDS, type StuckThresholdId,
   STUCK_AGENT_THRESHOLD_MINUTES, HEALER_WORKING_STUCK_MINUTES,
   DORMANT_THRESHOLD_DAYS, HARD_STUCK_THRESHOLD_MINUTES,
 } from '../stuck-thresholds.js';
 
 /** Every site that ENFORCES one of the four, with the constant it must read. */
+const IDS = Object.keys(STUCK_THRESHOLDS) as StuckThresholdId[];
+
 const ENFORCERS: Array<{ file: string; reads: string }> = [
   { file: 'agent/runtime.ts', reads: 'STUCK_AGENT_THRESHOLD_MINUTES' },
   { file: 'healer/healer-agent.ts', reads: 'HEALER_WORKING_STUCK_MINUTES' },
@@ -48,12 +50,11 @@ const ENFORCERS: Array<{ file: string; reads: string }> = [
 
 describe('T10 Step 1c — four cliffs, four owners, one table', () => {
   it('four ids, no more and no fewer', () => {
-    expect(STUCK_THRESHOLD_IDS).toHaveLength(4);
-    expect(Object.keys(STUCK_THRESHOLDS).sort()).toEqual([...STUCK_THRESHOLD_IDS].sort());
+    expect(Object.keys(STUCK_THRESHOLDS)).toHaveLength(4);
   });
 
   it('every row names an OWNER, states WHY, and says where its value came from', () => {
-    for (const id of STUCK_THRESHOLD_IDS) {
+    for (const id of IDS) {
       const t = STUCK_THRESHOLDS[id];
       expect(t.id, `${id}: id must match its key`).toBe(id);
       expect(t.ms, `${id}: a threshold is a positive duration`).toBeGreaterThan(0);
@@ -105,11 +106,11 @@ describe('T10 Step 1c — the two numbers that are NOT thresholds, and stay out'
     // a cadence: how often the reaper LOOKS, not how old a row must be.
     const table = JSON.stringify(STUCK_THRESHOLDS);
     expect(table).not.toMatch(/STUCK_AGENT_CHECK_MS['"\s]*:/);
-    expect(STUCK_THRESHOLD_IDS.map((id) => STUCK_THRESHOLDS[id].ms)).not.toContain(5 * 60_000);
+    expect(IDS.map((id) => STUCK_THRESHOLDS[id].ms)).not.toContain(5 * 60_000);
   });
 
   it('MAX_DRAIN_STUCK is a COUNT and is not in the table', () => {
-    const ids = STUCK_THRESHOLD_IDS.map(String).join(' ');
+    const ids = IDS.map(String).join(' ');
     expect(ids).not.toMatch(/drain/i);
   });
 });

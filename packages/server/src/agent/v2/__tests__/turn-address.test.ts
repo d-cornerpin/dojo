@@ -1,8 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import type { TurnCounterparty } from '../counterparty.js';
 import {
-  computeTurnAddress, resolveDeliveryChannel, renderReplyGoesTo, renderTailRestatement,
-  type ComputeTurnAddressInput,
+  computeTurnAddress, resolveDeliveryChannel, renderTailRestatement, type ComputeTurnAddressInput,
 } from '../turn-address.js';
 
 const contact: TurnCounterparty = {
@@ -33,7 +32,6 @@ describe('the turn address: who the written reply really goes to', () => {
     expect(a.deliveryChannel).toBe('imessage');
     expect(a.routed).toBe(true);
     expect(a.name).toBe('Pat Example');
-    expect(renderReplyGoesTo(a)).toBe('Your written reply goes to Pat Example (a known contact) by iMessage.');
   });
 
   it('A2: nothing arriving later can change it; the same inputs give the same address', () => {
@@ -77,13 +75,11 @@ describe('the turn address: who the written reply really goes to', () => {
     expect(a.kind).toBe('agent');
     expect(a.deliveryChannel).toBe('dashboard');
     expect(a.routed).toBe(false);
-    expect(renderReplyGoesTo(a)).toBeNull();
   });
 
   it('A6: engine and notification turns have no reply line and are never routed to a person as a reply', () => {
     const e = addr({ counterparty: owner, isEngineTurn: true, presence: 'away' });
     const n = addr({ counterparty: owner, isNotificationTurn: true, presence: 'away' });
-    for (const a of [e, n]) { expect(a.routed).toBe(false); expect(renderReplyGoesTo(a)).toBeNull(); }
     expect(e.kind).toBe('engine');
     expect(n.kind).toBe('notification');
     expect(n.deliveryChannel).toBe('dashboard');

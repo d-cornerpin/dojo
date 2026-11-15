@@ -110,10 +110,6 @@ interface GrantRuleRow {
 
 const memo = new Map<string, { fingerprint: string; grant: Grant }>();
 
-export function forgetGrant(agentId?: string): void {
-  if (agentId) memo.delete(agentId); else memo.clear();
-}
-
 /** Write this agent's rows to match `manifest`, in one transaction. Idempotent:
  *  running it twice leaves the same rows. Returns the number of rows written. */
 export function syncGrantRules(agentId: string, manifest: PermissionManifest): number {

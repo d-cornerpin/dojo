@@ -1,5 +1,5 @@
-// The ledger's verdict on a crossing, not the send's; built on LiveOutcome so `unknown` is unrepresentable.
-import type { LiveOutcome, OutcomeApplied, OutcomeFailed, OutcomeNoChange, OutcomeRefused } from '@dojo/shared';
+// The ledger's verdict on a crossing, not the send's; built on the shared outcome arms, so `unknown` is unrepresentable.
+import type { OutcomeApplied, OutcomeFailed, OutcomeNoChange, OutcomeRefused } from '@dojo/shared';
 import { createLogger } from '../../logger.js';
 
 const logger = createLogger('delivery-outcome');
@@ -12,10 +12,6 @@ export type LedgerOutcome =
   | OutcomeRefused<'no-such-work'>
   /** The write threw. There IS an outbound and the ledger has no record of it. */
   | OutcomeFailed<'ledger-write-failed'>;
-
-// Compile-time proof that LedgerOutcome never says `unknown`: adding such an arm breaks this line first.
-export type LedgerOutcomeIsLive = LedgerOutcome extends LiveOutcome<{ deliveryId: string }, string>
-  ? true : never;
 
 export function deliveryIdOf(o: LedgerOutcome): string | null {
   if (o.kind === 'applied') return o.value.deliveryId;

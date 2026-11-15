@@ -6,10 +6,6 @@ import { createLogger } from '../../logger.js';
 
 const logger = createLogger('recorded-commitment');
 
-// `ask` is excluded: `openAsk` writes one for the user's own inbound every turn, so counting it
-// would leave a floor that can never fire; `occurrence` is the scheduler's, not the model's.
-export const BOARD_KINDS: readonly string[] = ['commitment', 'task', 'project'];
-
 /** A recording claim in the past tense. Both halves must be present, in ONE sentence. */
 const RECORDED_VERB =
   /\b(recorded|logged|tracked|noted|saved|filed|captured|added|booked|put)\b/i;

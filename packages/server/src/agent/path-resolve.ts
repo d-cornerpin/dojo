@@ -142,7 +142,3 @@ export function matchAgentGlob(pattern: string, value: string, starCrossesSlash 
 export function matchAgentPathGlob(pattern: string, value: string): boolean {
   return matchAgentGlob(foldPath(expandTilde(pattern)), foldPath(expandTilde(value)));
 }
-
-export function matchesAnyPathGlob(patterns: string[], value: string): boolean {
-  return patterns.some(pattern => matchAgentPathGlob(pattern, value));
-}

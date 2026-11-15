@@ -10,7 +10,7 @@ import { classifyToolResult } from '../../../tool-outcome.js';
 import { executeTool, toolResultOf } from '../../../tools/index.js';
 import { RECENT_TOOL_WINDOW, loopDetector } from '../../classifiers/loop.js';
 import { checkIdenticalCallRefusal, identicalCallSignature, isSignatureTerminal, recordIdenticalCallResult } from '../../identical-call-brake.js';
-import { bumpLoopSignature, type AgentTurnState } from '../../state.js';
+import { bumpLoopSignature } from '../../state.js';
 import { createLogger } from '../../../../logger.js';
 import { FIRE_AND_FORGET_GEN_TOOLS, SEND_TO_PEOPLE_SET } from './tool-sets.js';
 import { wordsStepRefusal } from './media-words-step.js';

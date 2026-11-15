@@ -69,6 +69,3 @@ export const STUCK_THRESHOLDS: Readonly<Record<StuckThresholdId, StuckThreshold>
     carriedFrom: 'DORMANT_THRESHOLD_MS = 7 * 86400000 — healer/diagnostic.ts (declared inside a function body)',
   },
 };
-
-export const STUCK_THRESHOLD_IDS: readonly StuckThresholdId[] =
-  Object.keys(STUCK_THRESHOLDS) as StuckThresholdId[];
