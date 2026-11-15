@@ -89,7 +89,8 @@ export function reassignAffectedAgents(modelIds: string[], fallbackId = cheapest
   }
   for (const id of movedIds) {   // the effects every model change has: a new model's tool ids, a no-fit park looked at again
     sanitizeMessagesOnModelChange(id);
-    void import('./v2/honest-stop-lock.js').then((m) => m.noteModelsChanged(id));
+    void import('./v2/honest-stop-lock.js').then((m) => m.noteModelsChanged(id))
+      .catch((err: unknown) => logger.warn('A moved agent\'s no-fit park could not be looked at again', { agentId: id, error: err instanceof Error ? err.message : String(err) }));
   }
 
   return fallbackId ? { agentsMoved: reassigned, agentsWithoutModel: 0 } : { agentsMoved: 0, agentsWithoutModel: reassigned };

@@ -22,6 +22,7 @@ import { runMigrations } from '../../db/migrations.js';
 import { tellOwner } from '../../healer/owner-notices.js';
 import { moveAgentsOffSmallModels } from '../main-model-floor.js';
 import { standingOwnerNotices } from '../../healer/owner-notice-kinds.js';
+import * as honestStopLock from '../v2/honest-stop-lock.js';
 
 const db = (): Database.Database => mockDb.current!;
 const seedModel = (id: string, window: number | null, enabled = 1, cost = 1): void => {
@@ -118,10 +119,21 @@ describe('an agent on a too-small model, at start', () => {
 
   it('the router sentinel is never the pick, and a service setting follows its agent', () => {
     seedModel('cheap', 64_000);
+    expect(db().prepare("SELECT is_enabled, input_cost_per_m FROM models WHERE id = 'auto'").get(), 'non-vacuity: the free, enabled, large sentinel row is there to be skipped').toEqual({ is_enabled: 1, input_cost_per_m: 0 });
     db().prepare("INSERT INTO config (key, value) VALUES ('healer_model_id', 'tiny')").run();
     seedAgent('main', 'tiny');
     moveAgentsOffSmallModels();
     expect(modelOf('main')).toBe('cheap');
     expect((db().prepare("SELECT value FROM config WHERE key = 'healer_model_id'").get() as { value: string }).value).toBe('cheap');
+  });
+
+  it('a failed look at the parked agent after the move does not escape', async () => {
+    const looked = vi.spyOn(honestStopLock, 'noteModelsChanged').mockRejectedValue(new Error('look failed'));
+    seedModel('cheap', 64_000);
+    seedAgent('main', 'tiny');
+    moveAgentsOffSmallModels();
+    await vi.waitFor(() => expect(looked).toHaveBeenCalledWith('main'));
+    await new Promise<void>((resolve) => { setImmediate(resolve); });
+    expect(modelOf('main')).toBe('cheap');
   });
 });
