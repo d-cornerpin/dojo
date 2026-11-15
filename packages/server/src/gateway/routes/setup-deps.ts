@@ -11,7 +11,7 @@ import { deleteAllForAgent } from '../../memory/message-store.js';
 import { noteRouteFailure, routeFailure } from './route-failure.js';
 import { homeDir } from '../../home.js';
 import { pullOllamaModel, type PullProgress } from '../../services/ollama-pull.js';
-import { ensureLocalOllamaProvider, STANDARD_DECISION_MODEL, STANDARD_WRITER_MODEL } from '../../services/local-standard.js';
+import { ensureLocalOllamaProvider, STANDARD_DECISION_MODEL, STANDARD_ROW_STAYS, STANDARD_WRITER_MODEL, isStandardTag } from '../../services/local-standard.js';
 import { standardProgressLines, standardState, upkeep } from '../../services/ollama-upkeep.js';
 import { isVersionRefusal, plainPullError } from '../../services/ollama-version.js';
 import { attachIdleBound } from '../../child-idle-bound.js';
@@ -190,7 +190,7 @@ setupDepsRouter.get('/ollama/models', async (c) => {
     const resp = await fetch('http://localhost:11434/api/tags', { signal: AbortSignal.timeout(5000) });
     if (!resp.ok) return c.json({ ok: false, error: 'Ollama not responding' }, 502);
     const data = await resp.json() as { models?: Array<{ name: string; size: number; details?: { parameter_size?: string } }> };
-    return c.json({ ok: true, data: (data.models ?? []).filter((m) => m.name !== STANDARD_DECISION_MODEL.windowTag) });   // no Remove for the Dojo's own window tag
+    return c.json({ ok: true, data: (data.models ?? []).filter((m) => m.name !== STANDARD_DECISION_MODEL.windowTag).map((m) => ({ ...m, protected: isStandardTag(m.name) })) });   // no Remove for the Dojo's own window tag
   } catch (err) {
     return routeFailure(c, logger, err, { status: 502, message: 'Cannot connect to Ollama' });
   }
@@ -258,6 +258,7 @@ setupDepsRouter.post('/ollama/pull', async (c) => {
 // DELETE /ollama/models/:name: remove a model
 setupDepsRouter.delete('/ollama/models/:name', async (c) => {
   const name = c.req.param('name');
+  if (isStandardTag(name)) return c.json({ ok: false, error: STANDARD_ROW_STAYS }, 409);
   try {
     const resp = await fetch('http://localhost:11434/api/delete', {
       method: 'DELETE',

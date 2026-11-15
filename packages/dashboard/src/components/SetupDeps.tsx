@@ -30,6 +30,7 @@ interface DepState {
 interface OllamaModel {
   name: string;
   size: number;
+  protected?: boolean;
   details?: { parameter_size?: string };
 }
 
@@ -497,7 +498,7 @@ export const SetupDeps = ({ onReady }: { onReady?: (ready: boolean) => void }) =
                         <span className="text-xs text-ui/25 ml-2">{sizeMb > 1024 ? `${(sizeMb / 1024).toFixed(1)}GB` : `${sizeMb}MB`}</span>
                         {isEmbedding && <span className="text-[10px] text-ui/25 ml-2">(embedding model)</span>}
                       </div>
-                      {!isEmbedding && (
+                      {!isEmbedding && !m.protected && (
                         <button onClick={() => removeModel(m.name)}
                           className="text-xs text-red-400 hover:text-red-300">Remove</button>
                       )}

@@ -48,6 +48,7 @@ beforeEach(() => {
       ollama.installed.add(model);
       return pullStream();
     }
+    if (path === '/api/delete') return Response.json({});
     return new Response('no route', { status: 404 });
   }));
 });
@@ -90,6 +91,23 @@ describe('setup installs the pair once Ollama is up and the embedder is present'
     expect(res.status).toBe(200);
     await settled();
     expect(ollama.pulls.sort()).toEqual([STANDARD_DECISION_MODEL.tag, STANDARD_WRITER_MODEL.tag].sort());
+  });
+});
+
+describe('the Setup screen cannot remove the pair', () => {
+  it('refuses to delete either model, lists them as protected, and still removes another', async () => {
+    await setupDepsRouter.request('/ollama/auto-configure', { method: 'POST' });
+    await settled();
+    ollama.installed.add('other:1b');
+    const listed = await (await setupDepsRouter.request('/ollama/models')).json() as { data: Array<{ name: string; protected: boolean }> };
+    expect(Object.fromEntries(listed.data.map((m) => [m.name, m.protected]))).toMatchObject({
+      [STANDARD_DECISION_MODEL.tag]: true, [STANDARD_WRITER_MODEL.tag]: true, 'other:1b': false,
+    });
+    const res = await setupDepsRouter.request(`/ollama/models/${encodeURIComponent(STANDARD_WRITER_MODEL.tag)}`, { method: 'DELETE' });
+    expect(res.status).toBe(409);
+    expect(ollama.calls).not.toContain('/api/delete');
+    const other = await setupDepsRouter.request('/ollama/models/other%3A1b', { method: 'DELETE' });
+    expect(other.status).toBe(200);
   });
 });
 

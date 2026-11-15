@@ -61,6 +61,15 @@ export function standardModelRowId(which: Which): string | null {
   }
 }
 
+export const STANDARD_ROW_STAYS = 'The Dojo itself runs on this model for memory summaries and quick checks, so it stays on.';
+
+/** The Ollama tag's own row is one of the pair: the one question the Models tab and the Setup screen both ask. */
+export function isStandardTag(tag: string): boolean {
+  const provider = localOllamaProvider();
+  const row = provider ? getDb().prepare('SELECT id FROM models WHERE provider_id = ? AND api_model_id = ?').get(provider.id, tag) as { id: string } | undefined : undefined;
+  return isStandardModelRow(row?.id);
+}
+
 export function isStandardModelRow(modelId: string | null | undefined): boolean {
   return !!modelId && (modelId === standardModelRowId('writer') || modelId === standardModelRowId('decision'));
 }
