@@ -935,7 +935,7 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
       const sr = setTaskStatusResult(taskId, statusUpdate as TrackerStatus, {
         by: callerIsPM ? 'pm' : 'agent', actorId: agentId,
         reason: `work_update(action="status") -> ${String(statusUpdate)}`,
-        userQuote: typeof args.user_quote === 'string' ? args.user_quote : null,
+        userQuote: isPrimaryAgent(agentId) && typeof args.user_quote === 'string' ? args.user_quote : null,
       });
       if (!workSettled(sr.result)) {
         return `Refused: the status of ${taskId} did not change (${sr.result.detail}).`;
