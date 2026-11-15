@@ -457,3 +457,23 @@ describe('answersALiveAsk, clause by clause', () => {
     expect(answersALiveAsk({ ...base, isHumanContinuation: true, startAckRepliedNow: () => true })).toBe(false);
   });
 });
+
+// ── A TIME STAMP THE MODEL ECHOED IS GONE BEFORE THE ROW, THE BROADCAST AND THE CHANNEL PUSH READ THE TEXT ──
+
+describe('an echoed time stamp at the start of the reply', () => {
+  const STAMP = '[Nov 14, 2026, 07:05 AM UTC-08:00]';
+  const run = async (text: string) => {
+    deliverAckSpy.mockClear();
+    const out = await runTerminalText(state, ctxFor(turnCtxFor(), { isHumanContinuation: true, result: modelResult(text) }), scratchFor());
+    return { stored: (deliverAckSpy.mock.calls[0] as unknown as [string])[0], pushed: out.state.lastAssistantTextForIM };
+  };
+
+  it('is not in the stored text of a turn that also called a tool, nor in the text the channel push sends', async () => {
+    expect(await run(`${STAMP} All filed.`)).toEqual({ stored: 'All filed.', pushed: 'All filed.' });
+  });
+
+  it('leaves a clock time and a date that are no stamp', async () => {
+    expect((await run('9:30 AM works.')).stored).toBe('9:30 AM works.');
+    expect((await run('[2026-11-15] the plan')).stored).toBe('[2026-11-15] the plan');
+  });
+});

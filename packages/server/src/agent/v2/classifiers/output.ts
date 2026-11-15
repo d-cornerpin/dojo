@@ -111,16 +111,3 @@ export function sanitizeAssistantText(content: string | null): string | null {
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
-
-// The assembler time-stamps history and the model imitates the costume.
-// Stripping a leading run at the persist source is lane attribution, not
-// suppression: anchored at the reply start, strictly date-shaped (month-name
-// and ISO shapes), so real bracketed content survives.
-const LEADING_TIME_STAMP_RE =
-  /^\s*\[(?:(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s\d{1,2},\s\d{4},\s\d{1,2}:\d{2}[\s\u202F\u00A0]?(?:AM|PM)|\d{4}-\d{2}-\d{2}[T ]\d{1,2}:\d{2}(?::\d{2})?[\s\u202F\u00A0]?(?:AM|PM|UTC|Z)?)\]\s*/;
-
-export function stripLeadingTimeStamp(text: string): string {
-  let out = text;
-  while (LEADING_TIME_STAMP_RE.test(out)) out = out.replace(LEADING_TIME_STAMP_RE, '');
-  return out;
-}

@@ -276,3 +276,39 @@ describe('a cloud voice that breaks mid-reply continues in the local voice', () 
     await vi.waitFor(() => expect(sent.some((m) => m.type === 'voice:state' && m.state === 'error')).toBe(true));
   });
 });
+
+// What reaches either voice from a streamed reply: spaces at chunk edges, control marks, an echoed time stamp.
+describe('what is spoken from the streamed chunks', () => {
+  const STAMP = '[Nov 14, 2026, 07:05 AM UTC-08:00]';
+  async function openLocalSession(): Promise<void> {
+    verifyAndOpenVoiceSession(ws as never, `/voice?token=${jwt.sign({ userId: 'u1' }, 'secret')}&agentId=${A}`);
+    await handleVoiceMessage(ws as never, JSON.stringify({ type: 'config' }));
+  }
+  const spoken = async (open: () => Promise<void>, parts: string[]): Promise<string> => {
+    await open();
+    parts.forEach((p, i) => emit(chunk(p, i === parts.length - 1)));
+    emit(idle());
+    await vi.waitFor(() => expect(localSaid.length + pushed.length).toBeGreaterThan(0));
+    await settle();
+    return [...localSaid, ...pushed].join(' ');
+  };
+
+  for (const [voice, open] of [['local', openLocalSession], ['cloud', openCloudSession]] as const) {
+    it(`the ${voice} voice keeps the space at a chunk edge`, async () => {
+      expect(await spoken(open, ['Let me ', 'check that.'])).toContain('Let me check that.');
+    });
+    it(`the ${voice} voice leaves one space where a control mark was taken out`, async () => {
+      expect(await spoken(open, ['Hello [no-reply]world'])).toContain('Hello world');
+    });
+    it(`the ${voice} voice drops a time stamp echoed at the start`, async () => {
+      const said = await spoken(open, [`${STAMP} Done.`]);
+      expect(said).toContain('Done.');
+      expect(said).not.toContain('2026');
+    });
+    it(`the ${voice} voice keeps a clock time and a date that are no stamp`, async () => {
+      const said = await spoken(open, ['9:30 AM works. [2026-11-15] the plan']);
+      expect(said).toContain('9:30');
+      expect(said).toContain('2026-11-15');
+    });
+  }
+});

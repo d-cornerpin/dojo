@@ -8,11 +8,19 @@
 // ════════════════════════════════════════
 
 import { describe, it, expect } from 'vitest';
-import { stripLeadingTimeStamp } from '../classifiers/output.js';
+import { stripLeadingTimeStamp } from '../../../memory/message-stamp.js';
+import { renderMessageTimeStamp } from '../../../memory/message-stamp.js';
 
 describe('stripLeadingTimeStamp', () => {
   it('strips the observed production shape', () => {
     expect(stripLeadingTimeStamp('[Jul 16, 2026, 10:58 PM] Saved.')).toBe('Saved.');
+  });
+
+  it('strips the stamp the engine writes today, offset included, and keeps clock-like text that is no stamp', () => {
+    const stamp = renderMessageTimeStamp(Date.UTC(2026, 10, 14, 15, 5))!;
+    expect(stripLeadingTimeStamp(`${stamp} Here you go.`)).toBe('Here you go.');
+    expect(stripLeadingTimeStamp('9:30 AM works.')).toBe('9:30 AM works.');
+    expect(stripLeadingTimeStamp('[2026-11-15] the plan')).toBe('[2026-11-15] the plan');
   });
 
   it('strips a doubled prefix', () => {

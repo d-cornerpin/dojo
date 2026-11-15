@@ -20,8 +20,16 @@ export function renderMessageTimeStamp(createdAt: string | number | null | undef
   return instant === null ? null : `[${instant}]`;
 }
 
-/** A stamp in the shape `renderMessageTimeStamp` writes, at the start of text: a model that echoes it is stripped. */
-export const LEADING_STAMP_RE = /^\s*\[[A-Z][a-z]{2} \d{1,2}, \d{4}, \d{2}:\d{2}\s[AP]M UTC[+-]\d{2}:\d{2}\]\s*/;
+/** A stamp the model echoed at the start of its reply: the shape `renderMessageTimeStamp` writes (month-name with an
+ *  optional UTC offset, or ISO date and time), a leading run of them. A bracket with no clock time is real content. */
+const LEADING_TIME_STAMP_RE =
+  /^\s*\[(?:(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s\d{1,2},\s\d{4},\s\d{1,2}:\d{2}[\s\u202F\u00A0]?(?:AM|PM)(?: UTC[+-]\d{2}:\d{2})?|\d{4}-\d{2}-\d{2}[T ]\d{1,2}:\d{2}(?::\d{2})?[\s\u202F\u00A0]?(?:AM|PM|UTC|Z)?)\]\s*/;
+
+export function stripLeadingTimeStamp(text: string): string {
+  let out = text;
+  while (LEADING_TIME_STAMP_RE.test(out)) out = out.replace(LEADING_TIME_STAMP_RE, '');
+  return out;
+}
 
 export function renderInstant(createdAt: string | number | null | undefined): string | null {
   if (!createdAt) return null;

@@ -2,6 +2,8 @@
 // synthesis description for that turn. It is stripped for both engines so it is never read aloud;
 // one cue per turn, anchored at the start after leading whitespace.
 
+import { stripLeadingTimeStamp } from '../memory/message-stamp.js';
+
 const CUE_RE = /^\s*\(\(\s*deliver\s*:\s*([^)]*?)\s*\)\)\s*/i;
 
 export interface ParsedCue {
@@ -9,12 +11,13 @@ export interface ParsedCue {
   body: string;
 }
 
-// Parse a leading cue off `text`; text without a cue comes back unchanged.
-export function parseDeliveryCue(text: string): ParsedCue {
+// Parse a leading cue off `text` (an echoed time stamp before or after it goes too); text without a cue comes back unchanged.
+export function parseDeliveryCue(raw: string): ParsedCue {
+  const text = stripLeadingTimeStamp(raw);
   const m = CUE_RE.exec(text);
   if (!m) return { description: null, body: text };
   const description = m[1].trim();
-  const body = text.slice(m[0].length);
+  const body = stripLeadingTimeStamp(text.slice(m[0].length));
   return {
     description: description.length > 0 ? description : null,
     body,

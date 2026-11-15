@@ -16,7 +16,6 @@ import { withUnit } from '../db/unit.js';
 import { openAsk, askIdForMessage } from '../work/store.js';
 import { NOW_MS, createdAtText } from './store.js';
 import { estimateStoredTokens } from './budget.js';
-import { LEADING_STAMP_RE } from './message-stamp.js';
 import { turnContext } from '../agent/turn-context.js';
 
 export { NOW_MS, createdAtText };
@@ -116,12 +115,12 @@ function toStored(r: MessageRowShape): StoredMessage {
   };
 }
 
-// Rows are stored as they should be READ: the mood marker moves to `mood`, `[no-reply]` and an echoed leading time stamp are stripped, only from
+// Rows are stored as they should be READ: the mood marker moves to `mood`, and `[no-reply]` is stripped, only from
 // agent-authored text (assistant rows, working-note wrappers), never tool data, user words or a system prompt.
 // Display kind uses `@dojo/shared`'s classifier, the same one the dashboard runs.
 
 function displayReady(text: string): string {
-  return stripNoReplySentinel(stripMoodMarker(text)).trim().replace(LEADING_STAMP_RE, '');
+  return stripNoReplySentinel(stripMoodMarker(text)).trim();
 }
 
 function prepareContent(role: Role, content: string): { content: string; mood: string | null } {
