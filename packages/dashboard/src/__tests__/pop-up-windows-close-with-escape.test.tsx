@@ -60,15 +60,15 @@ import { ModalShell } from '../components/ModalShell';
 const shell = (page: ReactElement) => (
   <MemoryRouter>
     <AuthProvider>
-        <OrbProvider>
-          <ActiveAgentProvider>
-            <RightDockProvider>
-              <TechniqueSessionProvider>
-                {page}
-              </TechniqueSessionProvider>
-            </RightDockProvider>
-          </ActiveAgentProvider>
-        </OrbProvider>
+      <OrbProvider>
+        <ActiveAgentProvider>
+          <RightDockProvider>
+            <TechniqueSessionProvider>
+              {page}
+            </TechniqueSessionProvider>
+          </RightDockProvider>
+        </ActiveAgentProvider>
+      </OrbProvider>
     </AuthProvider>
   </MemoryRouter>
 );

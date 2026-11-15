@@ -101,13 +101,13 @@ const noteBubbles = (root: HTMLElement, text: string): Element[] =>
 
 const shell = (page: ReactElement) => (
   <MemoryRouter>
-      <OrbProvider>
-        <ActiveAgentProvider>
-          <RightDockProvider>
-            <TechniqueSessionProvider>{page}</TechniqueSessionProvider>
-          </RightDockProvider>
-        </ActiveAgentProvider>
-      </OrbProvider>
+    <OrbProvider>
+      <ActiveAgentProvider>
+        <RightDockProvider>
+          <TechniqueSessionProvider>{page}</TechniqueSessionProvider>
+        </RightDockProvider>
+      </ActiveAgentProvider>
+    </OrbProvider>
   </MemoryRouter>
 );
 

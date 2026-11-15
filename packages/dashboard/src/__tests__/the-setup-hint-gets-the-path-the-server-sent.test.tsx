@@ -87,15 +87,15 @@ const mocked = () => vi.mocked(api);
 const shell = (page: ReactElement) => (
   <MemoryRouter initialEntries={['/settings?tab=channels']}>
     <AuthProvider>
-        <OrbProvider>
-          <ActiveAgentProvider>
-            <RightDockProvider>
-              <TechniqueSessionProvider>
-                {page}
-              </TechniqueSessionProvider>
-            </RightDockProvider>
-          </ActiveAgentProvider>
-        </OrbProvider>
+      <OrbProvider>
+        <ActiveAgentProvider>
+          <RightDockProvider>
+            <TechniqueSessionProvider>
+              {page}
+            </TechniqueSessionProvider>
+          </RightDockProvider>
+        </ActiveAgentProvider>
+      </OrbProvider>
     </AuthProvider>
   </MemoryRouter>
 );

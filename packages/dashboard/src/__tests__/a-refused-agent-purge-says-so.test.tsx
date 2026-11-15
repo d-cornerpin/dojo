@@ -60,11 +60,11 @@ const ENDED_AGENT = {
 const renderAgents = () => render(
   <MemoryRouter>
     <AuthProvider>
-        <ActiveAgentProvider>
-          <ToastProvider>
-            <Agents />
-          </ToastProvider>
-        </ActiveAgentProvider>
+      <ActiveAgentProvider>
+        <ToastProvider>
+          <Agents />
+        </ToastProvider>
+      </ActiveAgentProvider>
     </AuthProvider>
   </MemoryRouter>,
 );
