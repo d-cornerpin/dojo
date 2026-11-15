@@ -114,7 +114,7 @@ export function workFile(workId: string, room: number): string {
   const noteList = project ? noteLines(project.id) : [];
   const spare = newestThatFit(noteList, half).left;
   const timed = newestThatFit([...reviewLines(tasks), ...exchangeLines(project ? tasks.map((t) => t.id) : [workId])], space - half + spare, true);
-  const notes = newestThatFit(noteList, half - spare + timed.left);
+  const notes = newestThatFit(noteList, half - spare + Math.max(0, timed.left));   // an over-long newest exchange takes no note room
   if (!project && timed.kept.length === 0) return '';
   const noteText = project
     ? `\n  The project's notes:${notes.kept.join('') || ' none'}`

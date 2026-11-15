@@ -104,6 +104,24 @@ describe('the review file shares its room between notes and reviews', () => {
     expect(report).toContain(`Question ${ASKS - 1}:`);
   });
 
+  it('a newest exchange longer than its room leaves the notes their half', async () => {
+    await projectWithHistory(1, 600, 'sheet detail');
+    let thread = '';
+    await review(PM, async () => {
+      expect((await call(PM, 'send_to_agent', { agent: WORKER, intent: 'QUESTION', payload: 'Question 0: does the last sheet use fiscal weeks' })).isError).toBe(false);
+      thread = (doneDb().prepare('SELECT thread_id FROM tool_receipts WHERE agent_id = ? ORDER BY rowid DESC LIMIT 1').get(PM) as { thread_id: string }).thread_id;
+      expect((await call(PM, 'work_validate', { action: 'decide', task_id: 'task-last', verdict: 'send_back', reason: 'Say which weeks' })).isError).toBe(false);
+    });
+    await new Promise((r) => setTimeout(r, 1000));   // the answers come a second after the decision, as they do on a box
+    for (let i = 0; i < 40; i += 1) {
+      insertMessage({ agentId: PM, role: 'user', lane: 'a2a', sourceAgentId: WORKER, a2aThreadId: thread, content: `Answer ${i}: ${'fiscal weeks 14 to 17, '.repeat(40)}` });
+    }
+    await handIn('task-last');
+    const report = await review(PM);
+    expect(report).toContain('Answer 39:');
+    expect(report.match(/Working note \d+/g)?.length ?? 0).toBeGreaterThan(100);
+  });
+
   it('a newest exchange longer than its room is shown, its answers cut', async () => {
     const report = await loneTaskAsking(1, 30);
     expect(report).toContain('Question 0:');
