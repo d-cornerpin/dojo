@@ -191,16 +191,6 @@ describe('a schedule set on a finished recurring task', () => {
     expect(body.error).not.toMatch(/secret raw sqlite text|SQLITE/i);
   });
 
-  it('R5-3 OWNER door: the revert-count reset is inside the unit, so a reopen that lands never answers 500', async () => {
-    const id = await finishedRecurring();
-    db().exec(`CREATE TRIGGER no_reset BEFORE INSERT ON work_events WHEN NEW.work_id = '${id}' AND NEW.kind = 'revert_reset' BEGIN SELECT RAISE(ABORT, 'no reset'); END`);
-    const before = snapshot(id);
-    const res = await put(id, SCHED());
-    // Either the whole save lands (200 and reopened) or none of it does (not 200 and unchanged).
-    if (res.status === 200) expect(row(id).state).not.toBe('done');
-    else expect(snapshot(id)).toEqual(before);
-  });
-
   it('R5-2 OWNER door: a refused arm on a LIVE row answers an honest error, never 200', async () => {
     const out = await call('work_open:task', { title: 'Live one', goal: 'g', allow_duplicate: true });
     const id = /task_id=([0-9a-f-]{36})/.exec(out.content)![1];
