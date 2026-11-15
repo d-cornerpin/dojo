@@ -12,7 +12,8 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { runMigrations } from '../../db/migrations.js';
 import { getDb } from '../../db/connection.js';
 import { insertMessageIfAbsent } from '../../memory/message-store.js';
-import { extractPayloadFromA2AMessage, findUnlandedInboundReply } from '../a2a-transport.js';
+import { extractPayloadFromA2AMessage } from '@dojo/shared';
+import { findUnlandedInboundReply } from '../a2a-transport.js';
 import { a2aPayloadForModel } from '../../tools/inbound-fences.js';
 
 const REPORT = 'Done: the crate count is forty-two.\nAll receipts are filed.';

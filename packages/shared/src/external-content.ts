@@ -151,3 +151,18 @@ export function unfenceExternal(text: string): string {
   }
   return out;
 }
+
+/** What the sender of a stored agent message wrote: its envelope and footer go. */
+export function extractPayloadFromA2AMessage(fenced: string): string | null {
+  // The stored row's fence is for the model, never part of what was written.
+  const content = unfenceExternal(fenced);
+  // New format: [A2A:INTENT thread:xxx from:Name] payload
+  const a2aMatch = content.match(/^\[A2A:\w+ thread:\S+ from:[^\]]+\]\s*([\s\S]*?)(\n\n\[Thread|$)/);
+  if (a2aMatch) return a2aMatch[1].trim();
+
+  // Legacy format: [SOURCE: AGENT MESSAGE FROM ...] payload
+  const legacyMatch = content.match(/^\[SOURCE: (?:AGENT MESSAGE|PM AGENT POKE|GROUP BROADCAST) FROM [^\]]+\]\s*([\s\S]*?)(\n\n\[(?:To reply|Reply via)|$)/);
+  if (legacyMatch) return legacyMatch[1].trim();
+
+  return content.trim();
+}

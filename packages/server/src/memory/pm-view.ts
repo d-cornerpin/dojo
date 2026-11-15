@@ -7,6 +7,7 @@ import { pinnedContextSection } from '../vault/retrieval.js';
 import { turnContext as liveTurnContext } from '../agent/turn-context.js';
 import { patienceBoundMs } from '../tracker/assignee-patience.js';
 import { answeredThread, tiedTask } from '../work/done/who-decides.js';
+import { workFile } from '../work/project-file.js';
 import type { PromptTurnContext } from '../prompt/assembler.js';
 import { boardAgentRows } from './store.js';
 import { contextOverflowSince } from './compaction.js';
@@ -17,12 +18,12 @@ export const keepsNoSummaries = (agentId: string): boolean => isPMAgent(agentId)
 export interface PMViewParts { pinned: string; tail: Message[]; file: string; present: Message[]; room: number }
 
 /** The parts in trim priority, kept longest first: the present turn, the file, the pinned memories, the tail. */
-export async function pmViewParts(agentId: string, turnContext: PromptTurnContext | undefined, contentBudget: number, block: number): Promise<PMViewParts> {
+export function pmViewParts(agentId: string, turnContext: PromptTurnContext | undefined, contentBudget: number, block: number): PMViewParts {
   const live = liveTurnContext(agentId);
   const { tail, present } = boardAgentRows(agentId, block, live?.turnNumber ?? null, turnContext?.engineEventKeepFullId ?? live?.triggerMessageId ?? null);
   // For one patience bound after a forced pass the view fits half its budget, so the retry assembles a smaller one.
   const room = contextOverflowSince(agentId, Date.now() - patienceBoundMs(agentId)) ? Math.floor(contentBudget / 2) : contentBudget;
   const task = turnContext?.counterparty?.kind === 'agent' ? tiedTask(agentId, answeredThread(agentId) ?? turnContext.counterparty.threadId) : null;
-  const file = task ? `The task this message is about, [${task}]:${(await import('../tracker/pm-agent.js')).taskFile(task, Math.floor(room / 4))}` : '';
+  const file = task ? `The task this message is about, [${task}]:${workFile(task, Math.floor(room / 4))}` : '';
   return { pinned: pinnedContextSection(agentId).section, tail, file, present, room };
 }

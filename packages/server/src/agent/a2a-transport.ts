@@ -8,7 +8,7 @@ import { liveAgentsNamed, liveAgentNamesNear } from './tool-helpers.js';
 import { activeRuns } from './shared-state.js';
 import { endedMidRun } from './ended-mid-run.js';
 import { patienceFloorFor } from '../tracker/assignee-patience.js';
-import { A2A_THREAD_SHORT_LENGTH, a2aThreadShort, a2aThreadShortLegacy, OWNER_ALERT_DOJO_PREFIX } from '@dojo/shared';
+import { A2A_THREAD_SHORT_LENGTH, a2aThreadShort, a2aThreadShortLegacy, extractPayloadFromA2AMessage, OWNER_ALERT_DOJO_PREFIX } from '@dojo/shared';
 import { tellAgentWhatDojoSent } from './dojo-voice.js';
 import { postAgentNotice } from './agent-notice.js';
 import { createLogger } from '../logger.js';
@@ -17,7 +17,6 @@ import { getAgentRuntime } from './runtime.js';
 import { deliveredResult, repliesSince, insertMessageIfAbsent, insertEngineEventIfAbsent, type EngineEventWork } from '../memory/message-store.js';
 import { resolveOrCreateConversation } from '../memory/conversations.js';
 import { isSenderAuthorized } from './v2/channel-auth.js';
-import { unfenceExternal } from '../tools/external-content.js';
 import { a2aPayloadForModel } from '../tools/inbound-fences.js';
 import { mayUseChannel } from './access/read.js';
 import { ACCESS_CHANNELS, type AccessChannel } from '@dojo/shared';
@@ -221,20 +220,6 @@ async function findRecentDuplicateAssignThread(
     });
     return null;
   }
-}
-
-export function extractPayloadFromA2AMessage(fenced: string): string | null {
-  // Dedup compares what the sender WROTE; the stored row's fence is for the model.
-  const content = unfenceExternal(fenced);
-  // New format: [A2A:INTENT thread:xxx from:Name] payload
-  const a2aMatch = content.match(/^\[A2A:\w+ thread:\S+ from:[^\]]+\]\s*([\s\S]*?)(\n\n\[Thread|$)/);
-  if (a2aMatch) return a2aMatch[1].trim();
-
-  // Legacy format: [SOURCE: AGENT MESSAGE FROM ...] payload
-  const legacyMatch = content.match(/^\[SOURCE: (?:AGENT MESSAGE|PM AGENT POKE|GROUP BROADCAST) FROM [^\]]+\]\s*([\s\S]*?)(\n\n\[(?:To reply|Reply via)|$)/);
-  if (legacyMatch) return legacyMatch[1].trim();
-
-  return content.trim();
 }
 
 function cosineSimilarity(a: Float32Array, b: Float32Array): number {
@@ -1165,7 +1150,7 @@ export function findUnlandedInboundReply(
     | { id: string; content: string; source_agent_id: string | null } | undefined;
   if (!row) return null;
   // The stored row is envelope + payload + footer; relay just the payload the sender wrote.
-  const payload = unfenceExternal(row.content).replace(/^\[A2A:[^\]]*\]\s*/, '').split('\n\n[Thread ')[0];
+  const payload = extractPayloadFromA2AMessage(row.content) ?? '';
   const fromTag = row.content.match(/^\[A2A:[A-Z]+\s+thread:\S+\s+from:([^\]]+)\]/);
   const senderName = resolveAgentDisplayName(row.source_agent_id) ?? fromTag?.[1]?.trim() ?? 'the other agent';
   return { payload, senderName, messageId: row.id, senderId: row.source_agent_id };

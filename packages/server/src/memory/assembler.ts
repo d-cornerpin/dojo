@@ -836,7 +836,7 @@ async function assembleMessageContext(
   const contentBudget = Math.max(0, maxTokens - systemTokens - offTheTop);   // the PM's view is fitted to this too: the loop's appends need room
   if (keepsNoSummaries(agentId)) {
     const block = tailTrimBlockGroups(policy.freshTailCount);
-    const v = await pmViewParts(agentId, turnContext, contentBudget, block);
+    const v = pmViewParts(agentId, turnContext, contentBudget, block);
     const present = budgetFreshTail(v.present, v.room, block);
     const file = estimateTokens(v.file) <= v.room - rowTokens(present) ? v.file : '';
     const pinned = estimateTokens(v.pinned) <= v.room - rowTokens(present) - estimateTokens(file) ? v.pinned : '';
