@@ -130,7 +130,7 @@ export function noteRepeatResult(agentId: string, turn: TurnContext, tool: strin
   return `\n\n[Engine: ${seenWords(key, n)}, so the engine has stopped this call; asking again will not change the answer. ${WAYS}]`;
 }
 
-/** How many work results new to the window this turn has brought back: the job's momentum. */
+/** The job's momentum this turn: work results new to the window, and the agent's choices to continue. */
 export function freshResults(agentId: string, turn: TurnContext | undefined): number {
   const w = windows.get(agentId);
   return w && w.ref === turn ? w.fresh : 0;
@@ -157,6 +157,7 @@ export function liftRepeatStops(agentId: string, reason: unknown): { content: st
   if (!w) return nothing;
   const stopped = [...new Set([...w.now.keys(), ...w.before.keys()])].filter((key) => due(w, key) >= stopOf(w, key));
   if (stopped.length === 0) return nothing;
+  w.fresh += 1;   // choosing to continue, with a reason, is the job moving for the checkpoint window
   const lifted = stopped.map((key) => {
     w.stopAt.set(key, nextStop(due(w, key)));
     w.refused.delete(key);

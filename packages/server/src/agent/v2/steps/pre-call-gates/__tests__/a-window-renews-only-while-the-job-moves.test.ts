@@ -21,7 +21,7 @@ import { pendingWakeups } from '../../../../shared-state.js';
 import { endTurnContext, openTurnContext, turnContext } from '../../../../turn-context.js';
 import { advance, initState, type AgentTurnState } from '../../../state.js';
 import { runPreCallGates, type PreCallGatesContext } from '../index.js';
-import { noteRepeatResult } from '../../../../v2/identical-call-brake.js';
+import { liftRepeatStops, noteRepeatResult } from '../../../../v2/identical-call-brake.js';
 import { beginJobRun, carryJobWork, endJobCarry } from '../../../../../work/task-freshness.js';
 import { insertMessage } from '../../../../../memory/message-store.js';
 import { getWaitingHumanConversations } from '../../../counterparty.js';
@@ -175,6 +175,37 @@ describe('a window renews only while the job moves and nobody waits', () => {
     expect(beginJobRun(AGENT, 'drain')).toBe(true);
     expect(await gate(stateAt(76))).toMatchObject({ directive: 'exit', reason: 'turn-time-budget' });
     expect(pendingWakeups.has(AGENT), 'a still continuation does not park').toBe(false);
+  });
+
+
+  /** A continuation of a job whose every batch honestly prints the same line: the last turn ran it three times. */
+  async function repeatingContinuation(): Promise<AgentTurnState> {
+    seedClaimedTask();
+    carryJobWork(AGENT, [TASK]);
+    await gate(stateAt(76));
+    pendingWakeups.clear();
+    expect(beginJobRun(AGENT, 'drain')).toBe(true);
+    const archive = { argv: ['archive', '--next', '50'] };
+    const last = openTurnContext(AGENT);
+    last.turnNumber = 1;
+    for (let i = 0; i < 3; i++) noteRepeatResult(AGENT, last, 'exec', archive, 'Archived 50 messages.', true);
+    const turn = openTurnContext(AGENT);
+    turn.turnNumber = 2;
+    expect(noteRepeatResult(AGENT, turn, 'exec', archive, 'Archived 50 messages.', true), 'stopped at the 4th').toBeTruthy();
+    return stateAt(76);
+  }
+
+  it('a continuation whose results honestly repeat keeps going when the agent chose to continue in the window', async () => {
+    const state = await repeatingContinuation();
+    expect(liftRepeatStops(AGENT, 'each run archives the next fifty').content).toMatch(/^Continuing/);
+    expect((await gate(state)).directive, 'the lift is the job moving').toBe('proceed');
+  });
+
+  it('the same continuation with no lift in the window ends and records the stall', async () => {
+    const state = await repeatingContinuation();
+    expect(await gate(state)).toMatchObject({ directive: 'exit', reason: 'turn-time-budget' });
+    expect(pendingWakeups.has(AGENT)).toBe(false);
+    expect(mockDb.current!.prepare("SELECT 1 FROM work_events WHERE work_id = ? AND kind = 'stalled'").get(TASK)).toBeTruthy();
   });
 
 });
