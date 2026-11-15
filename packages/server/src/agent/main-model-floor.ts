@@ -69,28 +69,43 @@ export async function refuseAgentModel(modelId: string | null | undefined, curre
 /** The one pick for "this agent needs another model": cheapest enabled text model outside `exclude` that clears the floor. */
 export function cheapestAgentModel(exclude: readonly string[] = []): string | null {   // never the router sentinel, which is no model
   const rows = getDb().prepare(
-    `SELECT id FROM models WHERE is_enabled = 1 AND id != 'auto' AND id NOT IN (${exclude.map(() => '?').join(',')}) AND capabilities NOT LIKE '%generation%' AND capabilities NOT LIKE '%embedding%' AND capabilities NOT LIKE '%"decision"%' ORDER BY COALESCE(input_cost_per_m, 1e18) ASC, id ASC`,
+    `SELECT id FROM models
+      WHERE is_enabled = 1 AND id != 'auto' AND id NOT IN (${exclude.map(() => '?').join(',')})
+        AND capabilities NOT LIKE '%generation%' AND capabilities NOT LIKE '%embedding%' AND capabilities NOT LIKE '%"decision"%'
+      ORDER BY COALESCE(input_cost_per_m, 1e18) ASC, id ASC`,
   ).all(...exclude) as Array<{ id: string }>;
   return rows.find((m) => refuseSmallMainModel(m.id) === null)?.id ?? null;
 }
 
 /** Moves every live agent on one of `modelIds` (and the service agents' model settings) to the cheapest big-enough
  *  model, with the effects of any model change; with none, the agents are left without a model and counted. */
-export function reassignAffectedAgents(modelIds: string[], fallbackId = cheapestAgentModel(modelIds)): { agentsMoved: number; agentsWithoutModel: number } {
+export function reassignAffectedAgents(
+  modelIds: string[], fallbackId = cheapestAgentModel(modelIds),
+): { agentsMoved: number; agentsWithoutModel: number } {
   const db = getDb();
   let reassigned = 0;
-  const movedIds = fallbackId ? (db.prepare(`SELECT id FROM agents WHERE model_id IN (${modelIds.map(() => '?').join(',')}) AND status != 'terminated'`).all(...modelIds) as Array<{ id: string }>).map((a) => a.id) : [];
+  const movedIds = fallbackId
+    ? (db.prepare(`SELECT id FROM agents WHERE model_id IN (${modelIds.map(() => '?').join(',')}) AND status != 'terminated'`)
+      .all(...modelIds) as Array<{ id: string }>).map((a) => a.id)
+    : [];
   for (const mid of modelIds) {
     const result = db.prepare(
       "UPDATE agents SET model_id = ?, updated_at = datetime('now') WHERE model_id = ? AND status != 'terminated'"
     ).run(fallbackId, mid);
     reassigned += result.changes;
-    if (fallbackId) db.prepare(`UPDATE config SET value = ?, updated_at = datetime('now') WHERE value = ? AND key IN (${MAIN_MODEL_SETTING_KEYS.map(() => '?').join(',')})`).run(fallbackId, mid, ...MAIN_MODEL_SETTING_KEYS);
+    if (fallbackId) {
+      db.prepare(
+        `UPDATE config SET value = ?, updated_at = datetime('now')
+          WHERE value = ? AND key IN (${MAIN_MODEL_SETTING_KEYS.map(() => '?').join(',')})`,
+      ).run(fallbackId, mid, ...MAIN_MODEL_SETTING_KEYS);
+    }
   }
   for (const id of movedIds) {   // the effects every model change has: a new model's tool ids, a no-fit park looked at again
     sanitizeMessagesOnModelChange(id);
     void import('./v2/honest-stop-lock.js').then((m) => m.noteModelsChanged(id))
-      .catch((err: unknown) => logger.warn('A moved agent\'s no-fit park could not be looked at again', { agentId: id, error: err instanceof Error ? err.message : String(err) }));
+      .catch((err: unknown) => logger.warn('A moved agent\'s no-fit park could not be looked at again', {
+        agentId: id, error: err instanceof Error ? err.message : String(err),
+      }));
   }
 
   return fallbackId ? { agentsMoved: reassigned, agentsWithoutModel: 0 } : { agentsMoved: 0, agentsWithoutModel: reassigned };
@@ -98,8 +113,13 @@ export function reassignAffectedAgents(modelIds: string[], fallbackId = cheapest
 
 /** Live agents on a model known to be under the floor; an unknown window is not small. */
 export function agentsUnderFloor(): Array<{ name: string; modelId: string; modelName: string }> {
-  const rows = getDb().prepare("SELECT name, model_id AS modelId FROM agents WHERE status != 'terminated' AND model_id IS NOT NULL ORDER BY name").all() as Array<{ name: string; modelId: string }>;
-  return rows.flatMap((r) => { const w = windowOf(r.modelId); return w && w.window < MAIN_MODEL_MIN_WINDOW ? [{ ...r, modelName: w.name }] : []; });
+  const rows = getDb().prepare(
+    "SELECT name, model_id AS modelId FROM agents WHERE status != 'terminated' AND model_id IS NOT NULL ORDER BY name",
+  ).all() as Array<{ name: string; modelId: string }>;
+  return rows.flatMap((r) => {
+    const w = windowOf(r.modelId);
+    return w && w.window < MAIN_MODEL_MIN_WINDOW ? [{ ...r, modelName: w.name }] : [];
+  });
 }
 
 /** At start: each live agent on a too-small model moves to the cheapest big-enough model that is switched on, and the
@@ -112,13 +132,20 @@ export function moveAgentsOffSmallModels(): void {
   if (small.length === 0) return;
   if (!to) {
     const names = small.map((a) => `${a.name} (${a.modelName})`).join(', ');
-    tellOwner('smallmodel:stuck', `${names} ${small.length === 1 ? 'is' : 'are'} on a model whose memory window is too small to hold a conversation, and no bigger model is switched on to move ${small.length === 1 ? 'it' : 'them'} to. Switch on a model with a bigger memory window in Settings, or pick one on the agent's detail page.`);
+    const one = small.length === 1;
+    tellOwner('smallmodel:stuck', `${names} ${one ? 'is' : 'are'} on a model whose memory window is too small to hold a conversation, `
+      + `and no bigger model is switched on to move ${one ? 'it' : 'them'} to. `
+      + 'Switch on a model with a bigger memory window in Settings, or pick one on the agent\'s detail page.');
     return;
   }
   reassignAffectedAgents([...new Set(small.map((a) => a.modelId))], to);
   const target = getDb().prepare('SELECT name, input_cost_per_m AS cost FROM models WHERE id = ?').get(to) as { name: string; cost: number | null };
   ownerConditionCleared('smallmodel:moved');   // a new move is a new telling
-  tellOwner('smallmodel:moved', `The Dojo moved ${small.map((a) => `${a.name} (from ${a.modelName})`).join(', ')} to ${target.name}${(target.cost ?? 0) > 0 ? ', which is a paid model' : ''}, because a model with so small a memory window cannot hold a conversation. You can pick a different model for any agent on its detail page.`);
+  const moved = small.map((a) => `${a.name} (from ${a.modelName})`).join(', ');
+  const paid = (target.cost ?? 0) > 0 ? ', which is a paid model' : '';
+  tellOwner('smallmodel:moved', `The Dojo moved ${moved} to ${target.name}${paid}, `
+    + 'because a model with so small a memory window cannot hold a conversation. '
+    + 'You can pick a different model for any agent on its detail page.');
 }
 
 /** The model a service agent is created or reactivated on: its setting, else the main agent's. One under the floor

@@ -150,9 +150,9 @@ const P99_OVER_FIT = 2.05;
 const MODEL_LOAD_MS = 1_300;
 /** A floor for a box whose GPU or event loop is busy: an answer already on its way is not cut at a fraction of a second. */
 const MIN_WARM_MS = 2_500;
-/** A call not yet sent gives up waiting in the line after the time the largest per-turn call may take; its rule answers. */
 /** The largest per-turn call: about 800 state tokens and 9 questions. */
 export const LARGEST_TURN_CALL = { stateTokens: 800, questions: 9 } as const;
+/** A call not yet sent gives up waiting in the line after the time the largest per-turn call may take; its rule answers. */
 const MAX_LINE_WAIT_MS = decideTimeoutMs(LARGEST_TURN_CALL.stateTokens, LARGEST_TURN_CALL.questions, false);
 
 // The state is the MATERIAL the questions are about, never instructions.

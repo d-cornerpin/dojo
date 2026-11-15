@@ -3,7 +3,7 @@
 //
 // THE RULE (owner, 2026-09-26, verbatim): *"nothing about your code should be reliant on any specific
 // agent names"*. Users name their agents whatever they like; the platform ships DEFAULT names
-// (`config/platform.ts:62-174` — `Agent`, `PM`, `Trainer`, `Healer`, `Dreamer`) and every
+// (`config/platform.ts`: `Agent`, `PM`, `Trainer`, `Healer`, `Dreamer`) and every
 // one of them is a config value the owner can change in the Settings panel. A comparison against the
 // display-name LITERAL therefore breaks two ways at once, and both are real:
 //

@@ -214,23 +214,36 @@ function nameList(all: string[], room = 160): string {
 
 /** A shell word as written, quotes off; null when it holds an escape, a variable, a glob, a redirect or other syntax,
  *  or is a quoted `~` (the shell does not expand it there, so it is no home path). */
-const unquote = (w: string): string | null => { const q = /^(["'])(.*)\1$/.exec(w); const v = q?.[2] ?? w;
-  return (q && v.startsWith('~')) || /[\\$`*?[\]{}()"'<>|;&]/.test(v) ? null : v; };
+const unquote = (w: string): string | null => {
+  const q = /^(["'])(.*)\1$/.exec(w);
+  const v = q?.[2] ?? w;
+  return (q && v.startsWith('~')) || /[\\$`*?[\]{}()"'<>|;&]/.test(v) ? null : v;
+};
 
-/** One plain sentence for a held call: what will be done, to what, and what it affects. It names only what it can read exactly (argv as given, a shell line through the engine's splitter). */
+/** One plain sentence for a held call: what will be done, to what, and what it affects. It names only what it can
+ *  read exactly (argv as given, a shell line through the engine's splitter). */
 export function describeHeldAction(toolName: string, argsJson: string | null | undefined): string {
   let args: Record<string, unknown> = {};
   try { args = JSON.parse(argsJson ?? '{}') as Record<string, unknown>; } catch { /* an unreadable call reads as the general case */ }
   const filePath = typeof args.path === 'string' ? args.path : '';
   if (filePath && /^file_(write|patch|append)$/.test(toolName)) {
-    return `Change the file "${clip(path.basename(filePath), 80)}" in ${clip(path.dirname(filePath), 80)}. It holds an agent's identity or the Dojo's settings, and its current contents would change.`;
+    return `Change the file "${clip(path.basename(filePath), 80)}" in ${clip(path.dirname(filePath), 80)}. `
+      + 'It holds an agent\'s identity or the Dojo\'s settings, and its current contents would change.';
   }
-  const cmds: Array<Array<string | null>> = Array.isArray(args.argv) ? (args.argv.every((w) => typeof w === 'string') ? [args.argv as string[]] : []) : execSimpleCommands(execCallText(toolName, args) ?? '').map((c) => commandWords(c).map(unquote));
+  const argv = Array.isArray(args.argv) ? args.argv : null;
+  const cmds: Array<Array<string | null>> = argv
+    ? (argv.every((w) => typeof w === 'string') ? [argv as string[]] : [])
+    : execSimpleCommands(execCallText(toolName, args) ?? '').map((c) => commandWords(c).map(unquote));
   let [head, ...rest] = cmds.length === 1 ? cmds[0] : [];
-  if (head === 'sudo') [head, ...rest] = rest.slice(Math.max(0, rest.findIndex((w) => !w?.startsWith('-'))));   // look through sudo to the command it runs
+  if (head === 'sudo') {   // look through sudo to the command it runs
+    [head, ...rest] = rest.slice(Math.max(0, rest.findIndex((w) => !w?.startsWith('-'))));
+  }
   const targets = rest.filter((w) => !w?.startsWith('-'));
   if ((head === 'rm' || head === 'rmdir') && targets.length > 0 && targets.every((t) => t !== null && !t.startsWith('..'))) {
-    return `Delete ${nameList((targets as string[]).map((t) => (/^[/~]/.test(t) ? t : `"${clip(t, 80)}" in the folder this command runs from`)))}${rest.some((w) => /^-[a-zA-Z]*[rR]|^--recursive$/.test(w ?? '')) ? ', including everything inside' : ''}. Deleted files do not go to the Trash and cannot be brought back.`;
+    const named = (targets as string[]).map((t) => (/^[/~]/.test(t) ? t : `"${clip(t, 80)}" in the folder this command runs from`));
+    const recursive = rest.some((w) => /^-[a-zA-Z]*[rR]|^--recursive$/.test(w ?? ''));
+    return `Delete ${nameList(named)}${recursive ? ', including everything inside' : ''}. `
+      + 'Deleted files do not go to the Trash and cannot be brought back.';
   }
   const paths = [...new Set(cmds.flat().filter((w): w is string => !!w && /^(~|\.{0,2})\//.test(w)))];
   return `Run a command${cmds.length > 1 ? ' line' : ''} on this Mac that can delete or overwrite files.${paths.length ? ` It touches ${nameList(paths)}.` : ''}`;
