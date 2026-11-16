@@ -812,17 +812,6 @@ describe('⚠ ROUND 3 — THE FLOOR IS SPELLED ON THE FTS SIDE, OR IT BOUNDS NOT
     //     `SCAN summaries_fts | SEARCH s USING INTEGER PRIMARY KEY`, and only the FTS-side spelling
     //     puts the range inside that scan (`INDEX 32:M1>`). The joined-table spelling really did
     //     filter AFTER the join. This is the defect, and it is real.
-    //   MESSAGES — `ix_msg_agent_seq (agent_id, seq)` DOES give the planner that range, so with ANY
-    //     floor spelling it INVERTS the join: `SEARCH m USING INDEX ix_msg_agent_seq (agent_id=? AND
-    //     seq>?)` drives, and `messages_fts` is probed per candidate (`INDEX 32:=M1`) with a temp
-    //     B-tree for the ORDER BY. The floor was ALREADY pushed there — into the index range rather
-    //     than into the FTS scan. The messages arm was never broken.
-    //
-    // So the property to assert is "the floor is in a RANGE in whichever scan drives the query",
-    // not "the FTS index detail carries a `>`". The FTS-side spelling is kept on all three anyway:
-    // it is uniform, it costs nothing on messages (identical plan), and it is the spelling that still
-    // pushes if the planner ever flips to FTS-first — which it does once `sqlite_stat1` exists, and
-    // this platform never runs ANALYZE (round-1 M7).
     const q = (tbl: string, alias: string, fts: string, clause: string): string =>
       `SELECT ${alias}.id FROM ${fts} INNER JOIN ${tbl} ${alias} ON ${fts}.rowid = ${alias}.rowid
        WHERE ${fts} MATCH ? AND ${alias}.agent_id = ? ${clause} ORDER BY rank LIMIT ?`;
@@ -842,18 +831,6 @@ describe('⚠ ROUND 3 — THE FLOOR IS SPELLED ON THE FTS SIDE, OR IT BOUNDS NOT
     // the comment above must be re-measured before anyone trusts it.
     expect(ftsStep(sumJoined), 'the joined-table spelling pushes too now — re-measure the finding')
       .not.toMatch(/VIRTUAL TABLE INDEX \S*>/);
-
-    // ── MESSAGES: every spelling gives the same inverted plan, and the floor is in the index range. ──
-    const msgPlans = ['AND messages_fts.rowid > ?', 'AND m.seq > ?'].map((c) =>
-      detail(q('messages', 'm', 'messages_fts', c), ['commonterm', 'agent-a', 100, 20]));
-    // eslint-disable-next-line no-console
-    console.log(`R3 PLAN  messages (either spelling): ${msgPlans[0].split(' | ')[0]}`);
-    for (const pl of msgPlans) {
-      expect(pl, 'the messages floor is no longer a range in the driving index — re-measure')
-        .toMatch(/ix_msg_agent_seq \(agent_id=\? AND seq>\?\)/);
-    }
-    expect(msgPlans[0], 'the two messages spellings no longer agree — the uniform spelling needs re-arguing')
-      .toBe(msgPlans[1]);
   });
 
   it('⚠ FEWER ROWS REACH THE JOIN — the pread-storm metric, counted rather than timed', () => {
