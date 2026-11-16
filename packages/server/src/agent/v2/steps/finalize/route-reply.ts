@@ -32,7 +32,10 @@ export async function routeTerminalReply(
   // Route the reply back to the inbound channel, else the dashboard (iMessage if the owner is away).
   if (isPrimaryAgent(agentId) && state.lastAssistantTextForIM) {
     try {
+      const said = state.lastAssistantTextForIM;
       state = await appendUndeliveredLinks(state, ctx);
+      // An answer already queued mid-turn is not queued again: only the download links it left out follow it.
+      const linksOnly = state.lastAssistantTextForIM!.slice(said.trimEnd().length).trim();
 
       const { getPresence, isImessageConfigured } = await import('../../../../services/presence.js');
 
@@ -94,7 +97,7 @@ export async function routeTerminalReply(
         }, agentId);
       }
 
-      await sendOrHold(state, ctx, { destination, settledContextHold, routeRoot, presenceNow, imessageConfigured: isImessageConfigured() });
+      await sendOrHold(state, ctx, { destination, settledContextHold, routeRoot, presenceNow, imessageConfigured: isImessageConfigured(), linksOnly });
     } catch (err) {
       logger.warn('v2.7.23: reply-destination routing failed', {
         agentId,
@@ -112,6 +115,7 @@ interface RouteDecision {
   readonly routeRoot: ReturnType<typeof outboundRoot>;
   readonly presenceNow: PresenceStatus;
   readonly imessageConfigured: boolean;
+  readonly linksOnly: string;
 }
 
 const TEXT_CHANNELS = ['imessage', 'sms', 'email', 'teams'] as const;
@@ -146,12 +150,14 @@ async function sendOrHold(stateIn: AgentTurnState, ctx: FinalizeContext, r: Rout
   } else if (destination === 'phone' && !state.repliedToCounterpartyThisTurn.phone && state.inboundContext?.phoneCallSid) {
     await speakOnCall(state, ctx);
   } else if (isTextChannel(destination) && !state.repliedToCounterpartyThisTurn[destination]) {
+    const text = turnCtx.earlyAnswerRowId ? r.linksOnly : state.lastAssistantTextForIM;
+    if (!text) return;
     // An iMessage reply goes to this turn's iMessage counterparty; with none (the away override) to the owner.
     const sender = counterparty.kind === 'user' && counterparty.channel === 'imessage' ? counterparty.senderId ?? undefined : undefined;
     const address = destination === 'imessage' && !r.imessageConfigured
       ? null
       : replyAddressFor({ ...state.inboundContext, channel: destination, sender, relation: counterparty.kind === 'user' ? counterparty.relation : undefined });
-    const queued = address !== null && await queueReply({ agentId, turnNumber, root: turnCtx.root ?? null, text: state.lastAssistantTextForIM, address }) !== null;
+    const queued = address !== null && await queueReply({ agentId, turnNumber, root: turnCtx.root ?? null, text, address }) !== null;
     if (!queued) {
       recordedId(recordHeld({ agentId, tool: 'auto-route', channel: destination, conversationId }, `no ${destination} address to reply to; the reply is in the dashboard chat`),
         'v2: auto-route held (no address)', { agentId, turnNumber, destination });

@@ -89,7 +89,7 @@ vi.mock('../../memory/embeddings.js', () => ({ queueEmbedding: vi.fn() }));
 vi.mock('../../services/imessage-bridge.js', () => ({
   isAwaitingIMResponse: () => false,
   clearIMResponseFlag: vi.fn(),
-  sendResponseViaIMessage: vi.fn(),
+ 
   getPendingIMSenderRaw: () => null,
   parseSafeSenders: () => [],
   stripSystemTags: (s: string) => s,

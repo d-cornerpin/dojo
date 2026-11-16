@@ -43,7 +43,7 @@ vi.mock('../../../../services/presence.js', () => ({ getPresence: () => hoisted.
 vi.mock('../../../../services/imessage-bridge.js', () => ({
   getTurnScopedImRecipient: () => hoisted.recipient,
   sendIMessageWithAttachment: vi.fn(async () => true),
-  sendResponseViaIMessage: vi.fn(async () => null),
+  sendIMessage: vi.fn(async () => null),
   getDefaultSender: () => null,
 }));
 vi.mock('../../../access/read.js', () => ({ mayUseChannel: () => true }));
@@ -62,13 +62,13 @@ vi.mock('../../../effects/fs.js', () => ({ existsSync: () => true, mkdirSync: ()
 vi.mock('../../../turn-context.js', () => ({ turnContext: () => undefined }));
 
 import { mediaHandlers } from '../media.js';
-import { sendResponseViaIMessage, sendIMessageWithAttachment } from '../../../../services/imessage-bridge.js';
+import { sendIMessage, sendIMessageWithAttachment } from '../../../../services/imessage-bridge.js';
 import { tellAgentAndWake } from '../../../wake-with-notice.js';
 import { postAgentNotice } from '../../../agent-notice.js';
 import { insertMessageIfAbsent } from '../../../../memory/message-store.js';
 import { generateImage } from '../../../../services/image-generation.js';
 
-const sendSpy = vi.mocked(sendResponseViaIMessage);
+const sendSpy = vi.mocked(sendIMessage);
 
 beforeEach(() => {
   mockDb.current = new Database(':memory:');

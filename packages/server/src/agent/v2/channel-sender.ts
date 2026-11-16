@@ -14,17 +14,21 @@ import type { RefusalKind } from '../dojo-voice.js';
 
 const logger = createLogger('channel-sender');
 
-/** Where a reply goes. An iMessage with no `to` goes to the owner, looked up when it is sent. */
-export type ReplyAddress =
+/** Where a reply goes. An iMessage with no `to` goes to the owner, looked up when it is sent. `toAgent`: the
+ *  recipient is another Dojo's agent. */
+export type ReplyAddress = (
   | { channel: 'imessage'; to: string | null }
   | { channel: 'sms'; to: string; from: string | null }
   | { channel: 'email'; to: string | null; messageId: string; service: 'gmail' | 'outlook' | null; account: string | null; fromOwner: boolean }
-  | { channel: 'teams'; to: string | null; chatId: string; account: string | null };
+  | { channel: 'teams'; to: string | null; chatId: string; account: string | null }
+) & { toAgent?: true };
 
 /** The waits after each failed try: five tries, the last about 43 minutes after the first. */
 const WAITS_MS = [30_000, 120_000, 600_000, 1_800_000];
 /** A try the process died inside is due again this long after it began. */
 const LEASE_MS = 600_000;
+/** A start line goes on its first try within this long of being written, or not at all. */
+const START_LINE_FRESH_MS = 60_000;
 const MAX_TIMER_MS = 2_147_483_647;
 
 const midTry = new Set<string>();
@@ -34,12 +38,17 @@ let timer: ReturnType<typeof setTimeout> | null = null;
 type Verdict = FoldedVerdict & { refusal?: RefusalKind };
 
 interface QueuedRow {
-  id: string; agent_id: string; turn_number: number | null; root_kind: string | null; root_id: string | null;
+  id: string; agent_id: string; tool: string; turn_number: number | null; root_kind: string | null; root_id: string | null;
   conversation_id: string | null; attempts: number; next_attempt_at: number; payload_json: string;
 }
 
 /** The address of a reply to a request, from its inbound record or the turn's inbound context (same keys). */
-export function replyAddressFor(meta: Partial<InboundMeta> & { channel: string }): ReplyAddress | null {
+export function replyAddressFor(meta: Omit<Partial<InboundMeta>, 'channel'> & { channel: string }): ReplyAddress | null {
+  const a = channelAddress(meta);
+  return a && meta.senderIsAgent ? { ...a, toAgent: true } : a;
+}
+
+function channelAddress(meta: Omit<Partial<InboundMeta>, 'channel'> & { channel: string }): ReplyAddress | null {
   const to = meta.recipientAddress ?? meta.sender ?? null;
   switch (meta.channel) {
     case 'imessage': return { channel: 'imessage', to: meta.sender ?? null };
@@ -130,7 +139,7 @@ export async function deliverDueReplies(now: number): Promise<void> {
   const passStartedAt = Date.now();
   try {
     const rows = getDb().prepare(
-      `SELECT id, agent_id, turn_number, root_kind, root_id, conversation_id, attempts, next_attempt_at, payload_json
+      `SELECT id, agent_id, tool, turn_number, root_kind, root_id, conversation_id, attempts, next_attempt_at, payload_json
          FROM deliveries WHERE outcome = 'pending' AND payload_json IS NOT NULL ORDER BY rowid`,
     ).all() as QueuedRow[];
     const queues = new Map<string, QueuedRow[]>();
@@ -169,7 +178,9 @@ async function tryOnce(row: QueuedRow, now: number): Promise<boolean> {
       to = payload.address.channel === 'imessage' && payload.address.to === null
         ? (await import('../../services/imessage-bridge.js')).getDefaultSender()
         : payload.address.to;
-      verdict = await sendAsItsTurn(row, payload, to);
+      verdict = row.tool === 'engine-ack' && now - row.next_attempt_at > START_LINE_FRESH_MS
+        ? { delivered: false, final: true, detail: 'a start line goes within a minute or not at all', receiptId: null }
+        : await sendAsItsTurn(row, payload, to);
     } catch (err) {
       verdict = { delivered: false, final: false, detail: err instanceof Error ? err.message : String(err), receiptId: null };
     }
@@ -242,7 +253,8 @@ async function sendBy(agentId: string, text: string, a: ReplyAddress, to: string
 
 async function recordVerdict(row: QueuedRow, address: ReplyAddress | null, to: string | null, v: Verdict, now: number): Promise<boolean> {
   const attempts = row.attempts + 1;
-  if (!v.delivered && !v.final && attempts <= WAITS_MS.length) {
+  // A start line gets one try: after a wait it would arrive late, perhaps after the answer.
+  if (!v.delivered && !v.final && row.tool !== 'engine-ack' && attempts <= WAITS_MS.length) {
     getDb().prepare(
       "UPDATE deliveries SET next_attempt_at = ?, detail = ?, updated_at = datetime('now') WHERE id = ? AND outcome = 'pending'",
     ).run(now + WAITS_MS[attempts - 1], v.detail, row.id);

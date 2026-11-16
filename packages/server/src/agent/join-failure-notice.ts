@@ -95,22 +95,3 @@ export function joinFailureNotice(p: NoticeInput): string {
 
   return lead + (p.questionSnippet ? ` (Your question was: "${p.questionSnippet}")` : '');
 }
-
-export interface JoinRelayOutcome {
-  text: string;
-  landedOn: string;
-  fellBackFrom: string | null;
-  why: string | null;
-}
-
-/** What the Dojo really did: never claims the asker was told when the text only reached the dashboard. */
-export function relayOutcomeSentence(asker: string, sent: JoinRelayOutcome | null): string {
-  if (sent === null) return `The Dojo tried to tell ${asker}, but nothing is recorded as sent, so ${asker} may not know.`;
-  if (sent.fellBackFrom) {
-    return `The Dojo (not you) tried to tell ${asker} on ${sent.fellBackFrom}, but that did not go${sent.why ? ` (${sent.why})` : ''}; `
-      + `the text is in the dashboard chat only, so ${asker} may not have seen it. It read: "${sent.text}"`;
-  }
-  return sent.landedOn === 'dashboard'
-    ? `The Dojo (not you) posted this in the dashboard chat for ${asker}: "${sent.text}"`
-    : `The Dojo (not you) sent ${asker} this text on ${sent.landedOn}: "${sent.text}"`;
-}

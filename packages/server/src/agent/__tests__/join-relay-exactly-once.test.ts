@@ -65,7 +65,6 @@ import {
   openAsk, claimAsk, stampClaimingTurn, openDelegationJoin, landPiece, joinPieces,
   settlePieceWithoutResult,
 } from '../../work/store.js';
-import { joinDeliveryDetail } from '../../work/ask-settlement.js';
 import { JOIN_REDRIVE_BOUND, STUCK_NOTICE_RETRY_BOUND } from '../../work/join-drive.js';
 import { resolveCompilePendingJoins } from '../a2a-transport.js';
 import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
@@ -86,9 +85,9 @@ const workRow = (id: string): Record<string, unknown> =>
 const relayRows = (joinId: string): Array<{ id: string; turn_number: number | null; created_at: string }> =>
   mockDb.current!.prepare(
     `SELECT id, turn_number, created_at FROM deliveries
-       WHERE tool = 'a2a-join-relay' AND outcome = 'delivered' AND detail LIKE ?
+       WHERE tool = 'a2a-join-relay' AND outcome = 'delivered' AND json_extract(payload_json, '$.joinId') = ?
        ORDER BY rowid`,
-  ).all(`%${joinDeliveryDetail(joinId)}%`) as Array<{ id: string; turn_number: number | null; created_at: string }>;
+  ).all(joinId) as Array<{ id: string; turn_number: number | null; created_at: string }>;
 
 /** What the OWNER can actually see on their own lane — the thing the duplicate answer is. */
 const ownerFacing = (): Array<{ content: string; role: string }> =>
@@ -175,11 +174,11 @@ function seedTheEnginesFirstRelay(askId: string, o: { turn?: number | null; conv
      VALUES (?, ?, 'assistant', 'Heard back from DupWorker: ECHO-PW8D-30', 'owner', 'dashboard', ?, 'agent-text', ?, NULL)`,
   ).run(messageId, AGENT, conversationId, Date.now());
   db.prepare(
-    `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, conversation_id, message_id, outcome, detail, created_at)
+    `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, conversation_id, message_id, outcome, payload_json, created_at)
      VALUES (?, ?, ?, 'a2a-join-relay', 'dashboard', ?, ?, 'delivered', ?, datetime('now', '+1 seconds'))`,
   ).run(
     `d-relay-1-${askId}`, AGENT, o.turn === undefined ? DELEGATING_TURN : o.turn,
-    conversationId, messageId, joinDeliveryDetail(askId),
+    conversationId, messageId, JSON.stringify({ joinId: askId }),
   );
   return `d-relay-1-${askId}`;
 }

@@ -41,7 +41,7 @@ const clearConsumedOneShotFlagsSpy = vi.fn();
 const enforceModelCapabilitiesSpy = vi.fn(() => ({ useTools: true }));
 const recordCostSpy = vi.fn();
 const queueEmbeddingSpy = vi.fn();
-const sendResponseViaIMessageSpy = vi.fn();
+const sendIMessageSpy = vi.fn();
 const checkAndCompactSpy = vi.fn(() => Promise.resolve({ leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 }));
 const estimateAssembledTokensMock = vi.fn(() => ({
   total: 1000,
@@ -129,7 +129,7 @@ vi.mock('../../../memory/embeddings.js', () => ({
 vi.mock('../../../services/imessage-bridge.js', () => ({
   isAwaitingIMResponse: () => false,
   clearIMResponseFlag: vi.fn(),
-  sendResponseViaIMessage: (...args: unknown[]) => sendResponseViaIMessageSpy(...args),
+  sendIMessage: (...args: unknown[]) => sendIMessageSpy(...args),
   getPendingIMSenderRaw: () => null,
   parseSafeSenders: () => [],
   stripSystemTags: (s: string) => s,
@@ -526,7 +526,7 @@ beforeEach(() => {
   enforceModelCapabilitiesSpy.mockImplementation(() => ({ useTools: true }));
   recordCostSpy.mockClear();
   queueEmbeddingSpy.mockClear();
-  sendResponseViaIMessageSpy.mockClear();
+  sendIMessageSpy.mockClear();
   checkAndCompactSpy.mockClear();
   estimateAssembledTokensMock.mockClear();
   estimateAssembledTokensMock.mockImplementation(() => ({

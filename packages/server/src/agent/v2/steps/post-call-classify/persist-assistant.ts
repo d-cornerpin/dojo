@@ -188,6 +188,8 @@ export async function runPersistAssistant(
         lastAssistantTextForIM: stripMoodMarker(persistedContent),
         ...compileDutyDischarged(state),
       });
+      // New words replace an early answer as the turn's reply, so the turn's end sends them.
+      turnCtx.earlyAnswerRowId = null;
     }
   } else if (persistedContent) {
     if (interAgentTurn) {
@@ -218,6 +220,7 @@ export async function runPersistAssistant(
         lastAssistantTextForIM: stripMoodMarker(persistedContent),
         ...compileDutyDischarged(state),
       });
+      turnCtx.earlyAnswerRowId = null;
       noteTerminalAnswer(messageId, 'a genuine terminal reply');
     }
     // Always send chat:message: the dashboard replaces the streamed bubble by id, correcting the raw

@@ -23,6 +23,8 @@ import { notifyTaskEnded } from './task-ended.js';
 import { TERMINAL_STATES, isTerminal } from './terminal-states.js';
 import type { TransitionApplied, WorkOutcome } from './outcome.js';
 import { heldByOwnerSql } from './tracker-view.js';
+// A cycle (settlement reads this store): the fragment is read at call time, never at load.
+import { REPLY_IN_FLIGHT } from './ask-settlement.js';
 export type { TransitionApplied, TransitionGate, WorkOutcome, WorkOutcomeReason, WorkPatchOutcome } from './outcome.js';
 export { workSettled, isStateConflict, noteUnsettled, noSuchWorkDetail } from './outcome.js';
 
@@ -1265,13 +1267,13 @@ function agingCutoff(): number {
 }
 
 /** Obligations still owed and not yet aged (the per-turn block); aged ones move to the daily brief,
- *  ageing writes nothing. */
+ *  ageing writes nothing. A request whose relay is on its way is not owed. */
 export function openObligations(agentId: string): Obligation[] {
   return getDb().prepare(`
     SELECT ${OBLIGATION_COLUMNS}
       FROM ${OBLIGATION_FROM}
      WHERE w.agent_id = ? AND w.kind IN ${OBLIGATION_KINDS} AND w.state IN ${OWED_STATES}
-       AND w.opened_at >= ?
+       AND w.opened_at >= ? AND NOT ${REPLY_IN_FLIGHT}
      ORDER BY w.opened_at ASC`).all(agentId, agingCutoff()) as Obligation[];
 }
 

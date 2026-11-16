@@ -120,6 +120,9 @@ const THE_DRIVER_CARRIES = [
   // arrives after the tools have run), so a step-local resets each round and the answer is
   // nameless on every turn that promoted — which is the measured defect, not a hypothesis.
   'startAckPromotedRowId',
+  // The queued row of an answer delivered mid-turn: written by the start-ack closure, read by finalize,
+  // so it crosses the whole span; finalize does not queue the same words again while it is set.
+  'earlyAnswerRowId',
   // Same tranche, second family: the once-per-turn filler latch. All four of its sites are
   // inside the span, so it crosses the ITERATION rather than a step — and a step-local would
   // be reset every round, so the caller hears "on it … checking … give me a sec …" in a row.

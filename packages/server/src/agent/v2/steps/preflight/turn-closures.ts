@@ -6,13 +6,14 @@ import { v4 as uuidv4 } from 'uuid';
 import type { DisplayKind } from '@dojo/shared';
 import { broadcast } from '../../../../gateway/ws.js';
 import { createLogger } from '../../../../logger.js';
-import { insertMessageIfAbsent } from '../../../../memory/message-store.js';
+import { insertMessageIfAbsent, START_ACK_ORIGIN_INTENT } from '../../../../memory/message-store.js';
 import { resolveRecipientDisplay } from '../../../../contacts/resolve-recipient.js';
 import { continuationContext } from '../../../turn-state.js';
 import type { TurnContext } from '../../../turn-context.js';
-import type { TurnCounterparty } from '../../counterparty.js';
+import { engineAckReachesTheirChannel, type TurnCounterparty } from '../../counterparty.js';
 import { withOutboundAsync } from '../../outbound.js';
-import { writeRoutingPill } from '../../channel-sender.js';
+import { replyAddressFor, writeRoutingPill } from '../../channel-sender.js';
+import { queueReply } from '../../deliveries.js';
 import { engineMayRouteTo } from '../../../access/engine-route.js';
 import type { PreflightContext, PreflightScratch } from './index.js';
 
@@ -122,86 +123,40 @@ export function runTurnClosures(
         agentId, error: err instanceof Error ? err.message : String(err),
       }, agentId);
     }
-    // Push to a non-dashboard counterparty's channel, best effort (the ack stands in chat regardless),
-    // with the same routing marker the reply resolver writes.
+    // Queue the line for the person's text channel (a phone call hears it at once), best effort: it stands in chat
+    // regardless. A start line is never an answer; an early answer names its row so the turn's end does not resend it.
     try {
-      // A start-ack is the model's opening line pushed early, never an answer (ask settlement excludes it).
-      // One channel guard for every arm: a withheld push costs the channel hop, never the line.
-      if (counterparty.kind === 'user' && !engineMayRouteTo(agentId, counterparty.channel)) {
+      if (counterparty.kind !== 'user') return;
+      // One channel guard for every arm: a withheld line costs the channel hop, never the line.
+      if (!engineMayRouteTo(agentId, counterparty.channel)) {
         logger.warn('v2: engine user-ack channel push withheld (the sending agent holds no grant on this channel; the ack stands in chat)', {
           agentId, channel: counterparty.channel,
         }, agentId);
         return;
       }
-      if (counterparty.kind === 'user' && counterparty.channel === 'imessage' && counterparty.senderId) {
-        const { sendResponseViaIMessage } = await import('../../../../services/imessage-bridge.js');
-        const delivered = await withOutboundAsync(
-          {
-            agentId, tool: 'engine-ack', channel: 'imessage', text,
-            recipientId: counterparty.senderId,
-            conversationId: turnCtx.root?.conversationId ?? null,
-          },
-          async () => sendResponseViaIMessage(text, agentId, counterparty.senderId!, false),
-        );
-        if (delivered) persistRoutingMarker(`iMessage to ${delivered.name}`);
-      } else if (counterparty.kind === 'user' && counterparty.channel === 'teams' && turnCtx.state!.inboundContext?.chatId) {
-        // `engineAckReachesTheirChannel` (v2/counterparty.ts) lists the channels these arms reach; keep both
-        // in step. Email gets no arm. The ack rides the chat the ask arrived on.
-        const chatId = turnCtx.state!.inboundContext.chatId;
-        const { executeTool } = await import('../../../tools/index.js');
-        const result = await withOutboundAsync(
-          {
-            agentId, tool: 'engine-ack', channel: 'teams', text,
-            recipientId: chatId, threadRoot: chatId,
-            conversationId: turnCtx.root?.conversationId ?? null,
-          },
-          () => executeTool(agentId, {
-            id: uuidv4(), name: 'teams_send_message',
-            arguments: { chat_id: chatId, message: text },
-          }),
-        );
-        if (result.kind === 'applied') persistRoutingMarker(`Teams to chat ${chatId.slice(0, 8)}…`);
-        else {
-          logger.warn('v2: engine user-ack Teams push refused (non-fatal; the ack still stands in chat)', {
-            agentId, why: result.reason,
-          }, agentId);
-        }
-      } else if (counterparty.kind === 'user' && counterparty.channel === 'phone' && turnCtx.state!.inboundContext?.phoneCallSid) {
+      const inbound = turnCtx.state!.inboundContext;
+      if (counterparty.channel === 'phone' && inbound?.phoneCallSid) {
         const { getCallSession } = await import('../../../../twilio/call-session.js');
-        const session = getCallSession(turnCtx.state!.inboundContext.phoneCallSid);
+        const session = getCallSession(inbound.phoneCallSid);
         if (session && !session.isEnded()) {
           await withOutboundAsync(
             {
               agentId, tool: 'engine-ack', channel: 'phone', text,
-              recipientId: turnCtx.state!.inboundContext.phoneFromNumber ?? counterparty.senderId ?? null,
+              recipientId: inbound.phoneFromNumber ?? counterparty.senderId ?? null,
               conversationId: turnCtx.root?.conversationId ?? null,
             },
             () => session.queueAgentSay(text),
           );
-          persistRoutingMarker(`phone call to ${resolveRecipientDisplay('phone', turnCtx.state!.inboundContext.phoneFromNumber ?? counterparty.senderId ?? '(unknown)')}`);
+          persistRoutingMarker(`phone call to ${resolveRecipientDisplay('phone', inbound.phoneFromNumber ?? counterparty.senderId ?? '(unknown)')}`);
         }
-      } else if (counterparty.kind === 'user' && counterparty.channel === 'sms' && turnCtx.state!.inboundContext?.smsFromNumber) {
-        const { sendSms } = await import('../../../../twilio/client.js');
-        const { getDefaultFromNumber } = await import('../../../../twilio/auth.js');
-        const fromNumber = turnCtx.state!.inboundContext?.smsToNumber ?? getDefaultFromNumber();
-        if (fromNumber) {
-          const smsTo = turnCtx.state!.inboundContext.smsFromNumber;
-          // `sendSms` reports a refusal as `{ ok: false }`, so the marker is gated on `ok`.
-          const sent = await withOutboundAsync(
-            {
-              agentId, tool: 'engine-ack', channel: 'sms', recipientId: smsTo, text,
-              conversationId: turnCtx.root?.conversationId ?? null,
-            },
-            () => sendSms(smsTo, text, fromNumber),
-          );
-          if (sent.ok) persistRoutingMarker(`SMS to ${resolveRecipientDisplay('sms', smsTo)}`);
-          else {
-            logger.warn('v2: engine user-ack SMS push failed (non-fatal; the ack still stands in chat)', {
-              agentId, error: sent.error,
-            }, agentId);
-          }
-        }
+        return;
       }
+      if (!engineAckReachesTheirChannel(counterparty) || !counterparty.senderId) return;
+      const address = replyAddressFor({ ...inbound, channel: counterparty.channel, sender: counterparty.senderId });
+      if (!address) return;
+      const startLine = originIntent === START_ACK_ORIGIN_INTENT;
+      const queued = await queueReply({ agentId, turnNumber, root: turnCtx.root ?? null, text, address, startLine });
+      if (queued && !startLine) turnCtx.earlyAnswerRowId = queued.id;
     } catch (err) {
       logger.warn('v2: engine user-ack channel delivery failed (non-fatal)', {
         agentId, error: err instanceof Error ? err.message : String(err),

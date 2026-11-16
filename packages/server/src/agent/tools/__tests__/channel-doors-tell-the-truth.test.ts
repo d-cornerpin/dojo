@@ -64,7 +64,7 @@ import { runMigrations } from '../../../db/migrations.js';
 import { gatesForCall } from '../gates.js';
 import { commsHandlers } from '../cat/comms.js';
 import { getSmsReachability, describeSmsRecipients } from '../../../services/capability-registry.js';
-import { originHasNoRelayDoor } from '../../a2a-transport.js';
+import { replyAddressFor } from '../../v2/channel-sender.js';
 import { reloadApprovedSenders } from '../../../services/imessage-bridge.js';
 import { FX } from '../../../../../../deploy/checks/fixture-vocabulary.mjs';
 
@@ -228,29 +228,21 @@ describe('the sub-agent permission wall', () => {
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
-// §4 — THE ALERT ARM. It fires for a refusal, never for the ordinary case.
+// §4 — A relay to a request with no channel to answer on is the dashboard copy, never a refusal.
 // ══════════════════════════════════════════════════════════════════════════════
-describe('the relay-refusal alert stops firing on joins with no door to refuse them', () => {
-  it('a DASHBOARD-origin join has no channel to be refused from (the incident)', () => {
-    expect(originHasNoRelayDoor('dashboard')).toBe(true);
+describe('a request with no channel door is answered on the dashboard, with nothing to refuse', () => {
+  it('a DASHBOARD-origin request has no channel address (the incident)', () => {
+    expect(replyAddressFor({ channel: 'dashboard' })).toBeNull();
   });
 
-  it('a voice-origin join likewise — the call is over, the dashboard IS the delivery', () => {
-    expect(originHasNoRelayDoor('voice')).toBe(true);
+  it('a voice-origin request likewise — the call is over, the dashboard IS the delivery', () => {
+    expect(replyAddressFor({ channel: 'voice' })).toBeNull();
   });
 
-  it('an unstamped ask likewise — the arm\'s original case, unchanged', () => {
-    expect(originHasNoRelayDoor(null)).toBe(true);
-    expect(originHasNoRelayDoor(undefined)).toBe(true);
-  });
-
-  it('CONTROL — every REAL channel still has a door, so a refusal on it still alerts', () => {
-    for (const ch of ['imessage', 'teams', 'email', 'sms']) {
-      expect(originHasNoRelayDoor(ch), ch).toBe(false);
-    }
-  });
-
-  it('CONTROL — a channel nobody has declared yet still alerts under its own name', () => {
-    expect(originHasNoRelayDoor('whatsapp')).toBe(false);
+  it('CONTROL — every REAL channel still has an address, so its reply goes through the sender and its check', () => {
+    expect(replyAddressFor({ channel: 'imessage', sender: '+15550200' })).not.toBeNull();
+    expect(replyAddressFor({ channel: 'sms', sender: '+15550200' })).not.toBeNull();
+    expect(replyAddressFor({ channel: 'email', sender: 'a@example.com', emailMessageId: '<m@x>' })).not.toBeNull();
+    expect(replyAddressFor({ channel: 'teams', sender: 'a@example.com', chatId: 'chat-1', chatType: 'dm' })).not.toBeNull();
   });
 });

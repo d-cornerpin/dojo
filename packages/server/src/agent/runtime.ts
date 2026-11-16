@@ -390,7 +390,7 @@ export function stopByOwner(agentId: string): { repliesNotSent: number } {
     return withUnit(() => {
       const dropped = suppressQueuedReplies(agentId);
       for (const id of dropped.askIds) {
-        const r = transition(id, { to: 'abandoned', by: 'owner', reason: 'called off by the owner: he pressed Stop', expectedState: 'claimed' });
+        const r = transition(id, { to: 'abandoned', by: 'owner', reason: 'called off by the owner: he pressed Stop' });
         if (r.kind !== 'applied') logger.debug('stop: a request was not called off', { workId: id, outcome: r.kind }, agentId);
       }
       return { repliesNotSent: dropped.repliesNotSent };

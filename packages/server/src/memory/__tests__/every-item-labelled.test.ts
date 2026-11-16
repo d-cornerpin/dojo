@@ -65,7 +65,7 @@ vi.mock('../embeddings.js', () => ({
 }));
 vi.mock('../vector-search.js', () => ({ vectorSearch: async () => [], hybridSearch: async () => [] }));
 vi.mock('../../services/imessage-bridge.js', () => ({
-  isAwaitingIMResponse: () => false, clearIMResponseFlag: vi.fn(), sendResponseViaIMessage: vi.fn(),
+  isAwaitingIMResponse: () => false, clearIMResponseFlag: vi.fn(),
   getPendingIMSenderRaw: () => null, stripSystemTags: (s: string) => s,
   // The safe-sender list is read for real (the watcher decides "direct to the agent" from
   // it); only the parse is restated, in the stored JSON shape the settings page writes.

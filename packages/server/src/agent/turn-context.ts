@@ -91,6 +91,8 @@ export interface TurnContext {
   deferredDeliveredByAck: boolean;
 
   startAckPromotedRowId: string | null;
+  /** The queued row of an answer delivered mid-turn; while set, the turn's end does not queue the same words. */
+  earlyAnswerRowId: string | null;
 
   // Latches that cross loop iterations: reset each round, the filler and the idle nudge would repeat.
   voiceFillerFired: boolean;
@@ -141,6 +143,7 @@ export function openTurnContext(agentId: string): TurnContext {
     engineStartAckDeliveredThisTurn: false,
     deferredDeliveredByAck: false,
     startAckPromotedRowId: null,
+    earlyAnswerRowId: null,
     voiceFillerFired: false,
     goingIdleDetectorRanThisTurn: false,
     state: null,

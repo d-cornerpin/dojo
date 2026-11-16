@@ -471,63 +471,6 @@ export function stripSystemTags(text: string): string {
     .trim();
 }
 
-/** Auto-delivers the agent's terminal text; returns who actually received it, or null if suppressed. */
-export async function sendResponseViaIMessage(
-  text: string,
-  agentId?: string,
-  recipientOverride?: string | null,
-  ownerBound?: boolean,
-): Promise<{ address: string; name: string } | null> {
-  if (!agentId) agentId = getPrimaryAgentId();
-  // An OWNER-BOUND send (the away-override promoting a dashboard/proactive reply to iMessage to reach an absent
-  // owner) goes to the owner/primary, never a contact. Checked before the recipientOverride branch.
-  if (ownerBound) {
-    const owner = getDefaultSender();
-    if (!owner) return null;
-    const cleanedOwner = stripSystemTags(text);
-    if (!cleanedOwner) return null;
-    const ok = await sendIMessage(owner, cleanedOwner);
-    if (!ok) {
-      logger.warn('Auto-reply not delivered: the iMessage send failed', { agentId, recipient: owner });
-      return null;
-    }
-    return { address: owner, name: findSafeSenderByAddress(getSafeSenders(), owner)?.name ?? owner };
-  }
-  // Fallback rails: with no inbound trigger default to the starred primary, not approvedSenders[0]; drop the
-  // auto-reply if the inbound sender was removed from the safe-sender list mid-conversation.
-  let sender: string | null = null;
-  let recipientName: string | null = null;
-  // The TURN's counterparty is the only per-person recipient source; if it is no longer a safe sender, SUPPRESS
-  // rather than texting the owner an answer meant for someone else.
-  if (recipientOverride !== undefined && recipientOverride !== null) {
-    const allowed = findSafeSenderByAddress(getSafeSenders(), recipientOverride);
-    if (allowed) { sender = recipientOverride; recipientName = allowed.name; }
-    else {
-      logger.warn('Auto-reply suppressed: turn counterparty not on safe-sender list', { agentId, recipient: recipientOverride });
-      return null;
-    }
-    const cleanedOverride = stripSystemTags(text);
-    if (!cleanedOverride) return null;
-    const ok = await sendIMessage(sender, cleanedOverride);
-    if (!ok) {
-      logger.warn('Auto-reply not delivered: the iMessage send failed', { agentId, recipient: sender });
-      return null;
-    }
-    return { address: sender, name: recipientName ?? sender };
-  }
-  // No override and not owner-bound: the starred default (owner); a caller meaning someone else passes them explicitly.
-  sender = getDefaultSender();
-  if (sender) recipientName = findSafeSenderByAddress(getSafeSenders(), sender)?.name ?? null;
-  if (!sender) return null;
-  const cleaned = stripSystemTags(text);
-  if (!cleaned) return null;
-  const ok = await sendIMessage(sender, cleaned); // sanitization happens inside sendIMessage
-  if (!ok) {
-    logger.warn('Auto-reply not delivered: the iMessage send failed', { agentId, recipient: sender });
-    return null;
-  }
-  return { address: sender, name: recipientName ?? sender };
-}
 const CHAT_DB_PATH = path.join(homeDir(), 'Library', 'Messages', 'chat.db');
 
 function loadLastSeenRowId(): number {
@@ -1443,7 +1386,7 @@ async function sendIMessageWithAttachmentInner(
   opts: SendOpts,
 ): Promise<SendResult> {
   // Safe-sender revalidation: a sender removed from the allowlist mid-conversation must not still receive FILES
-  // while their text reply is suppressed; mirrors sendResponseViaIMessage's recipient check.
+  // while their text reply is refused, as the reply sender's approved-list check does.
   if (!findSafeSenderByAddress(getSafeSenders(), recipient)) {
     logger.warn('Attachment send suppressed: recipient not on safe-sender list', { recipient });
     return 'failed';

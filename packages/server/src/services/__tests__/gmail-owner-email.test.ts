@@ -65,7 +65,7 @@ vi.mock('../../google/auth.js', async () => {
 // only the parse is restated, in the stored JSON shape the settings page writes. `addressesMatch`
 // and `sendAlert` are the two the watcher/status chain import.
 vi.mock('../../services/imessage-bridge.js', () => ({
-  isAwaitingIMResponse: () => false, clearIMResponseFlag: vi.fn(), sendResponseViaIMessage: vi.fn(),
+  isAwaitingIMResponse: () => false, clearIMResponseFlag: vi.fn(),
   getPendingIMSenderRaw: () => null, stripSystemTags: (s: string) => s,
   parseSafeSenders: (raw: string | null) => (raw ? (JSON.parse(raw) as Array<{ address: string }>) : []),
   sendIMessageWithAttachment: vi.fn(), addressesMatch: (a: string, b: string) => a.toLowerCase() === b.toLowerCase(),

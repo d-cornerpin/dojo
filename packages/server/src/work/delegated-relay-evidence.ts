@@ -34,7 +34,7 @@ export function turnEndedInModelSilence(agentId: string, turnNumber: number | nu
 }
 
 export function relayThatAnsweredOwedAsk(
-  ask: OwedAskRow, relayTools: readonly string[], joinDetail: (joinId: string) => string,
+  ask: OwedAskRow, relayTools: readonly string[],
 ): { id: string; tool: string } | null {
   if (ask.conversation_id == null || relayTools.length === 0) return null;
   const db = getDb();
@@ -79,11 +79,11 @@ export function relayThatAnsweredOwedAsk(
       const relay = db.prepare(
         `SELECT d.id AS id, d.tool AS tool FROM deliveries d
           WHERE d.agent_id = @agentId AND d.conversation_id = @conv AND d.outcome = 'delivered'
-            AND d.tool IN (${relaySql}) AND d.detail LIKE @detail
+            AND d.tool IN (${relaySql}) AND json_extract(d.payload_json, '$.joinId') = @joinId
             AND unixepoch(d.created_at) >= @floorSec
           ORDER BY d.rowid ASC LIMIT 1`,
       ).get({
-        agentId: ask.agent_id, conv: ask.conversation_id, detail: `%${joinDetail(piece.parent_id)}%`,
+        agentId: ask.agent_id, conv: ask.conversation_id, joinId: piece.parent_id,
         floorSec: Math.floor(ask.opened_at / 1000), ...relayBind,
       }) as { id: string; tool: string } | undefined;
       if (relay) return relay;
@@ -107,9 +107,8 @@ export function recordOwedAskShown(_agentId: string, owedMessageIds: readonly st
 /** At finalize: model silence on the re-served ask plus a relay that answers it, else null. */
 export function delegatedRelayEvidence(
   ask: OwedAskRow, turnNumber: number | null, relayTools: readonly string[],
-  joinDetail: (joinId: string) => string,
 ): { id: string; tool: string } | null {
   return turnEndedInModelSilence(ask.agent_id, turnNumber)
-    ? relayThatAnsweredOwedAsk(ask, relayTools, joinDetail)
+    ? relayThatAnsweredOwedAsk(ask, relayTools)
     : null;
 }

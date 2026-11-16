@@ -61,7 +61,7 @@ vi.mock('../v2/loop.js', () => ({
   },
 }));
 vi.mock('../../services/imessage-bridge.js', () => ({
-  sendAlert: vi.fn(), sendResponseViaIMessage: vi.fn(), maybeForwardToImessage: vi.fn(),
+  sendAlert: vi.fn(), maybeForwardToImessage: vi.fn(),
 }));
 
 const AGENT = 'desk-owner';

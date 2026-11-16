@@ -43,7 +43,7 @@ vi.mock('../../../../services/presence.js', () => ({ getPresence: () => hoisted.
 vi.mock('../../../../services/imessage-bridge.js', () => ({
   getTurnScopedImRecipient: () => hoisted.recipient,
   sendIMessageWithAttachment: vi.fn(async () => true),
-  sendResponseViaIMessage: vi.fn(async () => null),
+  sendIMessage: vi.fn(async () => null),
   getDefaultSender: () => null,
 }));
 vi.mock('../../../access/read.js', () => ({ mayUseChannel: () => true }));

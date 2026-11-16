@@ -52,7 +52,7 @@ import {
 } from '../store.js';
 import {
   settleAsk, settleAsksForDelivery, settleAsksAtTurnFinalize, settleAskOnJoin,
-  priorEngineJoinRelay, joinDeliveryDetail,
+  priorEngineJoinRelay,
 } from '../ask-settlement.js';
 import {
   JOIN_REDRIVE_BOUND, STUCK_NOTICE_RETRY_BOUND, JOIN_DRIVE_ENTRY,
@@ -92,7 +92,7 @@ const ownerInbound = (id: string, over: Record<string, unknown> = {}): Record<st
 function seedDelivery(
   id: string,
   o: { turn: number; displayKind: 'tool-turn' | 'agent-text'; content?: string; offsetSeconds?: number;
-       tool?: string; conversationId?: string | null; detailJoin?: string },
+       tool?: string; conversationId?: string | null; relaysJoin?: string },
 ): string {
   const messageId = `msg-${id}`;
   insertMessage({
@@ -108,14 +108,14 @@ function seedDelivery(
   mockDb.current!.prepare('UPDATE messages SET display_kind = ? WHERE id = ?')
     .run(o.displayKind, messageId);
   mockDb.current!.prepare(
-    `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, conversation_id, message_id, outcome, detail, created_at)
+    `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, conversation_id, message_id, outcome, payload_json, created_at)
      VALUES (?, ?, ?, ?, 'dashboard', ?, ?, 'delivered', ?, datetime('now', ?))`,
   ).run(
     id, AGENT, o.turn, o.tool ?? 'dashboard',
     o.conversationId === undefined ? CONV : o.conversationId,
     messageId,
-    // The relay stamps WHICH JOIN it answered; every other door records no join at all.
-    o.detailJoin === undefined ? null : joinDeliveryDetail(o.detailJoin),
+    // The relay records WHICH JOIN it answered; every other door records no join at all.
+    o.relaysJoin === undefined ? null : JSON.stringify({ joinId: o.relaysJoin }),
     `${o.offsetSeconds ?? 0} seconds`,
   );
   return id;
@@ -556,7 +556,7 @@ describe('(ii-b) the engine own relay settles the join even when it is stamped w
     // peer answered before the turn ended. Same row shape as `bc839833`.
     seedDelivery('d-relay-in-turn', {
       turn: 7, displayKind: 'agent-text', offsetSeconds: 5, tool: 'a2a-join-relay',
-      content: 'Heard back from Worker A: HARBOR-0', detailJoin: askId,
+      content: 'Heard back from Worker A: HARBOR-0', relaysJoin: askId,
     });
 
     const r = settleAskOnJoin(askId, {
@@ -577,7 +577,7 @@ describe('(ii-b) the engine own relay settles the join even when it is stamped w
     const kids = openJoin(askId, 1);
     landAll(kids);
     seedDelivery('d-relay-in-turn', {
-      turn: 7, displayKind: 'agent-text', offsetSeconds: 5, tool: 'a2a-join-relay', detailJoin: askId,
+      turn: 7, displayKind: 'agent-text', offsetSeconds: 5, tool: 'a2a-join-relay', relaysJoin: askId,
     });
     const r = settleAskOnJoin(askId, { agentId: AGENT, reason: 'the compiled answer reached the owner' });
     expect(r.verdict).toBe('closed');
@@ -603,7 +603,7 @@ describe('(ii-b) the engine own relay settles the join even when it is stamped w
     const askId = claimedAsk('m-1', 7);
     const kids = openJoin(askId, 1);
     seedDelivery('d-relay-early', {
-      turn: 7, displayKind: 'agent-text', offsetSeconds: -30, tool: 'a2a-join-relay', detailJoin: askId,
+      turn: 7, displayKind: 'agent-text', offsetSeconds: -30, tool: 'a2a-join-relay', relaysJoin: askId,
     });
     landAll(kids);
     const r = settleAskOnJoin(askId, { agentId: AGENT, deliveryId: 'd-relay-early', reason: 'x' });
@@ -616,7 +616,7 @@ describe('(ii-b) the engine own relay settles the join even when it is stamped w
     const kids = openJoin(askId, 2);
     landPiece(kids[0], { deliveryId: null as never, content: 'x', messageId: null, actorId: PEER });
     seedDelivery('d-relay-in-turn', {
-      turn: 7, displayKind: 'agent-text', offsetSeconds: 5, tool: 'a2a-join-relay', detailJoin: askId,
+      turn: 7, displayKind: 'agent-text', offsetSeconds: 5, tool: 'a2a-join-relay', relaysJoin: askId,
     });
     const r = settleAskOnJoin(askId, { agentId: AGENT, deliveryId: 'd-relay-in-turn', reason: 'x' });
     expect(r.verdict).toBe('unchanged');
@@ -633,7 +633,7 @@ describe('(ii-b) the engine own relay settles the join even when it is stamped w
     const kids = openJoin(askId, 1);
     landAll(kids);
     seedDelivery('d-relay-other', {
-      turn: 7, displayKind: 'agent-text', offsetSeconds: 5, tool: 'a2a-join-relay', detailJoin: other,
+      turn: 7, displayKind: 'agent-text', offsetSeconds: 5, tool: 'a2a-join-relay', relaysJoin: other,
     });
     const r = settleAskOnJoin(askId, { agentId: AGENT, reason: 'x' });
     expect(r.verdict).toBe('unchanged');
@@ -645,7 +645,7 @@ describe('(ii-b) the engine own relay settles the join even when it is stamped w
     const kids = openJoin(askId, 1);
     landAll(kids);
     seedDelivery('d-relay-chip', {
-      turn: 7, displayKind: 'tool-turn', offsetSeconds: 5, tool: 'a2a-join-relay', detailJoin: askId,
+      turn: 7, displayKind: 'tool-turn', offsetSeconds: 5, tool: 'a2a-join-relay', relaysJoin: askId,
     });
     const r = settleAskOnJoin(askId, { agentId: AGENT, deliveryId: 'd-relay-chip', reason: 'x' });
     expect(r.verdict).toBe('unchanged');
@@ -659,13 +659,13 @@ describe('(ii-b) the engine own relay settles the join even when it is stamped w
 // ════════════════════════════════════════════════════════════════════════
 
 describe('the prior-relay reader — what the engine has ALREADY said about this join', () => {
-  const relayRow = (id: string, o: { offsetSeconds: number; detailJoin?: string; tool?: string; outcome?: string }): void => {
+  const relayRow = (id: string, o: { offsetSeconds: number; relaysJoin?: string; tool?: string; outcome?: string }): void => {
     mockDb.current!.prepare(
-      `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, conversation_id, outcome, detail, created_at)
+      `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, conversation_id, outcome, payload_json, created_at)
        VALUES (?, ?, 7, ?, 'dashboard', ?, ?, ?, datetime('now', ?))`,
     ).run(
       id, AGENT, o.tool ?? 'a2a-join-relay', CONV, o.outcome ?? 'delivered',
-      o.detailJoin === undefined ? null : joinDeliveryDetail(o.detailJoin),
+      o.relaysJoin === undefined ? null : JSON.stringify({ joinId: o.relaysJoin }),
       `${o.offsetSeconds} seconds`,
     );
   };
@@ -674,7 +674,7 @@ describe('the prior-relay reader — what the engine has ALREADY said about this
     const askId = claimedAsk('m-1', 7);
     const kids = openJoin(askId, 1);
     landAll(kids);
-    relayRow('d-relay', { offsetSeconds: 5, detailJoin: askId });
+    relayRow('d-relay', { offsetSeconds: 5, relaysJoin: askId });
     expect(priorEngineJoinRelay(askId)?.id).toBe('d-relay');
   });
 
@@ -690,14 +690,14 @@ describe('the prior-relay reader — what the engine has ALREADY said about this
     const other = claimedAsk('m-2', 8);
     const kids = openJoin(askId, 1);
     landAll(kids);
-    relayRow('d-relay-other', { offsetSeconds: 5, detailJoin: other });
+    relayRow('d-relay-other', { offsetSeconds: 5, relaysJoin: other });
     expect(priorEngineJoinRelay(askId)).toBeNull();
   });
 
   it('NEGATIVE: a relay that PREDATES join_complete is not an answer to it', () => {
     const askId = claimedAsk('m-1', 7);
     const kids = openJoin(askId, 1);
-    relayRow('d-relay-early', { offsetSeconds: -30, detailJoin: askId });
+    relayRow('d-relay-early', { offsetSeconds: -30, relaysJoin: askId });
     landAll(kids);
     expect(priorEngineJoinRelay(askId)).toBeNull();
   });
@@ -706,7 +706,7 @@ describe('the prior-relay reader — what the engine has ALREADY said about this
     const askId = claimedAsk('m-1', 7);
     const kids = openJoin(askId, 1);
     landAll(kids);
-    relayRow('d-relay-failed', { offsetSeconds: 5, detailJoin: askId, outcome: 'failed' });
+    relayRow('d-relay-failed', { offsetSeconds: 5, relaysJoin: askId, outcome: 'failed' });
     expect(priorEngineJoinRelay(askId)).toBeNull();
   });
 
@@ -714,20 +714,18 @@ describe('the prior-relay reader — what the engine has ALREADY said about this
     const askId = claimedAsk('m-1', 7);
     const kids = openJoin(askId, 1);
     landAll(kids);
-    relayRow('d-dash', { offsetSeconds: 5, detailJoin: askId, tool: 'dashboard' });
+    relayRow('d-dash', { offsetSeconds: 5, relaysJoin: askId, tool: 'dashboard' });
     expect(priorEngineJoinRelay(askId)).toBeNull();
   });
 
-  it('the detail identity is ONE derivation, and the reader survives a door folding its own detail in', () => {
-    // `withOutbound`'s scope merges every door's detail into the row (`a; b`), so the reader
-    // matches on containment rather than equality — asserted rather than assumed.
+  it('the relay\'s request is read from its own record, which no door\'s detail can change', () => {
     const askId = claimedAsk('m-1', 7);
     const kids = openJoin(askId, 1);
     landAll(kids);
     mockDb.current!.prepare(
-      `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, conversation_id, outcome, detail, created_at)
-       VALUES ('d-relay-merged', ?, NULL, 'a2a-join-relay', 'imessage', ?, 'delivered', ?, datetime('now', '+5 seconds'))`,
-    ).run(AGENT, CONV, `imessage door ok; ${joinDeliveryDetail(askId)}`);
+      `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, conversation_id, outcome, detail, payload_json, created_at)
+       VALUES ('d-relay-merged', ?, NULL, 'a2a-join-relay', 'imessage', ?, 'delivered', 'imessage door ok', ?, datetime('now', '+5 seconds'))`,
+    ).run(AGENT, CONV, JSON.stringify({ joinId: askId }));
     expect(priorEngineJoinRelay(askId)?.id).toBe('d-relay-merged');
   });
 
@@ -737,7 +735,7 @@ describe('the prior-relay reader — what the engine has ALREADY said about this
     const askId = claimedAsk('m-1', 7);
     const kids = openJoin(askId, 1);
     landAll(kids);
-    relayRow('d-relay', { offsetSeconds: 5, detailJoin: askId });
+    relayRow('d-relay', { offsetSeconds: 5, relaysJoin: askId });
     const prior = priorEngineJoinRelay(askId)!;
     const r = settleAskOnJoin(askId, {
       agentId: AGENT, deliveryId: prior.id, reason: 'the engine had already relayed the delegated answer',

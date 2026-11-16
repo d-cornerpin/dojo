@@ -6,7 +6,7 @@ import { createLogger } from '../../logger.js';
 import type { TurnExitReason } from './turn-record.js';
 import { askIdForMessage } from '../../work/store.js';
 // The declared not-an-answer bubbles: one owner, three readers; import it, never retype it.
-import { NON_ANSWERING_DISPLAY_KINDS } from '../../work/ask-settlement.js';
+import { NON_ANSWERING_DELIVERY_TOOLS, NON_ANSWERING_DISPLAY_KINDS } from '../../work/ask-settlement.js';
 import { taskScope, tsToMs } from '../../work/tracker-view.js';
 import { setHold, heldExpr, workingExpr } from '../../work/done/hold.js';
 import { recordedInstant } from '../../memory/message-stamp.js';
@@ -16,10 +16,8 @@ import { answerStillStands } from '../../report/withdrawn-claim.js';
 
 const logger = createLogger('answered-edge');
 
-/** Deliveries that are not an ANSWER to anybody. A START-ACK IS NOT AN ANSWER, whoever wrote
- *  it: the model's own opening line is not a reply. In step with `ask-settlement.ts`. */
-const NON_ANSWERING_TOOLS = ["'engine-ack'"];
-
+/** Deliveries that are not an ANSWER to anybody: a start line, whoever wrote it, is not a reply. */
+const nonAnsweringToolsSql = (): string => [...NON_ANSWERING_DELIVERY_TOOLS].map((t) => `'${t}'`).join(', ');
 
 export interface AnswerReceipt {
   answered: boolean;
@@ -213,7 +211,7 @@ export function turnDeliveredToPerson(
     `SELECT 1 AS ok FROM deliveries d
       WHERE d.agent_id = ? AND d.turn_number = ? AND d.outcome = 'delivered'
         AND d.channel <> 'a2a'
-        AND d.tool NOT IN (${NON_ANSWERING_TOOLS.join(', ')})
+        AND d.tool NOT IN (${nonAnsweringToolsSql()})
         AND NOT EXISTS (SELECT 1 FROM messages m
                          WHERE m.id = d.message_id AND m.display_kind IN (${chipKinds}))
         ${scoped ? 'AND d.conversation_id = ?' : 'AND d.conversation_id IS NOT NULL'}
@@ -233,7 +231,7 @@ export function terminalDeliveryForTurn(
     `SELECT id FROM deliveries
       WHERE agent_id = ? AND turn_number = ? AND outcome = 'delivered'
         AND channel <> 'a2a'
-        AND tool NOT IN (${NON_ANSWERING_TOOLS.join(', ')})
+        AND tool NOT IN (${nonAnsweringToolsSql()})
         ${scoped ? 'AND conversation_id = ?' : 'AND conversation_id IS NOT NULL'}
       ORDER BY created_at DESC, rowid DESC LIMIT 1`,
   ).get(...(scoped ? [agentId, turnNumber, conversationId] : [agentId, turnNumber])) as

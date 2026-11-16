@@ -31,7 +31,7 @@ const sendAlertSpy = vi.fn();
 const imessageSpy = vi.fn();
 vi.mock('../../services/imessage-bridge.js', () => ({
   sendAlert: (...a: unknown[]) => sendAlertSpy(...a),
-  sendResponseViaIMessage: (...a: unknown[]) => imessageSpy(...a),
+  sendIMessage: (...a: unknown[]) => imessageSpy(...a),
   maybeForwardToImessage: (...a: unknown[]) => imessageSpy(...a),
 }));
 

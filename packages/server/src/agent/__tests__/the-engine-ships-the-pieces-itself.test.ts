@@ -57,7 +57,6 @@ import {
   openAsk, claimAsk, stampClaimingTurn, openDelegationJoin, landPiece, joinPieces,
   settlePieceWithoutResult,
 } from '../../work/store.js';
-import { joinDeliveryDetail } from '../../work/ask-settlement.js';
 import {
   JOIN_REDRIVE_BOUND, STUCK_NOTICE_RETRY_BOUND, engineRelayPreface,
 } from '../../work/join-drive.js';
@@ -83,8 +82,8 @@ const workRow = (id: string): Record<string, unknown> =>
 
 const relayRows = (joinId: string): Array<{ id: string; tool: string }> =>
   mockDb.current!.prepare(
-    `SELECT id, tool FROM deliveries WHERE outcome = 'delivered' AND detail LIKE ? ORDER BY rowid`,
-  ).all(`%${joinDeliveryDetail(joinId)}%`) as Array<{ id: string; tool: string }>;
+    `SELECT id, tool FROM deliveries WHERE outcome = 'delivered' AND json_extract(payload_json, '$.joinId') = ? ORDER BY rowid`,
+  ).all(joinId) as Array<{ id: string; tool: string }>;
 
 /** What the OWNER can actually see on their own lane. */
 const ownerFacing = (): Array<{ content: string; role: string }> =>

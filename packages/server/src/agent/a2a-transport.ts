@@ -11,7 +11,6 @@ import { patienceFloorFor } from '../tracker/assignee-patience.js';
 import {
   A2A_THREAD_SHORT_LENGTH, a2aThreadShort, a2aThreadShortLegacy, extractPayloadFromA2AMessage, OWNER_ALERT_DOJO_PREFIX,
 } from '@dojo/shared';
-import { tellAgentWhatDojoSent } from './dojo-voice.js';
 import { postAgentNotice } from './agent-notice.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
@@ -20,12 +19,11 @@ import {
   deliveredResult, repliesSince, insertMessageIfAbsent, insertEngineEventIfAbsent, type EngineEventWork,
 } from '../memory/message-store.js';
 import { resolveOrCreateConversation } from '../memory/conversations.js';
-import { isSenderAuthorized } from './v2/channel-auth.js';
 import { a2aPayloadForModel } from '../tools/inbound-fences.js';
-import { mayUseChannel } from './access/read.js';
-import { ACCESS_CHANNELS, type AccessChannel } from '@dojo/shared';
-import { type DeliveryInput } from './v2/deliveries.js';
-import { recordAtDoor, withOutboundAsync, recordedId } from './v2/outbound.js';
+import { queueReply, recordDelivery } from './v2/deliveries.js';
+import { replyAddressFor } from './v2/channel-sender.js';
+import { recordAtDoor, recordedId } from './v2/outbound.js';
+import { asTurn } from './turn-context.js';
 // The join lives in `work`; everything here is transport: it lands pieces and relays answers.
 import {
   THREAD_HOP_CAP, isTerminal,
@@ -38,28 +36,25 @@ import {
   extendJoinTtl, JOIN_LIVENESS_MAX_TOTAL_MS,
   type JoinState, type JoinPiece,
 } from '../work/store.js';
-import { relayOutcomeSentence, type JoinRelayOutcome, joinFailureNotice, joinFailureReason } from './join-failure-notice.js';
+import { joinFailureNotice, joinFailureReason } from './join-failure-notice.js';
 import { deferJoinRelay, takeDeferredJoinRelays } from './deferred-join-relay.js';
 // The join's close is the settlement authority's, never this module's, as elsewhere.
-import { settleAskOnJoin, priorEngineJoinRelay, joinDeliveryDetail } from '../work/ask-settlement.js';
+import { settleAskOnJoin, priorEngineJoinRelay, replyInFlight } from '../work/ask-settlement.js';
 // …and the grind-vs-tell ladder: how often the system comes back, and what it does when spent.
 import {
   JOIN_DRIVE_ENTRY, JOIN_REDRIVE_BOUND, nextJoinDriveRung, recordJoinDrive,
   joinRedriveIsBlind, compileSteerText, everyPieceLandedWithContent, engineRelayPreface,
-  scaffoldCardsOfRelay,
   type JoinDriveDecision,
 } from '../work/join-drive.js';
 import { joinWakeFooter } from './a2a-join-footer.js';
 import { currentTurnNumber } from './v2/turn-record.js';
 import { selfWakeStandDown } from '../work/work-reaper.js';
 import { recordFloorGhost } from './v2/floor-ghost.js';
-import { REPLY_NEEDED_INTENTS, type A2AIntent, type A2AEnvelope, type A2ADropReason, type ToolCall, type ChannelKind } from '@dojo/shared';
+import { REPLY_NEEDED_INTENTS, type A2AIntent, type A2AEnvelope, type A2ADropReason, type ChannelKind, type InboundMeta } from '@dojo/shared';
 import { resolveRecipientDisplay } from '../contacts/resolve-recipient.js';
-import { engineHandIn } from '../work/done/hand-in.js';
 import { compileAskerFromMeta } from '../work/compile-asker.js';
 import { deliveryLabel } from './v2/turn-address.js';
 import type { ReplyDestination } from './v2/reply-destination.js';
-import type { ToolOutcome } from './tool-outcome.js';
 import { homeDir } from '../home.js';
 import { servedRequestThreadFrom } from './a2a-own-turn.js';
 
@@ -858,216 +853,61 @@ function askRowForJoin(join: JoinState): { content: string; inbound_meta: string
   return r ?? null;
 }
 
-// The compose path and the wall use ONE predicate, not two copies of the rule: every
-// owner-channel door asks the agent's own channel grant, so this asks the same one. It grants
-// nothing: it declines to compose a send the wall will refuse, and says so out loud; the
-// iMessage relay branch sits inside the same scope check.
-export interface OwnerChannelRelayRefusal {
-  /** The channel the ask arrived on, so the owner is told which door stayed shut. */
-  channel: string;
-  /** The door that would have been crossed, a tool name or the bridge function. */
-  tool: string;
-  /** Why, in a sentence the owner can act on. */
-  why: string;
+/** The files the helpers handed back with their pieces of this request (paths), in the order the pieces opened. */
+export function pieceFiles(joinId: string): string[] {
+  const rows = getDb().prepare(
+    `SELECT m.attachments AS a FROM work p
+       JOIN deliveries d ON d.id = p.result_delivery_id JOIN messages m ON m.id = d.message_id
+      WHERE p.parent_id = ? AND m.attachments IS NOT NULL ORDER BY p.opened_at ASC, p.id ASC`,
+  ).all(joinId) as Array<{ a: string }>;
+  return rows.flatMap((r) => {
+    try { return (JSON.parse(r.a) as Array<{ path?: string }>).flatMap((f) => (f.path ? [f.path] : [])); } catch { return []; }
+  });
 }
 
-/** Would the wall refuse this agent an owner-channel send? Exported so the agreement is testable. */
-export function ownerChannelRelayRefusal(
-  agentId: string, channel: string, tool: string,
-): OwnerChannelRelayRefusal | null {
-  // Still ONE predicate for all doors: `mayUseChannel` on this agent's own grant; unknown is fail-closed.
-  const known = (ACCESS_CHANNELS as readonly string[]).includes(channel);
-  if (known && mayUseChannel(agentId, channel as AccessChannel)) return null;
-  return {
-    channel, tool,
-    why: 'only the primary agent may send on the owner\'s channels, and this join belongs to '
-      + 'another agent',
-  };
-}
+/** The hand-in a relay of the pieces reports: the newest piece's delivery. */
+const newestPieceDelivery = (pieces: JoinPiece[]): string | null =>
+  pieces.flatMap((p) => (p.resultDeliveryId ? [p.resultDeliveryId] : [])).at(-1) ?? null;
 
-/** The door each relay branch crosses, written once so the refusal names what the branch calls. */
-const RELAY_DOOR: Readonly<Record<string, string>> = {
-  imessage: 'imessage-bridge',
-  teams: 'teams_send_message',
-  email: 'gmail_reply/outlook_reply',
-  sms: 'sms_send',
-};
-
-/** Origins with no outbound door: the dashboard IS the delivery, a voice call is over by then.
- *  A named set, so a channel added to the doors but not here alerts under its own name. */
-const NON_RELAYABLE_ORIGINS: ReadonlySet<string> = new Set(['dashboard', 'voice']);
-
-/** Whether this channel could have refused anything; exported so a test can read it. */
-export function originHasNoRelayDoor(channel: string | null | undefined): boolean {
-  return channel == null || NON_RELAYABLE_ORIGINS.has(channel);
-}
-
-/** What the door said, from `ToolOutcome`'s arms, never the prose: refused vs failed differ. */
-function relayDoorDetail(r: ToolOutcome): string {
-  if (r.kind === 'refused') return `the door refused it (${r.reason})`;
-  if (r.kind === 'failed') return `the send failed (${r.reason})`;
-  return 'the send did not complete';
-}
-
-/** Deliver a join's result on the ask's channel, falling back to the dashboard so the owner
- *  always sees it; records the delivery and returns its row id, or null when nothing recorded.
- *  Exactly-once is the caller's: it must have won the `work` transition first; this sets no flag. */
-async function deliverJoinResultToOwner(
-  join: JoinState, deliveryText: string, opts?: { tool?: string; voice?: 'agent' | 'platform' | 'courier'; onOutcome?: (o: JoinRelayOutcome) => void },
-): Promise<string | null> {
-  // ONE relay, ONE recorded row: every door folds its observation into the declared row.
-  return withOutboundAsync(
-    {
-      agentId: join.agentId,
-      tool: opts?.tool ?? 'a2a-join-relay',
-      // Declared dashboard because that is the guaranteed floor; branches report what they used.
-      channel: 'dashboard',
-      conversationId: join.replyConversationId,
-    },
-    () => deliverJoinResultToOwnerInner(join, deliveryText, opts),
-  );
-}
-
-async function deliverJoinResultToOwnerInner(
-  join: JoinState, deliveryText: string, opts?: { tool?: string; voice?: 'agent' | 'platform' | 'courier'; onOutcome?: (o: JoinRelayOutcome) => void },
-): Promise<string | null> {
-  // Two statements wear different faces: 'agent' relays a peer's own words to the asker;
-  // 'platform' is the engine's own notice, prefixed and landed as a system row, never a bubble.
-  const platformVoice = opts?.voice === 'platform';
-  const deliveryBody = platformVoice || opts?.voice === 'courier'   // 'courier': the Dojo carrying the peer's own answer: labelled, still the labelled result row
-    ? `${OWNER_ALERT_DOJO_PREFIX} ${deliveryText}`   // plainly the Dojo speaking, never the agent
-    : deliveryText;
-  const ask = askRowForJoin(join);
-  let meta: {
-    channel?: string; sender?: string; chatId?: string; chatType?: string; emailMessageId?: string;
-    emailService?: string; emailAccount?: string; smsFromNumber?: string; smsToNumber?: string;
-  } = {};
-  try { meta = ask?.inbound_meta ? JSON.parse(ask.inbound_meta) as typeof meta : {}; } catch { meta = {}; }
-  const tool = opts?.tool ?? 'a2a-join-relay';
-  let delivered = false;
-  let channel: DeliveryInput['channel'] = 'dashboard';
-  let recipientId: string | null = null;
-  // Above every branch on purpose: a channel added later cannot skip the check.
-  let relayRefusal: OwnerChannelRelayRefusal | null =
-    originHasNoRelayDoor(meta.channel)
-      ? null   // no channel to be refused FROM: the dashboard fallback IS the delivery
-      : ownerChannelRelayRefusal(join.agentId, meta.channel!, RELAY_DOOR[meta.channel!] ?? meta.channel!);
-  /** A refusal AFTER the scope check must not make the failure silent again. */
-  const noteRelayRefusal = (ch: string, door: string, detail: string): void => {
-    relayRefusal ??= { channel: ch, tool: door, why: detail };
-  };
-  try {
-    if (relayRefusal) {
-      // Composed nothing: the answer goes to the dashboard below and the owner is told which door.
-    } else if (meta.channel === 'imessage' && meta.sender) {
-      const { sendResponseViaIMessage } = await import('../services/imessage-bridge.js');
-      delivered = !!(await sendResponseViaIMessage(deliveryBody, join.agentId, meta.sender));
-      channel = 'imessage'; recipientId = meta.sender;
-      if (!delivered) noteRelayRefusal('imessage', 'imessage-bridge', 'the iMessage bridge did not send it');
-    } else if (
-      meta.channel === 'teams' && meta.chatId &&
-      // Never a GROUP chat, and the sender is re-validated now; either failure takes the fallback.
-      meta.chatType !== 'group' && isSenderAuthorized('teams', meta.sender ?? '', 'agent')
-    ) {
-      const { executeTool } = await import('./tools/index.js');
-      const tc: ToolCall = { id: uuidv4(), name: 'teams_send_message', arguments: { chat_id: meta.chatId, message: deliveryBody } };
-      const r = await executeTool(join.agentId, tc);
-      delivered = r.kind === 'applied'; channel = 'teams'; recipientId = meta.chatId;
-      if (!delivered) noteRelayRefusal('teams', 'teams_send_message', relayDoorDetail(r));
-    } else if (
-      meta.channel === 'email' && meta.emailMessageId &&
-      isSenderAuthorized('email', meta.sender ?? '', 'agent', { emailService: meta.emailService === 'outlook' ? 'outlook' : 'gmail' })
-    ) {
-      const { executeTool } = await import('./tools/index.js');
-      const toolName = meta.emailService === 'gmail' ? 'gmail_reply' : 'outlook_reply';
-      const tc: ToolCall = {
-        id: uuidv4(), name: toolName,
-        // Reply FROM the mailbox that received the owner's question (multi-account), not a default.
-        arguments: { message_id: meta.emailMessageId, body: deliveryBody, ...(meta.emailAccount ? { account: meta.emailAccount } : {}) },
-      };
-      const r = await executeTool(join.agentId, tc);
-      delivered = r.kind === 'applied'; channel = 'email'; recipientId = meta.sender ?? null;
-      if (!delivered) noteRelayRefusal('email', toolName, relayDoorDetail(r));
-    } else if (meta.channel === 'sms' && (meta.smsFromNumber || meta.sender)) {
-      // SMS routes through sms_send like the rest, so the executor and revalidation all apply.
-      const { executeTool } = await import('./tools/index.js');
-      const to = meta.smsFromNumber ?? meta.sender!;
-      const tc: ToolCall = { id: uuidv4(), name: 'sms_send', arguments: { to, body: deliveryBody } };
-      const r = await executeTool(join.agentId, tc);
-      delivered = r.kind === 'applied'; channel = 'sms'; recipientId = to;
-      if (!delivered) noteRelayRefusal('sms', 'sms_send', relayDoorDetail(r));
+/** Pass a helper's `answer` (or, with none, a notice) back to whoever asked, in the Dojo's labelled voice, rooted in
+ *  the request and in no turn. The labelled copy goes on the dashboard at once; a request by text also gets a queued
+ *  reply on its own channel, and the request settles when that row is delivered. One row per join, tool and hand-in.
+ *  Returns what the Dojo did, in one sentence for the agent. */
+async function relayToAsker(
+  join: JoinState, r: { tool: string; answer: string; frame: string; files: string[]; reports: string | null },
+): Promise<string> {
+  const asker = askerOf(join);
+  if (r.reports !== null && getDb().prepare(
+    `SELECT 1 FROM deliveries WHERE agent_id = ? AND tool = ? AND json_extract(payload_json, '$.joinId') = ?
+        AND json_extract(payload_json, '$.reports') = ?`,
+  ).get(join.agentId, r.tool, join.id, r.reports)) return `The Dojo had already passed this on to ${asker}.`;
+  const text = `${OWNER_ALERT_DOJO_PREFIX} ${r.frame}${r.answer}`.trimEnd();
+  let meta: Partial<InboundMeta> = {};
+  try { meta = JSON.parse(askRowForJoin(join)?.inbound_meta ?? '{}') as Partial<InboundMeta>; } catch { /* no channel: the dashboard copy is the relay */ }
+  const address = meta.channel ? replyAddressFor({ ...meta, channel: meta.channel }) : null;
+  const root = { kind: 'ask' as const, id: join.rootId, sourceMessageId: join.rootId, conversationId: join.replyConversationId };
+  return asTurn(join.agentId, { turnNumber: null, root, convKey: null }, async () => {
+    // A helper's answer is the agent's own chat bubble, labelled; a notice is a system row.
+    const copyId = uuidv4();
+    const role = r.answer ? 'assistant' as const : 'system' as const;
+    insertMessageIfAbsent({ id: copyId, agentId: join.agentId, role, content: text,
+      ...(r.answer ? deliveredResult(join.replyConversationId, join.rootId) : {}) });
+    if (!address) {
+      recordDelivery({ agentId: join.agentId, tool: r.tool, channel: 'dashboard', recipientId: 'owner', messageId: copyId,
+        conversationId: join.replyConversationId, outcome: 'delivered', payload: { joinId: join.id, reports: r.reports } });
     }
-  } catch (err) {
-    logger.warn('join relay: channel delivery failed, falling back to dashboard', {
-      agentId: join.agentId, work: join.id, channel: meta.channel,
-      error: err instanceof Error ? err.message : String(err),
-    });
-    if (meta.channel) {
-      noteRelayRefusal(meta.channel, RELAY_DOOR[meta.channel] ?? meta.channel,
-        err instanceof Error ? err.message : String(err));
-    }
-    delivered = false;
-  }
-  let messageId: string | null = null;
-  if (!delivered) {
-    // Dashboard or failed channel: the agent's own chat message, so the text is never lost.
-    messageId = uuidv4();
-    // A platform notice is a system row on the owner-alert allowlist; a relay stays an assistant row.
-    const role = platformVoice ? 'system' as const : 'assistant' as const;
-    insertMessageIfAbsent({ id: messageId, agentId: join.agentId, role, content: deliveryBody,
-      ...(platformVoice ? {} : deliveredResult(join.replyConversationId, join.rootId)) });
     broadcast({
       type: 'chat:message', agentId: join.agentId,
-      message: { id: messageId, agentId: join.agentId, role, content: deliveryBody, tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: new Date().toISOString() },
+      message: { id: copyId, agentId: join.agentId, role, content: text, tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: new Date().toISOString() },
     });
-    channel = 'dashboard'; recipientId = 'owner';
-  }
-  opts?.onOutcome?.({ text: deliveryBody, landedOn: channel, fellBackFrom: !delivered && meta.channel ? meta.channel : null, why: relayRefusal?.why ?? null });
-  // A refusal is recorded loudly for both audiences, and only on an actual refusal: the answer
-  // already reached the dashboard, so what must not stay silent is that the channel reply failed.
-  if (relayRefusal) {
-    logger.error('join relay: the owner\'s channel reply was REFUSED; it went to the dashboard instead', {
-      agentId: join.agentId, work: join.id, channel: relayRefusal.channel,
-      tool: relayRefusal.tool, why: relayRefusal.why,
-    });
-    const noticeId = uuidv4();
-    const notice = `${OWNER_ALERT_DOJO_PREFIX} could not send that answer back on `   // the Dojo, never "I"
-      + `${relayRefusal.channel}, so it is here on the dashboard instead. ${relayRefusal.why}.`;
-    try {
-      const persisted = insertMessageIfAbsent({
-        id: noticeId, agentId: join.agentId, role: 'system', content: notice,
-      });
-      // Announced only when a row was actually written; a frame with no row is live-only.
-      if (persisted) {
-        tellAgentWhatDojoSent({ agentId: join.agentId, recipient: 'the owner (on the dashboard)', text: notice, why: 'because the answer could not go back on their channel' });
-        broadcast({
-          type: 'chat:message', agentId: join.agentId,
-          message: {
-            id: noticeId, agentId: join.agentId, role: 'system', content: notice,
-            tokenCount: null, modelId: null, cost: null, latencyMs: null,
-            createdAt: persisted.createdAt,
-          },
-        });
-      }
-    } catch (err) {
-      logger.warn('join relay: the refusal notice could not be written (non-fatal)', {
-        agentId: join.agentId, work: join.id,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
-  // The relay is a real outbound and records exactly one row: the doors fold into it.
-  const deliveryId = recordedId(recordAtDoor({
-    outcome: 'delivered', channel,
-    agentId: join.agentId, tool,
-    recipientId, messageId,
-    // ONE derivation of "which join was this?": the twice-relay guard reads this same string.
-    detail: joinDeliveryDetail(join.id),
-  }), 'a2a: join relay to the owner', { work: join.id, channel });
-  logger.info('join relay: engine delivered to owner', {
-    agentId: join.agentId, work: join.id, channel, viaChannel: delivered, deliveryId,
+    if (!address) return `The Dojo (not you) posted this in the dashboard chat for ${asker}: "${text}"`;
+    const queued = await queueReply({ agentId: join.agentId, turnNumber: null, root, text, address,
+      relay: { tool: r.tool, answer: r.answer, joinId: join.id, reports: r.reports, files: r.files } });
+    if (queued?.held) return `The Dojo did NOT send ${asker} this notice, because ${asker} is another Dojo's agent; it is only in the dashboard chat: "${text}"`;
+    return queued
+      ? `The Dojo (not you) is sending ${asker} this on ${address.channel}: "${text}". If it cannot get through you will be told.`
+      : `The Dojo could not queue this for ${asker} on ${address.channel}; it is only in the dashboard chat: "${text}"`;
   });
-  return deliveryId;
 }
 
 /** The honest "no answer" notice in the PLATFORM's voice; the AGENT is told separately.
@@ -1091,24 +931,18 @@ function failClosedNotice(join: JoinState, askedNameHint?: string | null): strin
 const JOIN_STEER_LABEL = '[Engine]';
 
 const askerOf = (join: JoinState): string => compileAskerFromMeta(askRowForJoin(join)?.inbound_meta ?? null, (ch, handle) => resolveRecipientDisplay(ch as ChannelKind, handle), (ch) => deliveryLabel(ch as ReplyDestination))?.name ?? 'the owner';
-/** Relay engine text to the asker AS THE DOJO (never the agent's voice), reporting what really happened. */
-const relayAsDojo = async (join: JoinState, text: string, tool = 'a2a-join-failed', voice: 'platform' | 'courier' = 'platform'): Promise<{ id: string | null; sent: JoinRelayOutcome | null }> => {
-  let sent: JoinRelayOutcome | null = null;
-  const id = await deliverJoinResultToOwner(join, text, { tool, voice, onOutcome: (o) => { sent = o; } });
-  return { id, sent };
-};
-const relayJoinFailure = async (join: JoinState, text: string): Promise<JoinRelayOutcome | null> => (await relayAsDojo(join, text)).sent;
+/** A Dojo notice about the request, with no helper's answer in it. */
+const relayNotice = (join: JoinState, text: string): Promise<string> =>
+  relayToAsker(join, { tool: 'a2a-join-failed', frame: text, answer: '', files: [], reports: null });
 /** The agent is told exactly what the Dojo sent the asker, and where it really went. */
-const tellAgentWhatTheRelaySent = (join: JoinState, sent: JoinRelayOutcome | null): void => {
-  const asker = askerOf(join);
-  postAgentNotice({ toAgentId: join.agentId, fromName: 'Dojo message sent', selfIntro: false, brief: `${relayOutcomeSentence(asker, sent)} Do not repeat it or claim it as your own words.` });
+const tellAgentWhatTheRelaySent = (join: JoinState, told: string): void => {
+  postAgentNotice({ toAgentId: join.agentId, fromName: 'Dojo message sent', selfIntro: false, brief: `${told} Do not repeat it or claim it as your own words.` });
 };
 
 /** The other half at this seam: THE AGENT IS TOLD and decides whether to speak. The platform
  *  states the fact because no model call exists here; the agent can add more on its next turn. */
-function tellAgentTheJoinFailed(join: JoinState, what: string, sent: JoinRelayOutcome | null): void {
+function tellAgentTheJoinFailed(join: JoinState, what: string, outcome: string): void {
   const askerWords = askerOf(join);
-  const outcome = relayOutcomeSentence(askerWords, sent);   // what REALLY happened, never "the asker was told" when it only reached the dashboard
   try {
     insertEngineEventIfAbsent({
       work: { taskId: join.id, runId: null, rootKind: 'ask', rootId: join.rootId },
@@ -1325,7 +1159,7 @@ async function resolveCompletedJoin(join: JoinState, senderNameHint?: string): P
     const failReason = joinFailureReason(joinPieces(join.id));
     const claimed = failJoinClosed(join.id, { reason: failReason, expectedState: join.parentState });
     if (claimed.kind !== 'applied') return;
-    tellAgentTheJoinFailed(join, `${failReason}.`, await relayJoinFailure(join, failClosedNotice(join, senderNameHint)));
+    tellAgentTheJoinFailed(join, `${failReason}.`, await relayNotice(join, failClosedNotice(join, senderNameHint)));
     return;
   }
   if (join.total === 1) {
@@ -1345,9 +1179,8 @@ async function relayOnePieceJoin(join: JoinState, senderNameHint?: string): Prom
   const piece = joinPieces(join.id)[0];
   const name = resolveAgentDisplayName(piece?.assigneeAgent) ?? senderNameHint ?? 'the other agent';
   const answer = (piece?.content ?? '').replace(/\s+/g, ' ').trim().slice(0, 1200);
-  // Courier: the row IS in the agent's own conversation, labelled as sent by the engine, so no second notice.
-  const { id: deliveryId } = await relayAsDojo(join, `Heard back from ${name}: ${answer}`, 'a2a-join-relay', 'courier');
-  if (deliveryId) noteSettlementRefusal(settleAskOnJoin(join.id, { agentId: join.agentId, deliveryId, reason: 'the engine relayed the delegated answer' }), 'a2a: join settled on relay', join.id);
+  // The labelled copy is in the agent's own conversation, so no second notice.
+  await relayToAsker(join, { tool: 'a2a-join-relay', frame: `Heard back from ${name}: `, answer, files: pieceFiles(join.id), reports: piece?.resultDeliveryId ?? null });
 }
 
 /** The delegating turn ended: tell the owner what came back while it ran, unless already relayed. */
@@ -1382,11 +1215,9 @@ async function deliverLateAnswerIfJoinFailedClosed(p: {
   const claimed = claimFailedJoinForLateAnswer(join.id, evidence, `${p.senderName} answered after all`);
   if (claimed.kind !== 'applied') return true;
   const answer = String(p.payload).replace(/\s+/g, ' ').trim().slice(0, 1200);
-  const lateText = `Update: ${p.senderName} answered after all. ${answer}`;
-  const deliveryId = await deliverJoinResultToOwner(join, lateText, { tool: 'a2a-join-late', voice: 'courier' });
-  // The agent is told what the Dojo carried.
-  tellAgentWhatDojoSent({ agentId: join.agentId, recipient: 'the person who asked', text: `${OWNER_ALERT_DOJO_PREFIX} ${lateText}`, sent: !!deliveryId, why: `carrying ${p.senderName}'s late answer to the question you delegated` });
-  if (deliveryId) noteSettlementRefusal(settleAskOnJoin(join.id, { agentId: join.agentId, deliveryId, reason: 'a late answer reached the owner', basis: 'late-answer' }), 'a2a: join settled on late answer', join.id);
+  tellAgentWhatTheRelaySent(join, await relayToAsker(join, {
+    tool: 'a2a-join-late', frame: `Update: ${p.senderName} answered after all. `, answer, files: pieceFiles(join.id), reports: evidence,
+  }));
   return true;
 }
 
@@ -1416,6 +1247,8 @@ export async function resolveCompilePendingJoins(agentId: string): Promise<Compi
   const out: CompileDriveResult = { drives: 0, wakeWanted: false };
   for (const join of compilePendingJoins(agentId)) {
     try {
+      // A relay on its way is neither stuck nor owed: the request settles when it goes, or fails if it never does.
+      if (replyInFlight(join.id)) continue;
       // ── 1. HAS THE COMPILED ANSWER LANDED? The authority decides, on the ledger. ──
       const settled = settleAskOnJoin(join.id, {
         agentId, reason: 'the compiled answer reached the owner',
@@ -1484,36 +1317,18 @@ export async function resolveCompilePendingJoins(agentId: string): Promise<Compi
           .map((p) => `From ${resolveAgentDisplayName(p.assigneeAgent) ?? 'a delegated agent'}:\n${
             (p.content ?? '').trim()}`)
           .join('\n\n');
-        const relayText = `${engineRelayPreface(piecesNow.length)}\n\n${body}`;
-        const deliveryId = await deliverJoinResultToOwner(join, relayText, { voice: 'courier' });
-        // The agent is told what the Dojo carried (a rider on its next turn; it asks for no wake).
-        tellAgentWhatDojoSent({ agentId, recipient: 'the person who asked', text: `${OWNER_ALERT_DOJO_PREFIX} ${relayText}`, sent: !!deliveryId, why: 'carrying the delegated pieces verbatim, because the compile was not written' });
+        tellAgentWhatTheRelaySent(join, await relayToAsker(join, {
+          tool: 'a2a-join-relay', frame: `${engineRelayPreface(piecesNow.length)}\n\n`, answer: body,
+          files: pieceFiles(join.id), reports: newestPieceDelivery(piecesNow),
+        }));
         recordJoinDrive(join.id, JOIN_DRIVE_ENTRY.engineRelay, {
           attempt: rung.attempt, bound: rung.bound,
-          note: deliveryId
-            ? 'the drives were spent with every piece back, so the engine shipped the pieces to the owner verbatim'
-            : 'the engine tried to ship the pieces itself and no delivery could be recorded; the ladder carries on to the notice',
+          note: 'the drives were spent with every piece back, so the engine relayed the pieces to the owner verbatim',
         });
-        // A rung SPENT either way: clearing the flag would silence the case that most needs the notice.
-        if (deliveryId) {
-          noteSettlementRefusal(settleAskOnJoin(join.id, {
-            agentId, deliveryId, basis: 'engine-relay',
-            reason: 'the engine shipped the landed pieces to the owner itself',
-          }), 'a2a: join settled on the engine relay of the landed pieces', join.id);
-          // The cards the model opened for this same job are handed in for it: the owner has the result.
-          for (const card of scaffoldCardsOfRelay(join.id, agentId)) {
-            engineHandIn(card.id, `the engine relayed the compiled result of the job this card was opened for to the owner (delivery ${deliveryId.slice(0, 8)})`,
-              { outcome: 'finished', items: [{ kind: 'delivery', ref: deliveryId }] });
-          }
-        } else {
-          logger.warn('compile drive: the engine relay of the landed pieces recorded no delivery', {
-            agentId, work: join.id, pieces: piecesNow.length,
-          });
-        }
         // NO WAKE: the owner has the content; a wake would re-open the answered compile.
         out.drives++;
         logger.info('compile drive: the drives were spent and every piece was back, so the engine shipped them', {
-          agentId, work: join.id, pieces: piecesNow.length, deliveryId,
+          agentId, work: join.id, pieces: piecesNow.length,
           redrives: rung.redrives, humanAsksOpen,
         });
         continue;
@@ -1584,14 +1399,9 @@ export async function resolveCompilePendingJoins(agentId: string): Promise<Compi
           expectedState: join.parentState,
         });
         if (claimed.kind !== 'applied') continue;
-        tellAgentWhatTheRelaySent(join, (await relayAsDojo(join, text)).sent);
+        tellAgentWhatTheRelaySent(join, await relayNotice(join, text));
       } else {
-        const { id: deliveryId } = await relayAsDojo(join, text, 'a2a-join-relay', 'courier');
-        if (deliveryId) {
-          noteSettlementRefusal(settleAskOnJoin(join.id, {
-            agentId, deliveryId, reason: 'the engine relayed the recorded pieces',
-          }), 'a2a: join settled on compile relay', join.id);
-        } else clearJoinCompilePending(join.id, 'relayed the recorded pieces (delivery not recorded)');
+        await relayToAsker(join, { tool: 'a2a-join-relay', frame: '', answer: text, files: pieceFiles(join.id), reports: newestPieceDelivery(joinPieces(join.id)) });
       }
       logger.info('compile-pending join resolved: the engine relayed the recorded pieces (the steered compile never answered the owner)', {
         agentId, work: join.id, pieces: pieces.length,
@@ -1718,7 +1528,7 @@ async function resolveOpenJoin(
     expectedState: state.parentState,
   });
   if (claimed.kind !== 'applied') return 'already-settled';
-  tellAgentTheJoinFailed(state, 'the delegated answer never came back inside the deadline.', await relayJoinFailure(state, landedContentNotice(state, snapshot, false, opts.askedNameHint)));
+  tellAgentTheJoinFailed(state, 'the delegated answer never came back inside the deadline.', await relayNotice(state, landedContentNotice(state, snapshot, false, opts.askedNameHint)));
   return 'failed-closed';
 }
 
@@ -1761,7 +1571,7 @@ async function resolveJoinUnderClosedParent(
     const withContent = snapshot.filter((p) => (p.content ?? '').trim().length > 0);
     if (withContent.length === 0) return 'already-settled';
     const text = `All the delegated pieces are back; here they are directly:\n${withContent.map(arrivedLine).join('\n')}`;
-    await relayAsDojo(state, text, 'a2a-join-relay', 'courier');
+    await relayToAsker(state, { tool: 'a2a-join-relay', frame: '', answer: text, files: pieceFiles(state.id), reports: newestPieceDelivery(snapshot) });
     if (state.compilePending) {
       clearJoinCompilePending(state.id, 'relayed the recorded pieces under a closed parent');
     }
@@ -1780,7 +1590,7 @@ async function resolveJoinUnderClosedParent(
   }
   // Defence in depth: the FINDER is the guard; this covers only the two-scanners-at-once race.
   if (claimed === 0) return 'already-settled';
-  tellAgentTheJoinFailed(state, 'a delegated piece under an already-answered question ran out of time.', await relayJoinFailure(state, landedContentNotice(state, snapshot, true, opts.askedNameHint)));
+  tellAgentTheJoinFailed(state, 'a delegated piece under an already-answered question ran out of time.', await relayNotice(state, landedContentNotice(state, snapshot, true, opts.askedNameHint)));
   return 'noticed';
 }
 

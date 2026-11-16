@@ -95,8 +95,10 @@ function advanceTurnTo(n: number, agentId = AGENT): void {
   ).run(agentId, n);
 }
 
+// The cards are handed in once the relay's verdict is committed, so a pass waits for that to land.
 const drive = async (): Promise<void> => {
   await resolveCompilePendingJoins(AGENT);
+  await new Promise((r) => setImmediate(r));
 };
 
 /** The measured S5/round-14 shape, built through the product's own calls. */

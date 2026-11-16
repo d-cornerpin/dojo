@@ -19,15 +19,16 @@ import { recordServingTurnByRowid } from '../memory/message-store.js';
 // Imported from the leaf: `NOT_A_START_ACK` reads it at module scope, and `message-store` reaches this
 // file through its own graph, so importing it from there could read it before it is initialized.
 import { START_ACK_ORIGIN_INTENT } from '../memory/origin-intents.js';
+import { afterCommit } from '../db/unit.js';
 import {
-  appendWorkEvent, askIdForMessage, claimingTurnOf, isTerminal,
+  appendWorkEvent, askIdForMessage, claimingTurnOf, failJoinClosed, isTerminal,
   transition,
   type WorkState,
 } from './store.js';
 
 const logger = createLogger('ask-settlement');
 
-/** Tools whose delivery is not an answer. Twin: `NON_ANSWERING_TOOLS` in `agent/v2/answered-edge.ts`. */
+/** Tools whose delivery is not an answer. */
 export const NON_ANSWERING_DELIVERY_TOOLS = new Set(['engine-ack', 'cannot-run']);
 
 /** `display_kind`s whose delivery is not a reply: a tool-call chip (`tool-turn`) and a `working-note`.
@@ -38,6 +39,16 @@ export const NON_ANSWERING_DISPLAY_KINDS = ['tool-turn', 'working-note'] as cons
  *  Declared above the predicates because `NOT_A_SUPERSEDED_BUBBLE` reads it at module scope.
  *  `a2a-join-failed` (a no-answer notice) and `a2a-join-late` (it has its own arm) are absent on purpose. */
 export const ENGINE_JOIN_RELAY_TOOLS = new Set(['a2a-join-relay']);
+
+/** A reply to the request `w` is on its way: a queued answering row carries it as its `joinId` (a relay). */
+export const REPLY_IN_FLIGHT =
+  `EXISTS (SELECT 1 FROM deliveries rf WHERE rf.outcome = 'pending' AND json_valid(rf.payload_json)
+      AND rf.tool NOT IN (${[...NON_ANSWERING_DELIVERY_TOOLS].map((t) => `'${t}'`).join(', ')})
+      AND json_extract(rf.payload_json, '$.joinId') = w.id)`;
+
+export function replyInFlight(askId: string): boolean {
+  return getDb().prepare(`SELECT 1 FROM work w WHERE w.id = ? AND ${REPLY_IN_FLIGHT}`).get(askId) !== undefined;
+}
 
 /** Where in the lifecycle the question is asked; it selects the no-evidence tie-break. `join` and `async`
  *  differ in evidence: the delivery must postdate `join_complete`, or be a background job's result. */
@@ -443,7 +454,7 @@ export function settleAsk(workId: string, ctx: SettlementContext): AskSettlement
   }
 
   const evidence = qualifyingDelivery(ask, ctx.turnNumber)
-    ?? (ctx.at === 'finalize' ? delegatedRelayEvidence(ask, ctx.turnNumber, [...ENGINE_JOIN_RELAY_TOOLS], joinDeliveryDetail) : null);
+    ?? (ctx.at === 'finalize' ? delegatedRelayEvidence(ask, ctx.turnNumber, [...ENGINE_JOIN_RELAY_TOOLS]) : null);
   if (evidence) {
     const r = transition(workId, {
       to: 'done', by: 'agent', actorId, resultDeliveryId: evidence.id,
@@ -513,12 +524,6 @@ export function settleAsk(workId: string, ctx: SettlementContext): AskSettlement
 const delegatingTurn = claimingTurnOf;
 
 
-/** The `detail` the join relay stamps on its delivery row: one derivation for the writer and every reader.
- *  The outbound scope merges the details of every door a send crosses (`a; b`): match on containment. */
-export function joinDeliveryDetail(joinId: string): string {
-  return `join ${joinId}`;
-}
-
 /** When the join's countdown reached zero, from the row's own event; `null` when it never did. */
 function joinCompletedAt(workId: string): number | null {
   const r = getDb().prepare(
@@ -536,15 +541,15 @@ function compiledDelivery(
   const relayTools = [...ENGINE_JOIN_RELAY_TOOLS];
   const floorSec = Math.floor(completedAtMs / 1000);
   // The delegating turn's own bubbles are not the compiled answer: a later turn, no turn, or the engine's
-  // relay of THIS join qualifies. Keyed to this row's relay (`joinDeliveryDetail`), not the tool alone, or
-  // one join's relay would settle another ask in the same conversation.
+  // relay of THIS join qualifies. Keyed to the relay's `joinId`, not the tool alone, or one join's relay
+  // would settle another ask in the same conversation.
   const relaySql = relayTools.map((_, i) => `@r${i}`).join(', ');
   const laterTurn = afterTurn == null ? ''
     : `AND (d.turn_number IS NULL OR d.turn_number > @afterTurn
-            OR (d.tool IN (${relaySql}) AND d.detail LIKE @joinDetail))`;
+            OR (d.tool IN (${relaySql}) AND json_extract(d.payload_json, '$.joinId') = @joinId))`;
   const bind = (extra: Record<string, unknown>): Record<string, unknown> => {
     const o: Record<string, unknown> = {
-      agentId: ask.agent_id, floorSec, joinDetail: `%${joinDeliveryDetail(ask.id)}%`, ...extra,
+      agentId: ask.agent_id, floorSec, joinId: ask.id, ...extra,
     };
     excluded.forEach((t, i) => { o[`x${i}`] = t; });
     relayTools.forEach((t, i) => { o[`r${i}`] = t; });
@@ -577,7 +582,7 @@ function compiledDelivery(
     { id: string; tool: string } | undefined) ?? null;
 }
 
-/** Has the engine already delivered this join's answer? A delivered relay of this join after its
+/** Has the engine already relayed this join's answer, or queued the relay? A relay of this join after its
  *  `join_complete` means the ladder's last rung must not relay again, even if the settlement after the
  *  first relay was refused. Reads the delivery ledger, never a flag. */
 export function priorEngineJoinRelay(workId: string): { id: string; tool: string } | null {
@@ -589,14 +594,14 @@ export function priorEngineJoinRelay(workId: string): { id: string; tool: string
   const bind: Record<string, unknown> = {
     agentId: ask.agent_id,
     floorSec: Math.floor(completedAt / 1000),
-    detail: `%${joinDeliveryDetail(workId)}%`,
+    joinId: workId,
   };
   tools.forEach((t, i) => { bind[`t${i}`] = t; });
   return (getDb().prepare(
     `SELECT d.id AS id, d.tool AS tool FROM deliveries d
-      WHERE d.agent_id = @agentId AND d.outcome = 'delivered'
+      WHERE d.agent_id = @agentId AND d.outcome IN ('delivered', 'pending')
         AND d.tool IN (${tools.map((_, i) => `@t${i}`).join(', ')})
-        AND d.detail LIKE @detail
+        AND json_extract(d.payload_json, '$.joinId') = @joinId
         AND unixepoch(d.created_at) >= @floorSec
       ORDER BY d.created_at ASC, d.rowid ASC LIMIT 1`,
   ).get(bind) as { id: string; tool: string } | undefined) ?? null;
@@ -787,11 +792,18 @@ export interface DeliveryCloseInput {
   conversationId: string | null;
   tool: string;
   outcome: string;
+  /** A relay's request: its verdict settles that request, not the asks of a turn. */
+  joinId?: string | null;
 }
 
 /** A quick ask is done when something was delivered for it, at send time (closing at finalize would make
  *  every quick answer wait for the turn boundary). The arguments narrow scope; `settleAsk` re-reads. */
 export function settleAsksForDelivery(p: DeliveryCloseInput): number {
+  if (p.joinId) {
+    if (p.outcome === 'delivered') onRelayDelivered(p.joinId, p);
+    else if (p.outcome === 'failed') onRelayEnded(p.joinId, p);
+    return 0;
+  }
   if (p.outcome !== 'delivered') return 0;
   if (p.turnNumber == null || p.conversationId == null) return 0;
   if (NON_ANSWERING_DELIVERY_TOOLS.has(p.tool)) return 0;
@@ -801,6 +813,30 @@ export function settleAsksForDelivery(p: DeliveryCloseInput): number {
     if (s.verdict === 'closed') closed++;
   }
   return closed;
+}
+
+/** A relay went: its request settles on it, and the cards the agent opened for that job are handed in. */
+function onRelayDelivered(joinId: string, p: DeliveryCloseInput): void {
+  const settled = settleAskOnJoin(joinId, {
+    agentId: p.agentId, deliveryId: p.deliveryId, reason: 'the engine relayed the delegated answer',
+    basis: p.tool === 'a2a-join-late' ? 'late-answer' : 'engine-relay',
+  });
+  if (settled.verdict !== 'closed') return;
+  // Loaded on use: the hand-in sits above settlement in the import graph.
+  afterCommit(() => void Promise.all([import('./join-drive.js'), import('./done/hand-in.js')]).then(([{ scaffoldCardsOfRelay }, { engineHandIn }]) => {
+    for (const card of scaffoldCardsOfRelay(joinId, p.agentId)) {
+      engineHandIn(card.id, `the engine relayed the compiled result of the job this card was opened for to the owner (delivery ${p.deliveryId.slice(0, 8)})`,
+        { outcome: 'finished', items: [{ kind: 'delivery', ref: p.deliveryId }] });
+    }
+  }));
+}
+
+/** A relay that never went ends its request failed, with the row's reason; a failure notice ends nothing. */
+function onRelayEnded(joinId: string, p: DeliveryCloseInput): void {
+  const ask = readAsk(joinId);
+  if (!ask || isTerminal(ask.state) || p.tool === 'a2a-join-failed') return;
+  const why = (getDb().prepare('SELECT detail FROM deliveries WHERE id = ?').get(p.deliveryId) as { detail: string | null }).detail;
+  failJoinClosed(joinId, { reason: `the helper's answer could not be sent${why ? ` (${why})` : ''}; it is in the chat`, expectedState: ask.state });
 }
 
 /** The requests a turn's reply in a conversation answers: the asks that turn holds claimed there. */

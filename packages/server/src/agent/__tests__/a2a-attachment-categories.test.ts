@@ -55,7 +55,7 @@ vi.mock('../../memory/embeddings.js', () => ({
 }));
 vi.mock('../../memory/vector-search.js', () => ({ vectorSearch: async () => [], hybridSearch: async () => [] }));
 vi.mock('../../services/imessage-bridge.js', () => ({
-  isAwaitingIMResponse: () => false, clearIMResponseFlag: vi.fn(), sendResponseViaIMessage: vi.fn(),
+  isAwaitingIMResponse: () => false, clearIMResponseFlag: vi.fn(),
   getPendingIMSenderRaw: () => null, stripSystemTags: (s: string) => s,
   parseSafeSenders: (raw: string | null) => (raw ? (JSON.parse(raw) as Array<{ address: string }>) : []),
   sendIMessageWithAttachment: vi.fn(), addressesMatch: (a: string, b: string) => a.toLowerCase() === b.toLowerCase(),

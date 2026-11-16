@@ -77,8 +77,10 @@ vi.mock('../../config/platform.js', () => ({
   isPrimaryAgent: () => false, isPMAgent: () => false, isHealerAgent: () => false,
   isDreamerAgent: () => false, getOwnerName: () => 'Owner', getPrimaryAgentId: () => 'primary',
 }));
-const sendIM = vi.hoisted(() => vi.fn(async () => null as unknown));
-vi.mock('../../services/imessage-bridge.js', () => ({ sendResponseViaIMessage: sendIM }));
+const sendIM = vi.hoisted(() => vi.fn(async () => true));
+vi.mock('../../services/imessage-bridge.js', () => ({ sendIMessage: sendIM }));
+// The reply sender's own timer stays off: what is queued is read from the ledger.
+vi.mock('../v2/channel-sender.js', async (orig) => ({ ...(await orig<Record<string, unknown>>()), armSenderTimer: () => {} }));
 vi.mock('../runtime.js', () => ({ getAgentRuntime: () => ({ handleMessage: vi.fn(async () => {}) }) }));
 
 import { runMigrations } from '../../db/migrations.js';
@@ -249,26 +251,22 @@ describe('#19: the reaper reaches a join whose parent has already closed', () =>
     expect(rows.c).toBe(1);
   });
 
-  it('C22: when the iMessage reply did not go and the text fell back to the dashboard, the agent is told exactly that', async () => {
+  it('C22: a notice to a request that came by iMessage is queued for its sender, and the agent is told it is on its way, not that it arrived', async () => {
     seedClosedParentJoin('m-fb');
     mockDb.current!.prepare(`UPDATE messages SET inbound_meta = ? WHERE id = 'm-fb'`)
       .run(JSON.stringify({ channel: 'imessage', sender: '+15550100' }));
-    sendIM.mockResolvedValue(null);
     await sweep();
     const told = agentToldRows();
     expect(told).toHaveLength(1);
     expect(told[0].content, 'never claims the asker was told').not.toMatch(/has told/);
-    expect(told[0].content).toMatch(/did not (go|reach)/i);
-    expect(told[0].content).toMatch(/dashboard/);
-    expect(told[0].content).toMatch(/imessage/i);
-    // The refusal row on the dashboard is the Dojo speaking (never "I"), and the agent is told its exact text.
-    const refusal = ownerFacing().find((m) => /could not send that answer back/i.test(m.content));
-    expect(refusal, 'a refusal row was written').toBeTruthy();
-    expect(refusal!.content).toMatch(/^Dojo: /);
-    expect(/\bI\b/.test(refusal!.content)).toBe(false);
-    expect(refusal!.role).toBe('system');
-    const dojoTold = mockDb.current!.prepare(`SELECT content FROM messages WHERE agent_id = ? AND origin_intent = 'dojo_message_sent'`).all(AGENT) as Array<{ content: string }>;
-    expect(dojoTold.some((r) => r.content.includes(refusal!.content))).toBe(true);
+    expect(told[0].content).toMatch(/is sending .* on imessage/i);
+    expect(told[0].content).toMatch(/if it cannot get through you will be told/i);
+    expect(sendIM, 'the sweep queues; the sender sends').not.toHaveBeenCalled();
+    const queued = mockDb.current!.prepare(
+      `SELECT outcome, json_extract(payload_json, '$.address.to') AS "to" FROM deliveries WHERE tool = 'a2a-join-failed'`,
+    ).all();
+    expect(queued).toEqual([{ outcome: 'pending', to: '+15550100' }]);
+    expect(ownerFacing().filter((m) => /^Dojo: /.test(m.content)), 'the labelled copy is on the dashboard too').toHaveLength(1);
   });
 
   it('POSITIVE: the parent\'s delivered answer is not disturbed — no state move, no re-close', async () => {

@@ -56,7 +56,7 @@ import { gatesForCall } from '../../tools/gates.js';
 import { evaluateGate } from '../../tools/gate-eval.js';
 import { forgetAccessGrants } from '../read.js';
 import { deriveLegacyGrants } from '../derive.js';
-import { ownerChannelRelayRefusal } from '../../a2a-transport.js';
+import { engineMayRouteTo, engineRouteRefusalReason } from '../engine-route.js';
 import type { AccessGrants } from '@dojo/shared';
 
 const db = (): Database.Database => mockDb.current!;
@@ -188,15 +188,14 @@ describe('the credential tools are gated', () => {
 
 describe('the four Twilio walls and the two Workspace walls read the grant', () => {
 
-  it('and the relay refuses / serves by the grant, driven', () => {
+  it('and the reply sender (which carries the relay) refuses / serves by the grant, driven', () => {
     agent('primary', 'sensei');
     agent('operator', 'ronin', (g) => { g.channels.master = true; g.channels.email = 'owner'; });
     agent('worker', 'apprentice');
-    expect(ownerChannelRelayRefusal('primary', 'email', 'gmail_reply')).toBeNull();
-    expect(ownerChannelRelayRefusal('operator', 'email', 'gmail_reply')).toBeNull();
-    const refused = ownerChannelRelayRefusal('worker', 'email', 'gmail_reply');
-    expect(refused).not.toBeNull();
-    expect(refused!.why).toMatch(/channel/i);
+    expect(engineMayRouteTo('primary', 'email')).toBe(true);
+    expect(engineMayRouteTo('operator', 'email')).toBe(true);
+    expect(engineMayRouteTo('worker', 'email')).toBe(false);
+    expect(engineRouteRefusalReason('email')).toMatch(/channel/i);
   });
 });
 

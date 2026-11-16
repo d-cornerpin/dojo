@@ -14,10 +14,9 @@
 // delivery persists and broadcasts and REACHES NOBODY — a bubble on the dashboard the channel
 // never received, which is the F-22 shape RC-9's internal note exists to prevent, arrived at
 // from the other side. So T51 is TWO changes, and this file pins them as one fact:
-//   * `preflight/turn-closures.ts` — `deliverEngineUserAck` gains a Teams push arm, built out
-//     of the SAME send the end-of-turn router already uses for a Teams reply
-//     (`finalize/channel-push.ts`: a synthetic `teams_send_message` ToolCall through
-//     `executeTool`, inside an outbound scope, with the routing marker the owner sees);
+//   * `preflight/turn-closures.ts` — `deliverEngineUserAck` queues the line for the one reply
+//     sender, which posts a Teams reply as `teams_send_message` through `executeTool`, with the
+//     routing marker the owner sees;
 //   * `v2/counterparty.ts` — `engineAckReachesTheirChannel` gains `teams`, because the
 //     intersection moved.
 //
@@ -30,69 +29,27 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import type { ToolCall } from '@dojo/shared';
 
-const { broadcastSpy, insertSpy, pillSpy, executeToolSpy, outboundIntents, engineMayRouteToSpy } = vi.hoisted(() => ({
-  pillSpy: vi.fn((_label: string) => {}),
-  broadcastSpy: vi.fn(),
-  insertSpy: vi.fn(),
-  executeToolSpy: vi.fn(async () => ({ kind: 'applied', result: { content: 'sent' } })),
-  outboundIntents: [] as Array<Record<string, unknown>>,
-  engineMayRouteToSpy: vi.fn((_agentId: string, _channel: string) => true),
-}));
-
-vi.mock('../../../../../gateway/ws.js', () => ({ broadcast: broadcastSpy }));
-// The routing pill's one writer; the spy reads what the owner's badge would say.
-vi.mock('../../../channel-sender.js', () => ({ writeRoutingPill: (_a: string, _t: number, label: string) => pillSpy(label) }));
-vi.mock('../../../../../memory/message-store.js', async (importOriginal) => ({
-  ...(await importOriginal<Record<string, unknown>>()),
-  insertMessageIfAbsent: insertSpy,
-}));
+const tool = vi.hoisted(() => ({ calls: [] as Array<{ name: string; arguments: Record<string, unknown> }>, grant: true }));
+vi.mock('../../../../../db/connection.js', async () => (await import('../../../__tests__/helpers/reply-sender.js')).connectionMock());
+vi.mock('../../../../../gateway/ws.js', () => ({ broadcast: () => {} }));
+vi.mock('../../../../access/engine-route.js', () => ({ engineMayRouteTo: () => tool.grant, engineRouteRefusalReason: () => 'no grant' }));
+vi.mock('../../../../../services/channel-safe-senders.js', async (orig) => ({ ...(await orig<Record<string, unknown>>()), getTeamsSafeSenders: () => [{ address: 'colleague@example.com', name: 'a colleague' }] }));
 vi.mock('../../../../tools/index.js', () => ({
-  executeTool: (...a: unknown[]) => executeToolSpy(...(a as [])),
-}));
-// The outbound scope is the LEDGER's business and has its own suite; here it is a
-// pass-through that records the identity each arm declares, which is the half this file
-// is about — a Teams ack must cross the door as `engine-ack`/`teams`, to the chat it came
-// from, exactly as the iMessage and SMS arms do for theirs.
-vi.mock('../../../outbound.js', () => ({
-  withOutboundAsync: async (intent: Record<string, unknown>, fn: () => Promise<unknown>) => {
-    outboundIntents.push(intent);
-    return fn();
+  executeTool: async (_agentId: string, call: { name: string; arguments: Record<string, unknown> }) => {
+    tool.calls.push(call);
+    return { kind: 'applied', value: { toolCallId: 'x', name: call.name, content: 'sent' } };
   },
 }));
-vi.mock('../../../../../contacts/resolve-recipient.js', () => ({
-  resolveRecipientDisplay: (_c: string, id: string) => id,
-}));
-// ── UX-ACCESS A4's CHANNEL DOOR, declared rather than borrowed (W83, v3.1.23 cut) ──
-// `turn-closures.ts` now asks `engineMayRouteTo` before any of its four push arms
-// fire. That predicate reads the agent's stored grants out of the DATABASE, and
-// this file's `AGENT` is the literal string `'FXID.n4'` — the owner's own primary.
-// Until T74b gave the suite its own home, the door silently opened a real
-// `~/.dojo/data/dojo.db`, found the owner's live grants there and answered `true`,
-// so these three clauses passed on a fact about ONE DEVELOPER'S BOX. On a fresh
-// checkout there is no such row and the ack was withheld. Same class as the five
-// live-database readers T74b's report §4 names; this one was invisible until the
-// grants work gave the door something to read.
-//
-// The door is A4's business and has its own suite
-// (`agent/access/__tests__/the-engine-route-asks.test.ts`, 301 lines) — exactly the
-// disposition this file already gives the outbound scope above. Here it is a SPY,
-// not a blank: the grant is declared open so the Teams arm can be measured, and
-// the CONTROL clause below drives it shut and pins that the arm stops. What the
-// file has always been about — Teams yes, email no — is untouched.
-vi.mock('../../../../access/engine-route.js', () => ({
-  engineMayRouteTo: (...a: unknown[]) => engineMayRouteToSpy(...(a as [string, string])),
-}));
-vi.mock('../../../../turn-state.js', () => ({ continuationContext: { set: vi.fn() } }));
 
+import { runMigrations } from '../../../../../db/migrations.js';
+import { START_ACK_ORIGIN_INTENT } from '../../../../../memory/message-store.js';
 import { runTurnClosures } from '../turn-closures.js';
+import { deliverDueReplies } from '../../../channel-sender.js';
 import { engineAckReachesTheirChannel, isRoutedHumanCounterparty, type TurnCounterparty } from '../../../counterparty.js';
-import type { PreflightContext, PreflightScratch } from '../index.js';
-import type { TurnContext } from '../../../../turn-context.js';
-import { FX, FXID } from '../../../../../../../../deploy/checks/fixture-vocabulary.mjs';
+import { freshReplyDb, replyRows, testDb, AGENT } from '../../../__tests__/helpers/reply-sender.js';
+import { FX } from '../../../../../../../../deploy/checks/fixture-vocabulary.mjs';
 
-const AGENT = FXID.n4;
 const CHAT_ID = '19:meeting_abcdef0123456789@thread.v2';
 
 const person = (over: Partial<TurnCounterparty> = {}): TurnCounterparty => ({
@@ -100,33 +57,24 @@ const person = (over: Partial<TurnCounterparty> = {}): TurnCounterparty => ({
   senderId: '+15550000000', threadId: null, senderIsAgent: false, ...over,
 } as TurnCounterparty);
 
-/** The ack closure as the turn hands it out, with only what its body reads. */
-function ackFor(counterparty: TurnCounterparty, inboundContext: Record<string, unknown> | null) {
-  const turnCtx = {
-    root: { conversationId: 'conv-1' },
-    state: { inboundContext },
-  } as unknown as TurnContext;
-  const sc: PreflightScratch = {
-    claimedEngineEvent: null, pendingEngineClaim: null, terminalAnswerRowId: null,
-  };
-  return runTurnClosures(
-    turnCtx,
-    { agentId: AGENT } as unknown as PreflightContext,
-    sc,
-    {
-      counterparty, chosenConvKey: 'teams:chat', chosenConversationId: 'conv-1',
-      turnNumber: 9, revertTriggerStampOnAbort: vi.fn(),
-    },
-  ).deliverEngineUserAck;
+/** The start line as the turn delivers it, then one pass of the reply sender. */
+async function startLine(counterparty: TurnCounterparty, inboundContext: Record<string, unknown> | null): Promise<void> {
+  const turnCtx = { root: { kind: 'ask', id: 'ask-1', sourceMessageId: 'm-1', conversationId: 'conv-1' }, state: { inboundContext } };
+  const { deliverEngineUserAck } = runTurnClosures(turnCtx as never, { agentId: AGENT } as never, { terminalAnswerRowId: null } as never, {
+    counterparty, chosenConvKey: 'teams:chat', chosenConversationId: 'conv-1', turnNumber: 9, revertTriggerStampOnAbort: () => {},
+  });
+  await deliverEngineUserAck('On it.', START_ACK_ORIGIN_INTENT, null, 'agent-text');
+  await deliverDueReplies(Date.now());
 }
 
-const routingMarkers = (): string[] => pillSpy.mock.calls.map((c) => `[Reply routed via ${c[0]}]`);
+const markers = (): string[] => (testDb().prepare("SELECT content FROM messages WHERE role = 'system' ORDER BY rowid").all() as Array<{ content: string }>).map((r) => r.content);
+const ackRow = () => testDb().prepare("SELECT COUNT(*) AS n FROM messages WHERE role = 'assistant' AND content = 'On it.'").get();
 
 beforeEach(() => {
-  broadcastSpy.mockClear(); insertSpy.mockClear(); pillSpy.mockClear(); executeToolSpy.mockClear();
-  outboundIntents.length = 0;
-  engineMayRouteToSpy.mockClear();
-  engineMayRouteToSpy.mockReturnValue(true);
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+  freshReplyDb(runMigrations);
+  tool.calls = [];
+  tool.grant = true;
 });
 
 describe('the predicate: the door opens where the ack can now actually be pushed', () => {
@@ -160,80 +108,42 @@ describe('the predicate: the door opens where the ack can now actually be pushed
   });
 });
 
-describe('the delivery: the ack REACHES a Teams chat, through the send the router already uses', () => {
-  it('RED→GREEN: the ack is pushed to the originating chat as a `teams_send_message`', async () => {
-    const deliver = ackFor(person({ channel: 'teams', senderId: `${FXID.n11}@northwind.example` }), { chatId: CHAT_ID });
-    await deliver('On it — pulling the numbers now.', 'start_ack', null, 'agent-text');
-
-    expect(executeToolSpy).toHaveBeenCalledTimes(1);
-    const [calledAgent, tc] = executeToolSpy.mock.calls[0] as unknown as [string, ToolCall];
-    expect(calledAgent).toBe(AGENT);
-    expect(tc.name).toBe('teams_send_message');
-    expect(tc.arguments).toEqual({ chat_id: CHAT_ID, message: 'On it — pulling the numbers now.' });
-  });
-
-  it('it crosses the door under the ack\'s own identity, to the chat it came from', async () => {
-    const deliver = ackFor(person({ channel: 'teams' }), { chatId: CHAT_ID });
-    await deliver('On it.', 'start_ack', null, 'agent-text');
-    expect(outboundIntents).toHaveLength(1);
-    expect(outboundIntents[0]).toMatchObject({
-      agentId: AGENT, tool: 'engine-ack', channel: 'teams',
-      recipientId: CHAT_ID, conversationId: 'conv-1',
-    });
+describe('the delivery: the ack REACHES a Teams chat, through the one reply sender', () => {
+  it('the ack is posted into the originating chat as a `teams_send_message`, once, as a start line', async () => {
+    await startLine(person({ channel: 'teams', senderId: 'colleague@example.com' }), { chatId: CHAT_ID, chatType: 'dm' });
+    expect(tool.calls).toEqual([{ id: expect.any(String), name: 'teams_send_message', arguments: { chat_id: CHAT_ID, message: 'On it.' } }]);
+    expect(replyRows()).toMatchObject([{ outcome: 'delivered', attempts: 1 }]);
+    expect(testDb().prepare('SELECT tool, channel FROM deliveries').all()).toEqual([{ tool: 'engine-ack', channel: 'teams' }]);
   });
 
   it('the owner sees the same badge a routed reply gets — one marker writer, never a second wording', async () => {
-    const deliver = ackFor(person({ channel: 'teams' }), { chatId: CHAT_ID });
-    await deliver('On it.', 'start_ack', null, 'agent-text');
-    expect(routingMarkers().some((m) => m.includes('Teams to chat'))).toBe(true);
+    await startLine(person({ channel: 'teams', senderId: 'colleague@example.com' }), { chatId: CHAT_ID, chatType: 'dm' });
+    expect(markers().at(-1)).toBe(`[Reply routed via Teams to chat ${CHAT_ID.slice(0, 8)}…]`);
   });
 
-  it('CONTROL — the A4 channel door is ASKED, and a withheld grant stops the push (W83)', async () => {
-    // The door is asked for the ack's own agent and the counterparty's own channel;
-    // and when it says no, the arm does not fire. Both halves, because a mock that
-    // only ever answers `true` would let the guard be deleted without a red.
-    const deliver = ackFor(person({ channel: 'teams' }), { chatId: CHAT_ID });
-    await deliver('On it.', 'start_ack', null, 'agent-text');
-    expect(engineMayRouteToSpy).toHaveBeenCalledWith(AGENT, 'teams');
-
-    engineMayRouteToSpy.mockClear();
-    executeToolSpy.mockClear();
-    insertSpy.mockClear();
-    pillSpy.mockClear();
-    outboundIntents.length = 0;
-    engineMayRouteToSpy.mockReturnValue(false);
-    const withheld = ackFor(person({ channel: 'teams' }), { chatId: CHAT_ID });
-    await withheld('On it.', 'start_ack', null, 'agent-text');
-    expect(executeToolSpy).not.toHaveBeenCalled();
-    expect(outboundIntents).toHaveLength(0);
-    expect(routingMarkers().some((m) => m.includes('Teams to chat'))).toBe(false);
+  it('CONTROL — a withheld channel grant queues nothing', async () => {
+    tool.grant = false;
+    await startLine(person({ channel: 'teams', senderId: 'colleague@example.com' }), { chatId: CHAT_ID, chatType: 'dm' });
+    expect(tool.calls).toEqual([]);
+    expect(replyRows()).toEqual([]);
   });
 
-  it('CONTROL — no chat id, no push: an ack with nowhere to go is never claimed as delivered', async () => {
-    const deliver = ackFor(person({ channel: 'teams' }), {});
-    await deliver('On it.', 'start_ack', null, 'agent-text');
-    expect(executeToolSpy).not.toHaveBeenCalled();
-    expect(outboundIntents).toHaveLength(0);
-    expect(routingMarkers()).toEqual([]);
+  it('CONTROL — no chat id, no push: an ack with nowhere to go is never queued', async () => {
+    await startLine(person({ channel: 'teams', senderId: 'colleague@example.com' }), {});
+    expect(tool.calls).toEqual([]);
+    expect(replyRows()).toEqual([]);
   });
 
-  it('CONTROL — EMAIL IS NOT PUSHED. The ack row is written and broadcast and that is all', async () => {
-    const deliver = ackFor(person({ channel: 'email', senderId: `${FXID.n11}@northwind.example` }),
-      { emailMessageId: '<abc@mail>' });
-    await deliver('On it.', 'start_ack', null, 'agent-text');
-    expect(executeToolSpy).not.toHaveBeenCalled();
-    expect(outboundIntents).toHaveLength(0);
-    expect(routingMarkers()).toEqual([]);
-    // the row itself is byte-identical to every other channel's — the ack is not deleted,
-    // it simply has no email transport, which is precisely why the door stays shut for it.
-    expect(insertSpy.mock.calls.some((c) => (c[0] as { role?: string }).role === 'assistant')).toBe(true);
+  it('CONTROL — EMAIL IS NOT PUSHED. The ack row is written and that is all', async () => {
+    await startLine(person({ channel: 'email', senderId: 'colleague@example.com' }), { emailMessageId: '<abc@mail>' });
+    expect(tool.calls).toEqual([]);
+    expect(replyRows()).toEqual([]);
+    expect(ackRow()).toEqual({ n: 1 });
   });
 
-  it('CONTROL — the dashboard path is untouched: persist + broadcast, no channel push at all', async () => {
-    const deliver = ackFor(person({ channel: 'dashboard', senderId: null }), null);
-    await deliver('On it.', 'start_ack', null, 'agent-text');
-    expect(executeToolSpy).not.toHaveBeenCalled();
-    expect(outboundIntents).toHaveLength(0);
-    expect(broadcastSpy).toHaveBeenCalled();
+  it('CONTROL — the dashboard path is untouched: the row, no channel push at all', async () => {
+    await startLine(person({ channel: 'dashboard', senderId: null }), null);
+    expect(replyRows()).toEqual([]);
+    expect(ackRow()).toEqual({ n: 1 });
   });
 });

@@ -50,7 +50,6 @@ import {
   openAsk, claimAsk, stampClaimingTurn, openDelegationJoin, landPiece, joinPieces,
   settlePieceWithoutResult,
 } from '../../work/store.js';
-import { joinDeliveryDetail } from '../../work/ask-settlement.js';
 import { releaseDeferredJoinRelays } from '../a2a-transport.js';
 import { deferJoinRelay } from '../deferred-join-relay.js';
 import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
@@ -66,9 +65,9 @@ const workRow = (id: string): Record<string, unknown> =>
 const relayRows = (joinId: string): Array<{ id: string; turn_number: number | null; created_at: string }> =>
   mockDb.current!.prepare(
     `SELECT id, turn_number, created_at FROM deliveries
-       WHERE tool = 'a2a-join-relay' AND outcome = 'delivered' AND detail LIKE ?
+       WHERE tool = 'a2a-join-relay' AND outcome = 'delivered' AND json_extract(payload_json, '$.joinId') = ?
        ORDER BY rowid`,
-  ).all(`%${joinDeliveryDetail(joinId)}%`) as Array<{ id: string; turn_number: number | null; created_at: string }>;
+  ).all(joinId) as Array<{ id: string; turn_number: number | null; created_at: string }>;
 
 /** What the OWNER can actually see on their own lane — the thing the duplicate answer is. */
 const ownerFacing = (): Array<{ content: string; role: string }> =>

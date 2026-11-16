@@ -36,6 +36,8 @@ export interface DeliveryInput {
   /** Explicit conversation identity: pass it (the turn's own conversation) and nothing resolves;
    *  omit for cross-conversation sends, where channel + recipient resolve the row. */
   conversationId?: string | null;
+  /** A queued reply's words and address, or a relay's request (`joinId`); a `pending` row with one is the sender's. */
+  payload?: Record<string, unknown> | null;
 }
 
 // The recipient's conversation row: the same identity inbound producers stamp, so send and reply share it.
@@ -93,6 +95,10 @@ export function recordDelivery(input: DeliveryInput): LedgerOutcome {
         input.outcome,
         input.detail ?? null,
       );
+      if (input.payload) {
+        db.prepare('UPDATE deliveries SET payload_json = ?, next_attempt_at = ? WHERE id = ?')
+          .run(JSON.stringify(input.payload), input.outcome === 'pending' ? Date.now() : null, id);
+      }
       // The close happens where a delivery becomes a row; `work/ask-settlement.ts` decides it, in the unit.
       settleAsksForDelivery({
         agentId: input.agentId,
@@ -101,6 +107,7 @@ export function recordDelivery(input: DeliveryInput): LedgerOutcome {
         conversationId,
         tool: input.tool,
         outcome: input.outcome,
+        joinId: typeof input.payload?.joinId === 'string' ? input.payload.joinId : null,
       });
       return { kind: 'applied', value: { deliveryId: id } };
     });
@@ -144,34 +151,39 @@ export interface QueuedReply {
   root: TurnRoot | null;
   text: string;
   address: ReplyAddress;
+  /** A start line ("on it"): tried once, and never an answer. */
+  startLine?: boolean;
+  /** A Dojo line about a delegated request: the helper's `answer` (empty for a notice), the request, the hand-in it reports. */
+  relay?: { tool: string; answer: string; joinId: string; reports: string | null; files: string[] };
 }
 
 /** The one place a reply is queued for the sender: cleaned, written `pending` and due now, and the sender woken.
- *  Returns the row id, or null when nothing is left to send or the row could not be written. */
-export async function queueReply(r: QueuedReply): Promise<string | null> {
+ *  Another Dojo's agent gets a helper's answer bare and no Dojo notice: that row is written `held`.
+ *  Returns the row, or null when nothing is left to send or the row could not be written. */
+export async function queueReply(r: QueuedReply): Promise<{ id: string; held: boolean } | null> {
   // Loaded on use: the credential registry and the sender sit above the ledger in the import graph.
   const { redactHandedCredentials } = await import('../../credentials/secret-fields.js');
   const { armSenderTimer } = await import('./channel-sender.js');
   const { announceLiveWork } = await import('../live-work.js');
-  const text = redactHandedCredentials(r.agentId, r.text).trim();
-  if (!text) return null;
+  const bare = r.relay !== undefined && r.address.toAgent === true;
+  const text = redactHandedCredentials(r.agentId, bare ? r.relay!.answer : r.text).trim();
+  const held = bare && !text;
+  if (!text && !held) return null;
   const label = await pillLabel(r.address, r.address.to);
-  const id = withUnit((): string | null => {
-    const written = deliveryIdOf(asTurn(r.agentId, { turnNumber: r.turnNumber, root: r.root, convKey: null }, () => recordDelivery({
-      agentId: r.agentId, tool: 'auto-route', channel: r.address.channel, recipientId: r.address.to,
-      conversationId: r.root?.conversationId ?? null, outcome: 'pending',
-    })));
-    if (written !== null) {
-      getDb().prepare('UPDATE deliveries SET payload_json = ?, next_attempt_at = ? WHERE id = ?')
-        .run(JSON.stringify({ text, address: r.address }), Date.now(), written);
-    }
-    return written;
-  });
+  const { relay } = r;
+  const id = deliveryIdOf(asTurn(r.agentId, { turnNumber: r.turnNumber, root: r.root, convKey: null }, () => recordDelivery({
+    agentId: r.agentId, tool: relay?.tool ?? (r.startLine ? 'engine-ack' : 'auto-route'), channel: r.address.channel,
+    recipientId: r.address.to, conversationId: r.root?.conversationId ?? null, outcome: held ? 'held' : 'pending',
+    detail: held ? 'a Dojo notice is never sent to another Dojo\'s agent' : null,
+    payload: { text, address: r.address, ...(relay ? { joinId: relay.joinId, reports: relay.reports, files: relay.files } : {}) },
+  })));
   if (id === null) return null;
-  await writeRoutingPill(r.agentId, r.turnNumber, withRoutingState(label, 'sending'));
-  announceLiveWork(r.agentId);
-  armSenderTimer();
-  return id;
+  await writeRoutingPill(r.agentId, r.turnNumber, held ? withRoutingState(label, 'not sent', 'another Dojo\'s agent') : withRoutingState(label, 'sending'));
+  if (!held) {
+    announceLiveWork(r.agentId);
+    armSenderTimer();
+  }
+  return { id, held };
 }
 
 // The intent row is written pending before transport; a crash leaves it, orphaned-claims hands the ask back.
@@ -193,11 +205,12 @@ export function resolvePendingDelivery(id: string, seen: DoorVerdict): LedgerOut
     const db = getDb();
     return withUnit((): LedgerOutcome | null => {
       const row = db.prepare(
-        `SELECT agent_id, turn_number, tool, channel, recipient_id, recipient_display, conversation_id
+        `SELECT agent_id, turn_number, tool, channel, recipient_id, recipient_display, conversation_id,
+                CASE WHEN json_valid(payload_json) THEN json_extract(payload_json, '$.joinId') END AS join_id
            FROM deliveries WHERE id = ? AND outcome = 'pending'`,
       ).get(id) as {
         agent_id: string; turn_number: number | null; tool: string; channel: DeliveryInput['channel'];
-        recipient_id: string | null; recipient_display: string | null; conversation_id: string | null;
+        recipient_id: string | null; recipient_display: string | null; conversation_id: string | null; join_id: string | null;
       } | undefined;
       if (!row) return null;
       const recipientId = row.recipient_id ?? seen.recipientId ?? null;
@@ -217,7 +230,7 @@ export function resolvePendingDelivery(id: string, seen: DoorVerdict): LedgerOut
         seen.receiptId ?? null, conversationId, id);
       settleAsksForDelivery({
         agentId: row.agent_id, turnNumber: row.turn_number, deliveryId: id, conversationId,
-        tool: row.tool, outcome: seen.outcome,
+        tool: row.tool, outcome: seen.outcome, joinId: row.join_id,
       });
       return { kind: 'applied', value: { deliveryId: id } };
     });
@@ -242,8 +255,10 @@ export function suppressQueuedReplies(agentId: string): { repliesNotSent: number
     if (row.turn_number !== null && row.conversation_id !== null) {
       for (const id of asksAnsweredBy(agentId, row.turn_number, row.conversation_id)) askIds.add(id);
     }
-    let parsed: { address?: ReplyAddress } = {};
-    try { parsed = JSON.parse(row.payload_json) as { address?: ReplyAddress }; } catch { /* unreadable: still dropped, with no mark */ }
+    let parsed: { address?: ReplyAddress; joinId?: string } = {};
+    try { parsed = JSON.parse(row.payload_json) as typeof parsed; } catch { /* unreadable: still dropped, with no mark */ }
+    // A relay answers its delegated request.
+    if (parsed.joinId) askIds.add(parsed.joinId);
     const { address } = parsed;
     if (!address) continue;
     afterCommit(() => void pillLabel(address, address.to).catch(() => address.channel)
