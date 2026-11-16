@@ -46,6 +46,7 @@ const KINDS: Record<string, Kind> = {
   ratelimit: action(agentNotice('rate_limit_notice', "status = 'rate_limited'"), { critical: true }),
   broken: action(agentNotice('broken_notice', "status != 'terminated'")),
   silent: action(agentNotice('silent_notice', "status != 'terminated'")),
+  undelivered: action(() => true),
   'memory-low': action(() => !!one("SELECT 1 FROM config WHERE key = 'owner_notice_memory_low'"), { critical: true }),
   signin: action((id) => {
     const [table, account] = id.split(/:(.*)/s);
@@ -58,7 +59,6 @@ const KINDS: Record<string, Kind> = {
   ollama: { cls: () => (heldOllamaVersion() !== null ? 'action' : 'informational'), stands: () => heldOllamaVersion() !== null },
   smallmodel: { cls: (key) => (key === 'smallmodel:stuck' ? 'action' : 'informational'), stands: () => true },
   projectend: { cls: () => 'informational', stands: () => true },
-  undelivered: { cls: () => 'informational', stands: () => true },
   fitunchecked: informational,
   lessons: informational,
 };

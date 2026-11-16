@@ -10,6 +10,7 @@ import { broadcast } from '../../gateway/ws.js';
 import { asTurn, type TurnRoot } from '../turn-context.js';
 import { announceLiveWork } from '../live-work.js';
 import type { FoldedVerdict } from './outbound.js';
+import type { RefusalKind } from '../dojo-voice.js';
 
 const logger = createLogger('channel-sender');
 
@@ -28,6 +29,9 @@ const MAX_TIMER_MS = 2_147_483_647;
 
 const midTry = new Set<string>();
 let timer: ReturnType<typeof setTimeout> | null = null;
+
+/** A verdict with the kind of refusal the sender found before any send, which the owner and the agent are told. */
+type Verdict = FoldedVerdict & { refusal?: RefusalKind };
 
 interface QueuedRow {
   id: string; agent_id: string; turn_number: number | null; root_kind: string | null; root_id: string | null;
@@ -154,7 +158,7 @@ async function tryOnce(row: QueuedRow, now: number): Promise<boolean> {
   try {
     const payload = parsedPayload(row);
     let to: string | null = null;
-    let verdict: FoldedVerdict;
+    let verdict: Verdict;
     // Anything that throws before or around the send is a failed try like any other, so it counts toward the five.
     try {
       if (!payload) throw new Error('the queued reply cannot be read');
@@ -177,25 +181,27 @@ function parsedPayload(row: QueuedRow): { text: string; address: ReplyAddress } 
 }
 
 /** The check and the send, stamped with the row's own turn and request. */
-function sendAsItsTurn(row: QueuedRow, payload: { text: string; address: ReplyAddress }, to: string | null): Promise<FoldedVerdict> {
+function sendAsItsTurn(row: QueuedRow, payload: { text: string; address: ReplyAddress }, to: string | null): Promise<Verdict> {
   const root: TurnRoot | null = row.root_kind && row.root_id
     ? { kind: row.root_kind as TurnRoot['kind'], id: row.root_id, sourceMessageId: null, conversationId: row.conversation_id }
     : null;
-  return asTurn(row.agent_id, { turnNumber: row.turn_number, root, convKey: null }, async (): Promise<FoldedVerdict> => {
-    const refusal = await refusalOf(row.agent_id, payload.address, to);
-    if (refusal !== null || to === null) return { delivered: false, final: true, detail: refusal, receiptId: null };
+  return asTurn(row.agent_id, { turnNumber: row.turn_number, root, convKey: null }, async (): Promise<Verdict> => {
+    const refused = await refusalOf(row.agent_id, payload.address, to);
+    if (refused !== null || to === null) return { delivered: false, final: true, detail: refused?.detail ?? null, receiptId: null, refusal: refused?.kind };
     const { withAdoptedOutbound } = await import('./outbound.js');
     return withAdoptedOutbound({ id: row.id, agentId: row.agent_id, channel: payload.address.channel }, () => sendBy(row.agent_id, payload.text, payload.address, to));
   });
 }
 
-/** The check before any send: the agent still holds the channel and the person is still approved. Final if it fails. */
-async function refusalOf(agentId: string, a: ReplyAddress, to: string | null): Promise<string | null> {
+/** The check before any send: the agent holds the channel, the person is approved, an SMS has a number. Final if not. */
+async function refusalOf(agentId: string, a: ReplyAddress, to: string | null): Promise<{ kind: RefusalKind; detail: string } | null> {
   const { engineMayRouteTo, engineRouteRefusalReason } = await import('../access/engine-route.js');
-  if (!engineMayRouteTo(agentId, a.channel)) return engineRouteRefusalReason(a.channel);
+  if (!engineMayRouteTo(agentId, a.channel)) return { kind: 'no-grant', detail: engineRouteRefusalReason(a.channel) };
   const { mayAnswer } = await import('./channel-auth.js');
   const approved = to !== null && mayAnswer(a.channel, to, 'agent', a.channel === 'email' ? { emailService: a.service ?? undefined, fromOwner: a.fromOwner } : undefined);
-  return approved ? null : `${to ?? 'the recipient'} is no longer on the approved list`;
+  if (!approved) return { kind: 'not-approved', detail: `${to ?? 'the recipient'} is no longer on the approved list` };
+  const noNumber = a.channel === 'sms' && !(a.from ?? (await import('../../twilio/auth.js')).getDefaultFromNumber());
+  return noNumber ? { kind: 'no-from-number', detail: 'no number to send the SMS from' } : null;
 }
 
 async function sendBy(agentId: string, text: string, a: ReplyAddress, to: string): Promise<{ ok: boolean; final?: boolean; detail?: string | null }> {
@@ -212,9 +218,7 @@ async function sendBy(agentId: string, text: string, a: ReplyAddress, to: string
   if (a.channel === 'sms') {
     const { sendSms } = await import('../../twilio/client.js');
     const { getDefaultFromNumber } = await import('../../twilio/auth.js');
-    const from = a.from ?? getDefaultFromNumber();
-    if (!from) return { ok: false, final: true, detail: 'no number to send the SMS from' };
-    const res = await sendSms(to, text, from);
+    const res = await sendSms(to, text, a.from ?? getDefaultFromNumber() ?? '');
     if (!res.ok) return { ok: false, detail: res.error };
     const sid = res.data.sid;
     writeToolReceipt({ agentId, tool: 'sms_send', tier: 1, verified: !!sid, basis: sid ? 'provider-id' : 'http-status', providerId: sid ?? null, recipient: to, sentText: text, detail: { route: 'auto', textLength: text.length } });
@@ -230,7 +234,7 @@ async function sendBy(agentId: string, text: string, a: ReplyAddress, to: string
   return { ok: false, final: o.kind === 'refused' && o.result.errorCode !== 'RATE_LIMITED', detail: o.result.content.slice(0, 300) };
 }
 
-async function recordVerdict(row: QueuedRow, address: ReplyAddress | null, to: string | null, v: FoldedVerdict, now: number): Promise<boolean> {
+async function recordVerdict(row: QueuedRow, address: ReplyAddress | null, to: string | null, v: Verdict, now: number): Promise<boolean> {
   const attempts = row.attempts + 1;
   if (!v.delivered && !v.final && attempts <= WAITS_MS.length) {
     getDb().prepare(
@@ -258,7 +262,7 @@ async function recordVerdict(row: QueuedRow, address: ReplyAddress | null, to: s
   logger.error('a reply could not be delivered', { deliveryId: row.id, attempts, reason: v.detail }, row.agent_id);
   await writeRoutingPill(row.agent_id, row.turn_number, `not delivered by ${label}: ${v.detail ?? 'unknown reason'}`);
   // Telling the owner and the agent never undoes or blocks the verdict.
-  try { (await import('../dojo-voice.js')).tellOfUndeliveredReply(row.id, label); } catch (err) {
+  try { (await import('../dojo-voice.js')).tellOfUndeliveredReply(row.id, label, v.refusal); } catch (err) {
     logger.warn('an undelivered reply was not told', { deliveryId: row.id, error: err instanceof Error ? err.message : String(err) }, row.agent_id);
   }
   return false;
