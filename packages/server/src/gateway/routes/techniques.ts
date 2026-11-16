@@ -9,6 +9,7 @@ import { getVersions, getUsage } from '../../techniques/versioning.js';
 import { exportTechnique } from '../../techniques/share-export.js';
 import { importTechnique } from '../../techniques/share-import.js';
 import { routeFailure } from './route-failure.js';
+import { insideFolder } from '../../techniques/technique-folder.js';
 
 const logger = createLogger('technique-routes');
 
@@ -144,7 +145,8 @@ techniquesRouter.get('/:id/files/*', (c) => {
   if (!technique) return c.json({ ok: false, error: 'Technique not found' }, 404);
 
   const filePath = c.req.path.replace(`/api/techniques/${id}/files/`, '');
-  const fullPath = path.join(technique.directoryPath, filePath);
+  const fullPath = insideFolder(technique.directoryPath, filePath);
+  if (!fullPath) return c.json({ ok: false, error: 'File path is outside the technique folder' }, 400);
 
   if (!fs.existsSync(fullPath)) return c.json({ ok: false, error: 'File not found' }, 404);
 
@@ -162,7 +164,8 @@ techniquesRouter.put('/:id/files/*', async (c) => {
   if (!body?.content && body?.content !== '') return c.json({ ok: false, error: 'content is required' }, 400);
 
   const filePath = c.req.path.replace(`/api/techniques/${id}/files/`, '');
-  const fullPath = path.join(technique.directoryPath, filePath);
+  const fullPath = insideFolder(technique.directoryPath, filePath);
+  if (!fullPath) return c.json({ ok: false, error: 'File path is outside the technique folder' }, 400);
 
   fs.mkdirSync(path.dirname(fullPath), { recursive: true });
   fs.writeFileSync(fullPath, body.content, 'utf-8');

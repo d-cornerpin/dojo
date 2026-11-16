@@ -21,9 +21,9 @@ vi.mock('../../agent/effects/fs.js', async () => {
 vi.mock('../../agent/access/read.js', () => ({ mayUseTechnique: vi.fn(() => true) }));
 
 import { runMigrations } from '../../db/migrations.js';
-import { createTechnique, TECHNIQUES_DIR } from '../store.js';
+import { createTechnique, findRemainingPlaceholders, TECHNIQUES_DIR } from '../store.js';
 import { executeTechniqueRead } from '../tools.js';
-import { applyPlaceholderToTechnique, findRemainingPlaceholders } from '../import-setup.js';
+import { applyPlaceholderToTechnique } from '../import-setup.js';
 
 let tmp: string;
 beforeEach(() => {

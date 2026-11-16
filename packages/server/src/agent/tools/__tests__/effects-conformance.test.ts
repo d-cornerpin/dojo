@@ -105,7 +105,7 @@ describe('effects-declaration conformance walk (PHASE-5 T1)', () => {
   // the same check T3's `shell` earned.
   // t200 moves both by ONE the same way: `tool_result_read`, a core definition with no twin.
   // v3.5 inspect C1 moves both by ONE more: `dojo_inspect`, a core definition with no twin.
-  // Deleting `technique_acknowledge` (core, no twin) moves both back by one.
+  // `technique_acknowledge` is not a tool: one fewer core definition, no twin.
   it('the census is T0\'s 320 static definitions + T3\'s `shell` + T77b\'s two drafts + DOJO-REPORT\'s `dojo_report` + t200\'s `tool_result_read` + K34\'s `lesson_record` + `dojo_inspect` + `continue_repeating`, less `technique_acknowledge`, 119 user_ twins, 446 at runtime', () => {
     expect(BASE.length).toBe(327);
     expect(BASE.filter((d) => d.name === 'dojo_inspect')).toHaveLength(1);
@@ -324,7 +324,7 @@ describe('effects-declaration conformance walk (PHASE-5 T1)', () => {
     // t200: core 113 → 114 and runtime 443 → 444, `tool_result_read`, the same shape.
     // K34: core 114 → 115 and runtime 444 → 445, `lesson_record` (the Dreamer's door), no twin.
     // v3.5 inspect C1: core 115 → 116 and runtime 445 → 446, `dojo_inspect`, no twin.
-    // `technique_acknowledge` deleted: core and runtime each down by one, no twin.
+    // `technique_acknowledge` is not a tool: core and runtime each one fewer, no twin.
     expect(toolDefinitions.length).toBe(116);
     expect(ALL.length).toBe(446);
 

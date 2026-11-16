@@ -10,7 +10,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { getPrimaryAgentId } from '../config/platform.js';
-import { getTrainerAgentId, setPlatformConfig } from '../config/platform.js';
+import { getTrainerAgentId, isTrainerAgent, setPlatformConfig } from '../config/platform.js';
 import { postAgentNotice } from '../agent/agent-notice.js';
 import { turnContext } from '../agent/turn-context.js';
 import { taskScope } from '../work/tracker-view.js';
@@ -135,7 +135,7 @@ function persistRetirementFlags(candidates: RetireCandidate[]): RetireCandidate[
 const LESSONS_FED_KEY = 'trainer.lessons_fed_ms';
 const BATCH_KEY = 'trainer.nightly_batch';
 const touchedAt = (l: LessonRow): number => l.expires_at - LESSON_LIFETIME_MS;
-interface NightlyBatch { threadId: string; lessonsUpTo: number | null }
+interface NightlyBatch { messageId: string; lessonsUpTo: number | null }
 
 const readConfig = (key: string): string | undefined =>
   (getDb().prepare('SELECT value FROM config WHERE key = ?').get(key) as { value: string } | undefined)?.value;
@@ -143,22 +143,18 @@ const lastBatch = (): NightlyBatch | null => JSON.parse(readConfig(BATCH_KEY) ??
 
 function unfedTechniqueLessons(): LessonRow[] {
   const last = lastBatch();
-  if (last?.lessonsUpTo != null && getDb().prepare('SELECT 1 FROM messages WHERE a2a_thread_id = ? AND served_by_turn IS NOT NULL').get(last.threadId)) {
+  if (last?.lessonsUpTo != null && getDb().prepare('SELECT 1 FROM messages WHERE id = ? AND served_by_turn IS NOT NULL').get(last.messageId)) {
     setPlatformConfig(LESSONS_FED_KEY, String(last.lessonsUpTo));
   }
   const fed = Number(readConfig(LESSONS_FED_KEY));
   return lessonsTouchedSince(Number.isFinite(fed) ? fed + 1 : 0, 'technique');
 }
 
-/** The engine's "drafts only": refused while the agent's live turn serves the nightly batch. */
+/** The engine's "drafts only": refused only on the Trainer turn that serves the nightly batch message itself. */
 export function nightlyDraftsOnlyRefusal(agentId: string, verb: string): string | null {
-  const thread = lastBatch()?.threadId;
-  const ctx = turnContext(agentId);
-  if (!thread || !ctx) return null;
-  const trigger = ctx.triggerMessageId
-    ? getDb().prepare('SELECT a2a_thread_id FROM messages WHERE id = ?').get(ctx.triggerMessageId) as { a2a_thread_id: string | null } | undefined
-    : undefined;
-  if (trigger?.a2a_thread_id !== thread && ctx.root?.id !== thread) return null;
+  if (!isTrainerAgent(agentId)) return null;
+  const batch = lastBatch()?.messageId;
+  if (!batch || turnContext(agentId)?.triggerMessageId !== batch) return null;
   return `Refused: ${verb} is not allowed on the nightly learning batch. Save new drafts only (save_technique with publish: false); the owner decides what is published or changed.`;
 }
 
@@ -216,10 +212,9 @@ export async function runDistillationCycle(): Promise<void> {
       );
     }
     try {
-      const threadId = uuidv4();
       const res = await deliverA2ANotice({
         intent: 'ASSIGN',
-        threadId,
+        threadId: uuidv4(),
         requiresResponse: true,
         payload:
           `Technique distillation (engine, one batch per dreaming cycle). ${bodies.join('\n\n')} ` +
@@ -230,7 +225,7 @@ export async function runDistillationCycle(): Promise<void> {
       batchDelivered = res?.delivered === true;
       if (batchDelivered) {
         const lessonsUpTo = lessons.length > 0 ? Math.max(...lessons.map(touchedAt)) : null;
-        setPlatformConfig(BATCH_KEY, JSON.stringify({ threadId, lessonsUpTo } satisfies NightlyBatch));
+        setPlatformConfig(BATCH_KEY, JSON.stringify({ messageId: res.messageId ?? '', lessonsUpTo } satisfies NightlyBatch));
         logger.info('distillation: sent draft batch to Trainer', { count: candidates.length, lessons: lessons.length });
       } else {
         logger.warn('distillation: Trainer batch was not delivered', {

@@ -1,5 +1,5 @@
 // While the Trainer's turn serves the nightly learning batch it may save new drafts, and nothing else:
-// publishing and changing an existing technique are refused. Outside that turn both work as before.
+// publishing and changing an existing technique are refused. Any other turn, the main agent's included, publishes.
 
 import { describe, it, expect, vi, beforeAll } from 'vitest';
 
@@ -36,9 +36,17 @@ beforeAll(async () => {
   await runDistillationCycle();
 });
 
+const nightlyBatch = () => getDb().prepare("SELECT id, a2a_thread_id AS thread FROM messages WHERE agent_id = ? AND source_agent_id = 'system' ORDER BY seq DESC LIMIT 1").get(TRAINER) as { id: string; thread: string };
+
 function onTheNightlyTurn(): void {
-  const batch = getDb().prepare("SELECT id FROM messages WHERE agent_id = ? AND source_agent_id = 'system' ORDER BY seq DESC LIMIT 1").get(TRAINER) as { id: string };
-  openTurnContext(TRAINER).triggerMessageId = batch.id;
+  openTurnContext(TRAINER).triggerMessageId = nightlyBatch().id;
+}
+
+/** A turn of `agentId` rooted in the nightly thread, triggered by some later message on it. */
+function onTheThreadLater(agentId: string): void {
+  const ctx = openTurnContext(agentId);
+  ctx.root = { kind: 'a2a', id: nightlyBatch().thread, sourceMessageId: null };
+  ctx.triggerMessageId = 'a-later-reply';
 }
 
 describe('the Trainer cannot publish on the nightly thread', () => {
@@ -57,8 +65,18 @@ describe('the Trainer cannot publish on the nightly thread', () => {
     expect(stateOf('new-draft')).toBe('draft');
   });
 
-  it('publishes as before on any other turn', async () => {
-    openTurnContext(TRAINER);
+  it('the main agent publishes on a turn rooted in the nightly thread', async () => {
+    onTheThreadLater(MAIN);
+    try {
+      expect((await toolResultOf(await run(MAIN, 'publish_technique', { name: 'owners-own' }))).isError).toBe(false);
+    } finally {
+      endTurnContext(MAIN);
+    }
+    expect(stateOf('owners-own')).toBe('published');
+  });
+
+  it('the Trainer publishes on a later daytime turn on that thread', async () => {
+    onTheThreadLater(TRAINER);
     try {
       expect((await call('publish_technique', { name: 'ready-draft' })).isError).toBe(false);
     } finally {

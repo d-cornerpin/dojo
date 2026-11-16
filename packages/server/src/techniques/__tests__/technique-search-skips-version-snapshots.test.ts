@@ -32,6 +32,8 @@ vi.mock('../store.js', () => ({
   recordTechniqueUsage: vi.fn(),
   resolveTechniqueRef: vi.fn(() => ({ ok: true, id: 't1' })),
   TechniqueValidationError: class TechniqueValidationError extends Error {},
+  readImportManifest: vi.fn(),
+  findRemainingPlaceholders: vi.fn(),
 }));
 
 vi.mock('../../agent/access/read.js', () => ({
@@ -39,9 +41,7 @@ vi.mock('../../agent/access/read.js', () => ({
 }));
 
 vi.mock('../import-setup.js', () => ({
-  readImportManifest: vi.fn(),
   applyPlaceholderToTechnique: vi.fn(),
-  findRemainingPlaceholders: vi.fn(),
   finalizeImportedTechnique: vi.fn(),
 }));
 

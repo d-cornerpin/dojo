@@ -238,7 +238,7 @@ describe('T54 — CONTROL: bookkeeping filtering is otherwise unmoved', () => {
     // promise floor, going-idle). The owner-ruled direction is that mutation is work, so the
     // call now draws a chip like its siblings `gmail_create_label` and `gmail_delete_label`.
     'gmail_label',
-    // `technique_acknowledge` was deleted: the tool recorded nothing anything read.
+    // `technique_acknowledge` is in no category: it is not a tool.
     'technique_acknowledge',
     // v3.5 E19b: `keyboard_type` and `mouse_click` type and click on the owner's screen, like
     // `mouse_move` and `applescript_run` (already effectful). Hidden, a Stop that cut one told the

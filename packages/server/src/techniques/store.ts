@@ -20,6 +20,7 @@ import {
 // The reference -> row -> directory read lives in its own leaf so the executor's gate loop can run it before
 // minting a call's capability, without pulling this module's fs, embeddings and broadcast into every dispatch.
 import { getTechnique, rowToTechnique, type TechniqueMetadata } from './technique-dir.js';
+import type { ImportedManifest } from './share-import.js';
 import { homeDir } from '../home.js';
 
 export { getTechnique, resolveTechniqueRef, techniqueDirectory } from './technique-dir.js';
@@ -413,14 +414,47 @@ export function recordTechniqueOutcome(techniqueId: string, agentId: string, suc
   } catch { /* best effort */ }
 }
 
+/** Read a technique's import manifest, or null if it was created locally (not imported). */
+export function readImportManifest(directoryPath: string): ImportedManifest | null {
+  const manifestPath = path.join(directoryPath, 'IMPORT_MANIFEST.json');
+  if (!fs.existsSync(manifestPath)) return null;
+  try {
+    return JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+  } catch {
+    return null;
+  }
+}
+
+/** Scan the technique's files for remaining {{NEEDS_FROM_USER:LABEL}} markers (gates finalize). */
+export function findRemainingPlaceholders(directoryPath: string): string[] {
+  const manifest = readImportManifest(directoryPath);
+  if (!manifest) return [];
+  const remaining = new Set<string>();
+  for (const p of manifest.placeholders) {
+    for (const relFile of p.files) {
+      const abs = path.resolve(directoryPath, relFile);
+      if (!fs.existsSync(abs)) continue;
+      try {
+        const content = fs.readFileSync(abs, 'utf-8');
+        if (content.includes(`{{NEEDS_FROM_USER:${p.label}}}`)) {
+          remaining.add(p.label);
+        }
+      } catch {
+        /* ignore unreadable file */
+      }
+    }
+  }
+  return Array.from(remaining);
+}
+
 export function publishTechnique(id: string): TechniqueMetadata | null {
   const db = getDb();
   const technique = getTechnique(id);
   if (!technique) return null;
   if (technique.state === 'published') return technique;
-  // An imported technique is published only once its setup is finalized, so no agent reads a placeholder as a value.
-  if (technique.state === 'needs_setup' || fs.existsSync(path.join(technique.directoryPath, 'IMPORT_MANIFEST.json'))) {
-    throw new TechniqueValidationError(`Refused: "${technique.name}" is still in setup and cannot be published. Fill every owner-supplied value with technique_set_placeholder, then call technique_finalize.`);
+  // No agent may read an unfilled {{NEEDS_FROM_USER}} blank as a value.
+  if (technique.state === 'needs_setup' || findRemainingPlaceholders(technique.directoryPath).length > 0) {
+    throw new TechniqueValidationError('This technique still has blanks to fill in before it can be published.');
   }
 
   db.prepare("UPDATE techniques SET state = 'published', published_at = datetime('now'), updated_at = datetime('now') WHERE id = ?").run(id);

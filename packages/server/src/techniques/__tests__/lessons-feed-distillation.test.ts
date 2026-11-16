@@ -13,8 +13,8 @@ vi.mock('../../db/connection.js', () => ({
   getDbPath: () => ':memory:',
 }));
 vi.mock('../../gateway/ws.js', () => ({ broadcast: vi.fn() }));
-const deliver = vi.fn(async (n: { threadId: string }, _label: string, _meta?: unknown) => ({ delivered: true, threadId: n.threadId }));
-vi.mock('../../agent/a2a-notice.js', () => ({ deliverA2ANotice: (n: { threadId: string }, l: string, m?: unknown) => deliver(n, l, m) }));
+const deliver = vi.fn(async (_n: unknown, _label: string, _meta?: unknown) => ({ delivered: true, threadId: 't', messageId: 'batch-1' }));
+vi.mock('../../agent/a2a-notice.js', () => ({ deliverA2ANotice: (n: unknown, l: string, m?: unknown) => deliver(n, l, m) }));
 const notice = vi.fn();
 vi.mock('../../agent/agent-notice.js', () => ({ postAgentNotice: (a: unknown) => notice(a) }));
 
@@ -65,7 +65,7 @@ describe('distillation reads lessons', () => {
     lesson('l6', 'technique', 'moving mail to junk');
     await runDistillationCycle();
     mockDb.current!.prepare("INSERT INTO agents (id, name, status) VALUES ('trainer', 'trainer', 'idle')").run();
-    mockDb.current!.prepare("INSERT INTO messages (id, agent_id, role, content, created_at, a2a_thread_id, served_by_turn) VALUES ('batch-1', 'trainer', 'user', 'batch', ?, ?, 1)").run(Date.now(), (deliver.mock.calls[0][0] as { threadId: string }).threadId);
+    mockDb.current!.prepare("INSERT INTO messages (id, agent_id, role, content, created_at, served_by_turn) VALUES ('batch-1', 'trainer', 'user', 'batch', ?, 1)").run(Date.now());
     await runDistillationCycle();
     expect(deliver).toHaveBeenCalledTimes(1);
     mockDb.current!.prepare("UPDATE lessons SET expires_at = expires_at + 1000, renewed_count = 1 WHERE id = 'l6'").run();

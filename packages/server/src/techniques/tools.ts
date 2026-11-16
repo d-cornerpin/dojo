@@ -17,11 +17,11 @@ import {
   recordTechniqueUsage,
   resolveTechniqueRef,
   TechniqueValidationError,
+  readImportManifest,
+  findRemainingPlaceholders,
 } from './store.js';
 import {
-  readImportManifest,
   applyPlaceholderToTechnique,
-  findRemainingPlaceholders,
   finalizeImportedTechnique,
 } from './import-setup.js';
 import { nightlyDraftsOnlyRefusal } from './distillation.js';
@@ -201,6 +201,7 @@ export function executePublishTechnique(agentId: string, classification: string,
   try {
     published = publishTechnique(resolved.id);
   } catch (err) {
+    if (err instanceof TechniqueValidationError) return `Refused: ${err.refusalText} Fill each with technique_set_placeholder, then call technique_finalize.`;
     return formatValidationError(err, 'Error publishing technique');
   }
   if (!published) return `Error: Failed to publish technique "${name}".`;
@@ -422,6 +423,7 @@ function checkTechniqueAccess(
   agentGroupId: string | null,
   agentId: string,
 ): string | null {
+  if (isTrainerAgent(agentId) || isPrimaryAgent(agentId)) return null;
   if (!mayUseTechnique(agentId, technique.id)) {
     return `Error: Technique "${technique.name}" is not in this agent's technique grants. The request was not performed. Ask the primary agent to grant it if this needs to happen.`;
   }
