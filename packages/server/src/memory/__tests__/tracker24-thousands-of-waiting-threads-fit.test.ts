@@ -67,11 +67,12 @@ function seed(): void {
 
 /** `n` people who each wrote last and were not answered. */
 function waitingPeople(n: number): void {
+  const now = Date.now();   // one clock for the whole seed: contact i is i ms older than contact 0 however slow the inserts
   for (let i = 0; i < n; i++) {
     db().prepare(`INSERT INTO conversations (id, agent_id, channel, provider, counterparty_id, counterparty_name) VALUES (?, ?, 'imessage', 'imessage', ?, ?)`)
       .run(`w${i}`, AGENT, `id-${i}`, `contact ${i}`);
     db().prepare(`INSERT INTO messages (id, agent_id, conversation_id, role, content, created_at, display_kind) VALUES (?, ?, ?, 'user', 'hello', ?, 'user-text')`)
-      .run(`wm${i}`, AGENT, `w${i}`, Date.now() - 60_000 - i);
+      .run(`wm${i}`, AGENT, `w${i}`, now - 60_000 - i);
   }
 }
 
