@@ -3,15 +3,9 @@
 # DOJO database restore
 # Puts your data back to how it was before an update.
 #
-# WHY THIS EXISTS, in one paragraph. An update can change the DATA, not just the app.
-# Rolling back to the previous version — from the dashboard, from the menu bar, or with
-# rollback.sh — restores the CODE ONLY; it does not undo a change to the database, which
-# is exactly why the watchdog refuses to roll back automatically after a migration. The
-# only thing that undoes THAT is the snapshot the platform takes just before it migrates,
-# and until this script existed there was no supported way to use one: no route, no
-# button, no menu item, no doc. The restore point that justifies the whole
-# no-rollback-after-migrations policy was reachable only by someone who already knew it
-# was there and could copy a file by hand.
+# WHY THIS EXISTS. An update can change the DATA, not just the app, and the only thing
+# that undoes that is the snapshot the platform takes just before it migrates. This puts
+# one back. rollback.sh calls it when the data is ahead of the build it restores.
 #
 # Self-contained on purpose, like rollback.sh: this has to work when the platform server
 # will NOT boot, which is the situation it exists for. No running server, no network, no
@@ -207,6 +201,8 @@ lock_holder_alive() {
 # A takeover marker a crashed run left behind goes after a minute, and the run that clears it goes on
 # to try the takeover itself (it is not told "another run is working" when none is).
 take_lock() {
+    # Called by rollback.sh, which already holds the lock.
+    [ "$(cat "$LOCK_DIR/pid" 2>/dev/null)" = "$PPID" ] && return 0
     mkdir -p "$DOJO_DIR" 2>/dev/null
     local holder age tk="$LOCK_DIR.takeover" got=1 try
     if mkdir "$LOCK_DIR" 2>/dev/null; then

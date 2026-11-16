@@ -5,8 +5,8 @@ import { createLogger } from '../logger.js';
 
 const logger = createLogger('migration-backup');
 
-// The pre-migration restore point, recorded and REQUIRED. Rollback after a migration is never automatic
-// (old code on a new schema can brick a box), so this snapshot is the only way back to the old data.
+// The pre-migration restore point, recorded and REQUIRED: it is the only way back to the old data, and
+// rollback.sh puts it back when the data is ahead of the build it restores.
 // Every outcome is stored in `config` for a surface to show, and no snapshot means the chain does not run.
 // Three deliberate exceptions: a database with nothing applied yet (fresh install) is never held up, a
 // connection with no file on disk is out of scope, and an explicit override lets the chain through once.
@@ -302,9 +302,6 @@ export function ensurePreChainBackup(
 
   recordOutcome(db, outcome);
   const message = refusalMessage(outcome, dataDir);
-  // Plain text to stderr too: launchd writes it to ~/.dojo/logs/platform.stderr.log, the one readable
-  // copy (the logger's file holds it JSON-escaped on one line).
-  process.stderr.write(`\n${message}\n\n`);
   logger.error('Refusing the migration chain: no database backup could be made', {
     status: outcome.status, error: outcome.error,
     freeBytes: outcome.freeBytes, neededBytes: outcome.neededBytes,

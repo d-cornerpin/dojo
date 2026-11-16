@@ -17,7 +17,7 @@ import { broadcast } from './gateway/ws.js';
 import { checkTimeouts, reArmSpawnTimeouts } from './agent/spawner.js';
 import { killTunnelSync } from './services/tunnel.js';
 import { getPrimaryAgentId, getPrimaryAgentName, setPlatformConfig, HOUSEHOLD_AGENT_IDS_KEY } from './config/platform.js';
-import { recordBootAttempt, markMigrationsRan, confirmHealthy, readMarker, synthesizeMigrationBootEpisode } from './update-state.js';
+import { recordBootAttempt, confirmHealthy, readMarker, synthesizeMigrationBootEpisode } from './update-state.js';
 import { probeFsCaseInsensitive, setFsCaseInsensitive } from './agent/path-guards.js';
 import { homeDir } from './home.js';
 import { refuseSmallMainModel } from './agent/main-model-floor.js';
@@ -288,24 +288,18 @@ async function main(): Promise<void> {
 
   // 3. Run database migrations
   // Boot sentinel: for a self-update boot, count the attempt BEFORE migrations (a crash mid-migration
-  // still counts); if a migration applied, flag it so the watchdog escalates rather than trusting a
-  // code-only rollback. First settle an install cut off mid-swap, so the record names what is live.
+  // still counts; the runner records the first commit). First settle an install cut off mid-swap.
   const migCountBefore = countAppliedMigrations();
   (await import('./update/install-tree.js')).settlePendingInstall(path.join(homeDir(), '.dojo'));
-  let bootEpisode = recordBootAttempt();
   // An updater predating the sentinel may swap the platform without a marker: migrations already applied
   // (a fresh install has 0) plus more pending means a real self-update, so synthesize the episode BEFORE
   // migrations.
-  if (!bootEpisode && migCountBefore > 0 && countAvailableMigrationFiles() > migCountBefore) {
+  if (!recordBootAttempt() && migCountBefore > 0 && countAvailableMigrationFiles() > migCountBefore) {
     const { getCurrentVersion } = await import('./gateway/routes/update.js');
-    bootEpisode = synthesizeMigrationBootEpisode(getCurrentVersion());
-    logger.warn('D-F: self-update boot detected without an updater marker (old-updater jump); synthesized a migration-carrying boot episode so the watchdog stays patient through the migration window and escalates rather than rolls back if it fails');
+    synthesizeMigrationBootEpisode(getCurrentVersion());
+    logger.warn('D-F: self-update boot detected without an updater marker (old-updater jump); synthesized a boot episode so the watchdog stays patient through the migration window');
   }
   runMigrations();
-  if (bootEpisode && countAppliedMigrations() > migCountBefore) {
-    markMigrationsRan();
-    logger.warn('D-F: a database migration ran during a self-update boot; a failed boot will escalate, not auto-rollback');
-  }
 
   // 3b. One-shot crash cleanup: agents left 'working', dangling model pointers. After the port bind (a
   // duplicate instance must not rewrite the running box's rows) and after the migrations that create the
@@ -1040,6 +1034,8 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
+  // Plain text to stderr too: launchd writes it to ~/.dojo/logs/platform.stderr.log, the readable copy.
+  process.stderr.write(`\n${err instanceof Error ? err.message : String(err)}\n\n`);
   logger.error('Fatal startup error', {
     error: err instanceof Error ? err.message : String(err),
     stack: err instanceof Error ? err.stack : undefined,

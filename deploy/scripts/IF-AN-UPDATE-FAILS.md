@@ -28,10 +28,10 @@ This puts the version you were on before the update back, keeps the broken one a
 it can be looked at, and restarts everything. Wait a minute, then try the dashboard
 again.
 
-**This puts the APP back. It does not put your DATA back.** If the update changed your
-data, that change is still there. Usually that is fine, the older app reads the newer
-data without complaining; that has been tested. If something still looks wrong
-afterwards, carry on to Situation B.
+**If the update changed your data, this puts your data back too**, to the copy taken just
+before the update, after asking you once. The newer data is not deleted: it is kept as
+`~/.dojo/data/backups/dojo-replaced-<the-date>.db`. If there is no copy from before the
+update, it changes nothing and says so (see "What if there is no backup?" below).
 
 ### If the watchdog said Dojo's program folder was missing
 
@@ -47,12 +47,15 @@ version back. If the program folder is already in place, it does nothing at all.
 
 ### A2. If it still will not start
 
-You may have hit the safety stop. Dojo refuses to change your data when it could not
-save a backup first. Look for the reason:
+You may have hit a safety stop. Dojo refuses to change your data when it could not
+save a backup first, and an older Dojo refuses data a newer one changed. Look for the
+reason:
 
 ```
 tail -30 ~/.dojo/logs/platform.stderr.log
 ```
+
+If it says **a newer version of Dojo changed this database**, run A1.
 
 If you see a message about **not enough free disk space**, that is the whole problem.
 Free up the amount it names (empty the Trash, delete some large files) and start Dojo:
@@ -90,13 +93,13 @@ You will get a list like this:
 
 ```
   2026-08-06 13:37   262 MB   chain 151 (up to 148_drop_messages_conv_key.sql)
-      /Users/you/.dojo/data/backups/dojo-pre-900-to-900-2026-08-06T20-37-31.db
+      /Users/you/.dojo/data/backups/dojo-pre-151-of-160-2026-08-06T20-37-31.db
 ```
 
 The date is when the copy was made, normally moments before the update changed
-anything. **Ignore the numbers in the file name**; they are always the same and mean
-nothing. The number that matters is the one after the word **chain**: a lower number is
-an older shape of your information.
+anything. The two numbers in the file name say how far along Dojo's list of data
+changes your data was when the copy was taken (151 of 160). The number after the word
+**chain** says it from inside the copy: a lower number is an older shape of your information.
 
 **If the list is empty**, there is no saved copy to go back to. Open Dojo → Settings →
 Update; the panel there says whether the last update saved one and, if not, why. Skip to
@@ -157,14 +160,6 @@ Restoring puts your database back to the copy's exact contents. **Anything that 
 after that copy was made is gone from Dojo's memory**, messages, tasks and notes from
 the hours since the update.
 
-One thing to know about going back **without** restoring the data (Situation A on its
-own): **the update tidies up your to-do list, and putting the old app back does not
-untidy it.** Old requests that had been marked finished on flimsy evidence get pointed
-at the real answer instead, and a number of them come back to you as still open,
-roughly twenty, on a list the size of yours. That is a repair, not damage: those items
-genuinely were not finished. It is also the *only* part of the update that going back
-cannot undo on its own. If you want that undone too, you need B1–B4 above.
-
 Nothing else costs you anything. Your Google and Microsoft accounts stay connected. Your
 agents, messages, files and settings are untouched.
 
@@ -175,8 +170,9 @@ agents, messages, files and settings are untouched.
 Then the update ran without saving one, which Dojo now refuses to do unless it is told
 to, but an older version could. Your options:
 
-1. **`bash ~/.dojo/scripts/rollback.sh`** still works. It puts the old app back, and the
-   old app reads the newer data. That fixes anything caused by the new app itself.
+1. **`bash ~/.dojo/scripts/rollback.sh`** will not put the old app over data the update
+   changed: it stops, changes nothing and says so. If the update did not change your
+   data, it puts the old app back as usual.
 2. **Check the other place backups live.** If you have ever run
    `~/.dojo/scripts/backup.sh`, there are copies under `~/.dojo/backups/`, and
    `restore-db.sh` lists those too.

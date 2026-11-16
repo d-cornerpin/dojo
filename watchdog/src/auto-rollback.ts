@@ -40,9 +40,10 @@ export interface UpdateMarker {
   confirmedHealthyAt: string | null;
   rollbackCount: number;
   migrationsRanDuringEpisode: boolean;
-  // Why we escalated: 'migration' = a code-only rollback is unsafe, 'exhausted' = the allowed rollback
-  // was spent; SHARED CONTRACT, the platform's confirmHealthy self-recovers only a migration escalation.
-  failedReason: 'migration' | 'exhausted' | null;
+  // The data copy from before the episode's first migration; rollback.sh puts it back. SHARED CONTRACT.
+  dataBackup: string | null;
+  // Why we escalated: the allowed rollback was spent. SHARED CONTRACT.
+  failedReason: 'exhausted' | null;
   // Monotonic write counter, the compare-and-swap token: two processes must read-modify-write this
   // file (this daemon writes 'rolled-back' on a box whose platform will not boot), so every RMW goes
   // through updateMarker and a write whose base no longer matches the file is REFUSED. SHARED CONTRACT.
@@ -78,7 +79,8 @@ export function readMarker(statePath: string = UPDATE_STATE_PATH): UpdateMarker 
       confirmedHealthyAt: str(parsed.confirmedHealthyAt),
       rollbackCount: num(parsed.rollbackCount),
       migrationsRanDuringEpisode: parsed.migrationsRanDuringEpisode === true,
-      failedReason: parsed.failedReason === 'migration' || parsed.failedReason === 'exhausted' ? parsed.failedReason : null,
+      dataBackup: str(parsed.dataBackup),
+      failedReason: parsed.failedReason === 'exhausted' ? 'exhausted' : null,
       writeSeq: num(parsed.writeSeq),
       updatedAt: str(parsed.updatedAt) ?? new Date().toISOString(),
     };
@@ -174,11 +176,11 @@ export function updateMarker(
 
 export type RollbackDecision =
   | { action: 'none' }
-  | { action: 'rollback' }
-  | { action: 'escalate'; reason: 'migration' | 'exhausted' };
+  | { action: 'rollback'; withData: boolean }
+  | { action: 'escalate'; reason: 'exhausted' };
 
-// PURE gate. Roll back ONLY on a proven failing self-update episode, NEVER on a generic outage; if
-// the failed build changed the DB, escalate loudly rather than brick on a schema the old build cannot read.
+// PURE gate. Roll back ONLY on a proven failing self-update episode, NEVER on a generic outage; when the
+// failed build changed the data, rollback.sh puts back the copy from before it too.
 export function decideAutoRollback(marker: UpdateMarker | null, nowMs: number): RollbackDecision {
   if (!marker) return { action: 'none' };
   // Only a proven self-update episode is actionable; any other phase is a generic outage: hands off.
@@ -191,14 +193,13 @@ export function decideAutoRollback(marker: UpdateMarker | null, nowMs: number): 
   const failing = attempts >= FAIL_BOOT_ATTEMPTS || wallClockExceeded;
   if (!failing) return { action: 'none' };
 
-  if (marker.migrationsRanDuringEpisode) return { action: 'escalate', reason: 'migration' };
   if (marker.rollbackCount >= MAX_AUTO_ROLLBACKS) return { action: 'escalate', reason: 'exhausted' };
-  return { action: 'rollback' };
+  return { action: 'rollback', withData: marker.migrationsRanDuringEpisode };
 }
 
 // Written right BEFORE spawning rollback.sh: bump the tally and anchor a FRESH boot window at the
 // rollback instant, so a restored build that never executes can still trip the failing gate later
-// ('exhausted'). A restored build that does boot keeps this anchor; old code runs no new migrations.
+// ('exhausted'). A restored build that does boot keeps this anchor.
 export function toRolledBack(marker: UpdateMarker): UpdateMarker {
   const now = new Date().toISOString();
   return {
@@ -213,9 +214,8 @@ export function toRolledBack(marker: UpdateMarker): UpdateMarker {
   };
 }
 
-// Terminal transition when we will NOT auto-roll-back (a migration ran, or the rollback was spent);
-// the reason is persisted so confirmHealthy can tell a recoverable escalation from an exhausted one.
-export function toFailedPermanently(marker: UpdateMarker, reason: 'migration' | 'exhausted'): UpdateMarker {
+// Terminal transition when the one rollback was spent.
+export function toFailedPermanently(marker: UpdateMarker, reason: 'exhausted'): UpdateMarker {
   return {
     ...marker,
     phase: 'failed-permanently',

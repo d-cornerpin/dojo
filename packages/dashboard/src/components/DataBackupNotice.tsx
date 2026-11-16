@@ -33,8 +33,8 @@ export const DataBackupNotice = ({ backup }: { backup: api.MigrationBackupOutcom
       The last update changed your data and <strong>no backup was made first</strong> ({when})
       {backup.overridden ? ', because the backup requirement was overridden' : ''} -{why}.
       <div className="text-xs text-cp-amber/70 mt-1">
-        Going back to the previous version puts the old app back but does not undo the
-        change to your data. There is no saved copy to restore from this update.
+        There is no saved copy of your data from before this update, so the previous
+        version cannot be put back with it.
       </div>
     </div>
   );

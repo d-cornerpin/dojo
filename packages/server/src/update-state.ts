@@ -1,6 +1,6 @@
 // Update-state marker: a small JSON file (~/.dojo/update-state.json) recording where a self-update is, so the
-// independent watchdog can tell a failing update from an outage and roll back code only (if the failed
-// build ran any migration it escalates instead). Not the platform DB: it must be readable when the DB or
+// independent watchdog can tell a failing update from an outage and roll it back (rollback.sh also puts back
+// `dataBackup` when the data is ahead of the restored build). Not the platform DB: it must be readable when the DB or
 // platform will not boot. The watchdog keeps a copy of this shape and reader in watchdog/src/auto-rollback.ts;
 // KEEP THE TWO IN SYNC (no shared import across the boundary).
 
@@ -46,11 +46,10 @@ export interface UpdateMarker {
   confirmedHealthyAt: string | null;
   rollbackCount: number;
   migrationsRanDuringEpisode: boolean;
-  /**
-   * Why the watchdog escalated to 'failed-permanently': 'migration' (a migration ran, so a code-only rollback
-   * is unsafe) or 'exhausted' (the one rollback was spent). Shared with watchdog/src/auto-rollback.ts.
-   */
-  failedReason: 'migration' | 'exhausted' | null;
+  /** The data copy taken before this episode's first migration committed; set once, never replaced. */
+  dataBackup: string | null;
+  /** Why the watchdog escalated to 'failed-permanently': the one rollback was spent. Shared with the watchdog. */
+  failedReason: 'exhausted' | null;
   /** Compare-and-swap token (see updateMarker); shared with watchdog/src/auto-rollback.ts. */
   writeSeq: number;
   updatedAt: string;
@@ -77,6 +76,7 @@ export function emptyMarker(): UpdateMarker {
     confirmedHealthyAt: null,
     rollbackCount: 0,
     migrationsRanDuringEpisode: false,
+    dataBackup: null,
     failedReason: null,
     writeSeq: 0,
     updatedAt: nowIso(),
@@ -96,8 +96,6 @@ export function readMarker(): UpdateMarker | null {
     const phase: UpdatePhase = typeof phaseRaw === 'string' && (PHASES as readonly string[]).includes(phaseRaw)
       ? (phaseRaw as UpdatePhase)
       : 'idle';
-    const failedReason: 'migration' | 'exhausted' | null =
-      parsed.failedReason === 'migration' || parsed.failedReason === 'exhausted' ? parsed.failedReason : null;
     return {
       phase,
       targetVersion: str(parsed.targetVersion),
@@ -110,7 +108,8 @@ export function readMarker(): UpdateMarker | null {
       confirmedHealthyAt: str(parsed.confirmedHealthyAt),
       rollbackCount: num(parsed.rollbackCount),
       migrationsRanDuringEpisode: parsed.migrationsRanDuringEpisode === true,
-      failedReason,
+      dataBackup: str(parsed.dataBackup),
+      failedReason: parsed.failedReason === 'exhausted' ? 'exhausted' : null,
       writeSeq: num(parsed.writeSeq),
       updatedAt: str(parsed.updatedAt) ?? nowIso(),
     };
@@ -120,7 +119,7 @@ export function readMarker(): UpdateMarker | null {
 }
 
 // Serialised write path: lock, read, decide, compare-and-swap. Two processes write this file, and a stale copy
-// could erase migrationsRanDuringEpisode and permit a code-only rollback onto a DB the old build cannot read.
+// could erase migrationsRanDuringEpisode and the record of the data copy a rollback puts back.
 // Each writer has its own temp file. The lock is best-effort (stale locks are broken; a writer that cannot lock
 // still proceeds) because the compare-and-swap makes a stale write harmless and must never be blocked.
 
@@ -251,34 +250,28 @@ export function recordBootAttempt(): UpdateMarker | null {
 
 // Synthetic episode for a boot with no marker: an older in-app updater swaps the tree without writing one,
 // yet the boot carries pending migrations. The watchdog refresh (services/watchdog-refresh.ts) needs a
-// 'booting-new' phase to hold its restart across that window. migrationsRanDuringEpisode starts TRUE:
-// there is no backupDir to restore, so a failure must escalate. Call only when no marker exists.
-export function synthesizeMigrationBootEpisode(targetVersion: string | null): UpdateMarker {
+// 'booting-new' phase to hold its restart across that window. Call only when no marker exists.
+export function synthesizeMigrationBootEpisode(targetVersion: string | null): void {
   const now = nowIso();
-  const after = updateMarker((prev) => ({
+  updateMarker((prev) => ({
     ...emptyMarker(),
     phase: 'booting-new',
     targetVersion,
-    previousVersion: null,
-    backupDir: null,
     bootAttempts: 1,
     firstBootAt: now,
     lastBootAt: now,
-    migrationsRanDuringEpisode: true,
-    failedReason: null,
     writeSeq: prev?.writeSeq ?? 0,
   }));
-  return after ?? { ...emptyMarker(), phase: 'booting-new', targetVersion, bootAttempts: 1, firstBootAt: now, lastBootAt: now, migrationsRanDuringEpisode: true };
 }
 
-// Boot sentinel follow-up (index.ts, right after runMigrations) when a migration applied during an episode:
-// a failed build that changed the database must not get a code-only rollback; the watchdog escalates.
-export function markMigrationsRan(): void {
+// The runner, when an episode's first migration commits: the data is now ahead of the build it replaced, and
+// `dataBackup` is the copy from before. Set once per episode, so a crash loop never replaces it.
+export function markMigrationsRan(dataBackup: string | null): void {
   updateMarker((m) => {
     if (!m) return null;
     if (m.phase !== 'booting-new' && m.phase !== 'rolled-back') return null;
     if (m.migrationsRanDuringEpisode) return null;
-    return { ...m, migrationsRanDuringEpisode: true };
+    return { ...m, migrationsRanDuringEpisode: true, dataBackup };
   });
 }
 
@@ -286,29 +279,10 @@ export function markMigrationsRan(): void {
 // 'rolled-back' as the durable record, and confirmedHealthyAt stops the watchdog treating it as failing.
 export function confirmHealthy(): boolean {
   let acted = false;
-  let recovered = false;
   updateMarker((m) => {
-    if (!m) return null;
-
-    if (m.phase === 'booting-new' || m.phase === 'rolled-back') {
-      if (m.confirmedHealthyAt) return null;
-      acted = true;
-      return { ...m, phase: m.phase === 'booting-new' ? 'healthy' : 'rolled-back', confirmedHealthyAt: nowIso() };
-    }
-
-    // A migration-escalated 'failed-permanently' (the watchdog's clock passed first) clears once this build
-    // confirms healthy; the caller must have checked the DB serves. Only 'migration' may recover, never 'exhausted'.
-    if (m.phase === 'failed-permanently' && m.failedReason === 'migration' && !m.confirmedHealthyAt) {
-      acted = true;
-      recovered = true;
-      return { ...m, phase: 'healthy', confirmedHealthyAt: nowIso() };
-    }
-
-    return null;
+    if (!m || (m.phase !== 'booting-new' && m.phase !== 'rolled-back') || m.confirmedHealthyAt) return null;
+    acted = true;
+    return { ...m, phase: m.phase === 'booting-new' ? 'healthy' : 'rolled-back', confirmedHealthyAt: nowIso() };
   });
-
-  if (recovered) {
-    logger.info('D-F: a migration-escalated self-update confirmed healthy after the watchdog window; cleared the false failed-permanently state (watchdog will send the owner correction)');
-  }
   return acted;
 }

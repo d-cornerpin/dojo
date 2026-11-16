@@ -44,8 +44,11 @@ function baseSchemaFromRunner(): string {
 
 function applyFile(db: Database.Database, f: string): void {
   const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, f), 'utf-8');
+  // As the runner does: a file whose declared column this replay never built is recorded, not run.
+  const needs = /^--[ \t]*REQUIRES-COLUMN:[ \t]*(\w+)\.(\w+)/m.exec(sql);
+  const unmet = needs && !db.prepare('SELECT 1 FROM pragma_table_info(?) WHERE name = ?').get(needs[1], needs[2]);
   db.transaction(() => {
-    if (f !== '019_agent_sdk_auth.sql') db.exec(sql);
+    if (f !== '019_agent_sdk_auth.sql' && !unmet) db.exec(sql);
     db.prepare('INSERT INTO _migrations (name) VALUES (?)').run(f);
   })();
 }

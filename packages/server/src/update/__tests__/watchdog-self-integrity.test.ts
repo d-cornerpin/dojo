@@ -128,12 +128,10 @@ afterEach(() => { fs.rmSync(home, { recursive: true, force: true }); });
 //
 // The lost update this pins is the brick itself. The watchdog reads the marker,
 // decides `rollback` (no migration ran), and writes `toRolledBack`. Between the
-// read and the write the platform's boot sentinel runs `markMigrationsRan()`.
-// The watchdog's write is built on the stale copy, so it ERASES the flag — and
-// the box now believes a code-only rollback is safe on a database the old build
-// cannot read. That is exactly the outcome the owner's 2026-07-06 decision
-// exists to prevent, arrived at through a race instead of through a bug in the
-// gate.
+// read and the write the platform's runner runs `markMigrationsRan()`.
+// The watchdog's write is built on the stale copy, so it ERASES the flag and the
+// record of the data copy, and the rollback puts the old build over data it
+// cannot read.
 // ════════════════════════════════════════════════════════════════════════════
 
 describe('watchdog self-integrity — update-state.json single-writer discipline', () => {
@@ -184,7 +182,7 @@ describe('watchdog self-integrity — update-state.json single-writer discipline
       const m = await import(${JSON.stringify(PLATFORM_MOD)});
       // STEP 2 — strictly AFTER the watchdog's read, so its snapshot is genuinely stale.
       await waitFor('watchdog-read');
-      m.markMigrationsRan();
+      m.markMigrationsRan('/tmp/dojo-pre-1-of-2.db');
       signal('platform-wrote');      // the watchdog is blocked until this lands
       console.log('platform-done');
     `);
@@ -194,12 +192,12 @@ describe('watchdog self-integrity — update-state.json single-writer discipline
     expect(w.stdout, 'the stale-base write must be refused').toContain('STALE_WRITE_ACCEPTED=false');
 
     const after = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
-    expect(after.migrationsRanDuringEpisode, 'the platform stamped a migration mid-flight; erasing it is the brick').toBe(true);
+    expect(after.migrationsRanDuringEpisode, 'the platform stamped a migration mid-flight; erasing it loses the data copy').toBe(true);
     // And because the transition re-decides on the FRESH marker inside the lock,
-    // the outcome is the escalation the ruling demands, not a code-only rollback.
-    expect(after.phase).toBe('failed-permanently');
-    expect(after.failedReason).toBe('migration');
-    expect(after.rollbackCount).toBe(0);
+    // the rollback keeps the record of the data copy rollback.sh puts back.
+    expect(after.phase).toBe('rolled-back');
+    expect(after.dataBackup).toBe('/tmp/dojo-pre-1-of-2.db');
+    expect(after.rollbackCount).toBe(1);
   }, 90_000);
 
   it('DRIVEN: a write built on a stale base is REFUSED, and the refusal is visible to the caller', () => {
@@ -234,7 +232,7 @@ describe('watchdog self-integrity — update-state.json single-writer discipline
       m.markPendingUpdate({ targetVersion: 'v2', previousVersion: 'v1', backupDir: '/tmp/b' }); grab();
       m.markBootingNew(); grab();
       m.recordBootAttempt(); grab();
-      m.markMigrationsRan(); grab();
+      m.markMigrationsRan(null); grab();
       m.confirmHealthy(); grab();
       // A brand-new episode must not rewind the counter — a rewound counter lets a
       // stale write from the previous episode pass the compare-and-swap.

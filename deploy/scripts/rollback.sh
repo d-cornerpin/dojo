@@ -1,11 +1,13 @@
 #!/bin/bash
 # ════════════════════════════════════════
 # DOJO local rollback
-# Restores the most recent platform backup the updater made, then restarts.
+# Restores the most recent platform backup the updater made, then restarts. When
+# the data is ahead of that build, it also puts back (through restore-db.sh) the
+# data copy the update episode recorded before its first migration.
 #
 # Self-contained on purpose: this must work when the platform server will NOT
 # boot (the exact situation it exists for). So no running server, no network,
-# no re-download — it only moves local directories and toggles launchd. The
+# no node, no re-download: local files, sqlite3 and launchd only. The
 # menu-bar app shells out to this; it is also safe to run by hand over SSH.
 #
 # --heal (v3.4, t197; the watchdog runs it when ~/.dojo/platform is MISSING):
@@ -293,11 +295,38 @@ fi
 echo "🥋 Rolling back DOJO: $cur_ver -> $target_ver"
 echo "   Restoring $(basename "$newest_backup") — $selection_reason."
 
+# The data is ahead when an applied migration is numbered above every migration file the restored build
+# carries (by leading number, so a development sibling such as 200b is not ahead of 200).
+data_copy=""
+build_top="$(ls "$newest_backup/packages/server/dist/db/migrations" 2>/dev/null | sed -n 's/^\([0-9][0-9]*\).*\.sql$/\1/p' | sort -n | tail -1)"
+data_top=""
+[ -f "$DOJO_DIR/data/dojo.db" ] && data_top="$(sqlite3 -readonly "$DOJO_DIR/data/dojo.db" 'SELECT MAX(CAST(name AS INTEGER)) FROM _migrations;' 2>/dev/null)"
+if [ -n "$build_top" ] && [ -n "$data_top" ] && [ "$data_top" -gt "$build_top" ]; then
+    data_copy="$(marker_field dataBackup)"
+    if [ -z "$data_copy" ] || [ ! -f "$data_copy" ]; then
+        echo "ERROR: your data was changed by a version newer than $target_ver, and there is no copy of your data from before the update to put back."
+        echo "   Nothing was changed. See ~/.dojo/scripts/IF-AN-UPDATE-FAILS.md."
+        exit 1
+    fi
+    echo "   Your data goes back to the copy taken just before the update; the newer data is kept under a dated name."
+    if [ -t 0 ]; then
+        printf "   Type yes to continue: "
+        read -r answer
+        [ "$answer" = "yes" ] || { echo "Stopped. Nothing has been changed."; exit 1; }
+    fi
+fi
+
 # 2. Stop services.
 echo "   Stopping services..."
 services_down=1   # BEFORE the first unload: a signal during the unloads must still reload both
 launchctl unload "$LAUNCH_DIR/com.dojo.platform.plist" 2>/dev/null
 launchctl unload "$LAUNCH_DIR/com.dojo.watchdog.plist" 2>/dev/null
+
+if [ -n "$data_copy" ] && ! bash "$(dirname "$0")/restore-db.sh" --from "$data_copy" --yes; then
+    echo "ERROR: your data could not be put back (see above), so the build was not changed either."
+    reload_services
+    exit 1
+fi
 
 # 3. Set the current (failed) build aside for diagnosis, then move the backup
 #    into place. Moves (not copies) so the swap is fast and uses no extra disk;

@@ -238,7 +238,7 @@ const RollbackSection = ({ currentVersion }: { currentVersion: string | null }) 
   }, []);
 
   const handleRollback = async (tag: string, version: string) => {
-    if (!confirm(`Roll back to ${version}? This will download that version, replace the current install, and restart the server.`)) return;
+    if (!confirm(`Roll back to ${version}? This downloads that version, replaces the current install and restarts the server. It does not change your data: if this update changed it, ${version} cannot use it, and Roll Back in the menu bar is the way back with your data.`)) return;
     setRollingBack(tag);
     setError(null);
     setResult(null);

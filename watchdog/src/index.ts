@@ -776,12 +776,12 @@ async function attemptRestart(): Promise<void> {
 
 // Update-recovery path, NOT the generic platform-down cascade: act ONLY when the update-state marker
 // PROVES a failing self-update episode (booting-new/rolled-back with its gate tripped): roll back
-// once (code only) via rollback.sh, or escalate to failed-permanently. Returns true when handled, so
+// once via rollback.sh (which also puts the data back when the update changed it), or escalate. Returns true when handled, so
 // runCheck skips the generic cascade that would kickstart the same bad build and race rollback.sh.
 async function maybeAutoRollback(): Promise<boolean> {
   // THE DECISION IS MADE INSIDE THE LOCK: reading first and writing a transition built on that read
-  // is a lost update against the platform's boot sentinel, and the flag it erases stops a code-only
-  // rollback onto a migrated database (full argument: `auto-rollback.ts`, THE SERIALISED WRITE PATH).
+  // is a lost update against the platform's boot sentinel, which could erase the record of the data
+  // copy (full argument: `auto-rollback.ts`, THE SERIALISED WRITE PATH).
   const seen: { marker: UpdateMarker | null; decision: RollbackDecision } = {
     marker: null,
     decision: { action: 'none' },
@@ -800,8 +800,7 @@ async function maybeAutoRollback(): Promise<boolean> {
   const imRecipient = getImessageRecipient();
 
   if (decision.action === 'escalate') {
-    // The terminal state was recorded inside the lock above (with the reason, so the platform's
-    // confirmHealthy can recover a migration escalation that finishes healthy later). Alert once, loud.
+    // The terminal state was recorded inside the lock above. Alert once, loud.
     log('error', 'D-F: escalating a failed self-update to failed-permanently (no auto-rollback)', {
       reason: decision.reason,
       targetVersion: marker.targetVersion,
@@ -809,12 +808,9 @@ async function maybeAutoRollback(): Promise<boolean> {
       rollbackCount: marker.rollbackCount,
     });
     if (claimAlertFor('auto_rollback_failed', imRecipient)) {
-      const because = decision.reason === 'migration'
-        ? 'the update had already changed the database, so undoing just the app could make things worse'
-        : 'putting the previous version back once did not fix it, and trying again is not safe';
       await sendSmartAlert(
         imRecipient,
-        `Watchdog: a Dojo update failed to start and I did NOT undo it automatically because ${because}. ` +
+        'Watchdog: a Dojo update failed to start and I did NOT undo it again, because putting the previous version back once did not fix it and trying again is not safe. ' +
         `The box may keep restarting. Please open the Dojo dashboard and restore a previous version, or reach out for help. I will keep watching.`,
       );
       recordAlert('Auto-rollback escalated to failed-permanently');
@@ -823,7 +819,8 @@ async function maybeAutoRollback(): Promise<boolean> {
   }
 
   // decision.action === 'rollback'
-  log('warn', 'D-F: self-update did not come up healthy, auto-rolling back to the previous build (code only)', {
+  log('warn', 'D-F: self-update did not come up healthy, auto-rolling back to the previous build', {
+    withData: decision.withData,
     targetVersion: marker.targetVersion,
     previousVersion: marker.previousVersion,
     bootAttempts: marker.bootAttempts,
@@ -833,9 +830,12 @@ async function maybeAutoRollback(): Promise<boolean> {
   // lock, BEFORE spawning: rollback.sh unloads this job and could cut a slow send short.
   if (claimAlertFor('auto_rollback', imRecipient)) {
     const toVer = marker.previousVersion ? ` (${marker.previousVersion})` : '';
+    const data = decision.withData
+      ? ' together with your data as it was just before the update. Messages that arrived during the failed starts are kept in a copy set aside, not lost.'
+      : '.';
     await sendSmartAlert(
       imRecipient,
-      `Watchdog: a Dojo update did not start up correctly, so I am automatically putting the previous version${toVer} back. ` +
+      `Watchdog: a Dojo update did not start up correctly, so I am automatically putting the previous version${toVer} back${data} ` +
       `The box will restart on its own in a minute. I will let you know if anything still looks wrong.`,
     );
     recordAlert('Auto-rollback to previous build initiated');

@@ -610,6 +610,17 @@ async function downloadAndInstall(o: {
   artifactBytes: number;
 }): Promise<{ ok: true; backupDir: string | null } | { ok: false; message: string; status: number }> {
   const kept = `Nothing was changed: Dojo is still running ${o.currentVersion}.`;
+  // Disk-space pre-flight before a single byte (the artifact's size is a fact): refusing leaves no update
+  // episode to roll back. Measured again after a write failure, since a disk fills after the check.
+  const disk = measureUpdateDiskNeed({ artifactBytes: o.artifactBytes });
+  const diskRefusal = updateDiskRefusal(disk);
+  if (diskRefusal) {
+    logger.warn('Install REFUSED before download: not enough free disk', {
+      freeBytes: disk.freeBytes, neededBytes: disk.totalNeedBytes, shortfallBytes: disk.shortfallBytes,
+      dbBytes: disk.dbBytes, artifactBytes: disk.artifactBytes, platformBytes: disk.platformBytes,
+    });
+    return { ok: false, message: diskRefusal, status: 507 };
+  }
   // Refuse a second install before downloading anything (the installer re-checks under the lock).
   const probe = acquireSwapLock(DOJO_DIR);
   if (typeof probe !== 'function') return { ok: false, message: `The update could not start: ${probe.busy}. ${kept}`, status: 409 };
@@ -744,20 +755,6 @@ export async function applyUpdate(channel?: UpdateChannel): Promise<ApplyUpdateR
       return { ok: true, message: 'Already up to date', newVersion: currentVersion };
     }
 
-    // Disk-space pre-flight before a single byte, once the release metadata is in hand (the artifact's size
-    // is a fact): refusing leaves no update episode to roll back. Measured again here, since a disk fills
-    // after the check.
-    const disk = measureUpdateDiskNeed({ artifactBytes: zipAsset.size ?? 0 });
-    const diskRefusal = updateDiskRefusal(disk);
-    if (diskRefusal) {
-      logger.warn('Update REFUSED before download: not enough free disk', {
-        freeBytes: disk.freeBytes, neededBytes: disk.totalNeedBytes,
-        shortfallBytes: disk.shortfallBytes, dbBytes: disk.dbBytes,
-        artifactBytes: disk.artifactBytes, platformBytes: disk.platformBytes,
-      });
-      return { ok: false, message: diskRefusal, status: 507 };
-    }
-
     logger.info('Starting update', { channel: ch, from: currentVersion, to: latestVersion, url: zipAsset.browser_download_url });
     const installed = await downloadAndInstall({
       zipUrl: zipAsset.browser_download_url,
@@ -844,10 +841,14 @@ updateRouter.get('/releases', async (c) => {
       name: string;
       published_at: string;
       body: string;
+      prerelease?: boolean;
       assets: Array<{ name: string; browser_download_url: string; size: number }>;
     }>;
 
-    const data = releases.map(r => {
+    // Only this release and earlier ones of the box's own channel: a stable box is never offered a pre-release.
+    const preflight = getUpdateChannel() === 'preflight';
+    const data = releases.filter(r => isValidVersionTag(r.tag_name) && (preflight || !r.prerelease)
+      && compareVersions(r.tag_name, currentVersion) <= 0).map(r => {
       const version = r.tag_name.replace(/^v/, '');
       const zipAsset = r.assets.find(a => a.name === 'dojo-platform.zip');
       return {

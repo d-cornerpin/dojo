@@ -200,26 +200,22 @@ class DojoMenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         refreshRollbackItem()
     }
 
-    // The newest ~/.dojo/platform.backup-<version> directory, if any. Newest by
-    // modification time == the version we were on before the last update.
+    // The build rollback.sh would restore, asked of the script itself (--print-target), so the
+    // menu names the same build the rollback picks.
     func newestBackup() -> (path: String, version: String)? {
-        let dojo = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".dojo")
-        guard let entries = try? FileManager.default.contentsOfDirectory(
-            at: dojo, includingPropertiesForKeys: [.contentModificationDateKey], options: []) else { return nil }
-
-        let prefix = "platform.backup-"
-        var newestURL: URL?
-        var newestDate = Date.distantPast
-        for url in entries where url.lastPathComponent.hasPrefix(prefix) {
-            let mdate = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
-                .contentModificationDate ?? Date.distantPast
-            if mdate > newestDate {
-                newestDate = mdate
-                newestURL = url
-            }
-        }
-        guard let n = newestURL else { return nil }
-        return (n.path, String(n.lastPathComponent.dropFirst(prefix.count)))
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = [FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".dojo/scripts/rollback.sh").path, "--print-target"]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        guard (try? process.run()) != nil else { return nil }
+        let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        process.waitUntilExit()
+        guard !out.isEmpty else { return nil }
+        let name = (out as NSString).lastPathComponent
+        return (out, name.hasPrefix("platform.backup-") ? String(name.dropFirst("platform.backup-".count)) : name)
     }
 
     func refreshRollbackItem() {
@@ -238,7 +234,7 @@ class DojoMenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let confirm = NSAlert()
         confirm.messageText = "Roll back DOJO to \(backup.version)?"
-        confirm.informativeText = "The current version will be set aside (kept for diagnosis) and the server restarted on \(backup.version). Use this if an update left the server unable to start."
+        confirm.informativeText = "The current version will be set aside (kept for diagnosis) and the server restarted on \(backup.version). If the update changed your data, the copy taken just before it is put back too, and the newer data is kept under a dated name. Use this if an update left the server unable to start."
         confirm.alertStyle = .warning
         confirm.addButton(withTitle: "Roll Back")
         confirm.addButton(withTitle: "Cancel")

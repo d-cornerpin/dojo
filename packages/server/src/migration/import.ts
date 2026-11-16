@@ -9,6 +9,7 @@ import { pipeline } from 'node:stream/promises';
 import unzipper from 'unzipper';
 import Database from 'better-sqlite3';
 import { closeDb } from '../db/connection.js';
+import { migrationAheadOfBuild } from '../db/migrations.js';
 import { clearSecretsCache } from '../config/loader.js';
 import { migratePaths } from './path-migration.js';
 import { copyTree } from './fs-copy.js';
@@ -208,6 +209,13 @@ async function runImport(
       await pipeline(file.stream(), fs.createWriteStream(dest));
     }
     fs.rmSync(innerZipPath, { force: true });
+
+    // A database a newer Dojo changed cannot be read by this build: refuse before anything is stopped.
+    const snapshot = path.join(extractRoot, 'data', 'dojo.db');
+    const sdb = fs.existsSync(snapshot) ? new Database(snapshot, { readonly: true }) : null;
+    let ahead: string | null;
+    try { ahead = sdb && migrationAheadOfBuild(sdb); } finally { sdb?.close(); }
+    if (ahead) throw new Error(`This export comes from a newer version of Dojo (its data holds ${ahead}). Update this Dojo first, then import it. Nothing was changed.`);
 
     broadcastProgress('services', 45, 'Stopping services...');
     servicesStopped = true;

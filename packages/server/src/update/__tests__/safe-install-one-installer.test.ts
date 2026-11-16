@@ -44,7 +44,7 @@ describe('the next boot names what is live before it counts itself', () => {
   it('index.ts settles a cut-off install immediately before the boot sentinel', () => {
     const idx = code('packages/server/src/index.ts');
     const settle = idx.indexOf('.settlePendingInstall(');
-    const count = idx.indexOf('let bootEpisode = recordBootAttempt();');
+    const count = idx.indexOf('recordBootAttempt()');
     expect(settle).toBeGreaterThan(-1);
     expect(count - settle, 'settle, then count: nothing in between').toBeLessThan(200);
     expect(settle).toBeLessThan(count);
