@@ -295,7 +295,8 @@ export function renderRecallLane(ctx: RecallLaneContext): LaneRender<RecallLaneP
       // While the snapshot renders, obligation-shaped hits are its material: a live one is already in it, and
       // "anything not listed is not owed" covers an unresolvable one. With no snapshot, each hit renders as itself.
       if (snapshot !== null && verdict.kind !== 'not-an-obligation') continue;
-      const line = `- [vault:${e.type}] ${oneLine(e.content).slice(0, vaultChars())}${formatCitationSuffix(e.citation)}`;
+      // The source leads and shares the preview's room, so the lane's worst case is unchanged.
+      const line = `- [vault:${e.type}] ${oneLine(`${formatCitationSuffix(e.citation).trim()} ${e.content}`).slice(0, vaultChars())}`;
       vaultLines.push(verdict.kind === 'unresolvable' ? `${line} ${UNRESOLVED_OBLIGATION_MARK}` : line);
     }
     // Sorted on the entry id: the same set renders in the same bytes whatever the ranking, with no implied chronology.

@@ -13,15 +13,15 @@ import { describe, it, expect } from 'vitest';
 import Database from 'better-sqlite3';
 import { ftsSafeQuery } from '../fts-query.js';
 
-describe('ftsSafeQuery: strips non-word punctuation and quotes every kept word', () => {
+describe('ftsSafeQuery: strips non-word punctuation, quotes every kept word and joins them with OR', () => {
   it('keeps only letter/digit/underscore words, drops 1-2 letter pieces', () => {
     expect(ftsSafeQuery('Can you check this? It\'s file.txt, foo-bar!', 20))
-      .toBe('"Can" "you" "check" "this" "file" "txt" "foo" "bar"');
+      .toBe('"Can" OR "you" OR "check" OR "this" OR "file" OR "txt" OR "foo" OR "bar"');
   });
 
   it('keeps the first maxWords words only', () => {
     expect(ftsSafeQuery('one two three four five six', 3))
-      .toBe('"one" "two" "three"');
+      .toBe('"one" OR "two" OR "three"');
   });
 
   it('no words longer than 2 characters gives the empty string', () => {
@@ -29,11 +29,15 @@ describe('ftsSafeQuery: strips non-word punctuation and quotes every kept word',
   });
 
   it('NOT is kept but quoted so it is a plain word; OR (2 letters) is dropped', () => {
-    expect(ftsSafeQuery('NOT OR bananas', 8)).toBe('"NOT" "bananas"');
+    expect(ftsSafeQuery('NOT OR bananas', 8)).toBe('"NOT" OR "bananas"');
   });
 
   it('unicode letters, digits and underscore survive', () => {
-    expect(ftsSafeQuery('café déjà_vu 2026', 8)).toBe('"café" "déjà_vu" "2026"');
+    expect(ftsSafeQuery('café déjà_vu 2026', 8)).toBe('"café" OR "déjà_vu" OR "2026"');
+  });
+
+  it('a quoted phrase stays one phrase and a trailing * stays a prefix, both rebuilt from words', () => {
+    expect(ftsSafeQuery('"new roof!" shing* car', 8)).toBe('"new roof" OR "shing"* OR "car"');
   });
 
   it('the produced MATCH text parses under real FTS5 (punctuation no longer breaks it)', () => {
@@ -44,10 +48,9 @@ describe('ftsSafeQuery: strips non-word punctuation and quotes every kept word',
     const match = db.prepare('select count(*) as n from t where t match ?');
     expect(match.get(ftsSafeQuery('can you check this?', 8))).toEqual({ n: 1 });
 
-    // The v35 expression — `query.replace(/["']/g, ' ').split(/\s+/).filter(w => w.length > 2)
-    // .slice(0, 8).join(' ')` — throws `fts5: syntax error` on the first call; this second one
-    // must not throw, and returns 0 because the row has no `txt`.
-    expect(() => match.get(ftsSafeQuery('Can you check this? file.txt', 8))).not.toThrow();
-    expect(match.get(ftsSafeQuery('Can you check this? file.txt', 8))).toEqual({ n: 0 });
+    // Punctuation, a phrase and a prefix all parse; any one word is enough to match.
+    expect(match.get(ftsSafeQuery('Can you check this? file.txt', 8))).toEqual({ n: 1 });
+    expect(match.get(ftsSafeQuery('"check this" fil*', 8))).toEqual({ n: 1 });
+    expect(match.get(ftsSafeQuery('"this check" zebra', 8))).toEqual({ n: 0 });
   });
 });

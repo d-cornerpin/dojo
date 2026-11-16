@@ -5,7 +5,7 @@ import { createLogger } from '../logger.js';
 import { generateEmbedding } from './embeddings.js';
 import { embeddingSourceAliveSql } from './embedding-sources.js';
 import { ftsSafeQuery } from './fts-query.js';
-import { agentMessagesFloor, VECTOR_CANDIDATE_ROWS } from './search-bounds.js';
+import { agentMessagesFloor } from './search-bounds.js';
 import { embeddingModelKey } from './embedding-model.js';
 
 const logger = createLogger('vector-search');
@@ -84,13 +84,11 @@ export async function vectorSearch(
 
   const where = conditions.join(' AND ');
 
-  // Newest first in write order: an index on (agent_id[, source_type]) reads the bound without sorting every blob.
   const rows = db.prepare(`
     SELECT e.id, e.source_type, e.source_id, e.agent_id, e.content_preview, e.embedding, e.dimensions
     FROM embeddings e
     WHERE ${where}
-    ORDER BY e.rowid DESC LIMIT ?
-  `).all(...params, VECTOR_CANDIDATE_ROWS) as Array<{
+  `).all(...params) as Array<{
     id: string;
     source_type: string;
     source_id: string;

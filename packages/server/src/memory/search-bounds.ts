@@ -9,9 +9,6 @@ const logger = createLogger('search-bounds');
 /** Newest messages an FTS query may RANK over; rowid is append-only, so the floor is a cheap time window. */
 export const FTS_CANDIDATE_ROWS = 50_000;
 
-/** Newest embeddings of one agent a vector search scores, read newest first through an index. */
-export const VECTOR_CANDIDATE_ROWS = 10_000;
-
 /** Rowids per LIKE chunk, newest first: each call is bounded and the budget can stop the walk partway. */
 export const LIKE_CHUNK_ROWS = 20_000;
 

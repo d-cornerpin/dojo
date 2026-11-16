@@ -9,7 +9,7 @@ import {
 } from './search-bounds.js';
 import { ftsSafeQuery } from './fts-query.js';
 import { renderInstant } from './message-stamp.js';
-import { pickWriter } from './writer.js';
+import { pickWriter, summaryRoom } from './writer.js';
 import { readerPoolAvailable, readerQuery } from './reader-pool.js';
 import { callModel } from '../agent/model.js';
 import { CHARS_PER_TOKEN, estimateTokens } from './budget.js';
@@ -807,9 +807,9 @@ export async function memoryExpand(
   // Make a model call to answer the prompt using the expanded material
   const systemPrompt = `You are a memory retrieval assistant. You have been given expanded conversation history material. Answer the user's question based ONLY on the material provided. If the material doesn't contain the answer, say so.`;
 
-  // The material is cut, never the question after it.
+  // The material is cut to what the writer can hold, never the question after it.
   const material = materialParts.join('\n');
-  const maxMaterialChars = 100_000 * CHARS_PER_TOKEN;
+  const maxMaterialChars = summaryRoom(modelId, estimateTokens(systemPrompt + prompt)) * CHARS_PER_TOKEN;
   const shown = material.length > maxMaterialChars ? `${material.slice(0, maxMaterialChars)}\n\n[... material truncated ...]` : material;
   const truncatedMessage = `Here is the expanded conversation history:\n\n${shown}\n\n---\n\nQuestion: ${prompt}`;
 

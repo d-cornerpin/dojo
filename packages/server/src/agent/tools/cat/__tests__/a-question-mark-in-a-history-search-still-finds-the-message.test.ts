@@ -1,5 +1,6 @@
-// A history search typed the way people talk ("Bob's roof?") finds the message: ordinary punctuation never
-// breaks the full-text search. Driven through executeTool on a migrated scratch database.
+// A history search typed the way people talk ("what did Bob say about the roof?") finds the message, the row
+// holding more of its words first: ordinary punctuation never breaks the full-text search, and OR still means OR.
+// Driven through executeTool on a migrated scratch database.
 
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import fs from 'node:fs';
@@ -19,8 +20,12 @@ beforeAll(() => {
   migrations.runMigrations();
   const db = connection.getDb();
   db.prepare("INSERT INTO agents (id, name, status, config, classification) VALUES (?, 'main', 'idle', '{}', 'sensei')").run(AGENT);
-  db.prepare("INSERT INTO messages (id, agent_id, role, lane, content) VALUES ('m-roof', ?, 'user', 'owner', ?)")
-    .run(AGENT, "Bob's roof needs new shingles before winter.");
+  const row = db.prepare("INSERT INTO messages (id, agent_id, role, lane, content) VALUES (?, ?, 'user', 'owner', ?)");
+  row.run('m-lunch', AGENT, 'What about lunch on Friday?');
+  // Small words are common in a real history, so the ranking weighs them low.
+  for (let i = 0; i < 6; i += 1) row.run(`m-chat-${i}`, AGENT, `What do you think about the plan for week ${i}?`);
+  row.run('m-roof', AGENT, "Bob's roof needs new shingles");
+  row.run('m-car', AGENT, 'The car is booked in for a service.');
 });
 
 afterAll(() => {
@@ -29,10 +34,25 @@ afterAll(() => {
   fs.rmSync(home, { recursive: true, force: true });
 });
 
+const search = async (pattern: string): Promise<string> => toolResultOf(await executeTool(AGENT, {
+  id: `call-${pattern.length}`, name: 'history_search', arguments: { pattern, scope: 'messages' },
+})).content;
+
 describe('a question mark in a history search', () => {
-  it.each(["Bob's roof?", 'roof?'])(
-    'still finds the message for %j', async (pattern) => {
-      const outcome = await executeTool(AGENT, { id: `call-${pattern.length}`, name: 'history_search', arguments: { pattern, scope: 'messages' } });
-      expect(toolResultOf(outcome).content).toContain('shingles');
-    });
+  it('the spoken question finds the message, ahead of one that shares only its small words', async () => {
+    const out = await search('what did Bob say about the roof?');
+    expect(out).toContain('shingles');
+    expect(out).toContain('lunch');
+    expect(out.indexOf('shingles')).toBeLessThan(out.indexOf('lunch'));
+  });
+
+  it.each(["Bob's roof?", 'roof?'])('still finds the message for %j', async (pattern) => {
+    expect(await search(pattern)).toContain('shingles');
+  });
+
+  it('roof OR car finds both', async () => {
+    const out = await search('roof OR car');
+    expect(out).toContain('shingles');
+    expect(out).toContain('service');
+  });
 });
