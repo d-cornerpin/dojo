@@ -1,109 +1,97 @@
-// rollback.sh, run for real in a scratch HOME with a stub launchctl: when the data is ahead of the build
-// it restores, it also puts back the data copy the update episode recorded, and the newer data is kept
-// under a dated name. Nothing outside the scratch tree is read or written.
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { spawnSync } from 'node:child_process';
-import Database from 'better-sqlite3';
+// rollback.sh, run for real in a scratch HOME (safe-install-fixtures): when the data's last step is one the
+// build it restores does not have, it also puts back the data copy the update episode recorded, and the
+// newer data is kept under a dated name. The data cases are shared with the runner's test.
+import { describe, it, expect, afterEach } from 'vitest';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
-import { ROLLBACK_SH, makeTree, versionAt } from './safe-install-fixtures.js';
+import { makeBox, makeTreeWithSteps, levelDb, whichDb, runRollbackSh, versionAt, type Box } from './safe-install-fixtures.js';
+import { migrationFileNames } from '../../db/migrations.js';
+import CASES from '../../db/__tests__/fixtures/data-ahead-cases.json' with { type: 'json' };
 
-let home: string;
-let dojo: string;
-const data = (): string => path.join(dojo, 'data');
+let b: Box;
+const live = (): string => path.join(b.dojo, 'data', 'dojo.db');
+const setAside = (): string[] => fs.readdirSync(path.join(b.dojo, 'data', 'backups')).filter((f) => f.startsWith('dojo-replaced-'));
+const result = (): string => fs.readFileSync(path.join(b.dojo, 'rollback-result'), 'utf-8');
 
-/** A build carrying the given migration files where an installed build keeps them. */
-function build(dir: string, version: string, files: string[]): string {
-  makeTree(dir, version);
-  const mig = path.join(dir, 'packages', 'server', 'dist', 'db', 'migrations');
-  fs.mkdirSync(mig, { recursive: true });
-  for (const f of files) fs.writeFileSync(path.join(mig, f), '-- step\n');
-  return dir;
-}
+afterEach(() => { fs.rmSync(b.home, { recursive: true, force: true }); });
 
-function database(file: string, applied: string[], which: string): string {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const db = new Database(file);
-  db.exec('CREATE TABLE _migrations (name TEXT PRIMARY KEY); CREATE TABLE which (v TEXT)');
-  for (const n of applied) db.prepare('INSERT INTO _migrations VALUES (?)').run(n);
-  db.prepare('INSERT INTO which VALUES (?)').run(which);
-  db.close();
-  return file;
-}
-
-const which = (file: string): string => {
-  const db = new Database(file, { readonly: true });
-  try { return (db.prepare('SELECT v FROM which').get() as { v: string }).v; } finally { db.close(); }
-};
-const setAside = (): string[] => fs.readdirSync(path.join(data(), 'backups')).filter((f) => f.startsWith('dojo-replaced-'));
-
-function run(): { code: number | null; out: string } {
-  const r = spawnSync('/bin/bash', [ROLLBACK_SH], {
-    env: { PATH: `${path.join(home, 'bin')}:/usr/bin:/bin:/usr/sbin:/sbin`, HOME: home, DOJO_HOME: home, DOJO_PORT: '1' },
-    encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 60_000,
-  });
-  return { code: r.status, out: `${r.stdout}${r.stderr}` };
-}
-
-beforeEach(() => {
-  home = fs.mkdtempSync(path.join(process.env.DOJO_TEST_HOME_ROOT || os.tmpdir(), 'rollback-data-'));
-  dojo = path.join(home, '.dojo');
-  fs.mkdirSync(path.join(home, 'Library', 'LaunchAgents'), { recursive: true });
-  fs.mkdirSync(path.join(home, 'bin'), { recursive: true });
-  // launchd's list follows load and unload, so restore-db.sh sees the platform stopped.
-  fs.writeFileSync(path.join(home, 'bin', 'launchctl'), [
-    '#!/bin/sh',
-    'case "$1" in',
-    `  list) [ -f "${home}/up" ] && printf '1\\t0\\tcom.dojo.platform\\n-\\t0\\tcom.dojo.watchdog\\n'; exit 0 ;;`,
-    `  unload) rm -f "${home}/up" ;;`,
-    `  load) touch "${home}/up" ;;`,
-    'esac',
-    'exit 0',
-  ].join('\n') + '\n', { mode: 0o755 });
-  fs.writeFileSync(path.join(home, 'up'), '');
-  build(path.join(dojo, 'platform'), '3.5.0', ['218_a.sql', '902_b.sql']);
-});
-
-afterEach(() => { fs.rmSync(home, { recursive: true, force: true }); });
-
-function episode(dataBackup: string | null): void {
-  const backupDir = build(path.join(dojo, 'platform.backup-3.4.1'), '3.4.1', ['218_a.sql']);
-  fs.writeFileSync(path.join(dojo, 'update-state.json'), JSON.stringify({
+/** The live build, the build a rollback restores, the live data, and the episode's recorded copy. */
+function box(o: { current: string[]; old: string[]; applied: string[]; copy?: boolean }): void {
+  b = makeBox('rollback-data-');
+  makeTreeWithSteps(b.platform, '3.5.0', o.current);
+  const backupDir = makeTreeWithSteps(path.join(b.dojo, 'platform.backup-3.4.1'), '3.4.1', o.old);
+  levelDb(live(), o.applied, 'newer');
+  const dataBackup = o.copy === false ? null
+    : levelDb(path.join(b.dojo, 'data', 'backups', 'dojo-pre-1-of-2-2026-11-16T10-00-00.db'), o.old.slice(0, 1), 'before');
+  fs.writeFileSync(path.join(b.dojo, 'update-state.json'), JSON.stringify({
     phase: 'rolled-back', targetVersion: '3.5.0', previousVersion: '3.4.1', backupDir, dataBackup,
     migrationsRanDuringEpisode: true, rollbackCount: 1, writeSeq: 4,
   }));
 }
+const ahead = { current: ['209_a.sql', '210_b.sql'], old: ['209_a.sql'], applied: ['209_a.sql', '210_b.sql'] };
 
 describe('rollback with newer data restores the pre-update copy', () => {
-  it('puts back the old build and the recorded copy, and keeps the newer data under a dated name', () => {
-    database(path.join(data(), 'dojo.db'), ['218_a.sql', '902_b.sql'], 'newer');
-    episode(database(path.join(data(), 'backups', 'dojo-pre-1-of-2-2026-11-16T10-00-00.db'), ['218_a.sql'], 'before'));
-    const r = run();
+  for (const c of CASES) {
+    it(`${c.case}: ${c.ahead ? 'program and data go back' : 'only the program goes back'}`, () => {
+      box({ current: [...new Set([...c.build, ...c.applied])], old: c.build, applied: c.applied });
+      const r = runRollbackSh(b, ['--auto']);
+      expect(r.code, r.out).toBe(0);
+      expect(versionAt(b.platform)).toBe('3.4.1');
+      expect(whichDb(live())).toBe(c.ahead ? 'before' : 'newer');
+      expect(setAside().map((f) => whichDb(path.join(b.dojo, 'data', 'backups', f)))).toEqual(c.ahead ? ['newer'] : []);
+      expect(result()).toMatch(c.ahead ? /^restored-with-data\t.*together with your data/ : /^restored\t.*did not need to change/);
+    });
+  }
+
+  it("the owner's update dying before 901: the files of v3.5.0-preflight.3 with 210 to 218 applied after 900", () => {
+    // The tag's files are this tree's files numbered up to 209, plus 900 (checked against the tag).
+    const files = migrationFileNames();
+    const old = files.filter((f) => parseInt(f, 10) <= 209 || parseInt(f, 10) === 900);
+    box({ current: files, old, applied: [...old, ...files.filter((f) => parseInt(f, 10) >= 210 && parseInt(f, 10) <= 218)] });
+    const r = runRollbackSh(b, ['--auto']);
     expect(r.code, r.out).toBe(0);
-    expect(versionAt(path.join(dojo, 'platform'))).toBe('3.4.1');
-    expect(which(path.join(data(), 'dojo.db'))).toBe('before');
+    expect(versionAt(b.platform)).toBe('3.4.1');
+    expect(whichDb(live())).toBe('before');
     expect(setAside()).toHaveLength(1);
-    expect(setAside()[0]).toMatch(/^dojo-replaced-\d{4}-\d{2}-\d{2}T/);
-    expect(which(path.join(data(), 'backups', setAside()[0]))).toBe('newer');
+    expect(result()).toMatch(/^restored-with-data\t/);
   });
 
-  it('leaves the data alone when the restored build can read it', () => {
-    database(path.join(data(), 'dojo.db'), ['218_a.sql'], 'current');
-    episode(database(path.join(data(), 'backups', 'dojo-pre-1-of-2-2026-11-16T10-00-00.db'), ['218_a.sql'], 'before'));
-    expect(run().code).toBe(0);
-    expect(versionAt(path.join(dojo, 'platform'))).toBe('3.4.1');
-    expect(which(path.join(data(), 'dojo.db'))).toBe('current');
-    expect(setAside()).toEqual([]);
+  it('asked for its target, it names the build and the time of the data copy that goes with it', () => {
+    box(ahead);
+    const lines = runRollbackSh(b, ['--print-target']).out.trim().split('\n');
+    expect(lines[0]).toBe(path.join(b.dojo, 'platform.backup-3.4.1'));
+    expect(lines[1]).toMatch(/^data \d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
   });
 
   it('changes nothing and says why when the data is ahead and no copy was recorded', () => {
-    database(path.join(data(), 'dojo.db'), ['218_a.sql', '902_b.sql'], 'newer');
-    episode(null);
-    const r = run();
+    box({ ...ahead, copy: false });
+    expect(runRollbackSh(b, ['--print-target']).out.trim().split('\n')[1]).toBe('data none');
+    const r = runRollbackSh(b, ['--auto']);
     expect(r.code).toBe(1);
-    expect(r.out).toMatch(/no copy of your data from before the update/i);
-    expect(versionAt(path.join(dojo, 'platform'))).toBe('3.5.0');
-    expect(which(path.join(data(), 'dojo.db'))).toBe('newer');
+    expect(versionAt(b.platform)).toBe('3.5.0');
+    expect(whichDb(live())).toBe('newer');
+    expect(result()).toMatch(/^unchanged\t.*no copy of it from before the update\. Nothing was changed/);
+  });
+
+  it('changes nothing when the server is still answering after it was told to stop', () => {
+    box(ahead);
+    fs.writeFileSync(path.join(b.bin, 'lsof'), '#!/bin/sh\necho "node 1 u 20u IPv4 TCP *:1 (LISTEN)"\n', { mode: 0o755 });
+    const r = runRollbackSh(b, ['--auto'], { DOJO_STOP_WAIT: '2' });
+    expect(r.code).toBe(1);
+    expect(versionAt(b.platform)).toBe('3.5.0');
+    expect(whichDb(live())).toBe('newer');
+    expect(setAside()).toEqual([]);
+    expect(result()).toMatch(/^unchanged\t.*did not stop in time/);
+    expect(fs.existsSync(path.join(b.home, 'up')), 'the services it stopped are started again').toBe(true);
+  });
+
+  it('--heal puts a build back over a missing program folder whatever the data, and says the data is ahead', () => {
+    box(ahead);
+    fs.rmSync(b.platform, { recursive: true });
+    const r = runRollbackSh(b, ['--heal']);
+    expect(r.code, r.out).toBe(0);
+    expect(versionAt(b.platform)).toBe('3.4.1');
+    expect(r.out).toMatch(/data was changed by a version newer than 3\.4\.1/);
+    expect(whichDb(live())).toBe('newer');
   });
 });

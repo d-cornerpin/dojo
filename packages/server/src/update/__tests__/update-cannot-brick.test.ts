@@ -81,7 +81,7 @@ function marker(over: Partial<UpdateMarker> = {}): UpdateMarker {
 //     marker says.
 //  3. "Failing" means the crash-exit counter tripped OR the wall clock ran out.
 //  4. One automatic rollback per episode. A spent one → ESCALATE.
-//  5. Otherwise, roll back, with the data when the failed build changed it.
+//  5. Otherwise, roll back (rollback.sh puts the data back too when it is ahead).
 function expectedAction(m: UpdateMarker | null, nowMs: number): RollbackDecision {
   if (!m) return { action: 'none' };
   const inEpisode = m.phase === 'booting-new' || m.phase === 'rolled-back';
@@ -94,7 +94,7 @@ function expectedAction(m: UpdateMarker | null, nowMs: number): RollbackDecision
   if (!crashLoop && !clockOut) return { action: 'none' };
 
   if (m.rollbackCount >= MAX_AUTO_ROLLBACKS) return { action: 'escalate', reason: 'exhausted' };
-  return { action: 'rollback', withData: m.migrationsRanDuringEpisode };
+  return { action: 'rollback' };
 }
 
 const ALL_PHASES: UpdatePhase[] = [
@@ -155,9 +155,9 @@ describe('update-cannot-brick — the D-F truth table', () => {
     expect(decideAutoRollback(null, T0)).toEqual({ action: 'none' });
   });
 
-  it('MIGRATION RAN ⇒ ROLL BACK WITH THE DATA, and the rollback budget still holds (the named row)', () => {
+  it('MIGRATION RAN ⇒ ROLL BACK, and the rollback budget still holds (the named row)', () => {
     const m = marker({ bootAttempts: FAIL_BOOT_ATTEMPTS, migrationsRanDuringEpisode: true, rollbackCount: 0 });
-    expect(decideAutoRollback(m, T0)).toEqual({ action: 'rollback', withData: true });
+    expect(decideAutoRollback(m, T0)).toEqual({ action: 'rollback' });
     const both = marker({ bootAttempts: FAIL_BOOT_ATTEMPTS, migrationsRanDuringEpisode: true, rollbackCount: 5 });
     expect(decideAutoRollback(both, T0)).toEqual({ action: 'escalate', reason: 'exhausted' });
   });
@@ -169,7 +169,7 @@ describe('update-cannot-brick — the D-F truth table', () => {
 
   it('a clean failing episode with no migration and no spent rollback rolls back the program only', () => {
     const m = marker({ bootAttempts: FAIL_BOOT_ATTEMPTS });
-    expect(decideAutoRollback(m, T0)).toEqual({ action: 'rollback', withData: false });
+    expect(decideAutoRollback(m, T0)).toEqual({ action: 'rollback' });
   });
 
   it('an unreadable firstBootAt cannot trip the wall clock (NaN must not read as "long ago")', () => {
@@ -196,7 +196,7 @@ const GATE_INPUTS = [
 
 describe('update-cannot-brick — the rollback transition preserves the gate\'s evidence', () => {
 
-  it('the data evidence survives the transition — a rolled-back episode still knows a migration ran', () => {
+  it('the data evidence survives the transition: a rolled-back episode still knows a migration ran', () => {
     const before = marker({ bootAttempts: FAIL_BOOT_ATTEMPTS, migrationsRanDuringEpisode: true });
     const after = toRolledBack(before);
     expect(after.migrationsRanDuringEpisode).toBe(true);
@@ -218,7 +218,7 @@ describe('update-cannot-brick — the rollback transition preserves the gate\'s 
     // 'none' for ever: the update episode never escalates, the owner is never
     // told the update failed, and the marker sits mid-episode indefinitely.
     const failing = marker({ bootAttempts: FAIL_BOOT_ATTEMPTS });
-    expect(decideAutoRollback(failing, T0)).toEqual({ action: 'rollback', withData: false });
+    expect(decideAutoRollback(failing, T0)).toEqual({ action: 'rollback' });
 
     const restored = toRolledBack(failing);
     // Immediately after: nothing is failing yet, the restored build deserves its window.

@@ -10,6 +10,7 @@ import type { AppEnv } from '../server.js';
 import { createLogger } from '../../logger.js';
 import { getDb } from '../../db/connection.js';
 import { readLastMigrationBackup } from '../../db/migration-backup.js';
+import { migrationAheadOfBuild } from '../../db/migrations.js';
 import { markBootingNew, readMarker } from '../../update-state.js';
 import { rollbackTargetPaths } from '../../update/rollback-target.js';
 import { installPlatformTree, newInstallWorkDir, runNpmInstall, acquireSwapLock } from '../../update/install-tree.js';
@@ -645,6 +646,11 @@ async function downloadAndInstall(o: {
     const staged = path.join(work, 'dojo-platform', 'platform');
     if (!fs.existsSync(path.join(staged, 'package.json'))) {
       return { ok: false, message: `The download does not contain a dojo-platform/platform tree. ${kept}`, status: 500 };
+    }
+    // A program older than the data's last change would run on data it cannot read: refuse before the marker is touched.
+    const steps = path.join(staged, 'packages', 'server', 'dist', 'db', 'migrations');
+    if (fs.existsSync(steps) && migrationAheadOfBuild(getDb(), fs.readdirSync(steps))) {
+      return { ok: false, message: `${o.targetVersion} cannot read your data, because a newer version changed it. Choose Roll Back in the menu bar, which puts your data from before the update back too. ${kept}`, status: 409 };
     }
     const r = await installPlatformTree({
       dojoDir: DOJO_DIR, stagedDir: staged, targetVersion: o.targetVersion, previousVersion: o.currentVersion,

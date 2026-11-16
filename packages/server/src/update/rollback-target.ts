@@ -20,7 +20,7 @@ export function rollbackTargetPaths(i: RollbackTargetInput): string[] {
   const script = path.join(i.dojoDir, 'scripts', 'rollback.sh');
   try {
     if (i.readText(script).includes('--print-target')) {
-      const out = i.runScript(script, '--print-target', i.home).trim();
+      const out = i.runScript(script, '--print-target', i.home).split('\n')[0].trim();   // line 1 is the build
       return out ? [path.resolve(out)] : [];
     }
   } catch { /* script missing or failed: fall through to the conservative set */ }

@@ -1,0 +1,9 @@
+[
+  { "case": "the update fails before 901: 210 to 218 applied after 900", "applied": ["209_a.sql", "900_z.sql", "210_b.sql", "218_c.sql"], "build": ["209_a.sql", "900_z.sql"], "ahead": true },
+  { "case": "the update fails after every file committed", "applied": ["209_a.sql", "900_z.sql", "210_b.sql", "218_c.sql", "901_y.sql", "902_x.sql"], "build": ["209_a.sql", "900_z.sql"], "ahead": true },
+  { "case": "a healthy box on its own build", "applied": ["209_a.sql", "900_z.sql", "210_b.sql", "218_c.sql", "901_y.sql", "902_x.sql"], "build": ["209_a.sql", "210_b.sql", "218_c.sql", "900_z.sql", "901_y.sql", "902_x.sql"], "ahead": false },
+  { "case": "a fresh install", "applied": [], "build": ["209_a.sql", "900_z.sql"], "ahead": false },
+  { "case": "the development database: an old leftover no build has, then real steps", "applied": ["077_unknown_sender_notifications.sql", "209_a.sql", "214_d.sql"], "build": ["209_a.sql", "214_d.sql", "900_z.sql"], "ahead": false },
+  { "case": "a box restored from an old backup, started on a newer build", "applied": ["209_a.sql", "900_z.sql"], "build": ["209_a.sql", "210_b.sql", "218_c.sql", "900_z.sql", "901_y.sql", "902_x.sql"], "ahead": false },
+  { "case": "a development sibling the build has", "applied": ["200_a.sql", "200b_b.sql"], "build": ["200_a.sql", "200b_b.sql", "201_c.sql"], "ahead": false }
+]

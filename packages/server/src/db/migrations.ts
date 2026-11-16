@@ -25,13 +25,11 @@ export function readMigrationFile(name: string): string {
   return fs.readFileSync(path.join(MIGRATIONS_DIR, name), 'utf-8');
 }
 
-/** The applied migration numbered above every file this build carries, or null. Names compare by their
- *  leading number, so a development sibling such as `200b` is never ahead of a build that has `200`. */
-export function migrationAheadOfBuild(db: ReturnType<typeof getDb>): string | null {
-  const top = Math.max(0, ...migrationFileNames().map((f) => parseInt(f, 10) || 0));
-  const row = db.prepare('SELECT name FROM _migrations WHERE CAST(name AS INTEGER) > ? ORDER BY name DESC LIMIT 1')
-    .get(top) as { name: string } | undefined;
-  return row?.name ?? null;
+/** The last step applied to this database when the build whose files are given does not have it, or null:
+ *  then a newer program changed the data. `_migrations` is a rowid table, so rowid order is apply order. */
+export function migrationAheadOfBuild(db: ReturnType<typeof getDb>, files: string[] = migrationFileNames()): string | null {
+  const last = (db.prepare('SELECT name FROM _migrations ORDER BY rowid DESC LIMIT 1').get() as { name: string } | undefined)?.name;
+  return last && !files.includes(last) ? last : null;
 }
 
 export function runMigrations(): void {
@@ -165,8 +163,9 @@ function runSqlMigrations(db: ReturnType<typeof getDb>): void {
   const files = migrationFileNames();
   const ahead = migrationAheadOfBuild(db);
   if (ahead) {
-    throw new Error(`Dojo stopped: a newer version of Dojo changed this database (it holds ${ahead}), and this version `
-      + 'cannot read it. Nothing was changed. Choose Roll Back in the menu bar, or see ~/.dojo/scripts/IF-AN-UPDATE-FAILS.md.');
+    throw new Error(`Dojo stopped: a newer version of Dojo changed this database (its last change, ${ahead}, is not one `
+      + 'this version has), and this version cannot read it. Nothing was changed. Choose Roll Back in the menu bar, or see '
+      + '~/.dojo/scripts/IF-AN-UPDATE-FAILS.md.');
   }
 
   // Read-only probe of the pending set so the backup sees it whole; each file is recorded in applyOne.

@@ -158,19 +158,25 @@ echo ""
 # sockets, and a wedged server can hold the port without answering health. Any single
 # positive refuses. Being wrong in the cautious direction costs one `stop.sh`; being wrong
 # the other way costs the database.
-LIVE=""
 # Read launchd's list into a variable first: under pipefail a `launchctl list | grep -q` can be cut
 # short by the early exit and report "not loaded" for a loaded service, the unsafe direction here.
-LAUNCHD_LIST="$(launchctl list 2>/dev/null)"
-if grep -Eq '(^|[[:space:]])com\.dojo\.platform$' <<<"$LAUNCHD_LIST"; then
-    LIVE="the Dojo platform service is loaded in launchd"
-elif lsof -nP -iTCP:"$PORT" 2>/dev/null | grep -q LISTEN; then
-    LIVE="something is already listening on port $PORT"
-elif command -v nc >/dev/null 2>&1 && nc -z -G 1 -w 1 127.0.0.1 "$PORT" >/dev/null 2>&1; then
-    LIVE="something accepted a connection on port $PORT"
-elif curl -s -m 2 -o /dev/null "http://127.0.0.1:$PORT/api/health" 2>/dev/null; then
-    LIVE="a Dojo server answered on port $PORT"
-fi
+live_reason() {
+    local listing
+    listing="$(launchctl list 2>/dev/null)"
+    if grep -Eq '(^|[[:space:]])com\.dojo\.platform$' <<<"$listing"; then
+        echo "the Dojo platform service is loaded in launchd"
+    elif lsof -nP -iTCP:"$PORT" 2>/dev/null | grep -q LISTEN; then
+        echo "something is already listening on port $PORT"
+    elif command -v nc >/dev/null 2>&1 && nc -z -G 1 -w 1 127.0.0.1 "$PORT" >/dev/null 2>&1; then
+        echo "something accepted a connection on port $PORT"
+    elif curl -s -m 2 -o /dev/null "http://127.0.0.1:$PORT/api/health" 2>/dev/null; then
+        echo "a Dojo server answered on port $PORT"
+    fi
+}
+# DOJO_STOP_WAIT (seconds, rollback.sh sets it): a server just told to stop is given that long to go.
+LIVE="$(live_reason)"
+waited=0
+while [ -n "$LIVE" ] && [ "$waited" -lt "${DOJO_STOP_WAIT:-0}" ]; do sleep 1; waited=$((waited + 1)); LIVE="$(live_reason)"; done
 if [ -n "$LIVE" ]; then
     echo "REFUSING: Dojo appears to be running ($LIVE)."
     echo ""
@@ -201,8 +207,8 @@ lock_holder_alive() {
 # A takeover marker a crashed run left behind goes after a minute, and the run that clears it goes on
 # to try the takeover itself (it is not told "another run is working" when none is).
 take_lock() {
-    # Called by rollback.sh, which already holds the lock.
-    [ "$(cat "$LOCK_DIR/pid" 2>/dev/null)" = "$PPID" ] && return 0
+    # Called by rollback.sh, which already holds the lock and names itself in DOJO_LOCK_HOLDER.
+    [ -n "${DOJO_LOCK_HOLDER:-}" ] && [ "$(cat "$LOCK_DIR/pid" 2>/dev/null)" = "$DOJO_LOCK_HOLDER" ] && return 0
     mkdir -p "$DOJO_DIR" 2>/dev/null
     local holder age tk="$LOCK_DIR.takeover" got=1 try
     if mkdir "$LOCK_DIR" 2>/dev/null; then

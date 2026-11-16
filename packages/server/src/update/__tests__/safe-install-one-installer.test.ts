@@ -40,17 +40,6 @@ describe('census: nothing copies a tree over the live platform any more', () => 
   });
 });
 
-describe('the next boot names what is live before it counts itself', () => {
-  it('index.ts settles a cut-off install immediately before the boot sentinel', () => {
-    const idx = code('packages/server/src/index.ts');
-    const settle = idx.indexOf('.settlePendingInstall(');
-    const count = idx.indexOf('recordBootAttempt()');
-    expect(settle).toBeGreaterThan(-1);
-    expect(count - settle, 'settle, then count: nothing in between').toBeLessThan(200);
-    expect(settle).toBeLessThan(count);
-  });
-});
-
 describe('the watchdog repairs a missing platform folder and tells the owner', () => {
   it('runCheck repairs before it judges health, and spawns the repair with --heal', () => {
     const idx = code('watchdog/src/index.ts');

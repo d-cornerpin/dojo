@@ -55,12 +55,11 @@ function countAvailableMigrationFiles(): number {
 }
 
 // For a self-update boot, re-check the DB after ~90s of uptime and mark the episode healthy; a crash
-// before then leaves it to the watchdog. 'failed-permanently' is armed too: a slow migration boot
-// confirmed healthy here is what clears that false terminal state (see confirmHealthy).
+// before then leaves it to the watchdog.
 function scheduleUpdateHealthConfirm(): void {
   const marker = readMarker();
   if (!marker) return;
-  if (marker.phase !== 'booting-new' && marker.phase !== 'rolled-back' && marker.phase !== 'failed-permanently') return;
+  if (marker.phase !== 'booting-new' && marker.phase !== 'rolled-back') return;
   if (marker.confirmedHealthyAt) return;
   setTimeout(() => {
     try {

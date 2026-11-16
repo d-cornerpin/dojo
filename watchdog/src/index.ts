@@ -12,6 +12,8 @@ import {
   toRolledBack,
   toFailedPermanently,
   spawnRollbackDetached,
+  takeRollbackResult,
+  afterRollbackResult,
   ROLLBACK_SCRIPT,
   FAIL_WALL_CLOCK_MS,
   type RollbackDecision,
@@ -800,7 +802,8 @@ async function maybeAutoRollback(): Promise<boolean> {
   const imRecipient = getImessageRecipient();
 
   if (decision.action === 'escalate') {
-    // The terminal state was recorded inside the lock above. Alert once, loud.
+    // The terminal state was recorded inside the lock above. Alert once, loud. This is also the word when
+    // rollback.sh left no outcome (it was killed): the one rollback is spent and Dojo is still down.
     log('error', 'D-F: escalating a failed self-update to failed-permanently (no auto-rollback)', {
       reason: decision.reason,
       targetVersion: marker.targetVersion,
@@ -810,47 +813,46 @@ async function maybeAutoRollback(): Promise<boolean> {
     if (claimAlertFor('auto_rollback_failed', imRecipient)) {
       await sendSmartAlert(
         imRecipient,
-        'Watchdog: a Dojo update failed to start and I did NOT undo it again, because putting the previous version back once did not fix it and trying again is not safe. ' +
-        `The box may keep restarting. Please open the Dojo dashboard and restore a previous version, or reach out for help. I will keep watching.`,
+        'Watchdog: a Dojo update failed to start, and putting the previous version back did not bring Dojo up, so Dojo is not running '
+        + 'and I am not trying again. Please get help, or see ~/.dojo/scripts/IF-AN-UPDATE-FAILS.md.',
       );
       recordAlert('Auto-rollback escalated to failed-permanently');
     }
     return true;
   }
 
-  // decision.action === 'rollback'
+  // decision.action === 'rollback'. The owner is told what rollback.sh did once it has run (tellRollbackResult).
   log('warn', 'D-F: self-update did not come up healthy, auto-rolling back to the previous build', {
-    withData: decision.withData,
     targetVersion: marker.targetVersion,
     previousVersion: marker.previousVersion,
     bootAttempts: marker.bootAttempts,
     firstBootAt: marker.firstBootAt,
   });
-  // The rollback intent and the restored build's fresh boot window were recorded above, inside the
-  // lock, BEFORE spawning: rollback.sh unloads this job and could cut a slow send short.
-  if (claimAlertFor('auto_rollback', imRecipient)) {
-    const toVer = marker.previousVersion ? ` (${marker.previousVersion})` : '';
-    const data = decision.withData
-      ? ' together with your data as it was just before the update. Messages that arrived during the failed starts are kept in a copy set aside, not lost.'
-      : '.';
-    await sendSmartAlert(
-      imRecipient,
-      `Watchdog: a Dojo update did not start up correctly, so I am automatically putting the previous version${toVer} back${data} ` +
-      `The box will restart on its own in a minute. I will let you know if anything still looks wrong.`,
-    );
-    recordAlert('Auto-rollback to previous build initiated');
-  }
   const pid = spawnRollbackDetached(undefined, (err) => {
     log('error', 'D-F: rollback.sh could not be executed (async spawn error)', {
       error: err.message, script: ROLLBACK_SCRIPT,
     });
-  });
+  }, ['--auto']);
   if (pid === null) {
     log('error', 'D-F: rollback.sh could not be spawned (missing script or exec error)', { script: ROLLBACK_SCRIPT });
   } else {
     log('info', 'D-F: rollback.sh spawned detached', { pid, script: ROLLBACK_SCRIPT });
   }
   return true;
+}
+
+// rollback.sh --auto leaves its outcome on disk (it unloads this daemon while it works): tell it, once.
+async function tellRollbackResult(): Promise<void> {
+  const result = takeRollbackResult();
+  if (!result) return;
+  updateMarker((m) => (m ? afterRollbackResult(m, result) : null));
+  log(result.kind.startsWith('restored') ? 'info' : 'error', 'D-F: rollback.sh finished', { ...result });
+  const to = getImessageRecipient();
+  const key = result.kind.startsWith('restored') ? 'auto_rollback' : 'auto_rollback_failed';
+  if (claimAlertFor(key, to)) {
+    await sendSmartAlert(to, result.text);
+    recordAlert(`Auto-rollback: ${result.kind}`);
+  }
 }
 
 // A missing platform folder is a swap cut off between its two renames; nothing inside the platform
@@ -904,6 +906,7 @@ async function runCheck(): Promise<void> {
 
   // 1b. A PROVEN-failing self-update takes precedence over the generic cascade: roll back or
   // escalate, then short-circuit so we do not kickstart the same bad build and race rollback.sh.
+  await tellRollbackResult();
   if (!healthy && await maybeAutoRollback()) return;
 
   if (!healthy) {

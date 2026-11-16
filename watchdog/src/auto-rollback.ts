@@ -11,6 +11,8 @@ const DOJO_DIR = path.join(os.homedir(), '.dojo');
 export const UPDATE_STATE_PATH = path.join(DOJO_DIR, 'update-state.json');
 // rollback.sh sits beside ~/.dojo/platform (build-package.sh); the menu-bar uses the same script.
 export const ROLLBACK_SCRIPT = path.join(DOJO_DIR, 'scripts', 'rollback.sh');
+// rollback.sh --auto writes its outcome here: one line, `<kind><TAB><why>`.
+export const ROLLBACK_RESULT_PATH = path.join(DOJO_DIR, 'rollback-result');
 
 export const FAIL_BOOT_ATTEMPTS = 3;
 // Wall clock is for the WEDGED-BUT-ALIVE case only (a build that listens but never confirms health; a
@@ -176,11 +178,11 @@ export function updateMarker(
 
 export type RollbackDecision =
   | { action: 'none' }
-  | { action: 'rollback'; withData: boolean }
+  | { action: 'rollback' }
   | { action: 'escalate'; reason: 'exhausted' };
 
-// PURE gate. Roll back ONLY on a proven failing self-update episode, NEVER on a generic outage; when the
-// failed build changed the data, rollback.sh puts back the copy from before it too.
+// PURE gate. Roll back ONLY on a proven failing self-update episode, NEVER on a generic outage; rollback.sh
+// decides whether the data goes back too, and says what it did (`RollbackResult`).
 export function decideAutoRollback(marker: UpdateMarker | null, nowMs: number): RollbackDecision {
   if (!marker) return { action: 'none' };
   // Only a proven self-update episode is actionable; any other phase is a generic outage: hands off.
@@ -194,7 +196,7 @@ export function decideAutoRollback(marker: UpdateMarker | null, nowMs: number): 
   if (!failing) return { action: 'none' };
 
   if (marker.rollbackCount >= MAX_AUTO_ROLLBACKS) return { action: 'escalate', reason: 'exhausted' };
-  return { action: 'rollback', withData: marker.migrationsRanDuringEpisode };
+  return { action: 'rollback' };
 }
 
 // Written right BEFORE spawning rollback.sh: bump the tally and anchor a FRESH boot window at the
@@ -222,6 +224,26 @@ export function toFailedPermanently(marker: UpdateMarker, reason: 'exhausted'): 
     failedReason: reason,
     updatedAt: new Date().toISOString(),
   };
+}
+
+/** What rollback.sh --auto did: the outcome word, and the sentence it wrote for the owner. */
+export interface RollbackResult { kind: 'restored-with-data' | 'restored' | 'unchanged' | 'failed'; text: string }
+
+/** Read and remove the outcome rollback.sh --auto left, or null when there is none. */
+export function takeRollbackResult(file: string = ROLLBACK_RESULT_PATH): RollbackResult | null {
+  try {
+    const [kind, text = ''] = fs.readFileSync(file, 'utf-8').trim().split('\t');
+    fs.rmSync(file, { force: true });
+    return kind === 'restored-with-data' || kind === 'restored' || kind === 'unchanged' || kind === 'failed' ? { kind, text } : null;
+  } catch { return null; }
+}
+
+/** The episode after the outcome: a rollback that changed nothing is not the one rollback spent, and
+ *  neither a refused nor a broken rollback is tried again. */
+export function afterRollbackResult(marker: UpdateMarker, r: RollbackResult): UpdateMarker | null {
+  if (r.kind === 'restored-with-data' || r.kind === 'restored') return null;
+  const rollbackCount = r.kind === 'unchanged' ? Math.max(0, marker.rollbackCount - 1) : marker.rollbackCount;
+  return { ...marker, phase: 'failed-permanently', failedReason: null, rollbackCount };
 }
 
 // Spawn rollback.sh DETACHED (own session, unref'd) so launchd unloading BOTH jobs cannot SIGTERM the

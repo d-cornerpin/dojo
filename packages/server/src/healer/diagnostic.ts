@@ -694,8 +694,8 @@ function getUpdateRollbackItems(): DiagnosticItem[] {
         code: 'UPDATE_FAILED_PERMANENTLY',
         title: 'A dojo update failed to start and could not be safely undone',
         detail:
-          `A recent dojo update did not boot correctly, and putting the previous version back once did not fix ` +
-          `it, so the system did NOT try again. The box may keep restarting or stay on a version that will not run. ` +
+          `A recent dojo update did not boot correctly, and the system could not undo it automatically (the watchdog ` +
+          `told the owner why). The box may keep restarting or stay on a version that will not run. ` +
           `This needs a person: open the dojo dashboard and restore a previous version from the update screen, or ` +
           `get help. Let the owner know in plain language that a dojo update failed and the box needs manual ` +
           `attention. Do NOT try to force another update.`,

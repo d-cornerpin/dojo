@@ -200,27 +200,34 @@ class DojoMenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         refreshRollbackItem()
     }
 
+    let rollbackScript = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent(".dojo/scripts/rollback.sh").path
+
     // The build rollback.sh would restore, asked of the script itself (--print-target), so the
-    // menu names the same build the rollback picks.
-    func newestBackup() -> (path: String, version: String)? {
+    // menu names the same build the rollback picks. `data` is the time of the data copy that goes
+    // back with it ("none" when there is no copy), or nil when the data stays as it is.
+    func newestBackup() -> (path: String, version: String, data: String?)? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/bash")
-        process.arguments = [FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".dojo/scripts/rollback.sh").path, "--print-target"]
+        process.arguments = [rollbackScript, "--print-target"]
         let pipe = Pipe()
         process.standardOutput = pipe
         guard (try? process.run()) != nil else { return nil }
-        let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let lines = (String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "")
+            .split(separator: "\n").map { String($0) }
         process.waitUntilExit()
-        guard !out.isEmpty else { return nil }
+        guard let out = lines.first, !out.isEmpty else { return nil }
         let name = (out as NSString).lastPathComponent
-        return (out, name.hasPrefix("platform.backup-") ? String(name.dropFirst("platform.backup-".count)) : name)
+        let data = lines.dropFirst().first.map { String($0.dropFirst("data ".count)) }
+        return (out, name.hasPrefix("platform.backup-") ? String(name.dropFirst("platform.backup-".count)) : name, data)
     }
 
     func refreshRollbackItem() {
         guard rollbackMenuItem != nil else { return }
-        if let backup = newestBackup() {
+        if !FileManager.default.fileExists(atPath: rollbackScript) {
+            rollbackMenuItem.title = "Roll Back…"
+            rollbackMenuItem.isEnabled = true
+        } else if let backup = newestBackup() {
             rollbackMenuItem.title = "Roll Back to \(backup.version)…"
             rollbackMenuItem.isEnabled = true
         } else {
@@ -230,24 +237,28 @@ class DojoMenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc func rollBack() {
-        guard let backup = newestBackup() else { return }
-
-        let confirm = NSAlert()
-        confirm.messageText = "Roll back DOJO to \(backup.version)?"
-        confirm.informativeText = "The current version will be set aside (kept for diagnosis) and the server restarted on \(backup.version). If the update changed your data, the copy taken just before it is put back too, and the newer data is kept under a dated name. Use this if an update left the server unable to start."
-        confirm.alertStyle = .warning
-        confirm.addButton(withTitle: "Roll Back")
-        confirm.addButton(withTitle: "Cancel")
-        NSApp.activate(ignoringOtherApps: true)
-        guard confirm.runModal() == .alertFirstButtonReturn else { return }
-
-        let scriptPath = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".dojo/scripts/rollback.sh").path
+        let scriptPath = rollbackScript
         guard FileManager.default.fileExists(atPath: scriptPath) else {
             showResult(title: "Rollback unavailable",
                        text: "rollback.sh was not found in ~/.dojo/scripts. Reinstall or update DOJO to get it.")
             return
         }
+        guard let backup = newestBackup() else { return }
+
+        var dataText = ""
+        if backup.data == "none" {
+            dataText = " The update changed your data and there is no copy of it from before the update, so Roll Back will stop and change nothing."
+        } else if let when = backup.data {
+            dataText = " Your data also goes back to the copy taken \(when). Everything since then is set aside in a dated copy, not deleted."
+        }
+        let confirm = NSAlert()
+        confirm.messageText = "Roll back DOJO to \(backup.version)?"
+        confirm.informativeText = "The current version will be set aside (kept for diagnosis) and the server restarted on \(backup.version).\(dataText) Use this if an update left the server unable to start."
+        confirm.alertStyle = .warning
+        confirm.addButton(withTitle: "Roll Back")
+        confirm.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        guard confirm.runModal() == .alertFirstButtonReturn else { return }
 
         statusMenuItem.title = "🟡 Rolling back to \(backup.version)..."
 

@@ -6,6 +6,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawnSync, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import Database from 'better-sqlite3';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = path.resolve(HERE, '../../../../..');
@@ -60,7 +61,9 @@ export function makeBox(prefix: string): Box {
   fs.mkdirSync(path.join(home, 'Library', 'LaunchAgents'), { recursive: true });
   fs.mkdirSync(dojo, { recursive: true });
   fs.mkdirSync(bin, { recursive: true });
-  fs.writeFileSync(path.join(bin, 'launchctl'), `#!/bin/sh\ncase "$1" in list) printf '1\\t0\\tcom.dojo.platform\\n-\\t0\\tcom.dojo.watchdog\\n'; exit 0;; esac\necho "$@" >> "${home}/launchctl.log"\nexit 0\n`, { mode: 0o755 });
+  // launchd's list follows load and unload (both start loaded), so restore-db.sh can see a stopped platform.
+  fs.writeFileSync(path.join(bin, 'launchctl'), `#!/bin/sh\ncase "$1" in list) [ -f "${home}/up" ] && printf '1\\t0\\tcom.dojo.platform\\n-\\t0\\tcom.dojo.watchdog\\n'; exit 0;; unload) rm -f "${home}/up";; load) touch "${home}/up";; esac\necho "$@" >> "${home}/launchctl.log"\nexit 0\n`, { mode: 0o755 });
+  fs.writeFileSync(path.join(home, 'up'), '');
   // The fake npm. NPM_MODE: ok | fail | enospc | nonative | kill (SIGKILLs the installer mid-run).
   fs.writeFileSync(path.join(bin, 'npm'), [
     '#!/bin/sh',
@@ -94,10 +97,10 @@ export function runInstaller(box: Box, env: Record<string, string>): DriverRun {
 }
 
 /** rollback.sh against the scratch box (its launchctl is the stub). */
-export function runRollbackSh(box: Box, args: string[] = []): { code: number; out: string } {
+export function runRollbackSh(box: Box, args: string[] = [], env: Record<string, string> = {}): { code: number; out: string } {
   try {
     const out = execFileSync('bash', [ROLLBACK_SH, ...args], {
-      env: { ...process.env, HOME: box.home, DOJO_HOME: box.home, PATH: `${box.bin}:${process.env.PATH ?? ''}` },
+      env: { ...process.env, HOME: box.home, DOJO_HOME: box.home, PATH: `${box.bin}:${process.env.PATH ?? ''}`, DOJO_PORT: '1', ...env },
       encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'],
     });
     return { code: 0, out };
@@ -113,4 +116,30 @@ export function readJson(p: string): Record<string, unknown> | null {
 
 export function versionAt(dir: string): string | null {
   return (readJson(path.join(dir, 'package.json'))?.version as string | undefined) ?? null;
+}
+
+/** A database at a level: `_migrations` rows in apply order, and a `which` row naming the copy. */
+export function levelDb(file: string, applied: string[], which: string): string {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const db = new Database(file);
+  db.exec("CREATE TABLE _migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (datetime('now'))); CREATE TABLE which (v TEXT)");
+  for (const n of applied) db.prepare('INSERT INTO _migrations (name) VALUES (?)').run(n);
+  db.prepare('INSERT INTO which VALUES (?)').run(which);
+  db.close();
+  return file;
+}
+
+/** The `which` row of a database made by `levelDb`. */
+export function whichDb(file: string): string {
+  const db = new Database(file, { readonly: true });
+  try { return (db.prepare('SELECT v FROM which').get() as { v: string }).v; } finally { db.close(); }
+}
+
+/** A tree of `version` carrying migration files where an installed build keeps them. */
+export function makeTreeWithSteps(dir: string, version: string, files: string[]): string {
+  makeTree(dir, version);
+  const steps = path.join(dir, 'packages', 'server', 'dist', 'db', 'migrations');
+  fs.mkdirSync(steps, { recursive: true });
+  for (const f of files) fs.writeFileSync(path.join(steps, f), '-- step\n');
+  return dir;
 }
