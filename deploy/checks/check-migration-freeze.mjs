@@ -72,26 +72,34 @@ for (const name of fs.readdirSync(path.join(ROOT, DIR)).filter((f) => f.endsWith
   const rel = `${DIR}/${name}`;
   const nowSum = migrationChecksum(fs.readFileSync(path.join(ROOT, rel), 'utf-8'));
   const revs = git(['log', '--format=%H', '--follow', '--', rel]).split('\n').filter(Boolean);
-  const versions = new Map();                       // checksum -> newest rev that produced it
+  const versions = new Map();                       // checksum -> every rev that produced it, newest first
   for (const rev of revs) {
     const text = showAt(rev, rel);
     if (text === null) continue;
     const sum = migrationChecksum(text);
-    if (!versions.has(sum)) versions.set(sum, rev);
+    versions.set(sum, [...(versions.get(sum) ?? []), rev]);
   }
   if (versions.size === 1 && versions.has(nowSum)) { single++; continue; }
   if (versions.size === 0) { single++; continue; }        // never committed: a brand-new migration
 
   // Every released version that differs from the tree fails, except one the described tag itself
-  // superseded (in its history, other bytes at the tag): that is older debt, printed but not failed.
+  // superseded (every released commit of it in the tag's history, other bytes at the tag): older
+  // debt, printed but not failed. A commit in the tag's history shipped in it.
   const tagText = tag ? showAt(tag, rel) : null;
   const tagSum = tagText === null ? null : migrationChecksum(tagText);
-  for (const [sum, rev] of versions) {
+  for (const [sum, sumRevs] of versions) {
     if (sum === nowSum) continue;
-    const releasedIn = isReleased(rev);
-    if (releasedIn === null) { preRelease.push({ name, rev: rev.slice(0, 8) }); continue; }
-    const row = { name, rev: rev.slice(0, 8), where: `released in ${releasedIn}`, oldSum: sum, nowSum };
-    if (tagSum !== null && sum !== tagSum && inTagHistory(rev)) debt.push(row);
+    let rev = null;
+    let outsideTag = false;
+    for (const r of sumRevs) {
+      const inTag = tag !== null && inTagHistory(r);
+      if (!inTag && isReleased(r) === null) continue;
+      rev = r;
+      outsideTag ||= !inTag;
+    }
+    if (rev === null) { preRelease.push({ name, rev: sumRevs[0].slice(0, 8) }); continue; }
+    const row = { name, rev: rev.slice(0, 8), where: `released in ${isReleased(rev)}`, oldSum: sum, nowSum };
+    if (tagSum !== null && sum !== tagSum && !outsideTag) debt.push(row);
     else changed.push(row);
   }
 }

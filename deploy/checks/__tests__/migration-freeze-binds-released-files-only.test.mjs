@@ -92,3 +92,18 @@ test('bytes a stable tag shipped stay frozen even when they match no tag the bra
     assert.match(r.stderr, /001_released\.sql differs .*released in v1\.0\.1\b/);
   } finally { fs.rmSync(repo.root, { recursive: true, force: true }); }
 });
+
+test('a released migration edited, reverted, then edited again is still frozen', () => {
+  const repo = scratchRepo();
+  try {
+    repo.write('001_released.sql', 'CREATE TABLE a (id INTEGER, oops TEXT);\n');
+    repo.commit('edit a released migration');
+    repo.write('001_released.sql', 'CREATE TABLE a (id INTEGER);\n');
+    repo.commit('revert it');
+    repo.write('001_released.sql', 'CREATE TABLE a (id INTEGER, again TEXT);\n');
+    repo.commit('edit it again');
+    const r = repo.run();
+    assert.equal(r.status, 1, r.stdout + r.stderr);
+    assert.match(r.stderr, /001_released\.sql differs .*released in v1\.0\.0/);
+  } finally { fs.rmSync(repo.root, { recursive: true, force: true }); }
+});
