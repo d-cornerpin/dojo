@@ -798,7 +798,13 @@ function assemblePMView(a: {
   const pinned = estimateTokens(v.pinned) <= left ? v.pinned : '';
   left -= estimateTokens(pinned);
   const conversation = chargeTurnAttachments(agentId, a.modelId, v.tail, v.room);
-  const tail = budgetFreshTail(conversation, Math.max(0, left), block);
+  // What did not fit is said in one line after the conversation, never left out silently; its room is kept first.
+  const leftOut = (older: boolean): string => {
+    const parts = [v.pinned && !pinned ? 'your pinned memories' : '', v.file && !file ? 'the file of this task' : '', older ? 'older messages of this conversation' : ''];
+    return parts.some(Boolean) ? `(Left out of this view to fit: ${parts.filter(Boolean).join(', ')}. They are still stored.)` : '';
+  };
+  const tail = budgetFreshTail(conversation, Math.max(0, left - estimateTokens(leftOut(true))), block);
+  const omitted = leftOut(tail.length < conversation.length);
   if (a.dryRun) {
     const kept = [...tail, ...present];
     const fit = { budget: a.contentBudget, cached: 0, before: kept, kept, outOfViewThroughSeq: 0 };
@@ -815,7 +821,7 @@ function assemblePMView(a: {
   const text = (t: string, lane: string): LaneMessage[] =>
     (t ? [tagMessageLane({ role: 'user' as const, content: t }, lane)] : []);
   const messages = applyIntegrityPass(
-    [...text(pinned, 'lane.vault'), ...past.messages, ...text(file, 'lane.pm-tail'), ...now.messages], agentId,
+    [...text(pinned, 'lane.vault'), ...past.messages, ...text(file, 'lane.pm-tail'), ...text(omitted, 'lane.pm-tail'), ...now.messages], agentId,
   );
   const spent = renderTokens(messages);
   const report: AllocationReport = {

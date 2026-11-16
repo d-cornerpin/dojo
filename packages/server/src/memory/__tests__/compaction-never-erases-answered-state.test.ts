@@ -71,7 +71,6 @@ import { insertMessage } from '../message-store.js';
 import { runMigrations } from '../../db/migrations.js';
 import { generateSummary } from '../summarize.js';
 import { runLeafCompaction, buildLeafSummaryInput, NO_CONVERSATION_PLACEHOLDER } from '../compaction.js';
-import { getCompactedMessageIds } from '../dag.js';
 import type { Message } from '@dojo/shared';
 import { FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
@@ -110,6 +109,11 @@ function stampAnswer(askId: string, answerId: string): void {
 function summaries(): Array<{ id: string; content: string; token_count: number }> {
   return db().prepare('SELECT id, content, token_count FROM summaries').all() as never;
 }
+
+/** The rows some summary of this agent covers. */
+const compactedIds = (): Set<string> => new Set((db().prepare(
+  'SELECT sm.message_id AS id FROM summary_messages sm JOIN summaries s ON s.id = sm.summary_id WHERE s.agent_id = ?',
+).all(AGENT) as Array<{ id: string }>).map((r) => r.id));
 
 // ════════════════════════════════════════════════════════════════════
 // 1. THE INCIDENT — an empty model result is a REFUSAL, not a summary.
@@ -172,7 +176,7 @@ describe('an empty summariser result never reclaims the rows it did not read', (
 
     expect(created).toBe(0);
     expect(summaries()).toHaveLength(0);
-    const compacted = getCompactedMessageIds(AGENT);
+    const compacted = compactedIds();
     expect(compacted.has(ask.id)).toBe(false);
     expect(compacted.has(answer.id)).toBe(false);
   });
@@ -186,7 +190,7 @@ describe('an empty summariser result never reclaims the rows it did not read', (
     const created = await runLeafCompaction(AGENT, MODEL, SMALL_WINDOW);
     expect(created).toBe(1);
     expect(summaries()[0].content).toBe('a real summary of the span');
-    expect(getCompactedMessageIds(AGENT).has(ask.id)).toBe(true);
+    expect(compactedIds().has(ask.id)).toBe(true);
   });
 });
 
@@ -213,7 +217,7 @@ describe('the placeholder path is only taken over spans the ledger calls plumbin
 
     expect(created).toBe(0);
     expect(summaries()).toHaveLength(0);
-    expect(getCompactedMessageIds(AGENT).has(ask.id)).toBe(false);
+    expect(compactedIds().has(ask.id)).toBe(false);
   });
 
   it('control: a genuinely-plumbing-only chunk still takes the placeholder path', async () => {
@@ -235,7 +239,7 @@ describe('the placeholder path is only taken over spans the ledger calls plumbin
     // placeholder, each one conversation (chunks never cross conversations).
     expect(created).toBe(2);
     for (const s of summaries()) expect(s.content).toBe(NO_CONVERSATION_PLACEHOLDER);
-    const compacted = getCompactedMessageIds(AGENT);
+    const compacted = compactedIds();
     expect(compacted.has(poke.id)).toBe(true);
     expect(compacted.has(a2a.id)).toBe(true);
   });

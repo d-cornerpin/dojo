@@ -3,6 +3,7 @@
 // Anything shown to a person reads the fail-closed `chat_messages` view instead.
 
 import { getDb } from '../db/connection.js';
+import { estimateTokensFromChars } from './budget.js';
 import type { Message } from '@dojo/shared';
 import { deriveOrigin, legacyOriginInputs } from '@dojo/shared';
 
@@ -150,25 +151,35 @@ export function boardAgentRows(
   return { tail: tail.map(rowToMessage), present: present.filter((r) => !shown.has(r.id)).map(rowToMessage) };
 }
 
-/** Everything EXCEPT the newest `freshTailCount` rows, oldest-first. Must stay exactly complementary with
- *  `getRecentMessages` (same order, same window) or the tail-to-summary handoff drops or duplicates rows. */
-export function getMessagesOutsideFreshTail(agentId: string, freshTailCount: number): Message[] {
-  const db = getDb();
-  const sessionBoundary = getSessionBoundary(agentId);
-  const params: Record<string, unknown> = { agentId, freshTailCount };
-  const clauses = ['agent_id = @agentId'];
-  if (sessionBoundary) { clauses.push('created_at >= (unixepoch(@boundary) * 1000)'); params.boundary = sessionBoundary; }
-  const where = clauses.join(' AND ');
+export interface SeqRange { fromSeq?: number; throughSeq?: number }
 
-  const rows = db.prepare(`
-    SELECT ${SELECT_COLS} FROM messages
-     WHERE ${where}
-       AND seq < (SELECT MIN(seq) FROM (
-             SELECT seq FROM messages WHERE ${where} ORDER BY seq DESC LIMIT @freshTailCount
-           ))
+/** This session's rows in no summary of the agent's, oldest first, older than its newest `floorRows` rows (the window
+ *  `getRecentMessages` reads, so the tail-to-summary handoff drops and duplicates nothing) and within `range`. The
+ *  session's first seq bounds the walk, so the (agent_id, seq) index never reaches rows before it. */
+function unsummarised(agentId: string, floorRows: number, range: SeqRange, cols: string): unknown[] {
+  const session = 'agent_id = @agentId AND (@boundary IS NULL OR created_at >= (unixepoch(@boundary) * 1000))';
+  return getDb().prepare(`
+    SELECT ${cols} FROM messages m
+     WHERE ${session}
+       AND seq < (SELECT MIN(seq) FROM (SELECT seq FROM messages WHERE ${session} ORDER BY seq DESC LIMIT @floorRows))
+       AND seq >= MAX(COALESCE(@from, 0), COALESCE((SELECT MIN(seq) FROM messages
+             WHERE agent_id = @agentId AND created_at >= (unixepoch(@boundary) * 1000)), 0))
+       AND seq <= COALESCE(@through, 9223372036854775807)
+       AND NOT EXISTS (SELECT 1 FROM summary_messages sm JOIN summaries s ON s.id = sm.summary_id
+                        WHERE sm.message_id = m.id AND s.agent_id = @agentId)
      ORDER BY seq ASC
-  `).all(params) as MessageRow[];
-  return rows.map(rowToMessage);
+  `).all({ agentId, floorRows, boundary: getSessionBoundary(agentId), from: range.fromSeq ?? null, through: range.throughSeq ?? null });
+}
+
+export function getUnsummarisedRows(agentId: string, floorRows: number, range: SeqRange = {}): Message[] {
+  return (unsummarised(agentId, floorRows, range, SELECT_COLS) as MessageRow[]).map(rowToMessage);
+}
+
+/** The same rows by count and token cost only: a row's text is read only when it has no stored count. */
+export function unsummarisedCost(agentId: string, floorRows: number, range: SeqRange): { rows: number; tokens: number } {
+  const rows = unsummarised(agentId, floorRows, range, 'token_count, CASE WHEN token_count IS NULL THEN length(content) END AS chars') as
+    Array<{ token_count: number | null; chars: number | null }>;
+  return { rows: rows.length, tokens: rows.reduce((t, r) => t + (r.token_count ?? estimateTokensFromChars(r.chars ?? 0)), 0) };
 }
 
 // The fresh-tail row floor is `getFreshTailCount` (`memory/budget.ts`); `tail-horizon.ts` `rowsLeavingView`

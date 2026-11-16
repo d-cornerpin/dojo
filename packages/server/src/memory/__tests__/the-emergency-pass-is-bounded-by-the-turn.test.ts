@@ -95,7 +95,7 @@ vi.mock('../summarize.js', async (importOriginal) => {
 });
 
 import { runMigrations } from '../../db/migrations.js';
-import { checkAndCompact, rebuildContextItems } from '../compaction.js';
+import { checkAndCompact } from '../compaction.js';
 import { mergeUntriedNotes } from '../merge-notes.js';
 import { forcedCompactionOptions, __resetBrakesForTests } from '../compaction-brakes.js';
 import { __resetEstimateCacheForTests } from '../assembled-estimate-cache.js';
@@ -144,7 +144,7 @@ function seedBox(): void {
  * `seedSummaries` and `seedMixed` used to write `summaries` rows and NO `summary_messages`
  * links, so every fixture here held summaries that covered nothing — a boundary-less agent a
  * real box cannot produce. t100 already hit this for one clause further down (see its note
- * around `getCompactedMessageIds`) and linked that summary by hand; this does the same thing
+ * around `old-39`) and linked that summary by hand; this does the same thing
  * once, for every seeder, so the shape is right by construction rather than per clause.
  *
  * ⚠ WHAT THIS DOES AND DOES NOT BUY, stated so nobody reads more into it. It closes the
@@ -183,7 +183,6 @@ function seedSummaries(count: number, depth: number, tokensEach: number): void {
   });
   tx();
   linkSeededSummaries(Array.from({ length: count }, (_, i) => `sum-d${depth}-${i}`));
-  rebuildContextItems(AGENT);
 }
 
 /** The raw cost of the summaries the agent actually holds. */

@@ -706,8 +706,8 @@ function wakeupDreamer(cycleMessage: string): void {
   const db = getDb();
   const dreamerId = getDreamerAgentId();
 
-  // Fresh-start reset: each batch message is self-contained, and carried-over messages and compaction
-  // summaries would fill the context window and loop compaction/continuity briefs.
+  // Fresh-start reset: each batch message is self-contained, so the session starts again and carried-over
+  // messages leave the view. Its summaries stay, as every agent's do across a reset.
   const boundary = new Date().toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
   db.prepare("UPDATE agents SET session_started_at = ?, updated_at = ?, config = json_remove(COALESCE(config, '{}'), '$.scratchpad') WHERE id = ?")
     .run(boundary, boundary, dreamerId);
@@ -715,9 +715,6 @@ function wakeupDreamer(cycleMessage: string): void {
   // Like the other reset paths, carry any fired-but-undelivered engine event across the boundary (a no-op
   // for the Dreamer, kept so every reset site is consistent).
   rehomeUnclaimedEngineEvents(dreamerId, boundary);
-
-  // Clear accumulated compaction summaries (context items)
-  db.prepare('DELETE FROM context_items WHERE agent_id = ?').run(dreamerId);
 
   // Forget the per-session scratch (fire-and-forget, best effort; this function is sync). A no-op for a
   // service agent, called so the five doors give one answer (see `agent/session-forget.ts`).

@@ -67,7 +67,7 @@ vi.mock('../../agent/model.js', async (importOriginal) => {
 });
 
 import { runMigrations } from '../../db/migrations.js';
-import { checkAndCompact, rebuildContextItems } from '../compaction.js';
+import { checkAndCompact } from '../compaction.js';
 import { compactionIsBraked, __resetBrakesForTests } from '../compaction-brakes.js';
 import { compactionFailureReason, compactionFailingCardText } from '../compaction-defect.js';
 import { __resetEstimateCacheForTests } from '../assembled-estimate-cache.js';
@@ -119,7 +119,6 @@ function seedSummaries(count: number, tokensEach: number): void {
       link.run(`sum-${i}`, oldest);
     }
   })();
-  rebuildContextItems(AGENT);
 }
 
 /** A model that writes what it was asked for. */

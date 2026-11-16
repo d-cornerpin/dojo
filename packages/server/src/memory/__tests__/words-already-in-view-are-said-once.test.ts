@@ -116,8 +116,6 @@ function condense(messageIds: string[]): void {
      VALUES ('sum-asks', ?, 1, 'leaf', 'The owner asked for twelve ledger reconciliations.', 12, ?,
              datetime('now'), datetime('now'), datetime('now'))`,
   ).run(AGENT, messageIds.length);
-  db().prepare("INSERT INTO context_items (agent_id, item_type, item_id, ordinal) VALUES (?, 'summary', 'sum-asks', 0)")
-    .run(AGENT);
   const link = db().prepare('INSERT INTO summary_messages (summary_id, message_id) VALUES (?, ?)');
   for (const id of messageIds) link.run('sum-asks', id);
 }

@@ -70,7 +70,7 @@ vi.mock('../../agent/model.js', () => ({
   getProviderCeilingTokens: () => null,
 }));
 
-const fault = vi.hoisted(() => ({ leafFor: null as string | null, contextItemsOnce: false }));
+const fault = vi.hoisted(() => ({ leafFor: null as string | null, swapCrashOnce: false }));
 vi.mock('../dag.js', async (orig) => {
   const real = await orig<typeof import('../dag.js')>();
   return {
@@ -79,15 +79,9 @@ vi.mock('../dag.js', async (orig) => {
       if (fault.leafFor && a[0] === fault.leafFor) throw new Error('simulated defect row');
       return real.createLeafSummary(...a);
     },
-  };
-});
-vi.mock('../compaction.js', async (orig) => {
-  const real = await orig<typeof import('../compaction.js')>();
-  return {
-    ...real,
-    rebuildContextItems: (agentId: string) => {
-      if (fault.contextItemsOnce) { fault.contextItemsOnce = false; throw new Error('simulated crash before the view was rebuilt'); }
-      return real.rebuildContextItems(agentId);
+    deleteSummary: (id: string) => {
+      if (fault.swapCrashOnce) { fault.swapCrashOnce = false; throw new Error('simulated crash before the swap finished'); }
+      return real.deleteSummary(id);
     },
   };
 });
@@ -95,7 +89,6 @@ vi.mock('../compaction.js', async (orig) => {
 import { runMigrations } from '../../db/migrations.js';
 import { insertMessage } from '../message-store.js';
 import { createLeafSummary, createCondensedSummary } from '../dag.js';
-import { rebuildContextItems } from '../compaction.js';
 import { assembleContext } from '../assembler.js';
 import { runSummaryRebuildBatch } from '../summary-rebuild.js';
 import { runLegacyRebuildAtBoot } from '../legacy-rebuild-boot.js';
@@ -147,17 +140,17 @@ function olderNote(ids: string[], text = 'Mixed: the owner asked about crates; d
 }
 
 const live = (): Array<{ id: string; subject_key: string | null; rebuild_state: string | null }> =>
-  db().prepare(`SELECT s.id, s.subject_key, s.rebuild_state FROM summaries s JOIN context_items ci ON ci.item_id = s.id
-                 WHERE ci.agent_id = ? AND ci.item_type = 'summary' ORDER BY s.earliest_at, s.id`).all(AGENT) as Array<{ id: string; subject_key: string | null; rebuild_state: string | null }>;
+  db().prepare(`SELECT s.id, s.subject_key, s.rebuild_state FROM summaries s
+                 WHERE s.agent_id = ? AND s.id NOT IN (SELECT parent_id FROM summary_parents) ORDER BY s.earliest_at, s.id`).all(AGENT) as Array<{ id: string; subject_key: string | null; rebuild_state: string | null }>;
 const coverCount = (id: string): number =>
-  (db().prepare(`SELECT COUNT(*) AS k FROM summary_messages sm JOIN context_items ci ON ci.item_id = sm.summary_id WHERE sm.message_id = ?`).get(id) as { k: number }).k;
+  (db().prepare(`SELECT COUNT(*) AS k FROM summary_messages sm JOIN summaries s ON s.id = sm.summary_id WHERE sm.message_id = ? AND s.id NOT IN (SELECT parent_id FROM summary_parents)`).get(id) as { k: number }).k;
 const viewOf = async (): Promise<string> => JSON.stringify((await assembleContext(AGENT, WRITER)).messages);
 
 beforeEach(() => {
   n = 0;
   model.calls = [];
   model.refuseCall = 0;
-  fault.leafFor = null; fault.contextItemsOnce = false;
+  fault.leafFor = null; fault.swapCrashOnce = false;
   activeRuns.clear();
   __resetSummaryWriterHealthForTests();
   __resetBreakersForTests();
@@ -176,7 +169,6 @@ describe('t144 — the 14-day scope, both ways', () => {
     const recent = history(3, 3);
     olderNote(old, 'Old mixed note.');
     olderNote(recent);
-    rebuildContextItems(AGENT);
     await runSummaryRebuildBatch();
     const rows = live();
     expect(rows.filter((r) => r.rebuild_state === 'legacy_mixed')).toHaveLength(1);
@@ -193,7 +185,6 @@ describe('t144 — the 14-day scope, both ways', () => {
   it('the boundary itself: 13 days in scope, 15 days out (the migration\'s own rule)', async () => {
     olderNote(history(1, 13));
     olderNote(history(1, 15));
-    rebuildContextItems(AGENT);
     await runSummaryRebuildBatch();
     const states = (db().prepare('SELECT rebuild_state AS s FROM summaries WHERE agent_id = ? AND rebuild_state IS NOT NULL').all(AGENT) as Array<{ s: string }>).map((r) => r.s);
     expect(states).toEqual(['legacy_mixed']);
@@ -204,7 +195,6 @@ describe('t144 — the 14-day scope, both ways', () => {
 describe('t144 — no count: every queued note in one run, paced only by real signals', () => {
   it('forty queued notes are all rebuilt in one run (the old 30-per-night batch is gone)', async () => {
     for (let i = 0; i < 40; i++) olderNote(history(1, 2));
-    rebuildContextItems(AGENT);
     const stats = await runSummaryRebuildBatch();
     expect(stats.legacy?.notesReplaced).toBe(40);
     expect(live().every((r) => r.rebuild_state === null && r.subject_key?.startsWith('conv:'))).toBe(true);
@@ -212,7 +202,6 @@ describe('t144 — no count: every queued note in one run, paced only by real si
 
   it('an agent mid-turn waits: nothing is dialled for it, its older note stays; idle again, it is rebuilt', async () => {
     olderNote(history(2, 2));
-    rebuildContextItems(AGENT);
     activeRuns.add(AGENT);
     const busy = await runSummaryRebuildBatch();
     expect(model.calls).toHaveLength(0);
@@ -225,7 +214,6 @@ describe('t144 — no count: every queued note in one run, paced only by real si
 
   it('the money guardrail: over today\'s limit, nothing is dialled and the note waits, labelled', async () => {
     olderNote(history(2, 2));
-    rebuildContextItems(AGENT);
     setGlobalBudget(0);
     const stats = await runSummaryRebuildBatch();
     expect(model.calls).toHaveLength(0);
@@ -237,7 +225,6 @@ describe('t144 — no count: every queued note in one run, paced only by real si
 describe('t144 — the rebuild fails well (lifecycle shapes)', () => {
   it('a refused dial leaves the older note in view, labelled; the next run resumes WITHOUT re-paying the chunk that landed', async () => {
     olderNote(history(2, 2));
-    rebuildContextItems(AGENT);
     model.refuseCall = 2;   // the second conversation's chunk is refused
     const first = await runSummaryRebuildBatch();
     expect(first.legacy?.waiting[AGENT]).toMatch(/refused/);
@@ -255,7 +242,6 @@ describe('t144 — the rebuild fails well (lifecycle shapes)', () => {
 
   it('downgrade, then upgrade: notes an older version wrote in between (one condensing a queued note) are labelled and rebuilt', async () => {
     olderNote(history(2, 2));
-    rebuildContextItems(AGENT);
     await runSummaryRebuildBatch();          // the upgrade's first run: rebuilt
     expect(live()).toHaveLength(2);
     // Downgraded: an older version writes a mixed leaf and condenses it with a fresh one, labelling nothing.
@@ -263,7 +249,6 @@ describe('t144 — the rebuild fails well (lifecycle shapes)', () => {
     const b = olderNote(history(2, 1));
     const parent = createCondensedSummary(AGENT, 'Older version condensed two mixed notes.', 300, [a, b], 1, new Date().toISOString(), new Date().toISOString());
     db().prepare('UPDATE summaries SET subject_key = NULL, rebuild_state = NULL WHERE id = ?').run(parent.id);
-    rebuildContextItems(AGENT);
     // Upgraded again: the job labels what nobody labelled, queues the recent mixed parent, rebuilds it.
     const stats = await runSummaryRebuildBatch();
     expect(stats.legacy?.classified).toBeGreaterThan(0);
@@ -273,7 +258,6 @@ describe('t144 — the rebuild fails well (lifecycle shapes)', () => {
 
   it('a conversation deleted while its rebuild was queued: the rest is rebuilt; nothing points at a deleted row', async () => {
     olderNote(history(2, 2));
-    rebuildContextItems(AGENT);
     model.refuseCall = 2;
     await runSummaryRebuildBatch();          // one conversation staged, the other refused
     db().prepare('DELETE FROM messages WHERE conversation_id = ?').run(MAIL);
@@ -289,7 +273,6 @@ describe('t144 — the rebuild fails well (lifecycle shapes)', () => {
   it('every source row gone: the note keeps its content, labelled "conversation unknown", and is never dialled', async () => {
     olderNote(history(1, 2), 'Note whose rows were all deleted.');
     db().prepare('DELETE FROM messages WHERE agent_id = ?').run(AGENT);
-    rebuildContextItems(AGENT);
     await runSummaryRebuildBatch();
     expect(model.calls).toHaveLength(0);
     const row = db().prepare('SELECT rebuild_state, content FROM summaries WHERE agent_id = ?').get(AGENT) as { rebuild_state: string; content: string };
@@ -308,13 +291,12 @@ function seedOther(): string {
   return olderNote(history(2, 2, OTHER, OTHER_CONVS), 'Second agent mixed note.', OTHER);
 }
 const liveFor = (agent: string): number =>
-  (db().prepare("SELECT COUNT(*) AS k FROM summaries s JOIN context_items ci ON ci.item_id = s.id WHERE ci.agent_id = ? AND ci.item_type = 'summary' AND s.subject_key LIKE 'conv:%'").get(agent) as { k: number }).k;
+  (db().prepare("SELECT COUNT(*) AS k FROM summaries s WHERE s.agent_id = ? AND s.id NOT IN (SELECT parent_id FROM summary_parents) AND s.subject_key LIKE 'conv:%'").get(agent) as { k: number }).k;
 
 describe('t144 round 2 — one agent\'s failure never starves the others (I1)', () => {
   it('a throw while swapping the first agent is logged against it; the second agent is still rebuilt', async () => {
     olderNote(history(2, 2));
     seedOther();
-    rebuildContextItems(AGENT); rebuildContextItems(OTHER);
     fault.leafFor = AGENT;
     const stats = await runSummaryRebuildBatch();
     expect(stats.legacy?.waiting[AGENT]).toMatch(/simulated defect row/);
@@ -328,8 +310,7 @@ describe('t144 round 2 — covered rows and rows in view change together (I4)', 
   it('a crash right after the swap leaves the older note in view and every row covered once; the next run finishes without paying again', async () => {
     const ids = history(2, 2);
     olderNote(ids);
-    rebuildContextItems(AGENT);
-    fault.contextItemsOnce = true;
+    fault.swapCrashOnce = true;
     const first = await runSummaryRebuildBatch();
     expect(first.legacy?.waiting[AGENT]).toMatch(/simulated crash/);
     for (const id of ids) expect(coverCount(id), `${id} is covered AND in view`).toBe(1);
@@ -384,7 +365,6 @@ describe('t144 round 2 — the contamination pass is paced like the rebuild: age
     const a = insertMessage({ agentId: AGENT, role: 'user', lane: 'owner', conversationId: DASH, content: PROSE });
     const b = insertMessage({ agentId: AGENT, role: 'assistant', lane: 'owner', conversationId: DASH, content: PROSE });
     const s = createLeafSummary(AGENT, '═══ DREAM CYCLE ═══ the crew recounted crates.', 100, [a.id, b.id], new Date().toISOString(), new Date().toISOString());
-    rebuildContextItems(AGENT);
     return s.id;
   }
   const contentOf = (id: string): string => (db().prepare('SELECT content FROM summaries WHERE id = ?').get(id) as { content: string }).content;
@@ -421,7 +401,6 @@ describe('t144 round 2 — the rebuild also starts once after an update boots, i
   const queuedNote = (): void => { db().prepare("UPDATE summaries SET rebuild_state = 'legacy_mixed_rebuild', subject_key = NULL WHERE id = ?").run(olderNote(history(2, 2))); };
   it('with a queued note it rebuilds the legacy notes and only them (the contamination pass is not run)', async () => {
     queuedNote();
-    rebuildContextItems(AGENT);
     const stats = await runLegacyRebuildAtBoot();
     expect(stats?.notesReplaced).toBe(1);
     expect(live()).toHaveLength(2);
@@ -430,7 +409,6 @@ describe('t144 round 2 — the rebuild also starts once after an update boots, i
   it('t145: it says it is starting, with the queued count, before the work (the pass used to log nothing until it finished)', async () => {
     bootLog.length = 0;
     queuedNote();
-    rebuildContextItems(AGENT);
     await runLegacyRebuildAtBoot();
     expect(bootLog[0]?.[0]).toBe('Older mixed notes: boot rebuild starting');
     expect(bootLog[0]?.[1]).toEqual({ queued: 1 });
@@ -449,7 +427,6 @@ describe('t144 round 2 — the rebuild also starts once after an update boots, i
 
   it('it does not overlap the nightly job: while one run holds the guard, the boot start steps aside', async () => {
     queuedNote();
-    rebuildContextItems(AGENT);
     const nightly = runSummaryRebuildBatch();
     expect(await runLegacyRebuildAtBoot()).toBeNull();
     await nightly;

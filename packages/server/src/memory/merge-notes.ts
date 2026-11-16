@@ -23,8 +23,9 @@ const BATCH = 2;
 
 export type RefusedStage = 'summary_writer_unavailable' | 'summariser_refused' | 'summariser_threw';
 
-/** `stage` is set only when a run that merged nothing met a refusal, or a writer that could not answer. */
-export interface MergeOutcome { created: number; tokensReclaimed: number; stage: RefusedStage | null; detail: string | null }
+/** `stage` is set only when a run that merged nothing met a refusal, or a writer that could not answer; `rested`
+ *  counts the notes this run rested on a refused pair. */
+export interface MergeOutcome { created: number; tokensReclaimed: number; stage: RefusedStage | null; detail: string | null; rested: number }
 
 const refusedBy = (writer: string, note: Summary): boolean => waiting(note.agentId, writer, spanKeyOf([note])) === 'cannot-hold';
 
@@ -44,7 +45,7 @@ function nextBatch(agentId: string, writer: string, tried: ReadonlySet<string>):
 /** Merge until no depth holds two untried notes. A verdict on a pair rests its older note and the run goes on; a
  *  refusal about the writer ends the run with no note marked, as do the owner's Stop and an abort. */
 export async function mergeUntriedNotes(agentId: string, writer: string, abortSignal?: AbortSignal): Promise<MergeOutcome> {
-  const out: MergeOutcome = { created: 0, tokensReclaimed: 0, stage: null, detail: null };
+  const out: MergeOutcome = { created: 0, tokensReclaimed: 0, stage: null, detail: null, rested: 0 };
   const tried = new Set<string>();
   let refusal: string | null = null;   // a writer's refusal of a batch: told when the run merged nothing
   const ended = (stage: RefusedStage, detail: string): MergeOutcome => (out.created > 0 ? out : { ...out, stage, detail });
@@ -74,6 +75,7 @@ export async function mergeUntriedNotes(agentId: string, writer: string, abortSi
     } else if ((summary.tooBig && !summary.noRoom && !summary.forNow) || summary.checkFailed) {
       tried.add(batch[0].id);   // a verdict on the pair: its older note rests; the newer gets one more partner
       markWaiting(agentId, writer, spanKeyOf([batch[0]]), 'cannot-hold');
+      out.rested += 1;
     } else {   // about the writer and the moment (no memory free, not answering, an empty answer): no note is marked
       logger.warn('SUMMARY_REFUSED a merge was left unmerged', { depth, parentCount: batch.length, reason: summary.reason }, agentId);
       refusal = summary.reason;

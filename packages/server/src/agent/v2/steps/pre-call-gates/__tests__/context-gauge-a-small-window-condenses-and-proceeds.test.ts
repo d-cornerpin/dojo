@@ -118,7 +118,6 @@ function seedSummaries(n: number, tokens: number): void {
       `INSERT INTO summaries (id, agent_id, depth, kind, content, token_count, descendant_count, earliest_at, latest_at, created_at)
        VALUES (?, ?, 0, 'leaf', ?, ?, 1, '2026-10-01 09:00:00', '2026-10-01 10:00:00', '2026-10-01 10:00:00')`,
     ).run(`sum-${i}`, AGENT, `Summary ${i}: ` + 'earlier work recorded. '.repeat(Math.floor(tokens / 5)), tokens);
-    db().prepare(`INSERT INTO context_items (agent_id, item_type, item_id, ordinal) VALUES (?, 'summary', ?, ?)`).run(AGENT, `sum-${i}`, i);
   }
 }
 

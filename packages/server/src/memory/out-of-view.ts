@@ -7,11 +7,11 @@ import { getDb } from '../db/connection.js';
 import { withLock } from '../db/with-lock.js';
 import { createLogger } from '../logger.js';
 import { backgroundDrains, registerAbortable, releaseAbortable } from '../agent/shared-state.js';
-import { getMessagesOutsideFreshTail } from './store.js';
-import { createLeafSummary, deleteSummary, getCompactedMessageIds, getSummarySourceMessages, updateSummaryContent } from './dag.js';
+import { getUnsummarisedRows, unsummarisedCost } from './store.js';
+import { createLeafSummary, deleteSummary, getSummarySourceMessages, updateSummaryContent } from './dag.js';
 import { UNCONDENSED_KIND, placeholderText, supersedeUncondensedPlaceholders } from './uncondensed-head.js';
 import {
-  archiveBeforeCovering, buildLeafSummaryInput, chunkMessages, getLeafChunkTokens, leavingViewPass, rebuildContextItems,
+  archiveBeforeCovering, buildLeafSummaryInput, chunkMessages, getLeafChunkTokens, leavingViewPass,
   NO_CONVERSATION_PLACEHOLDER,
 } from './compaction.js';
 import { generateSummary } from './summarize.js';
@@ -36,11 +36,8 @@ import type { Message } from '@dojo/shared';
 
 const logger = createLogger('memory-out-of-view');
 
-/** Unsummarised rows of this session at or below `throughSeq`. */
-export function owedThrough(agentId: string, throughSeq: number): Message[] {
-  const compacted = getCompactedMessageIds(agentId);
-  return getMessagesOutsideFreshTail(agentId, 1).filter((m) => !compacted.has(m.id) && (m.rowid ?? Number.POSITIVE_INFINITY) <= throughSeq);
-}
+/** Unsummarised rows of this session at or below `throughSeq`, by count and cost. */
+const owedThrough = (agentId: string, throughSeq: number): { rows: number; tokens: number } => unsummarisedCost(agentId, 1, { throughSeq });
 
 export function hasUncondensedPlaceholders(agentId: string): boolean {
   return !!getDb().prepare('SELECT 1 FROM summaries WHERE agent_id = ? AND kind = ? LIMIT 1').get(agentId, UNCONDENSED_KIND);
@@ -49,10 +46,9 @@ export function hasUncondensedPlaceholders(agentId: string): boolean {
 /** Cover every still-unsummarised row at or below `throughSeq` with placeholders, one per leaf chunk, after the
  *  vault archive (a failed archive refuses the cover). The caller holds the compaction lock. Returns rows covered. */
 export function writeUncondensedPlaceholders(agentId: string, throughSeq: number): number {
-  const owed = owedThrough(agentId, throughSeq);
+  const owed = getUnsummarisedRows(agentId, 1, { throughSeq });
   if (owed.length === 0 || !archiveBeforeCovering(agentId, owed)) return 0;
   for (const chunk of chunkMessages(owed, getLeafChunkTokens())) if (chunk.length > 0) placeholderFor(agentId, chunk);
-  rebuildContextItems(agentId);
   logger.warn('Rows left the live view with no summary written in time; placeholders stand in until one is', { rows: owed.length, throughSeq }, agentId);
   return owed.length;
 }
@@ -97,7 +93,7 @@ export function catchUpOwns(agentId: string, throughSeq: number): boolean {
     if (catchUpStands(agentId)) return true;
     endCatchUpIfDone(agentId);
     if (throughSeq <= 0) return false;
-    return owedThrough(agentId, throughSeq).reduce((n, m) => n + (m.tokenCount ?? estimateTokens(m.content)), 0) > LEAF_CHUNK_TOKENS;
+    return owedThrough(agentId, throughSeq).tokens > LEAF_CHUNK_TOKENS;
   } catch { return false; }
 }
 
@@ -254,7 +250,6 @@ async function replaceUnderLock(agentId: string, opts: { abortSignal?: AbortSign
     if (next === 'kept') replaced++;
     if (next === 'stop') break;
   }
-  if (replaced > 0) rebuildContextItems(agentId);
   if (!hasUncondensedPlaceholders(agentId)) noteCompactionRecovered(agentId, 0);
   else if (failedWriter) {
     reportCompactionDefect(agentId, 'summary_writer_unavailable', { modelId: failedWriter, detail: 'placeholder notes could not yet be replaced by summaries' },
@@ -309,7 +304,7 @@ export async function assembleWithNothingOutOfViewUnsummarised<T extends { outOf
     let assembled = await assemble();
     for (let pass = 0; pass <= OUT_OF_VIEW_FOLD_PASSES; pass++) {
       const throughSeq = assembled.outOfViewThroughSeq ?? 0;
-      if (throughSeq <= 0 || owedThrough(agentId, throughSeq).length === 0) return assembled;
+      if (throughSeq <= 0 || owedThrough(agentId, throughSeq).rows === 0) return assembled;
       if (pass === OUT_OF_VIEW_FOLD_PASSES) {
         logger.error('DEFECT: the out-of-view fold did not converge within its passes; placeholders cover the rest', { passes: pass, throughSeq }, agentId);
         budget.deadline = Date.now();
@@ -337,7 +332,7 @@ async function foldOutOfView(agentId: string, contextWindow: number, throughSeq:
     const ran = await withLock(`compact:${agentId}`, async () => {
       if (backlog) noWriter = pickWriter(agentId) === null;
       while (!backlog && !bound.signal.aborted) {
-        const owed = owedThrough(agentId, throughSeq).length;
+        const owed = owedThrough(agentId, throughSeq).rows;
         if (owed === 0) break;
         const eligible = eligibleSummaryWriters(ownModel(agentId), agentId);
         if (eligible.length === 0) { noWriter = true; break; }

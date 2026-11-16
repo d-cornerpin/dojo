@@ -83,7 +83,6 @@ function fold(...ids: string[]): void {
     `INSERT INTO summaries (id, agent_id, depth, kind, content, token_count, descendant_count, earliest_at, latest_at, created_at)
      VALUES ('sum-fold', ?, 1, 'leaf', 'Earlier the crew worked on the ledger audit.', 12, ?, datetime('now'), datetime('now'), datetime('now'))`,
   ).run(AGENT, ids.length);
-  db.prepare("INSERT INTO context_items (agent_id, item_type, item_id, ordinal) VALUES (?, 'summary', 'sum-fold', 0)").run(AGENT);
   for (const id of ids) db.prepare('INSERT INTO summary_messages (summary_id, message_id) VALUES (?, ?)').run('sum-fold', id);
 }
 

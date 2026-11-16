@@ -33,7 +33,7 @@ vi.mock('../../agent/model.js', async (importOriginal) => ({
 }));
 
 // Imported FIRST: a module first loaded while the model mock's factory runs would bind the unmocked call.
-import { runLeafCompaction, rebuildContextItems } from '../compaction.js';
+import { runLeafCompaction } from '../compaction.js';
 import { runMigrations } from '../../db/migrations.js';
 import { insertMessage } from '../message-store.js';
 import { assembleContext } from '../assembler.js';
@@ -74,7 +74,6 @@ describe('t269 fix round 2 — on a 32K window the newest note is whole in view'
     db().prepare('UPDATE messages SET created_at = ? + seq * 60000 WHERE agent_id = ?').run(Date.UTC(2026, 9, 1), AGENT);
     const created = await runLeafCompaction(AGENT, 'writer-1m', WINDOW, { floorRows: 4 });
     expect(created).toBeGreaterThan(0);
-    rebuildContextItems(AGENT);
     const text = await block();
     expect(text, 'the newest note arrives').toContain('END-OF-NEWEST-LEAF');
     expect(text, '…whole: not as a pointer').not.toContain('KEPT WHOLE, NOT ALL SHOWN');
@@ -86,7 +85,6 @@ describe('t269 fix round 2 — on a 32K window the newest note is whole in view'
     const at = new Date(Date.UTC(2026, 9, 1)).toISOString();
     db().prepare(`INSERT INTO summaries (id, agent_id, depth, kind, content, token_count, descendant_count, earliest_at, latest_at, created_at)
                   VALUES ('sum-big', ?, 0, 'leaf', ?, ?, 3, ?, ?, ?)`).run(AGENT, content, Math.ceil(content.length / 4), at, at, at);
-    db().prepare("INSERT INTO context_items (agent_id, item_type, item_id, ordinal) VALUES (?, 'summary', 'sum-big', 0)").run(AGENT);
     insertMessage({ agentId: AGENT, role: 'user', lane: 'owner', senderId: 'owner', content: 'What did we settle?', turnNumber: 1 });
     const text = await block();
     expect(text).not.toContain(LANE_TRUNCATION_MARKER.trim());

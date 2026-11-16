@@ -34,7 +34,7 @@ import { runMigrations } from '../../db/migrations.js';
 import { insertMessage } from '../message-store.js';
 import { claimAsk } from '../../work/store.js';
 import { openTurnContext, endTurnContext } from '../../agent/turn-context.js';
-import { getMessagesOutsideFreshTail } from '../store.js';
+import { getUnsummarisedRows } from '../store.js';
 import { rowsLeavingView } from '../tail-horizon.js';
 import { servedOwnerMessageIds } from '../served-ask.js';
 import { createLeafSummary } from '../dag.js';
@@ -195,7 +195,7 @@ describe('t145 R4 — only the served owner message is protected, and it is re-e
   it('NOTHING after the ask is frozen: the fold input and the condense trigger reach past it, as before', () => {
     const { askSeq } = servedAsk(70);
     runningTurnOn('ask-row');
-    expect(getMessagesOutsideFreshTail(AGENT, 24).map((m) => m.rowid as number)).toContain(askSeq);
+    expect(getUnsummarisedRows(AGENT, 24).map((m) => m.rowid as number)).toContain(askSeq);
     // t194: "full" is the trim's own cut, handed in by the gauge; nothing clamps it at the served ask.
     const leaving = rowsLeavingView({ full: { throughSeq: askSeq + 10, rows: 10 } });
     expect(leaving!.throughSeq).toBeGreaterThanOrEqual(askSeq);

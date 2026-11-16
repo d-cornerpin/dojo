@@ -319,7 +319,6 @@ export function deleteSummary(id: string): void {
   const txn = db.transaction(() => {
     db.prepare('DELETE FROM summary_messages WHERE summary_id = ?').run(id);
     db.prepare('DELETE FROM summary_parents WHERE summary_id = ? OR parent_id = ?').run(id, id);
-    db.prepare('DELETE FROM context_items WHERE item_id = ?').run(id);
     db.prepare('DELETE FROM summaries WHERE id = ?').run(id);
   });
 
@@ -328,54 +327,14 @@ export function deleteSummary(id: string): void {
   logger.info('Deleted summary', { summaryId: id });
 }
 
-// ── Context Items ──
+// ── The notes on top ──
 
+/** The agent's top-level notes (none is merged into a higher one), oldest first: what its view may show. */
 export function getContextSummaries(agentId: string): Summary[] {
-  const db = getDb();
-  const rows = db.prepare(`
+  const rows = getDb().prepare(`
     SELECT s.* FROM summaries s
-    INNER JOIN context_items ci ON s.id = ci.item_id
-    WHERE ci.agent_id = ? AND ci.item_type = 'summary'
+    WHERE s.agent_id = ? AND s.id NOT IN (SELECT parent_id FROM summary_parents)
     ORDER BY s.earliest_at ASC, s.id ASC
   `).all(agentId) as SummaryRow[];
-
   return rows.map(rowToSummary);
-}
-
-export function replaceContextItems(
-  agentId: string,
-  items: Array<{ itemType: 'message' | 'summary'; itemId: string }>,
-): void {
-  const db = getDb();
-
-  const deletePrev = db.prepare('DELETE FROM context_items WHERE agent_id = ?');
-  const insertItem = db.prepare(`
-    INSERT INTO context_items (agent_id, item_type, item_id, ordinal)
-    VALUES (?, ?, ?, ?)
-  `);
-
-  const txn = db.transaction(() => {
-    deletePrev.run(agentId);
-    for (let i = 0; i < items.length; i++) {
-      insertItem.run(agentId, items[i].itemType, items[i].itemId, i);
-    }
-  });
-
-  txn();
-
-  logger.debug('Replaced context items', {
-    agentId,
-    itemCount: items.length,
-  }, agentId);
-}
-
-export function getCompactedMessageIds(agentId: string): Set<string> {
-  const db = getDb();
-  const rows = db.prepare(`
-    SELECT sm.message_id FROM summary_messages sm
-    INNER JOIN summaries s ON sm.summary_id = s.id
-    WHERE s.agent_id = ?
-  `).all(agentId) as Array<{ message_id: string }>;
-
-  return new Set(rows.map(r => r.message_id));
 }

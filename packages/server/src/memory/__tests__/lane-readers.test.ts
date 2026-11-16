@@ -34,7 +34,7 @@ vi.mock('../../db/connection.js', () => ({
 }));
 
 import { insertMessage, insertEngineEvent } from '../message-store.js';
-import { getRecentMessages, getMessagesOutsideFreshTail, getMessagesByIds } from '../store.js';
+import { getRecentMessages, getUnsummarisedRows, getMessagesByIds } from '../store.js';
 import { recallRecentThread } from '../recall.js';
 import { memoryGrep } from '../retrieval.js';
 import { runMigrations } from '../../db/migrations.js';
@@ -188,7 +188,7 @@ describe('the archive high-water reads one keyspace', () => {
       (mockDb.current!.prepare('SELECT seq FROM messages').all() as Array<{ seq: number }>)
         .map(r => r.seq),
     );
-    const outside = getMessagesOutsideFreshTail(AGENT, 2);
+    const outside = getUnsummarisedRows(AGENT, 2);
     const rowids = outside.map((m) => m.rowid).filter((r): r is number => typeof r === 'number');
 
     expect(rowids.length).toBeGreaterThan(0);

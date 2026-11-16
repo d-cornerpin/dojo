@@ -46,7 +46,7 @@ vi.mock('../../agent/model.js', () => ({
 }));
 
 import { runMigrations } from '../../db/migrations.js';
-import { checkAndCompact, rebuildContextItems } from '../compaction.js';
+import { checkAndCompact } from '../compaction.js';
 import { createLeafSummary } from '../dag.js';
 import { insertMessage } from '../message-store.js';
 import { __resetBrakesForTests, LOW_YIELD_BACKOFF_MS } from '../compaction-brakes.js';
@@ -80,7 +80,6 @@ function seed(leaves: number, lone?: { depth: number; chars: number }, bad: read
   }
   for (let i = 0; i < leaves; i++) addLeaf(i, bad.includes(i) ? `BAD ${NOTE(i)}` : NOTE(i));
   for (let i = 0; i < 6; i++) row(i % 2 === 0 ? 'user' : 'assistant', `live line ${i}`);
-  rebuildContextItems(AGENT);
 }
 
 let turns = 0;

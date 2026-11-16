@@ -70,7 +70,6 @@ export function supersedeUncondensedPlaceholders(agentId: string, messageIds: re
       const left = (db.prepare('SELECT message_id AS m FROM summary_messages WHERE summary_id = ?').all(id) as Array<{ m: string }>).map((r) => r.m);
       if (left.length === 0) {
         db.prepare('DELETE FROM summary_parents WHERE summary_id = ? OR parent_id = ?').run(id, id);
-        db.prepare('DELETE FROM context_items WHERE item_id = ?').run(id);
         db.prepare('DELETE FROM summaries WHERE id = ?').run(id);
         return;
       }

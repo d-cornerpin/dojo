@@ -7,7 +7,7 @@ import { cachedAssembledEstimate } from './assembled-estimate-cache.js';
 export { forcedCompactionOptions } from './compaction-brakes.js';   // the emergency path's bounds, published where its callers already look
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
-import { getMessagesOutsideFreshTail, getRecentMessages } from './store.js';
+import { getUnsummarisedRows } from './store.js';
 import { rowsLeavingView, rowsStrandedBelowBoundary, type LeavingView } from './tail-horizon.js';
 import { estimateTokens, getFreshTailCount, SystemPromptTooLargeError } from './budget.js';
 import type { PromptTurnContext } from '../prompt/assembler.js';
@@ -17,7 +17,7 @@ import { V2_STUB_AFTER_TURNS, groupTail, type ContextView } from './assembler.js
 import { summaryWriterCandidates, eligibleSummaryWriters, ownModel, pickWriter, summaryRoom, writerPassedOver, spanWaitsForAWriter, summaryCallStarts } from './writer.js';
 import { ownerProgressFrame } from '../healer/owner-notices.js';
 import { supersedeUncondensedPlaceholders } from './uncondensed-head.js';
-import { createLeafSummary, getCompactedMessageIds, replaceContextItems } from './dag.js';
+import { createLeafSummary } from './dag.js';
 import { generateSummary } from './summarize.js';
 import { modelCharsPerToken } from '../services/token-density.js';
 import { LEAF_CHUNK_TOKENS, fullSpanTargetTokens, leafKeepCap, summaryShare, summaryTargetTokens } from './summary-target.js';
@@ -299,10 +299,7 @@ async function runCheckAndCompact(
   // THE TRIGGERS: forced (an overflow door or the owner's compact-now), or rows leaving the view. Notes are merged
   // right after a fold that wrote a leaf, and in a forced pass, while the view leaves a summary out (`mergeIfItCanHelp`).
   const leaving = force ? null : options?.leaving !== undefined ? options.leaving : leavingFromView(view);
-  const outsideProtected = (): Message[] => {
-    const compacted = getCompactedMessageIds(agentId);
-    return getMessagesOutsideFreshTail(agentId, 1).filter(m => !compacted.has(m.id) && (m.rowid ?? Infinity) < view.protectedFromSeq);
-  };
+  const outsideProtected = (): Message[] => getUnsummarisedRows(agentId, 1, { throughSeq: view.protectedFromSeq - 1 });
   const uncompactedOutsideFloor = force ? outsideProtected().length : 0;
 
   logger.info(`Compaction check: view=${totalTokens} (summaries=${view.summaryTokens} of ${view.summaryRawTokens}, tail=${view.tailKeptTokens} of ${view.tailTokens}), budget=${budget}${leaving ? `, leaving=${leaving.rowsLeaving} rows (${leaving.cause}) through seq ${leaving.throughSeq}` : ''}${force ? ' [FORCED]' : ''}`, {
@@ -338,25 +335,8 @@ async function runCheckAndCompact(
     }, agentId);
 
 
-    // Archive raw messages to the vault BEFORE compaction destroys them; if archival fails, ABORT (better a
-    // bloated context than lost data). An agent on the Dreamer ignore list skips the archive (null): do not abort.
-    const messagesForArchive = outsideProtected();
-    const archiveCompactedIds = getCompactedMessageIds(agentId);
-    // Never re-archive what the vault already holds (a reset archives without marking compacted): bound by
-    // rowid; a missing rowid falls to "include", so the safe direction is to archive. Bounds the ARCHIVE input only.
-    const archiveHighWater = getArchiveHighWaterMark(agentId);
-    const uncompactedForArchive = messagesForArchive.filter(
-      m => !archiveCompactedIds.has(m.id) && (archiveHighWater == null || m.rowid == null || m.rowid > archiveHighWater),
-    );
-    // Service agents are excluded from archival (it returns null for them): that null is not a failed archive.
-    // Their histories are plumbing, so compaction proceeds.
-    if (uncompactedForArchive.length > 0 && !isDreamerIgnored(agentId) && !isSystemServiceAgent(agentId)) {
-      const archiveId = archiveMessagesBeforeCompaction(agentId, uncompactedForArchive);
-      if (!archiveId) {
-        logger.error('Archive failed, aborting compaction to prevent data loss', { agentId, messageCount: uncompactedForArchive.length }, agentId);
-        return { leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 };
-      }
-    }
+    // Archive raw messages to the vault BEFORE compaction covers them; a failed archive aborts the pass.
+    if (!archiveBeforeCovering(agentId, outsideProtected())) return NO_COMPACTION;
 
     // Yield is measured on demand (summaries held plus the live tail): the trim already caps what is sent.
     const demand = (v: ContextView): number => v.summaryRawTokens + v.tailTokens;
@@ -421,11 +401,11 @@ async function measured(agentId: string, contextWindow: number, turnModelId: str
 async function mergeIfItCanHelp(
   agentId: string, writer: string, contextWindow: number, turnModelId: string, abortSignal?: AbortSignal,
 ): Promise<MergeOutcome | null> {
-  rebuildContextItems(agentId);
   const { view } = await measured(agentId, contextWindow, turnModelId);
   if (view.budgetTokens === 0 || view.summaryRawTokens <= view.summaryTokens) return null;
   const merged = await mergeUntriedNotes(agentId, writer, abortSignal);
-  rebuildContextItems(agentId);
+  // A run that rested a note on a refused merge: its notes may no longer shrink to fit, so the log says so.
+  if (merged.rested > 0) logger.warn(`${merged.rested} note(s) rested after a refused merge`, { rested: merged.rested, writer }, agentId);
   return merged;
 }
 
@@ -476,10 +456,8 @@ export async function leavingViewPass(
     cause: leaving.cause, rowsLeaving: leaving.rowsLeaving, throughSeq: leaving.throughSeq,
   }, agentId);
 
-  const compactedIds = getCompactedMessageIds(agentId);
   const floorRows = 1;
-  const span = getMessagesOutsideFreshTail(agentId, floorRows)
-    .filter(m => !compactedIds.has(m.id) && (m.rowid ?? Number.POSITIVE_INFINITY) <= leaving.throughSeq);
+  const span = getUnsummarisedRows(agentId, floorRows, { throughSeq: leaving.throughSeq });
   // An empty span is no work: nothing is archived, written or shown, and no brake is armed.
   if (span.length === 0) {
     logger.info('Leaving-view condense skipped: every row through the boundary already has its summary', { cause: leaving.cause, throughSeq: leaving.throughSeq }, agentId);
@@ -492,7 +470,6 @@ export async function leavingViewPass(
   // The out-of-view door walks the writers itself; every other leaving-view pass hands on.
   const leafCreated = await withCompactionActivity(agentId, async () => outOfView
     ? pass(modelId) : (await eachWriter(agentId, modelId, pass, options?.abortSignal)).leafCreated);
-  rebuildContextItems(agentId);
   if (leafCreated > 0) { ageOutReplayedReasoning(agentId); stubOldToolResultsAtBoundary(agentId); }
 
   const result = { leafCreated, condensedCreated: 0, tokensReclaimed: 0 };
@@ -514,8 +491,7 @@ async function foldOldestProtectedGroup(args: {
 }): Promise<CompactionResult> {
   const { agentId, protectedFromSeq, condensed } = args;
   if (progressed(condensed)) return condensed;
-  const compacted = getCompactedMessageIds(agentId);
-  const groups = groupTail(getMessagesOutsideFreshTail(agentId, 1).filter((m) => !compacted.has(m.id) && (m.rowid ?? 0) >= protectedFromSeq));
+  const groups = groupTail(getUnsummarisedRows(agentId, 1, { fromSeq: protectedFromSeq }));
   // The first group and every group after it up to the next row a person or peer sent: a view opens on a user row.
   let end = 0;
   while (end + 1 < groups.length && groups[end + 1].messages[0].role !== 'user') end++;
@@ -677,12 +653,7 @@ export async function runLeafCompaction(
   },
 ): Promise<number> {
   const cw = contextWindow ?? 200000;
-  const messagesOutside = getMessagesOutsideFreshTail(agentId, opts?.floorRows ?? getFreshTailCount(cw));
-  const compactedIds = getCompactedMessageIds(agentId);
-  const through = opts?.throughSeq;
-
-  const uncompacted = messagesOutside.filter(m => !compactedIds.has(m.id)
-    && (through === undefined || (m.rowid ?? Number.POSITIVE_INFINITY) <= through));
+  const uncompacted = getUnsummarisedRows(agentId, opts?.floorRows ?? getFreshTailCount(cw), { throughSeq: opts?.throughSeq });
 
   if (uncompacted.length === 0) {
     logger.debug('No messages to compact', {}, agentId);
@@ -809,54 +780,6 @@ async function coverRowsStrandedBelowBoundary(agentId: string, fromSeq: number):
   logger[covered > 0 ? 'warn' : 'error'](covered > 0 ? 'Rows were left below the summarised boundary; placeholder notes now stand in for them'
     : 'Rows were left below the summarised boundary and could NOT be covered (the vault archive was refused); they stay owed and the next fold retries', { stranded, covered, anchor }, agentId);
 }
-
-
-export function rebuildContextItems(agentId: string): void {
-  // Get all summaries that are NOT parents in summary_parents
-  // i.e., the "leaf nodes" of the DAG (top of the tree, highest depth)
-  const db = getDb();
-
-  const agentModel = db.prepare('SELECT model_id FROM agents WHERE id = ?').get(agentId) as { model_id: string | null } | undefined;
-  let contextWindow = 200000; // default
-  if (agentModel?.model_id) {
-    const model = db.prepare('SELECT context_window FROM models WHERE id = ?').get(agentModel.model_id) as { context_window: number | null } | undefined;
-    if (model?.context_window) contextWindow = model.context_window;
-  }
-
-  interface TopLevelRow {
-    id: string;
-    earliest_at: string;
-  }
-
-  const topLevel = db.prepare(`
-    SELECT s.id, s.earliest_at FROM summaries s
-    WHERE s.agent_id = ?
-      AND s.id NOT IN (
-        SELECT parent_id FROM summary_parents
-      )
-    ORDER BY s.earliest_at ASC, s.id ASC
-  `).all(agentId) as TopLevelRow[];
-
-  const freshTail = getRecentMessages(agentId, getFreshTailCount(contextWindow));
-
-  const items: Array<{ itemType: 'message' | 'summary'; itemId: string }> = [];
-
-  for (const summary of topLevel) {
-    items.push({ itemType: 'summary', itemId: summary.id });
-  }
-
-  for (const msg of freshTail) {
-    items.push({ itemType: 'message', itemId: msg.id });
-  }
-
-  replaceContextItems(agentId, items);
-
-  logger.info('Rebuilt context items', {
-    summaryCount: topLevel.length,
-    freshTailCount: freshTail.length,
-  }, agentId);
-}
-
 
 // Persisted tool rows (and assistant tool_use rows) are raw JSON arrays; the summarizer gets lines that keep WHAT
 // happened (tool name, ok/error, the result) without the wire format. Pure text content passes through untouched.

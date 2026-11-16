@@ -220,6 +220,9 @@ const reserveOf = (id: string): number => POST_BUDGET_LANES.find((l) => l.id ===
 export const TECHNIQUE_INLINE_CHARS = 25_000;
 export const TECHNIQUE_FRAME_CHARS = 512;
 
+/** Each technique version's instruction length: its file is read once per version, not on every assembly. */
+const instructionChars = new Map<string, number>();
+
 /** The most a strong technique match can add after this assembly: the largest injection any published
  *  technique this agent may use would produce. Counted on every call (an upper bound). */
 async function techniqueAllowanceTokens(agentId: string): Promise<number> {
@@ -229,10 +232,12 @@ async function techniqueAllowanceTokens(agentId: string): Promise<number> {
     let worst = 0;
     for (const t of listTechniques({ state: 'published' })) {
       if (!mayUseTechnique(agentId, t.id)) continue;
-      const md = getTechniqueDetail(t.id)?.instructions ?? '';
-      if (md.length === 0) continue;
+      const key = `${t.id}@${t.version}@${t.updatedAt}`;
+      const chars = instructionChars.get(key) ?? (getTechniqueDetail(t.id)?.instructions ?? '').length;
+      instructionChars.set(key, chars);
+      if (chars === 0) continue;
       worst = Math.max(worst, TECHNIQUE_FRAME_CHARS + 2 * t.name.length + t.id.length
-        + (md.length > TECHNIQUE_INLINE_CHARS ? 0 : md.length));
+        + (chars > TECHNIQUE_INLINE_CHARS ? 0 : chars));
     }
     return estimateTokensFromChars(worst);
   } catch {

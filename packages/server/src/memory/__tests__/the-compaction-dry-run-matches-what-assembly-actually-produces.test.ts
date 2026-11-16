@@ -69,9 +69,6 @@ function seedHugeSummary(db: Database.Database): void {
     INSERT INTO summaries (id, agent_id, depth, kind, content, token_count, descendant_count, earliest_at, latest_at, created_at)
     VALUES ('sum-huge', ?, 1, 'leaf', 'a very long summary', 500000, 4, '2026-08-01 09:00:00', '2026-08-01 10:00:00', '2026-08-01 10:00:00')
   `).run(AGENT);
-  db.prepare(`
-    INSERT INTO context_items (agent_id, item_type, item_id, ordinal) VALUES (?, 'summary', 'sum-huge', 0)
-  `).run(AGENT);
 }
 
 beforeEach(() => {

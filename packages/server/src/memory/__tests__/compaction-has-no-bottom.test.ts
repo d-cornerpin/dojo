@@ -24,7 +24,7 @@
 // ── WHAT IS REAL HERE, AND WHY IT HAS TO BE ──
 // The DB (in-memory, fully migrated), `checkAndCompact` and its whole trigger, the real
 // `estimateAssembledTokens` with its real tool-payload measurement and real provider join,
-// the real summary DAG writes, the real `rebuildContextItems`, the real provider breaker, and
+// the real summary DAG writes and reads, the real provider breaker, and
 // the real `archiveAgentConversation`. ONLY the summariser's model call is mocked, because it
 // is the one thing that cannot run in a unit box — and it is mocked through a seam that
 // records the depth and the ACTUAL system prompt `getDepthPrompt` produces, so "the depth-2
@@ -129,7 +129,7 @@ vi.mock('../summarize.js', async (importOriginal) => {
 });
 
 import { runMigrations } from '../../db/migrations.js';
-import { checkAndCompact, estimateAssembledTokens, rebuildContextItems } from '../compaction.js';
+import { checkAndCompact, estimateAssembledTokens } from '../compaction.js';
 import { mergeUntriedNotes } from '../merge-notes.js';
 import { compactionIsBraked, LOW_YIELD_BACKOFF_MS, __resetBrakesForTests } from '../compaction-brakes.js';
 import { compactionFailureReason } from '../compaction-defect.js';
@@ -186,7 +186,7 @@ function seedBox(): void {
  * `seedSummaries` and `seedMixed` used to write `summaries` rows and NO `summary_messages`
  * links, so every fixture here held summaries that covered nothing — a boundary-less agent a
  * real box cannot produce. t100 already hit this for one clause further down (see its note
- * around `getCompactedMessageIds`) and linked that summary by hand; this does the same thing
+ * around `old-39`) and linked that summary by hand; this does the same thing
  * once, for every seeder, so the shape is right by construction rather than per clause.
  *
  * ⚠ WHAT THIS DOES AND DOES NOT BUY, stated so nobody reads more into it. It closes the
@@ -225,7 +225,6 @@ function seedSummaries(count: number, depth: number, tokensEach: number): void {
   });
   tx();
   linkSeededSummaries(Array.from({ length: count }, (_, i) => `sum-d${depth}-${i}`));
-  rebuildContextItems(AGENT);
 }
 
 /** Seed top-level summaries at EXPLICIT, possibly different depths (review C1's shapes). */
@@ -244,7 +243,6 @@ function seedMixed(rows: ReadonlyArray<{ depth: number; tokens: number }>): void
   });
   tx();
   linkSeededSummaries(rows.map((r, i) => `mix-${i}-d${r.depth}`));
-  rebuildContextItems(AGENT);
 }
 
 /** What the single estimate says the assembler will ADMIT of this agent's summaries. */
@@ -822,16 +820,8 @@ describe('§5 a level merges peers of ONE depth (t269; it was the whole top-leve
   });
 
   /**
-   * ⚠ REVIEW I1 — THE REACTIVE PATH, which no first-round clause drove at all.
-   *
-   * `createLeafSummary` writes `summaries` only; both halves of the admission test read the
-   * `context_items` join. So `runLeafCompaction` → `condenseUntilFits` measured a snapshot
-   * WITHOUT the leaves it had just written, and if the OLD summaries fit it declared "fits" and
-   * skipped them — a regression against the deleted loop, which read `getLeafSummariesNotCondensed`
-   * (no join) and condensed >=4 leaves in the same pass.
-   *
-   * THE MUTANT: remove the `rebuildContextItems` ahead of the measure in `mergeIfItCanHelp` and
-   * this clause goes RED at `condensedCreated`.
+   * ⚠ REVIEW I1, THE REACTIVE PATH: the measure before a merge sees the leaves this same pass
+   * wrote, so a pass whose fresh leaves push the notes over budget merges them at once.
    */
   it('⚠ I1: leaves written THIS pass are condensed in the SAME pass', async () => {
     // Old summaries that comfortably fit, so only the fresh leaves can make it over budget.
@@ -874,7 +864,7 @@ describe('§5 a level merges peers of ONE depth (t269; it was the whole top-leve
     // the seeded one is linked to the last fat row, which is exactly where its boundary would
     // be. `rowsSinceBoundary` is then the 40 tail rows (the horizon's FLOOR, `keepFromSeq: 0`),
     // the gate measures the same 32,000 tokens it measured pre-t100, and every number in this
-    // clause is unchanged. `old-39` joins `getCompactedMessageIds`, leaving 39 fat rows outside
+    // clause is unchanged. `old-39` is then summarised, leaving 39 fat rows outside
     // the row cap for leaf chunking — still far more than the two leaves asserted below.
     db.prepare('INSERT INTO summary_messages (summary_id, message_id) VALUES (?, ?)')
       .run('sum-d0-0', 'old-39');

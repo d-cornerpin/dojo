@@ -61,7 +61,7 @@ vi.mock('../../agent/model.js', () => ({
 
 import { runMigrations } from '../../db/migrations.js';
 import { insertMessage } from '../message-store.js';
-import { checkAndCompact, rebuildContextItems } from '../compaction.js';
+import { checkAndCompact } from '../compaction.js';
 import { mergeUntriedNotes } from '../merge-notes.js';
 import { createLeafSummary } from '../dag.js';
 import { assembleContext } from '../assembler.js';
@@ -280,9 +280,8 @@ describe('t144 — the rebuild of mixed notes from before the update', () => {
     for (const c of ['subject_key', 'rebuild_state']) {
       if ((db().prepare('SELECT 1 FROM pragma_table_info(?) WHERE name = ?').get('summaries', c))) db().prepare(`UPDATE summaries SET ${c} = NULL`).run();
     }
-    rebuildContextItems(AGENT);
     await runSummaryRebuildBatch();
-    const live = db().prepare(`SELECT s.id FROM summaries s JOIN context_items ci ON ci.item_id = s.id WHERE ci.agent_id = ?`).all(AGENT) as Array<{ id: string }>;
+    const live = db().prepare(`SELECT s.id FROM summaries s WHERE s.agent_id = ? AND s.id NOT IN (SELECT parent_id FROM summary_parents)`).all(AGENT) as Array<{ id: string }>;
     expect(live.length).toBe(2);
     for (const s of live) expect(conversationsOf(s.id)).toHaveLength(1);
     // Every source row is covered by exactly one live summary.

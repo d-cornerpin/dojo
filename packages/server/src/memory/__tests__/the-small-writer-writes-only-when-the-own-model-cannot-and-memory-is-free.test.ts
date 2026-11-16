@@ -42,7 +42,6 @@ import { generateSummary } from '../summarize.js';
 import { insertMessage } from '../message-store.js';
 import { eligibleSummaryWriters, summaryWriterCandidates, markWaiting, clearOn, providerOf, __resetSummaryWriterHealthForTests } from '../writer.js';
 import { clearOn } from '../writer.js';
-import { rebuildContextItems } from '../compaction.js';
 import { pickWriter } from '../writer.js';
 import { createLeafSummary } from '../dag.js';
 import { mergeUntriedNotes } from '../merge-notes.js';
@@ -210,11 +209,10 @@ describe('a cloud own-model writer is never refused for local memory', () => {
     const big = 'Earlier summary: the crew counted the depot and filed the manifests, bay by bay. '.repeat(1_400);   // more than the own 32K model holds as a pair
     createLeafSummary(AGENT, big, 30_000, [ids[0]], '2026-07-01 00:00:00', '2026-07-01 00:00:01');
     createLeafSummary(AGENT, big, 30_000, [ids[1]], '2026-07-01 00:00:02', '2026-07-01 00:00:03');
-    rebuildContextItems(AGENT);
     const out = await mergeUntriedNotes(AGENT, OWN);
     expect(out.created).toBe(0);
     expect(out.stage, 'remembered per note, not reported as the writer refusing').toBeNull();
     expect(writers.calls, 'neither writer was dialled').toEqual([]);
-    expect(await mergeUntriedNotes(AGENT, OWN), 'and the pair is not offered again').toEqual({ created: 0, tokensReclaimed: 0, stage: null, detail: null });
+    expect(await mergeUntriedNotes(AGENT, OWN), 'and the pair is not offered again').toEqual({ created: 0, tokensReclaimed: 0, stage: null, detail: null, rested: 0 });
   });
 });

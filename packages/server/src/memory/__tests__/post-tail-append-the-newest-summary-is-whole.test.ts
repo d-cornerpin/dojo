@@ -65,8 +65,6 @@ function summary(i: number, chars: number): void {
                             earliest_at, latest_at, created_at)
      VALUES (?, ?, 0, 'leaf', ?, ?, 3, ?, ?, ?)`,
   ).run(id, AGENT, content, Math.ceil(content.length / 4), at, at, at);
-  db().prepare("INSERT INTO context_items (agent_id, item_type, item_id, ordinal) VALUES (?, 'summary', ?, ?)")
-    .run(AGENT, id, i);
 }
 
 const ids = (n: number): string[] => Array.from({ length: n }, (_, i) => `sum-${String(i).padStart(3, '0')}`);

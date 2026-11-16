@@ -922,7 +922,7 @@ describe('t94 §9 / t100 — the gate measures the tail the assembler actually s
 // ── §10 THE FLOOR IS LITERALLY THE PRE-t94 CALL, AND THE DIVIDER IS NOT LOAD-BEARING ────
 //
 // REVIEW I1, and it is the defect that hid behind this file's own flake. Routine leaf
-// compaction summarises exactly `getMessagesOutsideFreshTail(agent, cap)`, so the instant it
+// compaction summarises exactly the unsummarised rows older than the newest `cap`, so the instant it
 // finishes `rowsSinceBoundary == cap` — the horizon's FLOOR, which returns `keepFromSeq: 0`
 // (no filter) and `requestRows: cap`. The assembler then added the row-cap slack to that ask
 // unconditionally, so the real ask was 2×cap WITH NOTHING FILTERED, and

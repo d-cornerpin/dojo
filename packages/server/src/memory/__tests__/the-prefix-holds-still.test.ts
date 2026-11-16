@@ -192,18 +192,12 @@ function seedSummaries(): void {
                             earliest_at, latest_at, created_at)
      VALUES (?, ?, 1, 'leaf', ?, ?, 4, ?, ?, ?)`,
   );
-  const ctxItem = db.prepare(
-    "INSERT INTO context_items (agent_id, item_type, item_id, ordinal) VALUES (?, 'summary', ?, ?)",
-  );
   ins.run('sum-zebra', AGENT, 'The ZEBRA enclosure permit was filed on the 14th.', 12,
     '2026-08-01 09:00:00', '2026-08-01 10:00:00', '2026-08-01 10:00:00');
   ins.run('sum-newest-1', AGENT, `${FX.n4} asked about the invoice and was answered.`, 11,
     '2026-08-28 09:00:00', '2026-08-28 10:00:00', '2026-08-28 10:00:00');
   ins.run('sum-newest-2', AGENT, 'The porch light job was opened and assigned.', 11,
     '2026-08-29 09:00:00', '2026-08-29 10:00:00', '2026-08-29 10:00:00');
-  // `getContextSummaries` JOINs `context_items`; without these rows the summaries lane never
-  // renders and every clause that reads it is vacuous rather than red.
-  ['sum-zebra', 'sum-newest-1', 'sum-newest-2'].forEach((id, i) => ctxItem.run(AGENT, id, i));
 }
 
 /** A summaries set big enough that a lane ceiling and a tight budget both bite. */
@@ -214,15 +208,11 @@ function seedBulkSummaries(n: number): void {
                             earliest_at, latest_at, created_at)
      VALUES (?, ?, 1, 'leaf', ?, ?, 4, ?, ?, ?)`,
   );
-  const ctxItem = db.prepare(
-    "INSERT INTO context_items (agent_id, item_type, item_id, ordinal) VALUES (?, 'summary', ?, ?)",
-  );
   for (let i = 0; i < n; i++) {
     const day = String(1 + i).padStart(2, '0');
     const content = `Summary ${i}: ` + 'the quick brown fox jumped over the lazy dog. '.repeat(20);
     ins.run(`bulk-${i}`, AGENT, content, Math.ceil(content.length / 4),
       `2026-08-${day} 09:00:00`, `2026-08-${day} 10:00:00`, `2026-08-${day} 10:00:00`);
-    ctxItem.run(AGENT, `bulk-${i}`, 100 + i);
   }
 }
 

@@ -19,7 +19,7 @@ import { withLock } from '../db/with-lock.js';
 import { createLogger } from '../logger.js';
 import type { Message } from '@dojo/shared';
 import {
-  buildLeafSummaryInput, chunkMessages, getLeafChunkTokens, rebuildContextItems, NO_CONVERSATION_PLACEHOLDER,
+  buildLeafSummaryInput, chunkMessages, getLeafChunkTokens, NO_CONVERSATION_PLACEHOLDER,
 } from './compaction.js';
 import { pickWriter } from './writer.js';
 import { createLeafSummary, deleteSummary, getDescendantMessages, getSummary } from './dag.js';
@@ -137,10 +137,6 @@ function swapAgent(agentId: string, units: readonly Unit[], stats: LegacyRebuild
       db.prepare('DELETE FROM summary_rebuild_staged WHERE unit_id = ?').run(unit.id);
       replaced++;
     }
-    // ONE STEP: rows covered and rows in view change together. The view is rebuilt inside the swap, so
-    // a crash anywhere rolls the swap back (the older note, in view, covering the same rows) and never
-    // leaves rows covered by new notes that no view shows.
-    if (replaced > 0) rebuildContextItems(agentId);
   })();
   return replaced;
 }

@@ -1,6 +1,6 @@
 // Nightly contaminated-summary rebuild: regenerates flagged summaries (inter-agent plumbing or raw message text that
 // reached them) from their DAG descendants through the CURRENT summarization path and filter.
-// Self-limiting (a clean stock finds nothing, no per-night count) and idempotent + crash-safe: there is no "done"
+// Self-limiting (a clean stock finds nothing) and idempotent + crash-safe: there is no "done"
 // flag, a summary is clean because its content no longer matches the taxonomy. Leaves rebuild before condensed
 // parents, which wait while any child still matches. Deliberately NOT a boot migration: it needs LLM calls and
 // embedding refreshes that would block boot.
@@ -10,8 +10,6 @@ import { NEW_SESSION_DIVIDER, A2A_INBOUND_ANYWHERE_RE, SOURCE_ENVELOPE_ANYWHERE_
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { isPlatformNoise } from './platform-noise.js';
-// Its own module: this file is the thing being measured, not the measurer.
-import { recordCleanStock, countSummaryStock } from './summary-clean-stock.js';
 import {
   isNonConversationForSummary,
   buildLeafSummaryInput,
@@ -297,11 +295,6 @@ export interface SummaryRebuildStats {
   placeholders: number;
   deferred: number;
   skipped: number;
-  remainingAfter: number;
-  /** Total summaries in the store this run looked at. */
-  stockScanned: number;
-  /** Consecutive runs, INCLUDING this one, that scanned a non-empty stock and found nothing contaminated. */
-  consecutiveCleanRuns: number;
   /** The second selection: recent mixed notes rebuilt one conversation each. */
   legacy?: LegacyRebuildStats;
 }
@@ -313,7 +306,7 @@ export interface SummaryRebuildStats {
  * directly on a dev box. `opts.modelId` overrides the writer model; then the recent mixed notes are rebuilt.
  */
 export async function runSummaryRebuildBatch(opts?: { modelId?: string }): Promise<SummaryRebuildStats> {
-  const empty: SummaryRebuildStats = { flaggedBefore: 0, rebuilt: 0, placeholders: 0, deferred: 0, skipped: 0, remainingAfter: 0, stockScanned: 0, consecutiveCleanRuns: 0 };
+  const empty: SummaryRebuildStats = { flaggedBefore: 0, rebuilt: 0, placeholders: 0, deferred: 0, skipped: 0 };
 
   if (rebuildGuard.running) {
     logger.warn('Summary rebuild already running, skipping this invocation');
@@ -335,21 +328,10 @@ export async function runSummaryRebuildBatch(opts?: { modelId?: string }): Promi
 
 async function runContaminationPass(empty: SummaryRebuildStats, opts?: { modelId?: string }): Promise<SummaryRebuildStats> {
     const flagged = findContaminatedSummaries();
-    const stockScanned = countSummaryStock();
-    if (flagged.length === 0) {
-      const streak = recordCleanStock(0, stockScanned);
-      logger.info(
-        `SUMMARY_REBUILD_CLEAN_STOCK stockScanned=${stockScanned} flagged=0 ` +
-        `consecutiveCleanRuns=${streak}`,
-        { stockScanned, flagged: 0, consecutiveCleanRuns: streak },
-      );
-      return { ...empty, stockScanned, consecutiveCleanRuns: streak };
-    }
-    // Anything flagged resets the streak: the write boundary is not yet provably holding.
-    recordCleanStock(flagged.length, stockScanned);
+    if (flagged.length === 0) return empty;
 
     // Each flag's writer is resolved for its own agent: its own model, else the small writer, never one that waits.
-    const stats: SummaryRebuildStats = { ...empty, flaggedBefore: flagged.length, stockScanned };
+    const stats: SummaryRebuildStats = { ...empty, flaggedBefore: flagged.length };
     for (const flag of flagged) {
       const modelId = opts?.modelId ?? pickWriter(flag.agentId);
       if (!modelId) { stats.skipped++; continue; }   // no writer answering for this agent: a later night
@@ -368,16 +350,6 @@ async function runContaminationPass(empty: SummaryRebuildStats, opts?: { modelId
       }
     }
 
-    stats.remainingAfter = findContaminatedSummaries().length;
     logger.info('Summary rebuild nightly batch done', { ...stats });
-    if (stats.remainingAfter === 0) {
-      // The streak starts at the first run that scanned a real stock and found it clean; this run repaired its way there.
-      stats.consecutiveCleanRuns = recordCleanStock(0, stats.stockScanned);
-      logger.info(
-        `SUMMARY_REBUILD_CLEAN_STOCK stockScanned=${stats.stockScanned} flagged=0 ` +
-        `consecutiveCleanRuns=${stats.consecutiveCleanRuns} (repaired this run)`,
-        { ...stats },
-      );
-    }
     return stats;
 }
