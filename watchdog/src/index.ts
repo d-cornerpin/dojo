@@ -12,7 +12,8 @@ import {
   toRolledBack,
   toFailedPermanently,
   spawnRollbackDetached,
-  takeRollbackResult,
+  readRollbackResult,
+  ROLLBACK_RESULT_PATH,
   afterRollbackResult,
   ROLLBACK_SCRIPT,
   FAIL_WALL_CLOCK_MS,
@@ -265,10 +266,10 @@ function log(level: string, message: string, meta?: Record<string, unknown>): vo
 }
 
 
-function sendIMessage(recipient: string, text: string): void {
+function sendIMessage(recipient: string, text: string): boolean {
   if (!recipient) {
     log('warn', 'No iMessage recipient configured');
-    return;
+    return false;
   }
 
   try {
@@ -300,10 +301,12 @@ function sendIMessage(recipient: string, text: string): void {
     });
 
     log('info', 'iMessage sent', { recipient, textLength: text.length });
+    return true;
   } catch (err) {
     log('error', 'Failed to send iMessage', {
       error: err instanceof Error ? err.message : String(err),
     });
+    return false;
   }
 }
 
@@ -365,8 +368,8 @@ async function composeSmartAlert(fixedText: string): Promise<string> {
   }
 }
 
-async function sendSmartAlert(recipient: string, fixedText: string): Promise<void> {
-  sendIMessage(recipient, await composeSmartAlert(fixedText));
+async function sendSmartAlert(recipient: string, fixedText: string): Promise<boolean> {
+  return sendIMessage(recipient, await composeSmartAlert(fixedText));
 }
 
 // Heartbeat and last-alert go to the watchdog's OWN store, never the platform DB; the route reads it.
@@ -813,8 +816,8 @@ async function maybeAutoRollback(): Promise<boolean> {
     if (claimAlertFor('auto_rollback_failed', imRecipient)) {
       await sendSmartAlert(
         imRecipient,
-        'Watchdog: a Dojo update failed to start, and putting the previous version back did not bring Dojo up, so Dojo is not running '
-        + 'and I am not trying again. Please get help, or see ~/.dojo/scripts/IF-AN-UPDATE-FAILS.md.',
+        'Watchdog: a Dojo update failed to start, and Dojo is still not running after I tried to put the previous version back, '
+        + 'so I am not trying again. Please get help, or see ~/.dojo/scripts/IF-AN-UPDATE-FAILS.md.',
       );
       recordAlert('Auto-rollback escalated to failed-permanently');
     }
@@ -841,18 +844,18 @@ async function maybeAutoRollback(): Promise<boolean> {
   return true;
 }
 
-// rollback.sh --auto leaves its outcome on disk (it unloads this daemon while it works): tell it, once.
+// rollback.sh --auto leaves its outcome on disk (it unloads this daemon while it works): tell it, and
+// remove it only once the text went out, so a crash or a failed send retries next check.
 async function tellRollbackResult(): Promise<void> {
-  const result = takeRollbackResult();
+  const result = readRollbackResult();
   if (!result) return;
   updateMarker((m) => (m ? afterRollbackResult(m, result) : null));
   log(result.kind.startsWith('restored') ? 'info' : 'error', 'D-F: rollback.sh finished', { ...result });
   const to = getImessageRecipient();
-  const key = result.kind.startsWith('restored') ? 'auto_rollback' : 'auto_rollback_failed';
-  if (claimAlertFor(key, to)) {
-    await sendSmartAlert(to, result.text);
-    recordAlert(`Auto-rollback: ${result.kind}`);
-  }
+  if (!(await sendSmartAlert(to, result.text))) return;
+  fs.rmSync(ROLLBACK_RESULT_PATH, { force: true });
+  claimAlertFor(result.kind.startsWith('restored') ? 'auto_rollback' : 'auto_rollback_failed', to);
+  recordAlert(`Auto-rollback: ${result.kind}`);
 }
 
 // A missing platform folder is a swap cut off between its two renames; nothing inside the platform
@@ -964,9 +967,9 @@ async function runCheck(): Promise<void> {
     // The restart-failed flag clears silently: the "back UP and healthy" text already told the owner.
     markAlertResolved('platform_restart_failed');
 
-    // FALSE-ESCALATION: if we escalated but the box came up healthy after all, the platform recovers
-    // the marker and this path (same alert key the escalation used) sends the "it finished after all" note.
-    resolveAndTell('auto_rollback_failed', 'Watchdog: the Dojo update finished starting up after all and the box is healthy. No action needed.');
+    // An update episode that ended failed (escalated, or a refused or broken rollback) and is now healthy:
+    // the owner is told it runs again, nothing more, since how it recovered is not known here.
+    resolveAndTell('auto_rollback_failed', 'Watchdog: Dojo is running again and the box is healthy.');
     // Clear the auto-rollback alert silently on recovery too; the message above already told the owner.
     markAlertResolved('auto_rollback');
     // Recovery is the ONLY place the truthful counter and restart bookkeeping reset.

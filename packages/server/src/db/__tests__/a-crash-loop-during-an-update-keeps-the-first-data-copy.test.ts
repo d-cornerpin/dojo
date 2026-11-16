@@ -13,7 +13,8 @@ import { doneDb } from '../../work/done/__tests__/helpers/done-db.js';
 import { markPendingUpdate, markBootingNew, recordBootAttempt, readMarker, UPDATE_STATE_PATH } from '../../update-state.js';
 import { boxBefore901, FILE } from './helpers/a-box-before-901.js';
 
-const LAST = migrationFileNames().at(-1)!;
+/** A step after 901 that can run again: the one the crash loop leaves owed. */
+const LAST = migrationFileNames().find((f) => f.includes('owner_pause_author'))!;
 const appliedIn = (file: string): string[] => {
   const db = new Database(file, { readonly: true });
   try { return (db.prepare('SELECT name FROM _migrations').all() as { name: string }[]).map((r) => r.name); } finally { db.close(); }

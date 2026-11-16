@@ -12,7 +12,7 @@ describe('an older build refuses a newer database plainly', () => {
     freshDoneDb();
     doneDb().exec("CREATE TABLE _migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (datetime('now')), checksum TEXT)");
     doneDb().prepare('INSERT INTO _migrations (name) VALUES (?)').run('903_from_a_newer_dojo.sql');
-    expect(() => runMigrations()).toThrow(/newer version of Dojo.*903_from_a_newer_dojo\.sql/);
+    expect(() => runMigrations()).toThrow(/last change made to this database \(903_from_a_newer_dojo\.sql\) is one this version of Dojo does not have/);
     expect((doneDb().prepare('SELECT COUNT(*) AS c FROM _migrations').get() as { c: number }).c).toBe(1);
   });
 });

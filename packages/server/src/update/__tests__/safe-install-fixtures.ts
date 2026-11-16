@@ -136,8 +136,8 @@ export function whichDb(file: string): string {
 }
 
 /** A tree of `version` carrying migration files where an installed build keeps them. */
-export function makeTreeWithSteps(dir: string, version: string, files: string[]): string {
-  makeTree(dir, version);
+export function makeTreeWithSteps(dir: string, version: string, files: string[], opts: { native?: boolean } = {}): string {
+  makeTree(dir, version, opts);
   const steps = path.join(dir, 'packages', 'server', 'dist', 'db', 'migrations');
   fs.mkdirSync(steps, { recursive: true });
   for (const f of files) fs.writeFileSync(path.join(steps, f), '-- step\n');

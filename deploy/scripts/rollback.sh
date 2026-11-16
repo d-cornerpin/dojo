@@ -32,7 +32,8 @@ AUTO=0
 # too, a second line says `data <date and time of the copy>`, or `data none` when there is no copy.
 PRINT=0
 [ "${1:-}" = "--print-target" ] && PRINT=1
-unchanged() { RESULT="unchanged	Watchdog: a Dojo update did not start up correctly, and it could not be undone: $1. Nothing was changed, and Dojo may keep restarting. Choose Roll Back in the Dojo menu bar, or see ~/.dojo/scripts/IF-AN-UPDATE-FAILS.md."; }
+# The owner's sentence for each outcome; the second argument of `unchanged` is what he can do instead.
+unchanged() { RESULT="unchanged	Watchdog: a Dojo update did not start up correctly, and it could not be undone: $1. Nothing was changed, and Dojo may keep restarting. ${2:-Choose Roll Back in the Dojo menu bar, or see ~/.dojo/scripts/IF-AN-UPDATE-FAILS.md.}"; }
 failed() { RESULT="failed	Watchdog: a Dojo update did not start up correctly, and undoing it went wrong: $1. Please get help before changing anything else."; }
 unchanged "the rollback stopped before it changed anything"
 data_restored=0
@@ -101,6 +102,8 @@ take_lock() {
 if [ "$PRINT" != 1 ]; then
   if ! take_lock; then
       echo "ERROR: another install or rollback is already in progress ($LOCK_DIR). Aborting to avoid a concurrent restore."
+      unchanged "another rollback or restore was already running" "If Dojo is still not running in a few minutes, choose Roll Back in the Dojo menu bar."
+      [ "$AUTO" = 1 ] && printf '%s\n' "$RESULT" > "$DOJO_DIR/rollback-result"
       exit 1
   fi
   # The EXIT trap also runs on TERM, INT and HUP (a person, a shutdown or a hang-up): if the services
@@ -143,6 +146,11 @@ if [ "$PRINT" != 1 ]; then
   }
   on_exit() {
       if [ "${services_down:-0}" = 1 ]; then reload_services; fi
+      # Stopped during the data restore: it either finished or put the newer data back whole; say which.
+      if [ "$data_restored" = 1 ] && [ "${RESULT%%	*}" = failed ] \
+         && [ ! -f "$build_steps/$(sqlite3 -readonly "$DOJO_DIR/data/dojo.db" 'SELECT name FROM _migrations ORDER BY rowid DESC LIMIT 1;' 2>/dev/null)" ]; then
+          unchanged "the rollback was stopped before your data was put back"
+      fi
       [ "$AUTO" = 1 ] && printf '%s\n' "$RESULT" > "$DOJO_DIR/rollback-result"
       [ "$(cat "$LOCK_DIR/pid" 2>/dev/null)" = "$$" ] && rm -rf "$LOCK_DIR"
   }
@@ -302,7 +310,7 @@ fi
 
 if [ -z "$newest_backup" ]; then
     echo "ERROR: No ${BACKUP_PREFIX}* directory found in $DOJO_DIR — nothing to roll back to."
-    unchanged "there is no earlier version of Dojo on this Mac to go back to"
+    unchanged "there is no earlier version of Dojo on this Mac to go back to" "See ~/.dojo/scripts/IF-AN-UPDATE-FAILS.md."
     exit 1
 fi
 
@@ -335,7 +343,7 @@ elif [ "$data_ahead" = 1 ]; then
     if [ -z "$data_copy" ]; then
         echo "ERROR: your data was changed by a version newer than $target_ver, and there is no copy of your data from before the update to put back."
         echo "   Nothing was changed. See ~/.dojo/scripts/IF-AN-UPDATE-FAILS.md."
-        unchanged "the update changed your data and there is no copy of it from before the update"
+        unchanged "the update changed your data and there is no copy of it from before the update" 'See "What if there is no backup?" in ~/.dojo/scripts/IF-AN-UPDATE-FAILS.md.'
         exit 1
     fi
     echo "   Your data goes back to the copy taken $(copy_time "$data_copy"); everything since then is kept in a dated copy, not deleted."
@@ -354,13 +362,15 @@ launchctl unload "$LAUNCH_DIR/com.dojo.watchdog.plist" 2>/dev/null
 
 # restore-db.sh waits (bounded) for the server to have really stopped, and refuses if it has not.
 if [ -n "$data_copy" ]; then
+    data_restored=1   # until restore-db.sh says otherwise, so a stop from here on reports the real state
+    stopped "the rollback was stopped before it finished"
     if ! DOJO_LOCK_HOLDER=$$ DOJO_STOP_WAIT="${DOJO_STOP_WAIT:-30}" bash "$(dirname "$0")/restore-db.sh" --from "$data_copy" --yes; then
         echo "ERROR: your data could not be put back (see above), so the build was not changed either."
+        data_restored=0
         stopped "your data from before the update could not be put back (Dojo did not stop in time, or the copy did not pass its check)"
         reload_services
         exit 1
     fi
-    data_restored=1
 fi
 
 # 3. Set the current (failed) build aside for diagnosis, then move the backup
@@ -368,6 +378,7 @@ fi
 #    older backups remain for a deeper rollback if needed.
 ts="$(date +%Y%m%d-%H%M%S)"
 failed_dir=""
+failed "the rollback was stopped while it was swapping the program$([ "$data_restored" = 1 ] && echo ' (your data had already been put back to the copy from before the update)'), so Dojo may have no program to run until the watchdog repairs it"
 if [ -d "$PLATFORM_DIR" ]; then
     failed_dir="$(unique_path "$DOJO_DIR/platform.failed-${cur_ver}-${ts}")"
     echo "   Preserving current build -> $(basename "$failed_dir")"

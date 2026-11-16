@@ -163,8 +163,8 @@ function runSqlMigrations(db: ReturnType<typeof getDb>): void {
   const files = migrationFileNames();
   const ahead = migrationAheadOfBuild(db);
   if (ahead) {
-    throw new Error(`Dojo stopped: a newer version of Dojo changed this database (its last change, ${ahead}, is not one `
-      + 'this version has), and this version cannot read it. Nothing was changed. Choose Roll Back in the menu bar, or see '
+    throw new Error(`Dojo stopped: the last change made to this database (${ahead}) is one this version of Dojo does not `
+      + 'have, so it cannot read the data. Nothing was changed. Choose Roll Back in the menu bar, or see '
       + '~/.dojo/scripts/IF-AN-UPDATE-FAILS.md.');
   }
 

@@ -210,7 +210,9 @@ export function updateMarker(mutate: (current: UpdateMarker | null) => UpdateMar
 
 // The installer (update/install-tree.ts): written right before the two renames; opens a fresh episode.
 export function markPendingUpdate(args: { targetVersion: string; previousVersion: string; backupDir: string; stagingDir: string }): void {
-  // A new episode resets every field except writeSeq: rewinding it would let a straggling write pass the CAS.
+  // A new episode resets every field except writeSeq (rewinding it would let a straggling write pass the CAS),
+  // and an earlier episode's rollback outcome (rollback.sh --auto) is not this one's.
+  fs.rmSync(path.join(DOJO_DIR, 'rollback-result'), { force: true });
   updateMarker((prev) => ({
     ...emptyMarker(),
     phase: 'pending-update',

@@ -57,7 +57,7 @@ describe('an import of a snapshot from a newer build is refused', () => {
     await exportFromNewerDojo('pw');
     const stop = vi.fn(async () => {});
     const restart = vi.fn(async () => {});
-    await expect(performImport(ZIP, 'pw', stop, restart)).rejects.toThrow(/newer version of Dojo/);
+    await expect(performImport(ZIP, 'pw', stop, restart)).rejects.toThrow(/holds a change \(9999_from_a_newer_dojo\.sql\) this version of Dojo does not have/);
     expect(stop).not.toHaveBeenCalled();
     expect(fs.readFileSync(path.join(LIVE, 'live.txt'), 'utf-8')).toBe('live');
   });

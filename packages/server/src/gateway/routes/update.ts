@@ -650,7 +650,7 @@ async function downloadAndInstall(o: {
     // A program older than the data's last change would run on data it cannot read: refuse before the marker is touched.
     const steps = path.join(staged, 'packages', 'server', 'dist', 'db', 'migrations');
     if (fs.existsSync(steps) && migrationAheadOfBuild(getDb(), fs.readdirSync(steps))) {
-      return { ok: false, message: `${o.targetVersion} cannot read your data, because a newer version changed it. Choose Roll Back in the menu bar, which puts your data from before the update back too. ${kept}`, status: 409 };
+      return { ok: false, message: `${o.targetVersion} cannot read your data: the last change made to it is one ${o.targetVersion} does not have. Choose Roll Back in the menu bar, which puts your data from before the update back too. ${kept}`, status: 409 };
     }
     const r = await installPlatformTree({
       dojoDir: DOJO_DIR, stagedDir: staged, targetVersion: o.targetVersion, previousVersion: o.currentVersion,

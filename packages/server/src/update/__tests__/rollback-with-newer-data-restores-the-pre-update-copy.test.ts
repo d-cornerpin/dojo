@@ -3,6 +3,7 @@
 // newer data is kept under a dated name. The data cases are shared with the runner's test.
 import { describe, it, expect, afterEach } from 'vitest';
 import fs from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { makeBox, makeTreeWithSteps, levelDb, whichDb, runRollbackSh, versionAt, type Box } from './safe-install-fixtures.js';
 import { migrationFileNames } from '../../db/migrations.js';
@@ -31,7 +32,8 @@ function box(o: { current: string[]; old: string[]; applied: string[]; copy?: bo
 const ahead = { current: ['209_a.sql', '210_b.sql'], old: ['209_a.sql'], applied: ['209_a.sql', '210_b.sql'] };
 
 describe('rollback with newer data restores the pre-update copy', () => {
-  for (const c of CASES) {
+  // The fixture's before-901 case is proven below with the real file list of the old build.
+  for (const c of CASES.filter((x) => !x.case.startsWith('the update fails before 901'))) {
     it(`${c.case}: ${c.ahead ? 'program and data go back' : 'only the program goes back'}`, () => {
       box({ current: [...new Set([...c.build, ...c.applied])], old: c.build, applied: c.applied });
       const r = runRollbackSh(b, ['--auto']);
@@ -70,7 +72,43 @@ describe('rollback with newer data restores the pre-update copy', () => {
     expect(r.code).toBe(1);
     expect(versionAt(b.platform)).toBe('3.5.0');
     expect(whichDb(live())).toBe('newer');
-    expect(result()).toMatch(/^unchanged\t.*no copy of it from before the update\. Nothing was changed/);
+    expect(result()).toMatch(/^unchanged\t.*no copy of it from before the update\. Nothing was changed.*"What if there is no backup\?"/);
+    expect(result()).not.toMatch(/menu bar/);
+  });
+
+  it('another rollback holding the lock: says so, and changes nothing', () => {
+    box(ahead);
+    fs.mkdirSync(path.join(b.dojo, 'rollback.lock'));
+    fs.writeFileSync(path.join(b.dojo, 'rollback.lock', 'pid'), String(process.pid));
+    expect(runRollbackSh(b, ['--auto']).code).toBe(1);
+    expect(result()).toMatch(/^unchanged\t.*another rollback or restore was already running/);
+  });
+
+  // A shutdown sends TERM to the scripts; these stubs send it at the named step (cp is restore-db.sh's child,
+  // whose parent is rollback.sh; mv is rollback.sh's own).
+  const term = (tool: 'cp' | 'mv', when: string): void => fs.writeFileSync(path.join(b.bin, tool),
+    `#!/bin/sh\nfor last; do :; done\nif ${when}; then\n${tool === 'cp'
+      ? 'kill -TERM $PPID $(ps -o ppid= -p $PPID); head -c 512 "$2" > "$last"; exit 1'
+      : 'kill -TERM $PPID; exec /bin/mv "$@"'}\nfi\nexec /bin/${tool} "$@"\n`, { mode: 0o755 });
+  const whole = (file: string): boolean => spawnSync('sqlite3', [file, 'PRAGMA integrity_check;'], { encoding: 'utf-8' }).stdout.trim() === 'ok';
+
+  it('a stop half-way through copying the data back leaves the newer data whole, and says nothing changed', () => {
+    box(ahead);
+    term('cp', `case "$2" in */dojo-pre-*) case "$last" in */data/dojo.db) true;; *) false;; esac;; *) false;; esac`);
+    runRollbackSh(b, ['--auto']);
+    expect(whole(live())).toBe(true);
+    expect(whichDb(live())).toBe('newer');
+    expect(result()).toMatch(/^unchanged\t.*stopped before your data was put back/);
+  });
+
+  it('a stop after the data went back and while the program is swapped says exactly that', () => {
+    box(ahead);
+    term('mv', `[ "$1" = "${'$'}HOME/.dojo/platform" ]`);
+    runRollbackSh(b, ['--auto']);
+    expect(whole(live())).toBe(true);
+    expect(whichDb(live())).toBe('before');
+    expect(setAside().map((f) => whichDb(path.join(b.dojo, 'data', 'backups', f)))).toEqual(['newer']);
+    expect(result()).toMatch(/^failed\t.*swapping the program \(your data had already been put back.*may have no program to run/);
   });
 
   it('changes nothing when the server is still answering after it was told to stop', () => {

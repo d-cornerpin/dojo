@@ -345,9 +345,9 @@ fi
 # do not belong to.
 echo ""
 echo "Putting the backup in place..."
-rm -f "$DB-wal" "$DB-shm"
-if ! cp -f "$FROM" "$DB"; then
-    echo "REFUSING: the copy failed part-way, so the database file may be cut off."
+# A copy that fails or is stopped part-way (a shutdown sends TERM) puts the set-aside database back.
+put_back() {
+    echo "REFUSING: the copy failed or was stopped part-way, so the database file may be cut off."
     rm -f "$DB-wal" "$DB-shm"
     if [ -n "$SAFETY" ] && [ -s "$SAFETY" ] && cp -f "$SAFETY" "$DB"; then
         echo "  Your previous database has been put back from $SAFETY"
@@ -360,9 +360,13 @@ if ! cp -f "$FROM" "$DB"; then
         echo "  Copy it to $DB by hand before starting Dojo."
     fi
     exit 1
-fi
+}
+trap put_back TERM INT HUP
+rm -f "$DB-wal" "$DB-shm"
+cp -f "$FROM" "$DB" || put_back
 # A manual backup.sh copy may have kept its own tail; bring it along if it is there.
 if [ -f "$FROM-wal" ]; then cp -f "$FROM-wal" "$DB-wal" 2>/dev/null; fi
+trap - TERM INT HUP
 
 # ── 7. Verify the RESULT, and undo if it does not hold ──
 echo ""

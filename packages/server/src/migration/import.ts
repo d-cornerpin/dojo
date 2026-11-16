@@ -215,7 +215,7 @@ async function runImport(
     const sdb = fs.existsSync(snapshot) ? new Database(snapshot, { readonly: true }) : null;
     let ahead: string | null;
     try { ahead = sdb && migrationAheadOfBuild(sdb); } finally { sdb?.close(); }
-    if (ahead) throw new Error(`This export comes from a newer version of Dojo (its data holds ${ahead}). Update this Dojo first, then import it. Nothing was changed.`);
+    if (ahead) throw new Error(`This export's data holds a change (${ahead}) this version of Dojo does not have, so it cannot read it. Update this Dojo first, then import it. Nothing was changed.`);
 
     broadcastProgress('services', 45, 'Stopping services...');
     servicesStopped = true;
