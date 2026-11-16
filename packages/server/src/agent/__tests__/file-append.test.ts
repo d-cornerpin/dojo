@@ -137,16 +137,15 @@ describe('file_append at its DEFAULT setting against an existing non-empty file'
   });
 });
 
-describe('the corrected declaration states the read, and widens nothing', () => {
+describe('the declaration names the one path, and widens nothing', () => {
   function grantsFor(args: Record<string, unknown>): ResourceGrant[] {
     return grantsForCall(AGENT, effectsFor('file_append'), args);
   }
 
-  it('covers BOTH directions on the path the call named — the write and the peek', () => {
+  it('covers the path the call named: the write (the peek rides the write handle) and the size probe', () => {
     const file = path.join(tmpDir, 'notes.md');
     const grants = grantsFor({ path: file, content: 'x' });
     expect(grantsCover(grants, { op: 'fs_write', path: file, real: file }), 'the append itself').toBe(true);
-    expect(grantsCover(grants, { op: 'fs_read', path: file, real: file }), 'the trailing-byte peek').toBe(true);
     expect(grantsCover(grants, { op: 'fs_stat', path: file, real: file }), 'the size probe').toBe(true);
   });
 

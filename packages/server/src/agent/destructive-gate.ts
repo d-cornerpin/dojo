@@ -14,6 +14,7 @@ import { getPrimaryAgentId, getPrimaryAgentName, isHealerAgent } from '../config
 import { isProtectedIdentityPath } from './permissions.js';
 import { getAgentPermissions } from './manifest.js';
 import { grantForManifest } from './brokers/grants.js';
+import { authorizeFs } from './brokers/fs.js';
 import { EXEC_DOOR_ARG, authorizeExecShapedArgs, execCallText, execDoorFor } from './brokers/exec-seam.js';
 import { destroysDojoData, destroysDojoFiles, overwritesFile } from './brokers/dojo-redirect.js';
 import { wipesTheMac } from './brokers/proc.js';
@@ -98,14 +99,16 @@ export function wouldWreck(toolName: string, args: Record<string, unknown>): str
 // The seam is authorizeExecShapedArgs, the EXACT call the dispatcher's own gate row makes: one, no drift.
 // Manifest-permitted but destructive still returns true and is held (git reset --hard, an explicit rm).
 // A shape-mismatched exec call returns FALSE: refused, never authorized as the empty command.
-// Non-exec destructive kinds have no manifest command to check: they return true and hold as before.
+// A non-exec call is asked the one file check for each path it writes.
 export function manifestPermitsDestructiveCall(
   agentId: string,
   toolName: string,
   args: Record<string, unknown>,
 ): boolean {
-  const verdict = authorizeExecShapedArgs(grantForManifest(agentId, getAgentPermissions(agentId)), toolName, args);
-  if (verdict === null) return true; // not an exec-shaped call
+  const grant = grantForManifest(agentId, getAgentPermissions(agentId));
+  const verdict = authorizeExecShapedArgs(grant, toolName, args);
+  // Not exec-shaped: the one file check answers for every path the call writes.
+  if (verdict === null) return callerWrites(toolName, args).every((p) => authorizeFs(grant, 'fs_write', p).allowed);
   if (!verdict.allowed) {
     logger.warn('destructive-gate: pre-hold check refused the call', {
       agentId, toolName, rule: verdict.rule, reason: verdict.reason,

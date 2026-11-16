@@ -72,9 +72,8 @@ describe('the seventeen rows, one clause each', () => {
       const g = covers('2', rowsFor(name, { path: '/tmp/x' }));
       expect(g.kind === 'fs' && g.effect).toBe('fs_write');
     }
-    // file_patch reads AND writes; the ladder gated it on WRITE only, and adding
-    // the read gate would be a new refusal (P5-R5). It stays write-only.
-    expect(rowsFor('file_patch', { path: '/tmp/x' }).filter((g) => g.kind === 'fs')).toHaveLength(1);
+    // file_patch reads the file it edits, so its read is asked too.
+    expect(effectRows('file_patch', { path: '/tmp/x' })).toEqual(['1', '2']);
   });
 
   // ── ROW 3 IS TWO DOORS SINCE PHASE-5 T3, AND BOTH CARRY ITS REQUIREMENT ──

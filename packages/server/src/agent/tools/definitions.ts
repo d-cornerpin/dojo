@@ -265,9 +265,8 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'file_append',
     description: 'Append content to the end of a file at the given absolute path. Creates the file (and parent directories) if they do not exist. Use this for incremental writes, accumulating output across multiple turns, building a long doc one section at a time, logging progress to a scratchpad, instead of `file_write` (which overwrites everything) or the read-modify-rewrite cycle. The latter fills your context with the file\'s existing contents every time you want to add to it; `file_append` does not. Returns bytes appended, total file size, and a download URL.\n\nExample: file_append({ path: "/Users/me/notes.md", content: "\\n## Section 5\\nNew content here." }).\n\nBy default a leading newline is added if the existing file doesn\'t already end in one (so appended sections don\'t smush into the prior line). Set ensure_newline=false to append the exact bytes verbatim.',
-    // The `ensure_newline` default opens this path for reading to peek the last
-    // byte before appending, so the read is declared; nothing here adds a refusal.
-    effects: [{ kind: 'fs_write', from: 'args.path' }, { kind: 'fs_read', from: 'args.path' }],
+    // The last-byte peek before appending goes through the write handle, so the call only writes.
+    effects: [{ kind: 'fs_write', from: 'args.path' }],
     input_schema: {
       type: 'object',
       properties: {

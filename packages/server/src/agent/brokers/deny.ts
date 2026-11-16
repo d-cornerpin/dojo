@@ -239,10 +239,9 @@ export function isSensitivePath(absPath: string): boolean {
   return denyRuleFor(absPath, 'sensitive') !== null;
 }
 
-/** A file on the sensitive list that lets someone sign in to this Mac: one under ~/.ssh. */
-export function isLoginKeyFile(absPath: string): boolean {
-  return isSensitivePath(absPath) && foldPath(absPath).startsWith(foldPath(path.join(homeDir(), '.ssh')) + path.sep);
-}
+/** A file that lets someone sign in to this Mac: what the ~/.ssh deny row covers. */
+const SSH_ROW = DENY_RULES.find((r) => r.id === 'ssh-directory-except-public-keys') as DenyRule;
+export const isLoginKeyFile = (absPath: string): boolean => SSH_ROW.test(contextFor(absPath));
 
 /** Rows deny files by name; a folder holding one is named whole by a recursive read
  *  like `grep -r`, so the reader scan refuses these too. A test pairs each entry with a row. */

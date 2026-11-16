@@ -1,12 +1,11 @@
 // ════════════════════════════════════════════════════════════════════════════
 // COMMUNICATION verbs: chat attachments (show_to_user), publishing (share_file,
 // share_publicly), iMessage, SMS, and voice calls. Bodies relocated from the
-// executor switch unchanged; handler-body permission checks (show_to_user's
-// checkPermission, share_*'s sharePathGuard) moved with their bodies, not re-declared.
+// executor switch unchanged; share_*'s sharePathGuard moved with its body, not re-declared.
 // The three dynamic `await import('.../twilio/voice-outbound.js')` calls MUST stay
 // dynamic: that module's top level reads config/platform.js, which lands in the toolbox
-// graph ahead of the partial vi.mock in the suites. The checkPermission and sharePathGuard
-// body calls are live protections; do not drop or re-gate them.
+// graph ahead of the partial vi.mock in the suites. The sharePathGuard body calls are
+// live protections; do not drop them.
 // ════════════════════════════════════════════════════════════════════════════
 
 import * as effectFs from '../../effects/fs.js';
@@ -20,7 +19,6 @@ import { mayUseChannel, mayReachOthersOn } from '../../access/read.js';
 import { writeToolReceipt } from '../../../receipts/store.js';
 import { turnContext } from '../../turn-context.js';
 import { refuseSendWithNoRecipient, routedReplyWords } from '../../v2/send-recipient.js';
-import { checkPermission } from '../../permissions.js';
 import { sharePathGuard } from '../../path-guards.js';
 import { auditLog, permissionDeniedMessage, registerSharedFile } from '../util.js';
 import { appendTeamsSafeSender, appendGmailSafeSender, appendOutlookSafeSender } from '../../../services/channel-safe-senders.js';
@@ -131,13 +129,6 @@ export const commsHandlers: ToolHandlerMap = {
     const attachments: Array<{ fileId: string; filename: string; mimeType: string; size: number; path: string; category: 'image' | 'pdf' | 'text' | 'office' | 'audio' | 'video' | 'unknown' }> = [];
     for (const srcPath of filePaths) {
       try {
-        // Permission check, agents can only show files they're allowed to read.
-        const allowed = checkPermission(agentId, { type: 'file_read', path: srcPath });
-        if (!allowed.allowed) {
-          content = `Error: not allowed to read ${srcPath} (${allowed.reason ?? 'permission denied'}). show_to_user respects file_read permissions.`;
-          isError = true;
-          break;
-        }
         if (!effectFs.existsSync(srcPath)) {
           content = `Error: file not found: ${srcPath}`;
           isError = true;

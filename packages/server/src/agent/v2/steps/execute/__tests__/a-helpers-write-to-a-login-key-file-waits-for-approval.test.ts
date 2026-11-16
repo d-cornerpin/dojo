@@ -12,6 +12,7 @@ vi.mock('../../../../approval-decision.js', async (orig) => ({ ...(await orig<Re
 
 const MAIN = 'agent-main';
 const HELPER = 'agent-helper';
+const NARROW = 'agent-narrow';
 const home = fs.mkdtempSync(path.join(process.env.DOJO_TEST_HOME_ROOT || os.tmpdir(), 'login-key-hold-'));
 vi.stubEnv('DOJO_HOME', home);
 const connection = await import('../../../../../db/connection.js');
@@ -19,6 +20,7 @@ const migrations = await import('../../../../../db/migrations.js');
 const platform = await import('../../../../../config/platform.js');
 const { recordDispatchAndHold } = await import('../dispatch-bookkeeping.js');
 const { initState } = await import('../../../state.js');
+const { executeTool, toolWasBlocked } = await import('../../../../tools/index.js');
 
 const keys = path.join(home, '.ssh', 'authorized_keys');
 
@@ -29,6 +31,7 @@ beforeAll(() => {
   const add = db.prepare("INSERT INTO agents (id, name, status, config, classification, permissions, spawn_depth, created_by) VALUES (?, ?, 'idle', '{}', ?, ?, 1, 'agent-main')");
   add.run(MAIN, 'main', 'sensei', null);
   add.run(HELPER, 'helper', 'apprentice', wide);
+  add.run(NARROW, 'narrow', 'apprentice', JSON.stringify({ file_read: ['~/Projects/**'], file_write: ['~/Projects/**'], exec_allow: [], exec_deny: [], network_domains: 'none', max_processes: 1, can_spawn_agents: false, can_assign_permissions: false, system_control: [] }));
   db.prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('primary_agent_id', ?)").run(MAIN);
   platform.clearPlatformConfigCache();
 });
@@ -67,6 +70,12 @@ describe("a helper's write to a login-key file waits for approval", () => {
   it('an ordinary write by the same helper is not held', async () => {
     expect(await dispatch(HELPER, 'file_write', { path: path.join(home, 'notes.txt'), content: 'x' })).toBeNull();
     expect(await dispatch(HELPER, 'shell', { script: `echo hi | tee ${path.join(home, 'notes.txt')}` })).toBeNull();
+  });
+
+  it('a helper the file check would refuse is not held: it gets the plain refusal', async () => {
+    const args = { path: keys, content: 'ssh-ed25519 FAKEKEY' };
+    expect(await dispatch(NARROW, 'file_write', args)).toBeNull();
+    expect(toolWasBlocked(await executeTool(NARROW, { id: 'tc-narrow', name: 'file_write', arguments: args }))).toBe(true);
   });
 
   it("the main agent's own write is not held", async () => {

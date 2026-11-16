@@ -58,13 +58,10 @@ const FS_ROWS: ReadonlyArray<readonly [FsEffect, string]> = [['fs_read', '1'], [
 /** Ids the platform recorded name its own library or upload, not a folder the caller chose. */
 const PLATFORM_RECORDS: ReadonlySet<string> = new Set(['technique_dir', 'attachment_row']);
 
-/** The file effects the one file check asks, for every tool: each `args.` path the caller names.
- *  A read of a path the same call writes is an edit in place and is asked as that write. */
+/** The file effects the one file check asks, for every tool: each `args.` path the caller names. */
 export function callerFileEffects(name: string, kind: FsEffect): ToolEffect[] {
-  const declared = effectsFor(name) ?? [];
-  const written = new Set(declared.filter((e) => e.kind === 'fs_write').map((e) => e.from));
-  return declared.filter((e) => e.kind === kind && e.from.startsWith(EFFECT_FROM_ARGS)
-    && !(e.via && PLATFORM_RECORDS.has(e.via)) && !(kind === 'fs_read' && written.has(e.from)));
+  return (effectsFor(name) ?? []).filter((e) => e.kind === kind && e.from.startsWith(EFFECT_FROM_ARGS)
+    && !(e.via && PLATFORM_RECORDS.has(e.via)));
 }
 
 const OWNER_FACING_TOOLS = new Set(['dreamer_run_now', 'cost_summary']);

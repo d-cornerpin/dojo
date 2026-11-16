@@ -379,15 +379,15 @@ async function executeFileAppend(agentId: string, args: Record<string, unknown>)
 
     let leading = '';
     if (ensureNewline) {
-      // Peek the trailing byte (stat + 1-byte read, cheaper than a full read)
-      // to decide whether a separator newline is needed.
+      // Peek the trailing byte (stat + 1-byte read on the write handle) to decide
+      // whether a separator newline is needed; its content never leaves this function.
       let existingSize = 0;
       try {
         const stat = await effectFs.promises.stat(filePath);
         existingSize = stat.size;
       } catch { /* file doesn't exist, append creates it, no leading newline needed */ }
       if (existingSize > 0) {
-        const fh = await effectFs.promises.open(filePath, 'r');
+        const fh = await effectFs.promises.open(filePath, 'r+');
         try {
           const buf = Buffer.alloc(1);
           await fh.read(buf, 0, 1, existingSize - 1);

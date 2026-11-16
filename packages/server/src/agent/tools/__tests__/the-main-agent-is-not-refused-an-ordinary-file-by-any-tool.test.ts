@@ -45,6 +45,8 @@ describe('the main agent is not refused an ordinary file by any tool', () => {
     ['outlook_send', { to: 'someone@example.com', subject: 'Report', body: 'Attached.', attachments: [ordinary] }],
     ['office_read_word_document', { path: ordinary }],
     ['file_append', { path: projectEnv, content: 'DEBUG=1\n' }],
+    ['file_append', { path: ordinary, content: 'more\n' }],
+    ['file_write', { path: path.join(home, 'Library', 'notes', 'new.txt'), content: 'hello' }],
   ] as const)('%s is not refused', async (name, args) => {
     expect(toolWasBlocked(await run(name, args))).toBe(false);
   });
