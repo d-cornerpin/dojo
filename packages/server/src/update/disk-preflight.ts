@@ -21,6 +21,9 @@ import { childFailureEvidence } from './child-failure.js';
 
 const logger = createLogger('update-disk');
 
+/** The watchdog's flat disk floor, copied by hand; the watchdog contract check compares the two. */
+export const DISK_FLOOR_BYTES = 1024 * 1024 * 1024;
+
 export interface UpdateDiskNeed {
   /** False only when the volume WAS measured and is short. An unmeasurable volume is `true`. */
   ok: boolean;
@@ -154,7 +157,7 @@ export function updateDiskRefusal(
 export function downloadRoomRefusal(bytes: number): string | null {
   const dbPath = path.join(homeDir(), '.dojo', 'data', 'dojo.db');
   const free = freeBytesAt(path.dirname(dbPath));
-  const floor = Math.max(1024 ** 3, liveDbBytes(dbPath) * MIGRATION_BACKUP_FREE_DISK_MULTIPLE);
+  const floor = Math.max(DISK_FLOOR_BYTES, liveDbBytes(dbPath) * MIGRATION_BACKUP_FREE_DISK_MULTIPLE);
   if (free === null || free - bytes >= floor) return null;
   return `Dojo: there is not enough free disk space to download one of its local models (${readableBytes(bytes)}): this disk has `
     + `${readableBytes(free)} free and the Dojo keeps at least ${readableBytes(floor)} free. Nothing was downloaded; `
