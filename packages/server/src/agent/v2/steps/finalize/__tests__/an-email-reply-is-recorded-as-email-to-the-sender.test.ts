@@ -32,7 +32,7 @@ const OWNER_MAILBOX = 'owner@home.test';
 let calls: string[] = [];
 
 beforeEach(() => {
-  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
   mockDb.current = new Database(':memory:'); runMigrations();
   mockDb.current.prepare("INSERT INTO agents (id, name, status, classification) VALUES ('primary', 'primary', 'idle', 'standard')").run();
   mockDb.current.prepare("INSERT INTO google_accounts (id, kind, position, email, connected) VALUES ('g-user', 'user', 0, ?, 1)").run(OWNER_MAILBOX);

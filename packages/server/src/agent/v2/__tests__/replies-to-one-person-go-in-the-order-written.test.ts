@@ -16,7 +16,7 @@ import { deliverDueReplies, nextReplyDueAt } from '../channel-sender.js';
 import { freshReplyDb, imessage, personTurn, testDb, PERSON, OTHER, T0 } from './helpers/reply-sender.js';
 
 beforeEach(async () => {
-  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
   freshReplyDb(runMigrations);
   await routeTerminalReply(...personTurn('first', { channel: 'imessage' }, 1));
   await routeTerminalReply(...personTurn('second', { channel: 'imessage' }, 2));

@@ -5,7 +5,6 @@
 import { describe, it, expect, vi } from 'vitest';
 
 vi.mock('../connection.js', async () => (await import('../../work/done/__tests__/helpers/done-db.js')).connectionMock());
-vi.setConfig({ testTimeout: 120_000 });
 
 import { runMigrations, migrationFileNames } from '../migrations.js';
 import { freshDoneDb, doneDb } from '../../work/done/__tests__/helpers/done-db.js';

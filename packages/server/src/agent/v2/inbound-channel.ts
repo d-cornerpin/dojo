@@ -4,9 +4,8 @@
 // with isSenderAuthorized at resolve time; iMessage re-validates at send instead.
 import type { InboundMeta } from '@dojo/shared';
 import type { ChannelInboundContext } from './state.js';
-import { isSenderAuthorized } from './channel-auth.js';
+import { isSenderAuthorized, mayAnswer } from './channel-auth.js';
 import { stampInboundMeta } from '../../memory/message-store.js';
-import { ownerMailboxes } from '../../services/owner-mailboxes.js';
 
 /** Stamp structured routing metadata on an inbound row; producers call it right after inserting the message.
  *  Best-effort: on failure the engine falls back to prose parsing. */
@@ -82,15 +81,11 @@ function resolveFromMeta(raw: string): ResolvedInbound | null {
   }
 
   // Recheck the sender at resolve time, so a sender removed from the safe list after the row was stamped
-  // gets a dashboard notice, not an auto-reply. iMessage re-validates at send in sendResponseViaIMessage.
+  // gets a dashboard notice, not an auto-reply. iMessage re-validates at send.
   if (meta.channel === 'sms' || meta.channel === 'teams' || meta.channel === 'email') {
     const slot = meta.accountKind === 'user' ? 'user' : 'agent';
     const senderKey = meta.smsFromNumber ?? meta.sender ?? meta.recipientAddress ?? '';
-    // The owner's provider-confirmed email (`relation: 'owner'`, agent mailbox only) is answered while its sender
-    // is still one of the owner's connected mailboxes; the owner is not on a safe-sender list.
-    const ownerEmailStillTheirs = meta.channel === 'email' && slot === 'agent' && meta.relation === 'owner'
-      && ownerMailboxes().some((mb) => mb.address === senderKey.trim().toLowerCase());
-    if (!ownerEmailStillTheirs && !isSenderAuthorized(meta.channel, senderKey, slot, meta.emailService ? { emailService: meta.emailService } : undefined)) {
+    if (!mayAnswer(meta.channel, senderKey, slot, { emailService: meta.emailService, fromOwner: meta.relation === 'owner' })) {
       return { inboundChannel: 'dashboard', inboundContext: null };
     }
   }

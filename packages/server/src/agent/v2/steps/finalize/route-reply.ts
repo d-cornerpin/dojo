@@ -150,7 +150,7 @@ async function sendOrHold(stateIn: AgentTurnState, ctx: FinalizeContext, r: Rout
     const sender = counterparty.kind === 'user' && counterparty.channel === 'imessage' ? counterparty.senderId ?? undefined : undefined;
     const address = destination === 'imessage' && !r.imessageConfigured
       ? null
-      : replyAddressFor({ ...state.inboundContext, channel: destination, sender });
+      : replyAddressFor({ ...state.inboundContext, channel: destination, sender, relation: counterparty.kind === 'user' ? counterparty.relation : undefined });
     const queued = address !== null && await queueReply({ agentId, turnNumber, root: turnCtx.root ?? null, text: state.lastAssistantTextForIM, address }) !== null;
     if (!queued) {
       recordedId(recordHeld({ agentId, tool: 'auto-route', channel: destination, conversationId }, `no ${destination} address to reply to; the reply is in the dashboard chat`),

@@ -17,7 +17,7 @@ import { openTurnContext, endTurnContext } from '../../turn-context.js';
 import { freshReplyDb, imessage, personTurn, replyRows, testDb, AGENT, T0 } from './helpers/reply-sender.js';
 
 beforeEach(async () => {
-  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
   freshReplyDb(runMigrations);
   await routeTerminalReply(...personTurn('the plumber comes at nine', { channel: 'imessage' }, 1));
   testDb().prepare('UPDATE deliveries SET next_attempt_at = ? WHERE payload_json IS NOT NULL').run(T0);

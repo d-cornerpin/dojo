@@ -20,7 +20,7 @@ import { freshReplyDb, imessage, personTurn, replyRows, testDb, PERSON, T0 } fro
 const MIN = 60_000;
 
 beforeEach(async () => {
-  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
   freshReplyDb(runMigrations);
   logged.errors = [];
   await routeTerminalReply(...personTurn('the table is booked for eight', { channel: 'imessage' }));

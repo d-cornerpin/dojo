@@ -17,7 +17,7 @@ const logger = createLogger('channel-sender');
 export type ReplyAddress =
   | { channel: 'imessage'; to: string | null }
   | { channel: 'sms'; to: string; from: string | null }
-  | { channel: 'email'; to: string | null; messageId: string; service: 'gmail' | 'outlook'; account: string | null }
+  | { channel: 'email'; to: string | null; messageId: string; service: 'gmail' | 'outlook' | null; account: string | null; fromOwner: boolean }
   | { channel: 'teams'; to: string | null; chatId: string; account: string | null };
 
 /** The waits after each failed try: five tries, the last about 43 minutes after the first. */
@@ -44,7 +44,7 @@ export function replyAddressFor(meta: Partial<InboundMeta> & { channel: string }
       return sms ? { channel: 'sms', to: sms, from: meta.smsToNumber ?? null } : null;
     }
     case 'email': return meta.emailMessageId
-      ? { channel: 'email', to, messageId: meta.emailMessageId, service: meta.emailService === 'gmail' ? 'gmail' : 'outlook', account: meta.emailAccount ?? null }
+      ? { channel: 'email', to, messageId: meta.emailMessageId, service: meta.emailService ?? null, account: meta.emailAccount ?? null, fromOwner: meta.relation === 'owner' }
       : null;
     // A group chat never gets an engine reply; replies there are the agent's own sends.
     case 'teams': return meta.chatId && meta.chatType !== 'group'
@@ -71,15 +71,14 @@ export async function writeRoutingPill(agentId: string, turnNumber: number | nul
   try {
     const { insertMessageIfAbsent } = await import('../../memory/message-store.js');
     insertMessageIfAbsent({ id, agentId, role: 'system', content, turnNumber });
+    broadcast({
+      type: 'chat:message', agentId,
+      message: { id, agentId, role: 'system' as const, content, tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: new Date().toISOString() },
+    });
   } catch (err) {
     // The pill describes a send; it never breaks one.
     logger.warn('routing pill not written', { agentId, label, error: err instanceof Error ? err.message : String(err) }, agentId);
-    return;
   }
-  broadcast({
-    type: 'chat:message', agentId,
-    message: { id, agentId, role: 'system' as const, content, tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: new Date().toISOString() },
-  });
 }
 
 export function isMidTry(rowId: string): boolean {
@@ -119,6 +118,8 @@ export function armSenderTimer(): void {
 
 /** Tries every reply due at `now`: each conversation's rows in the order written, stopping at its first failure. */
 export async function deliverDueReplies(now: number): Promise<void> {
+  // A try's lease and wait run from when it starts: `now` plus the time this pass has already spent.
+  const passStartedAt = Date.now();
   try {
     const rows = getDb().prepare(
       `SELECT id, agent_id, turn_number, root_kind, root_id, conversation_id, attempts, next_attempt_at, payload_json
@@ -132,7 +133,8 @@ export async function deliverDueReplies(now: number): Promise<void> {
     await Promise.all([...queues.values()].map(async (queue) => {
       if (queue.some((row) => midTry.has(row.id))) return;
       for (const row of queue) {
-        if (row.next_attempt_at > now || !(await tryOnce(row, now))) return;
+        const startsAt = now + Date.now() - passStartedAt;
+        if (row.next_attempt_at > startsAt || !(await tryOnce(row, startsAt))) return;
       }
     }));
   } catch (err) {
@@ -150,37 +152,49 @@ async function tryOnce(row: QueuedRow, now: number): Promise<boolean> {
   if (!leased) return false;
   midTry.add(row.id);
   try {
-    const { text, address } = JSON.parse(row.payload_json) as { text: string; address: ReplyAddress };
-    const root: TurnRoot | null = row.root_kind && row.root_id
-      ? { kind: row.root_kind as TurnRoot['kind'], id: row.root_id, sourceMessageId: null, conversationId: row.conversation_id }
-      : null;
-    const to = address.channel === 'imessage' && address.to === null
-      ? (await import('../../services/imessage-bridge.js')).getDefaultSender()
-      : address.to;
-    const verdict = await asTurn(row.agent_id, { turnNumber: row.turn_number, root, convKey: null }, async (): Promise<FoldedVerdict> => {
-      const refusal = await refusalOf(row.agent_id, address, to);
-      if (refusal !== null) return { delivered: false, final: true, detail: refusal, receiptId: null };
-      const { withAdoptedOutbound } = await import('./outbound.js');
-      return withAdoptedOutbound({ id: row.id, agentId: row.agent_id, channel: address.channel }, () => sendBy(row.agent_id, text, address, to!));
-    });
-    return await recordVerdict(row, await pillLabel(address, to), to, verdict, now);
+    const payload = parsedPayload(row);
+    let to: string | null = null;
+    let verdict: FoldedVerdict;
+    // Anything that throws before or around the send is a failed try like any other, so it counts toward the five.
+    try {
+      if (!payload) throw new Error('the queued reply cannot be read');
+      to = payload.address.channel === 'imessage' && payload.address.to === null
+        ? (await import('../../services/imessage-bridge.js')).getDefaultSender()
+        : payload.address.to;
+      verdict = await sendAsItsTurn(row, payload, to);
+    } catch (err) {
+      verdict = { delivered: false, final: false, detail: err instanceof Error ? err.message : String(err), receiptId: null };
+    }
+    return await recordVerdict(row, payload?.address ?? null, to, verdict, now);
   } finally {
     midTry.delete(row.id);
     announceLiveWork(row.agent_id);
   }
 }
 
+function parsedPayload(row: QueuedRow): { text: string; address: ReplyAddress } | null {
+  try { return JSON.parse(row.payload_json) as { text: string; address: ReplyAddress }; } catch { return null; }
+}
+
+/** The check and the send, stamped with the row's own turn and request. */
+function sendAsItsTurn(row: QueuedRow, payload: { text: string; address: ReplyAddress }, to: string | null): Promise<FoldedVerdict> {
+  const root: TurnRoot | null = row.root_kind && row.root_id
+    ? { kind: row.root_kind as TurnRoot['kind'], id: row.root_id, sourceMessageId: null, conversationId: row.conversation_id }
+    : null;
+  return asTurn(row.agent_id, { turnNumber: row.turn_number, root, convKey: null }, async (): Promise<FoldedVerdict> => {
+    const refusal = await refusalOf(row.agent_id, payload.address, to);
+    if (refusal !== null || to === null) return { delivered: false, final: true, detail: refusal, receiptId: null };
+    const { withAdoptedOutbound } = await import('./outbound.js');
+    return withAdoptedOutbound({ id: row.id, agentId: row.agent_id, channel: payload.address.channel }, () => sendBy(row.agent_id, payload.text, payload.address, to));
+  });
+}
+
 /** The check before any send: the agent still holds the channel and the person is still approved. Final if it fails. */
 async function refusalOf(agentId: string, a: ReplyAddress, to: string | null): Promise<string | null> {
   const { engineMayRouteTo, engineRouteRefusalReason } = await import('../access/engine-route.js');
   if (!engineMayRouteTo(agentId, a.channel)) return engineRouteRefusalReason(a.channel);
-  const { getSafeSenders, findSafeSenderByAddress } = await import('../../services/imessage-bridge.js');
-  const { ownerMailboxes } = await import('../../services/owner-mailboxes.js');
-  const { isSenderAuthorized } = await import('./channel-auth.js');
-  const approved = to !== null && (
-    a.channel === 'imessage' ? findSafeSenderByAddress(getSafeSenders(), to) !== null
-    : (a.channel === 'email' && ownerMailboxes().some((mb) => mb.address === to.trim().toLowerCase()))
-      || isSenderAuthorized(a.channel, to, 'agent', a.channel === 'email' ? { emailService: a.service } : undefined));
+  const { mayAnswer } = await import('./channel-auth.js');
+  const approved = to !== null && mayAnswer(a.channel, to, 'agent', a.channel === 'email' ? { emailService: a.service ?? undefined, fromOwner: a.fromOwner } : undefined);
   return approved ? null : `${to ?? 'the recipient'} is no longer on the approved list`;
 }
 
@@ -216,7 +230,7 @@ async function sendBy(agentId: string, text: string, a: ReplyAddress, to: string
   return { ok: false, final: o.kind === 'refused' && o.result.errorCode !== 'RATE_LIMITED', detail: o.result.content.slice(0, 300) };
 }
 
-async function recordVerdict(row: QueuedRow, label: string, to: string | null, v: FoldedVerdict, now: number): Promise<boolean> {
+async function recordVerdict(row: QueuedRow, address: ReplyAddress | null, to: string | null, v: FoldedVerdict, now: number): Promise<boolean> {
   const attempts = row.attempts + 1;
   if (!v.delivered && !v.final && attempts <= WAITS_MS.length) {
     getDb().prepare(
@@ -229,11 +243,14 @@ async function recordVerdict(row: QueuedRow, label: string, to: string | null, v
   const written = resolvePendingDelivery(row.id, {
     outcome: v.delivered ? 'delivered' : 'failed', detail: v.detail, recipientId: to, receiptId: v.receiptId,
   });
-  if (written?.kind === 'failed') {
+  // Null: the row already ended elsewhere (a restarted sender resent it after the lease); that verdict stands.
+  if (written === null) return false;
+  if (written.kind === 'failed') {
     // The row stays pending under its lease and is tried again when it ends.
     logger.error('a reply\'s verdict could not be recorded', { deliveryId: row.id, turnNumber: row.turn_number, conversationId: row.conversation_id, error: written.detail }, row.agent_id);
     return false;
   }
+  const label = address ? await pillLabel(address, to).catch(() => address.channel) : 'its channel';
   if (v.delivered) {
     await writeRoutingPill(row.agent_id, row.turn_number, label);
     return true;

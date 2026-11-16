@@ -16,6 +16,7 @@ import { deliverDueReplies } from '../channel-sender.js';
 import { freshReplyDb, imessage, personTurn, replyRows, testDb, PERSON, T0 } from './helpers/reply-sender.js';
 
 beforeEach(async () => {
+  vi.useFakeTimers({ toFake: ['Date'] });
   freshReplyDb(runMigrations);
   await routeTerminalReply(...personTurn('see you at noon', { channel: 'imessage' }));
   testDb().prepare('UPDATE deliveries SET next_attempt_at = ? WHERE payload_json IS NOT NULL').run(T0);

@@ -24,7 +24,7 @@ import { resolveInbound } from '../inbound-channel.js';
 import { freshReplyDb, personTurn, replyRows, testDb, T0 } from './helpers/reply-sender.js';
 
 beforeEach(() => {
-  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
   freshReplyDb(runMigrations);
   tool.calls = [];
 });

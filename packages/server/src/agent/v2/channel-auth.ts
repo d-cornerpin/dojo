@@ -10,7 +10,8 @@ import {
   getTeamsSafeSenders,
   getTwilioSmsSafeSenders,
 } from '../../services/channel-safe-senders.js';
-import { addressesMatch } from '../../services/imessage-bridge.js';
+import { addressesMatch, findSafeSenderByAddress, getSafeSenders } from '../../services/imessage-bridge.js';
+import { ownerMailboxes } from '../../services/owner-mailboxes.js';
 
 export type AuthChannel = 'imessage' | 'teams' | 'sms' | 'email';
 export type AccountKind = 'agent' | 'user';
@@ -43,4 +44,18 @@ export function isSenderAuthorized(
     default:
       return false;
   }
+}
+
+/** May the Dojo answer this address on this channel: the approved list, or the owner writing from one of his own
+ *  connected mailboxes (provider-confirmed, agent mailbox only). Asked at inbound and again before each send. */
+export function mayAnswer(
+  channel: AuthChannel,
+  sender: string,
+  accountKind: AccountKind,
+  opts?: { emailService?: 'gmail' | 'outlook'; fromOwner?: boolean },
+): boolean {
+  if (channel === 'imessage') return accountKind === 'agent' && findSafeSenderByAddress(getSafeSenders(), sender) !== null;
+  if (channel === 'email' && accountKind === 'agent' && opts?.fromOwner
+    && ownerMailboxes().some((mb) => mb.address === sender.trim().toLowerCase())) return true;
+  return isSenderAuthorized(channel, sender, accountKind, opts?.emailService ? { emailService: opts.emailService } : undefined);
 }
