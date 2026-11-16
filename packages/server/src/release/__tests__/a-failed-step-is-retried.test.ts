@@ -48,7 +48,7 @@ describe('a failed release step is retried', () => {
   });
 
   it('one step failing while another ran does not record the version', async () => {
-    const extra: ReleaseStep = { id: 'extra-ok', sinceVersion: '0.0.0', pays: 'test', run: () => ({ examined: 1, flagged: 0, repaired: 0 }) };
+    const extra: ReleaseStep = { id: 'extra-ok', sinceVersion: '0.0.0', run: () => ({ examined: 1, flagged: 0, repaired: 0 }) };
     (RELEASE_STEPS as ReleaseStep[]).push(extra);
     try {
       reconcile.run.mockRejectedValue(new Error('boom'));

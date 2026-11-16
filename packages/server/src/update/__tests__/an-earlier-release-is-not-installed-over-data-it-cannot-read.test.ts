@@ -6,6 +6,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 
 vi.mock('../../db/connection.js', async () => (await import('../../work/done/__tests__/helpers/done-db.js')).connectionMock());
 vi.mock('../../services/watchdog-refresh.js', () => ({ refreshBundledWatchdog: async () => ({ refreshed: false, reason: 'test' }) }));
@@ -29,8 +30,10 @@ function release(version: string, steps: string[]): void {
   execFileSync('zip', ['-qr', path.join(tools.home, 'release.zip'), 'dojo-platform'], { cwd: work });
   fs.writeFileSync(path.join(tools.bin, 'curl'),
     `#!/bin/sh\nwhile [ $# -gt 0 ]; do if [ "$1" = "-o" ]; then cp "${path.join(tools.home, 'release.zip')}" "$2"; shift; fi; shift; done\n`, { mode: 0o755 });
-  vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
-    tag_name: `v${version}`, assets: [{ name: 'dojo-platform.zip', browser_download_url: 'https://example.invalid/dojo-platform.zip', size: 1000 }],
+  const digest = createHash('sha256').update(fs.readFileSync(path.join(tools.home, 'release.zip'))).digest('hex');
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => new Response(String(url).endsWith('.sha256') ? `${digest}  dojo-platform.zip\n` : JSON.stringify({
+    tag_name: `v${version}`, assets: [{ name: 'dojo-platform.zip', browser_download_url: 'https://example.invalid/dojo-platform.zip', size: 1000 },
+      { name: 'dojo-platform.zip.sha256', browser_download_url: 'https://example.invalid/dojo-platform.zip.sha256', size: 90 }],
   }), { status: 200 })));
 }
 

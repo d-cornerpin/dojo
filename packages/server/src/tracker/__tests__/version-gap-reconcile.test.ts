@@ -161,7 +161,6 @@ describe('C1 release steps are DECLARED, and the version gap decides which run',
     expect(ids).toContain('version-gap-reconcile');
     for (const s of RELEASE_STEPS) {
       expect(s.sinceVersion, `${s.id} declares no release`).toMatch(/^\d+\.\d+\.\d+/);
-      expect(s.pays.length, `${s.id} does not say what it pays for`).toBeGreaterThan(30);
     }
   });
 

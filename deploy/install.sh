@@ -375,21 +375,18 @@ for i in $(seq 1 30); do
     sleep 1
 done
 
-# Check if it's actually running
+# Any answer means it is listening: the page it serves while starting reloads itself until the wizard is ready.
 if ! curl -s "http://localhost:${API_PORT}/api/health" >/dev/null 2>&1; then
     echo ""
-    echo "⚠️  Server hasn't started yet. Check logs at: ~/.dojo/logs/"
+    echo "❌ The DOJO server did not start. Check logs at: ~/.dojo/logs/"
     echo "   Try: cat ~/.dojo/logs/platform.stderr.log"
-else
-    # Open browser
-    echo ""
-    echo "🌐 Opening setup wizard..."
-    open "http://localhost:${DASHBOARD_PORT}"
-
-    # Launch menu bar app
-    if [[ -d "/Applications/DOJO.app" ]]; then
-        open /Applications/DOJO.app
-    fi
+    exit 1
+fi
+echo ""
+echo "🌐 Opening setup wizard..."
+open "http://localhost:${DASHBOARD_PORT}"
+if [[ -d "/Applications/DOJO.app" ]]; then
+    open /Applications/DOJO.app
 fi
 
 echo ""

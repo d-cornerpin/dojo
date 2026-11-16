@@ -20,6 +20,7 @@ import { makeTree } from './safe-install-fixtures.js';
 const home = process.env.DOJO_HOME as string;
 const dojo = path.join(home, '.dojo');
 const platform = path.join(dojo, 'platform');
+const EMPTY_SHA256 = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  dojo-platform.zip\n';
 
 /** Every `exec` command the code under test tried to run. */
 const { execCmds, spawnCmds } = vi.hoisted(() => ({ execCmds: [] as string[][], spawnCmds: [] as string[][] }));
@@ -35,6 +36,7 @@ vi.mock('node:child_process', async (importOriginal) => {
   };
   const spawn = (file: string, argv: string[] = []) => {
     spawnCmds.push([file, ...argv]);
+    if (file === 'curl') orig.execFileSync('touch', [argv[argv.indexOf('-o') + 1]]);   // an empty download
     const child = Object.assign(new EventEmitter(), { stdout: null, stderr: null, kill: () => true, pid: 4242 });
     process.nextTick(() => child.emit('close', 0, null));
     return child;
@@ -56,9 +58,10 @@ beforeEach(() => {
   spawnCmds.length = 0;
   makeTree(platform, '3.3.3', { native: true });
   fs.mkdirSync(path.join(dojo, 'data'), { recursive: true }); // the volume the pre-flight measures
-  vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => new Response(String(url).endsWith('.sha256') ? EMPTY_SHA256 : JSON.stringify({
     tag_name: 'v3.4.0', name: 'v3.4.0', published_at: '2026-10-17T00:00:00Z', body: '',
-    assets: [{ name: 'dojo-platform.zip', browser_download_url: 'https://example.invalid/dojo-platform.zip', size: 1000 }],
+    assets: [{ name: 'dojo-platform.zip', browser_download_url: 'https://example.invalid/dojo-platform.zip', size: 1000 },
+      { name: 'dojo-platform.zip.sha256', browser_download_url: 'https://example.invalid/dojo-platform.zip.sha256', size: 90 }],
   }), { status: 200 })));
 });
 

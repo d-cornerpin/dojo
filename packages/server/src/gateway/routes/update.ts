@@ -28,6 +28,7 @@ import {
   type UpdateDiskNeed,
 } from '../../update/disk-preflight.js';
 import { homeDir } from '../../home.js';
+import { missingStandardBytes } from '../../services/local-standard.js';
 
 // No shell anywhere: every command is a program plus an argument array.
 const execFileAsync = promisify(execFile);
@@ -459,7 +460,7 @@ export async function checkForUpdate(channel?: UpdateChannel): Promise<UpdateChe
       // Measured here, where the artifact's own size is in hand. Never allowed to fail a
       // check: a disk we cannot read must not make "is there an update?" unanswerable.
       disk: (() => {
-        try { return measureUpdateDiskNeed({ artifactBytes: zipAsset?.size ?? 0 }); }
+        try { return measureUpdateDiskNeed({ artifactBytes: zipAsset?.size ?? 0, modelBytes: missingStandardBytes() }); }
         catch (err) {
           logger.debug('Update disk pre-flight failed (non-fatal)', {
             error: err instanceof Error ? err.message : String(err),
@@ -613,7 +614,7 @@ async function downloadAndInstall(o: {
   const kept = `Nothing was changed: Dojo is still running ${o.currentVersion}.`;
   // Disk-space pre-flight before a single byte (the artifact's size is a fact): refusing leaves no update
   // episode to roll back. Measured again after a write failure, since a disk fills after the check.
-  const disk = measureUpdateDiskNeed({ artifactBytes: o.artifactBytes });
+  const disk = measureUpdateDiskNeed({ artifactBytes: o.artifactBytes, modelBytes: missingStandardBytes() });
   const diskRefusal = updateDiskRefusal(disk);
   if (diskRefusal) {
     logger.warn('Install REFUSED before download: not enough free disk', {
@@ -621,6 +622,10 @@ async function downloadAndInstall(o: {
       dbBytes: disk.dbBytes, artifactBytes: disk.artifactBytes, platformBytes: disk.platformBytes,
     });
     return { ok: false, message: diskRefusal, status: 507 };
+  }
+  // Going forward needs the release's checksum list; going back may reach a release from before the lists.
+  if (!o.manifestUrl && compareVersions(o.targetVersion, o.currentVersion) > 0) {
+    return { ok: false, message: `${o.targetVersion} was published without its checksum list, so its download could not be checked. ${kept}`, status: 502 };
   }
   // Refuse a second install before downloading anything (the installer re-checks under the lock).
   const probe = acquireSwapLock(DOJO_DIR);
@@ -632,8 +637,7 @@ async function downloadAndInstall(o: {
     await spawnIdleBounded('curl', curlDownloadArgv(o.zipUrl, zipPath), {
       idleMs: UPDATE_DOWNLOAD_IDLE_MS, ceilingMs: UPDATE_DOWNLOAD_CEILING_MS,
     });
-    // Integrity before anything is unpacked. A release with no manifest is installed and recorded as
-    // unverified: refusing those would end the rollback path to every release that predates manifests.
+    // Integrity before anything is unpacked; only a rollback arrives here without a manifest.
     const verdict = await verifyArtifactAgainstManifest(zipPath, await fetchArtifactManifest(o.manifestUrl));
     if (verdict.outcome === 'refused') return { ok: false, message: `REFUSED — ${verdict.reason}. ${kept}`, status: 502 };
 

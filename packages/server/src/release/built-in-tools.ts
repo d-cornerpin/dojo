@@ -25,16 +25,16 @@ function addTo(holder: Holder | undefined, tools: readonly string[], skip: Reado
   return add.length > 0;
 }
 
-/** Names an audited edit of the agent's allow list took out and no later edit put back. */
-function removedNames(agentId: string): Set<string> {
-  const out = new Set<string>();
-  const rows = getDb().prepare("SELECT detail FROM audit_log WHERE target = ? AND result = 'success' AND detail LIKE '%tools.allow:%' ORDER BY created_at, rowid").all(agentId) as Array<{ detail: string }>;
-  for (const { detail } of rows) {
+/** Per agent, the names an audited edit of its allow list took out and no later edit put back (one scan of the log). */
+function removedNames(agentIds: string[]): Map<string, Set<string>> {
+  const out = new Map(agentIds.map((id) => [id, new Set<string>()]));
+  const rows = getDb().prepare(`SELECT target, detail FROM audit_log WHERE target IN (${agentIds.map(() => '?').join(', ')}) AND result = 'success' AND detail LIKE '%tools.allow:%' ORDER BY created_at, rowid`).all(...agentIds) as Array<{ target: string; detail: string }>;
+  for (const { target, detail } of rows) {
     const m = /tools\.allow: (\[[^\]]*\]) → (\[[^\]]*\])/.exec(detail);
     try {
       const [before, after] = [canon(JSON.parse(m?.[1] ?? '')), canon(JSON.parse(m?.[2] ?? ''))];
-      before.forEach((t) => out.add(t));
-      after.forEach((t) => out.delete(t));
+      before.forEach((t) => out.get(target)?.add(t));
+      after.forEach((t) => out.get(target)?.delete(t));
     } catch { /* not an allow change this reader can read */ }
   }
   return out;
@@ -47,15 +47,17 @@ export function deliverBuiltInTools(): ReleaseStepOutcome {
     [getDreamerAgentId(), (JSON.parse(DREAMER_TOOLS_POLICY) as { allow: string[] }).allow],
     [getPMAgentId(), PM_ALLOWED_TOOLS],
   ];
+  let removed: Map<string, Set<string>> | undefined;
   for (const [id, usual] of agents) {
     const row = db.prepare("SELECT tools_policy, permissions FROM agents WHERE id = ? AND status <> 'terminated'").get(id) as
       { tools_policy: string | null; permissions: string | null } | undefined;
     if (!row) continue;
     out.examined++;
+    removed ??= removedNames(agents.map(([a]) => a));
     const policy = parse(row.tools_policy) as Holder | null;
     const perm = parse(row.permissions);
     const grants = (perm?.grants as { tools?: Holder } | undefined)?.tools;
-    const skip = new Set([...canonicalizeToolsPolicy({ allow: [], deny: [...names(policy?.deny), ...names(grants?.deny)] }).deny, ...removedNames(id)]);
+    const skip = new Set([...canonicalizeToolsPolicy({ allow: [], deny: [...names(policy?.deny), ...names(grants?.deny)] }).deny, ...(removed.get(id) ?? [])]);
     const inColumn = addTo(policy ?? undefined, usual, skip);
     const inGrants = addTo(grants, usual, skip);
     if (inColumn || inGrants) {

@@ -61,6 +61,12 @@ export function standardModelRowId(which: Which): string | null {
   }
 }
 
+/** Bytes of the pair this box has not installed yet, which the next upkeep downloads; none without a local Ollama. */
+export function missingStandardBytes(): number {
+  if (!localOllamaProvider()) return 0;
+  return (standardModelRowId('decision') ? 0 : STANDARD_DECISION_MODEL.bytes) + (standardModelRowId('writer') ? 0 : STANDARD_WRITER_MODEL.bytes);
+}
+
 export const STANDARD_ROW_STAYS = 'The Dojo itself runs on this model for memory summaries and quick checks, so it stays on.';
 
 /** The Ollama tag's own row is one of the pair: the one question the Models tab and the Setup screen both ask. */

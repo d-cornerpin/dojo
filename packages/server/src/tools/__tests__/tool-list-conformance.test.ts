@@ -24,8 +24,7 @@
 // hangs). This test therefore imports the PLAIN DATA module tools/categories.ts
 // as the tool registry (the same surface the V5 visibility test trusts) plus the
 // LEAF/type-only hand-list modules, and never touches agent/tools.ts. The release
-// gate (deploy/check-tool-conformance.mjs) runs the identical assertions against
-// the built dist.
+// runs it in its unit-suite gate.
 // ════════════════════════════════════════
 import { describe, it, expect } from 'vitest';
 import { classifyTool, channelOfSendTool } from '@dojo/shared';
@@ -240,8 +239,7 @@ describe('tool-list conformance — SEND_TO_PEOPLE is registry-exhaustive (anti-
   // equality between the declarations and the list's base names: a declaration
   // without a list entry OR a list entry without a declaration fails the build
   // naming the tool. user_ twins inherit the flag via the twin-generation
-  // spread and are pinned by the twin-parity check above. Twin of section (f)
-  // in deploy/check-tool-conformance.mjs (which scans the built dist).
+  // spread and are pinned by the twin-parity check above.
   it('reachesPeople declarations and SEND_TO_PEOPLE base names are equal sets', () => {
     const declared = new Set(getAllToolDefinitions().filter((d) => d.reachesPeople === true && !d.name.startsWith('user_')).map((d) => d.name));
     const listBases = new Set(SEND_TO_PEOPLE.filter((n) => !n.startsWith('user_')));

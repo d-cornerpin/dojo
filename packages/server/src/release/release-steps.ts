@@ -23,7 +23,6 @@ export interface ReleaseStep {
   readonly id: string;
   /** The release at or after which a box may carry what this step looks for. */
   readonly sinceVersion: string;
-  readonly pays: string;
   /** Must be idempotent. The runner catches a throw, but a step should not rely on that. */
   readonly run: () => Promise<ReleaseStepOutcome> | ReleaseStepOutcome;
 }
@@ -34,11 +33,6 @@ export const RELEASE_STEPS: readonly ReleaseStep[] = [
     id: 'version-gap-reconcile',
     // `0.0.0` means any box that has ever run any version.
     sinceVersion: '0.0.0',
-    pays:
-      "the owner's 2026-08-06 report — a prior build's broken close_project left his production "
-      + 'dojo carrying 27 stale projects while the board reported 29 "Active" with zero '
-      + 'in-progress work. The fix ships; the wreckage stays. Nothing in the tree reconciled '
-      + 'tracker state across a version change.',
     run: async () => {
       const { runVersionGapReconcile } = await import('../tracker/version-gap-reconcile.js');
       const r = await runVersionGapReconcile();
@@ -47,13 +41,9 @@ export const RELEASE_STEPS: readonly ReleaseStep[] = [
   },
   {
     id: 'orphaned-ask-backlog',
-    // Below every 3.5.0 prerelease (`-0` sorts lowest): any box last run on an older build owes it.
+    // Below every 3.5.0 prerelease (`-0` sorts lowest): any box last run on an older build owes it. The boot
+    // reconcile parks the inherited backlog while this step is owed; this entry is that pass's marker and report.
     sinceVersion: '3.5.0-0',
-    pays:
-      'since t93 (v3.3.0) every restart mid-turn stranded an owner or contact message `claimed`, and no build handed '
-      + 'those back. The build that does would serve the whole backlog on its first boot. The PARKING happens in the '
-      + "boot reconcile (index.ts 4b1, before any turn can run), keyed on this step being owed; this entry is that pass's "
-      + 'marker and report, so it runs once per version boundary and a repeated boot finds nothing (proof-fix-f, review B2).',
     run: async () => {
       // Report only: a live turn's open row would read as dead. A throw leaves the step owed.
       const { completedInheritedBacklogPass } = await import('../work/inherited-backlog.js');
@@ -65,9 +55,6 @@ export const RELEASE_STEPS: readonly ReleaseStep[] = [
   {
     id: 'built-in-tools',
     sinceVersion: '3.5.0-preflight.4',
-    pays:
-      'the Dreamer and PM keep the tool list they last held, so an upgraded box\'s built-in agents lacked tools their build lists. '
-      + 'Adds every listed tool the owner neither denied nor removed in an audited edit.',
     run: async () => (await import('./built-in-tools.js')).deliverBuiltInTools(),
   },
 ];

@@ -13,6 +13,8 @@ import { reapToolboxGroupsAtBoot } from './agent/effects/toolbox-ledger.js';
 import { loadSecrets } from './config/loader.js';
 import { createServer } from './gateway/server.js';
 import { closeServers, trackRequests } from './gateway/close-servers.js';
+import { startingAnswer } from './gateway/starting-page.js';
+import { keepMacAwake } from './services/keep-awake.js';
 import { broadcast } from './gateway/ws.js';
 import { checkTimeouts, reArmSpawnTimeouts } from './agent/spawner.js';
 import { killTunnelSync } from './services/tunnel.js';
@@ -211,15 +213,10 @@ async function bindPortFirst(fetchHandler: (request: Request, env: unknown) => R
 async function main(): Promise<void> {
   logger.info('Starting Dojo Agent Platform...');
 
-  // Until the real app is built at the end of boot, every request gets 503 (the watchdog reads it as down).
+  // Until the real app is built at the end of boot, every request gets the 503 starting answer.
   let appFetch: ((request: Request, env: unknown) => Response | Promise<Response>) | null = null;
-  const server = await bindPortFirst((request, env) =>
-    appFetch
-      ? appFetch(request, env)
-      : new Response(JSON.stringify({ ok: false, error: 'Dojo is starting' }), {
-        status: 503,
-        headers: { 'content-type': 'application/json' },
-      }));
+  const server = await bindPortFirst((request, env) => (appFetch ? appFetch(request, env) : startingAnswer(request)));
+  keepMacAwake();
 
   // Track in-flight responses so shutdown can close their connections (gateway/close-servers.ts).
   trackRequests(server as unknown as HttpServer);

@@ -3,7 +3,8 @@
 // the database backup (`MIGRATION_BACKUP_FREE_DISK_MULTIPLE` x db+wal+shm, imported so this cannot
 // promise room the migration chain then refuses), the zip (its published size), and the extracted
 // tree plus the staged dependency copy (each the size of the installed tree, since the extracted size
-// is unknowable beforehand and not every volume can clone). Pruning of old backups and the work dir
+// is unknowable beforehand and not every volume can clone), and the Dojo's local models this box still
+// lacks (the first start downloads them). Pruning of old backups and the work dir
 // is not modelled: it frees space, so ignoring it errs the safe way. A volume that cannot be measured
 // answers "could not tell" and the update proceeds (as `db/migration-backup.ts` and
 // `gateway/routes/migration.ts` do); the migration chain's own refusal remains the net.
@@ -30,6 +31,7 @@ export interface UpdateDiskNeed {
   backupNeedBytes: number;
   artifactBytes: number;
   platformBytes: number;
+  modelBytes: number;
   totalNeedBytes: number;
   shortfallBytes: number;
 }
@@ -37,6 +39,9 @@ export interface UpdateDiskNeed {
 function fileSize(p: string): number {
   try { return fs.statSync(p).size; } catch { return 0; }
 }
+
+/** The live database footprint: the file plus its WAL and SHM. */
+const liveDbBytes = (dbPath: string): number => fileSize(dbPath) + fileSize(`${dbPath}-wal`) + fileSize(`${dbPath}-shm`);
 
 /** Bytes of a directory tree. Symlinks are not followed (the `cp -R` copies the link). */
 function treeSize(dir: string): number {
@@ -62,36 +67,40 @@ export function readableBytes(bytes: number): string {
   return bytes >= 1e9 ? `${(bytes / 1e9).toFixed(2)} GB` : `${Math.round(bytes / 1e6)} MB`;
 }
 
+/** Free bytes on the volume holding `dir`; null when it cannot be read. */
+function freeBytesAt(dir: string): number | null {
+  try {
+    const st = fs.statfsSync(dir);
+    return Number(st.bavail) * Number(st.bsize);
+  } catch (err) {
+    logger.debug('Free-disk check unavailable; not blocking', { error: err instanceof Error ? err.message : String(err) });
+    return null;
+  }
+}
+
 /** Measure what one update needs against this box; the paths are parameters so tests can use known sizes. */
 export function measureUpdateDiskNeed(input: {
   artifactBytes: number;
+  /** The Dojo's local models the first start will download (`missingStandardBytes`). */
+  modelBytes?: number;
   dbPath?: string;
   platformDir?: string;
 }): UpdateDiskNeed {
   const dbPath = input.dbPath ?? path.join(homeDir(), '.dojo', 'data', 'dojo.db');
   const platformDir = input.platformDir ?? path.join(homeDir(), '.dojo', 'platform');
 
-  const dbBytes = fileSize(dbPath) + fileSize(`${dbPath}-wal`) + fileSize(`${dbPath}-shm`);
+  const dbBytes = liveDbBytes(dbPath);
   const backupNeedBytes = dbBytes * MIGRATION_BACKUP_FREE_DISK_MULTIPLE;
   const platformBytes = treeSize(platformDir);
   const artifactBytes = Math.max(0, input.artifactBytes);
-  const totalNeedBytes = backupNeedBytes + artifactBytes + platformBytes * 2;
-
-  let freeBytes: number | null = null;
-  try {
-    const st = fs.statfsSync(path.dirname(dbPath));
-    freeBytes = Number(st.bavail) * Number(st.bsize);
-  } catch (err) {
-    logger.debug('Free-disk check unavailable for the update pre-flight; not blocking', {
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
-
+  const modelBytes = input.modelBytes ?? 0;
+  const totalNeedBytes = backupNeedBytes + artifactBytes + platformBytes * 2 + modelBytes;
+  const freeBytes = freeBytesAt(path.dirname(dbPath));
   const measured = freeBytes !== null;
   const shortfallBytes = freeBytes === null ? 0 : Math.max(0, totalNeedBytes - freeBytes);
   return {
     ok: !measured || shortfallBytes === 0,
-    measured, freeBytes, dbBytes, backupNeedBytes, artifactBytes, platformBytes,
+    measured, freeBytes, dbBytes, backupNeedBytes, artifactBytes, platformBytes, modelBytes,
     totalNeedBytes, shortfallBytes,
   };
 }
@@ -104,7 +113,9 @@ export function describeUpdateDiskShortfall(need: UpdateDiskNeed): string {
     '',
     `The update needs about ${readableBytes(need.totalNeedBytes)} free while it works: `
     + `${readableBytes(need.artifactBytes)} to download, ${readableBytes(need.platformBytes * 2)} to unpack it and `
-    + `prepare it beside the version you have now, and ${readableBytes(need.backupNeedBytes)} to back up your data `
+    + `prepare it beside the version you have now, `
+    + (need.modelBytes > 0 ? `${readableBytes(need.modelBytes)} for the local models its first start downloads, ` : '')
+    + `and ${readableBytes(need.backupNeedBytes)} to back up your data `
     + `(your database is ${readableBytes(need.dbBytes)}). This disk has ${readableBytes(need.freeBytes ?? 0)} free — `
     + `about ${readableBytes(need.shortfallBytes)} short.`,
     '',
@@ -136,6 +147,18 @@ export function updateDiskRefusal(
     'If you accept that you may not be able to go back, run this once and try again:',
     `  touch ${path.join(dataDir, MIGRATION_BACKUP_OVERRIDE_FILE)}`,
   ].join('\n');
+}
+
+/** The refusal when downloading `bytes` would leave less free than the watchdog's floor (1 GB, or a
+ *  database backup's need when larger); null when there is room or the disk cannot be read. */
+export function downloadRoomRefusal(bytes: number): string | null {
+  const dbPath = path.join(homeDir(), '.dojo', 'data', 'dojo.db');
+  const free = freeBytesAt(path.dirname(dbPath));
+  const floor = Math.max(1024 ** 3, liveDbBytes(dbPath) * MIGRATION_BACKUP_FREE_DISK_MULTIPLE);
+  if (free === null || free - bytes >= floor) return null;
+  return `Dojo: there is not enough free disk space to download one of its local models (${readableBytes(bytes)}): this disk has `
+    + `${readableBytes(free)} free and the Dojo keeps at least ${readableBytes(floor)} free. Nothing was downloaded; `
+    + 'the Dojo tries again by itself once there is room.';
 }
 
 /** Did the disk fill up? ENOSPC, the POSIX message or unzip's wording; never a plain network error. */

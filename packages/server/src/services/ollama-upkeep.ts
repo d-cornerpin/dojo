@@ -24,6 +24,7 @@ import {
   ensureLocalOllamaProvider, localOllamaProvider, ollamaJson, standardModelRowId,
 } from './local-standard.js';
 import { pullOllamaModel } from './ollama-pull.js';
+import { downloadRoomRefusal } from '../update/disk-preflight.js';
 import { getOllamaModelInfo } from './ollama.js';
 import { computeAndStoreRecommendedNumCtx } from './num-ctx-calculator.js';
 import { assignStandard, registerStandardRow, unregisterStandardRow } from './standard-model-rows.js';
@@ -100,11 +101,14 @@ async function keep(reason: UpkeepReason, need: Need): Promise<UpgradeResult> {
   const ids: Record<Which, string | null> = { decision: null, writer: null };
   let listed = await listedTags(local.baseUrl);
   let upgradedOnRefusal = false;
+  let noRoom: string | null = null;
   for (let i = 0; listed && i < 2; i++) {
     const which: Which = i === 0 ? 'decision' : 'writer';
     const { tag } = MODEL[which];
     if (!listed.has(tag)) {
       if (!current.ok && MODEL[which].minOllama) { unregisterStandardRow(local.id, tag); continue; }   // it waits for a newer Ollama
+      const short = downloadRoomRefusal(MODEL[which].bytes);
+      if (short !== null) { noRoom = short; say(which, short); unregisterStandardRow(local.id, tag); continue; }
       const error = await pull(which, local.baseUrl, say);
       if (error !== null && isVersionRefusal(error) && !upgradedOnRefusal) {
         upgradedOnRefusal = true;
@@ -129,7 +133,7 @@ async function keep(reason: UpkeepReason, need: Need): Promise<UpgradeResult> {
   noteUpkeep({ triedAt: (complete && windowMade) || !listed ? undefined : Date.now() });
   if (host && current.ok && (appFailed === null || reason === 'boot')) appFailed = await retireDownloadedApp(host, local.baseUrl);
   if (complete && current.ok && !upkeepRecord().limitOwed) { if (appFailed) tellOwner(NOTICE, ollamaAppLeftWords(appFailed)); else ownerConditionCleared(NOTICE); }
-  else if (!complete && (current.ok || current.transient) && !current.starting) tellOwner(NOTICE, STANDARD_MODELS_MISSING_WORDS);   // a failed upkeep told its own sentence
+  else if (!complete && (current.ok || current.transient) && !current.starting) tellOwner(NOTICE, noRoom ?? STANDARD_MODELS_MISSING_WORDS);   // a failed upkeep told its own sentence
   return current;
 }
 

@@ -65,7 +65,8 @@ beforeEach(() => {
   fs.mkdirSync(path.join(dojo, 'data'), { recursive: true }); // the volume the pre-flight measures
   vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
     tag_name: 'v3.4.0', name: 'v3.4.0', published_at: '2026-10-17T00:00:00Z', body: '',
-    assets: [{ name: 'dojo-platform.zip', browser_download_url: 'https://example.invalid/dojo-platform.zip', size: 1000 }],
+    assets: [{ name: 'dojo-platform.zip', browser_download_url: 'https://example.invalid/dojo-platform.zip', size: 1000 },
+      { name: 'dojo-platform.zip.sha256', browser_download_url: 'https://example.invalid/dojo-platform.zip.sha256', size: 90 }],
   }), { status: 200 })));
 });
 
