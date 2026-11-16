@@ -3,15 +3,27 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import Database from 'better-sqlite3';
 
-const db = new Database(':memory:');
-db.exec('CREATE TABLE agents (id TEXT PRIMARY KEY)');
-vi.mock('../../db/connection.js', () => ({ getDb: () => db }));
+const mockDb = { current: null as Database.Database | null };
+vi.mock('../../db/connection.js', () => ({ getDb: () => mockDb.current! }));
+vi.mock('../../config/platform.js', async (orig) => ({
+  ...(await orig<Record<string, unknown>>()),
+  isSetupCompleted: () => true, getPrimaryAgentId: () => 'primary', getPMAgentId: () => 'pm', getPMAgentName: () => 'PM',
+}));
 
+import { runMigrations } from '../../db/migrations.js';
 import { primaryReady } from '../primary-ready.js';
+import { ensurePMAgentRunning } from '../../tracker/pm-agent.js';
+
+const db = (): Database.Database => mockDb.current!;
+const addPrimary = (): void => { db().prepare("INSERT INTO agents (id, name, status) VALUES ('primary', 'Primary', 'idle')").run(); };
 
 describe('a resident waiting for the primary', () => {
-  beforeEach(() => vi.useFakeTimers());
-  afterEach(() => { db.exec('DELETE FROM agents'); vi.useRealTimers(); });
+  beforeEach(() => {
+    mockDb.current = new Database(':memory:');
+    runMigrations();
+    vi.useFakeTimers();
+  });
+  afterEach(() => { vi.useRealTimers(); mockDb.current?.close(); mockDb.current = null; });
 
   it('keeps one retry pending however often it is asked', () => {
     const retry = vi.fn();
@@ -20,13 +32,22 @@ describe('a resident waiting for the primary', () => {
     expect(retry).toHaveBeenCalledTimes(1);
   });
 
-  it('arms a fresh retry once the pending one has fired', () => {
-    const retry = vi.fn(() => primaryReady('Resident', 'primary', retry));
-    primaryReady('Resident', 'primary', retry);
+  it('keeps one retry for EACH resident, and each starts once when the primary appears', () => {
+    const started = { A: 0, B: 0 };
+    const ask = (who: 'A' | 'B'): void => { if (primaryReady(who, 'primary', () => ask(who))) started[who] += 1; };
+    ask('A'); ask('B'); ask('A'); ask('B');
+    vi.advanceTimersByTime(5_000);   // each retried once, found no primary, re-armed once
+    addPrimary();
     vi.advanceTimersByTime(5_000);
-    db.prepare("INSERT INTO agents (id) VALUES ('primary')").run();
+    vi.advanceTimersByTime(5_000);   // nothing left armed
+    expect(started).toEqual({ A: 1, B: 1 });
+  });
+
+  it('the PM, asked on every work_open, is created once the primary appears', () => {
+    for (let i = 0; i < 3; i++) ensurePMAgentRunning();
+    expect(db().prepare("SELECT COUNT(*) AS n FROM agents WHERE id = 'pm'").get()).toEqual({ n: 0 });
+    addPrimary();
     vi.advanceTimersByTime(5_000);
-    expect(retry).toHaveBeenCalledTimes(2);
-    expect(primaryReady('Resident', 'primary', retry)).toBe(true);
+    expect(db().prepare("SELECT status FROM agents WHERE id = 'pm'").get()).toEqual({ status: 'idle' });
   });
 });

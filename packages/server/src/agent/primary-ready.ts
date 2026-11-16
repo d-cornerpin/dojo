@@ -19,6 +19,7 @@ export function primaryReady(who: string, primaryId: string, retry: () => void):
     waited.delete(who);
     return true;
   }
+  if (pending.has(who)) return false;   // its retry is already armed; the count below is of retries, not asks
 
   const cycles = (waited.get(who) ?? 0) + 1;
   waited.set(who, cycles);
@@ -36,9 +37,7 @@ export function primaryReady(who: string, primaryId: string, retry: () => void):
     logger.warn(`Primary agent not yet created, deferring ${who} spawn`, { primaryId, cycles });
   }
 
-  if (!pending.has(who)) {
-    pending.add(who);
-    setTimeout(() => { pending.delete(who); retry(); }, 5_000);
-  }
+  pending.add(who);
+  setTimeout(() => { pending.delete(who); retry(); }, 5_000);
   return false;
 }
