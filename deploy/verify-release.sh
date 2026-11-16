@@ -39,31 +39,13 @@ ok=1
 note() { echo "  $*"; }
 bad()  { echo "  ❌ $*"; ok=0; }
 
-# Prerelease-aware "strictly greater": exit 0 iff version $1 ranks strictly
-# above $2. Mirrors the engine's compareVersions and release.sh's rank_above
-# so the post-publish check matches how a box resolves the newest release.
-rank_above() {
-  node -e '
-    function parse(v){
-      const s=String(v).replace(/^v/,"");const d=s.indexOf("-");
-      const bp=d===-1?s:s.slice(0,d);const pt=d===-1?"":s.slice(d+1);
-      const base=bp.split(".").map(x=>{const n=Number(x);return Number.isFinite(n)?n:0;});
-      let pre=null;if(pt){const m=pt.match(/(\d+)\s*$/);pre=m?Number(m[1]):0;}
-      return {base,pre};
-    }
-    function cmp(a,b){a=parse(a);b=parse(b);
-      for(let i=0;i<3;i++){const d=(a.base[i]||0)-(b.base[i]||0);if(d)return d;}
-      if(a.pre===null&&b.pre===null)return 0;
-      if(a.pre===null)return 1;if(b.pre===null)return -1;return a.pre-b.pre;}
-    process.exit(cmp(process.argv[1],process.argv[2])>0?0:1);
-  ' "$1" "$2"
-}
+# Exit 0 iff version $1 ranks strictly above $2, in the order a box resolves releases.
+rank_above() { node "$SCRIPT_DIR/version-rank.mjs" --above "$1" "$2"; }
 
 echo "Verifying release $TAG …"
 
-# 1. Release exists. If not, this is a half-made release (FA-D3): a prior run may
-#    have pushed the branch + tag but never created a consumable release. Print
-#    state-aware repair for BOTH the missing-release and unpushed-tag states.
+# 1. Release exists. If not, a prior run may have pushed the branch and tag but never created the
+#    release; the repair printed depends on whether the tag is on the remote.
 if ! gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
   echo "  ❌ release $TAG does not exist on GitHub"
   echo ""
@@ -106,11 +88,7 @@ if [ "$PREFLIGHT" = "1" ]; then
   else
     bad "$TAG is NOT marked pre-release — it would shadow Stable's releases/latest for everyone"
   fi
-  # FA-D2: a preflight tag MUST rank strictly above current stable or every
-  # Preflight box treats stable as newer, installs it, and silently drops the
-  # feature under test, while the release still looks fine. release.sh now
-  # guards this pre-publish; verify it POST-publish too (defense in depth, and
-  # this catches a hand-made release that bypassed release.sh).
+  # A preflight tag must rank above current stable, or every Preflight box takes stable instead.
   LATEST_STABLE="$(gh api "repos/$REPO/releases/latest" --jq '.tag_name' 2>/dev/null | sed 's/^v//' || true)"
   if echo "$LATEST_STABLE" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
     if rank_above "$VERSION" "$LATEST_STABLE"; then

@@ -6,10 +6,6 @@ set -euo pipefail
 #
 # Cuts a release end-to-end and REFUSES to report success unless the GitHub
 # release actually carries all three assets and the self-update path resolves.
-# This exists because every past release failure was the same shape: the
-# version got bumped, committed, tagged, pushed, and a release page created,
-# but the .zip/.pkg were never uploaded — so every user's self-update saw the
-# new version and then failed to download it.
 #
 # Usage:
 #   bash deploy/release.sh <version> --notes-file <path> [--dry-run]
@@ -21,23 +17,25 @@ set -euo pipefail
 #
 # --dry-run does everything locally (bump, build, verify the embedded version)
 # then reverts the bump WITHOUT committing/pushing/releasing. Use it to prove a
-# release will go cleanly before doing it for real.
+# release will go cleanly before doing it for real. Only the flag makes a dry
+# run: a DRY_RUN variable in the environment is refused.
 # ════════════════════════════════════════════════════════════════════════
 
 REPO="d-cornerpin/dojo"
 ZIP_NAME="dojo-platform.zip"
 PKG_NAME="Agent-DOJO-Installer.pkg"
-# PHASE-5 T6B: the sha256 manifest the self-updater verifies the zip against
-# before it rsyncs anything over a running install. It is published BESIDE its
-# own artifact, so it proves the bytes arrived intact — it is NOT proof of who
-# made them; that needs a signature checked against a key the platform holds.
-# Read by packages/server/src/update/artifact-integrity.ts.
+# The sha256 manifest the self-updater (update/artifact-integrity.ts) checks the
+# zip against: proof the bytes arrived intact, not of who made them.
 SHA_NAME="dojo-platform.zip.sha256"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 DIST="$SCRIPT_DIR/dist"
 
+if [ -n "${DRY_RUN+x}" ]; then
+  echo "❌ DRY_RUN is set in the environment, and that does not make a dry run. Unset it and pass the --dry-run flag. NOT publishing." >&2
+  exit 2
+fi
 DRY_RUN=0
 PREFLIGHT=0
 NOTES_FILE=""
@@ -52,22 +50,10 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-# ── One cleanup path for every way this script can end (PHASE-0 T13) ──
-# An abandoned run must leave the tree exactly as it found it, and there are
-# three ways to abandon one: a gate says no, someone presses ctrl-c, or the
-# process is killed. All three used to leave package.json rewritten at the new
-# version — so the tree was dirty, the NEXT release refused at its preconditions
-# with "working tree is not clean", and the actual reason ("we bumped and then a
-# gate said no") was three screens up. It was observed for real during T13's own
-# dry run, when the run was interrupted mid-flight.
-#
-# The bump is not a decision, it is a step. It is reverted only while it is
-# UNCOMMITTED: once the release commit exists the bump is real, and reverting it
-# would be the destructive act rather than the safe one.
-#
-# This is also the single owner of the smoke-sandbox teardown. Two separate
-# `trap ... EXIT` statements were racing for that job, and the second silently
-# replaced the first — one owner per job.
+# ── One cleanup path for every way this script can end ──
+# A refused, interrupted or killed run leaves the tree as it found it: the version
+# bump is reverted while it is uncommitted (once committed it is real), and the
+# smoke sandbox is torn down. This is the only EXIT trap.
 CURRENT=""
 BUMPED=0
 COMMITTED=0
@@ -87,42 +73,19 @@ trap 'echo "" >&2; echo "interrupted — cleaning up" >&2; exit 130' INT TERM
 fail() { echo "" >&2; echo "❌ $*" >&2; exit 1; }
 step() { echo ""; echo "▶ $*"; }
 
-# Prerelease-aware "strictly greater": exit 0 iff version $1 ranks strictly
-# ABOVE version $2. Mirrors the engine's compareVersions (packages/server/src/
-# gateway/routes/update.ts) EXACTLY so this gate matches how a box actually
-# resolves the newest release: higher base wins; a stable release outranks any
-# pre-release of the SAME base (so 3.1.10-preflight.1 ranks BELOW stable 3.1.10);
-# two pre-releases compare by ordinal; malformed segments clamp to 0 (FA-D7).
-rank_above() {
-  node -e '
-    function parse(v){
-      const s=String(v).replace(/^v/,"");const d=s.indexOf("-");
-      const bp=d===-1?s:s.slice(0,d);const pt=d===-1?"":s.slice(d+1);
-      const base=bp.split(".").map(x=>{const n=Number(x);return Number.isFinite(n)?n:0;});
-      let pre=null;if(pt){const m=pt.match(/(\d+)\s*$/);pre=m?Number(m[1]):0;}
-      return {base,pre};
-    }
-    function cmp(a,b){a=parse(a);b=parse(b);
-      for(let i=0;i<3;i++){const d=(a.base[i]||0)-(b.base[i]||0);if(d)return d;}
-      if(a.pre===null&&b.pre===null)return 0;
-      if(a.pre===null)return 1;if(b.pre===null)return -1;return a.pre-b.pre;}
-    process.exit(cmp(process.argv[1],process.argv[2])>0?0:1);
-  ' "$1" "$2"
-}
+# Exit 0 iff version $1 ranks strictly above every other argument, in the order a box resolves releases.
+rank_above() { node "$SCRIPT_DIR/version-rank.mjs" --above "$@"; }
 
-# True iff tag $1 exists locally AND points at the current HEAD commit. Used to
-# detect a re-entry (FA-D3): a prior run that committed the bump, created and
-# pushed the tag, then failed at `gh release create`.
+# True iff tag $1 exists locally AND points at the current HEAD commit: a prior
+# run committed the bump, pushed the tag, then failed at `gh release create`.
 tag_points_at_head() {
   git rev-parse "$1" >/dev/null 2>&1 \
     && [ "$(git rev-parse "$1^{commit}" 2>/dev/null)" = "$(git rev-parse HEAD 2>/dev/null)" ]
 }
 
 # Stable needs an explicit X.Y.Z (released as vX.Y.Z from `main`). Preflight
-# AUTO-PICKS its number — latest stable + 1 patch — and auto-increments the
-# pre-release ordinal, so nobody has to choose it (the common foot-gun). You may
-# still pass an explicit base to --preflight to target a bigger bump (e.g. 3.2.0).
-# Preflight publishes vX.Y.Z-preflight.N from the `Preflight` branch.
+# picks its own number unless given a base, and publishes vX.Y.Z-preflight.N
+# from the `Preflight` branch.
 # See deploy/RELEASES.md for the full process + numbering rules.
 if [ "$PREFLIGHT" = "0" ] && [ -z "$VERSION" ]; then
   fail "Usage: bash deploy/release.sh <X.Y.Z> --notes-file <path> [--dry-run]   (preflight: --preflight [<X.Y.Z>])"
@@ -132,7 +95,7 @@ if [ -n "$VERSION" ]; then
 fi
 BASE="$VERSION"
 
-# ── Plain release notes are required (G23) ──
+# ── Plain release notes are required ──
 # The notes are what a user reads in Settings before updating; the rule (deploy/RELEASE.md) is
 # plain sentences, grouped, no developer words. A commit-subject list is not that, so there is no
 # fallback to one: no notes file, or an empty one, is a refusal, before anything is touched. A
@@ -181,61 +144,36 @@ if [ -n "$(git status --porcelain)" ]; then fail "Working tree is not clean. Com
 CURRENT="$(node -p "require('./package.json').version")"
 
 if [ "$PREFLIGHT" = "1" ]; then
-  # We ALWAYS need the latest stable now: to auto-pick the base when none was
-  # given, AND (FA-D2) to GUARD that the resulting preflight tag ranks strictly
-  # above it. Before FA-D2 the guard lived only in the auto-pick branch, so an
-  # explicit base (e.g. `--preflight 3.1.9` while stable is 3.1.10) skipped it
-  # and published a pre-release every box ignores, silently stranding the
-  # feature under test with a "success" report.
+  # A test build must rank above the latest stable and above every preflight build already out, or the
+  # boxes that should take it ignore it. With no base it takes the higher of stable + 1 patch and the
+  # newest preflight's base; the ordinal is the next free one for that base.
   LATEST_STABLE="$(gh api "repos/$REPO/releases/latest" --jq '.tag_name' 2>/dev/null | sed 's/^v//')"
   echo "$LATEST_STABLE" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' \
     || fail "Could not read latest stable release to compute/guard the preflight base (got '${LATEST_STABLE:-none}')."
+  RELEASED="$(gh release list --repo "$REPO" --limit 100 2>/dev/null | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+-preflight\.[0-9]+' || true)"
+  TOP_PRE="$(node "$SCRIPT_DIR/version-rank.mjs" $RELEASED)"
   if [ -z "$BASE" ]; then
-    BASE="$(echo "$LATEST_STABLE" | awk -F. '{printf "%d.%d.%d", $1, $2, $3 + 1}')"
-    echo "  ↪ auto base: latest stable $LATEST_STABLE → preflight target $BASE"
+    BASE="$(node "$SCRIPT_DIR/version-rank.mjs" "$(echo "$LATEST_STABLE" | awk -F. '{printf "%d.%d.%d", $1, $2, $3 + 1}')" "${TOP_PRE%-preflight.*}" | sed 's/^v//')"
+    echo "  ↪ auto base: latest stable $LATEST_STABLE, newest preflight ${TOP_PRE:-none} → preflight target $BASE"
   fi
-  # Auto-increment the pre-release ordinal for this base: highest existing
-  # vBASE-preflight.N on GitHub, plus 1. The trailing `|| true` is required —
-  # under `set -euo pipefail`, grep finding no matches (the FIRST preflight build
-  # for a base) makes the pipeline exit non-zero and would abort the script.
-  LAST_N="$(gh release list --repo "$REPO" --limit 100 2>/dev/null \
-    | grep -oE "v${BASE}-preflight\.[0-9]+" | sed -E 's/.*preflight\.//' | sort -n | tail -1 || true)"
-  NEXT_N=$(( ${LAST_N:-0} + 1 ))
-  VERSION="${BASE}-preflight.${NEXT_N}"
+  LAST_N="$(printf '%s\n' $RELEASED | grep -E "^v${BASE}-preflight\." | sed -E 's/.*preflight\.//' | sort -n | tail -1 || true)"
+  VERSION="${BASE}-preflight.$(( ${LAST_N:-0} + 1 ))"
   TAG="v$VERSION"
-  # Rank guard (FA-D2): the FULL preflight tag must rank strictly above latest
-  # stable, whether the base was auto-picked OR given explicitly. A base equal
-  # to stable is the classic trap, 3.1.10-preflight.1 ranks BELOW stable
-  # 3.1.10 (a stable outranks its own pre-releases), so the box takes stable and
-  # drops the feature. This is verbatim the preserved invariant.
-  if ! rank_above "$VERSION" "$LATEST_STABLE"; then
-    SUGGEST="$(echo "$LATEST_STABLE" | awk -F. '{printf "%d.%d.%d", $1, $2, $3 + 1}')"
-    fail "Preflight $VERSION does NOT rank above current stable $LATEST_STABLE, every Preflight box would treat stable as newer, install it, and silently drop the feature under test. Use a base at least one patch above stable (e.g. --preflight $SUGGEST), or just run --preflight with no base to auto-pick it."
-  fi
-  echo "  ✓ $VERSION ranks above current stable $LATEST_STABLE"
+  rank_above "$VERSION" "$LATEST_STABLE" ${TOP_PRE:+"$TOP_PRE"} \
+    || fail "Preflight $VERSION does NOT rank above everything already out (stable $LATEST_STABLE, newest preflight ${TOP_PRE:-none}), so every Preflight box would ignore it. Run --preflight with no base to pick the number, or give a base at least that high."
+  echo "  ✓ $VERSION ranks above current stable $LATEST_STABLE and newest preflight ${TOP_PRE:-none}"
 else
   VERSION="$BASE"
   TAG="v$VERSION"
-  # Stable must strictly increase over the current version, UNLESS we are
-  # re-entering an interrupted release (FA-D3), where the bump is already
-  # committed so CURRENT already equals VERSION and the tag sits at HEAD.
-  # Uses rank_above (the engine-mirroring, prerelease-aware comparator) on
-  # purpose: when a promotion fast-forwards main over Preflight release
-  # commits, CURRENT is a pre-release string (e.g. 3.1.10-preflight.33) and
-  # the stable of the SAME base must rank ABOVE it, exactly as every box's
-  # updater resolves it. The old inline compare stripped the pre-release
-  # suffix and saw the two as equal, wrongly refusing the promotion cut.
+  # Stable must rank above the current version (a pre-release of its own base included), unless this
+  # run resumes an interrupted release whose bump is committed and whose tag sits at HEAD.
   if ! tag_points_at_head "$TAG" && ! rank_above "$VERSION" "$CURRENT"; then
     fail "New version $VERSION must be greater than current $CURRENT"
   fi
 fi
 
-# Re-entry detection (FA-D3). A prior run may have committed the bump, created +
-# pushed the tag, then FAILED at `gh release create`, leaving branch+tag
-# advanced with NO consumable release. Re-running must RESUME, not abort. We are
-# re-entering iff the tag already exists locally at HEAD; any other pre-existing
-# tag is a genuine conflict and still hard-fails. The late steps below are all
-# idempotent, so a resumed run finishes the release rather than erroring.
+# Re-entry: a tag already at HEAD means a prior run died after tagging, so this run resumes (every
+# late step is idempotent); a tag anywhere else is a conflict.
 REENTRY=0
 if git rev-parse "$TAG" >/dev/null 2>&1; then
   if tag_points_at_head "$TAG"; then
@@ -256,8 +194,8 @@ echo "  ✓ on $BRANCH, clean tree, gh authed, $CHANNEL_LABEL, $CURRENT → $VER
 
 # ── Typecheck (a broken build must never ship) ──
 step "Typecheck"
+npm run build -w packages/shared   # the server's type check reads the shared package's build
 npm run typecheck
-( cd packages/dashboard && npx tsc --noEmit -p tsconfig.json )
 echo "  ✓ server, shared, dashboard typecheck clean"
 
 # ── The gate manifest (deploy/checks/gate-manifest.mjs) ──
@@ -343,7 +281,7 @@ npm run build:package
 [ -f "$DIST/$ZIP_NAME" ] || fail "Build did not produce $ZIP_NAME"
 [ -f "$DIST/$PKG_NAME" ] || fail "Build did not produce $PKG_NAME"
 
-# ── The integrity manifest (PHASE-5 T6B) ──
+# ── The integrity manifest ──
 # Computed here, on the bytes that will be uploaded, and re-checked below so a
 # dry run proves the manifest is real rather than merely written.
 step "Writing $SHA_NAME"
@@ -359,12 +297,8 @@ EMBEDDED="$(unzip -p "$DIST/$ZIP_NAME" dojo-platform/platform/package.json | nod
 echo "  ✓ zip embeds $VERSION"
 
 # ── Smoke-boot the packaged build ──
-# v3.1.10-preflight.1 shipped a build that crashed on startup: a runtime import
-# of @dojo/shared could not resolve because the package's manifest pointed at
-# .ts source that the package does not ship. typecheck and tsx-dev both passed;
-# only the compiled, packaged artifact failed. So boot the actual artifact the
-# way production does (unzip → npm install → node dist) and refuse to publish if
-# it can't reach startup. Runs in --dry-run too, so it's a real preflight gate.
+# Boots the packaged artifact the way production does (unzip, npm install, node dist): only
+# the compiled package shows a packaging defect such as an import it cannot resolve.
 step "Smoke-booting the packaged build (catches non-resolvable imports before publish)"
 SMOKE_DIR="$(mktemp -d)"   # torn down by cleanup(), the one EXIT trap
 unzip -q "$DIST/$ZIP_NAME" -d "$SMOKE_DIR" || fail "Smoke boot: could not unzip the package"
@@ -373,16 +307,7 @@ SMOKE_PLATFORM="$SMOKE_DIR/dojo-platform/platform"
   || fail "Smoke boot: npm install failed in the packaged build"
 SMOKE_HOME="$SMOKE_DIR/home"; mkdir -p "$SMOKE_HOME/.dojo/data"
 SMOKE_LOG="$SMOKE_DIR/boot.log"
-# PHASE-0 T13: the smoke server gets its OWN free port, and "booted" now means
-# it ANSWERED, not that a hopeful line appeared in a log.
-#
-# It used to run on the default 3001 and count the string "is in use" as proof
-# of boot — which on a developer box (where the dev server holds 3001) meant the
-# packaged build never actually listened and the gate passed on the fact that it
-# could not start. The whole point of this step is that only the packaged
-# artifact can catch a packaging defect, so it has to really run. A free port
-# also lets the upgrade-header auth gate below interrogate the ARTIFACT rather
-# than the working tree.
+# Its own free port, and "booted" means it answered: the post-smoke gates below ask this artifact.
 SMOKE_PORT="$(node -e 'const s=require("net").createServer();s.listen(0,"127.0.0.1",()=>{const p=s.address().port;s.close(()=>console.log(p));});')"
 [ -n "$SMOKE_PORT" ] || fail "Smoke boot: could not obtain a free port for the packaged build. NOT publishing."
 # DOJO_SKIP_SYSTEM_DEPS keeps the boot from invoking Homebrew. `exec` makes the
@@ -395,9 +320,7 @@ SMOKE_PID=$!   # cleanup() kills it on ANY exit path, not just the happy one
 SMOKE_DOJO_LOG="$SMOKE_HOME/.dojo/logs/dojo.log"
 booted=0
 for _ in $(seq 1 60); do
-  # An HTTP answer on its own port is the whole import graph resolved, the
-  # migrations run, and the listener up — which is exactly what preflight.1
-  # failed to do, and exactly what a log line cannot prove.
+  # A 200 from health means the import graph resolved, the migrations ran and the app serves.
   if curl -fsS -m 2 -o /dev/null "http://127.0.0.1:$SMOKE_PORT/api/health" 2>/dev/null; then booted=1; break; fi
   kill -0 "$SMOKE_PID" 2>/dev/null || break   # process died before reaching startup
   sleep 1
@@ -425,62 +348,28 @@ run_blocking_gates post-smoke 3
 kill "$SMOKE_PID" 2>/dev/null || true
 wait "$SMOKE_PID" 2>/dev/null || true
 
-# ── Cacheable-prefix determinism gate (C28 Part 3) ──
-# The prompt cache erodes silently when a volatile token creeps into the cached
-# system prefix (a one-token change breaks caching and nothing fails). Assemble
-# the stable prefix TWICE from the PACKAGED dist and refuse to publish if it is
-# not byte-identical / smell-free / has a non-empty systemVolatile lane. Reuses
-# the smoke sandbox (migrations already ran, a primary agent exists). Runs in
-# --dry-run too, so it's a real preflight gate.
-step "Cacheable-prefix determinism gate (C28)"
+# ── Cacheable-prefix determinism gate ──
+# Assembles the stable prompt prefix twice from the packaged dist in the smoke sandbox and refuses
+# when it differs or carries a cache-breaker.
+step "Cacheable-prefix determinism gate"
 ( cd "$SMOKE_PLATFORM" && HOME="$SMOKE_HOME" DOJO_DATA_DIR="$SMOKE_HOME/.dojo/data" \
     DOJO_SKIP_SYSTEM_DEPS=1 NODE_ENV=production \
     node "$SCRIPT_DIR/check-prefix-determinism.mjs" "$SMOKE_PLATFORM/packages/server/dist" ) \
   || fail "Cacheable-prefix determinism gate: a cache-breaker is in the system prefix. NOT publishing."
 
-# ── Tool-list conformance gate (2026-07-08 defect-class tripwire) ──
-# A whole defect class: hand-maintained lists/maps of tool NAMES that freeze a
-# snapshot of the tool surface and silently drift as tools ship (every _ms
-# variant, user_ twin, office/onedrive tool falls out). It bit prod, a close-out
-# list missed calendar_create_ms and a finished job ghost-re-announced 100 min
-# later; drifted google validator maps left drive_upload + sheets_append 100%
-# dead. This gate reads the freshly-BUILT dist (npm run build:package above ran
-# tsc into packages/{shared,server}/dist) and refuses to publish if any surviving
-# hand list names a nonexistent tool OR the derived classifications regress. It is
-# CHEAP and static, so it runs on EVERY cut; it is never skippable. It never imports
-# agent/tools.ts (module-init circular import), only categories + leaf hand-list
-# modules + @dojo/shared.
-step "Tool-list conformance gate (hand lists vs. real tool surface)"
-# It loads built server modules, so it gets the smoke sandbox as its home and never opens the real database.
-HOME="$SMOKE_HOME" DOJO_DATA_DIR="$SMOKE_HOME/.dojo/data" node "$SCRIPT_DIR/check-tool-conformance.mjs" \
-  || fail "Tool-list conformance gate: a tool-name list drifted from the real tool surface. NOT publishing."
-
-# ── Unit-suite gate (2026-07-21, owner ruling: suites in no gate rot silently) ──
-# Every prior era proved it: 8 suites sat red for up to 8 weeks (one carried a
-# real production bug, weekend reminder fires) because nothing ever ran them.
-# The full server vitest suite now runs on EVERY cut, instruments-clean, and a
-# single red refuses the release. It is never skippable.
-#
-# PHASE-0 T13 verified this was already wired and left it exactly where it is —
-# the plan's accumulated item #3 asked the question ("does the unit suite run in
-# release.sh at all?"); the answer is yes, since 2026-07-21, and it is
-# unconditional. The router-selector guard (T7) rides in here, so anything that
-# makes model selection slow or routes it through a network call stops a release.
-step "Unit-suite gate (server + dashboard vitest, full run)"
+# ── Unit-suite gate: every suite on every cut, never skippable ──
+step "Unit-suite gate (server + dashboard vitest, the checker tests, full run)"
 ( cd "$SCRIPT_DIR/../packages/server" && npx vitest run --reporter=dot ) \
   || fail "Unit-suite gate: server unit tests are red. Root-cause and fix (owner rule: testing exists to find problems); NOT publishing."
 ( cd "$SCRIPT_DIR/../packages/dashboard" && npx vitest run --reporter=dot ) \
   || fail "Unit-suite gate: DASHBOARD tests are red. Root-cause and fix; NOT publishing."
-echo "- unit suite: full server + dashboard vitest runs, green (never skippable)" >> "$RELEASE_RECORD"
+node --test "$SCRIPT_DIR"/checks/__tests__/*.test.mjs \
+  || fail "Unit-suite gate: the checker tests in deploy/checks/__tests__ are red. NOT publishing."
+echo "- unit suite: full server + dashboard vitest runs and the checker tests, green (never skippable)" >> "$RELEASE_RECORD"
 
-# ── Dev-instrument ship-gate (C23) ──
-# The dev-test-tools harness injects sim-outbound send-capture + /api/dev routes into
-# source (tools.ts, model.ts, imessage-bridge.ts, gateway/server.ts). uninstall.mjs
-# removes them, but a FORGOTTEN or PARTIAL uninstall would ship them — silently capturing
-# real sends, exposing dev-only endpoints, or (worse) leaving the sim-outbound import wired
-# while the module is gone, which throws on every tool/model call. Refuse to publish if the
-# packaged artifact still references any of them. Mirrors the smoke-boot module-resolution
-# gate above.
+# ── Dev-instrument ship-gate ──
+# The dev harness injects send capture and /api/dev routes into source; a forgotten uninstall
+# would ship them, so the packaged artifact must reference none of them.
 if grep -raqiE "sim-outbound|/api/dev/|DEV-INSTRUMENTS" "$SMOKE_PLATFORM/packages/server/dist" 2>/dev/null; then
   echo "  ---- offending dev-instrument references in packaged build ----"
   grep -raniE "sim-outbound|/api/dev/|DEV-INSTRUMENTS" "$SMOKE_PLATFORM/packages/server/dist" 2>/dev/null | head -10
@@ -511,10 +400,7 @@ fi
 # The notes file was checked up front (a missing or empty one never gets here).
 NOTES_ARGS=(--notes-file "$NOTES_FILE")
 
-# ── Commit + tag + push (order preserved; each step idempotent on re-run) ──
-# FA-D3: keeping the documented order (commit → tag → push → release), every
-# late step below is a no-op when a prior interrupted run already did it, so a
-# resumed run finishes the release instead of erroring on the existing tag.
+# ── Commit + tag + push, in that order; each step is a no-op when a resumed run finds it done ──
 step "Committing, tagging, pushing"
 git add package.json
 if git diff --cached --quiet; then
@@ -547,9 +433,7 @@ step "Creating GitHub $([ "$PREFLIGHT" = "1" ] && echo 'pre-')release $TAG with 
 # Note the ${arr[@]+"${arr[@]}"} guards: under `set -u`, macOS bash 3.2 treats
 # "${empty[@]}" as an unbound variable and aborts, so expand empty arrays safely.
 if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
-  # FA-D3 re-entry: the release row already exists (a prior run created it but
-  # the asset upload failed). Ensure BOTH assets are present via an idempotent
-  # --clobber upload instead of erroring on the existing release.
+  # Re-entry: the release row exists but an upload failed, so every asset is uploaded again.
   echo "  ↪ release $TAG already exists, re-uploading all three assets (--clobber)"
   gh release upload "$TAG" "$DIST/$ZIP_NAME" "$DIST/$SHA_NAME" "$DIST/$PKG_NAME" --repo "$REPO" --clobber
 else

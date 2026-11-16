@@ -13,7 +13,11 @@ const DIR = 'packages/server/src/db/migrations';
 
 function scratchRepo() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dojo-freeze-test-'));
-  const git = (...args) => execFileSync('git', args, { cwd: root, stdio: 'ignore' });
+  let clock = 1_700_000_000;   // one second per git call, so `git describe` never meets a tie
+  const git = (...args) => {
+    const at = `${clock++} +0000`;
+    execFileSync('git', args, { cwd: root, stdio: 'ignore', env: { ...process.env, GIT_AUTHOR_DATE: at, GIT_COMMITTER_DATE: at } });
+  };
   const write = (name, sql) => fs.writeFileSync(path.join(root, DIR, name), sql);
   const commit = (msg) => { git('add', '-A'); git('commit', '-q', '-m', msg); };
   fs.mkdirSync(path.join(root, DIR), { recursive: true });
@@ -105,5 +109,23 @@ test('a released migration edited, reverted, then edited again is still frozen',
     const r = repo.run();
     assert.equal(r.status, 1, r.stdout + r.stderr);
     assert.match(r.stderr, /001_released\.sql differs .*released in v1\.0\.0/);
+  } finally { fs.rmSync(repo.root, { recursive: true, force: true }); }
+});
+
+test('a migration only a merged-in release tag shipped may not be removed', () => {
+  const repo = scratchRepo();
+  try {
+    repo.git('tag', 'v1.0.1-preflight.1');
+    repo.git('checkout', '-q', '-b', 'stable', 'v1.0.0');
+    repo.write('003_stable.sql', 'CREATE TABLE c (id INTEGER);\n');
+    repo.commit('three');
+    repo.git('tag', 'v1.0.1');
+    repo.git('checkout', '-q', '-');
+    repo.git('merge', '-q', '--no-edit', 'stable');
+    fs.rmSync(path.join(repo.root, DIR, '003_stable.sql'));
+    repo.commit('remove a migration the stable tag shipped');
+    const r = repo.run();
+    assert.equal(r.status, 1, r.stdout + r.stderr);
+    assert.match(r.stderr, /003_stable\.sql shipped at v1\.0\.1 and is GONE/);
   } finally { fs.rmSync(repo.root, { recursive: true, force: true }); }
 });

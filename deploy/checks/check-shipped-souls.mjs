@@ -45,8 +45,7 @@
 //      stale or stub-shaped copy.
 //
 // The soul list is DISCOVERED from `templates/`, not hand-maintained: a new `*-SOUL.md` is
-// covered the day it is added, which is the opposite of the hand-list defect class that
-// `check-tool-conformance.mjs` exists for.
+// covered the day it is added, never a hand-maintained list that drifts.
 //
 // ── OFFLINE, AND WHY THE SKIP IS SAFE ──
 // Same shape as `check-upgrade-bypass.mjs`, for the same reason. `npm run gates` must run on a

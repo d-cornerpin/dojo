@@ -104,13 +104,13 @@ for (const name of fs.readdirSync(path.join(ROOT, DIR)).filter((f) => f.endsWith
   }
 }
 
-// A recorded name whose file is gone is the `superseded` class: it needs a human, not a checksum.
-const removed = [];
-if (tag) {
-  for (const rel of git(['ls-tree', '-r', '--name-only', tag, '--', DIR]).split('\n').filter(Boolean)) {
-    if (!fs.existsSync(path.join(ROOT, rel))) removed.push(path.basename(rel));
-  }
-}
+// A file any release tag shipped and the tree no longer has is the `superseded` class: it needs a human.
+const gone = [...new Set(git(['log', '--no-renames', '--diff-filter=D', '--name-only', '--format=', '--', DIR]).split('\n'))]
+  .filter((rel) => rel && !fs.existsSync(path.join(ROOT, rel)));
+const tags = gone.length ? git(['tag', '-l', 'v*']).split('\n').filter(Boolean) : [];
+const asks = tags.flatMap((t) => gone.map((rel) => ({ t, rel })));
+const held = asks.length ? execFileSync('git', ['cat-file', '--batch-check'], { cwd: ROOT, encoding: 'utf8', input: asks.map((a) => `${a.t}:${a.rel}`).join('\n') + '\n' }).split('\n') : [];
+const removed = [...new Map(asks.filter((_, i) => !held[i].endsWith('missing')).map((a) => [a.rel, { name: path.basename(a.rel), tag: a.t }])).values()];
 
 console.log('── migration freeze ──');
 console.log(`  ${single} migration(s) with one version in their whole history (cannot diverge)`);
@@ -135,7 +135,7 @@ for (const u of changed) {
   console.error(`    now:     ${u.nowSum}`);
 }
 for (const r of removed) {
-  console.error(`✗ ${r} shipped at ${tag} and is GONE from the tree — the \`superseded\` class.`);
+  console.error(`✗ ${r.name} shipped at ${r.tag} and is GONE from the tree, the \`superseded\` class.`);
   console.error('    A box carrying that name will report a recorded migration whose file is absent.');
 }
 console.error('\n  A box that applied the old bytes keeps them and warns at every boot. Revert the');

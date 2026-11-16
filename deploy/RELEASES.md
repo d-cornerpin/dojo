@@ -83,9 +83,9 @@ git checkout Preflight          # create from main if it doesn't exist: git chec
 # ...make changes...
 git add -A
 git commit -m "feat(x): …" -m "Preflight-Feature: <slug>" -m "Co-Authored-By: …"
-bash deploy/release.sh --preflight --notes-file <path>   # auto-numbers: latest stable + 1 patch, next .N
+bash deploy/release.sh --preflight --notes-file <path>   # auto-numbers: above latest stable and every preflight out, next .N
 ```
-`release.sh --preflight` picks the number for you (latest stable + 1 patch, auto-incrementing `.N`), builds, publishes a GitHub **pre-release**, and verifies. The user flips Settings → Update → **Preflight** on their box and installs it.
+`release.sh --preflight` picks the number for you (the higher of latest stable + 1 patch and the newest preflight's base, auto-incrementing `.N`; it refuses a number that does not rank above everything already out), builds, publishes a GitHub **pre-release**, and verifies. The user flips Settings → Update → **Preflight** on their box and installs it.
 
 ### B — Cut a Stable release (small fix that skips Preflight)
 ```bash
@@ -118,7 +118,7 @@ The next Preflight build's base is now `new-stable + 1 patch` (the invariant in 
 ## 4. Reference
 
 - **Dev installs can't self-update.** `applyUpdate` only runs against a production install (`~/.dojo/platform`). On the dev server, test the toggle (it persists + re-checks); actual installs happen on a real box.
-- **Dry run anything risky:** `bash deploy/release.sh <ver> [--preflight] --dry-run` builds + verifies the embedded version, then reverts — no commit/push/release.
+- **Dry run anything risky:** `bash deploy/release.sh <ver> [--preflight] --dry-run` builds + verifies the embedded version, then reverts — no commit/push/release. Only the `--dry-run` flag makes a dry run: a `DRY_RUN` variable in the environment is refused.
 - **Every release ships plain notes, and the script refuses without them.** `release.sh` requires `--notes-file` (the plain-language list the rule in `deploy/RELEASE.md` describes) and stops before touching anything if it is missing or empty: there is no commit-subject fallback. A `--dry-run` prints the same refusal as a WOULD FAIL line. `verify-release.sh` also **fails the release if the body is empty or only a GitHub auto "Full Changelog" link.** If you ever finish a release by hand, you MUST add notes: `gh release edit <tag> --repo d-cornerpin/dojo --notes-file <file>`. Never use a bare `--generate-notes` as the only source — for direct-to-branch commits it produces just a changelog link, which counts as "no notes."
 - **Commits since the last tag must carry the neutral identity.** The blocking commit-identity gate (`deploy/checks/check-commit-identity.mjs`) refuses a release when any commit `PREV_TAG..HEAD` has an author or committer email that is a machine default (`.local`) or differs from this repo's configured `git config user.email`, or when that configured identity is not a GitHub noreply address (the release commit's trailer is that identity).
 - **If a release fails verification,** it printed the exact `gh release upload … --clobber` repair command; run it, then re-run `verify-release.sh`.

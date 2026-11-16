@@ -106,7 +106,9 @@ const PUBLIC = [
   /^packages\/[^/]+\/src\/.*(?:(?:^|\/)__tests__\/|\.(?:test|spec)\.tsx?$)/,
   /^watchdog\/src\/.*\.ts$/,
   /^deploy\/checks\/.*$/,
-  /^deploy\/release\.sh$/,
+  /^deploy\/(?:[^/]+|launchd\/.+|pkg-resources\/.+|pkg-scripts\/.+|code-history\/.+)\.(?:sh|md|mjs|html|xml|plist)$/,
+  /^deploy\/pkg-scripts\/[^/]+$/,
+  /^menubar\/.*\.(?:swift|sh)$/,
 ];
 
 function scannedFiles() {
@@ -1323,6 +1325,18 @@ for (const f of live) {
   if (!byFile.has(f.rel)) byFile.set(f.rel, []);
   byFile.get(f.rel).push(f);
 }
+// The session workspace under .superpowers/ quotes live details by design and the repository is public.
+const trackedWorkspace = execFileSync('git', ['ls-files', '.superpowers'], { cwd: ROOT, encoding: 'utf8' }).trim();
+if (trackedWorkspace) {
+  console.error('✗ tracked files under .superpowers/, so the session workspace is public-repo-visible:');
+  for (const f of trackedWorkspace.split('\n').slice(0, 5)) console.error('    ' + f);
+  process.exit(1);
+}
+// A release passes --require-hash-list: without the list the real-name half asked nothing.
+if (HASH_LIST_SOURCE === null && process.argv.includes('--require-hash-list')) {
+  console.error('✗ names gate: the real-name hash list was not loaded and this run requires it (set $DOJO_REAL_NAME_HASHES).');
+  process.exit(1);
+}
 console.log(HASH_LIST_SOURCE === null
   ? 'note: the real-name hash list was not loaded (no untracked .superpowers/known-real-name-hashes.json and no $DOJO_REAL_NAME_HASHES); every other rule ran.'
   : `real-name hash list: loaded ${REAL_NAME_HASHES.size} hash(es) from ${HASH_LIST_SOURCE}`);
@@ -1346,18 +1360,4 @@ console.error('  an agent or a person reaches every user\'s disk, and this repos
 console.error('  Replace the name with the ROLE it played — the primary agent, the harness bot, a');
 console.error('  sub-agent, a contact — or with a placeholder. The doctrine never needs the name.');
 console.error('  Re-run with --verbose to see the tokens (locally only; do not paste that output).');
-
-// ── THE WORKSPACE STAYS OUT OF THE PUBLIC REPO (2026-09-27) ──────────────────
-// Worker reports under .superpowers/ quote dev-box agent names and live details
-// BY DESIGN; the repo is public. 25 tracked reports were untracked the day this
-// clause landed. A future `git add -f` re-tracks silently — this makes it loud.
-{
-  const tracked = execFileSync('git', ['ls-files', '.superpowers'], { encoding: 'utf8' }).trim();
-  if (tracked) {
-    console.error('✗ tracked files under .superpowers/ — the session workspace is public-repo-visible:');
-    for (const f of tracked.split('\n').slice(0, 5)) console.error('    ' + f);
-    process.exitCode = 1;
-  }
-}
-
 process.exit(1);

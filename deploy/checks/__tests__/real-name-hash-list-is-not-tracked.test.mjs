@@ -18,11 +18,14 @@ test('no file by that name is tracked', () => {
   assert.equal(tracked.filter((f) => /known-real-name-hashes/.test(f)).length, 0);
 });
 
-test('with no list the gate still runs and says the hash list was not loaded', () => {
+test('with no list the gate still runs and says the hash list was not loaded, and a release run refuses', () => {
+  const common = execFileSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], { cwd: ROOT, encoding: 'utf8' }).trim();
+  const lists = [ROOT, path.dirname(common)].map((d) => path.join(d, '.superpowers', 'known-real-name-hashes.json'));
+  if (lists.some((f) => fs.existsSync(f))) return;   // this checkout has a list, so the gate cannot be shown without one
   const env = { ...process.env, DOJO_REAL_NAME_HASHES: path.join(os.tmpdir(), 'dojo-absent-hashes.json') };
   const r = spawnSync('node', [GATE], { cwd: ROOT, encoding: 'utf8', env });
-  const out = `${r.stdout}${r.stderr}`;
-  if (!fs.existsSync(path.join(ROOT, '.superpowers', 'known-real-name-hashes.json'))) assert.match(out, /hash list was not loaded/);
+  assert.match(`${r.stdout}${r.stderr}`, /hash list was not loaded/);
+  assert.equal(spawnSync('node', [GATE, '--require-hash-list'], { cwd: ROOT, encoding: 'utf8', env }).status, 1);
 });
 
 test('the digest of a coined word given by env is loaded and a vendor-shaped key does not hide it', () => {

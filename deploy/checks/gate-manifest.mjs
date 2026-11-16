@@ -6,11 +6,11 @@
 //          report    runs and prints into the release record; never refuses.
 //   phase  pre-build   reads source; runs in release.sh's opening block.
 //          post-smoke  asks the packaged build release.sh has just smoke-booted.
-//   releaseArgs  shell source release.sh appends to the call (post-smoke rows only).
+//   releaseArgs  shell source release.sh appends to the call.
 //
 // release.sh also runs steps that are its own shell and so are not listed here:
-// typecheck, embedded version, smoke boot, cache-prefix determinism, tool-list
-// conformance and the unit suite.
+// typecheck, embedded version, smoke boot, cache-prefix determinism, the unit
+// suites and the checker tests in deploy/checks/__tests__.
 
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -30,6 +30,7 @@ export const GATES = [
     tier: 'blocking',
     phase: 'pre-build',
     script: 'deploy/checks/check-no-personal-names.mjs',
+    releaseArgs: ['--require-hash-list'],
     title: 'Names/PII gate (no person or agent name in anything that ships)',
     fail: 'Names/PII gate: a shipped surface carries a person\'s or an agent\'s name. NOT publishing.',
     why: 'The owner\'s rule of 2026-09-26 — "in no code, comments, or documentation that goes live should we be including any agents names, peoples names, identifiable information of any kind" — and the v3.2.0 audit measured the shipped tree breaking it in 109 places across 51 files, one of them the owner\'s own credential inventory as string literals in a live data structure. Comments SHIP: `tsconfig.base.json` sets no `removeComments`, so a worker\'s measurement note naming the box\'s agents reaches every user\'s disk, and the repository is PUBLIC. The one-time scrub is batches A-C; this is what stops the inflow, because notes naming agents are a steady-state habit rather than a one-off mess. TWO HALVES, and neither may embed a name in this repo: the ROSTER half reads `agents.name` from the local database AT CHECK TIME (nothing written down, whole-word and case-sensitive so a vendor voice id is not a name, role names subtracted by reading `config/platform.ts`\'s own defaults) and SKIPS LOUDLY with no database rather than passing silently; the PATTERN half holds SHAPES only — a home-path username, an email address, a quoted GitHub handle — each with a fixture row proving what it catches AND what it ignores, and the gate refuses if its own fixture table fails. Early, pre-build, beside byte-hygiene: it is a text scan over tracked files and needs no build.',
@@ -63,7 +64,7 @@ export const GATES = [
   },
   {
     id: 'watchdog-contract',
-    tier: 'report',
+    tier: 'blocking',
     phase: 'pre-build',
     script: 'deploy/checks/check-watchdog-contract.mjs',
     title: 'Watchdog/platform contract gate (hand-synced copies must not drift)',
