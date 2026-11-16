@@ -54,6 +54,14 @@ const isReleased = (rev) => {
   }
   return releasedCache.get(rev);
 };
+// True when `rev` is in the described tag's history; git exits 1 for "no" and refuses on anything else.
+const inTagHistory = (rev) => {
+  try { git(['merge-base', '--is-ancestor', rev, tag]); return true; } catch (err) {
+    if (err?.status === 1) return false;
+    console.error(`✗ migration freeze: \`git merge-base --is-ancestor\` failed, so it refuses: ${err?.message ?? err}`);
+    process.exit(1);
+  }
+};
 
 const changed = [];
 const preRelease = [];
@@ -74,8 +82,8 @@ for (const name of fs.readdirSync(path.join(ROOT, DIR)).filter((f) => f.endsWith
   if (versions.size === 1 && versions.has(nowSum)) { single++; continue; }
   if (versions.size === 0) { single++; continue; }        // never committed: a brand-new migration
 
-  // The freeze fails when the newest tag's bytes differ from the tree. A released version that the
-  // newest tag had already superseded is older debt, printed every run but not failed.
+  // Every released version that differs from the tree fails, except one the described tag itself
+  // superseded (in its history, other bytes at the tag): that is older debt, printed but not failed.
   const tagText = tag ? showAt(tag, rel) : null;
   const tagSum = tagText === null ? null : migrationChecksum(tagText);
   for (const [sum, rev] of versions) {
@@ -83,8 +91,8 @@ for (const name of fs.readdirSync(path.join(ROOT, DIR)).filter((f) => f.endsWith
     const releasedIn = isReleased(rev);
     if (releasedIn === null) { preRelease.push({ name, rev: rev.slice(0, 8) }); continue; }
     const row = { name, rev: rev.slice(0, 8), where: `released in ${releasedIn}`, oldSum: sum, nowSum };
-    if (sum === tagSum) changed.push(row);
-    else debt.push(row);
+    if (tagSum !== null && sum !== tagSum && inTagHistory(rev)) debt.push(row);
+    else changed.push(row);
   }
 }
 
@@ -101,7 +109,7 @@ console.log(`  ${single} migration(s) with one version in their whole history (c
 console.log(`  ${changed.length} released migration(s) changed, ${removed.length} removed since ${tag ?? 'the tag'}`);
 if (debt.length > 0) {
   console.log(`  ⚠ ${debt.length} HISTORICAL divergence(s) — a released version differs from the file, `
-    + 'and it had ALREADY been superseded by the time the last tag shipped, so the divergence was '
+    + `and ${tag} had ALREADY superseded it with other bytes, so the divergence was `
     + 'created by an earlier amendment rather than by the current tree. Pre-existing debt, printed in '
     + 'full every run, not this gate\'s to fail a build over:');
   for (const d of debt) console.log(`     ${d.name}  applied ${d.oldSum.slice(0, 12)}… (${d.where}) vs now ${d.nowSum.slice(0, 12)}…`);

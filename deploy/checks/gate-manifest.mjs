@@ -39,9 +39,9 @@ export const GATES = [
     tier: 'blocking',
     phase: 'pre-build',
     script: 'deploy/checks/check-migration-freeze.mjs',
-    title: 'Migration freeze (a migration a box may have applied never changes)',
-    fail: 'Migration freeze: a migration a box may already have applied changed. That box keeps the old bytes and warns at every boot. NOT publishing.',
-    why: 'Migrations are raw-copied into the package and `_migrations.checksum` records the bytes a box applied, so an edit to a released (or branch-committed) migration never reaches that box: the change belongs in a new numbered file. The gate compares each such version against the tree with the runner\'s own checksum.',
+    title: 'Migration freeze (a migration a release shipped never changes)',
+    fail: 'Migration freeze: a migration a release shipped changed. A box that applied it keeps the old bytes and warns at every boot. NOT publishing.',
+    why: 'Migrations are raw-copied into the package and `_migrations.checksum` records the bytes a box applied, so an edit to a migration a release shipped never reaches a box that applied it: the change belongs in a new numbered file. The gate compares each version a release tag holds against the tree with the runner\'s own checksum; a file in no release tag may still change.',
   },
   {
     id: 'orphan-structures',
