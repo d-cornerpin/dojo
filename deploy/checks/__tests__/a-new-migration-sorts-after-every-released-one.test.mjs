@@ -24,7 +24,7 @@ function tagged(files) {
   git('config', 'user.name', 'Test');
   for (const f of files) write(f);
   git('add', '-A'); git('commit', '-q', '-m', 'release'); git('tag', 'v1.0.0');
-  return { root, write, run: () => spawnSync('node', [GATE], { cwd: root, encoding: 'utf8' }), clean: () => fs.rmSync(root, { recursive: true, force: true }) };
+  return { root, git, write, run: () => spawnSync('node', [GATE], { cwd: root, encoding: 'utf8' }), clean: () => fs.rmSync(root, { recursive: true, force: true }) };
 }
 
 test('a new file that sorts before a tagged file fails', () => {
@@ -61,5 +61,26 @@ test('a listed name the tag holds fails and says to delete it from the list', ()
     const r = box.run();
     assert.equal(r.status, 1, r.stdout + r.stderr);
     assert.match(r.stderr, new RegExp(`${LISTED.replace('.', '\\.')} .*delete it from`));
+  } finally { box.clean(); }
+});
+
+test('a merged-in stable tag nearer than the newest test build does not hide a released file', () => {
+  const box = tagged(['001_a.sql']);
+  const commit = (msg) => { box.git('add', '-A'); box.git('commit', '-q', '-m', msg); };
+  try {
+    box.git('checkout', '-q', '-b', 'preflight');
+    box.write('900_late.sql'); commit('900');
+    box.git('tag', 'v1.1.0-preflight.1');
+    box.git('checkout', '-q', '-b', 'stable', 'v1.0.0');
+    fs.writeFileSync(path.join(box.root, 'NOTES'), 'one\n'); commit('stable one');
+    fs.writeFileSync(path.join(box.root, 'NOTES'), 'two\n'); commit('stable two');
+    box.git('tag', 'v1.0.1');
+    box.git('checkout', '-q', 'preflight');
+    box.git('merge', '-q', '--no-edit', 'stable');
+    box.write('219_new.sql');
+    const r = box.run();
+    assert.match(r.stdout, /since v1\.0\.1\b/);
+    assert.equal(r.status, 1, r.stdout + r.stderr);
+    assert.match(r.stderr, /219_new\.sql .*sorts before 900_late\.sql/);
   } finally { box.clean(); }
 });

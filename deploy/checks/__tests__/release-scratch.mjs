@@ -9,7 +9,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 
 const DEPLOY = fileURLToPath(new URL('../../', import.meta.url));
 
-export function releaseScratch({ branch, stable, released }) {
+export function releaseScratch({ branch, stable, released, listFails = false }) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dojo-release-test-'));
   const bin = path.join(root, 'bin');
   fs.mkdirSync(path.join(root, 'repo', 'deploy'), { recursive: true });
@@ -29,7 +29,7 @@ echo "gh $*" >> "${path.join(root, 'gh.log')}"
 case "$*" in
   "auth status") exit 0 ;;
   "api repos/"*"/releases/latest"*) echo "v${stable}" ;;
-  "release list"*) printf '%s\\tPre-release\\t%s\\t2026-11-01\\n' ${released.map((t) => `${t} ${t}`).join(' ')} ;;
+  "release list"*) ${listFails ? 'exit 1' : `printf '%s\\tPre-release\\t%s\\t2026-11-01\\n' ${released.map((t) => `${t} ${t}`).join(' ')}`} ;;
   "release view"*) exit 1 ;;
   *) echo "unexpected gh call: $*" >&2; exit 99 ;;
 esac

@@ -74,10 +74,6 @@ const inTagHistory = (rev) => {
 };
 
 const files = fs.readdirSync(path.join(ROOT, DIR)).filter((f) => f.endsWith('.sql')).sort();
-const inTag = tag ? git(['ls-tree', '--name-only', tag, '--', `${DIR}/`]).split('\n').filter(Boolean).map((p) => path.basename(p)) : [];
-const lastInTag = [...inTag].sort().at(-1);
-const outOfOrder = files.filter((f) => lastInTag && f < lastInTag && !inTag.includes(f) && !WRITTEN_BEFORE_ORDER_RULE.includes(f));
-const listedButReleased = WRITTEN_BEFORE_ORDER_RULE.filter((f) => inTag.includes(f));
 
 const changed = [];
 const preRelease = [];
@@ -120,13 +116,27 @@ for (const name of files) {
   }
 }
 
-// A file any release tag shipped and the tree no longer has is the `superseded` class: it needs a human.
+// Which release tag, if any, holds each migration name: one listing for the removed rule and the order rule,
+// asked of every release tag (the described one can be a merged-in stable).
 const gone = [...new Set(git(['log', '--no-renames', '--diff-filter=D', '--name-only', '--format=', '--', DIR]).split('\n'))]
   .filter((rel) => rel && !fs.existsSync(path.join(ROOT, rel)));
-const tags = gone.length ? git(['tag', '-l', 'v*']).split('\n').filter(Boolean) : [];
-const asks = tags.flatMap((t) => gone.map((rel) => ({ t, rel })));
-const held = asks.length ? execFileSync('git', ['cat-file', '--batch-check'], { cwd: ROOT, encoding: 'utf8', input: asks.map((a) => `${a.t}:${a.rel}`).join('\n') + '\n' }).split('\n') : [];
-const removed = [...new Map(asks.filter((_, i) => !held[i].endsWith('missing')).map((a) => [a.rel, { name: path.basename(a.rel), tag: a.t }])).values()];
+const tags = git(['tag', '-l', 'v*']).split('\n').filter(Boolean);
+const trees = tags.length ? execFileSync('git', ['cat-file', '--batch-check'], { cwd: ROOT, encoding: 'utf8', input: tags.map((t) => `${t}:${DIR}`).join('\n') + '\n' }).split('\n') : [];
+const treeNames = new Map();   // many tags share one migrations tree, so each tree is listed once
+const releasedIn = new Map();
+tags.forEach((t, i) => {
+  const [oid, kind] = trees[i].split(' ');
+  if (kind !== 'tree') return;
+  if (!treeNames.has(oid)) treeNames.set(oid, git(['ls-tree', '--name-only', oid]).split('\n').filter(Boolean));
+  for (const name of treeNames.get(oid)) if (!releasedIn.has(name)) releasedIn.set(name, t);
+});
+
+// A file any release tag shipped and the tree no longer has is the `superseded` class: it needs a human.
+const removed = gone.map((rel) => path.basename(rel)).filter((name) => releasedIn.has(name)).map((name) => ({ name, tag: releasedIn.get(name) }));
+// A file in no release tag sorts after every released one, so a fresh install and an updated box apply the same order.
+const lastReleased = [...releasedIn.keys()].sort().at(-1);
+const outOfOrder = files.filter((f) => lastReleased && f < lastReleased && !releasedIn.has(f) && !WRITTEN_BEFORE_ORDER_RULE.includes(f));
+const listedButReleased = WRITTEN_BEFORE_ORDER_RULE.filter((f) => releasedIn.has(f));
 
 console.log('── migration freeze ──');
 console.log(`  ${single} migration(s) with one version in their whole history (cannot diverge)`);
@@ -155,11 +165,11 @@ for (const r of removed) {
   console.error('    A box carrying that name will report a recorded migration whose file is absent.');
 }
 for (const f of outOfOrder) {
-  console.error(`✗ ${f} is new since ${tag} and sorts before ${lastInTag}, which ${tag} holds: a fresh install would apply`);
+  console.error(`✗ ${f} is in no release tag and sorts before ${lastReleased}, which ${releasedIn.get(lastReleased)} holds: a fresh install would apply`);
   console.error('    it before that step and an updated box after it. Number it after every released file.');
 }
 for (const f of listedButReleased) {
-  console.error(`✗ ${f} is in ${tag} now, so it no longer needs the exemption: delete it from WRITTEN_BEFORE_ORDER_RULE.`);
+  console.error(`✗ ${f} is in ${releasedIn.get(f)} now, so it no longer needs the exemption: delete it from WRITTEN_BEFORE_ORDER_RULE.`);
 }
 if (changed.length || removed.length) {
   console.error('\n  A box that applied the old bytes keeps them and warns at every boot. Revert the');

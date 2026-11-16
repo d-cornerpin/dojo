@@ -22,3 +22,13 @@ test('a base that would rank below a preflight already out is refused', () => {
     assert.match(r.stderr, /3\.4\.2-preflight\.1 does NOT rank above everything already out/);
   } finally { box.clean(); }
 });
+
+test('a release list that cannot be read is refused, never taken as no preflight out', () => {
+  const box = releaseScratch({ ...OUT, listFails: true });
+  try {
+    const r = box.run(['--preflight', '--dry-run']);
+    assert.notEqual(r.status, 0);
+    assert.match(r.stderr, /Could not read the release list/);
+    assert.doesNotMatch(r.stdout, /ranks above/);
+  } finally { box.clean(); }
+});

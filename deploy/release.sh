@@ -46,7 +46,8 @@ while [ $# -gt 0 ]; do
     --preflight) PREFLIGHT=1; shift ;;
     --notes-file) NOTES_FILE="${2:-}"; shift 2 ;;
     -*) echo "Unknown flag: $1" >&2; exit 2 ;;
-    *) VERSION="$1"; shift ;;
+    *) [ -z "$VERSION" ] || { echo "❌ A second version was given ($VERSION, then $1): pass one version. NOT publishing." >&2; exit 2; }
+       VERSION="$1"; shift ;;
   esac
 done
 
@@ -150,7 +151,9 @@ if [ "$PREFLIGHT" = "1" ]; then
   LATEST_STABLE="$(gh api "repos/$REPO/releases/latest" --jq '.tag_name' 2>/dev/null | sed 's/^v//')"
   echo "$LATEST_STABLE" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' \
     || fail "Could not read latest stable release to compute/guard the preflight base (got '${LATEST_STABLE:-none}')."
-  RELEASED="$(gh release list --repo "$REPO" --limit 100 2>/dev/null | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+-preflight\.[0-9]+' || true)"
+  LISTED="$(gh release list --repo "$REPO" --limit 100 2>/dev/null)" \
+    || fail "Could not read the release list, so the preflight number cannot be checked against what is out."
+  RELEASED="$(printf '%s\n' "$LISTED" | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+-preflight\.[0-9]+' || true)"
   TOP_PRE="$(node "$SCRIPT_DIR/version-rank.mjs" $RELEASED)"
   if [ -z "$BASE" ]; then
     BASE="$(node "$SCRIPT_DIR/version-rank.mjs" "$(echo "$LATEST_STABLE" | awk -F. '{printf "%d.%d.%d", $1, $2, $3 + 1}')" "${TOP_PRE%-preflight.*}" | sed 's/^v//')"
