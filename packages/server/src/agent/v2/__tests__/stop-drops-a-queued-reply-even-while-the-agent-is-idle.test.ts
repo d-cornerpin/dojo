@@ -13,7 +13,7 @@ vi.mock('../../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRo
 import { runMigrations } from '../../../db/migrations.js';
 import { routeTerminalReply } from '../steps/finalize/route-reply.js';
 import { deliverDueReplies } from '../channel-sender.js';
-import { freshReplyDb, imessage, personTurn, replyRows, T0 } from './helpers/reply-sender.js';
+import { freshReplyDb, imessage, personTurn, replyRows, testDb, T0 } from './helpers/reply-sender.js';
 import { pressStop, pills } from './helpers/owner-stop.js';
 
 beforeEach(() => {
@@ -34,5 +34,12 @@ describe('Stop drops a queued reply even while the agent is idle', () => {
 
     await deliverDueReplies(T0 + 60 * 60_000);
     expect(imessage.send).not.toHaveBeenCalled();
+  });
+
+  it('a queued reply whose record cannot be read is still dropped', async () => {
+    await routeTerminalReply(...personTurn('here is the address', { channel: 'imessage' }));
+    testDb().prepare("UPDATE deliveries SET payload_json = '{broken' WHERE payload_json IS NOT NULL").run();
+    expect((await pressStop()).body.data?.repliesNotSent).toBe(1);
+    expect(replyRows()[0].outcome).toBe('suppressed');
   });
 });

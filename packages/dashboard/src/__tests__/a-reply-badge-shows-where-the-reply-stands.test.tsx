@@ -77,8 +77,8 @@ describe('a reply badge shows where the reply stands', () => {
   });
 
   it('not delivered, with the short reason', async () => {
-    const text = await feed([row('user', ASKED), row('assistant', ANSWER), mark(['sending']), mark(['not delivered', 'Messages is not signed in'])]);
-    expect(text).toContain('not delivered by iMessage to Sam: Messages is not signed in');
+    const text = await feed([row('user', ASKED), row('assistant', ANSWER), mark(['sending']), mark(['not delivered', 'Messages could not send it'])]);
+    expect(text).toContain('not delivered by iMessage to Sam: Messages could not send it');
     expect(text).not.toContain('sending by');
   });
 

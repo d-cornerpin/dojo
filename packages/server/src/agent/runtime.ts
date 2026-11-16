@@ -400,8 +400,6 @@ export function stopByOwner(agentId: string): { repliesNotSent: number } {
     return { repliesNotSent: 0 };
   } finally {
     stopAgent(agentId);
-    // With no run to cut, a standing flag would only cut the person's next turn.
-    if (!activeRuns.has(agentId)) stoppedAgents.delete(agentId);
   }
 }
 

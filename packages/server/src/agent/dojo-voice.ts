@@ -46,10 +46,12 @@ const PLAIN_WHY = {
   teams: 'Teams refused it',
 };
 export type RefusalKind = keyof typeof PLAIN_WHY;
+export const plainWhy = (refusal: RefusalKind | undefined, channel: string | undefined): string =>
+  PLAIN_WHY[refusal ?? channel as RefusalKind] ?? 'the channel did not take it';
 
 // A reply ended failed for good: the owner's one card per agent counts the failed replies since he last dismissed
 // it, and the agent is told it did not arrive. A start line is not an answer and is not told.
-export function tellOfUndeliveredReply(rowId: string, label: string, refusal: RefusalKind | undefined): void {
+export function tellOfUndeliveredReply(rowId: string, label: string, reason: string): void {
   const db = getDb();
   const row = db.prepare('SELECT agent_id, tool, channel, attempts FROM deliveries WHERE id = ?')
     .get(rowId) as { agent_id: string; tool: string; channel: string; attempts: number } | undefined;
@@ -61,7 +63,6 @@ export function tellOfUndeliveredReply(rowId: string, label: string, refusal: Re
   const { n } = db.prepare(`SELECT COUNT(*) AS n FROM deliveries WHERE agent_id = ? AND outcome = 'failed' AND payload_json IS NOT NULL
     AND tool NOT IN (${[...NON_ANSWERING_DELIVERY_TOOLS].map(() => '?').join(', ')}) AND (id = ? OR updated_at >= datetime(? / 1000 - 1, 'unixepoch'))`)
     .get(row.agent_id, ...NON_ANSWERING_DELIVERY_TOOLS, rowId, since) as { n: number };
-  const reason = PLAIN_WHY[refusal ?? row.channel as RefusalKind] ?? 'the channel did not take it';
   tellOwner(key, `${n} ${n === 1 ? 'reply' : 'replies'} could not be delivered since ${renderInstant(since)}. `
     + `Latest: ${label} (${reason}). ${n === 1 ? 'It is' : 'They are'} in the chat.`);
   postAgentNotice({

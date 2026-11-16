@@ -242,7 +242,10 @@ export function suppressQueuedReplies(agentId: string): { repliesNotSent: number
     if (row.turn_number !== null && row.conversation_id !== null) {
       for (const id of asksAnsweredBy(agentId, row.turn_number, row.conversation_id)) askIds.add(id);
     }
-    const { address } = JSON.parse(row.payload_json) as { address: ReplyAddress };
+    let parsed: { address?: ReplyAddress } = {};
+    try { parsed = JSON.parse(row.payload_json) as { address?: ReplyAddress }; } catch { /* unreadable: still dropped, with no mark */ }
+    const { address } = parsed;
+    if (!address) continue;
     afterCommit(() => void pillLabel(address, address.to).catch(() => address.channel)
       .then((label) => writeRoutingPill(agentId, row.turn_number, withRoutingState(label, 'not sent', 'stopped by you'))));
   }
