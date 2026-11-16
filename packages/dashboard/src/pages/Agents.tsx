@@ -37,8 +37,9 @@ const CreateAgentModal = ({
   const [selectedGroupId, setSelectedGroupId] = useState('');
   const [classification, setClassification] = useState<'apprentice' | 'ronin'>('apprentice');
   const [showPerms, setShowPerms] = useState(false);
-  // The form starts from the server's one helper default; it sends permissions only once the owner changes one.
-  const [initialAccess] = useState(() => readLegacyAccess(DEFAULT_SUBAGENT_PERMISSIONS, undefined, false));
+  // The form starts from the server's one helper default (no Web tool group, hence null grants); it sends
+  // permissions only once the owner changes one.
+  const [initialAccess] = useState(() => readLegacyAccess(DEFAULT_SUBAGENT_PERMISSIONS, undefined, false, null));
   const [access, setAccess] = useState(initialAccess);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);

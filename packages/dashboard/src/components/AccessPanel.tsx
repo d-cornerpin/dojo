@@ -60,8 +60,9 @@ export const AccessPanel = ({ agent, onUpdated, manifestEditable, manifestNote }
       agent.permissions,
       agent.toolsPolicy ?? undefined,
       (agent.config as Record<string, unknown>)?.shareUserProfile === true,
+      agent.effectiveGrants ?? null,
     ),
-    [agent.permissions, agent.toolsPolicy, agent.config],
+    [agent.permissions, agent.toolsPolicy, agent.config, agent.effectiveGrants],
   );
   const [legacy, setLegacy] = useState<LegacyAccess>(storedLegacy);
   useContentChange(storedLegacy, setLegacy);

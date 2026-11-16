@@ -29,6 +29,7 @@ import { resolveSpawnGrants, resolveUpdateGrants, grantsDelta } from '../../agen
 // floor did not move and that agents that already exist are not backfilled.
 import { DASHBOARD_CREATE_DEFAULT_GRANTS } from '../../agent/access/create-defaults.js';
 import { getAccessGrants } from '../../agent/access/read.js';
+import { withWebGroupFor } from '../../agent/access/tools-policy.js';
 import { writeGrants } from '../../agent/access/materialize.js';
 import { auditLog } from '../../agent/tools/util.js';
 import { parkedCauseOf } from '../../agent/v2/honest-stop-lock.js';
@@ -212,7 +213,7 @@ agentsRouter.post('/', async (c) => {
       groupId,
       timeoutSeconds,
       timeoutAt,
-      JSON.stringify({ ...scope.manifest, grants: grantScope.grants }),
+      JSON.stringify({ ...scope.manifest, grants: withWebGroupFor(grantScope.grants, body.toolsPolicy, body.grants) }),
       JSON.stringify(body.toolsPolicy ?? {}),
       JSON.stringify(body.equippedTechniques ?? []),
       body.taskId ?? null,
@@ -425,7 +426,7 @@ agentsRouter.put('/:id', async (c) => {
     if (Array.isArray(tp?.allow)) folded.tools.allow = (tp!.allow as unknown[]).filter((t): t is string => typeof t === 'string');
     if (Array.isArray(tp?.deny)) folded.tools.deny = (tp!.deny as unknown[]).filter((t): t is string => typeof t === 'string');
     pendingGrants = {
-      grants: folded,
+      grants: withWebGroupFor(folded, tp, body.grants),
       source: pendingGrants ? pendingGrants.source : 'tools policy set by owner (dashboard)',
     };
   }

@@ -149,11 +149,14 @@ describe('the collapsed header says what this agent is, in one plain line', () =
 // 2 · THE FIVE ROW SUMMARIES — the same derivation, one row at a time
 // ════════════════════════════════════════════════════════════════════════════════
 
+/** Grants that hold every tool group, the Web group included. */
+const webHeld: AccessGrants = { ...cloneGrants(MOST_RESTRICTIVE_GRANTS), tools: { categories: '*', allow: [], deny: [] } };
+
 describe('each row says its own state on its folded header', () => {
   // Everything off. The web pair needs saying explicitly: a MISSING tools policy
   // has always meant "all tools", so an empty blob reads the two web toggles ON.
   const off: LegacyAccess = readLegacyAccess(
-    {}, { allow: [], deny: ['web_search', 'web_fetch', 'web_browse'] }, false,
+    {}, { allow: [], deny: ['web_search', 'web_fetch', 'web_browse'] }, false, null,
   );
 
   it('what it can do', () => {
@@ -220,7 +223,7 @@ describe('the moved legacy toggles write exactly what they always wrote', () => 
   const tools = { allow: [], deny: ['web_search', 'web_fetch'] };
 
   it('⚠ READ THEN BUILD IS THE IDENTITY — opening the panel changes nothing', () => {
-    const built = buildLegacyAccess(readLegacyAccess(stored, tools, true));
+    const built = buildLegacyAccess(readLegacyAccess(stored, tools, true, webHeld));
     expect(built.permissions).toEqual({
       file_read: ['~/Projects/**'],
       file_write: '*',
@@ -236,24 +239,23 @@ describe('the moved legacy toggles write exactly what they always wrote', () => 
   });
 
   it('⚠ AND SO IT IS NEVER DIRTY ON ARRIVAL — a save sends the manifest only when one moved', () => {
-    const s = readLegacyAccess(stored, tools, true);
+    const s = readLegacyAccess(stored, tools, true, webHeld);
     expect(legacyDirty(s, { ...s })).toBe(false);
     expect(legacyDirty(s, { ...s, spawnOn: false })).toBe(true);
   });
 
   it('an EMPTY stored blob reads as the all-off shape, exactly as the old editor did', () => {
-    const s = readLegacyAccess({}, undefined, false);
+    const s = readLegacyAccess({}, undefined, false, null);
     expect(s.readOn).toBe(false);
     expect(s.execOn).toBe(false);
     expect(s.spawnOn).toBe(false);
-    // A missing policy still reads as "all tools", so search reads ON; browsing also needs the
-    // system-control grant, which an empty blob does not hold, so it reads OFF.
-    expect(s.searchOn).toBe(true);
+    // The web toggles read ON only with the Web tool group held, which an agent with no grants lacks.
+    expect(s.searchOn).toBe(false);
     expect(s.browseOn).toBe(false);
   });
 
   it('⚠ "Run programs on this Mac" IS `exec_allow`, AND OFF MEANS THE EMPTY LIST', () => {
-    const s = readLegacyAccess(stored, tools, false);
+    const s = readLegacyAccess(stored, tools, false, webHeld);
     expect(s.execOn).toBe(true);
     expect(s.execList).toBe('ls, cat');
     expect(buildLegacyAccess({ ...s, execOn: false }).permissions.exec_allow).toEqual([]);
@@ -261,7 +263,7 @@ describe('the moved legacy toggles write exactly what they always wrote', () => 
   });
 
   it('⚠ THE WEB TOGGLES REACH BOTH FIELDS THE OLD ONES REACHED', () => {
-    const s = readLegacyAccess(stored, tools, false);
+    const s = readLegacyAccess(stored, tools, false, webHeld);
     expect(s.searchOn).toBe(false);           // denied in the policy
     expect(s.browseOn).toBe(true);            // `web_browse` in system_control
     const bothOff = buildLegacyAccess({ ...s, searchOn: false, browseOn: false });
@@ -276,25 +278,25 @@ describe('the moved legacy toggles write exactly what they always wrote', () => 
     // toggle could be turned off and never on again — a control that lies, which
     // is the disease this overhaul exists to end. The advanced field now carries
     // only the denies no toggle owns.
-    const s = readLegacyAccess(stored, tools, false);
+    const s = readLegacyAccess(stored, tools, false, webHeld);
     expect(s.rawDeny).toBe('');
     expect(buildLegacyAccess({ ...s, searchOn: true }).toolsPolicy.deny).toEqual([]);
   });
 
   it('a deny no toggle owns survives the round trip', () => {
-    const s = readLegacyAccess(stored, { allow: [], deny: ['spawn_agent'] }, false);
+    const s = readLegacyAccess(stored, { allow: [], deny: ['spawn_agent'] }, false, webHeld);
     expect(s.rawDeny).toBe('spawn_agent');
     expect(buildLegacyAccess(s).toolsPolicy.deny).toEqual(['spawn_agent']);
   });
 
   it('the delegation pair still writes the manifest booleans the doors read', () => {
-    const s = readLegacyAccess(stored, tools, false);
+    const s = readLegacyAccess(stored, tools, false, webHeld);
     expect(buildLegacyAccess({ ...s, spawnOn: false }).permissions.can_spawn_agents).toBe(false);
     expect(buildLegacyAccess({ ...s, assignOn: true }).permissions.can_assign_permissions).toBe(true);
   });
 
   it('⚠ IT WRITES NO KEY THE OLD EDITOR DID NOT WRITE — a fold, not a re-key', () => {
-    const built = buildLegacyAccess(readLegacyAccess(stored, tools, false));
+    const built = buildLegacyAccess(readLegacyAccess(stored, tools, false, webHeld));
     expect(Object.keys(built.permissions).sort()).toEqual([
       'can_assign_permissions', 'can_spawn_agents', 'exec_allow', 'exec_deny',
       'file_read', 'file_write', 'network_domains',

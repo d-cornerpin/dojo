@@ -1,8 +1,8 @@
 // The manifest's toggle math for the Access panel and the new-agent form: pure functions, no React.
 // The values stay in PermissionManifest, the tools_policy column and config.
 
-import type { PermissionManifest } from '@dojo/shared';
-import { SEARCH_HOST, stableGrantsText } from '@dojo/shared';
+import type { AccessGrants, PermissionManifest } from '@dojo/shared';
+import { SEARCH_HOST, categoryGranted, stableGrantsText } from '@dojo/shared';
 
 export interface ToolsPolicy { allow: string[]; deny: string[] }
 
@@ -48,8 +48,11 @@ export function readLegacyAccess(
   perms: Partial<PermissionManifest> | null | undefined,
   tools: ToolsPolicy | null | undefined,
   shareProfile: boolean,
+  grants: AccessGrants | null,
 ): LegacyAccess {
   const p = perms ?? {};
+  // A web tool is on only with the Web tool group held; a save that turns one on grants the group.
+  const web = grants !== null && categoryGranted(grants, 'Web');
   return {
     readOn: hasPath(p.file_read), readAll: isAll(p.file_read), readList: toList(p.file_read),
     writeOn: hasPath(p.file_write), writeAll: isAll(p.file_write), writeList: toList(p.file_write),
@@ -57,9 +60,9 @@ export function readLegacyAccess(
     execAll: Array.isArray(p.exec_allow) && p.exec_allow.includes('*'),
     execList: Array.isArray(p.exec_allow) ? p.exec_allow.filter((c) => c !== '*').join(', ') : '',
     execDeny: (p.exec_deny ?? []).join(', '),
-    searchOn: hasTool(tools, 'web_search') && hasTool(tools, 'web_fetch'),
+    searchOn: web && hasTool(tools, 'web_search') && hasTool(tools, 'web_fetch'),
     // Browsing needs the system-control grant; an undenied tool alone cannot open a page.
-    browseOn: hasSys(p, 'web_browse') && hasTool(tools, 'web_browse'),
+    browseOn: web && hasSys(p, 'web_browse') && hasTool(tools, 'web_browse'),
     domainsAll: isAll(p.network_domains) || p.network_domains === '*',
     domainsList: toList(p.network_domains),
     screenOn: hasSys(p, 'screen'), mouseOn: hasSys(p, 'mouse'),
