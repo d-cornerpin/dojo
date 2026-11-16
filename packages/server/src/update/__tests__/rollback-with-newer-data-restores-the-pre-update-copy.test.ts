@@ -98,7 +98,32 @@ describe('rollback with newer data restores the pre-update copy', () => {
     runRollbackSh(b, ['--auto']);
     expect(whole(live())).toBe(true);
     expect(whichDb(live())).toBe('newer');
-    expect(result()).toMatch(/^unchanged\t.*stopped before your data was put back/);
+    expect(result()).toMatch(/^unchanged\t.*stopped before it finished\. Nothing was changed/);
+  });
+
+  it('a stop that also cuts the copy putting the newer data back is reported as data that cannot be read', () => {
+    box(ahead);
+    fs.writeFileSync(path.join(b.bin, 'cp'), [
+      '#!/bin/sh', 'for last; do :; done',
+      'case "$2" in */dojo-pre-*) kill -TERM $PPID $(ps -o ppid= -p $PPID); head -c 512 "$2" > "$last"; exit 1;;',
+      '  */dojo-replaced-*) head -c 512 "$2" > "$last"; exit 1;; esac', 'exec /bin/cp "$@"',
+    ].join('\n') + '\n', { mode: 0o755 });
+    runRollbackSh(b, ['--auto']);
+    expect(whole(live())).toBe(false);
+    expect(setAside().map((f) => whichDb(path.join(b.dojo, 'data', 'backups', f)))).toEqual(['newer']);
+    expect(result()).toMatch(/^failed\t.*your data could not be read.*dojo-replaced-<date>\.db.*Please get help/);
+    expect(result()).not.toMatch(/Nothing was changed/);
+  });
+
+  it('a stop to restore-db.sh alone after its copy finished reports the data that is in place', () => {
+    box(ahead);
+    fs.writeFileSync(path.join(b.bin, 'sqlite3'), [
+      '#!/bin/sh', 'case "$*" in */data/dojo.db*integrity_check*) kill -TERM $(ps -o ppid= -p $PPID);; esac', 'exec /usr/bin/sqlite3 "$@"',
+    ].join('\n') + '\n', { mode: 0o755 });
+    expect(runRollbackSh(b, ['--auto']).code).toBe(1);
+    expect(whichDb(live())).toBe('before');
+    expect(versionAt(b.platform)).toBe('3.5.0');
+    expect(result()).toMatch(/^failed\t.*your data was put back to the copy from before the update, but .*newer version is still installed/);
   });
 
   it('a stop after the data went back and while the program is swapped says exactly that', () => {
