@@ -203,6 +203,8 @@ beforeEach(() => {
     `INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, is_enabled)
      VALUES ('test-model', 'test-provider', 'Test Model', 'test-1', '["tools"]', ?, 1)`,
   ).run(world.window);
+  // A box past setup has its primary agent; without it every work_open arms a retry that outlives the clause.
+  db.prepare("INSERT INTO agents (id, name, model_id, status, config, classification) VALUES ('primary', 'Primary', 'test-model', 'idle', '{}', 'sensei')").run();
   db.prepare("INSERT INTO agents (id, name, model_id, status, config, classification) VALUES (?, 'Worker', 'test-model', 'idle', '{}', 'worker')").run(WORKER);
   db.prepare("INSERT INTO agents (id, name, model_id, status, config, classification) VALUES (?, 'Manager', 'test-model', 'idle', '{}', 'sensei')").run(MANAGER);
   db.prepare(

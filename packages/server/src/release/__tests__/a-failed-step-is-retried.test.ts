@@ -18,6 +18,8 @@ vi.mock('../../tracker/version-gap-reconcile.js', () => ({ runVersionGapReconcil
 vi.mock('../../work/inherited-backlog.js', () => ({ completedInheritedBacklogPass: () => ({ at: 'boot', examined: 0, parked: 0, completed: true }) }));
 
 import { runReleaseSteps, RELEASE_STEPS, RELEASE_STEPS_VERSION_KEY, type ReleaseStep } from '../release-steps.js';
+// The built-in tools step's module graph is loaded here, at file load, not inside the first clause that runs the steps.
+import '../built-in-tools.js';
 
 const marker = () => (mockDb.current!.prepare('SELECT value FROM config WHERE key = ?')
   .get(RELEASE_STEPS_VERSION_KEY) as { value: string } | undefined)?.value;

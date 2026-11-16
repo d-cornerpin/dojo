@@ -124,7 +124,8 @@ Object.defineProperty(os, 'homedir', {
 // it fails loudly.
 // ════════════════════════════════════════
 
-import { createRequire } from 'node:module';
+import { createRequire, syncBuiltinESMExports } from 'node:module';
+import http from 'node:http';
 import { afterAll, vi } from 'vitest';
 
 const SCRUBBED_ENV = /^(CLAUDE_CODE_|CLAUDECODE$|ANTHROPIC_|OPENAI_|OPENROUTER_|DEEPSEEK_|GEMINI_|GOOGLE_API_KEY$|GOOGLE_APPLICATION_CREDENTIALS$|MISTRAL_|GROQ_|XAI_|AWS_ACCESS_KEY_ID$|AWS_SECRET_ACCESS_KEY$|AWS_SESSION_TOKEN$)/;
@@ -176,3 +177,9 @@ g.setTimeout = ((fn: (...a: unknown[]) => void, ms?: number, ...args: unknown[])
 }) as typeof setTimeout;
 g.setInterval = ((...a: Parameters<typeof setInterval>) => { const t = real.setInterval(...a); armed.add(t); return t; }) as typeof setInterval;
 afterAll(() => { for (const t of armed) real.clearTimeout(t); armed.clear(); });
+
+// A test's stub server never closes an idle connection: Node's 5 s idle close races a client that reuses the
+// socket after a slow step (a loaded box), and the call fails with "fetch failed" before reaching the stub.
+const createServer = http.createServer;
+http.createServer = ((...a: unknown[]) => Object.assign((createServer as (...x: unknown[]) => http.Server)(...a), { keepAliveTimeout: 0 })) as typeof http.createServer;
+syncBuiltinESMExports();
