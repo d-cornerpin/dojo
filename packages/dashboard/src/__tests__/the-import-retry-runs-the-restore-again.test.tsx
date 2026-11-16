@@ -16,8 +16,13 @@ import type { ReactElement } from 'react';
 
 vi.mock('../lib/api', async () => {
   const actual = await vi.importActual<Record<string, unknown>>('../lib/api');
-  return { ...actual, request: vi.fn() };
+  return { ...actual, request: vi.fn(), getVersion: vi.fn(async () => ({ ok: true, data: { version: '1.0.0' } })) };
 });
+// The Dojo restarts after a good import; the test says when it is back.
+const restarted = vi.hoisted(() => ({ now: (): void => {} }));
+vi.mock('../lib/wait-for-restart', () => ({
+  waitForRestart: () => new Promise((resolve) => { restarted.now = () => resolve({ state: 'ready' }); }),
+}));
 vi.mock('../hooks/useWebSocket', async () => {
   const { fakeUseWebSocket } = await import('./helpers/frames');
   return { useWebSocket: fakeUseWebSocket, WebSocketProvider: ({ children }: { children: ReactElement }) => children };
@@ -89,9 +94,12 @@ describe('the import retry', () => {
     await waitFor(() => expect(importCalls()).toBe(2));
   });
 
-  it('after the retried import succeeds, the wizard moves on to the dependencies', async () => {
+  it('after the retried import succeeds and the Dojo has restarted, the wizard moves on to the dependencies', async () => {
     await importUntilItFails();
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(screen.getByText('Restored. Dojo is restarting onto your data…')).toBeTruthy());
+    expect(screen.queryByText('Installing dependencies…')).toBeNull();
+    restarted.now();
     await waitFor(() => expect(
       screen.queryByText('Dependencies installed.') ?? screen.queryByText('Installing dependencies…'),
     ).toBeTruthy());

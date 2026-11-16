@@ -25,11 +25,15 @@ export type { PostMigrationCheck } from '@dojo/shared';
 let currentChecks: PostMigrationCheck[] = [];
 let migrationDismissed = false;
 
-// The manifest from the most recent import. Cached so the dependency installer
-// and the wizard's "re-check" can re-run checks without re-reading the zip.
-let lastManifest: ExportManifest | null = null;
-export function setLastManifest(manifest: ExportManifest): void { lastManifest = manifest; }
-export function getLastManifest(): ExportManifest | null { return lastManifest; }
+// The manifest from the most recent import, kept in the database so the dependency installer and the
+// wizard's "re-check" still have it after the restart that follows an import.
+export function setLastManifest(manifest: ExportManifest): void {
+  getDb().prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('migration_manifest', ?)").run(JSON.stringify(manifest));
+}
+export function getLastManifest(): ExportManifest | null {
+  const row = getDb().prepare("SELECT value FROM config WHERE key = 'migration_manifest'").get() as { value: string } | undefined;
+  return row ? JSON.parse(row.value) as ExportManifest : null;
+}
 
 export function getChecks(): PostMigrationCheck[] {
   return currentChecks;

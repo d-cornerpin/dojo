@@ -9,13 +9,15 @@ import { pipeline } from 'node:stream/promises';
 import { spawn } from 'node:child_process';
 import type { AppEnv } from '../server.js';
 import { createExport } from '../../migration/export.js';
-import { readManifestFromZip, performImport, verifyArchive } from '../../migration/import.js';
+import { readManifestFromZip, performImport, verifyArchive, recordedOldCopy } from '../../migration/import.js';
 import { ImportAlreadyRunningError } from '../../migration/import-safety.js';
 import { bindImportCardMarker } from '../../migration/import-recovery.js';
 import { getChecks, dismissMigration, isMigrationDismissed, runPostMigrationChecks, getLastManifest } from '../../migration/checks.js';
 import { buildCombinedInstaller } from '../../migration/dependency-script.js';
 import { stopAgentRunsForImport, resumeAgentsAfterFailedImport } from '../../migration/import-agents.js';
-import { reopenDatabaseAfterImport } from '../../migration/after-import.js';
+import { getDb } from '../../db/connection.js';
+import { freeBytesAt, treeSize } from '../../update/disk-preflight.js';
+import { restartDojo } from './system.js';
 import { getDashboardPasswordHash, getJwtSecret } from '../../config/loader.js';
 import { broadcast } from '../ws.js';
 import { createLogger } from '../../logger.js';
@@ -121,13 +123,8 @@ migrationRouter.post('/preflight', async (c) => {
 
     // Free-disk check: the restore stages the inner zip + extracted tree + the
     // restored db, so require ~2x the database size free on the dojo volume.
-    let diskOk = true;
-    let freeBytes: number | null = null;
-    try {
-      const st = fs.statfsSync(homeDir());
-      freeBytes = Number(st.bavail) * Number(st.bsize);
-      diskOk = freeBytes >= manifest.contents.database_size_bytes * 2;
-    } catch { diskOk = true; /* can't determine, so don't block */ }
+    const freeBytes = freeBytesAt(homeDir());
+    const diskOk = freeBytes === null || freeBytes >= manifest.contents.database_size_bytes * 2;
 
     return c.json({ ok: true, data: { manifest, integrityOk, passwordOk, diskOk, freeBytes } });
   } catch (err) {
@@ -176,13 +173,12 @@ migrationRouter.post('/import', async (c) => {
       stoppedForImport = stopAgentRunsForImport();
     };
 
-    const restartServices = async () => {
-      // Re-initialize database connection, run migrations, and the one-time owner conversion
-      await reopenDatabaseAfterImport();
-    };
+    // A failed import put the old data back at the same path: reopening it is all its services need.
+    const reopenOldData = async () => { getDb(); };
 
-    const { manifest, checks } = await performImport(tmpPath, password, stopServices, restartServices, currentAuth, () => resumeAgentsAfterFailedImport(stoppedForImport));
-
+    const { manifest, checks } = await performImport(tmpPath, password, stopServices, reopenOldData, currentAuth, () => resumeAgentsAfterFailedImport(stoppedForImport));
+    // Readers that hold their own connection (memory search) still face the replaced files: a fresh process opens the new data.
+    restartDojo('a migration import finished');
     return c.json({ ok: true, data: { manifest, checks } });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -193,11 +189,20 @@ migrationRouter.post('/import', async (c) => {
   }
 });
 
-// GET /api/migration/import/status (current post-migration check state)
+// GET /api/migration/import/status (current post-migration check state, and the old copy the import set aside)
 migrationRouter.get('/import/status', (c) => {
-  const checks = getChecks();
-  const dismissed = isMigrationDismissed();
-  return c.json({ ok: true, data: { checks, dismissed } });
+  const old = recordedOldCopy();
+  const oldCopy = old ? { path: old, bytes: treeSize(old) } : null;
+  return c.json({ ok: true, data: { checks: getChecks(), dismissed: isMigrationDismissed(), oldCopy } });
+});
+
+// POST /api/migration/import/old-copy/delete: the owner's "Delete the old copy". Only the recorded folder.
+migrationRouter.post('/import/old-copy/delete', (c) => {
+  const old = recordedOldCopy();
+  if (!old) return c.json({ ok: false, error: 'There is no old copy to delete.' }, 404);
+  fs.rmSync(old, { recursive: true, force: true });
+  logger.info('Deleted the old copy an import set aside', { path: old });
+  return c.json({ ok: true, data: { deleted: old } });
 });
 
 // POST /api/migration/import/dismiss (dismiss post-migration banner)

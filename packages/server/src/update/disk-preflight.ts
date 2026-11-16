@@ -46,7 +46,7 @@ function fileSize(p: string): number {
 const liveDbBytes = (dbPath: string): number => fileSize(dbPath) + fileSize(`${dbPath}-wal`) + fileSize(`${dbPath}-shm`);
 
 /** Bytes of a directory tree. Symlinks are not followed (the `cp -R` copies the link). */
-function treeSize(dir: string): number {
+export function treeSize(dir: string): number {
   let total = 0;
   const stack = [dir];
   while (stack.length) {
@@ -70,7 +70,7 @@ export function readableBytes(bytes: number): string {
 }
 
 /** Free bytes on the volume holding `dir`; null when it cannot be read. */
-function freeBytesAt(dir: string): number | null {
+export function freeBytesAt(dir: string): number | null {
   try {
     const st = fs.statfsSync(dir);
     return Number(st.bavail) * Number(st.bsize);

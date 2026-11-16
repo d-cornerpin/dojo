@@ -8,12 +8,13 @@ import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import archiver from 'archiver';
 import { getDb } from '../db/connection.js';
-import { copyTree } from './fs-copy.js';
+import { copyTree, PROGRAM_ITEMS } from './fs-copy.js';
 import { generateManifest, type ExportManifest } from './manifest.js';
 import { broadcast } from '../gateway/ws.js';
 import { createLogger } from '../logger.js';
 import { homeDir } from '../home.js';
 import { TOOLBOX_LEDGER_FILE } from '../agent/effects/toolbox-ledger.js';
+import { freeBytesAt, readableBytes, treeSize } from '../update/disk-preflight.js';
 
 const logger = createLogger('migration-export');
 
@@ -24,17 +25,14 @@ const GWS_DIR = path.join(homeDir(), '.config', 'gws');
 // machine. Travels as cloudflared/.
 const CLOUDFLARED_DIR = path.join(homeDir(), '.cloudflared');
 
-// Deny-list for the ~/.dojo copy: top-level app code and assets the target machine's installer
-// provides (platform, watchdog, scripts, tools, bin, logs, dojologo.pdf), plus platform.backup-* dirs
-// matched by prefix. A new app-code dir under ~/.dojo must be added here AND to the import's preserve list.
-const TOP_LEVEL_SKIP = new Set(['platform', 'watchdog', 'scripts', 'tools', 'bin', 'logs', 'dojologo.pdf']);
-const PLATFORM_BACKUP_PREFIX = 'platform.backup-';
+// Logs, set-aside builds (update backups, failed, partial and staged trees) and the rollback lock travel nowhere.
+const SET_ASIDE = /^(logs$|platform\.|watchdog\.|rollback\.lock)/;
 // voice/ is mostly re-downloadable model weights; only the custom subdir migrates.
 const VOICE_KEEP_SUBDIR = 'custom';
 // Skipped in data/: the DB is snapshotted via the backup API (a raw copy of an open WAL database is
-// inconsistent), dojo.sqlite is empty, and the toolbox ledger names this boot's process groups so it
-// never travels.
-const DATA_FILE_SKIP = new Set(['dojo.db', 'dojo.db-shm', 'dojo.db-wal', 'dojo.sqlite', TOOLBOX_LEDGER_FILE]);
+// inconsistent), dojo.sqlite is empty, the toolbox ledger names this boot's process groups, and backups/
+// holds this Mac's pre-update database copies.
+const DATA_FILE_SKIP = new Set(['dojo.db', 'dojo.db-shm', 'dojo.db-wal', 'dojo.sqlite', TOOLBOX_LEDGER_FILE, 'backups']);
 const JUNK = new Set(['.DS_Store']);
 
 function broadcastProgress(stage: string, progress: number, message: string): void {
@@ -76,21 +74,6 @@ async function encryptFileToFile(srcPath: string, destPath: string, password: st
   return hash.digest('hex');
 }
 
-function getDirSize(dirPath: string): number {
-  if (!fs.existsSync(dirPath)) return 0;
-  let total = 0;
-  const entries = fs.readdirSync(dirPath, { withFileTypes: true });
-  for (const entry of entries) {
-    const fullPath = path.join(dirPath, entry.name);
-    if (entry.isDirectory()) {
-      total += getDirSize(fullPath);
-    } else {
-      total += fs.statSync(fullPath).size;
-    }
-  }
-  return total;
-}
-
 function listFiles(dirPath: string): string[] {
   if (!fs.existsSync(dirPath)) return [];
   return fs.readdirSync(dirPath).filter(f => !f.startsWith('.'));
@@ -103,6 +86,13 @@ export function exportOutputPath(date: string): string {
 }
 
 export async function createExport(password: string): Promise<{ filePath: string; manifest: ExportManifest }> {
+  // The staged copy, its zip, the encrypted copy and the final file all sit on this disk at once.
+  const dbBytes = fs.statSync(path.join(DOJO_DIR, 'data', 'dojo.db'), { throwIfNoEntry: false })?.size ?? 0;
+  const need = 4 * (dbBytes + treeSize(path.join(DOJO_DIR, 'uploads')));
+  const free = freeBytesAt(os.tmpdir());
+  if (free !== null && free < need) {
+    throw new Error(`Not enough free disk space to export: it needs about ${readableBytes(need)} and this disk has ${readableBytes(free)} free. Nothing was exported.`);
+  }
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dojo-export-'));
 
   try {
@@ -119,7 +109,7 @@ export async function createExport(password: string): Promise<{ filePath: string
     logger.info('Database snapshot complete', { size: dbSize });
 
     // Copy ~/.dojo by deny-list so new user folders migrate automatically. Skipped: tools/ (regenerated),
-    // logs/, the live DB files in data/ (snapshotted above), the installed app and platform.backup-* dirs.
+    // logs/, the live DB files in data/ (snapshotted above), the program and its set-aside copies.
     broadcastProgress('files', 40, 'Packaging your dojo...');
     copyDojoTree(DOJO_DIR, tmpDir);
     logger.info('Dojo tree copied (deny-list)');
@@ -155,7 +145,7 @@ export async function createExport(password: string): Promise<{ filePath: string
     broadcastProgress('manifest', 60, 'Generating manifest...');
     const promptFiles = listFiles(path.join(DOJO_DIR, 'prompts'));
     const techniqueNames = listTechniqueNames();
-    const uploadsSize = getDirSize(path.join(DOJO_DIR, 'uploads'));
+    const uploadsSize = treeSize(path.join(DOJO_DIR, 'uploads'));
     const manifest = await generateManifest(dbSize, promptFiles, techniqueNames, uploadsSize);
 
     // Inner archive: everything except the manifest.
@@ -214,8 +204,7 @@ export function copyDojoTree(srcRoot: string, destRoot: string): void {
       copyToolsCustomFiles(path.join(srcRoot, 'tools'), path.join(destRoot, 'tools'));
       continue;
     }
-    if (JUNK.has(entry.name) || TOP_LEVEL_SKIP.has(entry.name)) continue;
-    if (entry.name.startsWith(PLATFORM_BACKUP_PREFIX)) continue; // disposable update backups
+    if (JUNK.has(entry.name) || PROGRAM_ITEMS.includes(entry.name) || SET_ASIDE.test(entry.name)) continue;
     const src = path.join(srcRoot, entry.name);
     const dest = path.join(destRoot, entry.name);
     if (entry.isDirectory()) {

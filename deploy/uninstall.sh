@@ -92,8 +92,9 @@ done
 # Everything else the person made lives under ~/.dojo too (uploads, the rest of data/, memory files,
 # custom voice imports, loose technique scripts, ...). Copy every top-level entry except app code
 # the installer puts back (platform, update backups and set-aside builds, watchdog, scripts, bin,
-# logs, the icon, the lock) and what was saved above. A folder this list does not know about is
-# copied, never skipped. If ANY copy fails, nothing is removed.
+# logs, the icon, the lock; the same program entries as PROGRAM_ITEMS in migration/fs-copy.ts) and what
+# was saved above. A folder this list does not know about is copied, never skipped. If ANY copy fails,
+# nothing is removed.
 for entry in "$DOJO_DIR"/* "$DOJO_DIR"/.[!.]*; do
   [ -e "$entry" ] || continue
   name="$(basename "$entry")"

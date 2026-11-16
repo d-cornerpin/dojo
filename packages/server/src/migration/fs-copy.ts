@@ -8,6 +8,10 @@ const logger = createLogger('migration-copy');
 
 const DEFAULT_SKIP = new Set(['.DS_Store']);
 
+/** What under ~/.dojo is the program, not the owner's data: the installer brings it, so the export leaves it
+ *  out and the import keeps this Mac's. `deploy/uninstall.sh` names the same entries. */
+export const PROGRAM_ITEMS = ['platform', 'watchdog', 'scripts', 'tools', 'bin', 'dojologo.pdf'];
+
 export interface CopyTreeOptions {
   skip?: Set<string>;
 }

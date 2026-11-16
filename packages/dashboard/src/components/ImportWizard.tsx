@@ -2,7 +2,8 @@ import { useState, useRef, useEffect, useCallback, type DragEvent } from 'react'
 import { createPortal } from 'react-dom';
 import type { PostMigrationCheck } from '@dojo/shared';
 import { useWebSocket } from '../hooks/useWebSocket';
-import { request } from '../lib/api';
+import { request, getVersion } from '../lib/api';
+import { waitForRestart } from '../lib/wait-for-restart';
 import type { ExportManifest } from './PostMigrationBanner';
 import { ModalShell } from './ModalShell';
 
@@ -80,6 +81,10 @@ export const ImportWizard = ({ isOobe = false, asModal = false, initialStep, onC
   const [checks, setChecks] = useState<PostMigrationCheck[]>([]);
   const [markedDone, setMarkedDone] = useState<Set<string>>(new Set());
   const [busyCta, setBusyCta] = useState<string | null>(null);
+  // The previous Dojo folder the import set aside, while it is still on this Mac.
+  const [oldCopy, setOldCopy] = useState<{ path: string; bytes: number } | null>(null);
+  const restartWait = useRef(new AbortController());
+  useEffect(() => () => restartWait.current.abort(), []);
 
   // Ollama model downloads, mirroring OOBE: one at a time, poll byte progress,
   // surface the real error, retry per model.
@@ -110,25 +115,22 @@ export const ImportWizard = ({ isOobe = false, asModal = false, initialStep, onC
     return () => unsubs.forEach((u) => u());
   }, [subscribe]);
 
+  const loadStatus = async () => {
+    const result = await request<{ checks?: PostMigrationCheck[]; oldCopy?: { path: string; bytes: number } | null }>(`${apiBase}/import/status`);
+    if (result.ok) { setChecks(result.data.checks || []); setOldCopy(result.data.oldCopy ?? null); }
+  };
+
   // Resume case (opened straight at 'setup' from the banner): load the checks.
   useEffect(() => {
-    if (step !== 'setup' || checks.length > 0) return;
-    (async () => {
-      const result = await request<{ checks?: PostMigrationCheck[] }>(`${apiBase}/import/status`);
-      if (result.ok) setChecks(result.data.checks || []);
-    })();
+    if (step === 'setup' && checks.length === 0) void loadStatus();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step]);
 
-  // When deps finish, pull the latest checks and move to the guided step.
+  // When deps finish, pull the latest checks (they also arrive via WS) and move to the guided step.
   useEffect(() => {
-    if (!depDone) return;
-    (async () => {
-      const result = await request<{ checks?: PostMigrationCheck[] }>(`${apiBase}/import/status`);
-      if (result.ok) setChecks(result.data.checks || []); // they also arrive via WS
-      setStep('setup');
-    })();
-  }, [depDone, apiBase]);
+    if (depDone) void loadStatus().then(() => setStep('setup'));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [depDone]);
 
   // ── Step actions ──
 
@@ -167,6 +169,7 @@ export const ImportWizard = ({ isOobe = false, asModal = false, initialStep, onC
     if (!file) return;
     setRestoring(true); setError(null);
     setRestoreProgress({ progress: 2, message: 'Starting…' });
+    const before = await getVersion();
     const result = await request<{ checks?: PostMigrationCheck[] }>(`${apiBase}/import`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/octet-stream', 'X-Export-Password': encodeURIComponent(password) },
@@ -174,7 +177,9 @@ export const ImportWizard = ({ isOobe = false, asModal = false, initialStep, onC
     });
     if (result.ok) {
       setChecks(result.data.checks || []);
-      setRestoreProgress({ progress: 100, message: 'Restored.' });
+      // The Dojo restarts itself onto the imported data; the installer runs on the new process.
+      setRestoreProgress({ progress: 100, message: 'Restored. Dojo is restarting onto your data…' });
+      await waitForRestart({ expectedVersion: null, previousVersion: before.ok ? before.data.version : null, signal: restartWait.current.signal });
       setStep('deps');
     } else {
       setError(result.error || 'Import failed');
@@ -195,6 +200,13 @@ export const ImportWizard = ({ isOobe = false, asModal = false, initialStep, onC
     if (step === 'restore' && !restoreStartedRef.current) { restoreStartedRef.current = true; void runRestore(); }
     if (step === 'deps' && !depsStartedRef.current) { depsStartedRef.current = true; void runDeps(); }
   }, [step, runRestore, runDeps]);
+
+  const deleteOldCopy = async () => {
+    setBusyCta('old-copy'); setError(null);
+    const result = await request(`${apiBase}/import/old-copy/delete`, { method: 'POST' });
+    if (result.ok) setOldCopy(null); else setError(result.error || 'Could not delete the old copy.');
+    setBusyCta(null);
+  };
 
   const recheck = async () => {
     const result = await request<{ checks?: PostMigrationCheck[] }>(`${apiBase}/import/recheck`, { method: 'POST' });
@@ -585,6 +597,17 @@ export const ImportWizard = ({ isOobe = false, asModal = false, initialStep, onC
                 </div>
               );
             })}
+          </div>
+        )}
+
+        {oldCopy && (
+          <div className="glass-nested rounded-lg p-3 flex items-start gap-3">
+            <div className="min-w-0 flex-1">
+              <div className="text-sm text-ui/80">Your previous Dojo folder is still on this Mac ({fmtBytes(oldCopy.bytes)})</div>
+              <div className="text-xs text-ui/45 mt-0.5 font-mono break-all">{oldCopy.path}</div>
+              {error && <div className="text-xs text-red-400 mt-1">{error}</div>}
+            </div>
+            <button onClick={deleteOldCopy} disabled={busyCta === 'old-copy'} className="btn text-xs shrink-0">Delete the old copy</button>
           </div>
         )}
 

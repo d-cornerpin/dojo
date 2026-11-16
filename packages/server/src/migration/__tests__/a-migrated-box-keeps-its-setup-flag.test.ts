@@ -7,13 +7,13 @@
 //
 // It is COSMETIC, and this file is the measurement rather than the argument. The fixture is
 // restore-SHAPED: a real source-box database with a real `config` table carrying
-// `setup_completed='true'`, copied the way Step 7 copies it, then `markOobeComplete()`'s statement
+// `setup_completed='true'`, copied the way Step 7 copies it, then `recordInRestoredDb()`'s statement
 // run against the copy — so the two things the question turns on are both exercised.
 //
 // TWO INDEPENDENT REASONS a migrating user is fine, and the clauses below pin both:
 //   1. Step 7 restores `data/dojo.db` WHOLESALE, so the source row arrives before
-//      `markOobeComplete()` runs at all.
-//   2. `markOobeComplete()` writes `setup_completed` itself.
+//      `recordInRestoredDb()` runs at all.
+//   2. `recordInRestoredDb()` writes `setup_completed` itself.
 // Either alone is sufficient. That is why NO HEALING READ is owed — a reader accepting either
 // spelling would guard a state that cannot occur, and would give the typo a meaning.
 //
@@ -32,7 +32,7 @@ const ROOT = path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), `dojo-m
 const SOURCE_DB = path.join(ROOT, 'source', 'dojo.db');
 const DEST_DB = path.join(ROOT, 'dest', 'dojo.db');
 
-/** Exactly the statement `markOobeComplete()` runs, after this fix. */
+/** Exactly the statement `recordInRestoredDb()` runs, after this fix. */
 const MARK_OOBE_COMPLETE =
   "INSERT OR REPLACE INTO config (key, value) VALUES ('setup_completed', 'true')";
 
@@ -84,7 +84,7 @@ afterEach(() => {
 });
 
 describe('the restore carries the source config table', () => {
-  it('⚠ the REAL flag survives Step 7 on its own, before markOobeComplete runs', () => {
+  it('⚠ the REAL flag survives Step 7 on its own, before recordInRestoredDb runs', () => {
     restoreTreeWholesale();
 
     const dest = new Database(DEST_DB);
@@ -95,7 +95,7 @@ describe('the restore carries the source config table', () => {
     dest.close();
   });
 
-  it('and markOobeComplete makes it true a second, independent time', () => {
+  it('and recordInRestoredDb makes it true a second, independent time', () => {
     restoreTreeWholesale();
     const dest = new Database(DEST_DB);
     // Even from a source box that had NEVER completed OOBE, the mark alone suffices.

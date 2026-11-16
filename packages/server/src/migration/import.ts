@@ -8,11 +8,11 @@ import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import unzipper from 'unzipper';
 import Database from 'better-sqlite3';
-import { closeDb } from '../db/connection.js';
+import { closeDb, getDb } from '../db/connection.js';
 import { migrationAheadOfBuild } from '../db/migrations.js';
 import { clearSecretsCache } from '../config/loader.js';
 import { migratePaths } from './path-migration.js';
-import { copyTree } from './fs-copy.js';
+import { copyTree, PROGRAM_ITEMS } from './fs-copy.js';
 import { restartAfterFailedImport, noteBackupStuck, clearImportCard } from './import-recovery.js';
 import { putBackOwnBackup, acquireImportLock } from './import-safety.js';
 import { runPostMigrationChecks, setLastManifest, type PostMigrationCheck } from './checks.js';
@@ -111,6 +111,7 @@ async function runImport(
   zipPath: string,
   password: string,
   stopServices: () => Promise<void>,
+  /** Only after a failure: brings services back onto the old data, once it is back in place. */
   restartServices: () => Promise<void>,
   currentAuth?: { passwordHash: string | null; jwtSecret: string },
   /** Called when a failed import's data is back and services restarted: resumes the agents it stopped. */
@@ -265,12 +266,11 @@ async function runImport(
       logger.info('Cloudflare tunnel config restored');
     }
 
-    // Preserve this machine's installer/runtime app code from the pre-import backup (the export omits it and
-    // ~/.dojo was recreated fresh): platform, watchdog, scripts, tools, bin, dojologo.pdf. platform.backup-*
-    // dirs and voice models are deliberately not restored.
+    // Keep this Mac's program from the set-aside copy (the export leaves it out and ~/.dojo was recreated
+    // fresh). Its set-aside builds and voice models are deliberately not restored.
     broadcastProgress('config', 80, 'Finalizing configuration...');
     if (backupDir && fs.existsSync(backupDir)) {
-      for (const appItem of ['platform', 'watchdog', 'scripts', 'tools', 'bin', 'dojologo.pdf']) {
+      for (const appItem of PROGRAM_ITEMS) {
         const src = path.join(backupDir, appItem);
         if (!fs.existsSync(src)) continue;
         const dest = path.join(DOJO_DIR, appItem);
@@ -313,11 +313,10 @@ async function runImport(
       logger.info('Preserved current session auth in restored secrets');
     }
 
-    markOobeComplete();
+    recordInRestoredDb(ownBackup);
 
-    broadcastProgress('restart', 90, 'Restarting services...');
-    await restartServices();   // from here the import is COMMITTED: nothing below rolls it back
-    (await import('../config/platform.js')).clearPlatformConfigCache();   // after the migrations, so a renamed key is not read stale
+    // From here the import is COMMITTED: nothing below rolls it back. The caller restarts the Dojo onto it.
+    (await import('../config/platform.js')).clearPlatformConfigCache();
     clearImportCard();
 
     // Post-migration checks (manifest cached first for later re-checks). The import is committed: a failure
@@ -352,17 +351,25 @@ export async function performImport(...args: Parameters<typeof runImport>): Retu
 }
 
 
-function markOobeComplete(): void {
-  // Open the restored database directly (main connection is closed during import)
+/** Opens the restored database directly (the main connection is closed): setup is done, and where the old copy went. */
+function recordInRestoredDb(oldCopy: string | null): void {
   const dbPath = path.join(DOJO_DIR, 'data', 'dojo.db');
   if (!fs.existsSync(dbPath)) return;
 
   const db = new Database(dbPath);
   try {
     db.pragma('journal_mode = WAL');
-    // One key, the one every reader uses.
-    db.prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('setup_completed', 'true')").run();
+    const put = db.prepare('INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)');
+    put.run('setup_completed', 'true');
+    if (oldCopy) put.run('import_old_copy', oldCopy);
   } finally {
     db.close();
   }
+}
+
+/** The folder the import set aside, while it is still there. Only a `.dojo-backup-*` beside the live home qualifies. */
+export function recordedOldCopy(): string | null {
+  const row = getDb().prepare("SELECT value FROM config WHERE key = 'import_old_copy'").get() as { value: string } | undefined;
+  const p = row?.value;
+  return p && path.dirname(p) === homeDir() && path.basename(p).startsWith('.dojo-backup-') && fs.existsSync(p) ? p : null;
 }

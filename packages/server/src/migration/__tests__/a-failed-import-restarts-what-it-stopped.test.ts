@@ -1,7 +1,7 @@
 // A failed import that already stopped services must leave a working Dojo: restore the backup
 // THIS run made, then restart services (which re-opens the database). Failures before the stop
 // must not restart anything; a failing restart must never replace the original error; and a
-// restart that already ran on the success path must never run a second time.
+// committed import never calls it (the Dojo restarts itself onto the new data).
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
@@ -138,26 +138,12 @@ describe('a failed import restarts what it stopped', () => {
     expect(restart).toHaveBeenCalledTimes(1);
   });
 
-  it('the success-path restart throws: handle closed before the swap, old tree back, restarted again', async () => {
-    await buildZip(...(await encryptPayloadForTest('pw')));
-    const order: string[] = [];
-    closeDb.mockImplementation(() => { order.push('close'); });
-    const restart = vi.fn(async () => {
-      order.push('restart');
-      if (restart.mock.calls.length === 1) throw new Error('restart boom');
-    });
-    await expect(performImport(ZIP_PATH, 'pw', async () => {}, restart)).rejects.toThrow('restart boom');
-    expect(restart).toHaveBeenCalledTimes(2);
-    expect(order).toEqual(['close', 'restart', 'close', 'restart']);
-    expect(fs.readFileSync(path.join(LIVE_DIR, 'live.txt'), 'utf-8')).toBe('live');
-  });
-
-  it('a failure AFTER a good restart (checks throw) is not rolled back', async () => {
+  it('a failure after the commit (checks throw) is not rolled back', async () => {
     await buildZip(...(await encryptPayloadForTest('pw')));
     (runPostMigrationChecks as unknown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('checks boom'));
     const restart = vi.fn(async () => {});
     await expect(performImport(ZIP_PATH, 'pw', async () => {}, restart)).resolves.toBeTruthy();
-    expect(restart).toHaveBeenCalledTimes(1);
+    expect(restart).not.toHaveBeenCalled();
     expect(fs.existsSync(path.join(LIVE_DIR, 'live.txt'))).toBe(false); // the imported tree stays
   });
 

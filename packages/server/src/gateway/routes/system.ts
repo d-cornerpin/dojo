@@ -179,25 +179,21 @@ systemRouter.post('/debug-toast', async (c) => {
   return c.json({ ok: true, data: { agentId, severity, message } });
 });
 
-// POST /system/restart: exit the process so launchd (KeepAlive) brings it back within a couple of seconds.
-// Under `tsx watch` the exit stops the dev server, which the dashboard's confirm dialog warns about.
-// The 200 is returned first and the exit deferred so the response body flushes before the socket closes.
-systemRouter.post('/system/restart', async (c) => {
-  const isDev = process.env.NODE_ENV !== 'production';
-  // Broadcast a system marker so the dashboard can show a "restarting…"
-  // overlay and stop spamming reconnection errors during the gap.
-  broadcast({
-    type: 'system:restart',
-    initiatedAt: new Date().toISOString(),
-    mode: isDev ? 'dev' : 'production',
-  });
-
-  // Defer the exit so this response can flush.
+/** Exit so launchd (KeepAlive) brings the Dojo back within a couple of seconds; under `tsx watch` the exit
+ *  stops the dev server. Deferred so the caller's response flushes first; the marker lets every dashboard
+ *  show a "restarting" overlay through the gap. */
+export function restartDojo(reason: string): void {
+  broadcast({ type: 'system:restart', initiatedAt: new Date().toISOString(), mode: process.env.NODE_ENV !== 'production' ? 'dev' : 'production' });
   setTimeout(() => {
-    logger.info('Exiting on the user\'s restart request');
+    logger.info('Exiting to restart', { reason });
     process.exit(0);
   }, 300);
+}
 
+// POST /system/restart: the owner's restart button.
+systemRouter.post('/system/restart', async (c) => {
+  const isDev = process.env.NODE_ENV !== 'production';
+  restartDojo('the owner asked');
   return c.json({
     ok: true,
     data: {

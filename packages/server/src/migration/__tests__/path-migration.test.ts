@@ -138,6 +138,33 @@ describe('migratePaths', () => {
     db2.close();
   });
 
+  it('rewrites download links, generated media, reports and helper grants', () => {
+    const dbPath = path.join(dojoDir, 'data', 'dojo.db');
+    fs.mkdirSync(path.join(dojoDir, 'data'), { recursive: true });
+    const db = new Database(dbPath);
+    db.exec(`
+      CREATE TABLE shared_files (id TEXT PRIMARY KEY, file_path TEXT);
+      CREATE TABLE video_jobs (id TEXT PRIMARY KEY, asset_path TEXT);
+      CREATE TABLE dojo_reports (id TEXT PRIMARY KEY, bundle_path TEXT, export_path TEXT);
+      CREATE TABLE agents (id TEXT PRIMARY KEY, system_prompt_path TEXT, config TEXT, permissions TEXT);
+    `);
+    db.prepare('INSERT INTO shared_files VALUES (?, ?)').run('s', `${OLD}/.dojo/uploads/a.pdf`);
+    db.prepare('INSERT INTO video_jobs VALUES (?, ?)').run('v', `${OLD}/.dojo/media/v.mp4`);
+    db.prepare('INSERT INTO dojo_reports VALUES (?, ?, ?)').run('r', `${OLD}/.dojo/reports/r`, `${OLD}/Desktop/r.zip`);
+    db.prepare('INSERT INTO agents VALUES (?, NULL, NULL, ?)').run('h', `{"file_read":["${OLD}/.dojo/uploads/h"]}`);
+    db.close();
+
+    migratePaths(OLD, newHome, dojoDir);
+
+    const db2 = new Database(dbPath);
+    expect(db2.prepare('SELECT file_path FROM shared_files').get()).toEqual({ file_path: `${newHome}/.dojo/uploads/a.pdf` });
+    expect(db2.prepare('SELECT asset_path FROM video_jobs').get()).toEqual({ asset_path: `${newHome}/.dojo/media/v.mp4` });
+    expect(db2.prepare('SELECT bundle_path, export_path FROM dojo_reports').get())
+      .toEqual({ bundle_path: `${newHome}/.dojo/reports/r`, export_path: `${newHome}/Desktop/r.zip` });
+    expect(db2.prepare('SELECT permissions FROM agents').get()).toEqual({ permissions: `{"file_read":["${newHome}/.dojo/uploads/h"]}` });
+    db2.close();
+  });
+
   it('a database missing tables is tolerated: the config table is still rewritten', () => {
     const dbPath = path.join(dojoDir, 'data', 'dojo.db');
     fs.mkdirSync(path.join(dojoDir, 'data'), { recursive: true });
