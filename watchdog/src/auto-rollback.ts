@@ -199,10 +199,10 @@ export function decideAutoRollback(marker: UpdateMarker | null, nowMs: number): 
   return { action: 'rollback' };
 }
 
-// An update's first start may hold health down for a long migration chain: inside FAIL_WALL_CLOCK_MS the
-// restart waits rather than kill it mid-migration.
+// An update's first start (the new build, or the restored one after a rollback, which stamps a fresh
+// start time) may hold health down: inside FAIL_WALL_CLOCK_MS the restart and the "down" texts wait.
 export function updateIsStarting(marker: UpdateMarker | null, nowMs: number): boolean {
-  if (marker?.phase !== 'booting-new' || marker.confirmedHealthyAt || !marker.firstBootAt) return false;
+  if ((marker?.phase !== 'booting-new' && marker?.phase !== 'rolled-back') || marker.confirmedHealthyAt || !marker.firstBootAt) return false;
   return nowMs - Date.parse(marker.firstBootAt) < FAIL_WALL_CLOCK_MS;
 }
 

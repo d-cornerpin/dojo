@@ -17,7 +17,6 @@ import {
   afterRollbackResult,
   ROLLBACK_SCRIPT,
   updateIsStarting,
-  updateOwnsOutage,
   type RollbackDecision,
   type UpdateMarker,
 } from './auto-rollback.js';
@@ -31,6 +30,9 @@ import {
   sendAlert,
   sendRecovery,
   readLevel,
+  tellBack,
+  outageTexts,
+  integrityDue,
   type WatchdogState, type AlertKey,
 } from './alert-ledger.js';
 import { diskFloorBytes, toGb } from './disk-floor.js';
@@ -179,7 +181,6 @@ function getImessageRecipient(): string {
 }
 
 let consecutiveFailures = 0;
-const MAX_FAILURES_BEFORE_ALERT = 3;
 const MAX_FAILURES_BEFORE_RESTART = 5;
 
 // Truthful downtime accounting: `consecutiveFailures` resets ONLY on recovery, so the DOWN alert
@@ -188,8 +189,6 @@ const MAX_FAILURES_BEFORE_RESTART = 5;
 let failuresSinceRestart = 0;
 let restartAttempts = 0;
 let lastRestartAt = 0;
-// Grace window (in failed checks) after a restart before we conclude it did not help (~4 min).
-const RESTART_GRACE_FAILURES = 2;
 
 // The ledger lives in `alert-ledger.ts` so it can be unit-driven (this file starts a daemon at import).
 // Rules: first sends, a still-active issue waits 2 hours, a resolution sends exactly one recovery.
@@ -408,12 +407,14 @@ function checkDiskSpace(): void {
 // The database failing its integrity check is owner-told, like the platform-down and update alerts.
 function alertDbIntegrity(status: string): void {
   log('error', 'Database integrity check FAILED', { status });
-  // Recorded first, whether or not a text can go (the dashboard's health page and history read it).
+  // Recorded whether or not a text can go (the dashboard's health page and history read it).
   recordAlert(`DB integrity: ${status}`);
-  alert('db_integrity', `Watchdog: Database integrity check failed, ${status}`, `DB integrity: ${status}`);
+  if (sendAlert(state, 'db_integrity', getImessageRecipient(), `Watchdog: Database integrity check failed, ${status}`, sendIMessage)) saveState();
 }
 
 function checkDatabaseIntegrity(): void {
+  state.lastIntegrityAt = Date.now();
+  saveState();
   try {
     if (!fs.existsSync(DB_PATH)) return;
 
@@ -576,17 +577,19 @@ async function maybeAutoRollback(): Promise<boolean> {
 }
 
 // rollback.sh --auto leaves its outcome on disk (it unloads this daemon while it works): tell it, and
-// remove it only once the text went out, so a crash or a failed send retries next check.
-function tellRollbackResult(): void {
+// remove it only once the text went out, so a crash or a failed send retries next check. At a healthy
+// check that sentence is the owner's one "back" text, so no later recovery text is owed. True when sent.
+function tellRollbackResult(healthy: boolean): boolean {
   const result = readRollbackResult();
-  if (!result) return;
+  if (!result) return false;
   updateMarker((m) => (m ? afterRollbackResult(m, result) : null));
   log(result.kind.startsWith('restored') ? 'info' : 'error', 'D-F: rollback.sh finished', { ...result });
   const to = getImessageRecipient();
-  if (!sendIMessage(to, result.text)) return;
+  if (!sendIMessage(to, result.text)) return false;
   fs.rmSync(ROLLBACK_RESULT_PATH, { force: true });
-  claimAlertFor(result.kind.startsWith('restored') ? 'auto_rollback' : 'auto_rollback_failed', to);
+  if (!healthy) claimAlertFor(result.kind.startsWith('restored') ? 'auto_rollback' : 'auto_rollback_failed', to);
   recordAlert(`Auto-rollback: ${result.kind}`);
+  return true;
 }
 
 // A missing platform folder is a swap cut off between its two renames; nothing inside the platform
@@ -609,12 +612,7 @@ function maybeHealSwap(): boolean {
   return true;
 }
 
-// The full integrity read of the live database runs once a day of watchdog uptime.
-const INTEGRITY_EVERY_CYCLES = (24 * 60 * 60_000) / CHECK_INTERVAL_MS;
-let cycleCount = 0;
-
 async function runCheck(): Promise<void> {
-  cycleCount++;
   log('info', 'Running watchdog check cycle');
 
   recordHeartbeat();
@@ -627,7 +625,7 @@ async function runCheck(): Promise<void> {
 
   // 1b. A PROVEN-failing self-update takes precedence over the generic cascade: roll back or
   // escalate, then short-circuit so we do not kickstart the same bad build and race rollback.sh.
-  tellRollbackResult();
+  const toldResult = tellRollbackResult(healthy);
   if (!healthy && await maybeAutoRollback()) return;
 
   if (!healthy) {
@@ -646,7 +644,7 @@ async function runCheck(): Promise<void> {
     const marker = readMarker();
     if (failuresSinceRestart >= MAX_FAILURES_BEFORE_RESTART) {
       if (updateIsStarting(marker, Date.now())) {
-        log('info', 'Holding platform restart: a self-update migration boot is in progress and still inside the allowed window; waiting rather than killing it mid-migration', {
+        log('info', 'Holding platform restart: an update is still in its first start, inside the allowed window', {
           consecutiveFailures, failuresSinceRestart,
         });
       } else {
@@ -657,33 +655,14 @@ async function runCheck(): Promise<void> {
       }
     }
 
-    // The generic "down" and "restart did not help" texts wait while an update owns this outage.
-    if (!updateOwnsOutage(marker, state.alertState, Date.now())) {
-      if (consecutiveFailures >= MAX_FAILURES_BEFORE_ALERT) {
-        alert('platform_down', `Watchdog: Dojo platform is DOWN (${consecutiveFailures} checks failed). Will notify when it recovers.`,
-          `Platform down: ${consecutiveFailures} checks failed`);
-      }
-      if (restartAttempts > 0 && failuresSinceRestart >= RESTART_GRACE_FAILURES) {
-        alert('platform_restart_failed', `Watchdog: I automatically restarted the Dojo platform ${restartAttempts} time(s) but it is still down after ${consecutiveFailures} failed checks. It needs manual attention.`,
-          `Auto-restart did not fix platform: ${consecutiveFailures} failed checks, ${restartAttempts} restart(s)`);
-      }
-    }
+    const counts = { failures: consecutiveFailures, sinceRestart: failuresSinceRestart, restarts: restartAttempts };
+    for (const [key, text, record] of outageTexts(state, marker, Date.now(), counts)) alert(key, text, record);
   } else {
     // The recovery log fires whenever there were prior failures, even below the alert threshold.
     if (consecutiveFailures > 0) {
       log('info', 'Platform recovered', { previousFailures: consecutiveFailures });
     }
-    // Recovery sends only if we previously alerted; markAlertResolved's active check enforces that,
-    // so this must NOT be gated on `consecutiveFailures` (a restart's reset must not suppress it).
-    resolveAndTell('platform_down', 'Watchdog: Dojo platform is back UP and healthy.');
-    resolveAndTell('platform_missing', 'Watchdog: the repair worked. Dojo is back up and healthy.');
-    // The restart-failed flag clears silently: the "back UP and healthy" text already told the owner.
-    markAlertResolved('platform_restart_failed');
-
-    // An update episode that ended failed (escalated, or a refused or broken rollback) and is now healthy:
-    // the owner is told it runs again, nothing more, since how it recovered is not known here.
-    resolveAndTell('auto_rollback_failed', 'Watchdog: Dojo is running again and the box is healthy.');
-    resolveAndTell('auto_rollback', 'Watchdog: the rollback worked. Dojo is running again on the previous version and the box is healthy.');
+    if (tellBack(state, getImessageRecipient(), sendIMessage, toldResult)) saveState();
     // Recovery is the ONLY place the truthful counter and restart bookkeeping reset.
     consecutiveFailures = 0;
     failuresSinceRestart = 0;
@@ -693,8 +672,7 @@ async function runCheck(): Promise<void> {
 
   checkSystemMemory();
   checkDiskSpace();
-  if (cycleCount % INTEGRITY_EVERY_CYCLES === 0) checkDatabaseIntegrity();
-  // 7. Rotate watchdog log if needed
+  if (integrityDue(state.lastIntegrityAt, readMarker()?.confirmedHealthyAt, Date.now())) checkDatabaseIntegrity();
   rotateWatchdogLog();
 }
 
