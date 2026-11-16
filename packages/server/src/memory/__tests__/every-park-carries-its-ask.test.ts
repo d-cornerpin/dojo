@@ -142,7 +142,7 @@ describe('t145 R6 — a park that is not the turn-budget or tool-loop park still
     const state = initState({
       agentId: AGENT, contextWindow: WINDOW, isAutoRouted: false, configuredModelId: 'm', turnNumber: 1,
       triggeredByIMessage: false, triggeredByA2AReplyIntent: null, lastUserMessageContent: ASK, lastUserMessageId: 'ask-row',
-      inboundChannel: null, inboundContext: null, pendingTechniqueAck: null,
+      inboundChannel: null, inboundContext: null,
     });
     await recoverFromError(state, new AgentError('prompt is too long: context_length_exceeded', AGENT, { code: 'CONTEXT_OVERFLOW' }), { isUserFacingTurn: true });
     expect(foldedIntoNote(), 'premise: the recovery\'s forced compaction took the ask behind the boundary').toBe(true);

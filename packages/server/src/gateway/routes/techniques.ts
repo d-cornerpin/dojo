@@ -6,7 +6,6 @@ import path from 'node:path';
 import { createLogger } from '../../logger.js';
 import { createTechnique, getTechnique, getTechniqueDetail, listTechniques, updateTechnique, updateTechniqueInstructions, publishTechnique, deleteTechnique } from '../../techniques/store.js';
 import { getVersions, getUsage } from '../../techniques/versioning.js';
-import { clearTrainerSession } from '../../techniques/trainer-agent.js';
 import { exportTechnique } from '../../techniques/share-export.js';
 import { importTechnique } from '../../techniques/share-import.js';
 import { routeFailure } from './route-failure.js';
@@ -72,6 +71,7 @@ techniquesRouter.put('/:id', async (c) => {
 
   // Accept both `name` and `displayName` (the dashboard sends displayName, agent tools send name).
   const renameTo = (body.displayName ?? body.name) as string | undefined;
+  if (body.state === 'published') return c.json({ ok: false, error: 'Publish with POST /techniques/:id/publish.' }, 400);
 
   try {
     const updated = updateTechnique(id, {
@@ -106,10 +106,13 @@ techniquesRouter.put('/:id/instructions', async (c) => {
 
 // POST /:id/publish: publish a technique
 techniquesRouter.post('/:id/publish', (c) => {
-  const id = c.req.param('id');
-  const published = publishTechnique(id);
-  if (!published) return c.json({ ok: false, error: 'Technique not found' }, 404);
-  return c.json({ ok: true, data: published });
+  try {
+    const published = publishTechnique(c.req.param('id'));
+    if (!published) return c.json({ ok: false, error: 'Technique not found' }, 404);
+    return c.json({ ok: true, data: published });
+  } catch (err) {
+    return routeFailure(c, logger, err, { status: 400 });
+  }
 });
 
 // DELETE /:id: delete technique
@@ -223,18 +226,6 @@ techniquesRouter.post('/:id/export', async (c) => {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error('Technique export failed', { error: msg, id });
     return c.json({ ok: false, error: msg }, 400);
-  }
-});
-
-// POST /clear-session: clear trainer agent messages for a fresh session
-techniquesRouter.post('/clear-session', (c) => {
-  try {
-    clearTrainerSession();
-    return c.json({ ok: true, data: { cleared: true } });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    logger.error('Failed to clear trainer session', { error: msg });
-    return c.json({ ok: false, error: msg }, 500);
   }
 });
 

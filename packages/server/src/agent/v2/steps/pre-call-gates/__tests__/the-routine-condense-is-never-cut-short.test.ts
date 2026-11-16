@@ -109,7 +109,7 @@ function gate(window: number): Promise<unknown> {
     agentId: AGENT, contextWindow: window, isAutoRouted: false, configuredModelId: MODEL,
     turnNumber: 400, triggeredByIMessage: false, triggeredByA2AReplyIntent: null,
     lastUserMessageContent: 'is the dock open?', lastUserMessageId: 'msg-t140-person',   // round 7: a person's message started this turn
-    inboundChannel: 'dashboard', inboundContext: null, pendingTechniqueAck: null,
+    inboundChannel: 'dashboard', inboundContext: null,
   }), { phase: PRE_CALL_GATES_PHASE, loopCount: 1 });
   const ctx = {
     agentId: AGENT, turnNumber: 400, contextWindow: window, contextModelId: MODEL,

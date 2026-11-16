@@ -89,7 +89,7 @@ const freshState = (): AgentTurnState => initState({
   agentId: AGENT, contextWindow: 200_000, isAutoRouted: false, configuredModelId: 'model-1',
   turnNumber: TURN, triggeredByIMessage: false, triggeredByA2AReplyIntent: null,
   lastUserMessageContent: null, lastUserMessageId: null, inboundChannel: 'dashboard',
-  inboundContext: null, pendingTechniqueAck: null,
+  inboundContext: null,
 });
 
 const openTurn = (turn = TURN): void => {

@@ -50,7 +50,7 @@ afterEach(() => { mockDb.current?.close(); mockDb.current = null; });
 async function aTurn(): Promise<boolean> {
   const state = advance(initState({
     agentId: AGENT, contextWindow: 8192, isAutoRouted: true, configuredModelId: 'auto', turnNumber: 2, triggeredByIMessage: false,
-    triggeredByA2AReplyIntent: null, lastUserMessageContent: null, lastUserMessageId: null, inboundChannel: null, inboundContext: null, pendingTechniqueAck: null,
+    triggeredByA2AReplyIntent: null, lastUserMessageContent: null, lastUserMessageId: null, inboundChannel: null, inboundContext: null,
   }), { phase: CALL_LLM_PHASE, loopCount: 1 });
   const reArmed = vi.fn();
   const thrown = await selectModel(state, {

@@ -101,7 +101,7 @@ describe('t224: the thrown-turn recovery arm ends a command the turn left runnin
     const state = advance(initState({
       agentId: AGENT, contextWindow: 200000, isAutoRouted: false, configuredModelId: 'm', turnNumber: 1,
       triggeredByIMessage: false, triggeredByA2AReplyIntent: null, lastUserMessageContent: null,
-      lastUserMessageId: null, inboundChannel: 'dashboard', inboundContext: null, pendingTechniqueAck: null,
+      lastUserMessageId: null, inboundChannel: 'dashboard', inboundContext: null,
     }), { phase: TEARDOWN_PHASE });
 
     await runTurnRecovery(state, ctx, new Error('boom'));

@@ -114,7 +114,7 @@ export const vaultHandlers: ToolHandlerMap = {
       const { id, renewed } = await recordLesson({
         taskId: String(args.task_id ?? ''), cue: String(args.cue ?? ''), lesson: String(args.lesson ?? ''),
         evidenceEventIds: Array.isArray(args.evidence_event_ids) ? (args.evidence_event_ids as unknown[]).map(Number) : [],
-        confidence: Number(args.confidence), component: String(args.component ?? ''),
+        confidence: Number(args.confidence),
       });
       auditLog(agentId, 'tool_call', 'lesson_record', 'success', `lesson=${id} renewed=${renewed}`);
       return { content: renewed ? `Lesson ${id} renewed (this cue was already held).` : `Lesson ${id} recorded.`, isError: false };

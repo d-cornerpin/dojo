@@ -90,7 +90,7 @@ function freshState(turnNumber: number, prompt: string | null): AgentTurnState {
     configuredModelId: 'floor-model', turnNumber, triggeredByIMessage: false,
     triggeredByA2AReplyIntent: null, lastUserMessageContent: prompt,
     lastUserMessageId: prompt ? `msg-${turnNumber}` : null,
-    inboundChannel: 'dashboard', inboundContext: null, pendingTechniqueAck: null,
+    inboundChannel: 'dashboard', inboundContext: null,
   });
 }
 

@@ -120,7 +120,6 @@ async function recover(error: unknown, turnNumber = 1): Promise<void> {
     agentId: 'helper', contextWindow: 128_000, isAutoRouted: false, configuredModelId: 'm-a',
     turnNumber, triggeredByIMessage: false, triggeredByA2AReplyIntent: null,
     lastUserMessageContent: 'please look at the file', lastUserMessageId: null, inboundChannel: null, inboundContext: null,
-    pendingTechniqueAck: null,
   });
   await recoverFromError(state, error, { isUserFacingTurn: true });
 }

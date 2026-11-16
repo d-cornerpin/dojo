@@ -47,7 +47,7 @@ const dispatch = async (agentId: string, name: string, args: Record<string, unkn
     agentId, contextWindow: 200_000, isAutoRouted: false, configuredModelId: 'test',
     turnNumber: 1, triggeredByIMessage: false, triggeredByA2AReplyIntent: null,
     lastUserMessageContent: null, lastUserMessageId: null, inboundChannel: null,
-    inboundContext: null, pendingTechniqueAck: null,
+    inboundContext: null,
   });
   const out = await recordDispatchAndHold(state, { id: `tc-${name}`, name, arguments: args } as never, { agentId, db: connection.getDb() } as never);
   return out.refusal;

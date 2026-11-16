@@ -112,7 +112,7 @@ afterEach(async () => {
 const STATE = () => advance(initState({
   agentId: AGENT, contextWindow: WINDOW, isAutoRouted: false, configuredModelId: MODEL, turnNumber: 130,
   triggeredByIMessage: false, triggeredByA2AReplyIntent: null, lastUserMessageContent: 'check it',
-  lastUserMessageId: null, inboundChannel: null, inboundContext: null, pendingTechniqueAck: null,
+  lastUserMessageId: null, inboundChannel: null, inboundContext: null,
 }), { loopCount: 1 });
 
 /** One dial of one turn as the assemble step builds it: the assembly through its out-of-view fold door, then the
@@ -147,7 +147,7 @@ async function answersThroughThePark(maxRounds: number): Promise<{ fitted: boole
       const state = advance(initState({
         agentId: AGENT, contextWindow: WINDOW, isAutoRouted: false, configuredModelId: MODEL, turnNumber: 900 + round,
         triggeredByIMessage: false, triggeredByA2AReplyIntent: null, lastUserMessageContent: 'check it',
-        lastUserMessageId: null, inboundChannel: null, inboundContext: null, pendingTechniqueAck: null,
+        lastUserMessageId: null, inboundChannel: null, inboundContext: null,
       }), { loopCount: 1 });
       await recoverFromError(state, d.refusal, { isUserFacingTurn: true });
       if (pendingWakeups.has(AGENT)) { pendingWakeups.clear(); continue; }

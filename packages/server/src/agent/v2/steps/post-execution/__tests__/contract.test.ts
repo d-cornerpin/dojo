@@ -57,7 +57,6 @@ function freshState(): AgentTurnState {
     lastUserMessageId: 'msg-1',
     inboundChannel: 'dashboard',
     inboundContext: null,
-    pendingTechniqueAck: null,
   });
 }
 

@@ -164,7 +164,6 @@ function stateOverBudget(overrides: Partial<AgentTurnState> = {}): AgentTurnStat
     lastUserMessageId: 'msg-1',
     inboundChannel: 'dashboard',
     inboundContext: null,
-    pendingTechniqueAck: null,
   });
   return advance(fresh, {
     phase: PRE_CALL_GATES_PHASE,

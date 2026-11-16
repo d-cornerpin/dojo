@@ -90,7 +90,7 @@ async function gate(turnNumber: number, loopCount: number): Promise<void> {
     turnNumber, triggeredByIMessage: false, triggeredByA2AReplyIntent: null,
     // Round 7: a person's turn is one whose FIRST iteration was started by their message.
     lastUserMessageContent: 'is the dock open?', lastUserMessageId: loopCount === 1 ? `msg-${turnNumber}` : null,
-    inboundChannel: 'dashboard', inboundContext: null, pendingTechniqueAck: null,
+    inboundChannel: 'dashboard', inboundContext: null,
   }), { phase: PRE_CALL_GATES_PHASE, loopCount });
   const ctx = {
     agentId: AGENT, turnNumber, contextWindow: 200_000, contextModelId: OWN, configuredModelId: OWN, isAutoRouted: false,

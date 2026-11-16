@@ -1994,7 +1994,6 @@ describe('runV2Turn integration', () => {
         lastUserMessageId: 'msg-user-1',
         inboundChannel: null,
         inboundContext: null,
-        pendingTechniqueAck: null,
       });
 
       // First occurrence: T82b's compact-once path is turn-kind-agnostic (any doomed request

@@ -90,7 +90,7 @@ export const TOOL_CATEGORIES: Array<{ label: string; tools: string[] }> = [
   },
   {
     label: 'Techniques',
-    tools: ['save_technique', 'use_technique', 'technique_read', 'list_techniques', 'publish_technique', 'update_technique', 'submit_technique_for_review', 'delete_technique', 'technique_list_versions', 'technique_acknowledge', 'technique_set_placeholder', 'technique_finalize'],
+    tools: ['save_technique', 'use_technique', 'technique_read', 'list_techniques', 'publish_technique', 'update_technique', 'submit_technique_for_review', 'delete_technique', 'technique_list_versions', 'technique_set_placeholder', 'technique_finalize'],
   },
   {
     label: 'Communication',

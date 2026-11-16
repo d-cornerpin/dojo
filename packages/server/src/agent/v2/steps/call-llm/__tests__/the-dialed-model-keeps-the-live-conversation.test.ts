@@ -334,7 +334,7 @@ async function dialStep(firstPick: string): Promise<Awaited<ReturnType<typeof ca
     agentId: AGENT, contextWindow: getContextWindow('__auto__'), isAutoRouted: true, configuredModelId: 'auto',
     turnNumber: 251, triggeredByIMessage: false, triggeredByA2AReplyIntent: null,
     lastUserMessageContent: 'keep counting', lastUserMessageId: null,
-    inboundChannel: 'dashboard', inboundContext: null, pendingTechniqueAck: null,
+    inboundChannel: 'dashboard', inboundContext: null,
   });
   const input: ModelCallInputs = {
     agentId: AGENT, turnCtx: {} as ModelCallInputs['turnCtx'], turnNumber: 251, messageId: 'msg-t140-fallback',

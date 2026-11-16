@@ -174,14 +174,6 @@ export interface AgentTurnState {
    *  because parallel runOne callbacks clobber each other's state writes. */
   identicalCallRefusedThisTurn: boolean;
 
-  /** A technique was loaded this turn; backs the optional technique_acknowledge. In memory only. */
-  pendingTechniqueAck: {
-    techniqueId: string;
-    techniqueName: string;
-    loadedAtIso: string;
-    fromTurnNumber: number;
-  } | null;
-
   currentMessageId: string | null;        // active message ID for chat:chunk events
 }
 
@@ -197,7 +189,6 @@ export interface InitStateParams {
   lastUserMessageId: string | null;
   inboundChannel: 'imessage' | 'teams' | 'email' | 'sms' | 'phone' | 'voice' | 'dashboard' | null;
   inboundContext: ChannelInboundContext | null;
-  pendingTechniqueAck: AgentTurnState['pendingTechniqueAck'];
 }
 
 export function initState(params: InitStateParams): AgentTurnState {
@@ -268,7 +259,6 @@ export function initState(params: InitStateParams): AgentTurnState {
     taskClosedWithTextThisTurn: false,
     engineCutExit: null,
     identicalCallRefusedThisTurn: false,
-    pendingTechniqueAck: params.pendingTechniqueAck,
 
     currentMessageId: null,
   };

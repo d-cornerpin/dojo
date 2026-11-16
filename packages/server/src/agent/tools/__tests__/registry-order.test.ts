@@ -68,8 +68,9 @@ describe('tool registry (PHASE-5 T1 Step 2)', () => {
     // t200: 443 → 444. `tool_result_read`, one core tool (`effects: []`, it reads the agent's own rows).
     // K34: 444 → 445. `lesson_record`, one core tool (`effects: []`), no twin.
     // v3.5 inspect C1: 445 → 446. `dojo_inspect`, one core tool, no twin.
-    expect(cov.total).toBe(447);
-    expect(cov.declared).toBe(447);
+    // `technique_acknowledge` deleted: one core tool, no twin.
+    expect(cov.total).toBe(446);
+    expect(cov.declared).toBe(446);
     // T8 Step 3: 125 → 126. `history_get` gained the fs_read it always
     // performed, when the recall door converted to the facade and the missing
     // declaration refused it (RULING P5-R14, corrected at the site).

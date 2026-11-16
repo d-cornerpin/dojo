@@ -69,7 +69,7 @@ const stateFor = (configuredModelId: string, contextWindow: number, locked: stri
   const s = initState({
     agentId: AGENT, contextWindow, isAutoRouted: configuredModelId === 'auto', configuredModelId, turnNumber: 5,
     triggeredByIMessage: false, triggeredByA2AReplyIntent: null, lastUserMessageContent: 'go on', lastUserMessageId: 'm-1',
-    inboundChannel: 'dashboard', inboundContext: null, pendingTechniqueAck: null,
+    inboundChannel: 'dashboard', inboundContext: null,
   });
   return locked ? { ...s, lockedModelId: locked } : s;
 };

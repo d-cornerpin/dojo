@@ -179,7 +179,7 @@ async function oneRoutedCall(): Promise<{ turnWindow: number; dialedModelId: str
     agentId: AGENT, contextWindow: turnWindow, isAutoRouted: true, configuredModelId: 'auto',
     turnNumber: 201, triggeredByIMessage: false, triggeredByA2AReplyIntent: null,
     lastUserMessageContent: ASK, lastUserMessageId: null,
-    inboundChannel: 'dashboard', inboundContext: null, pendingTechniqueAck: null,
+    inboundChannel: 'dashboard', inboundContext: null,
   }), { phase: PRE_CALL_GATES_PHASE, loopCount: 1 });
   const gateCtx = {
     agentId: AGENT, turnNumber: 201, contextWindow: turnWindow, contextModelId: '__auto__',

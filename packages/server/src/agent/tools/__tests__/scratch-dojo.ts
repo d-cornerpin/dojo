@@ -50,7 +50,7 @@ export async function scratchDojo(name: string, files: Record<string, string> = 
   /** The turn loop's dispatch step: the refusal (a hold among them) it returns, or null when the call goes ahead. */
   const dispatch = async (agentId: string, tool: string, args: Record<string, unknown>) => (await recordDispatchAndHold(initState({
     agentId, contextWindow: 200_000, isAutoRouted: false, configuredModelId: 'test', turnNumber: 1, triggeredByIMessage: false,
-    triggeredByA2AReplyIntent: null, lastUserMessageContent: null, lastUserMessageId: null, inboundChannel: null, inboundContext: null, pendingTechniqueAck: null,
+    triggeredByA2AReplyIntent: null, lastUserMessageContent: null, lastUserMessageId: null, inboundChannel: null, inboundContext: null,
   }), { id: `tc-${tool}`, name: tool, arguments: args } as never, { agentId, db: connection.getDb() } as never)).refusal;
   return { home, run, text, dispatch, blocked: tools.toolWasBlocked };
 }

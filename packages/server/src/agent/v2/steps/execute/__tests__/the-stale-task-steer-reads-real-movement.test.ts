@@ -60,7 +60,7 @@ function ctxFor(): ExecuteContext {
 const fourCallsIn = (): AgentTurnState => advance(initState({
   agentId: AGENT, contextWindow: 100_000, isAutoRouted: false, configuredModelId: 'm', turnNumber: 9,
   triggeredByIMessage: false, triggeredByA2AReplyIntent: null, lastUserMessageContent: null, lastUserMessageId: null,
-  inboundChannel: null, inboundContext: null, pendingTechniqueAck: null,
+  inboundChannel: null, inboundContext: null,
 } as unknown as Parameters<typeof initState>[0]), { nonTrackerToolCalls: 4 });
 
 const steered = (s: AgentTurnState): boolean =>

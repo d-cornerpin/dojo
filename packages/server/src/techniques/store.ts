@@ -418,6 +418,10 @@ export function publishTechnique(id: string): TechniqueMetadata | null {
   const technique = getTechnique(id);
   if (!technique) return null;
   if (technique.state === 'published') return technique;
+  // An imported technique is published only once its setup is finalized, so no agent reads a placeholder as a value.
+  if (technique.state === 'needs_setup' || fs.existsSync(path.join(technique.directoryPath, 'IMPORT_MANIFEST.json'))) {
+    throw new TechniqueValidationError(`Refused: "${technique.name}" is still in setup and cannot be published. Fill every owner-supplied value with technique_set_placeholder, then call technique_finalize.`);
+  }
 
   db.prepare("UPDATE techniques SET state = 'published', published_at = datetime('now'), updated_at = datetime('now') WHERE id = ?").run(id);
 

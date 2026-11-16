@@ -81,6 +81,7 @@ export function finalizeImportedTechnique(techniqueId: string): { ok: true } | {
   const row = db.prepare('SELECT directory_path, name, state FROM techniques WHERE id = ?').get(techniqueId) as
     { directory_path: string; name: string; state: string } | undefined;
   if (!row) return { ok: false, error: `Technique "${techniqueId}" not found.` };
+  if (row.state !== 'needs_setup') return { ok: false, error: `"${row.name}" is not in setup, so there is nothing to finalize.` };
 
   const remaining = findRemainingPlaceholders(row.directory_path);
   if (remaining.length > 0) {

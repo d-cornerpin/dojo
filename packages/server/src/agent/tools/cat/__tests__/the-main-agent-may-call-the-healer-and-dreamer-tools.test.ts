@@ -40,7 +40,7 @@ const CALLS: Array<{ name: string; args: Record<string, unknown>; answer: string
   { name: 'vault_discard_archives', args: { archive_ids: ['nope'], reason: 'junk' }, answer: 'Discarded 0 archives', refusal: 'is for the Dreamer and the main agent only.' },
   {
     name: 'lesson_record',
-    args: { task_id: 'no-such-task', cue: 'c', lesson: 'l', evidence_event_ids: [1], confidence: 0.5, component: 'engine' },
+    args: { task_id: 'no-such-task', cue: 'c', lesson: 'l', evidence_event_ids: [1], confidence: 0.5 },
     answer: 'no task no-such-task',
     refusal: 'is for the Dreamer and the main agent only.',
   },

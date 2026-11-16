@@ -42,7 +42,6 @@ function stateWith(calls: Call[], errored: string[] = []): AgentTurnState {
     configuredModelId: 'floor-model', turnNumber: 1, triggeredByIMessage: false,
     triggeredByA2AReplyIntent: null, lastUserMessageContent: null,
     lastUserMessageId: null, inboundChannel: 'dashboard', inboundContext: null,
-    pendingTechniqueAck: null,
   });
   return {
     ...s,

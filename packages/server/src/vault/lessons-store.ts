@@ -1,5 +1,5 @@
-// The lessons table's single writer. A lesson is the Dreamer's one-sentence answer to "what should be done
-// differently next time" for one rough task; it is not a vault entry and is never injected into an agent.
+// The lessons table's single writer. A lesson is the Dreamer's one-sentence answer to "what should a technique
+// have covered" for one rough task; the Trainer's nightly pass reads it. It is not a vault entry.
 // `recordLesson` holds the three rules:
 //   · the task must exist, and every evidence id must be one of THAT task's own events;
 //   · every lesson expires 90 days after it was last written;
@@ -14,8 +14,6 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 /** A lesson lives this long after it was last written or renewed. */
 export const LESSON_LIFETIME_MS = 90 * DAY_MS;
 
-export const LESSON_COMPONENTS = ['technique', 'door_text', 'soul', 'engine'] as const;
-
 /** A refusal that is the model's to read and fix. */
 export class LessonRefused extends Error {}
 
@@ -25,7 +23,6 @@ export interface LessonInput {
   lesson: string;
   evidenceEventIds: number[];
   confidence: number;
-  component: string;
 }
 
 export interface LessonRow {
@@ -52,8 +49,8 @@ function lessonCycleStart(): number {
 
 const normalize = (s: string): string => s.toLowerCase().replace(/\s+/g, ' ').trim();
 
-async function findMatch(cue: string, component: string, now: number): Promise<LessonRow | undefined> {
-  const live = getDb().prepare('SELECT * FROM lessons WHERE component = ? AND expires_at > ?').all(component, now) as LessonRow[];
+async function findMatch(cue: string, now: number): Promise<LessonRow | undefined> {
+  const live = getDb().prepare("SELECT * FROM lessons WHERE component = 'technique' AND expires_at > ?").all(now) as LessonRow[];
   const exact = live.find((l) => normalize(l.cue) === normalize(cue));
   if (exact || live.length === 0) return exact;
   try {
@@ -78,9 +75,6 @@ export async function recordLesson(input: LessonInput, now: number = Date.now())
   const cue = input.cue?.trim();
   const lesson = input.lesson?.trim();
   if (!cue || !lesson) throw new LessonRefused('Error: cue and lesson are both required.');
-  if (!(LESSON_COMPONENTS as readonly string[]).includes(input.component)) {
-    throw new LessonRefused(`Error: component must be one of ${LESSON_COMPONENTS.join(', ')}.`);
-  }
   if (typeof input.confidence !== 'number' || !(input.confidence >= 0 && input.confidence <= 1)) {
     throw new LessonRefused('Error: confidence must be a number from 0 to 1.');
   }
@@ -105,7 +99,7 @@ export async function recordLesson(input: LessonInput, now: number = Date.now())
     throw new LessonRefused(`Task ${input.taskId} already has a lesson from this cycle (${done.id}). One lesson per task: go on to the next task, or write NO_ENTRY.`);
   }
 
-  const match = await findMatch(cue, input.component, now);
+  const match = await findMatch(cue, now);
   if (match) {
     const merged = [...new Set([...(JSON.parse(match.evidence_event_ids) as number[]), ...ids])];
     db.prepare(
@@ -118,8 +112,8 @@ export async function recordLesson(input: LessonInput, now: number = Date.now())
   const id = uuidv4();
   db.prepare(
     `INSERT INTO lessons (id, agent_id, task_id, cue, lesson, evidence_event_ids, confidence, component, created_at, expires_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(id, task.agent_id, input.taskId, cue, lesson, JSON.stringify(ids), input.confidence, input.component, now, now + LESSON_LIFETIME_MS);
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'technique', ?, ?)`,
+  ).run(id, task.agent_id, input.taskId, cue, lesson, JSON.stringify(ids), input.confidence, now, now + LESSON_LIFETIME_MS);
   return { id, renewed: false };
 }
 

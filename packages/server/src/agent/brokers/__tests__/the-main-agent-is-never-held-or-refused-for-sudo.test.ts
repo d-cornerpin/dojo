@@ -35,7 +35,7 @@ describe('the main agent is never held or refused for sudo', () => {
     const state = initState({
       agentId: PRIMARY, contextWindow: 200_000, isAutoRouted: false, configuredModelId: 'test', turnNumber: 1,
       triggeredByIMessage: false, triggeredByA2AReplyIntent: null, lastUserMessageContent: null, lastUserMessageId: null,
-      inboundChannel: null, inboundContext: null, pendingTechniqueAck: null,
+      inboundChannel: null, inboundContext: null,
     });
     const out = await recordDispatchAndHold(state, ({ id: 't1', name: 'shell', arguments: { script: 'sudo whoami' } } as never), ({ agentId: PRIMARY, db: null } as never));
     expect(out.refusal).toBeNull();

@@ -166,7 +166,6 @@ function stateInTeardown(): AgentTurnState {
     lastUserMessageId: null,
     inboundChannel: 'dashboard',
     inboundContext: null,
-    pendingTechniqueAck: null,
   }), { phase: TEARDOWN_PHASE });
 }
 

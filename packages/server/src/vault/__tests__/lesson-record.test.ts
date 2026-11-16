@@ -1,6 +1,5 @@
-// K34 — `lesson_record` is the Dreamer's one door into the lessons table: validated against the
-// task's own events, an expiry on every lesson, a recurring cue renews instead of duplicating,
-// and the owner hears once per cycle through the existing card, never through the main agent.
+// `lesson_record` is the Dreamer's one door into the lessons table: validated against the task's own
+// events, an expiry on every lesson, a recurring cue renews instead of duplicating, and no message is written.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
@@ -25,7 +24,6 @@ vi.mock('../../memory/embeddings.js', () => ({
 
 import { runMigrations } from '../../db/migrations.js';
 import { vaultHandlers } from '../../agent/tools/cat/vault.js';
-import { announceLessons, lessonReportLines } from '../lessons-announce.js';
 import { getDreamerAgentId } from '../../config/platform.js';
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -37,7 +35,7 @@ const call = (agentId: string, args: Record<string, unknown>) =>
 const lessons = () => mockDb.current!.prepare('SELECT * FROM lessons ORDER BY created_at').all() as Array<Record<string, any>>;
 const base = (over: Record<string, unknown> = {}) => ({
   task_id: 'task-1', cue: 'invalid label on a mail move', lesson: 'List the labels first',
-  evidence_event_ids: [eventA], confidence: 0.8, component: 'technique', ...over,
+  evidence_event_ids: [eventA], confidence: 0.8, ...over,
 });
 
 beforeEach(() => {
@@ -82,10 +80,9 @@ describe('lesson_record', () => {
     expect(lessons()).toHaveLength(0);
   });
 
-  it('refuses an unknown task, an unknown component, an out-of-range confidence, and no evidence at all', async () => {
+  it('refuses an unknown task, an out-of-range confidence, and no evidence at all', async () => {
     const d = getDreamerAgentId();
     expect((await call(d, base({ task_id: 'nope' }))).isError).toBe(true);
-    expect((await call(d, base({ component: 'vault' }))).isError).toBe(true);
     expect((await call(d, base({ confidence: 1.5 }))).isError).toBe(true);
     expect((await call(d, base({ evidence_event_ids: [] }))).isError).toBe(true);
     expect(lessons()).toHaveLength(0);
@@ -141,30 +138,10 @@ describe('lesson_record', () => {
   });
 });
 
-describe('the owner hears once per cycle, through the existing card, and the main agent hears nothing', () => {
-  it('one card for the cycle\'s lessons, worded for the owner', async () => {
-    const d = getDreamerAgentId();
-    const cycleStart = Date.now() - 1000;
-    await call(d, base());
-    await call(d, base({ cue: 'a timeout while waiting', task_id: 'task-2', evidence_event_ids: [eventB] }));
-    expect(announceLessons(cycleStart)).toBe(2);
-    const cards = broadcast.mock.calls.map((c) => c[0] as Record<string, any>).filter((e) => e.type === 'chat:error');
-    expect(cards).toHaveLength(1);
-    expect(cards[0].error).toMatch(/2 lessons/);
-    expect(cards[0].severity).toBe('warning');
-    expect(lessonReportLines(cycleStart).join(' ')).toMatch(/2 lessons/);
-  });
-
-  it('no lessons, no card', () => {
-    expect(announceLessons(Date.now() - 1000)).toBe(0);
-    expect(broadcast).not.toHaveBeenCalled();
-    expect(lessonReportLines(Date.now() - 1000)).toEqual([]);
-  });
-
-  it('recording and announcing write no message to anyone', async () => {
+describe('recording a lesson', () => {
+  it('writes no message to anyone', async () => {
     const before = (mockDb.current!.prepare('SELECT COUNT(*) AS n FROM messages').get() as { n: number }).n;
     await call(getDreamerAgentId(), base());
-    announceLessons(Date.now() - 1000);
     expect((mockDb.current!.prepare('SELECT COUNT(*) AS n FROM messages').get() as { n: number }).n).toBe(before);
   });
 });

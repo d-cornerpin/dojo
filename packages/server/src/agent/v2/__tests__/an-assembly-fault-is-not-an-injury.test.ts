@@ -157,7 +157,6 @@ async function recover(error: unknown, turnNumber: number, loopCount = 1): Promi
     agentId: AGENT, contextWindow: WINDOW, isAutoRouted: false, configuredModelId: MODEL,
     turnNumber, triggeredByIMessage: false, triggeredByA2AReplyIntent: null,
     lastUserMessageContent: 'keep counting', lastUserMessageId: null, inboundChannel: null, inboundContext: null,
-    pendingTechniqueAck: null,
   }), { loopCount });
   await recoverFromError(state, error, { isUserFacingTurn: true });
 }

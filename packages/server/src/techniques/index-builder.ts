@@ -10,7 +10,7 @@ export function generateTechniqueIndex(agentId?: string): string {
   const all = db.prepare(`
     SELECT id, name, description, tags FROM techniques
     WHERE state = 'published' AND enabled = 1
-    ORDER BY usage_count DESC, name ASC
+    ORDER BY name ASC
   `).all() as Array<{ id: string; name: string; description: string | null; tags: string }>;
 
   // Same predicate as `use_technique` access, so no agent is advertised a procedure it would be refused.

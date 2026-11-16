@@ -1,6 +1,5 @@
-// K34-fix — an UNDELIVERED Trainer batch must not be treated as delivered. A refused
-// lesson batch is not marked fed (so those lessons are offered again next cycle), and
-// the owner is not told "Drafted N technique(s)" for a batch nothing received.
+// An undelivered Trainer batch is not treated as delivered: a refused lesson batch is not marked fed
+// (those lessons are offered again next cycle), and the owner is not told the Trainer was asked.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
@@ -68,14 +67,7 @@ describe('an undelivered Trainer batch is not treated as delivered', () => {
     expect(fedRow()).toBeUndefined();
   });
 
-  it('CONTROL: a delivered lesson batch marks the lesson fed', async () => {
-    lesson('l2', 'technique', 'moving mail to junk');
-    deliverResult = { delivered: true, threadId: 't1' };
-    await runDistillationCycle();
-    expect(fedRow()).toBeDefined();
-  });
-
-  it('a refused candidate batch does not tell the owner it drafted techniques', async () => {
+  it('a refused candidate batch does not tell the owner the Trainer was asked', async () => {
     doneWork('w1', 'Send weekly status email 6/3');
     doneWork('w2', 'Send weekly status email 6/10');
     doneWork('w3', 'Send weekly status email 6/17');
@@ -84,13 +76,13 @@ describe('an undelivered Trainer batch is not treated as delivered', () => {
     expect(notice).not.toHaveBeenCalled();
   });
 
-  it('CONTROL: a delivered candidate batch tells the owner it drafted a technique', async () => {
+  it('CONTROL: a delivered candidate batch tells the owner the Trainer was asked', async () => {
     doneWork('w4', 'Send weekly status email 6/3');
     doneWork('w5', 'Send weekly status email 6/10');
     doneWork('w6', 'Send weekly status email 6/17');
     deliverResult = { delivered: true, threadId: 't' };
     await runDistillationCycle();
     expect(notice).toHaveBeenCalledTimes(1);
-    expect((notice.mock.calls[0][0] as { brief: string }).brief).toContain('Drafted 1 technique');
+    expect((notice.mock.calls[0][0] as { brief: string }).brief).toContain('Asked the Trainer to draft 1 technique');
   });
 });

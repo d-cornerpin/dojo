@@ -20,7 +20,7 @@ const HEADER = [
   'LESSON: one sentence, what to do differently next time',
   'EVIDENCE: the event ids (the #numbers in the timeline) that show it',
   'CONFIDENCE: a number from 0 to 1',
-  'Record each answer with lesson_record(task_id, cue, lesson, evidence_event_ids, confidence, component), where component says what should change: technique, door_text (a tool\'s or refusal\'s wording), soul (an agent\'s instructions) or engine. Lessons are not vault entries: do not save them with vault_remember. Then call complete_task.',
+  'Record each answer with lesson_record(task_id, cue, lesson, evidence_event_ids, confidence). A lesson is what a saved technique should have covered; anything else is NO_ENTRY. Lessons are not vault entries: do not save them with vault_remember. Then call complete_task.',
 ].join('\n');
 
 /** The task's story as the inspect timeline tells it (every record that names the task: its events,

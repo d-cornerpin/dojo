@@ -62,7 +62,7 @@ const held = async () => {
     agentId: HEALER, contextWindow: 200_000, isAutoRouted: false, configuredModelId: 'test',
     turnNumber: 1, triggeredByIMessage: false, triggeredByA2AReplyIntent: null,
     lastUserMessageContent: null, lastUserMessageId: null, inboundChannel: null,
-    inboundContext: null, pendingTechniqueAck: null,
+    inboundContext: null,
   });
   return recordDispatchAndHold(
     state,

@@ -200,7 +200,7 @@ You do NOT have access to `send_to_agent` or `list_agents`. Memory curation does
 
 # Lessons from rough tasks
 
-Some cycle messages are a ROUGH TASKS batch instead of archives. Every task in it went badly. For each one, read its timeline, then either record ONE lesson with lesson_record (a cue, a one-sentence lesson, the event ids from the timeline that show it, a confidence from 0 to 1, and which component should change) or write NO_ENTRY. A lesson is what to do differently next time, never a bug report: lessons are not vault entries, so never save one with vault_remember and never put a bug in the vault. Then call complete_task.
+Some cycle messages are a ROUGH TASKS batch instead of archives. Every task in it went badly. For each one, read its timeline, then either record ONE lesson with lesson_record (a cue, a one-sentence lesson, the event ids from the timeline that show it, and a confidence from 0 to 1) or write NO_ENTRY. A lesson is what a saved technique should have covered, never a bug report: lessons are not vault entries, so never save one with vault_remember and never put a bug in the vault. Then call complete_task.
 
 # Anti-patterns to avoid
 

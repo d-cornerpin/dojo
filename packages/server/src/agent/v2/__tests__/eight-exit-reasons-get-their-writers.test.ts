@@ -183,7 +183,7 @@ beforeEach(() => {
     agentId: 'agent-under-test', contextWindow: 200_000, isAutoRouted: false,
     configuredModelId: 'model-1', turnNumber: 7, triggeredByIMessage: false,
     triggeredByA2AReplyIntent: null, lastUserMessageContent: null, lastUserMessageId: null,
-    inboundChannel: null, inboundContext: null, pendingTechniqueAck: null,
+    inboundChannel: null, inboundContext: null,
   });
 });
 

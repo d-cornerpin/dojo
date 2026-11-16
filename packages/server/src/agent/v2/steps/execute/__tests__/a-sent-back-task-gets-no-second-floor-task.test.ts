@@ -31,7 +31,7 @@ async function sixUntrackedCalls(turnNumber: number): Promise<void> {
   let state = initState({
     agentId: AGENT, contextWindow: 100_000, isAutoRouted: false, configuredModelId: 'm', turnNumber, triggeredByIMessage: false,
     triggeredByA2AReplyIntent: null, lastUserMessageContent: 'Fix the totals page.', lastUserMessageId: `msg-${turnNumber}`,
-    inboundChannel: 'dashboard', inboundContext: null, pendingTechniqueAck: null,
+    inboundChannel: 'dashboard', inboundContext: null,
   });
   const ectx = {
     agentId: AGENT, turnCtx, turnNumber, db: db(), agent: { name: 'Agent' },

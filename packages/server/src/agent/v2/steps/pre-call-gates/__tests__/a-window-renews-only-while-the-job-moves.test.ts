@@ -33,7 +33,7 @@ function stateAt(loopCount: number, ageMs = 0): AgentTurnState {
   const s = initState({
     agentId: AGENT, contextWindow: 200_000, isAutoRouted: false, configuredModelId: 'm', turnNumber: 1,
     triggeredByIMessage: false, triggeredByA2AReplyIntent: null, lastUserMessageContent: null, lastUserMessageId: null,
-    inboundChannel: null, inboundContext: null, pendingTechniqueAck: null,
+    inboundChannel: null, inboundContext: null,
   });
   return advance(s, { phase: 'preCallGates', loopCount, turnStartMs: Date.now() - ageMs });
 }

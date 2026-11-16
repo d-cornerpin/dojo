@@ -87,7 +87,6 @@ function freshState(): ReturnType<typeof initState> {
     lastUserMessageId: null,
     inboundChannel: 'dashboard',
     inboundContext: null,
-    pendingTechniqueAck: null,
   }), { phase: FINALIZE_PHASE });
 }
 

@@ -210,7 +210,7 @@ export function TechniqueSessionProvider({ children }: { children: ReactNode }) 
   }, [startGuard]);
 
   // Decide whether to resume the trainer's existing conversation (if it's about
-  // THIS technique) or wipe it and start fresh. Sets `ready` when resolved so
+  // THIS technique) or start it on a fresh session. Sets `ready` when resolved so
   // the chat can load history.
   const resolveSession = useCallback(async (mode: 'new' | 'edit', token: number) => {
     const trainerId = trainerAgentIdRef.current;
@@ -240,11 +240,11 @@ export function TechniqueSessionProvider({ children }: { children: ReactNode }) 
       const latest = result.data[result.data.length - 1] as Message | undefined;
       lastTrainerActivityAtRef.current = latest?.createdAt ?? null;
     } else if (result.ok) {
-      // Fresh start: the history WAS read and is not this build's thread, so wipe the trainer session.
-      await api.request('/techniques/clear-session', { method: 'POST' }); // best effort
+      // Fresh start through Reset's door: the earlier conversation is archived behind the boundary, never deleted.
+      await api.request(`/chat/${trainerId}/new-session`, { method: 'POST' }); // best effort
       contextSentRef.current = false;
     } else {
-      // The history could not be read: that is not evidence the thread is stale, so nothing is wiped.
+      // The history could not be read: that is not evidence the thread is stale, so the session is kept.
       contextSentRef.current = false;
     }
     if (startGuard.isCurrent(token)) setReady(true);
@@ -433,7 +433,6 @@ export function TechniqueSessionProvider({ children }: { children: ReactNode }) 
             displayName: c.displayName.trim(),
             description: c.description.trim(),
             tags: c.tags,
-            ...(publish ? { state: 'published' } : {}),
           }),
         });
         if (!metaRes.ok) {

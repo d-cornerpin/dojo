@@ -173,7 +173,6 @@ async function recover(err: Error): Promise<void> {
     agentId: AGENT, contextWindow: 128_000, isAutoRouted: false, configuredModelId: 'm-a',
     turnNumber: 1, triggeredByIMessage: false, triggeredByA2AReplyIntent: null,
     lastUserMessageContent: null, lastUserMessageId: null, inboundChannel: null, inboundContext: null,
-    pendingTechniqueAck: null,
   });
   await recoverFromError(state, err, { isUserFacingTurn: false });
 }

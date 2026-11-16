@@ -1,9 +1,8 @@
 // What the engine records once a tool result exists: the cross-turn attempt record, effectful-call
-// counters, heavy-load accounting, explicit-send tracking, the send badge, technique-ack state and
-// permission alternatives. None of it can run before the result or decides whether the call runs.
+// counters, heavy-load accounting, explicit-send tracking, the send badge and permission alternatives.
+// None of it can run before the result or decides whether the call runs.
 
 import path from 'node:path';
-import { parseTechniqueFreshRead } from '@dojo/shared';
 import type { ToolCall } from '@dojo/shared';
 import { isTrainerAgent } from '../../../../config/platform.js';
 import { resolveRecipientDisplay } from '../../../../contacts/resolve-recipient.js';
@@ -154,69 +153,6 @@ export async function recordToolResultEffects(
       }
       if (sendMarkerLabel) persistRoutingMarker(sendMarkerLabel);
     } catch { /* outbound labeling is best-effort; never block a send */ }
-  }
-
-  // Technique-ack state: engage on the first successful read of a technique, not on re-reads of one
-  // pending or last acknowledged. Matched by techniqueId (the slug arg), since display names drift.
-  if (!toolResult.isError) {
-    if (tc.name === 'technique_read' || tc.name === 'use_technique') {
-      const reqName = typeof tc.arguments?.name === 'string' ? tc.arguments.name : null;
-      if (reqName) {
-        const alreadyEngaged =
-          state.pendingTechniqueAck !== null &&
-          state.pendingTechniqueAck.techniqueId === reqName;
-        if (alreadyEngaged) {
-          // Same technique already pending: one ack covers every read of it.
-        } else {
-          // The last-acknowledged technique is persisted in agents.config so re-reads do not re-engage.
-          let lastAckedId: string | null = null;
-          try {
-            const r = db.prepare('SELECT config FROM agents WHERE id = ?').get(agentId) as { config: string } | undefined;
-            const cfg = r?.config ? JSON.parse(r.config) as Record<string, unknown> : {};
-            const last = cfg.lastAcknowledgedTechniqueId;
-            if (typeof last === 'string') lastAckedId = last;
-          } catch { /* config unreadable, treat as no prior ack */ }
-          if (lastAckedId === reqName && state.pendingTechniqueAck === null) {
-            logger.debug('v2: technique re-read after prior ack, gate NOT re-engaged', {
-              agentId, tool: tc.name, techniqueId: reqName,
-            }, agentId);
-          } else {
-            let displayName = reqName;
-            const freshName = parseTechniqueFreshRead(toolResult.content);
-            if (freshName) displayName = freshName;
-            const pending = {
-              techniqueId: reqName,
-              techniqueName: displayName,
-              loadedAtIso: new Date().toISOString(),
-              fromTurnNumber: turnNumber,
-            };
-            // The pending ack lives in memory for this turn only and blocks nothing; persisting it
-            // to agents.config would resurrect a tool lock on a later turn.
-            state = advance(state, { pendingTechniqueAck: pending });
-            logger.debug('v2: technique read noted (advisory, non-blocking)', {
-              agentId, tool: tc.name, techniqueId: reqName,
-            }, agentId);
-          }
-        }
-      }
-    } else if (tc.name === 'technique_acknowledge') {
-      // Record this technique as last acknowledged so its re-reads do not re-engage.
-      const ackedName = typeof tc.arguments?.name === 'string' ? tc.arguments.name : null;
-      if (ackedName) {
-        try {
-          const r = db.prepare('SELECT config FROM agents WHERE id = ?').get(agentId) as { config: string } | undefined;
-          const cfg = r?.config ? JSON.parse(r.config) as Record<string, unknown> : {};
-          // Prefer the pending ack's techniqueId so the re-read match holds whichever name was passed.
-          const canonicalId = state.pendingTechniqueAck?.techniqueId ?? ackedName;
-          cfg.lastAcknowledgedTechniqueId = canonicalId;
-          db.prepare("UPDATE agents SET config = ?, updated_at = datetime('now') WHERE id = ?").run(JSON.stringify(cfg), agentId);
-        } catch { /* best effort */ }
-      }
-      if (state.pendingTechniqueAck) {
-        state = advance(state, { pendingTechniqueAck: null });
-        logger.info('v2: technique-ack gate cleared', { agentId, techniqueId: ackedName }, agentId);
-      }
-    }
   }
 
   // Permission denial suggestion appendix

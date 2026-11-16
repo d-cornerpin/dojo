@@ -24,6 +24,7 @@ import {
   findRemainingPlaceholders,
   finalizeImportedTechnique,
 } from './import-setup.js';
+import { nightlyDraftsOnlyRefusal } from './distillation.js';
 import {
   type DependencyManifest,
   emptyDependencyManifest,
@@ -111,6 +112,10 @@ export function executeSaveTechnique(agentId: string, agentName: string, classif
     manual_steps: Array.isArray(rawDeps.manual_steps) ? rawDeps.manual_steps : base.manual_steps,
   };
   const publish = args.publish as boolean ?? false;
+  if (publish) {
+    const nightly = nightlyDraftsOnlyRefusal(agentId, 'save_technique with publish: true');
+    if (nightly) return nightly;
+  }
 
   if (!name || !displayName || !description || !instructions) {
     return 'Error: name, display_name, description, and instructions are all required.';
@@ -180,7 +185,7 @@ export function executeListTechniques(agentId: string, classification: string, a
 
 
 export function executePublishTechnique(agentId: string, classification: string, args: Record<string, unknown>): string {
-  const refusal = authorizeTechniqueMutation(agentId, classification, 'publish_technique');
+  const refusal = authorizeTechniqueMutation(agentId, classification, 'publish_technique') ?? nightlyDraftsOnlyRefusal(agentId, 'publish_technique');
   if (refusal) return refusal;
 
   const name = args.name as string;
@@ -192,27 +197,12 @@ export function executePublishTechnique(agentId: string, classification: string,
   if (!technique) return `Error: Technique "${name}" not found.`;
   if (technique.state === 'published') return `Technique "${technique.name}" is already published.`;
 
-  // The placeholder-completeness check must live here in the executor: the tool-surface strip is advisory
-  // (text-mode emission bypasses it), and a still-in-setup technique with literal {{NEEDS_FROM_USER:...}}
-  // markers would be fed to other agents as real values. Refuse needs_setup and re-scan the files for unfilled
-  // markers (no-op for locally created techniques, which have no import manifest).
-  if (technique.state === 'needs_setup') {
-    return (
-      `Refused: "${technique.name}" is still in setup (needs_setup) and cannot be published. ` +
-      `Fill every owner-supplied value with technique_set_placeholder, then call technique_finalize ` +
-      `to move it to draft before publishing.`
-    );
+  let published;
+  try {
+    published = publishTechnique(resolved.id);
+  } catch (err) {
+    return formatValidationError(err, 'Error publishing technique');
   }
-  const remaining = findRemainingPlaceholders(technique.directoryPath);
-  if (remaining.length > 0) {
-    return (
-      `Refused: "${technique.name}" still has ${remaining.length} unfilled placeholder(s): ${remaining.join(', ')}. ` +
-      `Set each with technique_set_placeholder, then call technique_finalize before publishing, ` +
-      `so other agents never receive {{NEEDS_FROM_USER}} markers as if they were real values.`
-    );
-  }
-
-  const published = publishTechnique(resolved.id);
   if (!published) return `Error: Failed to publish technique "${name}".`;
 
   return `Technique "${published.name}" is now published and available to all agents in the dojo.`;
@@ -220,7 +210,7 @@ export function executePublishTechnique(agentId: string, classification: string,
 
 
 export function executeUpdateTechnique(agentId: string, _agentName: string, classification: string, args: Record<string, unknown>): string {
-  const refusal = authorizeTechniqueMutation(agentId, classification, 'update_technique');
+  const refusal = authorizeTechniqueMutation(agentId, classification, 'update_technique') ?? nightlyDraftsOnlyRefusal(agentId, 'update_technique');
   if (refusal) return refusal;
 
   const name = args.name as string;
@@ -695,68 +685,4 @@ export function executeTechniqueRead(
       return `Error: unknown action "${action}". Valid actions: outline, section, search, list_files, read_file.`;
   }
   return wrapTechniqueResult(technique.name, body);
-}
-
-// Acknowledges a technique read. The runtime owns the pendingTechniqueAck state (agents.config); this executor
-// only validates the payload (the summary must show the agent engaged), and the runtime clears the state on success.
-const TECHNIQUE_ACK_MIN_SUMMARY_CHARS = 100;
-
-export function executeTechniqueAcknowledge(
-  agentId: string,
-  pendingAck: { techniqueId: string; techniqueName: string } | null,
-  args: Record<string, unknown>,
-): { ok: true; content: string; clearedAck: true } | { ok: false; content: string } {
-  const name = typeof args.name === 'string' ? args.name : undefined;
-  const summary = typeof args.summary === 'string' ? args.summary : undefined;
-
-  if (!name) {
-    return { ok: false, content: 'Error: name (technique slug/id) is required.' };
-  }
-  // Acking is optional and the turn loop tracks the pending state (v2/loop.ts); this executor is dispatched
-  // without turn state, so pendingAck can be null even right after a read. That is a friendly no-op success,
-  // not an error. The paraphrase-length check only applies when a genuine pending ack is being cleared.
-  if (!pendingAck) {
-    return {
-      ok: true,
-      clearedAck: true,
-      content:
-        `Noted. Acknowledging a technique is optional; nothing was pending to clear, so go ahead and apply "${name}".`,
-    };
-  }
-  if (!summary || summary.trim().length < TECHNIQUE_ACK_MIN_SUMMARY_CHARS) {
-    return {
-      ok: false,
-      content:
-        `Error: summary must be at least ${TECHNIQUE_ACK_MIN_SUMMARY_CHARS} characters. ` +
-        `The acknowledgement is what shows you processed what you read instead of skipping past it. ` +
-        `Briefly paraphrase the technique's key steps in your own words (no need to be exhaustive, just enough to show you engaged). ` +
-        `Current summary length: ${(summary?.trim().length ?? 0)} chars.`,
-    };
-  }
-  // Match by slug (techniqueId) or display name (techniqueName). LLMs
-  // sometimes get the form wrong; accept either.
-  const matches = (
-    name === pendingAck.techniqueId ||
-    name.toLowerCase() === pendingAck.techniqueName.toLowerCase()
-  );
-  if (!matches) {
-    return {
-      ok: false,
-      content:
-        `Error: pending acknowledgement is for technique "${pendingAck.techniqueName}" (${pendingAck.techniqueId}), not "${name}". ` +
-        `Call technique_acknowledge(name="${pendingAck.techniqueId}", summary=...) to clear the current gate, ` +
-        `or re-read the technique you actually want to work with via technique_read.`,
-    };
-  }
-  logger.info('Technique acknowledgement accepted', {
-    techniqueId: pendingAck.techniqueId,
-    summaryChars: summary.trim().length,
-  }, agentId);
-  return {
-    ok: true,
-    clearedAck: true,
-    content:
-      `Acknowledgement accepted for "${pendingAck.techniqueName}" (${pendingAck.techniqueId}). ` +
-      `Acknowledging after a technique read is optional; it records that you engaged with the material before applying it.`,
-  };
 }

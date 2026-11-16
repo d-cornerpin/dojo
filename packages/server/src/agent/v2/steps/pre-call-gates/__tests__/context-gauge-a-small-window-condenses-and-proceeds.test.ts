@@ -128,7 +128,7 @@ function freshState(): AgentTurnState {
     agentId: AGENT, contextWindow: WINDOW, isAutoRouted: false, configuredModelId: MODEL,
     turnNumber: 7, triggeredByIMessage: false, triggeredByA2AReplyIntent: null,
     lastUserMessageContent: 'Read every report and summarise the totals.', lastUserMessageId: null,
-    inboundChannel: 'dashboard', inboundContext: null, pendingTechniqueAck: null,
+    inboundChannel: 'dashboard', inboundContext: null,
   });
   return advance(s, { phase: PRE_CALL_GATES_PHASE, loopCount: 2 });
 }

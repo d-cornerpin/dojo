@@ -1,8 +1,8 @@
-// TECHNIQUES: the twelve tools `tools/categories.ts` files under "Techniques".
+// TECHNIQUES: the eleven tools `tools/categories.ts` files under "Techniques".
 // The bodies are the old switch bodies, unchanged, keeping the per-case row
-// names (`agentRow2`, `taRow`, ...) that only existed because twelve cases
+// names (`agentRow2`, `tfRow`, ...) that only existed because the cases
 // shared one function scope.
-// The nine `techniques/tools.js` lazy loads are kept deliberately: that module
+// The `techniques/tools.js` lazy loads are kept deliberately: that module
 // imports nothing from the toolbox and they belong with their handlers. The
 // other lazy loads became static imports after measuring no cycle existed.
 
@@ -55,23 +55,6 @@ export const techniqueHandlers: ToolHandlerMap = {
     // The one technique verb whose result is never graded by prose, and
     // grading it here would be a new refusal. Preserved exactly.
     return { content: executeListTechniques(agentId, agentRow3?.classification ?? 'apprentice', args), isError: false };
-  },
-
-  async technique_acknowledge({ agentId, args }) {
-    // Read the pending-ack from agents.config, dispatch to the validator,
-    // and on success clear the persisted ack so the gate releases. The
-    // runtime re-reads config at its gate check, so clearing there suffices.
-    const { executeTechniqueAcknowledge } = await import('../../../techniques/tools.js');
-    const taDb = getDb();
-    const taRow = taDb.prepare('SELECT config FROM agents WHERE id = ?').get(agentId) as { config: string } | undefined;
-    const taCfg = taRow?.config ? JSON.parse(taRow.config) as Record<string, unknown> : {};
-    const pending = (taCfg.pendingTechniqueAck ?? null) as { techniqueId: string; techniqueName: string } | null;
-    const result = executeTechniqueAcknowledge(agentId, pending, args);
-    if (result.ok && result.clearedAck) {
-      delete taCfg.pendingTechniqueAck;
-      taDb.prepare("UPDATE agents SET config = ?, updated_at = datetime('now') WHERE id = ?").run(JSON.stringify(taCfg), agentId);
-    }
-    return { content: result.content, isError: !result.ok };
   },
 
   async publish_technique({ agentId, args }) {

@@ -87,7 +87,7 @@ async function gate(agentId: string, turnNumber: number, loopCount: number, fres
     agentId, contextWindow: 200_000, isAutoRouted: false, configuredModelId: OWN,
     turnNumber, triggeredByIMessage: false, triggeredByA2AReplyIntent: null,
     lastUserMessageContent: 'is the dock open?', lastUserMessageId: fresh ? `msg-${agentId}-${turnNumber}` : null,
-    inboundChannel: 'dashboard', inboundContext: null, pendingTechniqueAck: null,
+    inboundChannel: 'dashboard', inboundContext: null,
   }), { phase: PRE_CALL_GATES_PHASE, loopCount });
   const ctx = {
     agentId, turnNumber, contextWindow: 200_000, contextModelId: OWN, configuredModelId: OWN, isAutoRouted: false,

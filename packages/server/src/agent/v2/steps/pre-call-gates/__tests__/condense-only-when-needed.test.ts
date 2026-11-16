@@ -128,7 +128,7 @@ function freshState(): AgentTurnState {
     agentId: AGENT, contextWindow: WINDOW, isAutoRouted: false, configuredModelId: MODEL,
     turnNumber: 99, triggeredByIMessage: false, triggeredByA2AReplyIntent: null,
     lastUserMessageContent: 'is the dock open?', lastUserMessageId: null,
-    inboundChannel: 'dashboard', inboundContext: null, pendingTechniqueAck: null,
+    inboundChannel: 'dashboard', inboundContext: null,
   });
   return advance(s, { phase: PRE_CALL_GATES_PHASE, loopCount: 1 });
 }
@@ -254,7 +254,7 @@ describe('t140 — when the view is FULL for the dialed window, only the rows th
       agentId: SMALL_AGENT, contextWindow: SMALL_WINDOW, isAutoRouted: false, configuredModelId: SMALL_MODEL,
       turnNumber: 60, triggeredByIMessage: false, triggeredByA2AReplyIntent: null,
       lastUserMessageContent: 'tally?', lastUserMessageId: null,
-      inboundChannel: 'dashboard', inboundContext: null, pendingTechniqueAck: null,
+      inboundChannel: 'dashboard', inboundContext: null,
     }), { phase: PRE_CALL_GATES_PHASE, loopCount: 1 });
     const ctx = Object.assign(makeCtx(), {
       agentId: SMALL_AGENT, contextWindow: SMALL_WINDOW, contextModelId: SMALL_MODEL, configuredModelId: SMALL_MODEL,
@@ -282,7 +282,7 @@ describe('t140 — when the view is FULL for the dialed window, only the rows th
       agentId: SMALL_AGENT, contextWindow: SMALL_WINDOW, isAutoRouted: false, configuredModelId: SMALL_MODEL,
       turnNumber: 60, triggeredByIMessage: false, triggeredByA2AReplyIntent: null,
       lastUserMessageContent: 'tally?', lastUserMessageId: null,
-      inboundChannel: 'dashboard', inboundContext: null, pendingTechniqueAck: null,
+      inboundChannel: 'dashboard', inboundContext: null,
     }), { phase: PRE_CALL_GATES_PHASE, loopCount: 1 });
     const ctx = Object.assign(makeCtx(), {
       agentId: SMALL_AGENT, contextWindow: SMALL_WINDOW, contextModelId: SMALL_MODEL, configuredModelId: SMALL_MODEL,
@@ -304,7 +304,7 @@ describe('t140 — when the view is FULL for the dialed window, only the rows th
       agentId: SMALL_AGENT, contextWindow: SMALL_WINDOW, isAutoRouted: false, configuredModelId: SMALL_MODEL,
       turnNumber: 30, triggeredByIMessage: false, triggeredByA2AReplyIntent: null,
       lastUserMessageContent: 'tally?', lastUserMessageId: null,
-      inboundChannel: 'dashboard', inboundContext: null, pendingTechniqueAck: null,
+      inboundChannel: 'dashboard', inboundContext: null,
     }), { phase: PRE_CALL_GATES_PHASE, loopCount: 1 });
     const ctx = Object.assign(makeCtx(), {
       agentId: SMALL_AGENT, contextWindow: SMALL_WINDOW, contextModelId: SMALL_MODEL, configuredModelId: SMALL_MODEL,
@@ -358,7 +358,7 @@ describe('t140 fix round 1 — an auto-routed tool loop locked to a small, expen
       agentId: ROUTED_AGENT, contextWindow: 200_000, isAutoRouted: true, configuredModelId: 'auto',
       turnNumber: 60, triggeredByIMessage: false, triggeredByA2AReplyIntent: null,
       lastUserMessageContent: 'tally?', lastUserMessageId: null,
-      inboundChannel: 'dashboard', inboundContext: null, pendingTechniqueAck: null,
+      inboundChannel: 'dashboard', inboundContext: null,
     }), { phase: PRE_CALL_GATES_PHASE, loopCount: 3, lockedModelId: LOCKED, lockedTier: 'heavy' });
     // The turn's own window is the roomy provisional one (200K); only the LOCK says 32K.
     const ctx = Object.assign(makeCtx(), {

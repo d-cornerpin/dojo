@@ -136,7 +136,6 @@ async function failedCall(providerWords: string, turnNumber = 1): Promise<void> 
     agentId: 'helper', contextWindow: 128_000, isAutoRouted: false, configuredModelId: 'm-a',
     turnNumber, triggeredByIMessage: false, triggeredByA2AReplyIntent: null,
     lastUserMessageContent: null, lastUserMessageId: null, inboundChannel: null, inboundContext: null,
-    pendingTechniqueAck: null,
   });
   const err = new AgentError(providerWords, 'helper', {
     code: 'MODEL_CALL_FAILED', provider: classifyProviderErrorText(providerWords),

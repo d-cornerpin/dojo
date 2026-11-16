@@ -73,9 +73,6 @@ const logger = createLogger('memory-assembler');
 // next compaction boundary (`compaction.ts stubOldToolResultsAtBoundary`).
 export const V2_STUB_AFTER_TURNS = 12;
 
-// Technique reads use this age too: a shorter one loops with the technique-ack gate (`pendingTechniqueAck`):
-// read, ack, stubbed, re-read, re-ack.
-
 // Summaries naming a technique freshly re-read this session describe its old version, so they become a stub.
 
 

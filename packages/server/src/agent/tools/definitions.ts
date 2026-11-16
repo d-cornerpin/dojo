@@ -2088,7 +2088,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'use_technique',
-    description: 'Activate and load a technique. Prefer technique_read for browsing/searching, use_technique now returns an outline (sections + supporting files + sizes), and you call technique_read action="section" to read specific parts. Big techniques no longer truncate.\n\nWhen you load a technique, apply its actual steps rather than skipping back to cached memory. You MAY optionally call technique_acknowledge(name, summary) to record that you engaged with it, but it is not required and no tools are blocked either way.',
+    description: 'Activate and load a technique. Prefer technique_read for browsing/searching, use_technique now returns an outline (sections + supporting files + sizes), and you call technique_read action="section" to read specific parts. Big techniques no longer truncate.\n\nWhen you load a technique, apply its actual steps rather than skipping back to cached memory.',
     effects: [{ kind: 'fs_read', from: 'derived:the technique directory named by args.name' }],
     input_schema: {
       type: 'object',
@@ -2099,21 +2099,8 @@ export const toolDefinitions: ToolDefinition[] = [
     },
   },
   {
-    name: 'technique_acknowledge',
-    description: 'OPTIONAL. Note that you have engaged with a technique after reading it. This is not required and nothing is blocked without it (the old acknowledgement gate was removed). Pass the technique\'s slug (or display name) and a short paraphrase of its key steps. Use it only when you want to record that you processed the material before applying it; otherwise just go straight to the work.',
-    effects: [],
-    input_schema: {
-      type: 'object',
-      properties: {
-        name: { type: 'string', description: 'Technique slug/id or display name (must match the technique you just read).' },
-        summary: { type: 'string', description: 'Your own short paraphrase of the technique\'s key steps. Minimum 100 characters. Doesn\'t need to be exhaustive, just enough to demonstrate you processed the content.' },
-      },
-      required: ['name', 'summary'],
-    },
-  },
-  {
     name: 'technique_read',
-    description: 'Read a technique with surgical precision instead of slurping the whole thing. Five actions: (1) outline [default], returns headings, line ranges, char counts, and supporting files; never truncates; ALWAYS your first call when consulting a technique. (2) section, read one section by section_name="<title>" (case-insensitive substring match) or lines="start-end"; oversize sections require explicit line ranges. (3) search, query="<term>" greps TECHNIQUE.md AND all supporting files, returns matches with file + line number + surrounding context; best path through a huge technique. (4) list_files, list the technique\'s supporting files. (5) read_file, read one supporting file by file="<path>", optional lines="start-end".\n\nWhen you read a technique, apply what it says rather than falling back to cached memory (agents used to read techniques and then ignore them). You MAY optionally call technique_acknowledge afterward to record that you engaged, but it is not required and no tools are blocked. Pattern: technique_read (one or more times to load what you need), then do the work.',
+    description: 'Read a technique with surgical precision instead of slurping the whole thing. Five actions: (1) outline [default], returns headings, line ranges, char counts, and supporting files; never truncates; ALWAYS your first call when consulting a technique. (2) section, read one section by section_name="<title>" (case-insensitive substring match) or lines="start-end"; oversize sections require explicit line ranges. (3) search, query="<term>" greps TECHNIQUE.md AND all supporting files, returns matches with file + line number + surrounding context; best path through a huge technique. (4) list_files, list the technique\'s supporting files. (5) read_file, read one supporting file by file="<path>", optional lines="start-end".\n\nWhen you read a technique, apply what it says rather than falling back to cached memory (agents used to read techniques and then ignore them). Pattern: technique_read (one or more times to load what you need), then do the work.',
     effects: [{ kind: 'fs_read', from: 'args.name', via: 'technique_dir', scope: { at: 'argTree' } }],
     nonEffects: {
       file: 'a RELATIVE path INSIDE the technique directory — the handler refuses an absolute path or a traversal at the site before it opens anything. Resolved as a path of its own it would name a file relative to the server working directory, which this tool never touches; the real read is covered by the technique-tree effect above',
@@ -2424,7 +2411,7 @@ export const toolDefinitions: ToolDefinition[] = [
 
   {
     name: 'lesson_record',
-    description: 'Record ONE lesson from a rough task listed in your ROUGH TASKS batch. A lesson is a cue (the situation that should bring it to mind), the lesson in one sentence, the ids of that task\'s own timeline events that show it, a confidence from 0 to 1, and which component should change. It is kept for 90 days; a lesson with a cue we already hold renews instead of duplicating. Not a vault entry: never use vault_remember for these. Refuses an event id that is not in the task\'s timeline. For the Dreamer and the main agent only.',
+    description: 'Record ONE lesson from a rough task listed in your ROUGH TASKS batch. A lesson is a cue (the situation that should bring it to mind), the lesson in one sentence, the ids of that task\'s own timeline events that show it, and a confidence from 0 to 1, for what a technique should have covered. It is kept for 90 days; a lesson with a cue we already hold renews instead of duplicating. Not a vault entry: never use vault_remember for these. Refuses an event id that is not in the task\'s timeline. For the Dreamer and the main agent only.',
     effects: [],
     input_schema: {
       type: 'object',
@@ -2434,9 +2421,8 @@ export const toolDefinitions: ToolDefinition[] = [
         lesson: { type: 'string', description: 'One sentence: what to do differently next time.' },
         evidence_event_ids: { type: 'array', items: { type: 'number' }, description: 'Event ids (the #numbers in the task\'s timeline) that show it. At least one; each must be in that task\'s timeline.' },
         confidence: { type: 'number', description: 'From 0 to 1.' },
-        component: { type: 'string', enum: ['technique', 'door_text', 'soul', 'engine'], description: 'What should change: a technique, a tool\'s or refusal\'s wording (door_text), an agent\'s instructions (soul), or the engine.' },
       },
-      required: ['task_id', 'cue', 'lesson', 'evidence_event_ids', 'confidence', 'component'],
+      required: ['task_id', 'cue', 'lesson', 'evidence_event_ids', 'confidence'],
     },
   },
 

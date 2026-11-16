@@ -1,6 +1,5 @@
 import { primaryReady } from '../agent/primary-ready.js';
 import { getDb } from '../db/connection.js';
-import { deleteAllForAgent } from '../memory/message-store.js';
 import { createLogger } from '../logger.js';
 import { getPrimaryAgentId, getTrainerAgentId, getTrainerAgentName, isSetupCompleted } from '../config/platform.js';
 import { SEND_TO_PEOPLE } from '../agent/sensei-policy.js';
@@ -113,14 +112,3 @@ export function ensureTrainerAgentRunning(): void {
   }
 }
 
-
-export function clearTrainerSession(): void {
-  const trainerId = getTrainerAgentId();
-
-  deleteAllForAgent(trainerId);
-
-  // No soul re-injection: identity is the `sys.identity` prompt entry, rendered from the soul file on every
-  // assembly, so a cleared session comes back with its whole doctrine.
-
-  logger.info('Trainer session cleared', { trainerId });
-}

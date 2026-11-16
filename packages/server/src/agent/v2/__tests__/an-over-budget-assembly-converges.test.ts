@@ -149,7 +149,7 @@ async function recover(err: unknown, turnNumber: number): Promise<void> {
   const state = advance(initState({
     agentId: AGENT, contextWindow: WINDOW, isAutoRouted: false, configuredModelId: MODEL, turnNumber,
     triggeredByIMessage: false, triggeredByA2AReplyIntent: null, lastUserMessageContent: 'keep counting',
-    lastUserMessageId: null, inboundChannel: null, inboundContext: null, pendingTechniqueAck: null,
+    lastUserMessageId: null, inboundChannel: null, inboundContext: null,
   }), { loopCount: 1 });
   await recoverFromError(state, err, { isUserFacingTurn: true });
 }

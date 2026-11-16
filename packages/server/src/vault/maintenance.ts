@@ -34,7 +34,6 @@ import {
 } from './store.js';
 import { MAX_PINNED_ENTRIES } from './retrieval.js';
 import { buildRoughTasksBatch, lessonsCensusSince, advanceLessonsCensus } from './rough-tasks-batch.js';
-import { announceLessons, lessonReportLines } from './lessons-announce.js';
 import { homeDir } from '../home.js';
 import { fenceExternal } from '../tools/external-content.js';
 import { nextDailyRunDelayMs } from '../config/clock-time.js';
@@ -952,7 +951,6 @@ function writeDreamReportForCycle(state: PendingBatchState, outcome: 'complete' 
       `Vault entries: ${before.totalEntries} → ${after.totalEntries} (${memoriesExtracted >= 0 ? '+' : ''}${memoriesExtracted}).`,
       `Pinned: ${before.pinnedCount} → ${after.pinnedCount}. Permanent: ${before.permanentCount} → ${after.permanentCount}.`,
       `Engine maintenance: pruned ${state.maintenanceAtStart.pruned}, decayed ${state.maintenanceAtStart.decayed}, unpinned ${state.maintenanceAtStart.unpinned}, aged-out ${state.maintenanceAtStart.agedOut}.`,
-      ...lessonReportLines(state.cycleStartedAtMs),
       `Batches: ${state.batches.length}. Duration: ${Math.round(durationMs / 1000)}s. Mode: ${state.config.dreamMode}.`,
     ].join('\n');
 
@@ -998,7 +996,7 @@ async function finalizeDreamCycle(primaryId: string, state: PendingBatchState | 
   // dream_reports (the Dreams tab) and the owner-facing completion signal is the dream:complete broadcast
   // below; nothing is emitted to the primary.
 
-  if (state) { announceLessons(state.cycleStartedAtMs); advanceLessonsCensus(state.cycleStartedAtMs); }   // the owner hears once, by card
+  if (state) advanceLessonsCensus(state.cycleStartedAtMs);
   pendingBatches.delete(primaryId);
   // The drain is finished: close the cycle-in-flight marker. Reached from both the in-memory-state and the
   // resumed-after-restart (state === null) paths.

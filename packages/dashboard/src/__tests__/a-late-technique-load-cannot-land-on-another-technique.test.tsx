@@ -1,5 +1,5 @@
 // A slow answer for technique A never fills the Mat once technique B is open, and a chat history
-// that could not be read never wipes the Trainer conversation.
+// that could not be read never starts the Trainer on a fresh session.
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, act, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
@@ -43,7 +43,7 @@ describe('the technique session', () => {
     expect(latest.canvas.displayName).toBe('Name B');
   });
 
-  it('an unreadable chat history does not clear the Trainer conversation', async () => {
+  it('an unreadable chat history does not start the Trainer on a fresh session', async () => {
     getChatHistory.mockResolvedValue({ ok: false, error: 'down' });
     request.mockResolvedValue({ ok: true, data: {} });
     mount();
@@ -51,16 +51,16 @@ describe('the technique session', () => {
     await act(async () => { await Promise.resolve(); });
     act(() => latest.start('new'));
     await waitFor(() => expect(latest.ready).toBe(true));
-    expect(request.mock.calls.some((c) => c[0] === '/techniques/clear-session')).toBe(false);
+    expect(request.mock.calls.some((c) => c[0] === '/chat/trainer-1/new-session')).toBe(false);
   });
 
-  it('a history that was read and does not match is still cleared', async () => {
+  it('a history that was read and does not match starts a fresh session', async () => {
     getChatHistory.mockResolvedValue({ ok: true, data: [{ role: 'user', content: 'something else' }, { role: 'assistant', content: 'x' }] });
     request.mockResolvedValue({ ok: true, data: {} });
     mount();
     await act(async () => { await Promise.resolve(); });
     act(() => latest.start('new'));
     await waitFor(() => expect(latest.ready).toBe(true));
-    expect(request.mock.calls.some((c) => c[0] === '/techniques/clear-session')).toBe(true);
+    expect(request.mock.calls.some((c) => c[0] === '/chat/trainer-1/new-session')).toBe(true);
   });
 });

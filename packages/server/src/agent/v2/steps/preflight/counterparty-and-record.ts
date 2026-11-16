@@ -194,10 +194,6 @@ export async function runCounterpartyAndRecord(
   const turnStartedAt = new Date().toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
   turnBoundary.set(agentId, turnStartedAt);
 
-  // The technique-acknowledgement gate is per-turn only: never hydrate it from agents.config, or a
-  // leftover ack would lock tools on an unrelated later turn.
-  const initialPendingTechniqueAck: import('../../state.js').AgentTurnState['pendingTechniqueAck'] = null;
-
   turnCtx.state = initState({
     agentId,
     contextWindow,
@@ -211,7 +207,6 @@ export async function runCounterpartyAndRecord(
     // A continuation has no trigger row; the address restored the original's.
     inboundChannel: turnCtx.address?.boundChannel ?? inboundChannel,
     inboundContext: turnCtx.address?.inboundContext ?? inboundContext,
-    pendingTechniqueAck: initialPendingTechniqueAck,
   });
 
   return { counterparty, turnNumber, turnStartedAt };

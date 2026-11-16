@@ -28,7 +28,7 @@ function stateFor(agentId: string) {
     agentId, contextWindow: 100000, isAutoRouted: false, configuredModelId: 'm',
     turnNumber: 1, triggeredByIMessage: false, triggeredByA2AReplyIntent: false,
     lastUserMessageContent: null, lastUserMessageId: null, inboundChannel: null,
-    inboundContext: null, pendingTechniqueAck: null,
+    inboundContext: null,
   } as never);
 }
 async function fail(agentId: string, tool: string, args: Record<string, unknown>, content: string) {

@@ -2,7 +2,7 @@
 // failing are flagged for retirement. Constraints:
 //  - outcome-gated: candidates come from the tracker's durable completion record, not conversation mining.
 //  - batched: one engine pass per dreaming cycle, at most one message to the Trainer and one to the primary.
-//  - draft-only (publish: false): recall matches only published techniques, so drafts never shadow user work.
+//  - draft-only: the turn that serves the batch may not publish or change a technique (`nightlyDraftsOnlyRefusal`).
 //  - capped at MAX_CANDIDATES_PER_CYCLE; the owner is asked through the primary agent, and publishing stays
 //    a deliberate act via the Trainer.
 
@@ -10,8 +10,9 @@ import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { getPrimaryAgentId } from '../config/platform.js';
-import { getTrainerAgentId } from '../config/platform.js';
+import { getTrainerAgentId, setPlatformConfig } from '../config/platform.js';
 import { postAgentNotice } from '../agent/agent-notice.js';
+import { turnContext } from '../agent/turn-context.js';
 import { taskScope } from '../work/tracker-view.js';
 import { lessonsTouchedSince, LESSON_LIFETIME_MS, type LessonRow } from '../vault/lessons-store.js';
 
@@ -106,16 +107,16 @@ function findRetirementCandidates(): RetireCandidate[] {
 }
 
 // Persist the retirement signal on the technique row: set retire_flagged_at on new candidates (the first
-// flag time is kept) and clear it on any flagged technique that is no longer a candidate. Retirement
-// itself stays owner-manual; this only tracks the suggestion.
-function persistRetirementFlags(candidates: RetireCandidate[]): void {
+// flag time is kept) and clear it on any flagged technique that is no longer a candidate. Returns the newly
+// flagged ones, the only ones the owner is told about. Retirement itself stays owner-manual.
+function persistRetirementFlags(candidates: RetireCandidate[]): RetireCandidate[] {
   const db = getDb();
   const flaggedIds = new Set(candidates.map((c) => c.id));
 
   const setStmt = db.prepare(
     "UPDATE techniques SET retire_flagged_at = datetime('now'), updated_at = datetime('now') WHERE id = ? AND retire_flagged_at IS NULL",
   );
-  for (const c of candidates) setStmt.run(c.id);
+  const fresh = candidates.filter((c) => setStmt.run(c.id).changes > 0);
 
   const stillFlagged = db.prepare(
     'SELECT id FROM techniques WHERE retire_flagged_at IS NOT NULL',
@@ -126,24 +127,39 @@ function persistRetirementFlags(candidates: RetireCandidate[]): void {
   for (const row of stillFlagged) {
     if (!flaggedIds.has(row.id)) clearStmt.run(row.id);
   }
+  return fresh;
 }
 
-// Lessons the Dreamer wrote about techniques are candidates too.
-// A lesson is fed to the Trainer once per write: the cursor is the latest write time already fed.
+// Lessons the Dreamer wrote about techniques are candidates too. A lesson is fed once per write: the cursor is
+// the latest write time the Trainer's turn has taken up. The last batch is stamped so the next cycle can tell.
 const LESSONS_FED_KEY = 'trainer.lessons_fed_ms';
+const BATCH_KEY = 'trainer.nightly_batch';
 const touchedAt = (l: LessonRow): number => l.expires_at - LESSON_LIFETIME_MS;
+interface NightlyBatch { threadId: string; lessonsUpTo: number | null }
+
+const readConfig = (key: string): string | undefined =>
+  (getDb().prepare('SELECT value FROM config WHERE key = ?').get(key) as { value: string } | undefined)?.value;
+const lastBatch = (): NightlyBatch | null => JSON.parse(readConfig(BATCH_KEY) ?? 'null') as NightlyBatch | null;
 
 function unfedTechniqueLessons(): LessonRow[] {
-  const row = getDb().prepare('SELECT value FROM config WHERE key = ?').get(LESSONS_FED_KEY) as { value: string } | undefined;
-  const fed = Number(row?.value);
+  const last = lastBatch();
+  if (last?.lessonsUpTo != null && getDb().prepare('SELECT 1 FROM messages WHERE a2a_thread_id = ? AND served_by_turn IS NOT NULL').get(last.threadId)) {
+    setPlatformConfig(LESSONS_FED_KEY, String(last.lessonsUpTo));
+  }
+  const fed = Number(readConfig(LESSONS_FED_KEY));
   return lessonsTouchedSince(Number.isFinite(fed) ? fed + 1 : 0, 'technique');
 }
 
-function markLessonsFed(lessons: LessonRow[]): void {
-  const latest = Math.max(...lessons.map(touchedAt));
-  getDb().prepare(`INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
-                   ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`)
-    .run(LESSONS_FED_KEY, String(latest));
+/** The engine's "drafts only": refused while the agent's live turn serves the nightly batch. */
+export function nightlyDraftsOnlyRefusal(agentId: string, verb: string): string | null {
+  const thread = lastBatch()?.threadId;
+  const ctx = turnContext(agentId);
+  if (!thread || !ctx) return null;
+  const trigger = ctx.triggerMessageId
+    ? getDb().prepare('SELECT a2a_thread_id FROM messages WHERE id = ?').get(ctx.triggerMessageId) as { a2a_thread_id: string | null } | undefined
+    : undefined;
+  if (trigger?.a2a_thread_id !== thread && ctx.root?.id !== thread) return null;
+  return `Refused: ${verb} is not allowed on the nightly learning batch. Save new drafts only (save_technique with publish: false); the owner decides what is published or changed.`;
 }
 
 // One engine pass per dreaming cycle; never spawns agents. At most one batched A2A to the Trainer (drafts)
@@ -164,9 +180,8 @@ export async function runDistillationCycle(): Promise<void> {
   }
 
   // Failing published techniques: retirement flags.
-  const retireFlags = findRetirementCandidates();
   // Persisted every cycle, before the early return, so a cycle with no candidates still clears recovered ones.
-  persistRetirementFlags(retireFlags);
+  const retireFlags = persistRetirementFlags(findRetirementCandidates());
 
   const lessons = unfedTechniqueLessons();
 
@@ -185,11 +200,11 @@ export async function runDistillationCycle(): Promise<void> {
     const bodies: string[] = [];
     if (candidates.length > 0) {
       const list = candidates.map((c, i) =>
-        `${i + 1}. "${c.sampleTitle}" — completed ${c.count}x in the last ${PATTERN_LOOKBACK_DAYS} days (latest task id ${c.sampleTaskId}).${c.sampleGoal ? ` Goal: ${c.sampleGoal.slice(0, 200)}` : ''}`,
+        `${i + 1}. "${c.sampleTitle}", completed ${c.count}x in the last ${PATTERN_LOOKBACK_DAYS} days (latest task id ${c.sampleTaskId}).${c.sampleGoal ? ` Goal: ${c.sampleGoal.slice(0, 200)}` : ''}`,
       ).join('\n');
       bodies.push(
         `These task patterns completed repeatedly and no existing technique covers them:\n${list}\n\n` +
-        `For each: read the latest task's tracker entry and ledger, and author a DRAFT technique capturing the repeatable procedure (save_technique with publish: false — DRAFTS ONLY, never publish, never modify an existing technique). ` +
+        `For each: read the latest task's tracker entry and ledger, and author a DRAFT technique capturing the repeatable procedure (save_technique with publish: false; on this thread publishing and changing an existing technique are refused). ` +
         `Name it after the procedure, not the specific dates/people.`,
       );
     }
@@ -201,10 +216,11 @@ export async function runDistillationCycle(): Promise<void> {
       );
     }
     try {
+      const threadId = uuidv4();
       const res = await deliverA2ANotice({
         intent: 'ASSIGN',
-        threadId: uuidv4(),
-        requiresResponse: false,
+        threadId,
+        requiresResponse: true,
         payload:
           `Technique distillation (engine, one batch per dreaming cycle). ${bodies.join('\n\n')} ` +
           `When the drafts exist, you are done; the owner decides promotion.`,
@@ -213,7 +229,8 @@ export async function runDistillationCycle(): Promise<void> {
       }, 'Technique-distillation draft batch to the Trainer', { count: candidates.length, lessons: lessons.length, toAgent: getTrainerAgentId() });
       batchDelivered = res?.delivered === true;
       if (batchDelivered) {
-        if (lessons.length > 0) markLessonsFed(lessons);
+        const lessonsUpTo = lessons.length > 0 ? Math.max(...lessons.map(touchedAt)) : null;
+        setPlatformConfig(BATCH_KEY, JSON.stringify({ threadId, lessonsUpTo } satisfies NightlyBatch));
         logger.info('distillation: sent draft batch to Trainer', { count: candidates.length, lessons: lessons.length });
       } else {
         logger.warn('distillation: Trainer batch was not delivered', {
@@ -235,10 +252,10 @@ export async function runDistillationCycle(): Promise<void> {
   if (candidates.length > 0 || retireFlags.length > 0) {
     const lines: string[] = ['Nightly learning pass:'];
     let hadBullet = false;
-    // Claim drafts only if the batch actually reached the Trainer.
+    // The Trainer drafts on its own turn: say only that it was asked, and only if the batch reached it.
     if (candidates.length > 0 && batchDelivered) {
       lines.push(
-        `• Drafted ${candidates.length} technique${candidates.length === 1 ? '' : 's'} from repeated task patterns (inert drafts until you promote them).`,
+        `• Asked the Trainer to draft ${candidates.length} technique${candidates.length === 1 ? '' : 's'} from repeated task patterns (drafts stay inert until you promote them).`,
       );
       hadBullet = true;
     }

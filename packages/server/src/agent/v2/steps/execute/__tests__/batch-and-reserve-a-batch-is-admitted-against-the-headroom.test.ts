@@ -154,7 +154,7 @@ async function runBatch(n: number, decorate: (id: string, content: string) => st
   await runExecute(advance(initState({
     agentId: AGENT, contextWindow: WINDOW, isAutoRouted: false, configuredModelId: MODEL, turnNumber: 7,
     triggeredByIMessage: false, triggeredByA2AReplyIntent: null, lastUserMessageContent: 'audit the bays', lastUserMessageId: null,
-    inboundChannel: 'dashboard', inboundContext: null, pendingTechniqueAck: null,
+    inboundChannel: 'dashboard', inboundContext: null,
   }), { phase: EXECUTE_PHASE, loopCount: 2 }), ctxFor(calls));
   const row = db().prepare("SELECT content FROM messages WHERE agent_id = ? AND role = 'tool' ORDER BY seq DESC LIMIT 1").get(AGENT) as { content: string };
   return JSON.parse(row.content);

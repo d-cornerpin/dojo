@@ -43,7 +43,6 @@ function stateWith(calls: Call[]): AgentTurnState {
     configuredModelId: 'floor-model', turnNumber: 1804, triggeredByIMessage: false,
     triggeredByA2AReplyIntent: null, lastUserMessageContent: null,
     lastUserMessageId: null, inboundChannel: 'a2a', inboundContext: null,
-    pendingTechniqueAck: null,
   });
   return { ...s, toolCalls: calls, toolResults: calls.map((c) => ({ toolCallId: c.id, name: c.name, content: 'stdout:\n(no output)', isError: false })) } as AgentTurnState;
 }
