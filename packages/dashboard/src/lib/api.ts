@@ -64,6 +64,8 @@ export const login = async (password: string): Promise<ApiResponse<LoginResponse
   return result;
 };
 
+export const logout = (): Promise<ApiResponse<null>> => request<null>('/auth/logout', { method: 'POST' });
+
 export const checkAuth = async (): Promise<ApiResponse<AuthMeResponse>> => {
   return request<AuthMeResponse>('/auth/me');
 };

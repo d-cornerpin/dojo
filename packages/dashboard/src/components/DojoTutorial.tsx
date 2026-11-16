@@ -1,15 +1,12 @@
 /**
- * "How the dojo works": a navigable, screenshot-led tour shown from the final
+ * "How the dojo works": a navigable text tour shown from the final
  * setup step. Two panes: a chapter list on the left, the selected chapter's
- * content (with a screenshot) on the right. Closeable via the X, a backdrop
+ * text on the right. Closeable via the X, a backdrop
  * tap, the final "Got it", or Escape.
  *
  * Rendered through a portal into .dojo3-stage so it escapes the setup card's
  * backdrop-filter (which would otherwise trap position:fixed) while still
  * inheriting the dojo's tokens + .btn styling.
- *
- * Screenshots live in /public/tutorial/*.png. NOTE: those are captured from a
- * live dojo, so review/curate them (the vault especially) before shipping.
  */
 import { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
@@ -19,8 +16,6 @@ interface Chapter {
   nav: string;
   title: string;
   body: string[];
-  img: string;
-  alt: string;
 }
 
 const CHAPTERS: Chapter[] = [
@@ -32,8 +27,6 @@ const CHAPTERS: Chapter[] = [
       'Everything centers on the orb. Type or talk to your primary agent right here, it is the one you will work with most.',
       'Click the orb any time to open the ring of controls: Agents, Vault, Techniques, Tracker, Ledger, Vitals, and Settings.',
     ],
-    img: '/tutorial/orb.png',
-    alt: 'The dojo orb with its ring of controls open',
   },
   {
     id: 'agents',
@@ -43,8 +36,6 @@ const CHAPTERS: Chapter[] = [
       'Your primary agent does not work alone. It spins up sub-agents to handle tasks in parallel, a project manager keeps long work on track, a trainer turns repeated work into reusable techniques, and a dreamer reviews the day while you sleep.',
       'Open Agents from the orb to meet everyone, recruit new agents, or give each its own model and personality.',
     ],
-    img: '/tutorial/agents.png',
-    alt: 'The agents grid showing the primary agent and its team',
   },
   {
     id: 'memory',
@@ -54,8 +45,6 @@ const CHAPTERS: Chapter[] = [
       'As you talk, the dojo saves what matters (facts, preferences, decisions, people) into a long-term memory vault. You never have to repeat yourself, and your agents pick up where you left off, even weeks later.',
       'Browse, search, and edit everything from the Vault.',
     ],
-    img: '/tutorial/vault.png',
-    alt: 'The memory vault listing saved facts and preferences',
   },
   {
     id: 'providers',
@@ -65,8 +54,6 @@ const CHAPTERS: Chapter[] = [
       'Providers are the services that power your models. Open Settings → Providers and click Add Provider.',
       'Pick your service (Anthropic, OpenAI, OpenRouter, DeepSeek, or a local Ollama), paste your API key, and the dojo validates it on the spot. Add as many as you like; "Sync Models & Pricing" pulls in each provider’s latest catalog.',
     ],
-    img: '/tutorial/providers.png',
-    alt: 'Settings → Providers showing the configured providers',
   },
   {
     id: 'models',
@@ -74,10 +61,8 @@ const CHAPTERS: Chapter[] = [
     title: 'Enable the models you’ll use',
     body: [
       'Settings → Models lists every model from your providers. Toggle on the ones you want your agents to use. For aggregators like OpenRouter, search the catalog and add specific models.',
-      'Scroll down to the capability cards to choose which model handles images, video, music, transcription, and the system / voice-opener roles.',
+      'Scroll down to the capability cards to choose which model handles images, video, music, transcription, and the vision fallback for an agent whose own model cannot see images.',
     ],
-    img: '/tutorial/models.png',
-    alt: 'Settings → Models showing model toggles and capability cards',
   },
   {
     id: 'router',
@@ -85,10 +70,8 @@ const CHAPTERS: Chapter[] = [
     title: 'Let the dojo pick the model',
     body: [
       'You do not have to choose a model for every task. Sort your models into tiers: a cheap Light tier for simple work, a powerful Heavy tier for hard problems, and the router automatically picks the cheapest capable model for each request.',
-      'It scores locally in under 2 ms with no extra LLM call, using signals like length, code, and reasoning markers, which you can weight right on this page.',
+      'It decides on your own machine with no paid model call: a small local model reads each request, and when that model is not running a keyword score takes over, whose weights you can set right on this page.',
     ],
-    img: '/tutorial/router.png',
-    alt: 'Settings → Router showing tiers and dimension weights',
   },
   {
     id: 'techniques',
@@ -98,8 +81,6 @@ const CHAPTERS: Chapter[] = [
       'Techniques are step-by-step playbooks your agents can load on demand. When you teach the dojo to do something well, the trainer can turn it into a technique so every agent does it the same way next time.',
       'Browse, edit, publish, or share them from the Techniques page (open it from the orb).',
     ],
-    img: '/tutorial/techniques.png',
-    alt: 'The Techniques page showing a grid of techniques',
   },
   {
     id: 'channels',
@@ -109,8 +90,6 @@ const CHAPTERS: Chapter[] = [
       'Settings → Channels is where your agents reach the outside world. Under Agent’s Google Account, click Connect and sign in to grant Gmail, Calendar, Drive, Docs, and Sheets. The Microsoft Account section does the same for Outlook and OneDrive, toggle individual services on or off any time.',
       'The same page approves iMessage senders so you can text your dojo from your phone, or connects a Twilio number for SMS.',
     ],
-    img: '/tutorial/channels.png',
-    alt: 'Settings → Channels showing Google account and messaging options',
   },
   {
     id: 'voice',
@@ -120,8 +99,6 @@ const CHAPTERS: Chapter[] = [
       'Settings → Voice lets you pick a voice, run it locally (Kokoro) or in the cloud (Hume), and tune turn-taking, how patient the dojo is before it responds.',
       'Everything runs on your machine unless you choose a cloud voice.',
     ],
-    img: '/tutorial/voice.png',
-    alt: 'Settings → Voice showing voice and turn-taking options',
   },
 ];
 
@@ -178,7 +155,6 @@ export const DojoTutorial = ({ onClose }: { onClose: () => void }) => {
             {chapter.body.map((p, i) => (
               <p key={i} className="dojo3-tut__sec-body">{p}</p>
             ))}
-            <img className="dojo3-tut__img" src={chapter.img} alt={chapter.alt} loading="lazy" />
           </div>
         </div>
 

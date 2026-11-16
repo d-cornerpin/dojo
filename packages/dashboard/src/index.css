@@ -21,8 +21,8 @@
     color-scheme: dark;
 
     /* ── Fonts ── */
-    --font-sans: 'DM Sans';
-    --font-mono: 'JetBrains Mono';
+    --font-sans: system-ui, -apple-system, sans-serif;
+    --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
 
     /*
      * ── Color channels ──
@@ -1016,8 +1016,8 @@
   --dojo3-focus: #dcab63;
 
   /* font roles */
-  --dojo3-font-ui: "Space Grotesk", var(--font-sans), system-ui, sans-serif;
-  --dojo3-font-body: "Instrument Sans", var(--font-sans), system-ui, sans-serif;
+  --dojo3-font-ui: var(--font-sans);
+  --dojo3-font-body: var(--font-sans);
   --dojo3-font-mono: var(--font-mono), ui-monospace, monospace;
 
   position: relative;
@@ -1027,7 +1027,7 @@
   overflow: hidden;
   background: #efe6d3;
   color: var(--dojo3-ink);
-  font-family: "Instrument Sans", var(--font-sans), system-ui, sans-serif;
+  font-family: var(--font-sans);
   /* a flex row: [ main interface ][ optional right dock ] */
   display: flex;
   align-items: stretch;
@@ -1496,7 +1496,7 @@
 .dojo3-wordmark:hover:not(:disabled) { background: rgba(255, 252, 246, 0.42); }
 .dojo3-wordmark:disabled { cursor: default; }
 .dojo3-wordmark__text {
-  font: 500 13px/1 "Space Grotesk", var(--font-sans), system-ui, sans-serif;
+  font: 500 13px/1 var(--font-sans);
   /* the wordmark shows the active agent's NAME, uppercased, moderate tracking */
   letter-spacing: 0.16em;
   text-transform: uppercase;
@@ -1724,7 +1724,7 @@
    text-indent offsets the trailing letter-spacing so it stays optically
    centred. */
 .dojo3-login__wordmark {
-  font: 300 clamp(30px, 7vw, 38px)/1 "Space Grotesk", var(--font-sans), system-ui, sans-serif;
+  font: 300 clamp(30px, 7vw, 38px)/1 var(--font-sans);
   letter-spacing: 0.42em;
   text-indent: 0.42em;
   text-transform: uppercase;
@@ -2086,15 +2086,6 @@
   margin: 0 0 12px;
   font: 400 13px/1.55 var(--dojo3-font-body);
   color: var(--dojo3-ink-2);
-}
-.dojo3-tut__img {
-  display: block;
-  width: 100%;
-  height: auto;
-  margin-top: 4px;
-  border-radius: 12px;
-  border: 1px solid rgba(120, 96, 60, 0.16);
-  box-shadow: 0 12px 30px -20px rgba(58, 40, 16, 0.5);
 }
 .dojo3-tut__foot {
   flex: none;
@@ -2462,7 +2453,7 @@
 }
 .dojo3-panel__title {
   margin: 0;
-  font: 600 21px/1 "Space Grotesk", var(--font-sans), system-ui, sans-serif;
+  font: 600 21px/1 var(--font-sans);
   color: var(--dojo3-ink);
 }
 .dojo3-panel__meta {
@@ -3039,7 +3030,7 @@
 .dojo3-stage .voice-capsule__transcript span {
   display: inline-block;
   white-space: nowrap;
-  font: 500 15px/20px "Instrument Sans", var(--font-sans), system-ui, sans-serif;
+  font: 500 15px/20px var(--font-sans);
   color: #b8863c;
   letter-spacing: 0.005em;
   transform: translateX(0);

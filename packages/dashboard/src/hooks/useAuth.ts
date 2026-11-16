@@ -6,8 +6,7 @@ interface AuthContextValue {
   isAuthenticated: boolean;
   isLoading: boolean;
   login: (password: string) => Promise<string | null>;
-  logout: () => void;
-  checkAuth: () => Promise<boolean>;
+  logout: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -16,36 +15,21 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
 
-  const checkAuth = useCallback(async (): Promise<boolean> => {
-    const token = api.getToken();
-    if (!token) {
-      setIsAuthenticated(false);
-      setIsLoading(false);
-      return false;
-    }
-
-    // Retry a few times in case the server is still starting up
-    for (let attempt = 0; attempt < 3; attempt++) {
-      const result = await api.checkAuth();
-      if (result.ok && result.data.authenticated) {
-        setIsAuthenticated(true);
-        setIsLoading(false);
-        return true;
-      }
-      // If we got a real 401, don't retry
-      if (!result.ok && (result.error === 'Unauthorized' || result.error === 'Invalid or expired token')) {
-        break;
-      }
-      // Server might not be up yet, wait and retry
-      if (attempt < 2) {
+  // A dead network or the 503 while the Dojo starts is waited out; only a real 401 ends the sign-in.
+  useEffect(() => {
+    let live = true;
+    void (async () => {
+      let result = api.getToken() ? await api.checkAuth() : null;
+      while (live && result && !result.ok && result.error !== 'Unauthorized') {
         await new Promise((r) => setTimeout(r, 1500));
+        result = await api.checkAuth();
       }
-    }
-
-    api.clearToken();
-    setIsAuthenticated(false);
-    setIsLoading(false);
-    return false;
+      if (!live) return;
+      if (!result?.ok) api.clearToken();
+      setIsAuthenticated(!!result?.ok);
+      setIsLoading(false);
+    })();
+    return () => { live = false; };
   }, []);
 
   const login = useCallback(async (password: string): Promise<string | null> => {
@@ -57,18 +41,15 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     return result.error;
   }, []);
 
-  const logout = useCallback(() => {
+  const logout = useCallback(async () => {
+    await api.logout();
     api.clearToken();
     setIsAuthenticated(false);
   }, []);
 
-  useEffect(() => {
-    checkAuth();
-  }, [checkAuth]);
-
   return React.createElement(
     AuthContext.Provider,
-    { value: { isAuthenticated, isLoading, login, logout, checkAuth } },
+    { value: { isAuthenticated, isLoading, login, logout } },
     children,
   );
 };

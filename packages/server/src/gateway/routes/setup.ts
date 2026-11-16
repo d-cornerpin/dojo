@@ -1,10 +1,7 @@
 import { Hono } from 'hono';
-import jwt from 'jsonwebtoken';
 import { getDb } from '../../db/connection.js';
-import {
-  getDashboardPasswordHash,
-  getJwtSecret,
-} from '../../config/loader.js';
+import { getDashboardPasswordHash } from '../../config/loader.js';
+import { issueSession } from '../middleware/auth.js';
 import { isPastFirstRun, markFirstRunComplete } from '../../config/setup-state.js';
 import { createLogger } from '../../logger.js';
 import { getPrimaryAgentId } from '../../config/platform.js';
@@ -12,8 +9,6 @@ import type { SetupStatus } from '@dojo/shared';
 import type { AppEnv } from '../server.js';
 
 const logger = createLogger('setup');
-
-const JWT_EXPIRY = '24h';
 
 const setupRouter = new Hono<AppEnv>();
 
@@ -76,13 +71,7 @@ setupRouter.post('/complete', async (c) => {
     }, 400);
   }
 
-  const secret = getJwtSecret();
-  const token = jwt.sign({ userId: 'admin' }, secret, { expiresIn: JWT_EXPIRY });
-
-  c.header(
-    'Set-Cookie',
-    `token=${token}; HttpOnly; Path=/; SameSite=Strict; Max-Age=86400`,
-  );
+  const { token } = issueSession(c);
 
   // Writes the durable flag and shuts the OOBE window in this process.
   markFirstRunComplete();

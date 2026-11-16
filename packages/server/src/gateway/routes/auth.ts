@@ -1,16 +1,14 @@
 import { Hono } from 'hono';
 import bcrypt from 'bcrypt';
-import jwt from 'jsonwebtoken';
-import { getJwtSecret, getDashboardPasswordHash, setDashboardPassword } from '../../config/loader.js';
+import { getDashboardPasswordHash, setDashboardPassword } from '../../config/loader.js';
 import { LoginSchema, ChangePasswordSchema } from '../../config/schema.js';
-import { generateCsrfToken } from '../middleware/auth.js';
+import { issueSession } from '../middleware/auth.js';
 import { createLogger } from '../../logger.js';
 import type { AppEnv } from '../server.js';
 
 const logger = createLogger('auth');
 
 const SALT_ROUNDS = 12;
-const JWT_EXPIRY = '24h';
 
 const authRouter = new Hono<AppEnv>();
 
@@ -25,38 +23,27 @@ authRouter.post('/login', async (c) => {
   const { password } = parsed.data;
   const storedHash = getDashboardPasswordHash();
 
-  // First-run: no password set yet, so set it now
+  // First run: no password set yet, so this one becomes it.
   if (!storedHash) {
-    const hash = await bcrypt.hash(password, SALT_ROUNDS);
-    setDashboardPassword(hash);
+    setDashboardPassword(await bcrypt.hash(password, SALT_ROUNDS));
     logger.info('Initial dashboard password set');
-
-    const secret = getJwtSecret();
-    const token = jwt.sign({ userId: 'admin' }, secret, { expiresIn: JWT_EXPIRY });
-    const csrfToken = generateCsrfToken();
-
-    c.header('Set-Cookie', `token=${token}; HttpOnly; Path=/; SameSite=Strict; Max-Age=86400`, { append: true });
-    c.header('Set-Cookie', `csrf=${csrfToken}; Path=/; SameSite=Strict; Max-Age=86400`, { append: true });
-    c.header('Cache-Control', 'no-store'); c.header('Pragma', 'no-cache');
-    return c.json({ ok: true, data: { token, csrfToken } });
-  }
-
-  // Verify password
-  const valid = await bcrypt.compare(password, storedHash);
-  if (!valid) {
+  } else if (!(await bcrypt.compare(password, storedHash))) {
     logger.warn('Failed login attempt');
     return c.json({ ok: false, error: 'Invalid password' }, 401);
+  } else {
+    logger.info('Successful login');
   }
 
-  const secret = getJwtSecret();
-  const token = jwt.sign({ userId: 'admin' }, secret, { expiresIn: JWT_EXPIRY });
-  const csrfToken = generateCsrfToken();
-
-  c.header('Set-Cookie', `token=${token}; HttpOnly; Path=/; SameSite=Strict; Max-Age=86400`, { append: true });
-  c.header('Set-Cookie', `csrf=${csrfToken}; Path=/; SameSite=Strict; Max-Age=86400`, { append: true });
-  logger.info('Successful login');
+  const session = issueSession(c);
   c.header('Cache-Control', 'no-store'); c.header('Pragma', 'no-cache');
-  return c.json({ ok: true, data: { token, csrfToken } });
+  return c.json({ ok: true, data: session });
+});
+
+// POST /logout: the browser drops its session cookies.
+authRouter.post('/logout', (c) => {
+  c.header('Set-Cookie', 'token=; HttpOnly; Path=/; SameSite=Strict; Max-Age=0', { append: true });
+  c.header('Set-Cookie', 'csrf=; Path=/; SameSite=Strict; Max-Age=0', { append: true });
+  return c.json({ ok: true, data: null });
 });
 
 // POST /change-password

@@ -2,8 +2,10 @@
 
 import { useState, type FormEvent } from 'react';
 import * as api from '../../lib/api';
+import { useAuth } from '../../hooks/useAuth';
 
 export const SecurityTab = () => {
+  const { logout } = useAuth();
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -92,6 +94,7 @@ export const SecurityTab = () => {
       >
         {saving ? 'Changing...' : 'Change Password'}
       </button>
+      <button type="button" className="btn" onClick={() => void logout()}>Sign out</button>
     </form>
   );
 };

@@ -57,7 +57,10 @@ const doorHeaders = (
 /** THE ONLY `fetch` CALL IN THE DASHBOARD. A dead network becomes a VALUE here, never a rejection. */
 const throughTheDoor = async (url: string, init: RequestInit): Promise<RawResult> => {
   try {
-    return { ok: true, response: await fetch(url, init) };
+    const response = await fetch(url, init);
+    const renewed = response.headers.get('X-Dojo-Token');   // the server replaced a day-old token
+    if (renewed) setToken(renewed);
+    return { ok: true, response };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : 'Network error' };
   }

@@ -60,8 +60,15 @@ function parseCookies(cookieHeader: string | undefined): Record<string, string> 
 }
 
 
-export function generateCsrfToken(): string {
-  return crypto.randomBytes(32).toString('hex');
+const SESSION_S = 30 * 86400;
+const RENEW_AFTER_S = 86400;
+
+/** Signs a fresh session token and sets it, with the CSRF token, as the browser's session cookies. */
+export function issueSession(c: Context, csrfToken = crypto.randomBytes(32).toString('hex')): { token: string; csrfToken: string } {
+  const token = jwt.sign({ userId: 'admin' }, getJwtSecret(), { expiresIn: SESSION_S });
+  c.header('Set-Cookie', `token=${token}; HttpOnly; Path=/; SameSite=Strict; Max-Age=${SESSION_S}`, { append: true });
+  c.header('Set-Cookie', `csrf=${csrfToken}; Path=/; SameSite=Strict; Max-Age=${SESSION_S}`, { append: true });
+  return { token, csrfToken };
 }
 
 
@@ -123,8 +130,10 @@ export const authMiddleware = async (c: Context, next: Next): Promise<Response |
       }
     }
 
-    // Sliding session: refresh the cookie lifetime on each authenticated request.
-    c.header('Set-Cookie', `token=${token}; HttpOnly; Path=/; SameSite=Strict; Max-Age=86400`, { append: true });
+    // A day-old token is replaced, so a session in use never reaches its 30-day end.
+    if (Date.now() / 1000 - payload.iat > RENEW_AFTER_S) {
+      c.header('X-Dojo-Token', issueSession(c, cookies['csrf']).token);
+    }
 
     return next();
   } catch (err) {
