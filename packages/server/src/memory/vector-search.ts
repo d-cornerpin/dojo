@@ -167,7 +167,7 @@ export async function hybridSearch(
       const ftsRows = db.prepare(`
         SELECT m.id, m.content, m.role, rank
         FROM messages_fts fts
-        JOIN messages m ON m.rowid = fts.rowid
+        CROSS JOIN messages m ON m.rowid = fts.rowid
         WHERE messages_fts MATCH ? AND m.agent_id = ?${floorClause}
         ORDER BY rank
         LIMIT ?

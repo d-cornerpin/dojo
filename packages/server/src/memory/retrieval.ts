@@ -205,9 +205,9 @@ async function searchMessagesInner(
     // a common term over a huge table is thousands of row reads in one synchronous call. The floor is counted in the
     // agent's own rows, so other agents' traffic never pushes its history out of reach.
     const candidateFloor = agentMessagesFloor(db, agentId);
-    // The floor is spelled on the FTS side (messages_fts.rowid): on this arm every spelling plans identically, but on
-    // summaries only the FTS-side form pushes the range into the virtual-table scan. It does not make the query
-    // faster (ORDER BY rank still scores the whole doclist); it bounds the join count.
+    // CROSS JOIN keeps the full-text match the outer loop: with the floor present SQLite would otherwise walk the
+    // agent's rows by index and re-run the match once per row. The floor, spelled on the FTS side, then bounds the
+    // rows that reach the join.
     if (candidateFloor > 0) {
       conditions.push('messages_fts.rowid > ?');
       params.push(candidateFloor);
@@ -217,7 +217,7 @@ async function searchMessagesInner(
       SELECT m.id, m.role, m.content, datetime(m.created_at/1000,'unixepoch') AS created_at,
              snippet(messages_fts, 0, '>>>', '<<<', '...', 64) as snippet
       FROM messages_fts
-      INNER JOIN messages m ON messages_fts.rowid = m.rowid
+      CROSS JOIN messages m ON messages_fts.rowid = m.rowid
       WHERE messages_fts MATCH ?
         AND ${conditions.join(' AND ')}
       ORDER BY rank
@@ -807,9 +807,9 @@ export async function memoryExpand(
   // Make a model call to answer the prompt using the expanded material
   const systemPrompt = `You are a memory retrieval assistant. You have been given expanded conversation history material. Answer the user's question based ONLY on the material provided. If the material doesn't contain the answer, say so.`;
 
-  // The material is cut to what the writer can hold, never the question after it.
+  // The material is cut to what the writer can hold (at most 100,000 tokens), never the question after it.
   const material = materialParts.join('\n');
-  const maxMaterialChars = summaryRoom(modelId, estimateTokens(systemPrompt + prompt)) * CHARS_PER_TOKEN;
+  const maxMaterialChars = Math.min(100_000, summaryRoom(modelId, estimateTokens(systemPrompt + prompt))) * CHARS_PER_TOKEN;
   const shown = material.length > maxMaterialChars ? `${material.slice(0, maxMaterialChars)}\n\n[... material truncated ...]` : material;
   const truncatedMessage = `Here is the expanded conversation history:\n\n${shown}\n\n---\n\nQuestion: ${prompt}`;
 
