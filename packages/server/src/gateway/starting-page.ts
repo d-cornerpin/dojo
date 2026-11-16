@@ -4,8 +4,7 @@ const PAGE = '<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" co
   + '<body style="font-family:system-ui;text-align:center;padding-top:20vh"><h1>Dojo is starting</h1><p>This page reloads by itself.</p>';
 
 export function startingAnswer(request: Request): Response {
-  const page = request.headers.get('accept')?.includes('text/html');
-  return page
+  return request.headers.get('accept')?.includes('text/html')
     ? new Response(PAGE, { status: 503, headers: { 'content-type': 'text/html; charset=utf-8' } })
     : new Response(JSON.stringify({ ok: false, error: 'Dojo is starting' }), { status: 503, headers: { 'content-type': 'application/json' } });
 }

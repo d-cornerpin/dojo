@@ -31,7 +31,7 @@ import { assignStandard, registerStandardRow, unregisterStandardRow } from './st
 import {
   OLLAMA_DOWN_WORDS, OLLAMA_LIMIT_FAILED_WORDS, OLLAMA_TOO_OLD_WORDS, STANDARD_MODELS_MISSING_WORDS, ownerConditionCleared, tellOwner,
 } from '../healer/owner-notices.js';
-import { ollamaAppLeftWords } from '../healer/local-model-notice-words.js';
+import { STANDARD_MODELS_NO_ROOM_WORDS, ollamaAppLeftWords } from '../healer/local-model-notice-words.js';
 
 const logger = createLogger('ollama-upkeep');
 const NOTICE = 'ollama';
@@ -101,14 +101,15 @@ async function keep(reason: UpkeepReason, need: Need): Promise<UpgradeResult> {
   const ids: Record<Which, string | null> = { decision: null, writer: null };
   let listed = await listedTags(local.baseUrl);
   let upgradedOnRefusal = false;
-  let noRoom: string | null = null;
+  let noRoom = false;
   for (let i = 0; listed && i < 2; i++) {
     const which: Which = i === 0 ? 'decision' : 'writer';
     const { tag } = MODEL[which];
     if (!listed.has(tag)) {
       if (!current.ok && MODEL[which].minOllama) { unregisterStandardRow(local.id, tag); continue; }   // it waits for a newer Ollama
       const short = downloadRoomRefusal(MODEL[which].bytes);
-      if (short !== null) { noRoom = short; say(which, short); unregisterStandardRow(local.id, tag); continue; }
+      if (short !== null) logger.warn('Standard model download refused for disk space', { tag, why: short });
+      if (short !== null) { noRoom = true; say(which, short); unregisterStandardRow(local.id, tag); continue; }
       const error = await pull(which, local.baseUrl, say);
       if (error !== null && isVersionRefusal(error) && !upgradedOnRefusal) {
         upgradedOnRefusal = true;
@@ -133,7 +134,7 @@ async function keep(reason: UpkeepReason, need: Need): Promise<UpgradeResult> {
   noteUpkeep({ triedAt: (complete && windowMade) || !listed ? undefined : Date.now() });
   if (host && current.ok && (appFailed === null || reason === 'boot')) appFailed = await retireDownloadedApp(host, local.baseUrl);
   if (complete && current.ok && !upkeepRecord().limitOwed) { if (appFailed) tellOwner(NOTICE, ollamaAppLeftWords(appFailed)); else ownerConditionCleared(NOTICE); }
-  else if (!complete && (current.ok || current.transient) && !current.starting) tellOwner(NOTICE, noRoom ?? STANDARD_MODELS_MISSING_WORDS);   // a failed upkeep told its own sentence
+  else if (!complete && (current.ok || current.transient) && !current.starting) tellOwner(NOTICE, noRoom ? STANDARD_MODELS_NO_ROOM_WORDS : STANDARD_MODELS_MISSING_WORDS);   // a failed upkeep told its own sentence
   return current;
 }
 

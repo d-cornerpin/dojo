@@ -47,13 +47,12 @@ export function deliverBuiltInTools(): ReleaseStepOutcome {
     [getDreamerAgentId(), (JSON.parse(DREAMER_TOOLS_POLICY) as { allow: string[] }).allow],
     [getPMAgentId(), PM_ALLOWED_TOOLS],
   ];
-  let removed: Map<string, Set<string>> | undefined;
+  const removed = removedNames(agents.map(([id]) => id));
   for (const [id, usual] of agents) {
     const row = db.prepare("SELECT tools_policy, permissions FROM agents WHERE id = ? AND status <> 'terminated'").get(id) as
       { tools_policy: string | null; permissions: string | null } | undefined;
     if (!row) continue;
     out.examined++;
-    removed ??= removedNames(agents.map(([a]) => a));
     const policy = parse(row.tools_policy) as Holder | null;
     const perm = parse(row.permissions);
     const grants = (perm?.grants as { tools?: Holder } | undefined)?.tools;

@@ -612,9 +612,10 @@ async function downloadAndInstall(o: {
   artifactBytes: number;
 }): Promise<{ ok: true; backupDir: string | null } | { ok: false; message: string; status: number }> {
   const kept = `Nothing was changed: Dojo is still running ${o.currentVersion}.`;
-  // Disk-space pre-flight before a single byte (the artifact's size is a fact): refusing leaves no update
-  // episode to roll back. Measured again after a write failure, since a disk fills after the check.
-  const disk = measureUpdateDiskNeed({ artifactBytes: o.artifactBytes, modelBytes: missingStandardBytes() });
+  // Disk-space pre-flight before a single byte (the artifact's size is a fact; going back installs no models):
+  // refusing leaves no update episode to roll back. Measured again after a write failure, since a disk fills.
+  const forward = compareVersions(o.targetVersion, o.currentVersion) > 0;
+  const disk = measureUpdateDiskNeed({ artifactBytes: o.artifactBytes, modelBytes: forward ? missingStandardBytes() : 0 });
   const diskRefusal = updateDiskRefusal(disk);
   if (diskRefusal) {
     logger.warn('Install REFUSED before download: not enough free disk', {
@@ -624,7 +625,7 @@ async function downloadAndInstall(o: {
     return { ok: false, message: diskRefusal, status: 507 };
   }
   // Going forward needs the release's checksum list; going back may reach a release from before the lists.
-  if (!o.manifestUrl && compareVersions(o.targetVersion, o.currentVersion) > 0) {
+  if (!o.manifestUrl && forward) {
     return { ok: false, message: `${o.targetVersion} was published without its checksum list, so its download could not be checked. ${kept}`, status: 502 };
   }
   // Refuse a second install before downloading anything (the installer re-checks under the lock).

@@ -41,8 +41,7 @@ export const RELEASE_STEPS: readonly ReleaseStep[] = [
   },
   {
     id: 'orphaned-ask-backlog',
-    // Below every 3.5.0 prerelease (`-0` sorts lowest): any box last run on an older build owes it. The boot
-    // reconcile parks the inherited backlog while this step is owed; this entry is that pass's marker and report.
+    // Below every 3.5.0 prerelease (`-0` sorts lowest): any box last run on an older build owes it.
     sinceVersion: '3.5.0-0',
     run: async () => {
       // Report only: a live turn's open row would read as dead. A throw leaves the step owed.

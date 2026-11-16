@@ -5,6 +5,8 @@ import { settingsPath } from '@dojo/shared';
 
 export const STANDARD_MODELS_MISSING_WORDS = "Dojo: its own two local models could not be installed yet. The Dojo keeps trying "
   + `whenever Ollama is running; ${settingsPath('ollama')} shows what is missing and why.`;
+export const STANDARD_MODELS_NO_ROOM_WORDS = "Dojo: its own local models were not downloaded because this Mac's disk is nearly full. "
+  + `The Dojo tries again by itself once there is room; ${settingsPath('ollama')} shows how much space they need.`;
 export const uncheckedFitWords = (name: string): string =>
   `Dojo: ${name} was selected, but its memory fit could not be checked then (Ollama was not answering, or the model was not downloaded yet). `
   + "It will be checked when the model first loads, and refused then if it does not fit this box's memory.";

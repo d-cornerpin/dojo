@@ -15,6 +15,8 @@ vi.mock('../../gateway/ws.js', () => ({ broadcast: (f: { error?: string }) => { 
 
 import { runMigrations } from '../../db/migrations.js';
 import { standardProgressLines, upkeep, upkeepSettled } from '../ollama-upkeep.js';
+import { dismissOwnerNotice, ownerToldOf } from '../../healer/owner-notices.js';
+import { STANDARD_MODELS_NO_ROOM_WORDS } from '../../healer/local-model-notice-words.js';
 import { ollama, startFakeOllama, stopFakeOllama, fakeMac, formulaServe, LATEST, useOllamaHost } from './fake-mac.js';
 
 function freeSpace(bytes: number): void {
@@ -43,13 +45,30 @@ describe('a model pull that would cross the disk floor', () => {
     freeSpace(2_000_000_000);
     await upkeep('boot');
     expect(ollama.pulls).toEqual([]);
-    expect(standardProgressLines().join(' ')).toMatch(/not enough free disk space/);
-    expect(frames.list.some((f) => /not enough free disk space/.test(f.error ?? ''))).toBe(true);
+    expect(standardProgressLines().join(' ')).toMatch(/Not enough free disk space .*GB free/);
+    expect(frames.list.some((f) => f.error === STANDARD_MODELS_NO_ROOM_WORDS)).toBe(true);
   });
 
   it('goes ahead when the disk has room', async () => {
     freeSpace(1e12);
     await upkeep('boot');
     expect(ollama.pulls).toHaveLength(2);
-  });
+  }, 90_000);   // the first real pull in a worker loads the decision-window code
+
+  it('stays dismissed while the disk stays short, and a new shortage after room returned is told again', async () => {
+    freeSpace(2_000_000_000);
+    await upkeep('boot');
+    expect(ownerToldOf('ollama')).toBe(true);
+    dismissOwnerNotice('ollama');
+    freeSpace(1_500_000_000);
+    await upkeep('boot');
+    expect(ownerToldOf('ollama')).toBe(false);
+    freeSpace(1e12);
+    await upkeep('boot');
+    expect(ollama.pulls).toHaveLength(2);
+    ollama.installed = new Set();
+    freeSpace(2_000_000_000);
+    await upkeep('boot');
+    expect(ownerToldOf('ollama')).toBe(true);
+  }, 90_000);
 });
