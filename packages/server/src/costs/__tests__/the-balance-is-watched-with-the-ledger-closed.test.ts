@@ -67,11 +67,10 @@ vi.mock('../../services/imessage-run.js', async (importOriginal) => {
 });
 
 import { runMigrations } from '../../db/migrations.js';
-
-// Each clause boots the real module graph (the iMessage door pulls in the engine) and runs the
-// full migration chain; that is an import cost, not a timing assertion, and on a box shared by
-// many suites it can pass the 30 s default. Nothing here measures time.
-vi.setConfig({ testTimeout: 180_000, hookTimeout: 180_000 });
+// The graph every `boot()` reaches (the iMessage door pulls in the engine) is compiled once here, at load:
+// compiled inside the first clause it cost that clause 70 s and more on a loaded box.
+import '../../scheduler/clock.js';
+import '../../gateway/routes/config.js';
 
 const OWNER = 'owner@example.test';
 const db = (): Database.Database => mockDb.current!;

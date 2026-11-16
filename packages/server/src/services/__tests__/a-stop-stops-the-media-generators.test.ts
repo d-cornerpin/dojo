@@ -86,6 +86,10 @@ vi.mock('../../agent/turn-context.js', async (orig) => {
 vi.mock('../../agent/v2/loop.js', () => ({ runV2Turn: vi.fn(async () => undefined) }));
 
 import { runMigrations } from '../../db/migrations.js';
+// The two heavy graphs the clauses reach (the runtime and the tool family) are compiled once here, at load:
+// compiled inside a clause, by its first import, they cost 30 s and more on a loaded box, past every wait below.
+import '../../agent/runtime.js';
+import '../../agent/tools/cat/media.js';
 import { FX } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const AGENT = 'a5-media-agent';

@@ -17,11 +17,6 @@
 // RED-FIRST at 4cb9ed61: clauses marked `it.fails` are the witness; the fix commit flips them.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-
-const HOME = path.join(process.env.DOJO_TEST_HOME_ROOT || os.tmpdir(), 'dojo-t143-liveness');
 
 vi.mock('../../home.js', async () => {
   const p = await import('node:path');
@@ -94,10 +89,6 @@ vi.mock('../../services/imessage-run.js', async (importOriginal) => {
 });
 
 import { runMigrations } from '../../db/migrations.js';
-
-// Each clause boots the real module graph and runs the full migration chain; an import cost, not
-// a timing assertion. Nothing here measures time.
-vi.setConfig({ testTimeout: 180_000, hookTimeout: 180_000 });
 import { registerAbortable, releaseAbortable } from '../../agent/shared-state.js';
 import { configRouter } from '../../gateway/routes/config.js';
 import { noteEngineCheckpoint } from '../../work/engine-checkpoint-note.js';
@@ -115,8 +106,6 @@ const sqlTime = (ms: number): string => new Date(ms).toISOString().replace('T', 
 
 beforeEach(() => {
   endJobCarry('helper');   // the job carry is process memory: no test inherits another's
-  fs.rmSync(HOME, { recursive: true, force: true });
-  fs.mkdirSync(path.join(HOME, '.dojo', 'logs'), { recursive: true });
   const d = new Database(':memory:');
   d.pragma('foreign_keys = ON');
   mockDb.current = d;
