@@ -13,7 +13,7 @@ import { clearReferencesToWork } from './work-refs.js';
 import { createLogger } from '../logger.js';
 import type { WorkEventKind } from './event-kinds.js';
 // The fire-time advance and its restore live in `work/next-run.ts` and run inside this file's units.
-import { advanceScheduleOnClaim, restoreScheduleOnRelease } from './next-run.js';
+import { advanceScheduleOnClaim } from './next-run.js';
 import { transition, appendWorkEvent, type WorkOutcome } from './store.js';
 import { occurrenceOwesDeliverable } from './deliverable-declaration.js';
 import { proofDelivery } from './done/proof.js';
@@ -27,7 +27,6 @@ export const OCCURRENCE_KIND = 'occurrence';
  *  typo, and `satisfies` keeps them a view onto `event-kinds.ts`. */
 export const OCCURRENCE_EVENT = {
   fired: 'occurrence_fired',
-  released: 'occurrence_released',
   /** The run closed, carrying ITS OWN outcome word, which `work.state` cannot hold. Payload:
    *  `{ run_status, summary }`. */
   settled: 'occurrence_settled',
@@ -102,23 +101,6 @@ export function claimOccurrence(input: ClaimInput): string | null {
 }
 
 class LostClaim extends Error {}
-
-/** Hand a won claim back unfired (no agent available), restoring the occurrence as it was. */
-export function releaseOccurrence(
-  occurrenceId: string, workId: string, occurrenceMs: number | null,
-  priorLastRunMs: number | null, reason: string,
-): void {
-  const db = getDb();
-  withUnit(() => {
-    // Recorded on the SCHEDULE: the occurrence row is deleted below so its sequence can be claimed
-    // again, and an event on a deleted row cannot be found.
-    appendWorkEvent(workId, OCCURRENCE_EVENT.released, 'scheduler', { reason, occurrenceId });
-    clearReferencesToWork([occurrenceId]);
-    db.prepare('DELETE FROM work WHERE id = ?').run(occurrenceId);
-    restoreScheduleOnRelease(db, { workId, occurrenceMs, priorLastRunMs });
-  });
-  logger.info('occurrence released unfired', { workId, occurrenceId, reason });
-}
 
 /** Run word for a run that owed a person a message and reached nobody (shown with a neutral badge). */
 export const RUN_STATUS_UNDELIVERED = 'undelivered';

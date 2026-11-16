@@ -1183,6 +1183,7 @@ export const toolDefinitions: ToolDefinition[] = [
           description: 'Which schedule operation. Omit and the engine infers it (a `resolution` → resolve_missed, otherwise pause).',
         },
         task_id: { type: 'string', description: 'The task ID.' },
+        resume_at: { type: 'string', description: 'action="pause": ISO 8601 time the schedule resumes by itself ("pause it until Monday"). Omit to pause until it is resumed.' },
         resolution: {
           type: 'string',
           enum: ['run_now', 'skip', 'pause'],

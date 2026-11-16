@@ -36,7 +36,7 @@ import { openProof } from '../../../work/done/open-proof.js';
 import { proofFor, type HandInOutcome, type ProofItemInput, type ProofKind } from '../../../work/done/proof.js';
 import { normalizeTaskStatus } from '../../../tracker/task-status-words.js';
 import {
-  trackerCreateProject, trackerCreateTask, reminderCreate, repeatNumberError, trackerUpdateStatus,
+  trackerCreateProject, trackerCreateTask, reminderCreate, groupMember, trackerUpdateStatus,
   trackerAddNotes, trackerEditTask, trackerEditProject, trackerGetStatus,
   trackerListActive, trackerActivity, activityWindowStart,
   trackerPauseSchedule, trackerResumeSchedule, trackerRetask, trackerResolveMissedRuns,
@@ -173,70 +173,6 @@ const tableOfHandlers: ToolHandlerMap = {
       return { content, isError };
     }
     const repeatDaysOfWeek: string | undefined = normalizedDays ?? undefined;
-    if (args.repeat_unit === 'specific_days' && !repeatDaysOfWeek) {
-      content = 'Error: repeat_unit="specific_days" requires repeat_days_of_week (e.g. ["mon","wed"]).';
-      isError = true;
-      return { content, isError };
-    }
-
-    // Zero, negative, a fraction or NaN gives the engine no next run: the task
-    // fires once and the schedule quietly completes. Refuse it before the pairing checks.
-    const intervalNumErr = repeatNumberError(args.repeat_interval);
-    if (intervalNumErr) {
-      content = intervalNumErr;
-      isError = true;
-      return { content, isError };
-    }
-
-    // A partial repeat config (interval without unit, unit without interval, a bad
-    // unit, or repeat_* without a first-run time) writes a row that silently never
-    // fires and whose assignee is never told. Refuse every shape before the write.
-    const VALID_REPEAT_UNITS = new Set([
-      'minutes', 'hours', 'days', 'weeks', 'months', 'years', 'weekdays', 'specific_days',
-    ]);
-    const hasInterval = args.repeat_interval !== undefined && args.repeat_interval !== null;
-    const hasUnit = args.repeat_unit !== undefined && args.repeat_unit !== null && args.repeat_unit !== '';
-    // Order matters: validate the unit before pairing, so a misspelling gets the corrective hint.
-    if (hasUnit && !VALID_REPEAT_UNITS.has(args.repeat_unit as string)) {
-      content =
-        `Error: repeat_unit="${args.repeat_unit}" is not a valid unit. ` +
-        `Valid values: minutes, hours, days, weeks, months, years, weekdays, specific_days. ` +
-        `Common mistakes: "weekly" → repeat_interval=1, repeat_unit="weeks"; ` +
-        `"daily" → repeat_interval=1, repeat_unit="days"; ` +
-        `"every Mon/Wed/Fri" → repeat_unit="specific_days", repeat_days_of_week=["mon","wed","fri"].`;
-      isError = true;
-      return { content, isError };
-    }
-    if (hasInterval && !hasUnit) {
-      content =
-        `Error: repeat_interval was set without repeat_unit. The task would fire once and then never again. ` +
-        `Add repeat_unit (one of: minutes, hours, days, weeks, months, years, weekdays, specific_days). ` +
-        `Example for a daily task: repeat_interval=1, repeat_unit="days".`;
-      isError = true;
-      return { content, isError };
-    }
-    if (hasUnit && !hasInterval && args.repeat_unit !== 'specific_days') {
-      // specific_days legitimately ignores interval; every other unit needs a number.
-      content =
-        `Error: repeat_unit="${args.repeat_unit}" was set without repeat_interval. ` +
-        `Add repeat_interval (e.g. repeat_interval=1 for "every ${(args.repeat_unit as string).replace(/s$/, '')}"). ` +
-        `Or, if you want a fixed set of weekdays, use repeat_unit="specific_days" with repeat_days_of_week=["mon","wed",...].`;
-      isError = true;
-      return { content, isError };
-    }
-    // `local_time` SATISFIES this gate: it is the wall-clock spelling of the same
-    // fact, and this tool's declaration tells the model to prefer it. The refusal
-    // names both spellings: an error that omits a working fix teaches the wrong lesson.
-    if ((hasInterval || hasUnit) && !args.scheduled_start && !args.local_time) {
-      content =
-        `Error: a recurring task needs a first-run time — either scheduled_start (an ISO 8601 UTC instant) ` +
-        `or local_time (the wall clock the user named, "YYYY-MM-DDThh:mm", which the engine converts for you). ` +
-        `Without one the scheduler has no anchor, no next_run_at gets written, and the task will never fire. ` +
-        `Ask the person you are talking to when the first run should happen (or pick the next sensible slot, e.g. "tomorrow at 6 AM"); ` +
-        `if you need the current time to resolve a relative phrase, call get_current_time first.`;
-      isError = true;
-      return { content, isError };
-    }
 
     const measured = await readMeasureArg(agentId, args.measure);
     if (measured.error) return { content: measured.error, isError: true };
@@ -290,61 +226,6 @@ const tableOfHandlers: ToolHandlerMap = {
       return { content, isError };
     }
     const repeatDaysOfWeek: string | undefined = normalizedDays ?? undefined;
-    if (args.repeat_unit === 'specific_days' && !repeatDaysOfWeek) {
-      content = 'Error: repeat_unit="specific_days" requires repeat_days_of_week (e.g. ["mon","wed"]).';
-      isError = true;
-      return { content, isError };
-    }
-
-    // Same refusal of an unusable repeat number as kind="task": it fires once and completes.
-    const remIntervalNumErr = repeatNumberError(args.repeat_interval);
-    if (remIntervalNumErr) {
-      content = remIntervalNumErr;
-      isError = true;
-      return { content, isError };
-    }
-
-    // Same integrity gate as kind="task": reminders share the scheduler, same silent never-fires.
-    const VALID_REMINDER_REPEAT_UNITS = new Set([
-      'minutes', 'hours', 'days', 'weeks', 'months', 'years', 'weekdays', 'specific_days',
-    ]);
-    const remHasInterval = args.repeat_interval !== undefined && args.repeat_interval !== null;
-    const remHasUnit = args.repeat_unit !== undefined && args.repeat_unit !== null && args.repeat_unit !== '';
-    // Same ordering rule as kind="task": invalid unit first, so a misspelling gets a hint.
-    if (remHasUnit && !VALID_REMINDER_REPEAT_UNITS.has(args.repeat_unit as string)) {
-      content =
-        `Error: repeat_unit="${args.repeat_unit}" is not a valid unit. ` +
-        `Valid values: minutes, hours, days, weeks, months, years, weekdays, specific_days. ` +
-        `Common mistakes: "weekly" → repeat_interval=1, repeat_unit="weeks"; ` +
-        `"daily" → repeat_interval=1, repeat_unit="days".`;
-      isError = true;
-      return { content, isError };
-    }
-    if (remHasInterval && !remHasUnit) {
-      content =
-        `Error: repeat_interval was set without repeat_unit. The reminder would fire once and then never again. ` +
-        `Add repeat_unit (one of: minutes, hours, days, weeks, months, years, weekdays, specific_days). ` +
-        `Example for a daily reminder: repeat_interval=1, repeat_unit="days".`;
-      isError = true;
-      return { content, isError };
-    }
-    if (remHasUnit && !remHasInterval && args.repeat_unit !== 'specific_days') {
-      content =
-        `Error: repeat_unit="${args.repeat_unit}" was set without repeat_interval. ` +
-        `Add repeat_interval (e.g. repeat_interval=1 for "every ${(args.repeat_unit as string).replace(/s$/, '')}"). ` +
-        `Or, for a fixed set of weekdays, use repeat_unit="specific_days" with repeat_days_of_week=["mon","wed",...].`;
-      isError = true;
-      return { content, isError };
-    }
-    // Reminder twin of the task gate: `reminderCreate` takes `local_time` too; the gate must agree.
-    if ((remHasInterval || remHasUnit) && !args.when && !args.local_time) {
-      content =
-        `Error: a recurring reminder needs a first-fire time — either \`when\` (an ISO 8601 UTC instant) ` +
-        `or local_time (the wall clock the user named, "YYYY-MM-DDThh:mm", which the engine converts for you). ` +
-        `Without one the scheduler has no anchor. Ask the person you are talking to when the first reminder should fire and re-call with one of them set.`;
-      isError = true;
-      return { content, isError };
-    }
 
     try {
       content = await reminderCreate(agentId, {
@@ -457,24 +338,8 @@ const tableOfHandlers: ToolHandlerMap = {
       }
       editArgs.repeat_days_of_week = normalizedDays; // string | null
     }
-    // Switching to specific_days: the list must be supplied or already on the row.
-    if (args.repeat_unit === 'specific_days') {
-      if (editArgs.repeat_days_of_week === undefined || editArgs.repeat_days_of_week === null) {
-        try {
-          const row = getDb().prepare('SELECT repeat_days_of_week FROM work WHERE id = ?').get(args.task_id) as { repeat_days_of_week: string | null } | undefined;
-          const existingDays = row?.repeat_days_of_week ?? null;
-          if (!editArgs.repeat_days_of_week && !existingDays) {
-            content = 'Error: switching repeat_unit to "specific_days" requires repeat_days_of_week (e.g. ["mon","wed"]).';
-            isError = true;
-            return { content, isError };
-          }
-        } catch { /* fall through; tracker layer will surface row issues */ }
-      }
-      // Mirror create: carry interval=1 so downstream detects a recurring schedule.
-      if (editArgs.repeat_interval === undefined) {
-        editArgs.repeat_interval = 1;
-      }
-    }
+    // specific_days carries interval 1, as create does, so the schedule reads as repeating downstream.
+    if (args.repeat_unit === 'specific_days' && editArgs.repeat_interval === undefined) editArgs.repeat_interval = 1;
     return editWithMeasure(agentId, args, Object.keys(editArgs).length > 1, () => trackerEditTask(agentId, editArgs));
   },
 
@@ -701,7 +566,7 @@ const tableOfHandlers: ToolHandlerMap = {
     let isError = false;
     const tpsErr = pauseActionMissing(args) ?? checkRequired([{ name: 'task_id', value: args.task_id, type: 'string' }]);
     if (tpsErr) { content = tpsErr; isError = true; return { content, isError }; }
-    content = trackerPauseSchedule(agentId, { taskId: args.task_id as string });
+    content = trackerPauseSchedule(agentId, { taskId: args.task_id as string, resume_at: args.resume_at });
     return { content, isError: content.startsWith('Refused:') };
   },
 
@@ -767,23 +632,20 @@ const tableOfHandlers: ToolHandlerMap = {
       }
       newAgent = lookup.id;
     }
+    if (!newAgent) {
+      const member = groupMember(newGroup as string);
+      if (!member.ok) return { content: member.error, isError: true };
+      newAgent = member.id;
+    }
     const moved = moveAssignee({
       taskId: reassignTaskId, by: 'agent', actorId: agentId,
-      cause: args.cause, userQuote: args.user_quote,
-      to: newAgent ? { agentId: newAgent } : { groupId: newGroup as string },
+      cause: args.cause, userQuote: args.user_quote, to: { agentId: newAgent },
       door: 'work_update(action="reassign")',
     });
     if (!moved.ok) return { content: moved.text, isError: true };
     const title = (reassignDb.prepare('SELECT title FROM work WHERE id = ?').get(reassignTaskId) as { title: string } | undefined)?.title ?? reassignTaskId;
-    if (newAgent) {
-      const agentName = (reassignDb.prepare('SELECT name FROM agents WHERE id = ?').get(newAgent) as { name: string } | undefined)?.name ?? newAgent;
-      return { content: `Task "${title}" reassigned to ${agentName} (cause: ${moved.cause}).`, isError: false };
-    }
-    const groupName = (reassignDb.prepare('SELECT name FROM agent_groups WHERE id = ?').get(newGroup) as { name: string } | undefined)?.name ?? newGroup;
-    return {
-      content: `Task "${title}" reassigned to group "${groupName}" (cause: ${moved.cause}), PM will pick an agent at run time`,
-      isError: false,
-    };
+    const agentName = (reassignDb.prepare('SELECT name FROM agents WHERE id = ?').get(newAgent) as { name: string } | undefined)?.name ?? newAgent;
+    return { content: `Task "${title}" reassigned to ${agentName}${newGroup && !args.assigned_to ? ` from group ${newGroup}` : ''} (cause: ${moved.cause}).`, isError: false };
   },
 };
 

@@ -138,7 +138,12 @@ export const TaskScheduleForm = ({ value, onChange }: TaskScheduleFormProps) => 
             <input
               type="datetime-local"
               value={dateTimeValue}
-              onChange={(e) => update({ scheduledStart: e.target.value ? new Date(e.target.value).toISOString() : null })}
+              onChange={(e) => {
+                const start = e.target.value ? new Date(e.target.value).toISOString() : null;
+                // "Runs at" follows the start unless it was set to a different time of day.
+                const follows = !!value.anchorTime && anchorTimeOfDay(value.anchorTime) === anchorTimeOfDay(value.scheduledStart);
+                update(follows ? { scheduledStart: start, anchorTime: start } : { scheduledStart: start });
+              }}
               className="glass-input text-sm"
             />
           </div>
@@ -216,6 +221,7 @@ export const TaskScheduleForm = ({ value, onChange }: TaskScheduleFormProps) => 
                   <option value="weekdays">Weekdays (Mon–Fri)</option>
                   <option value="weeks">Weeks</option>
                   <option value="months">Months</option>
+                  <option value="years">Years</option>
                   <option value="specific_days">Specific days of week…</option>
                 </select>
               </div>

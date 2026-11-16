@@ -239,7 +239,7 @@ export const WORK_OP_READS: Readonly<Record<WorkOp, readonly string[]>> = {
   'work_validate:decide': ['action', 'task_id', 'verdict', 'reason', 'user_quote'],
   'work_validate:open_proof': ['action', 'task_id', 'item'],
   'work_validate:retask': ['action', 'task_id', 'directive', 'target_status', 'user_quote'],
-  'work_schedule:pause': ['action', 'task_id'],
+  'work_schedule:pause': ['action', 'task_id', 'resume_at'],
   'work_schedule:resume': ['action', 'task_id'],
   'work_schedule:resolve_missed': ['action', 'task_id', 'resolution'],
 };

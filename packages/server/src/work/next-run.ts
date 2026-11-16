@@ -70,12 +70,3 @@ export function advanceScheduleOnClaim(db: Database.Database, input: {
          input.occurrenceMs, input.nowMs).changes;
 }
 
-/** Restore in the same unit as the occurrence's DELETE; RAW instants, as truncating shifts up to 999 ms. */
-export function restoreScheduleOnRelease(db: Database.Database, input: {
-  workId: string; occurrenceMs: number | null; priorLastRunMs: number | null;
-}): void {
-  db.prepare(`
-    UPDATE work SET schedule_status = 'waiting', next_run_at = ?, last_run_at = ?, updated_at = ?
-     WHERE id = ?
-  `).run(input.occurrenceMs, input.priorLastRunMs, Date.now(), input.workId);
-}

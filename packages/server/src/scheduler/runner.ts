@@ -7,15 +7,15 @@ import { retireEngineEventsForRun, retireEngineEventsForTask } from '../agent/v2
 import { getDb } from '../db/connection.js';
 import { HARD_STUCK_THRESHOLD_MINUTES } from '../agent/stuck-thresholds.js';
 import {
-  taskScope, dueScope, msToText, tsToMs, STATE_TO_STATUS_SQL, scheduleRowColumns,
+  taskScope, dueScope, msToText, msToUtcText, tsToMs, stateToStatus, scheduleRowColumns,
 } from '../work/tracker-view.js';
 import { patchWork, setTrackerStatus, bumpWorkAttempts } from '../work/tracker-store.js';
 import { engineHandIn } from '../work/done/hand-in.js';
-import { clearHold, heldExpr, workingExpr } from '../work/done/hold.js';
+import { clearHold, heldExpr } from '../work/done/hold.js';
 import { setNextRun, clearLiveSchedule } from '../work/next-run.js';
 import { noteUnsettled } from '../work/store.js';
 import {
-  claimOccurrence, releaseOccurrence, settleOccurrence, occurrenceOf, inFlightOccurrence,
+  claimOccurrence, settleOccurrence, occurrenceOf, inFlightOccurrence,
   assignOccurrence, skipOpenOccurrences, sweepOrphanedOccurrences,
   sweepTerminatedAgentOccurrences, runsReadyToCloseOnDelivery, RUN_STATUS_UNDELIVERED,
 } from '../work/occurrences.js';
@@ -25,13 +25,13 @@ import { recordFloorGhost } from '../agent/v2/floor-ghost.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getTask } from '../tracker/schema.js';
+import { resumeSchedule } from '../tracker/tools.js';
 import { writeTaskLog } from '../tracker/task-log.js';
 import { calculateNextRun, normalizeDbTimestamp, type ScheduledTask } from './engine.js';
 import { getAgentRuntime } from '../agent/runtime.js';
-import { sendAgentMessage } from '../agent/agent-bus.js';
 import { postAgentNotice } from '../agent/agent-notice.js';
 import { insertEngineEventIfAbsent } from '../memory/message-store.js';
-import { getPrimaryAgentId, getPMAgentId } from '../config/platform.js';
+import { getPrimaryAgentId } from '../config/platform.js';
 import { recordMove } from '../work/move-record.js';
 import { OWNER_ALERT_HEADS_UP_PREFIX } from '@dojo/shared';
 // The liveness fact every reaper guards on: a run that is still executing must never be force-failed.
@@ -79,7 +79,7 @@ function intervalApproxMs(unit: string | null, interval: number | null): number 
 }
 
 /**
- * Pause the task and notify its agent (assignee, else a group pick, else the primary) of the missed runs.
+ * Pause the task and notify its holder (else the primary) of the missed runs.
  * The agent decides via work_schedule(action="resolve_missed"), since backfill or skip depends on the task.
  */
 function alertMissedRuns(taskRow: Record<string, unknown>, missedSlots: number): void {
@@ -89,12 +89,7 @@ function alertMissedRuns(taskRow: Record<string, unknown>, missedSlots: number):
   const repeatInterval = taskRow.repeat_interval as number | null;
   const repeatUnit = taskRow.repeat_unit as string | null;
 
-  let assignedAgent = (taskRow.assigned_to as string | null) ?? null;
-  if (!assignedAgent) {
-    const groupId = taskRow.assigned_to_group as string | null;
-    if (groupId) assignedAgent = pickAvailableAgentFromGroup(groupId);
-  }
-  if (!assignedAgent) assignedAgent = getPrimaryAgentId();
+  const assignedAgent = (taskRow.assigned_to as string | null) ?? getPrimaryAgentId();
 
   // Pause while the agent decides so the task does not re-fire every tick; its resolve call unpauses, and
   // `missed_runs_paused_at` lets autoResolveStaleMissedRunPauses skip it after a whole agent turn.
@@ -133,21 +128,6 @@ function alertMissedRuns(taskRow: Record<string, unknown>, missedSlots: number):
     taskId, taskTitle, missedSlots, assignedAgent,
   });
 }
-
-
-export function pickAvailableAgentFromGroup(groupId: string): string | null {
-  const db = getDb();
-  const agents = db.prepare(`
-    SELECT id FROM agents
-    WHERE group_id = ? AND status IN ('idle', 'working') AND classification != 'sensei'
-    ORDER BY
-      CASE status WHEN 'idle' THEN 0 ELSE 1 END,
-      (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND w.agent_id = agents.id AND ${workingExpr('w')}) ASC
-  `).all(groupId) as Array<{ id: string }>;
-
-  return agents.length > 0 ? agents[0].id : null;
-}
-
 
 
 // Deterministic fallback: once the agent has run a whole turn that STARTED after a missed-runs pause without
@@ -314,10 +294,14 @@ export async function checkScheduledTasks(): Promise<void> {
       try {
         const deps = JSON.parse(dependsOnRaw) as string[];
         if (deps.length > 0) {
-          const incomplete = deps.filter(depId => {
-            const dep = db.prepare(`SELECT ${STATE_TO_STATUS_SQL('state')} AS status FROM work WHERE id = ?`).get(depId) as { status: string } | undefined;
-            return !dep || dep.status !== 'complete';
-          });
+          const states = deps.map((depId) => (db.prepare('SELECT state FROM work WHERE id = ?').get(depId) as { state: string } | undefined)?.state ?? 'gone');
+          // A step that can never become done ends this one: handed in once, so it leaves the due scan.
+          const dead = states.findIndex((st) => st === 'failed' || st === 'abandoned' || st === 'gone');
+          if (dead >= 0) {
+            engineHandIn(taskId, `the step it waits on (${deps[dead]}) is ${states[dead] === 'gone' ? 'gone' : stateToStatus(states[dead]!)}, so this one can never start`, { scope: 'schedule', outcome: 'cant_be_done' });
+            continue;
+          }
+          const incomplete = deps.filter((_, i) => states[i] !== 'done');
           if (incomplete.length > 0) {
             logger.info('Scheduler: task has unmet dependencies, skipping', { taskId, incomplete });
             noteUnsettled(setNextRun(taskId, {
@@ -363,42 +347,7 @@ export async function checkScheduledTasks(): Promise<void> {
     // The occurrence id IS the run id (the lineage key `retireEngineEventsForRun` sweeps by).
     const runId = occurrenceId;
 
-    let assignedAgent = taskRow.assigned_to as string | null;
-    const assignedGroup = taskRow.assigned_to_group as string | null;
-
-    if (assignedGroup && !assignedAgent) {
-      assignedAgent = pickAvailableAgentFromGroup(assignedGroup);
-      if (!assignedAgent) {
-        const primaryId = getPrimaryAgentId();
-        const groupName = (db.prepare('SELECT name FROM agent_groups WHERE id = ?').get(assignedGroup) as { name: string } | undefined)?.name ?? assignedGroup;
-        sendAgentMessage(getPMAgentId(), primaryId, 'status',
-          `No available agents in group "${groupName}" for scheduled task "${taskRow.title}". Task run #${runNumber} skipped.`, {
-            taskId, runId, event: 'no_agent_available',
-          });
-        // Release the claim and restore the occurrence and prior last_run_at so the task retries next tick. The
-        // occurrence ROW goes with it, so the same occurrence can be claimed again once the group has somebody
-        // free; `releaseOccurrence` records `occurrence_released` on the SCHEDULE because that row is deleted.
-        // Both instants are the RAW columns: restoring a truncated `last_run_at` would shift it by up to 999ms.
-        const stillRunning = db.prepare('SELECT schedule_status FROM work WHERE id = ?')
-          .get(taskId) as { schedule_status: string } | undefined;
-        if (stillRunning?.schedule_status === 'running') {
-          noteUnsettled(setTrackerStatus(taskId, 'on_deck', {
-            by: 'scheduler', actorId: 'scheduler',
-            reason: 'no agent was available for this occurrence; the claim is released',
-          }), 'scheduler: no agent available, claim released', { taskId });
-          releaseOccurrence(
-            occurrenceId, taskId, claimedOccurrenceMs,
-            (taskRow.last_run_at_ms as number | null) ?? null,
-            'no available agent in the assigned group',
-          );
-        }
-        continue;
-      }
-    }
-
-    if (!assignedAgent) {
-      assignedAgent = getPrimaryAgentId();
-    }
+    let assignedAgent = (taskRow.assigned_to as string | null) ?? getPrimaryAgentId();
 
     const agentStatus = db.prepare('SELECT status FROM agents WHERE id = ?').get(assignedAgent) as { status: string } | undefined;
     if (!agentStatus || agentStatus.status === 'terminated') {
@@ -433,13 +382,15 @@ export async function checkScheduledTasks(): Promise<void> {
     const taskDesc = taskRow.description as string | null;
     const taskKind = taskRow.kind as string | null;
     const totalRuns = taskRow.repeat_end_value ? ` of ${taskRow.repeat_end_value}` : '';
+    // A run firing well after its time (the Mac was asleep or off) says so, so it is not passed off as on time.
+    const late = claimedOccurrenceMs !== null && nowMs - claimedOccurrenceMs > 5 * 60_000 ? `, late: it was due ${msToUtcText(claimedOccurrenceMs)}` : '';
 
     // Reminders get a lighter prompt: one conversational delivery in the agent's normal voice, then a silent close.
     // The wake asks for the reply ALONE and the bookkeeping in the NEXT response, because text emitted in the same
     // response as a tool call is demoted to working notes (post-call-classify/terminal-text.ts) and never heard.
     const message = taskKind === 'reminder'
-      ? `[Reminder due] ${taskDesc ?? taskTitle}\n\nTask ID: ${taskId}\nRun ID: ${runId}\n\nDeliver this reminder to the owner now as a single short chat message in your normal voice. Do NOT prefix with "Reminder:" or "Here's your reminder", just say the thing naturally (e.g. the owner asked to be reminded to "go get coffee" → "Hey, time to go get coffee."). Say it as a SEPARATE response with no tool call in it — text that rides along with a tool call is treated as working notes and never reaches the owner. Then, in your NEXT response, silently call work_update(action="status") with task_id="${taskId}" and status="complete". That status call is internal bookkeeping; do NOT write any owner-facing message about marking the reminder complete ("Task closed", "All done", "Marked complete"). The reminder message itself is the entire owner-facing output.`
-      : `[Scheduled Task, Run #${runNumber}${totalRuns}] ${taskTitle}${taskDesc ? '\n' + taskDesc : ''}\n\nTask ID: ${taskId}\nRun ID: ${runId}\n\nWhen this run is finished, hand it in: work_update(action="hand_in") with task_id="${taskId}" and its proof. That call is internal bookkeeping; do NOT write any owner-facing message about marking the task complete (e.g. "Task closed", "All done", "Marked complete"). The owner already received your reminder/output above; an extra "task closed" line is just noise.`;
+      ? `[Reminder due${late}] ${taskDesc ?? taskTitle}\n\nTask ID: ${taskId}\nRun ID: ${runId}\n\nDeliver this reminder to the owner now as a single short chat message in your normal voice. Do NOT prefix with "Reminder:" or "Here's your reminder", just say the thing naturally (e.g. the owner asked to be reminded to "go get coffee" → "Hey, time to go get coffee."). Say it as a SEPARATE response with no tool call in it — text that rides along with a tool call is treated as working notes and never reaches the owner. Then, in your NEXT response, silently call work_update(action="status") with task_id="${taskId}" and status="complete". That status call is internal bookkeeping; do NOT write any owner-facing message about marking the reminder complete ("Task closed", "All done", "Marked complete"). The reminder message itself is the entire owner-facing output.`
+      : `[Scheduled Task, Run #${runNumber}${totalRuns}${late}] ${taskTitle}${taskDesc ? '\n' + taskDesc : ''}\n\nTask ID: ${taskId}\nRun ID: ${runId}\n\nWhen this run is finished, hand it in: work_update(action="hand_in") with task_id="${taskId}" and its proof. That call is internal bookkeeping; do NOT write any owner-facing message about marking the task complete (e.g. "Task closed", "All done", "Marked complete"). The owner already received your reminder/output above; an extra "task closed" line is just noise.`;
 
     // Inject as an engine event on the EVENTS lane, outside the assignee's `messages` chat table.
     const msgId = uuidv4();
@@ -981,13 +932,18 @@ export function forceResetStuckRecurringTask(taskId: string): void {
 
 // Finished tasks are never pruned: deleting work history needs the owner's say-so. The task list is paged.
 
-/** Lift every paused hold whose resume time (`paused_until`) has passed. */
+/** Lift every pause whose resume time (`paused_until`) has passed: a paused hold, or a paused schedule. */
 export function resumeExpiredPauses(): void {
   const expired = getDb().prepare(`
-    SELECT w.id AS id FROM work w
-    WHERE ${taskScope('w')} AND ${heldExpr('w', 'paused')} AND w.paused_until IS NOT NULL AND w.paused_until <= ?
-  `).all(Date.now()) as Array<{ id: string }>;
-  for (const { id } of expired) {
+    SELECT w.id AS id, w.is_paused AS is_paused FROM work w
+    WHERE ${taskScope('w')} AND (${heldExpr('w', 'paused')} OR (w.is_paused = 1 AND w.schedule_status != 'completed'))
+      AND w.paused_until IS NOT NULL AND w.paused_until <= ?
+  `).all(Date.now()) as Array<{ id: string; is_paused: number }>;
+  for (const { id, is_paused } of expired) {
+    if (is_paused) {
+      resumeSchedule(id, 'the schedule\'s pause reached its resume time');
+      continue;
+    }
     if (!clearHold(id, 'scheduler')) continue;
     logger.info('Auto-resumed paused task (pause expired)', { taskId: id });
     const fresh = getTask(id);

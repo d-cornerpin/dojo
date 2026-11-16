@@ -176,7 +176,7 @@ export function takeoverRefusal(
 }
 
 
-export type MoveTarget = { agentId: string } | { groupId: string };
+export type MoveTarget = { agentId: string };
 
 export interface MoveRequest {
   taskId: string; by: Actor; actorId: string; cause: unknown; userQuote?: unknown;
@@ -209,13 +209,11 @@ export function checkMove(req: MoveRequest): MoveCheck {
     };
   }
   const cause = req.cause;
-  if (req.to && 'agentId' in req.to) {
+  if (req.to) {
     if (!isLiveAgent(req.to.agentId)) {
       return { ok: false, text: `Error: ${who(req.to.agentId)} does not exist or has been shut down; it cannot take work.` };
     }
     if (req.to.agentId === f.holder && !f.groupId) return { ok: false, text: `Error: "${f.title}" is already with ${who(f.holder)}.` };
-  } else if (req.to && !getDb().prepare('SELECT 1 FROM agent_groups WHERE id = ?').get(req.to.groupId)) {
-    return { ok: false, text: `Error: agent group ${req.to.groupId} does not exist.` };
   }
   if (cause === 'assignee_gone' && f.holderLive) {
     return {
@@ -263,12 +261,8 @@ export function writeAssignee(workId: string, to: MoveTarget | { clear: true }):
   const db = getDb();
   const at = Date.now();
   if ('clear' in to) return db.prepare('UPDATE work SET assignee_agent = NULL, updated_at = ? WHERE id = ?').run(at, workId).changes;
-  if ('agentId' in to) {
-    return db.prepare('UPDATE work SET agent_id = ?, assignee_agent = ?, assigned_to_group = NULL, updated_at = ? WHERE id = ?')
-      .run(to.agentId, to.agentId, at, workId).changes;
-  }
-  return db.prepare('UPDATE work SET assignee_agent = NULL, assigned_to_group = ?, updated_at = ? WHERE id = ?')
-    .run(to.groupId, at, workId).changes;
+  return db.prepare('UPDATE work SET agent_id = ?, assignee_agent = ?, assigned_to_group = NULL, updated_at = ? WHERE id = ?')
+    .run(to.agentId, to.agentId, at, workId).changes;
 }
 
 /** A terminated agent's work goes back to the agent that spawned it, else to the primary. */

@@ -344,7 +344,7 @@ describe('the recurring gate accepts every first-run spelling the tool declares'
         agentId: AGENT,
         args: { ...d.base, repeat_interval: 1, repeat_unit: 'days' },
       } as never);
-      expect(res.isError, 'a recurrence with no first-run time must still be refused').toBe(true);
+      expect(res.isError || res.content.startsWith('ASK_USER:'), 'a recurrence with no first-run time must open nothing').toBe(true);
       const unnamed = d.spellings.filter(s => !res.content.includes(s));
       expect(
         unnamed,

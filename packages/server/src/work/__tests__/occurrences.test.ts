@@ -30,7 +30,7 @@ vi.mock('../../db/connection.js', async () => {
 import { createWorkTable, seedTrackerTask } from './work-fixture.js';
 import { scheduleRowColumns } from '../tracker-view.js';
 import {
-  claimOccurrence, releaseOccurrence, settleOccurrence, occurrenceOf, inFlightOccurrence,
+  claimOccurrence, settleOccurrence, occurrenceOf, inFlightOccurrence,
   OCCURRENCE_KIND, OCCURRENCE_EVENT,
 } from '../occurrences.js';
 
@@ -230,44 +230,6 @@ describe('a crashed fire cannot lose the occurrence', () => {
     })!;
     settleOccurrence(id, 'complete', null, null);
     expect(inFlightOccurrence(W)).toBeNull();
-  });
-});
-
-// ════════════════════════════════════════════════════════════════════════════════
-describe('release — D21s unfired hand-back, carried', () => {
-  it('restores the occurrence and the prior last_run_at exactly, and removes the row', () => {
-    seedSchedule(MS_OCCURRENCE, { last_run_at: MS_OCCURRENCE - 86_400_000 });
-    const prior = (mockDb.current!.prepare('SELECT last_run_at FROM work WHERE id = ?')
-      .get(W) as { last_run_at: number }).last_run_at;
-    const id = claimOccurrence({
-      workId: W, sequence: 1, occurrenceMs: MS_OCCURRENCE,
-      nowMs: MS_OCCURRENCE + 1, nextRunMs: MS_OCCURRENCE + 1000, agentId: AGENT,
-    })!;
-
-    releaseOccurrence(id, W, MS_OCCURRENCE, prior, 'no agent available in the group');
-
-    const after = mockDb.current!.prepare(
-      'SELECT next_run_at, last_run_at, schedule_status FROM work WHERE id = ?',
-    ).get(W) as { next_run_at: number; last_run_at: number; schedule_status: string };
-    expect(after).toEqual({
-      next_run_at: MS_OCCURRENCE, last_run_at: prior, schedule_status: 'waiting',
-    });
-    expect(occurrences()).toHaveLength(0);
-  });
-
-  it('and the SAME sequence can then be claimed again on the next tick', () => {
-    // The release must not burn the sequence, or a group that was momentarily empty would
-    // lose that occurrence forever — the exact failure the release exists to prevent.
-    seedSchedule(MS_OCCURRENCE);
-    const id = claimOccurrence({
-      workId: W, sequence: 1, occurrenceMs: MS_OCCURRENCE,
-      nowMs: MS_OCCURRENCE + 1, nextRunMs: MS_OCCURRENCE + 1000, agentId: AGENT,
-    })!;
-    releaseOccurrence(id, W, MS_OCCURRENCE, null, 'no agent available');
-    expect(claimOccurrence({
-      workId: W, sequence: 1, occurrenceMs: MS_OCCURRENCE,
-      nowMs: MS_OCCURRENCE + 2, nextRunMs: MS_OCCURRENCE + 1000, agentId: AGENT,
-    })).not.toBeNull();
   });
 });
 

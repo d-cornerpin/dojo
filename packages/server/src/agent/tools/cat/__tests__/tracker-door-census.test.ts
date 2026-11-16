@@ -34,11 +34,6 @@ vi.mock('../../../../tracker/tools.js', () => ({
   trackerCreateProject: recorder('work_open:project'),
   trackerCreateTask: recorder('work_open:task'),
   reminderCreate: recorder('work_open:reminder'),
-  // Door-side schedule helper: the create doors refuse unusable repeat numbers
-  // before forwarding. This census tests FORWARDING, and its probe values are
-  // arbitrary; the refusal rule has its own test. Stubbed to accept, so a
-  // probe value reaches the recorder exactly as it arrived.
-  repeatNumberError: () => null,
   trackerEditTask: recorder('work_update:edit'),
   trackerEditProject: recorder('work_update:edit_project'),
   trackerUpdateStatus: recorder('work_update:status'),

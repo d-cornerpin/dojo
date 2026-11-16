@@ -3,12 +3,9 @@
 //
 // ── THE DEFECT ──
 // FOUR things reference `work(id)`, all `NO ACTION`: `work_events.work_id`,
-// `adjudications.work_id`, `techniques.build_project_id` and `work.parent_id` (itself). The two
-// occurrence delete paths in `work/occurrences.ts` swept `work_events` and forgot
-// `adjudications`:
+// `adjudications.work_id`, `techniques.build_project_id` and `work.parent_id` (itself). The
+// occurrence delete path in `work/occurrences.ts` swept `work_events` and forgot `adjudications`:
 //
-//   releaseOccurrence()   — the scheduler could not claim the occurrence, so the row is deleted
-//                           and its sequence freed
 //   deleteOccurrencesOf() — a schedule is deleted, so its occurrence children go with it
 //
 // An occurrence CAN carry an adjudication, and nothing guards against it: `store.ts`'s
@@ -18,7 +15,7 @@
 //
 // MEASURED: one such orphan appeared on the owner's body about an hour AFTER migrations 172 and
 // 173 swept the older damage — which is what makes this a live tap rather than history, and is
-// why the fix is at the two call sites and not only in a migration.
+// why the fix is at the call site and not only in a migration.
 //
 // ── L1-F2: THE WORK-SIDE CENSUS ──
 // The agents-side census (`gateway/routes/__tests__/a-purge-leaves-no-orphan-row.test.ts`) asks
@@ -69,7 +66,7 @@ vi.mock('../../logger.js', () => {
 });
 
 import { runMigrations } from '../../db/migrations.js';
-import { releaseOccurrence, deleteOccurrencesOf, OCCURRENCE_KIND } from '../occurrences.js';
+import { deleteOccurrencesOf, OCCURRENCE_KIND } from '../occurrences.js';
 
 const db = (): Database.Database => mockDb.current!;
 const NOW = 1_790_000_000_000;
@@ -151,35 +148,7 @@ afterEach(() => {
   mockDb.current = null;
 });
 
-// ── THE TWO OCCURRENCE DELETE PATHS ──────────────────────────────────────────────────────
-
-describe('releaseOccurrence — the released row takes its verdict with it', () => {
-  it('⚠ deletes the occurrence’s adjudication, not only its events', () => {
-    seedSchedule('sched-1');
-    seedOccurrence('occ-1', 'sched-1', 1);
-    expect(verdicts('occ-1')).toBe(1);
-
-    releaseOccurrence('occ-1', 'sched-1', NOW, null, 'no agent available');
-
-    expect(n('SELECT COUNT(*) AS n FROM work WHERE id = ?', 'occ-1')).toBe(0);
-    expect(n('SELECT COUNT(*) AS n FROM work_events WHERE work_id = ?', 'occ-1')).toBe(0);
-    expect(verdicts('occ-1')).toBe(0);
-    expect(fkViolations()).toEqual([]);
-  });
-
-  it('NEGATIVE CONTROL — another row’s verdict is untouched', () => {
-    seedSchedule('sched-1');
-    seedOccurrence('occ-1', 'sched-1', 1);
-    // A verdict on the SCHEDULE itself, which is not being deleted.
-    db().prepare(`INSERT INTO adjudications (work_id, claim_state, verdict, by_agent, created_at)
-                  VALUES ('sched-1', 'done', 'upheld', 'owner', ?)`).run(NOW);
-
-    releaseOccurrence('occ-1', 'sched-1', NOW, null, 'no agent available');
-
-    expect(verdicts('sched-1')).toBe(1);
-    expect(n('SELECT COUNT(*) AS n FROM work WHERE id = ?', 'sched-1')).toBe(1);
-  });
-});
+// ── THE OCCURRENCE DELETE PATH ──────────────────────────────────────────────────────
 
 describe('deleteOccurrencesOf — a schedule’s children take their verdicts with them', () => {
   it('⚠ deletes every child occurrence’s adjudication', () => {
@@ -237,18 +206,6 @@ describe('the work-side census — no reference to a deleted work row is forgott
     expect(refs.length).toBe(5);
     // All five are NO ACTION — which is WHY every delete path has to sweep them by hand.
     for (const r of refs) expect(r.onDelete, `${r.table}.${r.column}`).toBe('NO ACTION');
-  });
-
-  it('⚠ after releaseOccurrence, NOT ONE of them names the deleted row', () => {
-    seedSchedule('sched-1');
-    seedOccurrence('occ-1', 'sched-1', 1);
-
-    releaseOccurrence('occ-1', 'sched-1', NOW, null, 'no agent available');
-
-    for (const { table, column } of tablesReferencingWork()) {
-      expect(n(`SELECT COUNT(*) AS n FROM "${table}" WHERE "${column}" = ?`, 'occ-1'),
-        `${table}.${column} still names the released occurrence`).toBe(0);
-    }
   });
 
   it('⚠ after deleteOccurrencesOf, NOT ONE of them names a deleted child', () => {

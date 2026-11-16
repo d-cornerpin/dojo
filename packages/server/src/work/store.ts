@@ -241,8 +241,8 @@ export function transition(workId: string, input: TransitionInput): WorkOutcome 
          -- a settled row is not waiting to be compiled. The flag is cleared HERE rather
          -- than at the three call sites that settle a join, so it cannot survive its row.
          compile_pending = CASE WHEN ? = 1 THEN 0 ELSE compile_pending END,
-         -- a hold lasts only while the row stays where it is (work/done/hold.ts)
-         hold_kind = NULL, hold_reason = NULL, hold_at = NULL, paused_until = NULL,
+         -- a hold lasts only while the row stays where it is (work/done/hold.ts); a schedule's pause stays
+         hold_kind = NULL, hold_reason = NULL, hold_at = NULL, paused_until = CASE WHEN hold_kind IS NULL THEN paused_until END,
          updated_at = ?
        WHERE id = ?`,
     ).run(

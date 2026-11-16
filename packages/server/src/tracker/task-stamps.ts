@@ -222,7 +222,7 @@ export function renderStepFacts(t: TaskStampFields): string {
       `SELECT w.step_number AS step_number, w.title AS title FROM work w
         WHERE ${taskScope('w')}
           AND w.parent_id = ? AND w.step_number IS NOT NULL AND w.step_number < ?
-          AND w.state NOT IN ('done', 'failed')
+          AND w.state NOT IN ('done', 'failed', 'abandoned')
         ORDER BY w.step_number ASC LIMIT 1`,
     ).get(t.project_id, t.step_number) as { step_number: number; title: string } | undefined;
     if (!openEarlier) return `step ${t.step_number} of ${t.total_steps}`;
