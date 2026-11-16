@@ -6,7 +6,7 @@ import { sudoWouldHang } from '../brokers/sudo-probe.js';
 import { coerceNumberArg } from './pagination.js';
 import { silentWindowMs } from '../../tracker/silent-window.js';
 import { runWithIdleBound } from './process-idle-bound.js';
-import { redactText } from '../../inspect/redact.js';
+import { namedFileSecrets, redactText } from '../../inspect/redact.js';
 
 // `execFile` never consults a shell, which is what makes `exec({argv})` argv-no-shell; the shell
 // door reaches /bin/zsh by `-c` through this same single spawning call, carrying the call's capability.
@@ -141,24 +141,27 @@ export function handBackText(pid: number | undefined): string {
 
 async function settleProcess(
   running: Promise<{ stdout: string; stderr: string }>,
-  input: { auditTarget: string; timeout: number; note: string | null; audit: ProcessAudit },
+  input: { auditTarget: string; timeout: number; note: string | null; audit: ProcessAudit; cwd: string | undefined },
 ): Promise<string> {
   const { auditTarget, timeout, note, audit } = input;
+  // The hidden files the command named are read once it has ended, so a file it wrote is blanked too.
+  let named: string[] | undefined;
+  const blank = (text: string): string => redactText(text, [], named ??= namedFileSecrets(auditTarget, input.cwd));
   try {
     // A secret the command prints is blanked before the audit row, the agent and the store see it.
     const { stdout, stderr } = await running;
-    const out = redactText((stdout ?? '').trim());
-    const err = redactText((stderr ?? '').trim());
+    const out = blank((stdout ?? '').trim());
+    const err = blank((stderr ?? '').trim());
     audit(auditTarget, 'success',
       err ? `stdout: ${out.slice(0, 250)} | stderr: ${err.slice(0, 250)}` : out.slice(0, 500));
     return formatProcessResult({ stdout: out, stderr: err, reason: null, messageFallback: '' }, note);
   } catch (err: unknown) {
     const error = err as { stderr?: string; stdout?: string };
     const { reason, messageFallback } = processFailureReason(err, timeout);
-    const out = redactText((error.stdout ?? '').trim());
-    const errStream = redactText((error.stderr ?? '').trim());
+    const out = blank((error.stdout ?? '').trim());
+    const errStream = blank((error.stderr ?? '').trim());
     audit(auditTarget, 'error',
       `${reason} | stderr: ${errStream.slice(0, 250) || '(empty)'} | stdout: ${out.slice(0, 250) || '(empty)'}`);
-    return formatProcessResult({ stdout: out, stderr: errStream, reason, messageFallback: redactText(messageFallback) }, note);
+    return formatProcessResult({ stdout: out, stderr: errStream, reason, messageFallback: blank(messageFallback) }, note);
   }
 }

@@ -11,6 +11,8 @@ import { isReadStatement, stripExplain } from '../db/read-only-door.js';
 import { PATTERNS, secretOf } from '../techniques/scrub.js';
 import { REDACTED_CREDENTIAL, redactHandedCredentials } from '../credentials/secret-values.js';
 import { loadSecrets } from '../config/loader.js';
+import { secretFilesNamed } from '../agent/brokers/deny.js';
+import { readSmallFile } from '../agent/path-resolve.js';
 
 export const DENIED_TABLES: readonly string[] = ['agent_credentials', 'google_accounts', 'microsoft_accounts', 'twilio_config', 'github_account', 'plaud', 'vault_entries'];
 export const DENIED_COLUMN_PATTERNS: readonly RegExp[] = [/token/i, /secret/i, /passw(?:or)?d/i, /api[_-]?key/i, /refresh/i, /private/i];
@@ -163,10 +165,19 @@ function secretsFileValues(): string[] {
     .filter((v): v is string => typeof v === 'string' && v.length >= 16).sort((a, b) => b.length - a.length);
 }
 
-export function redactText(s: string, agentIds: readonly string[] = []): string {
+/** What a command's output must not show of each hidden file it names: every line of 12 or more characters,
+ *  and the value of a `name value`, `name=value` or `name: value` line when that is 12 or more. */
+export function namedFileSecrets(command: string, cwd?: string): string[] {
+  const lines = secretFilesNamed(command, cwd).flatMap((file) => (readSmallFile(file, 1 << 20) ?? '').split('\n').map((l) => l.trim()));
+  const pieces = lines.flatMap((line) => [line, /^[\w.-]+(?:\s*[=:]\s*|\s+)(.+)$/.exec(line)?.[1] ?? '']);
+  return [...new Set(pieces.filter((p) => p.length >= 12))].sort((a, b) => b.length - a.length);
+}
+
+/** Blank every secret shape in `s`, the secrets file's values, `literals` (longest first) and what the named agents handled. */
+export function redactText(s: string, agentIds: readonly string[] = [], literals: readonly string[] = []): string {
   if (!s) return s;
   let out = s;
-  for (const v of secretsFileValues()) out = out.split(v).join(REDACTED_CREDENTIAL);
+  for (const v of [...literals, ...secretsFileValues()]) out = out.split(v).join(REDACTED_CREDENTIAL);
   for (const p of PATTERNS) {
     out = out.replace(p.regex, (match: string, ...rest: unknown[]) => {
       const value = secretOf(p, match, rest);

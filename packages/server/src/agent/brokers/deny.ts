@@ -275,6 +275,10 @@ function pathsNamed(line: string, cwd?: string): Array<{ piece: string; abs: str
   });
 }
 
+/** The files a command line names that are hidden even from the main agent, so their contents are blanked in what it prints. */
+export const secretFilesNamed = (line: string, cwd?: string): string[] =>
+  pathsNamed(line, cwd).filter(({ abs }) => denyRuleFor(abs, 'sensitive', 'main', true)).map(({ abs }) => abs);
+
 /** Why a shell line is refused for naming a hidden file, or null. The main agent: only a word that is the Dojo's
  *  keys file by `~`, `$HOME` or an absolute path. Any other agent: the keys file anywhere in the line, or a word
  *  naming a hidden file or location; a folder above one is not refused, as what it prints is blanked. */

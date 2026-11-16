@@ -68,6 +68,13 @@ export function statOf(inputPath: string): fs.Stats | null {
   }
 }
 
+/** A file's text when it is a regular file under `maxBytes`, else null: the fs leaf, for blanking what a command printed. */
+export function readSmallFile(inputPath: string, maxBytes: number): string | null {
+  const stat = statOf(inputPath);
+  if (!stat?.isFile() || stat.size >= maxBytes) return null;
+  try { return fs.readFileSync(resolveHomePath(inputPath), 'utf8'); } catch { return null; }
+}
+
 // For outside callers: canonicalize, THEN resolve links. { resolved:false } means the caller MUST fail closed.
 export function resolveRealPathHardened(filePath: string): { path: string; resolved: boolean } {
   return realResolveDeepest(canonicalizeAgentPath(filePath));
