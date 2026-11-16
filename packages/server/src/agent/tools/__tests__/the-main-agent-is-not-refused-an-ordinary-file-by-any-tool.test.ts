@@ -16,7 +16,7 @@ const connection = await import('../../../db/connection.js');
 const migrations = await import('../../../db/migrations.js');
 const platform = await import('../../../config/platform.js');
 const { executeTool, toolWasBlocked } = await import('../index.js');
-const { UPLOADS } = await import('./tools-that-send-a-file.js');
+const { UPLOADS } = await import('./scratch-dojo.js');
 
 const ordinary = path.join(home, 'Documents', 'Taxes', 'report.txt');
 const projectEnv = path.join(home, 'code', 'site', '.env');

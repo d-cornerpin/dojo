@@ -12,7 +12,7 @@ import { PATTERNS, secretOf } from '../techniques/scrub.js';
 import { REDACTED_CREDENTIAL, redactHandedCredentials } from '../credentials/secret-values.js';
 import { loadSecrets } from '../config/loader.js';
 
-export const DENIED_TABLES: readonly string[] = ['agent_credentials', 'google_accounts', 'microsoft_accounts', 'twilio_config', 'github_account', 'plaud'];
+export const DENIED_TABLES: readonly string[] = ['agent_credentials', 'google_accounts', 'microsoft_accounts', 'twilio_config', 'github_account', 'plaud', 'vault_entries'];
 export const DENIED_COLUMN_PATTERNS: readonly RegExp[] = [/token/i, /secret/i, /passw(?:or)?d/i, /api[_-]?key/i, /refresh/i, /private/i];
 
 const NUMERIC_TYPE = /INT|REAL|FLOA|DOUB|NUM|DEC|BOOL/i;
@@ -20,7 +20,9 @@ const NUMERIC_TYPE = /INT|REAL|FLOA|DOUB|NUM|DEC|BOOL/i;
 /** SQLite's own statistics tables: after ANALYZE, `sqlite_stat4.sample` holds sampled index keys in
  *  cleartext (a destructive_approvals token among them). */
 const STAT_TABLE = /^sqlite_stat/;
-const isDeniedTable = (t: string): boolean => DENIED_TABLES.includes(t) || STAT_TABLE.test(t);
+/** A denied table, for this reader: the household memory (`vault_entries`) is the main agent's own to read. */
+export const tableDenied = (t: string, forMain = false): boolean => DENIED_TABLES.includes(t) && !(forMain && t === 'vault_entries');
+const isDeniedTable = (t: string, forMain: boolean): boolean => tableDenied(t, forMain) || STAT_TABLE.test(t);
 
 /** The schema pragmas name a table's columns and indexes, never its values, so the table they
  *  are asked about is not "reached". Their quoted argument is set aside before the name scan. */
@@ -126,10 +128,10 @@ function reads(sql: string, db: Database.Database): { tables: Set<string>; colum
 /** The sentence refusing this statement, or null when it reaches no credential. An EXPLAIN is checked as the
  *  statement it explains. A statement SQLite cannot compile returns null (SQLite fails it where it runs); one it
  *  compiles but this check cannot read is refused. */
-export function refuseDeniedSql(sql: string, db?: Database.Database): string | null {
+export function refuseDeniedSql(sql: string, db?: Database.Database, forMain = false): string | null {
   const ids = new Set(identifiers(sql.replace(SCHEMA_PRAGMA, 'pragma_$1(NULL)')));
   if (SCHEMA_QUALIFIED_CONFIG.test(stripLiterals(sql))) return CONFIG_QUALIFIED;
-  const named = [...ids].find(isDeniedTable);
+  const named = [...ids].find((t) => isDeniedTable(t, forMain));
   if (named) return tableRefusal(named);
   if (!db) return null;
   const { explained, inner } = stripExplain(sql);
@@ -139,7 +141,7 @@ export function refuseDeniedSql(sql: string, db?: Database.Database): string | n
     try { db.prepare(inner); } catch { return null; }
     return 'Refused: the statement could not be checked for what it reads, so it does not run.';
   }
-  const opened = [...reached.tables].find(isDeniedTable);
+  const opened = [...reached.tables].find((t) => isDeniedTable(t, forMain));
   if (opened) return tableRefusal(opened);
   const [column] = [...reached.columns].sort();
   return column
@@ -149,7 +151,7 @@ export function refuseDeniedSql(sql: string, db?: Database.Database): string | n
 
 function tableRefusal(table: string): string {
   if (STAT_TABLE.test(table)) return `Refused: the statement reaches ${table}, SQLite's statistics, which sample index keys (credentials among them) and are not readable through dojo_inspect.`;
-  return `Refused: the statement reaches ${table}, which holds credentials and is not readable through dojo_inspect.`;
+  return `Refused: the statement reaches ${table}, which holds credentials (or the owner's private memory) and is not readable through dojo_inspect.`;
 }
 
 /** The secrets file's values (every field but the search provider's name), longest first. */

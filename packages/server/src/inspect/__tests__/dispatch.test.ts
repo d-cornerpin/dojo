@@ -56,13 +56,13 @@ describe('the dispatcher: what → view', () => {
     expect(await dojoInspect({ what: 'state' }, AGENT)).toBe('STATE');
     expect(state).toHaveBeenCalledWith();
     expect(await dojoInspect({ what: 'schema', table: 'work' }, AGENT)).toBe('SCHEMA');
-    expect(schema).toHaveBeenCalledWith({ table: 'work' });
+    expect(schema).toHaveBeenCalledWith({ table: 'work' }, undefined, false);
   });
 
   it('sql is awaited: the answer is the rows, not a pending promise', async () => {
     const out = await dojoInspect({ what: 'sql', query: 'select 1' }, AGENT);
     expect(out).toBe('SQL-ROWS');
-    expect(sql).toHaveBeenCalledWith({ query: 'select 1' });
+    expect(sql).toHaveBeenCalledWith({ query: 'select 1' }, false);
   });
 
   it('the code views run under the calling agent, so its stop button ends their GitHub calls', async () => {

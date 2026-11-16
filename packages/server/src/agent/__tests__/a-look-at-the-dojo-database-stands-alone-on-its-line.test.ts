@@ -46,7 +46,7 @@ const PIPED = [
   'stat -f %N ~/.dojo/data/dojo.db | xargs strings',
   'ls ~/.dojo/data | xargs -I{} cat ~/.dojo/data/{}',
   'ls ~/.dojo/data | wc -l',
-  'find ~/.dojo/data -name "*.db" | xargs strings',
+  'find ~/.dojo -name "*.db" | xargs strings',
   'ls -d ~/.dojo/data/dojo.db; cat $_',
   'stat ~/.dojo/data/dojo.db && strings $_',
   'ls -d ~/.dojo/data/dojo.db\ncat "$_"',

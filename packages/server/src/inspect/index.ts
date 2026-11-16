@@ -3,6 +3,7 @@
 // A number sent as text ("12") is a number; any other non-number is left out, as if not given.
 
 import { coerceNumberArg } from '../agent/tools/pagination.js';
+import { isPrimaryAgent } from '../config/platform.js';
 import { INSPECT_VIEWS } from './definition.js';
 import { timeline, type TimelineArgs } from './timeline.js';
 import { conversation } from './conversation.js';
@@ -34,9 +35,9 @@ export async function dojoInspect(args: Args, agentId: string): Promise<string> 
     case 'state':
       return state();
     case 'schema':
-      return schema({ table: text(args.table) });
+      return schema({ table: text(args.table) }, undefined, isPrimaryAgent(agentId));
     case 'sql':
-      return await sql({ query: typeof args.query === 'string' ? args.query : '' });
+      return await sql({ query: typeof args.query === 'string' ? args.query : '' }, isPrimaryAgent(agentId));
     case 'code_search':
       return codeSearch({ pattern: typeof args.pattern === 'string' ? args.pattern : '', path: text(args.path) }, agentId);
     case 'code_read':

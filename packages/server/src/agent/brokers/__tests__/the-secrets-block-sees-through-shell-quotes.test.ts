@@ -25,13 +25,13 @@ const ROWS: Array<{ line: string; want: boolean; why: string }> = [
   { line: "cat ~/.ssh/id''_rsa", want: true, why: 'the key file split by a quote pair' },
   { line: 'head -5 ~/.ss"h"/id_rsa', want: true, why: 'the folder split by quotes' },
   { line: "ls /tmp; cat ~/.ssh/'id_rsa'", want: true, why: 'a quoted name in a later segment' },
-  // ── re-review 6: a recursive read of a sensitive folder, or of a folder that contains one ──
+  // ── a word naming a hidden location, and folders above one ──
   { line: 'grep -r . ~/.ssh', want: true, why: 'a recursive grep of the key folder' },
   { line: 'grep -rn x ~/.ssh/', want: true, why: 'the folder with a trailing slash' },
   { line: 'rg -e . ~/.ssh', want: true, why: 'rg reads folders recursively' },
-  { line: 'grep -R token ~/.dojo', want: true, why: 'the Dojo folder holds the secrets file' },
-  { line: 'grep -r token ~', want: true, why: 'the home folder holds the key folder' },
-  { line: 'rg token ~/.config', want: true, why: 'a folder that holds the cloud credentials folder' },
+  { line: 'grep -R token ~/.dojo', want: false, why: 'a folder above a hidden file: what it prints is blanked' },
+  { line: 'grep -r token ~', want: false, why: 'the home folder, above the key folder' },
+  { line: 'rg token ~/.config/gcloud', want: true, why: 'the cloud credentials folder itself' },
   { line: 'cp -r ~/.ssh /tmp/k', want: true, why: 'a recursive copy of the key folder' },
   // ── controls ──
   { line: 'ls ~/.ssh', want: true, why: 'a helper does not name the key folder' },

@@ -257,25 +257,15 @@ export function isSensitivePath(absPath: string): boolean {
 const SSH_ROW = DENY_RULES.find((r) => r.id === 'ssh-directory-except-public-keys') as DenyRule;
 export const isLoginKeyFile = (absPath: string): boolean => SSH_ROW.test(contextFor(absPath));
 
-/** Rows deny files by name; a folder holding one is named whole by a recursive read like `grep -r`,
- *  so a line naming such a folder is refused to every agent but the main one. A test pairs each entry with a row. */
+/** The hidden locations a word may name as a folder: a line naming one is refused to every agent but the
+ *  main one, as a file inside it is. A test pairs each entry with a row. */
 export const SENSITIVE_LOCATIONS: readonly string[] = ['.dojo/secrets.yaml', '.ssh', '.aws/credentials', '.config/gcloud', '.kube/config', '.plaud/tokens.json', '.cloudflared'];
-
-/** Is this path one of the fixed sensitive locations, or a folder that contains one? */
-export function containsSensitiveLocation(absPath: string): boolean {
-  const here = foldPath(path.resolve(absPath));
-  const prefix = here.endsWith(path.sep) ? here : here + path.sep;
-  return SENSITIVE_LOCATIONS.some((rel) => {
-    const loc = foldPath(path.join(homeDir(), rel));
-    return loc === here || loc.startsWith(prefix);
-  });
-}
 
 /** A shell word split into the path-shaped pieces a script inside it may name. */
 const PATH_PIECE_BREAKS = /[\s'"()=,:]+/;
 
 /** Why a shell line is refused for naming a hidden file, or null: the keys file for every agent; for any
- *  other agent, a word naming a hidden file or a folder holding one (the main agent's output is blanked instead). */
+ *  other agent, a word naming a hidden file or location. A folder above one is not refused: output is blanked. */
 export function shellLineNamesHidden(line: string, viewer: DenyViewer): string | null {
   if (namesSecretsFile(line) || namesSecretsFile(shellUnquoted(line) ?? '')) {
     return 'the line names secrets.yaml, the Dojo\'s keys file. Keys are changed in Settings → Providers on the dashboard, or by the owner';
@@ -285,7 +275,7 @@ export function shellLineNamesHidden(line: string, viewer: DenyViewer): string |
   for (const piece of words.flatMap((w) => w.split(PATH_PIECE_BREAKS)).filter(Boolean)) {
     const abs = path.resolve(resolveHomePath(piece));
     if (denyRuleFor(abs, 'sensitive', viewer, true)) return `"${piece}" is on the sensitive-files block list`;
-    if (containsSensitiveLocation(abs)) return `"${piece}" is, or holds, a folder on the sensitive-files block list`;
+    if (SENSITIVE_LOCATIONS.some((rel) => foldPath(path.join(homeDir(), rel)) === foldPath(abs))) return `"${piece}" is a folder on the sensitive-files block list`;
   }
   return null;
 }

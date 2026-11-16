@@ -18,11 +18,11 @@ function show(v: unknown): string {
 }
 
 /** Run one read and render its rows: checks run here, the query itself in a child process (`sql-child.ts`). */
-export async function sql(args: { query: string }): Promise<string> {
+export async function sql(args: { query: string }, forMain = false): Promise<string> {
   const db: Database.Database = getReadOnlyDb();
   const query = (args.query ?? '').trim().replace(/;\s*$/, '');
   if (!isReadStatement(query)) return READ_ONLY;
-  const refused = refuseDeniedSql(query, db);
+  const refused = refuseDeniedSql(query, db, forMain);
   if (refused) return refused;
   try {
     const stmt = db.prepare(query);

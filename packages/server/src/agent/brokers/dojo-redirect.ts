@@ -194,7 +194,7 @@ function sqlVerdict(sql: string, role: DoorRole): DoorVerdict {
   // The credential check runs first for every role; for the Healer the read-only check then fails closed.
   for (const s of statements) {
     const maintenance = WHOLE_DB_MAINTENANCE.test(bare(s));
-    const refused = refuseDeniedSql(s, maintenance ? undefined : db);   // undefined: the credential list by name only
+    const refused = refuseDeniedSql(s, maintenance ? undefined : db, role === 'main');   // undefined: the credential list by name only
     if (refused) return { outcome: 'credential', message: refused };
   }
   if (role === 'main') return { outcome: 'allowed' };
