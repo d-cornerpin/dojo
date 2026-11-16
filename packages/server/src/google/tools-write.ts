@@ -39,7 +39,7 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
     name: 'gmail_send',
     reachesPeople: true,
     description: 'Send an email from the connected Google account. Supports attachments, pass an array of absolute local file paths. Files totalling up to 25MB go inline; anything over auto-uploads to your Google Drive (folder "DOJO Email Attachments/<YYYY-MM>") and the recipient gets a shareable link appended to the body.',
-    effects: [{ kind: 'send', from: 'args.to' }, { kind: 'fs_read', from: 'args.attachments[]' }],
+    effects: [{ kind: 'send', from: 'args.to' }, { kind: 'fs_read', from: 'args.attachments[]', leaves: true }],
     input_schema: {
       type: 'object',
       properties: {
@@ -59,7 +59,7 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
     description: 'Reply to an existing email thread. **As of v2.7.24, in-thread replies to "Re:" messages from known correspondents auto-route via the engine, you do NOT need to call this tool for those.** Just write your reply text; the engine sends it on the same thread. Call this tool when: replying to a DIFFERENT thread than the inbound, replying to a notification that the engine did NOT auto-route, or when you need attachments / reply_all behavior. Supports attachments, same rules as gmail_send (25MB inline cap, overflow to Drive link).',
     effects: [
       { kind: 'send', from: 'derived:the Reply-To or sender of args.message_id' },
-      { kind: 'fs_read', from: 'args.attachments[]' },
+      { kind: 'fs_read', from: 'args.attachments[]', leaves: true },
     ],
     input_schema: {
       type: 'object',
@@ -76,7 +76,7 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
     name: 'gmail_forward',
     reachesPeople: true,
     description: 'Forward an email to new recipients. The original message\'s attachments are preserved automatically. You can also add NEW attachments via the `attachments` parameter; same 25MB inline cap applies to the combined total (original + new), with Drive spillover for any overflow.',
-    effects: [{ kind: 'send', from: 'args.to' }, { kind: 'fs_read', from: 'args.attachments[]' }],
+    effects: [{ kind: 'send', from: 'args.to' }, { kind: 'fs_read', from: 'args.attachments[]', leaves: true }],
     input_schema: {
       type: 'object',
       properties: {
@@ -95,7 +95,7 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
     // full account grant and "Can talk to people" off can draft all day and send nothing.
     name: 'gmail_draft',
     description: 'Create a DRAFT email in the connected Google account\'s Drafts folder. This sends nothing: the draft sits in Drafts until a person opens it and presses Send themselves. Use it to prepare a message for the user to review and send, and whenever you want a mail written but the decision to send it left with them. For a NEW message pass `to` and `subject`. To draft a REPLY on an existing thread pass `reply_to_message_id` instead — the recipient, the "Re:" subject and the threading are taken from that message, so the draft opens inside the conversation. Supports attachments on the same rules as gmail_send (25MB inline cap, overflow auto-uploads to Drive and appends a link).',
-    effects: [{ kind: 'fs_read', from: 'args.attachments[]' }],
+    effects: [{ kind: 'fs_read', from: 'args.attachments[]', leaves: true }],
     input_schema: {
       type: 'object',
       properties: {
@@ -279,7 +279,7 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'drive_upload',
     description: 'Upload a file from the local machine to Google Drive. If this file is a deliverable meant for the user/owner, prefer user_drive_upload so it lands directly in their Drive where they can see it.',
-    effects: [{ kind: 'fs_read', from: 'args.file_path' }],
+    effects: [{ kind: 'fs_read', from: 'args.file_path', leaves: true }],
     input_schema: {
       type: 'object',
       properties: {

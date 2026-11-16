@@ -4,6 +4,8 @@
 import path from 'node:path';
 import { foldPath } from '../fs-case.js';
 import { homeDir } from '../../home.js';
+import { resolveHomePath } from '../path-resolve.js';
+import { lexShellLine, shellUnquoted } from './shell-words.js';
 
 /** The doors a rule can shut. One row may shut several. */
 export type DenyTier = 'sensitive' | 'global_read' | 'global_write';
@@ -38,25 +40,23 @@ export type DenyViewer = 'main' | 'healer' | 'other';
 export type DenyViewerArg = DenyViewer | (() => DenyViewer);
 
 // Entries are lower-case: every comparison runs through foldPath.
-export const SENSITIVE_BASENAMES: ReadonlySet<string> = new Set<string>([
+const SENSITIVE_BASENAMES: ReadonlySet<string> = new Set<string>([
   'secrets.yaml',
   'secrets.yml',
   'secrets.json',
-  '.env',
-  '.env.local',
-  '.env.production',
-  '.env.development',
   'id_rsa',
   'id_ed25519',
   'id_ecdsa',
   'id_dsa',
   'authorized_keys',
   'known_hosts',
-  '.npmrc',
   '.pypirc',
   '.netrc',
   'credentials',
 ]);
+
+/** A project's own settings files: the main agent works with them, every other agent and every share does not. */
+const PROJECT_KEY_FILES: ReadonlySet<string> = new Set(['.env', '.env.local', '.env.production', '.env.development', '.npmrc']);
 
 /** No glob matcher lives here: importing permissions.ts's would close a cycle, so the
  *  rows below express containment with plain string ops that match each legacy glob. */
@@ -104,9 +104,16 @@ export const DENY_RULES: readonly DenyRule[] = [
     tiers: ['sensitive'],
     since: 'legacy',
     reason:
-      'secrets files, dotenv files, SSH private keys, npm/pypi/netrc credentials — CLAUDE.md: "Secrets never ' +
-      'enter the database or memory DAG… they never appear in message content, tool results, or summaries".',
+      'secrets files, SSH private keys, pypi/netrc credentials: secrets never appear in message content, tool results or summaries.',
     test: ({ base }) => SENSITIVE_BASENAMES.has(base),
+  },
+  {
+    id: 'project-key-lookalikes',
+    tiers: ['sensitive'],
+    since: 'legacy',
+    exceptFor: 'main',
+    reason: 'dotenv and .npmrc files often hold a project\'s keys: the main agent works with them, no other agent reads them and no door sends them off the Mac.',
+    test: ({ base }) => PROJECT_KEY_FILES.has(base),
   },
   {
     id: 'ssh-directory-except-public-keys',
@@ -136,6 +143,13 @@ export const DENY_RULES: readonly DenyRule[] = [
     since: 'legacy',
     reason: '~/.kube/config holds cluster credentials.',
     test: ({ folded, home }) => folded === path.join(home, '.kube', 'config'),
+  },
+  {
+    id: 'plaud-and-cloudflare-tokens',
+    tiers: ['sensitive'],
+    since: 'added',
+    reason: '~/.plaud/tokens.json and ~/.cloudflared hold account and tunnel credentials.',
+    test: ({ folded, home }) => folded === path.join(home, '.plaud', 'tokens.json') || underDir(folded, path.join(home, '.cloudflared')),
   },
   {
     id: 'healer-log',
@@ -243,9 +257,9 @@ export function isSensitivePath(absPath: string): boolean {
 const SSH_ROW = DENY_RULES.find((r) => r.id === 'ssh-directory-except-public-keys') as DenyRule;
 export const isLoginKeyFile = (absPath: string): boolean => SSH_ROW.test(contextFor(absPath));
 
-/** Rows deny files by name; a folder holding one is named whole by a recursive read
- *  like `grep -r`, so the reader scan refuses these too. A test pairs each entry with a row. */
-export const SENSITIVE_LOCATIONS: readonly string[] = ['.dojo/secrets.yaml', '.ssh', '.aws/credentials', '.config/gcloud', '.kube/config'];
+/** Rows deny files by name; a folder holding one is named whole by a recursive read like `grep -r`,
+ *  so a line naming such a folder is refused to every agent but the main one. A test pairs each entry with a row. */
+export const SENSITIVE_LOCATIONS: readonly string[] = ['.dojo/secrets.yaml', '.ssh', '.aws/credentials', '.config/gcloud', '.kube/config', '.plaud/tokens.json', '.cloudflared'];
 
 /** Is this path one of the fixed sensitive locations, or a folder that contains one? */
 export function containsSensitiveLocation(absPath: string): boolean {
@@ -257,15 +271,34 @@ export function containsSensitiveLocation(absPath: string): boolean {
   });
 }
 
+/** A shell word split into the path-shaped pieces a script inside it may name. */
+const PATH_PIECE_BREAKS = /[\s'"()=,:]+/;
+
+/** Why a shell line is refused for naming a hidden file, or null: the keys file for every agent; for any
+ *  other agent, a word naming a hidden file or a folder holding one (the main agent's output is blanked instead). */
+export function shellLineNamesHidden(line: string, viewer: DenyViewer): string | null {
+  if (namesSecretsFile(line) || namesSecretsFile(shellUnquoted(line) ?? '')) {
+    return 'the line names secrets.yaml, the Dojo\'s keys file. Keys are changed in Settings → Providers on the dashboard, or by the owner';
+  }
+  if (viewer === 'main') return null;
+  const words = lexShellLine(line)?.segments.flatMap((seg) => seg.words.map((w) => w.value)) ?? [line];
+  for (const piece of words.flatMap((w) => w.split(PATH_PIECE_BREAKS)).filter(Boolean)) {
+    const abs = path.resolve(resolveHomePath(piece));
+    if (denyRuleFor(abs, 'sensitive', viewer, true)) return `"${piece}" is on the sensitive-files block list`;
+    if (containsSensitiveLocation(abs)) return `"${piece}" is, or holds, a folder on the sensitive-files block list`;
+  }
+  return null;
+}
+
 /** True when the id names a resource denied for EVERY agent regardless of manifest.
  *  No production caller; the census in `__tests__/staged-set.test.ts` uses it so a new
  *  `bypass-hardening` id cannot silently become a narrowing nobody agreed to. */
 export function isGlobalDenyRule(ruleId: string): boolean {
   // A global deny is NEVER staged: an exec deny missing here would run log-only
   // for a sub-agent, exactly what every other agent is refused outright.
-  if (ruleId.startsWith('global-exec-deny:') || ruleId.startsWith('global-exec-substring:')) return true;
+  if (ruleId.startsWith('global-exec-deny:')) return true;
   // The sensitive tier reached by a non-path route is a global deny too, however the door gets there.
-  if (ruleId === 'exec-sensitive-read' || ruleId === 'applescript-shell-sensitive-read' || ruleId === 'sensitive-share') return true;
+  if (ruleId === 'exec-sensitive-read' || ruleId === 'sensitive-share') return true;
   return DENY_RULES.some((r) => r.id === ruleId);
 }
 

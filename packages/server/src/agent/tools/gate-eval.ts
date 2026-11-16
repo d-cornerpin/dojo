@@ -78,13 +78,12 @@ export async function evaluateGate(gate: ToolGate, ctx: GateContext): Promise<Ga
   const { agentId, name, args } = ctx;
 
   switch (gate.kind) {
-    // Every path the caller names is asked; a call that also sends the file out asks the share surface.
+    // Every path the caller names is asked; a read that leaves the Mac is asked on the share surface.
     case 'fs': {
-      const surface = effectsFor(name)?.some((e) => e.kind === 'send') ? 'share' : 'tool';
-      for (const resolved of gate.effects.flatMap((effect) => callerPaths(effect, args))) {
+      for (const [resolved, effect] of gate.effects.flatMap((e) => callerPaths(e, args).map((r) => [r, e] as const))) {
         // Present but not a string: refused, never coerced.
         if (!resolved.ok) return { gate, verdict: denied('arg-not-a-string', resolved.reason), resource: null, errorCode: 'PERMISSION_DENIED', auditAs: name };
-        const verdict = authorizeFs(grantFor(agentId), gate.effect, resolved.value, surface, name);
+        const verdict = authorizeFs(grantFor(agentId), gate.effect, resolved.value, effect.leaves ? 'share' : 'tool', name);
         if (!verdict.allowed) return { gate, verdict, resource: resolved.value.lexical, errorCode: 'PERMISSION_DENIED', auditAs: name };
       }
       return skip(gate);

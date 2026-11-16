@@ -8,7 +8,7 @@ vi.mock('../../squad-workspace.js', () => ({ hasSquadWorkspaceAccess: () => fals
 vi.mock('../../../config/platform.js', () => ({ isTrainerAgent: () => false, isPrimaryAgent: () => false, isHealerAgent: () => false }));
 
 import { grantForManifest } from '../grants.js';
-import { authorizeArgv, authorizeShellScript } from '../proc.js';
+import { authorizeArgv, authorizeProc } from '../proc.js';
 import { resolveArgvArg, resolveCommandArg } from '../resolve.js';
 
 const helper = (allow: string[]) => grantForManifest('helper', {
@@ -24,7 +24,7 @@ const argvRuns = (allow: string[], argv: string[]) => {
 const shellRuns = (allow: string[], line: string) => {
   const r = resolveCommandArg(line);
   if (!r.ok) throw new Error(line);
-  return authorizeShellScript(helper(allow), r.value).allowed;
+  return authorizeProc(helper(allow), r.value).allowed;
 };
 
 describe('a helper\'s command pattern covers an absolute path', () => {

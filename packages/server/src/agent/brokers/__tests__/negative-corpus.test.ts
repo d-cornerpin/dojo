@@ -386,24 +386,12 @@ describe('§6 — the proc broker: substitution, backticks and redirection appen
     }
   });
 
-  it('RECORDS the tokenized scan\'s known limit instead of pretending it is closed', async () => {
-    // `for f in ~/.ssh/id_ed25519; do cat $f; done` is ALLOWED for an agent with
-    // exec '*', and it was allowed before T2 as well: the scan looks at the
-    // tokens FOLLOWING a reading command, and the token following `cat` here is
-    // `$f`, not the path. The scan's own comment has always said so — *"a
-    // sufficiently motivated bypass will get through; the point is keeping
-    // accidental `cat ~/.dojo/secrets.yaml` out of the conversation"*.
-    //
-    // RULING P5-R5 is why this is asserted as an ALLOW rather than quietly
-    // fixed: closing it would be a NEW refusal class for an agent that holds
-    // exec '*', which is an owner decision, not a worker's. The clause exists so
-    // the limit is a measured fact with a name, and so a future task that DOES
-    // close it fails here and has to say it meant to.
+  it('a key file named in a loop header is refused: the one check reads every word of the line', async () => {
     const v = await authorize(wildcard(), {
       kind: 'shell',
       resource: mustResolveCommand('for f in ~/.ssh/id_ed25519; do cat $f; done'),
     });
-    expect(v.allowed).toBe(true);
+    expect(v.allowed).toBe(false);
     // …and the file that actually matters is closed on the substring rule no
     // matter how it is spelled, construct or no construct.
     const secrets = await authorize(wildcard(), {

@@ -32,7 +32,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
     name: 'outlook_send',
     reachesPeople: true,
     description: 'Send an email from the connected Microsoft account (Outlook). Supports attachments, pass an array of absolute local file paths. Files go inline while their total stays within 3MB; any file over 3MB, or past that total, is uploaded to OneDrive (folder "DOJO Email Attachments/<YYYY-MM>") and the recipient gets a shareable link appended to the body.',
-    effects: [{ kind: 'send', from: 'args.to' }, { kind: 'fs_read', from: 'args.attachments[]' }],
+    effects: [{ kind: 'send', from: 'args.to' }, { kind: 'fs_read', from: 'args.attachments[]', leaves: true }],
     input_schema: {
       type: 'object',
       properties: {
@@ -51,7 +51,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
     description: 'Reply to an existing Outlook email thread. **As of v2.7.24, in-thread replies to "Re:" messages from known correspondents auto-route via the engine, you do NOT need to call this tool for those.** Just write your reply text; the engine sends it on the same thread. Call this tool when: replying to a DIFFERENT thread than the inbound, replying to a notification that the engine did NOT auto-route (e.g., a new email rather than a "Re:"), or when you need attachments / reply_all behavior. Supports attachments, same rules as outlook_send (files go inline while their total stays within 3MB; any file over 3MB, or past that total, is sent as a OneDrive link).',
     effects: [
       { kind: 'send', from: 'derived:the sender of args.message_id' },
-      { kind: 'fs_read', from: 'args.attachments[]' },
+      { kind: 'fs_read', from: 'args.attachments[]', leaves: true },
     ],
     input_schema: {
       type: 'object',
@@ -68,7 +68,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
     name: 'outlook_forward',
     reachesPeople: true,
     description: 'Forward an Outlook email to new recipients. The original message\'s attachments are preserved automatically by Graph. You can also add NEW attachments via the `attachments` parameter; same rule applies: files go inline while their total stays within 3MB; any file over 3MB, or past that total, is sent as a OneDrive link.',
-    effects: [{ kind: 'send', from: 'args.to' }, { kind: 'fs_read', from: 'args.attachments[]' }],
+    effects: [{ kind: 'send', from: 'args.to' }, { kind: 'fs_read', from: 'args.attachments[]', leaves: true }],
     input_schema: {
       type: 'object',
       properties: {
@@ -86,7 +86,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
     // integration WRITE grant and consults no channel grant.
     name: 'outlook_draft',
     description: 'Create a DRAFT email in the connected Microsoft account\'s Drafts folder. This sends nothing: the draft sits in Drafts until a person opens it and presses Send themselves. Use it to prepare a message for the user to review and send, and whenever you want a mail written but the decision to send it left with them. For a NEW message pass `to` and `subject`. To draft a REPLY on an existing thread pass `reply_to_message_id` instead — Outlook builds the reply draft on that conversation, pre-addressed and quoting the original. Supports attachments on the same rules as outlook_send (files go inline while their total stays within 3MB; any file over 3MB, or past that total, is sent as a OneDrive link).',
-    effects: [{ kind: 'fs_read', from: 'args.attachments[]' }],
+    effects: [{ kind: 'fs_read', from: 'args.attachments[]', leaves: true }],
     input_schema: {
       type: 'object',
       properties: {
@@ -172,7 +172,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'onedrive_upload',
     description: 'Upload a file. Defaults to your personal OneDrive; pass drive_id to upload to a shared drive or SharePoint library. Handles files of any size using resumable upload sessions.',
-    effects: [{ kind: 'fs_read', from: 'args.file_path' }],
+    effects: [{ kind: 'fs_read', from: 'args.file_path', leaves: true }],
     input_schema: {
       type: 'object',
       properties: {
@@ -345,7 +345,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'onedrive_upload_batch',
     description: 'Upload multiple files in a single tool call. Defaults to your personal OneDrive; pass drive_id to upload to a shared drive or SharePoint library. Handles files of any size. Returns a summary of successes and failures.',
-    effects: [{ kind: 'fs_read', from: 'args.file_paths[]' }],
+    effects: [{ kind: 'fs_read', from: 'args.file_paths[]', leaves: true }],
     input_schema: {
       type: 'object',
       properties: {

@@ -131,8 +131,7 @@ describe('OR-MAC-BELONGS-TO-THE-AGENT: a shell READ of the Dojo\'s own database 
   it('OR-AUDIT-ANSWERS (a): the main agent\'s sqlite3 -readonly SELECT of a non-credential table runs; one touching a credential table is refused with a fact', () => {
     expect(verdict(PRIMARY, 'shell', `sqlite3 -readonly ${DB} "SELECT key, value FROM config WHERE key='user_presence'"`).allowed).toBe(true);
     expect(verdict(PRIMARY, 'proc', ['sqlite3', '-readonly', DB, 'select id, name from agents']).allowed).toBe(true);
-    for (const script of [`sqlite3 -readonly ${DB} "SELECT * FROM google_accounts"`, `sqlite3 -readonly ${DB} "select a.name, c.* from agents a join agent_credentials c on c.agent_id = a.id"`,
-      `sqlite3 -readonly ${DB} "select content from vault_entries limit 3"`]) {
+    for (const script of [`sqlite3 -readonly ${DB} "SELECT * FROM google_accounts"`, `sqlite3 -readonly ${DB} "select a.name, c.* from agents a join agent_credentials c on c.agent_id = a.id"`]) {
       const msg = refusal(PRIMARY, 'shell', script);
       expect(msg, script).toMatch(/^Refused: the statement reaches \w+, which holds credentials/);
     }

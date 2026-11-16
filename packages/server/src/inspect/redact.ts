@@ -12,7 +12,7 @@ import { PATTERNS, secretOf } from '../techniques/scrub.js';
 import { REDACTED_CREDENTIAL, redactHandedCredentials } from '../credentials/secret-values.js';
 import { loadSecrets } from '../config/loader.js';
 
-export const DENIED_TABLES: readonly string[] = ['agent_credentials', 'google_accounts', 'microsoft_accounts', 'twilio_config', 'github_account', 'plaud', 'vault_entries' /* owner's private memory stays behind vault_* tools */];
+export const DENIED_TABLES: readonly string[] = ['agent_credentials', 'google_accounts', 'microsoft_accounts', 'twilio_config', 'github_account', 'plaud'];
 export const DENIED_COLUMN_PATTERNS: readonly RegExp[] = [/token/i, /secret/i, /passw(?:or)?d/i, /api[_-]?key/i, /refresh/i, /private/i];
 
 const NUMERIC_TYPE = /INT|REAL|FLOA|DOUB|NUM|DEC|BOOL/i;
@@ -149,7 +149,7 @@ export function refuseDeniedSql(sql: string, db?: Database.Database): string | n
 
 function tableRefusal(table: string): string {
   if (STAT_TABLE.test(table)) return `Refused: the statement reaches ${table}, SQLite's statistics, which sample index keys (credentials among them) and are not readable through dojo_inspect.`;
-  return `Refused: the statement reaches ${table}, which holds credentials (or the owner's private memory) and is not readable through dojo_inspect.`;
+  return `Refused: the statement reaches ${table}, which holds credentials and is not readable through dojo_inspect.`;
 }
 
 /** The secrets file's values (every field but the search provider's name), longest first. */

@@ -39,7 +39,7 @@ describe('refuseDeniedSql', () => {
       'select * from `google_accounts` g',
       'select * from main.google_accounts',
     ]) expect(refuseDeniedSql(q), q).toMatch(/google_accounts/);
-    expect(DENIED_TABLES).toContain('vault_entries');
+    expect(DENIED_TABLES).not.toContain('vault_entries');
   });
 
   it('lets a statement through that only MENTIONS a denied table inside a string or a comment', () => {

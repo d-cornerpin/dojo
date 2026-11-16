@@ -168,8 +168,8 @@ describe('EXEC-LOOP — the global denies still reach inside a construct', () =>
     // clause exists to prove is that the floor reaches INSIDE a construct, so it now uses a command
     // whose INNER form is still a floor entry. Sudo is a transparent wrapper: it comes off and the
     // whole pipeline re-runs, which is exactly what keeps this true.
-    expect(exec('freeworker', 'sudo rm -rf /').allowed).toBe(false);
-    const r = exec('freeworker', 'for i in 1; do sudo rm -rf /; done');
+    expect(exec('freeworker', 'sudo chmod 777 *').allowed).toBe(false);
+    const r = exec('freeworker', 'for i in 1; do sudo chmod 777 *; done');
     expect(r.allowed).toBe(false);
     expect(r.reason).toMatch(/Global deny/);
   });

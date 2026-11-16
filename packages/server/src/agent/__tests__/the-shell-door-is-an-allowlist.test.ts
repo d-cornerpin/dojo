@@ -236,7 +236,7 @@ describe('the shell door on the Dojo database: an allowlist', () => {
     expect(run(HEALER, ['sqlite3', ABS])).toBe('refuse');
     expect(run(HEALER, ['sqlite3', ABS, '.dump'])).toBe('refuse');
     expect(run(HEALER, ['sqlite3', '-cmd', 'select 1', ABS, 'select 1'])).toBe('refuse');
-    expect(run(MAIN, ['sqlite3', ABS, 'select * from vault_entries'])).toBe('refuse');
+    expect(run(MAIN, ['sqlite3', ABS, 'select * from vault_entries'])).toBe('allow');
     expect(run(MAIN, ['cp', '-r', `${home}/.dojo/data`, '/tmp/d'])).toBe('allow');
     expect(run(WORKER, ['sqlite3', '-readonly', ABS, 'select 1'])).toBe('refuse');
     expect(run(MAIN, ['ls', '-la', ABS])).toBe('allow');

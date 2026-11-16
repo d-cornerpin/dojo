@@ -162,7 +162,8 @@ describe('effects-declaration conformance walk (PHASE-5 T1)', () => {
     // T77b: 20 → 22. `gmail_draft` and `outlook_draft` each declare the `fs_read` their
     // `attachments` field earns, and each twin inherits it through the same spread. NOT a
     // `send` effect — a draft delivers to nobody — which is the arithmetic saying the
-    // classification held.
+    // classification held. The draft's attachment read carries `leaves: true`: a read that
+    // leaves the Mac, asked as a share, still not a send.
     expect(effectfulTwins).toBe(22);
   });
 

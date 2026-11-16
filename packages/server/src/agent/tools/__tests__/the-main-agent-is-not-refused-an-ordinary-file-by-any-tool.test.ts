@@ -16,6 +16,7 @@ const connection = await import('../../../db/connection.js');
 const migrations = await import('../../../db/migrations.js');
 const platform = await import('../../../config/platform.js');
 const { executeTool, toolWasBlocked } = await import('../index.js');
+const { UPLOADS } = await import('./tools-that-send-a-file.js');
 
 const ordinary = path.join(home, 'Documents', 'Taxes', 'report.txt');
 const projectEnv = path.join(home, 'code', 'site', '.env');
@@ -47,6 +48,8 @@ describe('the main agent is not refused an ordinary file by any tool', () => {
     ['file_append', { path: projectEnv, content: 'DEBUG=1\n' }],
     ['file_append', { path: ordinary, content: 'more\n' }],
     ['file_write', { path: path.join(home, 'Library', 'notes', 'new.txt'), content: 'hello' }],
+    ['file_read', { path: projectEnv }],
+    ...UPLOADS(ordinary),
   ] as const)('%s is not refused', async (name, args) => {
     expect(toolWasBlocked(await run(name, args))).toBe(false);
   });

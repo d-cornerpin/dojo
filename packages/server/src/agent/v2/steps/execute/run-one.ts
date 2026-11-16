@@ -88,6 +88,8 @@ export async function runOneToolCall(tc: ToolCall, ctx: ExecuteContext, sc: Exec
   }
   let toolResult;
   // Identical-call brake, pre-execution half: a stopped call is not run again until the agent lifts the stop.
+  // The main agent can lift even a stop that ended the tool phase: its lift runs and the phase reopens.
+  if (turnCtx.toolPhaseEndedBySpinBrake && tc.name === LIFT_TOOL && isPrimaryAgent(agentId)) turnCtx.toolPhaseEndedBySpinBrake = false;
   const refusal = turnCtx.toolPhaseEndedBySpinBrake
     ? '[Engine: the tool phase for this turn ended after an identical call was refused repeatedly. No further tools will run this turn. Answer in text with what you have.]'
     : wordsStepRefusal(turnCtx, tc.name)

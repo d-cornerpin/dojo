@@ -28,6 +28,8 @@ export interface ToolEffect {
   scope?: EffectScope;
   /** Named indirection resolving an id to its recorded path; never a callback; no resolve, no grant. */
   via?: EffectIndirection;
+  /** On a file read: the call hands the file's bytes off the Mac (mail, text, upload, another agent), so it is asked as a share. */
+  leaves?: true;
 }
 
 export type EffectIndirection = 'attachment_row' | 'technique_dir' | 'agent_canvas_file' | 'office_local_path';

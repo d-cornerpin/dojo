@@ -9,6 +9,7 @@
 
 import { mouseClick, mouseMove, keyboardType, screenRead, applescriptRun } from '../../system-control.js';
 import type { ToolHandlerMap } from '../handler.js';
+import { redactText } from '../../../inspect/redact.js';
 
 export const hidHandlers: ToolHandlerMap = {
   async "mouse_click"({ agentId, args }) {
@@ -64,7 +65,7 @@ export const hidHandlers: ToolHandlerMap = {
   async "applescript_run"({ agentId, args }) {
     let content = '';
     let isError = false;
-    content = await applescriptRun(agentId, { script: args.script as string });
+    content = redactText(await applescriptRun(agentId, { script: args.script as string }), [agentId]);
     isError = content.startsWith('AppleScript error');
     return { content, isError };
   },

@@ -4,6 +4,7 @@ import { execFile } from 'node:child_process';
 import os from 'node:os';
 import { createLogger } from '../../logger.js';
 import { isSudoLine } from './sudo-policy.js';
+import { execSimpleCommands } from '../exec-grammar.js';
 import { SUDO_PROBE_TIMEOUT_MS, sudoPasswordPromptMessage } from './sudo-copy.js';
 
 const logger = createLogger('sudo-probe');
@@ -28,8 +29,7 @@ async function probePasswordless(): Promise<boolean> {
 
 /** The message to return instead of running a hanging sudo line; null = carry on. */
 export async function sudoWouldHang(command: string): Promise<string | null> {
-  const trimmed = command.trim();
-  if (!isSudoLine(trimmed) && !/(^|[\s;&|(])sudo\s/.test(trimmed)) return null;
+  if (!execSimpleCommands(command, false).some(isSudoLine)) return null;
   if (passwordless !== true) {
     const probe = await probePasswordless();
     if (probe) passwordless = true;

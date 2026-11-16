@@ -625,7 +625,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   {
     name: 'slides_add_image_from_local_path',
     description: 'Insert an image from a LOCAL file path (e.g., an image just made by image_create at ~/.dojo/uploads/<agent>/...) into a slide. Uploads the file to Drive internally and embeds it in one call — you don\'t have to chain drive_upload + slides_add_image_from_drive yourself. Returns the slide image_id and the Drive file_id (so you can reuse the same upload across multiple slides without re-uploading).',
-    effects: [{ kind: 'fs_read', from: 'args.file_path' }],
+    effects: [{ kind: 'fs_read', from: 'args.file_path', leaves: true }],
     input_schema: {
       type: 'object',
       properties: {
@@ -855,7 +855,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   {
     name: 'slides_build_slide',
     description: 'Build an entire slide from a freeform list of elements in ONE Slides API call. Much faster than chaining slides_add_text_box / slides_add_shape / slides_add_image / etc., because every element creation, styling, text insert, and the slide background are bundled into a single batchUpdate (one HTTP round trip instead of N). Use this when designing a custom slide that doesn\'t match a layout helper. Omit slide_id to create a new slide; pass slide_id to add elements to an existing slide. Each element kind is fully optional — leave kinds out if you don\'t need them. Returns { slide_id, element_ids: [...] } where element_ids is in the same order as the elements you supplied.',
-    effects: [{ kind: 'fs_read', from: 'fixed:~/.dojo/data/slides_styles.json' }, { kind: 'fs_read', from: 'args.elements[].file_path' }],
+    effects: [{ kind: 'fs_read', from: 'fixed:~/.dojo/data/slides_styles.json' }, { kind: 'fs_read', from: 'args.elements[].file_path', leaves: true }],
     // `kind` is a key of the ELEMENT OBJECT described in prose
     // inside `elements[]` (the array's items are free-form by design), not a
     // top-level parameter of this tool.

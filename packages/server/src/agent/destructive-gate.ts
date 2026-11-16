@@ -17,8 +17,15 @@ import { grantForManifest } from './brokers/grants.js';
 import { authorizeFs } from './brokers/fs.js';
 import { EXEC_DOOR_ARG, authorizeExecShapedArgs, execCallText, execDoorFor } from './brokers/exec-seam.js';
 import { destroysDojoData, destroysDojoFiles, overwritesFile } from './brokers/dojo-redirect.js';
-import { wipesTheMac } from './brokers/proc.js';
-import { shellPayloads } from './brokers/applescript.js';
+import { floorReadings } from './brokers/proc.js';
+import { authorizeAppleScript, shellPayloads } from './brokers/applescript.js';
+import { resolveCommandArg } from './brokers/resolve.js';
+import { lexShellLine } from './brokers/shell-words.js';
+import { wrappedProgramIndex } from './brokers/sudo-policy.js';
+import { commandWords } from './exec-grammar.js';
+import { resolveHomePath } from './path-resolve.js';
+import { homeDir } from '../home.js';
+import path from 'node:path';
 import { denyRuleFor, isLoginKeyFile } from './brokers/deny.js';
 import type { ResolvedPath } from './brokers/resolve.js';
 import { canonicalizeAgentPath } from './path-resolve.js';
@@ -35,10 +42,37 @@ const logger = createLogger('destructive-gate');
 // The sweeper re-wakes once after STALE_PENDING_MINUTES; it stays well under the approval TTL.
 const STALE_PENDING_MINUTES = 5;
 
-// Conservative surface: outright deletion, plus exec text matching clearly-destructive patterns.
-// Catastrophics are hard-denied in permissions.ts; this covers the destructive-but-legitimate band.
-// truncate joins the destroy group; mv/cp stay out: benign overwhelmingly, destructive form undetectable.
-const DESTRUCTIVE_EXEC_RE = /(^|[\s;&|])(rm|rmdir|shred|truncate|mkfs(\.\w+)?|dd)\b|--force|--hard\b|git\s+(push\s+.*--force|reset\s+--hard|clean\s+-[a-z]*f)/i;
+// Conservative surface: deleting programs and forced git rewrites, read per command from the shared grammar.
+// Catastrophics are hard-denied by the broker; this covers the destructive-but-legitimate band.
+// mv/cp stay out: benign overwhelmingly, destructive form undetectable.
+const DESTROYERS = /^(?:rm|rmdir|shred|truncate|dd|mkfs(?:\.\w+)?)$/i;
+
+/** Whether a line runs a deleting program (behind a wrapper like `xargs` or `sudo` too) or forces a git rewrite. */
+function runsDestroyer(line: string): boolean {
+  return floorReadings(line).some((command) => {
+    const w = commandWords(command);
+    return wrappedProgramIndex(w, (bare) => DESTROYERS.test(bare)) !== null || w.some((x) => x.startsWith('--force') || x === '--hard')
+      || (w[0] === 'git' && w[1] === 'clean' && w.some((x) => /^-[a-z]*f/i.test(x)));
+  });
+}
+
+/** Whether a line's `rm` names `/`, the home folder or another folder that holds the Dojo. */
+function wipesTheMac(line: string): boolean {
+  const dojo = path.join(homeDir(), '.dojo');
+  return floorReadings(line).some((command) => {
+    const words = lexShellLine(command)?.segments[0]?.words.map((w) => w.value) ?? [];
+    return path.basename(words[0] ?? '') === 'rm' && words.slice(1).some((w) => {
+      const rel = path.relative(path.resolve(resolveHomePath(w)), dojo);
+      return !w.startsWith('-') && rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+    });
+  });
+}
+
+/** The shell lines a call runs: an AppleScript's `do shell script` payloads, or the exec doors' text. */
+function shellLinesOf(toolName: string, args: Record<string, unknown>): string[] {
+  if (toolName === 'applescript_run') return typeof args.script === 'string' ? shellPayloads(args.script) : [];
+  return [execCallText(toolName, args)].filter((t): t is string => t !== null);
+}
 
 export function isDestructiveCall(
   toolName: string,
@@ -51,10 +85,8 @@ export function isDestructiveCall(
   const text = door ? execCallText(toolName, args) : null;
   const raw = door ? args[EXEC_DOOR_ARG[door]] : null;
   const argv = Array.isArray(raw) && raw.every((e) => typeof e === 'string') ? (raw as string[]) : null;
-  if (door) {
-    if (text === null) return 'destructive shell command';
-    if (DESTRUCTIVE_EXEC_RE.test(text) || destroysDojoData(argv ?? text)) return 'destructive shell command';
-  }
+  if (door && text === null) return 'destructive shell command';
+  if (shellLinesOf(toolName, args).some(runsDestroyer) || (text !== null && destroysDojoData(argv ?? text))) return 'destructive shell command';
   // A login key lets whoever holds it sign in to the Mac: a write onto one is held, whatever door writes it.
   const written = callerWrites(toolName, args);
   if (written.some((p) => isLoginKeyFile(p.lexical) || isLoginKeyFile(p.real))
@@ -85,12 +117,11 @@ export function wouldWreck(toolName: string, args: Record<string, unknown>): str
   if (rule?.id === 'dojo-secrets-writes') return 'overwrite the Dojo\'s secrets file and lose every saved key';
   if (rule?.id === 'dojo-database-writes') return 'write straight into the Dojo\'s live database file and can corrupt every agent, message and setting in it';
   const raw = args[EXEC_DOOR_ARG[execDoorFor(toolName) ?? 'shell']];
-  const lines = toolName === 'applescript_run' && typeof args.script === 'string' ? shellPayloads(args.script)
-    : [execCallText(toolName, args)].filter((t): t is string => t !== null);
+  const lines = shellLinesOf(toolName, args);
   if (lines.some(wipesTheMac)) return 'erase the whole disk or the home folder, the Dojo with it';
   const argv = toolName === 'exec' && Array.isArray(raw) && raw.every((e) => typeof e === 'string') ? (raw as string[]) : null;
   if (argv ? destroysDojoFiles(argv) : lines.some((l) => destroysDojoFiles(l))) {
-    return 'delete, move or overwrite the Dojo\'s own database, data, backups or secrets file';
+    return 'delete, move or overwrite the Dojo\'s own database, data or backups';
   }
   return null;
 }
@@ -106,6 +137,10 @@ export function manifestPermitsDestructiveCall(
   args: Record<string, unknown>,
 ): boolean {
   const grant = grantForManifest(agentId, getAgentPermissions(agentId));
+  if (toolName === 'applescript_run') {
+    const script = resolveCommandArg(args.script);
+    return script.ok && authorizeAppleScript(grant, script.value).allowed;
+  }
   const verdict = authorizeExecShapedArgs(grant, toolName, args);
   // Not exec-shaped: the one file check answers for every path the call writes.
   if (verdict === null) return callerWrites(toolName, args).every((p) => authorizeFs(grant, 'fs_write', p).allowed);

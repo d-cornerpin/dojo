@@ -67,7 +67,7 @@ function bareWord(word: string): string {
 
 /** THE ONE resolver for the privilege word's index, so recognition and stripping cannot disagree. */
 /** Past a wrapper the walk continues; outside one the first program ends it, `echo sudo` being data. */
-function wrappedProgramIndex(words: readonly string[], wanted: (bare: string) => boolean): number | null {
+export function wrappedProgramIndex(words: readonly string[], wanted: (bare: string) => boolean): number | null {
   let i = 0;
   let wrapped = false;
   while (i < words.length) {

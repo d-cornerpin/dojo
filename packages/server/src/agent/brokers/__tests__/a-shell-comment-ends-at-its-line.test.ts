@@ -25,7 +25,7 @@ describe('a shell comment ends at its line', () => {
   });
 
   it('a hash inside a word or a quote is not a comment', () => {
-    expect(shell("echo a#b'\nrm -rf /'").allowed).toBe(true);
-    expect(shell("echo '# x\nrm -rf /'").allowed).toBe(true);
+    expect(shell("echo a#b'\nchmod 777 *'").allowed).toBe(true);
+    expect(shell("echo '# x\nchmod 777 *'").allowed).toBe(true);
   });
 });

@@ -14,10 +14,7 @@ export {
   type ResolvedPath, type ResolvedCommand, type ResolvedArgv, type ResolvedUrl, type Resolution,
 } from './resolve.js';
 export { authorizeFs, globalDeny, shareDeny } from './fs.js';
-export {
-  authorizeProc, authorizeArgv, authorizeShellScript,
-  commandReadsSensitiveFile, argvReadsSensitiveFile,
-} from './proc.js';
+export { authorizeProc, authorizeArgv } from './proc.js';
 export { authorizeAppleScript } from './applescript.js';
 export {
   authorizeExecShapedCall, authorizeExecShapedArgs, execCallText, execDoorFor,

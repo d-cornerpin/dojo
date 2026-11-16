@@ -28,7 +28,7 @@ export function schema(args: { table?: string }, db: Database.Database = getRead
   const virtualNames = new Set(all.filter((t) => t.virtual).map((t) => t.name));
   if (!args.table) {
     const lines = all.map(({ name }) => {
-      if (DENIED_TABLES.includes(name)) return `${name}: ${NOT_READABLE} (it holds credentials or the owner's private memory)`;
+      if (DENIED_TABLES.includes(name)) return `${name}: ${NOT_READABLE} (it holds credentials)`;
       const n = db.prepare(`SELECT count(*) FROM ${quote(name)}`).pluck().get() as number;
       const fts = searchPart(name, virtualNames);
       return `${name} (${n.toLocaleString('en-US')} row${n === 1 ? '' : 's'})${fts ? `: ${fts}` : ''}`;
@@ -43,6 +43,6 @@ export function schema(args: { table?: string }, db: Database.Database = getRead
   const nameW = Math.max(...cols.map((c) => c.name.length));
   const rows = cols.map((c) => `${c.name.padEnd(nameW)}  ${typeOf(c)}${isDeniedColumn(c.name, c.type) ? ` (credential: ${NOT_READABLE})` : ''}`);
   const fts = searchPart(t.name, virtualNames);
-  const head = denied ? `${t.name}: ${NOT_READABLE}, its rows hold credentials or the owner's private memory` : `${t.name}${fts ? `: ${fts}` : ''}`;
+  const head = denied ? `${t.name}: ${NOT_READABLE}, its rows hold credentials` : `${t.name}${fts ? `: ${fts}` : ''}`;
   return `${head}\n\n${rows.join('\n')}`;
 }
