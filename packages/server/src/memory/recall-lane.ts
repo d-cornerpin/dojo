@@ -22,6 +22,7 @@ import {
   type LiveCommitment, type BoardCounts,
 } from '../work/obligation-memory.js';
 import { UNFILED_ARCHIVE_LABEL, unfiledArchiveWorstCaseLines } from '../vault/retrieval.js';
+import { formatCitationSuffix } from '../vault/store.js';
 import { parseDivider, NEW_SESSION_DIVIDER_LABEL } from '@dojo/shared';
 import { turnBoundary } from '../agent/turn-state.js';
 
@@ -89,7 +90,7 @@ function deriveRecallQuery(agentId: string): string {
 
 
 export interface RecallHit { sourceId: string }
-export interface RecallVaultHit { id: string; type: string; content: string }
+export interface RecallVaultHit { id: string; type: string; content: string; citation?: string | null }
 
 export interface RecallLaneContext {
   agentId: string;
@@ -294,7 +295,7 @@ export function renderRecallLane(ctx: RecallLaneContext): LaneRender<RecallLaneP
       // While the snapshot renders, obligation-shaped hits are its material: a live one is already in it, and
       // "anything not listed is not owed" covers an unresolvable one. With no snapshot, each hit renders as itself.
       if (snapshot !== null && verdict.kind !== 'not-an-obligation') continue;
-      const line = `- [vault:${e.type}] ${oneLine(e.content).slice(0, vaultChars())}`;
+      const line = `- [vault:${e.type}] ${oneLine(e.content).slice(0, vaultChars())}${formatCitationSuffix(e.citation)}`;
       vaultLines.push(verdict.kind === 'unresolvable' ? `${line} ${UNRESOLVED_OBLIGATION_MARK}` : line);
     }
     // Sorted on the entry id: the same set renders in the same bytes whatever the ranking, with no implied chronology.
@@ -521,7 +522,7 @@ export async function buildRecallLaneMessage(
           });
       for (const e of hits) {
         // Pinned entries are skipped: pinnedContextSection (vault/retrieval.ts) already serves them.
-        if (!pinnedIds.has(e.id)) vaultHits.push({ id: e.id, type: e.type, content: e.content });
+        if (!pinnedIds.has(e.id)) vaultHits.push({ id: e.id, type: e.type, content: e.content, citation: e.citation });
       }
     }
 

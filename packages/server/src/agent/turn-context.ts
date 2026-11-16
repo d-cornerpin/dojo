@@ -46,8 +46,6 @@ export interface TurnContext {
 
   triggerMessageId: string | null | undefined;
 
-  recallTokens: number;
-
   startAckTimer: ReturnType<typeof setTimeout> | null;
 
   // Written from the streaming TTS callback; only the bag carries the write to its readers.
@@ -118,7 +116,6 @@ export function openTurnContext(agentId: string): TurnContext {
     root: undefined,
     servedWork: undefined,
     triggerMessageId: undefined,
-    recallTokens: 0,
     startAckTimer: null,
     phoneStreamBuffer: '',
     phoneStreamFlushedAny: false,
@@ -208,17 +205,6 @@ export function getWorkOriginForAgent(agentId: string, kind: WorkOrigin['kind'])
     turn: ctx?.turnNumber ?? null,
     convKey: ctx?.convKey ?? null,
   };
-}
-
-export function getRecallBudgetUsed(agentId: string): number {
-  return openContexts.get(agentId)?.recallTokens ?? 0;
-}
-
-export function addRecallBudgetUsed(agentId: string, tokens: number): number {
-  const ctx = openContexts.get(agentId);
-  if (!ctx) return 0;
-  ctx.recallTokens += Math.max(0, tokens);
-  return ctx.recallTokens;
 }
 
 export function openTurnContextAgents(): string[] {

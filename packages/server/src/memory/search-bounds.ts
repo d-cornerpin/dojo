@@ -1,12 +1,16 @@
 // Hard bounds on text search: LIMIT bounds the ANSWER, not the WORK. A leading-wildcard LIKE and FTS ORDER BY rank
 // both touch every candidate, so the bound is on the candidate set and on ROWS READ. The fallback is LOUD.
 
+import type Database from 'better-sqlite3';
 import { createLogger } from '../logger.js';
 
 const logger = createLogger('search-bounds');
 
 /** Newest messages an FTS query may RANK over; rowid is append-only, so the floor is a cheap time window. */
 export const FTS_CANDIDATE_ROWS = 50_000;
+
+/** Newest embeddings of one agent a vector search scores, read newest first through an index. */
+export const VECTOR_CANDIDATE_ROWS = 10_000;
 
 /** Rowids per LIKE chunk, newest first: each call is bounded and the budget can stop the walk partway. */
 export const LIKE_CHUNK_ROWS = 20_000;
@@ -162,6 +166,12 @@ export function logBoundedFallback(
     stoppedBecause: report.stoppedBecause,
     truncated: report.truncated,
   }, agentId);
+}
+
+/** The messages FTS floor counted in the agent's own rows: the seq under its newest FTS_CANDIDATE_ROWS (0 when fewer). */
+export function agentMessagesFloor(db: Database.Database, agentId: string): number {
+  return (db.prepare('SELECT seq FROM messages WHERE agent_id = ? ORDER BY seq DESC LIMIT 1 OFFSET ?')
+    .get(agentId, FTS_CANDIDATE_ROWS) as { seq: number } | undefined)?.seq ?? 0;
 }
 
 /** The rowid floor for an FTS candidate window over the newest FTS_CANDIDATE_ROWS rows (0 when smaller). */

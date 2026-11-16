@@ -3,33 +3,13 @@
 // import is static; none of these modules imports anything from the toolbox.
 
 import { coerceNumberArg } from '../pagination.js';
-import { getRecallBudgetUsed, addRecallBudgetUsed, turnConversationScope } from '../../turn-context.js';
+import { turnConversationScope } from '../../turn-context.js';
 import { recallRecentThread } from '../../../memory/recall.js';
 import { memoryGrep, memoryDescribe, memoryExpand } from '../../../memory/retrieval.js';
 import type { ToolHandlerMap } from '../handler.js';
 
-// Per-turn recall budget: cumulative recall_recent_thread + history_search
-// EMITTED tokens (estimated chars/4 at dispatch), past which the tools return
-// a short notice. The excavation itself forces the compaction it fights.
-const RECALL_BUDGET_TOKENS = 8000;
-
-function recallBudgetNotice(usedTokens: number): string {
-  const k = Math.round(usedTokens / 1000);
-  return (
-    `You have recalled ~${k}k tokens this turn. The current conversation is already in ` +
-    `your context; if you are looking for a specific message, use history_search with a ` +
-    `narrow pattern, or ask the person directly.`
-  );
-}
-
 export const recallHandlers: ToolHandlerMap = {
   async recall_recent_thread({ agentId, args }) {
-    {
-      const used = getRecallBudgetUsed(agentId);
-      if (used >= RECALL_BUDGET_TOKENS) {
-        return { content: recallBudgetNotice(used), isError: false };
-      }
-    }
     const turnCount = Math.min(30, Math.max(1, Math.floor(coerceNumberArg(args.turn_count) ?? 8)));
     const includeToolCalls = args.include_tool_calls === false ? false : true;
     const includeToolResults = args.include_tool_results === true;
@@ -59,8 +39,6 @@ export const recallHandlers: ToolHandlerMap = {
       scope: recallScope,
       turnConversationId,
     });
-    // Bill the emitted output against this turn's recall budget.
-    addRecallBudgetUsed(agentId, Math.ceil(content.length / 4));
     return { content, isError: false };
   },
 
@@ -74,12 +52,6 @@ export const recallHandlers: ToolHandlerMap = {
         isError: true,
       };
     }
-    {
-      const used = getRecallBudgetUsed(agentId);
-      if (used >= RECALL_BUDGET_TOKENS) {
-        return { content: recallBudgetNotice(used), isError: false };
-      }
-    }
     const content = await memoryGrep(agentId, {
       pattern: grepPattern,
       mode: args.mode as 'full_text' | 'regex' | undefined,
@@ -88,7 +60,6 @@ export const recallHandlers: ToolHandlerMap = {
       before: args.before as string | undefined,
       limit: args.limit as number | undefined,
     });
-    addRecallBudgetUsed(agentId, Math.ceil(content.length / 4));
     return { content, isError: false };
   },
 

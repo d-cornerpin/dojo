@@ -23,7 +23,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 
 import {
   openTurnContext, turnContext, endTurnContext, turnConversationScope,
-  getWorkOriginForAgent, getRecallBudgetUsed, addRecallBudgetUsed, openTurnContextAgents,
+  getWorkOriginForAgent, openTurnContextAgents,
 } from '../turn-context.js';
 
 import {
@@ -43,7 +43,7 @@ const THE_TURN_OWNS = [
   'agentId',
   'kind', 'convKey', 'conversationId', 'modelRequestId',
   'address',   // 3.5: who this turn talks to and where the reply lands; computed once in preflight, read by delivery, the assembler and the send tools
-  'turnNumber', 'root', 'servedWork', 'triggerMessageId', 'recallTokens',
+  'turnNumber', 'root', 'servedWork', 'triggerMessageId',
   'pickupSeq',   // t145: the message-sequence high-water at pickup, read by the delegate-reply link (tracker-store)
   'jobParked',   // t159 G2: written by `parkJob` (work/), read by `turnParkedTheJob` (v2/engine-exit): a published fact
 ];
@@ -161,13 +161,11 @@ describe('PHASE-6 T1: TurnContext — what the turn owns', () => {
     const first = openTurnContext(FXID.n4);
     first.kind = 'a2a';
     first.turnNumber = 41;
-    addRecallBudgetUsed(FXID.n4, 900);
 
     const second = openTurnContext(FXID.n4);
     expect(second).not.toBe(first);
     expect(second.kind).toBeUndefined();
     expect(second.turnNumber).toBeUndefined();
-    expect(getRecallBudgetUsed(FXID.n4)).toBe(0);
   });
 
   it('ONE CLEAR POINT: endTurnContext removes the bag, and reads answer "outside a turn"', () => {
@@ -208,16 +206,6 @@ describe('PHASE-6 T1: TurnContext — what the turn owns', () => {
     expect(turnContext(FXID.n5)!.kind).toBeUndefined();
     endTurnContext(FXID.n5);
     expect(turnContext(FXID.n4)!.kind).toBe('user');
-  });
-
-  it('outside a turn, per-turn recorders record nothing rather than a stale entry', () => {
-    // The old maps created an entry lazily for an agent that was not in a turn (a tool
-    // driven for a peer through the a2a transport does exactly this), and that entry
-    // then survived until whenever that agent next went idle. Answering "no turn" is the
-    // same answer `turnNumber` already gave for the same call.
-    expect(addRecallBudgetUsed('nobody', 500)).toBe(0);
-    expect(getRecallBudgetUsed('nobody')).toBe(0);
-    expect(openTurnContextAgents()).toEqual([]);
   });
 });
 

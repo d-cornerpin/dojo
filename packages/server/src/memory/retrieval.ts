@@ -4,12 +4,15 @@ import {
   breadcrumbFor, clearQueryDispatched, markQueryDispatched, offThreadBreadcrumb,
 } from '../observability/stall-sentinel.js';
 import {
-  boundedRecencyScan, boundedRecencyScanSync, ftsAgentCandidateFloor, ftsCandidateRowidFloor,
+  agentMessagesFloor, boundedRecencyScan, boundedRecencyScanSync, ftsAgentCandidateFloor,
   logBoundedFallback, FTS_CANDIDATE_ROWS,
 } from './search-bounds.js';
+import { ftsSafeQuery } from './fts-query.js';
+import { renderInstant } from './message-stamp.js';
+import { pickWriter } from './writer.js';
 import { readerPoolAvailable, readerQuery } from './reader-pool.js';
 import { callModel } from '../agent/model.js';
-import { estimateTokens } from './budget.js';
+import { CHARS_PER_TOKEN, estimateTokens } from './budget.js';
 import { getSummary, getDescendantMessages } from './dag.js';
 import { getLargeFile } from './large-files.js';
 import { clauseFor, requestForAnotherTurn } from './awaiting-own-turn.js';
@@ -76,20 +79,15 @@ function summariesFtsWindow(db: ReturnType<typeof getDb>, agentId: string): Summ
  * window and whether filters were given (booleans, never values: the line is pasted into bug reports). The AGENT
  * gets one sentence naming the door out, because an agent that cannot tell "nothing matched" from "nothing RECENT
  * matched" re-asks with new wording (the self-echo loop). Returns that sentence, or null when the bound did not bite.
- * `remedy` is required and stated per arm: `before` only adds a created_at ceiling under the rowid floor, and
- * searchSummaries and history_expand take no date filter, so no one sentence is true on every arm.
- * It fires only when a floor applied AND the limit went unfilled; announcing a bound nobody reached is noise.
+ * The door out is regex mode: its bounded walk is not held to the FTS window. It fires only when a floor applied AND the limit went unfilled; announcing a bound nobody reached is noise.
  */
 function noteBoundedFtsMiss(p: {
   readonly subsystem: string;
   readonly unit: 'messages' | 'summaries';
-  /** What the AGENT can actually do on THIS arm. */
-  readonly remedy: string;
   readonly agentId: string;
   readonly candidateFloor: number;
   readonly matched: number;
   readonly limit: number;
-  readonly newestRowid: number;
   readonly reseated?: boolean;
   readonly sinceGiven?: boolean;
   readonly beforeGiven?: boolean;
@@ -99,15 +97,14 @@ function noteBoundedFtsMiss(p: {
     subsystem: p.subsystem,
     candidateFloor: p.candidateFloor,
     candidateRows: FTS_CANDIDATE_ROWS,
-    newestRowid: p.newestRowid,
     matched: p.matched,
     limit: p.limit,
     reseated: p.reseated ?? false,
     sinceGiven: p.sinceGiven ?? false,
     beforeGiven: p.beforeGiven ?? false,
   }, p.agentId);
-  return `[searched the newest ${FTS_CANDIDATE_ROWS.toLocaleString('en-US')} ${p.unit} only`
-    + ` — older history was not scanned. ${p.remedy}]`;
+  return `[searched the newest ${FTS_CANDIDATE_ROWS.toLocaleString('en-US')} ${p.unit} only, older history was not`
+    + ' scanned. Search again with mode: "regex" (an exact-phrase match) to reach further back.]';
 }
 
 // ── history_search: FTS5 search on messages and summaries ──
@@ -205,14 +202,9 @@ async function searchMessagesInner(
     }
 
     // Rank over a bounded candidate set: ORDER BY rank scores every match and the join pulls each row's content, so
-    // a common term over a huge table is thousands of row reads in one synchronous call. The rowid floor makes recency
-    // the bound (messages.seq is append-only, so it is a time window computed with one indexed MAX); on a box smaller
-    // than the window the floor is 0 and nothing changes.
-    // It is `seq`, not `rowid`: seq is the table's rowid alias, and the reader guard refuses a bare rowid projection
-    // because SQLite names the column `seq`, so `row.rowid` would read undefined without throwing.
-    const maxSeq = (db.prepare('SELECT MAX(seq) AS r FROM messages WHERE agent_id = ?')
-      .get(agentId) as { r: number | null } | undefined)?.r ?? 0;
-    const candidateFloor = ftsCandidateRowidFloor(maxSeq);
+    // a common term over a huge table is thousands of row reads in one synchronous call. The floor is counted in the
+    // agent's own rows, so other agents' traffic never pushes its history out of reach.
+    const candidateFloor = agentMessagesFloor(db, agentId);
     // The floor is spelled on the FTS side (messages_fts.rowid): on this arm every spelling plans identically, but on
     // summaries only the FTS-side form pushes the range into the virtual-table scan. It does not make the query
     // faster (ORDER BY rank still scores the whole doclist); it bounds the join count.
@@ -238,17 +230,14 @@ async function searchMessagesInner(
       // With the reader pool up this runs on the worker's connection so the serving thread stays serviceable.
       type FtsRow = { id: string; role: string; content: string; created_at: string; snippet: string };
       const rawRows = readerPoolAvailable()
-        ? await readerQuery<FtsRow>('history_search:fts', sql, [pattern, ...params, fetchLimit])
-        : db.prepare(sql).all(pattern, ...params, fetchLimit) as FtsRow[];
+        ? await readerQuery<FtsRow>('history_search:fts', sql, [ftsSafeQuery(pattern), ...params, fetchLimit])
+        : db.prepare(sql).all(ftsSafeQuery(pattern), ...params, fetchLimit) as FtsRow[];
       const rows = rawRows.filter((r) => !isPureToolCallMessage(r.content)).slice(0, limit ?? 20);
 
       // A bounded miss is not a miss: the one helper all three FTS arms use says so.
       const note = noteBoundedFtsMiss({
         subsystem: 'history_search:fts', unit: 'messages', agentId,
-        // before is a created_at ceiling under the rowid floor: it re-orders matches inside the window, not below it.
-        remedy: 'A narrower or more distinctive term is what reaches further back; a before="<ISO date>"'
-          + ' filter re-orders matches inside this window but cannot search below it.',
-        candidateFloor, matched: rows.length, limit: limit ?? 20, newestRowid: maxSeq,
+        candidateFloor, matched: rows.length, limit: limit ?? 20,
         sinceGiven: Boolean(since), beforeGiven: Boolean(before),
       });
       if (note) results.push(note);
@@ -267,7 +256,7 @@ async function searchMessagesInner(
         const expandHint = isTruncated
           ? ` [snippet only, call history_get(id="${row.id}") for full ${row.content.length}-char message]`
           : '';
-        results.push(`[id=${idShort} ${row.created_at}] (${row.role}) ${clauseFor(elsewhere, row.id)}${snippet}${expandHint}`);
+        results.push(`[id=${idShort} ${renderInstant(row.created_at) ?? row.created_at}] (${row.role}) ${clauseFor(elsewhere, row.id)}${snippet}${expandHint}`);
       }
     } catch (err) {
       // FTS5 MATCH can fail with invalid syntax. Log no pattern (the user's own words; this log is pasted into bug
@@ -374,7 +363,7 @@ async function searchMessagesLike(
     const expandHint = isTruncated
       ? ` [snippet only, call history_get(id="${row.id}") for full ${row.content.length}-char message]`
       : '';
-    return `[id=${idShort} ${row.created_at}] (${row.role}) ${clauseFor(elsewhere, row.id)}${preview}${expandHint}`;
+    return `[id=${idShort} ${renderInstant(row.created_at) ?? row.created_at}] (${row.role}) ${clauseFor(elsewhere, row.id)}${preview}${expandHint}`;
   });
 }
 
@@ -422,8 +411,8 @@ async function searchSummariesInner(
         LIMIT ?
       `;
       const sqlParams: unknown[] = candidateFloor > 0
-        ? [pattern, agentId, candidateFloor, limit ?? 20]
-        : [pattern, agentId, limit ?? 20];
+        ? [ftsSafeQuery(pattern), agentId, candidateFloor, limit ?? 20]
+        : [ftsSafeQuery(pattern), agentId, limit ?? 20];
       // Pool up: the ranked read runs on a worker connection; pool down: the same query on-thread (as the messages path).
       type SumFtsRow = {
         id: string; depth: number; kind: string; content: string;
@@ -447,12 +436,7 @@ async function searchSummariesInner(
       // The same bounded-miss note the messages arm has.
       const note = noteBoundedFtsMiss({
         subsystem: 'summary_search:fts', unit: 'summaries', agentId,
-        // searchSummaries takes no date filter, so the term is the agent's only lever; history_search reaches the
-        // raw messages.
-        remedy: 'A narrower or more distinctive term is the only lever here; this search takes no date'
-          + ' filter. history_search reaches the raw messages these summaries were built from.',
-        candidateFloor, matched: rows.length, limit: limit ?? 20,
-        newestRowid: window.globalMax, reseated: window.reseated,
+        candidateFloor, matched: rows.length, limit: limit ?? 20, reseated: window.reseated,
       });
       if (note) results.push(note);
     } catch (err) {
@@ -665,8 +649,8 @@ async function expandSummariesFts(
         LIMIT ?
       `;
     const sqlParams: unknown[] = candidateFloor > 0
-      ? [query, agentId, candidateFloor, EXPAND_SUMMARY_LIMIT]
-      : [query, agentId, EXPAND_SUMMARY_LIMIT];
+      ? [ftsSafeQuery(query), agentId, candidateFloor, EXPAND_SUMMARY_LIMIT]
+      : [ftsSafeQuery(query), agentId, EXPAND_SUMMARY_LIMIT];
     // Pool up: the ranked read runs on a worker's read-only connection; pool down: the same bounded query on-thread.
     const rows = (readerPoolAvailable()
       ? await readerQuery<ExpandSummaryRow>('history_expand:fts', sql, sqlParams)
@@ -675,12 +659,7 @@ async function expandSummariesFts(
     // "older history was not scanned" sentence spliced in would be read as content to summarise.
     void noteBoundedFtsMiss({
       subsystem: 'history_expand:fts', unit: 'summaries', agentId,
-      // Deep recall applies the same floor and exposes no way to move it, so the sentence states the bound and the one
-      // lever that changes the answer.
-      remedy: 'A narrower or more distinctive term is the only lever here; this bound is not'
-        + ' adjustable from the call.',
-      candidateFloor, matched: rows.length, limit: EXPAND_SUMMARY_LIMIT,
-      newestRowid: window.globalMax, reseated: window.reseated,
+      candidateFloor, matched: rows.length, limit: EXPAND_SUMMARY_LIMIT, reseated: window.reseated,
     });
     return rows;
   } finally {
@@ -818,11 +797,9 @@ export async function memoryExpand(
     return 'No relevant material found for the given query/summary IDs.';
   }
 
-  // Get agent's model
-  const db = getDb();
-  const agent = db.prepare('SELECT model_id FROM agents WHERE id = ?').get(agentId) as { model_id: string | null } | undefined;
-
-  if (!agent?.model_id) {
+  // The model that writes this agent's summaries: its own, or for an auto agent its router's standard-tier pick.
+  const modelId = pickWriter(agentId);
+  if (!modelId) {
     // Return raw material without LLM processing
     return `Expanded material (no model available for synthesis):\n\n${materialParts.join('\n')}`;
   }
@@ -830,18 +807,16 @@ export async function memoryExpand(
   // Make a model call to answer the prompt using the expanded material
   const systemPrompt = `You are a memory retrieval assistant. You have been given expanded conversation history material. Answer the user's question based ONLY on the material provided. If the material doesn't contain the answer, say so.`;
 
-  const userMessage = `Here is the expanded conversation history:\n\n${materialParts.join('\n')}\n\n---\n\nQuestion: ${prompt}`;
-
-  // Truncate if too long
-  const maxInputTokens = 100000;
-  const truncatedMessage = estimateTokens(userMessage) > maxInputTokens
-    ? userMessage.slice(0, maxInputTokens * 4) + '\n\n[... material truncated ...]'
-    : userMessage;
+  // The material is cut, never the question after it.
+  const material = materialParts.join('\n');
+  const maxMaterialChars = 100_000 * CHARS_PER_TOKEN;
+  const shown = material.length > maxMaterialChars ? `${material.slice(0, maxMaterialChars)}\n\n[... material truncated ...]` : material;
+  const truncatedMessage = `Here is the expanded conversation history:\n\n${shown}\n\n---\n\nQuestion: ${prompt}`;
 
   try {
     const result = await callModel({
       agentId,
-      modelId: agent.model_id,
+      modelId,
       messages: [{ role: 'user', content: truncatedMessage }],
       systemPrompt,
       tools: false,
@@ -907,7 +882,7 @@ export async function memorySearch(
       const results = await hybridSearch(query, agentId, { limit });
 
       if (results.length === 0) {
-        return `No results found for "${query}". This search checked all stored messages and summaries, retrying with a different query is unlikely to help.`;
+        return `No results found for "${query}".`;
       }
 
       const formatted = results.map((r, i) => {

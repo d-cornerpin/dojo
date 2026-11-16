@@ -10,6 +10,7 @@ import { createLogger } from '../logger.js';
 import { turnContext as liveTurnContext } from '../agent/turn-context.js';
 import { clauseFor, requestForAnotherTurn } from './awaiting-own-turn.js';
 import { charBoundary } from './tool-result-view.js';
+import { renderInstant } from './message-stamp.js';
 
 const logger = createLogger('memory-recall');
 
@@ -96,11 +97,6 @@ function clip(text: string, maxChars: number): { text: string; truncated: number
   // providers reject it. charBoundary backs off to a grapheme boundary; the dropped count is taken from there.
   const cut = charBoundary(text, maxChars, 'back');
   return { text: `${text.slice(0, cut)}…`, truncated: text.length - cut };
-}
-
-function formatTimestamp(iso: string): string {
-  // Stored as "YYYY-MM-DD HH:MM:SS", keep it compact.
-  return iso.slice(11, 16); // "HH:MM"
 }
 
 interface AssistantPart {
@@ -353,7 +349,7 @@ export function recallRecentThread(agentId: string, opts: RecallOptions): string
       const linesBefore = lines.length;
 
       const role = ROLE_LABEL[msg.role] ?? msg.role.toUpperCase();
-      const t = formatTimestamp(msg.created_at);
+      const t = renderInstant(msg.created_at) ?? msg.created_at;
 
       if (msg.role === 'system') {
         const trimmed = msg.content.trim();
@@ -401,7 +397,7 @@ export function recallRecentThread(agentId: string, opts: RecallOptions): string
               if (resultRow) {
                 const resultText = parseToolContent(resultRow.content);
                 const clipped = clip(resultText, truncateChars);
-                const resT = formatTimestamp(resultRow.created_at);
+                const resT = renderInstant(resultRow.created_at) ?? resultRow.created_at;
                 lines.push(`[TOOL ${resT}] (result: ${tc.name}) ${clipped.text || '(empty)'}`);
                 if (clipped.truncated > 0) {
                   truncatedResultCount += 1;

@@ -5,7 +5,7 @@ import { createLogger } from '../logger.js';
 import { generateEmbedding } from './embeddings.js';
 import { embeddingSourceAliveSql } from './embedding-sources.js';
 import { ftsSafeQuery } from './fts-query.js';
-import { ftsCandidateRowidFloor } from './search-bounds.js';
+import { agentMessagesFloor, VECTOR_CANDIDATE_ROWS } from './search-bounds.js';
 import { embeddingModelKey } from './embedding-model.js';
 
 const logger = createLogger('vector-search');
@@ -84,11 +84,13 @@ export async function vectorSearch(
 
   const where = conditions.join(' AND ');
 
+  // Newest first in write order: an index on (agent_id[, source_type]) reads the bound without sorting every blob.
   const rows = db.prepare(`
     SELECT e.id, e.source_type, e.source_id, e.agent_id, e.content_preview, e.embedding, e.dimensions
     FROM embeddings e
     WHERE ${where}
-  `).all(...params) as Array<{
+    ORDER BY e.rowid DESC LIMIT ?
+  `).all(...params, VECTOR_CANDIDATE_ROWS) as Array<{
     id: string;
     source_type: string;
     source_id: string;
@@ -140,19 +142,18 @@ export async function hybridSearch(
 
   // The FTS5 keyword arm must stay in line with `searchMessagesInner` in retrieval.ts, which owns it: the
   // MATCH text is FTS-safe (`ftsSafeQuery`; a `?`, `.`, `'` or `-` must not throw a syntax error the catch
-  // swallows, dropping the keyword half); it ranks only the newest `FTS_CANDIDATE_ROWS` rows (a common term
+  // swallows, dropping the keyword half); it ranks only the agent's newest `FTS_CANDIDATE_ROWS` rows (a common term
   // over a large table is a full synchronous walk on the serving thread); it drops the agent's own pure
   // tool_use echo (`isPureToolCallMessage`), which would trigger the grep-the-grep loop.
   const ftsResults: Array<{ sourceType: string; sourceId: string; preview: string; score: number }> = [];
-  const pattern = ftsSafeQuery(query, 8);
+  const pattern = ftsSafeQuery(query);
   if (pattern.length > 0) {
     try {
       // Dynamic import: retrieval.ts already imports this module dynamically, so a static import
       // here would close the cycle.
       const { isPureToolCallMessage } = await import('./retrieval.js');
 
-      const maxSeq = (db.prepare('SELECT MAX(seq) AS r FROM messages WHERE agent_id = ?').get(agentId) as { r: number | null } | undefined)?.r ?? 0;
-      const candidateFloor = ftsCandidateRowidFloor(maxSeq);
+      const candidateFloor = agentMessagesFloor(db, agentId);
 
       // Over-fetch, then drop echoes, then keep the first `limit`: the same shape as
       // `searchMessagesInner`, so the two arms cannot drift apart.
