@@ -33,24 +33,13 @@ export function twimlVoicemail(greeting: string, statusCallback: string, transcr
   );
 }
 
-/**
- * Hand the call to our Media Streams WebSocket (bidirectional μ-law frames). From/To go in as <Parameter>
- * tags that Twilio echoes in the WS `start` customParameters; without them badges show "(unknown)".
- */
-export function twimlConnectStream(
-  streamUrl: string,
-  params: { from?: string; to?: string } = {},
-): string {
-  const paramTags: string[] = [];
-  if (params.from) paramTags.push(`<Parameter name="From" value="${xmlEscape(params.from)}"/>`);
-  if (params.to) paramTags.push(`<Parameter name="To" value="${xmlEscape(params.to)}"/>`);
+/** Hand the call to our Media Streams WebSocket (bidirectional μ-law frames). */
+export function twimlConnectStream(streamUrl: string): string {
   return (
     `<?xml version="1.0" encoding="UTF-8"?>` +
     `<Response>` +
     `<Connect>` +
-    `<Stream url="${xmlEscape(streamUrl)}">` +
-    paramTags.join('') +
-    `</Stream>` +
+    `<Stream url="${xmlEscape(streamUrl)}"/>` +
     `</Connect>` +
     `</Response>`
   );

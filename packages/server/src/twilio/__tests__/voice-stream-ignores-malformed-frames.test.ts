@@ -62,7 +62,7 @@ vi.mock('../../agent/v2/outbound.js', () => ({
 vi.mock('../../agent/access/read.js', () => ({ mayUseChannel: vi.fn() }));
 
 const { handleVoiceStreamMessage } = await import('../voice-stream.js');
-const { getCallSession, listActiveCallSessions } = await import('../call-session.js');
+const { getCallSession, listActiveCallSessions, announceCall } = await import('../call-session.js');
 
 const makeWs = (): WSContext => ({ send: () => {} }) as unknown as WSContext;
 
@@ -100,7 +100,8 @@ describe('handleVoiceStreamMessage ignores malformed frames without throwing', (
     expect(listActiveCallSessions().length).toBe(before);
   });
 
-  it('still registers a session for a well-formed start frame', async () => {
+  it('still registers a session for a well-formed start frame of an announced call', async () => {
+    announceCall('CA-MALFORMED-TEST', '+15550001111', '+15550002222');
     const before = listActiveCallSessions().length;
     await expect(handleVoiceStreamMessage(makeWs(), wellFormedStart)).resolves.toBeUndefined();
     expect(listActiveCallSessions().length).toBe(before + 1);

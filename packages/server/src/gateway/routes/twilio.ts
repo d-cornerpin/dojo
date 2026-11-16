@@ -121,7 +121,7 @@ twilioRouter.post('/webhook/voice', async (c) => {
   if (denied) return denied;
 
   const { twimlConnectStream, twimlVoicemail, twimlReject } = await import('../../twilio/twiml.js');
-  const { callerIsAllowlisted } = await import('../../twilio/call-session.js');
+  const { callerIsAllowlisted, announceCall } = await import('../../twilio/call-session.js');
   const { isVoiceEnabled, getTwilioConfig } = await import('../../twilio/auth.js');
 
   if (!isVoiceEnabled()) {
@@ -131,6 +131,7 @@ twilioRouter.post('/webhook/voice', async (c) => {
   const from = formParams.From ?? '';
   const to = formParams.To ?? '';
   const direction = formParams.Direction ?? 'inbound';
+  const callSid = formParams.CallSid ?? '';
 
   // Outbound calls placed by the agent also POST here for their initial TwiML (Direction says so); those
   // always connect to the Media Streams handler, since the agent authorized the call by placing it.
@@ -142,14 +143,10 @@ twilioRouter.post('/webhook/voice', async (c) => {
   const wsBase = webhook.base.replace(/^http/, 'ws');
   const streamUrl = `${wsBase}/api/twilio/voice-stream`;
 
-  if (direction.startsWith('outbound')) {
-    return c.text(twimlConnectStream(streamUrl, { from, to }), 200, { 'Content-Type': 'application/xml' });
-  }
-
-  // Inbound call: branch on the unknown-caller policy.
-  const allowlisted = callerIsAllowlisted(from);
-  if (allowlisted || cfg.voiceUnknownCallerAction === 'agent') {
-    return c.text(twimlConnectStream(streamUrl, { from, to }), 200, { 'Content-Type': 'application/xml' });
+  // Inbound calls branch on the unknown-caller policy. A streamed call is announced so its socket is let in.
+  if (direction.startsWith('outbound') || callerIsAllowlisted(from) || cfg.voiceUnknownCallerAction === 'agent') {
+    announceCall(callSid, from, to);
+    return c.text(twimlConnectStream(streamUrl), 200, { 'Content-Type': 'application/xml' });
   }
   if (cfg.voiceUnknownCallerAction === 'voicemail') {
     const statusCallback = `${webhook.base}/api/twilio/webhook/voicemail-recording`;

@@ -22,7 +22,7 @@ const ALWAYS_PUBLIC_PREFIXES = [
   '/api/upload/download/',    // unguessable UUID is the credential
   '/api/voice/assets/',       // static voice-mode runtime assets (VAD model, ORT wasm)
   '/api/twilio/webhook/',     // verified by X-Twilio-Signature in the handler (verifySignatureOr401)
-  '/api/twilio/voice-stream', // Twilio Media Streams WS, opened by Twilio with no JWT
+  '/api/twilio/voice-stream', // Twilio Media Streams WS; admits only a call the signed voice webhook announced
 ];
 
 // OOBE ONLY: open until first run completes. These routes install software and provision the first agent,

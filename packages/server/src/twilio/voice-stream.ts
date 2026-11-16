@@ -1,6 +1,7 @@
 // Twilio Media Streams WebSocket handler. Twilio opens a bidirectional WS per call carrying JSON text frames:
 // inbound `connected | start | media | stop | mark | dtmf`, outbound `media` (also `mark` and `clear`).
-// A CallSession is created on `start`, fed `media` frames, and ended on `stop` or socket close.
+// A CallSession is created on `start` for a call the voice webhook announced, fed `media` frames, and
+// ended on `stop` or socket close.
 
 import type { WSContext } from 'hono/ws';
 import { createLogger } from '../logger.js';
@@ -9,6 +10,7 @@ import {
   endCallSession,
   getCallSession,
   registerCallSession,
+  takeAnnouncedCall,
 } from './call-session.js';
 
 const logger = createLogger('twilio-voice-stream');
@@ -20,7 +22,6 @@ interface TwilioMediaStartEvent {
     accountSid: string;
     callSid: string;
     tracks: string[];
-    customParameters?: Record<string, string>;
     mediaFormat: { encoding: string; sampleRate: number; channels: number };
   };
   streamSid: string;
@@ -92,26 +93,23 @@ export async function handleVoiceStreamMessage(ws: WSContext, data: string | Arr
       }
       const callSid = startMsg.start.callSid;
       const streamSid = startMsg.streamSid;
-      wsToCallSid.set(ws, callSid);
-      // An outbound call already has a placeholder session (from voice-outbound): attach the WS sender
-      // to it. Otherwise this is an inbound call and gets a new session.
+      const send = (m: string) => { try { ws.send(m); } catch { /* dead */ } };
+      const announced = takeAnnouncedCall(callSid);
       const existing = getCallSession(callSid);
+      if (!announced || existing?.isStarted()) {
+        logger.warn('Twilio WS start for a call the voice webhook did not announce, closing');
+        ws.close();
+        return;
+      }
+      wsToCallSid.set(ws, callSid);
+      // An agent-placed call has a placeholder session (from voice-outbound) waiting for its socket.
       if (existing) {
-        existing.bindSend((m: string) => { try { ws.send(m); } catch { /* dead */ } }, streamSid);
+        existing.bindSend(send, streamSid);
         existing.start();
         return;
       }
-      // Inbound: From/To come from the TwiML <Parameter> customParameters, else '(unknown)'.
-      const params = startMsg.start.customParameters ?? {};
-      const fromNumber = params.From ?? params.from ?? '(unknown)';
-      const toNumber = params.To ?? params.to ?? '(unknown)';
       const session = new CallSession({
-        callSid,
-        streamSid,
-        direction: 'inbound',
-        fromNumber,
-        toNumber,
-        send: (m: string) => { try { ws.send(m); } catch { /* dead */ } },
+        callSid, streamSid, direction: 'inbound', fromNumber: announced.from, toNumber: announced.to, send,
       });
       registerCallSession(session);
       session.start();

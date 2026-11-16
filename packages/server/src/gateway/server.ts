@@ -200,9 +200,8 @@ export function createServer() {
 
   // Twilio Media Streams WebSocket, Twilio opens this when a call
   // is connected to <Stream>. Carries μ-law audio frames in both
-  // directions. Public path (Twilio doesn't have a JWT) - auth is
-  // enforced by the fact that Twilio only knows the URL after we
-  // returned it in TwiML from a signature-verified webhook.
+  // directions. Public path (Twilio has no JWT): the handler accepts
+  // only a call the signature-verified voice webhook announced.
   app.get('/api/twilio/voice-stream', upgradeWebSocket(() => {
     return {
       onOpen: (_event, ws) => {

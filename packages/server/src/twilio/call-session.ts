@@ -630,6 +630,7 @@ export class CallSession {
   }
 
   isEnded(): boolean { return this.ended; }
+  isStarted(): boolean { return this.started; }
 
   /**
    * Schedule the disconnect after a delay instead of ending at once when `voice_call_end` fires, so the
@@ -734,6 +735,23 @@ export function registerCallSession(s: CallSession): void {
 
 export function getCallSession(callSid: string): CallSession | null {
   return sessionsByCallSid.get(callSid) ?? null;
+}
+
+// Calls the signed voice webhook answered with a stream, keyed by call id: the audio socket is public, so
+// only these may open an inbound session, and their numbers are the webhook's verified ones.
+const ANNOUNCED_CALL_TTL_MS = 60_000;
+const announcedCalls = new Map<string, { from: string; to: string }>();
+
+export function announceCall(callSid: string, from: string, to: string): void {
+  announcedCalls.set(callSid, { from, to });
+  setTimeout(() => announcedCalls.delete(callSid), ANNOUNCED_CALL_TTL_MS).unref();
+}
+
+/** The announced numbers for a call, usable once and only within the time limit; null otherwise. */
+export function takeAnnouncedCall(callSid: string): { from: string; to: string } | null {
+  const announced = announcedCalls.get(callSid) ?? null;
+  announcedCalls.delete(callSid);
+  return announced;
 }
 
 export function endCallSession(callSid: string, reason: string): void {
