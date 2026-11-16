@@ -722,7 +722,8 @@
         "failed",
         "held",
         "suppressed",
-        "owner_closed"
+        "owner_closed",
+        "migrated"
       ],
       "workShaped": true,
       "why": "The delivery ledger: one row per send, `outcome` recording how it went, the EVIDENCE a piece of work finished. A `pending` row with a payload (migration 'reply row') is a reply owed to a person that the channel sender (agent/v2/channel-sender.ts) still has to send: pending -> delivered | failed, with tries and a due time. So it is work keyed to an agent.",
