@@ -717,10 +717,16 @@
       "definedIn": "packages/server/src/db/migrations/121_deliveries.sql",
       "agentLink": "agent_id",
       "stateColumn": "outcome",
-      "terminalStates": [],
-      "workShaped": false,
-      "why": "The delivery ledger: one row per send attempt, `outcome` (delivered | failed | held) recording how the send went. It is the EVIDENCE a piece of work finished, not a second place where work is tracked.",
-      "disposition": "Stays and becomes universal in Phase 2 (recorded at the five transport doors)."
+      "terminalStates": [
+        "delivered",
+        "failed",
+        "held",
+        "suppressed",
+        "owner_closed"
+      ],
+      "workShaped": true,
+      "why": "The delivery ledger: one row per send, `outcome` recording how it went, the EVIDENCE a piece of work finished. A `pending` row with a payload (migration 'reply row') is a reply owed to a person that the channel sender (agent/v2/channel-sender.ts) still has to send: pending -> delivered | failed, with tries and a due time. So it is work keyed to an agent.",
+      "disposition": "TYPED SIDE-QUEUE. Not folded into work: its state is the transport's (address, tries, due time, crash lease), and the request it answers is already a work row (an ask) that its verdict settles. Rows with no payload stay pure evidence."
     },
     {
       "name": "summary_checks",
