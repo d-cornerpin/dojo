@@ -19,11 +19,13 @@ const folder = (name: string): string => {
   fs.writeFileSync(path.join(p, 'kept.txt'), 'twelve bytes');
   return p;
 };
-const record = (p: string): void => {
+// The import records the folder and its size once; the status only reads that record.
+const record = (p: string): Database.Database => {
   const d = new Database(':memory:');
   d.exec('CREATE TABLE config (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
-  d.prepare("INSERT INTO config (key, value) VALUES ('import_old_copy', ?)").run(p);
+  d.prepare("INSERT INTO config (key, value) VALUES ('import_old_copy', ?)").run(JSON.stringify({ path: p, bytes: 12 }));
   db.current = d;
+  return d;
 };
 const oldCopy = async () => (await (await migrationRouter.request('/import/status')).json()).data.oldCopy;
 const deleteIt = (body: object = {}) => migrationRouter.request('/import/old-copy/delete', { method: 'POST', body: JSON.stringify(body) });
@@ -38,7 +40,8 @@ describe('delete the old copy', () => {
   it('shows where the recorded copy is and how big, and removes only that folder', async () => {
     const recorded = folder('.dojo-backup-111');
     const other = folder('.dojo-backup-222');
-    record(recorded);
+    const d = record(recorded);
+    fs.writeFileSync(path.join(recorded, 'more.txt'), 'not walked on each look');
     expect(await oldCopy()).toEqual({ path: recorded, bytes: 12 });
 
     const res = await deleteIt({ path: other });
@@ -47,6 +50,16 @@ describe('delete the old copy', () => {
     expect(fs.existsSync(other)).toBe(true);
     expect(fs.existsSync(live)).toBe(true);
     expect(await oldCopy()).toBeNull();
+    expect(d.prepare("SELECT 1 FROM config WHERE key = 'import_old_copy'").get()).toBeUndefined();
+  });
+
+  it('refuses a recorded folder that is a link, and leaves what it points at', async () => {
+    const target = folder('Documents');
+    const link = path.join(homeDir(), '.dojo-backup-333');
+    fs.symlinkSync(target, link);
+    record(link);
+    expect((await deleteIt()).status).toBe(404);
+    expect(fs.existsSync(path.join(target, 'kept.txt'))).toBe(true);
   });
 
   it('refuses when the record names the live Dojo home', async () => {

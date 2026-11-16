@@ -13,6 +13,7 @@ import { migrationAheadOfBuild } from '../db/migrations.js';
 import { clearSecretsCache } from '../config/loader.js';
 import { migratePaths } from './path-migration.js';
 import { copyTree, PROGRAM_ITEMS } from './fs-copy.js';
+import { treeSize } from '../update/disk-preflight.js';
 import { restartAfterFailedImport, noteBackupStuck, clearImportCard } from './import-recovery.js';
 import { putBackOwnBackup, acquireImportLock } from './import-safety.js';
 import { runPostMigrationChecks, setLastManifest, type PostMigrationCheck } from './checks.js';
@@ -111,7 +112,7 @@ async function runImport(
   zipPath: string,
   password: string,
   stopServices: () => Promise<void>,
-  /** Only after a failure: brings services back onto the old data, once it is back in place. */
+  /** Opens the restored data and runs its database changes before the commit; after a failure, the old data. */
   restartServices: () => Promise<void>,
   currentAuth?: { passwordHash: string | null; jwtSecret: string },
   /** Called when a failed import's data is back and services restarted: resumes the agents it stopped. */
@@ -315,8 +316,9 @@ async function runImport(
 
     recordInRestoredDb(ownBackup);
 
-    // From here the import is COMMITTED: nothing below rolls it back. The caller restarts the Dojo onto it.
-    (await import('../config/platform.js')).clearPlatformConfigCache();
+    broadcastProgress('restart', 90, 'Restarting services...');
+    await restartServices();   // from here the import is COMMITTED: nothing below rolls it back; the caller restarts the Dojo onto it
+    (await import('../config/platform.js')).clearPlatformConfigCache();   // after the migrations, so a renamed key is not read stale
     clearImportCard();
 
     // Post-migration checks (manifest cached first for later re-checks). The import is committed: a failure
@@ -361,15 +363,28 @@ function recordInRestoredDb(oldCopy: string | null): void {
     db.pragma('journal_mode = WAL');
     const put = db.prepare('INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)');
     put.run('setup_completed', 'true');
-    if (oldCopy) put.run('import_old_copy', oldCopy);
+    if (oldCopy) put.run('import_old_copy', JSON.stringify({ path: oldCopy, bytes: treeSize(oldCopy) }));
   } finally {
     db.close();
   }
 }
 
-/** The folder the import set aside, while it is still there. Only a `.dojo-backup-*` beside the live home qualifies. */
-export function recordedOldCopy(): string | null {
+/** The folder the import set aside and its size then, while it is still there. Only a real `.dojo-backup-*`
+ *  folder beside the live home qualifies, never a link. */
+export function recordedOldCopy(): { path: string; bytes: number } | null {
   const row = getDb().prepare("SELECT value FROM config WHERE key = 'import_old_copy'").get() as { value: string } | undefined;
-  const p = row?.value;
-  return p && path.dirname(p) === homeDir() && path.basename(p).startsWith('.dojo-backup-') && fs.existsSync(p) ? p : null;
+  let rec: { path?: unknown; bytes?: unknown };
+  try { rec = JSON.parse(row?.value ?? 'null') ?? {}; } catch { return null; }
+  const p = rec.path;
+  if (typeof p !== 'string' || path.dirname(p) !== homeDir() || !path.basename(p).startsWith('.dojo-backup-')) return null;
+  return fs.lstatSync(p, { throwIfNoEntry: false })?.isDirectory() ? { path: p, bytes: Number(rec.bytes) || 0 } : null;
+}
+
+/** The owner's "Delete the old copy": removes the recorded folder and its record. Null when there is none. */
+export async function deleteOldCopy(): Promise<string | null> {
+  const old = recordedOldCopy();
+  if (!old) return null;
+  await fs.promises.rm(old.path, { recursive: true, force: true });
+  getDb().prepare("DELETE FROM config WHERE key = 'import_old_copy'").run();
+  return old.path;
 }

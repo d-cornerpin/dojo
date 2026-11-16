@@ -25,14 +25,15 @@ export type { PostMigrationCheck } from '@dojo/shared';
 let currentChecks: PostMigrationCheck[] = [];
 let migrationDismissed = false;
 
-// The manifest from the most recent import, kept in the database so the dependency installer and the
-// wizard's "re-check" still have it after the restart that follows an import.
-export function setLastManifest(manifest: ExportManifest): void {
-  getDb().prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('migration_manifest', ?)").run(JSON.stringify(manifest));
+// What the checks read of the most recent import's manifest, kept in the database so the dependency installer
+// and the wizard's "re-check" still have it after the restart. The old Mac's names and folders are not kept.
+type CheckedManifest = Pick<ExportManifest, 'contents'>;
+export function setLastManifest(manifest: CheckedManifest): void {
+  getDb().prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('migration_manifest', ?)").run(JSON.stringify({ contents: manifest.contents }));
 }
-export function getLastManifest(): ExportManifest | null {
+export function getLastManifest(): CheckedManifest | null {
   const row = getDb().prepare("SELECT value FROM config WHERE key = 'migration_manifest'").get() as { value: string } | undefined;
-  return row ? JSON.parse(row.value) as ExportManifest : null;
+  return row ? JSON.parse(row.value) as CheckedManifest : null;
 }
 
 export function getChecks(): PostMigrationCheck[] {
@@ -157,7 +158,7 @@ function checkTechniqueDependencies(): void {
 }
 
 
-export async function runPostMigrationChecks(manifest: ExportManifest): Promise<PostMigrationCheck[]> {
+export async function runPostMigrationChecks(manifest: CheckedManifest): Promise<PostMigrationCheck[]> {
   migrationDismissed = false;
   currentChecks = [];
 

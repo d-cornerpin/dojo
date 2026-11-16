@@ -179,7 +179,8 @@ export const ImportWizard = ({ isOobe = false, asModal = false, initialStep, onC
       setChecks(result.data.checks || []);
       // The Dojo restarts itself onto the imported data; the installer runs on the new process.
       setRestoreProgress({ progress: 100, message: 'Restored. Dojo is restarting onto your data…' });
-      await waitForRestart({ expectedVersion: null, previousVersion: before.ok ? before.data.version : null, signal: restartWait.current.signal });
+      await waitForRestart({ expectedVersion: null, previousVersion: before.ok ? before.data.version : null, signal: restartWait.current.signal,
+        onStatus: (message) => setRestoreProgress({ progress: 100, message }) });
       setStep('deps');
     } else {
       setError(result.error || 'Import failed');

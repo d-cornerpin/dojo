@@ -9,14 +9,15 @@ import { pipeline } from 'node:stream/promises';
 import { spawn } from 'node:child_process';
 import type { AppEnv } from '../server.js';
 import { createExport } from '../../migration/export.js';
-import { readManifestFromZip, performImport, verifyArchive, recordedOldCopy } from '../../migration/import.js';
+import { readManifestFromZip, performImport, verifyArchive, recordedOldCopy, deleteOldCopy } from '../../migration/import.js';
 import { ImportAlreadyRunningError } from '../../migration/import-safety.js';
 import { bindImportCardMarker } from '../../migration/import-recovery.js';
 import { getChecks, dismissMigration, isMigrationDismissed, runPostMigrationChecks, getLastManifest } from '../../migration/checks.js';
 import { buildCombinedInstaller } from '../../migration/dependency-script.js';
 import { stopAgentRunsForImport, resumeAgentsAfterFailedImport } from '../../migration/import-agents.js';
 import { getDb } from '../../db/connection.js';
-import { freeBytesAt, treeSize } from '../../update/disk-preflight.js';
+import { runMigrations } from '../../db/migrations.js';
+import { freeBytesAt } from '../../update/disk-preflight.js';
 import { restartDojo } from './system.js';
 import { getDashboardPasswordHash, getJwtSecret } from '../../config/loader.js';
 import { broadcast } from '../ws.js';
@@ -173,10 +174,10 @@ migrationRouter.post('/import', async (c) => {
       stoppedForImport = stopAgentRunsForImport();
     };
 
-    // A failed import put the old data back at the same path: reopening it is all its services need.
-    const reopenOldData = async () => { getDb(); };
+    // Before the commit: open the restored data and run its database changes, so a failing change rolls the import back.
+    const openAndMigrate = async () => { getDb(); runMigrations(); };
 
-    const { manifest, checks } = await performImport(tmpPath, password, stopServices, reopenOldData, currentAuth, () => resumeAgentsAfterFailedImport(stoppedForImport));
+    const { manifest, checks } = await performImport(tmpPath, password, stopServices, openAndMigrate, currentAuth, () => resumeAgentsAfterFailedImport(stoppedForImport));
     // Readers that hold their own connection (memory search) still face the replaced files: a fresh process opens the new data.
     restartDojo('a migration import finished');
     return c.json({ ok: true, data: { manifest, checks } });
@@ -191,16 +192,13 @@ migrationRouter.post('/import', async (c) => {
 
 // GET /api/migration/import/status (current post-migration check state, and the old copy the import set aside)
 migrationRouter.get('/import/status', (c) => {
-  const old = recordedOldCopy();
-  const oldCopy = old ? { path: old, bytes: treeSize(old) } : null;
-  return c.json({ ok: true, data: { checks: getChecks(), dismissed: isMigrationDismissed(), oldCopy } });
+  return c.json({ ok: true, data: { checks: getChecks(), dismissed: isMigrationDismissed(), oldCopy: recordedOldCopy() } });
 });
 
 // POST /api/migration/import/old-copy/delete: the owner's "Delete the old copy". Only the recorded folder.
-migrationRouter.post('/import/old-copy/delete', (c) => {
-  const old = recordedOldCopy();
+migrationRouter.post('/import/old-copy/delete', async (c) => {
+  const old = await deleteOldCopy();
   if (!old) return c.json({ ok: false, error: 'There is no old copy to delete.' }, 404);
-  fs.rmSync(old, { recursive: true, force: true });
   logger.info('Deleted the old copy an import set aside', { path: old });
   return c.json({ ok: true, data: { deleted: old } });
 });

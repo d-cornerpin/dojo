@@ -14,6 +14,11 @@ vi.mock('../../db/connection.js', async () => {
   return { closeDb: vi.fn(), getDbPath: () => ':memory:', getDb: () => (db.current ??= new Database(':memory:')) };
 });
 vi.mock('../../gateway/ws.js', () => ({ broadcast: vi.fn() }));
+const migrations = vi.hoisted(() => ({ fail: false }));
+vi.mock('../../db/migrations.js', async (orig) => {
+  const real = await orig<typeof import('../../db/migrations.js')>();
+  return { ...real, runMigrations: () => { if (migrations.fail) { migrations.fail = false; throw new Error('a change failed'); } real.runMigrations(); } };
+});
 vi.mock('../checks.js', () => ({ runPostMigrationChecks: vi.fn(async () => []), setLastManifest: vi.fn() }));
 vi.mock('../import-agents.js', () => ({ stopAgentRunsForImport: () => [], resumeAgentsAfterFailedImport: vi.fn() }));
 vi.mock('../../config/platform.js', () => ({ clearPlatformConfigCache: vi.fn() }));
@@ -73,5 +78,25 @@ describe('after an import, search answers from the new data', () => {
     expect(exit).not.toHaveBeenCalled();
     vi.runAllTimers();
     expect(exit).toHaveBeenCalledWith(0);
+  });
+
+  it('an import whose database changes fail puts the old data back, shows the error and asks for no restart', async () => {
+    const live = path.join(homeDir(), '.dojo');
+    fs.rmSync(live, { recursive: true, force: true });
+    fs.mkdirSync(live, { recursive: true });
+    fs.writeFileSync(path.join(live, 'before.txt'), 'old');
+    const body = await exportZip();
+    const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+    vi.useFakeTimers({ toFake: ['setTimeout'] });
+    migrations.fail = true;
+
+    const res = await migrationRouter.request('/import', {
+      method: 'POST', body, headers: { 'x-export-password': encodeURIComponent(PASSWORD) },
+    });
+    expect(await res.json()).toMatchObject({ ok: false, error: expect.stringContaining('a change failed') });
+    expect(fs.readFileSync(path.join(live, 'before.txt'), 'utf-8')).toBe('old');
+    expect(fs.existsSync(path.join(live, 'notes'))).toBe(false);
+    vi.runAllTimers();
+    expect(exit).not.toHaveBeenCalled();
   });
 });
