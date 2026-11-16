@@ -125,7 +125,7 @@ Object.defineProperty(os, 'homedir', {
 // ════════════════════════════════════════
 
 import { createRequire } from 'node:module';
-import { vi } from 'vitest';
+import { afterAll, vi } from 'vitest';
 
 const SCRUBBED_ENV = /^(CLAUDE_CODE_|CLAUDECODE$|ANTHROPIC_|OPENAI_|OPENROUTER_|DEEPSEEK_|GEMINI_|GOOGLE_API_KEY$|GOOGLE_APPLICATION_CREDENTIALS$|MISTRAL_|GROQ_|XAI_|AWS_ACCESS_KEY_ID$|AWS_SECRET_ACCESS_KEY$|AWS_SESSION_TOKEN$)/;
 for (const key of Object.keys(process.env)) {
@@ -162,3 +162,17 @@ vi.mock('kokoro-js', () => ({
   KokoroTTS: class { static from_pretrained = (): never => { throw new Error('no test loads the real TTS model'); }; },
   TextSplitterStream: class {},
 }));
+
+// A real timer a file leaves armed is cleared when the file ends: fired after teardown it reaches a closed test
+// database and fails a green run. Runs after the file's own afterAll; fake timers are never touched.
+type RealTimers = { setTimeout: typeof setTimeout; setInterval: typeof setInterval; clearTimeout: typeof clearTimeout };
+const g = globalThis as typeof globalThis & { __realTimers?: RealTimers };
+const real = (g.__realTimers ??= { setTimeout: g.setTimeout, setInterval: g.setInterval, clearTimeout: g.clearTimeout });
+const armed = new Set<ReturnType<typeof setTimeout>>();
+g.setTimeout = ((fn: (...a: unknown[]) => void, ms?: number, ...args: unknown[]) => {
+  const t = real.setTimeout((...a: unknown[]) => { armed.delete(t); fn(...a); }, ms, ...args);
+  armed.add(t);
+  return t;
+}) as typeof setTimeout;
+g.setInterval = ((...a: Parameters<typeof setInterval>) => { const t = real.setInterval(...a); armed.add(t); return t; }) as typeof setInterval;
+afterAll(() => { for (const t of armed) real.clearTimeout(t); armed.clear(); });

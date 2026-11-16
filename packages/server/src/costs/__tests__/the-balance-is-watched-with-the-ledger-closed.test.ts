@@ -67,10 +67,10 @@ vi.mock('../../services/imessage-run.js', async (importOriginal) => {
 });
 
 import { runMigrations } from '../../db/migrations.js';
-// The graph every `boot()` reaches (the iMessage door pulls in the engine) is compiled once here, at load:
-// compiled inside the first clause it cost that clause 70 s and more on a loaded box.
-import '../../scheduler/clock.js';
-import '../../gateway/routes/config.js';
+// The engine graph (the iMessage door pulls it in) is loaded once per file, here; `boot()` restarts only the
+// balance check, the one module whose process memory a restart clears for these clauses.
+import * as clock from '../../scheduler/clock.js';
+import { configRouter } from '../../gateway/routes/config.js';
 
 const OWNER = 'owner@example.test';
 const db = (): Database.Database => mockDb.current!;
@@ -99,8 +99,10 @@ function fakeFetch(url: string | URL): Promise<Response> {
 }
 
 beforeEach(async () => {
-  fs.rmSync(HOME, { recursive: true, force: true });
-  fs.mkdirSync(path.join(HOME, '.dojo', 'logs'), { recursive: true });
+  // A clean home per clause (the keys file), except the log folder the live logger may be appending to.
+  const dojo = path.join(HOME, '.dojo');
+  fs.mkdirSync(dojo, { recursive: true });
+  for (const f of fs.readdirSync(dojo)) if (f !== 'logs') fs.rmSync(path.join(dojo, f), { recursive: true, force: true });
   const d = new Database(':memory:');
   d.pragma('foreign_keys = ON');
   mockDb.current = d;
@@ -127,17 +129,16 @@ afterEach(() => {
   vi.useRealTimers();
   mockDb.current?.close();
   mockDb.current = null;
-  vi.resetModules();
 });
 
 /** A freshly booted process: the scheduler's tick and the config routes, as the server has them. */
+let boots = 0;
 async function boot(): Promise<{
   tick: () => Promise<'ran' | 'skipped'>;
   route: (method: string, p: string, body?: unknown) => Promise<Response>;
 }> {
-  vi.resetModules();
-  const clock = await import('../../scheduler/clock.js');
-  const { configRouter } = await import('../../gateway/routes/config.js');
+  const fresh = `../provider-balance-check.js?boot=${++boots}`;
+  vi.doMock('../provider-balance-check.js', () => import(/* @vite-ignore */ fresh));
   const tick = async (): Promise<'ran' | 'skipped'> => {
     const r = await clock.runSchedulerTick();
     // The balance check rides the tick but is kicked, not awaited (a slow provider must never
@@ -266,14 +267,7 @@ describe('fix round 1 (M1): a hung provider never holds the scheduler', () => {
       fetchCalls.push(String(url));
       return new Promise<Response>((_, reject) => { failHungCall = reject; });
     }));
-    const clock = await (async () => { vi.resetModules(); return import('../../scheduler/clock.js'); })();
-    // Load the module graph the tick reaches BEFORE timing anything: a cold first load of it can
-    // take longer than the windows below on a busy box, and that is an import cost, not the hang
-    // this clause is about (it was a coin flip at load ~20-100; t138 round 4).
-    await import('../../costs/provider-balance-check.js');
-    await import('../../services/memory-low-notice.js');
-    await import('../../services/resource-monitor.js');
-    await import('../../scheduler/runner.js');
+    await boot();
     const within = <T>(p: Promise<T>, ms: number): Promise<T | 'held'> =>
       Promise.race([p, new Promise<'held'>((res) => setTimeout(() => res('held'), ms))]);
 
