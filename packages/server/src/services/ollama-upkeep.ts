@@ -108,8 +108,7 @@ async function keep(reason: UpkeepReason, need: Need): Promise<UpgradeResult> {
     if (!listed.has(tag)) {
       if (!current.ok && MODEL[which].minOllama) { unregisterStandardRow(local.id, tag); continue; }   // it waits for a newer Ollama
       const short = downloadRoomRefusal(MODEL[which].bytes);
-      if (short !== null) logger.warn('Standard model download refused for disk space', { tag, why: short });
-      if (short !== null) { noRoom = true; say(which, short); unregisterStandardRow(local.id, tag); continue; }
+      if (short !== null) { logger.warn('Model download refused for disk space', { tag, why: short }); noRoom = true; say(which, short); unregisterStandardRow(local.id, tag); continue; }
       const error = await pull(which, local.baseUrl, say);
       if (error !== null && isVersionRefusal(error) && !upgradedOnRefusal) {
         upgradedOnRefusal = true;

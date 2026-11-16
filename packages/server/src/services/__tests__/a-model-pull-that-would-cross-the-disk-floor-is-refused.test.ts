@@ -15,6 +15,7 @@ vi.mock('../../gateway/ws.js', () => ({ broadcast: (f: { error?: string }) => { 
 
 import { runMigrations } from '../../db/migrations.js';
 import { standardProgressLines, upkeep, upkeepSettled } from '../ollama-upkeep.js';
+import '../decision-window.js';   // loaded here, not inside a case's clock
 import { dismissOwnerNotice, ownerToldOf } from '../../healer/owner-notices.js';
 import { STANDARD_MODELS_NO_ROOM_WORDS } from '../../healer/local-model-notice-words.js';
 import { ollama, startFakeOllama, stopFakeOllama, fakeMac, formulaServe, LATEST, useOllamaHost } from './fake-mac.js';
@@ -53,7 +54,7 @@ describe('a model pull that would cross the disk floor', () => {
     freeSpace(1e12);
     await upkeep('boot');
     expect(ollama.pulls).toHaveLength(2);
-  }, 90_000);   // the first real pull in a worker loads the decision-window code
+  });
 
   it('stays dismissed while the disk stays short, and a new shortage after room returned is told again', async () => {
     freeSpace(2_000_000_000);
@@ -70,5 +71,5 @@ describe('a model pull that would cross the disk floor', () => {
     freeSpace(2_000_000_000);
     await upkeep('boot');
     expect(ownerToldOf('ollama')).toBe(true);
-  }, 90_000);
+  });
 });

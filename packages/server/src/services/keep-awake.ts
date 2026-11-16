@@ -4,6 +4,7 @@ import { spawn } from 'node:child_process';
 
 export function keepMacAwake(run: typeof spawn = spawn, bin = '/usr/bin/caffeinate'): void {
   if (!fs.existsSync(bin)) return;
-  // A failed start arrives as an 'error' event, never a throw: a Mac that cannot be kept awake still runs the Dojo.
-  run(bin, ['-s', '-w', String(process.pid)], { stdio: 'ignore' }).on('error', () => undefined).unref();
+  try {
+    run(bin, ['-s', '-w', String(process.pid)], { stdio: 'ignore' }).on('error', () => undefined).unref();
+  } catch { /* most failed starts are an 'error' event, a damaged binary throws: either way the Dojo still runs */ }
 }
