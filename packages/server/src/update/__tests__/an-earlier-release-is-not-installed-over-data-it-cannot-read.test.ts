@@ -19,6 +19,8 @@ const platform = path.join(dojo, 'platform');
 const marker = path.join(dojo, 'update-state.json');
 const savedPath = process.env.PATH;
 let tools: Box;
+/** Settles with the code of the restart an install hands to launchd (its timer fires a second after the reply). */
+let restarted: Promise<unknown>;
 
 /** The release GitHub offers: a whole tree of `version` with the given migration files. */
 function release(version: string, steps: string[]): void {
@@ -41,7 +43,7 @@ async function post(route: string, body: object): Promise<{ ok: boolean; error?:
 beforeEach(() => {
   tools = makeBox('earlier-release-');
   process.env.PATH = `${tools.bin}:${savedPath ?? ''}`;
-  vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+  restarted = new Promise((resolve) => { vi.spyOn(process, 'exit').mockImplementation(((code?: number) => resolve(code)) as never); });
   for (const n of fs.existsSync(dojo) ? fs.readdirSync(dojo) : []) {
     if (n.startsWith('platform') || n.startsWith('update-state')) fs.rmSync(path.join(dojo, n), { recursive: true, force: true });
   }
@@ -74,6 +76,7 @@ describe('an earlier release is not installed over data it cannot read', () => {
     const r = await post('/rollback', { tag: 'v3.4.1' });
     expect(r.ok, r.error).toBe(true);
     expect(versionAt(platform)).toBe('3.4.1');
+    expect(await restarted, 'the install restarts, inside this clause').toBe(0);
   }, 120_000);
 
   it('a forward update is not refused', async () => {
@@ -81,5 +84,6 @@ describe('an earlier release is not installed over data it cannot read', () => {
     const r = await post('/apply', {});
     expect(r.ok, r.error).toBe(true);
     expect(versionAt(platform)).toBe('3.6.0');
+    expect(await restarted, 'the install restarts, inside this clause').toBe(0);
   }, 120_000);
 });

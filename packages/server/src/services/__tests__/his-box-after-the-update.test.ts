@@ -273,10 +273,13 @@ describe('round 5: the pair\'s rows follow what Ollama lists, at every boot and 
     mac = fakeMac({ running: null }); useOllamaHost(mac);
     db().exec(MIGRATION_209());
     await updateFirstBoot();
-    const before = ollama.requests;
+    // A judgment's ask is dialled synchronously, so the twenty judgments' asks are counted as they are made.
+    const asks = vi.spyOn(globalThis, 'fetch');
     for (let i = 0; i < 20; i++) getDecisionProvider();
-    await new Promise((r) => setTimeout(r, 100));
-    expect(ollama.requests - before).toBe(1);
+    const made = asks.mock.calls.map((c) => String(c[0]));
+    await Promise.allSettled(asks.mock.results.map((r) => r.value as Promise<unknown>));   // the ask ends inside this clause
+    asks.mockRestore();
+    expect(made).toEqual([expect.stringMatching(/\/api\/tags$/)]);
   });
 });
 
