@@ -6,7 +6,7 @@ import { liveWork, hasLiveWork, announceLiveWork } from '../../agent/live-work.j
 // The third fact the stop door asks: a run still unwinding, when neither other fact can answer.
 import { isRunUnwinding } from '../../agent/shared-state.js';
 import { terminateAgent } from '../../agent/spawner.js';
-import { stopAgent } from '../../agent/runtime.js';
+import { stopByOwner } from '../../agent/runtime.js';
 import { noteOwnerStop } from '../../migration/import-agents.js';
 import { insertMessageIfAbsent } from '../../memory/message-store.js';
 import { refuseStaleWholeDocument } from './whole-document-guard.js';
@@ -528,7 +528,7 @@ agentsRouter.post('/:id/stop', (c) => {
     return c.json({ ok: false, error: 'Agent is not currently working and has no background jobs running' }, 400);
   }
 
-  stopAgent(id);
+  const { repliesNotSent } = stopByOwner(id);
   noteOwnerStop(id);   // a failed import in flight must not lift the owner's own stop
 
   // Report what actually happened rather than asserting an outcome: `stopAgent` writes idle only when no
@@ -543,7 +543,7 @@ agentsRouter.post('/:id/stop', (c) => {
   });
   // The counts were read before the stop (what it was asked to cut); the payload reports what is left.
   return c.json({ ok: true, data: {
-    agentId: id, status: after.status, stopping: after.status === 'working', inFlight: liveWork(id),
+    agentId: id, status: after.status, stopping: after.status === 'working', inFlight: liveWork(id), repliesNotSent,
   } });
 });
 

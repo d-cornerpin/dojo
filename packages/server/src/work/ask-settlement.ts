@@ -795,17 +795,21 @@ export function settleAsksForDelivery(p: DeliveryCloseInput): number {
   if (p.outcome !== 'delivered') return 0;
   if (p.turnNumber == null || p.conversationId == null) return 0;
   if (NON_ANSWERING_DELIVERY_TOOLS.has(p.tool)) return 0;
-  const rows = getDb().prepare(
-    `SELECT id FROM work
-      WHERE agent_id = ? AND kind = 'ask' AND state = 'claimed'
-        AND claimed_by_turn = ? AND conversation_id = ?`,
-  ).all(p.agentId, p.turnNumber, p.conversationId) as Array<{ id: string }>;
   let closed = 0;
-  for (const r of rows) {
-    const s = settleAsk(r.id, { agentId: p.agentId, turnNumber: p.turnNumber, at: 'delivery' });
+  for (const id of asksAnsweredBy(p.agentId, p.turnNumber, p.conversationId)) {
+    const s = settleAsk(id, { agentId: p.agentId, turnNumber: p.turnNumber, at: 'delivery' });
     if (s.verdict === 'closed') closed++;
   }
   return closed;
+}
+
+/** The requests a turn's reply in a conversation answers: the asks that turn holds claimed there. */
+export function asksAnsweredBy(agentId: string, turnNumber: number, conversationId: string): string[] {
+  return (getDb().prepare(
+    `SELECT id FROM work
+      WHERE agent_id = ? AND kind = 'ask' AND state = 'claimed'
+        AND claimed_by_turn = ? AND conversation_id = ?`,
+  ).all(agentId, turnNumber, conversationId) as Array<{ id: string }>).map((r) => r.id);
 }
 
 

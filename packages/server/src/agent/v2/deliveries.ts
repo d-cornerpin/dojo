@@ -7,9 +7,9 @@ import { createLogger } from '../../logger.js';
 import { asTurn, turnStamp, type TurnRoot } from '../turn-context.js';
 import { resolveOrCreateConversation } from '../../memory/conversations.js';
 import { noSuchWorkDetail } from '../../work/store.js';
-import { settleAsksForDelivery } from '../../work/ask-settlement.js';
-import { withUnit } from '../../db/unit.js';
-import type { ReplyAddress } from './channel-sender.js';
+import { asksAnsweredBy, settleAsksForDelivery } from '../../work/ask-settlement.js';
+import { afterCommit, withUnit } from '../../db/unit.js';
+import { isMidTry, writeRoutingPill, type ReplyAddress } from './channel-sender.js';
 import { deliveryIdOf, type LedgerOutcome } from './delivery-outcome.js';
 export { deliveryIdOf, recordedId, type LedgerOutcome } from './delivery-outcome.js';
 
@@ -225,6 +225,25 @@ export function resolvePendingDelivery(id: string, seen: DoorVerdict): LedgerOut
     logger.warn('resolvePendingDelivery failed (non-fatal; the delivery itself is unaffected)', { id, error: detail });
     return { kind: 'failed', reason: 'ledger-write-failed', detail };
   }
+}
+
+/** Stop: each reply of the agent still waiting to go, except one mid-send, ends `suppressed`. Synchronous, so the
+ *  caller ends the requests in the same transaction; returns those requests (the asks each reply answered). */
+export function suppressQueuedReplies(agentId: string): { repliesNotSent: number; askIds: string[] } {
+  const rows = getDb().prepare(
+    "SELECT id, turn_number, conversation_id FROM deliveries WHERE agent_id = ? AND outcome = 'pending' AND payload_json IS NOT NULL ORDER BY rowid",
+  ).all(agentId) as Array<{ id: string; turn_number: number | null; conversation_id: string | null }>;
+  const askIds = new Set<string>();
+  let repliesNotSent = 0;
+  for (const row of rows) {
+    if (isMidTry(row.id) || resolvePendingDelivery(row.id, { outcome: 'suppressed', detail: 'stopped by the owner' })?.kind !== 'applied') continue;
+    repliesNotSent++;
+    if (row.turn_number !== null && row.conversation_id !== null) {
+      for (const id of asksAnsweredBy(agentId, row.turn_number, row.conversation_id)) askIds.add(id);
+    }
+    afterCommit(() => void writeRoutingPill(agentId, row.turn_number, 'not sent: stopped by you'));
+  }
+  return { repliesNotSent, askIds: [...askIds] };
 }
 
 export function dropPendingDelivery(id: string): void {

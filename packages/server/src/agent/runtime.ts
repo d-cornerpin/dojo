@@ -22,6 +22,9 @@ import { writeAgentStatus } from './agent-status.js';
 import { STUCK_AGENT_THRESHOLD_MINUTES } from './stuck-thresholds.js';
 import { selfWakeStandDown } from '../work/work-reaper.js';
 import { handBackOrphansOf } from '../work/orphaned-claims.js';
+import { transition } from '../work/store.js';
+import { withUnit } from '../db/unit.js';
+import { suppressQueuedReplies } from './v2/deliveries.js';
 
 // Dedup: the "model does not support tools" banner fires once per (agent, model) pair per process.
 const toolsUnavailableNotified = new Set<string>();
@@ -378,6 +381,20 @@ export function stopAgent(agentId: string): void {
   }
 
   logger.info('Agent stop requested', { runInFlight, callsAborted: cut }, agentId);
+}
+
+/** The owner's Stop: replies still waiting to go are dropped and the requests they answered end as called off
+ *  by him, in one transaction; then the agent stops. Import and terminate call `stopAgent` alone. */
+export function stopByOwner(agentId: string): { repliesNotSent: number } {
+  const { repliesNotSent } = withUnit(() => {
+    const dropped = suppressQueuedReplies(agentId);
+    for (const id of dropped.askIds) {
+      transition(id, { to: 'abandoned', by: 'owner', reason: 'called off by the owner: he pressed Stop', expectedState: 'claimed' });
+    }
+    return dropped;
+  });
+  stopAgent(agentId);
+  return { repliesNotSent };
 }
 
 // Clear one-shot markers (stopAgent, a2a-transport); the DELIVERING turn clears, never the assembler,
