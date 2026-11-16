@@ -205,7 +205,7 @@ export function CanvasView({ dock }: { dock: Extract<DockSpec, { kind: 'canvas' 
   // ── Copy contents to clipboard ──
   // What gets copied depends on the type: the HTML source for an HTML canvas,
   // the raw text for code/markdown/json/csv, and the document's text for
-  // Word/Excel (pulled from the rendered same-origin iframe). Images/PDF/
+  // Word/Excel (parsed from the render HTML). Images/PDF/
   // external pages have no useful text, so the button is hidden for them.
   const [copied, setCopied] = useState(false);
   const canCopy =
@@ -220,19 +220,14 @@ export function CanvasView({ dock }: { dock: Extract<DockSpec, { kind: 'canvas' 
       text = meta.text;
       if (ext === '.json') { try { text = JSON.stringify(JSON.parse(meta.text), null, 2); } catch { /* keep raw */ } }
     } else if (meta?.renderUrl) {
-      // Word/Excel: read the rendered (same-origin) iframe's text; if that comes
-      // back empty (not loaded yet, or blocked), fetch the render HTML and parse.
-      const frame = document.querySelector('.dojo3-dock__frame') as HTMLIFrameElement | null;
-      text = frame?.contentDocument?.body?.innerText?.trim() ?? '';
-      if (!text) {
-        const sent = await api.fetchUrl(meta.renderUrl, { authorize: true });
-        if (sent.ok) {
-          try {
-            const html = await sent.response.text();
-            const parsed = new DOMParser().parseFromString(html, 'text/html');
-            text = (parsed.body?.innerText || parsed.body?.textContent || '').trim();
-          } catch { /* leave empty */ }
-        }
+      // Word/Excel: the rendered frame is sandboxed to an opaque origin, so fetch its HTML and parse it.
+      const sent = await api.fetchUrl(meta.renderUrl, { authorize: true });
+      if (sent.ok) {
+        try {
+          const html = await sent.response.text();
+          const parsed = new DOMParser().parseFromString(html, 'text/html');
+          text = (parsed.body?.innerText || parsed.body?.textContent || '').trim();
+        } catch { /* leave empty */ }
       }
     }
     if (!text) return;

@@ -6,6 +6,7 @@ import { ZodError } from 'zod';
 import fs from 'node:fs';
 import path from 'node:path';
 import { insideFolder } from '../techniques/technique-folder.js';
+import { DISPLAY_CSP } from '../services/canvas-html.js';
 import { authMiddleware } from './middleware/auth.js';
 import { authRouter } from './routes/auth.js';
 import { configRouter } from './routes/config.js';
@@ -132,6 +133,7 @@ export function createServer() {
       headers: {
         'Content-Type': mime[ext] ?? 'application/octet-stream',
         'Cache-Control': 'public, max-age=300',
+        ...(['.html', '.htm', '.svg'].includes(ext) ? { 'Content-Security-Policy': DISPLAY_CSP } : {}),
       },
     });
   });

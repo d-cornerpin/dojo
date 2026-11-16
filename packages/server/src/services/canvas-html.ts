@@ -1,10 +1,16 @@
 // Make an HTML file self-contained for the canvas: relative sibling assets would 404 once served from
-// /api/upload/download/<id>?inline=1, so local assets are inlined as data: URIs (resolved against the file's own
-// directory) and remote refs are left alone. The dock and the headless render canvas_read uses then match.
+// /api/upload/download/<id>?inline=1, so local assets inside the file's own directory are inlined as data: URIs
+// and every other ref is left alone. The dock and the headless render canvas_read uses then match.
 
 import fs from 'node:fs';
 import path from 'node:path';
 import { homeDir } from '../home.js';
+import { isSensitivePath } from '../agent/path-guards.js';
+import { insideFolder } from '../techniques/technique-folder.js';
+
+/** The policy on every HTML, SVG or Office preview served for display: an opaque origin, so the page's
+ *  script cannot read the dashboard's storage or call its API with the owner's credentials. */
+export const DISPLAY_CSP = 'sandbox allow-scripts allow-popups allow-forms';
 
 const ASSET_MIME: Record<string, string> = {
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
@@ -27,6 +33,19 @@ function resolveHome(p: string): string {
 // True for refs we must not touch: remote URLs, data URIs, anchors, protocol-relative URLs, special schemes.
 function isRemote(ref: string): boolean {
   return /^(https?:|data:|blob:|mailto:|tel:|#|javascript:)/i.test(ref) || ref.startsWith('//');
+}
+
+/** May the canvas read this file: never one the secret-file rule denies, in either spelling, and with
+ *  `folder` only a file inside that folder once links are followed. */
+export function canvasMayRead(absPath: string, folder?: string): boolean {
+  let real: string;
+  try {
+    real = fs.realpathSync(absPath);
+  } catch {
+    return false;
+  }
+  if (isSensitivePath(absPath) || isSensitivePath(real)) return false;
+  return folder === undefined || insideFolder(folder, path.relative(folder, absPath)) !== null;
 }
 
 function toDataUri(absPath: string): string | null {
@@ -66,10 +85,11 @@ export function inlineHtmlAssets(htmlAbsPath: string): string {
     } catch {
       decoded = clean;
     }
-    const absOf = (p: string) => (path.isAbsolute(p) ? p : path.resolve(baseDir, p));
-    const data = toDataUri(absOf(decoded));
-    if (data) return data;
-    return decoded === clean ? null : toDataUri(absOf(clean));
+    const read = (p: string) => {
+      const abs = path.isAbsolute(p) ? p : path.resolve(baseDir, p);
+      return canvasMayRead(abs, baseDir) ? toDataUri(abs) : null;
+    };
+    return read(decoded) ?? (decoded === clean ? null : read(clean));
   };
 
   // Media tags: inline src / poster (NOT <a href>, which is navigation).

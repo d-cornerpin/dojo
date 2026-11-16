@@ -9,7 +9,7 @@ import { chromium } from 'playwright';
 import { createLogger } from '../logger.js';
 import { callModel } from './model.js';
 import { getEffectiveVisionModel } from '../services/vision-model.js';
-import { inlineHtmlAssets } from '../services/canvas-html.js';
+import { inlineHtmlAssets, canvasMayRead } from '../services/canvas-html.js';
 import { renderOfficeToHtml, isOfficeRenderable } from '../services/office-render.js';
 import { getCurrentCanvas, resolveHome, type CanvasState } from './canvas-state.js';
 
@@ -119,6 +119,9 @@ export async function viewCanvas(agentId: string, args: Record<string, unknown>)
       const filePath = resolveHome(target.path);
       if (!effectFs.existsSync(filePath)) {
         return `Error: the canvas file no longer exists on disk (${filePath}).`;
+      }
+      if (!canvasMayRead(filePath)) {
+        return `Refused: ${path.basename(filePath)} is a secret file, so the canvas does not show its contents.`;
       }
       const ext = path.extname(filePath).toLowerCase();
 

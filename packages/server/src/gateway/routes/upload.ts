@@ -3,7 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createLogger } from '../../logger.js';
-import { inlineHtmlAssets } from '../../services/canvas-html.js';
+import { inlineHtmlAssets, canvasMayRead, DISPLAY_CSP } from '../../services/canvas-html.js';
 import { renderOfficeToHtml, isOfficeRenderable } from '../../services/office-render.js';
 import { routeFailure } from './route-failure.js';
 import { homeDir } from '../../home.js';
@@ -459,6 +459,7 @@ uploadRouter.get('/download/:fileId', async (c) => {
       // deliberately labelled octet-stream and undo the whole guard.
       'X-Content-Type-Options': 'nosniff',
       'Cache-Control': inline && isHtml ? 'no-store' : 'public, max-age=86400',
+      ...(isHtml || ext === '.svg' ? { 'Content-Security-Policy': DISPLAY_CSP } : {}),
     },
   });
 });
@@ -488,7 +489,7 @@ uploadRouter.get('/render/:fileId', async (c) => {
     return c.json({ ok: false, error: 'This file type cannot be previewed in the canvas.' }, 415);
   }
   return new Response(html, {
-    headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' },
+    headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Content-Security-Policy': DISPLAY_CSP },
   });
 });
 
@@ -530,7 +531,7 @@ uploadRouter.get('/describe/:fileId', async (c) => {
   const stat = await fs.promises.stat(row.file_path);
   const isText = CANVAS_TEXT_EXTS.has(ext) || row.mime_type.startsWith('text/');
   let text: string | undefined;
-  if (isText && stat.size <= CANVAS_TEXT_MAX_BYTES) {
+  if (isText && stat.size <= CANVAS_TEXT_MAX_BYTES && canvasMayRead(row.file_path)) {
     try {
       text = await fs.promises.readFile(row.file_path, 'utf-8');
     } catch { /* leave undefined, frontend falls back to the inline URL */ }
