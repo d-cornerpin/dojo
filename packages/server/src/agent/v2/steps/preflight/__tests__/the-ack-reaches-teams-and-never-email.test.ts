@@ -14,7 +14,7 @@
 // delivery persists and broadcasts and REACHES NOBODY — a bubble on the dashboard the channel
 // never received, which is the F-22 shape RC-9's internal note exists to prevent, arrived at
 // from the other side. So T51 is TWO changes, and this file pins them as one fact:
-//   * `preflight/turn-closures.ts` — `deliverEngineUserAck` queues the line for the one reply
+//   * `preflight/turn-closures.ts`: `deliverEngineUserAck` queues the line for the one reply
 //     sender, which posts a Teams reply as `teams_send_message` through `executeTool`, with the
 //     routing marker the owner sees;
 //   * `v2/counterparty.ts` — `engineAckReachesTheirChannel` gains `teams`, because the
@@ -121,27 +121,27 @@ describe('the delivery: the ack REACHES a Teams chat, through the one reply send
     expect(markers().at(-1)).toBe(`[Reply routed via Teams to chat ${CHAT_ID.slice(0, 8)}…]`);
   });
 
-  it('CONTROL — a withheld channel grant queues nothing', async () => {
+  it('CONTROL: a withheld channel grant queues nothing', async () => {
     tool.grant = false;
     await startLine(person({ channel: 'teams', senderId: 'colleague@example.com' }), { chatId: CHAT_ID, chatType: 'dm' });
     expect(tool.calls).toEqual([]);
     expect(replyRows()).toEqual([]);
   });
 
-  it('CONTROL — no chat id, no push: an ack with nowhere to go is never queued', async () => {
+  it('CONTROL: no chat id, no push: an ack with nowhere to go is never queued', async () => {
     await startLine(person({ channel: 'teams', senderId: 'colleague@example.com' }), {});
     expect(tool.calls).toEqual([]);
     expect(replyRows()).toEqual([]);
   });
 
-  it('CONTROL — EMAIL IS NOT PUSHED. The ack row is written and that is all', async () => {
+  it('CONTROL: EMAIL IS NOT PUSHED. The ack row is written and that is all', async () => {
     await startLine(person({ channel: 'email', senderId: 'colleague@example.com' }), { emailMessageId: '<abc@mail>' });
     expect(tool.calls).toEqual([]);
     expect(replyRows()).toEqual([]);
     expect(ackRow()).toEqual({ n: 1 });
   });
 
-  it('CONTROL — the dashboard path is untouched: the row, no channel push at all', async () => {
+  it('CONTROL: the dashboard path is untouched: the row, no channel push at all', async () => {
     await startLine(person({ channel: 'dashboard', senderId: null }), null);
     expect(replyRows()).toEqual([]);
     expect(ackRow()).toEqual({ n: 1 });

@@ -228,18 +228,18 @@ describe('the sub-agent permission wall', () => {
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
-// §4 — A relay to a request with no channel to answer on is the dashboard copy, never a refusal.
+// §4: a relay to a request with no channel to answer on is the dashboard copy, never a refusal.
 // ══════════════════════════════════════════════════════════════════════════════
 describe('a request with no channel door is answered on the dashboard, with nothing to refuse', () => {
   it('a DASHBOARD-origin request has no channel address (the incident)', () => {
     expect(replyAddressFor({ channel: 'dashboard' })).toBeNull();
   });
 
-  it('a voice-origin request likewise — the call is over, the dashboard IS the delivery', () => {
+  it('a voice-origin request likewise: the call is over, the dashboard IS the delivery', () => {
     expect(replyAddressFor({ channel: 'voice' })).toBeNull();
   });
 
-  it('CONTROL — every REAL channel still has an address, so its reply goes through the sender and its check', () => {
+  it('CONTROL: every REAL channel still has an address, so its reply goes through the sender and its check', () => {
     expect(replyAddressFor({ channel: 'imessage', sender: '+15550200' })).not.toBeNull();
     expect(replyAddressFor({ channel: 'sms', sender: '+15550200' })).not.toBeNull();
     expect(replyAddressFor({ channel: 'email', sender: 'a@example.com', emailMessageId: '<m@x>' })).not.toBeNull();

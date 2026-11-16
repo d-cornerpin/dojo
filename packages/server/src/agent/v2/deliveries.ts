@@ -77,8 +77,9 @@ export function recordDelivery(input: DeliveryInput): LedgerOutcome {
       const { turnNumber, root } = turnStamp(input.agentId);
       db.prepare(`
         INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, recipient_id, recipient_display,
-                                conversation_id, root_kind, root_id, message_id, receipt_id, outcome, detail, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+                                conversation_id, root_kind, root_id, message_id, receipt_id, outcome, detail, payload_json,
+                                next_attempt_at, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
       `).run(
         id,
         input.agentId,
@@ -94,11 +95,9 @@ export function recordDelivery(input: DeliveryInput): LedgerOutcome {
         input.receiptId ?? null,
         input.outcome,
         input.detail ?? null,
+        input.payload ? JSON.stringify(input.payload) : null,
+        input.payload && input.outcome === 'pending' ? Date.now() : null,
       );
-      if (input.payload) {
-        db.prepare('UPDATE deliveries SET payload_json = ?, next_attempt_at = ? WHERE id = ?')
-          .run(JSON.stringify(input.payload), input.outcome === 'pending' ? Date.now() : null, id);
-      }
       // The close happens where a delivery becomes a row; `work/ask-settlement.ts` decides it, in the unit.
       settleAsksForDelivery({
         agentId: input.agentId,

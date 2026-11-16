@@ -1,7 +1,7 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 // THE SMS ACK ARM MARKS ONLY WHAT ACTUALLY LEFT.
 //
-// `sendSms` does not throw on a refused send — it returns `{ ok: false, error }` — and the one
+// `sendSms` does not throw on a refused send (it returns `{ ok: false, error }`), and the one
 // reply sender keeps that value for the start line as for every reply: the routing marker is the
 // record of what reached the person, and a refused text must not arrive in the conversation as
 // "[Reply routed via SMS to <person>]". Twilio is faked at `sendSms` + `getDefaultFromNumber`.

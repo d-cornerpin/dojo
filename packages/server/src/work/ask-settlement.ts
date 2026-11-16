@@ -42,8 +42,8 @@ export const ENGINE_JOIN_RELAY_TOOLS = new Set(['a2a-join-relay']);
 
 /** A reply to the request `w` is on its way: a queued answering row carries it as its `joinId` (a relay). */
 export const REPLY_IN_FLIGHT =
-  `EXISTS (SELECT 1 FROM deliveries rf WHERE rf.outcome = 'pending' AND json_valid(rf.payload_json)
-      AND rf.tool NOT IN (${[...NON_ANSWERING_DELIVERY_TOOLS].map((t) => `'${t}'`).join(', ')})
+  `EXISTS (SELECT 1 FROM deliveries rf WHERE rf.outcome = 'pending' AND rf.payload_json IS NOT NULL
+      AND json_valid(rf.payload_json) AND rf.tool NOT IN (${[...NON_ANSWERING_DELIVERY_TOOLS].map((t) => `'${t}'`).join(', ')})
       AND json_extract(rf.payload_json, '$.joinId') = w.id)`;
 
 export function replyInFlight(askId: string): boolean {
@@ -828,7 +828,9 @@ function onRelayDelivered(joinId: string, p: DeliveryCloseInput): void {
       engineHandIn(card.id, `the engine relayed the compiled result of the job this card was opened for to the owner (delivery ${p.deliveryId.slice(0, 8)})`,
         { outcome: 'finished', items: [{ kind: 'delivery', ref: p.deliveryId }] });
     }
-  }));
+  }).catch((err) => logger.warn('a relayed job\'s cards were not handed in', {
+    joinId, deliveryId: p.deliveryId, error: err instanceof Error ? err.message : String(err),
+  }, p.agentId)));
 }
 
 /** A relay that never went ends its request failed, with the row's reason; a failure notice ends nothing. */

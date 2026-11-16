@@ -42,7 +42,7 @@ beforeEach(() => {
       id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, turn_number INTEGER,
       tool TEXT NOT NULL, channel TEXT NOT NULL, recipient_id TEXT, recipient_display TEXT,
       conversation_id TEXT, root_kind TEXT, root_id TEXT, message_id TEXT, receipt_id TEXT,
-      outcome TEXT NOT NULL, detail TEXT,
+      outcome TEXT NOT NULL, detail TEXT, payload_json TEXT, next_attempt_at INTEGER,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
