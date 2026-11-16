@@ -339,12 +339,10 @@ trackerRouter.post('/tasks', async (c) => {
   }
 });
 
-/** The owner moving a card: a close or a cancel is his decision (`work/done/decide.ts`), as is a send-back
- *  (the decision route, with his reason); paused and blocked put it on hold; any other move lifts the hold
- *  and is a plain status change. Null when it landed, else why not. */
+/** Writes the owner's move of a card: a close or a cancel goes through his decision (`work/done/decide.ts`),
+ *  paused and blocked set his hold, any other move lifts the hold and changes the status. Null when it
+ *  landed, else why not. */
 function ownerMoveRefusal(id: string, status: string): string | null {
-  if (status === 'handed_in') return 'only the agent working on a task hands it in, with its proof';
-  if (status === 'sent_back') return 'sending a task back is your decision with a reason; use Send back on the task';
   if (status === 'complete' || status === 'cancelled' || status === 'fallen') {
     const r = decide({ workId: id, deciderAgentId: null, verdict: status === 'complete' ? 'owner_done' : 'cancel', reason: `moved to ${status} on the dashboard task board` });
     return r.kind === 'decided' ? null : r.text;
@@ -358,6 +356,11 @@ function ownerMoveRefusal(id: string, status: string): string | null {
   if (workSettled(result)) return null;
   return isStateConflict(result) ? `the task moved to "${result.actual}" while this request was in flight` : `${result.reason}: ${result.detail}`;
 }
+
+const BOARD_REFUSES: Record<string, string> = {
+  handed_in: 'Only the agent working on a task hands it in, with its proof.',
+  sent_back: 'A task is sent back only by your decision, with a reason: use Send back on the task.',
+};
 
 // PUT /tasks/:id: update task
 trackerRouter.put('/tasks/:id', async (c) => {
@@ -394,6 +397,9 @@ trackerRouter.put('/tasks/:id', async (c) => {
     const scheduleErr = scheduleInputError(body);
     if (scheduleErr) return c.json({ ok: false, error: scheduleErr }, 400);
   }
+
+  // The hand-in states are never a board write: the worker hands in, and a send-back is the owner's decision.
+  if (Object.hasOwn(BOARD_REFUSES, body.status)) return c.json({ ok: false, error: BOARD_REFUSES[body.status] }, 409);
 
   try {
     const updates: Record<string, string> = {};

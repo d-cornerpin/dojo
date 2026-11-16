@@ -17,8 +17,8 @@ import { ToastProvider } from '../hooks/useToast';
 
 const tasks = [{ id: 't1', title: 'Write the report', status: 'handed_in', priority: 'normal', assignedTo: null, scheduleStatus: 'unscheduled', runCount: 0, createdAt: '2026-01-01 00:00:00', updatedAt: '2026-01-01 00:00:00' } as unknown as Task];
 
-const dropOnSentBack = () => {
-  render(<ToastProvider><KanbanBoard tasks={tasks} onTaskClick={() => {}} onStatusChange={cardMover(tasks, vi.fn(), vi.fn())} /></ToastProvider>);
+const dropOnSentBack = (board = tasks, showError = vi.fn()) => {
+  render(<ToastProvider><KanbanBoard tasks={board} onTaskClick={() => {}} onStatusChange={cardMover(board, vi.fn(), showError)} /></ToastProvider>);
   const column = screen.getByText('Sent back', { selector: '.kcol__title' }).closest('.kcol') as HTMLElement;
   fireEvent.drop(column, { dataTransfer: { getData: () => 't1' } });
 };
@@ -39,5 +39,13 @@ describe('a drag to Sent back records the owner\'s decision with a reason', () =
     await new Promise((r) => setTimeout(r, 0));
     expect(api.decideTask).not.toHaveBeenCalled();
     expect(api.updateTask).not.toHaveBeenCalled();
+  });
+
+  it('refuses a card that was not handed in before asking why', () => {
+    const prompt = vi.spyOn(window, 'prompt');
+    const showError = vi.fn();
+    dropOnSentBack([{ ...tasks[0], status: 'in_progress' }], showError);
+    expect(showError).toHaveBeenCalledWith('Only a task that was handed in can be sent back.');
+    expect(prompt).not.toHaveBeenCalled();
   });
 });

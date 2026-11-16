@@ -33,7 +33,7 @@ describe('a drag to Handed in is refused', () => {
   it('refuses Handed in with a plain reason and leaves the task where it was', async () => {
     const res = await move('handed_in');
     expect(res.status).toBe(409);
-    expect((await res.json()).error).toMatch(/hands it in/);
+    expect((await res.json()).error).toBe('Only the agent working on a task hands it in, with its proof.');
     expect(state()).toBe('claimed');
   });
 

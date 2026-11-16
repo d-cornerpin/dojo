@@ -11,9 +11,10 @@ export const cardMover = (
   setTasks: Dispatch<SetStateAction<Task[]>>,
   showError: (message: string) => void,
 ) => async (taskId: string, newStatus: Task['status']) => {
+  const before = tasks.find((t) => t.id === taskId);
+  if (newStatus === 'sent_back' && before?.status !== 'handed_in') return showError('Only a task that was handed in can be sent back.');
   const reason = newStatus === 'sent_back' ? window.prompt('Why are you sending it back? Its worker reads this.')?.trim() ?? '' : '';
   if (newStatus === 'sent_back' && !reason) return;
-  const before = tasks.find((t) => t.id === taskId);
   setTasks((prev) =>
     prev.map((t) => (t.id === taskId ? { ...t, status: newStatus, updatedAt: new Date().toISOString() } : t)),
   );

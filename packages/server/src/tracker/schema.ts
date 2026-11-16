@@ -13,7 +13,7 @@ import {
   statusToState, tsToMs, msToText, revertCountExpr, type TrackerStatus,
 } from '../work/tracker-view.js';
 import { TERMINAL_STATE_NAMES } from '../work/terminal-states.js';
-import { TOLD, stallKey } from '../healer/owner-notices.js';
+import { TOLD, DISMISSED, stallKey } from '../healer/owner-notices.js';
 import {
   openTrackerProject, openTrackerTask, patchWork,
   setTrackerStatus, type WorkPatch, type SetStatusInput,
@@ -764,14 +764,15 @@ export function listTasksPage(
   const db = getDb();
   const { conditions, params } = taskListWhere(filter);
   // System agents' tasks are dropped HERE, before the page is cut: dropped after, a page made only of them
-  // reached the board empty and its cursor never moved. One that was sent back, or that an owner card names,
-  // stays visible for the owner.
+  // reached the board empty and its cursor never moved. One that was sent back, or that a standing owner card
+  // names, stays visible for the owner.
   const hidden = [...(page.hideAgentIds ?? [])];
   if (hidden.length > 0) {
     const marks = hidden.map(() => '?').join(', ');
     conditions.push(`((COALESCE(work.requester_id, '') NOT IN (${marks}) AND (COALESCE(work.agent_id, '') NOT IN (${marks}) OR ${revertCountExpr('work')} > 0))
-      OR EXISTS (SELECT 1 FROM healer_state c WHERE c.scope = ? AND c.key = ? || work.id))`);
-    params.push(...hidden, ...hidden, TOLD, stallKey(''));
+      OR EXISTS (SELECT 1 FROM healer_state c WHERE c.scope = ? AND c.key = ? || work.id
+        AND NOT EXISTS (SELECT 1 FROM healer_state d WHERE d.scope = ? AND d.key = c.key)))`);
+    params.push(...hidden, ...hidden, TOLD, stallKey(''), DISMISSED);
   }
   const terminal = `work.state IN (${TERMINAL_STATE_NAMES.map((st) => `'${st}'`).join(', ')})`;
   const open = page.before ? [] : (db.prepare(`${TASK_COLS} WHERE ${[...conditions, `NOT ${terminal}`].join(' AND ')}${TASK_LIST_ORDER}`).all(...params) as TaskRow[]);
