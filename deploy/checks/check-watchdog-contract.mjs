@@ -27,6 +27,8 @@
 //   watchdog only reads what the platform wrote. When this gate fires, the
 //   watchdog copy moves to match the platform, never the reverse.
 //
+// ── RULE 1b: a single value each side keeps by hand (PAIRS, e.g. the disk floor) is equal ──
+//
 // ── RULE 2: no new declaration copy appears unannounced ──
 //   Rule 1 can only compare copies it knows about. A THIRD file that starts
 //   declaring FAIL_BOOT_ATTEMPTS is invisible to it — which is precisely how a
@@ -118,6 +120,11 @@ const CONST_MEMBERS = ['FAIL_BOOT_ATTEMPTS', 'FAIL_WALL_CLOCK_MS', 'MAX_AUTO_ROL
 const UNION_TYPE = 'UpdatePhase';
 const RUNTIME_LIST = 'PHASES';
 const SHAPE_INTERFACE = 'UpdateMarker';
+
+// Single values each side keeps by hand outside the marker contract: server file and name, watchdog file and name.
+const PAIRS = [
+  { what: 'disk floor', server: ['packages/server/src/update/disk-preflight.ts', 'DISK_FLOOR_BYTES'], watchdog: ['watchdog/src/disk-floor.ts', 'WATCHDOG_DISK_FLOOR_BYTES'] },
+];
 
 // Rule 2 scan scope: the packages a copy could plausibly appear in.
 const SCAN_DIRS = ['watchdog/src', 'packages/server/src', 'packages/shared/src'];
@@ -350,6 +357,22 @@ if (live.length > 1 && mismatched.length) {
   console.error('');
 }
 
+// ── RULE 1b: the single hand-kept values agree ──
+
+const pairValue = ([rel, name]) => {
+  const abs = path.join(ROOT, rel);
+  return fs.existsSync(abs) ? extractConst(stripComments(fs.readFileSync(abs, 'utf8')), name)?.text ?? null : null;
+};
+const pairLines = [];
+for (const p of PAIRS) {
+  const [s, w] = [pairValue(p.server), pairValue(p.watchdog)];
+  if (s !== null && s === w) { pairLines.push(`${p.what} ${s}`); continue; }
+  failed = true;
+  console.error(`✗ the ${p.what} differs: ${p.server.join(' ')} = ${s ?? 'not found'}, ${p.watchdog.join(' ')} = ${w ?? 'not found'}.`);
+  console.error('  Change both copies together.');
+  console.error('');
+}
+
 // ── RULE 2: no undeclared declaration copy ──
 
 const declaredAbs = new Set(copies.map((c) => c.abs));
@@ -466,4 +489,5 @@ console.log(
   `  no undeclared copy in ${SCAN_DIRS.join(', ')}` +
     `${testDeclarations.length ? ` (${testDeclarations.length} test declaration(s) seen, not compared: ${testDeclarations.map((t) => t.rel).join(', ')})` : ''}`,
 );
+console.log(`  hand-kept values agree: ${pairLines.join(', ')}`);
 console.log(`  watchdog independence intact — ${watchdogFilesScanned} file(s) in watchdog/src import nothing from packages/server, packages/shared or @dojo/*`);

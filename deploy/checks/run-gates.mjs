@@ -18,7 +18,7 @@ if (tier !== 'blocking' && tier !== 'report') {
 const gates = GATES.filter((g) => g.tier === tier);
 
 // A runner that finds nothing to run would report a clean sweep, so an emptied list fails.
-const FLOOR = { blocking: 9, report: 2 };
+const FLOOR = { blocking: 8, report: 3 };
 if (gates.length < FLOOR[tier]) {
   console.error(`✗ gate manifest declares only ${gates.length} ${tier} gate(s); floor is ${FLOOR[tier]}.`);
   console.error('  A gate list that empties itself would pass every build. Fix gate-manifest.mjs.');

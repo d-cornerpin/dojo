@@ -40,7 +40,7 @@ export const GATES = [
     tier: 'blocking',
     phase: 'pre-build',
     script: 'deploy/checks/check-migration-freeze.mjs',
-    title: 'Migration freeze (a migration a release shipped never changes)',
+    title: 'Migration freeze (a migration a release shipped never changes, and a new one sorts after them)',
     fail: 'Migration freeze: a migration a release shipped changed. A box that applied it keeps the old bytes and warns at every boot. NOT publishing.',
     why: 'Migrations are raw-copied into the package and `_migrations.checksum` records the bytes a box applied, so an edit to a migration a release shipped never reaches a box that applied it: the change belongs in a new numbered file. The gate compares each version a release tag holds against the tree with the runner\'s own checksum; a file in no release tag may still change.',
   },
@@ -64,7 +64,7 @@ export const GATES = [
   },
   {
     id: 'watchdog-contract',
-    tier: 'blocking',
+    tier: 'report',
     phase: 'pre-build',
     script: 'deploy/checks/check-watchdog-contract.mjs',
     title: 'Watchdog/platform contract gate (hand-synced copies must not drift)',

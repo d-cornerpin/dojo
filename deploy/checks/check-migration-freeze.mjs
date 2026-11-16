@@ -8,6 +8,9 @@
 // tag has reached no user's box and may still change. The checksum is the runner's own (sha256 of
 // the text with CRLF normalised, `db/migrations.ts`).
 //
+// It also holds the ORDER: a file new since the last release tag sorts after every file that tag
+// holds, so a fresh install and an updated box apply the steps in the same order.
+//
 // Usage:  node deploy/checks/check-migration-freeze.mjs
 // ════════════════════════════════════════
 import fs from 'node:fs';
@@ -17,6 +20,13 @@ import { execFileSync } from 'node:child_process';
 
 const ROOT = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim();
 const DIR = 'packages/server/src/db/migrations';
+
+// Written before the order rule. A name the last release tag holds must be deleted from this list.
+const WRITTEN_BEFORE_ORDER_RULE = [
+  '210_finished_rows_answer_their_verdict_request.sql', '211_work_ledger_detail.sql', '212_no_summary_writer_setting.sql',
+  '213_background_commands.sql', '214_background_command_call.sql', '215_imaginer_stays_retired.sql',
+  '216_router_probe_settings_removed.sql', '217_one_owner_name_key.sql', '218_conversation_tail_index.sql',
+];
 
 const git = (args) => execFileSync('git', args, { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
 
@@ -63,12 +73,18 @@ const inTagHistory = (rev) => {
   }
 };
 
+const files = fs.readdirSync(path.join(ROOT, DIR)).filter((f) => f.endsWith('.sql')).sort();
+const inTag = tag ? git(['ls-tree', '--name-only', tag, '--', `${DIR}/`]).split('\n').filter(Boolean).map((p) => path.basename(p)) : [];
+const lastInTag = [...inTag].sort().at(-1);
+const outOfOrder = files.filter((f) => lastInTag && f < lastInTag && !inTag.includes(f) && !WRITTEN_BEFORE_ORDER_RULE.includes(f));
+const listedButReleased = WRITTEN_BEFORE_ORDER_RULE.filter((f) => inTag.includes(f));
+
 const changed = [];
 const preRelease = [];
 const debt = [];
 let single = 0;
 
-for (const name of fs.readdirSync(path.join(ROOT, DIR)).filter((f) => f.endsWith('.sql')).sort()) {
+for (const name of files) {
   const rel = `${DIR}/${name}`;
   const nowSum = migrationChecksum(fs.readFileSync(path.join(ROOT, rel), 'utf-8'));
   const revs = git(['log', '--format=%H', '--follow', '--', rel]).split('\n').filter(Boolean);
@@ -125,8 +141,8 @@ if (debt.length > 0) {
 if (preRelease.length > 0) {
   console.log(`  ${preRelease.length} version(s) in no release tag, free to change: ` + [...new Set(preRelease.map((p) => p.name))].join(', '));
 }
-if (changed.length === 0 && removed.length === 0) {
-  console.log('✓ migration freeze: no migration a release shipped has changed');
+if (changed.length === 0 && removed.length === 0 && outOfOrder.length === 0 && listedButReleased.length === 0) {
+  console.log('✓ migration freeze: no migration a release shipped has changed, and every new one sorts after them');
   process.exit(0);
 }
 for (const u of changed) {
@@ -138,6 +154,15 @@ for (const r of removed) {
   console.error(`✗ ${r.name} shipped at ${r.tag} and is GONE from the tree, the \`superseded\` class.`);
   console.error('    A box carrying that name will report a recorded migration whose file is absent.');
 }
-console.error('\n  A box that applied the old bytes keeps them and warns at every boot. Revert the');
-console.error('  migration and put the change in a NEW numbered file.');
+for (const f of outOfOrder) {
+  console.error(`✗ ${f} is new since ${tag} and sorts before ${lastInTag}, which ${tag} holds: a fresh install would apply`);
+  console.error('    it before that step and an updated box after it. Number it after every released file.');
+}
+for (const f of listedButReleased) {
+  console.error(`✗ ${f} is in ${tag} now, so it no longer needs the exemption: delete it from WRITTEN_BEFORE_ORDER_RULE.`);
+}
+if (changed.length || removed.length) {
+  console.error('\n  A box that applied the old bytes keeps them and warns at every boot. Revert the');
+  console.error('  migration and put the change in a NEW numbered file.');
+}
 process.exit(1);

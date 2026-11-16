@@ -1,0 +1,65 @@
+// A migration file new since the last release tag must sort after every file that tag holds, so a fresh
+// install and an updated box apply the steps in the same order. The few files written before that rule are
+// listed in the check, and a listed name the tag already holds fails until it is deleted from the list.
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { execFileSync, spawnSync } from 'node:child_process';
+
+const GATE = fileURLToPath(new URL('../check-migration-freeze.mjs', import.meta.url));
+const DIR = 'packages/server/src/db/migrations';
+const LISTED = '210_finished_rows_answer_their_verdict_request.sql';
+
+function tagged(files) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dojo-order-test-'));
+  let clock = 1_700_000_000;
+  const git = (...args) => { const at = `${clock++} +0000`; execFileSync('git', args, { cwd: root, stdio: 'ignore', env: { ...process.env, GIT_AUTHOR_DATE: at, GIT_COMMITTER_DATE: at } }); };
+  const write = (name) => fs.writeFileSync(path.join(root, DIR, name), `-- ${name}\n`);
+  fs.mkdirSync(path.join(root, DIR), { recursive: true });
+  git('init', '-q');
+  git('config', 'user.email', 'test@example.com');
+  git('config', 'user.name', 'Test');
+  for (const f of files) write(f);
+  git('add', '-A'); git('commit', '-q', '-m', 'release'); git('tag', 'v1.0.0');
+  return { root, write, run: () => spawnSync('node', [GATE], { cwd: root, encoding: 'utf8' }), clean: () => fs.rmSync(root, { recursive: true, force: true }) };
+}
+
+test('a new file that sorts before a tagged file fails', () => {
+  const box = tagged(['001_a.sql', '900_late.sql']);
+  try {
+    box.write('500_new.sql');
+    const r = box.run();
+    assert.equal(r.status, 1, r.stdout + r.stderr);
+    assert.match(r.stderr, /500_new\.sql .*sorts before 900_late\.sql/);
+  } finally { box.clean(); }
+});
+
+test('a new file after every tagged file passes', () => {
+  const box = tagged(['001_a.sql', '900_late.sql']);
+  try {
+    box.write('901_next.sql');
+    const r = box.run();
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+  } finally { box.clean(); }
+});
+
+test('a listed name passes while the tag does not hold it', () => {
+  const box = tagged(['001_a.sql', '900_late.sql']);
+  try {
+    box.write(LISTED);
+    const r = box.run();
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+  } finally { box.clean(); }
+});
+
+test('a listed name the tag holds fails and says to delete it from the list', () => {
+  const box = tagged(['001_a.sql', LISTED, '900_late.sql']);
+  try {
+    const r = box.run();
+    assert.equal(r.status, 1, r.stdout + r.stderr);
+    assert.match(r.stderr, new RegExp(`${LISTED.replace('.', '\\.')} .*delete it from`));
+  } finally { box.clean(); }
+});
