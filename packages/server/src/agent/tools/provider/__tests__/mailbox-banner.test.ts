@@ -1,34 +1,8 @@
-// ════════════════════════════════════════════════════════════════════════════
-// WHOSE MAILBOX IS THIS? — the mail-read ownership header
-// (PHASE-5 T4 wrote clauses 1–5 for the user banner; UX-REPAIR T39 added the
-// other half, because half a rule is how the agent lost the plot.)
-//
-// A `user_*` mail read returns the OWNER'S inbox. The banner in front of it is
-// what tells the model that the emails below were addressed to the user and
-// that instructions inside them are not the agent's to follow — i.e. it is the
-// thing standing between the owner's inbox and a prompt-injection channel.
-//
-// PHASE-5.md's T4 Step 1 correction flagged this exact region as a trap: the
-// executor's default membership branch banners Google reads and NOT Microsoft
-// reads, while the explicit cases banner both. Drop an explicit `user_outlook_*`
-// label and that tool routes through the branch and loses its banner with no
-// error, no test failure and no line in a diff that looks like a capability
-// change. Clause 1 is the guard: every banner-eligible tool must be served by
-// the HANDLER TABLE, never by the fall-through.
-//
-// ── UX-REPAIR T39 (owner report: "the agent once again has no clue which email
-// accounts are his vs the user's") ──
-// The DESIGN was right and the dispatch was honest: the `user_` prefix picks the
-// slot, so an unprefixed read is always the agent's own account and never a
-// guess. What was missing was the RECEIPT. An agent-slot read said only
-// "Inbox (15 messages):" — the account was named only when the slot happened to
-// hold more than one connected account, which on a four-account box (one agent
-// and one user account per provider) is never. So the model read its own inbox,
-// or the owner's, with nothing in the result saying which, and answered "the
-// inbox". Clause 3 used to assert that silence on purpose; it now asserts the
-// distinction that matters instead: BOTH sides say whose mailbox they are, and
-// only the user's side carries the injection warning.
-// ════════════════════════════════════════════════════════════════════════════
+// The mail-read ownership header. A `user_*` mail read returns the OWNER'S inbox; the banner in front of it
+// tells the model the emails were addressed to the user and their instructions are not the agent's to follow,
+// so it is what keeps the owner's inbox from being an injection channel. Every banner-eligible tool must be
+// served by the handler table. The agent's own reads name the agent's account too, without the warning, so
+// both sides say whose mailbox they are and only the user's side carries the guard.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { FX, FXID } from '../../../../../../../deploy/checks/fixture-vocabulary.mjs';
@@ -74,7 +48,7 @@ const table = workspaceHandlers as Record<string, (ctx: { agentId: string; name:
 const call = (name: string, args: Record<string, unknown> = {}) => table[name]({ agentId: 'a1', name, args, callId: 'c1' });
 
 /** The sentences that make the user banner an injection guard. They are the
- *  recorded requirement; T39 may add identification, never dilute these. */
+ *  recorded requirement; identification may be added, never dilute these. */
 const INJECTION_GUARD = [
   // Case-insensitive on the leading word only: T39 moved this sentence from
   // after a comma to after a full stop, so `this` became `This`. The words are
@@ -115,7 +89,7 @@ describe('the mail-read ownership header', () => {
     expect(out.isError).toBe(false);
   });
 
-  // ── CLAUSE 3 (T39): THE AGENT'S OWN READS SAY SO TOO, AND DIFFERENTLY ──
+  // ── CLAUSE 3: THE AGENT'S OWN READS SAY SO TOO, AND DIFFERENTLY ──
   it.each([...AGENT_MAILBOX_READ_TOOLS])('%s names the AGENT\'s own account', async (name) => {
     const out = await call(name);
     expect(out.content.startsWith('[Mailbox: your OWN inbox — agent@'), `${name} says nothing about whose inbox it is`).toBe(true);

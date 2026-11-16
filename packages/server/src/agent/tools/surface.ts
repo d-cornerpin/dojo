@@ -285,11 +285,11 @@ function computeFilteredTools(agentId: string): ToolDefinition[] {
     user: getGoogleServiceFlagsForKind('user'),
   } as const;
 
-  /** Kind connected, the kind's grant covers the tool (full for a write), and its service on for some account. */
+  /** Kind connected, the kind's grant covers the tool (full for a write; the main agent holds all), and its service on. */
   function isToolEnabledByService(t: ToolDefinition): boolean {
     const kind = accountKindForTool(t.name);
     if (!(kind === 'user' ? userKindConnected : agentKindConnected)) return false;
-    if (!levelAllows(integrationLevelFor(agentId, 'google', kind), t)) return false;
+    if (!isPrimary && !levelAllows(integrationLevelFor(agentId, 'google', kind), t)) return false;
     const service = serviceOfTool('google', t.name);
     return service ? googleServiceFlags[kind][service as Parameters<typeof isGoogleServiceEnabledForKind>[1]] : true;
   }
@@ -313,7 +313,7 @@ function computeFilteredTools(agentId: string): ToolDefinition[] {
   function isMsToolEnabledByService(t: ToolDefinition): boolean {
     const kind = accountKindForTool(t.name);
     if (!(kind === 'user' ? userSlotMsConnected : agentSlotMsConnected)) return false;
-    if (!levelAllows(integrationLevelFor(agentId, 'microsoft', kind), t)) return false;
+    if (!isPrimary && !levelAllows(integrationLevelFor(agentId, 'microsoft', kind), t)) return false;
     const service = serviceOfTool('microsoft', t.name);
     return service ? msServiceFlags[kind][service as Parameters<typeof isMsServiceEnabledForKind>[1]] : true;
   }
@@ -352,9 +352,9 @@ function computeFilteredTools(agentId: string): ToolDefinition[] {
     filtered.push(...officeEditToolDefinitions);
   }
 
-  // Plaud is read-only, one account per install, no service toggles: connected AND the agent's
-  // plaud grant, both required. Without it the PM is offered a full Plaud set it cannot use.
-  if (isPlaudConnected() && mayUsePlaud(agentId)) {
+  // Plaud is read-only, one account per install, no service toggles: connected AND (the main agent or
+  // the agent's plaud grant). Without it the PM is offered a full Plaud set it cannot use.
+  if (isPlaudConnected() && (isPrimary || mayUsePlaud(agentId))) {
     filtered.push(...plaudReadToolDefinitions);
   }
 

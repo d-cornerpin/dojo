@@ -579,10 +579,11 @@ export function disconnectMicrosoftAccount(accountId: string): void {
 
 // ── Access Level ──
 
-export function getAgentMicrosoftAccessLevel(agentId: string, _isPrimary: boolean, _isPM: boolean): 'full' | 'read' | 'none' {
+export function getAgentMicrosoftAccessLevel(agentId: string, isPrimary: boolean, _isPM: boolean): 'full' | 'read' | 'none' {
   // Same as the Google twin: connectivity still wins; the tier is this agent's grant.
   const anyEnabled = isMicrosoftEnabled('agent') || isMicrosoftEnabled('user');
   const anyConnected = isMicrosoftConnected('agent') || isMicrosoftConnected('user');
   if (!anyEnabled || !anyConnected) return 'none';
-  return widestIntegrationLevel(agentId, 'microsoft');
+  // The main agent holds every account, whatever level is stored for it.
+  return isPrimary ? 'full' : widestIntegrationLevel(agentId, 'microsoft');
 }

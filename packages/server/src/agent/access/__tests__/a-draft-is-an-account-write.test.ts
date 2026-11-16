@@ -1,35 +1,10 @@
-// ════════════════════════════════════════════════════════════════════════════
-// UX-REPAIR / T77b — A DRAFT IS AN ACCOUNT WRITE, NOT A CHANNEL SEND (RED-first).
-//
-// `gmail_draft` and `outlook_draft` put a finished message in the mailbox's own Drafts
-// folder and send nothing. A person opens it and presses Send, or does not. That is the
-// whole feature, and its whole difficulty is a CLASSIFICATION question this file exists to
-// pin, because getting it wrong in either direction is a real defect:
-//
-//   • Classed as a SEND, the draft tools would be swallowed by `SEND_TO_PEOPLE` and would
-//     then need the email channel — so the owner's FX.n8 shape (a full write grant on
-//     his own Google account, "Can talk to people" OFF) could not draft at all, which is
-//     the exact thing he asked for.
-//   • Classed as NOTHING, they would slip past the integration tier and an agent with a
-//     READ grant could write to the mailbox.
-//
-// So the rule is: ONE conjunct, the integration write tier, and no channel grant consulted.
-// The account door (`accountRefusal`) already expresses that shape — the full level for a write
-// AND `channelForTool(tool) === null || mayUseChannel(...)` — so the entire classification
-// is the decision to leave these names OUT of `SEND_TO_PEOPLE` and to record WHY in the
-// build-checked `SEND_TO_PEOPLE_NA` ledger. Nothing in the door changes. This file drives
-// both halves through the real readers rather than asserting the list membership alone,
-// because a list is not a permission.
-//
-// ── THE ACCEPTANCE CASE, DRIVEN BELOW ──
-// `FXID.n8`: `integrations.google.user = 'full'`, `channels.master = false`.
-//   user_gmail_draft  → ALLOWED, and on the advertised surface.
-//   user_gmail_send   → REFUSED, and stripped from the advertised surface.
-// Both halves matter. An agent that can draft but is still offered the send tool is the
-// "advertised but not permitted" drift UX-ACCESS exists to end.
-//
-// RED AT `8a64df3c`: no `gmail_draft` or `outlook_draft` exists anywhere in the tree.
-// ════════════════════════════════════════════════════════════════════════════
+// A draft is an account write, not a channel send. `gmail_draft` and `outlook_draft` put a message in the
+// mailbox's own Drafts folder and send nothing. Classed as a send, they would need the email channel, so an
+// agent with a full grant on the owner's account and "can talk to people" off could not draft. Classed as
+// nothing, a read grant could write to the mailbox. So the account door asks the full level for a write and
+// asks the channel only for a send; the draft names stay out of `SEND_TO_PEOPLE`, with the reason recorded in
+// `SEND_TO_PEOPLE_NA`. The acceptance case (`FXID.n8`: owner's Google account at full, channels off) may draft,
+// is offered the draft tools, and is refused and not offered the send tools.
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
@@ -109,7 +84,7 @@ beforeEach(() => { mockDb.current = null; forgetAccessGrants(); });
 // 1 · THE DOOR — the acceptance case, driven through the real wall
 // ════════════════════════════════════════════════════════════════════════════
 
-describe('T77b — the draft door asks the account, and never the channel', () => {
+describe('the draft door asks the account, and never the channel', () => {
   it('⚠ THE ACCEPTANCE CASE — account write + human channels OFF: drafting is allowed', () => {
     // The existence check is not decoration: the door would answer `true` for
     // any INVENTED name under a full grant, so without it this clause passes on a tool
@@ -179,7 +154,7 @@ describe('T77b — the draft door asks the account, and never the channel', () =
 // 2 · THE CLASSIFICATION — what makes the door behave that way
 // ════════════════════════════════════════════════════════════════════════════
 
-describe('T77b — a draft is on no human channel, by every reader that answers that question', () => {
+describe('a draft is on no human channel, by every reader that answers that question', () => {
   it('⚠ `channelForTool` answers null, which is what removes the second conjunct', () => {
     for (const name of ALL_DRAFT_NAMES) expect(channelForTool(name)).toBeNull();
     // the control: the send twins DO answer, from the same reader
@@ -213,7 +188,7 @@ describe('T77b — a draft is on no human channel, by every reader that answers 
 // 3 · THE SHAPE — category, twins, and what the description promises
 // ════════════════════════════════════════════════════════════════════════════
 
-describe('T77b — the draft tools sit with their own family and say what they do', () => {
+describe('the draft tools sit with their own family and say what they do', () => {
   it('⚠ they live in the Gmail and Outlook categories, with their send siblings', () => {
     const cat = (label: string): string[] => TOOL_CATEGORIES.find((c) => c.label === label)?.tools ?? [];
     expect(cat('Gmail')).toContain('gmail_draft');

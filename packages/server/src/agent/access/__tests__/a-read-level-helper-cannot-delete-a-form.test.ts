@@ -11,6 +11,7 @@ vi.mock('../../../google/client.js', () => {
 
 import { scratchDojo, MAIN, HELPER, OPEN_SCOPE } from '../../tools/__tests__/scratch-dojo.js';
 import { getDb } from '../../../db/connection.js';
+import { getFilteredTools } from '../../tools/surface.js';
 
 const readOnly = cloneGrants(MOST_RESTRICTIVE_GRANTS);
 readOnly.tools.categories = '*';
@@ -33,6 +34,18 @@ describe('a read-level helper cannot delete a form', () => {
     const r = await dojo.run(HELPER, 'forms_get', { form_id: 'f1' });
     expect(dojo.blocked(r)).toBe(false);
     expect(sent).toHaveBeenCalled();
+  });
+
+  it('the main agent is offered the Slides writes and a Google read with a read or none grant stored', () => {
+    for (const level of ['read', 'none'] as const) {
+      const g = cloneGrants(readOnly);
+      g.integrations.google = { agent: level, user: level };
+      getDb().prepare('UPDATE agents SET permissions = ? WHERE id = ?').run(JSON.stringify({ grants: g }), MAIN);
+      const names = getFilteredTools(MAIN).map((t) => t.name);
+      if (process.env.R08_PROBE) console.log('PROBE', level, names.length);
+      expect(names, level).toContain('slides_add_slide');
+      expect(names, level).toContain('gmail_search');
+    }
   });
 
   it('the main agent deletes it even with a read-level grant stored', async () => {

@@ -647,11 +647,12 @@ export function disconnectGoogleAccount(accountId: string): void {
 }
 
 
-export function getAgentGoogleAccessLevel(agentId: string, _isPrimary: boolean, _isPM: boolean): 'full' | 'read' | 'none' {
+export function getAgentGoogleAccessLevel(agentId: string, isPrimary: boolean, _isPM: boolean): 'full' | 'read' | 'none' {
   // The tier is the agent's own grant. CONNECTIVITY still wins: an account that is not connected or a
   // provider that is disabled is `none` whatever the grant says, a fact about the box and not a permission.
   const anyEnabled = isGoogleEnabled('agent') || isGoogleEnabled('user');
   const anyConnected = isGoogleConnected('agent') || isGoogleConnected('user');
   if (!anyEnabled || !anyConnected) return 'none';
-  return widestIntegrationLevel(agentId, 'google');
+  // The main agent holds every account, whatever level is stored for it.
+  return isPrimary ? 'full' : widestIntegrationLevel(agentId, 'google');
 }
