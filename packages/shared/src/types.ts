@@ -310,7 +310,7 @@ export interface Project {
 export interface ProjectDetail extends Project {
   tasks: Task[];
   /** `cancelled` is counted apart from `failed`; `blocked` counts Working tasks held blocked. */
-  taskCounts: { pending: number; inProgress: number; complete: number; blocked: number; failed: number; cancelled: number };
+  taskCounts: { pending: number; inProgress: number; handedIn: number; sentBack: number; complete: number; blocked: number; failed: number; cancelled: number };
 }
 
 /** A Working task with no movement for this long is left quiet and labelled on the board. */

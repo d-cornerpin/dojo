@@ -46,7 +46,7 @@ describe('editing a reminder with an unreadable time is refused', () => {
 
     const res = await call('work_update', { action: 'edit', task_id: id, scheduled_start: 'tomorrow 10am' });
     expect(res.isError).toBe(true);
-    expect(res.content).toMatch(/not a parseable datetime/);
+    expect(res.content).toMatch(/cannot be read as a date/);
     expect(scheduleOf(id)).toEqual(before);
     expect(before.next_run_at).toBe(Date.parse(when));
   });

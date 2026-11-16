@@ -13,6 +13,8 @@ import { workerOf } from '../../work/done/record.js';
 import { workingExpr } from '../../work/terminal-states.js';
 import { postAgentNotice, redriveWithoutReply } from '../../agent/agent-notice.js';
 import { tsToMs } from '../../work/tracker-view.js';
+import { calculateNextRun, scheduledTaskFromRow } from '../../scheduler/engine.js';
+import { scheduleError } from '../../tracker/tools.js';
 import { deleteOccurrencesOf } from '../../work/occurrences.js';
 import { recordReassignment } from '../../tracker/assignee-patience.js';
 import { createLogger } from '../../logger.js';
@@ -29,39 +31,6 @@ const trackerRouter = new Hono();
 function hiddenAgentIdSet(): Set<string> {
   return getDashboardHiddenAgentIds();
 }
-
-// The repeat units the engine accepts; the dashboard's dropdown offers a subset.
-const REPEAT_UNITS = new Set([
-  'minutes', 'hours', 'days', 'weeks', 'months', 'years', 'weekdays', 'specific_days',
-]);
-
-// A plain-words reason the schedule the dashboard sent cannot run, or null when it can: an unparseable
-// start, an interval that is not a whole number of at least 1, an unknown unit, or an interval and unit not
-// given together. Each would otherwise store a "waiting" schedule that never fires, so it is refused first.
-function scheduleInputError(body: Record<string, unknown>): string | null {
-  const start = body.scheduled_start;
-  const interval = body.repeat_interval;
-  const unit = body.repeat_unit;
-  const startPresent = start !== undefined && start !== null;
-  const intervalPresent = interval !== undefined && interval !== null;
-  const unitPresent = unit !== undefined && unit !== null;
-
-  if (startPresent && tsToMs(start as string | null | undefined) === null) {
-    return 'The start time can\'t be read as a date. Pick a date and time the schedule can begin on.';
-  }
-  const intervalNum = typeof interval === 'number' ? interval : Number(interval);
-  if (intervalPresent && !(Number.isFinite(intervalNum) && Number.isInteger(intervalNum) && intervalNum >= 1)) {
-    return 'The repeat interval must be a whole number of at least 1.';
-  }
-  if (unitPresent && !REPEAT_UNITS.has(unit as string)) {
-    return 'The repeat unit is not one of the options on the form.';
-  }
-  if (intervalPresent !== unitPresent) {
-    return 'A repeat interval and a repeat unit must be set together.';
-  }
-  return null;
-}
-
 
 // GET /projects: list all projects (filtered to user-facing only)
 trackerRouter.get('/projects', (c) => {
@@ -237,26 +206,10 @@ trackerRouter.post('/tasks', async (c) => {
     return c.json({ ok: false, error: 'title (string) is required' }, 400);
   }
 
-  // Reject a specific_days schedule with an empty or invalid day allowlist BEFORE the row is created, so a
-  // config error fails loudly instead of degrading to a single fire then complete (the scheduler's
-  // specific_days walk cannot advance with no allowed weekday). Mirrors the agent-side check in
-  // work_open(kind="task").
-  if (body.scheduled_start && body.repeat_unit === 'specific_days') {
-    const { parseDaysOfWeek } = await import('../../scheduler/engine.js');
-    if (!parseDaysOfWeek((body.repeat_days_of_week ?? null) as string | null)) {
-      return c.json({
-        ok: false,
-        error: 'A "specific days" repeat needs at least one weekday selected (e.g. Mon and Wed). With no days selected the task would run once and then stop. Pick the days you want, or use a plain weekly repeat instead.',
-      }, 400);
-    }
-  }
-
   // A schedule that cannot run is refused before the row is created, so the owner
   // is never told 201 for a "waiting" schedule that will never fire.
-  const scheduleErr = scheduleInputError(body);
-  if (scheduleErr) {
-    return c.json({ ok: false, error: scheduleErr }, 400);
-  }
+  const scheduleErr = scheduleError(body);
+  if (scheduleErr) return c.json({ ok: false, error: scheduleErr }, 400);
 
   try {
     const taskId = createTask({
@@ -278,28 +231,15 @@ trackerRouter.post('/tasks', async (c) => {
     const announced = getTask(taskId);
 
     if (body.scheduled_start) {
-      const { calculateNextRun } = await import('../../scheduler/engine.js');
       // specific_days requires the day-of-week allowlist; the dashboard sends repeat_days_of_week as a CSV
       // string.
       const repeatDaysOfWeek = (body.repeat_days_of_week ?? null) as string | null;
       // anchor_time defaults to scheduled_start when the caller gives none (pick a start, check "repeat").
       const anchorTime = (body.anchor_time ?? body.scheduled_start) as string;
-      const taskForCalc = {
-        id: taskId,
-        scheduled_start: body.scheduled_start,
-        repeat_interval: body.repeat_interval ?? null,
-        repeat_unit: body.repeat_unit ?? null,
-        repeat_end_type: body.repeat_end_type ?? 'never',
-        repeat_end_value: body.repeat_end_value ?? null,
-        run_count: 0,
-        is_paused: 0,
-        last_run_at: null,
-        next_run_at: null,
-        schedule_status: 'waiting',
-        repeat_days_of_week: repeatDaysOfWeek,
-        anchor_time: anchorTime,
-      };
-      const nextRun = calculateNextRun(taskForCalc) ?? body.scheduled_start;
+      const nextRun = calculateNextRun(scheduledTaskFromRow({
+        ...body, id: taskId, repeat_end_type: body.repeat_end_type ?? 'never', repeat_days_of_week: repeatDaysOfWeek,
+        anchor_time: anchorTime, schedule_status: 'waiting', run_count: 0, is_paused: 0, last_run_at: null, next_run_at: null, tz: null,
+      })) ?? body.scheduled_start;
 
       noteUnsettled(setNextRun(taskId, {
         at: tsToMs(nextRun),
@@ -376,25 +316,11 @@ trackerRouter.put('/tasks/:id', async (c) => {
     return c.json({ ok: false, error: 'Task not found' }, 404);
   }
 
-  // This route fully overwrites the schedule from the body when scheduled_start is set, so the effective
-  // unit and days are the body's. Reject a specific_days schedule with an empty or invalid allowlist before
-  // touching the row. `!= null` covers undefined (no schedule edit) and null (remove-schedule), neither of
-  // which writes days.
-  if (body.scheduled_start != null && body.repeat_unit === 'specific_days') {
-    const { parseDaysOfWeek } = await import('../../scheduler/engine.js');
-    if (!parseDaysOfWeek((body.repeat_days_of_week ?? null) as string | null)) {
-      return c.json({
-        ok: false,
-        error: 'A "specific days" repeat needs at least one weekday selected (e.g. Mon and Wed). With no days selected the task would run once and then stop. Pick the days you want, or use a plain weekly repeat instead.',
-      }, 400);
-    }
-  }
-
   // A bad schedule in the same Save refuses the whole Save: the priority, status and assignee writes below
-  // must not land when the schedule cannot run. Gated on a schedule edit (null is the remove-schedule
-  // branch).
+  // must not land when the schedule cannot run. A schedule edit replaces every schedule field from the
+  // body, so the body is the whole schedule after the write (null is the remove-schedule branch).
   if (body.scheduled_start != null) {
-    const scheduleErr = scheduleInputError(body);
+    const scheduleErr = scheduleError(body);
     if (scheduleErr) return c.json({ ok: false, error: scheduleErr }, 400);
   }
 
@@ -470,7 +396,6 @@ trackerRouter.put('/tasks/:id', async (c) => {
           },
         }), 'dashboard: schedule cleared on task edit', { taskId: id });
       } else {
-        const { calculateNextRun } = await import('../../scheduler/engine.js');
         const existingTask = getTask(id);
         const repeatDaysOfWeek = (body.repeat_days_of_week ?? null) as string | null;
         // anchor_time: use the caller's if given, else preserve the existing anchor (so changing
@@ -483,23 +408,11 @@ trackerRouter.put('/tasks/:id', async (c) => {
         // The row's own zone (`getTask` does not project it): the walk runs on the clock the
         // owner set, not the box's.
         const taskZone = (getDb().prepare('SELECT tz FROM work WHERE id = ?').get(id) as { tz: string | null } | undefined)?.tz ?? null;
-        const taskForCalc = {
-          id,
-          scheduled_start: body.scheduled_start,
-          repeat_interval: body.repeat_interval ?? null,
-          repeat_unit: body.repeat_unit ?? null,
-          repeat_end_type: body.repeat_end_type ?? 'never',
-          repeat_end_value: body.repeat_end_value ?? null,
-          run_count: existingTask?.runCount ?? 0,
-          is_paused: 0,
-          last_run_at: null,
-          next_run_at: null,
-          schedule_status: 'waiting',
-          repeat_days_of_week: repeatDaysOfWeek,
-          anchor_time: anchorTime,
-          tz: taskZone,
-        };
-        const nextRun = calculateNextRun(taskForCalc) ?? body.scheduled_start;
+        const nextRun = calculateNextRun(scheduledTaskFromRow({
+          ...body, id, repeat_end_type: body.repeat_end_type ?? 'never', repeat_days_of_week: repeatDaysOfWeek,
+          anchor_time: anchorTime, schedule_status: 'waiting', run_count: existingTask?.runCount ?? 0, is_paused: 0,
+          last_run_at: null, next_run_at: null, tz: taskZone,
+        })) ?? body.scheduled_start;
 
         // a schedule on a FINISHED task = run it again: reopen + arm land in one unit (or nothing does)
         const armErr = armScheduleOnOwnerSave(id, () => setNextRun(id, {

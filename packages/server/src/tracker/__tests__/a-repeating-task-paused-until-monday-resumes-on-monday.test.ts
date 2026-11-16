@@ -12,6 +12,7 @@ vi.mock('../../agent/runtime.js', () => ({
   getAgentRuntime: () => ({ handleMessage: async () => 'ran', whenQueuedRunEnds: async () => 'ran' }),
 }));
 
+process.env.TZ = 'UTC';
 const MAIN = 'agent-main';
 const home = fs.mkdtempSync(path.join(process.env.DOJO_TEST_HOME_ROOT || os.tmpdir(), 'pause-until-'));
 vi.stubEnv('DOJO_HOME', home);
@@ -86,5 +87,27 @@ describe('a repeating task paused until Monday resumes on Monday', () => {
     });
     expect(res.isError, res.content).toBeFalsy();
     await pausedUntilMondayThenMonday(id);
+  });
+
+  it('a paused status with no resume time holds the run and leaves the schedule alone', async () => {
+    at(WEDNESDAY);
+    const id = await dailyBrief('Morning brief C');
+    const res = await call('work_update', { action: 'status', task_id: id, status: 'paused', notes: 'waiting for the owner to reply' });
+    expect(res.isError, res.content).toBeFalsy();
+    expect(scheduleOf(id).is_paused).toBe(0);
+  });
+
+  it('a never-run Monday-only schedule that starts on a Saturday resumes to the Monday', async () => {
+    at(WEDNESDAY);
+    const made = await call('work_open', {
+      kind: 'task', title: 'Monday standup notes', goal: 'the notes are written', allow_duplicate: true,
+      scheduled_start: '2026-11-21T09:00:00Z', repeat_unit: 'specific_days', repeat_days_of_week: ['mon'],
+    });
+    expect(made.isError, made.content).toBeFalsy();
+    const id = /task_id=([\w-]+)/.exec(made.content)![1]!;
+    await call('work_schedule', { action: 'pause', task_id: id });
+    const res = await call('work_schedule', { action: 'resume', task_id: id });
+    expect(res.isError, res.content).toBeFalsy();
+    expect(scheduleOf(id)).toEqual({ is_paused: 0, next_run_at: MONDAY_RUN });
   });
 });

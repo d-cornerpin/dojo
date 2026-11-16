@@ -65,7 +65,9 @@ export const TaskCard = ({ task, agentIsWorking, onClick, onDeleted }: TaskCardP
   // The working animation shows only while the assigned agent is in a turn right now.
   const isActive = task.status === 'in_progress' && !!agentIsWorking;
   const isBlocked = task.hold === 'blocked';
-  const isPaused = task.hold === 'paused';
+  // A paused schedule is a pause too (a finished schedule also carries the flag, so it is left out).
+  const schedulePaused = task.isPaused && task.scheduleStatus !== 'completed';
+  const isPaused = task.hold === 'paused' || schedulePaused;
   // Paused and complete cards read as dimmed in the prototype.
   const isDim = isPaused || task.status === 'complete';
   const outcomeLabel = terminalOutcomeLabel(task.status);
@@ -107,6 +109,10 @@ export const TaskCard = ({ task, agentIsWorking, onClick, onDeleted }: TaskCardP
           {HOLD_WORDS[task.hold]}: {task.holdReason}
           {isPaused && task.pausedUntil ? ` (until ${formatShortDateTime(task.pausedUntil)})` : ''}
         </div>
+      )}
+
+      {!task.hold && schedulePaused && (
+        <div className="kcard__warn">Schedule paused{task.pausedUntil ? ` until ${formatShortDateTime(task.pausedUntil)}` : ''}</div>
       )}
 
       {isDormant && <div className="kcard__warn">No activity since {formatDateShort(task.lastMovedAt)}</div>}

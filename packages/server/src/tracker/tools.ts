@@ -24,7 +24,7 @@ import { finishedScheduleRefusal, setsASchedule } from './finished-task-schedule
 import { taskReadWithNotes } from './task-notes-view.js';
 import { linkLaterInstruction } from './later-instruction.js';
 import { declareDeliverableOnSchedule, declaredDeliverableShape, findLiveRecurringTwin, DELIVERABLE_OWING_TASK_KINDS } from '../work/deliverable-declaration.js';
-import { calculateNextRun, normalizeDbTimestamp, parseDaysOfWeek, wallToInstant, instantToWall, getBoxTimeZone, type ScheduledTask, type WallClock } from '../scheduler/engine.js';
+import { calculateNextRun, scheduledTaskFromRow, normalizeDbTimestamp, parseDaysOfWeek, wallToInstant, instantToWall, getBoxTimeZone, type WallClock } from '../scheduler/engine.js';
 import { broadcast } from '../gateway/ws.js';
 import { isPMAgent, isPrimaryAgent } from '../config/platform.js';
 import { taskWriteRefusal, escalationPointer } from '../work/row-authority.js';
@@ -125,42 +125,37 @@ const modelTimeMs = (v: unknown): number | null => {
 const REPEAT_UNITS = ['minutes', 'hours', 'days', 'weeks', 'months', 'years', 'weekdays', 'specific_days'];
 const isSet = (v: unknown): boolean => v !== undefined && v !== null && v !== '';
 
-// Why a schedule could never fire, or null when it can, judged on the values the row would hold after the
-// write. Every agent door that writes a schedule asks this one check before it writes anything.
-export function scheduleError(s: Record<string, unknown>): string | null {
+// Why a schedule could never run, in one plain sentence, or null when it can. It judges the values the row
+// holds after the write: `changes` over `current` (a new anchor is read from `changes` only). The agent
+// doors and the dashboard's routes all ask this one check before they write.
+export function scheduleError(changes: Record<string, unknown>, current: Record<string, unknown> = {}): string | null {
+  const s: Record<string, unknown> = { ...current, anchor_time: undefined };
+  for (const [k, v] of Object.entries(changes)) if (v !== undefined) s[k] = v;
   for (const time of [s.scheduled_start, s.anchor_time]) {
-    if (isSet(time) && modelTimeMs(time) === null) {
-      return `Error: the time "${String(time)}" is not a parseable datetime, so the scheduler could never fire it. `
-        + 'Resolve relative times yourself: call get_current_time, add the offset, and re-call with an ISO 8601 UTC '
-        + 'timestamp (e.g. "2026-07-03T16:38:00Z"), or pass local_time="YYYY-MM-DDThh:mm" and let the engine convert it.';
-    }
+    if (isSet(time) && modelTimeMs(time) === null) return `The time "${String(time)}" cannot be read as a date, so the schedule could never run.`;
   }
   const interval = s.repeat_interval;
   const unit = isSet(s.repeat_unit) ? String(s.repeat_unit) : null;
   const num = typeof interval === 'number' ? interval : Number(interval);
   if (isSet(interval) && !(Number.isInteger(num) && num >= 1)) {
-    return `Error: repeat_interval="${String(interval)}" must be a whole number of 1 or more (for example 1 for "every day"). Zero, negative or fractional numbers cannot repeat; the task would run once and stop.`;
+    return `The repeat interval "${String(interval)}" must be a whole number of 1 or more; zero, negative or fractional numbers cannot repeat.`;
   }
-  if (unit && !REPEAT_UNITS.includes(unit)) {
-    return `Error: repeat_unit="${unit}" is not a valid unit. Valid values: ${REPEAT_UNITS.join(', ')}. `
-      + 'Common mistakes: "weekly" → repeat_interval=1, repeat_unit="weeks"; "daily" → repeat_interval=1, repeat_unit="days"; '
-      + '"every Mon/Wed" → repeat_unit="specific_days", repeat_days_of_week=["mon","wed"].';
-  }
-  if (isSet(interval) && !unit) {
-    return `Error: repeat_interval is set without repeat_unit, so the task would fire once and never again. Set repeat_unit (one of: ${REPEAT_UNITS.join(', ')}), or clear repeat_interval to stop repeating.`;
-  }
-  if (unit && !isSet(interval) && unit !== 'specific_days') {
-    return `Error: repeat_unit="${unit}" is set without repeat_interval, so the next run cannot be computed. Set repeat_interval (e.g. 1 for "every ${unit.replace(/s$/, '')}"), or clear repeat_unit to stop repeating.`;
-  }
+  if (unit && !REPEAT_UNITS.includes(unit)) return `The repeat unit "${unit}" is not one of: ${REPEAT_UNITS.join(', ')} ("weekly" is every 1 weeks).`;
+  if (isSet(interval) && !unit) return 'A repeat interval needs a repeat unit, or the task would run once and never again.';
+  if (unit && !isSet(interval) && unit !== 'specific_days') return `A repeat unit of "${unit}" needs a repeat interval (for example 1, for every ${unit.replace(/s$/, '')}).`;
   if (unit === 'specific_days' && !parseDaysOfWeek(isSet(s.repeat_days_of_week) ? String(s.repeat_days_of_week) : null)) {
-    return 'Error: repeat_unit="specific_days" needs at least one weekday in repeat_days_of_week (e.g. ["mon","wed"]). With none the task would fire once and never repeat.';
+    return 'A "specific days" repeat needs at least one weekday, or the task would run once and never repeat.';
   }
-  if (unit && !isSet(s.scheduled_start)) {
-    return 'Error: a repeating schedule needs a first-run time: scheduled_start (`when` on a reminder, an ISO 8601 UTC instant) '
-      + 'or local_time ("YYYY-MM-DDThh:mm", which the engine converts). Without one it never fires. Ask the person you are '
-      + 'talking to when the first run should happen; call get_current_time first if you need it to resolve a relative phrase.';
-  }
+  if (unit && !isSet(s.scheduled_start)) return 'A repeating schedule needs a first run time, or it never runs.';
   return null;
+}
+
+// The agent doors' form of the schedule refusal: the plain sentence, then how a model fixes it.
+function toolScheduleError(changes: Record<string, unknown>, current?: Record<string, unknown>): string | null {
+  const why = scheduleError(changes, current);
+  return why && `Error: ${why} Nothing was saved. Give a time as scheduled_start, an ISO 8601 UTC timestamp (call `
+    + 'get_current_time to resolve "tomorrow" or "in 2 hours"), or as local_time="YYYY-MM-DDThh:mm"; a reminder\'s first time is `when`; '
+    + 'a repeat is repeat_interval with repeat_unit. If you do not know when it should run, ask the person you are talking to.';
 }
 
 // A task given to a group is held by one of its live members: an idle one first, then the least loaded.
@@ -507,7 +502,7 @@ export async function trackerCreateTask(agentId: string, args: Record<string, un
       resolvedScheduleZone = resolved.zone;
     }
 
-    { const no = scheduleError(args); if (no) return no; }
+    { const no = toolScheduleError(args); if (no) return no; }
     if (args.assigned_to_group) {
       const member = groupMember(String(args.assigned_to_group));
       if (!member.ok) return member.error;
@@ -679,24 +674,12 @@ export async function trackerCreateTask(agentId: string, args: Record<string, un
         anchorTime = scheduledStart;
       }
 
-      const taskForCalc = {
-        id: taskId,
-        scheduled_start: scheduledStart,
-        repeat_interval: repeatInterval ?? null,
-        repeat_unit: repeatUnit ?? null,
-        repeat_end_type: repeatEndType,
-        repeat_end_value: repeatEndValue ?? null,
-        run_count: 0,
-        is_paused: 0,
-        last_run_at: null,
-        next_run_at: null,
-        schedule_status: 'waiting',
-        repeat_days_of_week: repeatDaysOfWeek ?? null,
-        anchor_time: anchorTime ?? null,
-        // The row's own zone reaches the very first advance too.
-        tz: resolvedScheduleZone,
-      };
-      const nextRun = calculateNextRun(taskForCalc) ?? scheduledStart;
+      // The row's own zone reaches the very first advance too.
+      const nextRun = calculateNextRun(scheduledTaskFromRow({
+        id: taskId, scheduled_start: scheduledStart, repeat_interval: repeatInterval ?? null, repeat_unit: repeatUnit ?? null,
+        repeat_end_type: repeatEndType, repeat_end_value: repeatEndValue ?? null, repeat_days_of_week: repeatDaysOfWeek ?? null,
+        anchor_time: anchorTime ?? null, tz: resolvedScheduleZone, schedule_status: 'waiting',
+      })) ?? scheduledStart;
 
       noteUnsettled(setNextRun(taskId, {
         at: tsToMs(nextRun),
@@ -916,8 +899,13 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
         + (hold === 'paused' ? 'name what you are waiting for (e.g. "waiting for the vendor to send the tracking number").'
           : 'name the obstacle (e.g. "need API key for service X").');
     }
-    // A repeating task has one pause, its schedule's: a hold would not stop the next run.
-    if (hold === 'paused' && taskRow?.repeat_interval) return trackerPauseSchedule(agentId, { taskId, resume_at: args.resume_at });
+    // "Pause it until Monday" on a repeating task is its schedule's pause (a hold would not stop the next
+    // run); a pause with no resume time holds only the run being worked.
+    if (hold === 'paused' && taskRow?.repeat_interval && isSet(args.resume_at)) {
+      const paused = trackerPauseSchedule(agentId, { taskId, resume_at: args.resume_at, reason: holdReason });
+      if (priority && paused.startsWith('Schedule paused')) updateTask(taskId, { priority });
+      return paused;
+    }
     if (hold) {
       const held = setHold(taskId, hold, holdReason, agentId, resumeAt, args.user_quote);
       if (!held.ok) return `Refused: ${taskId} was not put on hold (${held.why}).`;
@@ -1103,13 +1091,12 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
 
     if (setsASchedule([scheduledStart, repeatInterval, repeatUnit, repeatEndType, repeatEndValue, repeatDaysOfWeek, anchorTime])) { const no = finishedScheduleRefusal(taskId, getTask(taskId)?.title ?? 'this task', 'changed'); if (no) return no; }
     // The schedule check runs on the values the row will hold once the edit lands; only a new anchor is read.
-    const edited: Record<string, unknown> = { scheduled_start: scheduledStart, repeat_interval: repeatInterval, repeat_unit: repeatUnit, repeat_days_of_week: repeatDaysOfWeek };
-    if (anchorTime !== undefined || Object.values(edited).some((v) => v !== undefined)) {
+    const edited = { scheduled_start: scheduledStart, repeat_interval: repeatInterval, repeat_unit: repeatUnit, repeat_days_of_week: repeatDaysOfWeek, anchor_time: anchorTime };
+    if (Object.values(edited).some((v) => v !== undefined)) {
       const current = getDb().prepare(
         `SELECT ${msToText('scheduled_start')} AS scheduled_start, repeat_interval, repeat_unit, repeat_days_of_week FROM work WHERE id = ?`,
       ).get(taskId) as Record<string, unknown> | undefined;
-      for (const k of Object.keys(edited)) if (edited[k] === undefined) edited[k] = current?.[k];
-      const no = scheduleError({ ...edited, anchor_time: anchorTime });
+      const no = toolScheduleError(edited, current);
       if (no) return no;
     }
 
@@ -1461,6 +1448,8 @@ export function trackerGetStatus(agentId: string, args: Record<string, unknown>)
         `Task Summary:`,
         `  On Deck: ${project.taskCounts.pending}`,
         `  In Progress: ${project.taskCounts.inProgress}`,
+        `  Handed in: ${project.taskCounts.handedIn}`,
+        `  Sent back: ${project.taskCounts.sentBack}`,
         `  Complete: ${project.taskCounts.complete}`,
         `  Blocked: ${project.taskCounts.blocked}`,
         `  Fallen: ${project.taskCounts.failed}`,
@@ -2017,6 +2006,7 @@ export function trackerPauseSchedule(agentId: string, args: Record<string, unkno
   const until = modelTimeMs(args.resume_at);
   if (isSet(args.resume_at) && until === null) return `Error: resume_at="${String(args.resume_at)}" is not a parseable datetime. Nothing was paused; re-call with an ISO 8601 time.`;
   // This pause also answers a missed-runs notice, so the engine's fallback stands down.
+  if (isSet(args.reason)) writeTaskLog({ taskId, fromEntity: isPMAgent(agentId) ? 'pm' : `agent:${agentId}`, entryKind: 'observation', actionTaken: 'schedule paused', note: String(args.reason) });
   noteUnsettled(patchWork(taskId, { is_paused: 1, schedule_status: 'paused', paused_until: until, missed_runs_paused_at: null }), 'trackerPauseSchedule: schedule paused', { taskId });
   const freshSchedPaused = getTask(taskId);
   if (freshSchedPaused) broadcast({ type: 'tracker:task_updated', data: freshSchedPaused });
@@ -2028,26 +2018,14 @@ export function trackerPauseSchedule(agentId: string, args: Record<string, unkno
 export function resumeSchedule(taskId: string, reason: string): string | null {
   const task = getDb().prepare(`SELECT ${scheduleRowColumns('w')} FROM work w WHERE w.id = ?`).get(taskId) as Record<string, unknown> | undefined;
   if (!task) return null;
-  const nextRun = calculateNextRun({
-    id: taskId,
-    scheduled_start: task.scheduled_start as string | null,
-    repeat_interval: task.repeat_interval as number | null,
-    repeat_unit: task.repeat_unit as string | null,
-    repeat_end_type: task.repeat_end_type as string | null,
-    repeat_end_value: task.repeat_end_value as string | null,
-    run_count: (task.run_count as number) ?? 0,
-    is_paused: 0,
+  const nextRun = calculateNextRun(scheduledTaskFromRow(task, {
+    is_paused: 0, next_run_at: null, schedule_status: 'waiting',
     last_run_at: task.repeat_interval ? new Date().toISOString() : task.last_run_at as string | null,
-    next_run_at: null,
-    schedule_status: 'waiting',
-    repeat_days_of_week: task.repeat_days_of_week as string | null,
-    anchor_time: task.anchor_time as string | null,
-    tz: task.tz as string | null,
-  });
+  }));
   // An explicit resume also disarms the missed-runs fallback and any resume time.
   noteUnsettled(setNextRun(taskId, {
     at: tsToMs(nextRun), reason,
-    alongside: { is_paused: 0, schedule_status: 'waiting', paused_until: null, missed_runs_paused_at: null },
+    alongside: { is_paused: nextRun ? 0 : 1, schedule_status: nextRun ? 'waiting' : 'completed', paused_until: null, missed_runs_paused_at: null },
   }), 'schedule resumed', { taskId });
   const fresh = getTask(taskId);
   if (fresh) broadcast({ type: 'tracker:task_updated', data: fresh });
@@ -2106,22 +2084,9 @@ export function trackerResolveMissedRuns(agentId: string, args: Record<string, u
   if (action === 'skip') {
     // The next future anchor (strictly > now): calculateNextRun walks the anchor forward when fed an
     // unpaused snapshot.
-    const scheduledTask: ScheduledTask = {
-      id: task.id as string,
-      scheduled_start: task.scheduled_start as string | null,
-      repeat_interval: task.repeat_interval as number | null,
-      repeat_unit: task.repeat_unit as string | null,
-      repeat_end_type: task.repeat_end_type as string | null,
-      repeat_end_value: task.repeat_end_value as string | null,
-      run_count: (task.run_count as number) ?? 0,
-      is_paused: 0,
-      last_run_at: new Date().toISOString(), // pretend a run just happened, so the loop skips current slot
-      next_run_at: null,
-      schedule_status: 'waiting',
-      repeat_days_of_week: task.repeat_days_of_week as string | null,
-      anchor_time: task.anchor_time as string | null,
-      tz: task.tz as string | null,
-    };
+    const scheduledTask = scheduledTaskFromRow(task, {
+      is_paused: 0, last_run_at: new Date().toISOString(), next_run_at: null, schedule_status: 'waiting',
+    });
     const nextRun = calculateNextRun(scheduledTask);
     if (!nextRun) {
       return `Could not compute a next-run for "${title}" (likely past repeat_end_value or anchor missing). Task stays paused; investigate manually.`;

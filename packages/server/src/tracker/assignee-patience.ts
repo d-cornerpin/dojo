@@ -108,8 +108,7 @@ export function assigneeLastState(agentId: string | null | undefined): string {
 
 /** A person's reassignment, from the dashboard or the main agent's reassign verb: who, why, and the prior worker's last state. */
 export function recordReassignment(p: {
-  taskId: string; actor: string; fromAgentId: string | null; toAgentId: string | null;
-  toGroupId?: string | null; reason: string;
+  taskId: string; actor: string; fromAgentId: string | null; toAgentId: string | null; reason: string;
 }): void {
   const priorState = assigneeLastState(p.fromAgentId);
   appendWorkEvent(p.taskId, AUDIT_KIND, p.actor, {
@@ -117,10 +116,10 @@ export function recordReassignment(p: {
     reason: p.reason,
     from_agent: p.fromAgentId,
     action_taken: `reassigned ${p.fromAgentId ?? 'unassigned'} → `
-      + `${p.toAgentId ?? p.toGroupId ?? 'unassigned'}`,
+      + `${p.toAgentId ?? 'unassigned'}`,
     note: `prior assignee last state: ${priorState}`,
   });
   logger.info('reassignment recorded', {
-    taskId: p.taskId, actor: p.actor, from: p.fromAgentId, to: p.toAgentId ?? p.toGroupId,
+    taskId: p.taskId, actor: p.actor, from: p.fromAgentId, to: p.toAgentId,
   });
 }

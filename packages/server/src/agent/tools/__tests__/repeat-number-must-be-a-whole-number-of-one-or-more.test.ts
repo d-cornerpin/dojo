@@ -2,7 +2,7 @@
 // A REPEAT NUMBER THAT CANNOT STEP THE CALENDAR IS REFUSED AT EVERY AGENT DOOR
 //
 // The dashboard refuses `repeat_interval` 0 / -1 / 0.5 before any write
-// (`gateway/routes/tracker.ts:88` `scheduleInputError`). The three doors that
+// (the same `scheduleError` check). The three doors that
 // save a repeat interval for AGENTS checked only that the number is PRESENT
 // (`cat/tracker.ts` `hasInterval` / `remHasInterval`, `tracker/tools.ts`
 // `effHasInterval`), never that it is a usable one. A zero, negative or
@@ -97,11 +97,10 @@ beforeEach(() => {
   mockDb.current = db;
 });
 
-/** The refusal every door must return verbatim for an unusable repeat number. */
+/** The refusal every door returns for an unusable repeat number (the model hint follows it). */
 function refusedRepeat(value: unknown): string {
-  return `Error: repeat_interval="${value}" must be a whole number of 1 or more `
-    + `(for example 1 for "every day"). Zero, negative or fractional numbers `
-    + `cannot repeat; the task would run once and stop.`;
+  return `Error: The repeat interval "${value}" must be a whole number of 1 or more; `
+    + 'zero, negative or fractional numbers cannot repeat. Nothing was saved.';
 }
 
 const BAD_VALUES: readonly unknown[] = [0, -1, 0.5, NaN];
@@ -128,7 +127,7 @@ describe('work_open(kind="task") refuses a repeat number that cannot repeat', ()
         },
       } as never);
       expect(res.isError, `a task with repeat_interval=${String(value)} opened:\n${res.content}`).toBe(true);
-      expect(res.content).toBe(refusedRepeat(value));
+      expect(res.content).toContain(refusedRepeat(value));
       expect(workRowCount(), 'the refused call wrote a row anyway').toBe(0);
     });
   }
@@ -160,7 +159,7 @@ describe('work_open(kind="reminder") refuses a repeat number that cannot repeat'
         },
       } as never);
       expect(res.isError, `a reminder with repeat_interval=${String(value)} opened:\n${res.content}`).toBe(true);
-      expect(res.content).toBe(refusedRepeat(value));
+      expect(res.content).toContain(refusedRepeat(value));
       expect(workRowCount(), 'the refused call wrote a row anyway').toBe(0);
     });
   }
@@ -214,7 +213,7 @@ describe('trackerEditTask refuses a repeat number that cannot repeat', () => {
       seedRunningTask(mockDb.current!);
       const before = scheduleRow();
       const res = trackerEditTask(AGENT, { taskId: 'task-repeat-edit', repeat_interval: value });
-      expect(res, `an edit to repeat_interval=${String(value)} was accepted:\n${res}`).toBe(refusedRepeat(value));
+      expect(res, `an edit to repeat_interval=${String(value)} was accepted:\n${res}`).toContain(refusedRepeat(value));
       expect(scheduleRow(), 'the refused edit touched the row').toEqual(before);
     });
   }

@@ -7,7 +7,7 @@ import { retireEngineEventsForRun, retireEngineEventsForTask } from '../agent/v2
 import { getDb } from '../db/connection.js';
 import { HARD_STUCK_THRESHOLD_MINUTES } from '../agent/stuck-thresholds.js';
 import {
-  taskScope, dueScope, msToText, msToUtcText, tsToMs, stateToStatus, scheduleRowColumns,
+  taskScope, dueScope, msToText, tsToMs, stateToStatus, scheduleRowColumns,
 } from '../work/tracker-view.js';
 import { patchWork, setTrackerStatus, bumpWorkAttempts } from '../work/tracker-store.js';
 import { engineHandIn } from '../work/done/hand-in.js';
@@ -26,8 +26,9 @@ import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getTask } from '../tracker/schema.js';
 import { resumeSchedule } from '../tracker/tools.js';
+import { formatTimeForAgent } from '../services/format-time.js';
 import { writeTaskLog } from '../tracker/task-log.js';
-import { calculateNextRun, normalizeDbTimestamp, type ScheduledTask } from './engine.js';
+import { calculateNextRun, normalizeDbTimestamp, scheduledTaskFromRow } from './engine.js';
 import { getAgentRuntime } from '../agent/runtime.js';
 import { postAgentNotice } from '../agent/agent-notice.js';
 import { insertEngineEventIfAbsent } from '../memory/message-store.js';
@@ -38,28 +39,6 @@ import { OWNER_ALERT_HEADS_UP_PREFIX } from '@dojo/shared';
 import { activeRuns } from '../agent/shared-state.js';
 
 const logger = createLogger('scheduler');
-
-// Builds a `ScheduledTask` from a `work` row's projected columns, including its own zone `tz`.
-function scheduledTaskFromRow(row: Record<string, unknown>, over: Partial<ScheduledTask> = {}): ScheduledTask {
-  return {
-    id: row.id as string,
-    scheduled_start: row.scheduled_start as string | null,
-    repeat_interval: row.repeat_interval as number | null,
-    repeat_unit: row.repeat_unit as string | null,
-    repeat_end_type: row.repeat_end_type as string | null,
-    repeat_end_value: row.repeat_end_value as string | null,
-    run_count: (row.run_count as number) ?? 0,
-    is_paused: (row.is_paused as number) ?? 0,
-    last_run_at: row.last_run_at as string | null,
-    next_run_at: row.next_run_at as string | null,
-    schedule_status: row.schedule_status as string,
-    repeat_days_of_week: row.repeat_days_of_week as string | null,
-    anchor_time: row.anchor_time as string | null,
-    tz: row.tz as string | null,
-    ...over,
-  };
-}
-
 
 /** Approximate ms per interval (months and years approximate by design), for the missed-runs detector. */
 function intervalApproxMs(unit: string | null, interval: number | null): number | null {
@@ -294,14 +273,15 @@ export async function checkScheduledTasks(): Promise<void> {
       try {
         const deps = JSON.parse(dependsOnRaw) as string[];
         if (deps.length > 0) {
-          const states = deps.map((depId) => (db.prepare('SELECT state FROM work WHERE id = ?').get(depId) as { state: string } | undefined)?.state ?? 'gone');
+          const rows = deps.map((depId) => db.prepare('SELECT state, title FROM work WHERE id = ?').get(depId) as { state: string; title: string | null } | undefined);
           // A step that can never become done ends this one: handed in once, so it leaves the due scan.
-          const dead = states.findIndex((st) => st === 'failed' || st === 'abandoned' || st === 'gone');
+          const dead = rows.findIndex((r) => !r || r.state === 'failed' || r.state === 'abandoned');
           if (dead >= 0) {
-            engineHandIn(taskId, `the step it waits on (${deps[dead]}) is ${states[dead] === 'gone' ? 'gone' : stateToStatus(states[dead]!)}, so this one can never start`, { scope: 'schedule', outcome: 'cant_be_done' });
+            const step = rows[dead] ? `"${rows[dead]!.title ?? 'untitled'}" [${deps[dead]!.slice(0, 8)}] is ${stateToStatus(rows[dead]!.state)}` : `[${deps[dead]!.slice(0, 8)}] no longer exists`;
+            engineHandIn(taskId, `the step it waits on, ${step}, so this one can never start`, { scope: 'schedule', outcome: 'cant_be_done' });
             continue;
           }
-          const incomplete = deps.filter((_, i) => states[i] !== 'done');
+          const incomplete = deps.filter((_, i) => rows[i]?.state !== 'done');
           if (incomplete.length > 0) {
             logger.info('Scheduler: task has unmet dependencies, skipping', { taskId, incomplete });
             noteUnsettled(setNextRun(taskId, {
@@ -383,13 +363,13 @@ export async function checkScheduledTasks(): Promise<void> {
     const taskKind = taskRow.kind as string | null;
     const totalRuns = taskRow.repeat_end_value ? ` of ${taskRow.repeat_end_value}` : '';
     // A run firing well after its time (the Mac was asleep or off) says so, so it is not passed off as on time.
-    const late = claimedOccurrenceMs !== null && nowMs - claimedOccurrenceMs > 5 * 60_000 ? `, late: it was due ${msToUtcText(claimedOccurrenceMs)}` : '';
+    const late = claimedOccurrenceMs !== null && nowMs - claimedOccurrenceMs > 5 * 60_000 ? `, late: it was due ${formatTimeForAgent(claimedOccurrenceMs)}` : '';
 
     // Reminders get a lighter prompt: one conversational delivery in the agent's normal voice, then a silent close.
     // The wake asks for the reply ALONE and the bookkeeping in the NEXT response, because text emitted in the same
     // response as a tool call is demoted to working notes (post-call-classify/terminal-text.ts) and never heard.
     const message = taskKind === 'reminder'
-      ? `[Reminder due${late}] ${taskDesc ?? taskTitle}\n\nTask ID: ${taskId}\nRun ID: ${runId}\n\nDeliver this reminder to the owner now as a single short chat message in your normal voice. Do NOT prefix with "Reminder:" or "Here's your reminder", just say the thing naturally (e.g. the owner asked to be reminded to "go get coffee" → "Hey, time to go get coffee."). Say it as a SEPARATE response with no tool call in it — text that rides along with a tool call is treated as working notes and never reaches the owner. Then, in your NEXT response, silently call work_update(action="status") with task_id="${taskId}" and status="complete". That status call is internal bookkeeping; do NOT write any owner-facing message about marking the reminder complete ("Task closed", "All done", "Marked complete"). The reminder message itself is the entire owner-facing output.`
+      ? `[Reminder due${late}] ${taskDesc ?? taskTitle}\n\nTask ID: ${taskId}\nRun ID: ${runId}\n\nDeliver this reminder to the owner now as a single short chat message in your normal voice. Do NOT prefix with "Reminder:" or "Here's your reminder", just say the thing naturally (e.g. the owner asked to be reminded to "go get coffee" → "Hey, time to go get coffee."). Say it as a SEPARATE response with no tool call in it: text that rides along with a tool call is treated as working notes and never reaches the owner. Then, in your NEXT response, silently call work_update(action="status") with task_id="${taskId}" and status="complete". That status call is internal bookkeeping; do NOT write any owner-facing message about marking the reminder complete ("Task closed", "All done", "Marked complete"). The reminder message itself is the entire owner-facing output.`
       : `[Scheduled Task, Run #${runNumber}${totalRuns}${late}] ${taskTitle}${taskDesc ? '\n' + taskDesc : ''}\n\nTask ID: ${taskId}\nRun ID: ${runId}\n\nWhen this run is finished, hand it in: work_update(action="hand_in") with task_id="${taskId}" and its proof. That call is internal bookkeeping; do NOT write any owner-facing message about marking the task complete (e.g. "Task closed", "All done", "Marked complete"). The owner already received your reminder/output above; an extra "task closed" line is just noise.`;
 
     // Inject as an engine event on the EVENTS lane, outside the assignee's `messages` chat table.

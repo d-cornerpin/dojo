@@ -288,6 +288,8 @@ export function getProject(id: string): ProjectDetail | null {
   const taskCounts = {
     pending: 0,
     inProgress: 0,
+    handedIn: 0,
+    sentBack: 0,
     complete: 0,
     blocked: 0,
     failed: 0,
@@ -298,6 +300,8 @@ export function getProject(id: string): ProjectDetail | null {
     switch (task.status) {
       case 'on_deck': taskCounts.pending++; break;
       case 'in_progress': taskCounts.inProgress++; break;
+      case 'handed_in': taskCounts.handedIn++; break;
+      case 'sent_back': taskCounts.sentBack++; break;
       case 'complete': taskCounts.complete++; break;
       case 'fallen': taskCounts.failed++; break;
       case 'cancelled': taskCounts.cancelled++; break;

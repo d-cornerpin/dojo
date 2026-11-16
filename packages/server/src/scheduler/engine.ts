@@ -28,6 +28,27 @@ export interface ScheduledTask {
 }
 
 
+// Builds a `ScheduledTask` from a `work` row's projected columns, including its own zone `tz`.
+export function scheduledTaskFromRow(row: Record<string, unknown>, over: Partial<ScheduledTask> = {}): ScheduledTask {
+  return {
+    id: row.id as string,
+    scheduled_start: row.scheduled_start as string | null,
+    repeat_interval: row.repeat_interval as number | null,
+    repeat_unit: row.repeat_unit as string | null,
+    repeat_end_type: row.repeat_end_type as string | null,
+    repeat_end_value: row.repeat_end_value as string | null,
+    run_count: (row.run_count as number) ?? 0,
+    is_paused: (row.is_paused as number) ?? 0,
+    last_run_at: row.last_run_at as string | null,
+    next_run_at: row.next_run_at as string | null,
+    schedule_status: row.schedule_status as string,
+    repeat_days_of_week: row.repeat_days_of_week as string | null,
+    anchor_time: row.anchor_time as string | null,
+    tz: row.tz as string | null,
+    ...over,
+  };
+}
+
 export function getBoxTimeZone(): string {
   return Intl.DateTimeFormat().resolvedOptions().timeZone;
 }
@@ -291,6 +312,11 @@ export function calculateNextRun(task: ScheduledTask, timeZone?: string): string
     const dow = wallDayOfWeek(wall);
     if (dow === 6) { wall = normalizeWall({ ...wall, day: wall.day + 2 }); candidate = wallToInstant(wall, tz); }
     else if (dow === 0) { wall = normalizeWall({ ...wall, day: wall.day + 1 }); candidate = wallToInstant(wall, tz); }
+  }
+
+  // A specific_days schedule never yields a day it may not run on, also when no step was taken.
+  if (task.repeat_unit === 'specific_days' && !parseDaysOfWeek(task.repeat_days_of_week ?? null)?.has(wallDayOfWeek(wall))) {
+    wall = advanceWallByUnit(wall, 1, 'specific_days', task.repeat_days_of_week ?? null); candidate = wallToInstant(wall, tz);
   }
 
   const candidateIso = candidate.toISOString();
