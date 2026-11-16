@@ -130,8 +130,8 @@ export const authMiddleware = async (c: Context, next: Next): Promise<Response |
       }
     }
 
-    // A day-old token is replaced, so a session in use never reaches its 30-day end.
-    if (Date.now() / 1000 - payload.iat > RENEW_AFTER_S) {
+    // A token with less than 29 days left is replaced, so a session in use never reaches its end.
+    if (payload.exp - Date.now() / 1000 < SESSION_S - RENEW_AFTER_S) {
       c.header('X-Dojo-Token', issueSession(c, cookies['csrf']).token);
     }
 

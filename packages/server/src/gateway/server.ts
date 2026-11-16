@@ -296,6 +296,7 @@ export function createServer() {
     if (fs.existsSync(dashboardDist)) {
       // Serve static assets (relative to cwd)
       app.use('/assets/*', serveStatic({ root: './packages/dashboard/dist' }));
+      app.use('/fonts/*', serveStatic({ root: './packages/dashboard/dist' }));
       app.use('/favicon.png', serveStatic({ root: './packages/dashboard/dist', path: '/favicon.png' }));
       app.use('/dojologo.svg', serveStatic({ root: './packages/dashboard/dist', path: '/dojologo.svg' }));
       // Voice mode chimes. Without these explicit handlers, /wake-chime.wav etc. fall through to

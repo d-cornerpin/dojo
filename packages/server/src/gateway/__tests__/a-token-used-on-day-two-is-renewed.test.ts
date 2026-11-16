@@ -3,6 +3,7 @@
 
 import { describe, it, expect, vi, afterAll } from 'vitest';
 import bcrypt from 'bcrypt';
+import jwt from 'jsonwebtoken';
 
 const hash = bcrypt.hashSync('a-test-password', 4);
 vi.mock('../../config/loader.js', async (orig) => ({
@@ -47,5 +48,13 @@ describe('a token used on day two is renewed', () => {
 
     vi.setSystemTime(Date.now() + 31 * DAY);
     expect((await me(renewed!)).status).toBe(401);
+  });
+
+  it('renews a 24-hour token from before the update on its first use', async () => {
+    const old = jwt.sign({ userId: 'admin' }, 'test-secret-for-renewal', { expiresIn: '24h' });
+    vi.setSystemTime(Date.now() + 2 * 3600_000);
+    const res = await me(old);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('x-dojo-token')).toBeTruthy();
   });
 });

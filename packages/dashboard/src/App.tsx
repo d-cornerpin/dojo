@@ -28,12 +28,12 @@ import { TechniqueSessionProvider } from './components/TechniqueSessionProvider'
 
 
 const RequireAuth = () => {
-  const { isAuthenticated, isLoading } = useAuth();
+  const { isAuthenticated, isLoading, isWaiting } = useAuth();
 
   if (isLoading) {
     return (
       <div className="min-h-screen bg-[#f0e6d2] flex items-center justify-center">
-        <div className="text-[#7a6a52]">Loading...</div>
+        <div className="text-[#7a6a52]">{isWaiting ? 'Waiting for your Dojo...' : 'Loading...'}</div>
       </div>
     );
   }

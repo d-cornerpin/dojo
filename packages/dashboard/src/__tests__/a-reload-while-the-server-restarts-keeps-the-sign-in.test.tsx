@@ -5,8 +5,8 @@ import { render, screen, act } from '@testing-library/react';
 import { AuthProvider, useAuth } from '../hooks/useAuth';
 
 const Shows = () => {
-  const { isAuthenticated, isLoading } = useAuth();
-  return <div>{isLoading ? 'loading' : isAuthenticated ? 'signed in' : 'signed out'}</div>;
+  const { isAuthenticated, isLoading, isWaiting } = useAuth();
+  return <div>{isWaiting && isLoading ? 'waiting' : isLoading ? 'loading' : isAuthenticated ? 'signed in' : 'signed out'}</div>;
 };
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status });
 
@@ -24,6 +24,8 @@ describe('a reload while the server restarts keeps the sign-in', () => {
       return json(200, { ok: true, data: { authenticated: true, userId: 'admin' } });
     }));
     render(<AuthProvider><Shows /></AuthProvider>);
+    await act(() => vi.advanceTimersByTimeAsync(10));
+    expect(screen.getByText('waiting')).toBeTruthy();
     for (let i = 0; i < 10; i++) await act(() => vi.advanceTimersByTimeAsync(2000));
     expect(screen.getByText('signed in')).toBeTruthy();
     expect(localStorage.getItem('dojo_token')).toBe('a-token');
