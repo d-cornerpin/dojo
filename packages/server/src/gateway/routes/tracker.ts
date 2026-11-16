@@ -9,6 +9,9 @@ import { workSettled, isStateConflict, noteUnsettled } from '../../work/store.js
 import { deleteTrackerRow } from '../../work/tracker-store.js';
 import { decide, type Verdict } from '../../work/done/decide.js';
 import { setHold, clearHold } from '../../work/done/hold.js';
+import { workerOf } from '../../work/done/record.js';
+import { workingExpr } from '../../work/terminal-states.js';
+import { postAgentNotice, redriveWithoutReply } from '../../agent/agent-notice.js';
 import { tsToMs } from '../../work/tracker-view.js';
 import { deleteOccurrencesOf } from '../../work/occurrences.js';
 import { recordReassignment } from '../../tracker/assignee-patience.js';
@@ -323,7 +326,11 @@ trackerRouter.post('/tasks', async (c) => {
     // The LAST frame for this id must equal the stored row; a no-op when nothing settled.
     broadcastTaskSettled(taskId, announced);
 
+    // A task for now reaches its agent at once; a scheduled one waits for its fire time.
     const task = getTask(taskId);
+    if (task?.assignedTo && !body.scheduled_start) {
+      void redriveWithoutReply({ toAgentId: task.assignedTo, fromAgentId: null, taskId, content: `[Engine hint: the owner made the task "${task.title}" [${taskId}] for you on the dashboard. Start it now.]` });
+    }
     return c.json({ ok: true, data: task }, 201);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -332,10 +339,12 @@ trackerRouter.post('/tasks', async (c) => {
   }
 });
 
-/** The owner moving a card: a close or a cancel is his decision (`work/done/decide.ts`); paused and
- *  blocked put it on hold; any other move lifts the hold and is a plain status change. Null when it
- *  landed, else why not. */
+/** The owner moving a card: a close or a cancel is his decision (`work/done/decide.ts`), as is a send-back
+ *  (the decision route, with his reason); paused and blocked put it on hold; any other move lifts the hold
+ *  and is a plain status change. Null when it landed, else why not. */
 function ownerMoveRefusal(id: string, status: string): string | null {
+  if (status === 'handed_in') return 'only the agent working on a task hands it in, with its proof';
+  if (status === 'sent_back') return 'sending a task back is your decision with a reason; use Send back on the task';
   if (status === 'complete' || status === 'cancelled' || status === 'fallen') {
     const r = decide({ workId: id, deciderAgentId: null, verdict: status === 'complete' ? 'owner_done' : 'cancel', reason: `moved to ${status} on the dashboard task board` });
     return r.kind === 'decided' ? null : r.text;
@@ -551,19 +560,24 @@ trackerRouter.post('/projects/:id/close', async (c) => {
   }
 });
 
-// DELETE /projects/:id: delete project and all its tasks
+// DELETE /projects/:id: delete project and all its tasks. Tasks being worked on are a hurdle, not a block:
+// without `?anyway=1` it names them and deletes nothing; with it, each working agent is told.
 trackerRouter.delete('/projects/:id', (c) => {
   const id = c.req.param('id');
   const db = getDb();
 
-  const project = db.prepare(`SELECT w.id AS id FROM work w WHERE ${projectScope('w')} AND w.id = ?`).get(id);
+  const project = db.prepare(`SELECT w.id AS id, w.title FROM work w WHERE ${projectScope('w')} AND w.id = ?`).get(id) as { id: string; title: string | null } | undefined;
   if (!project) {
     return c.json({ ok: false, error: 'Project not found' }, 404);
   }
 
-  // Get task IDs for cascade
-  const taskIds = db.prepare(`SELECT w.id AS id FROM work w WHERE ${taskScope('w')} AND w.parent_id = ?`).all(id) as Array<{ id: string }>;
-  const ids = taskIds.map(t => t.id);
+  const tasks = db.prepare(`SELECT w.id, w.title, ${workingExpr('w')} AS working FROM work w WHERE ${taskScope('w')} AND w.parent_id = ?`)
+    .all(id) as Array<{ id: string; title: string | null; working: number }>;
+  const ids = tasks.map(t => t.id);
+  const working = tasks.filter((t) => t.working).map((t) => ({ ...t, worker: workerOf(t.id) }));
+  if (working.length > 0 && c.req.query('anyway') !== '1') {
+    return c.json({ ok: false, error: `Being worked on now: ${working.map((t) => `"${t.title ?? t.id}"`).join(', ')}. Delete it anyway?` }, 409);
+  }
 
   // Delete child rows for these tasks. An occurrence is a child of a TASK, so under a project it is a
   // grandchild, and `parent_id REFERENCES work(id)` has no cascade: `deleteTrackerRow(project)` removes only
@@ -575,6 +589,9 @@ trackerRouter.delete('/projects/:id', (c) => {
 
   // Delete the project and its tasks (children first, inside one transaction).
   deleteTrackerRow(id);
+  for (const t of working) {
+    postAgentNotice({ toAgentId: t.worker, fromName: 'the task board', selfIntro: false, brief: `The owner deleted the project "${project.title ?? id}", and with it your task "${t.title ?? t.id}" [${t.id}]. Stop working on it.` });
+  }
 
   logger.info('Project deleted', { projectId: id, tasksDeleted: ids.length });
   return c.json({ ok: true, data: { projectId: id, tasksDeleted: ids.length } });

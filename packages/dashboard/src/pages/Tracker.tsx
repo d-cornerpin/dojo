@@ -768,11 +768,14 @@ export const Tracker = () => {
                   type="button"
                   className="btn btn--sm"
                   onClick={async () => {
-                    const res = await api.deleteProject(selectedProjectId);
+                    let res = await api.deleteProject(selectedProjectId);
                     setConfirmDeleteProject(false);
+                    // Tasks being worked on: the server names them and he may go on.
+                    if (!res.ok && res.status === 409) {
+                      if (!window.confirm(res.error)) return;
+                      res = await api.deleteProject(selectedProjectId, true);
+                    }
                     if (!res.ok) {
-                      // Refused (e.g. running tasks), nothing was deleted, so
-                      // the board stays on the project and says why.
                       toast.error(res.error || 'The project could not be deleted.');
                       return;
                     }

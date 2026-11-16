@@ -1230,8 +1230,8 @@ export const createTask = async (data: CreateTaskRequest): Promise<ApiResponse<{
   });
 };
 
-export const deleteProject = async (id: string): Promise<ApiResponse<void>> => {
-  return request<void>(`/tracker/projects/${id}`, { method: 'DELETE' });
+export const deleteProject = async (id: string, anyway = false): Promise<ApiResponse<void>> => {
+  return request<void>(`/tracker/projects/${id}${anyway ? '?anyway=1' : ''}`, { method: 'DELETE' });
 };
 
 export const closeProject = async (
