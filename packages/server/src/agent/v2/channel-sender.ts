@@ -257,5 +257,9 @@ async function recordVerdict(row: QueuedRow, address: ReplyAddress | null, to: s
   }
   logger.error('a reply could not be delivered', { deliveryId: row.id, attempts, reason: v.detail }, row.agent_id);
   await writeRoutingPill(row.agent_id, row.turn_number, `not delivered by ${label}: ${v.detail ?? 'unknown reason'}`);
+  // Telling the owner and the agent never undoes or blocks the verdict.
+  try { (await import('../dojo-voice.js')).tellOfUndeliveredReply(row.id, label); } catch (err) {
+    logger.warn('an undelivered reply was not told', { deliveryId: row.id, error: err instanceof Error ? err.message : String(err) }, row.agent_id);
+  }
   return false;
 }

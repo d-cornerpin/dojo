@@ -4,6 +4,10 @@
 
 import { postAgentNotice } from './agent-notice.js';
 import { getPrimaryAgentId } from '../config/platform.js';
+import { getDb } from '../db/connection.js';
+import { NON_ANSWERING_DELIVERY_TOOLS } from '../work/ask-settlement.js';
+import { TOLD, ownerConditionCleared, ownerToldOf, tellOwner } from '../healer/owner-notices.js';
+import { msToUtcText } from '../work/tracker-view.js';
 
 export { DOJO_VOICE_PREFIX, dojoVoice } from './dojo-voice-label.js';
 
@@ -27,6 +31,31 @@ export function tellAgentOwnerAlertSent(aboutAgentId: string | undefined, text: 
   const agentId = aboutAgentId ?? getPrimaryAgentId();
   if (agentId) tellAgentWhatDojoSent({ agentId, recipient: 'the owner (by iMessage)', text, sent, why: aboutAgentId ? 'because it was about you and you could not say it yourself' : 'as a platform notice' });
   return sent;
+}
+
+// A reply ended failed for good: the owner's one card per agent counts the failed replies since he last saw it,
+// and the agent is told it did not arrive. A start line is not an answer and is not told.
+export function tellOfUndeliveredReply(rowId: string, label: string): void {
+  const db = getDb();
+  const row = db.prepare('SELECT agent_id, tool, attempts, detail FROM deliveries WHERE id = ?')
+    .get(rowId) as { agent_id: string; tool: string; attempts: number; detail: string | null } | undefined;
+  if (!row || NON_ANSWERING_DELIVERY_TOOLS.has(row.tool)) return;
+  const key = `undelivered:${row.agent_id}`;
+  if (!ownerToldOf(key)) ownerConditionCleared(key);   // seen or never raised: this failure starts a new count
+  const since = (db.prepare('SELECT at_ms FROM healer_state WHERE scope = ? AND key = ?').get(TOLD, key) as { at_ms: number } | undefined)?.at_ms ?? Date.now();
+  // The row that raised the card ended just before it was told, so the count reaches back one second.
+  const { n } = db.prepare(`SELECT COUNT(*) AS n FROM deliveries WHERE agent_id = ? AND outcome = 'failed' AND payload_json IS NOT NULL
+    AND tool NOT IN (${[...NON_ANSWERING_DELIVERY_TOOLS].map(() => '?').join(', ')}) AND (id = ? OR updated_at >= datetime(? / 1000 - 1, 'unixepoch'))`)
+    .get(row.agent_id, ...NON_ANSWERING_DELIVERY_TOOLS, rowId, since) as { n: number };
+  const reason = (row.detail ?? '').split(/[;\n]/)[0].trim().replace(/\.$/, '').slice(0, 120) || 'the channel did not take it';
+  const tries = `${row.attempts} ${row.attempts === 1 ? 'try' : 'tries'}`;
+  tellOwner(key, `${n} ${n === 1 ? 'reply' : 'replies'} could not be delivered since ${msToUtcText(since)}. `
+    + `Latest: ${label} (${reason}). ${n === 1 ? 'It is' : 'They are'} in the chat.`);
+  postAgentNotice({
+    toAgentId: row.agent_id, fromName: 'Dojo delivery', selfIntro: false,
+    brief: `Your reply (${label}) did NOT reach them after ${tries}: ${reason}. It will not be sent later. `
+      + 'Do not say it arrived; if they must hear it, reach them another way in your own words.',
+  });
 }
 
 // The Dojo posted the caption with the agent's files as its turn ended early; tell the agent exactly that.
