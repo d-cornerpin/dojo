@@ -1,7 +1,7 @@
 // A "DOWN" text that Messages failed to send is not recorded as told: the next check sends it again,
 // up to three tries in a row, after which it counts as told (a slow Messages may have delivered it).
 import { describe, it, expect } from 'vitest';
-import { emptyState, sendAlert, sendRecovery, SEND_TRIES } from '../../../../../watchdog/src/alert-ledger.js';
+import { emptyState, sendAlert, sendRecovery, tellBack, SEND_TRIES } from '../../../../../watchdog/src/alert-ledger.js';
 
 const OWNER = '+15550100';
 
@@ -32,5 +32,17 @@ describe('a down text that failed is sent again next cycle', () => {
     expect(sendRecovery(state, 'platform_down', OWNER, 'UP', () => false)).toBe(false);
     expect(sendRecovery(state, 'platform_down', OWNER, 'UP', () => true)).toBe(true);
     expect(sendRecovery(state, 'platform_down', OWNER, 'UP', () => true), 'one recovery per incident').toBe(false);
+  });
+});
+
+describe('a failure count does not carry into the next incident', () => {
+  it('an alert retired after a failed send starts its next incident with a clean count', () => {
+    const state = emptyState();
+    sendAlert(state, 'platform_down', OWNER, 'DOWN', () => false, 1_000);
+    sendAlert(state, 'platform_down', OWNER, 'DOWN', () => false, 121_000);
+    tellBack(state, OWNER, () => true, false);
+    let tries = 0;
+    for (let i = 0; i < 5; i++) sendAlert(state, 'platform_down', OWNER, 'DOWN', () => { tries++; return false; }, 1_000_000 + i * 120_000);
+    expect(tries).toBe(SEND_TRIES);
   });
 });

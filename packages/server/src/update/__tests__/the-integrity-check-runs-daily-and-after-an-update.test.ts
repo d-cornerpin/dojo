@@ -5,8 +5,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { emptyState, integrityDue, persistState, readState, INTEGRITY_EVERY_MS } from '../../../../../watchdog/src/alert-ledger.js';
+import type { UpdateMarker } from '../../../../../watchdog/src/auto-rollback.js';
 
 const NOW = Date.parse('2026-11-16T12:00:00.000Z');
+const marker = (phase: UpdateMarker['phase'], confirmedHealthyAt: string | null): UpdateMarker => ({
+  phase, targetVersion: '3.5.0', previousVersion: '3.4.1', backupDir: null, stagingDir: null, bootAttempts: 1,
+  firstBootAt: new Date(NOW - 120_000).toISOString(), lastBootAt: null, confirmedHealthyAt, rollbackCount: 0,
+  migrationsRanDuringEpisode: false, dataBackup: null, failedReason: null, writeSeq: 1, updatedAt: new Date(NOW).toISOString(),
+});
 
 describe('the integrity check runs daily and after an update', () => {
   it('runs when never run or a day has passed, not before', () => {
@@ -16,9 +22,17 @@ describe('the integrity check runs daily and after an update', () => {
   });
 
   it('runs once after an update first came up healthy', () => {
-    const healthyAt = new Date(NOW - 60_000).toISOString();
-    expect(integrityDue(NOW - 3_600_000, healthyAt, NOW)).toBe(true);
-    expect(integrityDue(NOW - 30_000, healthyAt, NOW), 'already run since').toBe(false);
+    const healthy = marker('healthy', new Date(NOW - 60_000).toISOString());
+    expect(integrityDue(NOW - 3_600_000, healthy, NOW)).toBe(true);
+    expect(integrityDue(NOW - 30_000, healthy, NOW), 'already run since').toBe(false);
+  });
+
+  it('waits while an update is still starting, even with no recorded time', () => {
+    expect(integrityDue(null, marker('booting-new', null), NOW)).toBe(false);
+  });
+
+  it('a recorded time in the future (the clock was set back) is due', () => {
+    expect(integrityDue(NOW + 3_600_000, null, NOW)).toBe(true);
   });
 
   it('the time of the last check survives a watchdog restart', () => {

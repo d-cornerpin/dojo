@@ -1,10 +1,9 @@
-// Watchdog alert dedup / recovery ledger: what the watchdog texts the owner about, and nothing else.
-// First occurrence sends, a still-active issue waits 2 hours,
-// a resolution sends one recovery; persisted so the rules hold across a restart.
+// The watchdog's pure decisions: the alert ledger (first occurrence sends, a still-active issue waits 2 hours,
+// a resolution sends one recovery; persisted across a restart) and which texts and checks are due when.
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { updateOwnsOutage, type UpdateMarker } from './auto-rollback.js';
+import { updateIsStarting, updateOwnsOutage, type UpdateMarker } from './auto-rollback.js';
 
 export const ALERT_COOLDOWN_MS = 2 * 60 * 60 * 1000;
 
@@ -91,9 +90,10 @@ export function claimAlert(state: WatchdogState, alertKey: AlertKey, recipient: 
   return shouldSendAlert(state, alertKey, nowMs);
 }
 
-/** Retire an active alert silently; true exactly once per incident. */
+/** Retire an active alert silently; true exactly once per incident. Its failed-send count ends with it. */
 export function markAlertResolved(state: WatchdogState, alertKey: string): boolean {
   const entry = state.alertState[alertKey];
+  if (entry) delete entry.failures;
   if (entry?.active) {
     state.alertState[alertKey] = { lastSentAt: entry.lastSentAt, active: false };
     return true;
@@ -129,6 +129,22 @@ function recoveryTold(state: WatchdogState, alertKey: AlertKey, recipient: strin
 /** The one recovery text for an active alert; the alert is retired only once that text was told. */
 export function sendRecovery(state: WatchdogState, alertKey: AlertKey, recipient: string, text: string, send: Send): boolean {
   return recoveryTold(state, alertKey, recipient, text, send) && markAlertResolved(state, alertKey);
+}
+
+/** Tell rollback.sh's outcome sentence; true once told (sent, or SEND_TRIES failed in a row), when the caller
+ *  removes the result. A "back" text is owed later, except for a restored build already healthy now. */
+export function tellRollbackOutcome(state: WatchdogState, kind: string, text: string, recipient: string, send: Send,
+  healthy: boolean, nowMs: number = Date.now()): boolean {
+  if (!recipient) return false;
+  const restored = kind.startsWith('restored');
+  const key: AlertKey = restored ? 'auto_rollback' : 'auto_rollback_failed';
+  if (!send(recipient, text)) {
+    const entry = state.alertState[key] ?? { lastSentAt: 0, active: false };
+    state.alertState[key] = { ...entry, failures: (entry.failures ?? 0) + 1 };
+    if (state.alertState[key].failures! < SEND_TRIES) return false;
+  }
+  state.alertState[key] = { lastSentAt: nowMs, active: !(restored && healthy) };
+  return true;
 }
 
 // What the owner is told when Dojo is healthy again, most specific first; he gets at most one per check.
@@ -169,11 +185,13 @@ export function outageTexts(state: WatchdogState, marker: UpdateMarker | null, n
   return texts;
 }
 
-// The full integrity read of the live database: once a day, and once after an update's first healthy start.
+// The full integrity read of the live database: once a day, and once after an update's first healthy start;
+// never while an update is starting. A last time in the future (the clock was set back) counts as due.
 export const INTEGRITY_EVERY_MS = 24 * 60 * 60_000;
-export function integrityDue(lastAt: number | null, confirmedHealthyAt: string | null | undefined, nowMs: number): boolean {
-  if (lastAt === null || nowMs - lastAt >= INTEGRITY_EVERY_MS) return true;
-  return !!confirmedHealthyAt && Date.parse(confirmedHealthyAt) > lastAt;
+export function integrityDue(lastAt: number | null, marker: UpdateMarker | null, nowMs: number): boolean {
+  if (updateIsStarting(marker, nowMs)) return false;
+  if (lastAt === null || nowMs < lastAt || nowMs - lastAt >= INTEGRITY_EVERY_MS) return true;
+  return !!marker?.confirmedHealthyAt && Date.parse(marker.confirmedHealthyAt) > lastAt;
 }
 
 // A level (memory, disk) changes state only after this many checks in a row, so a reading near its line does not flap.

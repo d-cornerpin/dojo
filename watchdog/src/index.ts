@@ -24,7 +24,6 @@ import {
   emptyState,
   readState,
   persistState,
-  claimAlert as claimAlertIn,
   integrityFailureFromError,
   markAlertResolved as markAlertResolvedIn,
   sendAlert,
@@ -33,6 +32,7 @@ import {
   tellBack,
   outageTexts,
   integrityDue,
+  tellRollbackOutcome,
   type WatchdogState, type AlertKey,
 } from './alert-ledger.js';
 import { diskFloorBytes, toGb } from './disk-floor.js';
@@ -202,12 +202,6 @@ function saveState(): void {
   if (!persistState(state, STATE_PATH)) {
     log('error', 'Failed to persist watchdog state', { path: STATE_PATH });
   }
-}
-
-function claimAlertFor(alertKey: AlertKey, recipient: string): boolean {
-  const send = claimAlertIn(state, alertKey, recipient);
-  if (send) saveState();
-  return send;
 }
 
 function markAlertResolved(alertKey: string): boolean {
@@ -577,19 +571,18 @@ async function maybeAutoRollback(): Promise<boolean> {
 }
 
 // rollback.sh --auto leaves its outcome on disk (it unloads this daemon while it works): tell it, and
-// remove it only once the text went out, so a crash or a failed send retries next check. At a healthy
-// check that sentence is the owner's one "back" text, so no later recovery text is owed. True when sent.
+// remove it only once told, so a crash or a failed send retries next check. True when it was a restored
+// build's sentence, which is then this check's one "back" text.
 function tellRollbackResult(healthy: boolean): boolean {
   const result = readRollbackResult();
   if (!result) return false;
   updateMarker((m) => (m ? afterRollbackResult(m, result) : null));
   log(result.kind.startsWith('restored') ? 'info' : 'error', 'D-F: rollback.sh finished', { ...result });
   const to = getImessageRecipient();
-  if (!sendIMessage(to, result.text)) return false;
+  if (!tellRollbackOutcome(state, result.kind, result.text, to, sendIMessage, healthy)) return false;
   fs.rmSync(ROLLBACK_RESULT_PATH, { force: true });
-  if (!healthy) claimAlertFor(result.kind.startsWith('restored') ? 'auto_rollback' : 'auto_rollback_failed', to);
   recordAlert(`Auto-rollback: ${result.kind}`);
-  return true;
+  return result.kind.startsWith('restored');
 }
 
 // A missing platform folder is a swap cut off between its two renames; nothing inside the platform
@@ -672,7 +665,7 @@ async function runCheck(): Promise<void> {
 
   checkSystemMemory();
   checkDiskSpace();
-  if (integrityDue(state.lastIntegrityAt, readMarker()?.confirmedHealthyAt, Date.now())) checkDatabaseIntegrity();
+  if (integrityDue(state.lastIntegrityAt, readMarker(), Date.now())) checkDatabaseIntegrity();
   rotateWatchdogLog();
 }
 
