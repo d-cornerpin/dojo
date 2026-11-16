@@ -16,7 +16,8 @@ import {
   ROLLBACK_RESULT_PATH,
   afterRollbackResult,
   ROLLBACK_SCRIPT,
-  FAIL_WALL_CLOCK_MS,
+  updateIsStarting,
+  updateOwnsOutage,
   type RollbackDecision,
   type UpdateMarker,
 } from './auto-rollback.js';
@@ -27,6 +28,9 @@ import {
   claimAlert as claimAlertIn,
   integrityFailureFromError,
   markAlertResolved as markAlertResolvedIn,
+  sendAlert,
+  sendRecovery,
+  readLevel,
   type WatchdogState, type AlertKey,
 } from './alert-ledger.js';
 import { diskFloorBytes, toGb } from './disk-floor.js';
@@ -39,7 +43,6 @@ const HEALTH_ENDPOINT = `${PLATFORM_URL}/api/health`;
 const CHECK_INTERVAL_MS = 120_000; // 2 minutes
 const DB_PATH = path.join(os.homedir(), '.dojo', 'data', 'dojo.db');
 const LOG_PATH = path.join(os.homedir(), '.dojo', 'logs', 'watchdog.log');
-const OLLAMA_URL = process.env.OLLAMA_URL ?? 'http://localhost:11434';
 const DOJO_DIR = path.join(os.homedir(), '.dojo');
 
 // Watchdog-owned state store: heartbeat, last alert, and the alert ledger live in a JSON file the
@@ -188,11 +191,6 @@ let lastRestartAt = 0;
 // Grace window (in failed checks) after a restart before we conclude it did not help (~4 min).
 const RESTART_GRACE_FAILURES = 2;
 
-// Per-provider consecutive-unreachable counters: alert only on a sustained outage (N straight
-// cycles), not a blip. In-memory only: a watchdog restart clears these.
-const PROVIDER_FAILURE_THRESHOLD = 3; // ~3 cycles = ~6 min at CHECK_INTERVAL_MS
-const providerFailureCounts: Record<string, number> = {};
-
 // The ledger lives in `alert-ledger.ts` so it can be unit-driven (this file starts a daemon at import).
 // Rules: first sends, a still-active issue waits 2 hours, a resolution sends exactly one recovery.
 let state: WatchdogState = emptyState();
@@ -219,18 +217,20 @@ function markAlertResolved(alertKey: string): boolean {
   return resolved;
 }
 
-/** Retire an alert AND tell the owner it is over. The recipient is resolved FIRST and the alert is
- *  retired only with a place to send: an unreachable owner POSTPONES the recovery, not destroys it. */
+// Checks in a row on each side of a level's line (memory, disk); see readLevel.
+const levelRuns: Record<string, number> = {};
+
+/** Text the owner about an alert, once per cooldown; true when it went out. */
+function alert(alertKey: AlertKey, text: string, record: string): boolean {
+  if (!sendAlert(state, alertKey, getImessageRecipient(), text, sendIMessage)) return false;
+  recordAlert(record);
+  return true;
+}
+
+/** Tell the owner an alert is over; it stays active until the text went out. */
 function resolveAndTell(alertKey: AlertKey, text: string): boolean {
-  const to = getImessageRecipient();
-  if (!to) {
-    if (state.alertState[alertKey]?.active) {
-      log('warn', 'Recovery message HELD: no approved recipient could be resolved; the alert stays active and the next cycle retries', { alertKey });
-    }
-    return false;
-  }
-  if (!markAlertResolved(alertKey)) return false;
-  sendIMessage(to, text);
+  if (!sendRecovery(state, alertKey, getImessageRecipient(), text, sendIMessage)) return false;
+  saveState();
   return true;
 }
 
@@ -250,18 +250,13 @@ function log(level: string, message: string, meta?: Record<string, unknown>): vo
     message,
     ...(meta ? { meta } : {}),
   });
-  // Best-effort like every watchdog write: a full disk or unwritable ~/.dojo must never kill the
-  // daemon (every cycle starts with a log() call); console output still goes to launchd's log.
+  // Best-effort: a full disk or unwritable ~/.dojo must never kill the daemon. Only a line the
+  // rotated file could not take goes to launchd's stderr file, so that file stays small.
   try {
     ensureLogDir();
     fs.appendFileSync(LOG_PATH, entry + '\n');
   } catch {
-    // Unwritable log (disk full, permissions); keep watching anyway.
-  }
-  if (level === 'error' || level === 'warn') {
-    console.error(`[${level}] ${message}`);
-  } else {
-    console.log(`[${level}] ${message}`);
+    console.error(entry);
   }
 }
 
@@ -310,68 +305,6 @@ function sendIMessage(recipient: string, text: string): boolean {
   }
 }
 
-// A LOCAL (Ollama) "system"-tier model, when configured, rewrites alert facts into clearer text.
-// STRICTLY best-effort: ANY failure falls back to fixed text; local-only: the cloud may be down too.
-function getSystemLocalModel(): string | null {
-  try {
-    if (!fs.existsSync(DB_PATH)) return null;
-    const db = new Database(DB_PATH, { readonly: true });
-    db.pragma('busy_timeout = 3000');
-    const row = db.prepare(`
-      SELECT m.api_model_id AS apiModelId
-      FROM router_tier_models tm
-      JOIN models m ON m.id = tm.model_id
-      JOIN providers p ON p.id = m.provider_id
-      WHERE tm.tier_id = 'system' AND m.is_enabled = 1 AND p.type = 'ollama'
-      ORDER BY tm.priority ASC
-      LIMIT 1
-    `).get() as { apiModelId: string } | undefined;
-    db.close();
-    return row?.apiModelId ?? null;
-  } catch {
-    return null;
-  }
-}
-
-async function composeSmartAlert(fixedText: string): Promise<string> {
-  const model = getSystemLocalModel();
-  if (!model) return fixedText;
-  try {
-    const prompt =
-      "You are the DOJO watchdog writing a short alert to the operator's phone. " +
-      'Rewrite the status below as ONE or TWO short, calm, plain-text sentences ' +
-      '(no markdown, no emoji, no greeting). State the problem and, if there is an ' +
-      'obvious next step, add it. Do NOT invent any detail not present in the status. ' +
-      'Keep it under 300 characters.\n\n' +
-      `Status: ${fixedText}`;
-    const response = await fetch(`${OLLAMA_URL}/api/generate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model,
-        prompt,
-        stream: false,
-        options: { temperature: 0.2, num_predict: 120 },
-      }),
-      // Short hard cap: a hung Ollama must not sit on the alert; fall back immediately.
-      signal: AbortSignal.timeout(5000),
-    });
-    if (!response.ok) return fixedText;
-    const data = await response.json() as { response?: string };
-    const composed = (data.response ?? '').trim();
-    if (!composed || composed.length > 600) return fixedText;
-    // Keep alerts identifiable no matter how the model phrased it.
-    const body = composed.replace(/^watchdog:\s*/i, '').trim();
-    return body ? `Watchdog: ${body}` : fixedText;
-  } catch {
-    return fixedText;
-  }
-}
-
-async function sendSmartAlert(recipient: string, fixedText: string): Promise<boolean> {
-  return sendIMessage(recipient, await composeSmartAlert(fixedText));
-}
-
 // Heartbeat and last-alert go to the watchdog's OWN store, never the platform DB; the route reads it.
 
 function recordHeartbeat(): void {
@@ -411,179 +344,6 @@ async function checkPlatformHealth(): Promise<boolean> {
   }
 }
 
-async function checkStalledAgents(): Promise<void> {
-  try {
-    if (!fs.existsSync(DB_PATH)) return;
-
-    const db = new Database(DB_PATH, { readonly: true });
-    // Read-only discipline: busy_timeout waits out a transient lock; NEVER set journal_mode on the
-    // readonly connection: it writes the header and THROWS on a non-WAL DB; the platform owns WAL.
-    db.pragma('busy_timeout = 3000');
-
-    // (1) Agents stuck in 'working' with no progress for 30+ min.
-    const stalled = db.prepare(`
-      SELECT id, name, status, updated_at FROM agents
-      WHERE status = 'working'
-        AND updated_at <= datetime('now', '-30 minutes')
-    `).all() as Array<{ id: string; name: string; status: string; updated_at: string }>;
-
-    // (2) An agent NOT working (idle/error/paused) with an unanswered HUMAN ask waiting 15+ min.
-    // The waiting set is `work(kind='ask', state='open')`, opened with the message,
-    // so an unauthorized inbound never opens one and can never be counted here.
-    // `lane='owner'` is the platform's waiting-set form; the A2A filters stay: a migrated
-    // row can still hold `a2a_thread_id`.
-    // `opened_at` is epoch-ms INTEGER and `session_started_at` is TEXT:
-    // SQLite orders INTEGER before TEXT unconditionally, so the old compare was
-    // constantly false; each compare now casts both sides via unixepoch.
-    const backlog = db.prepare(`
-      SELECT a.id AS id, a.name AS name, a.status AS status,
-             COUNT(*) AS waiting, MIN(w.opened_at) AS oldest
-      FROM agents a
-      JOIN work w ON w.agent_id = a.id
-      JOIN messages m ON m.id = w.root_id AND m.agent_id = w.agent_id
-      WHERE a.status IN ('idle', 'error', 'paused')
-        AND w.kind = 'ask'
-        AND w.state = 'open'
-        AND m.role = 'user'
-        AND m.lane = 'owner'
-        AND m.source_agent_id IS NULL
-        AND m.a2a_thread_id IS NULL
-        AND w.opened_at >= COALESCE(unixepoch(a.session_started_at) * 1000, 0)
-        AND w.opened_at <= (unixepoch('now', '-15 minutes') * 1000)
-      GROUP BY a.id, a.name, a.status
-    `).all() as Array<{ id: string; name: string; status: string; waiting: number; oldest: number }>;
-
-    db.close();
-
-    // LOG-ONLY by owner decision: the phone voice is reserved for platform-down and update failures,
-    // and this backlog query is an approximation that produced a false positive; it stays log-only.
-    if (stalled.length > 0) {
-      const names = stalled.map(a => a.name).join(', ');
-      log('warn', `Stalled agents detected: ${names}`, { count: stalled.length });
-    }
-    if (backlog.length > 0) {
-      const names = backlog.map(a => `${a.name} (${a.waiting} waiting, ${a.status})`).join(', ');
-      log('warn', `Agents with unanswered human backlog: ${names}`, { count: backlog.length });
-    }
-    if (stalled.length === 0 && backlog.length === 0 && markAlertResolved('stalled_agents')) {
-      // Clears any stalled-agents alert state an older watchdog may have left, silently.
-      log('info', 'No more stalled agents or human backlog');
-    }
-  } catch (err) {
-    log('error', 'Failed to check stalled agents', {
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
-}
-
-// The box's ENABLED model providers (read-only). "Enabled" = a provider (excluding the internal
-// `__system__` sentinel) with at least one enabled model: the same set the platform routes to.
-type EnabledProvider = { id: string; name: string; type: string; base_url: string | null };
-
-function getEnabledProviders(): EnabledProvider[] {
-  try {
-    if (!fs.existsSync(DB_PATH)) return [];
-    const db = new Database(DB_PATH, { readonly: true });
-    db.pragma('busy_timeout = 3000');
-    const rows = db.prepare(`
-      SELECT p.id AS id, p.name AS name, p.type AS type, p.base_url AS base_url
-      FROM providers p
-      WHERE p.id != '__system__'
-        AND EXISTS (SELECT 1 FROM models m WHERE m.provider_id = p.id AND m.is_enabled = 1)
-    `).all() as EnabledProvider[];
-    db.close();
-    return rows;
-  } catch {
-    // DB unreadable: provider probing needs the DB, so skip this cycle (platform-down handling covers it).
-    return [];
-  }
-}
-
-function isLocalHost(u: string): boolean {
-  try {
-    const h = new URL(u).hostname.toLowerCase();
-    return h === 'localhost' || h === '127.0.0.1' || h === '0.0.0.0' || h === '::1' || h.endsWith('.local');
-  } catch {
-    return false;
-  }
-}
-
-// A cheap reachability probe: no API key, no model call, just whether the endpoint answers over the
-// network. No probeable public endpoint for a type: use its configured base_url; none: null (skip).
-function resolveProviderProbe(p: EnabledProvider): { url: string; method: 'GET' | 'HEAD'; local: boolean } | null {
-  const base = (p.base_url ?? '').replace(/\/+$/, '');
-  switch (p.type) {
-    case 'ollama': {
-      const root = base || OLLAMA_URL.replace(/\/+$/, '');
-      return { url: `${root}/api/tags`, method: 'GET', local: isLocalHost(root) };
-    }
-    case 'anthropic': {
-      const root = base || 'https://api.anthropic.com';
-      return { url: root, method: 'HEAD', local: isLocalHost(root) };
-    }
-    case 'openai': {
-      const root = base || 'https://api.openai.com';
-      return { url: root, method: 'HEAD', local: isLocalHost(root) };
-    }
-    case 'openai-compatible':
-      // No universal public endpoint; use the configured base_url when present.
-      return base ? { url: base, method: 'HEAD', local: isLocalHost(base) } : null;
-    default:
-      return base ? { url: base, method: 'HEAD', local: isLocalHost(base) } : null;
-  }
-}
-
-// Reachable = the host returned ANY HTTP response (even 401/403/404, i.e. up but unauthenticated).
-// Only a network/DNS/timeout failure counts as down. Short, hard cap.
-async function probeProviderReachable(url: string, method: 'GET' | 'HEAD'): Promise<boolean> {
-  try {
-    await fetch(url, { method, signal: AbortSignal.timeout(5000) });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-// Probe ENABLED providers for cheap HTTP reachability (no API key, no model call); per-provider
-// failure counts drive the sustained-unreachable line below.
-async function checkProviders(): Promise<void> {
-  const providers = getEnabledProviders();
-  if (providers.length === 0) return; // DB unreadable or no enabled providers to probe.
-
-  for (const p of providers) {
-    const probe = resolveProviderProbe(p);
-    if (!probe) {
-      log('debug', 'Provider has no probeable endpoint, skipping', { provider: p.name, type: p.type });
-      continue;
-    }
-    const alertKey = `provider_down:${p.id}`;
-    const reachable = await probeProviderReachable(probe.url, probe.method);
-
-    if (reachable) {
-      providerFailureCounts[p.id] = 0;
-      if (markAlertResolved(alertKey)) {
-        // Clears alert state an older watchdog may have left, silently.
-        log('info', 'Provider reachable again', { provider: p.name });
-      } else {
-        log('debug', 'Provider reachable', { provider: p.name });
-      }
-      continue;
-    }
-
-    // Unreachable this cycle.
-    const count = (providerFailureCounts[p.id] ?? 0) + 1;
-    providerFailureCounts[p.id] = count;
-    log('warn', 'Provider unreachable', { provider: p.name, type: p.type, url: probe.url, consecutive: count });
-
-    // LOG-ONLY by owner decision: a deliberately powered-off local provider flaps this probe (the
-    // network can answer for a sleeping machine), so provider reachability stays in log lines only.
-    if (count === PROVIDER_FAILURE_THRESHOLD) {
-      log('warn', 'Provider has reached the sustained-unreachable threshold (log-only, no owner text)', {
-        provider: p.name, consecutive: count });
-    }
-  }
-}
-
 function getMacAvailableMemoryMb(): { totalMb: number; freeMb: number; freePercent: number } {
   const totalMb = Math.round(os.totalmem() / (1024 * 1024));
   try {
@@ -603,28 +363,18 @@ function getMacAvailableMemoryMb(): { totalMb: number; freeMb: number; freePerce
   }
 }
 
-async function checkSystemMemory(): Promise<void> {
+function checkSystemMemory(): void {
   const { freeMb, freePercent } = getMacAvailableMemoryMb();
-
-  if (freePercent < 10) {
-    log('warn', 'System memory low', { freeMb, freePercent: freePercent.toFixed(1) });
-
-    const imRecipient = getImessageRecipient();
-    if (claimAlertFor('memory_low', imRecipient)) {
-      await sendSmartAlert(imRecipient, `Watchdog: System memory low, ${freeMb}MB free (${freePercent.toFixed(0)}%). Will follow up when resolved.`);
-      recordAlert(`Memory low: ${freeMb}MB`);
-    }
-  } else {
-    // Memory is fine, send recovery if it was previously alerting
-    if (resolveAndTell('memory_low', `Watchdog: Memory recovered, ${freeMb}MB free (${freePercent.toFixed(0)}%)`)) {
-      log('info', 'System memory recovered', { freeMb, freePercent: freePercent.toFixed(1) });
-    } else {
-      log('debug', 'System memory OK', { freeMb, freePercent: freePercent.toFixed(1) });
-    }
+  const level = readLevel(levelRuns, 'memory_low', freePercent < 10);
+  log(freePercent < 10 ? 'warn' : 'debug', 'System memory', { freeMb, freePercent: freePercent.toFixed(1) });
+  if (level === 'low') {
+    alert('memory_low', `Watchdog: System memory low, ${freeMb}MB free (${freePercent.toFixed(0)}%). Will follow up when resolved.`, `Memory low: ${freeMb}MB`);
+  } else if (level === 'ok') {
+    resolveAndTell('memory_low', `Watchdog: Memory recovered, ${freeMb}MB free (${freePercent.toFixed(0)}%)`);
   }
 }
 
-async function checkDiskSpace(): Promise<void> {
+function checkDiskSpace(): void {
   try {
     const result = execSync(`df -k "${DOJO_DIR}" | tail -1`, { encoding: 'utf-8', timeout: 5000 });
     const parts = result.trim().split(/\s+/);
@@ -636,29 +386,19 @@ async function checkDiskSpace(): Promise<void> {
     const floor = diskFloorBytes();
     const floorGb = toGb(floor.bytes);
 
-    if (availableGb < floorGb) {
-      log('warn', 'Disk space critically low', {
-        availableGb: availableGb.toFixed(2), floorGb: floorGb.toFixed(2), binding: floor.binding,
-      });
-      const imRecipient = getImessageRecipient();
-      if (claimAlertFor('disk_low', imRecipient)) {
-        // The owner is told WHICH answer set the number: an unaccountable threshold gets ignored.
-        const because = floor.binding === 'backup'
-          ? ` This box needs about ${floorGb.toFixed(1)}GB free to keep making a database backup before it updates.`
-          : '';
-        await sendSmartAlert(imRecipient, `Watchdog: Disk space low, ${availableGb.toFixed(1)}GB free.${because} Will follow up when resolved.`);
-        recordAlert(`Disk space low: ${availableGb.toFixed(1)}GB (floor ${floorGb.toFixed(1)}GB, ${floor.binding})`);
-      }
-    } else {
+    const level = readLevel(levelRuns, 'disk_low', availableGb < floorGb);
+    log(availableGb < floorGb ? 'warn' : 'debug', 'Disk space', {
+      availableGb: availableGb.toFixed(2), floorGb: floorGb.toFixed(2), binding: floor.binding,
+    });
+    if (level === 'low') {
+      // The owner is told WHICH answer set the number: an unaccountable threshold gets ignored.
+      const because = floor.binding === 'backup'
+        ? ` This box needs about ${floorGb.toFixed(1)}GB free to keep making a database backup before it updates.`
+        : '';
+      alert('disk_low', `Watchdog: Disk space low, ${availableGb.toFixed(1)}GB free.${because} Will follow up when resolved.`,
+        `Disk space low: ${availableGb.toFixed(1)}GB (floor ${floorGb.toFixed(1)}GB, ${floor.binding})`);
+    } else if (level === 'ok') {
       resolveAndTell('disk_low', `Watchdog: Disk space recovered, ${availableGb.toFixed(1)}GB free.`);
-      log('debug', 'Disk space OK', { availableGb: availableGb.toFixed(1), floorGb: floorGb.toFixed(2) });
-    }
-
-    // Also check ~/.dojo/ size
-    const dojoSize = execSync(`du -sk "${DOJO_DIR}" 2>/dev/null | cut -f1`, { encoding: 'utf-8', timeout: 10000 }).trim();
-    const dojoSizeMb = parseInt(dojoSize, 10) / 1024;
-    if (dojoSizeMb > 5000) { // > 5GB
-      log('warn', 'DOJO data directory is large', { sizeMb: Math.round(dojoSizeMb) });
     }
   } catch {
     log('debug', 'Could not check disk space');
@@ -666,17 +406,14 @@ async function checkDiskSpace(): Promise<void> {
 }
 
 // The database failing its integrity check is owner-told, like the platform-down and update alerts.
-async function alertDbIntegrity(status: string): Promise<void> {
+function alertDbIntegrity(status: string): void {
   log('error', 'Database integrity check FAILED', { status });
   // Recorded first, whether or not a text can go (the dashboard's health page and history read it).
   recordAlert(`DB integrity: ${status}`);
-  const imRecipient = getImessageRecipient();
-  if (claimAlertFor('db_integrity', imRecipient)) {
-    await sendSmartAlert(imRecipient, `Watchdog: Database integrity check failed, ${status}`);
-  }
+  alert('db_integrity', `Watchdog: Database integrity check failed, ${status}`, `DB integrity: ${status}`);
 }
 
-async function checkDatabaseIntegrity(): Promise<void> {
+function checkDatabaseIntegrity(): void {
   try {
     if (!fs.existsSync(DB_PATH)) return;
 
@@ -687,7 +424,7 @@ async function checkDatabaseIntegrity(): Promise<void> {
 
     const status = result[0]?.integrity_check ?? 'unknown';
     if (status !== 'ok') {
-      await alertDbIntegrity(status);
+      alertDbIntegrity(status);
     } else {
       markAlertResolved('db_integrity');
       log('debug', 'Database integrity OK');
@@ -699,7 +436,7 @@ async function checkDatabaseIntegrity(): Promise<void> {
     // A file too damaged for the check to run THROWS rather than answering; that is the worst
     // case and must reach the owner like any other integrity failure. Busy/locked stays quiet.
     const damaged = integrityFailureFromError(err);
-    if (damaged) await alertDbIntegrity(damaged);
+    if (damaged) alertDbIntegrity(damaged);
   }
 }
 
@@ -802,8 +539,6 @@ async function maybeAutoRollback(): Promise<boolean> {
   const decision = seen.decision;
   if (!marker || decision.action === 'none') return false;
 
-  const imRecipient = getImessageRecipient();
-
   if (decision.action === 'escalate') {
     // The terminal state was recorded inside the lock above. Alert once, loud. This is also the word when
     // rollback.sh left no outcome (it was killed): the one rollback is spent and Dojo is still down.
@@ -813,14 +548,10 @@ async function maybeAutoRollback(): Promise<boolean> {
       previousVersion: marker.previousVersion,
       rollbackCount: marker.rollbackCount,
     });
-    if (claimAlertFor('auto_rollback_failed', imRecipient)) {
-      await sendSmartAlert(
-        imRecipient,
-        'Watchdog: a Dojo update failed to start, and Dojo is still not running after I tried to put the previous version back, '
-        + 'so I am not trying again. Please get help, or see ~/.dojo/scripts/IF-AN-UPDATE-FAILS.md.',
-      );
-      recordAlert('Auto-rollback escalated to failed-permanently');
-    }
+    alert('auto_rollback_failed',
+      'Watchdog: a Dojo update failed to start, and Dojo is still not running after I tried to put the previous version back, '
+      + 'so I am not trying again. Please get help, or see ~/.dojo/scripts/IF-AN-UPDATE-FAILS.md.',
+      'Auto-rollback escalated to failed-permanently');
     return true;
   }
 
@@ -846,13 +577,13 @@ async function maybeAutoRollback(): Promise<boolean> {
 
 // rollback.sh --auto leaves its outcome on disk (it unloads this daemon while it works): tell it, and
 // remove it only once the text went out, so a crash or a failed send retries next check.
-async function tellRollbackResult(): Promise<void> {
+function tellRollbackResult(): void {
   const result = readRollbackResult();
   if (!result) return;
   updateMarker((m) => (m ? afterRollbackResult(m, result) : null));
   log(result.kind.startsWith('restored') ? 'info' : 'error', 'D-F: rollback.sh finished', { ...result });
   const to = getImessageRecipient();
-  if (!(await sendSmartAlert(to, result.text))) return;
+  if (!sendIMessage(to, result.text)) return;
   fs.rmSync(ROLLBACK_RESULT_PATH, { force: true });
   claimAlertFor(result.kind.startsWith('restored') ? 'auto_rollback' : 'auto_rollback_failed', to);
   recordAlert(`Auto-rollback: ${result.kind}`);
@@ -863,7 +594,7 @@ async function tellRollbackResult(): Promise<void> {
 function logHealSpawnError(err: Error): void {
   log('error', 't197: rollback.sh --heal could not be executed', { error: err.message, script: ROLLBACK_SCRIPT });
 }
-async function maybeHealSwap(): Promise<boolean> {
+function maybeHealSwap(): boolean {
   const marker = readMarker();
   const heal = decideSwapHeal(DOJO_DIR, marker);
   const to = getImessageRecipient();
@@ -873,26 +604,13 @@ async function maybeHealSwap(): Promise<boolean> {
     return false;
   }
   log('error', 't197: the platform folder is missing; repairing the cut-off swap', { finishes: heal.finishes });
-  if (claimAlertFor('platform_missing', to)) { await sendSmartAlert(to, heal.text); recordAlert(`Platform folder missing: ${heal.finishes}`); }
+  alert('platform_missing', heal.text, `Platform folder missing: ${heal.finishes}`);
   if (heal.finishes !== 'nothing-to-restore') spawnRollbackDetached(ROLLBACK_SCRIPT, logHealSpawnError, ['--heal']);
   return true;
 }
 
-// Patience gate: a migration boot can hold health down for a long one-time chain, so hold the
-// generic kickstart inside the auto-rollback gate's FAIL_WALL_CLOCK_MS: never kill it mid-migration.
-function isWithinMigrationBootWindow(): boolean {
-  const marker = readMarker();
-  if (!marker) return false;
-  if (marker.phase !== 'booting-new') return false;
-  if (marker.confirmedHealthyAt) return false;
-  if (!marker.firstBootAt) return false;
-  const firstBootMs = Date.parse(marker.firstBootAt);
-  if (!Number.isFinite(firstBootMs)) return false;
-  return (Date.now() - firstBootMs) < FAIL_WALL_CLOCK_MS;
-}
-
-
-// Monotonic cycle counter so the integrity check runs on a guaranteed cadence (every 10th cycle).
+// The full integrity read of the live database runs once a day of watchdog uptime.
+const INTEGRITY_EVERY_CYCLES = (24 * 60 * 60_000) / CHECK_INTERVAL_MS;
 let cycleCount = 0;
 
 async function runCheck(): Promise<void> {
@@ -902,14 +620,14 @@ async function runCheck(): Promise<void> {
   recordHeartbeat();
 
   // 0. A missing platform folder is repaired before health is judged.
-  if (await maybeHealSwap()) return;
+  if (maybeHealSwap()) return;
 
   // 1. Platform health
   const healthy = await checkPlatformHealth();
 
   // 1b. A PROVEN-failing self-update takes precedence over the generic cascade: roll back or
   // escalate, then short-circuit so we do not kickstart the same bad build and race rollback.sh.
-  await tellRollbackResult();
+  tellRollbackResult();
   if (!healthy && await maybeAutoRollback()) return;
 
   if (!healthy) {
@@ -923,10 +641,11 @@ async function runCheck(): Promise<void> {
     });
 
     // Restart every MAX_FAILURES_BEFORE_RESTART failed checks; only the cadence counter resets, the
-    // truthful count keeps climbing. EXCEPTION: inside the migration-boot window hold the kickstart
-    // (do NOT reset the cadence counter) so the next cycle proceeds once the window passes.
+    // truthful count keeps climbing. While an update is starting the kickstart waits (the cadence
+    // counter is not reset) so the next cycle proceeds once the window passes.
+    const marker = readMarker();
     if (failuresSinceRestart >= MAX_FAILURES_BEFORE_RESTART) {
-      if (isWithinMigrationBootWindow()) {
+      if (updateIsStarting(marker, Date.now())) {
         log('info', 'Holding platform restart: a self-update migration boot is in progress and still inside the allowed window; waiting rather than killing it mid-migration', {
           consecutiveFailures, failuresSinceRestart,
         });
@@ -938,21 +657,15 @@ async function runCheck(): Promise<void> {
       }
     }
 
-    if (consecutiveFailures >= MAX_FAILURES_BEFORE_ALERT) {
-      const imRecipient = getImessageRecipient();
-      if (claimAlertFor('platform_down', imRecipient)) {
-        await sendSmartAlert(imRecipient, `Watchdog: Dojo platform is DOWN (${consecutiveFailures} checks failed). Will notify when it recovers.`);
-        recordAlert(`Platform down: ${consecutiveFailures} checks failed`);
+    // The generic "down" and "restart did not help" texts wait while an update owns this outage.
+    if (!updateOwnsOutage(marker, state.alertState, Date.now())) {
+      if (consecutiveFailures >= MAX_FAILURES_BEFORE_ALERT) {
+        alert('platform_down', `Watchdog: Dojo platform is DOWN (${consecutiveFailures} checks failed). Will notify when it recovers.`,
+          `Platform down: ${consecutiveFailures} checks failed`);
       }
-    }
-
-    // The auto-restart did NOT fix it: after at least one restart and the grace window, tell the
-    // owner in plain language. One text per cooldown via claimAlertFor.
-    if (restartAttempts > 0 && failuresSinceRestart >= RESTART_GRACE_FAILURES) {
-      const imRecipient = getImessageRecipient();
-      if (claimAlertFor('platform_restart_failed', imRecipient)) {
-        await sendSmartAlert(imRecipient, `Watchdog: I automatically restarted the Dojo platform ${restartAttempts} time(s) but it is still down after ${consecutiveFailures} failed checks. It needs manual attention.`);
-        recordAlert(`Auto-restart did not fix platform: ${consecutiveFailures} failed checks, ${restartAttempts} restart(s)`);
+      if (restartAttempts > 0 && failuresSinceRestart >= RESTART_GRACE_FAILURES) {
+        alert('platform_restart_failed', `Watchdog: I automatically restarted the Dojo platform ${restartAttempts} time(s) but it is still down after ${consecutiveFailures} failed checks. It needs manual attention.`,
+          `Auto-restart did not fix platform: ${consecutiveFailures} failed checks, ${restartAttempts} restart(s)`);
       }
     }
   } else {
@@ -970,8 +683,7 @@ async function runCheck(): Promise<void> {
     // An update episode that ended failed (escalated, or a refused or broken rollback) and is now healthy:
     // the owner is told it runs again, nothing more, since how it recovered is not known here.
     resolveAndTell('auto_rollback_failed', 'Watchdog: Dojo is running again and the box is healthy.');
-    // Clear the auto-rollback alert silently on recovery too; the message above already told the owner.
-    markAlertResolved('auto_rollback');
+    resolveAndTell('auto_rollback', 'Watchdog: the rollback worked. Dojo is running again on the previous version and the box is healthy.');
     // Recovery is the ONLY place the truthful counter and restart bookkeeping reset.
     consecutiveFailures = 0;
     failuresSinceRestart = 0;
@@ -979,23 +691,9 @@ async function runCheck(): Promise<void> {
     lastRestartAt = 0;
   }
 
-  // 2. Check stalled agents
-  await checkStalledAgents();
-
-  // 3. Check providers
-  await checkProviders();
-
-  // 4. Check system memory
-  await checkSystemMemory();
-
-  // 5. Check disk space
-  await checkDiskSpace();
-
-  // 6. Database integrity (run less frequently, every 10th cycle ~20 min)
-  if (cycleCount % 10 === 0) {
-    await checkDatabaseIntegrity();
-  }
-
+  checkSystemMemory();
+  checkDiskSpace();
+  if (cycleCount % INTEGRITY_EVERY_CYCLES === 0) checkDatabaseIntegrity();
   // 7. Rotate watchdog log if needed
   rotateWatchdogLog();
 }

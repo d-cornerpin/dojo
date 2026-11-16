@@ -199,6 +199,19 @@ export function decideAutoRollback(marker: UpdateMarker | null, nowMs: number): 
   return { action: 'rollback' };
 }
 
+// An update's first start may hold health down for a long migration chain: inside FAIL_WALL_CLOCK_MS the
+// restart waits rather than kill it mid-migration.
+export function updateIsStarting(marker: UpdateMarker | null, nowMs: number): boolean {
+  if (marker?.phase !== 'booting-new' || marker.confirmedHealthyAt || !marker.firstBootAt) return false;
+  return nowMs - Date.parse(marker.firstBootAt) < FAIL_WALL_CLOCK_MS;
+}
+
+// The generic "down" texts wait while an update owns the outage: it is still starting, or its failure was
+// already texted (that alert stays active until Dojo runs again).
+export function updateOwnsOutage(marker: UpdateMarker | null, ledger: Record<string, { active: boolean }>, nowMs: number): boolean {
+  return updateIsStarting(marker, nowMs) || !!ledger.auto_rollback_failed?.active;
+}
+
 // Written right BEFORE spawning rollback.sh: bump the tally and anchor a FRESH boot window at the
 // rollback instant, so a restored build that never executes can still trip the failing gate later
 // ('exhausted'). A restored build that does boot keeps this anchor.

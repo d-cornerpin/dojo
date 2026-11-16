@@ -87,8 +87,7 @@ export function claimAlert(state: WatchdogState, alertKey: AlertKey, recipient: 
   return shouldSendAlert(state, alertKey, nowMs);
 }
 
-/** Retire an active alert; true exactly once per incident, the caller's signal to send the recovery.
- *  CALL ORDER: resolve the recipient first; retiring without one loses the recovery. */
+/** Retire an active alert silently; true exactly once per incident. */
 export function markAlertResolved(state: WatchdogState, alertKey: string): boolean {
   const entry = state.alertState[alertKey];
   if (entry?.active) {
@@ -96,6 +95,33 @@ export function markAlertResolved(state: WatchdogState, alertKey: string): boole
     return true;
   }
   return false;
+}
+
+export type Send = (recipient: string, text: string) => boolean;
+
+/** Claim, then send; a send that failed gives the claim back, so the next check tries again. */
+export function sendAlert(state: WatchdogState, alertKey: AlertKey, recipient: string, text: string, send: Send, nowMs: number = Date.now()): boolean {
+  const before = state.alertState[alertKey];
+  if (!claimAlert(state, alertKey, recipient, nowMs)) return false;
+  if (send(recipient, text)) return true;
+  if (before) state.alertState[alertKey] = before; else delete state.alertState[alertKey];
+  return false;
+}
+
+/** The one recovery text for an active alert; the alert is retired only once that text went out. */
+export function sendRecovery(state: WatchdogState, alertKey: AlertKey, recipient: string, text: string, send: Send): boolean {
+  return !!state.alertState[alertKey]?.active && send(recipient, text) && markAlertResolved(state, alertKey);
+}
+
+// A level (memory, disk) changes state only after this many checks in a row, so a reading near its line does not flap.
+export const DWELL_CHECKS = 3;
+
+/** One reading of a level: 'low' once the bad run is long enough, 'ok' once the good run is, else null.
+ *  `runs` counts checks in a row per level (positive bad, negative good). */
+export function readLevel(runs: Record<string, number>, alertKey: AlertKey, bad: boolean): 'low' | 'ok' | null {
+  const run = bad ? Math.max(runs[alertKey] ?? 0, 0) + 1 : Math.min(runs[alertKey] ?? 0, 0) - 1;
+  runs[alertKey] = run;
+  return run >= DWELL_CHECKS ? 'low' : run <= -DWELL_CHECKS ? 'ok' : null;
 }
 
 /** Plain words for a database so damaged that `PRAGMA integrity_check` THROWS instead of returning rows
