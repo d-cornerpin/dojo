@@ -671,8 +671,13 @@ function buildContentLanes(
         const p = render.payload as TailPayload;
         let kept = budgetFreshTail(p.rows, maxTokens, tailTrimBlockGroups(freshTailCount));
         // The served owner message is never out of view: if the trim took it (or it sits behind the boundary) it is
-        // re-emitted and its cost (attachments via `p.charge`) comes off the rest's room.
-        const servedOf = (rows: Message[]): Message[] => (p.charge ?? ((r: Message[]) => r))(servedRowsOutOfView(p.agentId, [...rows, ...(p.inEvents ?? [])])).map((m) => overRoomRowView(m, maxTokens));
+        // re-emitted and its cost (attachments via `p.charge`) comes off the rest's room. Served rows share that room
+        // newest first, so the newest is whole and older ones shrink to their kept-row pointer.
+        const servedOf = (rows: Message[]): Message[] => {
+          let room = maxTokens;
+          return (p.charge ?? ((r: Message[]) => r))(servedRowsOutOfView(p.agentId, [...rows, ...(p.inEvents ?? [])])).reverse()
+            .map((m) => { const shown = overRoomRowView(m, room); room = Math.max(0, room - rowTokens([shown])); return shown; }).reverse();
+        };
         let served = servedOf(kept);
         if (served.length > 0) {
           kept = budgetFreshTail(p.rows, Math.max(0, maxTokens - rowTokens(served)), tailTrimBlockGroups(freshTailCount));

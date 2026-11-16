@@ -545,7 +545,7 @@ export function contractForConfiguredModel(modelId: string | null | undefined): 
 // its shape is flat `message`, pre-parsed tool args, `done_reason`, newline-delimited JSON.
 
 import { getOllamaLock } from '../services/ollama-lock.js';
-import { isStandardModelRow } from '../services/local-standard.js';
+import { isStandardModelRow, standardModelRowId } from '../services/local-standard.js';
 import { modelCharsPerToken } from '../services/token-density.js';
 import { refuseUncheckedAtFirstLoad } from './local-model-fit.js';
 
@@ -809,7 +809,9 @@ async function callOllamaModel(
   const dialRoom = dial ? Math.max(0, Math.min(modelInfo.maxOutputTokens, windowRoom)) : Number.POSITIVE_INFINITY;
   const dialOutputCap = dial ? Math.max(utilityOutputCap(dial, params.utilityTargetTokens), Math.min(params.outputRoomAsk ?? 0, dialRoom)) : null;
   const dialNumCtxInput = dial ? { ...dialShown, outputTokens: dialOutputCap ?? dial.maxOutputTokens } : null;
-  const dialNumCtx = dialNumCtxInput ? utilityNumCtx(dialNumCtxInput) : null;
+  // The resident writer keeps one window, the room set aside for it, so a call of another length does not reload it.
+  const writerRoom = pinned && modelId === standardModelRowId('writer') ? await (await import('../services/dojo-working-memory.js')).writerReservedWindowTokens(effectiveNumCtx ?? null) : 0;
+  const dialNumCtx = dialNumCtxInput ? Math.max(utilityNumCtx(dialNumCtxInput), writerRoom) : null;
 
   const requestBody: Record<string, unknown> = {
     model: ollamaModelName,
