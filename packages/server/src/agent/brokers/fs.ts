@@ -6,15 +6,12 @@
 import { isTrainerAgent, isHealerAgent, isPrimaryAgent } from '../../config/platform.js';
 import { isProtectedIdentityPath } from '../path-resolve.js';
 import { hasSquadWorkspaceAccess } from '../squad-workspace.js';
-import { denyRuleFor, tiersForKind, isSensitivePath, type DenyTier, type DenyViewer, type DenyViewerArg } from './deny.js';
+import { denyRuleFor, tiersForKind, isSensitivePath, type DenyTier, type DenyViewerArg } from './deny.js';
 import { evaluateRules, matchPathPattern, type Grant } from './grants.js';
 import type { ResolvedPath } from './resolve.js';
 import { allow, deny, type Verdict } from './types.js';
 
 export type FsKind = 'fs_read' | 'fs_write';
-
-/** Who an agent is to a scoped deny row. */
-export const viewerFor = (agentId: string): DenyViewer => (isPrimaryAgent(agentId) ? 'main' : isHealerAgent(agentId) ? 'healer' : 'other');
 
 /** The per-kind refusal wording; a Healer-log read names the bounded helper tools instead. */
 function globalDenyReason(kind: FsKind, tier: DenyTier, rawPath: string, ruleId: string): string {
@@ -88,7 +85,7 @@ export function authorizeFs(
   }
 
   // A scoped row binds every agent except the one it names, so the viewer is derived from the grant's agent.
-  const globallyDenied = globalDeny(kind, resource, () => viewerFor(grant.agentId));
+  const globallyDenied = globalDeny(kind, resource, () => (isPrimaryAgent(grant.agentId) ? 'main' : isHealerAgent(grant.agentId) ? 'healer' : 'other'));
   if (globallyDenied) return globallyDenied;
 
   // The trainer's broad file_write never re-opens the owner's identity/profile or

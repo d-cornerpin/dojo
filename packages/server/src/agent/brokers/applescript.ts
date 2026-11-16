@@ -1,8 +1,7 @@
 
 import { isPrimaryAgent } from '../../config/platform.js';
 import { evaluateRules, type Grant } from './grants.js';
-import { namesSecretsFile } from './deny.js';
-import { globalExecDeny, authorizeShellCommandText, hiddenFileDeny } from './proc.js';
+import { commandReadsSensitiveFile, globalExecDeny, authorizeShellCommandText, keysFileDeny } from './proc.js';
 import { authorizePrivilege, mentionsAdminPrivileges } from './sudo-policy.js';
 import type { ResolvedCommand } from './resolve.js';
 import { allow, deny, type Verdict } from './types.js';
@@ -17,9 +16,9 @@ export function shellPayloads(script: string): string[] {
 // osascript is a second interpreter: its "do shell script" reaches back into
 // /bin/sh, so the script body and every payload answer to the shell rules.
 export function authorizeAppleScript(grant: Grant, script: ResolvedCommand): Verdict {
-  // The raw body is asked for the keys file too: AppleScript can read a file without the shell.
+  // Checking the raw body refuses a script that merely names the secret store.
   const floor = !isPrimaryAgent(grant.agentId);
-  const globals = (namesSecretsFile(script.raw) ? hiddenFileDeny(script.raw, grant.agentId) : null) ?? globalExecDeny(script.raw, floor);
+  const globals = keysFileDeny(script.raw, grant.agentId) ?? globalExecDeny(script.raw, floor);
   if (globals) return globals;
 
   // "do shell script ... with administrator privileges" is macOS root with no
@@ -30,8 +29,17 @@ export function authorizeAppleScript(grant: Grant, script: ResolvedCommand): Ver
   }
 
   for (const inner of shellPayloads(script.raw)) {
-    const payloadDeny = hiddenFileDeny(inner, grant.agentId) ?? globalExecDeny(inner.trim(), floor);
+    const payloadDeny = keysFileDeny(inner, grant.agentId) ?? globalExecDeny(inner.trim(), floor);
     if (payloadDeny) return payloadDeny;
+    const scan = commandReadsSensitiveFile(inner, floor);
+    if (scan.blocked) {
+      return deny(
+        'bypass-hardening',
+        'applescript-shell-sensitive-read',
+        scan.reason,
+        `[BLOCKED] applescript refused: ${scan.reason}. AppleScript's "do shell script" is the shell, so it answers to the same rules the shell tool does.`,
+      );
+    }
     const verdict = authorizeShellCommandText(grant, inner);
     if (!verdict.allowed) return verdict;
   }

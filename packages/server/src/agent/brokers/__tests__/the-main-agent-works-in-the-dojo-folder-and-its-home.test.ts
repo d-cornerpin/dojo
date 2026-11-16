@@ -1,5 +1,6 @@
 // The main agent may look in, copy and archive the Dojo folder and search or back up its home; only
-// the keys file, credential tables and the raw database through the file tools stay hidden from it.
+// secret files, credential tables and the raw database through the file tools stay hidden from it. A
+// project's own secrets.yaml is an ordinary file; a line naming the Dojo's keys file is refused (owner ruling).
 
 import { describe, it, expect, vi } from 'vitest';
 
@@ -26,7 +27,8 @@ describe('the main agent works in the Dojo folder and its home', () => {
   it('looks in, copies and archives the Dojo folder', () => {
     for (const line of ['cd ~/.dojo && ls', 'ls ~/.dojo/data | grep db', 'tar czf ~/Desktop/dojo.tgz ~/.dojo', 'cp ~/.dojo/data/dojo.db ~/Desktop/',
       'sqlite3 ~/.dojo/data/dojo.db ".dump" > ~/Desktop/dump.sql', 'du -sh ~/.dojo/backups',
-      'cat ~/.ssh/id_ed25519']) expect(runs(line), line).toBe(true);
+      'grep -rn "secrets.yaml" ~/code/app', 'kubectl apply -f chart/secrets.yaml', 'git add chart/templates/secrets.yaml',
+      'echo secrets.yaml >> .gitignore']) expect(runs(line), line).toBe(true);
   });
 
   it('searches and backs up its home, folders holding secret files included', () => {
@@ -40,7 +42,7 @@ describe('the main agent works in the Dojo folder and its home', () => {
   });
 
   it('still never sees a secret: key files, credential tables, the raw database through the file tools', () => {
-    for (const line of ['cat ~/.dojo/secrets.yaml', 'ls -l ~/.dojo/secrets.yaml', 'sqlite3 -readonly ~/.dojo/data/dojo.db "SELECT * FROM google_accounts"']) {
+    for (const line of ['cat ~/.dojo/secrets.yaml', 'ls -l ~/.dojo/secrets.yaml', 'chmod 600 ~/.dojo/secrets.yaml', 'cat ~/.ssh/id_ed25519', 'sqlite3 -readonly ~/.dojo/data/dojo.db "SELECT * FROM google_accounts"']) {
       expect(runs(line), line).toBe(false);
     }
     expect(file('fs_read', '~/.dojo/data/dojo.db')).toBe(false);

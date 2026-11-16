@@ -1,7 +1,7 @@
 // One function, both callers, so the two exec authorization calls never drift; an
 // unresolvable shape is REFUSED, never defaulted: an empty command must never pass.
 
-import { authorizeArgv, authorizeProc } from './proc.js';
+import { authorizeArgv, authorizeShellScript } from './proc.js';
 import { resolveArgvArg, resolveCommandArg } from './resolve.js';
 import type { Grant } from './grants.js';
 import { deny, type Verdict } from './types.js';
@@ -18,20 +18,20 @@ export function execDoorFor(toolName: string): ExecDoor | null {
 export const EXEC_DOOR_ARG: Readonly<Record<ExecDoor, string>> = { proc: 'argv', shell: 'script' };
 
 /** Resolve this call's resource, then authorize it; `raw` saves both callers re-deriving where it lives. */
-export function authorizeExecShapedCall(grant: Grant, door: ExecDoor, raw: unknown): Verdict {
+export function authorizeExecShapedCall(grant: Grant, door: ExecDoor, raw: unknown, cwd?: string): Verdict {
   if (door === 'proc') {
     const resolved = resolveArgvArg(raw);
     if (!resolved.ok) {
       return deny('ladder-parity', `exec-shape:${resolved.code}`, resolved.reason);
     }
-    const verdict = authorizeArgv(grant, resolved.value);
+    const verdict = authorizeArgv(grant, resolved.value, cwd);
     return verdict.allowed ? redirectDojoQuestion(grant.agentId, resolved.value.argv) ?? verdict : verdict;
   }
   const resolved = resolveCommandArg(raw);
   if (!resolved.ok) {
     return deny('ladder-parity', `shell-shape:${resolved.code}`, resolved.reason);
   }
-  const verdict = authorizeProc(grant, resolved.value);
+  const verdict = authorizeShellScript(grant, resolved.value, cwd);
   // The Dojo database door: asked only of lines the broker allowed, so it can refuse, never permit.
   return verdict.allowed ? redirectDojoQuestion(grant.agentId, resolved.value.raw) ?? verdict : verdict;
 }

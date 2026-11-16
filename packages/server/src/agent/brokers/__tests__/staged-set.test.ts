@@ -25,7 +25,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { authorizeAppleScript } from '../applescript.js';
-import { authorizeProc, authorizeArgv } from '../proc.js';
+import { authorizeShellScript, authorizeArgv } from '../proc.js';
 import { grantForManifest } from '../grants.js';
 import { isGlobalDenyRule } from '../deny.js';
 import { resolveCommandArg, resolveArgvArg } from '../resolve.js';
@@ -75,7 +75,7 @@ function applescript(grant: ReturnType<typeof grantForManifest>, script: string)
 function shell(grant: ReturnType<typeof grantForManifest>, script: string): Verdict {
   const resolved = resolveCommandArg(script);
   if (!resolved.ok) throw new Error(`fixture did not resolve: ${script}`);
-  return authorizeProc(grant, resolved.value);
+  return authorizeShellScript(grant, resolved.value);
 }
 
 // The four sensitive families the block list names, one path each. These are

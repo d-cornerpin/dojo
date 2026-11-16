@@ -16,7 +16,7 @@ import { resolveChildScope, validateManifest, scopeExcesses, artifactPathFor } f
 import { PRIMARY_AGENT_PERMISSIONS } from '../manifest.js';
 import { DEFAULT_SUBAGENT_PERMISSIONS } from '@dojo/shared';
 import { grantForManifest } from '../brokers/grants.js';
-import { authorizeProc } from '../brokers/proc.js';
+import { authorizeShellScript, authorizeProc } from '../brokers/proc.js';
 import { authorizeAppleScript } from '../brokers/applescript.js';
 import { authorizeSystemControl } from '../brokers/index.js';
 import { resolveCommandArg } from '../brokers/resolve.js';
@@ -54,8 +54,8 @@ describe('A: the one default, a helper of the main agent starts small', () => {
 
   it('runs its own commands through the shell, pipes and loops included', () => {
     const grant = grantForManifest(CHILD, child());
-    expect(authorizeProc(grant, cmd('ls -la | wc -l')).allowed, 'pipes').toBe(true);
-    expect(authorizeProc(grant, cmd('for f in *; do echo $f; done')).allowed, 'loops').toBe(true);
+    expect(authorizeShellScript(grant, cmd('ls -la | wc -l')).allowed, 'pipes').toBe(true);
+    expect(authorizeShellScript(grant, cmd('for f in *; do echo $f; done')).allowed, 'loops').toBe(true);
     expect(authorizeProc(grant, cmd('git status')).allowed, 'a plain program').toBe(true);
     expect(authorizeProc(grant, cmd('curl https://example.com')).allowed, 'not on its list').toBe(false);
   });
@@ -77,14 +77,14 @@ describe('A: the one default, a helper of the main agent starts small', () => {
     const grant = grantForManifest(CHILD, child());
     for (const name of ['mv', 'cp', 'sort', 'jq', 'tee']) {
       expect(authorizeProc(grant, cmd(`${name} a b`)).allowed, `${name} by argv`).toBe(true);
-      expect(authorizeProc(grant, cmd(`${name} a b`)).allowed, `${name} by shell`).toBe(true);
+      expect(authorizeShellScript(grant, cmd(`${name} a b`)).allowed, `${name} by shell`).toBe(true);
     }
   });
 
   it('MUST-SURVIVE: the deny lists are UNTOUCHED by the mv/cp ruling', () => {
     expect(DEFAULT_SUBAGENT_PERMISSIONS.exec_deny).toEqual(['rm -rf /', 'rm -rf ~', 'sudo *', 'chmod 777 *']);
     const grant = grantForManifest(CHILD, child());
-    expect(authorizeProc(grant, cmd('sudo ls')).allowed).toBe(false);
+    expect(authorizeShellScript(grant, cmd('sudo ls')).allowed).toBe(false);
   });
 
   it('a helper\'s child never exceeds the helper: each field it lacks narrows to its own', () => {

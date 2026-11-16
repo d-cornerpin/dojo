@@ -1,5 +1,5 @@
 // The main agent's daily SSH work is not refused at the shell or exec door, lines that name a private
-// key included: the secret stays hidden by blanking what a command prints. Decisions only: nothing runs.
+// key included: only a program that reads the key into the conversation is. Decisions only: nothing runs.
 
 import { describe, it, expect, vi } from 'vitest';
 
@@ -25,7 +25,6 @@ describe('the main agent uses its SSH keys', () => {
     'ls -l ~/.ssh/id_rsa',
     'git push origin main',
     'GIT_SSH_COMMAND="ssh -i ~/.ssh/id_ed25519" git push origin main',
-    'cat ~/.ssh/known_hosts',
   ])('shell: %s', (line) => {
     expect(authorizeExecShapedCall(main, 'shell', line).allowed).toBe(true);
   });

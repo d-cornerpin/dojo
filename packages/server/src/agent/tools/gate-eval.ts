@@ -24,6 +24,7 @@ import { heldGroupsClause } from './held-groups.js';
 import { holdsDojoInspect, DOJO_INSPECT_REFUSAL } from '../../inspect/grant.js';
 import type { ToolGate } from './gates.js';
 import { callerPaths } from '../effects/scopes.js';
+import { resolveProcessCwd } from './process-run.js';
 
 /** What a gate answered, plus enough to audit and render it. */
 export interface GateOutcome {
@@ -97,7 +98,7 @@ export async function evaluateGate(gate: ToolGate, ctx: GateContext): Promise<Ga
       if (!from || !from.startsWith(EFFECT_FROM_ARGS)) return skip(gate);
       const raw = readArgPath(args, from.slice(EFFECT_FROM_ARGS.length));
       if (raw === undefined || raw === null) return skip(gate);
-      const verdict = authorizeExecShapedCall(grantFor(agentId), gate.kind, raw);
+      const verdict = authorizeExecShapedCall(grantFor(agentId), gate.kind, raw, resolveProcessCwd(args.cwd).cwd);
       return {
         gate,
         verdict,

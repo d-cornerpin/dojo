@@ -1,5 +1,4 @@
-// The limits the main agent no longer has still bind every other agent, however the line is spelled. A
-// recursive read of the home folder is not among them: what it prints is blanked.
+// The limits the main agent no longer has still bind every other agent, however the line is spelled.
 
 import { describe, it, expect, vi } from 'vitest';
 
@@ -29,8 +28,8 @@ describe('a helper agent is still refused', () => {
     expect(authorizeExecShapedCall(helper, 'proc', ['sudo', 'ls']).allowed).toBe(false);
   });
 
-  it('the Dojo folder, and a word naming a hidden location', () => {
-    for (const line of ['cd ~/.dojo && ls', 'tar czf ~/Desktop/dojo.tgz ~/.dojo', 'cp ~/.dojo/data/dojo.db ~/Desktop/', 'grep -ri key ~/.ssh', 'cat ~/.aws/credentials']) {
+  it('the Dojo folder, and a recursive read or copy of a folder holding a secret', () => {
+    for (const line of ['cd ~/.dojo && ls', 'tar czf ~/Desktop/dojo.tgz ~/.dojo', 'cp ~/.dojo/data/dojo.db ~/Desktop/', 'grep -ri invoice ~', 'rsync -a ~/ /Volumes/Backup/']) {
       expect(refused(line), line).toBe(true);
     }
   });

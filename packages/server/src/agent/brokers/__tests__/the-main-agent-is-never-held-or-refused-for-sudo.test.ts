@@ -41,8 +41,8 @@ describe('the main agent is never held or refused for sudo', () => {
     expect(out.refusal).toBeNull();
   });
 
-  it('the main agent cannot be talked out of the keys file by sudo', () => {
-    for (const line of ['sudo cat ~/.dojo/secrets.yaml', 'su root -c "cat ~/.dojo/secrets.yaml"']) {
+  it('the main agent cannot be talked out of a secret by sudo', () => {
+    for (const line of ['sudo cat ~/.dojo/secrets.yaml', 'su root -c "cat ~/.ssh/id_rsa"']) {
       expect(authorizeExecShapedCall(main, 'shell', line).allowed, line).toBe(false);
     }
   });
