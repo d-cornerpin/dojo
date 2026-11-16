@@ -28,8 +28,9 @@ function handlersFor(defs: readonly ToolDefinition[], provider: WorkspaceProvide
   return defs.map((def): [string, ToolHandler] => [def.name, async ({ agentId, name, args }) => {
     const kind = accountKindForTool(name);
     const resolved = resolve(kind, args.account as string | undefined);
-    // An account that does not resolve is the executor's to explain: there is no account to grant yet.
-    const refusal = 'error' in resolved ? null : accountRefusal(agentId, def, provider, { ...resolved.account, kind });
+    // An account that does not resolve is asked on the kind's grant; the executor then explains why.
+    const account = 'error' in resolved ? { id: null, enabledServices: null } : resolved.account;
+    const refusal = accountRefusal(agentId, def, provider, { ...account, kind });
     if (refusal) {
       auditLog(agentId, name, null, 'denied', refusal);
       return { content: refusal, isError: true, errorCode: 'PERMISSION_DENIED' };
