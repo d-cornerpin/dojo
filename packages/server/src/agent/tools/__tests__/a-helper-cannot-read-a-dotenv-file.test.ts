@@ -15,6 +15,7 @@ describe('a helper cannot read a dotenv file', () => {
     ['file_read', { path: path.join(project, '.npmrc') }],
     ['shell', { script: `cat "${project}/.env"` }],
     ['shell', { script: 'cat .env', cwd: project }],
+    ['shell', { script: `cd "${project}" && cat .env` }],
     ['shell', { script: 'cp .env /tmp/copied-env', cwd: project }],
   ] as const)('%s is refused', async (name, args) => {
     expect(blocked(await run(HELPER, name, args))).toBe(true);

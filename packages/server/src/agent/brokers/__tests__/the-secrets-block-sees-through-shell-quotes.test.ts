@@ -35,6 +35,8 @@ const ROWS: Array<{ line: string; want: boolean; why: string }> = [
   { line: 'grep --regexp=id_rsa ~/notes.txt', want: false, why: 'the pattern given with --regexp=' },
   { line: 'egrep -i -A 2 "id_rsa|.env" ~/notes.txt', want: false, why: 'the pattern after options' },
   { line: 'sed -n "/id_rsa/p" ~/notes.txt', want: false, why: 'the sed script is not a file' },
+  { line: "awk -v n=1 '/id_rsa/ {print}' ~/notes.txt", want: false, why: 'awk -v takes a value before the program' },
+  { line: "awk '/id_rsa/ {print}' ~/notes.txt", want: false, why: 'the awk program is not a file' },
   { line: 'echo credentials', want: false, why: 'a word, not a file' },
   { line: 'git log -- .npmrc', want: false, why: 'a file name with no file here' },
   { line: 'grep "~/.ssh/config" ~/notes.txt', want: true, why: 'a pattern spelled as a hidden path is read as that path' },

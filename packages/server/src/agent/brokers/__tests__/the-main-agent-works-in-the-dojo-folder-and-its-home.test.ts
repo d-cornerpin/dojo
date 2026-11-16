@@ -26,7 +26,7 @@ describe('the main agent works in the Dojo folder and its home', () => {
   it('looks in, copies and archives the Dojo folder', () => {
     for (const line of ['cd ~/.dojo && ls', 'ls ~/.dojo/data | grep db', 'tar czf ~/Desktop/dojo.tgz ~/.dojo', 'cp ~/.dojo/data/dojo.db ~/Desktop/',
       'sqlite3 ~/.dojo/data/dojo.db ".dump" > ~/Desktop/dump.sql', 'du -sh ~/.dojo/backups',
-      'cat ~/.ssh/id_ed25519']) expect(runs(line), line).toBe(true);
+      'cat ~/.ssh/id_ed25519', 'grep -rn "secrets.yaml" ~/code/app']) expect(runs(line), line).toBe(true);
   });
 
   it('searches and backs up its home, folders holding secret files included', () => {

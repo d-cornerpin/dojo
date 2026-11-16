@@ -50,8 +50,8 @@ describe("the main agent's shell refuses a line naming the keys file", () => {
     expect(appleScript(`read POSIX file "${KEYS}"`).allowed).toBe(false);
   });
 
-  it("a project's own secrets.yaml is an ordinary file", () => {
-    for (const line of ['kubectl apply -f chart/secrets.yaml', 'git add chart/templates/secrets.yaml', 'echo secrets.yaml >> .gitignore', 'cat ~/.dojo/logs/dojo.log']) {
+  it("a project's own secrets.yaml is an ordinary file, and a relative spelling meets the warning, not a refusal", () => {
+    for (const line of ['cd ~/.dojo && rm secrets.yaml', 'kubectl apply -f chart/secrets.yaml', 'git add chart/templates/secrets.yaml', 'echo secrets.yaml >> .gitignore', 'cat ~/.dojo/logs/dojo.log']) {
       expect(authorizeExecShapedCall(main, 'shell', line).allowed, line).toBe(true);
     }
   });

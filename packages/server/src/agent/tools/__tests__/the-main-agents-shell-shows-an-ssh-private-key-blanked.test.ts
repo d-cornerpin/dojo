@@ -11,15 +11,22 @@ const BODY = ['QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ'
 const RSA_BODY = 'TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT';
 const PUBLIC = 'ssh-ed25519 PPPPPPPPPPPPPPPPPPPPPPPPPPPP someone@example.com';
 const { scratchDojo, MAIN } = await import('./scratch-dojo.js');
-const { home, text } = await scratchDojo('hidden-file-blank', {
+const { home, run, text, blocked } = await scratchDojo('hidden-file-blank', {
   '.ssh/id_ed25519': ['-----BEGIN OPENSSH PRIVATE KEY-----', ...BODY, '-----END OPENSSH PRIVATE KEY-----', ''].join('\n'),
   '.ssh/id_ed25519.pub': `${PUBLIC}\n`,
   '.ssh/id_rsa': `-----BEGIN RSA PRIVATE KEY-----\n${RSA_BODY}\n-----END RSA PRIVATE KEY-----\n`,
+  '.ssh/work.ppk': 'PuTTY-User-Key-File-3: ssh-rsa\nPrivate-Lines: 1\nUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUU\n',
+  '.aws/credentials': '[default]\naws_secret_access_key = XXXXXXXXXXXXXXXXXXXX/XXXXXXXXXXXXXXXXXXX\n',
   '.netrc': 'machine example.com\nlogin someone\npassword vvvvvvvvvvvvvvvv\n',
   'one/.netrc': 'machine example.com login someone password wwwwwwwwwwwwwwww\n',
 });
 const ssh = path.join(home, '.ssh');
-const shell = (script: string) => text(MAIN, 'shell', { script });
+/** The command's output, after checking it ran and was not refused. */
+const shell = async (script: string): Promise<string> => {
+  const outcome = await run(MAIN, 'shell', { script });
+  expect(blocked(outcome), script).toBe(false);
+  return JSON.stringify(outcome);
+};
 
 describe("the main agent's shell shows a hidden file blanked", () => {
   it.each([`cat "${ssh}/id_ed25519"`, `tail -3 "${ssh}/id_ed25519"`, `python3 -c "print(open('${ssh}/id_ed25519').read())"`])('%s shows no line of the key', async (script) => {
@@ -31,6 +38,13 @@ describe("the main agent's shell shows a hidden file blanked", () => {
     expect(await shell(`cat "${ssh}/id_rsa"`)).not.toContain(RSA_BODY);
     expect(await shell(`cat "${home}/.netrc"`)).not.toContain('vvvvvvvvvvvvvvvv');
     expect(await shell(`cat "${home}/one/.netrc"`)).not.toContain('wwwwwwwwwwwwwwww');
+  });
+
+  it('a leading cd moves where a bare or relative name is read', async () => {
+    expect(await shell(`cd "${ssh}" && cat work.ppk`)).not.toContain('UUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUU');
+    expect(await shell(`cd "${home}/.aws" && cat credentials`)).not.toContain('XXXXXXXXXXXXXXXXXXXX/XXXXXXXXXXXXXXXXXXX');
+    expect(await shell(`cd "${home}" && cat .netrc`)).not.toContain('vvvvvvvvvvvvvvvv');
+    expect(await shell(`cd "${home}" && tail -3 .ssh/id_rsa`)).not.toContain(RSA_BODY);
   });
 
   it('an AppleScript result shows no line of the key', async () => {

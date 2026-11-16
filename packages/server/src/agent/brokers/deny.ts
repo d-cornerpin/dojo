@@ -263,15 +263,21 @@ const KEYS_ROW = DENY_RULES.find((r) => r.id === 'dojo-secrets-store') as DenyRu
 export const SENSITIVE_LOCATIONS: readonly string[] = ['.dojo/secrets.yaml', '.ssh', '.aws/credentials', '.config/gcloud', '.kube/config', '.plaud/tokens.json', '.cloudflared'];
 
 /** Each path a line names: its words as the shell unquotes them, split where a script inside a word may start a
- *  path. A relative spelling resolves against `cwd`; a bare name counts only when `cwd` holds a file of that name. */
+ *  path, resolved where the line runs (`cwd`, moved by a leading `cd X`). A bare name, or a name directly under `/`,
+ *  counts only when that file exists there. */
 function pathsNamed(line: string, cwd?: string): Array<{ piece: string; abs: string; spelledWhole: boolean }> {
-  const words = lexShellLine(line)?.segments.flatMap((seg) => seg.words.map((w) => w.value)) ?? [line];
+  const segments = lexShellLine(line)?.segments ?? [];
+  const words = segments.length ? segments.flatMap((seg) => seg.words.map((w) => w.value)) : [line];
+  const expand = (p: string): string => resolveHomePath(p.replace(/^\$\{?HOME\}?(?=\/|$)/, homeDir()));
+  const [first, next] = segments;
+  const cdTo = first?.words.length === 2 && first.words[0].value === 'cd' && next && !next.pipedIn ? expand(first.words[1].value) : '';
+  const here = path.resolve(cwd ?? '', cdTo);
   return words.flatMap((w) => w.split(/[\s'"()=,:]+/)).filter(Boolean).flatMap((piece) => {
-    const expanded = resolveHomePath(piece.replace(/^\$\{?HOME\}?(?=\/|$)/, homeDir()));
+    const expanded = expand(piece);
     const spelledWhole = path.isAbsolute(expanded);
-    const abs = path.resolve(cwd ?? '', expanded);
-    if (!spelledWhole && !expanded.includes('/') && !(cwd && statOf(abs))) return [];
-    return [{ piece, abs, spelledWhole }];
+    const abs = path.resolve(here, expanded);
+    const mustExist = !expanded.includes('/') || (spelledWhole && path.dirname(abs) === path.parse(abs).root);
+    return mustExist && !statOf(abs) ? [] : [{ piece, abs, spelledWhole }];
   });
 }
 
