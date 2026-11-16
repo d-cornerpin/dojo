@@ -10,6 +10,7 @@ import { createLogger } from '../logger.js';
 import { getTunnelStatus } from './tunnel.js';
 import { isSensitivePath } from '../agent/path-guards.js';
 import { homeDir } from '../home.js';
+import { canvasMayRead } from './canvas-html.js';
 
 const logger = createLogger('public-share');
 
@@ -138,14 +139,9 @@ function rewriteHtmlWithInlinedAssets(htmlPath: string, shareDir: string): Asset
       }
     }
 
-    // An asset the page names is published like a directory-walk file or the entry file: its bytes land under
-    // OUT_DIR and are served with no sign-in. Same sanctioned check, asked on the RESOLVED path before
-    // anything stats, reads or copies it, in both spellings (`brokers/fs.ts:shareDeny` asks both): a `..`
-    // segment and a symlink are two ways of writing the same filename.
-    const lexicalSource = path.resolve(absSource);
-    let realSource = lexicalSource;
-    try { realSource = fs.realpathSync(lexicalSource); } catch { /* missing or unresolvable: the lexical answer stands */ }
-    if (isSensitivePath(lexicalSource) || (realSource !== lexicalSource && isSensitivePath(realSource))) {
+    // An asset the page names is served with no sign-in, so it gets the canvas's secret-file check (both
+    // spellings, before anything reads it); unlike the canvas, a share may publish files outside the page folder.
+    if (!canvasMayRead(path.resolve(absSource))) {
       logger.warn('Public share: skipped a sensitive asset named by the shared page', { ref });
       warnings.push(`Skipped asset on the sensitive-files block list: ${ref}`);
       skippedCount++;

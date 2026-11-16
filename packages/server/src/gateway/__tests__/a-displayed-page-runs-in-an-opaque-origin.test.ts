@@ -1,5 +1,6 @@
 // HTML, SVG and Office previews served for display carry a CSP sandbox without allow-same-origin, so a page's
-// script runs in an opaque origin and cannot use the dashboard's storage or call its API as the owner.
+// script runs in an opaque origin and cannot use the dashboard's storage or call its API as the owner. A shared
+// page still keeps its dialogs and downloads, and may fetch its own public files from that opaque origin.
 
 import { describe, it, expect, vi, beforeAll } from 'vitest';
 import fs from 'node:fs';
@@ -19,6 +20,8 @@ const sandboxed = (res: Response) => {
   const csp = res.headers.get('content-security-policy') ?? '';
   expect(csp).toMatch(/^sandbox\b/);
   expect(csp).not.toContain('allow-same-origin');
+  expect(csp).toContain('allow-modals');
+  expect(csp).toContain('allow-downloads');
 };
 
 beforeAll(() => {
@@ -33,6 +36,7 @@ beforeAll(() => {
   add('c', 'sheet.csv', 'a,b\n1,2', 'text/csv');
   fs.mkdirSync(path.join(OUT_DIR, 'demo-csp'), { recursive: true });
   fs.writeFileSync(path.join(OUT_DIR, 'demo-csp', 'index.html'), '<script>1</script>');
+  fs.writeFileSync(path.join(OUT_DIR, 'demo-csp', 'data.json'), '{}');
 });
 
 describe('display responses are sandboxed', () => {
@@ -47,7 +51,10 @@ describe('display responses are sandboxed', () => {
     sandboxed(res);
   });
 
-  it('a shared page', async () => {
-    sandboxed(await createServer().app.request('/share/demo-csp/index.html'));
+  it('a shared page, whose own files answer its opaque-origin fetches', async () => {
+    const app = createServer().app;
+    sandboxed(await app.request('/share/demo-csp/index.html'));
+    const data = await app.request('/share/demo-csp/data.json', { headers: { Origin: 'null' } });
+    expect(data.headers.get('access-control-allow-origin')).toBe('*');
   });
 });

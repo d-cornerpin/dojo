@@ -133,6 +133,8 @@ export function createServer() {
       headers: {
         'Content-Type': mime[ext] ?? 'application/octet-stream',
         'Cache-Control': 'public, max-age=300',
+        // Shares are public, and a sandboxed page fetches its own fonts, modules and data from origin "null".
+        'Access-Control-Allow-Origin': '*',
         ...(['.html', '.htm', '.svg'].includes(ext) ? { 'Content-Security-Policy': DISPLAY_CSP } : {}),
       },
     });

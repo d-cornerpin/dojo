@@ -205,8 +205,8 @@ export function CanvasView({ dock }: { dock: Extract<DockSpec, { kind: 'canvas' 
   // ── Copy contents to clipboard ──
   // What gets copied depends on the type: the HTML source for an HTML canvas,
   // the raw text for code/markdown/json/csv, and the document's text for
-  // Word/Excel (parsed from the render HTML). Images/PDF/
-  // external pages have no useful text, so the button is hidden for them.
+  // Word/Excel (parsed from the render HTML). Images/PDF/external pages have
+  // no useful text, so the button is hidden for them.
   const [copied, setCopied] = useState(false);
   const canCopy =
     (isHtmlCanvas && !!htmlSource) ||

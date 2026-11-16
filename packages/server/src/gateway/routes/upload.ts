@@ -489,7 +489,11 @@ uploadRouter.get('/render/:fileId', async (c) => {
     return c.json({ ok: false, error: 'This file type cannot be previewed in the canvas.' }, 415);
   }
   return new Response(html, {
-    headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Content-Security-Policy': DISPLAY_CSP },
+    headers: {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-store',
+      'Content-Security-Policy': DISPLAY_CSP,
+    },
   });
 });
 

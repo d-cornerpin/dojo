@@ -5,12 +5,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { homeDir } from '../home.js';
-import { isSensitivePath } from '../agent/path-guards.js';
+import { shareDeny } from '../agent/brokers/fs.js';
+import { resolvePathArg } from '../agent/brokers/resolve.js';
 import { insideFolder } from '../techniques/technique-folder.js';
 
 /** The policy on every HTML, SVG or Office preview served for display: an opaque origin, so the page's
  *  script cannot read the dashboard's storage or call its API with the owner's credentials. */
-export const DISPLAY_CSP = 'sandbox allow-scripts allow-popups allow-forms';
+export const DISPLAY_CSP =
+  'sandbox allow-scripts allow-popups allow-forms allow-modals allow-downloads allow-popups-to-escape-sandbox';
 
 const ASSET_MIME: Record<string, string> = {
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
@@ -38,13 +40,8 @@ function isRemote(ref: string): boolean {
 /** May the canvas read this file: never one the secret-file rule denies, in either spelling, and with
  *  `folder` only a file inside that folder once links are followed. */
 export function canvasMayRead(absPath: string, folder?: string): boolean {
-  let real: string;
-  try {
-    real = fs.realpathSync(absPath);
-  } catch {
-    return false;
-  }
-  if (isSensitivePath(absPath) || isSensitivePath(real)) return false;
+  const resolved = resolvePathArg(absPath);
+  if (!resolved.ok || !resolved.value.realResolved || shareDeny(resolved.value, 'canvas')) return false;
   return folder === undefined || insideFolder(folder, path.relative(folder, absPath)) !== null;
 }
 
