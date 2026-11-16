@@ -8,7 +8,7 @@
 import path from 'node:path';
 import { canonicalizeAgentPath, resolveRealPathHardened } from '../path-resolve.js';
 import { effectsFor } from '../tools/registry.js';
-import { resolvePathArg, resolveArgvArg, resolveUrlArg } from '../brokers/resolve.js';
+import { resolvePathArg, resolveArgvArg, resolveUrlArg, type Resolution, type ResolvedPath } from '../brokers/resolve.js';
 import {
   EFFECT_FROM_ARGS, EFFECT_FROM_FIXED, EFFECT_FROM_DERIVED,
   type ToolEffect, type EffectScope, type EffectIndirection,
@@ -93,6 +93,33 @@ function pushResolved(
   if (value.real !== value.lexical) grants.push({ kind, at: 'tree', root: value.real });
 }
 
+/** THE PATHS THE CALLER NAMED for one `args.` file effect: the argument, each list element (or that
+ *  element's property), or the path an id resolves to. An absent value names nothing; a present
+ *  non-string stays a failed resolution so the gate can refuse it. */
+export function callerPaths(
+  effect: ToolEffect,
+  args: Record<string, unknown>,
+  resolvers: Readonly<Record<EffectIndirection, IndirectResolver>> = INDIRECT_RESOLVERS,
+): Resolution<ResolvedPath>[] {
+  if (!fsKindOf(effect.kind) || !effect.from.startsWith(EFFECT_FROM_ARGS)) return [];
+  const dotted = effect.from.slice(EFFECT_FROM_ARGS.length);
+  let named: unknown[];
+  if (effect.via) {
+    // A `via` not in the table, or nothing recorded: no path, fail closed; the handler's message stands.
+    const id = readArgPath(args, dotted);
+    const resolve = resolvers[effect.via] as IndirectResolver | undefined;
+    named = typeof id === 'string' && id.trim().length > 0 && resolve ? [resolve(id)?.path] : [];
+  } else if (dotted.includes('[]')) {
+    const arrayAt = dotted.indexOf('[]');
+    const prop = dotted.slice(arrayAt + 2).replace(/^\./, '');
+    const list = readArgPath(args, dotted.slice(0, arrayAt));
+    named = Array.isArray(list) ? list.map((el) => (prop === '' ? el : readArgPath(el as Record<string, unknown>, prop))) : [];
+  } else {
+    named = [readArgPath(args, dotted)];
+  }
+  return named.map(resolvePathArg).filter((r) => r.ok || r.code !== 'not_present');
+}
+
 /** THE RESOURCES THIS CALL MAY TOUCH: built after every gate answered; it decides nothing. */
 export function grantsForCall(
   agentId: string,
@@ -107,49 +134,13 @@ export function grantsForCall(
     const fsKind = fsKindOf(effect.kind);
 
     if (effect.from.startsWith(EFFECT_FROM_ARGS)) {
-      const dotted = effect.from.slice(EFFECT_FROM_ARGS.length);
-
-      // `via:`: the argument is an IDENTIFIER and the resource is the path the platform recorded for it.
-      if (effect.via && fsKind) {
-        const id = readArgPath(args, dotted);
-        if (typeof id !== 'string' || id.trim().length === 0) continue;
-        // A `via` not in the table, or nothing recorded: NO grant, fail closed; the handler's message stands.
-        const resolve = resolvers[effect.via] as IndirectResolver | undefined;
-        if (!resolve) continue;
-        const row = resolve(id);
-        if (!row) continue;
-        const recorded = resolvePathArg(row.path);
-        // `argTree` COMPOSES with the indirection: the resolved directory becomes the TREE, else one file.
-        if (recorded.ok) pushResolved(grants, fsKind, recorded.value, effect.scope?.at === 'argTree');
-        continue;
-      }
-
-      // `args.<name>[]`: EVERY ELEMENT, one grant each; `args.<name>[].<prop>`: the element is an OBJECT and
-      // the path is that property. Anything not a usable path grants nothing: a list narrows, never widens.
-      const arrayAt = dotted.indexOf('[]');
-      if (arrayAt !== -1 && fsKind) {
-        const list = readArgPath(args, dotted.slice(0, arrayAt));
-        const prop = dotted.slice(arrayAt + 2);
-        if (Array.isArray(list)) {
-          for (const element of list) {
-            const named = prop === ''
-              ? element
-              : readArgPath(element as Record<string, unknown>, prop.startsWith('.') ? prop.slice(1) : prop);
-            const resolved = resolvePathArg(named);
-            if (resolved.ok) {
-              grants.push({ kind: fsKind, at: 'path', lexical: resolved.value.lexical, real: resolved.value.real });
-            }
-          }
-        }
-        continue;
-      }
-
-      const raw = readArgPath(args, dotted);
+      // `argTree`: the argument names a DIRECTORY and the effect covers inside it; never wider than it.
       if (fsKind) {
-        const resolved = resolvePathArg(raw);
-        // `argTree`: the argument names a DIRECTORY and the effect covers inside it; never wider than it.
-        if (resolved.ok) pushResolved(grants, fsKind, resolved.value, effect.scope?.at === 'argTree');
-      } else if (effect.kind === 'proc') {
+        for (const r of callerPaths(effect, args, resolvers)) if (r.ok) pushResolved(grants, fsKind, r.value, effect.scope?.at === 'argTree');
+        continue;
+      }
+      const raw = readArgPath(args, effect.from.slice(EFFECT_FROM_ARGS.length));
+      if (effect.kind === 'proc') {
         const resolved = resolveArgvArg(raw);
         if (resolved.ok) {
           grants.push({ kind: 'proc', program: resolved.value.program, display: resolved.value.display });

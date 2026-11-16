@@ -15,13 +15,15 @@ import { isProtectedIdentityPath } from './permissions.js';
 import { getAgentPermissions } from './manifest.js';
 import { grantForManifest } from './brokers/grants.js';
 import { EXEC_DOOR_ARG, authorizeExecShapedArgs, execCallText, execDoorFor } from './brokers/exec-seam.js';
-import { destroysDojoData, destroysDojoFiles } from './brokers/dojo-redirect.js';
+import { destroysDojoData, destroysDojoFiles, overwritesFile } from './brokers/dojo-redirect.js';
 import { wipesTheMac } from './brokers/proc.js';
 import { shellPayloads } from './brokers/applescript.js';
-import { denyRuleFor } from './brokers/deny.js';
-import { resolvePathArg } from './brokers/resolve.js';
+import { denyRuleFor, isLoginKeyFile } from './brokers/deny.js';
+import type { ResolvedPath } from './brokers/resolve.js';
+import { canonicalizeAgentPath } from './path-resolve.js';
 import { resolveAgentRef } from './tool-helpers.js';
-import { FS_WRITE_TOOLS } from './tools/gates.js';
+import { callerFileEffects } from './tools/gates.js';
+import { callerPaths } from './effects/scopes.js';
 import { OWNER_ALERT_DOJO_PREFIX } from '@dojo/shared';
 import { tellAgentWhatDojoSent } from './dojo-voice.js';
 import { APPROVAL_TTL_MINUTES, deliverGateWake } from './approval-decision.js';
@@ -45,26 +47,29 @@ export function isDestructiveCall(
   // execCallText is the one owner of 'what did this call ask to run', at both doors and every call shape.
   // A shape it cannot read is UNKNOWN, not harmless: hold it; the manifest pre-check then refuses outright.
   const door = execDoorFor(toolName);
+  const text = door ? execCallText(toolName, args) : null;
+  const raw = door ? args[EXEC_DOOR_ARG[door]] : null;
+  const argv = Array.isArray(raw) && raw.every((e) => typeof e === 'string') ? (raw as string[]) : null;
   if (door) {
-    const text = execCallText(toolName, args);
     if (text === null) return 'destructive shell command';
-    const raw = args[EXEC_DOOR_ARG[door]];
-    const argv = Array.isArray(raw) && raw.every((e) => typeof e === 'string') ? (raw as string[]) : null;
     if (DESTRUCTIVE_EXEC_RE.test(text) || destroysDojoData(argv ?? text)) return 'destructive shell command';
   }
+  // A login key lets whoever holds it sign in to the Mac: a write onto one is held, whatever door writes it.
+  const written = callerWrites(toolName, args);
+  if (written.some((p) => isLoginKeyFile(p.lexical) || isLoginKeyFile(p.real))
+    || (text !== null && overwritesFile(argv ?? text, (word) => isLoginKeyFile(canonicalizeAgentPath(word))))) {
+    return 'write to a login-key file';
+  }
   // The Healer holds primary-equivalent write, so a protected-identity-file write is destructive for it.
-  // isProtectedIdentityPath canonicalizes the path first, so a traversal cannot slip the prefix.
-  if (
-    callerAgentId &&
-    isHealerAgent(callerAgentId) &&
-    (toolName === 'file_write' || toolName === 'file_patch' || toolName === 'file_append')
-  ) {
-    const filePath = typeof args.path === 'string' ? args.path : '';
-    if (filePath && isProtectedIdentityPath(filePath)) {
-      return 'edit to an owner identity or config file';
-    }
+  if (callerAgentId && isHealerAgent(callerAgentId) && written.some((p) => isProtectedIdentityPath(p.lexical))) {
+    return 'edit to an owner identity or config file';
   }
   return null;
+}
+
+/** Every path this call writes that its caller named, resolved: what the one file check asked. */
+function callerWrites(toolName: string, args: Record<string, unknown>): ResolvedPath[] {
+  return callerFileEffects(toolName, 'fs_write').flatMap((e) => callerPaths(e, args)).flatMap((r) => (r.ok ? [r.value] : []));
 }
 
 /** What a main-agent call would destroy, or null: the one question its warn-once hurdle asks. */
@@ -75,12 +80,9 @@ export function wouldWreck(toolName: string, args: Record<string, unknown>): str
     const row = target.ok ? getDb().prepare('SELECT classification FROM agents WHERE id = ?').get(target.id) as { classification: string } | undefined : undefined;
     return row?.classification === 'sensei' ? 'end a sensei the Dojo runs on, or the main agent itself' : null;
   }
-  if (FS_WRITE_TOOLS.has(toolName)) {
-    const target = resolvePathArg(args.path);
-    const rule = target.ok ? denyRuleFor(target.value.real, 'global_write') ?? denyRuleFor(target.value.lexical, 'global_write') : null;
-    if (rule?.id === 'dojo-secrets-writes') return 'overwrite the Dojo\'s secrets file and lose every saved key';
-    return rule?.id === 'dojo-database-writes' ? 'write straight into the Dojo\'s live database file and can corrupt every agent, message and setting in it' : null;
-  }
+  const rule = callerWrites(toolName, args).map((p) => denyRuleFor(p.real, 'global_write') ?? denyRuleFor(p.lexical, 'global_write')).find(Boolean);
+  if (rule?.id === 'dojo-secrets-writes') return 'overwrite the Dojo\'s secrets file and lose every saved key';
+  if (rule?.id === 'dojo-database-writes') return 'write straight into the Dojo\'s live database file and can corrupt every agent, message and setting in it';
   const raw = args[EXEC_DOOR_ARG[execDoorFor(toolName) ?? 'shell']];
   const lines = toolName === 'applescript_run' && typeof args.script === 'string' ? shellPayloads(args.script)
     : [execCallText(toolName, args)].filter((t): t is string => t !== null);

@@ -36,7 +36,7 @@ fs.writeFileSync(path.join(fixtureHome, 'site', 'index.html'), '<html><body>hi</
 // never from an incidental allowlist miss.
 vi.mock('../../db/connection.js', () => ({
   getDb: () => ({
-    prepare: () => ({
+    prepare: (sql: string) => ({
       run: () => ({}),
       get: () => ({
         id: 'agent-under-test',
@@ -46,7 +46,10 @@ vi.mock('../../db/connection.js', () => ({
         created_by: 'agent-parent',
         group_id: null,
       }),
-      all: () => [],
+      // The grant rows the same manifest projects to: read and write everywhere.
+      all: () => (sql.includes('grant_rule')
+        ? ['fs_read', 'fs_write'].map((effect_kind) => ({ effect_kind, mode: 'allow', pattern: '*', source: 'manifest', manifest_fingerprint: '' }))
+        : []),
     }),
     exec: () => ({}),
     transaction: (fn: () => unknown) => () => fn(),

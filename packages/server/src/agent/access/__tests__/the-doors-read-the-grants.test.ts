@@ -11,8 +11,7 @@
 //
 // RED AT `b382580`, measured: `gatesForCall('imessage_send', {})` returns
 // `{kind:'primary_only', row:'7'}`; `gatesForCall('credential_delete', …)`
-// returns NOTHING (the declared `secrets` effect lands in `ungatedEffectKinds`,
-// refused by nothing — census C3); and the four Twilio walls plus the two
+// returns NOTHING (the declared `secrets` effect was refused by nothing, census C3); and the four Twilio walls plus the two
 // Workspace-write walls each read `isPrimaryAgent(agentId)` in their own body.
 //
 // GREEN means: the SAME refusals still bite for the SAME agents (post-migration
@@ -59,7 +58,6 @@ import { forgetAccessGrants } from '../read.js';
 import { deriveLegacyGrants } from '../derive.js';
 import { ownerChannelRelayRefusal } from '../../a2a-transport.js';
 import type { AccessGrants } from '@dojo/shared';
-import { ungatedEffectKinds } from '../../tools/gates.js';
 
 const db = (): Database.Database => mockDb.current!;
 
@@ -203,9 +201,8 @@ describe('the four Twilio walls and the two Workspace walls read the grant', () 
 });
 
 describe('the enforcement surface moved in one direction only', () => {
-  it('`secrets` is no longer an ungated declared effect', async () => {
-    const gates = gatesForCall('credential_get', { service_name: 'x' });
-    expect(ungatedEffectKinds('credential_get', gates)).not.toContain('secrets');
+  it('the declared `secrets` effect meets the credential gate', async () => {
+    expect(gatesForCall('credential_get', { service_name: 'x' }).some((g) => g.kind === 'credential')).toBe(true);
   });
 
   it('a tool that reaches nobody gains no channel gate', () => {

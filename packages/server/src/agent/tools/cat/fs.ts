@@ -17,7 +17,7 @@ import { getDb } from '../../../db/connection.js';
 import { coerceNumberArg } from '../pagination.js';
 import { TOOL_RESULT_VIEW_CHARS } from '../../../memory/tool-result-view.js';
 import { queueLinkArtifact } from '../../pending-attachments.js';
-import { resolvePath, isSensitivePath } from '../../path-guards.js';
+import { resolvePath } from '../../path-guards.js';
 import { resolveArgvArg } from '../../brokers/resolve.js';
 import { runProcess, resolveProcessCwd, processTimeout, type ProcessAudit } from '../process-run.js';
 import { personFirstFor } from '../person-first.js';
@@ -442,11 +442,6 @@ export async function executeFilePatch(
   if (!path.isAbsolute(filePath)) {
     auditLog(agentId, 'file_patch', filePath, 'error', 'Path must be absolute');
     return 'Error: Path must be absolute. Use ~ for home directory or provide a full path.';
-  }
-
-  if (isSensitivePath(filePath)) {
-    auditLog(agentId, 'file_patch', filePath, 'denied', 'sensitive path block list');
-    return `[BLOCKED] file_patch refused: ${filePath} is on the sensitive-files block list (secrets.yaml, .env files, SSH keys, cloud credentials). The DOJO never lets agents rewrite secret files.`;
   }
 
   // Validate every patch up front so we fail fast before reading the file.

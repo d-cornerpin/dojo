@@ -1,6 +1,5 @@
 // An agent that may READ a folder but not write to it must still be able to read a Word or
-// Excel file there. The body's local-file write check belongs to the tools that write; the
-// three read-only tools are gated by their declared fs_read effect.
+// Excel file there: the office body asks no write permission of the three read-only tools.
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const permCalls = vi.hoisted(() => [] as Array<{ type: string; path?: string }>);
@@ -43,14 +42,6 @@ describe('office tools and the local-file permission check', () => {
       expect(r.isError).toBeFalsy();
       expect(r.content).toBe('ok');
       expect(permCalls.some((c) => c.type === 'file_write')).toBe(false);
-    });
-  }
-
-  for (const name of ['office_replace_in_word_document', 'office_write_spreadsheet_range']) {
-    it(`${name} is still denied without write permission`, async () => {
-      const r = await run(name);
-      expect(r.isError).toBe(true);
-      expect(r.content).toMatch(/^(\[BLOCKED\] )?Permission denied/);
     });
   }
 });

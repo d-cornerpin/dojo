@@ -8,7 +8,7 @@ import { workOperation } from '../../tools/work-verbs.js';
 import { effectsFor } from './registry.js';
 import { getSmsReachability, describeSmsRecipients } from '../../services/capability-registry.js';
 import { toolCategoryLabels } from '../access/read.js';
-import type { EffectKind } from './types.js';
+import { EFFECT_FROM_ARGS, type ToolEffect } from './types.js';
 import type { AccessChannel } from '@dojo/shared';
 
 /** OWNER-FACING CONTROLS: the SAME set `getFilteredTools` strips the surface
@@ -24,7 +24,8 @@ export const PRIMARY_ONLY_TOOLS = new Set<string>([
 
 /** Every gate kind; `row` names the old ladder row it carries. */
 export type ToolGate =
-  | { readonly kind: 'fs'; readonly effect: 'fs_read' | 'fs_write'; readonly row: string }
+  /** The declared file effects of one kind whose paths the caller names; each path is asked. */
+  | { readonly kind: 'fs'; readonly effect: FsEffect; readonly effects: readonly ToolEffect[]; readonly row: string }
   /** Two doors, argv on `proc` and script on `shell`; `exec_allow` covers both unless withheld. */
   | { readonly kind: 'proc'; readonly row: string }
   | { readonly kind: 'shell'; readonly row: string }
@@ -52,8 +53,20 @@ const SYSTEM_CONTROL_CATEGORY: Readonly<Record<string, string>> = {
   applescript_run: 'applescript',
 };
 
-const FS_READ_TOOLS = new Set(['file_read', 'file_list']);
-export const FS_WRITE_TOOLS = new Set(['file_write', 'file_append', 'file_patch']);
+type FsEffect = 'fs_read' | 'fs_write';
+const FS_ROWS: ReadonlyArray<readonly [FsEffect, string]> = [['fs_read', '1'], ['fs_write', '2']];
+/** Ids the platform recorded name its own library or upload, not a folder the caller chose. */
+const PLATFORM_RECORDS: ReadonlySet<string> = new Set(['technique_dir', 'attachment_row']);
+
+/** The file effects the one file check asks, for every tool: each `args.` path the caller names.
+ *  A read of a path the same call writes is an edit in place and is asked as that write. */
+export function callerFileEffects(name: string, kind: FsEffect): ToolEffect[] {
+  const declared = effectsFor(name) ?? [];
+  const written = new Set(declared.filter((e) => e.kind === 'fs_write').map((e) => e.from));
+  return declared.filter((e) => e.kind === kind && e.from.startsWith(EFFECT_FROM_ARGS)
+    && !(e.via && PLATFORM_RECORDS.has(e.via)) && !(kind === 'fs_read' && written.has(e.from)));
+}
+
 const OWNER_FACING_TOOLS = new Set(['dreamer_run_now', 'cost_summary']);
 const IMESSAGE_PRIMARY_ONLY = new Set(['imessage_send', 'imessage_list_contacts']);
 const CREDENTIAL_TOOLS = new Set(['credential_list', 'credential_get', 'credential_add', 'credential_update', 'credential_delete']);
@@ -61,8 +74,10 @@ const CREDENTIAL_TOOLS = new Set(['credential_list', 'credential_get', 'credenti
 export function gatesForCall(name: string, args: Record<string, unknown>): ToolGate[] {
   const gates: ToolGate[] = [];
 
-  if (FS_READ_TOOLS.has(name)) gates.push({ kind: 'fs', effect: 'fs_read', row: '1' });
-  if (FS_WRITE_TOOLS.has(name)) gates.push({ kind: 'fs', effect: 'fs_write', row: '2' });
+  for (const [effect, row] of FS_ROWS) {
+    const effects = callerFileEffects(name, effect);
+    if (effects.length > 0) gates.push({ kind: 'fs', effect, effects, row });
+  }
   if (name === 'exec') gates.push({ kind: 'proc', row: '3' });
   if (name === 'shell') gates.push({ kind: 'shell', row: '3s' });
   if (name === 'spawn_agent') gates.push({ kind: 'spawn', row: '4' });
@@ -123,24 +138,4 @@ export function gatesForCall(name: string, args: Record<string, unknown>): ToolG
   if (name !== 'dojo_inspect' && toolCategoryLabels(name).length > 0) gates.push({ kind: 'category', row: '17' });
 
   return gates;
-}
-
-/** EFFECTS A TOOL DECLARES THAT NOTHING GATES: recorded by the dispatcher,
- *  refused by nothing; the enumeration an owner decides FROM to gate one. */
-export function ungatedEffectKinds(name: string, gates: readonly ToolGate[]): EffectKind[] {
-  const declared = effectsFor(name);
-  if (!declared || declared.length === 0) return [];
-  const gated = new Set<string>();
-  for (const g of gates) {
-    if (g.kind === 'fs') gated.add(g.effect);
-    else if (g.kind === 'proc') gated.add('proc');
-    else if (g.kind === 'shell') gated.add('shell');
-    else if (g.kind === 'applescript') gated.add('applescript');
-    else if (g.kind === 'net') gated.add('net');
-    else if (g.kind === 'spawn') gated.add('spawn');
-    else if (g.kind === 'credential') gated.add('secrets');
-  }
-  const out: EffectKind[] = [];
-  for (const e of declared) if (!gated.has(e.kind) && !out.includes(e.kind)) out.push(e.kind);
-  return out;
 }

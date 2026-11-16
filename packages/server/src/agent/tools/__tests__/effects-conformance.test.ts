@@ -231,7 +231,8 @@ describe('effects-declaration conformance walk (PHASE-5 T1)', () => {
     // v3.5 field fix 3 (audit #5): +1. `work_open` gains its first ruling (`tasks[].measure.args.path`,
     // the file-set measure's folder, authorized by the measure door with file_list's own gates);
     // `work_update` already carried a ruling, so its `measure.args.path` moves nothing here.
-    expect(BASE.filter((d) => d.nonEffects).length).toBe(26);
+    // `gmail_read_attachment.filename` is the same bare name, ruled inert: +1.
+    expect(BASE.filter((d) => d.nonEffects).length).toBe(27);
 
     const kindsInUse = new Set(BASE.flatMap((d) => d.effects.map((e) => e.kind)));
     // `fs_delete` and `spawn` are single-member classes today; since T3 so are

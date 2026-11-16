@@ -1,19 +1,15 @@
 // OFFICE DOCUMENTS: Word, Excel, PowerPoint, local files and OneDrive alike.
 // NINETEEN dispatch keys onto ONE body that branches on `name`: all resolve
 // to the same function (the old fall-through), each on its own line for `git grep`.
-// TWO permission checks live in the body, not in declared gates: account writes
-// are primary-only (the owner's cloud is the owner's), and a local document pays
-// the same `file_write` manifest floor as the `file_write` tool. Neither may drop.
+// Account writes are primary-only here (the owner's cloud is the owner's); a local
+// document's path is asked by the one file check, from the declared effects.
 
-import path from 'node:path';
 import { getDb } from '../../../db/connection.js';
 import { isPrimaryAgent } from '../../../config/platform.js';
 import { isMicrosoftConnected } from '../../../microsoft/auth.js';
 import { executeOfficeTool } from '../../../microsoft/tools-office.js';
-import { checkPermission } from '../../permissions.js';
-import { auditLog, permissionDeniedMessage, openFileInCanvas, localOfficePathFromResult } from '../util.js';
+import { auditLog, openFileInCanvas, localOfficePathFromResult } from '../util.js';
 import type { ToolHandler, ToolHandlerMap } from '../handler.js';
-import { homeDir } from '../../../home.js';
 
 const officeBody: ToolHandler = async ({ agentId, name, args }) => {
     let content = '';
@@ -22,9 +18,6 @@ const officeBody: ToolHandler = async ({ agentId, name, args }) => {
     // PRIMARY-ONLY: the owner's cloud is the owner's; a sub-agent must not mutate it.
     const OFFICE_CREATE_TOOLS = new Set([
       'office_create_word_document', 'office_create_spreadsheet', 'office_create_presentation',
-    ]);
-    const OFFICE_READ_ONLY_TOOLS = new Set([
-      'office_get_word_document_outline', 'office_read_word_document', 'office_get_spreadsheet_range',
     ]);
     // OneDrive/Graph-only ops with no local mode (they operate on a file_id).
     const OFFICE_MS_ACCOUNT_ONLY_TOOLS = new Set([
@@ -37,30 +30,9 @@ const officeBody: ToolHandler = async ({ agentId, name, args }) => {
     const createGoesToOneDrive = OFFICE_CREATE_TOOLS.has(name) && isMicrosoftConnected('agent') && isPrimaryAgent(agentId);
     const targetsMicrosoftAccount = OFFICE_MS_ACCOUNT_ONLY_TOOLS.has(name) || usesOneDriveFileId || createGoesToOneDrive;
 
-    if (targetsMicrosoftAccount) {
-      if (!isPrimaryAgent(agentId)) {
-        content = 'Permission denied: only the primary agent can create or edit Office documents on the connected Microsoft account.';
-        isError = true;
-        auditLog(agentId, name, null, 'denied', 'Microsoft-account office tool restricted to primary agent');
-        return { content, isError };
-      }
-    } else {
-      const localFilename = typeof args.filename === 'string' && (args.filename as string).trim().length > 0
-        ? (args.filename as string).trim()
-        : 'document';
-      const localDest = typeof args.path === 'string' && (args.path as string).trim().length > 0
-        ? (args.path as string).trim()
-        : path.join(homeDir(), '.dojo', 'uploads', agentId, localFilename);
-      // The three read-only tools skip it: their declared fs_read effect is their gate.
-      if (!OFFICE_READ_ONLY_TOOLS.has(name)) {
-      const perm = checkPermission(agentId, { type: 'file_write', path: localDest });
-      if (!perm.allowed) {
-        auditLog(agentId, name, localDest, 'denied', perm.reason);
-        content = permissionDeniedMessage(perm.reason, agentId);
-        isError = true;
-        return { content, isError };
-      }
-      }
+    if (targetsMicrosoftAccount && !isPrimaryAgent(agentId)) {
+      auditLog(agentId, name, null, 'denied', 'Microsoft-account office tool restricted to primary agent');
+      return { content: 'Permission denied: only the primary agent can create or edit Office documents on the connected Microsoft account.', isError: true };
     }
     const agentRow = getDb().prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
     content = await executeOfficeTool(name, args, agentId, agentRow?.name ?? agentId);

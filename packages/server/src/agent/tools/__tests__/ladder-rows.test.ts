@@ -27,7 +27,7 @@ vi.mock('../../../config/platform.js', async () => {
 });
 import path from 'node:path';
 
-import { gatesForCall, ungatedEffectKinds, PRIMARY_ONLY_TOOLS, type ToolGate } from '../gates.js';
+import { gatesForCall, PRIMARY_ONLY_TOOLS, type ToolGate } from '../gates.js';
 
 /** Which rows the clauses below claim to cover. Filled by `covers()`. */
 const covered = new Set<string>();
@@ -275,32 +275,13 @@ describe('the seventeen rows, one clause each', () => {
   });
 });
 
-describe('P5-R5 — what the loop deliberately does NOT gate', () => {
-  it('a tool with no ladder row gets no EFFECT-derived gate, however many effects it declares', () => {
-    // `image_create` writes into the calling agent's uploads directory and
-    // declares `fs_write`; nothing gated it before T2, so nothing gates it now.
-    // Wiring "declared ⇒ granted" would narrow what the owner's agents can do,
-    // which the phase's posture makes an owner decision.
-    //
-    // UX-ACCESS A3 — WHAT MOVED AND WHAT DID NOT. Row 17 is the owner's positive
-    // CATEGORY grant, and all four of these tools are filed in the index, so each
-    // now carries one. The requirement this clause exists for is untouched: a
-    // DECLARED EFFECT still mints nothing. Row 17 is not derived from an effect
-    // and refuses nobody alive today (every existing agent's snapshot is `'*'`);
-    // it is the ruling stated precisely, not loosened.
-    for (const name of ['image_create', 'send_to_agent', 'work_update', 'vault_remember']) {
+describe('what the loop does NOT gate', () => {
+  it('a path the platform picks mints no file gate; a path the caller names does', () => {
+    // `image_create` writes into the calling agent's uploads directory, a path no argument names.
+    for (const name of ['image_create', 'work_update', 'vault_remember']) {
       const gates = rowsFor(name, { path: '/tmp/x', url: 'https://example.com', command: 'ls', argv: ['ls'], script: 'ls' });
-      expect(gates.filter((g) => g.kind !== 'category'), `${name} mints no effect-derived gate`).toEqual([]);
       expect(gates.every((g) => g.row === '17'), `${name}'s only gate is the category grant`).toBe(true);
     }
-  });
-
-  it('the ungated effects are RECORDED, which is the other half of the ruling', () => {
-    // A tool whose declared effect no row gates reports it, so the enumeration
-    // exists when somebody decides one of them should gate.
-    const kinds = ungatedEffectKinds('image_create', rowsFor('image_create', {}));
-    expect(kinds).toContain('fs_write');
-    // …and a fully-gated tool reports nothing.
-    expect(ungatedEffectKinds('file_read', rowsFor('file_read', { path: '/tmp/x' }))).toEqual([]);
+    expect(effectRows('send_to_agent', { attach_paths: ['/tmp/x'] })).toEqual(['1']);
   });
 });

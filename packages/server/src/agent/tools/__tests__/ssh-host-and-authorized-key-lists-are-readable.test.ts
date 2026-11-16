@@ -1,5 +1,5 @@
 // ~/.ssh/known_hosts and ~/.ssh/authorized_keys hold no secret, so file_read returns them; a private key in
-// the same folder is still refused, and no other door (copy over, patch, share) opens the two lists.
+// the same folder is still refused, and neither a helper's copy-over nor a share opens the two lists.
 // Driven through the tool executor in a scratch home.
 
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
@@ -67,12 +67,6 @@ describe('the SSH host and authorized-key lists are readable', () => {
   it.each(['cp', 'mv'])('a default helper cannot %s a key over ~/.ssh/authorized_keys', async (cmd) => {
     const outcome = await run(DEFAULT_HELPER, 'exec', { argv: [cmd, path.join(home, 'stranger.pub'), path.join(ssh, 'authorized_keys')] });
     expect(toolWasBlocked(outcome) || toolResultOf(outcome).isError).toBe(true);
-    expect(authorized()).not.toContain('STRANGERKEY');
-  });
-
-  it('file_patch on ~/.ssh/authorized_keys is refused', async () => {
-    const outcome = await run(MAIN, 'file_patch', { path: '~/.ssh/authorized_keys', patches: [{ search: 'FAKEPUBKEY', replace: 'STRANGERKEY' }] });
-    expect(toolResultOf(outcome).content).toContain('sensitive-files block list');
     expect(authorized()).not.toContain('STRANGERKEY');
   });
 

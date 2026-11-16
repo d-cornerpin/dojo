@@ -12,7 +12,7 @@ import { effectsFor } from './registry.js';
 import {
   authorizeFs, authorizeAppleScript, authorizeNet, authorizeSpawn, authorizeSystemControl,
   authorizeExecShapedCall,
-  resolvePathArg, resolveCommandArg, resolveUrlArg, resolveFixedHost,
+  resolveCommandArg, resolveUrlArg, resolveFixedHost,
   grantFor, type Verdict,
 } from '../brokers/index.js';
 import { EFFECT_FROM_ARGS, EFFECT_FROM_FIXED, type EffectKind } from './types.js';
@@ -23,6 +23,7 @@ import {
 import { heldGroupsClause } from './held-groups.js';
 import { holdsDojoInspect, DOJO_INSPECT_REFUSAL } from '../../inspect/grant.js';
 import type { ToolGate } from './gates.js';
+import { callerPaths } from '../effects/scopes.js';
 
 /** What a gate answered, plus enough to audit and render it. */
 export interface GateOutcome {
@@ -77,23 +78,16 @@ export async function evaluateGate(gate: ToolGate, ctx: GateContext): Promise<Ga
   const { agentId, name, args } = ctx;
 
   switch (gate.kind) {
+    // Every path the caller names is asked; a call that also sends the file out asks the share surface.
     case 'fs': {
-      const from = declaredFrom(name, gate.effect);
-      if (!from || !from.startsWith(EFFECT_FROM_ARGS)) return skip(gate);
-      const raw = readArgPath(args, from.slice(EFFECT_FROM_ARGS.length));
-      const resolved = resolvePathArg(raw);
-      if (!resolved.ok) {
-        // Absent: the gate does not apply. Present but not a string: refused, never coerced.
-        if (resolved.code === 'not_present') return skip(gate);
-        return { gate, verdict: denied('arg-not-a-string', resolved.reason), resource: null, errorCode: 'PERMISSION_DENIED', auditAs: name };
+      const surface = effectsFor(name)?.some((e) => e.kind === 'send') ? 'share' : 'tool';
+      for (const resolved of gate.effects.flatMap((effect) => callerPaths(effect, args))) {
+        // Present but not a string: refused, never coerced.
+        if (!resolved.ok) return { gate, verdict: denied('arg-not-a-string', resolved.reason), resource: null, errorCode: 'PERMISSION_DENIED', auditAs: name };
+        const verdict = authorizeFs(grantFor(agentId), gate.effect, resolved.value, surface, name);
+        if (!verdict.allowed) return { gate, verdict, resource: resolved.value.lexical, errorCode: 'PERMISSION_DENIED', auditAs: name };
       }
-      return {
-        gate,
-        verdict: authorizeFs(grantFor(agentId), gate.effect, resolved.value),
-        resource: resolved.value.lexical,
-        errorCode: 'PERMISSION_DENIED',
-        auditAs: name,
-      };
+      return skip(gate);
     }
 
     // Both exec doors share ONE seam: `authorizeExecShapedCall`, the same call

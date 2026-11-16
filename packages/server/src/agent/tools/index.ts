@@ -5,11 +5,9 @@
 //   3. Malformed-argument JSON -> PARSE_ERROR. 4. The declared gate loop.
 //   5. The schema boundary: AFTER refusals (a refused call answers "permission
 //      denied"), BEFORE dispatch (no handler sees a shape it could crash on).
-//   6. The three membership interceptors. 7. Dispatch: handler table, else
-//      membership fallback.
-//   8. The tail: fence, admission, unknown-args warning, audit.
-// THE INTERCEPTORS ARE EXECUTOR BODY, NOT HANDLERS: they return a `ToolResult` directly
-// and skip the tail; handlers must not return early (a context-budget guarantee rides it).
+//   6. Dispatch: handler table, else membership fallback.
+//   7. The tail: fence, admission, unknown-args warning, audit, for every tool's result;
+//      handlers must not return early (a context-budget guarantee rides it).
 
 
 import { runWithToolCallId } from '../turn-state.js';
@@ -24,8 +22,7 @@ import { resolveToolAlias } from '../../tools/aliases.js';
 import { workOperation } from '../../tools/work-verbs.js';
 import { withOutboundAsyncIfAbsent, outboundIntentForTool } from '../v2/outbound.js';
 import { resolveAgentRef, resolveGroupRef } from '../tool-helpers.js';
-import { sharePathGuard, pdfInputPaths } from '../path-guards.js';
-import { gatesForCall, ungatedEffectKinds } from './gates.js';
+import { gatesForCall } from './gates.js';
 import { validateToolArgs } from './validate-args.js';
 import { toolDefinitions, toolDefinitionsByName, isBoundaryValidated, getAllToolDefinitions } from './definitions.js';
 import { getFilteredTools, getAgentDenySet } from './surface.js';
@@ -39,19 +36,15 @@ import { TOOL_RESULT_VIEW_CHARS, toolResultView } from '../../memory/tool-result
 import { CHARS_PER_TOKEN } from '../../memory/budget.js';
 import { prependMailboxOwnerHeader } from './provider/mailbox-banner.js';
 import { fenceOutsideSpan } from '../../tools/inbound-fences.js';
-import { auditLog, agentCanSelfCompleteById, permissionDeniedMessage, openFileInCanvas } from './util.js';
+import { auditLog, agentCanSelfCompleteById, permissionDeniedMessage } from './util.js';
 import { evaluateGate } from './gate-eval.js';
 import { openCallCapability } from '../effects/scopes.js';
 import { mayWriteWorkspace } from '../access/workspace.js';
-import { isPrimaryAgent, isPMAgent } from '../../config/platform.js';
+import { isPMAgent } from '../../config/platform.js';
 // Single-source PM allow-list, re-checked at this chokepoint: the wall sits above the gate loop.
 import { pmMayCall } from '../../tracker/pm-agent.js';
 import { googleReadToolDefinitions, executeGoogleReadTool } from '../../google/tools-read.js';
 import { googleWriteToolDefinitions, executeGoogleWriteTool } from '../../google/tools-write.js';
-import { slidesToolNames, executeGoogleSlidesTool } from '../../google/tools-slides.js';
-import { pdfToolNames, executePdfTool } from '../pdf-tools.js';
-import { formsToolNames, executeGoogleFormsTool } from '../../google/tools-forms.js';
-import { getAgentGoogleAccessLevel } from '../../google/auth.js';
 import { microsoftReadToolDefinitions, executeMicrosoftReadTool } from '../../microsoft/tools-read.js';
 import { microsoftWriteToolDefinitions, executeMicrosoftWriteTool } from '../../microsoft/tools-write.js';
 import type { ToolCall, ToolResult, ToolErrorCode } from '@dojo/shared';
@@ -196,8 +189,8 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
     return { toolCallId: id, name, content, isError: true, errorCode: 'PARSE_ERROR' as const };
   }
 
-  // THE GATE LOOP: the fifteen hand-written permission branches that stood here are now
-  // declared gates in `agent/tools/gates.ts`. Parity: same refusals, order, words, audit.
+  // THE GATE LOOP: the gates `agent/tools/gates.ts` declares for this call, in order; the
+  // first refusal is the result.
   {
     const gates = gatesForCall(name, args);
     for (const gate of gates) {
@@ -236,13 +229,6 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
       };
     }
 
-    const ungated = ungatedEffectKinds(name, gates);
-    if (ungated.length > 0) {
-      logger.debug('declared effects with no gate today (recorded, not refused)', {
-        tool: name, effects: ungated,
-      }, agentId);
-    }
-
     // THE CAPABILITY: all gates answered. The declared effects resolved against these
     // args are the only resources the facade will perform; it mints no permission.
     openCallCapability(agentId, name, id, args);
@@ -259,58 +245,6 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
   }
 
   try {
-    if (pdfToolNames.includes(name)) {
-      // A caller-chosen path goes straight into context: gate every INPUT path as share_file does.
-      for (const rawPdfPath of pdfInputPaths(args)) {
-        const pdfGuard = await sharePathGuard(agentId, name, rawPdfPath);
-        if (!pdfGuard.allowed) {
-          auditLog(agentId, name, pdfGuard.absPath, 'denied', pdfGuard.reason);
-          return { toolCallId: id, name, content: pdfGuard.blockedMessage ?? permissionDeniedMessage(pdfGuard.reason, agentId), isError: true, errorCode: 'PERMISSION_DENIED' };
-        }
-      }
-      content = await executePdfTool(name, args, agentId);
-      isError = content.startsWith('Error');
-      // Auto-open a PRODUCED pdf; read-only PDF tools produce no file and must not re-open an input.
-      const PDF_READ_ONLY = name === 'pdf_read' || name === 'pdf_get_info';
-      if (!isError && !PDF_READ_ONLY) {
-        const pdfPath = content.match(/(\/\S+\.pdf)\b/i)?.[1];
-        if (pdfPath && openFileInCanvas(agentId, pdfPath).opened) {
-          content += '\n\nThis PDF is now open in the canvas, the user can see it. No need to call canvas_render, show_to_user, or share_file to show it; just tell them it is on the canvas (share the download link only if they ask to save it).';
-        }
-      }
-      return { toolCallId: id, name, content, isError };
-    }
-
-    // Primary AND read-level agents; PM agents ('none') aren't shown these, fall to unknown-tool.
-    if (slidesToolNames.includes(name)) {
-      const slidesAccess = getAgentGoogleAccessLevel(agentId, isPrimaryAgent(agentId), isPMAgent(agentId));
-      if (slidesAccess === 'none') {
-        content = 'Permission denied: this agent does not have Google Slides access.';
-        isError = true;
-        auditLog(agentId, name, null, 'denied', 'Google Slides tool blocked: no Google access');
-      } else {
-        const agentRow = getDb().prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
-        content = await executeGoogleSlidesTool(name, args, agentId, agentRow?.name ?? agentId);
-        isError = content.startsWith('Error');
-      }
-      return { toolCallId: id, name, content, isError };
-    }
-
-    // Google Forms (slides dispatch mirrored): writes are primary-only via tool filtering.
-    if (formsToolNames.includes(name)) {
-      const formsAccess = getAgentGoogleAccessLevel(agentId, isPrimaryAgent(agentId), isPMAgent(agentId));
-      if (formsAccess === 'none') {
-        content = 'Permission denied: this agent does not have Google Forms access.';
-        isError = true;
-        auditLog(agentId, name, null, 'denied', 'Google Forms tool blocked: no Google access');
-      } else {
-        const agentRow = getDb().prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
-        content = await executeGoogleFormsTool(name, args, agentId, agentRow?.name ?? agentId);
-        isError = content.startsWith('Error');
-      }
-      return { toolCallId: id, name, content, isError };
-    }
-
     // Dispatch on the OPERATION, not the raw name: verbs key as `<verb>:<discriminator>`.
     const dispatchKey = workOperation(name, args) ?? name;
 

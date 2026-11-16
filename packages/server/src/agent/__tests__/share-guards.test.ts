@@ -44,7 +44,7 @@ if (!fs.existsSync(capitalisedSecrets)) fs.writeFileSync(capitalisedSecrets, 'du
 // have come from the guard under test, never from an incidental allowlist miss.
 vi.mock('../../db/connection.js', () => ({
   getDb: () => ({
-    prepare: () => ({
+    prepare: (sql: string) => ({
       run: () => ({}),
       get: () => ({
         id: 'agent-under-test',
@@ -54,7 +54,10 @@ vi.mock('../../db/connection.js', () => ({
         created_by: 'agent-parent',
         group_id: null,
       }),
-      all: () => [],
+      // The grant rows the same manifest projects to: read and write everywhere.
+      all: () => (sql.includes('grant_rule')
+        ? ['fs_read', 'fs_write'].map((effect_kind) => ({ effect_kind, mode: 'allow', pattern: '*', source: 'manifest', manifest_fingerprint: '' }))
+        : []),
     }),
     exec: () => ({}),
     transaction: (fn: () => unknown) => () => fn(),
@@ -83,7 +86,6 @@ import {
   isFsCaseInsensitive,
   setFsCaseInsensitive,
   probeFsCaseInsensitive,
-  pdfInputPaths,
   sharePathGuard,
   type ProbeFs,
 } from '../path-guards.js';
@@ -143,7 +145,6 @@ describe('share_file refuses sensitive paths', () => {
   it('blocks ~/.dojo/secrets.yaml', async () => {
     const r = await share('~/.dojo/secrets.yaml');
     expect(r.content).toContain('[BLOCKED]');
-    expect(r.content).toContain('sensitive-files block list');
     expect(r.isError).toBe(true);
     // The whole point: no URL was minted.
     expect(r.content).not.toMatch(/Download link/);
@@ -253,7 +254,6 @@ describe('canvas_render refuses sensitive paths — the guard family gains its m
   it('blocks ~/.dojo/secrets.yaml and mints NO url', async () => {
     const r = await renderPath('~/.dojo/secrets.yaml');
     expect(r.content).toContain('[BLOCKED]');
-    expect(r.content).toContain('sensitive-files block list');
     expect(r.isError).toBe(true);
     // The whole point: the canvas never opened and no download URL exists.
     expect(r.content).not.toMatch(/Canvas opened/);
@@ -343,10 +343,10 @@ describe('share_file enforces file_read permission', () => {
     expect(denied.allowed).toBe(false);
   });
 
-  it('a permission refusal carries blockedMessage=null so the caller renders the standard text', async () => {
-    const guard = await sharePathGuard(AGENT, 'share_file', path.join(fixtureHome, '.dojo', 'logs', 'healer.log'));
-    expect(guard.allowed).toBe(false);
-    if (!guard.allowed) expect(guard.blockedMessage).toBeNull();
+  it('a permission refusal renders the standard text', async () => {
+    const r = await share(path.join(fixtureHome, '.dojo', 'logs', 'healer.log'));
+    expect(r.isError).toBe(true);
+    expect(r.content).toContain('Permission denied');
   });
 
   it('a sensitive-list refusal carries its own [BLOCKED] text', async () => {
@@ -462,21 +462,5 @@ describe('the boot probe measures the filesystem', () => {
     const truth = fs.existsSync(probeLower);
     fs.unlinkSync(probeUpper);
     expect(measured).toBe(truth);
-  });
-});
-
-// ════════════════════════════════════════
-// Which pdf arguments the interceptor gates
-// ════════════════════════════════════════
-
-describe('pdfInputPaths', () => {
-  it('collects path, input_paths and image-block paths; ignores output filenames', () => {
-    expect(pdfInputPaths({ path: '/a.pdf' })).toEqual(['/a.pdf']);
-    expect(pdfInputPaths({ input_paths: ['/a.pdf', '/b.pdf'], output_filename: 'out.pdf' }))
-      .toEqual(['/a.pdf', '/b.pdf']);
-    expect(pdfInputPaths({ content: [{ type: 'image', path: '/img.png' }, { type: 'text', text: 'hi' }] }))
-      .toEqual(['/img.png']);
-    expect(pdfInputPaths({ filename: 'report.pdf' })).toEqual([]);
-    expect(pdfInputPaths({ path: '   ' })).toEqual([]);
   });
 });

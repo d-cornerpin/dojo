@@ -239,6 +239,11 @@ export function isSensitivePath(absPath: string): boolean {
   return denyRuleFor(absPath, 'sensitive') !== null;
 }
 
+/** A file on the sensitive list that lets someone sign in to this Mac: one under ~/.ssh. */
+export function isLoginKeyFile(absPath: string): boolean {
+  return isSensitivePath(absPath) && foldPath(absPath).startsWith(foldPath(path.join(homeDir(), '.ssh')) + path.sep);
+}
+
 /** Rows deny files by name; a folder holding one is named whole by a recursive read
  *  like `grep -r`, so the reader scan refuses these too. A test pairs each entry with a row. */
 export const SENSITIVE_LOCATIONS: readonly string[] = ['.dojo/secrets.yaml', '.ssh', '.aws/credentials', '.config/gcloud', '.kube/config'];

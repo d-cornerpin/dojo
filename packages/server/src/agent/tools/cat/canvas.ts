@@ -30,8 +30,7 @@ export const canvasHandlers: ToolHandlerMap = {
     // `path`: register the on-disk file so the canvas can fetch it, and remember it so edits auto-refresh.
     if (rawPath) {
       // THE GUARD ITS SIBLINGS RUN: `registerSharedFile` mints the same unauthenticated URL
-      // `share_file` mints, so `sharePathGuard` is asked first: the deny-list sensitive tier,
-      // then the file_read permission. Family completeness: `publish-path-guards.test.ts`.
+      // `share_file` mints, so the share surface's sensitive tier is asked too.
       const canvasGuard = await sharePathGuard(agentId, 'canvas_render', rawPath);
       if (!canvasGuard.allowed) {
         auditLog(agentId, 'canvas_render', canvasGuard.absPath, 'denied', canvasGuard.reason);

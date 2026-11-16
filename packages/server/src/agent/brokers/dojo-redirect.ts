@@ -258,18 +258,22 @@ export function destroysDojoData(command: string | readonly string[]): boolean {
 const DESTROYS_OPERANDS = new Set(['rm', 'rmdir', 'unlink', 'shred', 'srm', 'truncate', 'mv', 'tee', 'dd']);
 const OVERWRITES_LAST = new Set(['cp', 'rsync', 'ditto', 'install', 'ln']);
 
-/** Whether a command deletes, moves, truncates or overwrites the Dojo's database, data, backups or secrets file. */
-export function destroysDojoFiles(command: string | readonly string[]): boolean {
-  const dojoCannotLose = (word: string): boolean => refersToDojoDatabase(word) || namesSecretsFile(word);
-  if (destroysDojoData(command)) return true;
+/** Whether a command deletes, moves, truncates or overwrites a file `names` matches: a redirect
+ *  target, an operand of a program that destroys what it names, or a copy-style program's last one. */
+export function overwritesFile(command: string | readonly string[], names: (word: string) => boolean): boolean {
   const text = typeof command === 'string' ? command : command.join(' ');
-  if ([...text.matchAll(/>\|?\s*([^\s;&|<>]+)/g)].some((m) => dojoCannotLose(m[1]))) return true;
+  if ([...text.matchAll(/>\|?\s*([^\s;&|<>]+)/g)].some((m) => names(m[1]))) return true;
   return commandsOf(command).some((words) => {
     const at = words.findIndex((w) => DESTROYS_OPERANDS.has(path.basename(w.value)) || OVERWRITES_LAST.has(path.basename(w.value)));
     if (at < 0) return false;
     const operands = words.slice(at + 1).map((w) => w.value).filter((v) => !v.startsWith('-'));
-    return (OVERWRITES_LAST.has(path.basename(words[at].value)) ? operands.slice(-1) : operands).some(dojoCannotLose);
+    return (OVERWRITES_LAST.has(path.basename(words[at].value)) ? operands.slice(-1) : operands).some(names);
   });
+}
+
+/** Whether a command deletes, moves, truncates or overwrites the Dojo's database, data, backups or secrets file. */
+export function destroysDojoFiles(command: string | readonly string[]): boolean {
+  return destroysDojoData(command) || overwritesFile(command, (word) => refersToDojoDatabase(word) || namesSecretsFile(word));
 }
 
 /** The door's verdict on a command (a shell line, or an argv vector) for an agent's role. */

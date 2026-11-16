@@ -117,8 +117,11 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
       'Download an attachment from a Gmail message to local disk. Use gmail_list_attachments (or gmail_read, which lists them) to find the attachment_id first. Saves to ~/.dojo/uploads/<your-agent-id>/ by default; override with save_path. Returns the absolute path so you can pass it to file_read, show_to_user, etc.',
     effects: [
       { kind: 'fs_write', from: 'args.save_path' },
-      { kind: 'fs_write', from: 'args.filename' },
+      { kind: 'fs_write', from: 'derived:the calling agent uploads directory', scope: { at: 'tree', template: '~/.dojo/uploads/<agentId>' } },
     ],
+    nonEffects: {
+      filename: 'a bare NAME reduced to one path component; without save_path the file lands in the agent uploads directory the effect above declares',
+    },
     input_schema: {
       type: 'object',
       properties: {
