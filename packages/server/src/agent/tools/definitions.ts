@@ -1372,7 +1372,7 @@ export const toolDefinitions: ToolDefinition[] = [
         name: { type: 'string', description: 'New name for the agent. Omit to keep the current name.' },
         system_prompt: { type: 'string', description: 'New system prompt (role, personality, instructions). REPLACES the existing prompt entirely, include everything you want kept. Omit to keep the current prompt.' },
         model_id: { type: 'string', description: 'New model ID to assign, or "auto" for auto-routing. Call list_models for valid IDs. Omit to keep the current model.' },
-        permissions: { type: 'object', description: 'Permission fields to MERGE (only include what changes): file_read/file_write ("*" or path array), exec_allow/exec_deny (command arrays), network_domains ("*"|"none"|array), max_processes, can_spawn_agents, can_assign_permissions, system_control (array of "mouse"/"keyboard"/"screen"/"applescript"/"web_browse" or ["*"]). Requires can_assign_permissions.' },
+        permissions: { type: 'object', description: 'Permission fields to MERGE (only include what changes): file_read/file_write ("*" or path array), exec_allow/exec_deny (command arrays), network_domains ("*"|"none"|array), can_spawn_agents, can_assign_permissions, system_control (array of "mouse"/"keyboard"/"screen"/"applescript"/"web_browse" or ["*"]). Requires can_assign_permissions.' },
         tools: { type: 'object', description: 'Tool-access policy to MERGE: { allow?: string[], deny?: string[] } of tool names. Requires can_assign_permissions.' },
         grants: {
           type: 'object',
@@ -2572,6 +2572,7 @@ export const toolDefinitions: ToolDefinition[] = [
         query: { type: 'string', description: 'Keywords to search for. Pass an empty string to list recent entries regardless of content.' },
         tag: { type: 'string', description: 'Filter to entries with this tag (optional).' },
         limit: { type: 'number', description: 'Max results (default 5).' },
+        group_id: { type: 'string', description: 'Optional: read this squad instead of your own (one you created; the main agent may read any).' },
       },
       required: [],
     },

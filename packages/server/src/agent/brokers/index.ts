@@ -34,7 +34,7 @@ export {
 export function authorizeSpawn(grant: Grant): Verdict {
   const verdict = evaluateRules(grant, 'spawn', () => true);
   if (verdict.decided && verdict.allowed) return allow(verdict.pattern);
-  return deny('ladder-parity', 'no-spawn-grant', 'Agent spawning is not permitted');
+  return deny('ladder-parity', 'no-spawn-grant', 'Agent spawning is not permitted: a helper starts without it. The main agent grants it with permissions { "can_spawn_agents": true } on spawn_agent or update_agent');
 }
 
 /** `system_control`, as grant rows: a manifest may name the category, the tool, or `'*'`,

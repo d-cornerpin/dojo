@@ -41,6 +41,7 @@ import { requestOnThreadForAnotherTurn } from '../../a2a-own-turn.js';
 import { recordAtDoor } from '../../v2/outbound.js';
 import { recordedId } from '../../v2/delivery-outcome.js';
 import { getAgentPermissions } from '../../permissions.js';
+import { validateManifest } from '../../scope.js';
 import { isNoWakeIntent, deliverA2AMessage, deliverA2AMessage as deliverBc } from '../../a2a-transport.js';
 import { onAgentRecovered } from '../../../healer/injury-recovery.js';
 import { resolveTaskId, getTask, formatResolveError } from '../../../tracker/schema.js';
@@ -873,6 +874,10 @@ export const agentsHandlers: ToolHandlerMap = {
         isError = true;
         return { content, isError };
       }
+      // The permissions document carries the grants beside the manifest; the grants half is judged below.
+      const { grants: _docGrants, ...manifestPart } = newPerms ?? {};
+      const permsCheck = newPerms === undefined ? null : validateManifest(manifestPart);
+      if (permsCheck && !permsCheck.ok) return { content: `Error: invalid permission manifest, ${permsCheck.reason}`, isError: true };
       const db = getDb();
       const uaResolved = resolveAgentRef(args.agent_id as string, 'update_agent');
       if (!uaResolved.ok) { content = uaResolved.error; isError = true; return { content, isError }; }
@@ -923,12 +928,8 @@ export const agentsHandlers: ToolHandlerMap = {
           }
         }
 
-        // Permissions and tools policy (access control): gated by can_assign_permissions.
+        // Permissions and tools policy (access control).
         if (newPerms !== undefined || newTools !== undefined) {
-          const callerPerms = getAgentPermissions(agentId);
-          if (!callerPerms.can_assign_permissions) {
-            return { content: 'Permission denied: you do not have permission to change other agents\' permissions or tool policy.', isError: true };
-          }
           if (newPerms !== undefined) {
             const existingPermsRow = db.prepare('SELECT permissions FROM agents WHERE id = ?').get(target.id) as { permissions: string };
             const merged = { ...JSON.parse(existingPermsRow.permissions || '{}'), ...newPerms };
@@ -946,13 +947,8 @@ export const agentsHandlers: ToolHandlerMap = {
       };
       const preRefused = [newGrants, newPerms, newTools].some((v) => v !== undefined) ? inspectGainRefusal(agentId, target.id, () => applyAccess([])) : null;
       if (preRefused) return typeof preRefused === 'string' ? { content: preRefused, isError: true, errorCode: 'PERMISSION_DENIED' as const } : preRefused;
-      // Identity (name / system_prompt): on the primary agent, only the primary itself may change it.
+      // Identity (name / system_prompt).
       if (newName !== undefined || newPrompt !== undefined) {
-        if (isPrimaryAgent(target.id) && !isPrimaryAgent(agentId)) {
-          content = 'Error: cannot edit the primary agent via this tool. Edit its SOUL.md on the Agents page (System Prompt) instead.';
-          isError = true;
-          return { content, isError };
-        }
         if (typeof newName === 'string' && newName.trim() && newName.trim() !== target.name) {
           const trimmedName = newName.trim();
           // ONE RENAME DOOR: the inline `UPDATE agents SET name` this replaced left the old

@@ -1,9 +1,8 @@
-// The legacy manifest's panel math for the access panel: pure functions, no React.
-// A repointing, not a migration: the values stay in PermissionManifest, the tools_policy column and config.
-// The load-bearing property: build(read(x)) is the document PermissionsEditor.buildOutput writes, as a test.
+// The manifest's toggle math for the Access panel and the new-agent form: pure functions, no React.
+// The values stay in PermissionManifest, the tools_policy column and config.
 
 import type { PermissionManifest } from '@dojo/shared';
-import { stableGrantsText } from '@dojo/shared';
+import { SEARCH_HOST, stableGrantsText } from '@dojo/shared';
 
 export interface ToolsPolicy { allow: string[]; deny: string[] }
 
@@ -11,7 +10,7 @@ export interface ToolsPolicy { allow: string[]; deny: string[] }
  *  the advanced field, and the two must not both claim one name. */
 const WEB_TOOLS = ['web_search', 'web_fetch', 'web_browse'];
 
-/** The old editor's toggle state, one object. */
+/** The editor's toggle state, one object. */
 export interface LegacyAccess {
   readOn: boolean; readAll: boolean; readList: string;
   writeOn: boolean; writeAll: boolean; writeList: string;
@@ -20,7 +19,7 @@ export interface LegacyAccess {
   screenOn: boolean; mouseOn: boolean; keyboardOn: boolean; applescriptOn: boolean;
   spawnOn: boolean; assignOn: boolean;
   shareProfile: boolean;
-  maxProcesses: number; rawAllow: string; rawDeny: string;
+  rawAllow: string; rawDeny: string;
 }
 
 
@@ -59,14 +58,14 @@ export function readLegacyAccess(
     execList: Array.isArray(p.exec_allow) ? p.exec_allow.filter((c) => c !== '*').join(', ') : '',
     execDeny: (p.exec_deny ?? []).join(', '),
     searchOn: hasTool(tools, 'web_search') && hasTool(tools, 'web_fetch'),
-    browseOn: hasSys(p, 'web_browse') || hasTool(tools, 'web_browse'),
+    // Browsing needs the system-control grant; an undenied tool alone cannot open a page.
+    browseOn: hasSys(p, 'web_browse') && hasTool(tools, 'web_browse'),
     domainsAll: isAll(p.network_domains) || p.network_domains === '*',
     domainsList: toList(p.network_domains),
     screenOn: hasSys(p, 'screen'), mouseOn: hasSys(p, 'mouse'),
     keyboardOn: hasSys(p, 'keyboard'), applescriptOn: hasSys(p, 'applescript'),
     spawnOn: p.can_spawn_agents ?? false, assignOn: p.can_assign_permissions ?? false,
     shareProfile,
-    maxProcesses: p.max_processes ?? 3,
     rawAllow: (tools?.allow ?? []).join(', '),
     // Only denies no toggle owns: seeding the toggles' own denies here makes a web toggle one-way.
     rawDeny: (tools?.deny ?? []).filter((t) => !WEB_TOOLS.includes(t)).join(', '),
@@ -75,12 +74,12 @@ export function readLegacyAccess(
 
 // ── Build ──
 
-/** The NINE keys the old editor writes, named so the identity is checkable. */
+/** The eight keys the editor writes, named so the identity is checkable. */
 export interface LegacyManifest {
   file_read: string[] | '*'; file_write: string[] | '*';
   exec_allow: string[]; exec_deny: string[];
   network_domains: string[] | '*' | 'none';
-  max_processes: number; can_spawn_agents: boolean; can_assign_permissions: boolean;
+  can_spawn_agents: boolean; can_assign_permissions: boolean;
   system_control: string[];
 }
 
@@ -90,8 +89,8 @@ export interface LegacyDocument {
   shareUserProfile: boolean;
 }
 
-/** The same nine keys `PermissionsEditor.buildOutput` writes, from the same rules; keys it never
- *  writes (`shell_allow`, artifact paths) stay absent; the reader fills them on read. */
+/** Keys it never writes (`shell_allow`, artifact paths) stay absent; the reader fills them on read.
+ *  Search on adds the search host to a domain list, since search is reach to that host. */
 export function buildLegacyAccess(s: LegacyAccess): LegacyDocument {
   const anyWeb = s.searchOn || s.browseOn;
   const system_control: string[] = [];
@@ -111,8 +110,7 @@ export function buildLegacyAccess(s: LegacyAccess): LegacyDocument {
       file_write: !s.writeOn ? [] : s.writeAll ? '*' : split(s.writeList),
       exec_allow: !s.execOn ? [] : s.execAll ? ['*'] : split(s.execList),
       exec_deny: split(s.execDeny),
-      network_domains: !anyWeb ? 'none' : s.domainsAll ? '*' : split(s.domainsList),
-      max_processes: s.maxProcesses,
+      network_domains: !anyWeb ? 'none' : s.domainsAll ? '*' : [...new Set([...split(s.domainsList), ...(s.searchOn ? [SEARCH_HOST] : [])])],
       can_spawn_agents: s.spawnOn,
       can_assign_permissions: s.assignOn,
       system_control,

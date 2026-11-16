@@ -231,7 +231,6 @@ const HEALER_PERMISSIONS = JSON.stringify({
   exec_allow: ['*'],
   exec_deny: [],
   network_domains: '*',
-  max_processes: 5,
   can_spawn_agents: false,
   can_assign_permissions: false,
   system_control: [],

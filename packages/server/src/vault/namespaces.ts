@@ -5,6 +5,7 @@
 import { createLogger } from '../logger.js';
 import { createEntry, listEntries, type VaultEntry } from './store.js';
 import { getDb } from '../db/connection.js';
+import { isPrimaryAgent } from '../config/platform.js';
 
 const logger = createLogger('vault-namespaces');
 
@@ -81,14 +82,15 @@ export function vaultSearchInNamespace(params: {
 }
 
 /**
- * Resolves an agent's squad namespace from its group_id, or null when it is in no group, so the share/recall
- * tools can return a clean error to the model.
+ * The squad namespace an agent reads: its own group's, or a named group it created (any group, for the main
+ * agent, whose own group is the System group). Null when there is none it may use.
  */
-export function resolveAgentNamespace(agentId: string): string | null {
+export function resolveAgentNamespace(agentId: string, groupId?: string): string | null {
   const db = getDb();
   const row = db
     .prepare('SELECT group_id FROM agents WHERE id = ?')
     .get(agentId) as { group_id: string | null } | undefined;
-  if (!row?.group_id) return null;
-  return `squad:${row.group_id}`;
+  if (!groupId || groupId === row?.group_id) return row?.group_id ? `squad:${row.group_id}` : null;
+  const group = db.prepare('SELECT created_by FROM agent_groups WHERE id = ?').get(groupId) as { created_by: string } | undefined;
+  return group && (group.created_by === agentId || isPrimaryAgent(agentId)) ? `squad:${groupId}` : null;
 }

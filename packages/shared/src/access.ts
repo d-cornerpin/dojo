@@ -1,6 +1,8 @@
 // Access grants: one object per agent stating what it may reach, stored in `agents.permissions`.
 // Every per-channel grant is inert unless `channels.master` is true, so only `channelTierOf()` reads one.
 
+import type { PermissionManifest } from './types.js';
+
 export const ACCESS_CHANNELS = ['imessage', 'sms', 'voice', 'email', 'teams'] as const;
 export type AccessChannel = (typeof ACCESS_CHANNELS)[number];
 
@@ -99,8 +101,8 @@ export function techniqueGranted(grants: AccessGrants, techniqueId: string): boo
   return t === '*' || t.includes(techniqueId);
 }
 
-// Files, scratchpad, the sub-agent lifecycle (complete_task, send_to_agent) and the work tracker; nothing
-// reaches outside the dojo. 'Managing Other Agents' widens nothing: spawn_agent, kill_agent and
+// Files, scratchpad, the sub-agent lifecycle (complete_task, send_to_agent), the work tracker and the squad's
+// shared memory; nothing reaches outside the dojo. 'Managing Other Agents' widens nothing: spawn_agent, kill_agent and
 // spawn_timeout_decision stay behind can_spawn_agents, update_agent and the group-editing verbs behind
 // PRIMARY_ONLY_TOOLS (agent/tools/surface.ts). A creation default only, never re-applied at boot
 // (access/materialize.ts writes only agents with no grants), so an owner's revocation survives restarts.
@@ -112,6 +114,7 @@ export const MOST_RESTRICTIVE_GRANTS: AccessGrants = {
       // The work tracker; migration 168_work_tracker_default_grant.sql names the same two strings.
       'Open Work (what you still owe)',
       'Work Tracker (projects, tasks, reminders, promises)',
+      'Squad Coordination',
     ],
     allow: [],
     deny: [],
@@ -125,6 +128,25 @@ export const MOST_RESTRICTIVE_GRANTS: AccessGrants = {
   channels: { master: false, imessage: 'none', sms: 'none', voice: 'none', email: 'none', teams: 'none' },
   // No technique by default: a technique is a standing procedure injected unasked, so it is granted explicitly.
   techniques: [],
+};
+
+/** The web search host: "Search the web" is reach to this host. */
+export const SEARCH_HOST = 'api.search.brave.com';
+
+const HELPER_COMMANDS = ['ls', 'cat', 'head', 'tail', 'grep', 'find', 'wc', 'echo', 'node', 'npm', 'npx', 'git', 'mv', 'cp', 'sort', 'jq', 'tee'];
+
+// The one default for every helper, made by an agent or on the dashboard: its own work folders (`/tmp`, plus
+// its uploads folder added per agent), the short command list on both doors (the shell follows `exec_allow`
+// when `shell_allow` is absent), the network, no helpers of its own and no handing out permissions.
+export const DEFAULT_SUBAGENT_PERMISSIONS: PermissionManifest = {
+  file_read: ['/tmp/**'],
+  file_write: ['/tmp/**'],
+  exec_allow: HELPER_COMMANDS,
+  exec_deny: ['rm -rf /', 'rm -rf ~', 'sudo *', 'chmod 777 *'],
+  network_domains: '*',
+  can_spawn_agents: false,
+  can_assign_permissions: false,
+  system_control: [],
 };
 
 export function cloneGrants(g: AccessGrants): AccessGrants {

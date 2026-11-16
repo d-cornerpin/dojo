@@ -10,7 +10,7 @@ vi.mock('../../../db/connection.js', () => ({
 
 const { authorizeExecShapedCall } = await import('../exec-seam.js');
 const { grantForManifest } = await import('../grants.js');
-const { DEFAULT_SUBAGENT_PERMISSIONS } = await import('../../manifest.js');
+const { DEFAULT_SUBAGENT_PERMISSIONS } = await import('@dojo/shared');
 const { homeDir } = await import('../../../home.js');
 
 const helper = grantForManifest('agent-helper', DEFAULT_SUBAGENT_PERMISSIONS);

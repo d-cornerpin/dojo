@@ -81,7 +81,7 @@ export const ACCESS_PRESETS: readonly AccessPreset[] = [
   preset(
     'most_restrictive',
     'Most restrictive',
-    'Its own files and its own task list. No people, no accounts, no keys. Every new agent starts here.',
+    'Its task list and its squad\'s shared notes. No people, no accounts, no keys. Files and programs are set separately.',
     () => { /* the constant itself, the default, unmodified */ },
   ),
   preset(

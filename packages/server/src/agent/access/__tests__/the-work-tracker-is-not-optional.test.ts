@@ -198,14 +198,14 @@ describe('1a — a newly created agent can call work_open', () => {
   });
 
   it('THE CONTROL: the default did not quietly become "everything"', async () => {
-    // The ruling widened the floor by exactly two groups. If a later change turns
-    // the floor into '*' this passes 1a and destroys ruling 2, so the narrowness
-    // is asserted beside the widening.
+    // The ruling widened the floor by exactly two groups, and squad memory joined it later.
+    // If a later change turns the floor into '*' this passes 1a and destroys ruling 2, so
+    // the narrowness is asserted beside the widening.
     for (const name of ['web_search', 'vault_remember', 'gmail_inbox', 'imessage_send']) {
       const out = await evaluateGate(row17(name)!, ctx('fresh', name));
       expect(out.verdict.allowed, `${name} is outside the floor and must stay refused`).toBe(false);
     }
-    expect(categoriesOf('fresh')).toHaveLength(5);
+    expect(categoriesOf('fresh')).toHaveLength(6);
   });
 });
 

@@ -53,12 +53,12 @@ describe('the Ollama card', () => {
 describe('the Dojo Capacity card', () => {
   it('stops at the first rejected limit, names the field, and does not say Saved!', async () => {
     vi.mocked(api.setSetting).mockImplementation(async (key) =>
-      key === 'spawn_max_children'
+      key === 'spawn_max_depth'
         ? { ok: false, error: 'too high' }
         : { ok: true, data: { key, value: '2' } });
     render(<AgentLimitsSettings />);
     fireEvent.click(await screen.findByRole('button', { name: 'Save Limits' }));
-    await waitFor(() => expect(screen.getByText('Max Children Per Agent: too high')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('Max Spawn Depth: too high')).toBeTruthy());
     expect(screen.queryByText('Saved!')).toBeNull();
     expect(api.setSetting).toHaveBeenCalledTimes(2);
   });

@@ -288,7 +288,6 @@ export interface PermissionManifest {
   shell_allow?: string[];
   shell_deny?: string[];
   network_domains: string[] | '*' | 'none';
-  max_processes: number;
   can_spawn_agents: boolean;
   can_assign_permissions: boolean;
   system_control: string[];

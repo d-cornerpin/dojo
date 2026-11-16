@@ -52,7 +52,6 @@ function broadcastMessage(agentId: string, msg: { id: string; role: string; cont
 // carry an explicit one (the spawn_agent tool requires it at the surface; ronin has none).
 const SPAWN_DEFAULTS = {
   maxChildrenPerAgent: 3,
-  maxConcurrent: 5,
   maxSpawnDepth: 2,
 };
 
@@ -69,7 +68,6 @@ function getSpawnConfig() {
     };
     return {
       maxChildrenPerAgent: get('spawn_max_children', SPAWN_DEFAULTS.maxChildrenPerAgent),
-      maxConcurrent: get('spawn_max_concurrent', SPAWN_DEFAULTS.maxConcurrent),
       maxSpawnDepth: get('spawn_max_depth', SPAWN_DEFAULTS.maxSpawnDepth),
     };
   } catch {
@@ -243,9 +241,9 @@ export async function spawnAgent(params: SpawnParams): Promise<{ agentId: string
   const timeoutSeconds = classification === 'ronin' ? null : (timeout ?? null);
   const timeoutAt = timeoutSeconds ? new Date(Date.now() + timeoutSeconds * 1000).toISOString().replace('T', ' ').replace('Z', '') : null;
 
-  // THE CHILD'S SCOPE: no manifest named, the child gets the owner's DECIDED default (parent minus
-  // danger, plus its own artifact directory). A named manifest is schema-validated and bounded by
-  // child inside the parent; a malformed or escalating one REFUSES the spawn, never a silent downgrade.
+  // THE CHILD'S SCOPE: no manifest named, the child gets the one helper default (plus its own artifact
+  // directory). A named manifest is schema-validated and bounded by the parent; a malformed or escalating
+  // one REFUSES the spawn, never a silent downgrade.
   const scope = resolveChildScope(permissions, getAgentPermissions(parentId), agentId);
   if (!scope.ok) {
     throw new Error(`Spawn denied: ${scope.reason}`);

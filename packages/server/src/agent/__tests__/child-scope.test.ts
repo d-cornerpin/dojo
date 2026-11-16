@@ -1,22 +1,20 @@
 // ════════════════════════════════════════════════════════════════════════════
-// THE DECIDED DEFAULT, THE SUBSET RULE, AND THE REFUSALS (PHASE-5 T5).
+// THE ONE HELPER DEFAULT, THE SUBSET RULE, AND THE REFUSALS.
 //
-// Owner decision, DECIDED 2026-07-26: *"a spawned worker's default scope = its
-// parent's effective scope MINUS destructive tools, system control, and
-// messaging/outbound-send"*. This file is that decision as clauses, plus the two
-// halves the plan's Step 2 asks for — child ⊆ parent, and a malformed manifest
+// Owner ruling: helpers are "Limited by default"; the main agent grants more per
+// job. A spawn naming no manifest gets DEFAULT_SUBAGENT_PERMISSIONS (plus its own
+// artifact directory), never its parent's reach. Beside it, the two halves that
+// keep a named manifest honest: child within parent, and a malformed manifest
 // REFUSING rather than silently downgrading.
 //
 // EVERY REFUSAL HERE HAS A POSITIVE CONTROL BESIDE IT. A validator that refuses
-// valid spawns is a capability loss, and the phase's posture makes that the more
-// dangerous of the two failure modes.
+// valid spawns is a capability loss.
 // ════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect } from 'vitest';
-import {
-  defaultChildScope, resolveChildScope, validateManifest, scopeExcesses, artifactPathFor,
-} from '../scope.js';
-import { PRIMARY_AGENT_PERMISSIONS, DEFAULT_SUBAGENT_PERMISSIONS } from '../manifest.js';
+import { resolveChildScope, validateManifest, scopeExcesses, artifactPathFor } from '../scope.js';
+import { PRIMARY_AGENT_PERMISSIONS } from '../manifest.js';
+import { DEFAULT_SUBAGENT_PERMISSIONS } from '@dojo/shared';
 import { grantForManifest } from '../brokers/grants.js';
 import { authorizeShellScript, authorizeProc } from '../brokers/proc.js';
 import { authorizeAppleScript } from '../brokers/applescript.js';
@@ -26,7 +24,11 @@ import type { PermissionManifest } from '@dojo/shared';
 import { gatesForCall } from '../tools/gates.js';
 
 const CHILD = 'child-1';
-const child = () => defaultChildScope(PRIMARY_AGENT_PERMISSIONS, CHILD);
+const child = (): PermissionManifest => {
+  const r = resolveChildScope(undefined, PRIMARY_AGENT_PERMISSIONS, CHILD);
+  if (!r.ok) throw new Error(r.reason);
+  return r.manifest;
+};
 
 const cmd = (text: string) => {
   const r = resolveCommandArg(text);
@@ -34,13 +36,8 @@ const cmd = (text: string) => {
   return r.value;
 };
 
-describe('A — the DECIDED default: inherit parent, minus danger', () => {
-  it('STRIPS system control, which is the member that actually changes anything', () => {
-    // Today a child receives its parent's manifest verbatim, so a child of the
-    // primary inherits `['*','applescript']`. Two live sub-agents on the dev body
-    // are exactly that shape, by inheritance. This is what stops for NEW spawns.
-    expect(PRIMARY_AGENT_PERMISSIONS.system_control).toEqual(['*', 'applescript']);
-    expect(child().system_control).toEqual([]);
+describe('A: the one default, a helper of the main agent starts small', () => {
+  it('holds no system control, AppleScript included', () => {
     const grant = grantForManifest(CHILD, child());
     for (const category of ['mouse', 'keyboard', 'screen', 'web_browse']) {
       expect(authorizeSystemControl(grant, category, 'x').allowed, category).toBe(false);
@@ -48,71 +45,56 @@ describe('A — the DECIDED default: inherit parent, minus danger', () => {
     expect(authorizeAppleScript(grant, cmd('display dialog "hi"')).allowed).toBe(false);
   });
 
-  it('⚠ KEEPS THE EXEC AND SHELL REACH — shell/pipes is NOT in the danger set', () => {
-    // Plan T5 INBOUND (c), and the MUST-SURVIVE item. Withholding `shell_allow`
-    // by default would be a narrowing the owner's ruling does not authorize, so
-    // this is asserted through the real brokers rather than on the field.
+  it('works in its own folders, not its parent\'s', () => {
+    expect(child().file_read).not.toBe('*');
+    expect(child().file_read).toContain('/tmp/**');
+    expect(child().file_read).toContain(artifactPathFor(CHILD));
+    expect(child().file_write).toContain(artifactPathFor(CHILD));
+  });
+
+  it('runs its own commands through the shell, pipes and loops included', () => {
     const grant = grantForManifest(CHILD, child());
-    expect(child().exec_allow).toEqual(PRIMARY_AGENT_PERMISSIONS.exec_allow);
-    expect(child().shell_allow).toEqual(PRIMARY_AGENT_PERMISSIONS.shell_allow);
     expect(authorizeShellScript(grant, cmd('ls -la | wc -l')).allowed, 'pipes').toBe(true);
     expect(authorizeShellScript(grant, cmd('for f in *; do echo $f; done')).allowed, 'loops').toBe(true);
     expect(authorizeProc(grant, cmd('git status')).allowed, 'a plain program').toBe(true);
+    expect(authorizeProc(grant, cmd('curl https://example.com')).allowed, 'not on its list').toBe(false);
   });
 
-  it('KEEPS the network reach — the false `none` default is dead', () => {
+  it('KEEPS the network reach', () => {
     expect(child().network_domains).toBe('*');
-    expect(DEFAULT_SUBAGENT_PERMISSIONS.network_domains).toBe('*');
   });
 
-  it('KEEPS delegation flags — neither is in the named danger set', () => {
-    // Stripping `can_spawn_agents` would narrow what a child of the primary holds
-    // today. Leaving `can_assign_permissions` is safe only because the subset
-    // rule below bounds it, which is the trade stated in the module header.
-    expect(child().can_spawn_agents).toBe(true);
-    expect(child().can_assign_permissions).toBe(true);
+  it('OWNER RULING: cannot make helpers or hand out permissions', () => {
+    // "Limited by default": the main agent grants these per job, through spawn_agent's permissions.
+    expect(child().can_spawn_agents).toBe(false);
+    expect(child().can_assign_permissions).toBe(false);
   });
 
-  it('ADDS the child’s own artifact directory — the path T2 staged a window for', () => {
-    const scoped = defaultChildScope(
-      { ...PRIMARY_AGENT_PERMISSIONS, file_read: ['/tmp/**'], file_write: ['/tmp/**'] },
-      CHILD,
-    );
-    expect(scoped.file_read).toContain(artifactPathFor(CHILD));
-    expect(scoped.file_write).toContain(artifactPathFor(CHILD));
-    // …and a `'*'` parent is left alone: turning a wildcard into an enumeration
-    // would NARROW it.
-    expect(child().file_read).toBe('*');
-  });
-
-  it('MUST-SURVIVE: the default sub-agent keeps its seventeen commands on BOTH doors', () => {
-    // T3's measurement, and the brief names it: the new default must not shrink
-    // it. Counted rather than eyeballed.
-    //
-    // ⚠ 12 → 14, SWEEP-A TB8 JOB 3 (OWNER RULING, 2026-08-05): *"agents do work
-    // and must be able to move files."* `mv` and `cp` join both doors. This is a
-    // WIDENING of the default, never a narrowing — the twelve above are all still
-    // here and the deny lists are untouched. The primary already held `'*'`
-    // (`PRIMARY_AGENT_PERMISSIONS.exec_allow`, manifest.ts:25), so the product
-    // never blocked a file-move for the owner's own agent; the gap this closes is
-    // the DEFAULT sub-agent's, which is what a delegated worker gets.
-    // 14 -> 17: `sort`, `jq` and `tee` join both doors (owner ruling, also a widening).
+  it('MUST-SURVIVE: the default helper keeps its seventeen commands on BOTH doors', () => {
+    // Owner rulings: mv and cp ("agents do work and must be able to move files"), then sort, jq and tee.
+    // The shell follows exec_allow when shell_allow is absent, so the two doors are asked here.
     expect(DEFAULT_SUBAGENT_PERMISSIONS.exec_allow).toHaveLength(17);
-    expect(DEFAULT_SUBAGENT_PERMISSIONS.shell_allow).toHaveLength(17);
-    expect(DEFAULT_SUBAGENT_PERMISSIONS.shell_allow).toEqual(DEFAULT_SUBAGENT_PERMISSIONS.exec_allow);
-    // The ruling by name, on both doors, so a re-ordering cannot satisfy the count
-    // while dropping the capability.
-    expect(DEFAULT_SUBAGENT_PERMISSIONS.exec_allow).toContain('mv');
-    expect(DEFAULT_SUBAGENT_PERMISSIONS.exec_allow).toContain('cp');
-    expect(DEFAULT_SUBAGENT_PERMISSIONS.shell_allow).toContain('mv');
-    expect(DEFAULT_SUBAGENT_PERMISSIONS.shell_allow).toContain('cp');
+    const grant = grantForManifest(CHILD, child());
+    for (const name of ['mv', 'cp', 'sort', 'jq', 'tee']) {
+      expect(authorizeProc(grant, cmd(`${name} a b`)).allowed, `${name} by argv`).toBe(true);
+      expect(authorizeShellScript(grant, cmd(`${name} a b`)).allowed, `${name} by shell`).toBe(true);
+    }
   });
 
   it('MUST-SURVIVE: the deny lists are UNTOUCHED by the mv/cp ruling', () => {
-    // The ruling widened `exec_allow`/`shell_allow` and nothing else. A widening
-    // that quietly relaxed a deny rule would be a different, unauthorised change.
     expect(DEFAULT_SUBAGENT_PERMISSIONS.exec_deny).toEqual(['rm -rf /', 'rm -rf ~', 'sudo *', 'chmod 777 *']);
-    expect(DEFAULT_SUBAGENT_PERMISSIONS.shell_deny).toEqual(['rm -rf /', 'rm -rf ~', 'sudo *', 'chmod 777 *']);
+    const grant = grantForManifest(CHILD, child());
+    expect(authorizeShellScript(grant, cmd('sudo ls')).allowed).toBe(false);
+  });
+
+  it('a helper\'s child never exceeds the helper: each field it lacks narrows to its own', () => {
+    const narrow: PermissionManifest = { ...DEFAULT_SUBAGENT_PERMISSIONS, file_read: ['/srv/data/**'], exec_allow: ['ls'], network_domains: 'none', can_spawn_agents: true };
+    const r = resolveChildScope(undefined, narrow, CHILD);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.manifest.file_read).toEqual(['/srv/data/**', artifactPathFor(CHILD), expect.any(String)]);
+    expect(r.manifest.exec_allow).toEqual(['ls']);
+    expect(r.manifest.network_domains).toBe('none');
   });
 });
 
@@ -140,7 +122,7 @@ describe('C — child ⊆ parent, enforced structurally', () => {
     ...DEFAULT_SUBAGENT_PERMISSIONS,
     file_read: ['/tmp/**'], file_write: ['/tmp/**'],
     exec_allow: ['ls', 'git'], shell_allow: ['ls'],
-    network_domains: ['example.com'], max_processes: 3,
+    network_domains: ['example.com'],
     can_spawn_agents: true, can_assign_permissions: true,
     system_control: ['mouse'],
   };
@@ -156,7 +138,6 @@ describe('C — child ⊆ parent, enforced structurally', () => {
       ['a domain the parent lacks', { network_domains: ['evil.example'] }],
       ['system control the parent lacks', { system_control: ['keyboard'] }],
       ['system control wildcard', { system_control: '*' }],
-      ['more processes', { max_processes: 99 }],
     ];
     for (const [label, over] of cases) {
       const excesses = scopeExcesses(over as never, parent);
@@ -175,7 +156,6 @@ describe('C — child ⊆ parent, enforced structurally', () => {
       ['no commands at all', { exec_allow: [] }],
       ['fewer domains', { network_domains: [] }],
       ['no network', { network_domains: 'none' }],
-      ['fewer processes', { max_processes: 1 }],
       ['no system control', { system_control: [] }],
       ['dropping spawn', { can_spawn_agents: false }],
       ['an empty object — everything defaulted', {}],
@@ -202,8 +182,8 @@ describe('C — child ⊆ parent, enforced structurally', () => {
 
   it('an omitted field cannot be a way to inherit danger', () => {
     // A caller naming only `exec_allow` must not thereby inherit the parent's
-    // system control: the fields it does not name come from the minus-danger
-    // default, not from the parent's own manifest.
+    // system control: the fields it does not name come from the default, not
+    // from the parent's own manifest.
     const resolved = resolveChildScope({ exec_allow: ['ls'] }, PRIMARY_AGENT_PERMISSIONS, CHILD);
     expect(resolved.ok).toBe(true);
     if (!resolved.ok) return;
@@ -217,7 +197,7 @@ describe('C — a malformed manifest REFUSES, it never silently downgrades', () 
       { file_read: 42 },
       { exec_allow: 'ls' },
       { can_spawn_agents: 'yes' },
-      { max_processes: -1 },
+      { max_processes: 3 },
       { network_domains: 'anything' },
       { unknown_field: true },
     ]) {
@@ -249,11 +229,11 @@ describe('C — a malformed manifest REFUSES, it never silently downgrades', () 
     }
   });
 
-  it('a spawn that names NOTHING gets the decided default, not a refusal', () => {
+  it('a spawn that names NOTHING gets the default, not a refusal', () => {
     const resolved = resolveChildScope(undefined, PRIMARY_AGENT_PERMISSIONS, CHILD);
     expect(resolved.ok).toBe(true);
     if (!resolved.ok) return;
     expect(resolved.manifest.system_control).toEqual([]);
-    expect(resolved.manifest.exec_allow).toEqual(PRIMARY_AGENT_PERMISSIONS.exec_allow);
+    expect(resolved.manifest.exec_allow).toEqual(DEFAULT_SUBAGENT_PERMISSIONS.exec_allow);
   });
 });

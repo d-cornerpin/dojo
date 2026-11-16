@@ -182,17 +182,6 @@ export const ManageManifestItems = ({ state, onChange, editable, note }: Props) 
               )}
             />
             <Item
-              name="Programs it may run at once"
-              help="How many processes this agent may hold open."
-              control={(
-                <input
-                  type="number" min={1} max={50} className="finput acx-count" aria-label="Programs it may run at once"
-                  value={state.maxProcesses}
-                  onChange={(e) => edit({ maxProcesses: Number(e.target.value) })}
-                />
-              )}
-            />
-            <Item
               name="Tools it may use, by name"
               help="Leave empty for every tool its groups allow."
               control={(

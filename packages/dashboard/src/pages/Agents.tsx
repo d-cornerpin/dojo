@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import type { AgentDetail, Model, PermissionManifest } from '@dojo/shared';
+import type { AgentDetail, Model } from '@dojo/shared';
+import { DEFAULT_SUBAGENT_PERMISSIONS } from '@dojo/shared';
 import type { WsEvent, AgentStatusEvent, AgentTerminatedEvent } from '@dojo/shared';
 import * as api from '../lib/api';
 import { formatDateShort } from '../lib/dates';
@@ -8,7 +9,8 @@ import { useWebSocket } from '../hooks/useWebSocket';
 import { useToast } from '../hooks/useToast';
 import { AgentCard } from '../components/AgentCard';
 import { GroupCard } from '../components/GroupCard';
-import { PermissionsEditor, DEFAULT_SUBAGENT_PERMISSIONS, DEFAULT_SUBAGENT_TOOLS_POLICY } from '../components/PermissionsEditor';
+import { PermissionsEditor } from '../components/PermissionsEditor';
+import { buildLegacyAccess, legacyDirty, readLegacyAccess } from '../lib/manifest-edits';
 import { TechniqueSelector } from '../components/TechniqueSelector';
 import { ModalShell } from '../components/ModalShell';
 import { AgentModelOption } from '../components/AgentModelOption';
@@ -35,35 +37,28 @@ const CreateAgentModal = ({
   const [selectedGroupId, setSelectedGroupId] = useState('');
   const [classification, setClassification] = useState<'apprentice' | 'ronin'>('apprentice');
   const [showPerms, setShowPerms] = useState(false);
-  const [permissions, setPermissions] = useState<Partial<PermissionManifest>>(DEFAULT_SUBAGENT_PERMISSIONS);
-  const [toolsPol, setToolsPol] = useState(DEFAULT_SUBAGENT_TOOLS_POLICY);
+  // The form starts from the server's one helper default; it sends permissions only once the owner changes one.
+  const [initialAccess] = useState(() => readLegacyAccess(DEFAULT_SUBAGENT_PERMISSIONS, undefined, false));
+  const [access, setAccess] = useState(initialAccess);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [equippedTechniques, setEquippedTechniques] = useState<string[]>([]);
-
-  const [shareProfile, setShareProfile] = useState(false);
-
-
-  const handlePermsChange = (perms: Partial<PermissionManifest>, tools: { allow: string[]; deny: string[] }, sp: boolean) => {
-    setPermissions(perms);
-    setToolsPol(tools);
-    setShareProfile(sp);
-  };
 
   const handleCreate = async () => {
     if (!name.trim() || !systemPrompt.trim()) return;
     setSaving(true);
     setError(null);
 
+    const built = legacyDirty(initialAccess, access) ? buildLegacyAccess(access) : null;
     const createData: Record<string, unknown> = {
       name: name.trim(),
       systemPrompt: systemPrompt.trim(),
       modelId: modelId || undefined,
       timeout: timeout ? Number(timeout) : undefined,
-      permissions: permissions as PermissionManifest,
-      toolsPolicy: (toolsPol.allow.length > 0 || toolsPol.deny.length > 0) ? toolsPol : undefined,
+      permissions: built?.permissions,
+      toolsPolicy: built && (built.toolsPolicy.allow.length > 0 || built.toolsPolicy.deny.length > 0) ? built.toolsPolicy : undefined,
       classification,
-      shareUserProfile: shareProfile || undefined,
+      shareUserProfile: built?.shareUserProfile || undefined,
       groupId: selectedGroupId || undefined,
       equippedTechniques: equippedTechniques.length > 0 ? equippedTechniques : undefined,
     };
@@ -196,12 +191,7 @@ const CreateAgentModal = ({
             </button>
             {showPerms && (
               <div className="mt-3 glass-nested rounded-xl p-4">
-                <PermissionsEditor
-                  permissions={permissions}
-                  toolsPolicy={toolsPol}
-                  onChange={handlePermsChange}
-                  compact
-                />
+                <PermissionsEditor state={access} onChange={setAccess} compact />
               </div>
             )}
           </div>

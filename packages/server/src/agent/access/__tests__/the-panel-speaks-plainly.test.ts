@@ -123,7 +123,7 @@ describe('the collapsed header says what this agent is, in one plain line', () =
     // which is the property this line exists to hold. Still "talks to no one" and
     // "no connections": a tracker row is inside this box.
     expect(accessDigest(cloneGrants(MOST_RESTRICTIVE_GRANTS), { runsPrograms: false }))
-      .toBe('5 tool groups · talks to no one · no connections');
+      .toBe('6 tool groups · talks to no one · no connections');
   });
 
   it('⚠ IT IS DERIVED, NOT REMEMBERED — every clause moves when the object moves', () => {
@@ -227,7 +227,6 @@ describe('the moved legacy toggles write exactly what they always wrote', () => 
       exec_allow: ['ls', 'cat'],
       exec_deny: ['rm -rf /'],
       network_domains: '*',
-      max_processes: 5,
       can_spawn_agents: true,
       can_assign_permissions: false,
       system_control: ['screen', 'web_browse'],
@@ -247,11 +246,10 @@ describe('the moved legacy toggles write exactly what they always wrote', () => 
     expect(s.readOn).toBe(false);
     expect(s.execOn).toBe(false);
     expect(s.spawnOn).toBe(false);
-    expect(s.maxProcesses).toBe(3);
-    // `hasToolAccess(undefined, …)` answered "all tools" for a missing policy,
-    // which is why an agent with no policy reads the web toggles as ON.
+    // A missing policy still reads as "all tools", so search reads ON; browsing also needs the
+    // system-control grant, which an empty blob does not hold, so it reads OFF.
     expect(s.searchOn).toBe(true);
-    expect(s.browseOn).toBe(true);
+    expect(s.browseOn).toBe(false);
   });
 
   it('⚠ "Run programs on this Mac" IS `exec_allow`, AND OFF MEANS THE EMPTY LIST', () => {
@@ -299,7 +297,7 @@ describe('the moved legacy toggles write exactly what they always wrote', () => 
     const built = buildLegacyAccess(readLegacyAccess(stored, tools, false));
     expect(Object.keys(built.permissions).sort()).toEqual([
       'can_assign_permissions', 'can_spawn_agents', 'exec_allow', 'exec_deny',
-      'file_read', 'file_write', 'max_processes', 'network_domains',
+      'file_read', 'file_write', 'network_domains',
       'system_control',
     ]);
     expect(Object.keys(built).sort()).toEqual(['permissions', 'shareUserProfile', 'toolsPolicy']);
@@ -343,6 +341,7 @@ describe('nothing on this panel speaks the dojo\'s internal language', () => {
       'Meta', 'File & System', 'Managing Other Agents',
       'Open Work (what you still owe)',
       'Work Tracker (projects, tasks, reminders, promises)',
+      'Squad Coordination',
     ]);
     expect(byId('full_trust').grants.tools.categories).toBe('*');
     expect(byId('operator').grants.channels.imessage).toBe('owner');

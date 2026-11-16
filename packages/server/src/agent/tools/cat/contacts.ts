@@ -80,10 +80,13 @@ export const contactsHandlers: ToolHandlerMap = {
   },
 
   async squad_recall({ agentId, args }) {
-    const namespace = resolveAgentNamespace(agentId);
+    const groupId = typeof args.group_id === 'string' && args.group_id ? args.group_id : undefined;
+    const namespace = resolveAgentNamespace(agentId, groupId);
     if (!namespace) {
       return {
-        content: 'Error: You are not a member of any squad (no group_id). squad_recall is only available to agents in a group.',
+        content: groupId
+          ? `Error: you may read only your own squad or one you created, and "${groupId}" is neither.`
+          : 'Error: You are not a member of any squad (no group_id). squad_recall is only available to agents in a group.',
         isError: true,
       };
     }

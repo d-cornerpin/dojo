@@ -120,7 +120,7 @@ beforeEach(() => {
   mockDb.current = d;
   runMigrations();
   d.pragma('foreign_keys = ON');
-  d.prepare("INSERT INTO agents (id, name, status) VALUES (?, 'A', 'idle')").run(AGENT);
+  d.prepare(`INSERT INTO agents (id, name, status, permissions) VALUES (?, 'A', 'idle', '{"file_read":"*"}')`).run(AGENT);
   openTurn();
 });
 afterEach(() => { mockDb.current?.close(); mockDb.current = null; });

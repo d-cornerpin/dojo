@@ -33,7 +33,7 @@ let openedAt = 0;
 const sqlTime = (ms: number): string => new Date(ms).toISOString().replace('T', ' ').slice(0, 19);
 
 function agent(id: string): void {
-  doneDb().prepare('INSERT OR IGNORE INTO agents (id, name) VALUES (?, ?)').run(id, id);
+  doneDb().prepare(`INSERT OR IGNORE INTO agents (id, name, permissions) VALUES (?, ?, '{"file_read":"*"}')`).run(id, id);   // a worker that may read its own files
 }
 
 function audit(id: string, o: { agent?: string; action?: string; target: string; result?: string; detail?: string; at?: number }): void {

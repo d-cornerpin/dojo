@@ -84,6 +84,7 @@ import { runAssemble, ASSEMBLE_PHASE } from '../steps/assemble/index.js';
 import { runCallLLM, CALL_LLM_PHASE, type CallLLMContext } from '../steps/call-llm/index.js';
 import type { AssembleContext } from '../steps/assemble/index.js';
 import { getContextWindow } from '../../model.js';
+import { PRIMARY_AGENT_PERMISSIONS } from '../../manifest.js';
 import * as coldImport1 from '../../../router/rate-limits.js';
 
 const AGENT = 'agent-n42-dock-desk';
@@ -107,8 +108,9 @@ function seed(configured: string): void {
   tier.run('light', LIGHT, 0);
   tier.run('standard', STANDARD, 0);
   tier.run('heavy', HEAVY, 0);
-  db().prepare(`INSERT INTO agents (id, name, model_id, status, config, created_at, updated_at)
-                VALUES (?, 'Dock Desk', ?, 'idle', '{}', datetime('now'), datetime('now'))`).run(AGENT, configured);
+  // A wide agent: every file, command and tool, so the measured window is the whole surface's.
+  db().prepare(`INSERT INTO agents (id, name, model_id, status, config, permissions, created_at, updated_at)
+                VALUES (?, 'Dock Desk', ?, 'idle', '{}', ?, datetime('now'), datetime('now'))`).run(AGENT, configured, JSON.stringify(PRIMARY_AGENT_PERMISSIONS));
   // ~60K tokens of history: the heavy and standard windows hold all of it, the light one cannot.
   for (let t = 1; t <= 30; t++) {
     insertMessage({ agentId: AGENT, role: 'user', lane: 'owner', senderId: 'owner', content: `[ask ${t}] Read me the manifest for bay ${t}.`, turnNumber: t });

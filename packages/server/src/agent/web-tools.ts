@@ -6,6 +6,7 @@ import { stripHtmlTags } from './html-text.js';
 import { outsideSpan } from '../tools/external-content.js';
 import { getSearchApiKey } from '../config/loader.js';
 import { checkPermission } from './permissions.js';
+import { SEARCH_HOST } from '@dojo/shared';
 // web_fetch is bounded in two phases: the server gets 15s to answer, then the body read gets its own
 // deadline sized from the declared content-length, between the base and the ceiling.
 const WEB_FETCH_HEADERS_TIMEOUT_MS = 15_000;
@@ -78,7 +79,7 @@ export async function webSearch(
   }
 
   // Permission check
-  const perm = checkPermission(agentId, { type: 'network', domain: 'api.search.brave.com' });
+  const perm = checkPermission(agentId, { type: 'network', domain: SEARCH_HOST });
   if (!perm.allowed) {
     return `Permission denied: ${perm.reason}`;
   }
@@ -94,7 +95,7 @@ export async function webSearch(
     const slot = openAgentCall(agentId, 'turn', AbortSignal.timeout(15000));
     try {
       if (slot.refused) return STOPPED_BY_USER;
-      const searchUrl = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=${Math.min(count, 20)}`;
+      const searchUrl = `https://${SEARCH_HOST}/res/v1/web/search?q=${encodeURIComponent(query)}&count=${Math.min(count, 20)}`;
 
     logger.info('Web search executing', { query, count }, agentId);
 

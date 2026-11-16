@@ -1,53 +1,13 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
-import type { PermissionManifest } from '@dojo/shared';
+import { useState } from 'react';
+import type { LegacyAccess } from '../lib/manifest-edits';
 
-// ════════════════════════════════════════
-// Permissions Editor: toggle-based UI
-// Maps friendly toggles to PermissionManifest
-// ════════════════════════════════════════
+// The new-agent form's permission toggles. The state and its arithmetic are `lib/manifest-edits.ts`, the
+// same the Access panel uses; this file only renders.
 
 interface PermissionsEditorProps {
-  permissions: Partial<PermissionManifest>;
-  toolsPolicy?: { allow: string[]; deny: string[] };
-  shareUserProfile?: boolean;
-  onChange: (perms: Partial<PermissionManifest>, toolsPolicy: { allow: string[]; deny: string[] }, shareUserProfile: boolean) => void;
+  state: LegacyAccess;
+  onChange: (next: LegacyAccess) => void;
   compact?: boolean;
-}
-
-// ── Helpers ──
-
-function hasPath(val: unknown): boolean {
-  if (val === '*') return true;
-  if (Array.isArray(val) && val.length > 0) return true;
-  return false;
-}
-
-function isAll(val: unknown): boolean {
-  return val === '*' || (Array.isArray(val) && val.includes('*'));
-}
-
-function toList(val: unknown): string {
-  if (Array.isArray(val)) return val.filter(v => v !== '*').join(', ');
-  return '';
-}
-
-function hasSysControl(perms: Partial<PermissionManifest>, key: string): boolean {
-  const sc = perms.system_control;
-  if (!Array.isArray(sc)) return false;
-  return sc.includes('*') || sc.includes(key);
-}
-
-function hasExecAll(perms: Partial<PermissionManifest>): boolean {
-  return Array.isArray(perms.exec_allow) && perms.exec_allow.includes('*');
-}
-
-function hasToolAccess(policy: { allow?: string[]; deny?: string[] } | undefined | null, tool: string): boolean {
-  if (!policy) return true; // no policy = all tools
-  const deny = policy.deny ?? [];
-  const allow = policy.allow ?? [];
-  if (deny.includes(tool)) return false;
-  if (allow.length === 0) return true; // empty allow = all
-  return allow.includes(tool);
 }
 
 // ── Toggle Switch ──
@@ -172,167 +132,56 @@ const Section = ({ title, children }: { title: string; children: React.ReactNode
 // Main Component
 // ════════════════════════════════════════
 
-export const PermissionsEditor = ({ permissions, toolsPolicy, shareUserProfile: initialShareProfile, onChange, compact }: PermissionsEditorProps) => {
-  // Suppress onChange during initial mount
-  const mountedRef = useRef(false);
-
-  // ── Files ──
-  const [readOn, setReadOn] = useState(hasPath(permissions.file_read));
-  const [readAll, setReadAll] = useState(isAll(permissions.file_read));
-  const [readList, setReadList] = useState(toList(permissions.file_read));
-
-  const [writeOn, setWriteOn] = useState(hasPath(permissions.file_write));
-  const [writeAll, setWriteAll] = useState(isAll(permissions.file_write));
-  const [writeList, setWriteList] = useState(toList(permissions.file_write));
-
-  // ── Exec ──
-  const [execOn, setExecOn] = useState(Array.isArray(permissions.exec_allow) && permissions.exec_allow.length > 0);
-  const [execAll, setExecAll] = useState(hasExecAll(permissions));
-  const [execList, setExecList] = useState(
-    Array.isArray(permissions.exec_allow) ? permissions.exec_allow.filter(c => c !== '*').join(', ') : '',
-  );
-
-  // ── Web ──
-  const [webSearchOn, setWebSearchOn] = useState(
-    hasToolAccess(toolsPolicy, 'web_search') && hasToolAccess(toolsPolicy, 'web_fetch'),
-  );
-  const [webBrowseOn, setWebBrowseOn] = useState(
-    hasSysControl(permissions, 'web_browse') || hasToolAccess(toolsPolicy, 'web_browse'),
-  );
-  const [webDomainsAll, setWebDomainsAll] = useState(isAll(permissions.network_domains) || permissions.network_domains === '*');
-  const [webDomainsList, setWebDomainsList] = useState(toList(permissions.network_domains));
-
-  // ── System Control ──
-  const [screenOn, setScreenOn] = useState(hasSysControl(permissions, 'screen'));
-  const [mouseOn, setMouseOn] = useState(hasSysControl(permissions, 'mouse'));
-  const [keyboardOn, setKeyboardOn] = useState(hasSysControl(permissions, 'keyboard'));
-  const [applescriptOn, setApplescriptOn] = useState(hasSysControl(permissions, 'applescript'));
-
-  // ── Delegation ──
-  //
-  // There is no "send iMessages" toggle: a tool-policy deny cannot grant it, because the channel door
-  // refuses non-primary agents regardless. Grant it in the Channels section of the Access panel.
-  // An agent that already carries the deny keeps it: the Advanced "Denied Tools (raw)" field is
-  // seeded from the stored policy and carries it through a save.
-  const [spawnOn, setSpawnOn] = useState(permissions.can_spawn_agents ?? false);
-  const [assignPermsOn, setAssignPermsOn] = useState(permissions.can_assign_permissions ?? false);
-  const [shareProfile, setShareProfile] = useState(initialShareProfile ?? false);
-
-  // ── Advanced ──
+export const PermissionsEditor = ({ state, onChange, compact }: PermissionsEditorProps) => {
   const [showAdvanced, setShowAdvanced] = useState(false);
-  const [execDeny, setExecDeny] = useState((permissions.exec_deny ?? []).join(', '));
-  const [maxProcesses, setMaxProcesses] = useState(permissions.max_processes ?? 3);
-  const [rawToolsAllow, setRawToolsAllow] = useState((toolsPolicy?.allow ?? []).join(', '));
-  const [rawToolsDeny, setRawToolsDeny] = useState((toolsPolicy?.deny ?? []).join(', '));
-
-  // ── Build PermissionManifest + ToolsPolicy from toggle state ──
-
-  const buildOutput = useCallback(() => {
-    // File permissions
-    const file_read: string[] | '*' = !readOn ? ([] as string[]) : readAll ? '*' : readList.split(',').map(s => s.trim()).filter(Boolean);
-    const file_write: string[] | '*' = !writeOn ? ([] as string[]) : writeAll ? '*' : writeList.split(',').map(s => s.trim()).filter(Boolean);
-
-    // Exec
-    const exec_allow: string[] = !execOn ? [] : execAll ? ['*'] : execList.split(',').map(s => s.trim()).filter(Boolean);
-    const exec_deny: string[] = execDeny.split(',').map(s => s.trim()).filter(Boolean);
-
-    // Network: ON if web search or web browse is on
-    const anyWeb = webSearchOn || webBrowseOn;
-    const network_domains: string[] | '*' | 'none' = !anyWeb ? 'none' : webDomainsAll ? '*' : webDomainsList.split(',').map(s => s.trim()).filter(Boolean);
-
-    // System control
-    const system_control: string[] = [];
-    if (screenOn) system_control.push('screen');
-    if (mouseOn) system_control.push('mouse');
-    if (keyboardOn) system_control.push('keyboard');
-    if (applescriptOn) system_control.push('applescript');
-    if (webBrowseOn) system_control.push('web_browse');
-
-    const perms: Partial<PermissionManifest> = {
-      file_read,
-      file_write,
-      exec_allow,
-      exec_deny,
-      network_domains,
-      max_processes: maxProcesses,
-      can_spawn_agents: spawnOn,
-      can_assign_permissions: assignPermsOn,
-      system_control,
-    };
-
-    // Tools policy: build deny list from toggles
-    const toolsDeny: string[] = [];
-    if (!webSearchOn) { toolsDeny.push('web_search', 'web_fetch'); }
-    if (!webBrowseOn) { toolsDeny.push('web_browse'); }
-
-    // Merge with raw advanced overrides
-    const advAllow = rawToolsAllow.split(',').map(s => s.trim()).filter(Boolean);
-    const advDeny = rawToolsDeny.split(',').map(s => s.trim()).filter(Boolean);
-    const mergedDeny = [...new Set([...toolsDeny, ...advDeny])];
-
-    return { perms, tools: { allow: advAllow, deny: mergedDeny }, shareProfile };
-  }, [
-    readOn, readAll, readList, writeOn, writeAll, writeList,
-    execOn, execAll, execList, execDeny, webSearchOn, webBrowseOn, webDomainsAll, webDomainsList,
-    screenOn, mouseOn, keyboardOn, applescriptOn, spawnOn, assignPermsOn,
-    maxProcesses, rawToolsAllow, rawToolsDeny, shareProfile,
-  ]);
-
-  useEffect(() => {
-    if (!mountedRef.current) {
-      mountedRef.current = true;
-      return;
-    }
-    const { perms, tools, shareProfile: sp } = buildOutput();
-    onChange(perms, tools, sp);
-  }, [buildOutput]);
-
+  const set = (patch: Partial<LegacyAccess>) => onChange({ ...state, ...patch });
+  const on = (key: keyof LegacyAccess) => (v: boolean) => set({ [key]: v });
   const gap = compact ? 'space-y-4' : 'space-y-5';
 
   return (
     <div className={gap}>
       {/* ── Files ── */}
       <Section title="Files">
-        <PermRow label="Read Files" description="Allow this agent to read files on disk" enabled={readOn} onToggle={setReadOn}>
-          <SubOption allLabel="All files" specificLabel="Specific folders" isAll={readAll} list={readList}
-            onAllChange={setReadAll} onListChange={setReadList} placeholder="~/Projects/**, /tmp/**, ~/Desktop/*" />
+        <PermRow label="Read Files" description="Allow this agent to read files on disk" enabled={state.readOn} onToggle={on('readOn')}>
+          <SubOption allLabel="All files" specificLabel="Specific folders" isAll={state.readAll} list={state.readList}
+            onAllChange={on('readAll')} onListChange={(v) => set({ readList: v })} placeholder="~/Projects/**, /tmp/**, ~/Desktop/*" />
         </PermRow>
-        <PermRow label="Write Files" description="Allow this agent to create and modify files" enabled={writeOn} onToggle={setWriteOn}>
-          <SubOption allLabel="All files" specificLabel="Specific folders" isAll={writeAll} list={writeList}
-            onAllChange={setWriteAll} onListChange={setWriteList} placeholder="~/Projects/**, /tmp/**" />
+        <PermRow label="Write Files" description="Allow this agent to create and modify files" enabled={state.writeOn} onToggle={on('writeOn')}>
+          <SubOption allLabel="All files" specificLabel="Specific folders" isAll={state.writeAll} list={state.writeList}
+            onAllChange={on('writeAll')} onListChange={(v) => set({ writeList: v })} placeholder="~/Projects/**, /tmp/**" />
         </PermRow>
       </Section>
 
       {/* ── Commands ── */}
       <Section title="Commands">
-        <PermRow label="Run Terminal Commands" description="Allow this agent to execute shell commands" enabled={execOn} onToggle={setExecOn} warning>
-          <SubOption allLabel="All commands" specificLabel="Only these commands" isAll={execAll} list={execList}
-            onAllChange={setExecAll} onListChange={setExecList} placeholder="ls, cat, node, npm, git, grep, find" />
+        <PermRow label="Run Terminal Commands" description="Allow this agent to execute shell commands" enabled={state.execOn} onToggle={on('execOn')} warning>
+          <SubOption allLabel="All commands" specificLabel="Only these commands" isAll={state.execAll} list={state.execList}
+            onAllChange={on('execAll')} onListChange={(v) => set({ execList: v })} placeholder="ls, cat, node, npm, git, grep, find" />
         </PermRow>
       </Section>
 
       {/* ── Web Access ── */}
       <Section title="Web Access">
-        <PermRow label="Web Search" description="Search the web using Brave Search" enabled={webSearchOn} onToggle={setWebSearchOn} />
-        <PermRow label="Web Browsing" description="Open a headless browser to interact with web pages" enabled={webBrowseOn} onToggle={setWebBrowseOn}>
-          <SubOption allLabel="All websites" specificLabel="Only these domains" isAll={webDomainsAll} list={webDomainsList}
-            onAllChange={setWebDomainsAll} onListChange={setWebDomainsList} placeholder="github.com, docs.python.org, ..." />
+        <PermRow label="Web Search" description="Search the web using Brave Search" enabled={state.searchOn} onToggle={on('searchOn')} />
+        <PermRow label="Web Browsing" description="Open a headless browser to interact with web pages" enabled={state.browseOn} onToggle={on('browseOn')}>
+          <SubOption allLabel="All websites" specificLabel="Only these domains" isAll={state.domainsAll} list={state.domainsList}
+            onAllChange={on('domainsAll')} onListChange={(v) => set({ domainsList: v })} placeholder="github.com, docs.python.org, ..." />
         </PermRow>
       </Section>
 
       {/* ── System Control ── */}
       <Section title="System Control">
-        <PermRow label="View the Screen" description="Take screenshots and read screen contents" enabled={screenOn} onToggle={setScreenOn} />
-        <PermRow label="Control the Mouse" description="Move and click the mouse cursor" enabled={mouseOn} onToggle={setMouseOn} />
-        <PermRow label="Control the Keyboard" description="Type text and press keyboard shortcuts" enabled={keyboardOn} onToggle={setKeyboardOn} />
-        <PermRow label="Run AppleScripts" description="Automate macOS apps and system features" enabled={applescriptOn} onToggle={setApplescriptOn} warning />
+        <PermRow label="View the Screen" description="Take screenshots and read screen contents" enabled={state.screenOn} onToggle={on('screenOn')} />
+        <PermRow label="Control the Mouse" description="Move and click the mouse cursor" enabled={state.mouseOn} onToggle={on('mouseOn')} />
+        <PermRow label="Control the Keyboard" description="Type text and press keyboard shortcuts" enabled={state.keyboardOn} onToggle={on('keyboardOn')} />
+        <PermRow label="Run AppleScripts" description="Automate macOS apps and system features" enabled={state.applescriptOn} onToggle={on('applescriptOn')} warning />
       </Section>
 
       {/* ── Delegation ── */}
       <Section title="Delegation">
-        <PermRow label="Create Sub-Agents" description="Spawn new agents to delegate work" enabled={spawnOn} onToggle={setSpawnOn} />
-        <PermRow label="Assign Permissions" description="Set and change permissions for other agents it creates or manages" enabled={assignPermsOn} onToggle={setAssignPermsOn} />
-        <PermRow label="Share User Profile" description="Include your profile (About You) in this agent's context so it knows who you are" enabled={shareProfile} onToggle={setShareProfile} />
+        <PermRow label="Create Sub-Agents" description="Spawn new agents to delegate work" enabled={state.spawnOn} onToggle={on('spawnOn')} />
+        <PermRow label="Assign Permissions" description="Set and change permissions for other agents it creates or manages" enabled={state.assignOn} onToggle={on('assignOn')} />
+        <PermRow label="Share User Profile" description="Include your profile (About You) in this agent's context so it knows who you are" enabled={state.shareProfile} onToggle={on('shareProfile')} />
       </Section>
 
       {/* ── Advanced ── */}
@@ -349,42 +198,19 @@ export const PermissionsEditor = ({ permissions, toolsPolicy, shareUserProfile: 
             <div>
               <label className="text-[10px] font-semibold text-ui/40 uppercase tracking-wide block mb-1">Blocked Commands</label>
               <input
-                value={execDeny}
-                onChange={(e) => setExecDeny(e.target.value)}
+                value={state.execDeny}
+                onChange={(e) => set({ execDeny: e.target.value })}
                 placeholder="rm -rf *, sudo *, ..."
                 className="glass-input w-full font-mono"
               />
               <p className="text-[10px] text-ui/25 mt-0.5">Every agent but the main one is always refused rm -rf /, sudo and chmod 777.</p>
             </div>
-            <div>
-              <label className="text-[10px] font-semibold text-ui/40 uppercase tracking-wide block mb-1">Max Processes</label>
-              <input
-                type="number"
-                min={1}
-                max={50}
-                value={maxProcesses}
-                onChange={(e) => setMaxProcesses(Number(e.target.value))}
-                className="glass-input w-20"
-              />
-            </div>
-            <div>
-              <label className="text-[10px] font-semibold text-ui/40 uppercase tracking-wide block mb-1">Network Domains (raw)</label>
-              <input
-                value={webDomainsAll ? '*' : webDomainsList}
-                onChange={(e) => {
-                  if (e.target.value === '*') { setWebDomainsAll(true); }
-                  else { setWebDomainsAll(false); setWebDomainsList(e.target.value); }
-                }}
-                placeholder="* for all, or comma-separated domains"
-                className="glass-input w-full font-mono"
-              />
-            </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="text-[10px] font-semibold text-ui/40 uppercase tracking-wide block mb-1">Allowed Tools (raw)</label>
                 <input
-                  value={rawToolsAllow}
-                  onChange={(e) => setRawToolsAllow(e.target.value)}
+                  value={state.rawAllow}
+                  onChange={(e) => set({ rawAllow: e.target.value })}
                   placeholder="empty = all tools"
                   className="glass-input w-full font-mono"
                 />
@@ -392,8 +218,8 @@ export const PermissionsEditor = ({ permissions, toolsPolicy, shareUserProfile: 
               <div>
                 <label className="text-[10px] font-semibold text-ui/40 uppercase tracking-wide block mb-1">Denied Tools (raw)</label>
                 <input
-                  value={rawToolsDeny}
-                  onChange={(e) => setRawToolsDeny(e.target.value)}
+                  value={state.rawDeny}
+                  onChange={(e) => set({ rawDeny: e.target.value })}
                   placeholder="spawn_agent, kill_agent, ..."
                   className="glass-input w-full font-mono"
                 />
@@ -404,25 +230,4 @@ export const PermissionsEditor = ({ permissions, toolsPolicy, shareUserProfile: 
       </div>
     </div>
   );
-};
-
-// ── Default Permissions for new sub-agents (read only) ──
-
-export const DEFAULT_SUBAGENT_PERMISSIONS: Partial<PermissionManifest> = {
-  file_read: ['~/Projects/**', '/tmp/**'],
-  file_write: [],
-  exec_allow: [],
-  exec_deny: [],
-  network_domains: 'none',
-  max_processes: 3,
-  can_spawn_agents: false,
-  can_assign_permissions: false,
-  system_control: [],
-};
-
-// No `imessage_send` deny here: the channel door already refuses an agent that holds no channel
-// grant, and a new agent starts with none. A deny that duplicates a wall is a second authority.
-export const DEFAULT_SUBAGENT_TOOLS_POLICY = {
-  allow: [] as string[],
-  deny: ['web_browse'] as string[],
 };

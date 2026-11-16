@@ -18,7 +18,7 @@ import { sanitizeMessagesOnModelChange } from '../../agent/model-switch.js';
 import type { AccessGrants, AgentDetail, Model } from '@dojo/shared';
 import { cloneGrants, NEW_SESSION_DIVIDER } from '@dojo/shared';
 import { noteRouteFailure } from './route-failure.js';
-import { resolveChildScope } from '../../agent/scope.js';
+import { resolveChildScope, validateManifest } from '../../agent/scope.js';
 import { caseVariantClash, caseVariantClashMessage } from '../../agent/tool-helpers.js';
 import { purgeAgentRows } from '../../agent/purge.js';
 import { getAgentPermissions } from '../../agent/permissions.js';
@@ -372,6 +372,9 @@ agentsRouter.put('/:id', async (c) => {
     // `permissions` is a JSON document carrying the manifest AND the grants. The permissions editor knows
     // nothing about grants, so carry the stored grants forward unless the caller sent its own (that wins).
     const incoming = (body.permissions ?? {}) as Record<string, unknown>;
+    const { grants: _sentGrants, ...manifest } = incoming;
+    const checked = validateManifest(manifest);
+    if (!checked.ok) return c.json({ ok: false, error: `Access not saved, invalid permission manifest: ${checked.reason}` }, 400);
     if (incoming.grants === undefined) {
       const prior = db.prepare('SELECT permissions FROM agents WHERE id = ?').get(id) as { permissions: string | null } | undefined;
       try {

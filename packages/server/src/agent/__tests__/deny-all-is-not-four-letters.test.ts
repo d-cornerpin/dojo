@@ -29,7 +29,7 @@
 // `brokers/fs.ts`'s `configured` flag flipped from false to true, changing the
 // refusal a real agent sees from "file_write not configured for this agent" to
 // "file_write not allowed for path: …". The corruption is reachable from EVERY
-// read of the manifest, and `scope.ts`'s `defaultChildScope` serializes whatever
+// read of the manifest, and `manifest.ts`'s `withArtifactPaths` serializes whatever
 // it is handed into a spawned child's own row.
 //
 // ── WHAT DENY-ALL MUST STAY ──
@@ -55,8 +55,8 @@ vi.mock('../../config/platform.js', () => ({
   isTrainerAgent: () => false,
   isPrimaryAgent: () => false,
 }));
-import { PRIMARY_AGENT_PERMISSIONS, artifactPathFor, artifactDirFor } from '../manifest.js';
-import { defaultChildScope, resolveChildScope, scopeExcesses } from '../scope.js';
+import { PRIMARY_AGENT_PERMISSIONS, artifactPathFor, artifactDirFor, withArtifactPaths } from '../manifest.js';
+import { resolveChildScope, scopeExcesses } from '../scope.js';
 import { projectManifestToRules, grantForManifest } from '../brokers/grants.js';
 import { authorizeFs } from '../brokers/fs.js';
 import { resolvePathArg } from '../brokers/resolve.js';
@@ -79,7 +79,7 @@ function verdict(manifest: PermissionManifest, kind: 'fs_read' | 'fs_write', raw
 
 describe('A — `none` stays `none` through the artifact-path widening', () => {
   it('does not become a list of characters', () => {
-    const scoped = defaultChildScope(denyAll(), AGENT);
+    const scoped = withArtifactPaths(denyAll(), AGENT);
 
     expect(scoped.file_write).toBe('none');
     expect(scoped.file_read).toBe('none');
@@ -93,7 +93,7 @@ describe('A — `none` stays `none` through the artifact-path widening', () => {
 
   it('NEGATIVE CONTROL — a list parent still gains the artifact directory (T5)', () => {
     // The guard must not have been bought by disabling the widening it guards.
-    const scoped = defaultChildScope(
+    const scoped = withArtifactPaths(
       { ...PRIMARY_AGENT_PERMISSIONS, file_read: ['/tmp/**'], file_write: ['/tmp/**'] },
       AGENT,
     );
@@ -103,7 +103,7 @@ describe('A — `none` stays `none` through the artifact-path widening', () => {
   });
 
   it('NEGATIVE CONTROL — `*` is still left alone rather than enumerated', () => {
-    const scoped = defaultChildScope(PRIMARY_AGENT_PERMISSIONS, AGENT);
+    const scoped = withArtifactPaths(PRIMARY_AGENT_PERMISSIONS, AGENT);
     expect(scoped.file_read).toBe('*');
     expect(scoped.file_write).toBe('*');
   });
@@ -140,7 +140,7 @@ describe('A — `none` stays `none` through the artifact-path widening', () => {
 
 describe('B — deny-all projects NO allow rule, so the letters are not grants', () => {
   it('yields no fs_write / fs_read allow rows at all', () => {
-    const rules = projectManifestToRules(defaultChildScope(denyAll(), AGENT));
+    const rules = projectManifestToRules(withArtifactPaths(denyAll(), AGENT));
 
     const writes = rules.filter((r) => r.effectKind === 'fs_write' && r.mode === 'allow');
     const reads = rules.filter((r) => r.effectKind === 'fs_read' && r.mode === 'allow');
@@ -159,7 +159,7 @@ describe('B — deny-all projects NO allow rule, so the letters are not grants',
     // `authorizeFs`'s `configured` flag flipped true, so the agent was told "not
     // allowed for path", which reads as a path problem a model will try to route
     // around, instead of "not configured", which is the truth.
-    const scoped = defaultChildScope(denyAll(), AGENT);
+    const scoped = withArtifactPaths(denyAll(), AGENT);
 
     const write = verdict(scoped, 'fs_write', '/tmp/whatever.txt');
     expect(write.allowed).toBe(false);
@@ -173,7 +173,7 @@ describe('B — deny-all projects NO allow rule, so the letters are not grants',
   it('⚠ THE SECURITY CLAUSE — a file literally named `n` is NOT writable', () => {
     // `[...'none']` put `n`, `o` and `e` in the allow list as patterns, and
     // `matchPathPattern` is what then had to be relied on to refuse them.
-    const scoped = defaultChildScope(denyAll(), AGENT);
+    const scoped = withArtifactPaths(denyAll(), AGENT);
     for (const p of ['/n', '/o', '/e', '/tmp/n']) {
       expect(verdict(scoped, 'fs_write', p).allowed, `write ${p}`).toBe(false);
       expect(verdict(scoped, 'fs_read', p).allowed, `read ${p}`).toBe(false);
@@ -182,7 +182,7 @@ describe('B — deny-all projects NO allow rule, so the letters are not grants',
 
   it('NEGATIVE CONTROL — a real allowlist still projects its own rules', () => {
     const rules = projectManifestToRules(
-      defaultChildScope({ ...PRIMARY_AGENT_PERMISSIONS, file_write: ['/tmp/**'] }, AGENT),
+      withArtifactPaths({ ...PRIMARY_AGENT_PERMISSIONS, file_write: ['/tmp/**'] }, AGENT),
     );
     const writes = rules
       .filter((r) => r.effectKind === 'fs_write' && r.mode === 'allow')

@@ -13,7 +13,7 @@ import { resolvePathArg, resolveCommandArg } from './brokers/resolve.js';
 
 const logger = createLogger('permissions');
 
-export { getAgentPermissions, PRIMARY_AGENT_PERMISSIONS, DEFAULT_SUBAGENT_PERMISSIONS } from './manifest.js';
+export { getAgentPermissions, PRIMARY_AGENT_PERMISSIONS } from './manifest.js';
 export {
   resolveRealPathHardened,
   isProtectedIdentityPath,

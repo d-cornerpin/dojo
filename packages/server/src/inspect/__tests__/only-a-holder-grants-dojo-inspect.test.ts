@@ -249,7 +249,7 @@ describe('fix round 4 RULING: an edit is judged on what it leaves', () => {
     try {
       const model = await upd({ agent_id: HEALER, model_id: 'mdl' });
       expect(model.isError, model.content).toBe(false);
-      const manifest = await upd({ agent_id: HEALER, permissions: { max_processes: 3 } });
+      const manifest = await upd({ agent_id: HEALER, permissions: { exec_deny: ['rm -rf /'] } });
       expect(manifest.isError, manifest.content).toBe(false);
       const narrower = await upd({ agent_id: HEALER, grants: { tools: { deny: ['dojo_inspect', 'cost_summary'] } } });
       expect(narrower.isError, narrower.content).toBe(false);

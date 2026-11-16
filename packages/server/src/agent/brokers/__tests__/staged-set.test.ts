@@ -29,7 +29,8 @@ import { authorizeShellScript, authorizeArgv } from '../proc.js';
 import { grantForManifest } from '../grants.js';
 import { isGlobalDenyRule } from '../deny.js';
 import { resolveCommandArg, resolveArgvArg } from '../resolve.js';
-import { DEFAULT_SUBAGENT_PERMISSIONS, PRIMARY_AGENT_PERMISSIONS } from '../../manifest.js';
+import { DEFAULT_SUBAGENT_PERMISSIONS } from '@dojo/shared';
+import { PRIMARY_AGENT_PERMISSIONS } from '../../manifest.js';
 import type { Verdict } from '../types.js';
 
 /**

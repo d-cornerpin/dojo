@@ -1,15 +1,12 @@
 // SCOPE: VALIDATED, SUBSET-OF-PARENT, READABLE (effective scope derivable on demand for the API).
 // VALIDATED: a malformed manifest REFUSES the spawn; a silent downgrade writes a scope nobody chose.
 // SUBSET: a child cannot exceed its parent. can_assign_permissions gates delegation, never escalation.
-// Default: the parent's effective scope MINUS the danger set (destructive, system_control, outbound).
-// Destructive and outbound are already withheld elsewhere; system_control is what changes here.
-// Not stripped (outside the danger set; stripping would narrow today's behavior): exec/shell, network,
-// can_spawn_agents. No outbound manifest field: a new gate would refuse working calls; child-scope.test.ts
-// holds the walls. can_assign_permissions is bounded by subset.
+// Default: one small manifest for every helper (DEFAULT_SUBAGENT_PERMISSIONS); the creator widens it per job.
 
 import { z } from 'zod';
 import type { PermissionManifest } from '@dojo/shared';
-import { DEFAULT_SUBAGENT_PERMISSIONS, withArtifactPaths, artifactPathFor } from './manifest.js';
+import { DEFAULT_SUBAGENT_PERMISSIONS } from '@dojo/shared';
+import { withArtifactPaths, artifactPathFor } from './manifest.js';
 
 // 'none' is valid on read/write fields: the validator must not refuse a manifest the platform wrote itself.
 const pathList = z.union([z.literal('*'), z.literal('none'), z.array(z.string())]);
@@ -23,7 +20,6 @@ export const manifestSchema = z.object({
   shell_allow: z.array(z.string()).optional(),
   shell_deny: z.array(z.string()).optional(),
   network_domains: z.union([z.literal('*'), z.literal('none'), z.array(z.string())]).optional(),
-  max_processes: z.number().int().nonnegative().optional(),
   can_spawn_agents: z.boolean().optional(),
   can_assign_permissions: z.boolean().optional(),
   system_control: z.union([z.literal('*'), z.array(z.string())]).optional(),
@@ -52,21 +48,6 @@ export function validateManifest(raw: unknown): ParseResult {
 }
 
 export { artifactPathFor };
-
-// Decided default: the parent's scope MINUS the danger set, applied only when the spawn names no manifest.
-// Prospective only: existing agents keep exactly their current scope.
-export function defaultChildScope(parent: PermissionManifest, childId: string): PermissionManifest {
-  return {
-    // Inherited, plus the child's own artifact directory.
-    ...withArtifactPaths(parent, childId),
-    // DANGER system_control: the member that changes; empty names nothing, AppleScript included.
-    system_control: [],
-  };
-}
-
-export function defaultScopeFor(agentId: string): PermissionManifest {
-  return withArtifactPaths(DEFAULT_SUBAGENT_PERMISSIONS, agentId);
-}
 
 // A parent list holding '*' holds everything, exactly as the broker's matchCommandPattern reads it.
 // 'none' and [] both deny all: emptiness is tested once, at the top, before any parent question.
@@ -135,15 +116,23 @@ export function scopeExcesses(child: ManifestInput, parent: PermissionManifest):
   if (child.system_control !== undefined) {
     check(controlSubset(child.system_control, parent.system_control), 'system_control', 'child requests system control its parent does not hold');
   }
-  if (child.max_processes !== undefined) {
-    check(child.max_processes <= parent.max_processes, 'max_processes', `child requests ${child.max_processes}, parent holds ${parent.max_processes}`);
-  }
   if (child.can_spawn_agents) {
     check(parent.can_spawn_agents === true, 'can_spawn_agents', 'parent cannot spawn, so its child cannot either');
   }
   if (child.can_assign_permissions) {
     check(parent.can_assign_permissions === true, 'can_assign_permissions', 'parent cannot assign permissions, so its child cannot either');
   }
+  return out;
+}
+
+// The default, each field the parent does not hold narrowed to the parent's own, so a helper's child never
+// exceeds it. The main agent holds everything, so its helpers get the default unchanged.
+function defaultWithin(parent: PermissionManifest): PermissionManifest {
+  const out: PermissionManifest = { ...DEFAULT_SUBAGENT_PERMISSIONS };
+  for (const field of ['file_read', 'file_write', 'exec_allow', 'network_domains'] as const) {
+    if (scopeExcesses({ [field]: out[field] }, parent).length > 0) Object.assign(out, { [field]: parent[field] });
+  }
+  if (scopeExcesses({ shell_allow: out.exec_allow }, parent).length > 0) out.shell_allow = parent.shell_allow ?? parent.exec_allow;
   return out;
 }
 
@@ -154,8 +143,9 @@ export function resolveChildScope(
   parent: PermissionManifest,
   childId: string,
 ): { ok: true; manifest: PermissionManifest } | { ok: false; reason: string } {
+  const base = defaultWithin(parent);
   if (requested === undefined || requested === null) {
-    return { ok: true, manifest: defaultChildScope(parent, childId) };
+    return { ok: true, manifest: withArtifactPaths(base, childId) };
   }
   const validated = validateManifest(requested);
   if (!validated.ok) {
@@ -168,6 +158,6 @@ export function resolveChildScope(
       reason: `a sub-agent cannot exceed its parent's scope — ${excesses.join('; ')}`,
     };
   }
-  // Omitted fields take the minus-danger default, not the parent's, so omission cannot inherit danger.
-  return { ok: true, manifest: { ...defaultChildScope(parent, childId), ...validated.manifest } as PermissionManifest };
+  // Omitted fields take the default, so naming one field never inherits the parent's reach.
+  return { ok: true, manifest: withArtifactPaths({ ...base, ...validated.manifest } as PermissionManifest, childId) };
 }
