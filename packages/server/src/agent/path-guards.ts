@@ -10,7 +10,7 @@ export {
   probeFsCaseInsensitive, setFsCaseInsensitive, isFsCaseInsensitive, foldPath,
   type ProbeFs,
 } from './fs-case.js';
-export { isSensitivePath, SENSITIVE_BASENAMES } from './brokers/deny.js';
+export { isSensitivePath } from './brokers/deny.js';
 
 export const resolvePath = resolveHomePath;
 

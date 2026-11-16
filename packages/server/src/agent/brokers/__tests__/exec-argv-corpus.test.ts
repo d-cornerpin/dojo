@@ -117,7 +117,7 @@ vi.mock('../../../config/platform.js', async () => {
 });
 
 import { resolveArgvArg, resolveCommandArg } from '../resolve.js';
-import { authorizeArgv, authorizeShellScript } from '../proc.js';
+import { authorizeArgv, authorizeProc } from '../proc.js';
 import { grantForManifest } from '../grants.js';
 
 const grantOf = (id: keyof typeof agentRows) => grantForManifest(id, JSON.parse(agentRows[id].permissions));
@@ -310,17 +310,17 @@ describe('§D — the shell class is a SEPARATE grant, and today\'s agents alrea
     // The migration promise in one clause: `shell_allow` absent ⇒ the shell door
     // answers from `exec_allow`, so every agent alive today runs tomorrow exactly
     // what it runs now. Nobody has to edit a manifest for that to be true.
-    expect(authorizeShellScript(scoped(), mustScript('ls -la | cat')).allowed).toBe(true);
-    expect(authorizeShellScript(wildcard(), mustScript('for i in 1 2 3; do echo $i; done')).allowed).toBe(true);
+    expect(authorizeProc(scoped(), mustScript('ls -la | cat')).allowed).toBe(true);
+    expect(authorizeProc(wildcard(), mustScript('for i in 1 2 3; do echo $i; done')).allowed).toBe(true);
   });
 
   it('a manifest that WITHHOLDS shell explicitly refuses the shell door while exec still works', () => {
     expect(authorizeArgv(noShell(), mustArgv(['git', 'status'])).allowed).toBe(true);
-    expect(authorizeShellScript(noShell(), mustScript('ls | wc -l')).allowed).toBe(false);
+    expect(authorizeProc(noShell(), mustScript('ls | wc -l')).allowed).toBe(false);
   });
 
   it('the shell door is deny-by-default for an agent with no exec grant either', () => {
-    expect(authorizeShellScript(locked(), mustScript('ls')).allowed).toBe(false);
+    expect(authorizeProc(locked(), mustScript('ls')).allowed).toBe(false);
   });
 });
 
@@ -330,7 +330,7 @@ describe('§E — EXEC-LOOP PRESERVED: the owner\'s own construct still runs, at
     // Owner ruling 2026-07-28, verbatim subject: this line was refused with
     // "Command 'for' is not allowed" and the owner overruled it.
     const line = 'for i in $(seq -w 1 20); do echo "=== note-$i.md ==="; cat "$HOME/Projects/notes.txt"; done';
-    expect(authorizeShellScript(wildcard(), mustScript(line)).allowed).toBe(true);
+    expect(authorizeProc(wildcard(), mustScript(line)).allowed).toBe(true);
   });
 
   it('pipes, redirects, substitution, chains and conditionals all still run', () => {
@@ -342,12 +342,12 @@ describe('§E — EXEC-LOOP PRESERVED: the owner\'s own construct still runs, at
       'while read -r l; do echo "$l"; done < /dev/null',
       'ls; echo second',
     ]) {
-      expect(authorizeShellScript(wildcard(), mustScript(script)).allowed, `expected ALLOW: ${script}`).toBe(true);
+      expect(authorizeProc(wildcard(), mustScript(script)).allowed, `expected ALLOW: ${script}`).toBe(true);
     }
   });
 
   it('grammar widens and AUTHORITY DOES NOT — an inner command outside the allowlist is refused', () => {
-    const v = authorizeShellScript(scoped(), mustScript('for f in a b; do curl https://x/$f; done'));
+    const v = authorizeProc(scoped(), mustScript('for f in a b; do curl https://x/$f; done'));
     expect(v.allowed).toBe(false);
     if (!v.allowed) expect(v.reason).toMatch(/curl/);
   });
@@ -361,7 +361,7 @@ describe('§E — EXEC-LOOP PRESERVED: the owner\'s own construct still runs, at
       'sudo rm -rf /',            // v3.2.2: the wrapper comes off and the floor still bites
       `cat ${sshDir}/id_ed25519`,
     ]) {
-      expect(authorizeShellScript(wildcard(), mustScript(script)).allowed, `expected refusal: ${script}`).toBe(false);
+      expect(authorizeProc(wildcard(), mustScript(script)).allowed, `expected refusal: ${script}`).toBe(false);
     }
   });
 });

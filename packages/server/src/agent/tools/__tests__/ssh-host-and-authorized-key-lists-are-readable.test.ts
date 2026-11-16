@@ -1,5 +1,5 @@
 // ~/.ssh/known_hosts and ~/.ssh/authorized_keys hold no secret, so file_read returns them; a private key in
-// the same folder is still refused, and neither a helper's copy-over nor a share opens the two lists.
+// the same folder is still refused, a helper's copy-over waits for approval, and no share opens the two lists.
 // Driven through the tool executor in a scratch home.
 
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
@@ -8,6 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 vi.mock('../../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: (e: unknown) => e }));
+vi.mock('../../approval-decision.js', async (orig) => ({ ...(await orig<Record<string, unknown>>()), deliverGateWake: async () => true }));
 
 const MAIN = 'agent-main';
 const HELPER = 'agent-helper';
@@ -18,6 +19,8 @@ const connection = await import('../../../db/connection.js');
 const migrations = await import('../../../db/migrations.js');
 const platform = await import('../../../config/platform.js');
 const { executeTool, toolResultOf, toolWasBlocked } = await import('../index.js');
+const { recordDispatchAndHold } = await import('../../v2/steps/execute/dispatch-bookkeeping.js');
+const { initState } = await import('../../v2/state.js');
 
 const ssh = path.join(home, '.ssh');
 
@@ -64,9 +67,15 @@ describe('the SSH host and authorized-key lists are readable', () => {
     });
   }
 
-  it.each(['cp', 'mv'])('a default helper cannot %s a key over ~/.ssh/authorized_keys', async (cmd) => {
-    const outcome = await run(DEFAULT_HELPER, 'exec', { argv: [cmd, path.join(home, 'stranger.pub'), path.join(ssh, 'authorized_keys')] });
-    expect(toolWasBlocked(outcome) || toolResultOf(outcome).isError).toBe(true);
+  it.each(['cp', 'mv'])('a default helper\'s %s of a key over ~/.ssh/authorized_keys waits for approval', async (cmd) => {
+    const state = initState({
+      agentId: DEFAULT_HELPER, contextWindow: 200_000, isAutoRouted: false, configuredModelId: 'test', turnNumber: 1,
+      triggeredByIMessage: false, triggeredByA2AReplyIntent: null, lastUserMessageContent: null, lastUserMessageId: null,
+      inboundChannel: null, inboundContext: null, pendingTechniqueAck: null,
+    });
+    const call = { id: `tc-${cmd}`, name: 'exec', arguments: { argv: [cmd, path.join(home, 'stranger.pub'), path.join(ssh, 'authorized_keys')] } };
+    const out = await recordDispatchAndHold(state, call as never, { agentId: DEFAULT_HELPER, db: connection.getDb() } as never);
+    expect(out.refusal?.content).toContain('[HELD by engine');
     expect(authorized()).not.toContain('STRANGERKEY');
   });
 

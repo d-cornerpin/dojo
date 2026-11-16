@@ -1,7 +1,7 @@
 // THE SHARED BODY OF BOTH EXEC DOORS: one runner, so two doors cannot drift into two output formats.
 // `auditLog` is injected rather than imported, which is what keeps this module a toolbox-free leaf.
 
-import { resolveHomePath, isExistingDirectory } from '../path-resolve.js';
+import { resolveHomePath, statOf } from '../path-resolve.js';
 import { sudoWouldHang } from '../brokers/sudo-probe.js';
 import { coerceNumberArg } from './pagination.js';
 import { silentWindowMs } from '../../tracker/silent-window.js';
@@ -29,7 +29,7 @@ export function processTimeout(raw: unknown, agentId: string): number {
  *  falls back with a note, so a model that guessed a path gets its run plus the reason, not an error. */
 export function resolveProcessCwd(raw: unknown): { cwd: string | undefined; note: string | null } {
   if (typeof raw !== 'string' || raw.trim().length === 0) return { cwd: undefined, note: null };
-  if (isExistingDirectory(raw)) return { cwd: resolveHomePath(raw), note: null };
+  if (statOf(raw)?.isDirectory()) return { cwd: resolveHomePath(raw), note: null };
   return {
     cwd: undefined,
     note: `[note: cwd "${raw}" is not an existing directory; ran in the default working directory instead]`,

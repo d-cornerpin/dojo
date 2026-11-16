@@ -59,12 +59,12 @@ function realResolveDeepest(lexicalAbs: string, depth = 0): { path: string; reso
   }
 }
 
-/** Existing DIRECTORY? Lives in the fs leaf: its one caller must not import node:fs itself. */
-export function isExistingDirectory(inputPath: string): boolean {
+/** What is at a path, or null when nothing is. Lives in the fs leaf: its callers must not import node:fs themselves. */
+export function statOf(inputPath: string): fs.Stats | null {
   try {
-    return fs.statSync(resolveHomePath(inputPath)).isDirectory();
+    return fs.statSync(resolveHomePath(inputPath));
   } catch {
-    return false;
+    return null;
   }
 }
 

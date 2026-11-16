@@ -65,9 +65,7 @@ export function checkPermission(agentId: string, action: PermissionAction): Perm
         result = { allowed: false, reason: 'No command specified for exec' };
         break;
       }
-      // `scanSensitiveReads` stays OFF here: this is the exact call destructive-gate records;
-      // the tokenized scan belongs to the dispatcher, which asks with the scan ON.
-      const verdict = authorizeProc(grant, resolved.value, false);
+      const verdict = authorizeProc(grant, resolved.value);
       result = verdict.allowed ? { allowed: true } : { allowed: false, reason: verdict.reason };
       break;
     }

@@ -4,8 +4,8 @@
 import path from 'node:path';
 import { foldPath } from '../fs-case.js';
 import { homeDir } from '../../home.js';
-import { resolveHomePath } from '../path-resolve.js';
-import { lexShellLine } from './shell-words.js';
+import { resolveHomePath, statOf } from '../path-resolve.js';
+import { lexShellLine, shellUnquoted } from './shell-words.js';
 
 /** The doors a rule can shut. One row may shut several. */
 export type DenyTier = 'sensitive' | 'global_read' | 'global_write';
@@ -40,7 +40,7 @@ export type DenyViewer = 'main' | 'healer' | 'other';
 export type DenyViewerArg = DenyViewer | (() => DenyViewer);
 
 // Entries are lower-case: every comparison runs through foldPath.
-export const SENSITIVE_BASENAMES: ReadonlySet<string> = new Set<string>([
+const SENSITIVE_BASENAMES: ReadonlySet<string> = new Set<string>([
   'secrets.yaml',
   'secrets.yml',
   'secrets.json',
@@ -258,28 +258,35 @@ const SSH_ROW = DENY_RULES.find((r) => r.id === 'ssh-directory-except-public-key
 export const isLoginKeyFile = (absPath: string): boolean => SSH_ROW.test(contextFor(absPath));
 const KEYS_ROW = DENY_RULES.find((r) => r.id === 'dojo-secrets-store') as DenyRule;
 
-/** Rows deny files by name; a folder holding one is named whole by a recursive read
- *  like `grep -r`, so the reader scan refuses these too. A test pairs each entry with a row. */
+/** The hidden locations a word may name as a folder: a line naming one is refused to every agent but the
+ *  main one, as a file inside it is. A test pairs each entry with a row. */
 export const SENSITIVE_LOCATIONS: readonly string[] = ['.dojo/secrets.yaml', '.ssh', '.aws/credentials', '.config/gcloud', '.kube/config', '.plaud/tokens.json', '.cloudflared'];
 
-/** Is this path one of the fixed sensitive locations, or a folder that contains one? */
-export function containsSensitiveLocation(absPath: string): boolean {
-  const here = foldPath(path.resolve(absPath));
-  const prefix = here.endsWith(path.sep) ? here : here + path.sep;
-  return SENSITIVE_LOCATIONS.some((rel) => {
-    const loc = foldPath(path.join(homeDir(), rel));
-    return loc === here || loc.startsWith(prefix);
+/** Each path a line names: its words as the shell unquotes them, split where a script inside a word may start a
+ *  path. A relative spelling resolves against `cwd`; a bare name counts only when `cwd` holds a file of that name. */
+function pathsNamed(line: string, cwd?: string): Array<{ piece: string; abs: string; spelledWhole: boolean }> {
+  const words = lexShellLine(line)?.segments.flatMap((seg) => seg.words.map((w) => w.value)) ?? [line];
+  return words.flatMap((w) => w.split(/[\s'"()=,:]+/)).filter(Boolean).flatMap((piece) => {
+    const expanded = resolveHomePath(piece.replace(/^\$\{?HOME\}?(?=\/|$)/, homeDir()));
+    const spelledWhole = path.isAbsolute(expanded);
+    const abs = path.resolve(cwd ?? '', expanded);
+    if (!spelledWhole && !expanded.includes('/') && !(cwd && statOf(abs))) return [];
+    return [{ piece, abs, spelledWhole }];
   });
 }
 
-/** Whether a word of the line, as the shell unquotes it, is the Dojo's own keys file by `~`, `$HOME` or an
- *  absolute path; a word is also split where a script inside it may start a path. */
-export function lineNamesKeysFile(line: string): boolean {
-  const words = lexShellLine(line)?.segments.flatMap((seg) => seg.words.map((w) => w.value)) ?? [line];
-  return words.flatMap((w) => w.split(/[\s'"()=,:]+/)).some((word) => {
-    const expanded = resolveHomePath(word.replace(/^\$\{?HOME\}?(?=\/|$)/, homeDir()));
-    return path.isAbsolute(expanded) && KEYS_ROW.test(contextFor(path.resolve(expanded)));
-  });
+/** Why a shell line is refused for naming a hidden file, or null. The main agent: only a word that is the Dojo's
+ *  keys file by `~`, `$HOME` or an absolute path. Any other agent: the keys file anywhere in the line, or a word
+ *  naming a hidden file or location; a folder above one is not refused, as what it prints is blanked. */
+export function shellLineNamesHidden(line: string, viewer: DenyViewer, cwd?: string): string | null {
+  const keys = 'the line names secrets.yaml, the Dojo\'s keys file. Keys are changed in Settings → Providers on the dashboard, or by the owner';
+  if (viewer === 'main') return pathsNamed(line).some(({ abs, spelledWhole }) => spelledWhole && KEYS_ROW.test(contextFor(abs))) ? keys : null;
+  if (namesSecretsFile(line) || namesSecretsFile(shellUnquoted(line) ?? '')) return keys;
+  for (const { piece, abs } of pathsNamed(line, cwd)) {
+    if (denyRuleFor(abs, 'sensitive', viewer, true)) return `"${piece}" is on the sensitive-files block list`;
+    if (SENSITIVE_LOCATIONS.some((rel) => foldPath(path.join(homeDir(), rel)) === foldPath(abs))) return `"${piece}" is a folder on the sensitive-files block list`;
+  }
+  return null;
 }
 
 /** True when the id names a resource denied for EVERY agent regardless of manifest.
@@ -288,9 +295,9 @@ export function lineNamesKeysFile(line: string): boolean {
 export function isGlobalDenyRule(ruleId: string): boolean {
   // A global deny is NEVER staged: an exec deny missing here would run log-only
   // for a sub-agent, exactly what every other agent is refused outright.
-  if (ruleId.startsWith('global-exec-deny:') || ruleId.startsWith('global-exec-substring:')) return true;
+  if (ruleId.startsWith('global-exec-deny:')) return true;
   // The sensitive tier reached by a non-path route is a global deny too, however the door gets there.
-  if (ruleId === 'exec-sensitive-read' || ruleId === 'applescript-shell-sensitive-read' || ruleId === 'sensitive-share') return true;
+  if (ruleId === 'exec-sensitive-read' || ruleId === 'sensitive-share') return true;
   return DENY_RULES.some((r) => r.id === ruleId);
 }
 
