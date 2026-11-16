@@ -7,6 +7,7 @@ import { getDb } from '../../db/connection.js';
 import { getAgentPermissions } from '../manifest.js';
 import { toolGrantsFor, toolCategoryGranted, mayUsePlaud, holdsCredentialGrant, integrationLevelFor, mayUseChannel } from '../access/read.js';
 import { channelForTool } from '../access/channels.js';
+import { accountKindForTool, levelAllows, serviceOfTool } from '../access/workspace.js';
 import { PRIMARY_ONLY_TOOLS } from './gates.js';
 import { agentCanSelfComplete } from './util.js';
 import { holdsDojoInspect, DOJO_INSPECT } from '../../inspect/grant.js';
@@ -284,51 +285,18 @@ function computeFilteredTools(agentId: string): ToolDefinition[] {
     user: getGoogleServiceFlagsForKind('user'),
   } as const;
 
-  const serviceToolPrefixes: Record<string, string[]> = {
-    gmail: ['gmail_'],
-    calendar: ['calendar_'],
-    drive: ['drive_'],
-    docs: ['docs_'],
-    sheets: ['sheets_'],
-    slides: ['slides_'],
-    forms: ['forms_'],
-  };
-
-  /** Both must pass: kind connected AND service enabled; `user_*` strips `user_` to find the service. */
-  function isToolEnabledByService(toolName: string): boolean {
-    const isUserKind = toolName.startsWith('user_');
-    const canonical = isUserKind ? toolName.slice('user_'.length) : toolName;
-    const kind = isUserKind ? 'user' : 'agent';
-    if (!(isUserKind ? userKindConnected : agentKindConnected)) return false;
-    if (integrationLevelFor(agentId, 'google', kind) === 'none') return false;
-    for (const [service, prefixes] of Object.entries(serviceToolPrefixes)) {
-      if (prefixes.some(p => canonical.startsWith(p))) {
-        return googleServiceFlags[kind][service as Parameters<typeof isGoogleServiceEnabledForKind>[1]];
-      }
-    }
-    return true; // tools not matching any service are always enabled when the kind is connected
+  /** Kind connected, the kind's grant covers the tool (full for a write), and its service on for some account. */
+  function isToolEnabledByService(t: ToolDefinition): boolean {
+    const kind = accountKindForTool(t.name);
+    if (!(kind === 'user' ? userKindConnected : agentKindConnected)) return false;
+    if (!levelAllows(integrationLevelFor(agentId, 'google', kind), t)) return false;
+    const service = serviceOfTool('google', t.name);
+    return service ? googleServiceFlags[kind][service as Parameters<typeof isGoogleServiceEnabledForKind>[1]] : true;
   }
 
-  if (googleAccess === 'full') {
-    // Primary agent: all read + write tools, filtered by per-slot connection AND enabled services.
+  if (googleAccess !== 'none') {
     const allGoogleTools = [...googleReadToolDefinitions, ...googleWriteToolDefinitions, ...slidesToolDefinitions, ...formsToolDefinitions];
-    filtered.push(...allGoogleTools.filter(t => isToolEnabledByService(t.name)));
-  } else if (googleAccess === 'read') {
-    // Read tier: read tools PLUS all of Slides (decks are safe output); no send, no doc/Drive edits.
-    filtered.push(...googleReadToolDefinitions.filter(t => isToolEnabledByService(t.name)));
-    filtered.push(...slidesToolDefinitions.filter(t => isToolEnabledByService(t.name)));
-    // Forms collects answers from outside people, so read tools only; create/edit stay with the primary.
-    filtered.push(
-      ...formsToolDefinitions
-        .filter(t => t.name === 'forms_get' || t.name === 'forms_list_responses')
-        .filter(t => isToolEnabledByService(t.name)),
-    );
-    // drive_upload rides the read tier: without it slides_add_image_from_drive cannot reach a local file.
-    filtered.push(
-      ...googleWriteToolDefinitions
-        .filter(t => t.name === 'drive_upload')
-        .filter(t => isToolEnabledByService(t.name)),
-    );
+    filtered.push(...allGoogleTools.filter(isToolEnabledByService));
   }
 
   const msAccess = getAgentMicrosoftAccessLevel(agentId, isPrimary, isPM);
@@ -341,36 +309,17 @@ function computeFilteredTools(agentId: string): ToolDefinition[] {
     user: getMsServiceFlagsForKind('user'),
   } as const;
 
-  const msServiceToolPrefixes: Record<string, string[]> = {
-    outlook: ['outlook_'],
-    calendar: ['calendar_agenda_ms', 'calendar_search_ms', 'calendar_list_ms', 'calendar_create_ms', 'calendar_update_ms', 'calendar_delete_ms', 'calendar_respond_invite_ms', 'calendar_share_invites_ms', 'calendar_accept_share_ms', 'calendar_freebusy_ms'],
-    onedrive: ['onedrive_', 'sharepoint_'],
-    teams: ['teams_', 'online_meeting_'],
-    contacts: ['contacts_'],
-    onenote: ['onenote_'],
-    tasks: ['tasks_'],
-  };
-
   /** Like the Google gate, multi-account: some connected account of the kind with the service enabled. */
-  function isMsToolEnabledByService(toolName: string): boolean {
-    const isUserKind = toolName.startsWith('user_');
-    const canonical = isUserKind ? toolName.slice('user_'.length) : toolName;
-    const kind = isUserKind ? 'user' : 'agent';
-    if (!(isUserKind ? userSlotMsConnected : agentSlotMsConnected)) return false;
-    if (integrationLevelFor(agentId, 'microsoft', kind) === 'none') return false;
-    for (const [service, patterns] of Object.entries(msServiceToolPrefixes)) {
-      if (patterns.some(p => canonical.startsWith(p) || canonical === p)) {
-        return msServiceFlags[kind][service as Parameters<typeof isMsServiceEnabledForKind>[1]];
-      }
-    }
-    return true;
+  function isMsToolEnabledByService(t: ToolDefinition): boolean {
+    const kind = accountKindForTool(t.name);
+    if (!(kind === 'user' ? userSlotMsConnected : agentSlotMsConnected)) return false;
+    if (!levelAllows(integrationLevelFor(agentId, 'microsoft', kind), t)) return false;
+    const service = serviceOfTool('microsoft', t.name);
+    return service ? msServiceFlags[kind][service as Parameters<typeof isMsServiceEnabledForKind>[1]] : true;
   }
 
-  if (msAccess === 'full') {
-    const allMsTools = [...microsoftReadToolDefinitions, ...microsoftWriteToolDefinitions];
-    filtered.push(...allMsTools.filter(t => isMsToolEnabledByService(t.name)));
-  } else if (msAccess === 'read') {
-    filtered.push(...microsoftReadToolDefinitions.filter(t => isMsToolEnabledByService(t.name)));
+  if (msAccess !== 'none') {
+    filtered.push(...[...microsoftReadToolDefinitions, ...microsoftWriteToolDefinitions].filter(isMsToolEnabledByService));
   }
 
   // Unified cross-mailbox read: any readable slot with a MAIL-capable account; no user_ twin or param.

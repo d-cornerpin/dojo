@@ -199,6 +199,7 @@ function buildDateOrTimeQuestionItem(
 export const formsToolDefinitions: ToolDefinition[] = [
   {
     name: 'forms_create_form',
+    writes: true,
     description: 'Create a new Google Form. Returns form_id, edit_url, and response_url. Use the returned form_id with the other forms_* tools to add or edit questions. The created form has no questions until you add them.',
     effects: [],
     input_schema: {
@@ -212,6 +213,7 @@ export const formsToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'forms_add_text_question',
+    writes: true,
     description: 'Add a text-input question (short answer or paragraph) to an existing form. Returns the new item_id. Use paragraph=true for long-form responses, false (default) for one-line answers.',
     effects: [],
     input_schema: {
@@ -229,6 +231,7 @@ export const formsToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'forms_add_choice_question',
+    writes: true,
     description: 'Add a multiple-choice, checkbox, or dropdown question. Returns the new item_id. Specify type plus the answer options list.',
     effects: [],
     input_schema: {
@@ -256,6 +259,7 @@ export const formsToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'forms_add_scale_question',
+    writes: true,
     description: 'Add a linear-scale question (e.g. 1–5 or 0–10) with optional endpoint labels. Returns the new item_id.',
     effects: [],
     input_schema: {
@@ -276,6 +280,7 @@ export const formsToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'forms_add_date_question',
+    writes: true,
     description: 'Add a date, time, or datetime question. Returns the new item_id. kind="date" picks just a calendar date, "time" picks a time-of-day, "datetime" picks both.',
     effects: [],
     input_schema: {
@@ -298,6 +303,7 @@ export const formsToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'forms_update_question',
+    writes: true,
     description: 'Replace an existing question on a form. You must specify what kind of question it should become — pass the same fields you would for forms_add_*. The item_id stays the same; the question content is replaced.',
     effects: [],
     input_schema: {
@@ -345,6 +351,7 @@ export const formsToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'forms_rename_question',
+    writes: true,
     description: 'Lightweight edit: change the title, description, and/or required flag of an existing question without touching the question type or its options. For changing the question TYPE or replacing options, use forms_update_question instead.',
     effects: [],
     input_schema: {
@@ -361,6 +368,7 @@ export const formsToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'forms_set_settings',
+    writes: true,
     description: 'Update form-level settings: quiz mode, email collection, accepting responses. Pass any subset of fields. Quiz mode (is_quiz=true) lets you assign correct answers and point values per question via the Forms UI; setting it via this tool toggles the form-level flag.',
     effects: [],
     input_schema: {
@@ -379,6 +387,7 @@ export const formsToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'forms_delete_item',
+    writes: true,
     description: 'Delete a question or other item from a form by its item_id. Other items shift up to fill the gap. Cannot be undone.\n\nNOTE: this deletes ONE item INSIDE a form. To delete the entire form itself, use forms_delete_form (or drive_delete with the form_id).',
     effects: [],
     input_schema: {
@@ -392,6 +401,7 @@ export const formsToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'forms_delete_form',
+    writes: true,
     description: 'Delete an entire form. Forms are stored as Drive files, so this routes through the Drive API. Defaults to TRASH (recoverable for 30 days from Drive trash). Pass permanent: true to skip trash and delete immediately — irreversible.\n\nFor deleting a single QUESTION inside a form, use forms_delete_item instead.',
     effects: [],
     input_schema: {

@@ -903,7 +903,9 @@ async function prepareOutlookAttachments(
 
 // Path B (multi-account): every Microsoft write tool can target a specific
 // connected account of its kind via an `account` param (the account's email).
+// Each is marked as a write here, so the account door asks for the full level.
 for (const def of microsoftWriteToolDefinitions) {
+  def.writes = true;
   const schema = def.input_schema as { properties?: Record<string, unknown> };
   if (schema.properties && !schema.properties.account) {
     schema.properties.account = {

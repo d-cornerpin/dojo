@@ -409,6 +409,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   // ── Style & deck management ──
   {
     name: 'slides_create_presentation',
+    writes: true,
     description: 'Create a new Google Slides presentation with a DeckStyle applied. Default dimensions are 720×405pt (16:9 widescreen, renders at 1920×1080 pixels). Pass width_pt/height_pt to override. The style is persisted per-presentation and used by every subsequent slides_* call automatically. Replaces the old slides_create tool.',
     effects: [{ kind: 'fs_read', from: 'fixed:~/.dojo/data/slides_styles.json' }, { kind: 'fs_write', from: 'fixed:~/.dojo/data/slides_styles.json' }],
     input_schema: {
@@ -424,6 +425,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'slides_set_style',
+    writes: true,
     description: 'Set or update the active DeckStyle for an existing presentation. Persists to disk so all later tool calls use the new fonts, colors, and spacing.',
     effects: [{ kind: 'fs_read', from: 'fixed:~/.dojo/data/slides_styles.json' }, { kind: 'fs_write', from: 'fixed:~/.dojo/data/slides_styles.json' }],
     input_schema: {
@@ -457,6 +459,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   // ── Slide operations ──
   {
     name: 'slides_add_slide',
+    writes: true,
     description: 'Add a new slide to a presentation using a predefined layout. Applies the deck style background automatically.',
     effects: [{ kind: 'fs_read', from: 'fixed:~/.dojo/data/slides_styles.json' }],
     input_schema: {
@@ -471,6 +474,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'slides_duplicate_slide',
+    writes: true,
     description: 'Duplicate an existing slide. Returns the new slide ID.',
     effects: [],
     input_schema: {
@@ -484,6 +488,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'slides_delete_slide',
+    writes: true,
     description: 'Delete a slide from a presentation.',
     effects: [],
     input_schema: {
@@ -497,6 +502,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'slides_reorder_slides',
+    writes: true,
     description: 'Move a set of slides to a new position in the presentation.',
     effects: [],
     input_schema: {
@@ -511,6 +517,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'slides_set_background',
+    writes: true,
     description: 'Set a slide background to a solid color or a stretched image URL. Provide exactly one of color or image_url.',
     effects: [],
     nonEffects: {
@@ -531,6 +538,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   // ── Text operations ──
   {
     name: 'slides_add_text_box',
+    writes: true,
     description: 'Place a styled text box on a slide. The role determines which DeckStyle properties are applied (title, heading, body, subtitle, caption).',
     effects: [{ kind: 'fs_read', from: 'fixed:~/.dojo/data/slides_styles.json' }],
     input_schema: {
@@ -548,6 +556,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'slides_add_bullet_list',
+    writes: true,
     description: 'Create a text box containing a bulleted list. Prefix items with \\t to nest.',
     effects: [{ kind: 'fs_read', from: 'fixed:~/.dojo/data/slides_styles.json' }],
     input_schema: {
@@ -564,6 +573,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'slides_style_text_range',
+    writes: true,
     description: 'Apply formatting to a specific character range within a text box. Only the properties you specify are changed.',
     effects: [],
     nonEffects: {
@@ -591,6 +601,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   // ── Image operations ──
   {
     name: 'slides_add_image',
+    writes: true,
     description: 'Insert an image from a publicly accessible URL.',
     effects: [],
     nonEffects: {
@@ -609,6 +620,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'slides_add_image_from_drive',
+    writes: true,
     description: 'Insert an image from a Google Drive file the agent has access to.',
     effects: [],
     input_schema: {
@@ -624,6 +636,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'slides_add_image_from_local_path',
+    writes: true,
     description: 'Insert an image from a LOCAL file path (e.g., an image just made by image_create at ~/.dojo/uploads/<agent>/...) into a slide. Uploads the file to Drive internally and embeds it in one call — you don\'t have to chain drive_upload + slides_add_image_from_drive yourself. Returns the slide image_id and the Drive file_id (so you can reuse the same upload across multiple slides without re-uploading).',
     effects: [{ kind: 'fs_read', from: 'args.file_path', leaves: true }],
     input_schema: {
@@ -640,6 +653,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'slides_replace_shape_with_image',
+    writes: true,
     description: 'Find every shape containing placeholder_text and replace it with the image. Useful for template workflows.',
     effects: [],
     nonEffects: {
@@ -660,6 +674,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   // ── Video operations ──
   {
     name: 'slides_add_video',
+    writes: true,
     description: 'Embed a YouTube or Google Drive video on a slide. source must be YOUTUBE or GOOGLE_DRIVE.',
     effects: [],
     input_schema: {
@@ -678,6 +693,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   // ── Shape operations ──
   {
     name: 'slides_add_shape',
+    writes: true,
     description: 'Create a shape on a slide. Common shape_types: RECTANGLE, ROUND_RECTANGLE, ELLIPSE, TRIANGLE, DIAMOND, HEXAGON, PENTAGON, ARROW_RIGHT, STAR, CLOUD, CHEVRON, CALLOUT_RECTANGLE, FLOW_CHART_PROCESS, FLOW_CHART_DECISION.',
     effects: [{ kind: 'fs_read', from: 'fixed:~/.dojo/data/slides_styles.json' }],
     input_schema: {
@@ -697,6 +713,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'slides_add_line',
+    writes: true,
     description: 'Draw a straight line on a slide.',
     effects: [{ kind: 'fs_read', from: 'fixed:~/.dojo/data/slides_styles.json' }],
     input_schema: {
@@ -719,6 +736,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   // ── Table operations ──
   {
     name: 'slides_add_table',
+    writes: true,
     description: 'Create an empty table on a slide.',
     effects: [],
     input_schema: {
@@ -735,6 +753,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'slides_populate_table',
+    writes: true,
     description: 'Fill an entire table from a 2D array of strings. Optionally styles the first row with bold text and an accent background.',
     effects: [{ kind: 'fs_read', from: 'fixed:~/.dojo/data/slides_styles.json' }],
     input_schema: {
@@ -752,6 +771,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   // ── Layout helpers (compound) ──
   {
     name: 'slides_layout_title',
+    writes: true,
     description: 'Create a fully formatted title slide with centered title and subtitle. Optionally uses an image URL as the background.',
     effects: [{ kind: 'fs_read', from: 'fixed:~/.dojo/data/slides_styles.json' }],
     nonEffects: {
@@ -770,6 +790,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'slides_layout_section',
+    writes: true,
     description: 'Create a section divider slide with a large heading on the accent-colored background.',
     effects: [{ kind: 'fs_read', from: 'fixed:~/.dojo/data/slides_styles.json' }],
     input_schema: {
@@ -784,6 +805,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'slides_layout_content',
+    writes: true,
     description: 'The workhorse slide: title at top, body content below. If both text/bullets and an image are provided, automatically splits into two columns based on image_position (right, left, bottom, full).',
     effects: [{ kind: 'fs_read', from: 'fixed:~/.dojo/data/slides_styles.json' }],
     nonEffects: {
@@ -804,6 +826,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'slides_layout_two_column',
+    writes: true,
     description: 'Create a two-column slide. Each column object may contain text, bullets, image_url, or image_drive_id.',
     effects: [{ kind: 'fs_read', from: 'fixed:~/.dojo/data/slides_styles.json' }],
     input_schema: {
@@ -819,6 +842,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'slides_layout_image',
+    writes: true,
     description: 'Create a slide dominated by a large image with an optional caption below.',
     effects: [{ kind: 'fs_read', from: 'fixed:~/.dojo/data/slides_styles.json' }],
     nonEffects: {
@@ -838,6 +862,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'slides_layout_comparison',
+    writes: true,
     description: 'Create a side-by-side comparison slide with 2-4 items. Each item: {heading, points, image_url?}.',
     effects: [{ kind: 'fs_read', from: 'fixed:~/.dojo/data/slides_styles.json' }],
     input_schema: {
@@ -854,6 +879,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   // ── Macro builder ──
   {
     name: 'slides_build_slide',
+    writes: true,
     description: 'Build an entire slide from a freeform list of elements in ONE Slides API call. Much faster than chaining slides_add_text_box / slides_add_shape / slides_add_image / etc., because every element creation, styling, text insert, and the slide background are bundled into a single batchUpdate (one HTTP round trip instead of N). Use this when designing a custom slide that doesn\'t match a layout helper. Omit slide_id to create a new slide; pass slide_id to add elements to an existing slide. Each element kind is fully optional — leave kinds out if you don\'t need them. Returns { slide_id, element_ids: [...] } where element_ids is in the same order as the elements you supplied.',
     effects: [{ kind: 'fs_read', from: 'fixed:~/.dojo/data/slides_styles.json' }, { kind: 'fs_read', from: 'args.elements[].file_path', leaves: true }],
     // `kind` is a key of the ELEMENT OBJECT described in prose
@@ -938,6 +964,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'slides_delete_element',
+    writes: true,
     description: 'Delete any page element by object ID.',
     effects: [],
     input_schema: {
@@ -951,6 +978,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'slides_move_element',
+    writes: true,
     description: 'Move a page element to an absolute position (points).',
     effects: [],
     input_schema: {
@@ -966,6 +994,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'slides_resize_element',
+    writes: true,
     description: 'Resize a page element to a target width/height in points.',
     effects: [],
     input_schema: {
@@ -981,6 +1010,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'slides_update_text',
+    writes: true,
     description: 'Replace the entire text content of an existing text box or shape on a slide. Deletes whatever was there and inserts the new text. For find/replace within text, use slides_find_replace instead.',
     effects: [],
     input_schema: {
@@ -995,6 +1025,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'slides_format_text',
+    writes: true,
     description: 'Apply text formatting (bold/italic/underline/font size/color) to ALL text inside an existing text box or shape. Pass only the properties you want to change. For per-character styling, use the Slides API directly.',
     effects: [],
     input_schema: {
@@ -1014,6 +1045,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'slides_find_replace',
+    writes: true,
     description: 'Global find-and-replace text across the entire presentation.',
     effects: [],
     input_schema: {

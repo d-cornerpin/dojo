@@ -14,7 +14,7 @@
 //     READ grant could write to the mailbox.
 //
 // So the rule is: ONE conjunct, the integration write tier, and no channel grant consulted.
-// `mayWriteWorkspace` already expresses that shape — `integrationLevelFor(...) === 'full'`
+// The account door (`accountRefusal`) already expresses that shape — the full level for a write
 // AND `channelForTool(tool) === null || mayUseChannel(...)` — so the entire classification
 // is the decision to leave these names OUT of `SEND_TO_PEOPLE` and to record WHY in the
 // build-checked `SEND_TO_PEOPLE_NA` ledger. Nothing in the door changes. This file drives
@@ -57,7 +57,7 @@ vi.mock('../../../config/platform.js', async () => {
 
 import { MOST_RESTRICTIVE_GRANTS, cloneGrants, channelOfSendTool, type AccessGrants } from '@dojo/shared';
 import { forgetAccessGrants, toolCategoryGranted, mayUseChannel } from '../read.js';
-import { mayWriteWorkspace, mayReadWorkspace } from '../workspace.js';
+import { accountRefusal, accountKindForTool, type WorkspaceProvider } from '../workspace.js';
 import { channelForTool } from '../channels.js';
 import { SEND_TO_PEOPLE, SEND_TO_PEOPLE_NA } from '../../sensei-policy.js';
 import { registryToolDefinitions } from '../../tools/registry.js';
@@ -70,6 +70,10 @@ import { FXID } from '../../../../../../deploy/checks/fixture-vocabulary.mjs';
  *  is asserted byte-identical to the declared order by `registry-order.test.ts`. */
 const defsNamed = (names: readonly string[]) =>
   registryToolDefinitions().filter((d) => names.includes(d.name));
+
+/** The account door on the tool's own definition, for the kind its name selects. */
+const mayUse = (agentId: string, tool: string, provider: WorkspaceProvider): boolean =>
+  accountRefusal(agentId, defsNamed([tool])[0], provider, { id: null, kind: accountKindForTool(tool), enabledServices: null }) === null;
 
 const DRAFT_TOOLS = ['gmail_draft', 'outlook_draft'] as const;
 const ALL_DRAFT_NAMES = ['gmail_draft', 'user_gmail_draft', 'outlook_draft', 'user_outlook_draft'];
@@ -107,7 +111,7 @@ beforeEach(() => { mockDb.current = null; forgetAccessGrants(); });
 
 describe('T77b — the draft door asks the account, and never the channel', () => {
   it('⚠ THE ACCEPTANCE CASE — account write + human channels OFF: drafting is allowed', () => {
-    // The existence check is not decoration: `mayWriteWorkspace` would answer `true` for
+    // The existence check is not decoration: the door would answer `true` for
     // any INVENTED name under a full grant, so without it this clause passes on a tool
     // that does not exist.
     const declared = new Set(registryToolDefinitions().map((d) => d.name));
@@ -116,8 +120,8 @@ describe('T77b — the draft door asks the account, and never the channel', () =
 
     seedAgent(FXID.n8, mrMeSeeksGrants());
 
-    expect(mayWriteWorkspace(FXID.n8, 'user_gmail_draft', 'google')).toBe(true);
-    expect(mayWriteWorkspace(FXID.n8, 'user_outlook_draft', 'microsoft')).toBe(true);
+    expect(mayUse(FXID.n8, 'user_gmail_draft', 'google')).toBe(true);
+    expect(mayUse(FXID.n8, 'user_outlook_draft', 'microsoft')).toBe(true);
   });
 
   it('⚠ AND IT SURVIVES THE ADVERTISED SURFACE — the two filters that could strip it', () => {
@@ -138,9 +142,9 @@ describe('T77b — the draft door asks the account, and never the channel', () =
   it('⚠ THE CONTROL THAT MAKES IT MEAN SOMETHING — the SAME agent is refused on send', () => {
     seedAgent(FXID.n8, mrMeSeeksGrants());
 
-    expect(mayWriteWorkspace(FXID.n8, 'user_gmail_send', 'google')).toBe(false);
-    expect(mayWriteWorkspace(FXID.n8, 'gmail_send', 'google')).toBe(false);
-    expect(mayWriteWorkspace(FXID.n8, 'user_outlook_send', 'microsoft')).toBe(false);
+    expect(mayUse(FXID.n8, 'user_gmail_send', 'google')).toBe(false);
+    expect(mayUse(FXID.n8, 'gmail_send', 'google')).toBe(false);
+    expect(mayUse(FXID.n8, 'user_outlook_send', 'microsoft')).toBe(false);
   });
 
   it('a READ grant does not buy a draft — the write tier is still the first conjunct', () => {
@@ -148,16 +152,16 @@ describe('T77b — the draft door asks the account, and never the channel', () =
     g.integrations.google.user = 'read';
     seedAgent('reader', g);
 
-    expect(mayReadWorkspace('reader', 'user_gmail_search', 'google')).toBe(true);
-    expect(mayWriteWorkspace('reader', 'user_gmail_draft', 'google')).toBe(false);
+    expect(mayUse('reader', 'user_gmail_search', 'google')).toBe(true);
+    expect(mayUse('reader', 'user_gmail_draft', 'google')).toBe(false);
   });
 
   it('the AGENT slot and the USER slot are still separate grants for a draft', () => {
     const g = mrMeSeeksGrants();          // user: full, agent: none
     seedAgent('split', g);
 
-    expect(mayWriteWorkspace('split', 'user_gmail_draft', 'google')).toBe(true);
-    expect(mayWriteWorkspace('split', 'gmail_draft', 'google')).toBe(false);
+    expect(mayUse('split', 'user_gmail_draft', 'google')).toBe(true);
+    expect(mayUse('split', 'gmail_draft', 'google')).toBe(false);
   });
 
   it('CONTROL — turning the email channel ON changes nothing about drafting, and unlocks send', () => {
@@ -166,8 +170,8 @@ describe('T77b — the draft door asks the account, and never the channel', () =
     g.channels.email = 'owner';
     seedAgent('talks', g);
 
-    expect(mayWriteWorkspace('talks', 'user_gmail_draft', 'google')).toBe(true);
-    expect(mayWriteWorkspace('talks', 'user_gmail_send', 'google')).toBe(true);
+    expect(mayUse('talks', 'user_gmail_draft', 'google')).toBe(true);
+    expect(mayUse('talks', 'user_gmail_send', 'google')).toBe(true);
   });
 });
 

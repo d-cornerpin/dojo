@@ -46,27 +46,31 @@ const googleAccounts = { agent: 'agent@example.com', user: 'owner@example.com' }
 vi.mock('../../../../google/accounts.js', () => ({
   resolveGoogleAccountForRead: (kind: string, email?: string) =>
     ({ account: { id: kind, email: email ?? googleAccounts[kind] }, labelAccount: false }),
+  resolveGoogleAccountForTool: (kind: string) => ({ account: { id: kind } }),
 }));
 vi.mock('../../../../microsoft/accounts.js', () => ({
   resolveMicrosoftAccountForRead: (kind: string, email?: string) =>
     ({ account: { id: kind, email: email ?? (kind === 'user' ? 'owner@outlook.example' : 'agent@outlook.example') }, labelAccount: false }),
+  resolveMicrosoftAccountForTool: (kind: string) => ({ account: { id: kind } }),
 }));
 
 const googleRead = vi.fn(async () => 'GOOGLE BODY');
 const msRead = vi.fn(async () => 'MICROSOFT BODY');
-vi.mock('../../../../google/tools-read.js', () => ({ executeGoogleReadTool: (...a: unknown[]) => googleRead(...(a as [])) }));
-vi.mock('../../../../google/tools-write.js', () => ({ executeGoogleWriteTool: async () => 'WROTE' }));
-vi.mock('../../../../microsoft/tools-read.js', () => ({ executeMicrosoftReadTool: (...a: unknown[]) => msRead(...(a as [])) }));
-vi.mock('../../../../microsoft/tools-write.js', () => ({ executeMicrosoftWriteTool: async () => 'WROTE' }));
+// The handlers are built from the definitions: each provider declares its four mail reads and their twins.
+const mailReads = (family: string) => ['search', 'read', 'inbox', 'list_attachments']
+  .flatMap((op) => [{ name: `${family}_${op}` }, { name: `user_${family}_${op}` }]);
+vi.mock('../../../../google/tools-read.js', () => ({ googleReadToolDefinitions: mailReads('gmail'), executeGoogleReadTool: (...a: unknown[]) => googleRead(...(a as [])) }));
+vi.mock('../../../../google/tools-write.js', () => ({ googleWriteToolDefinitions: [], executeGoogleWriteTool: async () => 'WROTE' }));
+vi.mock('../../../../google/tools-slides.js', () => ({ slidesToolDefinitions: [], executeGoogleSlidesTool: async () => 'WROTE' }));
+vi.mock('../../../../google/tools-forms.js', () => ({ formsToolDefinitions: [], executeGoogleFormsTool: async () => 'WROTE' }));
+vi.mock('../../../../microsoft/tools-read.js', () => ({ microsoftReadToolDefinitions: mailReads('outlook'), executeMicrosoftReadTool: (...a: unknown[]) => msRead(...(a as [])) }));
+vi.mock('../../../../microsoft/tools-write.js', () => ({ microsoftWriteToolDefinitions: [], executeMicrosoftWriteTool: async () => 'WROTE' }));
 
 const { USER_MAILBOX_READ_TOOLS, AGENT_MAILBOX_READ_TOOLS, prependMailboxOwnerHeader } =
   await import('../mailbox-banner.js');
-const { googleHandlers } = await import('../google.js');
-const { microsoftHandlers } = await import('../microsoft.js');
+const { workspaceHandlers } = await import('../workspace.js');
 
-const table: Record<string, (ctx: { agentId: string; name: string; args: Record<string, unknown>; callId: string }) => Promise<{ content: string; isError: boolean }>> = {
-  ...(googleHandlers as never), ...(microsoftHandlers as never),
-};
+const table = workspaceHandlers as Record<string, (ctx: { agentId: string; name: string; args: Record<string, unknown>; callId: string }) => Promise<{ content: string; isError: boolean }>>;
 const call = (name: string, args: Record<string, unknown> = {}) => table[name]({ agentId: 'a1', name, args, callId: 'c1' });
 
 /** The sentences that make the user banner an injection guard. They are the

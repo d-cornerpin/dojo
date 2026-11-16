@@ -5,7 +5,7 @@
 //   3. Malformed-argument JSON -> PARSE_ERROR. 4. The declared gate loop.
 //   5. The schema boundary: AFTER refusals (a refused call answers "permission
 //      denied"), BEFORE dispatch (no handler sees a shape it could crash on).
-//   6. Dispatch: handler table, else membership fallback.
+//   6. Dispatch: the handler table, else "unknown tool".
 //   7. The tail: fence, admission, unknown-args warning, audit, for every tool's result;
 //      handlers must not return early (a context-budget guarantee rides it).
 
@@ -34,28 +34,16 @@ import { handlerFor } from './handlers.js';
 import { getRegisteredMaxResultTokens } from '../v2/classifiers/concurrency.js';
 import { TOOL_RESULT_VIEW_CHARS, toolResultView } from '../../memory/tool-result-view.js';
 import { CHARS_PER_TOKEN } from '../../memory/budget.js';
-import { prependMailboxOwnerHeader } from './provider/mailbox-banner.js';
 import { fenceOutsideSpan } from '../../tools/inbound-fences.js';
 import { auditLog, agentCanSelfCompleteById, permissionDeniedMessage } from './util.js';
 import { evaluateGate } from './gate-eval.js';
 import { openCallCapability } from '../effects/scopes.js';
-import { mayWriteWorkspace } from '../access/workspace.js';
 import { isPMAgent } from '../../config/platform.js';
 // Single-source PM allow-list, re-checked at this chokepoint: the wall sits above the gate loop.
 import { pmMayCall } from '../../tracker/pm-agent.js';
-import { googleReadToolDefinitions, executeGoogleReadTool } from '../../google/tools-read.js';
-import { googleWriteToolDefinitions, executeGoogleWriteTool } from '../../google/tools-write.js';
-import { microsoftReadToolDefinitions, executeMicrosoftReadTool } from '../../microsoft/tools-read.js';
-import { microsoftWriteToolDefinitions, executeMicrosoftWriteTool } from '../../microsoft/tools-write.js';
 import type { ToolCall, ToolResult, ToolErrorCode } from '@dojo/shared';
 
 const logger = createLogger('tools');
-
-// Dispatch routing sets; membership routing stops newer tools falling to "Unknown tool".
-const GOOGLE_WRITE_TOOL_NAMES = new Set(googleWriteToolDefinitions.map(t => t.name));
-const GOOGLE_READ_TOOL_NAMES = new Set(googleReadToolDefinitions.map(t => t.name));
-const MS_WRITE_TOOL_NAMES = new Set(microsoftWriteToolDefinitions.map(t => t.name));
-const MS_READ_TOOL_NAMES = new Set(microsoftReadToolDefinitions.map(t => t.name));
 
 
 /** The unknown-argument census over the RUNTIME surface, not the core array (blind to
@@ -248,45 +236,21 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
     // Dispatch on the OPERATION, not the raw name: verbs key as `<verb>:<discriminator>`.
     const dispatchKey = workOperation(name, args) ?? name;
 
-    // DISPATCH: every key answers from `tools/cat/*` or `tools/provider/*`; the `else` below
-    // is the old `default:` arm. The tail applies to handler results identically.
-    const relocated = handlerFor(dispatchKey);
-    if (relocated) {
-      const outcome = await relocated({ agentId, name, args, callId: id, toolCall });
+    // DISPATCH: every key answers from `tools/cat/*` or `tools/provider/*`, built from the
+    // definitions, so a name with no handler is unknown. The tail applies to every result.
+    const handler = handlerFor(dispatchKey);
+    if (handler) {
+      const outcome = await handler({ agentId, name, args, callId: id, toolCall });
       content = outcome.content;
       isError = outcome.isError;
       if (outcome.errorCode) errorCode = outcome.errorCode;
-    } else if (
-      // The guard's predicate: the agent's per-ACCOUNT Workspace grant (plus a send's channel grant).
-      (GOOGLE_WRITE_TOOL_NAMES.has(name) || MS_WRITE_TOOL_NAMES.has(name))
-      && !mayWriteWorkspace(agentId, name, GOOGLE_WRITE_TOOL_NAMES.has(name) ? 'google' : 'microsoft')
-    ) {
-      content = 'Permission denied: only the primary agent can use Workspace write tools.';
-      isError = true;
-      auditLog(agentId, name, null, 'denied', 'Workspace write tool restricted to primary agent');
     } else {
-      const dispatchAgentName =
-        (getDb().prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined)?.name ?? agentId;
-      if (GOOGLE_WRITE_TOOL_NAMES.has(name)) {
-        content = await executeGoogleWriteTool(name, args, agentId, dispatchAgentName);
-        isError = content.startsWith('Error');
-      } else if (GOOGLE_READ_TOOL_NAMES.has(name)) {
-        content = prependMailboxOwnerHeader(await executeGoogleReadTool(name, args, agentId, dispatchAgentName), name, args);
-        isError = content.startsWith('Error');
-      } else if (MS_WRITE_TOOL_NAMES.has(name)) {
-        content = await executeMicrosoftWriteTool(name, args, agentId, dispatchAgentName);
-        isError = content.startsWith('Error');
-      } else if (MS_READ_TOOL_NAMES.has(name)) {
-        content = await executeMicrosoftReadTool(name, args, agentId, dispatchAgentName);
-        isError = content.startsWith('Error');
-      } else {
-        // The SAME classified truth as the load_tool_docs path: `unknown`, or `exists_not_allowed`.
-        const allowedToolNames = new Set(getFilteredTools(agentId).map(t => t.name));
-        const knownToolNames = new Set(getAllToolDefinitions().map(t => t.name));
-        content = describeNameFailure([name], allowedToolNames, knownToolNames);
-        isError = true;
-        auditLog(agentId, 'tool_call', name, 'error', 'Unknown tool');
-      }
+      // The SAME classified truth as the load_tool_docs path: `unknown`, or `exists_not_allowed`.
+      const allowedToolNames = new Set(getFilteredTools(agentId).map(t => t.name));
+      const knownToolNames = new Set(getAllToolDefinitions().map(t => t.name));
+      content = describeNameFailure([name], allowedToolNames, knownToolNames);
+      isError = true;
+      auditLog(agentId, 'tool_call', name, 'error', 'Unknown tool');
     }
   } catch (err) {
     content = `Tool execution failed: ${err instanceof Error ? err.message : String(err)}`;

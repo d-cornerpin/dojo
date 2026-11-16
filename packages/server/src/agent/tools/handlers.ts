@@ -30,8 +30,7 @@ import { reportHandlers } from './cat/report.js';
 import { resultReadHandlers } from './cat/result-read.js';
 import { inspectHandlers } from './cat/inspect.js';
 import { documentHandlers } from './cat/documents.js';
-import { googleHandlers } from './provider/google.js';
-import { microsoftHandlers } from './provider/microsoft.js';
+import { workspaceHandlers } from './provider/workspace.js';
 import { plaudHandlers } from './provider/plaud.js';
 import { unifiedHandlers } from './provider/unified.js';
 
@@ -67,8 +66,7 @@ function table(): ReadonlyMap<string, ToolHandler> {
     ...Object.entries(resultReadHandlers),
     ...Object.entries(inspectHandlers),
     ...Object.entries(documentHandlers),
-    ...Object.entries(googleHandlers),
-    ...Object.entries(microsoftHandlers),
+    ...Object.entries(workspaceHandlers),
     ...Object.entries(plaudHandlers),
     ...Object.entries(unifiedHandlers),
   ]);

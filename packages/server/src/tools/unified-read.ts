@@ -324,19 +324,12 @@ interface EnumeratedAccount {
   label: string;
 }
 
-/** A per-account service is enabled unless its JSON explicitly sets it false (defaults are all-on). */
-function serviceEnabled(enabledServices: string | null, service: string): boolean {
-  if (!enabledServices) return true;
-  try {
-    return (JSON.parse(enabledServices) as Record<string, unknown>)[service] !== false;
-  } catch {
-    return true;
-  }
-}
-
-async function enumerateAccounts(service: 'calendar' | 'mail'): Promise<EnumeratedAccount[]> {
+/** Every connected account with the service on that this agent may read (the account door, `access/workspace.ts`). */
+async function enumerateAccounts(service: 'calendar' | 'mail', agentId: string): Promise<EnumeratedAccount[]> {
   const { listGoogleAccounts } = await import('../google/accounts.js');
   const { listMicrosoftAccounts } = await import('../microsoft/accounts.js');
+  const { accountRefusal, serviceEnabled } = await import('../agent/access/workspace.js');
+  const tool = { name: service === 'calendar' ? 'calendar_agenda' : 'email_search' };
 
   const googleService = service === 'calendar' ? 'calendar' : 'gmail';
   const msService = service === 'calendar' ? 'calendar' : 'outlook';
@@ -364,12 +357,12 @@ async function enumerateAccounts(service: 'calendar' | 'mail'): Promise<Enumerat
 
   for (const kind of ['agent', 'user'] as const) {
     for (const a of listGoogleAccounts(kind)) {
-      if (a.connected && serviceEnabled(a.enabledServices, googleService)) {
+      if (a.connected && serviceEnabled(a.enabledServices, googleService) && !accountRefusal(agentId, tool, 'google', { ...a, kind })) {
         out.push(make('google', a.id, kind, a.email, googleProvider));
       }
     }
     for (const a of listMicrosoftAccounts(kind)) {
-      if (a.connected && serviceEnabled(a.enabledServices, msService)) {
+      if (a.connected && serviceEnabled(a.enabledServices, msService) && !accountRefusal(agentId, tool, 'microsoft', { ...a, kind })) {
         out.push(make('microsoft', a.id, kind, a.email, msProvider));
       }
     }
@@ -404,7 +397,7 @@ export async function unifiedCalendarAgenda(
   const { computeCalendarWindow } = await import('../services/calendar-window.js');
   const window = computeCalendarWindow({ days, timezone: requestedTz, start_date: startDate });
 
-  const accounts = await enumerateAccounts('calendar');
+  const accounts = await enumerateAccounts('calendar', agentId);
   if (accounts.length === 0) {
     return 'No calendar is connected. Connect a Google or Microsoft account in Settings to see your agenda.';
   }
@@ -480,7 +473,7 @@ export async function unifiedEmailSearch(
   const days = (args.days as number) ?? 30;
   const limit = (args.limit as number) ?? 5;
 
-  const accounts = await enumerateAccounts('mail');
+  const accounts = await enumerateAccounts('mail', agentId);
   if (accounts.length === 0) {
     return 'No mailbox is connected. Connect a Gmail or Outlook account in Settings to search your email.';
   }
@@ -558,7 +551,7 @@ export async function otherCalendarsAgendaSection(
   agentId: string,
   agentName: string,
 ): Promise<string> {
-  const all = await enumerateAccounts('calendar');
+  const all = await enumerateAccounts('calendar', agentId);
   const accounts = all.filter(
     a => !(a.provider === exclude.provider && a.accountId === exclude.accountId),
   );
@@ -620,7 +613,7 @@ export async function otherMailboxesCountSection(
   agentId: string,
   agentName: string,
 ): Promise<string> {
-  const all = await enumerateAccounts('mail');
+  const all = await enumerateAccounts('mail', agentId);
   const accounts = all.filter(
     a => !(a.provider === exclude.provider && a.accountId === exclude.accountId),
   );

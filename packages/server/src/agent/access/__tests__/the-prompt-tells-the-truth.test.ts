@@ -253,7 +253,7 @@ describe('the strip removes advertisement and never capability', () => {
     // tool on the build-checked send surface: if the filter would remove it, the
     // agent must already be unable to use it — which for the ladder-gated names
     // is a DRIVEN refusal, and for the rest is `mayUseChannel` being the same
-    // predicate the handler wall and `mayWriteWorkspace` ask.
+    // predicate the handler wall and the account door (`accountRefusal`) ask.
     agent('nogrant', { grants: (g) => { g.channels.master = false; } });
     const removable = SEND_TO_PEOPLE.filter((t) => {
       const ch = channelForTool(t);

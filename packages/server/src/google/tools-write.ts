@@ -984,7 +984,9 @@ function loadUserAttachmentsForGmail(
 
 // Every Google write tool can target a connected account of its kind via an `account` param (its email);
 // omit it to use the only connected one. Injected once: base and user_ variants share one input_schema.
+// Each is marked as a write here, so the account door asks for the full level.
 for (const def of googleWriteToolDefinitions) {
+  def.writes = true;
   const schema = def.input_schema as { properties?: Record<string, unknown> };
   if (schema.properties && !schema.properties.account) {
     schema.properties.account = {

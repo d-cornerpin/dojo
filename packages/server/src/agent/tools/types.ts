@@ -74,6 +74,8 @@ export interface ToolDefinition {
   concurrency?: 'safe' | 'serial' | 'agent' | 'special';
   /** Must equal SEND_TO_PEOPLE (sensei-policy.ts keeps a leaf twin, test-enforced); not the 'send' effect. */
   reachesPeople?: true;
+  /** Changes an account's data, so an agent needs the full level on that account (`access/workspace.ts`). */
+  writes?: true;
   maxResultTokens?: number;
   scale?: ToolScale;   // what ONE call can do (several ids, a page); a sibling of input_schema, never on the wire
 }
