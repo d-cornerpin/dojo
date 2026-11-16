@@ -42,7 +42,7 @@ describe('a late verdict on a finished reply changes nothing', () => {
     finish(true);
     await first;
     expect(replyRows()).toMatchObject([{ outcome: 'delivered' }]);
-    expect(pills()).toEqual([`[Reply routed via sending by iMessage to ${PERSON}]`, `[Reply routed via iMessage to ${PERSON}]`]);
+    expect(pills()).toEqual([`[Reply routed via iMessage to ${PERSON} (sending)]`, `[Reply routed via iMessage to ${PERSON}]`]);
     expect(fake.errors).toEqual([]);
   });
 });

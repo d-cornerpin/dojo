@@ -215,15 +215,25 @@ export interface InboundMeta {
   ownerWordsAt?: number;
 }
 
+/** Where a reply stands when it is not simply delivered: waiting to go, failed for good, or dropped by Stop. */
+export type RoutingState = 'sending' | 'not delivered' | 'not sent';
+
 export interface OutboundRoutingMatch {
   channel: ChannelKind;
   recipient: string | null;
+  state: { kind: RoutingState; reason: string | null } | null;
 }
 
-/** Written only via persistRoutingMarker (turn-closures.ts). parseOutboundRouting reads `label` back, so a
- *  delivered reply's label names who got it: "<channel> to <recipient>" ("iMessage to Sam"). */
+/** Written only by the reply sender's pill writer. The label is "<channel> to <recipient>" ("iMessage to Sam"),
+ *  then an optional state from `withRoutingState`; a delivered reply carries none. */
 export function formatRoutingMarker(label: string): string {
   return `[Reply routed via ${label}]`;
+}
+
+/** "<label> (<state>: <reason>)"; the reason is cut short and kept free of the marker's own brackets. */
+export function withRoutingState(label: string, kind: RoutingState, reason?: string | null): string {
+  const why = (reason ?? '').replace(/[[\]()\s]+/g, ' ').trim().slice(0, 80);
+  return `${label} (${kind}${why ? `: ${why}` : ''})`;
 }
 
 export function cleanSenderLabel(raw: string | null | undefined): string | null {
@@ -261,7 +271,7 @@ export function parseOutboundRouting(content: string): OutboundRoutingMatch | nu
   const m = content.trim().match(OUTBOUND_ROUTING_RE);
   if (!m) return null;
   if (m[1] !== undefined) {
-    return { channel: 'imessage', recipient: m[1].trim() || null };
+    return { channel: 'imessage', recipient: m[1].trim() || null, state: null };
   }
   const raw = (m[2] || 'imessage').toLowerCase();
   const channel: ChannelKind =
@@ -270,14 +280,16 @@ export function parseOutboundRouting(content: string): OutboundRoutingMatch | nu
     : raw === 'phone call' ? 'phone'
     : raw === 'sms' ? 'sms'
     : 'imessage';
-  const tail = m[3] || '';
+  const st = (m[3] || '').match(/\s\((sending|not delivered|not sent)(?::\s*([^)]*))?\)$/i);
+  const tail = (m[3] || '').slice(0, st?.index);
   // Teams stamps "to chat <id>", others "to <recipient>"; the non-Teams match is anchored to the tail start
   // so a "to " inside an email subject is never mistaken for a recipient.
   const recipient =
     channel === 'teams'
       ? tail.match(/to chat (.+)$/i)?.[1]?.trim() || null
       : tail.match(/^\s*to (.+)$/i)?.[1]?.trim() || null;
-  return { channel, recipient };
+  const state = st ? { kind: st[1].toLowerCase() as RoutingState, reason: st[2]?.trim() || null } : null;
+  return { channel, recipient, state };
 }
 
 export function isNoReplyClosedMarker(content: string): boolean {

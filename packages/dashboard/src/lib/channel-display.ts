@@ -1,7 +1,7 @@
 // Channel badge presentation: maps a ChannelKind (+ sender/recipient) to the emoji and label
 // on the inbound/outbound chips. ONE source so every chat page renders identical badges;
 // the parsing lives in @dojo/shared, this is the dashboard-side wording.
-import { unfenceExternal, type ChannelKind } from '@dojo/shared';
+import { unfenceExternal, type ChannelKind, type OutboundRoutingMatch } from '@dojo/shared';
 
 /** The fence is for the agent; the owner sees fenced text as it arrived. The ONE dashboard strip. */
 export function withoutFence(content: string): string {
@@ -47,17 +47,17 @@ export function inboundBadge(channel: ChannelKind, sender: string | null): Chann
   };
 }
 
-// Outbound: the agent's reply went out via this channel ("to X via iMessage"). With no recipient
-// to show, fall back to the channel alone; an email reply says "sent via email reply".
-export function outboundBadge(channel: ChannelKind, recipient: string | null): ChannelBadge {
+// Outbound: the reply went out via this channel ("to X via iMessage"), or, not (yet) delivered, where it
+// stands. With no recipient, the channel alone; an email reply says "sent via email reply".
+export function outboundBadge(channel: ChannelKind, recipient: string | null, state: OutboundRoutingMatch['state'] = null): ChannelBadge {
   const who = cleanName(recipient);
   const name = CHANNEL_NAME[channel];
-  return {
-    emoji: CHANNEL_EMOJI[channel],
-    label: who
-      ? `to ${who} via ${name}`
-      : channel === 'email'
-        ? 'sent via email reply'
-        : `sent via ${name}`,
-  };
+  const to = who ? ` to ${who}` : '';
+  const why = state?.reason ? `: ${state.reason}` : '';
+  const delivered = who ? `to ${who} via ${name}` : channel === 'email' ? 'sent via email reply' : `sent via ${name}`;
+  const label = !state ? delivered
+    : state.kind === 'sending' ? `sending by ${name}${to}`
+    : state.kind === 'not delivered' ? `not delivered by ${name}${to}${why}`
+    : `not sent${to}${why}`;
+  return { emoji: CHANNEL_EMOJI[channel], label };
 }

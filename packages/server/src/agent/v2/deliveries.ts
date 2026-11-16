@@ -9,7 +9,8 @@ import { resolveOrCreateConversation } from '../../memory/conversations.js';
 import { noSuchWorkDetail } from '../../work/store.js';
 import { asksAnsweredBy, settleAsksForDelivery } from '../../work/ask-settlement.js';
 import { afterCommit, withUnit } from '../../db/unit.js';
-import { isMidTry, writeRoutingPill, type ReplyAddress } from './channel-sender.js';
+import { isMidTry, pillLabel, writeRoutingPill, type ReplyAddress } from './channel-sender.js';
+import { withRoutingState } from '@dojo/shared';
 import { deliveryIdOf, type LedgerOutcome } from './delivery-outcome.js';
 export { deliveryIdOf, recordedId, type LedgerOutcome } from './delivery-outcome.js';
 
@@ -150,7 +151,7 @@ export interface QueuedReply {
 export async function queueReply(r: QueuedReply): Promise<string | null> {
   // Loaded on use: the credential registry and the sender sit above the ledger in the import graph.
   const { redactHandedCredentials } = await import('../../credentials/secret-fields.js');
-  const { armSenderTimer, pillLabel, writeRoutingPill } = await import('./channel-sender.js');
+  const { armSenderTimer } = await import('./channel-sender.js');
   const { announceLiveWork } = await import('../live-work.js');
   const text = redactHandedCredentials(r.agentId, r.text).trim();
   if (!text) return null;
@@ -167,7 +168,7 @@ export async function queueReply(r: QueuedReply): Promise<string | null> {
     return written;
   });
   if (id === null) return null;
-  await writeRoutingPill(r.agentId, r.turnNumber, `sending by ${label}`);
+  await writeRoutingPill(r.agentId, r.turnNumber, withRoutingState(label, 'sending'));
   announceLiveWork(r.agentId);
   armSenderTimer();
   return id;
@@ -231,8 +232,8 @@ export function resolvePendingDelivery(id: string, seen: DoorVerdict): LedgerOut
  *  caller ends the requests in the same transaction; returns those requests (the asks each reply answered). */
 export function suppressQueuedReplies(agentId: string): { repliesNotSent: number; askIds: string[] } {
   const rows = getDb().prepare(
-    "SELECT id, turn_number, conversation_id FROM deliveries WHERE agent_id = ? AND outcome = 'pending' AND payload_json IS NOT NULL ORDER BY rowid",
-  ).all(agentId) as Array<{ id: string; turn_number: number | null; conversation_id: string | null }>;
+    "SELECT id, turn_number, conversation_id, payload_json FROM deliveries WHERE agent_id = ? AND outcome = 'pending' AND payload_json IS NOT NULL ORDER BY rowid",
+  ).all(agentId) as Array<{ id: string; turn_number: number | null; conversation_id: string | null; payload_json: string }>;
   const askIds = new Set<string>();
   let repliesNotSent = 0;
   for (const row of rows) {
@@ -241,7 +242,9 @@ export function suppressQueuedReplies(agentId: string): { repliesNotSent: number
     if (row.turn_number !== null && row.conversation_id !== null) {
       for (const id of asksAnsweredBy(agentId, row.turn_number, row.conversation_id)) askIds.add(id);
     }
-    afterCommit(() => void writeRoutingPill(agentId, row.turn_number, 'not sent: stopped by you'));
+    const { address } = JSON.parse(row.payload_json) as { address: ReplyAddress };
+    afterCommit(() => void pillLabel(address, address.to).catch(() => address.channel)
+      .then((label) => writeRoutingPill(agentId, row.turn_number, withRoutingState(label, 'not sent', 'stopped by you'))));
   }
   return { repliesNotSent, askIds: [...askIds] };
 }

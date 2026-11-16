@@ -46,7 +46,7 @@ describe('an iMessage reply that fails is tried again and goes', () => {
     expect(imessage.send).toHaveBeenLastCalledWith(PERSON, 'the table is booked for eight');
     expect(replyRows()[0]).toMatchObject({ outcome: 'delivered', attempts: 3 });
     const pills = testDb().prepare("SELECT content FROM messages WHERE role = 'system' ORDER BY rowid").all() as Array<{ content: string }>;
-    expect(pills.map((p) => p.content)).toEqual([`[Reply routed via sending by iMessage to ${PERSON}]`, `[Reply routed via iMessage to ${PERSON}]`]);
+    expect(pills.map((p) => p.content)).toEqual([`[Reply routed via iMessage to ${PERSON} (sending)]`, `[Reply routed via iMessage to ${PERSON}]`]);
   });
 
   it('after five failed tries over about 43 minutes it is failed, logged, and never tried again', async () => {

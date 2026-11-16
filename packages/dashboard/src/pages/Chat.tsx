@@ -1295,6 +1295,8 @@ export const Chat = ({ panel = null }: ChatProps) => {
   const { outboundChannelByAssistantId, hiddenRoutingMarkerIds } = useMemo(() => {
     const byAssistant = new Map<string, OutboundChannelInfo>();
     const hidden = new Set<string>();
+    // Replies still sending, per recipient, oldest first: a later verdict row is that reply's newest state.
+    const sending = new Map<string, string[]>();
     for (let i = 0; i < messages.length; i++) {
       const m = messages[i];
       if (m.role !== 'system') continue;
@@ -1302,16 +1304,18 @@ export const Chat = ({ panel = null }: ChatProps) => {
       // email all resolve recipient + badge consistently.
       const routed = parseOutboundRouting(m.content);
       if (!routed) continue;
-      // Walk backwards through any interleaved tool / system rows to
-      // find the assistant message this marker belongs to.
-      let assistantId: string | null = null;
-      for (let j = i - 1; j >= 0; j--) {
+      const key = `${routed.channel}|${routed.recipient}`;
+      // A verdict belongs to the oldest reply still sending to that recipient; otherwise walk backwards
+      // through any interleaved tool / system rows to find the assistant message this marker belongs to.
+      let assistantId: string | null = routed.state?.kind === 'sending' ? null : sending.get(key)?.shift() ?? null;
+      for (let j = i - 1; j >= 0 && !assistantId; j--) {
         const prev = messages[j];
         if (prev.role === 'assistant') { assistantId = prev.id; break; }
         if (prev.role !== 'tool' && prev.role !== 'system') break;
       }
       if (!assistantId) continue;
-      byAssistant.set(assistantId, outboundBadge(routed.channel, routed.recipient));
+      if (routed.state?.kind === 'sending') sending.set(key, [...(sending.get(key) ?? []), assistantId]);
+      byAssistant.set(assistantId, outboundBadge(routed.channel, routed.recipient, routed.state));
       hidden.add(m.id);
     }
     return { outboundChannelByAssistantId: byAssistant, hiddenRoutingMarkerIds: hidden };
@@ -1521,7 +1525,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
             // badge as the attached path, so phone / Teams / email resolve correctly.
             const routed = parseOutboundRouting(msg.content);
             if (routed) {
-              const badge = outboundBadge(routed.channel, routed.recipient);
+              const badge = outboundBadge(routed.channel, routed.recipient, routed.state);
               return (
                 <div key={msg.id} className="flex justify-start my-1 px-1">
                   <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-ui/[0.05] text-tertiary text-[10px] font-mono">

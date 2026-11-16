@@ -10,6 +10,9 @@ import {
   parseInboundChannel,
   parseOutboundRouting,
   stripInboundChannelMarker,
+  formatRoutingMarker,
+  withRoutingState,
+  type RoutingState,
 } from '@dojo/shared';
 import { TOOL_CATEGORIES } from '../../../tools/categories.js';
 
@@ -106,6 +109,17 @@ describe('channel parsers — real marker shapes', () => {
     expect(parseOutboundRouting('[Reply routed via phone call to Alex]')).toMatchObject({ channel: 'phone', recipient: 'Alex' });
     expect(parseOutboundRouting('[SENT VIA IMESSAGE to Alex]')).toMatchObject({ channel: 'imessage', recipient: 'Alex' });
     expect(parseOutboundRouting('not a marker')).toBeNull();
+  });
+
+  it('parseOutboundRouting reads where a reply stands: sending, delivered, not delivered, not sent', () => {
+    const mark = (state?: [RoutingState, string?]) => formatRoutingMarker(state ? withRoutingState('iMessage to Alex', ...state) : 'iMessage to Alex');
+    expect(parseOutboundRouting(mark(['sending']))).toEqual({ channel: 'imessage', recipient: 'Alex', state: { kind: 'sending', reason: null } });
+    expect(parseOutboundRouting(mark())).toEqual({ channel: 'imessage', recipient: 'Alex', state: null });
+    expect(parseOutboundRouting(mark(['not delivered', 'Messages [is] (not) signed in']))).toEqual({
+      channel: 'imessage', recipient: 'Alex', state: { kind: 'not delivered', reason: 'Messages is not signed in' },
+    });
+    expect(parseOutboundRouting(mark(['not sent', 'stopped by you']))).toEqual({ channel: 'imessage', recipient: 'Alex', state: { kind: 'not sent', reason: 'stopped by you' } });
+    expect(parseOutboundRouting(formatRoutingMarker(withRoutingState('Teams to chat 19abcdef…', 'sending')))).toMatchObject({ channel: 'teams', recipient: '19abcdef…' });
   });
 
   it('stripInboundChannelMarker removes the header + phone trailer', () => {

@@ -384,17 +384,25 @@ export function stopAgent(agentId: string): void {
 }
 
 /** The owner's Stop: replies still waiting to go are dropped and the requests they answered end as called off
- *  by him, in one transaction; then the agent stops. Import and terminate call `stopAgent` alone. */
+ *  by him, in one transaction; then the agent stops, whatever the drop did. Import and terminate call `stopAgent` alone. */
 export function stopByOwner(agentId: string): { repliesNotSent: number } {
-  const { repliesNotSent } = withUnit(() => {
-    const dropped = suppressQueuedReplies(agentId);
-    for (const id of dropped.askIds) {
-      transition(id, { to: 'abandoned', by: 'owner', reason: 'called off by the owner: he pressed Stop', expectedState: 'claimed' });
-    }
-    return dropped;
-  });
-  stopAgent(agentId);
-  return { repliesNotSent };
+  try {
+    return withUnit(() => {
+      const dropped = suppressQueuedReplies(agentId);
+      for (const id of dropped.askIds) {
+        const r = transition(id, { to: 'abandoned', by: 'owner', reason: 'called off by the owner: he pressed Stop', expectedState: 'claimed' });
+        if (r.kind !== 'applied') logger.debug('stop: a request was not called off', { workId: id, outcome: r.kind }, agentId);
+      }
+      return { repliesNotSent: dropped.repliesNotSent };
+    });
+  } catch (err) {
+    logger.error('stop: queued replies could not be dropped; the agent is stopped anyway', { error: err instanceof Error ? err.message : String(err) }, agentId);
+    return { repliesNotSent: 0 };
+  } finally {
+    stopAgent(agentId);
+    // With no run to cut, a standing flag would only cut the person's next turn.
+    if (!activeRuns.has(agentId)) stoppedAgents.delete(agentId);
+  }
 }
 
 // Clear one-shot markers (stopAgent, a2a-transport); the DELIVERING turn clears, never the assembler,

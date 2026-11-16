@@ -3,7 +3,7 @@
 // the row's own turn; its verdict is written on that row: delivered, due again after a wait, or failed for good.
 // The ledger, the transports and their lookups load on use: this module sits under the live-work reader.
 import { v4 as uuidv4 } from 'uuid';
-import { formatRoutingMarker, type InboundMeta } from '@dojo/shared';
+import { formatRoutingMarker, withRoutingState, type InboundMeta } from '@dojo/shared';
 import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
 import { broadcast } from '../../gateway/ws.js';
@@ -61,7 +61,11 @@ export function replyAddressFor(meta: Partial<InboundMeta> & { channel: string }
 export async function pillLabel(a: ReplyAddress, to: string | null): Promise<string> {
   const { resolveRecipientDisplay } = await import('../../contacts/resolve-recipient.js');
   switch (a.channel) {
-    case 'imessage': return `iMessage to ${to ? resolveRecipientDisplay('imessage', to) : 'the owner'}`;
+    case 'imessage': {
+      // An owner-bound reply names the owner now, so its waiting, sent and stopped marks read alike.
+      const who = to ?? (await import('../../services/imessage-bridge.js')).getDefaultSender();
+      return `iMessage to ${who ? resolveRecipientDisplay('imessage', who) : 'the owner'}`;
+    }
     case 'sms': return `SMS to ${resolveRecipientDisplay('sms', a.to)}`;
     case 'email': return `email to ${to ? resolveRecipientDisplay('email', to) : 'the sender'}`;
     case 'teams': return `Teams to chat ${a.chatId.slice(0, 8)}…`;
@@ -196,6 +200,8 @@ function sendAsItsTurn(row: QueuedRow, payload: { text: string; address: ReplyAd
 /** The check before any send: the agent holds the channel, the person is approved, an SMS has a number. Final if not. */
 async function refusalOf(agentId: string, a: ReplyAddress, to: string | null): Promise<{ kind: RefusalKind; detail: string } | null> {
   const { engineMayRouteTo, engineRouteRefusalReason } = await import('../access/engine-route.js');
+  const agent = getDb().prepare('SELECT status FROM agents WHERE id = ?').get(agentId) as { status: string } | undefined;
+  if (!agent || agent.status === 'terminated') return { kind: 'agent-ended', detail: 'the agent was ended' };
   if (!engineMayRouteTo(agentId, a.channel)) return { kind: 'no-grant', detail: engineRouteRefusalReason(a.channel) };
   const { mayAnswer } = await import('./channel-auth.js');
   const approved = to !== null && mayAnswer(a.channel, to, 'agent', a.channel === 'email' ? { emailService: a.service ?? undefined, fromOwner: a.fromOwner } : undefined);
@@ -260,7 +266,7 @@ async function recordVerdict(row: QueuedRow, address: ReplyAddress | null, to: s
     return true;
   }
   logger.error('a reply could not be delivered', { deliveryId: row.id, attempts, reason: v.detail }, row.agent_id);
-  await writeRoutingPill(row.agent_id, row.turn_number, `not delivered by ${label}: ${v.detail ?? 'unknown reason'}`);
+  await writeRoutingPill(row.agent_id, row.turn_number, withRoutingState(label, 'not delivered', v.detail ?? 'unknown reason'));
   // Telling the owner and the agent never undoes or blocks the verdict.
   try { (await import('../dojo-voice.js')).tellOfUndeliveredReply(row.id, label, v.refusal); } catch (err) {
     logger.warn('an undelivered reply was not told', { deliveryId: row.id, error: err instanceof Error ? err.message : String(err) }, row.agent_id);

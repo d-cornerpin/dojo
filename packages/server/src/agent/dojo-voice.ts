@@ -39,6 +39,7 @@ const PLAIN_WHY = {
   'not-approved': 'they are no longer on the approved list',
   'no-grant': 'this agent is not allowed to use that channel',
   'no-from-number': 'there is no number to send the text from',
+  'agent-ended': 'the agent was ended',
   imessage: 'Messages could not send it',
   sms: 'the text service did not take it',
   email: 'the mail service refused it',
