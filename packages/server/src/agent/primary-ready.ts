@@ -9,9 +9,10 @@ const logger = createLogger('primary-ready');
 const LOUD_AFTER = 3;
 
 const waited = new Map<string, number>();
+const pending = new Set<string>();   // one retry per caller: every work_open asks again, and each retry re-arms itself
 
 /** true: carry on; any wait recorded for this caller is forgotten.
- *  false: the caller MUST return; the retry is already scheduled, ignoring it double-schedules. */
+ *  false: the caller MUST return; a retry is scheduled (only one per caller is ever pending). */
 export function primaryReady(who: string, primaryId: string, retry: () => void): boolean {
   const exists = getDb().prepare('SELECT id FROM agents WHERE id = ?').get(primaryId);
   if (exists) {
@@ -35,6 +36,9 @@ export function primaryReady(who: string, primaryId: string, retry: () => void):
     logger.warn(`Primary agent not yet created, deferring ${who} spawn`, { primaryId, cycles });
   }
 
-  setTimeout(retry, 5_000);
+  if (!pending.has(who)) {
+    pending.add(who);
+    setTimeout(() => { pending.delete(who); retry(); }, 5_000);
+  }
   return false;
 }
