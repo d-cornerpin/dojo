@@ -9,6 +9,7 @@ import { findMatchingContact } from '../../contacts/store.js';
 import { recipientIdsMatch } from '../recipient-identity.js';
 import type { ToolReceiptRow } from '../../receipts/store.js';
 import { recordedInstant } from '../../memory/message-stamp.js';
+import { pendingReplies } from './channel-sender.js';
 
 const logger = createLogger('outbound-ledger');
 
@@ -26,6 +27,8 @@ export interface OutboundDelivery {
   turnNumber: number | null;
   verified: boolean;
   createdAt: string;
+  /** A reply the sender holds queued: recorded, not gone out yet. */
+  waiting?: true;
 }
 
 /** Map a receipt's tool to its channel (a2a for the inter-agent sends). */
@@ -113,7 +116,8 @@ export function findRecentDeliveries(
   }
 }
 
-/** The last `limit` deliveries in the window, newest first, any recipient: the RECENT OUTBOUND block. */
+/** The last `limit` deliveries in the window, newest first, any recipient, after the replies still queued: the
+ *  RECENT OUTBOUND block. */
 export function getRecentOutbound(
   agentId: string,
   windowHours: number,
@@ -131,7 +135,11 @@ export function getRecentOutbound(
         ORDER BY created_at DESC
         LIMIT ?`,
     ).all(agentId, `-${hours} hours`, ...NON_SEND_RECEIPT_TOOLS, n) as ToolReceiptRow[];
-    return rows.map(rowToDelivery);
+    const waiting = pendingReplies(agentId).map((w): OutboundDelivery => ({
+      tool: 'auto-route', channel: w.channel, recipient: w.recipient, sentText: null, convKey: null,
+      turnNumber: null, verified: false, createdAt: w.createdAt, waiting: true,
+    }));
+    return [...waiting, ...rows.map(rowToDelivery)];
   } catch (err) {
     logger.warn('getRecentOutbound failed (non-fatal)', {
       agentId, error: err instanceof Error ? err.message : String(err),
@@ -332,7 +340,8 @@ export const RECENT_OUTBOUND_HEAD = 'RECENT OUTBOUND (engine-verified):';
 export function renderRecentOutboundBlock(rows: readonly OutboundDelivery[]): string | null {
   if (rows.length === 0) return null;
   const lines = rows.map(
-    (d) => `${recordedInstant(d.createdAt)} ${channelLabel(d.channel)} -> ${d.recipient ?? 'unknown'}`,
+    (d) => `${recordedInstant(d.createdAt)} ${channelLabel(d.channel)} -> ${d.recipient ?? 'unknown'}${
+      d.waiting ? ': not gone out yet, the Dojo is still trying' : ''}`,
   );
   return `${RECENT_OUTBOUND_HEAD}\n${lines.join('\n')}`;
 }

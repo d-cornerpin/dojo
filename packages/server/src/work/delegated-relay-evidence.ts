@@ -9,6 +9,7 @@
 
 import { getDb } from '../db/connection.js';
 import { appendWorkEvent, askIdForMessage } from './store.js';
+import { CHANNEL_MATCHES } from './ask-settlement.js';
 
 export const OWED_ASK_SHOWN_MARKER = 'owed_ask_shown_to_model';
 
@@ -79,7 +80,7 @@ export function relayThatAnsweredOwedAsk(
       const relay = db.prepare(
         `SELECT d.id AS id, d.tool AS tool FROM deliveries d
           WHERE d.agent_id = @agentId AND d.conversation_id = @conv AND d.outcome = 'delivered'
-            AND d.tool IN (${relaySql}) AND json_extract(d.payload_json, '$.joinId') = @joinId
+            AND d.tool IN (${relaySql}) AND json_extract(d.payload_json, '$.joinId') = @joinId AND ${CHANNEL_MATCHES}
             AND unixepoch(d.created_at) >= @floorSec
           ORDER BY d.rowid ASC LIMIT 1`,
       ).get({

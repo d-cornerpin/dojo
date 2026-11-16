@@ -177,13 +177,27 @@ describe('CENSUS B — the structural invariant: no `claimed` ask outlives its t
       `SELECT id, claimed_by_turn FROM work
         WHERE kind = 'ask' AND state = 'claimed' AND claimed_by_turn IN (1,2,3)`,
     ).all() as Array<{ id: string; claimed_by_turn: number }>;
-    expect(survivors, 'a claimed ask whose turn has finalized is the fossil this task deletes').toEqual([]);
+    expect(survivors, 'a claimed ask whose turn has finalized, with no reply on its way, is the fossil').toEqual([]);
 
     const state = (id: string): string => (db.prepare('SELECT state FROM work WHERE id = ?')
       .get(askIdForMessage(id)) as { state: string }).state;
     expect(state('m-answered')).toBe('done');
     expect(state('m-silent'), 'no evidence means the owner is served again, never parked').toBe('open');
     expect(state('m-delegated'), 'delegated work outstanding means held, and visibly owed').toBe('blocked');
+  });
+
+  it('the one exception: an ask whose reply is still on its way stays claimed with its turn', () => {
+    const db = mockDb.current!;
+    insertMessage(ownerInbound({ id: 'm-in-flight' }) as never);
+    claimAsk(askIdForMessage('m-in-flight'), AGENT);
+    stampClaimingTurn(askIdForMessage('m-in-flight'), 4);
+    db.prepare(
+      `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, conversation_id, outcome, payload_json, next_attempt_at)
+       VALUES ('d-q', ?, 4, 'auto-route', 'imessage', ?, 'pending', '{"text":"on its way"}', 0)`,
+    ).run(AGENT, CONV);
+    settleAsksAtTurnFinalize({ agentId: AGENT, turnNumber: 4 });
+    const state = (db.prepare('SELECT state FROM work WHERE id = ?').get(askIdForMessage('m-in-flight')) as { state: string }).state;
+    expect(state).toBe('claimed');
   });
 
   it('every ending is NON-TERMINAL or delivery-backed — nothing is quietly written off', () => {

@@ -40,11 +40,19 @@ export const NON_ANSWERING_DISPLAY_KINDS = ['tool-turn', 'working-note'] as cons
  *  `a2a-join-failed` (a no-answer notice) and `a2a-join-late` (it has its own arm) are absent on purpose. */
 export const ENGINE_JOIN_RELAY_TOOLS = new Set(['a2a-join-relay']);
 
-/** A reply to the request `w` is on its way: a queued answering row carries it as its `joinId` (a relay). */
+/** A reply to the request `w` is on its way: a queued answering row of the turn that claimed it, in its
+ *  conversation, or one that carries it as its `joinId` (a relay). A start line alone is not a reply. */
 export const REPLY_IN_FLIGHT =
   `EXISTS (SELECT 1 FROM deliveries rf WHERE rf.outcome = 'pending' AND rf.payload_json IS NOT NULL
       AND json_valid(rf.payload_json) AND rf.tool NOT IN (${[...NON_ANSWERING_DELIVERY_TOOLS].map((t) => `'${t}'`).join(', ')})
-      AND json_extract(rf.payload_json, '$.joinId') = w.id)`;
+      AND ((rf.agent_id = w.agent_id AND rf.turn_number = w.claimed_by_turn AND rf.conversation_id = w.conversation_id)
+           OR json_extract(rf.payload_json, '$.joinId') = w.id))`;
+
+/** A request closes only on a row of its own channel; a dashboard, voice or phone request (live) also on the
+ *  dashboard copy of its reply. Over the delivery `d`. */
+export const CHANNEL_MATCHES =
+  `EXISTS (SELECT 1 FROM conversations cm WHERE cm.id = d.conversation_id
+      AND (cm.channel IN ('dashboard', 'voice', 'phone') OR cm.channel = d.channel))`;
 
 export function replyInFlight(askId: string): boolean {
   return getDb().prepare(`SELECT 1 FROM work w WHERE w.id = ? AND ${REPLY_IN_FLIGHT}`).get(askId) !== undefined;
@@ -123,6 +131,7 @@ function qualifyingDelivery(
         AND ${NOT_A_SUPERSEDED_BUBBLE}
         AND ${NOT_A_START_ACK}
         AND ${NOT_OWED_PAST_THIS_DELIVERY}
+        AND ${CHANNEL_MATCHES}
         AND unixepoch(d.created_at) >= ?
       ORDER BY d.created_at DESC, d.rowid DESC LIMIT 1`,
   ).get(ask.agent_id, turnNumber, ask.conversation_id, ...excluded,
@@ -185,7 +194,7 @@ export function realAnswerInConversationSince(
     `SELECT d.id AS id, d.tool AS tool FROM deliveries d
       WHERE d.agent_id = ? AND d.conversation_id = ? AND d.outcome = 'delivered'
         AND d.tool NOT IN (${excluded.map(() => '?').join(', ')})
-        AND d.tool NOT LIKE '%-door' AND ${NOT_A_TOOL_CHIP} AND ${NOT_A_START_ACK}
+        AND d.tool NOT LIKE '%-door' AND ${NOT_A_TOOL_CHIP} AND ${NOT_A_START_ACK} AND ${CHANNEL_MATCHES}
         AND d.created_at >= ?
       ORDER BY d.created_at DESC, d.rowid DESC LIMIT 1`,
   ).get(agentId, conversationId, ...excluded, notBefore) as { id: string; tool: string } | undefined) ?? null;
@@ -313,11 +322,27 @@ function standDownReServe(
   return out('held', reason);
 }
 
+/** The turn's reply to this ask's conversation that ended failed on its channel, or (once the turn is over) was held
+ *  with no way to send it. */
+function undeliveredReply(ask: AskRow, turnNumber: number | null, turnOver: boolean): { id: string; outcome: string; detail: string | null } | null {
+  if (turnNumber == null || ask.conversation_id == null) return null;
+  const excluded = [...NON_ANSWERING_DELIVERY_TOOLS];
+  return (getDb().prepare(
+    `SELECT id, outcome, detail FROM deliveries
+      WHERE agent_id = ? AND turn_number = ? AND conversation_id = ? AND tool NOT IN (${excluded.map(() => '?').join(', ')})
+        AND ((outcome = 'failed' AND payload_json IS NOT NULL) OR (outcome = 'held' AND ? = 1))
+      ORDER BY rowid DESC LIMIT 1`,
+  ).get(ask.agent_id, turnNumber, ask.conversation_id, ...excluded, turnOver ? 1 : 0) as { id: string; outcome: string; detail: string | null } | undefined) ?? null;
+}
+
 function joinOutstanding(ask: AskRow): boolean {
   return (ask.remaining_children ?? 0) > 0 || ask.compile_pending === 1;
 }
 
-/** The authority: every ask transition into `done`, and every decision not to, goes through here. */
+/** The authority: every ask transition into `done`, and every decision not to, goes through here.
+ *  Arm order: terminal; async; join; join hold; evidence; reply in flight; reply undelivered or held; then the
+ *  no-evidence arms. In flight sits below evidence: an answer delivered on the request's own channel closes it
+ *  even while a second reply waits. */
 export function settleAsk(workId: string, ctx: SettlementContext): AskSettlementOutcome {
   const actorId = ctx.actorId ?? ctx.agentId;
   const out = (verdict: AskSettlementVerdict, detail: string, deliveryId: string | null = null):
@@ -467,6 +492,15 @@ export function settleAsk(workId: string, ctx: SettlementContext): AskSettlement
     return out('closed', `delivered via ${evidence.tool}`, evidence.id);
   }
 
+  // The reply is queued and the sender will try: the ask stays with its turn, neither owed nor served again.
+  if (ask.state === 'claimed' && replyInFlight(workId)) return out('held', 'the reply is on its way');
+  const undelivered = ask.state === 'claimed' ? undeliveredReply(ask, ctx.turnNumber, ctx.at !== 'delivery') : null;
+  if (undelivered) {
+    const why = `the reply could not be sent (${undelivered.outcome}): ${undelivered.detail ?? 'no reason recorded'}`;
+    const r = transition(workId, { to: 'failed', by: 'engine', actorId: 'ask-settlement', expectedState: ask.state, evidenceRef: undelivered.id, reason: why });
+    return r.kind === 'applied' ? out('closed', why) : out('unchanged', `fail refused: ${r.kind}`);
+  }
+
   // No turn-bound evidence, but its background jobs' results already reached the owner and nothing is owed.
   if (ctx.at === 'finalize') {
     const late = settleOnAsyncResult(ask, { ...ctx, deliveryId: null }, actorId, out);
@@ -532,7 +566,8 @@ function joinCompletedAt(workId: string): number | null {
   return r?.at ?? null;
 }
 
-/** The compiled answer's receipt, or null. A named delivery is checked by the same predicate. */
+/** The compiled answer's receipt, or null. A named delivery is checked by the same predicate. The dashboard copy
+ *  of a delegated request's answer, or of a background job's result, still counts here, whatever the channel. */
 function compiledDelivery(
   ask: AskRow, completedAtMs: number, named: string | null | undefined, afterTurn: number | null,
 ): { id: string; tool: string } | null {
@@ -804,7 +839,8 @@ export function settleAsksForDelivery(p: DeliveryCloseInput): number {
     else if (p.outcome === 'failed') onRelayEnded(p.joinId, p);
     return 0;
   }
-  if (p.outcome !== 'delivered') return 0;
+  // A reply that failed for good settles its asks too: they end failed rather than wait for ever.
+  if (p.outcome !== 'delivered' && p.outcome !== 'failed') return 0;
   if (p.turnNumber == null || p.conversationId == null) return 0;
   if (NON_ANSWERING_DELIVERY_TOOLS.has(p.tool)) return 0;
   let closed = 0;
@@ -867,9 +903,9 @@ export interface FinalizeSettlementInput {
 
 export interface FinalizeSettlementResult { closed: number; held: number; reopened: number }
 
-/** The turn is over: every ask it claimed or assembled gets its verdict. No ask stays `claimed` by a
- *  finalized turn (`work/__tests__/ask-done-census.test.ts`). The claimed set is scoped by turn, not
- *  conversation: an ask picked up and answered elsewhere is still this turn's to dispose of. */
+/** The turn is over: every ask it claimed or assembled gets its verdict. No ask stays `claimed` by a finalized
+ *  turn unless its reply is on its way (`work/__tests__/ask-done-census.test.ts`). The claimed set is scoped by
+ *  turn, not conversation: an ask picked up and answered elsewhere is still this turn's to dispose of. */
 export function settleAsksAtTurnFinalize(p: FinalizeSettlementInput): FinalizeSettlementResult {
   const result: FinalizeSettlementResult = { closed: 0, held: 0, reopened: 0 };
   const db = getDb();

@@ -102,13 +102,16 @@ export function isMidTry(rowId: string): boolean {
   return midTry.has(rowId);
 }
 
-/** Replies of this agent still waiting to go out. */
-export function pendingReplies(agentId: string): number {
+export interface WaitingReply { channel: ReplyAddress['channel']; recipient: string | null; createdAt: string }
+
+/** Replies of this agent still waiting to go out, newest first. */
+export function pendingReplies(agentId: string): WaitingReply[] {
   try {
-    return (getDb().prepare(
-      "SELECT COUNT(*) AS n FROM deliveries WHERE agent_id = ? AND outcome = 'pending' AND payload_json IS NOT NULL",
-    ).get(agentId) as { n: number }).n;
-  } catch { return 0; }
+    return getDb().prepare(
+      `SELECT channel, COALESCE(recipient_display, recipient_id) AS recipient, created_at AS createdAt FROM deliveries
+        WHERE agent_id = ? AND outcome = 'pending' AND payload_json IS NOT NULL ORDER BY rowid DESC`,
+    ).all(agentId) as WaitingReply[];
+  } catch { return []; }
 }
 
 /** When the next reply can go: the earliest due time of the oldest waiting row of each conversation. */

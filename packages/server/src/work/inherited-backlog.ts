@@ -8,7 +8,7 @@ import { createLogger } from '../logger.js';
 import { appendWorkEvent, dismissCommitment, transition } from './store.js';
 import { insertEngineEventIfAbsent } from '../memory/message-store.js';
 import { ageInWords } from './hand-back-facts.js';
-import { INHERITED_BACKLOG_MARKER, settleAsk } from './ask-settlement.js';
+import { INHERITED_BACKLOG_MARKER, REPLY_IN_FLIGHT, settleAsk } from './ask-settlement.js';
 export { INHERITED_BACKLOG_MARKER };
 
 const logger = createLogger('inherited-backlog');
@@ -50,7 +50,7 @@ export function parkInheritedBacklog(deadTurn: string, bootAt = PROCESS_STARTED_
       LEFT JOIN conversations c ON c.id = w.conversation_id
      WHERE w.kind = 'ask' AND w.state = 'claimed'
        AND (t.turn_number IS NULL OR ${deadTurn})
-       AND NOT (t.exit_reason IS 'terminated' AND t.ended_at >= ?)
+       AND NOT (t.exit_reason IS 'terminated' AND t.ended_at >= ?) AND NOT ${REPLY_IN_FLIGHT}
      ORDER BY w.opened_at
   `).all(bootAt) as Inherited[];
   const byAgent = new Map<string, Inherited[]>();

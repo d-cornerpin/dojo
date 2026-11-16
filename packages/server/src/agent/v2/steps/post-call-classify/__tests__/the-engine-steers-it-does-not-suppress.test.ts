@@ -12,12 +12,11 @@ import {
   POST_CALL_CLASSIFY_PHASE,
   type PostCallClassifyContext,
 } from '../index.js';
-import { FX, FXID } from '../../../../../../../../deploy/checks/fixture-vocabulary.mjs';
+import { FX } from '../../../../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 // ── The step's outside world ──
 // Each mock stands in for a DOOR the span already went through; none of them changes
 // a decision.
-const { delivered } = vi.hoisted(() => ({ delivered: { value: false } }));
 const broadcastSpy = vi.fn();
 vi.mock('../../../../../gateway/ws.js', () => ({ broadcast: (...a: unknown[]) => broadcastSpy(...(a as [])) }));
 
@@ -29,17 +28,11 @@ vi.mock('../../../../../memory/message-store.js', async (importOriginal) => ({
   insertEngineEventIfAbsent: (...a: unknown[]) => insertEngineEventIfAbsentSpy(...(a as [])),
 }));
 
-vi.mock('../../../answered-edge.js', async (importOriginal) => ({ ...(await importOriginal<Record<string, unknown>>()), turnDeliveredToPerson: () => delivered.value }));
 vi.mock('../../../../../services/presence.js', () => ({ getPresence: () => 'away' }));
 
-// A unit test must not open the dev database. Every DB reader in this span is a door
-// it already went through inside the loop; the stub answers nothing.
+// A migrated in-memory database: the delivery ledger the double-answer guard reads is the real one.
+vi.mock('../../../../../db/connection.js', async () => (await import('../../../__tests__/helpers/reply-sender.js')).connectionMock());
 const emptyStmt = { all: () => [], get: () => undefined, run: () => ({ changes: 0 }) };
-const fakeDb = {
-  prepare: () => emptyStmt,
-  transaction: (fn: (...a: unknown[]) => unknown) => (...a: unknown[]) => fn(...a),
-} as unknown as PostCallClassifyContext['db'];
-vi.mock('../../../../../db/connection.js', () => ({ getDb: () => fakeDb }));
 
 const reArmIfStrandedNoAnswerSpy = vi.fn();
 const noteTerminalAnswerSpy = vi.fn();
@@ -49,7 +42,8 @@ const startAckRepliedNowSpy = vi.fn(() => false);
 
 function turnCtxFor(over: Record<string, unknown> = {}): PostCallClassifyContext['turnCtx'] {
   return {
-    agentId: FXID.n4,
+    agentId: AGENT,
+    root: { kind: 'ask', id: 'msg-user-1', sourceMessageId: 'msg-user-1', conversationId: 'conv-1' },
     kind: 'user',
     convKey: 'ck-1',
     conversationId: 'conv-1',
@@ -74,11 +68,11 @@ const modelResult = (
 
 function ctxFor(over: Partial<PostCallClassifyContext> = {}): PostCallClassifyContext {
   return {
-    agentId: FXID.n4,
+    agentId: AGENT,
     turnCtx: turnCtxFor(),
     turnNumber: 7,
-    db: fakeDb,
-    agent: { id: FXID.n4, name: FX.n4 } as unknown as PostCallClassifyContext['agent'],
+    db: testDb(),
+    agent: { id: AGENT, name: FX.n4 } as unknown as PostCallClassifyContext['agent'],
     counterparty: { kind: 'user', relation: 'owner', channel: 'dashboard' } as unknown as PostCallClassifyContext['counterparty'],
     counterpartyIsAgentSender: false,
     chosenConvKey: 'ck-1',
@@ -116,7 +110,7 @@ function freshState(over: Partial<AgentTurnState> = {}): AgentTurnState {
   // positionally: `state.modelId` is one of this step's four outputs, so a state built
   // sloppily would make that output read `undefined` and the clause prove nothing.
   const base = initState({
-    agentId: FXID.n4, contextWindow: 128_000, isAutoRouted: false,
+    agentId: AGENT, contextWindow: 128_000, isAutoRouted: false,
     configuredModelId: 'test-model', turnNumber: 7, triggeredByIMessage: false,
     triggeredByA2AReplyIntent: null, lastUserMessageContent: 'what is the answer?',
     lastUserMessageId: 'msg-user-1',
@@ -126,6 +120,10 @@ function freshState(over: Partial<AgentTurnState> = {}): AgentTurnState {
 
 
 import { runCloseoutFloors } from '../closeout-floors.js';
+import { runMigrations } from '../../../../../db/migrations.js';
+import { freshReplyDb, testDb, AGENT } from '../../../__tests__/helpers/reply-sender.js';
+import { claimedAsk } from '../../../__tests__/helpers/owner-stop.js';
+import { dashboardCopy } from '../../../__tests__/helpers/text-request.js';
 import { runReplyFloors } from '../reply-floors.js';
 import { steerFired } from '../../../steer-queue.js';
 import type { PostCallScratch } from '../index.js';
@@ -137,9 +135,13 @@ const dbWithRecentReply = (content: string): PostCallClassifyContext['db'] => ({
   transaction: (fn: (...a: unknown[]) => unknown) => (...a: unknown[]) => fn(...a),
 } as unknown as PostCallClassifyContext['db']);
 
+beforeEach(() => freshReplyDb(runMigrations));
+
 describe('the 30-character closeout after a delivery is steered, not retracted', () => {
   it('THE RED: first time the floor fires, the line is held (not retracted) and the agent is told; written again, it goes out', async () => {
-    delivered.value = true;
+    // A text turn: the answer's dashboard copy is on the ledger under the person's iMessage conversation.
+    claimedAsk('msg-user-1', 'conv-1', 7);
+    dashboardCopy(7, 'conv-1');
     const sc = scFor('All set.');
     const out = runCloseoutFloors(freshState(), ctxFor({ result: modelResult({ content: 'All set.' }) }), sc);
     expect(retracted()).toBe(false);

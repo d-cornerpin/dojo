@@ -7,6 +7,7 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { askAnswerEvidence, settleAsk, NON_ANSWERING_DISPLAY_KINDS, realAnswerInConversationSince } from './ask-settlement.js';
 import { appendWorkEvent, claimingTurnOf, clearJoinCompilePending, transition } from './store.js';
+import { ORPHANED_CLAIM } from './orphaned-claims.js';
 
 const logger = createLogger('ask-remediation');
 
@@ -51,36 +52,44 @@ function anyLaterRealDelivery(
   return realAnswerInConversationSince(agentId, conversationId, notBefore) !== null;
 }
 
+/** Class 1, also the heal run at every start: asks still `claimed` whose claiming turn ended normally are settled
+ *  again at finalize (a reply still on its way holds them). An ask of a gone or dead turn is the crash arm's. */
+export function healStuckClaims(dry = false): { counts: AskRemediationReport['stuckClaimed']; reopenedIds: string[] } {
+  const counts = { candidates: 0, closed: 0, held: 0, reopened: 0, unchanged: 0 };
+  const reopenedIds: string[] = [];
+  const stuck = getDb().prepare(
+    `SELECT w.id AS id, w.agent_id AS agent_id, w.claimed_by_turn AS turn_number
+       FROM work w
+       LEFT JOIN turns t ON t.agent_id = w.agent_id AND t.turn_number = w.claimed_by_turn
+      WHERE w.kind = 'ask' AND w.state = 'claimed' AND NOT ${ORPHANED_CLAIM}
+      ORDER BY w.opened_at`,
+  ).all() as Array<{ id: string; agent_id: string; turn_number: number }>;
+  counts.candidates = stuck.length;
+  for (const row of stuck) {
+    if (dry) {
+      if (askAnswerEvidence(row.id, row.turn_number)) counts.closed++; else counts.reopened++;
+      continue;
+    }
+    const v = settleAsk(row.id, {
+      agentId: row.agent_id, turnNumber: row.turn_number, at: 'finalize', actorId: REMEDIATION_ACTOR,
+    });
+    if (v.verdict === 'closed') counts.closed++;
+    else if (v.verdict === 'held') counts.held++;
+    else if (v.verdict === 'reopened') { counts.reopened++; reopenedIds.push(row.id); }
+    else counts.unchanged++;
+  }
+  return { counts, reopenedIds };
+}
+
 /** Runs the pass; `dryRun` counts every branch without writing. */
 export function remediateAskLedger(opts: { dryRun?: boolean } = {}): AskRemediationReport {
   const dry = opts.dryRun === true;
   const db = getDb();
   const r = emptyReport();
 
-  // Class 1: asks still `claimed` whose claiming turn finalized or has no turn row; in-flight turns excluded.
-  const stuck = db.prepare(
-    `SELECT w.id AS id, w.agent_id AS agent_id, w.claimed_by_turn AS turn_number
-       FROM work w
-       LEFT JOIN turns t ON t.agent_id = w.agent_id AND t.turn_number = w.claimed_by_turn
-      WHERE w.kind = 'ask' AND w.state = 'claimed'
-        AND (w.claimed_by_turn IS NULL OR t.turn_number IS NULL OR t.ended_at IS NOT NULL)
-      ORDER BY w.opened_at`,
-  ).all() as Array<{ id: string; agent_id: string; turn_number: number | null }>;
-  r.stuckClaimed.candidates = stuck.length;
-  for (const row of stuck) {
-    if (dry) {
-      const ev = askAnswerEvidence(row.id, row.turn_number);
-      if (ev) r.stuckClaimed.closed++; else r.stuckClaimed.reopened++;
-      continue;
-    }
-    const v = settleAsk(row.id, {
-      agentId: row.agent_id, turnNumber: row.turn_number, at: 'finalize', actorId: REMEDIATION_ACTOR,
-    });
-    if (v.verdict === 'closed') r.stuckClaimed.closed++;
-    else if (v.verdict === 'held') r.stuckClaimed.held++;
-    else if (v.verdict === 'reopened') { r.stuckClaimed.reopened++; r.reopenedIds.push(row.id); }
-    else r.stuckClaimed.unchanged++;
-  }
+  const healed = healStuckClaims(dry);
+  r.stuckClaimed = healed.counts;
+  r.reopenedIds.push(...healed.reopenedIds);
 
   // Class 2: asks answered then written off `abandoned`. Two recorded moves: the engine re-opens
   // the row pointing at the answering delivery, then the authority closes it against it.

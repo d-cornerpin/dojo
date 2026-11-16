@@ -40,7 +40,7 @@ function openJobRows(agentId: string): number {
 export function liveWork(agentId: string): LiveWork {
   return {
     turn: countAbortable(agentId, 'turn'),
-    background: Math.max(countAbortable(agentId, 'background'), openJobRows(agentId)) + pendingReplies(agentId),
+    background: Math.max(countAbortable(agentId, 'background'), openJobRows(agentId)) + pendingReplies(agentId).length,
   };
 }
 

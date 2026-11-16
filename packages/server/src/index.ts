@@ -412,6 +412,14 @@ async function main(): Promise<void> {
     } catch (err) {
       logger.warn('Boot crash-reconciliation failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
     }
+    // Every boot: an ask left claimed by a turn that ended is settled again; one whose reply is still queued waits.
+    try {
+      const { healStuckClaims } = await import('./work/ask-remediation.js');
+      const { counts } = healStuckClaims();
+      if (counts.candidates > 0) logger.warn('Boot: asks left claimed by an ended turn were settled again', counts);
+    } catch (err) {
+      logger.warn('Boot ask heal failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
+    }
     // 4b1c. One-shot ask-ledger remediation (a `config` row disarms it). Position is load-bearing: AFTER
     // the staleness sweep (its handed-back rows are never met by the reboot-swarm guard) and BEFORE the
     // re-drain below (the same boot that hands an ask back serves it).
