@@ -902,7 +902,7 @@ async function relayToAsker(
     });
     if (!address) return `The Dojo (not you) posted this in the dashboard chat for ${asker}: "${text}"`;
     const queued = await queueReply({ agentId: join.agentId, turnNumber: null, root, text, address,
-      relay: { tool: r.tool, answer: r.answer, joinId: join.id, reports: r.reports, files: r.files } });
+      relay: { tool: r.tool, answer: r.answer, joinId: join.id, reports: r.reports }, files: r.files });
     if (queued?.held) return `The Dojo did NOT send ${asker} this notice, because ${asker} is another Dojo's agent; it is only in the dashboard chat: "${text}"`;
     return queued
       ? `The Dojo (not you) is sending ${asker} this on ${address.channel}: "${text}". If it cannot get through you will be told.`

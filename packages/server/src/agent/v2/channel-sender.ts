@@ -2,6 +2,7 @@
 // oldest first and a waiting row holds the ones behind it. Each try runs in a scope that adopts its row and declares
 // the row's own turn; its verdict is written on that row: delivered, due again after a wait, or failed for good.
 // The ledger, the transports and their lookups load on use: this module sits under the live-work reader.
+import path from 'node:path';
 import { v4 as uuidv4 } from 'uuid';
 import { formatRoutingMarker, withRoutingState, type InboundMeta } from '@dojo/shared';
 import { getDb } from '../../db/connection.js';
@@ -194,12 +195,14 @@ async function tryOnce(row: QueuedRow, now: number): Promise<boolean> {
   }
 }
 
-function parsedPayload(row: QueuedRow): { text: string; address: ReplyAddress } | null {
-  try { return JSON.parse(row.payload_json) as { text: string; address: ReplyAddress }; } catch { return null; }
+interface Payload { text: string; address: ReplyAddress; files?: string[] }
+
+function parsedPayload(row: QueuedRow): Payload | null {
+  try { return JSON.parse(row.payload_json) as Payload; } catch { return null; }
 }
 
-/** The check and the send, stamped with the row's own turn and request. */
-function sendAsItsTurn(row: QueuedRow, payload: { text: string; address: ReplyAddress }, to: string | null): Promise<Verdict> {
+/** The check and the send, stamped with the row's own turn and request. The words go first, then the files. */
+function sendAsItsTurn(row: QueuedRow, payload: Payload, to: string | null): Promise<Verdict> {
   const root: TurnRoot | null = row.root_kind && row.root_id
     ? { kind: row.root_kind as TurnRoot['kind'], id: row.root_id, sourceMessageId: null, conversationId: row.conversation_id }
     : null;
@@ -207,7 +210,42 @@ function sendAsItsTurn(row: QueuedRow, payload: { text: string; address: ReplyAd
     const refused = await refusalOf(row.agent_id, payload.address, to);
     if (refused !== null || to === null) return { delivered: false, final: true, detail: refused?.detail ?? null, receiptId: null, refusal: refused?.kind };
     const { withAdoptedOutbound } = await import('./outbound.js');
-    return withAdoptedOutbound({ id: row.id, agentId: row.agent_id, channel: payload.address.channel }, () => sendBy(row.agent_id, payload.text, payload.address, to));
+    const adopted = { id: row.id, agentId: row.agent_id, channel: payload.address.channel };
+    const files = payload.files ?? [];
+    const words = payload.text || files.length === 0
+      ? await withAdoptedOutbound(adopted, () => sendBy(row.agent_id, payload.text, payload.address, to)) : null;
+    if (words && (!words.delivered || files.length === 0)) return words;
+    const missed = await sendFiles(adopted, to, files);
+    const detail = missed.length > 0 ? `not sent: ${missed.join(', ')}` : null;
+    const anyWent = words !== null || missed.length < files.length;
+    if (detail && anyWent) await tellOfFilesNotSent(row.agent_id, to, missed);
+    return { delivered: anyWent, final: true, detail: [words?.detail, detail].filter(Boolean).join('; ') || null, receiptId: words?.receiptId ?? null };
+  });
+}
+
+/** Each file in its own try after the words; returns the ones that did not go, with why. A file that does not go
+ *  is final for that file: it never holds the row or sends the words again. A missing or too big file is not tried. */
+async function sendFiles(adopted: { id: string; agentId: string; channel: ReplyAddress['channel'] }, to: string, files: string[]): Promise<string[]> {
+  const { withAdoptedOutbound } = await import('./outbound.js');
+  const { sendIMessageWithAttachment, iMessageFileRefusal } = await import('../../services/imessage-bridge.js');
+  const missed: string[] = [];
+  for (const file of files) {
+    let why = iMessageFileRefusal(file);
+    if (!why && !(await withAdoptedOutbound(adopted, async () => ({ ok: await sendIMessageWithAttachment(to, file) }))).delivered) {
+      why = 'Messages could not send it';
+    }
+    if (why) missed.push(`${path.basename(file)} (${why})`);
+  }
+  return missed;
+}
+
+/** The words went but some files did not: the agent is woken to tell the person in its own words. */
+async function tellOfFilesNotSent(agentId: string, to: string, missed: string[]): Promise<void> {
+  const { tellAgentAndWake, requesterReachSentence } = await import('../wake-with-notice.js');
+  await tellAgentAndWake({
+    agentId, from: 'File delivery',
+    brief: `your reply went, but these file(s) did not reach ${to} over iMessage: ${missed.join(', ')}. They are in the dashboard only. `
+      + `Tell them so in your own words; do not tell them the files were sent. ${await requesterReachSentence(to)}`,
   });
 }
 

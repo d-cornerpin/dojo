@@ -20,11 +20,16 @@ export const testDb = (): Database.Database => {
 };
 export const connectionMock = () => ({ getDb: testDb, closeDb: () => {}, getDbPath: () => ':memory:' });
 
-/** The iMessage send, faked where the bridge would run its program. */
-export const imessage = { send: vi.fn(async (_to: string, _text: string): Promise<boolean> => true) };
+/** The iMessage sends, faked where the bridge would run its program; `sent` is every send in order. */
+export const imessage = {
+  send: vi.fn(async (_to: string, _text: string): Promise<boolean> => true),
+  sendFile: vi.fn(async (_to: string, _path: string): Promise<boolean> => true),
+  sent: [] as string[],
+};
 export const bridgeMock = (orig: Record<string, unknown>) => ({
   ...orig,
-  sendIMessage: (to: string, text: string) => imessage.send(to, text),
+  sendIMessage: (to: string, text: string) => { imessage.sent.push(text); return imessage.send(to, text); },
+  sendIMessageWithAttachment: (to: string, path: string) => { imessage.sent.push(`file ${path}`); return imessage.sendFile(to, path); },
 });
 
 /** A fresh migrated database with the approved iMessage list (the first entry is the owner) and the agent. */
@@ -36,6 +41,9 @@ export function freshReplyDb(runMigrations: () => void, approved: string[] = [OW
   testDb().prepare("INSERT INTO agents (id, name, status, classification) VALUES (?, ?, 'idle', 'standard')").run(AGENT, AGENT);
   imessage.send.mockReset();
   imessage.send.mockResolvedValue(true);
+  imessage.sendFile.mockReset();
+  imessage.sendFile.mockResolvedValue(true);
+  imessage.sent = [];
 }
 
 export function setApproved(addresses: string[]): void {
@@ -54,6 +62,6 @@ export function personTurn(text: string, meta: Partial<InboundMeta> & { channel:
   const address = { kind: 'person', isOwner: false, boundChannel: meta.channel, autoRoutes: true, deliveryChannel: meta.channel, routed: true, inboundChannel: meta.channel, senderId: sender };
   const root = { kind: 'ask', id: `ask-${turnNumber}`, sourceMessageId: null, conversationId: `conv-${sender}` };
   const turnState = { lastAssistantTextForIM: text, explicitSendThisTurn: {}, repliedToCounterpartyThisTurn: {}, steerQueue: { pending: [], fired: [] }, inboundChannel: meta.channel, inboundContext: inboundContext ?? { chatType: 'dm', recipientAddress: sender } };
-  const ctx = { agentId: AGENT, turnNumber, turnCtx: { address, ownerAffinityDestination: null, root }, counterparty, chosenConvKey: 'c', settledContextWakeTurn: false, isEngineTurn: false, persistRoutingMarker: () => {} };
+  const ctx = { agentId: AGENT, turnNumber, turnCtx: { address, ownerAffinityDestination: null, root, replyFiles: [] }, counterparty, chosenConvKey: 'c', settledContextWakeTurn: false, isEngineTurn: false, persistRoutingMarker: () => {} };
   return [turnState, ctx] as [never, never];
 }

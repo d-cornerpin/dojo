@@ -1,6 +1,6 @@
 // After the tool loop, before teardown. Always `proceed`s: each block catches its own failure.
-// Order matters: deferred recovery and stranded files both set the reply text,
-// and the router sits between them. Driver closures arrive as values (importing would cycle).
+// Order matters: deferred recovery and stranded files both shape the reply, and the router sends
+// what they leave. Driver closures arrive as values (importing would cycle).
 
 import type { WsEvent } from '@dojo/shared';
 import type { getDb } from '../../../../db/connection.js';
@@ -39,8 +39,8 @@ export async function runFinalize(state: AgentTurnState, ctx: FinalizeContext): 
   const { agentId, turnCtx, db, stopStatusHeartbeat } = ctx;
 
   state = recoverDeferredReply(state, ctx);
-  state = await routeTerminalReply(state, ctx);
   state = await surfaceStrandedAttachments(state, ctx);
+  state = await routeTerminalReply(state, ctx);
   await scheduleCompletionReport(ctx);
 
   stopStatusHeartbeat(agentId);

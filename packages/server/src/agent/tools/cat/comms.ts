@@ -26,7 +26,7 @@ import { createPublicShare } from '../../../services/public-share.js';
 import { executeSmsSend } from '../../../twilio/sms-outbound.js';
 import { isEmailSendingEnabled, getGoogleWorkspaceConfig } from '../../../google/auth.js';
 import { isMsEmailSendingEnabled, getMicrosoftWorkspaceConfig } from '../../../microsoft/auth.js';
-import { parseSafeSenders, reloadApprovedSenders, getSafeSenders, getIMBridgeStatus, findSafeSenderByAddress, sendIMessageWithAttachments } from '../../../services/imessage-bridge.js';
+import { parseSafeSenders, reloadApprovedSenders, getSafeSenders, getIMBridgeStatus, findSafeSenderByAddress, sendIMessageWithAttachments, MAX_IMESSAGE_FILE_BYTES } from '../../../services/imessage-bridge.js';
 import { iMessageListHasHumanOwner } from '../../../services/imessage-owner-gate.js';
 import { getSmsReachability, describeSmsRecipients } from '../../../services/capability-registry.js';
 import { queuePendingAttachments } from '../../pending-attachments.js';
@@ -511,9 +511,7 @@ export const commsHandlers: ToolHandlerMap = {
             auditLog(agentId, 'imessage_send', recipient, 'error', `non-file attachment: ${p}`);
             break;
           }
-          // iMessage tops out near 100MB per file; refuse cleanly, don't let imsg time out.
-          const MAX_IMESSAGE_BYTES = 100 * 1024 * 1024;
-          if (stat.size > MAX_IMESSAGE_BYTES) {
+          if (stat.size > MAX_IMESSAGE_FILE_BYTES) {
             const mb = (stat.size / 1024 / 1024).toFixed(1);
             content = `iMessage NOT sent - attachment "${p}" is ${mb}MB, which exceeds iMessage's ~100MB per-file limit. Use share_publicly or upload to a cloud drive and send the link instead.`;
             isError = true;

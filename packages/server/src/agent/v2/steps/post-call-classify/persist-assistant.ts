@@ -238,16 +238,8 @@ export async function runPersistAssistant(
     }));
   }
 
-  // The end-of-turn channel router routes text only, so send reply attachments to an iMessage
-  // requester here; a dashboard turn already renders them in its bubble.
-  if (queuedAttachments.length > 0 && counterparty.kind === 'user' && counterparty.channel === 'imessage' && counterparty.senderId) {
-    try {
-      const { textFilesToRequester } = await import('../text-files-to-requester.js');
-      await textFilesToRequester(agentId, counterparty.senderId, queuedAttachments as Array<{ path?: string; filename?: string }>);
-    } catch (err) {
-      logger.warn('A-1: reply-attachment iMessage delivery failed', { agentId, error: err instanceof Error ? err.message : String(err) }, agentId);
-    }
-  }
+  // The files ride the turn's reply to the person's channel; the bubble above already shows them.
+  if (queuedAttachments.length > 0) turnCtx.replyFiles.push(...queuedAttachments);
 
   // Broadcast streaming complete (only if we actually streamed something)
   if ((persistedContent && persistedContent.trim().length > 0) || result.toolCalls.length > 0) {

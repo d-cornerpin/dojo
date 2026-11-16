@@ -30,7 +30,7 @@ function addressFor(cp: TurnCounterparty, inbound: 'imessage' | 'dashboard' | nu
 async function destinationOf(cp: TurnCounterparty, address: ReturnType<typeof addressFor>, stateInbound: 'imessage' | 'dashboard' | null): Promise<string> {
   queueSpy.mockClear();
   const state = { lastAssistantTextForIM: 'hi', explicitSendThisTurn: {}, repliedToCounterpartyThisTurn: {}, steerQueue: { pending: [], fired: [] }, inboundChannel: stateInbound, inboundContext: null } as never;
-  const ctx = { agentId: 'primary', turnNumber: 1, turnCtx: { address, ownerAffinityDestination: null }, counterparty: cp, chosenConvKey: 'c', settledContextWakeTurn: false, isEngineTurn: false } as never;
+  const ctx = { agentId: 'primary', turnNumber: 1, turnCtx: { address, ownerAffinityDestination: null, replyFiles: [] }, counterparty: cp, chosenConvKey: 'c', settledContextWakeTurn: false, isEngineTurn: false } as never;
   await routeTerminalReply(state, ctx);
   expect(queueSpy.mock.calls.length).toBeLessThanOrEqual(1);
   const queued = queueSpy.mock.calls[0] as unknown as [{ address: { channel: string } }] | undefined;

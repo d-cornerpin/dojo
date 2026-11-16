@@ -33,7 +33,7 @@ function address(p: 'in_dojo' | 'away', settled: boolean, isEngineTurn: boolean)
 async function delivered(addr: ReturnType<typeof address>, settled: boolean, isEngineTurn: boolean) {
   queueSpy.mockClear();
   const state = { lastAssistantTextForIM: 'hi', explicitSendThisTurn: {}, repliedToCounterpartyThisTurn: {}, steerQueue: { pending: [], fired: [] }, inboundChannel: null, inboundContext: null } as never;
-  const ctx = { agentId: 'primary', turnNumber: 1, turnCtx: { address: addr, ownerAffinityDestination: null }, counterparty: owner, chosenConvKey: 'c', settledContextWakeTurn: settled, isEngineTurn, persistRoutingMarker: () => {} } as never;
+  const ctx = { agentId: 'primary', turnNumber: 1, turnCtx: { address: addr, ownerAffinityDestination: null, replyFiles: [] }, counterparty: owner, chosenConvKey: 'c', settledContextWakeTurn: settled, isEngineTurn, persistRoutingMarker: () => {} } as never;
   await routeTerminalReply(state, ctx);
   const queued = queueSpy.mock.calls[0] as unknown as [{ address: { channel: string } }] | undefined;
   return queued ? queued[0].address.channel : 'dashboard';

@@ -1350,6 +1350,15 @@ async function sendIMessageInner(recipient: string, rawText: string, opts: SendO
   }
 }
 
+/** iMessage tops out near 100MB per file: a larger one is refused before any send rather than left to time out. */
+export const MAX_IMESSAGE_FILE_BYTES = 100 * 1024 * 1024;
+
+/** Why a file cannot go by iMessage at all, checked before any send; null when it can be tried. */
+export function iMessageFileRefusal(filePath: string): string | null {
+  const size = fs.statSync(filePath, { throwIfNoEntry: false })?.size;
+  return size === undefined ? 'not found' : size > MAX_IMESSAGE_FILE_BYTES ? 'over 100 MB' : null;
+}
+
 /** Sends one file with an optional caption (imsg, else AppleScript); true on success, false on any failure. */
 export async function sendIMessageWithAttachment(recipient: string, filePath: string, caption?: string, opts: SendOpts = {}): Promise<boolean> {
   return (await oneAtATime(() => attachmentDoor(recipient, filePath, caption, opts))) === 'sent';

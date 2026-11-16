@@ -16,7 +16,7 @@ import { queueReply } from '../../deliveries.js';
 import { replyAddressFor } from '../../channel-sender.js';
 import { engineMayRouteTo, engineRouteRefusalReason } from '../../../access/engine-route.js';
 import type { ReplyDestination } from '../../reply-destination.js';
-import type { AgentTurnState } from '../../state.js';
+import { advance, type AgentTurnState } from '../../state.js';
 import { appendUndeliveredLinks } from './link-backstop.js';
 import type { FinalizeContext } from './index.js';
 
@@ -29,10 +29,14 @@ export async function routeTerminalReply(
 ): Promise<AgentTurnState> {
   const { agentId, turnNumber, turnCtx, counterparty, chosenConvKey, settledContextWakeTurn, isEngineTurn } = ctx;
 
+  // Chips (a canvas document, the live screen) stay on the dashboard; real files ride the reply.
+  const files = turnCtx.replyFiles.filter((f) => !f.openInCanvas && !f.screenShare).map((f) => f.path);
   // Route the reply back to the inbound channel, else the dashboard (iMessage if the owner is away).
-  if (isPrimaryAgent(agentId) && state.lastAssistantTextForIM) {
+  if (isPrimaryAgent(agentId) && (state.lastAssistantTextForIM || files.length > 0)) {
     try {
-      const said = state.lastAssistantTextForIM;
+      // A turn with files and no words still routes: the files go as a reply with no text.
+      if (state.lastAssistantTextForIM === null) state = advance(state, { lastAssistantTextForIM: '' });
+      const said = state.lastAssistantTextForIM!;
       state = await appendUndeliveredLinks(state, ctx);
       // An answer already queued mid-turn is not queued again: only the download links it left out follow it.
       const linksOnly = state.lastAssistantTextForIM!.slice(said.trimEnd().length).trim();
@@ -97,7 +101,7 @@ export async function routeTerminalReply(
         }, agentId);
       }
 
-      await sendOrHold(state, ctx, { destination, settledContextHold, routeRoot, presenceNow, imessageConfigured: isImessageConfigured(), linksOnly });
+      await sendOrHold(state, ctx, { destination, settledContextHold, routeRoot, presenceNow, imessageConfigured: isImessageConfigured(), linksOnly, files });
     } catch (err) {
       logger.warn('v2.7.23: reply-destination routing failed', {
         agentId,
@@ -116,6 +120,7 @@ interface RouteDecision {
   readonly presenceNow: PresenceStatus;
   readonly imessageConfigured: boolean;
   readonly linksOnly: string;
+  readonly files: string[];
 }
 
 const TEXT_CHANNELS = ['imessage', 'sms', 'email', 'teams'] as const;
@@ -151,13 +156,13 @@ async function sendOrHold(stateIn: AgentTurnState, ctx: FinalizeContext, r: Rout
     await speakOnCall(state, ctx);
   } else if (isTextChannel(destination) && !state.repliedToCounterpartyThisTurn[destination]) {
     const text = turnCtx.earlyAnswerRowId ? r.linksOnly : state.lastAssistantTextForIM;
-    if (!text) return;
+    if (!text && r.files.length === 0) return;
     // An iMessage reply goes to this turn's iMessage counterparty; with none (the away override) to the owner.
     const sender = counterparty.kind === 'user' && counterparty.channel === 'imessage' ? counterparty.senderId ?? undefined : undefined;
     const address = destination === 'imessage' && !r.imessageConfigured
       ? null
       : replyAddressFor({ ...state.inboundContext, channel: destination, sender, relation: counterparty.kind === 'user' ? counterparty.relation : undefined });
-    const queued = address !== null && await queueReply({ agentId, turnNumber, root: turnCtx.root ?? null, text, address, downloadLinks: !!turnCtx.earlyAnswerRowId }) !== null;
+    const queued = address !== null && await queueReply({ agentId, turnNumber, root: turnCtx.root ?? null, text, address, files: r.files, downloadLinks: !!turnCtx.earlyAnswerRowId }) !== null;
     if (!queued) {
       recordedId(recordHeld({ agentId, tool: 'auto-route', channel: destination, conversationId }, `no ${destination} address to reply to; the reply is in the dashboard chat`),
         'v2: auto-route held (no address)', { agentId, turnNumber, destination });

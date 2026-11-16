@@ -23,7 +23,7 @@ export async function runNoReply(
   sc: PostCallScratch,
 ): Promise<StepOutcome> {
   const {
-    agentId, counterparty, latestUserSource,
+    agentId, latestUserSource,
     messageId, noteTerminalAnswer, persistAndBroadcastSystemRow, result, triggerRow,
     turnCtx, turnNumber,
   } = ctx;
@@ -184,17 +184,8 @@ export async function runNoReply(
             },
           });
           surfacedNoReplyAttachments = true;
-
-          // An iMessage requester gets the files on their channel too: the end-of-turn router is skipped on a
-          // no-reply turn, and the safety net cannot find drained files.
-          if (counterparty.kind === 'user' && counterparty.channel === 'imessage' && counterparty.senderId) {
-            try {
-              const { textFilesToRequester } = await import('../text-files-to-requester.js');
-              await textFilesToRequester(agentId, counterparty.senderId, noReplyAttachments as Array<{ path?: string; filename?: string }>);
-            } catch (err) {
-              logger.warn('N-3: no-reply attachment iMessage delivery failed', { agentId, error: err instanceof Error ? err.message : String(err) }, agentId);
-            }
-          }
+          // The files ride a reply to the person's channel at the turn's end.
+          turnCtx.replyFiles.push(...noReplyAttachments);
         }
       } catch (err) {
         logger.warn('v2: failed to surface no-reply canvas chip', {

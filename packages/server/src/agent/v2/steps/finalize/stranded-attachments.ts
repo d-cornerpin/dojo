@@ -1,5 +1,5 @@
 // End-of-turn safety net for files queued by `show_to_user` with no terminal text after them.
-// It runs after the channel router, so it sends files to an iMessage requester itself.
+// It runs before the channel router: the files join the turn's reply, and only a turn with no reply takes their caption.
 
 import { v4 as uuidv4 } from 'uuid';
 import type { Message } from '@dojo/shared';
@@ -11,12 +11,12 @@ import type { FinalizeContext } from './index.js';
 
 const logger = createLogger('v2-loop');
 
-/** Returns the state it advanced (surfaced files become the turn's reply text). */
+/** Returns the state it advanced (the caption joins the reply text, or is the reply when there is none). */
 export async function surfaceStrandedAttachments(
   state: AgentTurnState,
   ctx: FinalizeContext,
 ): Promise<AgentTurnState> {
-  const { agentId, turnNumber, counterparty, broadcast, noteTerminalAnswer } = ctx;
+  const { agentId, turnNumber, turnCtx, counterparty, broadcast, noteTerminalAnswer } = ctx;
   if (turnParkedTheJob(agentId)) return state;   // a park is not the job's end; files ride the final reply
 
   // Surface still-queued attachments as a final assistant message so they reach the user.
@@ -61,23 +61,14 @@ export async function surfaceStrandedAttachments(
         fileCount: stranded.attachments.length,
         captionCount: stranded.captions.length,
       }, agentId);
-      // Setting the reply text here would never route (the router already ran), so send the files
-      // directly to an iMessage requester, caption on the first.
-      if (counterparty.kind === 'user' && counterparty.channel === 'imessage' && counterparty.senderId) {
-        try {
-          // This outbound arm bypasses `channel-push.ts`, but it leaves the box, so it takes the same scrub.
-          const { redactHandedCredentials } = await import('../../../../credentials/secret-fields.js');
-          const captionOut = redactHandedCredentials(agentId, captionText);
-          // The helper also tells the agent (so its reply does not claim the file arrived).
-          const { textFilesToRequester } = await import('../text-files-to-requester.js');
-          await textFilesToRequester(agentId, counterparty.senderId, stranded.attachments as Array<{ path?: string; filename?: string }>, captionOut);
-        } catch (err) {
-          logger.warn('A-1/A-2: stranded-file iMessage delivery failed', { agentId, error: err instanceof Error ? err.message : String(err) }, agentId);
-        }
-        // On failure textFilesToRequester tells the agent, which tells the person; the platform does not.
+      turnCtx.replyFiles.push(...stranded.attachments);
+      const reply = state.lastAssistantTextForIM;
+      if (!reply) {
+        state = advance(state, { lastAssistantTextForIM: captionText });
+        noteTerminalAnswer(synthId, 'stranded files surfaced');
+      } else if (captionText) {
+        state = advance(state, { lastAssistantTextForIM: `${reply.trimEnd()}\n\n${captionText}` });
       }
-      state = advance(state, { lastAssistantTextForIM: captionText });
-      noteTerminalAnswer(synthId, 'stranded files surfaced');
     }
   } catch (err) {
     logger.warn('show_to_user safety net failed (non-fatal)', {

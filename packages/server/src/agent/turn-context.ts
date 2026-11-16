@@ -6,6 +6,7 @@
 // The type import is erased at compile time, so no runtime cycle.
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { AgentTurnState } from './v2/state.js';
+import type { PendingAttachment } from './pending-attachments.js';
 
 // Origin of the turn; the kind vocabulary must match migration 112.
 export interface TurnRoot {
@@ -93,6 +94,8 @@ export interface TurnContext {
   startAckPromotedRowId: string | null;
   /** The queued row of an answer delivered mid-turn; while set, the turn's end does not queue the same words. */
   earlyAnswerRowId: string | null;
+  /** Files shown with this turn's reply; finalize puts the real files (not chips) on the reply's row. */
+  replyFiles: PendingAttachment[];
 
   // Latches that cross loop iterations: reset each round, the filler and the idle nudge would repeat.
   voiceFillerFired: boolean;
@@ -144,6 +147,7 @@ export function openTurnContext(agentId: string): TurnContext {
     deferredDeliveredByAck: false,
     startAckPromotedRowId: null,
     earlyAnswerRowId: null,
+    replyFiles: [],
     voiceFillerFired: false,
     goingIdleDetectorRanThisTurn: false,
     state: null,

@@ -155,7 +155,9 @@ export interface QueuedReply {
   /** The "Download:" line that follows an early answer: it goes like a reply but is never the answer. */
   downloadLinks?: boolean;
   /** A Dojo line about a delegated request: the helper's `answer` (empty for a notice), the request, the hand-in it reports. */
-  relay?: { tool: string; answer: string; joinId: string; reports: string | null; files: string[] };
+  relay?: { tool: string; answer: string; joinId: string; reports: string | null };
+  /** Paths of files sent after the words; only iMessage carries files. */
+  files?: string[];
 }
 
 /** The one place a reply is queued for the sender: cleaned, written `pending` and due now, and the sender woken.
@@ -169,14 +171,15 @@ export async function queueReply(r: QueuedReply): Promise<{ id: string; held: bo
   const bare = r.relay !== undefined && r.address.toAgent === true;
   const text = redactHandedCredentials(r.agentId, bare ? r.relay!.answer : r.text).trim();
   const held = bare && !text;
-  if (!text && !held) return null;
+  const files = r.address.channel === 'imessage' ? r.files ?? [] : [];
+  if (!text && !held && files.length === 0) return null;
   const label = await pillLabel(r.address, r.address.to);
   const { relay } = r;
   const id = deliveryIdOf(asTurn(r.agentId, { turnNumber: r.turnNumber, root: r.root, convKey: null }, () => recordDelivery({
     agentId: r.agentId, tool: relay?.tool ?? (r.startLine ? 'engine-ack' : r.downloadLinks ? 'download-links' : 'auto-route'), channel: r.address.channel,
     recipientId: r.address.to, conversationId: r.root?.conversationId ?? null, outcome: held ? 'held' : 'pending',
     detail: held ? 'a Dojo notice is never sent to another Dojo\'s agent' : null,
-    payload: { text, address: r.address, ...(relay ? { joinId: relay.joinId, reports: relay.reports, files: relay.files } : {}) },
+    payload: { text, address: r.address, ...(files.length > 0 ? { files } : {}), ...(relay ? { joinId: relay.joinId, reports: relay.reports } : {}) },
   })));
   if (id === null) return null;
   await writeRoutingPill(r.agentId, r.turnNumber, held ? withRoutingState(label, 'not sent', 'another Dojo\'s agent') : withRoutingState(label, 'sending'));

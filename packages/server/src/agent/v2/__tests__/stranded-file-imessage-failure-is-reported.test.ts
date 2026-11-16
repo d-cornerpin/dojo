@@ -1,85 +1,81 @@
-// When the end-of-turn net sends a stranded file to an iMessage requester and the send does not
-// land (it says no, or it throws), the agent is told (no owner alert: the agent tells the person).
-// A send that lands says nothing extra.
+// When a stranded file rides the reply to an iMessage requester and does not land (the send says no, or it
+// throws), the agent is woken and told (no owner alert: the agent tells the person). A file that lands says nothing extra.
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
-const sendFileMock = vi.hoisted(() => vi.fn());
-const sendAlertMock = vi.hoisted(() => vi.fn(async () => {}));
-const noticeMock = vi.hoisted(() => vi.fn());
-const plainNoticeMock = vi.hoisted(() => vi.fn());
-const insertMock = vi.hoisted(() => vi.fn());
+const woken = vi.hoisted(() => vi.fn(async (_n: { agentId: string; brief: string }) => {}));
+const plainNotice = vi.hoisted(() => vi.fn());
+const sendAlert = vi.hoisted(() => vi.fn(async () => {}));
+vi.mock('../../../db/connection.js', async () => (await import('./helpers/reply-sender.js')).connectionMock());
+vi.mock('../../../services/imessage-bridge.js', async (orig) => ({ ...(await import('./helpers/reply-sender.js')).bridgeMock(await orig()), sendAlert }));
+vi.mock('../../../services/presence.js', () => ({ getPresence: () => 'in_dojo', isImessageConfigured: () => true }));
+vi.mock('../../../config/platform.js', async (orig) => ({ ...(await orig<Record<string, unknown>>()), isPrimaryAgent: () => true }));
+vi.mock('../../access/engine-route.js', () => ({ engineMayRouteTo: () => true, engineRouteRefusalReason: () => 'no grant' }));
+vi.mock('../../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: (e: unknown) => e }));
+vi.mock('../../wake-with-notice.js', async (orig) => ({ ...(await orig<Record<string, unknown>>()), tellAgentAndWake: woken }));
+vi.mock('../../agent-notice.js', () => ({ postAgentNotice: plainNotice }));
 
-vi.mock('../../../logger.js', () => {
-  const noop = (): void => {};
-  return { createLogger: () => ({ debug: noop, info: noop, warn: noop, error: noop }), setLogLevel: noop, setLogBroadcast: noop, readLogEntries: () => [] };
-});
-vi.mock('../../../memory/message-store.js', () => ({ insertMessageIfAbsent: insertMock }));
-vi.mock('../../agent-notice.js', () => ({ postAgentNotice: plainNoticeMock }));
-vi.mock('../engine-exit.js', () => ({ turnParkedTheJob: () => false }));
-vi.mock('../../pending-attachments.js', () => ({
-  drainPendingAttachmentsWithCaptions: () => ({ attachments: [{ filename: 'report.pdf', path: '/tmp/fake/report.pdf' }], captions: [] }),
-}));
-vi.mock('../../../credentials/secret-fields.js', () => ({ redactHandedCredentials: (_a: string, t: string) => t }));
-vi.mock('../../wake-with-notice.js', () => ({ tellAgentAndWake: noticeMock, requesterReachSentence: async (a: string) => `Your written reply on this turn does NOT reach them; call imessage_send with recipient="${a}".` }));
-vi.mock('../../../services/imessage-bridge.js', () => ({
-  sendIMessageWithAttachment: sendFileMock,
-  sendAlert: sendAlertMock,
-}));
+import { runMigrations } from '../../../db/migrations.js';
+import { queuePendingAttachments } from '../../pending-attachments.js';
+import { deliverDueReplies } from '../channel-sender.js';
+import { freshReplyDb, imessage, testDb, AGENT, PERSON } from './helpers/reply-sender.js';
+import { imessageTurn } from './helpers/imessage-turn.js';
 
-const { surfaceStrandedAttachments } = await import('../steps/finalize/stranded-attachments.js');
-const { advance } = await import('../state.js');
+const report = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'dojo-test-files-')), 'report.pdf');
+fs.writeFileSync(report, 'a report');
+const strand = () => queuePendingAttachments(AGENT, [{ fileId: 'f1', filename: 'report.pdf', mimeType: 'application/pdf', size: 8, path: report, category: 'pdf' }]);
 
-const ctx = () => ({
-  agentId: 'agent-1',
-  turnNumber: 3,
-  counterparty: { kind: 'user', channel: 'imessage', senderId: '+15550100198' },
-  broadcast: vi.fn(),
-  noteTerminalAnswer: vi.fn(),
-}) as never;
+async function replyWithStrandedFile(): Promise<void> {
+  const turn = imessageTurn();
+  await turn.say('The report is attached.');
+  strand();
+  await turn.finalize();
+  await deliverDueReplies(Date.now());
+}
 
-const run = () => surfaceStrandedAttachments({} as never, ctx()).catch(() => undefined);
+beforeEach(() => { freshReplyDb(runMigrations); woken.mockClear(); plainNotice.mockClear(); sendAlert.mockClear(); });
 
 describe('a stranded file that does not reach iMessage', () => {
-  beforeEach(() => { insertMock.mockClear(); plainNoticeMock.mockClear(); sendFileMock.mockReset(); sendAlertMock.mockClear(); noticeMock.mockClear(); });
-  void advance;
-
   it('is reported when the send answers no', async () => {
-    sendFileMock.mockResolvedValue(false);
-    await run();
-    expect(sendAlertMock).not.toHaveBeenCalled();   // C2: the platform does not message the owner; the agent is told and tells the person
-    // the agent is told too, naming the file, so its reply does not claim it arrived
-    expect(noticeMock).toHaveBeenCalledTimes(1);
-    expect(noticeMock.mock.calls[0][0].agentId).toBe('agent-1');   // and the agent is WOKEN so it tells the person now
-    expect(noticeMock.mock.calls[0][0].brief).toContain('report.pdf');
-    expect(noticeMock.mock.calls[0][0].brief).toContain('imessage_send');   // R4: names how to reach the requester
-    expect(noticeMock.mock.calls[0][0].brief).toContain('+15550100198');
+    imessage.sendFile.mockResolvedValue(false);
+    await replyWithStrandedFile();
+    expect(sendAlert).not.toHaveBeenCalled();   // the platform does not message the owner; the agent tells the person
+    expect(woken).toHaveBeenCalledTimes(1);
+    const { agentId, brief } = woken.mock.calls[0][0];
+    expect(agentId).toBe(AGENT);
+    expect(brief).toContain('report.pdf');
+    expect(brief).toContain('imessage_send');   // names how to reach the requester
+    expect(brief).toContain(PERSON);
   });
 
   it('is reported when the send throws', async () => {
-    sendFileMock.mockRejectedValue(new Error('imsg down'));
-    await run();
-    expect(sendAlertMock).not.toHaveBeenCalled();
-    expect(noticeMock).toHaveBeenCalledTimes(1);
+    imessage.sendFile.mockRejectedValue(new Error('imsg down'));
+    await replyWithStrandedFile();
+    expect(sendAlert).not.toHaveBeenCalled();
+    expect(woken).toHaveBeenCalledTimes(1);
   });
 
   it('says nothing extra when the file landed', async () => {
-    sendFileMock.mockResolvedValue(true);
-    await run();
-    expect(sendFileMock).toHaveBeenCalledTimes(1);
-    expect(sendAlertMock).not.toHaveBeenCalled();
-    expect(noticeMock).not.toHaveBeenCalled();
+    await replyWithStrandedFile();
+    expect(imessage.sendFile).toHaveBeenCalledTimes(1);
+    expect(sendAlert).not.toHaveBeenCalled();
+    expect(woken).not.toHaveBeenCalled();
   });
 });
 
 describe('a stranded file with no caption from the agent', () => {
-  beforeEach(() => { insertMock.mockClear(); plainNoticeMock.mockClear(); sendFileMock.mockReset(); noticeMock.mockClear(); });
   it('is shown and texted with NO engine-written words, and the agent is told it was delivered', async () => {
-    sendFileMock.mockResolvedValue(true);
-    await run();
-    expect(insertMock.mock.calls[0][0].content).toBe('');
-    expect(sendFileMock.mock.calls[0][2]).toBe('');   // no caption on the text either
-    expect(plainNoticeMock).toHaveBeenCalledTimes(1);
-    expect(plainNoticeMock.mock.calls[0][0].brief).toContain('report.pdf');
-    expect(plainNoticeMock.mock.calls[0][0].brief).toMatch(/no caption/i);
+    const turn = imessageTurn();
+    strand();
+    await turn.finalize();
+    await deliverDueReplies(Date.now());
+    const shown = testDb().prepare("SELECT content FROM messages WHERE role = 'assistant' AND attachments IS NOT NULL").get() as { content: string };
+    expect(shown.content).toBe('');
+    expect(imessage.sent).toEqual([`file ${report}`]);   // no words on the channel either
+    expect(plainNotice).toHaveBeenCalledTimes(1);
+    expect(plainNotice.mock.calls[0][0].brief).toContain('report.pdf');
+    expect(plainNotice.mock.calls[0][0].brief).toMatch(/no caption/i);
   });
 });
