@@ -10,7 +10,7 @@ import { useToast } from '../hooks/useToast';
 import { AgentCard } from '../components/AgentCard';
 import { GroupCard } from '../components/GroupCard';
 import { PermissionsEditor } from '../components/PermissionsEditor';
-import { buildLegacyAccess, legacyDirty, readLegacyAccess } from '../lib/manifest-edits';
+import { createAgentAccess, readLegacyAccess } from '../lib/manifest-edits';
 import { TechniqueSelector } from '../components/TechniqueSelector';
 import { ModalShell } from '../components/ModalShell';
 import { AgentModelOption } from '../components/AgentModelOption';
@@ -49,16 +49,13 @@ const CreateAgentModal = ({
     setSaving(true);
     setError(null);
 
-    const built = legacyDirty(initialAccess, access) ? buildLegacyAccess(access) : null;
     const createData: Record<string, unknown> = {
       name: name.trim(),
       systemPrompt: systemPrompt.trim(),
       modelId: modelId || undefined,
       timeout: timeout ? Number(timeout) : undefined,
-      permissions: built?.permissions,
-      toolsPolicy: built && (built.toolsPolicy.allow.length > 0 || built.toolsPolicy.deny.length > 0) ? built.toolsPolicy : undefined,
+      ...createAgentAccess(initialAccess, access),
       classification,
-      shareUserProfile: built?.shareUserProfile || undefined,
       groupId: selectedGroupId || undefined,
       equippedTechniques: equippedTechniques.length > 0 ? equippedTechniques : undefined,
     };

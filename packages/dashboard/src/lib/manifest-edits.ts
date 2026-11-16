@@ -127,6 +127,13 @@ export function legacyDirty(original: LegacyAccess, draft: LegacyAccess): boolea
 }
 
 
+/** The new-agent form's access fields: none when no toggle moved, so the server's one helper default applies. */
+export function createAgentAccess(initial: LegacyAccess, access: LegacyAccess): Partial<LegacyDocument> {
+  if (!legacyDirty(initial, access)) return {};
+  const { permissions, toolsPolicy, shareUserProfile } = buildLegacyAccess(access);
+  return { permissions, toolsPolicy, shareUserProfile };
+}
+
 /** Asked of the BUILT document, not the switch: the exec switch turns on with an empty list, which
  *  grants nothing; a summary reading the switch would promise programs an agent is refused. */
 export function legacyReachSummary(s: LegacyAccess): { web: boolean; programs: boolean } {

@@ -197,9 +197,9 @@ export function evaluateRules(
   return { decided: false };
 }
 
-/** Path allow matching: a `*` in a granted folder pattern spans any depth below it. */
+/** Path matching, verbatim `permissions.ts:matchesAny` semantics. */
 export function matchPathPattern(pattern: string, absPath: string): boolean {
-  return pattern === '*' || matchAgentPathGlob(pattern, absPath, true);
+  return pattern === '*' || matchAgentPathGlob(pattern, absPath);
 }
 
 /** Domain matching, verbatim `checkNetworkPermission` semantics. */

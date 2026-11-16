@@ -1363,7 +1363,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'update_agent',
-    description: 'Change another sub-agent\'s configuration: name, system prompt, model, permissions, and/or tool policy in one call. This is THE tool for editing a sub-agent, do NOT modify files, SOUL.md, or the database directly. Provide agent_id plus at least one field to change; omitted fields are left untouched. Mirrors spawn_agent\'s parameters. Conversation history, tracker tasks, and group membership are always preserved; changes take effect on the agent\'s next turn. Only the primary agent itself may change the primary agent\'s identity (name/system_prompt). Changing `permissions` or `tools` requires the caller to have can_assign_permissions. Pair with get_agent_profile to read current values before rewriting.',
+    description: 'Change another sub-agent\'s configuration: name, system prompt, model, permissions, and/or tool policy in one call. This is THE tool for editing a sub-agent, do NOT modify files, SOUL.md, or the database directly. Provide agent_id plus at least one field to change; omitted fields are left untouched. Mirrors spawn_agent\'s parameters. Conversation history, tracker tasks, and group membership are always preserved; changes take effect on the agent\'s next turn. Only the primary agent itself may change the primary agent\'s identity (name/system_prompt). Pair with get_agent_profile to read current values before rewriting.',
     effects: [],
     input_schema: {
       type: 'object',
@@ -1372,8 +1372,8 @@ export const toolDefinitions: ToolDefinition[] = [
         name: { type: 'string', description: 'New name for the agent. Omit to keep the current name.' },
         system_prompt: { type: 'string', description: 'New system prompt (role, personality, instructions). REPLACES the existing prompt entirely, include everything you want kept. Omit to keep the current prompt.' },
         model_id: { type: 'string', description: 'New model ID to assign, or "auto" for auto-routing. Call list_models for valid IDs. Omit to keep the current model.' },
-        permissions: { type: 'object', description: 'Permission fields to MERGE (only include what changes): file_read/file_write ("*" or path array), exec_allow/exec_deny (command arrays), network_domains ("*"|"none"|array), can_spawn_agents, can_assign_permissions, system_control (array of "mouse"/"keyboard"/"screen"/"applescript"/"web_browse" or ["*"]). Requires can_assign_permissions.' },
-        tools: { type: 'object', description: 'Tool-access policy to MERGE: { allow?: string[], deny?: string[] } of tool names. Requires can_assign_permissions.' },
+        permissions: { type: 'object', description: 'Permission fields to MERGE (only include what changes): file_read/file_write ("*" or path array), exec_allow/exec_deny (command arrays), network_domains ("*"|"none"|array), can_spawn_agents, can_assign_permissions, system_control (array of "mouse"/"keyboard"/"screen"/"applescript"/"web_browse" or ["*"]).' },
+        tools: { type: 'object', description: 'Tool-access policy to MERGE: { allow?: string[], deny?: string[] } of tool names.' },
         grants: {
           type: 'object',
           description: 'Access to MERGE, same shape as spawn_agent\'s grants. Only the sections you name change; everything else the agent holds is left alone, EXCEPT that tools.allow, if you send it, REPLACES the whole list. To give an agent more named tools without touching what it has, send tools.add (a list of names): it appends and never drops one. Call get_agent_profile first to see what it has now. YOU CAN ONLY GRANT WHAT YOU HOLD — anything beyond your own access is refused, named, and audited.',

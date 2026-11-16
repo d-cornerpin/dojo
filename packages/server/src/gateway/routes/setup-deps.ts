@@ -7,6 +7,7 @@ import path from 'node:path';
 import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
 import { resolveProvision } from './setup-primary-id.js';
+import { setPlatformConfig } from '../../config/platform.js';
 import { deleteAllForAgent } from '../../memory/message-store.js';
 import { noteRouteFailure, routeFailure } from './route-failure.js';
 import { homeDir } from '../../home.js';
@@ -475,12 +476,16 @@ setupDepsRouter.post('/provision-agent', async (c) => {
     }
   }
 
-  // OOBE provisioning is a person setting the box up.
-  db.prepare(`
-    INSERT INTO agents (id, name, model_id, system_prompt_path, status, config, created_by, created_by_kind,
-                        classification, created_at, updated_at)
-    VALUES (?, ?, ?, NULL, 'idle', '{"shareUserProfile":true}', 'system', 'user', ?, datetime('now'), datetime('now'))
-  `).run(id, name, modelId ?? null, classification ?? 'sensei');
+  // OOBE provisioning is a person setting the box up. The main agent's row and its pointer land together,
+  // so it is never, even briefly, an agent the engine does not know as the main one.
+  db.transaction(() => {
+    db.prepare(`
+      INSERT INTO agents (id, name, model_id, system_prompt_path, status, config, created_by, created_by_kind,
+                          classification, created_at, updated_at)
+      VALUES (?, ?, ?, NULL, 'idle', '{"shareUserProfile":true}', 'system', 'user', ?, datetime('now'), datetime('now'))
+    `).run(id, name, modelId ?? null, classification ?? 'sensei');
+    if (primary === true) setPlatformConfig('primary_agent_id', id);
+  })();
 
   logger.info('Agent provisioned during OOBE', { id, name, modelId, classification });
   return c.json({ ok: true, data: { id, name, action: 'created' } });

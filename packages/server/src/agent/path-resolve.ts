@@ -139,6 +139,6 @@ export function matchAgentGlob(pattern: string, value: string, starCrossesSlash 
 
 // The glob regex is case-SENSITIVE, so on APFS '~/.dojo/Secrets.yaml' slips every deny pattern
 // while opening the same bytes. Expand '~' on BOTH sides first, then fold; exec deny stays strict.
-export function matchAgentPathGlob(pattern: string, value: string, starCrossesSlash = false): boolean {
-  return matchAgentGlob(foldPath(expandTilde(pattern)), foldPath(expandTilde(value)), starCrossesSlash);
+export function matchAgentPathGlob(pattern: string, value: string): boolean {
+  return matchAgentGlob(foldPath(expandTilde(pattern)), foldPath(expandTilde(value)));
 }

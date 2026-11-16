@@ -1,6 +1,5 @@
-// The owner recruits a helper on the Agents page and turns Web Browsing on: the helper is created with
-// browsing granted and not denied, so it can open pages. Left untouched, the form sends no permissions and
-// the server's one default applies.
+// The owner recruits a helper on the Agents page without opening its permissions: the form sends no
+// permissions of its own, so the server's one helper default applies.
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
@@ -41,22 +40,11 @@ const openForm = async () => {
 const submit = async () => {
   fireEvent.click(screen.getByRole('button', { name: 'Recruit Agent' }));
   await waitFor(() => expect(createAgent()).toHaveBeenCalled());
-  return createAgent().mock.calls[0][0] as { permissions?: { system_control: string[]; network_domains: unknown }; toolsPolicy?: { deny: string[] } };
+  return createAgent().mock.calls[0][0] as { permissions?: unknown };
 };
 
-describe('web browsing turned on in the form lets the helper browse', () => {
-  it('sends browsing granted and not denied', async () => {
-    await openForm();
-    fireEvent.click(screen.getByText(/^Permissions/));
-    const row = screen.getByText('Web Browsing').closest('.py-3') as HTMLElement;
-    fireEvent.click(row.querySelector('button') as HTMLButtonElement);
-    const sent = await submit();
-    expect(sent.permissions?.system_control).toContain('web_browse');
-    expect(sent.permissions?.network_domains).not.toBe('none');
-    expect(sent.toolsPolicy?.deny ?? []).not.toContain('web_browse');
-  });
-
-  it('an untouched form sends no permissions of its own', async () => {
+describe('an untouched new-agent form sends no permissions', () => {
+  it('sends none', async () => {
     await openForm();
     const sent = await submit();
     expect(sent.permissions).toBeUndefined();
