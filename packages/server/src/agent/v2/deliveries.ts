@@ -4,12 +4,13 @@
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
-import { turnContext } from '../turn-context.js';
+import { asTurn, turnStamp, type TurnRoot } from '../turn-context.js';
 import { resolveOrCreateConversation } from '../../memory/conversations.js';
 import { noSuchWorkDetail } from '../../work/store.js';
 import { settleAsksForDelivery } from '../../work/ask-settlement.js';
 import { withUnit } from '../../db/unit.js';
-import type { LedgerOutcome } from './delivery-outcome.js';
+import type { ReplyAddress } from './channel-sender.js';
+import { deliveryIdOf, type LedgerOutcome } from './delivery-outcome.js';
 export { deliveryIdOf, recordedId, type LedgerOutcome } from './delivery-outcome.js';
 
 const logger = createLogger('deliveries');
@@ -70,7 +71,7 @@ export function recordDelivery(input: DeliveryInput): LedgerOutcome {
     const id = uuidv4();
     return withUnit((): LedgerOutcome => {
       const conversationId = conversationFor(input);
-      const root = turnContext(input.agentId)?.root;
+      const { turnNumber, root } = turnStamp(input.agentId);
       db.prepare(`
         INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, recipient_id, recipient_display,
                                 conversation_id, root_kind, root_id, message_id, receipt_id, outcome, detail, created_at, updated_at)
@@ -78,7 +79,7 @@ export function recordDelivery(input: DeliveryInput): LedgerOutcome {
       `).run(
         id,
         input.agentId,
-        turnContext(input.agentId)?.turnNumber ?? null,
+        turnNumber,
         input.tool,
         input.channel,
         input.recipientId ?? null,
@@ -94,7 +95,7 @@ export function recordDelivery(input: DeliveryInput): LedgerOutcome {
       // The close happens where a delivery becomes a row; `work/ask-settlement.ts` decides it, in the unit.
       settleAsksForDelivery({
         agentId: input.agentId,
-        turnNumber: turnContext(input.agentId)?.turnNumber ?? null,
+        turnNumber,
         deliveryId: id,
         conversationId,
         tool: input.tool,
@@ -133,6 +134,43 @@ export function recordDecisionReceipt(workId: string, decider: string, surface: 
       + `this row: it is the receipt for the decision, which is what satisfies work.done's `
       + `delivery requirement here. Every reader of this table filters outcome='delivered'.`,
   });
+}
+
+/** A reply for a person's channel, with the turn and request that wrote it (never the agent's live turn). */
+export interface QueuedReply {
+  agentId: string;
+  turnNumber: number | null;
+  root: TurnRoot | null;
+  text: string;
+  address: ReplyAddress;
+}
+
+/** The one place a reply is queued for the sender: cleaned, written `pending` and due now, and the sender woken.
+ *  Returns the row id, or null when nothing is left to send or the row could not be written. */
+export async function queueReply(r: QueuedReply): Promise<string | null> {
+  // Loaded on use: the credential registry and the sender sit above the ledger in the import graph.
+  const { redactHandedCredentials } = await import('../../credentials/secret-fields.js');
+  const { armSenderTimer, pillLabel, writeRoutingPill } = await import('./channel-sender.js');
+  const { announceLiveWork } = await import('../live-work.js');
+  const text = redactHandedCredentials(r.agentId, r.text).trim();
+  if (!text) return null;
+  const label = await pillLabel(r.address, r.address.to);
+  const id = withUnit((): string | null => {
+    const written = deliveryIdOf(asTurn(r.agentId, { turnNumber: r.turnNumber, root: r.root, convKey: null }, () => recordDelivery({
+      agentId: r.agentId, tool: 'auto-route', channel: r.address.channel, recipientId: r.address.to,
+      conversationId: r.root?.conversationId ?? null, outcome: 'pending',
+    })));
+    if (written !== null) {
+      getDb().prepare('UPDATE deliveries SET payload_json = ?, next_attempt_at = ? WHERE id = ?')
+        .run(JSON.stringify({ text, address: r.address }), Date.now(), written);
+    }
+    return written;
+  });
+  if (id === null) return null;
+  await writeRoutingPill(r.agentId, r.turnNumber, `sending by ${label}`);
+  announceLiveWork(r.agentId);
+  armSenderTimer();
+  return id;
 }
 
 // The intent row is written pending before transport; a crash leaves it, orphaned-claims hands the ask back.

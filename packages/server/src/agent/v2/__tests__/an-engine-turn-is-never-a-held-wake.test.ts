@@ -4,15 +4,16 @@
 // a person-turn idea. Behavioural: drives routeTerminalReply and compares with the told (live) address.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
-const { pushSpy, presence } = vi.hoisted(() => ({
-  pushSpy: vi.fn(async () => undefined),
+const { queueSpy, presence } = vi.hoisted(() => ({
+  queueSpy: vi.fn(async () => 'row'),
   presence: { current: 'in_dojo' as 'in_dojo' | 'away' },
 }));
-vi.mock('../steps/finalize/channel-push.js', () => ({ pushReplyToChannel: pushSpy }));
+vi.mock('../deliveries.js', async (orig) => ({ ...(await orig<Record<string, unknown>>()), queueReply: queueSpy }));
+vi.mock('../outbound.js', async (orig) => ({ ...(await orig<Record<string, unknown>>()), recordHeld: () => ({ kind: 'applied', value: { deliveryId: 'held' } }) }));
+vi.mock('../../access/engine-route.js', () => ({ engineMayRouteTo: () => true, engineRouteRefusalReason: () => '' }));
 vi.mock('../steps/finalize/link-backstop.js', () => ({ appendUndeliveredLinks: async (s: unknown) => s }));
 vi.mock('../../../config/platform.js', async (orig) => ({ ...(await orig<Record<string, unknown>>()), isPrimaryAgent: () => true }));
 vi.mock('../../../services/presence.js', () => ({ getPresence: () => presence.current, isImessageConfigured: () => true }));
-vi.mock('../../../services/imessage-bridge.js', () => ({ sendResponseViaIMessage: vi.fn() }));
 vi.mock('../../../logger.js', () => ({ createLogger: () => ({ info: vi.fn(), debug: vi.fn(), warn: vi.fn(), error: vi.fn() }) }));
 
 import { routeTerminalReply } from '../steps/finalize/route-reply.js';
@@ -28,14 +29,14 @@ function address(p: 'in_dojo' | 'away', settled: boolean, isEngineTurn: boolean)
     presence: p, imessageBridgeConfigured: true, ownerAffinityChannel: null, autoRoutes: true, settledContextWakeTurn: settled,
   });
 }
+/** The channel the reply was queued on; a held or dashboard reply leaves the text in the dashboard. */
 async function delivered(addr: ReturnType<typeof address>, settled: boolean, isEngineTurn: boolean) {
-  pushSpy.mockClear();
-  const state = { lastAssistantTextForIM: 'hi', explicitSendThisTurn: {}, steerQueue: { pending: [], fired: [] }, inboundChannel: null } as never;
-  const ctx = { agentId: 'primary', turnNumber: 1, turnCtx: { address: addr, ownerAffinityDestination: null }, counterparty: owner, chosenConvKey: 'c', settledContextWakeTurn: settled, isEngineTurn } as never;
-  await routeTerminalReply(state, ctx, false);
-  expect(pushSpy).toHaveBeenCalledTimes(1);
-  const opts = (pushSpy.mock.calls[0] as unknown as [unknown, unknown, { destination: string; settledContextHold: boolean }])[2];
-  return opts.settledContextHold ? 'dashboard' : opts.destination; // a held push leaves the text in the dashboard
+  queueSpy.mockClear();
+  const state = { lastAssistantTextForIM: 'hi', explicitSendThisTurn: {}, repliedToCounterpartyThisTurn: {}, steerQueue: { pending: [], fired: [] }, inboundChannel: null, inboundContext: null } as never;
+  const ctx = { agentId: 'primary', turnNumber: 1, turnCtx: { address: addr, ownerAffinityDestination: null }, counterparty: owner, chosenConvKey: 'c', settledContextWakeTurn: settled, isEngineTurn, persistRoutingMarker: () => {} } as never;
+  await routeTerminalReply(state, ctx);
+  const queued = queueSpy.mock.calls[0] as unknown as [{ address: { channel: string } }] | undefined;
+  return queued ? queued[0].address.channel : 'dashboard';
 }
 
 beforeEach(() => { presence.current = 'in_dojo'; });

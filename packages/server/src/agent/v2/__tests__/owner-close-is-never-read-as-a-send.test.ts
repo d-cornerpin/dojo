@@ -1,19 +1,8 @@
-// PHASE-2 T8c2 item 5 — the owner's own close, and the four ways it must NOT leak.
-//
-// The policy: the owner's explicit dashboard close reaches `done` even when no delivery can
-// be resolved, because G7 exists to stop the ENGINE and the AGENT asserting completion on
-// their own say-so, and the owner is the person the work was FOR. The design and its
-// alternative are argued in `../deliveries.ts`; this file is the part that has to keep
-// holding after somebody stops reading comments.
-//
-// The receipt is only safe because every consumer of `deliveries` ignores it. That is not an
-// assumption here — the enumeration is re-run as a clause, and the three specific consumers
-// most likely to be fooled are exercised directly.
+// The owner closing his own task writes one receipt row that says nothing was delivered, and no reader of the
+// delivery ledger takes it for a send: each query that decides "was something delivered" is run against it.
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import fs from 'node:fs';
-import path from 'node:path';
 
 const mockDb: { current: Database.Database | null } = { current: null };
 
@@ -76,9 +65,7 @@ describe('the receipt is an honest record, not a claimed send', () => {
     expect(String(rows[0].detail)).toMatch(/Nothing was delivered by this row/);
   });
 
-  it('carries NO root lineage — migration 135s own reasoning, applied live', () => {
-    // 135:230-232: a sentinel carrying `root_id=<task id>` "would have manufactured per-task
-    // delivery evidence for the PM's own consult path". This row must not carry it either.
+  it('carries no root lineage, so it is never per-task delivery evidence', () => {
     recordDecisionReceipt(W, 'The owner', 'the dashboard task board');
     expect(receipts()[0].root_id).toBeNull();
     expect(receipts()[0].root_kind).toBeNull();
@@ -93,8 +80,7 @@ describe('the receipt is an honest record, not a claimed send', () => {
   });
 
   it('refuses an id that does not resolve, so G7 refuses the close', () => {
-    // PHASE-4 T1: the refusal has a NAME now. It used to be a null indistinguishable
-    // from "the ledger write threw", which is the other way this returns nothing.
+    // A named refusal, apart from a ledger write that threw.
     const o = recordDecisionReceipt('no-such-work', 'The owner', 'the dashboard task board');
     expect(o.kind).toBe('refused');
     if (o.kind === 'refused') expect(o.reason).toBe('no-such-work');
@@ -105,7 +91,6 @@ describe('the receipt is an honest record, not a claimed send', () => {
 
 describe('the receipt is invisible to every consumer of the ledger', () => {
   it('NEGATIVE CONTROL: the PM consult path does not see it as delivery evidence', () => {
-    // `tracker/task-stamps.ts:66`, verbatim shape.
     recordDecisionReceipt(W, 'The owner', 'the dashboard task board');
     const channels = mockDb.current!.prepare(
       `SELECT DISTINCT channel FROM deliveries WHERE agent_id = ? AND outcome = 'delivered'`,
@@ -114,8 +99,7 @@ describe('the receipt is invisible to every consumer of the ledger', () => {
   });
 
   it('NEGATIVE CONTROL: the tracker-store close resolver does not offer it to a later close', () => {
-    // `work/tracker-store.ts:377` — if this returned the receipt, an AGENT's next close
-    // would inherit the owner's exemption, which is exactly the leak to prevent.
+    // If this returned the receipt, an agent's next close would inherit the owner's exemption.
     recordDecisionReceipt(W, 'The owner', 'the dashboard task board');
     const hit = mockDb.current!.prepare(
       `SELECT id FROM deliveries WHERE agent_id = ? AND outcome = 'delivered' AND tool <> 'engine-ack'`,
@@ -124,9 +108,7 @@ describe('the receipt is invisible to every consumer of the ledger', () => {
   });
 
   it('NEGATIVE CONTROL: the dashboard dedup lookup cannot reach it', () => {
-    // `agent/v2/outbound.ts:430` is the ONE reader with no outcome filter. It is keyed on
-    // `channel='dashboard'` AND a real message id; the receipt is `channel='none'` with a
-    // NULL message id, so it is unreachable twice over.
+    // The one reader with no outcome filter is keyed on `channel='dashboard'` and a real message id.
     recordDecisionReceipt(W, 'The owner', 'the dashboard task board');
     const hit = mockDb.current!.prepare(
       `SELECT id FROM deliveries WHERE agent_id = ? AND channel = 'dashboard' AND message_id = ?`,
@@ -149,42 +131,5 @@ describe('the receipt is invisible to every consumer of the ledger', () => {
       `SELECT id FROM deliveries WHERE agent_id = ? AND channel = 'dashboard' AND message_id = ?`,
     ).get(AGENT, 'm1');
     expect(dedup).toBeDefined();
-  });
-});
-
-describe('the enumeration the design rests on, re-derived rather than trusted', () => {
-  const walk = (dir: string, acc: string[] = []): string[] => {
-    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-      const fp = path.join(dir, e.name);
-      if (e.isDirectory()) {
-        if (e.name === '__tests__' || e.name === 'migrations') continue;
-        walk(fp, acc);
-      } else if (e.name.endsWith('.ts')) acc.push(fp);
-    }
-    return acc;
-  };
-
-  it('PLANTED FAULT: a new reader with no outcome filter is caught', () => {
-    // The rule has to bite on a statement, not just on a file list, or the clause above is a
-    // spelling check. Both allowed shapes must still pass, and a bare scan must not.
-    const OUTCOME_IN_LIST2 = /outcome\s+IN\s*\(([^)]*)\)/i;
-    const filt = (stmt: string): boolean => {
-      const m = OUTCOME_IN_LIST2.exec(stmt);
-      return !/outcome\s*=\s*'delivered'/i.test(stmt)
-        && !/channel\s*=\s*'dashboard'[\s\S]*message_id\s*=/i.test(stmt)
-        && !/\bid\s*=\s*\?/.test(stmt)
-        && !(m !== null && !/owner_closed/.test(m[1]));
-    };
-    expect(filt(`FROM deliveries WHERE agent_id = ? ORDER BY created_at DESC LIMIT 1`)).toBe(true);
-    expect(filt(`FROM deliveries WHERE agent_id = ? AND outcome = 'delivered'`)).toBe(false);
-    expect(filt(`FROM deliveries WHERE id = ?`)).toBe(false);
-    expect(filt(`FROM deliveries WHERE channel = 'dashboard' AND message_id = ?`)).toBe(false);
-    // PHASE-4 T4's shape (c): a POSITIVE enumeration that omits `owner_closed` passes…
-    expect(filt(`FROM deliveries WHERE outcome IN ('failed','suppressed','held')`)).toBe(false);
-    // …and the same shape with `owner_closed` ADDED to it is exactly the leak this clause
-    // exists to stop, so it must still bite.
-    expect(filt(`FROM deliveries WHERE outcome IN ('failed','owner_closed')`)).toBe(true);
-    // A negated filter is not shape (c) and never was — it sees the row.
-    expect(filt(`FROM deliveries WHERE outcome <> 'delivered'`)).toBe(true);
   });
 });

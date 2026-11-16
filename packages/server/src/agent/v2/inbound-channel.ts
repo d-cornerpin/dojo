@@ -104,6 +104,7 @@ function resolveFromMeta(raw: string): ResolvedInbound | null {
     emailAccount: meta.emailAccount, // reply from the same mailbox
     chatId: meta.chatId,
     chatType: meta.chatType,
+    teamsAccount: meta.teamsAccount,
     smsFromNumber: meta.smsFromNumber,
     smsToNumber: meta.smsToNumber,
     phoneCallSid: meta.phoneCallSid,

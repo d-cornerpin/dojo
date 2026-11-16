@@ -28,7 +28,7 @@ import {
 const logger = createLogger('ask-settlement');
 
 /** Tools whose delivery is not an answer. Twin: `NON_ANSWERING_TOOLS` in `agent/v2/answered-edge.ts`. */
-export const NON_ANSWERING_DELIVERY_TOOLS = new Set(['engine-ack']);
+export const NON_ANSWERING_DELIVERY_TOOLS = new Set(['engine-ack', 'cannot-run']);
 
 /** `display_kind`s whose delivery is not a reply: a tool-call chip (`tool-turn`) and a `working-note`.
  *  Keyed on the delivery's own message row, so a send with no message id is untouched. */
@@ -841,11 +841,8 @@ export function settleAsksAtTurnFinalize(p: FinalizeSettlementInput): FinalizeSe
     `SELECT w.id AS id FROM work w
       WHERE w.agent_id = ? AND w.kind = 'ask' AND w.state = 'done'
         AND w.result_delivery_id IN (
-          -- the outcome filter is redundant here (the receipt on the row can only ever have
-          -- come from a delivered row) and it is written anyway: the enumeration guard in
-          -- owner-close-receipt.test.ts requires EVERY production reader of this table to
-          -- carry it, and a reader that is safe by argument rather than by predicate is the
-          -- shape that guard exists to refuse.
+          -- the outcome filter is redundant here (the receipt can only come from a delivered row);
+          -- every reader of this table carries it, so an owner's close receipt is never read as a send.
           SELECT d.id FROM deliveries d
            WHERE d.agent_id = ? AND d.turn_number = ? AND d.outcome = 'delivered')`,
   ).all(p.agentId, p.agentId, p.turnNumber) as Array<{ id: string }>;

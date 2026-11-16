@@ -1,10 +1,11 @@
-// "Would a stop cut anything?" asked once: live `background` registrations and open job rows.
+// "Would a stop cut anything?" asked once: live `background` registrations, open job rows and queued replies.
 // `agents.status` answers whether a turn is in flight: a different question, deliberately unused.
 
 import { countAbortable } from './shared-state.js';
 import { getDb } from '../db/connection.js';
 import { broadcast } from '../gateway/ws.js';
 import { TERMINAL_JOB_STATUS_SQL } from '../services/media-job-status.js';
+import { pendingReplies } from './v2/channel-sender.js';
 
 /** The shape already on the wire (`AgentDetail.inFlight`) and in the dashboard rule (`StopSubject`). */
 export interface LiveWork {
@@ -34,11 +35,12 @@ function openJobRows(agentId: string): number {
   return n;
 }
 
-/** A pure read, never a writer. A job has a registration AND a row: count the max, never the sum. */
+/** A pure read, never a writer. A job has a registration AND a row: count the max, never the sum. A reply
+ *  waiting to go out is live work of its own. */
 export function liveWork(agentId: string): LiveWork {
   return {
     turn: countAbortable(agentId, 'turn'),
-    background: Math.max(countAbortable(agentId, 'background'), openJobRows(agentId)),
+    background: Math.max(countAbortable(agentId, 'background'), openJobRows(agentId)) + pendingReplies(agentId),
   };
 }
 

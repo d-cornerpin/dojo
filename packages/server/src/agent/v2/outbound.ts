@@ -6,7 +6,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { channelOfSendTool, PLATFORM_SENDER, type WsEvent } from '@dojo/shared';
 import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
-import { turnContext } from '../turn-context.js';
+import { turnStamp } from '../turn-context.js';
 import { recordDelivery, resolvePendingDelivery, dropPendingDelivery, type DeliveryInput } from './deliveries.js';
 import { deliveryIdOf, type LedgerOutcome } from './delivery-outcome.js';
 export { recordedId, deliveryIdOf } from './delivery-outcome.js';
@@ -63,6 +63,8 @@ interface OutboundScope {
   /** `deliveryId` is still the INTENT row: no door has said what happened yet. */
   pending: boolean;
   details: string[];
+  /** The scope adopted a queued reply's row: crossings fold in and nothing is written until `finish`. */
+  adopted?: boolean;
 }
 
 /** The channel a send tool delivers on (from the shared `channelOfSendTool` map), or null when it reaches nobody.
@@ -225,6 +227,37 @@ export function withOutboundAsync<T>(intent: OutboundIntent, fn: () => Promise<T
   });
 }
 
+/** One try's verdict, folded from what the send function said and every door it crossed: failure wins. */
+export interface FoldedVerdict {
+  delivered: boolean;
+  /** The refusal will not change, so the try is not worth repeating. */
+  final: boolean;
+  detail: string | null;
+  receiptId: string | null;
+}
+
+function finish(scope: OutboundScope, said: { ok: boolean; final?: boolean; detail?: string | null }): FoldedVerdict {
+  if (!said.ok) scope.failed = true;
+  if (said.detail) scope.details.push(said.detail);
+  return { delivered: !scope.failed, final: !said.ok && said.final === true, detail: mergedDetail(scope), receiptId: scope.receiptId };
+}
+
+/** One try of a queued reply, in a scope that adopts its row: no door writes a row, `finish` gives the one verdict. */
+export async function withAdoptedOutbound(
+  row: { id: string; agentId: string; channel: DeliveryChannel },
+  send: () => Promise<{ ok: boolean; final?: boolean; detail?: string | null }>,
+): Promise<FoldedVerdict> {
+  const scope: OutboundScope = {
+    intent: { agentId: row.agentId, tool: 'auto-route', channel: row.channel },
+    deliveryId: row.id, receiptId: null, failed: false, pending: false, details: [], adopted: true,
+  };
+  try {
+    return finish(scope, await outboundContext.run(scope, send));
+  } catch (err) {
+    return finish(scope, { ok: false, detail: err instanceof Error ? err.message : String(err) });
+  }
+}
+
 /** A transport door reports what it observed. In a scope the first crossing writes the row and later ones
  *  fold into it; outside one it writes a standalone row, as `PLATFORM_SENDER` unless the door knows the agent. */
 export function recordAtDoor(observed: DoorObservation): LedgerOutcome {
@@ -247,6 +280,9 @@ export function recordAtDoor(observed: DoorObservation): LedgerOutcome {
 
   if (observed.outcome === 'failed') scope.failed = true;
   if (observed.detail) scope.details.push(observed.detail);
+  if (scope.adopted && scope.deliveryId) {
+    return { kind: 'no_change', reason: 'folded-into-open-scope', deliveryId: scope.deliveryId, detail:'a crossing of a queued reply, recorded by its verdict' };
+  }
   if (scope.pending && scope.deliveryId) {
     // The FIRST crossing of an outside send: the intent becomes what this door observed.
     scope.pending = false;
@@ -375,7 +411,7 @@ export function recordDashboardDelivery(event: WsEvent): string | null {
       recipientId: 'owner',
       messageId: msg.id,
       // The turn's own conversation; outside a turn (a boot notice) the resolver supplies it.
-      conversationId: turnContext(agentId)?.root?.conversationId ?? null,
+      conversationId: turnStamp(agentId).root?.conversationId ?? null,
       outcome: 'delivered',
     }));
     return deliveryId;

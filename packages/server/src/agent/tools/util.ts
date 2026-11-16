@@ -11,7 +11,7 @@ import { createLogger } from '../../logger.js';
 import { isDreamerAgent, isHealerAgent } from '../../config/platform.js';
 import { getTunnelStatus } from '../../services/tunnel.js';
 import { getCurrentToolCallId } from '../turn-state.js';
-import { turnContext } from '../turn-context.js';
+import { turnStamp } from '../turn-context.js';
 import { userWords, currentAddress } from '../v2/turn-address.js';
 // A leaf (imports nothing): importing credentials/secret-fields.ts here would re-open the
 // secret-fields -> registry -> tools cycle.
@@ -40,8 +40,7 @@ export function auditLog(agentId: string, actionType: string, target: string | n
     const safeTarget = target === null ? null : redactHandedCredentials(agentId, target);
     const safeDetail = detail === undefined ? null : redactHandedCredentials(agentId, detail);
     // Every audit row carries the turn that ran it, the root it served, and the call id.
-    const turnNumber = turnContext(agentId)?.turnNumber ?? null;
-    const root = turnContext(agentId)?.root ?? null;
+    const { turnNumber, root } = turnStamp(agentId);
     db.prepare(`
       INSERT INTO audit_log (id, agent_id, action_type, target, result, detail, turn_number, call_id, root_kind, root_id, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))

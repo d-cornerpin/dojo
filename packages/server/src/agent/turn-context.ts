@@ -3,7 +3,8 @@
 // A field left `undefined` = the old maps' "no entry"; an explicit `null` = the maps' explicit null.
 // Facts wider than a turn live in turn-state.ts and MUST NOT move here.
 
-// Type-only and the module's only import: erased at compile time, so no runtime cycle.
+// The type import is erased at compile time, so no runtime cycle.
+import { AsyncLocalStorage } from 'node:async_hooks';
 import type { AgentTurnState } from './v2/state.js';
 
 // Origin of the turn; the kind vocabulary must match migration 112.
@@ -159,6 +160,28 @@ export function turnContext(agentId: string): TurnContext | undefined {
 // Not the loop's teardown block: it READS root and served work; the wrapper orders the clear after them.
 export function endTurnContext(agentId: string): void {
   openContexts.delete(agentId);
+}
+
+/** The turn a record is stamped with. */
+export interface TurnStamp {
+  readonly turnNumber: number | null;
+  readonly root: TurnRoot | null;
+  readonly convKey: string | null;
+}
+
+// A send outside its own turn (a queued reply's retry) declares that turn; a declared "no turn" stays no turn.
+const declaredStamp = new AsyncLocalStorage<{ agentId: string; stamp: TurnStamp }>();
+
+export function asTurn<T>(agentId: string, stamp: TurnStamp, fn: () => T): T {
+  return declaredStamp.run({ agentId, stamp }, fn);
+}
+
+/** Every writer that stamps a turn asks here: the declared turn first, the agent's live turn only without one. */
+export function turnStamp(agentId: string): TurnStamp {
+  const declared = declaredStamp.getStore();
+  if (declared?.agentId === agentId) return declared.stamp;
+  const ctx = openContexts.get(agentId);
+  return { turnNumber: ctx?.turnNumber ?? null, root: ctx?.root ?? null, convKey: ctx?.convKey ?? null };
 }
 
 // The three states ARE the contract; a reader that flattens them re-opens the bleed:

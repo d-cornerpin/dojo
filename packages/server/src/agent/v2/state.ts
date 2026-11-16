@@ -52,6 +52,7 @@ export interface ChannelInboundContext {
   recipientAddress?: string;
   chatId?: string;
   chatType?: 'dm' | 'group';
+  teamsAccount?: string;
   emailMessageId?: string;
   emailService?: 'outlook' | 'gmail';
   emailSubject?: string;

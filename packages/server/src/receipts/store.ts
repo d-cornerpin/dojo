@@ -7,7 +7,7 @@ import { getDb } from '../db/connection.js';
 import { withUnit } from '../db/unit.js';
 import { createLogger } from '../logger.js';
 import { getCurrentToolCallId } from '../agent/turn-state.js';
-import { turnContext } from '../agent/turn-context.js';
+import { turnStamp } from '../agent/turn-context.js';
 import { noteReceiptForOutbound } from '../agent/v2/outbound.js';
 
 // Bounds the sent_text copy (the pending-question header displays 300 chars).
@@ -97,9 +97,8 @@ export function writeToolReceipt(params: WriteReceiptParams): string {
   const receiptId = uuidv4();
   const auditId = skipAudit ? null : uuidv4();
   const detailJson = detail ? JSON.stringify(detail) : null;
-  // Attributed from live engine state; NULL outside a turn.
-  const convKey = turnContext(agentId)?.convKey ?? null;
-  const turnNumber = turnContext(agentId)?.turnNumber ?? null;
+  // Attributed to the declared or live turn; NULL outside one.
+  const { convKey, turnNumber, root } = turnStamp(agentId);
   const boundedSentText = sentText != null && sentText.length > 0
     ? sentText.slice(0, SENT_TEXT_MAX_CHARS)
     : null;
@@ -116,7 +115,6 @@ export function writeToolReceipt(params: WriteReceiptParams): string {
     }
 
     const liveCallId = getCurrentToolCallId(agentId);
-    const liveRoot = turnContext(agentId)?.root ?? null;
     db.prepare(`
       INSERT INTO tool_receipts (
         id, agent_id, tool, tier, verified, basis,
@@ -127,7 +125,7 @@ export function writeToolReceipt(params: WriteReceiptParams): string {
     `).run(
       receiptId, agentId, tool, tier, verified ? 1 : 0, basis,
       providerId, threadId, recipient, taskId, detailJson, auditId, sim ? 1 : 0,
-      convKey, turnNumber, boundedSentText, liveCallId, liveRoot?.kind ?? null, liveRoot?.id ?? null,
+      convKey, turnNumber, boundedSentText, liveCallId, root?.kind ?? null, root?.id ?? null,
     );
     });
 

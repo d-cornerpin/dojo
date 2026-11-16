@@ -1,15 +1,23 @@
-// Reply-destination resolver: decides WHERE the terminal reply goes; `channel-push.ts` sends it.
+// Reply-destination resolver: decides WHERE the terminal reply goes, then queues it for the channel sender,
+// speaks it on a live call, or records why it was held. Exactly one of those happens.
 // The dev test kit's instrument manifest anchors on the entry guard line below; keep its text unchanged.
 
 import { createLogger } from '../../../../logger.js';
 import { isPrimaryAgent } from '../../../../config/platform.js';
+import { redactHandedCredentials } from '../../../../credentials/secret-fields.js';
+import { resolveRecipientDisplay } from '../../../../contacts/resolve-recipient.js';
+import type { PresenceStatus } from '../../../../services/presence.js';
 import { recordAffinityPromotion, affinityPromotionRefusedNoBasis } from '../../owner-affinity.js';
-import { outboundRoot } from '../../outbound-root.js';
+import { outboundRoot, describeOutboundRoot } from '../../outbound-root.js';
 import { resolveDeliveryChannel } from '../../turn-address.js';
 import { steerFired } from '../../steer-queue.js';
+import { withOutboundAsync, recordHeld, recordedId } from '../../outbound.js';
+import { queueReply } from '../../deliveries.js';
+import { replyAddressFor } from '../../channel-sender.js';
+import { engineMayRouteTo, engineRouteRefusalReason } from '../../../access/engine-route.js';
+import type { ReplyDestination } from '../../reply-destination.js';
 import type { AgentTurnState } from '../../state.js';
 import { appendUndeliveredLinks } from './link-backstop.js';
-import { pushReplyToChannel } from './channel-push.js';
 import type { FinalizeContext } from './index.js';
 
 const logger = createLogger('v2-loop');
@@ -27,7 +35,6 @@ export async function routeTerminalReply(
       state = await appendUndeliveredLinks(state, ctx);
 
       const { getPresence, isImessageConfigured } = await import('../../../../services/presence.js');
-      const { sendResponseViaIMessage } = await import('../../../../services/imessage-bridge.js');
 
       const presenceNow = getPresence();
       // Affinity alone is not consent: an affinity-only promotion with no basis is refused. The bound
@@ -87,10 +94,7 @@ export async function routeTerminalReply(
         }, agentId);
       }
 
-      await pushReplyToChannel(state, ctx, {
-        destination, settledContextHold, routeRoot, presenceNow,
-        isImessageConfigured, sendResponseViaIMessage, getPresence,
-      });
+      await sendOrHold(state, ctx, { destination, settledContextHold, routeRoot, presenceNow, imessageConfigured: isImessageConfigured() });
     } catch (err) {
       logger.warn('v2.7.23: reply-destination routing failed', {
         agentId,
@@ -100,4 +104,120 @@ export async function routeTerminalReply(
   }
 
   return state;
+}
+
+interface RouteDecision {
+  readonly destination: ReplyDestination;
+  readonly settledContextHold: boolean;
+  readonly routeRoot: ReturnType<typeof outboundRoot>;
+  readonly presenceNow: PresenceStatus;
+  readonly imessageConfigured: boolean;
+}
+
+const TEXT_CHANNELS = ['imessage', 'sms', 'email', 'teams'] as const;
+const isTextChannel = (d: ReplyDestination): d is typeof TEXT_CHANNELS[number] => (TEXT_CHANNELS as readonly string[]).includes(d);
+
+/** Queues, speaks or holds the terminal reply. It never advances the state. */
+async function sendOrHold(stateIn: AgentTurnState, ctx: FinalizeContext, r: RouteDecision): Promise<void> {
+  // The caller already asserted this non-null at run time (`link-backstop.ts`); restated as a type only.
+  const state = stateIn as AgentTurnState & { lastAssistantTextForIM: string };
+  const { agentId, turnNumber, turnCtx, counterparty, persistRoutingMarker } = ctx;
+  const { destination, settledContextHold, routeRoot, presenceNow } = r;
+  const conversationId = turnCtx.root?.conversationId ?? null;
+
+  if (settledContextHold && destination !== 'dashboard') {
+    // No affirmative root on a settled wake: withhold the push, keep the reply in the dashboard and mark
+    // the pill "held". The held row carries the root read that produced it, so a hold reads apart from a push.
+    recordedId(recordHeld({ agentId, tool: 'auto-route', channel: 'dashboard', conversationId }, describeOutboundRoot(routeRoot)),
+      'v2: settled-context hold', { agentId, turnNumber });
+    persistRoutingMarker('held in dashboard: no active conversation');
+    logger.warn('settled-context hold: withheld auto-route channel push (no affirmative root); reply stays visible in dashboard', {
+      agentId, turnNumber, destination, presence: presenceNow,
+      outboundRoot: routeRoot.root,
+    }, agentId);
+  } else if (destination !== 'dashboard' && !engineMayRouteTo(agentId, destination)) {
+    // One channel-grant door for every arm; the reply stays in the dashboard.
+    recordedId(recordHeld({ agentId, tool: 'auto-route', channel: destination, conversationId }, engineRouteRefusalReason(destination)),
+      'v2: auto-route withheld (no channel grant)', { agentId, turnNumber, destination });
+    persistRoutingMarker('held (no channel grant)');
+    logger.warn('auto-route withheld: the sending agent holds no grant on this channel', {
+      agentId, turnNumber, destination,
+    }, agentId);
+  } else if (destination === 'phone' && !state.repliedToCounterpartyThisTurn.phone && state.inboundContext?.phoneCallSid) {
+    await speakOnCall(state, ctx);
+  } else if (isTextChannel(destination) && !state.repliedToCounterpartyThisTurn[destination]) {
+    // An iMessage reply goes to this turn's iMessage counterparty; with none (the away override) to the owner.
+    const sender = counterparty.kind === 'user' && counterparty.channel === 'imessage' ? counterparty.senderId ?? undefined : undefined;
+    const address = destination === 'imessage' && !r.imessageConfigured
+      ? null
+      : replyAddressFor({ ...state.inboundContext, channel: destination, sender });
+    const queued = address !== null && await queueReply({ agentId, turnNumber, root: turnCtx.root ?? null, text: state.lastAssistantTextForIM, address }) !== null;
+    if (!queued) {
+      recordedId(recordHeld({ agentId, tool: 'auto-route', channel: destination, conversationId }, `no ${destination} address to reply to; the reply is in the dashboard chat`),
+        'v2: auto-route held (no address)', { agentId, turnNumber, destination });
+    }
+  }
+}
+
+/** Speaks the reply on the active call. If streaming TTS already spoke the body, only the remaining tail is
+ *  queued; otherwise the whole reply, so it is never silently dropped. */
+async function speakOnCall(state: AgentTurnState & { lastAssistantTextForIM: string }, ctx: FinalizeContext): Promise<void> {
+  const { agentId, turnCtx, persistRoutingMarker } = ctx;
+  const inbound = state.inboundContext!;
+  const replyOut = redactHandedCredentials(agentId, state.lastAssistantTextForIM);
+  try {
+    const { getCallSession } = await import('../../../../twilio/call-session.js');
+    const session = getCallSession(inbound.phoneCallSid!);
+    if (!session) {
+      logger.warn('v2.9.18: phone auto-reply skipped - no active session for callSid', {
+        agentId, callSid: inbound.phoneCallSid,
+      }, agentId);
+    } else if (session.isEnded()) {
+      logger.warn('v2.9.18: phone auto-reply skipped - call already ended', {
+        agentId, callSid: inbound.phoneCallSid,
+      }, agentId);
+    } else if (turnCtx.phoneStreamFlushedAny) {
+      const tail = redactHandedCredentials(agentId, turnCtx.phoneStreamBuffer).trim();
+      if (tail) {
+        // One reply is one outbound row, however many sentences it is spoken in.
+        await withOutboundAsync(
+          {
+            agentId, tool: 'auto-route', channel: 'phone', text: tail,
+            recipientId: inbound.phoneFromNumber ?? null,
+            conversationId: turnCtx.root?.conversationId ?? null,
+          },
+          () => session.queueAgentSay(tail),
+        );
+        turnCtx.phoneStreamBuffer = '';
+      }
+      persistRoutingMarker(`phone call to ${resolveRecipientDisplay('phone', inbound.phoneFromNumber ?? '(unknown)')}`);
+      logger.info('v2.9.23: routed reply via phone TTS (streamed)', {
+        agentId,
+        callSid: inbound.phoneCallSid,
+        to: inbound.phoneFromNumber,
+        tailLength: tail.length,
+        totalTextLength: replyOut.length,
+      }, agentId);
+    } else {
+      await withOutboundAsync(
+        {
+          agentId, tool: 'auto-route', channel: 'phone', text: replyOut,
+          recipientId: inbound.phoneFromNumber ?? null,
+          conversationId: turnCtx.root?.conversationId ?? null,
+        },
+        () => session.queueAgentSay(replyOut),
+      );
+      persistRoutingMarker(`phone call to ${resolveRecipientDisplay('phone', inbound.phoneFromNumber ?? '(unknown)')}`);
+      logger.info('v2.9.18: routed reply via phone TTS', {
+        agentId,
+        callSid: inbound.phoneCallSid,
+        to: inbound.phoneFromNumber,
+        textLength: replyOut.length,
+      }, agentId);
+    }
+  } catch (err) {
+    logger.warn('v2.9.18: phone auto-reply crashed', {
+      agentId, error: err instanceof Error ? err.message : String(err),
+    }, agentId);
+  }
 }

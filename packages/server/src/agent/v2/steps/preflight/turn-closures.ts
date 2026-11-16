@@ -3,7 +3,7 @@
 // because they read the turn's state live from the bag.
 
 import { v4 as uuidv4 } from 'uuid';
-import { formatRoutingMarker, type DisplayKind } from '@dojo/shared';
+import type { DisplayKind } from '@dojo/shared';
 import { broadcast } from '../../../../gateway/ws.js';
 import { createLogger } from '../../../../logger.js';
 import { insertMessageIfAbsent } from '../../../../memory/message-store.js';
@@ -12,6 +12,7 @@ import { continuationContext } from '../../../turn-state.js';
 import type { TurnContext } from '../../../turn-context.js';
 import type { TurnCounterparty } from '../../counterparty.js';
 import { withOutboundAsync } from '../../outbound.js';
+import { writeRoutingPill } from '../../channel-sender.js';
 import { engineMayRouteTo } from '../../../access/engine-route.js';
 import type { PreflightContext, PreflightScratch } from './index.js';
 
@@ -65,23 +66,8 @@ export function runTurnClosures(
     if (chosenConvKey) continuationContext.set(agentId, { convKey: chosenConvKey, conversationId: chosenConversationId, counterparty, address: turnCtx.address });
   };
 
-  // Persists and broadcasts a `[Reply routed via <label>]` row the dashboard renders as a badge; the one
-  // writer for engine acks and the reply resolver. The deliveries row is written by the send's own door.
-  const persistRoutingMarker = (label: string): void => {
-    const tagId = uuidv4();
-    const tagContent = formatRoutingMarker(label);
-    insertMessageIfAbsent({ id: tagId, agentId, role: 'system', content: tagContent, turnNumber });
-    broadcast({
-      type: 'chat:message',
-      agentId,
-      message: {
-        id: tagId, agentId, role: 'system' as const,
-        content: tagContent,
-        tokenCount: null, modelId: null, cost: null, latencyMs: null,
-        createdAt: new Date().toISOString(),
-      },
-    });
-  };
+  // The dashboard's routing pill for this turn; the deliveries row is written by the send's own door.
+  const persistRoutingMarker = (label: string): void => { void writeRoutingPill(agentId, turnNumber, label); };
 
   // Persists a system row and broadcasts it, so wordy mode shows it live and not only after a refresh.
   const persistAndBroadcastSystemRow = (content: string): string => {

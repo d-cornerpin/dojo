@@ -1,19 +1,18 @@
-// 3.5 fix round 1: delivery is not a source regex, it is behaviour. `routeTerminalReply` hands the
-// push the destination the SAME resolver gives the agent (`resolveDeliveryChannel`), whatever
-// the newest row, the trigger row or the owner's presence says; and the channel the agent is told
-// (`liveAddress`) equals the channel used, including after a presence flip.
+// `routeTerminalReply` queues the reply on the destination the SAME resolver gives the agent
+// (`resolveDeliveryChannel`), whatever the newest row, the trigger row or the owner's presence says; and the
+// channel the agent is told (`liveAddress`) equals the channel used, including after a presence flip.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
-const { pushSpy, presence, bridge } = vi.hoisted(() => ({
-  pushSpy: vi.fn(async () => undefined),
+const { queueSpy, presence, bridge } = vi.hoisted(() => ({
+  queueSpy: vi.fn(async () => 'row'),
   presence: { current: 'in_dojo' as 'in_dojo' | 'away' },
   bridge: { on: true },
 }));
-vi.mock('../channel-push.js', () => ({ pushReplyToChannel: pushSpy }));
+vi.mock('../../../deliveries.js', async (orig) => ({ ...(await orig<Record<string, unknown>>()), queueReply: queueSpy }));
+vi.mock('../../../../access/engine-route.js', () => ({ engineMayRouteTo: () => true, engineRouteRefusalReason: () => '' }));
 vi.mock('../link-backstop.js', () => ({ appendUndeliveredLinks: async (s: unknown) => s }));
 vi.mock('../../../../../config/platform.js', async (orig) => ({ ...(await orig<Record<string, unknown>>()), isPrimaryAgent: () => true }));
 vi.mock('../../../../../services/presence.js', () => ({ getPresence: () => presence.current, isImessageConfigured: () => bridge.on }));
-vi.mock('../../../../../services/imessage-bridge.js', () => ({ sendResponseViaIMessage: vi.fn() }));
 vi.mock('../../../../../logger.js', () => ({ createLogger: () => ({ info: vi.fn(), debug: vi.fn(), warn: vi.fn(), error: vi.fn() }) }));
 
 import { routeTerminalReply } from '../route-reply.js';
@@ -27,13 +26,15 @@ const owner: TurnCounterparty = { kind: 'user', name: 'Owner Example', relation:
 function addressFor(cp: TurnCounterparty, inbound: 'imessage' | 'dashboard' | null, now: 'in_dojo' | 'away', primary = true) {
   return computeTurnAddress({ autoRoutes: primary, counterparty: cp, isEngineTurn: false, isNotificationTurn: false, inboundChannel: inbound, inboundContext: null, presence: now, imessageBridgeConfigured: true, ownerAffinityChannel: null });
 }
+/** The channel the reply was queued on, or `dashboard` when nothing left the dashboard. */
 async function destinationOf(cp: TurnCounterparty, address: ReturnType<typeof addressFor>, stateInbound: 'imessage' | 'dashboard' | null): Promise<string> {
-  pushSpy.mockClear();
-  const state = { lastAssistantTextForIM: 'hi', explicitSendThisTurn: {}, steerQueue: { pending: [], fired: [] }, inboundChannel: stateInbound } as never;
+  queueSpy.mockClear();
+  const state = { lastAssistantTextForIM: 'hi', explicitSendThisTurn: {}, repliedToCounterpartyThisTurn: {}, steerQueue: { pending: [], fired: [] }, inboundChannel: stateInbound, inboundContext: null } as never;
   const ctx = { agentId: 'primary', turnNumber: 1, turnCtx: { address, ownerAffinityDestination: null }, counterparty: cp, chosenConvKey: 'c', settledContextWakeTurn: false, isEngineTurn: false } as never;
-  await routeTerminalReply(state, ctx, false);
-  expect(pushSpy).toHaveBeenCalledTimes(1);
-  return (pushSpy.mock.calls[0] as unknown as [unknown, unknown, { destination: string }])[2].destination;
+  await routeTerminalReply(state, ctx);
+  expect(queueSpy.mock.calls.length).toBeLessThanOrEqual(1);
+  const queued = queueSpy.mock.calls[0] as unknown as [{ address: { channel: string } }] | undefined;
+  return queued ? queued[0].address.channel : 'dashboard';
 }
 
 beforeEach(() => { presence.current = 'in_dojo'; bridge.on = true; });

@@ -200,6 +200,8 @@ export interface InboundMeta {
   emailSubject?: string;
   chatId?: string;
   chatType?: 'dm' | 'group';
+  /** The Teams work account the message came to; the reply goes from the same one. */
+  teamsAccount?: string;
   smsFromNumber?: string;
   smsToNumber?: string;
   phoneCallSid?: string;

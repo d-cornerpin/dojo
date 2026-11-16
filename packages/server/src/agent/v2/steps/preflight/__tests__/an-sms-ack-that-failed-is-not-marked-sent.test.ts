@@ -13,7 +13,8 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
-const { broadcastSpy, insertSpy, executeToolSpy, outboundIntents, engineMayRouteToSpy } = vi.hoisted(() => ({
+const { broadcastSpy, insertSpy, pillSpy, executeToolSpy, outboundIntents, engineMayRouteToSpy } = vi.hoisted(() => ({
+  pillSpy: vi.fn((_label: string) => {}),
   broadcastSpy: vi.fn(),
   insertSpy: vi.fn(),
   executeToolSpy: vi.fn(async () => ({ kind: 'applied', result: { content: 'sent' } })),
@@ -22,6 +23,8 @@ const { broadcastSpy, insertSpy, executeToolSpy, outboundIntents, engineMayRoute
 }));
 
 vi.mock('../../../../../gateway/ws.js', () => ({ broadcast: broadcastSpy }));
+// The routing pill's one writer; the spy reads what the owner's badge would say.
+vi.mock('../../../channel-sender.js', () => ({ writeRoutingPill: (_a: string, _t: number, label: string) => pillSpy(label) }));
 vi.mock('../../../../../memory/message-store.js', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   insertMessageIfAbsent: insertSpy,
@@ -80,13 +83,10 @@ function ackFor(counterparty: TurnCounterparty, inboundContext: Record<string, u
   ).deliverEngineUserAck;
 }
 
-const routingMarkers = (): string[] => insertSpy.mock.calls
-  .map((c) => c[0] as { role?: string; content?: string })
-  .filter((m) => m.role === 'system')
-  .map((m) => m.content ?? '');
+const routingMarkers = (): string[] => pillSpy.mock.calls.map((c) => `[Reply routed via ${c[0]}]`);
 
 beforeEach(() => {
-  broadcastSpy.mockClear(); insertSpy.mockClear(); executeToolSpy.mockClear();
+  broadcastSpy.mockClear(); insertSpy.mockClear(); pillSpy.mockClear(); executeToolSpy.mockClear();
   sendSmsSpy.mockReset();
   outboundIntents.length = 0;
   engineMayRouteToSpy.mockClear();

@@ -631,6 +631,9 @@ async function main(): Promise<void> {
         });
       }
     }
+    // Replies left waiting by the last run go out once the bridge is up.
+    const { armSenderTimer } = await import('./agent/v2/channel-sender.js');
+    armSenderTimer();
   }
 
   {
