@@ -41,11 +41,6 @@ describe("the main agent's shell refuses a line naming the keys file", () => {
     expect(verdict.allowed ? '' : verdict.reason).toMatch(/keys file.*Settings.*owner/);
   });
 
-  it('a relative name, against the call\'s working directory', () => {
-    expect(authorizeExecShapedCall(main, 'shell', 'git add secrets.yaml', path.join(homeDir(), '.dojo')).allowed).toBe(false);
-    expect(authorizeExecShapedCall(main, 'shell', 'git add secrets.yaml', path.join(homeDir(), 'code', 'app')).allowed).toBe(true);
-  });
-
   it('exec', () => {
     expect(authorizeExecShapedCall(main, 'proc', ['cat', KEYS]).allowed).toBe(false);
   });

@@ -144,16 +144,15 @@ function readsRecursively(cmd: string, words: readonly string[]): boolean {
 /** Copy-style readers whose LAST operand is the destination: written, not read. */
 const WRITES_TO_LAST: ReadonlySet<string> = new Set(['cp', 'mv', 'rsync', 'scp']);
 
-function readerReadsSensitive(cmd: string, words: readonly string[], folders: boolean): { blocked: true; reason: string } | null {
+function readerReadsSensitive(cmd: string, words: readonly string[], notMain: boolean): { blocked: true; reason: string } | null {
   const files = fileOperands(cmd, words);
-  const recursive = folders && readsRecursively(cmd, words);
+  const recursive = notMain && readsRecursively(cmd, words);
   const destination = WRITES_TO_LAST.has(cmd) && files.length > 1 ? files.length - 1 : -1;
   for (let k = 0; k < files.length; k++) {
     const word = files[k];
     const expanded = resolvePath(word);
     const abs = path.isAbsolute(expanded) ? expanded : path.resolve(expanded);
-    // `folders` false is the main agent: a row scoped to every agent but it (a project's .env) does not bind it.
-    if (denyRuleFor(abs, 'sensitive', folders ? undefined : 'main')) return { blocked: true, reason: `path "${word}" is on the sensitive-files block list` };
+    if (denyRuleFor(abs, 'sensitive', notMain ? undefined : 'main')) return { blocked: true, reason: `path "${word}" is on the sensitive-files block list` };
     if (recursive && k !== destination && containsSensitiveLocation(abs)) {
       return { blocked: true, reason: `path "${word}" is, or holds, a folder on the sensitive-files block list` };
     }
@@ -203,8 +202,8 @@ function secretsSubstringDeny(spelling: string, basis: 'ladder-parity' | 'bypass
 }
 
 /** The owner's ruling for the main agent: a word that is the Dojo's own keys file refuses the line. */
-export function keysFileDeny(line: string, agentId: string, cwd?: string): Verdict | null {
-  return isPrimaryAgent(agentId) && lineNamesKeysFile(line, cwd) ? keysFileRefusal('ladder-parity') : null;
+export function keysFileDeny(line: string, agentId: string): Verdict | null {
+  return isPrimaryAgent(agentId) && lineNamesKeysFile(line) ? keysFileRefusal('ladder-parity') : null;
 }
 
 /** ONE VOICE for the sensitive-read refusal: two places, identical words, different basis. */
@@ -256,11 +255,12 @@ function secretsSubstringUnquoted(trimmed: string): Verdict | null {
 }
 
 /** The tokenized sensitive-path scan, crude on purpose: the substring covers what matters.
- *  `folders` false (the main agent) lets a recursive read walk a folder that merely holds a secret. */
-export function commandReadsSensitiveFile(command: string, folders = true): { blocked: true; reason: string } | { blocked: false } {
+ *  `notMain` false (the main agent) lets a recursive read walk a folder that merely holds a secret,
+ *  and lets it read a file whose row excepts it (a project's .env). */
+export function commandReadsSensitiveFile(command: string, notMain = true): { blocked: true; reason: string } | { blocked: false } {
   // Same scan over the words as the shell will unquote them, so a path split by quotes is still the path.
   for (const seg of lexShellLine(command)?.segments ?? []) {
-    const scan = argvReadsSensitiveFile(seg.words.map((w) => w.value), folders);
+    const scan = argvReadsSensitiveFile(seg.words.map((w) => w.value), notMain);
     if (scan.blocked) return scan;
   }
   const tokens = command.split(/\s+/).filter(Boolean);
@@ -274,7 +274,7 @@ export function commandReadsSensitiveFile(command: string, folders = true): { bl
       if (arg === '|' || arg === '||' || arg === '&&' || arg === ';' || arg === '>') break;
       operands.push(arg);
     }
-    const found = readerReadsSensitive(cmd, operands, folders);
+    const found = readerReadsSensitive(cmd, operands, notMain);
     if (found) return found;
   }
   return { blocked: false };
@@ -339,7 +339,7 @@ function isInlineShellScript(argv: readonly string[]): boolean {
 /** The argv door. Refusals in order: builtins and -c on the program; global deny and secrets substring
  *  on the rebuilt line; the sensitive-read scan over the elements. Then the proc rows, deny before
  *  allow; no row means deny. */
-export function authorizeArgv(grant: Grant, resource: ResolvedArgv, cwd?: string): Verdict {
+export function authorizeArgv(grant: Grant, resource: ResolvedArgv): Verdict {
   if (SHELL_BUILTINS.has(resource.base)) {
     return deny(
       'ladder-parity',
@@ -357,7 +357,7 @@ export function authorizeArgv(grant: Grant, resource: ResolvedArgv, cwd?: string
     );
   }
 
-  const globals = keysFileDeny(resource.display, grant.agentId, cwd) ?? globalExecDeny(resource.display, !isPrimaryAgent(grant.agentId));
+  const globals = keysFileDeny(resource.display, grant.agentId) ?? globalExecDeny(resource.display, !isPrimaryAgent(grant.agentId));
   if (globals) return globals;
 
   const scan = argvReadsSensitiveFile(resource.argv, !isPrimaryAgent(grant.agentId));
@@ -374,12 +374,12 @@ export function authorizeArgv(grant: Grant, resource: ResolvedArgv, cwd?: string
 }
 
 /** Same scan over a vector: token boundaries come from the caller, no whitespace guess. */
-export function argvReadsSensitiveFile(argv: readonly string[], folders = true): { blocked: true; reason: string } | { blocked: false } {
+export function argvReadsSensitiveFile(argv: readonly string[], notMain = true): { blocked: true; reason: string } | { blocked: false } {
   if (argv.length === 0) return { blocked: false };
   for (let i = 0; i < argv.length; i++) {
     const cmd = path.basename(argv[i]);
     if (!SENSITIVE_FILE_READING_COMMANDS.has(cmd)) continue;
-    const found = readerReadsSensitive(cmd, argv.slice(i + 1), folders);
+    const found = readerReadsSensitive(cmd, argv.slice(i + 1), notMain);
     if (found) return found;
   }
   return { blocked: false };
@@ -391,9 +391,8 @@ export function authorizeProc(
   grant: Grant,
   resource: ResolvedCommand,
   scanSensitiveReads = false,
-  cwd?: string,
 ): Verdict {
-  const keys = keysFileDeny(resource.raw, grant.agentId, cwd);
+  const keys = keysFileDeny(resource.raw, grant.agentId);
   if (keys) return keys;
   // The floor reads the whole line (a construct's header is not one of its commands), every simple
   // command and what a privilege wrapper runs; the main agent does not meet it.
@@ -439,6 +438,6 @@ export function authorizeProc(
 }
 
 /** THE SHELL DOOR: shell({script}) under /bin/zsh -c, authorizeProc with the scan ON over shell rows. */
-export function authorizeShellScript(grant: Grant, resource: ResolvedCommand, cwd?: string): Verdict {
-  return authorizeProc(grant, resource, true, cwd);
+export function authorizeShellScript(grant: Grant, resource: ResolvedCommand): Verdict {
+  return authorizeProc(grant, resource, true);
 }

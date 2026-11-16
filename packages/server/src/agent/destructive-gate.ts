@@ -19,15 +19,11 @@ import { EXEC_DOOR_ARG, authorizeExecShapedArgs, execCallText, execDoorFor } fro
 import { destroysDojoData, destroysDojoFiles, overwritesFile } from './brokers/dojo-redirect.js';
 import { floorReadings } from './brokers/proc.js';
 import { authorizeAppleScript, shellPayloads } from './brokers/applescript.js';
-import { resolveCommandArg } from './brokers/resolve.js';
-import { lexShellLine } from './brokers/shell-words.js';
 import { wrappedProgramIndex } from './brokers/sudo-policy.js';
 import { commandWords } from './exec-grammar.js';
-import { resolveHomePath } from './path-resolve.js';
-import { homeDir } from '../home.js';
 import path from 'node:path';
 import { denyRuleFor, isLoginKeyFile } from './brokers/deny.js';
-import type { ResolvedPath } from './brokers/resolve.js';
+import { resolveCommandArg, type ResolvedPath } from './brokers/resolve.js';
 import { canonicalizeAgentPath } from './path-resolve.js';
 import { resolveAgentRef } from './tool-helpers.js';
 import { callerFileEffects } from './tools/gates.js';
@@ -58,11 +54,11 @@ function runsDestroyer(line: string): boolean {
 
 /** Whether a line's `rm` names `/`, the home folder or another folder that holds the Dojo. */
 function wipesTheMac(line: string): boolean {
-  const dojo = path.join(homeDir(), '.dojo');
+  const dojo = canonicalizeAgentPath('~/.dojo');
   return floorReadings(line).some((command) => {
-    const words = lexShellLine(command)?.segments[0]?.words.map((w) => w.value) ?? [];
+    const words = commandWords(command);
     return path.basename(words[0] ?? '') === 'rm' && words.slice(1).some((w) => {
-      const rel = path.relative(path.resolve(resolveHomePath(w)), dojo);
+      const rel = path.relative(canonicalizeAgentPath(w), dojo);
       return !w.startsWith('-') && rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
     });
   });
@@ -121,7 +117,7 @@ export function wouldWreck(toolName: string, args: Record<string, unknown>): str
   if (lines.some(wipesTheMac)) return 'erase the whole disk or the home folder, the Dojo with it';
   const argv = toolName === 'exec' && Array.isArray(raw) && raw.every((e) => typeof e === 'string') ? (raw as string[]) : null;
   if (argv ? destroysDojoFiles(argv) : lines.some((l) => destroysDojoFiles(l))) {
-    return 'delete, move or overwrite the Dojo\'s own database, data or backups';
+    return 'delete, move or overwrite the Dojo\'s own database, data, backups or secrets file';
   }
   return null;
 }

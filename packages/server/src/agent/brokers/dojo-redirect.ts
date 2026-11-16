@@ -12,7 +12,7 @@ import { getDb } from '../../db/connection.js';
 import { firstKeyword } from '../../db/read-only-door.js';
 import { homeDir } from '../../home.js';
 import { refuseDeniedSql } from '../../inspect/redact.js';
-import { DOJO_BACKUP_DIRS, denyRuleFor } from './deny.js';
+import { DOJO_BACKUP_DIRS, denyRuleFor, namesSecretsFile } from './deny.js';
 import { lexShellLine, type Segment, type Word } from './shell-words.js';
 import { deny, type Verdict } from './types.js';
 
@@ -271,9 +271,9 @@ export function overwritesFile(command: string | readonly string[], names: (word
   });
 }
 
-/** Whether a command deletes, moves, truncates or overwrites the Dojo's database, data or backups. */
+/** Whether a command deletes, moves, truncates or overwrites the Dojo's database, data, backups or secrets file. */
 export function destroysDojoFiles(command: string | readonly string[]): boolean {
-  return destroysDojoData(command) || overwritesFile(command, refersToDojoDatabase);
+  return destroysDojoData(command) || overwritesFile(command, (word) => refersToDojoDatabase(word) || namesSecretsFile(word));
 }
 
 /** The door's verdict on a command (a shell line, or an argv vector) for an agent's role. */

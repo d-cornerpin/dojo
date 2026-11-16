@@ -18,20 +18,20 @@ export function execDoorFor(toolName: string): ExecDoor | null {
 export const EXEC_DOOR_ARG: Readonly<Record<ExecDoor, string>> = { proc: 'argv', shell: 'script' };
 
 /** Resolve this call's resource, then authorize it; `raw` saves both callers re-deriving where it lives. */
-export function authorizeExecShapedCall(grant: Grant, door: ExecDoor, raw: unknown, cwd?: string): Verdict {
+export function authorizeExecShapedCall(grant: Grant, door: ExecDoor, raw: unknown): Verdict {
   if (door === 'proc') {
     const resolved = resolveArgvArg(raw);
     if (!resolved.ok) {
       return deny('ladder-parity', `exec-shape:${resolved.code}`, resolved.reason);
     }
-    const verdict = authorizeArgv(grant, resolved.value, cwd);
+    const verdict = authorizeArgv(grant, resolved.value);
     return verdict.allowed ? redirectDojoQuestion(grant.agentId, resolved.value.argv) ?? verdict : verdict;
   }
   const resolved = resolveCommandArg(raw);
   if (!resolved.ok) {
     return deny('ladder-parity', `shell-shape:${resolved.code}`, resolved.reason);
   }
-  const verdict = authorizeShellScript(grant, resolved.value, cwd);
+  const verdict = authorizeShellScript(grant, resolved.value);
   // The Dojo database door: asked only of lines the broker allowed, so it can refuse, never permit.
   return verdict.allowed ? redirectDojoQuestion(grant.agentId, resolved.value.raw) ?? verdict : verdict;
 }

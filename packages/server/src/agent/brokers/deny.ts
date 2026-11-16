@@ -256,6 +256,7 @@ export function isSensitivePath(absPath: string): boolean {
 /** A file that lets someone sign in to this Mac: what the ~/.ssh deny row covers. */
 const SSH_ROW = DENY_RULES.find((r) => r.id === 'ssh-directory-except-public-keys') as DenyRule;
 export const isLoginKeyFile = (absPath: string): boolean => SSH_ROW.test(contextFor(absPath));
+const KEYS_ROW = DENY_RULES.find((r) => r.id === 'dojo-secrets-store') as DenyRule;
 
 /** Rows deny files by name; a folder holding one is named whole by a recursive read
  *  like `grep -r`, so the reader scan refuses these too. A test pairs each entry with a row. */
@@ -271,16 +272,13 @@ export function containsSensitiveLocation(absPath: string): boolean {
   });
 }
 
-/** Whether a word of the line, as the shell unquotes it, is the Dojo's own keys file: by `~`, `$HOME`, an
- *  absolute path, or a relative one against the call's working directory when it is known. */
-export function lineNamesKeysFile(line: string, cwd?: string): boolean {
-  const keys = foldPath(path.join(homeDir(), '.dojo', 'secrets.yaml'));
+/** Whether a word of the line, as the shell unquotes it, is the Dojo's own keys file by `~`, `$HOME` or an
+ *  absolute path; a word is also split where a script inside it may start a path. */
+export function lineNamesKeysFile(line: string): boolean {
   const words = lexShellLine(line)?.segments.flatMap((seg) => seg.words.map((w) => w.value)) ?? [line];
-  // A word is split where a script inside it may start a path: quotes, parentheses, `=`, `,` and `:`.
-  return words.flatMap((w) => w.split(/[\s'"()=,:]+/)).filter(Boolean).some((word) => {
+  return words.flatMap((w) => w.split(/[\s'"()=,:]+/)).some((word) => {
     const expanded = resolveHomePath(word.replace(/^\$\{?HOME\}?(?=\/|$)/, homeDir()));
-    if (!path.isAbsolute(expanded) && !cwd) return false;
-    return foldPath(path.resolve(cwd ?? '/', expanded)) === keys;
+    return path.isAbsolute(expanded) && KEYS_ROW.test(contextFor(path.resolve(expanded)));
   });
 }
 

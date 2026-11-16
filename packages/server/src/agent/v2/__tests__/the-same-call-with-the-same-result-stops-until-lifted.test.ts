@@ -52,6 +52,7 @@ vi.mock('../../../logger.js', () => ({
 import { runV2Turn } from '../loop.js';
 import { runMigrations } from '../../../db/migrations.js';
 import { submitUserMessage } from '../../../gateway/routes/chat.js';
+import { clearPlatformConfigCache } from '../../../config/platform.js';
 
 // Fresh agents per case: the rule's window lives in the process, keyed by agent and turn.
 let MAIN = '';
@@ -148,6 +149,16 @@ describe('the same call with the same result stops until the agent chooses to co
     expect(ran('gmail_search')).toBe(4);
     const row = mockDb.current!.prepare('SELECT exit_reason FROM turns WHERE agent_id = ? ORDER BY rowid DESC LIMIT 1').get(MAIN) as { exit_reason: string };
     expect(row.exit_reason).toBe('brake');
+  });
+
+  it('after the tool phase ends, the main agent can still lift the stop and the call runs; a helper cannot', async () => {
+    clearPlatformConfigCache();   // which agent is the main one is read from this case's config
+    const seen = await turn(MAIN, [...times(4, search), ...times(3, search), lift(), search]);
+    expect(seen.some((r) => /^Continuing/.test(r))).toBe(true);
+    expect(ran('gmail_search')).toBe(5);
+    toolSpy.mockClear();
+    await turn(HELPER, [...times(4, search), ...times(3, search), lift(), search]);
+    expect(ran('gmail_search')).toBe(4);
   });
 
   it('stopped calls retried once each never add up to the end of the tool phase', async () => {
