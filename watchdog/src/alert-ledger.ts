@@ -138,12 +138,14 @@ export function tellRollbackOutcome(state: WatchdogState, kind: string, text: st
   if (!recipient) return false;
   const restored = kind.startsWith('restored');
   const key: AlertKey = restored ? 'auto_rollback' : 'auto_rollback_failed';
-  if (!send(recipient, text)) {
+  const sent = send(recipient, text);
+  if (!sent) {
     const entry = state.alertState[key] ?? { lastSentAt: 0, active: false };
     state.alertState[key] = { ...entry, failures: (entry.failures ?? 0) + 1 };
     if (state.alertState[key].failures! < SEND_TRIES) return false;
   }
-  state.alertState[key] = { lastSentAt: nowMs, active: !(restored && healthy) };
+  // Only a sentence that went out holds the generic texts; one given up on leaves them to tell him.
+  state.alertState[key] = { lastSentAt: nowMs, active: sent && !(restored && healthy) };
   return true;
 }
 
