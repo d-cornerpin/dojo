@@ -92,39 +92,3 @@ export function repairToolPairing(messages: PairedMessage[]): PairingRepairRepor
 
   return report;
 }
-
-/** Postcondition as a predicate: after `repairToolPairing`, neither orphan direction exists. */
-export function unpairedToolIds(messages: readonly PairedMessage[]): {
-  toolUseWithoutResult: string[];
-  toolResultWithoutUse: string[];
-} {
-  const toolUseWithoutResult: string[] = [];
-  const toolResultWithoutUse: string[] = [];
-  const offered = new Set<string>();
-
-  for (let i = 0; i < messages.length; i++) {
-    const blocks = blocksOf(messages[i]);
-    if (!blocks) continue;
-    if (messages[i].role === 'assistant') {
-      const answered = new Set<string>();
-      for (let j = i + 1; j < messages.length && isToolResultCarrier(messages[j]); j++) {
-        for (const b of blocksOf(messages[j]) ?? []) {
-          if (b.type === 'tool_result' && typeof b.tool_use_id === 'string') answered.add(b.tool_use_id);
-        }
-      }
-      for (const b of blocks) {
-        if (b.type === 'tool_use' && typeof b.id === 'string') {
-          offered.add(b.id);
-          if (!answered.has(b.id)) toolUseWithoutResult.push(b.id);
-        }
-      }
-      continue;
-    }
-    for (const b of blocks) {
-      if (b.type === 'tool_result' && typeof b.tool_use_id === 'string' && !offered.has(b.tool_use_id)) {
-        toolResultWithoutUse.push(b.tool_use_id);
-      }
-    }
-  }
-  return { toolUseWithoutResult, toolResultWithoutUse };
-}
