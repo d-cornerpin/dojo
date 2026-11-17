@@ -303,3 +303,11 @@ export function setAgentBudget(agentId: string, limitUsd: number, period: string
   `).run(id, limitUsd, period);
   logger.info('Agent budget set', { agentId, limitUsd, period });
 }
+
+/** No limit: the budget row goes, and with it its card and its "limit reached" notice. */
+export function removeBudget(budgetId: string): void {
+  endBudgetCard(budgetId);
+  ownerConditionCleared(budgetStopKey(budgetId));
+  getDb().prepare('DELETE FROM budgets WHERE id = ?').run(budgetId);
+  logger.info('Budget removed', { budgetId });
+}
