@@ -10,6 +10,7 @@ import { getDb } from '../db/connection.js';
 import { recordInboundMeta } from '../agent/v2/inbound-channel.js';
 import { insertInboundMessageIfAbsent } from '../work/ask-title.js';
 import { isSenderAuthorized } from '../agent/v2/channel-auth.js';
+import { senderWakes } from './channel-safe-senders.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getPrimaryAgentId } from '../config/platform.js';
@@ -205,6 +206,7 @@ async function pollForNewMessages(): Promise<void> {
     }
 
     let totalNewCount = 0;
+    let wakeCount = 0;
 
     // Fetch members + messages for all chats in parallel
     type ChatMessage = {
@@ -261,7 +263,9 @@ async function pollForNewMessages(): Promise<void> {
         }
         body = body.slice(0, 1000);
 
-        const content = teamsInboundContent({ senderEmail, senderName, chatTopic: chat.topic ?? null, chatType: chat.chatType, time: msg.createdDateTime, body, chatId: chat.id });
+        // He and the people on the Teams approved list wake the agent; anyone else waits for its next turn.
+        const wakes = senderWakes('teams', null, senderEmail ?? '');
+        const content = teamsInboundContent({ senderEmail, senderName, chatTopic: chat.topic ?? null, chatType: chat.chatType, time: msg.createdDateTime, body, chatId: chat.id, replyInGroup: wakes && chat.chatType !== 'oneOnOne' });
 
         const msgId = uuidv4();
         // Conversation identity is the Teams chat id.
@@ -325,6 +329,7 @@ async function pollForNewMessages(): Promise<void> {
 
         notifiedIds.add(msg.id);
         totalNewCount++;
+        if (wakes) wakeCount++;
         recordNotification({
           at: new Date().toISOString(),
           from: senderLabel,
@@ -342,25 +347,25 @@ async function pollForNewMessages(): Promise<void> {
       chatLastMessageAt.set(chat.id, newestMessageAt);
     }
 
-    // Trigger the agent once for all new messages this poll
     if (totalNewCount > 0) {
-      const runtime = getAgentRuntime();
-      const summary = totalNewCount === 1
-        ? `[SOURCE: TEAMS MESSAGE] An incoming Teams message is waiting above — review it and reply using teams_send_message with the chat_id provided.`
-        : `[SOURCE: TEAMS MESSAGE] ${totalNewCount} incoming Teams messages are waiting above — review each one and reply using teams_send_message with the chat_id provided in each.`;
-
-      runtime.handleMessage(primaryId, summary).catch(err => {
-        logger.error('Failed to trigger runtime for Teams notification', {
-          error: err instanceof Error ? err.message : String(err),
-        });
-      });
-
       // Persist notified IDs (last 200)
       const recentIds = [...notifiedIds].slice(-200);
       db.prepare(`
         INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
         ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = datetime('now')
       `).run(notifiedKey, JSON.stringify(recentIds), JSON.stringify(recentIds));
+    }
+
+    // Wake the agent once for the new messages from him or approved senders; the rest wait for its next turn.
+    if (wakeCount > 0) {
+      const summary = wakeCount === 1
+        ? '[SOURCE: TEAMS MESSAGE] New Teams message. Details above: act on it as the framing there indicates.'
+        : `[SOURCE: TEAMS MESSAGE] ${wakeCount} new Teams messages. Details above: act on each as the framing there indicates.`;
+      getAgentRuntime().handleMessage(primaryId, summary).catch(err => {
+        logger.error('Failed to trigger runtime for Teams notification', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
     }
 
     recordPollSuccess();
