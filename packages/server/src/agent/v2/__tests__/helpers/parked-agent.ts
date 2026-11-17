@@ -13,14 +13,14 @@ export function overBudget(): void {
   testDb().prepare("INSERT INTO cost_records (id, agent_id, model_id, provider_id, input_tokens, output_tokens, cost_usd) VALUES ('spent', ?, 'm', 'p', 1, 1, 2)").run(AGENT);
 }
 
-/** A message from `sender` by iMessage; `extra` lands in its inbound record. */
-export function textFrom(id: string, sender: string, extra: Record<string, unknown> = {}): void {
+/** A message from `sender` on `channel` (iMessage unless named); `extra` lands in its inbound record. */
+export function textFrom(id: string, sender: string, extra: Record<string, unknown> = {}, channel: 'imessage' | 'email' = 'imessage'): void {
   const conversationId = `conv-${sender}`;
-  testDb().prepare("INSERT OR IGNORE INTO conversations (id, agent_id, channel, provider, counterparty_id, created_at) VALUES (?, ?, 'imessage', 'imessage', ?, datetime('now'))")
-    .run(conversationId, AGENT, sender);
+  testDb().prepare("INSERT OR IGNORE INTO conversations (id, agent_id, channel, provider, counterparty_id, created_at) VALUES (?, ?, ?, ?, ?, datetime('now'))")
+    .run(conversationId, AGENT, channel, channel, sender);
   insertMessage({
-    id, agentId: AGENT, role: 'user', content: 'Is the north dock open today?', turnNumber: 1, channel: 'imessage', senderId: sender,
-    conversationId, inboundMeta: JSON.stringify({ channel: 'imessage', sender, recipientAddress: sender, authorized: true, ...extra }),
+    id, agentId: AGENT, role: 'user', content: 'Is the north dock open today?', turnNumber: 1, channel, senderId: sender,
+    conversationId, inboundMeta: JSON.stringify({ channel, sender, recipientAddress: sender, authorized: true, ...extra }),
   });
 }
 

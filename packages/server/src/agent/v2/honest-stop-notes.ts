@@ -9,11 +9,12 @@ import { createLogger } from '../../logger.js';
 import { parkedCauseOf } from './honest-stop-lock.js';
 import { queueReply } from './deliveries.js';
 import { replyAddressFor } from './channel-sender.js';
+import { engineAckReachesTheirChannel } from './counterparty.js';
 
 const logger = createLogger('honest-stop');
 
 /** What a person other than the owner hears on their own channel: no money figure, no provider detail. */
-const CANNOT_RUN_LINE = `${OWNER_ALERT_DOJO_PREFIX} the agent cannot reply right now. The owner has been told.`;
+const CANNOT_RUN_LINE = `${OWNER_ALERT_DOJO_PREFIX} the agent cannot reply right now. The owner can see this.`;
 
 /** A platform line in the agent's dashboard chat; false when a row with this id already exists. */
 export function chatLine(agentId: string, id: string, content: string, conversationId?: string | null): boolean {
@@ -23,14 +24,21 @@ export function chatLine(agentId: string, id: string, content: string, conversat
 }
 
 /** The agent cannot run: the open request on message `askRootId` is told ONCE (row id `park-note:<message>`), with
- *  `ownerWords` on the dashboard; a person other than the owner who wrote by text also hears one neutral line there.
+ *  `ownerWords` on the dashboard. A person other than the owner, on a channel the engine's own lines reach, also hears
+ *  one neutral line there, once while any request of theirs that was told still waits.
  *  False when no open request waits on that message or it was already told. */
 export async function tellCannotRun(agentId: string, askRootId: string, ownerWords: string): Promise<boolean> {
   const ask = getDb().prepare(`SELECT conversation_id AS conversationId FROM work WHERE kind = 'ask' AND agent_id = ? AND root_id = ? AND state = 'open'`)
     .get(agentId, askRootId) as { conversationId: string | null } | undefined;
   if (!ask || !chatLine(agentId, `park-note:${askRootId}`, ownerWords, ask.conversationId)) return false;
   const [message] = getMessagesByIds([askRootId]);
-  if (!message?.inboundMeta || message.origin?.relation === 'owner') return true;   // the owner is told on the dashboard only
+  const o = message?.origin;
+  // The owner is told on the dashboard only; the engine writes no line of its own by email.
+  if (!message?.inboundMeta || !o || o.kind !== 'user' || o.relation === 'owner'
+    || !engineAckReachesTheirChannel({ ...o, kind: 'user', channel: o.channel ?? 'dashboard', name: '', senderIsAgent: false })) return true;
+  const toldInThisPark = getDb().prepare(`SELECT 1 FROM deliveries d JOIN work w ON w.kind = 'ask' AND w.agent_id = d.agent_id AND w.root_id = d.root_id
+    WHERE d.agent_id = ? AND d.tool = 'cannot-run' AND d.conversation_id = ? AND w.state = 'open'`).get(agentId, ask.conversationId);
+  if (toldInThisPark) return true;
   const meta = JSON.parse(message.inboundMeta) as Partial<InboundMeta>;
   const address = meta.channel ? replyAddressFor({ ...meta, channel: meta.channel }) : null;
   if (address) {
