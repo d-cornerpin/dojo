@@ -219,7 +219,9 @@ function sendAsItsTurn(row: QueuedRow, payload: Payload, to: string | null): Pro
     const detail = missed.length > 0 ? `not sent: ${missed.join(', ')}` : null;
     // A reply of files alone that sent nothing is a failed try like any other, so it is tried again.
     const anyWent = words !== null || missed.length < files.length;
-    if (detail && anyWent) await tellOfFilesNotSent(row.agent_id, to, missed);
+    // What follows an early answer is not an answer, so no undelivered notice follows it: its files are told here at its last try.
+    const lastTry = row.attempts + 1 > WAITS_MS.length;
+    if (detail && (anyWent || (lastTry && row.tool === 'download-links'))) await tellOfFilesNotSent(row.agent_id, to, missed);
     return { delivered: anyWent, final: anyWent, detail: [words?.detail, detail].filter(Boolean).join('; ') || null, receiptId: words?.receiptId ?? null };
   });
 }

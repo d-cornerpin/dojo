@@ -152,7 +152,7 @@ export interface QueuedReply {
   address: ReplyAddress;
   /** A start line ("on it"): tried once, and never an answer. */
   startLine?: boolean;
-  /** The "Download:" line that follows an early answer: it goes like a reply but is never the answer. */
+  /** What follows an early answer (download links, a later caption, files): it goes like a reply but is never the answer. */
   downloadLinks?: boolean;
   /** A Dojo line about a delegated request: the helper's `answer` (empty for a notice), the request, the hand-in it reports. */
   relay?: { tool: string; answer: string; joinId: string; reports: string | null };

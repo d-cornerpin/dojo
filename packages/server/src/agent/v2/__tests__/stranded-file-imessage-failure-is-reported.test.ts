@@ -65,6 +65,25 @@ describe('a stranded file that does not reach iMessage', () => {
   });
 });
 
+describe('a stranded file after an early answer', () => {
+  it('rides a row that is not the answer, and its failure is still told once, at its last try', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });   // only the passes below send, on a still clock
+    imessage.sendFile.mockResolvedValue(false);
+    const turn = imessageTurn();
+    await turn.answerEarly('The report is ready.');
+    strand();
+    await turn.finalize();
+    let now = Date.now() + 1000;
+    for (const wait of [30_000, 120_000, 600_000, 1_800_000, 0]) { await deliverDueReplies(now); now += wait; }
+    const rows = testDb().prepare('SELECT tool, outcome FROM deliveries WHERE payload_json IS NOT NULL ORDER BY rowid').all();
+    expect(rows).toEqual([{ tool: 'auto-route', outcome: 'delivered' }, { tool: 'download-links', outcome: 'failed' }]);
+    expect(imessage.sent.filter((s) => s === 'The report is ready.')).toHaveLength(1);
+    expect(woken).toHaveBeenCalledTimes(1);
+    expect(woken.mock.calls[0][0].brief).toContain('report.pdf');
+    vi.useRealTimers();
+  });
+});
+
 describe('a stranded file with no caption from the agent', () => {
   it('is shown and texted with NO engine-written words, and the agent is told it was delivered', async () => {
     const turn = imessageTurn();
