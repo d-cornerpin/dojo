@@ -35,6 +35,23 @@ describe('a request left claimed after its reply is settled at the next boot', (
     expect(askRow(ask)).toEqual({ state: 'done', result_delivery_id: 'd-1' });
   });
 
+  it('a claim stranded more than a week ago is left alone, never re-opened to be answered late', () => {
+    const ask = claimedAsk('msg-old', CONV, 3);
+    turnRow(3);
+    testDb().prepare('UPDATE work SET opened_at = ? WHERE id = ?').run(Date.now() - 8 * 24 * 3_600_000, ask);
+
+    healStuckClaims();
+    expect(askRow(ask).state).toBe('claimed');
+  });
+
+  it('settles under its own name', () => {
+    const ask = claimedAsk('msg-4', CONV, 4);
+    turnRow(4);
+    healStuckClaims();
+    const actor = testDb().prepare("SELECT actor FROM work_events WHERE work_id = ? AND kind = 'transition' ORDER BY id DESC LIMIT 1").get(ask) as { actor: string };
+    expect(actor.actor).toBe('boot-heal');
+  });
+
   it('an inherited request whose run died before this version stays claimed for the update to park', () => {
     const ask = claimedAsk('msg-2', CONV, 2);
     testDb().prepare(

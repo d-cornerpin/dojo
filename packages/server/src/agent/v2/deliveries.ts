@@ -152,6 +152,8 @@ export interface QueuedReply {
   address: ReplyAddress;
   /** A start line ("on it"): tried once, and never an answer. */
   startLine?: boolean;
+  /** The "Download:" line that follows an early answer: it goes like a reply but is never the answer. */
+  downloadLinks?: boolean;
   /** A Dojo line about a delegated request: the helper's `answer` (empty for a notice), the request, the hand-in it reports. */
   relay?: { tool: string; answer: string; joinId: string; reports: string | null; files: string[] };
 }
@@ -171,7 +173,7 @@ export async function queueReply(r: QueuedReply): Promise<{ id: string; held: bo
   const label = await pillLabel(r.address, r.address.to);
   const { relay } = r;
   const id = deliveryIdOf(asTurn(r.agentId, { turnNumber: r.turnNumber, root: r.root, convKey: null }, () => recordDelivery({
-    agentId: r.agentId, tool: relay?.tool ?? (r.startLine ? 'engine-ack' : 'auto-route'), channel: r.address.channel,
+    agentId: r.agentId, tool: relay?.tool ?? (r.startLine ? 'engine-ack' : r.downloadLinks ? 'download-links' : 'auto-route'), channel: r.address.channel,
     recipientId: r.address.to, conversationId: r.root?.conversationId ?? null, outcome: held ? 'held' : 'pending',
     detail: held ? 'a Dojo notice is never sent to another Dojo\'s agent' : null,
     payload: { text, address: r.address, ...(relay ? { joinId: relay.joinId, reports: relay.reports, files: relay.files } : {}) },

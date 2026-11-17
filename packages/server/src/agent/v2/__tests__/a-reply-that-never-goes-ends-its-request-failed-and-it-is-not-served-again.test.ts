@@ -13,7 +13,7 @@ import { runMigrations } from '../../../db/migrations.js';
 import { deliverDueReplies } from '../channel-sender.js';
 import { freshReplyDb, imessage, replyRows } from './helpers/reply-sender.js';
 import { claimedAsk } from './helpers/owner-stop.js';
-import { CONV, askRow, endTurn } from './helpers/text-request.js';
+import { CONV, askRow, endTurn, turnRow } from './helpers/text-request.js';
 
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
@@ -25,6 +25,7 @@ describe('a reply that never goes ends its request failed and it is not served a
   it('after five failed tries the request is failed, not open', async () => {
     imessage.send.mockResolvedValue(false);
     const ask = claimedAsk('msg-1', CONV, 1);
+    turnRow(1);
     await endTurn(1, 'the table is booked for eight');
     let now = Date.now();
     for (const wait of [30_000, 120_000, 600_000, 1_800_000, 0]) {

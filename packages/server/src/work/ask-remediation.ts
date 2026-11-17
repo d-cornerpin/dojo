@@ -13,6 +13,9 @@ const logger = createLogger('ask-remediation');
 
 /** The actor recorded on every row this pass moves, so the corrections are findable as a set. */
 export const REMEDIATION_ACTOR = 'ask-remediation-tb3';
+/** The actor the start-up heal records; it reaches back only this far, so an old stranded claim is never answered late. */
+export const HEAL_ACTOR = 'boot-heal';
+const HEAL_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** The `config` key that arms the pass; overwritten with the report only after it ran, so a crash
  *  mid-pass re-runs it: every branch must stay idempotent by its own predicate. */
@@ -52,27 +55,25 @@ function anyLaterRealDelivery(
   return realAnswerInConversationSince(agentId, conversationId, notBefore) !== null;
 }
 
-/** Class 1, also the heal run at every start: asks still `claimed` whose claiming turn ended normally are settled
- *  again at finalize (a reply still on its way holds them). An ask of a gone or dead turn is the crash arm's. */
-export function healStuckClaims(dry = false): { counts: AskRemediationReport['stuckClaimed']; reopenedIds: string[] } {
+/** Class 1, also the heal run at every start: asks of the last week still `claimed` by a turn that ended normally
+ *  are settled again at finalize (a reply still on its way holds them). A gone or dead turn's ask is the crash arm's. */
+export function healStuckClaims(dry = false, actorId = HEAL_ACTOR): { counts: AskRemediationReport['stuckClaimed']; reopenedIds: string[] } {
   const counts = { candidates: 0, closed: 0, held: 0, reopened: 0, unchanged: 0 };
   const reopenedIds: string[] = [];
   const stuck = getDb().prepare(
     `SELECT w.id AS id, w.agent_id AS agent_id, w.claimed_by_turn AS turn_number
        FROM work w
        LEFT JOIN turns t ON t.agent_id = w.agent_id AND t.turn_number = w.claimed_by_turn
-      WHERE w.kind = 'ask' AND w.state = 'claimed' AND NOT ${ORPHANED_CLAIM}
+      WHERE w.kind = 'ask' AND w.state = 'claimed' AND NOT ${ORPHANED_CLAIM} AND w.opened_at >= ?
       ORDER BY w.opened_at`,
-  ).all() as Array<{ id: string; agent_id: string; turn_number: number }>;
+  ).all(Date.now() - HEAL_WINDOW_MS) as Array<{ id: string; agent_id: string; turn_number: number }>;
   counts.candidates = stuck.length;
   for (const row of stuck) {
     if (dry) {
       if (askAnswerEvidence(row.id, row.turn_number)) counts.closed++; else counts.reopened++;
       continue;
     }
-    const v = settleAsk(row.id, {
-      agentId: row.agent_id, turnNumber: row.turn_number, at: 'finalize', actorId: REMEDIATION_ACTOR,
-    });
+    const v = settleAsk(row.id, { agentId: row.agent_id, turnNumber: row.turn_number, at: 'finalize', actorId });
     if (v.verdict === 'closed') counts.closed++;
     else if (v.verdict === 'held') counts.held++;
     else if (v.verdict === 'reopened') { counts.reopened++; reopenedIds.push(row.id); }
@@ -87,7 +88,7 @@ export function remediateAskLedger(opts: { dryRun?: boolean } = {}): AskRemediat
   const db = getDb();
   const r = emptyReport();
 
-  const healed = healStuckClaims(dry);
+  const healed = healStuckClaims(dry, REMEDIATION_ACTOR);
   r.stuckClaimed = healed.counts;
   r.reopenedIds.push(...healed.reopenedIds);
 

@@ -29,7 +29,7 @@ import {
 const logger = createLogger('ask-settlement');
 
 /** Tools whose delivery is not an answer. */
-export const NON_ANSWERING_DELIVERY_TOOLS = new Set(['engine-ack', 'cannot-run']);
+export const NON_ANSWERING_DELIVERY_TOOLS = new Set(['engine-ack', 'cannot-run', 'download-links']);
 
 /** `display_kind`s whose delivery is not a reply: a tool-call chip (`tool-turn`) and a `working-note`.
  *  Keyed on the delivery's own message row, so a send with no message id is untouched. */
@@ -322,17 +322,19 @@ function standDownReServe(
   return out('held', reason);
 }
 
-/** The turn's reply to this ask's conversation that ended failed on its channel, or (once the turn is over) was held
- *  with no way to send it. */
-function undeliveredReply(ask: AskRow, turnNumber: number | null, turnOver: boolean): { id: string; outcome: string; detail: string | null } | null {
+/** Once the turn is over, its reply to this ask's conversation that ended failed on its channel, or was held with no
+ *  way to send it. While the turn still runs a later answer may yet go, so a failed verdict waits for finalize. */
+function undeliveredReply(ask: AskRow, turnNumber: number | null, atVerdict: boolean): { id: string; outcome: string; detail: string | null } | null {
   if (turnNumber == null || ask.conversation_id == null) return null;
+  if (atVerdict && !getDb().prepare('SELECT 1 FROM turns WHERE agent_id = ? AND turn_number = ? AND ended_at IS NOT NULL')
+    .get(ask.agent_id, turnNumber)) return null;
   const excluded = [...NON_ANSWERING_DELIVERY_TOOLS];
   return (getDb().prepare(
     `SELECT id, outcome, detail FROM deliveries
       WHERE agent_id = ? AND turn_number = ? AND conversation_id = ? AND tool NOT IN (${excluded.map(() => '?').join(', ')})
-        AND ((outcome = 'failed' AND payload_json IS NOT NULL) OR (outcome = 'held' AND ? = 1))
+        AND ((outcome = 'failed' AND payload_json IS NOT NULL) OR outcome = 'held')
       ORDER BY rowid DESC LIMIT 1`,
-  ).get(ask.agent_id, turnNumber, ask.conversation_id, ...excluded, turnOver ? 1 : 0) as { id: string; outcome: string; detail: string | null } | undefined) ?? null;
+  ).get(ask.agent_id, turnNumber, ask.conversation_id, ...excluded) as { id: string; outcome: string; detail: string | null } | undefined) ?? null;
 }
 
 function joinOutstanding(ask: AskRow): boolean {
@@ -494,7 +496,7 @@ export function settleAsk(workId: string, ctx: SettlementContext): AskSettlement
 
   // The reply is queued and the sender will try: the ask stays with its turn, neither owed nor served again.
   if (ask.state === 'claimed' && replyInFlight(workId)) return out('held', 'the reply is on its way');
-  const undelivered = ask.state === 'claimed' ? undeliveredReply(ask, ctx.turnNumber, ctx.at !== 'delivery') : null;
+  const undelivered = ask.state === 'claimed' ? undeliveredReply(ask, ctx.turnNumber, ctx.at === 'delivery') : null;
   if (undelivered) {
     const why = `the reply could not be sent (${undelivered.outcome}): ${undelivered.detail ?? 'no reason recorded'}`;
     const r = transition(workId, { to: 'failed', by: 'engine', actorId: 'ask-settlement', expectedState: ask.state, evidenceRef: undelivered.id, reason: why });
