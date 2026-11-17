@@ -61,7 +61,7 @@ const CHAPTERS: Chapter[] = [
     title: 'Enable the models you’ll use',
     body: [
       'Settings → Models lists every model from your providers. Toggle on the ones you want your agents to use. For aggregators like OpenRouter, search the catalog and add specific models.',
-      'Scroll down to the capability cards to choose the model for each job: looking at images when an agent’s own model cannot, making images, video, speech and music, transcription, and the voice opener.',
+      'Scroll down to the capability cards to choose the model for each job: looking at images when an agent’s own model cannot, making images, video, speech and music, and transcription.',
     ],
   },
   {

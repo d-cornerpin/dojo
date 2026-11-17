@@ -356,19 +356,12 @@ export class HumeStreamSession {
 
   /**
    * End the stream: send `close: true` so Hume generates the buffered tail audio, then wait for the server
-   * to close the socket, capped at 10 s so a stuck socket cannot hang the burst. The burst's words are
-   * billed here, as one cost row, once any audio came back.
+   * to close the socket, capped at 10 s so a stuck socket cannot hang the burst. The first-audio limit keeps
+   * running through the wait. Once it ends, the burst's words are billed as one cost row if audio came back.
    */
   async close(): Promise<void> {
     if (!this.socket || this.closed) return;
     this.closed = true;
-    if (this.firstAudioTimer) clearTimeout(this.firstAudioTimer);
-    if (this.chars > 0 && this.audioSeen) {
-      recordCost({
-        agentId: this.agentId, modelId: 'hume-octave', providerId: HUME_PROVIDER_KEY,
-        inputTokens: 0, outputTokens: 0, units: this.chars, requestType: 'speech',
-      });
-    }
     try {
       this.socket.sendPublish({ close: true });
     } catch { /* socket may already be dead */ }
@@ -392,6 +385,13 @@ export class HumeStreamSession {
 
     try { this.socket.close(); } catch { /* ignore */ }
     this.socket = null;
+    if (this.firstAudioTimer) clearTimeout(this.firstAudioTimer);
+    if (this.chars > 0 && this.audioSeen) {
+      recordCost({
+        agentId: this.agentId, modelId: 'hume-octave', providerId: HUME_PROVIDER_KEY,
+        inputTokens: 0, outputTokens: 0, units: this.chars, requestType: 'speech',
+      });
+    }
   }
 }
 

@@ -95,7 +95,7 @@ afterEach(() => { mockDb.current?.close(); mockDb.current = null; });
 
 const PURPOSES: UtilityPurpose[] = [
   'ask_title', 'continuity_brief',
-  'vision_caption', 'page_summary', 'voice_opener', 'memory_summarize',
+  'vision_caption', 'page_summary', 'memory_summarize',
 ];
 
 describe('t283 — a toolless utility call on a small window is charged only the output its dial caps', () => {

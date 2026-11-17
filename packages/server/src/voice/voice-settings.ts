@@ -30,9 +30,12 @@ const speedOf = (value: string, fallback: number): number => {
   return Number.isFinite(n) && n >= 0.5 && n <= 2 ? n : fallback;
 };
 
-export function loadVoiceSettings(): VoiceSettings {
+// A call with no voice chosen speaks in this local voice; dashboard voice uses DEFAULT_VOICE.
+const PHONE_DEFAULT_VOICE = 'af_bella';
+
+export function loadVoiceSettings(surface: 'dashboard' | 'phone' = 'dashboard'): VoiceSettings {
   const s: VoiceSettings = {
-    voice: DEFAULT_VOICE, speed: 1, sttModel: DEFAULT_STT_MODEL_KEY,
+    voice: surface === 'phone' ? PHONE_DEFAULT_VOICE : DEFAULT_VOICE, speed: 1, sttModel: DEFAULT_STT_MODEL_KEY,
     wakeWordEnabled: false, wakePhrase: `hey ${getPrimaryAgentName().toLowerCase()}`, sleepPhrase: 'stop listening',
     ttsEngine: 'local', cloudVoice: '', cloudVoiceProvider: 'HUME_AI', cloudDescription: null, cloudSpeed: 1,
     // The unset default matches the dashboard's initial 'quick'.

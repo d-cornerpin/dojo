@@ -51,7 +51,7 @@ vi.mock('../hume-engine.js', () => ({
   },
 }));
 vi.mock('../../agent/runtime.js', () => ({ preemptAgentForUrgentMessage: () => {} }));
-vi.mock('../../agent/turn-context.js', () => ({ turnContext: () => ({ address: { deliveryChannel: 'voice' } }) }));
+vi.mock('../../memory/served-ask.js', () => ({ turnAnswersSpokenRequest: () => true }));
 
 let heard = '';
 const localSaid: string[] = [];

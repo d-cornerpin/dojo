@@ -18,7 +18,7 @@ export async function synthesizeForTwilio(
   text: string,
   call: { cloudDown: boolean; agentId: string },
 ): Promise<{ pcm: Float32Array; sampleRate: number } | null> {
-  const settings = loadVoiceSettings();
+  const settings = loadVoiceSettings('phone');
   if (settings.ttsEngine === 'cloud' && !call.cloudDown) {
     try {
       return await synthesizeCloud(text, settings, call.agentId);

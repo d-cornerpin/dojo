@@ -1,5 +1,5 @@
 // A sentence the caller did not hear is not recorded as said: one the voice could not speak leaves no
-// delivery, and a barge-in adds one transcript line naming what was cut off.
+// delivery, and a barge-in or a hang-up adds one transcript line naming what was cut off.
 import { describe, it, expect, vi } from 'vitest';
 
 const runs: Array<{ sql: string; args: unknown[] }> = [];
@@ -64,5 +64,16 @@ describe('an interrupted sentence is recorded as not heard', () => {
     const lines = transcriptOf().split('\n');
     expect(lines.filter((l) => l.includes('not heard'))).toHaveLength(1);
     expect(lines.at(-1)).toContain('The second part never plays.');
+  });
+
+  it('a hang-up with audio still queued adds one line saying the caller hung up', async () => {
+    delivered.length = 0; runs.length = 0;
+    const s = call();
+    await s.queueAgentSay('The first part is long.');
+    await s.queueAgentSay('The second part never plays.');
+    s.end('twilio_stop');
+    const lines = transcriptOf().split('\n').filter((l) => l.includes('not heard'));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('the caller hung up: The first part is long. The second part never plays.');
   });
 });

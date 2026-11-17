@@ -12,7 +12,7 @@ import jwt from 'jsonwebtoken';
 import { getJwtSecret } from '../config/loader.js';
 import { createLogger } from '../logger.js';
 import { broadcast, onBroadcast } from '../gateway/ws.js';
-import { turnContext } from '../agent/turn-context.js';
+import { turnAnswersSpokenRequest } from '../memory/served-ask.js';
 import { submitUserMessage } from '../gateway/routes/chat.js';
 import { transcribeBuffer, pcmFloatToWav, ensureSttReady } from './stt-service.js';
 import { loadVoiceSettings, type VoiceSettings } from './voice-settings.js';
@@ -55,8 +55,8 @@ interface VoiceSession {
   // Catches proactive agent messages (watchers, pokes) while no TTS is active and starts a TTS burst.
   unsubscribeProactive: (() => void) | null;
   /** Transcript held after a mid-thought utterance; the timer submits it unless a continuation arrives
-   *  and merges with it. Speaking again stops the timer (null) until that utterance ends. */
-  pendingTurnExtension: { transcript: string; timer: ReturnType<typeof setTimeout> | null } | null;
+   *  and merges with it. `speaking` marks a hold stretched because the person started speaking again. */
+  pendingTurnExtension: { transcript: string; timer: ReturnType<typeof setTimeout>; speaking: boolean } | null;
   // Set by 'utterance_canonical': the next binary frame is vad-web's canonical buffer (with preroll)
   // and REPLACES pcmChunks, restoring the first word the live frame stream cuts off.
   expectingCanonicalFrame: boolean;
@@ -193,10 +193,10 @@ export function pushVoiceFiller(agentId: string, phrase: string): boolean {
   return pushed;
 }
 
-// Only a turn answering what was said by voice is read aloud: chunks of any other turn never reach speech.
+// Only a turn answering a spoken request is read aloud: chunks of any other turn never reach speech.
 function onSpokenEvent(handler: (event: WsEvent) => void): () => void {
   return onBroadcast((event) => {
-    if (event.type === 'chat:chunk' && turnContext(event.agentId)?.address?.deliveryChannel !== 'voice') return;
+    if (event.type === 'chat:chunk' && !turnAnswersSpokenRequest(event.agentId)) return;
     handler(event);
   });
 }
@@ -348,7 +348,7 @@ export function closeVoiceSession(ws: WSContext): void {
   if (session.pingInterval) clearInterval(session.pingInterval);
   // Clear a held turn-extension timer so it cannot submit on a closed WS.
   if (session.pendingTurnExtension) {
-    clearTimeout(session.pendingTurnExtension.timer ?? undefined);
+    clearTimeout(session.pendingTurnExtension.timer);
     session.pendingTurnExtension = null;
   }
   sessions.delete(ws);
@@ -396,9 +396,10 @@ export async function handleVoiceMessage(ws: WSContext, data: string | ArrayBuff
     }
 
     case 'utterance_start': {
-      // Speaking again during a mid-thought hold: the held words wait for this utterance to end.
+      // Speaking again during a mid-thought hold: the held words wait longer for this utterance to end,
+      // and still go if it never does (a cough the browser starts and never ends).
       const held = session.pendingTurnExtension;
-      if (held?.timer) { clearTimeout(held.timer); held.timer = null; }
+      if (held) holdTranscript(session, held.transcript, SPEAKING_AGAIN_HOLD_MS, true);
       session.pcmChunks = [];
       session.partialLastChunkCount = 0;
       session.lastPartialText = '';
@@ -414,13 +415,10 @@ export async function handleVoiceMessage(ws: WSContext, data: string | ArrayBuff
     }
 
     case 'utterance_end': {
-      await handleUtteranceEnd(session);
-      // The utterance that stopped a hold brought nothing to merge: the held words go on their own.
       const held = session.pendingTurnExtension;
-      if (held && !held.timer) {
-        session.pendingTurnExtension = null;
-        await submitTranscriptAndStartTts(session, held.transcript);
-      }
+      await handleUtteranceEnd(session);
+      // The utterance that stretched a hold brought nothing to merge: the held words go after the usual wait.
+      if (held?.speaking && session.pendingTurnExtension === held) holdTranscript(session, held.transcript, TURN_EXTENSION_MS, false);
       return;
     }
 
@@ -537,6 +535,21 @@ function smartTurnHoldMs(pComplete: number, threshold: number, patience: VoiceSe
   // frac = 0 at the threshold (barely incomplete), 1 at p=0 (certain mid-thought).
   const frac = Math.max(0, Math.min(1, (threshold - pComplete) / Math.max(threshold, 1e-6)));
   return Math.round(min + frac * (max - min));
+}
+
+// How long held words wait once the person speaks again, for that utterance to end and merge.
+const SPEAKING_AGAIN_HOLD_MS = 15_000;
+
+// Hold a transcript for `holdMs`, replacing any earlier hold; the timer submits it unless a continuation
+// merges into it first (a continuation clears the hold and moves the words forward).
+function holdTranscript(session: VoiceSession, transcript: string, holdMs: number, speaking: boolean): void {
+  if (session.pendingTurnExtension) clearTimeout(session.pendingTurnExtension.timer);
+  const timer = setTimeout(() => {
+    if (session.pendingTurnExtension?.timer !== timer) return;
+    session.pendingTurnExtension = null;
+    void submitTranscriptAndStartTts(session, transcript);
+  }, holdMs);
+  session.pendingTurnExtension = { transcript, timer, speaking };
 }
 
 // Merge a held transcript with a continuation, collapsing the case where both are the SAME utterance
@@ -745,7 +758,7 @@ async function handleUtteranceEnd(session: VoiceSession): Promise<void> {
   // If a previous utterance is held by the extension timer, merge it with this one and clear the timer,
   // so a mid-thought pause the VAD split into two utterance_ends lands as one turn.
   if (session.pendingTurnExtension) {
-    clearTimeout(session.pendingTurnExtension.timer ?? undefined);
+    clearTimeout(session.pendingTurnExtension.timer);
     transcript = mergeHeldTranscript(session.pendingTurnExtension.transcript, transcript);
     session.pendingTurnExtension = null;
   }
@@ -772,14 +785,7 @@ async function handleUtteranceEnd(session: VoiceSession): Promise<void> {
       reason: turnComplete !== null ? `smart-turn p=${turnComplete.toFixed(3)}` : 'conjunction',
     });
     sendJson(session.ws, { type: 'voice:state', agentId: session.agentId, state: 'listening' });
-    const heldTranscript = transcript;
-    const timer = setTimeout(() => {
-      // A continuation clears this timer and moves the transcript forward; only fire if still current.
-      if (session.pendingTurnExtension?.timer !== timer) return;
-      session.pendingTurnExtension = null;
-      void submitTranscriptAndStartTts(session, heldTranscript);
-    }, holdMs);
-    session.pendingTurnExtension = { transcript: heldTranscript, timer };
+    holdTranscript(session, transcript, holdMs, false);
     return;
   }
 

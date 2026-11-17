@@ -8,8 +8,7 @@ export type UtilityPurpose =
   | 'memory_summarize'
   | 'continuity_brief'
   | 'vision_caption'
-  | 'page_summary'
-  | 'voice_opener';
+  | 'page_summary';
 
 export interface UtilityDial {
   readonly purpose: UtilityPurpose;
@@ -30,8 +29,6 @@ const DIALS: Readonly<Record<UtilityPurpose, UtilityDial>> = {
   vision_caption: { purpose: 'vision_caption', maxOutputTokens: 256, latencyBudgetMs: 30_000 },
 
   page_summary: { purpose: 'page_summary', maxOutputTokens: 512, latencyBudgetMs: 30_000 },
-
-  voice_opener: { purpose: 'voice_opener', maxOutputTokens: 96, latencyBudgetMs: null },
 };
 
 // Unknown purpose returns null: the call stays EXACTLY as today, never silently capped, because

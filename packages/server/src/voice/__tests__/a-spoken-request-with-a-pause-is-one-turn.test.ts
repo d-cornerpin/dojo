@@ -1,5 +1,6 @@
 // "Add milk to the list and" (pause) "also remind me at five": speaking again during the mid-thought hold
-// keeps the held words, so the request goes to the agent once, whole, however long the second part takes.
+// keeps the held words, so the request goes to the agent once, whole. A sound that starts and never ends
+// does not strand them.
 import { describe, it, expect, vi, afterEach } from 'vitest';
 
 const heard: string[] = [];
@@ -63,5 +64,21 @@ describe('a spoken request with a pause is one turn', () => {
     await vi.advanceTimersByTimeAsync(5_000);
 
     expect(submitted).toEqual(['Add milk to the list and also remind me at five.']);
+  });
+
+  it('a sound that starts and never ends still lets the held words go', async () => {
+    vi.useFakeTimers();
+    submitted.length = 0;
+    verifyAndOpenVoiceSession(ws as never, `/voice?token=${jwt.sign({ userId: 'u1' }, 'secret')}&agentId=agent-1`);
+    heard.push('Add milk to the list and');
+    doneness.push(0.1);
+
+    await control('utterance_start'); await audio(); await control('utterance_end');   // held: mid-thought
+    await vi.advanceTimersByTimeAsync(200);
+    await control('utterance_start');                                                  // a cough, no end
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(submitted).toEqual([]);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(submitted).toEqual(['Add milk to the list and']);
   });
 });

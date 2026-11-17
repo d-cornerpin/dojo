@@ -270,13 +270,7 @@ export class CallSession {
           const drained = this.ttsQueue.length;
           const carryBytes = this.ttsCarry.length;
           const droppedTexts = this.pendingSpeechTexts.length;
-          // Audio already recorded as said but cut off: one transcript line names it.
-          const unheard = [...(carryBytes > 0 ? [this.playingText] : []), ...this.ttsQueue.map((c) => c.text)];
-          if (unheard.length > 0) {
-            this.transcript.push({ at: new Date().toISOString(), speaker: 'agent', text: `(not heard, the caller spoke over it: ${unheard.join(' ')})` });
-          }
-          this.ttsQueue = [];
-          this.ttsCarry = Buffer.alloc(0);
+          this.dropUnplayed('the caller spoke over it');
           for (const item of this.pendingSpeechTexts) item.heard(false);
           this.pendingSpeechTexts = [];
           this.speechGeneration += 1;
@@ -616,6 +610,7 @@ export class CallSession {
     }
     for (const item of this.pendingSpeechTexts) item.heard(false);
     this.pendingSpeechTexts = [];
+    this.dropUnplayed(reason === 'max_duration_reached' ? 'the call reached its time limit' : 'the caller hung up');
     const durationSeconds = Math.round((Date.now() - this.startedAt) / 1000);
     const transcriptText = this.transcript.length === 0
       ? null
@@ -639,6 +634,14 @@ export class CallSession {
     logger.info('CallSession ended', {
       callSid: this.callSid, reason, durationSeconds, transcriptLines: this.transcript.length,
     });
+  }
+
+  /** Drop audio queued to the caller but not yet played; it was recorded as said, so one line names it. */
+  private dropUnplayed(why: string): void {
+    const unheard = [...(this.ttsCarry.length > 0 ? [this.playingText] : []), ...this.ttsQueue.map((c) => c.text)];
+    if (unheard.length > 0) this.transcript.push({ at: new Date().toISOString(), speaker: 'agent', text: `(not heard, ${why}: ${unheard.join(' ')})` });
+    this.ttsQueue = [];
+    this.ttsCarry = Buffer.alloc(0);
   }
 
   isEnded(): boolean { return this.ended; }
