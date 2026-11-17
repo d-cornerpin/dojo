@@ -25,11 +25,13 @@ export const imessage = {
   send: vi.fn(async (_to: string, _text: string): Promise<boolean> => true),
   sendFile: vi.fn(async (_to: string, _path: string): Promise<boolean> => true),
   sent: [] as string[],
+  on: true,
 };
 export const bridgeMock = (orig: Record<string, unknown>) => ({
   ...orig,
   sendIMessage: (to: string, text: string) => { imessage.sent.push(text); return imessage.send(to, text); },
   sendIMessageWithAttachment: (to: string, path: string) => { imessage.sent.push(`file ${path}`); return imessage.sendFile(to, path); },
+  isIMessageSwitchedOn: () => imessage.on,
 });
 
 /** A fresh migrated database with the approved iMessage list (the first entry is the owner) and the agent. */
@@ -44,6 +46,7 @@ export function freshReplyDb(runMigrations: () => void, approved: string[] = [OW
   imessage.sendFile.mockReset();
   imessage.sendFile.mockResolvedValue(true);
   imessage.sent = [];
+  imessage.on = true;
 }
 
 export function setApproved(addresses: string[]): void {

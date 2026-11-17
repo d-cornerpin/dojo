@@ -252,12 +252,16 @@ async function tellOfFilesNotSent(agentId: string, to: string, missed: string[])
   });
 }
 
-/** The check before any send: the agent holds the channel, the person is approved, an SMS has a number. Final if not. */
+/** The check before any send: the agent holds the channel, iMessage is switched on, the person is approved, an SMS
+ *  has a number. Final if not. */
 async function refusalOf(agentId: string, a: ReplyAddress, to: string | null): Promise<{ kind: RefusalKind; detail: string } | null> {
   const { engineMayRouteTo, engineRouteRefusalReason } = await import('../access/engine-route.js');
   const agent = getDb().prepare('SELECT status FROM agents WHERE id = ?').get(agentId) as { status: string } | undefined;
   if (!agent || agent.status === 'terminated') return { kind: 'agent-ended', detail: 'the agent was ended' };
   if (!engineMayRouteTo(agentId, a.channel)) return { kind: 'no-grant', detail: engineRouteRefusalReason(a.channel) };
+  if (a.channel === 'imessage' && !(await import('../../services/imessage-bridge.js')).isIMessageSwitchedOn()) {
+    return { kind: 'imessage-off', detail: 'iMessage is switched off in Settings' };
+  }
   const { mayAnswer } = await import('./channel-auth.js');
   const approved = to !== null && mayAnswer(a.channel, to, 'agent', a.channel === 'email' ? { emailService: a.service ?? undefined, fromOwner: a.fromOwner } : undefined);
   if (!approved) return { kind: 'not-approved', detail: `${to ?? 'the recipient'} is no longer on the approved list` };
