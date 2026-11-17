@@ -117,8 +117,11 @@ describe('rollback with newer data restores the pre-update copy', () => {
 
   it('a stop to restore-db.sh alone after its copy finished reports the data that is in place', () => {
     box(ahead);
+    // TERM goes to restore-db.sh itself: the outermost ancestor running it (its subshells carry the same name).
     fs.writeFileSync(path.join(b.bin, 'sqlite3'), [
-      '#!/bin/sh', 'case "$*" in */data/dojo.db*integrity_check*) kill -TERM $(ps -o ppid= -p $PPID);; esac', 'exec /usr/bin/sqlite3 "$@"',
+      '#!/bin/sh', 'case "$*" in */data/dojo.db*integrity_check*)',
+      '  p=$PPID; t=; while [ "$p" -gt 1 ]; do case "$(ps -o command= -p $p)" in *restore-db.sh*) t=$p;; esac; p=$(ps -o ppid= -p $p | tr -d " "); done',
+      '  kill -TERM $t;; esac', 'exec /usr/bin/sqlite3 "$@"',
     ].join('\n') + '\n', { mode: 0o755 });
     expect(runRollbackSh(b, ['--auto']).code).toBe(1);
     expect(whichDb(live())).toBe('before');

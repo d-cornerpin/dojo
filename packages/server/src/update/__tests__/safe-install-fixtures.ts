@@ -119,13 +119,18 @@ export function versionAt(dir: string): string | null {
 }
 
 /** A database at a level: `_migrations` rows in apply order, and a `which` row naming the copy. */
-export function levelDb(file: string, applied: string[], which: string): string {
+/** A WAL-mode database, as the product keeps it. Closed cleanly its side files are gone; `crashed` leaves them. */
+export function levelDb(file: string, applied: string[] | null, which: string, opts: { crashed?: boolean } = {}): string {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const db = new Database(file);
-  db.exec("CREATE TABLE _migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (datetime('now'))); CREATE TABLE which (v TEXT)");
-  for (const n of applied) db.prepare('INSERT INTO _migrations (name) VALUES (?)').run(n);
+  db.pragma('journal_mode = WAL');
+  db.exec('CREATE TABLE which (v TEXT)');
+  if (applied) db.exec("CREATE TABLE _migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (datetime('now')))");
+  for (const n of applied ?? []) db.prepare('INSERT INTO _migrations (name) VALUES (?)').run(n);
   db.prepare('INSERT INTO which VALUES (?)').run(which);
+  const sides = opts.crashed ? ['-wal', '-shm'].map((s) => [file + s, fs.readFileSync(file + s)] as const) : [];
   db.close();
+  for (const [p, bytes] of sides) fs.writeFileSync(p, bytes);
   return file;
 }
 
