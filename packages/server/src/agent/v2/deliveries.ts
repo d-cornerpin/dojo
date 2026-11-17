@@ -154,6 +154,8 @@ export interface QueuedReply {
   startLine?: boolean;
   /** What follows an early answer (download links, a later caption, files): it goes like a reply but is never the answer. */
   downloadLinks?: boolean;
+  /** The Dojo's line that the agent cannot run: never an answer, and never sent to another Dojo's agent. */
+  cannotRun?: boolean;
   /** A Dojo line about a delegated request: the helper's `answer` (empty for a notice), the request, the hand-in it reports. */
   relay?: { tool: string; answer: string; joinId: string; reports: string | null };
   /** Paths of files sent after the words; only iMessage carries files. */
@@ -168,15 +170,15 @@ export async function queueReply(r: QueuedReply): Promise<{ id: string; held: bo
   const { redactHandedCredentials } = await import('../../credentials/secret-fields.js');
   const { armSenderTimer } = await import('./channel-sender.js');
   const { announceLiveWork } = await import('../live-work.js');
-  const bare = r.relay !== undefined && r.address.toAgent === true;
-  const text = redactHandedCredentials(r.agentId, bare ? r.relay!.answer : r.text).trim();
+  const bare = (r.relay !== undefined || r.cannotRun === true) && r.address.toAgent === true;
+  const text = redactHandedCredentials(r.agentId, bare ? r.relay?.answer ?? '' : r.text).trim();
   const held = bare && !text;
   const files = r.address.channel === 'imessage' ? r.files ?? [] : [];
   if (!text && !held && files.length === 0) return null;
   const label = await pillLabel(r.address, r.address.to);
   const { relay } = r;
   const id = deliveryIdOf(asTurn(r.agentId, { turnNumber: r.turnNumber, root: r.root, convKey: null }, () => recordDelivery({
-    agentId: r.agentId, tool: relay?.tool ?? (r.startLine ? 'engine-ack' : r.downloadLinks ? 'download-links' : 'auto-route'), channel: r.address.channel,
+    agentId: r.agentId, tool: relay?.tool ?? (r.startLine ? 'engine-ack' : r.downloadLinks ? 'download-links' : r.cannotRun ? 'cannot-run' : 'auto-route'), channel: r.address.channel,
     recipientId: r.address.to, conversationId: r.root?.conversationId ?? null, outcome: held ? 'held' : 'pending',
     detail: held ? 'a Dojo notice is never sent to another Dojo\'s agent' : null,
     payload: { text, address: r.address, ...(files.length > 0 ? { files } : {}), ...(relay ? { joinId: relay.joinId, reports: relay.reports } : {}) },

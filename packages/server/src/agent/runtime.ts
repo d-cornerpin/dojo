@@ -505,7 +505,7 @@ class AgentRuntime {
       declineQueuedWaiters(agentId);
       return 'not-run';
     }
-    if (st?.status === 'paused') (await import('./v2/honest-stop-notes.js')).noteWaitingOfParked(agentId);   // a message to a parked agent is answered on arrival
+    if (st?.status === 'paused') await (await import('./v2/honest-stop-notes.js')).noteWaitingOfParked(agentId);   // a message to a parked agent is answered on arrival
     // Busy: the ONE direct add. A user stop must not eat an inbound; self-wakes use queueSelfWake only.
     if (activeRuns.has(agentId)) {
       logger.info('Agent busy, queuing wakeup for after current run', { agentId }, agentId);

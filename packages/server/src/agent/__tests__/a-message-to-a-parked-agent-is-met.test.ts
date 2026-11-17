@@ -8,9 +8,9 @@
 // is a row in THAT message's conversation, posted without a model call, a text or a card, once per
 // message (a deterministic row id). The message itself stays queued and is answered on release.
 //
-// Channel: the existing system-note path is the dashboard's chat (a `role='system'` row and a
-// `chat:message` frame); it does not go back out on the iMessage channel, so an iMessage-origin
-// message gets the line in its conversation in the dashboard only.
+// Channel: the owner is told in the dashboard's chat only (a `role='system'` row and a `chat:message`
+// frame), even for his message by iMessage. A person other than the owner also hears one neutral line on
+// their own channel (`a-contact-texting-an-agent-that-cannot-run-hears-one-neutral-line`).
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
@@ -77,12 +77,12 @@ describe('t148 r5 — a message to a parked agent is answered on arrival with th
     expect(askState('m-dash'), 'the message stays queued, to be answered on release').toBe('open');
   });
 
-  it('an iMessage-origin message gets the line in ITS conversation, dashboard only: nothing goes back out on the phone channel', async () => {
+  it('the owner\'s iMessage gets the line in ITS conversation, dashboard only: nothing goes back out on the phone channel', async () => {
     await arrive('m-im', 'imessage', 'conv-im');
     await getAgentRuntime().handleMessage(AGENT, '');
     const n = notes();
     expect(n.map((r) => [r.id, r.conversation_id])).toEqual([['park-note:m-im', 'conv-im']]);
-    expect(imessageSpy, 'the existing system-note path does not go out on iMessage').not.toHaveBeenCalled();
+    expect(imessageSpy, 'the owner is never texted about it').not.toHaveBeenCalled();
     expect(sendAlertSpy).not.toHaveBeenCalled();
   });
 
