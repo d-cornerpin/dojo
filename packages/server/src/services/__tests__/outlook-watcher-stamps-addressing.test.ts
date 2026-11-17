@@ -171,8 +171,6 @@ describe('outlook watcher stamps email addressing', () => {
 
   it('4. a user-kind mailbox: agent on To and owner on Cc → placement cc', async () => {
     setMailbox('user', 'owner@x.com');
-    // Bob is on this mailbox's approved list, so his mail is stored (a stranger's is only an engine event).
-    mockDb.current!.prepare(`INSERT INTO config (key, value) VALUES ('outlook_approved_senders_user', '[{"address":"bob@y.test"}]')`).run();
     await outlookPoll([msg('o4', {
       toRecipients: [{ emailAddress: { address: 'agent@x.com' } }],
       ccRecipients: [{ emailAddress: { address: 'owner@x.com' } }],

@@ -1,5 +1,5 @@
-// Gmail's side of the one mail watcher (`mail-watcher.ts`): the inbox is listed by query, page by page, and each
-// new mail's headers are read with a second call.
+// Gmail's side of the one mail watcher (`mail-watcher.ts`): the inbox ids are listed by query, page by page (Gmail
+// lists newest first), and each new mail's headers are read with a second call.
 
 import { googleRead } from '../google/client.js';
 import { GMAIL_BASE } from '../google/gmail-search.js';
@@ -9,12 +9,14 @@ import { judgeGmailOwnerEmail } from './mail-owner-intake.js';
 import { MailWatcher } from './mail-watcher.js';
 import type { WatcherStatus } from './watcher-status.js';
 
-const PAGE_SIZE = 50;
+// Ids only, so pages are large: every id is listed before the oldest mails are read.
+const PAGE_SIZE = 500;
 const HEADERS = ['From', 'Subject', 'Date', 'To', 'Cc', 'Authentication-Results', 'Message-ID', 'X-Platform-Send-Id'];
 
 const gmail = new MailWatcher<{ id: string; threadId?: string }>({
   name: 'gmail',
   company: 'Google',
+  newestFirst: true,
   views: () => listGoogleAccountViews(),
   async list(view, since, next) {
     const query = `in:inbox after:${Math.floor(since.getTime() / 1000)}`;
@@ -43,7 +45,7 @@ const gmail = new MailWatcher<{ id: string; threadId?: string }>({
       date: header('Date') ?? '',
       snippet: gmailSnippetText(msg?.snippet),
       addressing,
-      ownerWordsAt: Number(msg?.internalDate),
+      receivedAt: Number(msg?.internalDate),
       owner: () => judgeGmailOwnerEmail({ kind: view.kind, placement: addressing.placement, from, headers, messageId: ref.id, accountId: view.id }),
     };
   },

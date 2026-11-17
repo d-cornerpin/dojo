@@ -1,25 +1,18 @@
 // One mail watcher body for both providers (Gmail, Outlook): a timer polls every connected account's inbox, each
 // account with its own cursor, processed list and failure state, so a flaky mailbox does not suppress the others.
-// Every new mail is stored; one from the owner, from a sender on that mailbox's approved list, or to the agent's own
-// mailbox also wakes the main agent, once per poll. Any other is an unauthorized row: it owes no reply and drives
-// no turn, and the agent reads it in its EVENTS lane at its next turn.
+// Each new mail is stored by `mail-record.ts`; the ones that wake the main agent wake it once per poll.
 
-import { v4 as uuidv4 } from 'uuid';
-import { resolveOrCreateConversation } from '../memory/conversations.js';
 import { getDb } from '../db/connection.js';
-import { recordInboundMeta } from '../agent/v2/inbound-channel.js';
-import { insertInboundMessageIfAbsent } from '../work/ask-title.js';
 import { createLogger } from '../logger.js';
-import { broadcast } from '../gateway/ws.js';
-import { getOwnerName, getPrimaryAgentId } from '../config/platform.js';
+import { getPrimaryAgentId } from '../config/platform.js';
 import { getAgentRuntime } from '../agent/runtime.js';
-import { onMailList, senderWakes, type MailService } from './channel-safe-senders.js';
+import type { MailService } from './channel-safe-senders.js';
+import type { OwnerEmailOutcome } from './mail-owner-intake.js';
+import { recordMail } from './mail-record.js';
 import { addressesMatch } from './imessage-bridge.js';
 import { listAgentSelfIdentities, matchSelfIdentity } from './self-identities.js';
 import { persistNotifiedIds } from './notified-ids.js';
-import { ownerEmailCommandNote, type OwnerEmailOutcome } from './mail-owner-intake.js';
 import type { MailAddressingFacts } from './mail-inbound-facts.js';
-import { mailNoticeContent } from '../tools/inbound-fences.js';
 import { type WatcherStatus, type RecentNotification, pushRecent, maybeAlertOnFailure, maybeAlertOnRecovery, normalizeError, watcherFailingOnRecord, watchedForMail } from './watcher-status.js';
 
 const POLL_INTERVAL_MS = 300_000;
@@ -46,13 +39,16 @@ export interface MailItem {
   date: string;
   snippet: string;
   addressing: MailAddressingFacts;
-  ownerWordsAt: number;
+  /** When the mailbox received it, in ms: the cursor moves to it when a poll stops part-way. */
+  receivedAt: number;
   owner: () => Promise<OwnerEmailOutcome>;
 }
 
 export interface MailProvider<Ref extends { id: string }> {
   name: MailService;
   company: 'Google' | 'Microsoft';
+  /** The listing comes newest first, so every page is listed before the oldest mails are known. */
+  newestFirst: boolean;
   views: () => MailAccountView[];
   /** One page of the inbox received after `since`; `next` continues the listing, null when done. */
   list: (view: MailAccountView, since: Date, next: string | null) => Promise<{ ok: true; refs: Ref[]; next: string | null } | { ok: false; error: string }>;
@@ -86,6 +82,7 @@ export class MailWatcher<Ref extends { id: string }> {
   private readonly accountState = new Map<string, AccountWatchState>();
   private pollTimer: ReturnType<typeof setInterval> | null = null;
   private firstPollTimer: ReturnType<typeof setTimeout> | null = null;
+  private polling = false;
 
   constructor(private readonly p: MailProvider<Ref>) {
     this.logger = createLogger(`${p.name}-watcher`);
@@ -189,7 +186,8 @@ export class MailWatcher<Ref extends { id: string }> {
     return null;
   }
 
-  private async listSince(view: MailAccountView, since: Date): Promise<{ ok: true; refs: Ref[] } | { ok: false; error: string }> {
+  /** The oldest unprocessed mails since `since`, at most MAX_MAILS_PER_POLL, oldest first; `more` when some wait. */
+  private async listSince(view: MailAccountView, since: Date): Promise<{ ok: true; refs: Ref[]; more: boolean } | { ok: false; error: string }> {
     const refs: Ref[] = [];
     let next: string | null = null;
     do {
@@ -197,8 +195,9 @@ export class MailWatcher<Ref extends { id: string }> {
       if (!page.ok) return page;
       refs.push(...page.refs);
       next = page.next;
-    } while (next && refs.length < MAX_MAILS_PER_POLL);
-    return { ok: true, refs: refs.slice(0, MAX_MAILS_PER_POLL) };
+    } while (next && (this.p.newestFirst || refs.length < MAX_MAILS_PER_POLL));
+    if (this.p.newestFirst) refs.reverse();
+    return { ok: true, refs: refs.slice(0, MAX_MAILS_PER_POLL), more: next !== null || refs.length > MAX_MAILS_PER_POLL };
   }
 
   private async pollAccount(view: MailAccountView): Promise<void> {
@@ -225,7 +224,7 @@ export class MailWatcher<Ref extends { id: string }> {
         this.recordFailure(accountId, s, listed.error);
         return;
       }
-      const woken = await this.announce(view, s, listed.refs);
+      const { woken, stopped, lastAt } = await this.announce(view, s, listed.refs);
       if (woken > 0) {
         const notifyAccount = view.email ?? view.kind;
         // Neutral trigger: the per-email rows carry the real framing, so this must not contradict them.
@@ -236,7 +235,9 @@ export class MailWatcher<Ref extends { id: string }> {
           this.logger.error('Failed to wake the main agent for new email', { accountId, error: err instanceof Error ? err.message : String(err) });
         });
       }
-      this.saveLastCheckedAt(accountId, pollStartIso);
+      // A poll that stopped part-way moves the cursor only to the last mail it handled, so no waiting mail is passed.
+      if (!stopped && !listed.more) this.saveLastCheckedAt(accountId, pollStartIso);
+      else if (lastAt !== null) this.saveLastCheckedAt(accountId, new Date(lastAt).toISOString());
       this.recordSuccess(accountId, s);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -245,26 +246,30 @@ export class MailWatcher<Ref extends { id: string }> {
     }
   }
 
-  /** Records each mail not yet processed; returns how many were stored for the first time and wake the agent. */
-  private async announce(view: MailAccountView, s: AccountWatchState, refs: Ref[]): Promise<number> {
+  /** Records each mail not yet processed, oldest first, so the capped processed list keeps the newest ids. Returns
+   *  how many were stored for the first time and wake the agent, whether a failed read stopped it, and the
+   *  received time of the last mail it handled. */
+  private async announce(view: MailAccountView, s: AccountWatchState, refs: Ref[]): Promise<{ woken: number; stopped: boolean; lastAt: number | null }> {
     const nKey = this.configKey('notified_ids', view.id);
     let notifiedIds: Set<string>;
     try { notifiedIds = new Set(JSON.parse(this.readConfig(nKey) ?? '[]') as string[]); } catch { notifiedIds = new Set(); }
     const selfIdentities = listAgentSelfIdentities();
     let woken = 0;
+    let lastAt: number | null = null;
     for (const ref of refs) {
       if (notifiedIds.has(ref.id)) continue;
       const mail = await this.p.read(view, ref);
       if (!mail) {
-        this.logger.warn('Mail read failed, tried again next poll', { accountId: view.id, messageId: ref.id });
-        continue;
+        this.logger.warn('Mail read failed; this poll stops here and the next one starts from this mail', { accountId: view.id, messageId: ref.id });
+        return { woken, stopped: true, lastAt };
       }
+      if (Number.isFinite(mail.receivedAt)) lastAt = mail.receivedAt;
       // The agent's own outbound never wakes it (cost, reply loops): the sender is this mailbox or another agent mailbox.
       const self = mail.fromAddr && (matchSelfIdentity(mail.fromAddr, selfIdentities) ?? (view.email && addressesMatch(mail.fromAddr, view.email) ? view.email : null));
       if (self) {
         this.logger.info('Mail poll: skipping self-sent', { accountId: view.id, messageId: mail.id, selfIdentity: self });
       } else {
-        const stored = await this.record(view, mail);
+        const stored = await recordMail(this.p, view, mail);
         if (stored !== 'seen') {
           if (stored === 'wakes') woken++;
           s.totalNotifications++;
@@ -276,87 +281,23 @@ export class MailWatcher<Ref extends { id: string }> {
       notifiedIds.add(ref.id);
       persistNotifiedIds(nKey, notifiedIds);   // after each mail, so a poll that throws later does not re-read it
     }
-    return woken;
+    return { woken, stopped: false, lastAt };
   }
 
-  /** Stores one mail: 'wakes' or 'waits' for a first sighting, 'seen' when an earlier poll already stored it. */
-  private async record(view: MailAccountView, mail: MailItem): Promise<'wakes' | 'waits' | 'seen'> {
-    const primaryId = getPrimaryAgentId();
-    const ownerName = getOwnerName();
-    const notifyAccount = view.email ?? view.kind;
-    // Direct to the agent: its own mailbox, from a safe sender (a user mailbox is the human's mail, never answered
-    // for them) or the owner's own email the provider confirmed (`mail-owner-intake.ts`).
-    const ownerMail = await mail.owner();
-    const isDirectToAgent = ownerMail.state === 'confirmed' || (view.kind === 'agent' && onMailList(this.p.name, view.id, mail.fromAddr));
-    const content = mailNoticeContent({
-      provider: this.NAME, accountSuffix: `${view.kind === 'user' ? "user's" : "agent's"} ${this.p.company} account`, account: notifyAccount, ownerName,
-      kind: view.kind, fromAddr: mail.fromAddr, from: mail.from, subject: mail.subject, date: mail.date, snippet: mail.snippet, messageId: mail.id,
-      directToAgent: isDirectToAgent, toolHint: `${view.kind === 'agent' ? '' : 'user_'}${this.p.name}_read`, addressing: mail.addressing,
-      ownerEmail: ownerMail.state === 'none' ? undefined : ownerMail,
-    }) + await ownerEmailCommandNote(ownerMail);
-
-    const msgId = uuidv4();
-    // Conversation identity is provider + sender + thread, so two threads from one sender are two conversations.
-    const conversationId = resolveOrCreateConversation(primaryId, {
-      channel: 'email', provider: this.p.name, counterpartyId: mail.fromAddr || mail.from, threadRoot: mail.threadRoot,
-    });
-    // Structured routing metadata: `authorized` is the auto-reply verdict, so a user-kind mailbox or an unknown
-    // sender is read as a notification and never answered for the human.
-    const inboundMetaObj = {
-      channel: 'email' as const,
-      accountKind: view.kind,
-      authorized: isDirectToAgent,
-      sender: mail.fromAddr || mail.from,
-      emailMessageId: mail.id,
-      emailService: this.p.name,
-      emailAccount: notifyAccount,
-      emailSubject: mail.subject,
-      mailAddressing: mail.addressing,
-      ...(ownerMail.state === 'confirmed' ? { relation: 'owner' as const, ownerWords: ownerMail.words, ownerWordsAt: mail.ownerWordsAt } : {}),
-    };
-    const stored = insertInboundMessageIfAbsent({
-      id: msgId,
-      agentId: primaryId,
-      role: 'user',
-      content,
-      conversationId,
-      externalMessageId: mail.id,
-      channel: inboundMetaObj.channel,
-      senderId: inboundMetaObj.sender,
-      authorized: inboundMetaObj.authorized,
-    });
-    // null: an earlier poll stored this mail (its processed-list save was lost); no second live card, no second wake.
-    if (stored === null) return 'seen';
-    recordInboundMeta(msgId, inboundMetaObj);
-    // The same inbound_meta and conversation binding as the row, so live and refetched attribution agree.
-    broadcast({
-      type: 'chat:message',
-      agentId: primaryId,
-      message: {
-        id: msgId,
-        agentId: primaryId,
-        role: 'user' as const,
-        content,
-        conversationId,
-        inboundMeta: JSON.stringify(inboundMetaObj),
-        tokenCount: null,
-        modelId: null,
-        cost: null,
-        latencyMs: null,
-        createdAt: new Date().toISOString(),
-      },
-    });
-    this.logger.info('New email recorded for the main agent', { accountId: view.id, messageId: mail.id });
-    return senderWakes(this.p.name, view, mail.fromAddr) ? 'wakes' : 'waits';
-  }
-
+  // One poll at a time: a slow poll still running when the timer fires again is not joined by a second.
   private async pollAllAccounts(): Promise<void> {
-    for (const view of this.p.views()) {
-      try {
-        await this.pollAccount(view);
-      } catch (err) {
-        this.logger.error('pollAccount threw outside its catch', { accountId: view.id, error: err instanceof Error ? err.message : String(err) });
+    if (this.polling) return;
+    this.polling = true;
+    try {
+      for (const view of this.p.views()) {
+        try {
+          await this.pollAccount(view);
+        } catch (err) {
+          this.logger.error('pollAccount threw outside its catch', { accountId: view.id, error: err instanceof Error ? err.message : String(err) });
+        }
       }
+    } finally {
+      this.polling = false;
     }
   }
 

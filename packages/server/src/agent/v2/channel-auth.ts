@@ -6,7 +6,7 @@
 // pass channel !== 'phone'); iMessage is owned by the bridge, whose callers vet the sender.
 import { getTeamsSafeSenders, getTwilioSmsSafeSenders, mailboxesSafeSenders } from '../../services/channel-safe-senders.js';
 import { addressesMatch, findSafeSenderByAddress, getSafeSenders } from '../../services/imessage-bridge.js';
-import { ownerMailboxes } from '../../services/owner-mailboxes.js';
+import { isOwnerAddress } from '../../services/owner-mailboxes.js';
 
 export type AuthChannel = 'imessage' | 'teams' | 'sms' | 'email';
 export type AccountKind = 'agent' | 'user';
@@ -47,6 +47,6 @@ export function mayAnswer(
 ): boolean {
   if (channel === 'imessage') return accountKind === 'agent' && findSafeSenderByAddress(getSafeSenders(), sender) !== null;
   if (channel === 'email' && accountKind === 'agent' && opts?.fromOwner
-    && ownerMailboxes().some((mb) => mb.address === sender.trim().toLowerCase())) return true;
+    && isOwnerAddress(sender)) return true;
   return isSenderAuthorized(channel, sender, accountKind, opts?.emailService ? { emailService: opts.emailService } : undefined);
 }

@@ -23,7 +23,7 @@ describe('a mailbox connected after boot is watched', () => {
     try {
       watcher.start();
       await vi.advanceTimersByTimeAsync(10_001);
-      await w.addMailbox(p, 'agent', 'agent.box@example.com', 'acct-late', false);
+      await w.addMailbox(p, 'agent', 'agent.box@example.com', 'acct-late', null);
       await vi.advanceTimersByTimeAsync(300_000);
       w.inboxHolds(p, [{ id: 'late-1', from: 'Pat <pat@example.com>', subject: 'Hello', snippet: 'hi', to: 'agent.box@example.com' }]);
       await vi.advanceTimersByTimeAsync(300_000);

@@ -228,8 +228,7 @@ microsoftRouter.put('/watch-email', async (c) => {
     }
     logger.info('Outlook email-monitoring toggled', { accountId: accountId ?? slot, enabled: body.enabled });
 
-    // Bounce the watcher so a fresh enable picks up lastCheckedAt seeding.
-    // See google route for the same pattern + rationale.
+    // Bounce the watcher so its next poll comes in ten seconds instead of at the next five-minute round.
     try {
       const { stopOutlookWatcher, startOutlookWatcher, markOutlookWatchBaselineNow } =
         await import('../../services/outlook-watcher.js');

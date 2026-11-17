@@ -389,7 +389,8 @@ describe('P44 t280b — a poll that threw part-way and re-reads the owner email'
     const a = mail('b2', 'owner@home.test', [AUTH_PASS('home.test')]);
     const b = mail('b3', 'owner@home.test', [AUTH_PASS('home.test')]);
     broadcastSpy.mockImplementation((frame: { message?: { id?: string } }) => { if (broadcastSpy.mock.calls.length === 2) throw new Error('boom'); return frame; });
-    await mailArrives([a, b]);
+    // Gmail lists newest first and the watcher handles the oldest first, so `a` is handled before `b`.
+    await mailArrives([b, a]);
     const saved = mockDb.current!.prepare(`SELECT value FROM config WHERE key LIKE 'gmail_notified_ids%'`).all() as Array<{ value: string }>;
     expect(saved.map((r) => r.value).join('')).toContain('b2');
   });

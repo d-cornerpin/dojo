@@ -8,7 +8,7 @@ import { addressesMatch, parseSafeSenders, type SafeSender } from './imessage-br
 import { configKeyToChannel, syncSafeSenderToContacts, syncSafeSendersToContacts } from '../contacts/from-safe-senders.js';
 import { listGoogleAccounts } from '../google/accounts.js';
 import { listMicrosoftAccounts } from '../microsoft/accounts.js';
-import { ownerMailboxes } from './owner-mailboxes.js';
+import { isOwnerAddress } from './owner-mailboxes.js';
 
 export type MailService = 'gmail' | 'outlook';
 
@@ -49,8 +49,7 @@ export function onMailList(service: MailService, accountId: string, address: str
 /** Whether a new message wakes the main agent: mail to its own mailbox, from the owner, or from a sender on that
  *  mailbox's approved list. Anything else waits for the agent's next turn. */
 export function senderWakes(channel: MailService, account: { id: string; kind: 'agent' | 'user' }, address: string): boolean {
-  const a = address.trim().toLowerCase();
-  return account.kind === 'agent' || ownerMailboxes().some((mb) => mb.address === a) || onMailList(channel, account.id, a);
+  return account.kind === 'agent' || isOwnerAddress(address) || onMailList(channel, account.id, address.trim().toLowerCase());
 }
 
 export function getTeamsSafeSenders(): SafeSender[] {
@@ -89,6 +88,20 @@ function appendToKey(key: string, sender: SafeSender): AppendChannelSenderResult
   const channel = configKeyToChannel(key);
   if (channel) syncSafeSenderToContacts(channel, sender, null);
   return { ok: true, added: true, totalSenders: next.length };
+}
+
+/** A list saved under a slot name ('agent', 'user') belongs to that kind's first mailbox when no account has that
+ *  id (a mailbox connected from the dashboard has a random one): it is merged there once, at start. */
+export function moveSlotListsToMailboxes(): void {
+  for (const service of ['gmail', 'outlook'] as const) {
+    for (const kind of ['agent', 'user'] as const) {
+      const accounts = service === 'gmail' ? listGoogleAccounts(kind) : listMicrosoftAccounts(kind);
+      const old = readByKey(mailKey(service, kind));
+      if (old.length === 0 || accounts.length === 0 || accounts.some((a) => a.id === kind)) continue;
+      for (const sender of old) appendToKey(mailKey(service, accounts[0].id), sender);
+      getDb().prepare('DELETE FROM config WHERE key = ?').run(mailKey(service, kind));
+    }
+  }
 }
 
 export function appendMailSafeSender(service: MailService, accountId: string, sender: SafeSender): AppendChannelSenderResult {

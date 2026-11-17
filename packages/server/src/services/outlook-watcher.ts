@@ -1,4 +1,5 @@
-// Outlook's side of the one mail watcher (`mail-watcher.ts`): one Graph listing, page by page, carries every field.
+// Outlook's side of the one mail watcher (`mail-watcher.ts`): one Graph listing, oldest first and page by page,
+// carries every field.
 
 import { msGraphRead } from '../microsoft/client.js';
 import { listMicrosoftAccountViews } from '../microsoft/auth.js';
@@ -24,10 +25,11 @@ interface GraphMail {
 const outlook = new MailWatcher<GraphMail>({
   name: 'outlook',
   company: 'Microsoft',
+  newestFirst: false,
   views: () => listMicrosoftAccountViews(),
   async list(view, since, next) {
     const filter = `receivedDateTime gt ${since.toISOString()}`;
-    const endpoint = next ?? `me/mailFolders/inbox/messages?$top=${PAGE_SIZE}&$filter=${encodeURIComponent(filter)}&$select=id,from,subject,receivedDateTime,bodyPreview,isRead,conversationId,toRecipients,ccRecipients&$orderby=receivedDateTime desc`;
+    const endpoint = next ?? `me/mailFolders/inbox/messages?$top=${PAGE_SIZE}&$filter=${encodeURIComponent(filter)}&$select=id,from,subject,receivedDateTime,bodyPreview,isRead,conversationId,toRecipients,ccRecipients&$orderby=receivedDateTime asc`;
     const r = await msGraphRead(endpoint, 'system', 'Outlook Watcher', 'outlook_inbox_poll', { filter, account: view.id }, view.id);
     if (!r.ok) return { ok: false, error: r.error ?? 'Unknown poll error' };
     const data = r.data as { value?: GraphMail[]; '@odata.nextLink'?: string } | null;
@@ -48,7 +50,7 @@ const outlook = new MailWatcher<GraphMail>({
       date,
       snippet: msg.bodyPreview ?? '',
       addressing,
-      ownerWordsAt: Date.parse(date),
+      receivedAt: Date.parse(date),
       owner: () => judgeOutlookOwnerEmail({ kind: view.kind, placement: addressing.placement, fromAddress, messageId: msg.id, accountId: view.id }),
     };
   },

@@ -4,7 +4,8 @@ import Database from 'better-sqlite3';
 import { vi } from 'vitest';
 
 export type Provider = 'gmail' | 'outlook';
-export interface Mail { id: string; from: string; subject: string; snippet: string; to: string }
+/** `at`: when the mailbox received it (ms); by default a minute ago. `headers` and `body` add to a Gmail mail. */
+export interface Mail { id: string; from: string; subject: string; snippet: string; to: string; at?: number; headers?: Array<{ name: string; value: string }>; body?: string }
 
 export const world = { db: null as Database.Database | null };
 export const wake = vi.fn(async (_agentId: string, _text: string) => undefined);
@@ -39,12 +40,13 @@ function setConfig(key: string, value: string): void {
                      ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(key, value);
 }
 
-/** A connected, watched mailbox. With `running`, its cursor is a minute old, so the next poll announces mail. */
-export async function addMailbox(p: Provider, kind: 'agent' | 'user', email: string, id: string, running = true): Promise<void> {
-  const row = { id, kind, email, connected: true, watchEmail: true, sendEmail: false, enabledServices: JSON.stringify({ [p]: true }) };
+/** A connected mailbox, watched unless `watch` is false. With a `cursorAgoMs`, the watcher has been running that
+ *  long, so the next poll announces mail received since. */
+export async function addMailbox(p: Provider, kind: 'agent' | 'user', email: string, id: string, cursorAgoMs: number | null = 60_000, watch = true): Promise<void> {
+  const row = { id, kind, email, connected: true, watchEmail: watch, sendEmail: false, enabledServices: JSON.stringify({ [p]: true }) };
   if (p === 'gmail') (await import('../../google/accounts.js')).insertGoogleAccount(row);
   else (await import('../../microsoft/accounts.js')).insertMicrosoftAccount(row);
-  if (running) setConfig(id === 'agent' ? `${p}_last_checked_at` : `${p}_last_checked_at_${id}`, new Date(Date.now() - 60_000).toISOString());
+  if (cursorAgoMs !== null) setConfig(id === 'agent' ? `${p}_last_checked_at` : `${p}_last_checked_at_${id}`, new Date(Date.now() - cursorAgoMs).toISOString());
 }
 
 /** The list the Settings page saves for one mailbox. */
@@ -54,30 +56,41 @@ export function approve(p: Provider, accountId: string, address: string): void {
 
 const addr = (from: string): string => from.match(/<([^>]+)>/)?.[1] ?? from;
 
-/** The provider's inbox holds `mail`, served `pageSize` to a page. */
+/** The provider's inbox holds `mail` (oldest first), served `pageSize` to a page, newest first for Gmail as Gmail
+ *  does; each listing returns only mail received after the time the watcher asks from. */
 export function inboxHolds(p: Provider, mail: Mail[], pageSize = 50): void {
-  const page = (n: number) => mail.slice(n * pageSize, (n + 1) * pageSize);
-  const more = (n: number) => (n + 1) * pageSize < mail.length;
+  const minuteAgo = Date.now() - 60_000;
+  const at = (m: Mail): number => m.at ?? minuteAgo;
+  const after = (since: number): Mail[] => mail.filter((m) => at(m) > since);
+  const page = (list: Mail[], n: number) => ({ items: list.slice(n * pageSize, (n + 1) * pageSize), more: (n + 1) * pageSize < list.length });
   if (p === 'gmail') {
     googleRead.mockImplementation(async (url: string) => {
       if (url.includes('/messages?')) {
+        const since = Number(decodeURIComponent(url).match(/after:(\d+)/)?.[1] ?? 0) * 1000;
         const n = Number(url.match(/pageToken=(\d+)/)?.[1] ?? 0);
-        return { ok: true, data: { messages: page(n).map((m) => ({ id: m.id, threadId: `th-${m.id}` })), ...(more(n) ? { nextPageToken: String(n + 1) } : {}) } };
+        const { items, more } = page([...after(since)].reverse(), n);
+        return { ok: true, data: { messages: items.map((m) => ({ id: m.id, threadId: `th-${m.id}` })), ...(more ? { nextPageToken: String(n + 1) } : {}) } };
       }
       const m = mail.find((x) => url.includes(`/messages/${x.id}?`));
       if (!m) return { ok: false, error: 'no such message' };
-      const headers = [{ name: 'From', value: m.from }, { name: 'Subject', value: m.subject }, { name: 'Date', value: 'Mon, 12 Oct 2026 10:00:00 +0000' }, { name: 'To', value: m.to }];
-      return { ok: true, data: { id: m.id, threadId: `th-${m.id}`, snippet: m.snippet, labelIds: ['INBOX'], payload: { headers } } };
+      if (url.includes('format=full')) {
+        return { ok: true, data: { id: m.id, payload: { mimeType: 'text/plain', body: { data: Buffer.from(m.body ?? '').toString('base64url') } } } };
+      }
+      const headers = [{ name: 'From', value: m.from }, { name: 'Subject', value: m.subject }, { name: 'Date', value: 'Mon, 12 Oct 2026 10:00:00 +0000' }, { name: 'To', value: m.to }, ...(m.headers ?? [])];
+      return { ok: true, data: { id: m.id, threadId: `th-${m.id}`, snippet: m.snippet, internalDate: String(at(m)), labelIds: ['INBOX'], payload: { headers } } };
     });
   } else {
     msGraphRead.mockImplementation(async (url: string) => {
-      if (!url.includes('mailFolders/inbox/messages') && !url.startsWith('https://graph.example.com/next')) return { ok: false, error: 'no such message' };
-      const n = Number(url.match(/page=(\d+)/)?.[1] ?? 0);
-      const value = page(n).map((m) => ({
-        id: m.id, subject: m.subject, bodyPreview: m.snippet, conversationId: `cv-${m.id}`, receivedDateTime: '2026-10-12T10:00:00Z',
+      const next = url.match(/^https:\/\/graph\.example\.com\/next\?since=(\d+)&page=(\d+)/);
+      if (!next && !url.includes('mailFolders/inbox/messages')) return { ok: false, error: 'no such message' };
+      const since = next ? Number(next[1]) : Date.parse(decodeURIComponent(url).match(/receivedDateTime gt (\S+?)&/)?.[1] ?? '1970-01-01T00:00:00Z');
+      const n = next ? Number(next[2]) : 0;
+      const { items, more } = page(after(since), n);
+      const value = items.map((m) => ({
+        id: m.id, subject: m.subject, bodyPreview: m.snippet, conversationId: `cv-${m.id}`, receivedDateTime: new Date(at(m)).toISOString(),
         from: { emailAddress: { name: 'Sender', address: addr(m.from) } }, toRecipients: [{ emailAddress: { address: addr(m.to) } }],
       }));
-      return { ok: true, data: { value, ...(more(n) ? { '@odata.nextLink': `https://graph.example.com/next?page=${n + 1}` } : {}) } };
+      return { ok: true, data: { value, ...(more ? { '@odata.nextLink': `https://graph.example.com/next?since=${since}&page=${n + 1}` } : {}) } };
     });
   }
 }

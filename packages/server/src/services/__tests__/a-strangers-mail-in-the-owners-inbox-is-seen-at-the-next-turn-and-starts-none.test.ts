@@ -15,6 +15,7 @@ import '../gmail-watcher.js';
 import '../outlook-watcher.js';
 
 import { getPendingEngineEvent, getWaitingHumanConversations } from '../../agent/v2/counterparty.js';
+import { assembleContext } from '../../memory/assembler.js';
 
 beforeEach(() => w.freshWorld());
 
@@ -27,5 +28,7 @@ describe("a stranger's mail in the owner's inbox is seen at the next turn and st
     expect(w.rows('SELECT lane, authorized FROM messages WHERE external_message_id = ?', 's-1')).toEqual([{ lane: 'owner', authorized: 0 }]);
     expect(getWaitingHumanConversations('primary')).toEqual([]);
     expect(getPendingEngineEvent('primary')).toBeNull();
+    // The next turn's assembled context, through the real assembler, carries the notice.
+    expect(JSON.stringify((await assembleContext('primary', 'm')).messages)).toContain('promo@example.com');
   });
 });

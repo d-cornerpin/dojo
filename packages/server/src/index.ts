@@ -668,6 +668,8 @@ async function main(): Promise<void> {
 
   {
     try {
+      // Lists saved under a slot name move to their mailbox before the first poll reads them.
+      try { (await import('./services/channel-safe-senders.js')).moveSlotListsToMailboxes(); } catch { /* retried next start */ }
       const { startGmailWatcher } = await import('./services/gmail-watcher.js');
       startGmailWatcher();
     } catch (err) {
