@@ -120,6 +120,7 @@ const userEmails = new Map<string, string>();
 const membersFetched = new Set<string>();
 
 const POLL_INTERVAL_MS = 15_000;
+const TEAMS_BODY_MAX = 4_000;   // a longer message is cut here and says so
 
 // ── Own user ID (cached) ──
 
@@ -224,6 +225,7 @@ async function pollForNewMessages(): Promise<void> {
       from?: { user?: { id?: string; displayName?: string } };
       body?: { content: string; contentType: string };
       messageType?: string;
+      attachments?: Array<{ name?: string | null }>;
     };
 
     // Only chats whose newest message is newer than what was handled are read; a chat with no preview is read.
@@ -277,7 +279,10 @@ async function pollForNewMessages(): Promise<void> {
         if (msg.body?.contentType === 'html') {
           body = body.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
         }
-        body = body.slice(0, 1000);
+        // A long message says where it was cut, and attached files are named, so the agent knows what it has not seen.
+        if (body.length > TEAMS_BODY_MAX) body = `${body.slice(0, TEAMS_BODY_MAX)}\n[The message is longer than 4,000 characters and was cut here.]`;
+        const files = (msg.attachments ?? []).map((a) => a.name).filter((n): n is string => !!n);
+        if (files.length > 0) body += `\n[Attached files: ${files.join(', ')}]`;
 
         // He and the people on the Teams approved list wake the agent; anyone else waits for its next turn.
         const wakes = senderWakes('teams', null, senderEmail ?? '');
