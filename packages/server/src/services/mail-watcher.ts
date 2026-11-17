@@ -11,13 +11,12 @@ import type { OwnerEmailOutcome } from './mail-owner-intake.js';
 import { recordMail } from './mail-record.js';
 import { addressesMatch } from './imessage-bridge.js';
 import { listAgentSelfIdentities, matchSelfIdentity } from './self-identities.js';
-import { persistNotifiedIds } from './notified-ids.js';
+import { MAX_MAILS_PER_POLL, persistNotifiedIds } from './notified-ids.js';
 import type { MailAddressingFacts } from './mail-inbound-facts.js';
 import { type WatcherStatus, type RecentNotification, pushRecent, maybeAlertOnFailure, maybeAlertOnRecovery, normalizeError, watcherFailingOnRecord, watchedForMail } from './watcher-status.js';
 
 const POLL_INTERVAL_MS = 300_000;
 const LOOKBACK_MARGIN_MS = 15 * 60 * 1000;
-const MAX_MAILS_PER_POLL = 500;
 
 export interface MailAccountView {
   id: string;
@@ -69,7 +68,11 @@ interface AccountWatchState {
   recentNotifications: RecentNotification[];
   alreadyAlerted: boolean;
   notificationsSinceFailureAlert: number;
+  /** Polls in a row each mail id could not be read on; at READ_TRIES the mail is passed. */
+  readFailures: Map<string, number>;
 }
+
+const READ_TRIES = 3;
 
 function pickLatest(times: Array<string | null>): string | null {
   const valid = times.filter((v): v is string => v !== null);
@@ -129,6 +132,7 @@ export class MailWatcher<Ref extends { id: string }> {
         recentNotifications: [],
         alreadyAlerted: false,
         notificationsSinceFailureAlert: 0,
+        readFailures: new Map(),
       };
       this.accountState.set(accountId, s);
     }
@@ -186,14 +190,14 @@ export class MailWatcher<Ref extends { id: string }> {
     return null;
   }
 
-  /** The oldest unprocessed mails since `since`, at most MAX_MAILS_PER_POLL, oldest first; `more` when some wait. */
-  private async listSince(view: MailAccountView, since: Date): Promise<{ ok: true; refs: Ref[]; more: boolean } | { ok: false; error: string }> {
+  /** The oldest mails since `since` not yet handled, at most MAX_MAILS_PER_POLL, oldest first; `more` when some wait. */
+  private async listSince(view: MailAccountView, since: Date, handled: ReadonlySet<string>): Promise<{ ok: true; refs: Ref[]; more: boolean } | { ok: false; error: string }> {
     const refs: Ref[] = [];
     let next: string | null = null;
     do {
       const page = await this.p.list(view, since, next);
       if (!page.ok) return page;
-      refs.push(...page.refs);
+      refs.push(...page.refs.filter((r) => !handled.has(r.id)));
       next = page.next;
     } while (next && (this.p.newestFirst || refs.length < MAX_MAILS_PER_POLL));
     if (this.p.newestFirst) refs.reverse();
@@ -218,13 +222,16 @@ export class MailWatcher<Ref extends { id: string }> {
         this.logger.info('Mail watcher: baseline set for a newly monitored account', { accountId });
         return;
       }
-      const listed = await this.listSince(view, new Date(Math.max(0, new Date(s.lastCheckedAt).getTime() - LOOKBACK_MARGIN_MS)));
+      const nKey = this.configKey('notified_ids', accountId);
+      let handled: Set<string>;
+      try { handled = new Set(JSON.parse(this.readConfig(nKey) ?? '[]') as string[]); } catch { handled = new Set(); }
+      const listed = await this.listSince(view, new Date(Math.max(0, new Date(s.lastCheckedAt).getTime() - LOOKBACK_MARGIN_MS)), handled);
       if (!listed.ok) {
         this.logger.warn('Mail poll failed', { accountId, error: listed.error });
         this.recordFailure(accountId, s, listed.error);
         return;
       }
-      const { woken, stopped, lastAt } = await this.announce(view, s, listed.refs);
+      const { woken, stoppedAt, lastAt } = await this.announce(view, s, listed.refs, handled, nKey);
       if (woken > 0) {
         const notifyAccount = view.email ?? view.kind;
         // Neutral trigger: the per-email rows carry the real framing, so this must not contradict them.
@@ -235,10 +242,13 @@ export class MailWatcher<Ref extends { id: string }> {
           this.logger.error('Failed to wake the main agent for new email', { accountId, error: err instanceof Error ? err.message : String(err) });
         });
       }
-      // A poll that stopped part-way moves the cursor only to the last mail it handled, so no waiting mail is passed.
-      if (!stopped && !listed.more) this.saveLastCheckedAt(accountId, pollStartIso);
-      else if (lastAt !== null) this.saveLastCheckedAt(accountId, new Date(lastAt).toISOString());
-      this.recordSuccess(accountId, s);
+      // A poll that stopped part-way moves the cursor only to the last mail it handled, so no waiting mail is passed,
+      // and the cursor never moves back.
+      const current = new Date(s.lastCheckedAt).getTime();
+      if (stoppedAt === null && !listed.more) this.saveLastCheckedAt(accountId, pollStartIso);
+      else if (lastAt !== null && lastAt > current) this.saveLastCheckedAt(accountId, new Date(lastAt).toISOString());
+      if (stoppedAt === null) this.recordSuccess(accountId, s);
+      else this.recordFailure(accountId, s, `could not read mail ${stoppedAt}`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this.logger.error('Mail poll threw', { accountId, error: msg });
@@ -246,23 +256,30 @@ export class MailWatcher<Ref extends { id: string }> {
     }
   }
 
-  /** Records each mail not yet processed, oldest first, so the capped processed list keeps the newest ids. Returns
-   *  how many were stored for the first time and wake the agent, whether a failed read stopped it, and the
+  /** Records each listed mail, oldest first, so the capped processed list keeps the newest ids. Returns how many
+   *  were stored for the first time and wake the agent, the id of a mail whose failed read stopped it, and the
    *  received time of the last mail it handled. */
-  private async announce(view: MailAccountView, s: AccountWatchState, refs: Ref[]): Promise<{ woken: number; stopped: boolean; lastAt: number | null }> {
-    const nKey = this.configKey('notified_ids', view.id);
-    let notifiedIds: Set<string>;
-    try { notifiedIds = new Set(JSON.parse(this.readConfig(nKey) ?? '[]') as string[]); } catch { notifiedIds = new Set(); }
+  private async announce(view: MailAccountView, s: AccountWatchState, refs: Ref[], notifiedIds: Set<string>, nKey: string): Promise<{ woken: number; stoppedAt: string | null; lastAt: number | null }> {
     const selfIdentities = listAgentSelfIdentities();
     let woken = 0;
     let lastAt: number | null = null;
     for (const ref of refs) {
-      if (notifiedIds.has(ref.id)) continue;
       const mail = await this.p.read(view, ref);
       if (!mail) {
-        this.logger.warn('Mail read failed; this poll stops here and the next one starts from this mail', { accountId: view.id, messageId: ref.id });
-        return { woken, stopped: true, lastAt };
+        // A mail that fails on READ_TRIES polls in a row is passed, so one bad mail cannot hold the mailbox.
+        const tries = (s.readFailures.get(ref.id) ?? 0) + 1;
+        s.readFailures.set(ref.id, tries);
+        if (tries < READ_TRIES) {
+          this.logger.warn('Mail read failed; this poll stops here and the next one starts from this mail', { accountId: view.id, messageId: ref.id, tries });
+          return { woken, stoppedAt: ref.id, lastAt };
+        }
+        this.logger.error('Mail could not be read on three polls in a row; it is passed', { accountId: view.id, messageId: ref.id });
+        s.readFailures.delete(ref.id);
+        notifiedIds.add(ref.id);
+        persistNotifiedIds(nKey, notifiedIds);
+        continue;
       }
+      s.readFailures.delete(ref.id);
       if (Number.isFinite(mail.receivedAt)) lastAt = mail.receivedAt;
       // The agent's own outbound never wakes it (cost, reply loops): the sender is this mailbox or another agent mailbox.
       const self = mail.fromAddr && (matchSelfIdentity(mail.fromAddr, selfIdentities) ?? (view.email && addressesMatch(mail.fromAddr, view.email) ? view.email : null));
@@ -281,7 +298,7 @@ export class MailWatcher<Ref extends { id: string }> {
       notifiedIds.add(ref.id);
       persistNotifiedIds(nKey, notifiedIds);   // after each mail, so a poll that throws later does not re-read it
     }
-    return { woken, stopped: false, lastAt };
+    return { woken, stoppedAt: null, lastAt };
   }
 
   // One poll at a time: a slow poll still running when the timer fires again is not joined by a second.

@@ -4,8 +4,9 @@ import Database from 'better-sqlite3';
 import { vi } from 'vitest';
 
 export type Provider = 'gmail' | 'outlook';
-/** `at`: when the mailbox received it (ms); by default a minute ago. `headers` and `body` add to a Gmail mail. */
-export interface Mail { id: string; from: string; subject: string; snippet: string; to: string; at?: number; headers?: Array<{ name: string; value: string }>; body?: string }
+/** `at`: when the mailbox received it (ms); by default a minute ago. `headers` and `body` add to a Gmail mail, and an
+ *  `unreadable` Gmail mail is listed but its read always fails. */
+export interface Mail { id: string; from: string; subject: string; snippet: string; to: string; at?: number; headers?: Array<{ name: string; value: string }>; body?: string; unreadable?: boolean }
 
 export const world = { db: null as Database.Database | null };
 export const wake = vi.fn(async (_agentId: string, _text: string) => undefined);
@@ -72,7 +73,7 @@ export function inboxHolds(p: Provider, mail: Mail[], pageSize = 50): void {
         return { ok: true, data: { messages: items.map((m) => ({ id: m.id, threadId: `th-${m.id}` })), ...(more ? { nextPageToken: String(n + 1) } : {}) } };
       }
       const m = mail.find((x) => url.includes(`/messages/${x.id}?`));
-      if (!m) return { ok: false, error: 'no such message' };
+      if (!m || m.unreadable) return { ok: false, error: 'no such message' };
       if (url.includes('format=full')) {
         return { ok: true, data: { id: m.id, payload: { mimeType: 'text/plain', body: { data: Buffer.from(m.body ?? '').toString('base64url') } } } };
       }
@@ -104,13 +105,19 @@ export async function watcher(p: Provider): Promise<{ start: () => void; stop: (
   return { start: m.startOutlookWatcher, stop: m.stopOutlookWatcher };
 }
 
-/** One poll of the real watcher (its first, ten seconds after start), on fake timers. */
-export async function poll(p: Provider): Promise<void> {
+/** `count` polls of the real watcher, on fake timers: its first, ten seconds after start, then one each five minutes.
+ *  `between` runs after each poll. */
+export async function poll(p: Provider, count = 1, between: () => void = () => {}): Promise<void> {
   const w = await watcher(p);
   vi.useFakeTimers({ toFake: ['setTimeout', 'setInterval', 'clearInterval', 'clearTimeout'] });
   try {
     w.start();
     await vi.advanceTimersByTimeAsync(10_001);
+    between();
+    for (let i = 1; i < count; i++) {
+      await vi.advanceTimersByTimeAsync(300_000);
+      between();
+    }
   } finally {
     w.stop();
     vi.useRealTimers();
