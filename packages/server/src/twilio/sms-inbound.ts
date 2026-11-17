@@ -40,6 +40,7 @@ export interface InboundSmsPayload {
 
 const MAX_MMS_MEDIA = 5;                       // per message
 const MAX_MMS_MEDIA_BYTES = 10 * 1024 * 1024;  // per media item
+const MMS_DOWNLOAD_TIMEOUT_MS = 30_000;        // per media item: a host that never answers is listed as a link
 
 // Same shape as UploadedFile in upload.ts and imessage-bridge.ts, so attachment injection reads every producer.
 interface UploadedFile {
@@ -129,9 +130,11 @@ export async function downloadMmsMedia(payload: InboundSmsPayload, agentId: stri
   const authHeader = 'Basic ' + Buffer.from(`${creds.sid}:${creds.token}`).toString('base64');
   for (let i = 0; i < urls.length; i++) {
     const url = urls[i];
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), MMS_DOWNLOAD_TIMEOUT_MS);
     try {
       // Twilio media URLs 302-redirect to unauthenticated storage; fetch drops Authorization on that hop, as intended.
-      const res = await fetch(url, { headers: { Authorization: authHeader } });
+      const res = await fetch(url, { headers: { Authorization: authHeader }, signal: ac.signal });
       if (!res.ok) {
         logger.warn('MMS media download failed, listing URL instead', {
           messageSid: payload.messageSid, url, status: res.status,
@@ -178,6 +181,8 @@ export async function downloadMmsMedia(payload: InboundSmsPayload, agentId: stri
         messageSid: payload.messageSid, url, error: err instanceof Error ? err.message : String(err),
       });
       result.failedUrls.push(url);
+    } finally {
+      clearTimeout(timer);
     }
   }
   return result;
