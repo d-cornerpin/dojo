@@ -78,4 +78,16 @@ describe('a stranded file with no caption from the agent', () => {
     expect(plainNotice.mock.calls[0][0].brief).toContain('report.pdf');
     expect(plainNotice.mock.calls[0][0].brief).toMatch(/no caption/i);
   });
+
+  it('gets the normal retries: Messages fails once, and the file goes on the retry, once', async () => {
+    imessage.sendFile.mockResolvedValueOnce(false);
+    const turn = imessageTurn();
+    strand();
+    await turn.finalize();
+    const now = Date.now() + 1000;
+    await deliverDueReplies(now);
+    await deliverDueReplies(now + 30_000);
+    expect(imessage.sent).toEqual([`file ${report}`, `file ${report}`]);
+    expect(testDb().prepare('SELECT outcome, attempts FROM deliveries WHERE payload_json IS NOT NULL').all()).toEqual([{ outcome: 'delivered', attempts: 2 }]);
+  });
 });

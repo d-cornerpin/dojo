@@ -39,8 +39,9 @@ export async function runFinalize(state: AgentTurnState, ctx: FinalizeContext): 
   const { agentId, turnCtx, db, stopStatusHeartbeat } = ctx;
 
   state = recoverDeferredReply(state, ctx);
+  const said = state.lastAssistantTextForIM ?? '';
   state = await surfaceStrandedAttachments(state, ctx);
-  state = await routeTerminalReply(state, ctx);
+  state = await routeTerminalReply(state, ctx, said);
   await scheduleCompletionReport(ctx);
 
   stopStatusHeartbeat(agentId);

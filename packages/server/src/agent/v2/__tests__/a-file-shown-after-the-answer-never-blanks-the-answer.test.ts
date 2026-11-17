@@ -36,4 +36,13 @@ describe('a file shown after the answer never blanks the answer', () => {
     await deliverDueReplies(Date.now());
     expect(imessage.sent).toEqual(['Sales rose 8% this quarter.\n\nThe chart.', `file ${chart}`]);
   });
+
+  it('after an early answer, the caption and the file follow it, and the answer goes once', async () => {
+    const turn = imessageTurn();
+    await turn.answerEarly('Sales rose 8% this quarter.');
+    queuePendingAttachments(AGENT, [{ fileId: 'f1', filename: 'chart.png', mimeType: 'image/png', size: 7, path: chart, category: 'image' }], 'The chart.');
+    await turn.finalize();
+    await deliverDueReplies(Date.now());
+    expect(imessage.sent).toEqual(['Sales rose 8% this quarter.', 'The chart.', `file ${chart}`]);
+  });
 });

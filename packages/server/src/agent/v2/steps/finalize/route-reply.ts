@@ -22,10 +22,12 @@ import type { FinalizeContext } from './index.js';
 
 const logger = createLogger('v2-loop');
 
-/** Returns the state it advanced. */
+/** Returns the state it advanced. `said` is the reply as it stood before finalize added to it: after an early
+ *  answer, only what was added since (a caption, download links) is queued. */
 export async function routeTerminalReply(
   state: AgentTurnState,
   ctx: FinalizeContext,
+  said = state.lastAssistantTextForIM ?? '',
 ): Promise<AgentTurnState> {
   const { agentId, turnNumber, turnCtx, counterparty, chosenConvKey, settledContextWakeTurn, isEngineTurn } = ctx;
 
@@ -34,13 +36,6 @@ export async function routeTerminalReply(
   // Route the reply back to the inbound channel, else the dashboard (iMessage if the owner is away).
   if (isPrimaryAgent(agentId) && (state.lastAssistantTextForIM || files.length > 0)) {
     try {
-      // A turn with files and no words still routes: the files go as a reply with no text.
-      if (state.lastAssistantTextForIM === null) state = advance(state, { lastAssistantTextForIM: '' });
-      const said = state.lastAssistantTextForIM!;
-      state = await appendUndeliveredLinks(state, ctx);
-      // An answer already queued mid-turn is not queued again: only the download links it left out follow it.
-      const linksOnly = state.lastAssistantTextForIM!.slice(said.trimEnd().length).trim();
-
       const { getPresence, isImessageConfigured } = await import('../../../../services/presence.js');
 
       const presenceNow = getPresence();
@@ -71,6 +66,12 @@ export async function routeTerminalReply(
         imessageBridgeConfigured: isImessageConfigured(),
         ownerAffinityChannel: turnCtx.ownerAffinityDestination,
       });
+      // Files go only by iMessage, so a turn with files and no words routes only there, as a reply with no text.
+      if (!state.lastAssistantTextForIM && (destination !== 'imessage' || files.length === 0)) return state;
+      if (state.lastAssistantTextForIM === null) state = advance(state, { lastAssistantTextForIM: '' });
+      state = await appendUndeliveredLinks(state, ctx);
+      // An answer already queued mid-turn is not queued again: only what finalize added to it follows it.
+      const linksOnly = state.lastAssistantTextForIM!.slice(said.trimEnd().length).trim();
       // Record the promotion only when affinity drove this reply onto iMessage with the owner not
       // away, so the per-conversation cooldown keeps a wake storm from becoming a text storm.
       if (destination === 'imessage' && effectiveOwnerAffinity === 'imessage' && presenceNow !== 'away') {
