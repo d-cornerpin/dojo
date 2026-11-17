@@ -22,8 +22,8 @@ const lists = vi.hoisted(() => ({
 
 vi.mock('../../../services/channel-safe-senders.js', () => ({
   mailboxesSafeSenders: (service: 'gmail' | 'outlook') => lists[service],
-  getTeamsSafeSenders: () => lists.teams,
-  getTwilioSmsSafeSenders: () => lists.sms,
+  senderWakes: (channel: 'sms' | 'teams', _account: null, address: string) =>
+    (channel === 'sms' ? lists.sms : lists.teams).some((x) => x.address.toLowerCase() === address.toLowerCase()),
 }));
 
 vi.mock('../../../services/imessage-bridge.js', () => ({
