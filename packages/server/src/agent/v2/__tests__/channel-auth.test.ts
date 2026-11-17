@@ -21,8 +21,7 @@ const lists = vi.hoisted(() => ({
 }));
 
 vi.mock('../../../services/channel-safe-senders.js', () => ({
-  getGmailSafeSenders: () => lists.gmail,
-  getOutlookSafeSenders: () => lists.outlook,
+  mailboxesSafeSenders: (service: 'gmail' | 'outlook') => lists[service],
   getTeamsSafeSenders: () => lists.teams,
   getTwilioSmsSafeSenders: () => lists.sms,
 }));

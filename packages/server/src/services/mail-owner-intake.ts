@@ -13,7 +13,7 @@ import { stripHtmlTags } from '../agent/html-text.js';
 import { extractOwnGmailText, type GmailBodyPart } from '../google/gmail-body.js';
 import { googleRead } from '../google/client.js';
 import { msGraphRead } from '../microsoft/client.js';
-import { isPlatformSent } from './platform-sends.js';
+import { forgetOldMailRecords, isPlatformSent } from './platform-sends.js';
 import type { OwnerEmailNotice } from '../tools/inbound-fences.js';
 
 /** `none`: the From is not an owner address (or the mail is in the owner's own inbox). */
@@ -39,6 +39,7 @@ function firstSighting(messageId: string, deliveryRef: string): 'first' | 'seen_
   try {
     const key = `owner_mail_seen:${messageId.replace(/^<|>$/g, '')}`;
     const db = getDb();
+    forgetOldMailRecords('owner_mail_seen:');
     if (db.prepare(`INSERT OR IGNORE INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))`).run(key, deliveryRef).changes === 1) return 'first';
     return (db.prepare('SELECT value FROM config WHERE key = ?').get(key) as { value: string } | undefined)?.value === deliveryRef ? 'first' : 'seen_before';
   } catch { return 'failed'; }

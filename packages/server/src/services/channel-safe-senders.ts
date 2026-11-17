@@ -4,20 +4,17 @@
 // channel (the notification still arrives).
 
 import { getDb } from '../db/connection.js';
-import { parseSafeSenders, type SafeSender } from './imessage-bridge.js';
+import { addressesMatch, parseSafeSenders, type SafeSender } from './imessage-bridge.js';
 import { configKeyToChannel, syncSafeSenderToContacts, syncSafeSendersToContacts } from '../contacts/from-safe-senders.js';
+import { listGoogleAccounts } from '../google/accounts.js';
+import { listMicrosoftAccounts } from '../microsoft/accounts.js';
+import { ownerMailboxes } from './owner-mailboxes.js';
 
-export type AccountSlot = 'agent' | 'user';
+export type MailService = 'gmail' | 'outlook';
 
-// Gmail and Outlook lists are per slot (agent vs user mailbox), matching the per-slot "Allow sending email"
-// toggle; Teams runs on one Microsoft account, so its list is single-keyed.
-
-function gmailConfigKey(slot: AccountSlot): string {
-  return `gmail_approved_senders_${slot}`;
-}
-function outlookConfigKey(slot: AccountSlot): string {
-  return `outlook_approved_senders_${slot}`;
-}
+// Gmail and Outlook keep one list per mailbox, keyed by its account id (the key the Settings page writes);
+// Teams runs on one Microsoft account, so its list is single-keyed.
+const mailKey = (service: MailService, accountId: string): string => `${service}_approved_senders_${accountId}`;
 const TEAMS_CONFIG_KEY = 'teams_approved_senders';
 // Twilio SMS senders and Voice callers are single-keyed (not per number), the same shape as Teams.
 const TWILIO_SMS_CONFIG_KEY = 'twilio_sms_approved_senders';
@@ -35,12 +32,25 @@ function readByKey(key: string): SafeSender[] {
   }
 }
 
-export function getGmailSafeSenders(slot: AccountSlot): SafeSender[] {
-  return readByKey(gmailConfigKey(slot));
+export function getMailSafeSenders(service: MailService, accountId: string): SafeSender[] {
+  return readByKey(mailKey(service, accountId));
 }
 
-export function getOutlookSafeSenders(slot: AccountSlot): SafeSender[] {
-  return readByKey(outlookConfigKey(slot));
+/** Every approved list of a provider's mailboxes, of one kind or of all. */
+export function mailboxesSafeSenders(service: MailService, kind?: 'agent' | 'user'): SafeSender[] {
+  const accounts = service === 'gmail' ? listGoogleAccounts(kind) : listMicrosoftAccounts(kind);
+  return accounts.flatMap((a) => getMailSafeSenders(service, a.id));
+}
+
+export function onMailList(service: MailService, accountId: string, address: string): boolean {
+  return !!address && getMailSafeSenders(service, accountId).some((s) => addressesMatch(s.address, address));
+}
+
+/** Whether a new message wakes the main agent: mail to its own mailbox, from the owner, or from a sender on that
+ *  mailbox's approved list. Anything else waits for the agent's next turn. */
+export function senderWakes(channel: MailService, account: { id: string; kind: 'agent' | 'user' }, address: string): boolean {
+  const a = address.trim().toLowerCase();
+  return account.kind === 'agent' || ownerMailboxes().some((mb) => mb.address === a) || onMailList(channel, account.id, a);
 }
 
 export function getTeamsSafeSenders(): SafeSender[] {
@@ -81,11 +91,8 @@ function appendToKey(key: string, sender: SafeSender): AppendChannelSenderResult
   return { ok: true, added: true, totalSenders: next.length };
 }
 
-export function appendGmailSafeSender(slot: AccountSlot, sender: SafeSender): AppendChannelSenderResult {
-  return appendToKey(gmailConfigKey(slot), sender);
-}
-export function appendOutlookSafeSender(slot: AccountSlot, sender: SafeSender): AppendChannelSenderResult {
-  return appendToKey(outlookConfigKey(slot), sender);
+export function appendMailSafeSender(service: MailService, accountId: string, sender: SafeSender): AppendChannelSenderResult {
+  return appendToKey(mailKey(service, accountId), sender);
 }
 export function appendTeamsSafeSender(sender: SafeSender): AppendChannelSenderResult {
   return appendToKey(TEAMS_CONFIG_KEY, sender);
@@ -106,7 +113,7 @@ export function backfillSafeSenderContacts(): { created: number; updated: number
 
   let created = 0;
   let updated = 0;
-  // Match every safe-sender list by key shape (catches the per-slot gmail/outlook keys without listing them).
+  // Match every safe-sender list by key shape (catches the per-mailbox gmail/outlook keys without listing them).
   const rows = db
     .prepare("SELECT key, value FROM config WHERE key LIKE '%approved_senders%' OR key LIKE '%approved_callers%'")
     .all() as Array<{ key: string; value: string }>;

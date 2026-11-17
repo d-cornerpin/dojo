@@ -1,0 +1,383 @@
+// One mail watcher body for both providers (Gmail, Outlook): a timer polls every connected account's inbox, each
+// account with its own cursor, processed list and failure state, so a flaky mailbox does not suppress the others.
+// Every new mail is stored; one from the owner, from a sender on that mailbox's approved list, or to the agent's own
+// mailbox also wakes the main agent, once per poll. Any other is an unauthorized row: it owes no reply and drives
+// no turn, and the agent reads it in its EVENTS lane at its next turn.
+
+import { v4 as uuidv4 } from 'uuid';
+import { resolveOrCreateConversation } from '../memory/conversations.js';
+import { getDb } from '../db/connection.js';
+import { recordInboundMeta } from '../agent/v2/inbound-channel.js';
+import { insertInboundMessageIfAbsent } from '../work/ask-title.js';
+import { createLogger } from '../logger.js';
+import { broadcast } from '../gateway/ws.js';
+import { getOwnerName, getPrimaryAgentId } from '../config/platform.js';
+import { getAgentRuntime } from '../agent/runtime.js';
+import { onMailList, senderWakes, type MailService } from './channel-safe-senders.js';
+import { addressesMatch } from './imessage-bridge.js';
+import { listAgentSelfIdentities, matchSelfIdentity } from './self-identities.js';
+import { persistNotifiedIds } from './notified-ids.js';
+import { ownerEmailCommandNote, type OwnerEmailOutcome } from './mail-owner-intake.js';
+import type { MailAddressingFacts } from './mail-inbound-facts.js';
+import { mailNoticeContent } from '../tools/inbound-fences.js';
+import { type WatcherStatus, type RecentNotification, pushRecent, maybeAlertOnFailure, maybeAlertOnRecovery, normalizeError, watcherFailingOnRecord, watchedForMail } from './watcher-status.js';
+
+const POLL_INTERVAL_MS = 300_000;
+const LOOKBACK_MARGIN_MS = 15 * 60 * 1000;
+const MAX_MAILS_PER_POLL = 500;
+
+export interface MailAccountView {
+  id: string;
+  kind: 'agent' | 'user';
+  email: string | null;
+  enabled: boolean;
+  connected: boolean;
+  watchEmail: boolean;
+  services: Partial<Record<MailService, boolean>>;
+}
+
+/** One mail as the body needs it, whichever provider read it. */
+export interface MailItem {
+  id: string;
+  threadRoot: string;
+  from: string;
+  fromAddr: string;
+  subject: string;
+  date: string;
+  snippet: string;
+  addressing: MailAddressingFacts;
+  ownerWordsAt: number;
+  owner: () => Promise<OwnerEmailOutcome>;
+}
+
+export interface MailProvider<Ref extends { id: string }> {
+  name: MailService;
+  company: 'Google' | 'Microsoft';
+  views: () => MailAccountView[];
+  /** One page of the inbox received after `since`; `next` continues the listing, null when done. */
+  list: (view: MailAccountView, since: Date, next: string | null) => Promise<{ ok: true; refs: Ref[]; next: string | null } | { ok: false; error: string }>;
+  /** The mail behind one listed ref, or null when it cannot be read now (it is tried again next poll). */
+  read: (view: MailAccountView, ref: Ref) => Promise<MailItem | null>;
+}
+
+interface AccountWatchState {
+  lastCheckedAt: string | null;
+  lastPollAt: string | null;
+  lastPollOk: boolean | null;
+  lastPollError: string | null;
+  consecutiveFailures: number;
+  firstFailureAt: string | null;
+  totalPolls: number;
+  totalNotifications: number;
+  lastNotifiedAt: string | null;
+  recentNotifications: RecentNotification[];
+  alreadyAlerted: boolean;
+  notificationsSinceFailureAlert: number;
+}
+
+function pickLatest(times: Array<string | null>): string | null {
+  const valid = times.filter((v): v is string => v !== null);
+  return valid.length === 0 ? null : valid.sort().slice(-1)[0];
+}
+
+export class MailWatcher<Ref extends { id: string }> {
+  private readonly logger: ReturnType<typeof createLogger>;
+  private readonly NAME: 'GMAIL' | 'OUTLOOK';
+  private readonly accountState = new Map<string, AccountWatchState>();
+  private pollTimer: ReturnType<typeof setInterval> | null = null;
+  private firstPollTimer: ReturnType<typeof setTimeout> | null = null;
+
+  constructor(private readonly p: MailProvider<Ref>) {
+    this.logger = createLogger(`${p.name}-watcher`);
+    this.NAME = p.name === 'gmail' ? 'GMAIL' : 'OUTLOOK';
+  }
+
+  // The 'agent' account's keys carry no suffix; every other account's carry its id.
+  private configKey(what: 'last_checked_at' | 'notified_ids', accountId: string): string {
+    return accountId === 'agent' ? `${this.p.name}_${what}` : `${this.p.name}_${what}_${accountId}`;
+  }
+
+  private readConfig(key: string): string | null {
+    try {
+      return (getDb().prepare('SELECT value FROM config WHERE key = ?').get(key) as { value: string } | undefined)?.value ?? null;
+    } catch { return null; }
+  }
+
+  private saveLastCheckedAt(accountId: string, timestamp: string): void {
+    this.stateFor(accountId).lastCheckedAt = timestamp;
+    try {
+      getDb().prepare(`
+        INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
+        ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = datetime('now')
+      `).run(this.configKey('last_checked_at', accountId), timestamp, timestamp);
+    } catch (err) {
+      this.logger.error('Failed to save the mail cursor', { accountId, error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  // Created on first sight (so accounts added at runtime are polled) with the cursor saved for it, if any.
+  private stateFor(accountId: string): AccountWatchState {
+    let s = this.accountState.get(accountId);
+    if (!s) {
+      s = {
+        lastCheckedAt: this.readConfig(this.configKey('last_checked_at', accountId)),
+        lastPollAt: null,
+        lastPollOk: null,
+        lastPollError: null,
+        consecutiveFailures: 0,
+        firstFailureAt: null,
+        totalPolls: 0,
+        totalNotifications: 0,
+        lastNotifiedAt: null,
+        recentNotifications: [],
+        alreadyAlerted: false,
+        notificationsSinceFailureAlert: 0,
+      };
+      this.accountState.set(accountId, s);
+    }
+    return s;
+  }
+
+  status(): WatcherStatus {
+    const views = this.p.views();
+    const states = views.map(v => this.stateFor(v.id));
+    // lastPollOk: false if any account's last poll failed, true if all succeeded, null if none polled or all skipped.
+    const ok = states.map(s => s.lastPollOk).filter((v): v is boolean => v !== null);
+    return {
+      name: this.p.name,
+      running: this.pollTimer !== null,
+      enabled: views.some(v => v.connected && watchedForMail(v, this.p.name)),
+      connected: views.some(v => v.connected),
+      pollIntervalMs: POLL_INTERVAL_MS,
+      lastPollAt: pickLatest(states.map(s => s.lastPollAt)),
+      lastPollOk: ok.length === 0 ? null : ok.every(v => v),
+      lastPollError: states.find(s => s.lastPollOk === false)?.lastPollError ?? null,
+      consecutiveFailures: states.reduce((a, s) => Math.max(a, s.consecutiveFailures), 0),
+      firstFailureAt: states.map(s => s.firstFailureAt).filter((v): v is string => v !== null).sort()[0] ?? null,
+      lastCheckedAt: pickLatest(states.map(s => s.lastCheckedAt)),
+      totalPolls: states.reduce((a, s) => a + s.totalPolls, 0),
+      totalNotifications: states.reduce((a, s) => a + s.totalNotifications, 0),
+      lastNotifiedAt: pickLatest(states.map(s => s.lastNotifiedAt)),
+      recentNotifications: states.flatMap(s => s.recentNotifications).sort((a, b) => (a.at < b.at ? 1 : -1)).slice(0, 10),
+    };
+  }
+
+  private recordSuccess(accountId: string, s: AccountWatchState): void {
+    Object.assign(s, { lastPollAt: new Date().toISOString(), lastPollOk: true, lastPollError: null, consecutiveFailures: 0, firstFailureAt: null });
+    if (s.alreadyAlerted || watcherFailingOnRecord(this.p.name, accountId)) {
+      this.logger.info('Mail watcher recovered, sending the recovery alert', { accountId });
+      s.alreadyAlerted = maybeAlertOnRecovery({ name: this.p.name, accountId, alreadyAlerted: s.alreadyAlerted, totalNotificationsSinceFailure: s.notificationsSinceFailureAlert });
+      s.notificationsSinceFailureAlert = 0;
+    }
+  }
+
+  private recordFailure(accountId: string, s: AccountWatchState, rawMsg: string): void {
+    const msg = normalizeError(rawMsg);
+    const nowIso = new Date().toISOString();
+    Object.assign(s, { lastPollAt: nowIso, lastPollOk: false, lastPollError: msg, consecutiveFailures: s.consecutiveFailures + 1 });
+    if (!s.firstFailureAt) s.firstFailureAt = nowIso;
+    s.alreadyAlerted = maybeAlertOnFailure({ name: this.p.name, accountId, consecutiveFailures: s.consecutiveFailures, firstFailureAt: s.firstFailureAt, lastError: msg, alreadyAlerted: s.alreadyAlerted });
+  }
+
+  // Why an account is not polled, recorded as a non-error skip so the status can say why nothing happens.
+  private skipReason(v: MailAccountView): string | null {
+    const label = v.email ?? `${v.kind} account`;
+    if (!v.enabled) return `${label}: ${this.p.company} integration disabled`;
+    if (!v.connected) return `${label}: not connected`;
+    if (!v.watchEmail) return `${label}: email monitoring disabled`;
+    if (!v.services[this.p.name]) return `${label}: ${this.p.name === 'gmail' ? 'Gmail' : 'Outlook'} service disabled`;
+    return null;
+  }
+
+  private async listSince(view: MailAccountView, since: Date): Promise<{ ok: true; refs: Ref[] } | { ok: false; error: string }> {
+    const refs: Ref[] = [];
+    let next: string | null = null;
+    do {
+      const page = await this.p.list(view, since, next);
+      if (!page.ok) return page;
+      refs.push(...page.refs);
+      next = page.next;
+    } while (next && refs.length < MAX_MAILS_PER_POLL);
+    return { ok: true, refs: refs.slice(0, MAX_MAILS_PER_POLL) };
+  }
+
+  private async pollAccount(view: MailAccountView): Promise<void> {
+    const accountId = view.id;
+    const s = this.stateFor(accountId);
+    s.totalPolls++;
+    const pollStartIso = new Date().toISOString();
+    const skip = this.skipReason(view);
+    if (skip) {
+      Object.assign(s, { lastPollAt: pollStartIso, lastPollOk: null, lastPollError: skip });
+      return;
+    }
+    try {
+      // First poll of a newly monitored account: the baseline is "now" and the existing inbox is never replayed.
+      if (!s.lastCheckedAt) {
+        this.saveLastCheckedAt(accountId, pollStartIso);
+        this.recordSuccess(accountId, s);
+        this.logger.info('Mail watcher: baseline set for a newly monitored account', { accountId });
+        return;
+      }
+      const listed = await this.listSince(view, new Date(Math.max(0, new Date(s.lastCheckedAt).getTime() - LOOKBACK_MARGIN_MS)));
+      if (!listed.ok) {
+        this.logger.warn('Mail poll failed', { accountId, error: listed.error });
+        this.recordFailure(accountId, s, listed.error);
+        return;
+      }
+      const woken = await this.announce(view, s, listed.refs);
+      if (woken > 0) {
+        const notifyAccount = view.email ?? view.kind;
+        // Neutral trigger: the per-email rows carry the real framing, so this must not contradict them.
+        const summary = woken === 1
+          ? `[SOURCE: ${this.NAME} NOTIFICATION] New email in ${notifyAccount}. Details above — act on it as the framing there indicates.`
+          : `[SOURCE: ${this.NAME} NOTIFICATION] ${woken} new emails in ${notifyAccount}. Details above — act on each as the framing there indicates.`;
+        getAgentRuntime().handleMessage(getPrimaryAgentId(), summary).catch(err => {
+          this.logger.error('Failed to wake the main agent for new email', { accountId, error: err instanceof Error ? err.message : String(err) });
+        });
+      }
+      this.saveLastCheckedAt(accountId, pollStartIso);
+      this.recordSuccess(accountId, s);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.error('Mail poll threw', { accountId, error: msg });
+      this.recordFailure(accountId, s, msg);
+    }
+  }
+
+  /** Records each mail not yet processed; returns how many were stored for the first time and wake the agent. */
+  private async announce(view: MailAccountView, s: AccountWatchState, refs: Ref[]): Promise<number> {
+    const nKey = this.configKey('notified_ids', view.id);
+    let notifiedIds: Set<string>;
+    try { notifiedIds = new Set(JSON.parse(this.readConfig(nKey) ?? '[]') as string[]); } catch { notifiedIds = new Set(); }
+    const selfIdentities = listAgentSelfIdentities();
+    let woken = 0;
+    for (const ref of refs) {
+      if (notifiedIds.has(ref.id)) continue;
+      const mail = await this.p.read(view, ref);
+      if (!mail) {
+        this.logger.warn('Mail read failed, tried again next poll', { accountId: view.id, messageId: ref.id });
+        continue;
+      }
+      // The agent's own outbound never wakes it (cost, reply loops): the sender is this mailbox or another agent mailbox.
+      const self = mail.fromAddr && (matchSelfIdentity(mail.fromAddr, selfIdentities) ?? (view.email && addressesMatch(mail.fromAddr, view.email) ? view.email : null));
+      if (self) {
+        this.logger.info('Mail poll: skipping self-sent', { accountId: view.id, messageId: mail.id, selfIdentity: self });
+      } else {
+        const stored = await this.record(view, mail);
+        if (stored !== 'seen') {
+          if (stored === 'wakes') woken++;
+          s.totalNotifications++;
+          if (s.alreadyAlerted) s.notificationsSinceFailureAlert++;
+          s.lastNotifiedAt = new Date().toISOString();
+          s.recentNotifications = pushRecent(s.recentNotifications, { at: s.lastNotifiedAt, from: `${mail.from} → ${view.email ?? view.kind}`, subject: mail.subject });
+        }
+      }
+      notifiedIds.add(ref.id);
+      persistNotifiedIds(nKey, notifiedIds);   // after each mail, so a poll that throws later does not re-read it
+    }
+    return woken;
+  }
+
+  /** Stores one mail: 'wakes' or 'waits' for a first sighting, 'seen' when an earlier poll already stored it. */
+  private async record(view: MailAccountView, mail: MailItem): Promise<'wakes' | 'waits' | 'seen'> {
+    const primaryId = getPrimaryAgentId();
+    const ownerName = getOwnerName();
+    const notifyAccount = view.email ?? view.kind;
+    // Direct to the agent: its own mailbox, from a safe sender (a user mailbox is the human's mail, never answered
+    // for them) or the owner's own email the provider confirmed (`mail-owner-intake.ts`).
+    const ownerMail = await mail.owner();
+    const isDirectToAgent = ownerMail.state === 'confirmed' || (view.kind === 'agent' && onMailList(this.p.name, view.id, mail.fromAddr));
+    const content = mailNoticeContent({
+      provider: this.NAME, accountSuffix: `${view.kind === 'user' ? "user's" : "agent's"} ${this.p.company} account`, account: notifyAccount, ownerName,
+      kind: view.kind, fromAddr: mail.fromAddr, from: mail.from, subject: mail.subject, date: mail.date, snippet: mail.snippet, messageId: mail.id,
+      directToAgent: isDirectToAgent, toolHint: `${view.kind === 'agent' ? '' : 'user_'}${this.p.name}_read`, addressing: mail.addressing,
+      ownerEmail: ownerMail.state === 'none' ? undefined : ownerMail,
+    }) + await ownerEmailCommandNote(ownerMail);
+
+    const msgId = uuidv4();
+    // Conversation identity is provider + sender + thread, so two threads from one sender are two conversations.
+    const conversationId = resolveOrCreateConversation(primaryId, {
+      channel: 'email', provider: this.p.name, counterpartyId: mail.fromAddr || mail.from, threadRoot: mail.threadRoot,
+    });
+    // Structured routing metadata: `authorized` is the auto-reply verdict, so a user-kind mailbox or an unknown
+    // sender is read as a notification and never answered for the human.
+    const inboundMetaObj = {
+      channel: 'email' as const,
+      accountKind: view.kind,
+      authorized: isDirectToAgent,
+      sender: mail.fromAddr || mail.from,
+      emailMessageId: mail.id,
+      emailService: this.p.name,
+      emailAccount: notifyAccount,
+      emailSubject: mail.subject,
+      mailAddressing: mail.addressing,
+      ...(ownerMail.state === 'confirmed' ? { relation: 'owner' as const, ownerWords: ownerMail.words, ownerWordsAt: mail.ownerWordsAt } : {}),
+    };
+    const stored = insertInboundMessageIfAbsent({
+      id: msgId,
+      agentId: primaryId,
+      role: 'user',
+      content,
+      conversationId,
+      externalMessageId: mail.id,
+      channel: inboundMetaObj.channel,
+      senderId: inboundMetaObj.sender,
+      authorized: inboundMetaObj.authorized,
+    });
+    // null: an earlier poll stored this mail (its processed-list save was lost); no second live card, no second wake.
+    if (stored === null) return 'seen';
+    recordInboundMeta(msgId, inboundMetaObj);
+    // The same inbound_meta and conversation binding as the row, so live and refetched attribution agree.
+    broadcast({
+      type: 'chat:message',
+      agentId: primaryId,
+      message: {
+        id: msgId,
+        agentId: primaryId,
+        role: 'user' as const,
+        content,
+        conversationId,
+        inboundMeta: JSON.stringify(inboundMetaObj),
+        tokenCount: null,
+        modelId: null,
+        cost: null,
+        latencyMs: null,
+        createdAt: new Date().toISOString(),
+      },
+    });
+    this.logger.info('New email recorded for the main agent', { accountId: view.id, messageId: mail.id });
+    return senderWakes(this.p.name, view, mail.fromAddr) ? 'wakes' : 'waits';
+  }
+
+  private async pollAllAccounts(): Promise<void> {
+    for (const view of this.p.views()) {
+      try {
+        await this.pollAccount(view);
+      } catch (err) {
+        this.logger.error('pollAccount threw outside its catch', { accountId: view.id, error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+  }
+
+  // The timer always runs: each poll skips the accounts that are off or disconnected, so one connected later is watched.
+  start(): void {
+    if (this.pollTimer) return;
+    this.accountState.clear();   // re-read every cursor, so a baseline the dashboard just set takes effect
+    this.pollTimer = setInterval(() => { this.pollAllAccounts().catch(() => { /* logged inside */ }); }, POLL_INTERVAL_MS);
+    this.firstPollTimer = setTimeout(() => { this.pollAllAccounts().catch(() => { /* logged inside */ }); }, 10_000);
+    this.logger.info('Mail watcher started', { pollInterval: POLL_INTERVAL_MS });
+  }
+
+  stop(): void {
+    if (this.pollTimer) clearInterval(this.pollTimer);
+    if (this.firstPollTimer) clearTimeout(this.firstPollTimer);
+    this.pollTimer = null;
+    this.firstPollTimer = null;
+  }
+
+  /** Reset an account's cursor to now, so only mail arriving from here on is announced (watch-email turned on). */
+  markBaselineNow(accountId: string): void {
+    this.saveLastCheckedAt(accountId, new Date().toISOString());
+  }
+}

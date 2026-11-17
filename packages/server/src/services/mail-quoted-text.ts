@@ -29,7 +29,8 @@ export function newTextOf(body: string): string {
   return kept.slice(start, end).join('\n');
 }
 
-// Block starts: `On ... wrote:` (or its wrap), an Original/Forwarded banner, From: + Sent:/Date:, `Begin forwarded`.
+// Block starts: `On ... wrote:` (or its wrap), an Original/Forwarded banner, From: + Sent:/Date:, `Begin forwarded`,
+// and, in any language, a "who wrote this" line: one ending in ':' that a `>` quote directly follows.
 function isBlockStart(lines: string[], i: number): boolean {
   const t = lines[i].trim().toLowerCase();
 
@@ -46,6 +47,8 @@ function isBlockStart(lines: string[], i: number): boolean {
   }
 
   if (t === 'begin forwarded message:') return true;
+
+  if (t.endsWith(':') && (lines[i + 1] ?? '').trimStart().startsWith('>')) return true;
 
   return false;
 }

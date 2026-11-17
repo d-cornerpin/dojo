@@ -220,6 +220,8 @@ describe('P44 — the Gmail watcher stamps mail addressing on the inbound meta',
 
   it('case 4: a user mailbox counts only its own address — the agent in To is not its "to"', async () => {
     setMailbox('user', 'owner@x.com');
+    // Bob is on this mailbox's approved list, so his mail is stored (a stranger's is only an engine event).
+    mockDb.current!.prepare(`INSERT INTO config (key, value) VALUES ('gmail_approved_senders_user', '[{"address":"bob@y.test"}]')`).run();
     await mailArrives([{ ...G1, id: 'g4', headers: [
       { name: 'From', value: 'Bob <bob@y.test>' },
       { name: 'Subject', value: 'Plan' },

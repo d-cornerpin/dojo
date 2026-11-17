@@ -11,6 +11,11 @@ export const SEND_ID_HEADER = 'X-Platform-Send-Id';
 
 const norm = (id: string): string => id.trim().replace(/^<|>$/g, '').toLowerCase();
 
+/** Drops this kind of mail record (`config` rows under `prefix`) once it is 90 days old, so the rows do not pile up. */
+export function forgetOldMailRecords(prefix: string): void {
+  getDb().prepare(`DELETE FROM config WHERE substr(key, 1, ?) = ? AND updated_at < datetime('now', '-90 days')`).run(prefix.length, prefix);
+}
+
 /** THROWS if unwritable: an unrecorded send could later be read as the owner speaking, so none is made. */
 function mustRecord(ids: string[]): void {
   try {
@@ -33,6 +38,7 @@ export function newPlatformSend(): { sendId: string; messageId: string } {
   const sendId = randomUUID();
   const messageId = `<${sendId}@send.invalid>`;
   mustRecord([sendId, messageId]);
+  try { forgetOldMailRecords(KEY); } catch { /* a later send prunes */ }
   return { sendId, messageId };
 }
 

@@ -7,8 +7,7 @@ import { getSafeSenders, findSafeSenderByAddress, type SafeSender } from '../ser
 import {
   getTwilioSmsSafeSenders,
   getTwilioVoiceSafeCallers,
-  getGmailSafeSenders,
-  getOutlookSafeSenders,
+  mailboxesSafeSenders,
   getTeamsSafeSenders,
 } from '../services/channel-safe-senders.js';
 
@@ -24,7 +23,7 @@ function contactByChannelHandle(channel: ChannelKind, handle: string): ContactRe
   }
 }
 
-// Every safe-sender list the handle could be on; email checks both slots. A throwing read returns null
+// Every safe-sender list the handle could be on; email checks every mailbox. A throwing read returns null
 // so labeling never breaks a send.
 function safeSenderNameFor(channel: ChannelKind, handle: string): string | null {
   const lists: SafeSender[][] = [];
@@ -40,8 +39,7 @@ function safeSenderNameFor(channel: ChannelKind, handle: string): string | null 
         lists.push(getTwilioVoiceSafeCallers());
         break;
       case 'email':
-        lists.push(getGmailSafeSenders('agent'), getGmailSafeSenders('user'));
-        lists.push(getOutlookSafeSenders('agent'), getOutlookSafeSenders('user'));
+        lists.push(mailboxesSafeSenders('gmail'), mailboxesSafeSenders('outlook'));
         break;
       case 'teams':
         lists.push(getTeamsSafeSenders());

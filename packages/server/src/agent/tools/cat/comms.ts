@@ -21,11 +21,13 @@ import { turnContext } from '../../turn-context.js';
 import { refuseSendWithNoRecipient, routedReplyWords } from '../../v2/send-recipient.js';
 import { sharePathGuard } from '../../path-guards.js';
 import { auditLog, permissionDeniedMessage, registerSharedFile } from '../util.js';
-import { appendTeamsSafeSender, appendGmailSafeSender, appendOutlookSafeSender } from '../../../services/channel-safe-senders.js';
+import { appendTeamsSafeSender, appendMailSafeSender } from '../../../services/channel-safe-senders.js';
 import { createPublicShare } from '../../../services/public-share.js';
 import { executeSmsSend } from '../../../twilio/sms-outbound.js';
-import { isEmailSendingEnabled, getGoogleWorkspaceConfig } from '../../../google/auth.js';
-import { isMsEmailSendingEnabled, getMicrosoftWorkspaceConfig } from '../../../microsoft/auth.js';
+import { isEmailSendingEnabled } from '../../../google/auth.js';
+import { getPrimaryGoogleAccount } from '../../../google/accounts.js';
+import { isMsEmailSendingEnabled } from '../../../microsoft/auth.js';
+import { getPrimaryMicrosoftAccount } from '../../../microsoft/accounts.js';
 import { parseSafeSenders, reloadApprovedSenders, getSafeSenders, getIMBridgeStatus, findSafeSenderByAddress, sendIMessageWithAttachments, MAX_IMESSAGE_FILE_BYTES } from '../../../services/imessage-bridge.js';
 import { iMessageListHasHumanOwner } from '../../../services/imessage-owner-gate.js';
 import { getSmsReachability, describeSmsRecipients } from '../../../services/capability-registry.js';
@@ -320,17 +322,10 @@ export const commsHandlers: ToolHandlerMap = {
           auditLog(agentId, 'add_safe_sender', `${channelArg}:${address}`, 'error', `missing slot arg; quote: "${auditQuote}"`);
           return { content, isError };
         }
-        // Read sending capability AND the account email, so the messages below can
-        // name the real mailbox; both providers read table-backed config getters.
-        let sendingEnabled = false;
-        let accountEmail: string | null = null;
-        if (channelArg === 'gmail') {
-          sendingEnabled = isEmailSendingEnabled(slot);
-          accountEmail = getGoogleWorkspaceConfig(slot).accountEmail;
-        } else { // outlook
-          sendingEnabled = isMsEmailSendingEnabled(slot);
-          accountEmail = getMicrosoftWorkspaceConfig(slot).accountEmail;
-        }
+        // The slot's first mailbox: its sending switch, its address for the messages below, and its id for the list.
+        const sendingEnabled = channelArg === 'gmail' ? isEmailSendingEnabled(slot) : isMsEmailSendingEnabled(slot);
+        const account = channelArg === 'gmail' ? getPrimaryGoogleAccount(slot) : getPrimaryMicrosoftAccount(slot);
+        const accountEmail = account?.email ?? null;
         if (!sendingEnabled) {
           const acctLabel = accountEmail ? `${accountEmail} (the ${slot} slot)` : `the ${slot} slot`;
           const channelLabel = channelArg === 'gmail' ? 'Gmail' : 'Outlook';
@@ -343,9 +338,7 @@ export const commsHandlers: ToolHandlerMap = {
           auditLog(agentId, 'add_safe_sender', `${channelArg}:${address}`, 'denied', `slot=${slot} sendEmail=off; quote: "${auditQuote}"`);
           return { content, isError };
         }
-        const result = channelArg === 'gmail'
-          ? appendGmailSafeSender(slot, sender)
-          : appendOutlookSafeSender(slot, sender);
+        const result = appendMailSafeSender(channelArg as 'gmail' | 'outlook', account?.id ?? slot, sender);
         const channelHumanLabel = channelArg === 'gmail' ? 'Gmail' : 'Outlook';
         const slotLabel = accountEmail ? `${accountEmail} (${slot} slot)` : `${slot} slot`;
         if (!result.added) {
