@@ -165,7 +165,7 @@ type LoopMsg = {
 // here; `agent/v2/outbound-ledger.ts`, `work/obligations.ts` and `memory/deliveries-lane.ts` are upstream of
 // this module, so the formatter cannot live here (an import cycle).
 import { renderMessageTimeStamp } from './message-stamp.js';
-import { servedRowsOutOfView } from './served-ask.js';
+import { answeredMessageId, servedRowsOutOfView } from './served-ask.js';
 import { END_OF_HISTORY, endOfHistoryMarker } from './end-of-history.js';
 export { renderMessageTimeStamp };
 
@@ -671,12 +671,15 @@ function buildContentLanes(
         const p = render.payload as TailPayload;
         let kept = budgetFreshTail(p.rows, maxTokens, tailTrimBlockGroups(freshTailCount));
         // The served owner message is never out of view: if the trim took it (or it sits behind the boundary) it is
-        // re-emitted and its cost (attachments via `p.charge`) comes off the rest's room. Served rows share that room
-        // newest first, so the newest is whole and older ones shrink to their kept-row pointer.
+        // re-emitted and its cost (attachments via `p.charge`) comes off the rest's room. Served rows share that room:
+        // the message the turn answers first, then newest first; what no longer fits shrinks to its kept-row pointer.
         const servedOf = (rows: Message[]): Message[] => {
+          const all = (p.charge ?? ((r: Message[]) => r))(servedRowsOutOfView(p.agentId, [...rows, ...(p.inEvents ?? [])]));
+          const answered = answeredMessageId(p.agentId);
           let room = maxTokens;
-          return (p.charge ?? ((r: Message[]) => r))(servedRowsOutOfView(p.agentId, [...rows, ...(p.inEvents ?? [])])).reverse()
-            .map((m) => { const shown = overRoomRowView(m, room); room = Math.max(0, room - rowTokens([shown])); return shown; }).reverse();
+          const shown = new Map([...all].reverse().sort((a, b) => Number(b.id === answered) - Number(a.id === answered))
+            .map((m) => { const v = overRoomRowView(m, room); room = Math.max(0, room - rowTokens([v])); return [m.id, v] as const; }));
+          return all.map((m) => shown.get(m.id) ?? m);
         };
         let served = servedOf(kept);
         if (served.length > 0) {

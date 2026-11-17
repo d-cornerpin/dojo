@@ -44,22 +44,34 @@ beforeEach(() => {
 });
 afterEach(() => { endTurnContext(AGENT); mockDb.current?.close(); mockDb.current = null; });
 
-describe('large unanswered messages do not raise the turn\'s model', () => {
-  it('four large open asks behind the fold: shown within the room, the newest whole, the older ones by pointer', async () => {
-    const asks = [0, 1, 2, 3].map((i) => say('user', `ASK-${i} ${'crate manifest line, bay and weight; '.repeat(540)}`, `ask-${i}`));
-    expect(claimAsk('ask:ask-0', AGENT).kind).toBe('applied');
-    createLeafSummary(AGENT, 'The owner sent four long manifests to check.', 20, asks, '2026-10-01 00:00:00', '2026-10-01 00:00:05');
-    for (let i = 0; i < 6; i++) { say('assistant', `checking part ${i}`); say('user', `part ${i} looks fine`); }
-    const bag = openTurnContext(AGENT);
-    bag.root = { kind: 'ask', id: 'ask-0', sourceMessageId: 'ask-0' };
-    expect(servedOwnerMessageIds(AGENT), 'precondition: all four are served').toEqual(expect.arrayContaining(asks));
+const LINE = 'crate manifest line, bay and weight; ';
+const contentOf = (id: string): string => (mockDb.current!.prepare('SELECT content FROM messages WHERE id = ?').get(id) as { content: string }).content;
+const whole = (wire: string, id: string): boolean => wire.includes(JSON.stringify(contentOf(id)).slice(1, -1));
 
-    const a = await assembleContext(AGENT, 'm');
-    expect(a.allocation!.spentTokens, 'the assembly fits its budget').toBeLessThanOrEqual(a.allocation!.budgetTokens);
-    const wire = JSON.stringify(a.messages);
-    const newest = (mockDb.current!.prepare("SELECT content FROM messages WHERE id = 'ask-3'").get() as { content: string }).content;
-    expect(wire, 'the newest is whole').toContain(JSON.stringify(newest).slice(1, -1));
-    for (const id of asks) expect(wire, `${id} is still shown`).toContain(id.toUpperCase());
-    expect(wire, 'an older one is shown by its kept-row pointer').toContain('msg:ask-0');
+/** Asks of the given sizes (in repeated lines) behind the fold, the first one the running turn's trigger. */
+async function servedBehindTheFold(sizes: number[]): Promise<{ wire: string; spent: number; budget: number }> {
+  const asks = sizes.map((n, i) => say('user', `ASK-${i} ${LINE.repeat(n)}`, `ask-${i}`));
+  expect(claimAsk('ask:ask-0', AGENT).kind).toBe('applied');
+  createLeafSummary(AGENT, 'The owner sent long manifests to check.', 20, asks, '2026-10-01 00:00:00', '2026-10-01 00:00:05');
+  for (let i = 0; i < 6; i++) { say('assistant', `checking part ${i}`); say('user', `part ${i} looks fine`); }
+  openTurnContext(AGENT).root = { kind: 'ask', id: 'ask-0', sourceMessageId: 'ask-0' };
+  expect(servedOwnerMessageIds(AGENT), 'precondition: every ask is served').toEqual(expect.arrayContaining(asks));
+  const a = await assembleContext(AGENT, 'm');
+  return { wire: JSON.stringify(a.messages), spent: a.allocation!.spentTokens, budget: a.allocation!.budgetTokens };
+}
+
+describe('large unanswered messages do not raise the turn\'s model', () => {
+  it('four large open asks behind the fold: within the room; the trigger and the newest whole, the others by pointer', async () => {
+    const { wire, spent, budget } = await servedBehindTheFold([540, 540, 540, 540]);
+    expect(spent, 'the assembly fits its budget').toBeLessThanOrEqual(budget);
+    expect(whole(wire, 'ask-0'), 'the message the turn answers is whole').toBe(true);
+    expect(whole(wire, 'ask-3'), 'the newest is whole').toBe(true);
+    for (const id of ['ask-1', 'ask-2']) expect(wire, `${id} is shown by its kept-row pointer`).toContain(`msg:${id}`);
+  });
+
+  it('a later follow-up that would take the room: the trigger stays whole, the follow-up shrinks', async () => {
+    const { wire } = await servedBehindTheFold([300, 1_350]);
+    expect(whole(wire, 'ask-0'), 'the message the turn answers is whole').toBe(true);
+    expect(wire).toContain('msg:ask-1');
   });
 });

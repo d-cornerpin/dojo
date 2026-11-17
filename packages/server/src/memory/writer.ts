@@ -44,7 +44,7 @@ export type Signal =
   | { kind: 'own-model-changed'; agentId?: string }
   | { kind: 'span-written'; agentId: string; spanKeys: readonly string[] }
   | { kind: 'boot' }
-  | { kind: 'memory-readable'; freeTokens?: number | null };
+  | { kind: 'memory-readable' };
 
 /** The agent's own model as stored (read afresh: the owner may change it). */
 export const ownModel = (agentId: string): string | undefined => {
@@ -96,7 +96,7 @@ export function clearOn(signal: Signal): void {
       case 'own-model-changed': if (signal.agentId) rows(REASONS.filter((r) => r !== 'cannot-hold')).filter((r) => r.agent === signal.agentId).forEach(drop); break;   // a writer's verdict is keyed by that writer
       case 'span-written': rows(['check-failed']).filter((r) => r.agent === signal.agentId && signal.spanKeys.includes(r.span)).forEach(drop); break;
       case 'boot': rows(TRANSIENT).forEach(drop); break;
-      case 'memory-readable': rows(signal.freeTokens != null && summaryWindow(0) <= signal.freeTokens ? ['memory-unreadable', 'no-room'] : ['memory-unreadable']).forEach(drop); break;
+      case 'memory-readable': rows(['memory-unreadable']).forEach(drop); break;
       case 'writer-answered': {
         // A summary answer frees the writer, and lets the small writer be sized again for the agent it wrote for; any
         // other answer frees it only while an agent of its order waits with no writer that can run.
@@ -133,18 +133,6 @@ export function refuseWhatTheWriterCannotHold(modelId: string, systemPrompt: str
   return { ok: false, reason: 'the summary writer cannot hold this input', tooBig: true };
 }
 
-/** Ollama answered: the free memory is readable, and a "no room" wait ends once a summary fits in it again. */
-export async function memoryReadable(): Promise<void> {
-  let waitsForRoom = false;
-  try { waitsForRoom = !!getDb().prepare('SELECT 1 FROM healer_state WHERE scope = ? LIMIT 1').get(SCOPE + 'no-room'); } catch { /* no database yet */ }
-  const freeTokens = waitsForRoom ? await import('../agent/local-model-fit.js').then((m) => m.freeWriterWindowTokens()).catch(() => null) : null;
-  clearOn({ kind: 'memory-readable', freeTokens });
-}
-
-/** The small writer's window for a summary of `inputChars` at the caller's target. */
-const summaryWindow = (inputChars: number, targetTokens?: number): number => utilityNumCtx({ inputChars, charsPerToken: MEASURED_CHARS_PER_TOKEN,
-  outputTokens: utilityOutputCap(utilityDial('memory_summarize')!, targetTokens), configuredNumCtx: null });
-
 const NO_ROOM: SummaryResult = { ok: false, reason: 'the memory free now cannot hold a summary on the Dojo\'s writer', tooBig: true, noRoom: true };
 
 /** The small writer as a fallback uses only the memory free now: a span too big for it is halved, and when not
@@ -155,7 +143,8 @@ export async function refuseFallbackOverFreeMemory(
   if (modelId !== standardModelRowId('writer') || writerAssignedSummaries()) return null;
   if (waiting(agentId, modelId) !== null) return NO_ROOM;
   const free = await (await import('../agent/local-model-fit.js')).freeWriterWindowTokens();
-  const windowFor = (inputChars: number): number => summaryWindow(inputChars, targetTokens);
+  const windowFor = (inputChars: number): number => utilityNumCtx({ inputChars, charsPerToken: MEASURED_CHARS_PER_TOKEN,
+    outputTokens: utilityOutputCap(utilityDial('memory_summarize')!, targetTokens), configuredNumCtx: null });
   if (free !== null && windowFor(systemPrompt.length + content.length) <= free) return null;
   if (free === null || windowFor(systemPrompt.length) > free) {
     markWaiting(agentId, modelId, '', free === null ? 'memory-unreadable' : 'no-room');

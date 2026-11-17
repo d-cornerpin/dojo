@@ -80,9 +80,16 @@ export function servedTriggerMessageIds(agentId: string): string[] {
   }
 }
 
+/** Every message the running turn serves; the first is the one that started it. */
+const servedIds = (agentId: string): string[] =>
+  [...new Set([...servedOwnerMessageIds(agentId), ...servedAssignMessageIds(agentId), ...servedTriggerMessageIds(agentId)])];
+
+/** The message the running turn answers, or null. */
+export const answeredMessageId = (agentId: string): string | null => servedIds(agentId)[0] ?? null;
+
 /** The served rows that are NOT among `inView` (compared by id), as stored rows, oldest first. */
 export function servedRowsOutOfView(agentId: string, inView: readonly { id: string }[]): Message[] {
-  const ids = [...new Set([...servedOwnerMessageIds(agentId), ...servedAssignMessageIds(agentId), ...servedTriggerMessageIds(agentId)])];
+  const ids = servedIds(agentId);
   if (ids.length === 0) return [];
   const seen = new Set(inView.map((m) => m.id));
   const missing = ids.filter((id) => !seen.has(id));

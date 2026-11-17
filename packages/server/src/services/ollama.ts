@@ -3,7 +3,7 @@
 import { createLogger } from '../logger.js';
 import { upkeepWhenIncomplete } from './ollama-upkeep.js';
 import { getDb } from '../db/connection.js';
-import { clearOn, memoryReadable } from '../memory/writer.js';
+import { clearOn } from '../memory/writer.js';
 
 const logger = createLogger('ollama');
 
@@ -42,7 +42,7 @@ export async function checkOllamaHealth(baseUrl?: string): Promise<boolean> {
       const data = await response.json() as { models?: Array<{ name: string }> };
       cachedStatus.models = (data.models ?? []).map(m => m.name);
       upkeepWhenIncomplete(cachedStatus.models, url);   // Ollama answering is the signal to finish the pair
-      await ollamaAnswered(url);   // a waiting summary writer on this Ollama is re-tested
+      ollamaAnswered(url);   // a waiting summary writer on this Ollama is re-tested
     }
 
     return healthy;
@@ -193,8 +193,8 @@ export async function getOllamaModelInfo(modelName: string, baseUrl?: string): P
 
 /** Ollama at `url` answered: its free memory may be readable again, and each Ollama provider there is a signal for a
  *  summary span waiting on a writer it serves (`memory/writer.ts`). */
-async function ollamaAnswered(url: string): Promise<void> {
-  await memoryReadable();
+function ollamaAnswered(url: string): void {
+  clearOn({ kind: 'memory-readable' });
   try {
     const norm = (u: string | null): string => (u ?? DEFAULT_OLLAMA_URL).replace(/\/+$/, '');
     const rows = getDb().prepare("SELECT id, base_url FROM providers WHERE type = 'ollama'").all() as Array<{ id: string; base_url: string | null }>;
