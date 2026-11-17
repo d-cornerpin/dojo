@@ -15,7 +15,7 @@ vi.mock('../../work/ask-title.js', () => ({ insertInboundMessageIfAbsent: insert
 vi.mock('../../agent/v2/inbound-channel.js', () => ({ recordInboundMeta: recordMock }));
 vi.mock('../../gateway/ws.js', () => ({ broadcast: broadcastMock }));
 vi.mock('../../agent/runtime.js', () => ({ getAgentRuntime: () => ({ handleMessage: handleMock }) }));
-vi.mock('../../services/channel-safe-senders.js', () => ({ getTwilioSmsSafeSenders: () => [] }));
+vi.mock('../../services/channel-safe-senders.js', () => ({ senderWakes: () => true }));
 vi.mock('../../services/safe-senders.js', () => ({ addressesMatch: () => false, isOwnerIMessageRecipient: () => false }));
 vi.mock('../../tools/external-content.js', () => ({ fenceExternal: (_a: string, _b: string, t: string) => t }));
 vi.mock('../../contacts/resolve-recipient.js', () => ({ resolveRecipientDisplay: (_c: string, n: string) => n }));
