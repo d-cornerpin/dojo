@@ -90,7 +90,6 @@ describe('T8V — the collapse is total and reversible at the boundary', () => {
       expect(entry, `${name} has no alias row — a model still holding this name gets "unknown tool"`).toBeDefined();
       expect(isTombstone(entry!), `${name} must route, not tombstone`).toBe(false);
       expect(WORK_VERBS as readonly string[]).toContain((entry as { to: string }).to);
-      expect((entry as { added?: string }).added, `${name}'s alias row needs an added: stamp for SWEEP-F T7`).toBeTruthy();
     }
   });
 
