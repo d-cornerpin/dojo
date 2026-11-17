@@ -112,8 +112,8 @@ export const LANE_LIMITS: Record<string, LaneLimits> = {
   // prefix on every call. The PM tail is bounded by the horizon (`tail-horizon.ts`) and the token trim
   // (`assembler.ts`, PM branch).
 
-  // The vault's per-ask retrieval is `recall-lane.ts`; its pinned half is bounded by `MAX_PINNED_ENTRIES`
-  // (`vault/retrieval.ts`).
+  // The vault's per-ask retrieval is `recall-lane.ts`; its pinned half is every permanent entry plus the
+  // newest `MAX_PINNED_ENTRIES` other pins (`vault/retrieval.ts`).
   'lane.vault': {},
 
   // `scrubWindow` caps the tool rows scanned since session start. `relevanceBudget` decides how many older

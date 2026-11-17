@@ -30,9 +30,9 @@ import {
   incrementArchiveAttempt,
   markArchivePoisoned,
   sqlUtcStamp,
+  restoreCleanupHidesOnce,
   type VaultConversation,
 } from './store.js';
-import { MAX_PINNED_ENTRIES } from './retrieval.js';
 import { buildRoughTasksBatch, lessonsCensusSince, advanceLessonsCensus } from './rough-tasks-batch.js';
 import { homeDir } from '../home.js';
 import { fenceExternal } from '../tools/external-content.js';
@@ -141,6 +141,7 @@ function getDefaultDreamModel(): string | null {
 
 
 export function runEngineMaintenance(): { pruned: number; decayed: number; unpinned: number; agedOut: number } {
+  restoreCleanupHidesOnce();
   const db = getDb();
   let pruned = 0;
 
@@ -550,7 +551,7 @@ function buildDreamerCycleMessage(
   void profilePath; void soulPath;
 
   return `═══ DREAM CYCLE ═══
-Vault state: ${stats.totalEntries} entries (${stats.pinnedCount} pinned, ${stats.permanentCount} permanent). Pin cap: ${MAX_PINNED_ENTRIES}${stats.pinnedCount > MAX_PINNED_ENTRIES ? ', OVER CAP, prune now' : ''}.${archiveSummary}${batchNote}
+Vault state: ${stats.totalEntries} entries (${stats.pinnedCount} pinned, ${stats.permanentCount} permanent).${archiveSummary}${batchNote}
 
 Process the archives below. Extract durable memories and route each to the right store per your SOUL: vault_remember for general knowledge, contact_remember for person-as-entity facts (who someone is, role/company, relationships, channel preferences, a new email/phone), and credential_add ONLY when an archive contains the actual value of a service credential (follow your SOUL's cautions: never guess, skip anything personal-financial). Discard junk archives. Only update USER.md if an archive has a clear, explicit, FUNDAMENTAL profile change you can quote (see your SOUL). Never edit SOUL.md. Then call complete_task.
 

@@ -45,6 +45,7 @@ const store = vi.hoisted(() => ({
   markArchivePoisoned: vi.fn(),
   markConversationProcessed: vi.fn(),
   sqlUtcStamp: (d: Date) => d.toISOString().slice(0, 19).replace('T', ' '),
+  restoreCleanupHidesOnce: vi.fn(),
 }));
 vi.mock('../store.js', () => store);
 

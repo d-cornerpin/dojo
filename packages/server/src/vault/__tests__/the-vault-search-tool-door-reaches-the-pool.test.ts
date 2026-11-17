@@ -124,7 +124,7 @@ beforeAll(() => {
     }
   })();
   d.close();
-  db = new Database(dbPath, { readonly: true });
+  db = new Database(dbPath);
 });
 
 afterAll(async () => {
@@ -218,7 +218,7 @@ describe('⚠ FIX ROUND 1, I2 — A TRUNCATED WINDOW IS TOLD TO THE AGENT, NOT O
       embedding_model TEXT DEFAULT 'ollama:nomic-embed-text',
       id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, type TEXT NOT NULL DEFAULT 'fact',
       content TEXT NOT NULL, is_obsolete INTEGER DEFAULT 0, embedding BLOB, namespace TEXT,
-      created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now'))
+      retrieval_count INTEGER DEFAULT 0, last_retrieved_at TEXT, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now'))
     )`);
     d.exec('CREATE INDEX idx_vault_agent ON vault_entries(agent_id)');
     d.exec(`CREATE TABLE vault_conversations (
@@ -235,7 +235,7 @@ describe('⚠ FIX ROUND 1, I2 — A TRUNCATED WINDOW IS TOLD TO THE AGENT, NOT O
     ins.run(200_000, 'recent', AGENT, `the ${NEEDLE}, filed recently`, emb);
     d.close();
     const prev = db;
-    db = new Database(p, { readonly: true });
+    db = new Database(p);
     pathOverride = p;
     resetReaderPoolForTest();
     try {

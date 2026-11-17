@@ -110,6 +110,8 @@ export interface RecallLanePayload {
   pairs: Array<{ ask: string; answer: string; askAt: string; answerAt: string; answerAtMs: number; preReset?: boolean }>;
   msgLines: string[];
   vaultLines: string[];
+  /** The entry id of each vault line, in line order; truncation drops lines from the end. */
+  vaultIds: string[];
   /**
    * Newest still-unfiled conversation archive snippets: keeps a fact told before a session reset recallable until
    * the Dreamer files it. Searched by the query, so it lives in this per-ask lane (caps: vault/retrieval.ts).
@@ -285,10 +287,10 @@ export function renderRecallLane(ctx: RecallLaneContext): LaneRender<RecallLaneP
       })()
     : null;
 
-  const vaultLines: string[] = [];
+  const vault: Array<{ id: string; line: string }> = [];
   if (ctx.includeVault) {
     for (const e of ctx.vaultHits) {
-      if (vaultLines.length >= vaultRowCap()) break;
+      if (vault.length >= vaultRowCap()) break;
       // A recalled promise is resolved against the work board before it is served as owed; a dead one would be wrong.
       const verdict = obligationVerdict(e.content);
       if (verdict.kind === 'closed') continue;  // the spine says it is not owed: it is not memory, it is noise
@@ -298,10 +300,10 @@ export function renderRecallLane(ctx: RecallLaneContext): LaneRender<RecallLaneP
       // The source leads and shares the preview's room, so the lane's worst case is unchanged.
       const source = formatCitationSuffix(e.citation).trim().replace(/^(\[source: .{80}).+\]$/, '$1…]');
       const line = `- [vault:${e.type}] ${oneLine(`${source} ${e.content}`).slice(0, vaultChars())}`;
-      vaultLines.push(verdict.kind === 'unresolvable' ? `${line} ${UNRESOLVED_OBLIGATION_MARK}` : line);
+      vault.push({ id: e.id, line: verdict.kind === 'unresolvable' ? `${line} ${UNRESOLVED_OBLIGATION_MARK}` : line });
     }
-    // Sorted on the entry id: the same set renders in the same bytes whatever the ranking, with no implied chronology.
-    vaultLines.sort();
+    // Sorted on the line: the same set renders in the same bytes whatever the ranking, with no implied chronology.
+    vault.sort((a, b) => (a.line < b.line ? -1 : a.line > b.line ? 1 : 0));
   }
 
   // Oldest first by answer time, ties on the answer text: a pure function of the set, not of the ranking.
@@ -309,7 +311,8 @@ export function renderRecallLane(ctx: RecallLaneContext): LaneRender<RecallLaneP
   const render = toLaneRender({
     pairs: pairRows,
     msgLines: msgCandidates.map((c) => c.line),
-    vaultLines,
+    vaultLines: vault.map((v) => v.line),
+    vaultIds: vault.map((v) => v.id),
     bridgeLines: ctx.bridgeLines ?? [],
     cut: false,
     snapshot,
@@ -405,6 +408,7 @@ export function recallLaneWorstCaseTokens(): number {
       `- ${longest} assistant: ${'x'.repeat(askChars())}`),
     vaultLines: Array.from({ length: vaultRowCap() }, () =>
       `- [vault:preference] ${'x'.repeat(vaultChars())}`),
+    vaultIds: [],
     bridgeLines: unfiledArchiveWorstCaseLines(),
     // The truncation marker is inside the worst case, so a truncated render never exceeds the reserve.
     cut: true,
@@ -429,9 +433,11 @@ const RELEVANT_MEMORY_CACHE_MS = 60_000;
 export interface RecallLaneBlocks {
   commitments: string | null;
   recall: string | null;
+  /** The vault entries the recall half rendered: the turn records them as used. */
+  vaultIds: string[];
 }
 
-const EMPTY_BLOCKS: RecallLaneBlocks = { commitments: null, recall: null };
+const EMPTY_BLOCKS: RecallLaneBlocks = { commitments: null, recall: null, vaultIds: [] };
 
 // Derived-data cache only (loss = recompute), keyed by (agent, includeVault) and validated by query text, so N
 // tool iterations of one turn run the vector search (and one query embed) at most once.
@@ -508,8 +514,9 @@ export async function buildRecallLaneMessage(
     if (includeVault) {
       // All lookups are scoped to THIS agent's vault (unscoped, every agent's context could recall other agents'
       // private entries); personalOnly keeps squad-namespaced entries out of personal recall.
-      const { semanticSearch, getPinnedEntries, listEntriesBounded } = await import('../vault/store.js');
-      const pinnedIds = new Set(getPinnedEntries(agentId).map((e) => e.id));
+      const { semanticSearch, listEntriesBounded } = await import('../vault/store.js');
+      const { pinnedContextSection } = await import('../vault/retrieval.js');
+      const pinnedIds = new Set(pinnedContextSection(agentId).entryIds);
       const hits = queryEmbedding
         ? await semanticSearch(queryText, {
             limit: laneLimit(RECALL_LANE_ID, 'retrieval', 'vaultLimit'),
@@ -523,7 +530,7 @@ export async function buildRecallLaneMessage(
             agentId, includeOwnerScope: true,
           });
       for (const e of hits) {
-        // Pinned entries are skipped: pinnedContextSection (vault/retrieval.ts) already serves them.
+        // Skipped only when the pinned block rendered it: a pin past the block's cap is still recallable.
         if (!pinnedIds.has(e.id)) vaultHits.push({ id: e.id, type: e.type, content: e.content, citation: e.citation });
       }
     }
@@ -548,8 +555,9 @@ export async function buildRecallLaneMessage(
     });
     // Read off the payload the fitted render carries, not off messages[0]: after truncate the array may hold one
     // message or two, depending on which half survived.
-    blocks = render
-      ? { commitments: renderCommitmentsBlock(render.payload!), recall: renderRecalledBlock(render.payload!) }
+    const p = render?.payload;
+    blocks = p
+      ? { commitments: renderCommitmentsBlock(p), recall: renderRecalledBlock(p), vaultIds: p.vaultIds.slice(0, p.vaultLines.length) }
       : EMPTY_BLOCKS;
   } catch (err) {
     logger.debug('recall lane retrieval failed', {
