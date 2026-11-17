@@ -587,15 +587,6 @@
       "definedIn": "packages/server/src/db/migrations/137_work_attributes.sql",
       "why": "THE SCHEDULE AXIS \u2014 a BRIDGE with a named successor: these re-express as `schedule_json`/`tz`/`anchor_local`/`sequence` + occurrence rows at T8c. `is_paused` is a SEPARATE axis from `state='paused'` and T6's reopen edge negative-controls the two against each other. Readers at PHASE-2 T8b: tracker/schema.ts, tracker/tools.ts, scheduler/engine.ts.",
       "verifiedBy": "git grep -l 'last_run_at' -- packages/server/src packages/dashboard/src | grep -v '__tests__|.test.|/migrations/'"
-    },
-    {
-      "id": "work.missed_runs_paused_at",
-      "kind": "column",
-      "table": "work",
-      "column": "missed_runs_paused_at",
-      "definedIn": "packages/server/src/db/migrations/137_work_attributes.sql",
-      "why": "THE SCHEDULE AXIS \u2014 a BRIDGE with a named successor: these re-express as `schedule_json`/`tz`/`anchor_local`/`sequence` + occurrence rows at T8c. `is_paused` is a SEPARATE axis from `state='paused'` and T6's reopen edge negative-controls the two against each other. Readers at PHASE-2 T8b: tracker/tools.ts, scheduler/runner.ts, work/tracker-store.ts.",
-      "verifiedBy": "git grep -l 'missed_runs_paused_at' -- packages/server/src packages/dashboard/src | grep -v '__tests__|.test.|/migrations/'"
     }
   ],
   "tables": [
