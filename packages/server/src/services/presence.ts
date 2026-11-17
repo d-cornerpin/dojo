@@ -1,8 +1,8 @@
-// The in_dojo / away toggle; iMessage delivery is a deliberate `imessage_send`, never an automatic forward.
+// The in_dojo / away toggle, and whether the owner can be reached by iMessage: the switch is on and his address is known.
 
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
-import { getIMBridgeStatus, getDefaultSender } from './imessage-bridge.js';
+import { isIMessageSwitchedOn, getDefaultSender } from './imessage-bridge.js';
 
 const logger = createLogger('presence');
 
@@ -30,13 +30,7 @@ export function setPresence(status: PresenceStatus): void {
   logger.info('User presence changed', { status });
 }
 
+/** The owner can be reached by iMessage: it is switched on in Settings and his address is known. */
 export function isImessageConfigured(): boolean {
-  const status = getIMBridgeStatus();
-  return (status.enabled || status.running) && !!getDefaultSender();
-}
-
-/** Stricter than isImessageConfigured: the bridge toggle is ON and a default sender exists. */
-export function isImessageEnabled(): boolean {
-  const status = getIMBridgeStatus();
-  return status.enabled && !!getDefaultSender();
+  return isIMessageSwitchedOn() && !!getDefaultSender();
 }

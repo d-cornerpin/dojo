@@ -5,7 +5,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 vi.mock('../../db/connection.js', async () => (await import('../../work/done/__tests__/helpers/done-db.js')).connectionMock());
 vi.mock('../../gateway/ws.js', () => ({ broadcast: () => undefined, stampPersistedRow: (e: unknown) => e }));
 const presence = vi.hoisted(() => ({ away: false }));
-vi.mock('../../services/presence.js', () => ({ getPresence: () => (presence.away ? 'away' : 'in_dojo'), isImessageEnabled: () => presence.away }));
+vi.mock('../../services/presence.js', () => ({ getPresence: () => (presence.away ? 'away' : 'in_dojo'), isImessageConfigured: () => presence.away }));
 const texts = vi.hoisted(() => ({ sent: [] as string[] }));
 vi.mock('../../services/imessage-bridge.js', () => ({
   getDefaultSender: () => 'owner-number',

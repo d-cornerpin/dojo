@@ -10,7 +10,7 @@ vi.mock('../../../../../config/platform.js', async (orig) => ({
   ...(await orig<typeof import('../../../../../config/platform.js')>()),
   isHealerAgent: (id: string) => id === HEALER, isPrimaryAgent: () => false, getPrimaryAgentId: () => null,
 }));
-vi.mock('../../../../../services/presence.js', () => ({ getPresence: () => kit.presence, isImessageEnabled: () => true }));
+vi.mock('../../../../../services/presence.js', () => ({ getPresence: () => kit.presence, isImessageConfigured: () => true }));
 vi.mock('../../../../../services/imessage-bridge.js', () => ({
   getDefaultSender: () => 'owner@example.com',
   sendIMessage: async (_to: string, text: string) => { kit.sends.push(text); return true; },
