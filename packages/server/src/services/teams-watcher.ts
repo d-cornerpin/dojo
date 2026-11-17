@@ -99,11 +99,19 @@ let pollTimer: ReturnType<typeof setInterval> | null = null;
 let firstPollTimer: ReturnType<typeof setTimeout> | null = null;
 let ownUserId: string | null = null;
 
-// chatId to the ISO timestamp of the newest message processed from that chat; filters out already-seen messages.
-const chatLastMessageAt = new Map<string, string>();
+// One saved time per chat (its newest message handled) and the start of the last good poll, the baseline for a chat
+// not seen yet. Kept in one config row, so a message sent while the Dojo restarts is read after it.
+const CURSORS_KEY = 'teams_chat_cursors';
+interface TeamsCursors { since: string; chats: Record<string, string> }
+let cursors: TeamsCursors = { since: new Date(0).toISOString(), chats: {} };
 
-// When the watcher started: the baseline for chats not yet seen, so earlier messages are not replayed.
-let watcherStartedAt = new Date(0).toISOString();
+function loadCursors(): TeamsCursors | null {
+  try {
+    const row = getDb().prepare('SELECT value FROM config WHERE key = ?').get(CURSORS_KEY) as { value: string } | undefined;
+    const c = row ? JSON.parse(row.value) as Partial<TeamsCursors> : null;
+    return c && typeof c.since === 'string' && c.chats && typeof c.chats === 'object' ? { since: c.since, chats: c.chats } : null;
+  } catch { return null; }
+}
 
 // userId → email populated from chat member list on first sight of each chat
 const userEmails = new Map<string, string>();
@@ -172,10 +180,11 @@ async function pollForNewMessages(): Promise<void> {
       recordPollFailure('Could not determine own user ID');
       return;
     }
+    const pollStartIso = new Date().toISOString();
 
-    // Step 1: Get all chats with their last-updated timestamp
+    // Step 1: Get the chats, newest activity first, each with the time of its newest message
     const chatsResult = await msGraphRead(
-      'me/chats?$top=50&$select=id,topic,chatType,lastUpdatedDateTime',
+      'me/chats?$top=50&$expand=lastMessagePreview&$orderby=lastMessagePreview/createdDateTime desc',
       'system', 'Teams Watcher', 'teams_watcher_list_chats', {},
     );
     if (!chatsResult.ok) {
@@ -185,7 +194,7 @@ async function pollForNewMessages(): Promise<void> {
     }
 
     const chatsData = chatsResult.data as {
-      value?: Array<{ id: string; topic: string | null; chatType: string; lastUpdatedDateTime: string }>;
+      value?: Array<{ id: string; topic: string | null; chatType: string; lastMessagePreview?: { createdDateTime?: string } | null }>;
     };
     if (!chatsData?.value) {
       // No chats is not an error; still record success so the status panel does not go stale.
@@ -217,8 +226,14 @@ async function pollForNewMessages(): Promise<void> {
       messageType?: string;
     };
 
+    // Only chats whose newest message is newer than what was handled are read; a chat with no preview is read.
+    const moved = chatsData.value.filter((chat) => {
+      const newest = chat.lastMessagePreview?.createdDateTime;
+      return !newest || newest > (cursors.chats[chat.id] ?? cursors.since);
+    });
+
     const chatResults = await Promise.all(
-      chatsData.value.map(async (chat) => {
+      moved.map(async (chat) => {
         await fetchChatMembers(chat.id);
         const msgsResult = await msGraphRead(
           `chats/${encodeURIComponent(chat.id)}/messages?$top=10&$orderby=createdDateTime desc`,
@@ -229,6 +244,9 @@ async function pollForNewMessages(): Promise<void> {
     );
 
     for (const { chat, msgsResult } of chatResults) {
+      // A chat seen for the first time keeps the current baseline, so a failed read is tried again from it.
+      const lastSeenAt = cursors.chats[chat.id] ?? cursors.since;
+      cursors.chats[chat.id] = lastSeenAt;
       if (!msgsResult.ok) {
         logger.debug('Teams watcher: messages fetch error', { chatId: chat.id, error: msgsResult.error });
         continue;
@@ -237,8 +255,6 @@ async function pollForNewMessages(): Promise<void> {
       const msgsData = msgsResult.data as { value?: ChatMessage[] };
       if (!msgsData?.value) continue;
 
-      // A chat never processed before uses watcherStartedAt as the baseline.
-      const lastSeenAt = chatLastMessageAt.get(chat.id) ?? watcherStartedAt;
       let newestMessageAt = lastSeenAt;
 
       for (const msg of msgsData.value) {
@@ -344,7 +360,7 @@ async function pollForNewMessages(): Promise<void> {
       }
 
       // Advance the per-chat message window so these are not re-processed.
-      chatLastMessageAt.set(chat.id, newestMessageAt);
+      cursors.chats[chat.id] = newestMessageAt;
     }
 
     if (totalNewCount > 0) {
@@ -367,6 +383,12 @@ async function pollForNewMessages(): Promise<void> {
         });
       });
     }
+
+    cursors.since = pollStartIso;
+    db.prepare(`
+      INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
+    `).run(CURSORS_KEY, JSON.stringify(cursors));
 
     recordPollSuccess();
   } catch (err) {
@@ -395,8 +417,8 @@ export function startTeamsWatcher(): void {
     return;
   }
 
-  watcherStartedAt = new Date().toISOString();
-  logger.info('Starting Teams watcher', { pollInterval: POLL_INTERVAL_MS, watcherStartedAt });
+  cursors = loadCursors() ?? { since: new Date().toISOString(), chats: {} };
+  logger.info('Starting Teams watcher', { pollInterval: POLL_INTERVAL_MS, since: cursors.since });
 
   pollTimer = setInterval(() => {
     pollForNewMessages().catch(err => {
@@ -420,7 +442,6 @@ export function stopTeamsWatcher(): void {
       clearTimeout(firstPollTimer);
       firstPollTimer = null;
     }
-    chatLastMessageAt.clear();
     membersFetched.clear();
     ownUserId = null;
     userEmails.clear();
