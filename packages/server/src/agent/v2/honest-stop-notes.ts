@@ -43,7 +43,7 @@ export async function tellCannotRun(agentId: string, askRootId: string, ownerWor
   const address = meta.channel ? replyAddressFor({ ...meta, channel: meta.channel }) : null;
   if (address) {
     const root = { kind: 'ask' as const, id: askRootId, sourceMessageId: askRootId, conversationId: ask.conversationId };
-    await queueReply({ agentId, turnNumber: null, root, text: CANNOT_RUN_LINE, address, cannotRun: true });
+    await queueReply({ agentId, turnNumber: null, root, text: CANNOT_RUN_LINE, address, kind: 'cannot-run' });
   }
   return true;
 }

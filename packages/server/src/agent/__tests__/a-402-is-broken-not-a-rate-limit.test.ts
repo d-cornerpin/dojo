@@ -146,9 +146,13 @@ afterEach(() => {
   mockDb.current = null;
 });
 
-const ownerTexts = (): number => (db().prepare(
-  "SELECT COUNT(*) AS n FROM deliveries WHERE agent_id = 'platform' AND tool = 'alert' AND recipient_id = ?",
-).get(OWNER) as { n: number }).n;
+/** The owner's texts on the ledger, once every send in flight has ended (a send is recorded when it ends). */
+const ownerTexts = async (): Promise<number> => {
+  for (let i = 0; i < 50; i++) await new Promise((r) => setImmediate(r));
+  return (db().prepare(
+    "SELECT COUNT(*) AS n FROM deliveries WHERE agent_id = 'platform' AND tool = 'alert' AND recipient_id = ?",
+  ).get(OWNER) as { n: number }).n;
+};
 const cards = (): string[] => broadcasts
   .filter((b) => b.type === 'chat:error' && b.agentId === 'platform' && b.severity !== 'info')
   .map((b) => String(b.error));
@@ -200,7 +204,7 @@ describe('C — a 402 on a pinned model is the platform\'s honest BROKEN path, n
       const agent = db().prepare('SELECT status, last_error FROM agents WHERE id = ?').get(AGENT) as { status: string; last_error: string };
       expect(agent.status).toBe('error');
       expect(agent.last_error).toMatch(/^\[quota_exhausted\]/);
-      expect(ownerTexts()).toBe(1);
+      expect(await ownerTexts()).toBe(1);
       expect(cards()).toHaveLength(1);
       expect(hasActiveRateLimitRetry(AGENT)).toBe(false);
       const said = db().prepare("SELECT content FROM messages WHERE agent_id = ? AND content LIKE '%rate limit%'").all(AGENT);
@@ -247,7 +251,7 @@ describe('ROUND 2 — only out-of-credit is `quota`; a per-window "quota exceede
     const agent = db().prepare('SELECT status, last_error FROM agents WHERE id = ?').get(AGENT) as { status: string; last_error: string | null };
     expect(agent.last_error ?? '').not.toMatch(/quota_exhausted/);
     expect((db().prepare('SELECT broken_notice AS n FROM agents WHERE id = ?').get(AGENT) as { n: string | null }).n).toBeNull();
-    expect(ownerTexts()).toBe(0);
+    expect(await ownerTexts()).toBe(0);
     expect(cards()).toHaveLength(0);
   });
 
@@ -265,7 +269,7 @@ describe('ROUND 2 — only out-of-credit is `quota`; a per-window "quota exceede
     expect(hasActiveRateLimitRetry(AGENT)).toBe(false);
     await recover(err);
     expect((db().prepare('SELECT status FROM agents WHERE id = ?').get(AGENT) as { status: string }).status).toBe('error');
-    expect(ownerTexts()).toBe(1);
+    expect(await ownerTexts()).toBe(1);
     expect(cards()).toHaveLength(1);
   });
 

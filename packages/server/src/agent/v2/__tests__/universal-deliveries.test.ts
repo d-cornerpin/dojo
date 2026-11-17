@@ -49,7 +49,7 @@ vi.mock('../../../db/connection.js', async () => {
 
 import { runMigrations } from '../../../db/migrations.js';
 import {
-  withOutbound, withOutboundAsync, recordAtDoor, noteReceiptForOutbound, deliveryIdOf,
+  withOutboundAsync, recordAtDoor, noteReceiptForOutbound, deliveryIdOf,
   recordDashboardDelivery, PLATFORM_SENDER,
 } from '../outbound.js';
 import { openTurnContext, endTurnContext, turnContext } from '../../turn-context.js';
@@ -92,10 +92,10 @@ beforeEach(() => {
 // ════════════════════════════════════════════════════════════════════════
 
 describe('a door inside an outbound scope writes exactly one row', () => {
-  it('POSITIVE: one scope, one row, carrying the caller identity and the door outcome', () => {
-    const id = deliveryIdOf(withOutbound(
+  it('POSITIVE: one scope, one row, carrying the caller identity and the door outcome', async () => {
+    const id = deliveryIdOf(await withOutboundAsync(
       { agentId: AGENT, tool: 'imessage_send', channel: 'imessage', recipientId: '+15550000' },
-      () => recordAtDoor({ outcome: 'delivered', channel: 'imessage', detail: 'via imsg' }),
+      async () => recordAtDoor({ outcome: 'delivered', channel: 'imessage', detail: 'via imsg' }),
     ));
     const rows = deliveries();
     expect(rows).toHaveLength(1);
@@ -108,12 +108,12 @@ describe('a door inside an outbound scope writes exactly one row', () => {
     expect(rows[0].recipient_id).toBe('+15550000');
   });
 
-  it('NEGATIVE CONTROL: a NESTED door call inside the same scope does not add a second row', () => {
+  it('NEGATIVE CONTROL: a NESTED door call inside the same scope does not add a second row', async () => {
     // The real shape: sendIMessageWithAttachment sends the file, then calls sendIMessage for
     // the caption. Two door crossings, ONE thing the user received.
-    withOutbound(
+    await withOutboundAsync(
       { agentId: AGENT, tool: 'imessage_send', channel: 'imessage', recipientId: '+15550000' },
-      () => {
+      async () => {
         recordAtDoor({ outcome: 'delivered', channel: 'imessage', detail: 'file' });
         recordAtDoor({ outcome: 'delivered', channel: 'imessage', detail: 'caption' });
       },
@@ -123,25 +123,22 @@ describe('a door inside an outbound scope writes exactly one row', () => {
 
   // ── PHASE-4 T1: `string | null` meant three things; these name them. ──
 
-  it('T1: the SECOND crossing of one scope says no_change, and points at the same row', () => {
-    // The fold is the designed, correct case, and the old `string | null` could not say so:
-    // a caller reading a non-null id could not tell "I wrote the row" from "somebody else
-    // already did". Both facts matter to a caller deciding whether it owes a link.
+  it('T1: every crossing of one scope says no_change, and points at the row the send writes when it ends', async () => {
+    // A crossing inside a scope writes nothing: the scope's one row is written when the send ends, with
+    // every door's observation folded in. Both crossings name that row.
     let first: ReturnType<typeof recordAtDoor> | null = null;
     let second: ReturnType<typeof recordAtDoor> | null = null;
-    withOutbound(
+    await withOutboundAsync(
       { agentId: AGENT, tool: 'imessage_send', channel: 'imessage', recipientId: '+15550000' },
-      () => {
+      async () => {
         first = recordAtDoor({ outcome: 'delivered', channel: 'imessage', detail: 'file' });
         second = recordAtDoor({ outcome: 'delivered', channel: 'imessage', detail: 'caption' });
       },
     );
-    expect(first!.kind).toBe('applied');
-    expect(second!.kind).toBe('no_change');
+    expect(first!.kind).toBe('no_change');
     if (second!.kind === 'no_change') expect(second!.reason).toBe('folded-into-open-scope');
-    // One send, one row — and both outcomes name it.
     expect(deliveryIdOf(first!)).toBe(deliveryIdOf(second!));
-    expect(deliveryCount()).toBe(1);
+    expect(deliveries().map((r) => r.id)).toEqual([deliveryIdOf(first!)]);
   });
 
   it('T1: a ledger write that BREAKS says failed — not the same null as a fold', () => {
@@ -165,10 +162,10 @@ describe('a door inside an outbound scope writes exactly one row', () => {
     expect(deliveryCount()).toBe(0);
   });
 
-  it('a FAILURE anywhere in the scope wins: partial success is recorded as failed', () => {
-    withOutbound(
+  it('a FAILURE anywhere in the scope wins: partial success is recorded as failed', async () => {
+    await withOutboundAsync(
       { agentId: AGENT, tool: 'imessage_send', channel: 'imessage', recipientId: '+15550000' },
-      () => {
+      async () => {
         recordAtDoor({ outcome: 'delivered', channel: 'imessage', detail: 'file 1' });
         recordAtDoor({ outcome: 'failed', channel: 'imessage', detail: 'file 2 missing' });
       },
@@ -179,11 +176,11 @@ describe('a door inside an outbound scope writes exactly one row', () => {
     expect(String(rows[0].detail)).toContain('file 2 missing');
   });
 
-  it('two SEPARATE scopes are two separate rows', () => {
-    withOutbound({ agentId: AGENT, tool: 'imessage_send', channel: 'imessage' },
-      () => recordAtDoor({ outcome: 'delivered', channel: 'imessage' }));
-    withOutbound({ agentId: AGENT, tool: 'sms_send', channel: 'sms' },
-      () => recordAtDoor({ outcome: 'delivered', channel: 'sms' }));
+  it('two SEPARATE scopes are two separate rows', async () => {
+    await withOutboundAsync({ agentId: AGENT, tool: 'imessage_send', channel: 'imessage' },
+      async () => recordAtDoor({ outcome: 'delivered', channel: 'imessage' }));
+    await withOutboundAsync({ agentId: AGENT, tool: 'sms_send', channel: 'sms' },
+      async () => recordAtDoor({ outcome: 'delivered', channel: 'sms' }));
     expect(deliveryCount()).toBe(2);
   });
 
@@ -215,11 +212,11 @@ describe('a door inside an outbound scope writes exactly one row', () => {
 // ════════════════════════════════════════════════════════════════════════
 
 describe('a THROWN send records failed', () => {
-  it('POSITIVE: the scope records failed when the door throws past it', () => {
-    expect(() => withOutbound(
+  it('POSITIVE: the scope records failed when the door throws past it', async () => {
+    await expect(withOutboundAsync(
       { agentId: AGENT, tool: 'gmail_send', channel: 'email', recipientId: 'a@b.c' },
       () => { throw new Error('provider exploded'); },
-    )).toThrow('provider exploded');
+    )).rejects.toThrow('provider exploded');
     const rows = deliveries();
     expect(rows).toHaveLength(1);
     expect(rows[0].outcome).toBe('failed');
@@ -236,22 +233,22 @@ describe('a THROWN send records failed', () => {
     expect(rows[0].outcome).toBe('failed');
   });
 
-  it('NEGATIVE CONTROL: a throw does NOT overwrite a delivery the door already observed as failed-free…', () => {
+  it('NEGATIVE CONTROL: a throw does NOT overwrite a delivery the door already observed as failed-free…', async () => {
     // …it downgrades it, and it never invents a SECOND row for the same send.
-    expect(() => withOutbound(
+    await expect(withOutboundAsync(
       { agentId: AGENT, tool: 'imessage_send', channel: 'imessage' },
-      () => {
+      async () => {
         recordAtDoor({ outcome: 'delivered', channel: 'imessage' });
         throw new Error('crashed after the send');
       },
-    )).toThrow();
+    )).rejects.toThrow();
     const rows = deliveries();
     expect(rows).toHaveLength(1);
     expect(rows[0].outcome).toBe('failed');
   });
 
-  it('NEGATIVE CONTROL: a scope that neither sends nor throws writes NOTHING', () => {
-    withOutbound({ agentId: AGENT, tool: 'imessage_send', channel: 'imessage' }, () => {
+  it('NEGATIVE CONTROL: a scope that neither sends nor throws writes NOTHING', async () => {
+    await withOutboundAsync({ agentId: AGENT, tool: 'imessage_send', channel: 'imessage' }, async () => {
       // the tool refused before reaching any transport
     });
     expect(deliveryCount()).toBe(0);
@@ -374,7 +371,7 @@ describe('an answered ask reaches done on the dashboard path', () => {
     expect(w.result_delivery_id).toBe(deliveries()[0].id);
   });
 
-  it('NEGATIVE CONTROL: a bubble in ANOTHER conversation does not close this ask', () => {
+  it('NEGATIVE CONTROL: a bubble in ANOTHER conversation does not close this ask', async () => {
     insertMessage({
       id: 'm-ask', agentId: AGENT, role: 'user', content: 'check the roof quote?',
       lane: 'owner', channel: 'dashboard', senderId: 'owner', authorized: true,
@@ -385,9 +382,9 @@ describe('an answered ask reaches done on the dashboard path', () => {
     expect(claimAsk(askId, AGENT).kind).toBe('applied');
     expect(stampClaimingTurn(askId, 7)).toBe(1);
 
-    withOutbound(
+    await withOutboundAsync(
       { agentId: AGENT, tool: 'imessage_send', channel: 'imessage', conversationId: 'conv-im' },
-      () => recordAtDoor({ outcome: 'delivered', channel: 'imessage' }),
+      async () => recordAtDoor({ outcome: 'delivered', channel: 'imessage' }),
     );
     const w = mockDb.current!.prepare('SELECT state FROM work WHERE id = ?').get(askId) as { state: string };
     expect(w.state).toBe('claimed');
@@ -399,27 +396,27 @@ describe('an answered ask reaches done on the dashboard path', () => {
 // ════════════════════════════════════════════════════════════════════════
 
 describe('deliveries.receipt_id is populated when a receipt exists', () => {
-  it('POSITIVE: the receipt written inside the scope stamps the scope its row', () => {
-    withOutbound({ agentId: AGENT, tool: 'sms_send', channel: 'sms', recipientId: '+1555' }, () => {
+  it('POSITIVE: the receipt written inside the scope stamps the scope its row', async () => {
+    await withOutboundAsync({ agentId: AGENT, tool: 'sms_send', channel: 'sms', recipientId: '+1555' }, async () => {
       recordAtDoor({ outcome: 'delivered', channel: 'sms' });
       noteReceiptForOutbound('receipt-abc');
     });
     expect(deliveries()[0].receipt_id).toBe('receipt-abc');
   });
 
-  it('the receipt can arrive BEFORE the door crossing and still lands on the row', () => {
-    withOutbound({ agentId: AGENT, tool: 'sms_send', channel: 'sms' }, () => {
+  it('the receipt can arrive BEFORE the door crossing and still lands on the row', async () => {
+    await withOutboundAsync({ agentId: AGENT, tool: 'sms_send', channel: 'sms' }, async () => {
       noteReceiptForOutbound('receipt-early');
       recordAtDoor({ outcome: 'delivered', channel: 'sms' });
     });
     expect(deliveries()[0].receipt_id).toBe('receipt-early');
   });
 
-  it('END TO END: writeToolReceipt itself links the row — the two sole writers, no helper', () => {
+  it('END TO END: writeToolReceipt itself links the row — the two sole writers, no helper', async () => {
     // The measured defect this pins: the first live run recorded 119 deliveries and linked
     // ZERO of them, because the auto-route wrote its receipt one statement BELOW the scope.
     // Asserting through `writeToolReceipt` is what makes the ordering part of the contract.
-    const id = withOutbound({ agentId: AGENT, tool: 'imessage_send', channel: 'imessage', recipientId: '+1555' }, () => {
+    const id = await withOutboundAsync({ agentId: AGENT, tool: 'imessage_send', channel: 'imessage', recipientId: '+1555' }, async () => {
       const d = deliveryIdOf(recordAtDoor({ outcome: 'delivered', channel: 'imessage' }));
       writeToolReceipt({
         agentId: AGENT, tool: 'imessage_send', tier: 3, verified: false,
@@ -435,9 +432,9 @@ describe('deliveries.receipt_id is populated when a receipt exists', () => {
     expect(receipt?.sent_text).toBe('the roof quote is $4,200');
   });
 
-  it('NEGATIVE CONTROL: a receipt written OUTSIDE any scope stamps nothing', () => {
-    withOutbound({ agentId: AGENT, tool: 'sms_send', channel: 'sms' },
-      () => recordAtDoor({ outcome: 'delivered', channel: 'sms' }));
+  it('NEGATIVE CONTROL: a receipt written OUTSIDE any scope stamps nothing', async () => {
+    await withOutboundAsync({ agentId: AGENT, tool: 'sms_send', channel: 'sms' },
+      async () => recordAtDoor({ outcome: 'delivered', channel: 'sms' }));
     noteReceiptForOutbound('receipt-stray');
     expect(deliveries()[0].receipt_id).toBeNull();
   });
