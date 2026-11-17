@@ -1,10 +1,6 @@
-// v3.5 field fix 3, audit round (#9): WORK RECORDS ARE KEPT, AND AN OPEN QUESTION WAITS FOR ITS ANSWER.
-//
-// RULINGS-AUDIT section 3, item 9. The hourly prune deleted the oldest complete, blocked, fallen and
-// cancelled tasks past 50 each: blocked is open, owed work, and ruling 9d keeps work records ("prune
-// history only with the owner's say-so"). A verdict request the owner had not answered in 12 hours
-// dropped the task to blocked on a fixed clock, and a missed-runs pause nobody resolved in 10 minutes
-// was skipped on a fixed clock; missed runs are now decided by the engine at its first pass. Owner (2026-10-13): "I don't want to put hard limits on the dojo."
+// Work records are kept, and open work is never decided on a fixed clock: the hourly sweeps prune no blocked or
+// finished task, and a schedule an older build paused for missed runs is decided at the first scheduler pass.
+// Owner (2026-10-13): "I don't want to put hard limits on the dojo."
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
@@ -39,7 +35,7 @@ vi.mock('../../work/tracker-store.js', async (importOriginal) => {
         : actual.setTrackerStatus(id, status, input),
   };
 });
-import { runMigrations } from '../../db/migrations.js';
+import { runMigrations, migrationFileNames } from '../../db/migrations.js';
 import { checkScheduledTasks } from '../runner.js';
 import { decide } from '../../work/done/decide.js';
 import { REAPER_KINDS } from '../../work/work-reaper.js';
@@ -95,7 +91,7 @@ describe('the hourly sweeps keep work records', () => {
 
 describe('a missed-runs pause is never left to a clock or to the agent', () => {
   it('a task an older build paused for missed runs is decided at the first scheduler pass after the upgrade', async () => {
-    const LAST = '904_missed_runs_decided_by_the_engine.sql';
+    const LAST = migrationFileNames().at(-1)!;
     db().prepare('DELETE FROM _migrations WHERE name = ?').run(LAST);
     db().exec('ALTER TABLE work ADD COLUMN missed_runs_paused_at INTEGER');
     const id = seedTask('water the plants');

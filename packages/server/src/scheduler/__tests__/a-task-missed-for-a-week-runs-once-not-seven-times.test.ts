@@ -20,6 +20,8 @@ describe('a task missed for a week runs once, not seven times', () => {
     expect(box.runsOf(id)).toBe(1);
     expect(box.triggers()).toHaveLength(1);
     expect(box.triggers()[0]).toMatch(/catch-up of the run due Sun, Mar 8, 2026, 10:00 PM/);
+    expect(box.db().prepare("SELECT next_run_at FROM work WHERE kind = 'occurrence' AND parent_id = ?").get(id))
+      .toEqual({ next_run_at: Date.parse('2026-03-08T22:00:00Z') });   // the run history names the same run
     expect(box.nextRunOf(id)).toBe(Date.parse('2026-03-09T22:00:00Z'));
   });
 });

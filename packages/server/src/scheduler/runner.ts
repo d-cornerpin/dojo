@@ -28,25 +28,32 @@ import { getTask } from '../tracker/schema.js';
 import { resumeSchedule } from '../tracker/tools.js';
 import { formatTimeForAgent } from '../services/format-time.js';
 import { writeTaskLog } from '../tracker/task-log.js';
-import { calculateNextRun, normalizeDbTimestamp, scheduledTaskFromRow } from './engine.js';
+import { calculateNextRun, normalizeDbTimestamp, scheduledTaskFromRow, parseDaysOfWeek } from './engine.js';
 import { getAgentRuntime } from '../agent/runtime.js';
 import { postAgentNotice } from '../agent/agent-notice.js';
 import { insertEngineEventIfAbsent } from '../memory/message-store.js';
 import { getPrimaryAgentId } from '../config/platform.js';
 import { recordMove } from '../work/move-record.js';
 import { OWNER_ALERT_HEADS_UP_PREFIX } from '@dojo/shared';
-import { tellOwner, ownerToldOf, toldWords } from '../healer/owner-notices.js';
+import { tellOwner, ownerToldOf, ownerConditionCleared, TOLD } from '../healer/owner-notices.js';
+import { renderInstant } from '../memory/message-stamp.js';
 import { PROCESS_STARTED_AT } from '../work/inherited-backlog.js';
 // The liveness fact every reaper guards on: a run that is still executing must never be force-failed.
 import { activeRuns } from '../agent/shared-state.js';
 
 const logger = createLogger('scheduler');
 
-/** Approximate ms per interval (months and years approximate by design): how long one missed run stays recent. */
-function intervalApproxMs(unit: string | null, interval: number | null): number | null {
-  if (!interval || !unit) return null;
+/** Approximate ms per interval (months and years approximate by design): how long one missed run stays recent.
+ *  A specific-days schedule uses its longest gap between allowed days (a Mondays-only task: a week). */
+function intervalApproxMs(row: Record<string, unknown>): number | null {
+  const interval = row.repeat_interval as number | null;
   const DAY = 86_400_000;
-  switch (unit) {
+  if (row.repeat_unit === 'specific_days') {
+    const d = [...(parseDaysOfWeek(row.repeat_days_of_week as string | null) ?? [])].sort();
+    return d.length ? DAY * Math.max(...d.map((x, i) => (d[(i + 1) % d.length]! - x + 7) % 7 || 7)) : DAY;
+  }
+  if (!interval) return null;
+  switch (row.repeat_unit) {
     case 'minutes': return interval * 60_000;
     case 'hours': return interval * 3_600_000;
     case 'days': return interval * DAY;
@@ -54,7 +61,6 @@ function intervalApproxMs(unit: string | null, interval: number | null): number 
     case 'months': return interval * 30 * DAY;
     case 'years': return interval * 365 * DAY;
     case 'weekdays': return DAY;
-    case 'specific_days': return DAY;
     default: return null;
   }
 }
@@ -62,51 +68,38 @@ function intervalApproxMs(unit: string | null, interval: number | null): number 
 /** A run firing this long after its time was missed (the Dojo was off, the Mac asleep, the task on hold). */
 const LATE_MS = 5 * 60_000;
 const MISSED_COUNT_CAP = 100;
+interface Missed { count: number; recentMs: number | null; cause: string }
 
-/** How many runs a late schedule missed (counted up to the cap), and its missed run younger than one interval. */
-function missedRuns(row: Record<string, unknown>, nowMs: number, intervalMs: number): { count: number; recentMs: number | null } {
+/** A late repeating task's missed runs: how many (counted up to the cap), the one younger than one interval, and why. */
+function missedRuns(row: Record<string, unknown>, nowMs: number, intervalMs: number): Missed {
   const after = (fromMs: number): number | null => tsToMs(calculateNextRun(scheduledTaskFromRow(row, {
     is_paused: 0, next_run_at: null, last_run_at: new Date(fromMs).toISOString(),
   }), undefined, fromMs));
+  const firstMs = occurrenceOf(row)!;
   let count = 0;
-  for (let s = occurrenceOf(row); s !== null && s <= nowMs && count < MISSED_COUNT_CAP; s = after(s)) count++;
+  for (let s: number | null = firstMs; s !== null && s <= nowMs && count < MISSED_COUNT_CAP; s = after(s)) count++;
   const recent = after(nowMs - intervalMs);
-  return { count, recentMs: recent !== null && recent <= nowMs ? recent : null };
-}
-
-/** Why the schedule's first missed run did not fire, as far as the engine can tell. */
-function missedCause(taskId: string, dueMs: number): string {
   const held = getDb().prepare(`SELECT 1 FROM work_events WHERE work_id = ? AND kind = 'audit'
-    AND json_extract(payload, '$.entry_kind') = 'hold_cleared' AND created_at >= ?`).get(taskId, dueMs);
-  if (held) return 'the task was on hold';
-  return dueMs < (tsToMs(PROCESS_STARTED_AT) ?? 0) ? 'the Dojo was not running' : 'the Mac was asleep';
+    AND json_extract(payload, '$.entry_kind') = 'hold_cleared' AND created_at >= ?`).get(row.id, firstMs);
+  const cause = held ? 'the task was on hold'
+    : firstMs < (tsToMs(PROCESS_STARTED_AT) ?? 0) ? 'the Dojo was not running' : 'the Mac was asleep or the Dojo was busy';
+  return { count, recentMs: recent !== null && recent <= nowMs ? recent : null, cause };
 }
 
-/** One card per task: a second miss before he has seen the first adds to its count. */
-function tellMissedRuns(taskId: string, title: string, count: number, cause: string, done: string): void {
-  const key = `missedruns:${taskId}`;
-  const total = count + (ownerToldOf(key) ? Number(/missed (\d+)/.exec(toldWords(key))?.[1] ?? 0) : 0);
-  const runs = `${total}${count >= MISSED_COUNT_CAP ? ' or more' : ''} scheduled run${total === 1 ? '' : 's'}`;
-  tellOwner(key, `"${title}" missed ${runs} because ${cause}. ${done}`);
-}
-
-/**
- * A repeating task that missed runs: its missed run younger than one interval fires once now as a catch-up (the
- * claim walks the schedule past the older ones); with none that recent, all are skipped to the next scheduled
- * time. Either way the owner gets one card. Returns the catch-up's due time, or null when the runs were skipped.
- */
-function decideMissedRuns(row: Record<string, unknown>, nowMs: number, intervalMs: number): number | null {
+/** Records the decision on the task's history and the log, then tells the owner on one card per task. Its count is
+ *  the runs recorded since the card was told; once he has seen or dismissed it, the next miss starts a new count. */
+function tellMissedRuns(row: Record<string, unknown>, nowMs: number, m: Missed, done: string): void {
   const taskId = row.id as string;
   const title = (row.title as string | null) ?? 'A scheduled task';
-  const { count, recentMs } = missedRuns(row, nowMs, intervalMs);
-  const cause = missedCause(taskId, occurrenceOf(row) ?? nowMs);
-  const own = (ms: number | null): string => (ms === null ? 'not set' : formatTimeForAgent(ms, { utc: false }));
-  const nextRun = recentMs === null ? tsToMs(resumeSchedule(taskId, 'missed runs older than one interval; skipped to the next scheduled time')) : null;
-  logger.warn('Scheduler: missed runs', { taskId, title, missed: count, cause, decision: recentMs === null ? 'skipped' : 'caught_up', catchUpDue: recentMs, nextRun });
-  tellMissedRuns(taskId, title, count, cause, recentMs === null
-    ? `None was recent enough to run, so they were skipped. The next run is ${own(nextRun)}.`
-    : `The Dojo ran the one due ${own(recentMs)} now to catch up and skipped any older ones.`);
-  return recentMs;
+  writeTaskLog({ taskId, fromEntity: 'scheduler', entryKind: 'auto_sweep', reason: m.cause, evidenceJson: JSON.stringify({ missed: m.count }),
+    actionTaken: m.recentMs === null ? `skipped ${m.count} missed runs` : `caught up the run due ${renderInstant(m.recentMs)}, skipped any older ones` });
+  logger.warn('Scheduler: missed runs', { taskId, title, missed: m.count, cause: m.cause, decision: m.recentMs === null ? 'skipped' : 'caught_up', catchUpDue: m.recentMs });
+  const key = `missedruns:${taskId}`;
+  if (!ownerToldOf(key)) ownerConditionCleared(key);
+  const since = (getDb().prepare('SELECT at_ms FROM healer_state WHERE scope = ? AND key = ?').get(TOLD, key) as { at_ms: number } | undefined)?.at_ms ?? nowMs;
+  const { n } = getDb().prepare(`SELECT COALESCE(SUM(json_extract(json_extract(payload, '$.evidence_json'), '$.missed')), 0) AS n FROM work_events
+    WHERE work_id = ? AND kind = 'audit' AND json_extract(payload, '$.entry_kind') = 'auto_sweep' AND created_at >= ?`).get(taskId, since) as { n: number };
+  tellOwner(key, `"${title}" missed ${n}${m.count >= MISSED_COUNT_CAP ? ' or more' : ''} scheduled run${n === 1 ? '' : 's'} because ${m.cause}. ${done}`);
 }
 
 
@@ -159,12 +152,14 @@ export async function checkScheduledTasks(): Promise<void> {
     const runNumber = runCount + 1;
 
     // A repeating task that already ran and is late missed runs (a never-run task is a first fire, not a miss).
-    const intervalMs = intervalApproxMs(taskRow.repeat_unit as string | null, taskRow.repeat_interval as number | null);
+    // With none younger than one interval they are all skipped; else the claim below runs the recent one.
+    const intervalMs = intervalApproxMs(taskRow);
     const dueMs = occurrenceOf(taskRow);
-    let catchUpOf = dueMs;
-    if (intervalMs && runCount > 0 && dueMs !== null && nowMs - dueMs > LATE_MS) {
-      catchUpOf = decideMissedRuns(taskRow, nowMs, intervalMs);
-      if (catchUpOf === null) continue;
+    const missed = intervalMs && runCount > 0 && dueMs !== null && nowMs - dueMs > LATE_MS ? missedRuns(taskRow, nowMs, intervalMs) : null;
+    if (missed && missed.recentMs === null) {
+      const next = resumeSchedule(taskId, 'missed runs older than one interval; skipped to the next scheduled time');
+      tellMissedRuns(taskRow, nowMs, missed, `None was recent enough to run, so they were skipped. The next run is ${renderInstant(tsToMs(next)) ?? 'not set'}.`);
+      continue;
     }
 
     const dependsOnRaw = taskRow.depends_on as string | null;
@@ -211,13 +206,14 @@ export async function checkScheduledTasks(): Promise<void> {
 
     const occurrenceId = claimOccurrence({
       workId: taskId, sequence: runNumber, occurrenceMs: claimedOccurrenceMs,
-      nowMs, nextRunMs: tsToMs(nextAtFire),
+      nowMs, nextRunMs: tsToMs(nextAtFire), scheduledForMs: missed?.recentMs,
       agentId: (taskRow.assigned_to as string | null) ?? 'scheduler',
     });
     if (!occurrenceId) {
       logger.info('Scheduler: occurrence already claimed elsewhere, skipping', { taskId, occurrence: claimedOccurrence, sequence: runNumber });
       continue;
     }
+    if (missed) tellMissedRuns(taskRow, nowMs, missed, `The Dojo ran the one due ${renderInstant(missed.recentMs)} now to catch up and skipped any older ones.`);
     noteUnsettled(setTrackerStatus(taskId, 'in_progress', {
       by: 'scheduler', actorId: 'scheduler',
       reason: `scheduled occurrence ${claimedOccurrence} fired`,
@@ -262,7 +258,8 @@ export async function checkScheduledTasks(): Promise<void> {
     const taskKind = taskRow.kind as string | null;
     const totalRuns = taskRow.repeat_end_value ? ` of ${taskRow.repeat_end_value}` : '';
     // A run firing well after its time (the Mac was asleep or off) says so, so it is not passed off as on time.
-    const late = catchUpOf !== null && nowMs - catchUpOf > LATE_MS ? `, late: a catch-up of the run due ${formatTimeForAgent(catchUpOf)}` : '';
+    const late = missed ? `, late: a catch-up of the run due ${formatTimeForAgent(missed.recentMs!)}`
+      : claimedOccurrenceMs !== null && nowMs - claimedOccurrenceMs > LATE_MS ? `, late: it was due ${formatTimeForAgent(claimedOccurrenceMs)}` : '';
 
     // Reminders get a lighter prompt: one conversational delivery in the agent's normal voice, then a silent close.
     // The wake asks for the reply ALONE and the bookkeeping in the NEXT response, because text emitted in the same

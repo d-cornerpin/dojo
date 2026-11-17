@@ -27,8 +27,6 @@ export interface FormatTimeOptions {
   /** IANA timezone for the localized side. Defaults to the host's system tz. */
   timezone?: string;
   allDay?: boolean;
-  /** false: the localized side alone, for the owner's eyes. */
-  utc?: boolean;
 }
 
 /** Short timezone abbreviation for the moment in the zone; falls back to the IANA zone name. */
@@ -67,7 +65,8 @@ export function formatTimeForAgent(input: Date | string | number, opts: FormatTi
   }).format(date);
 
   const abbrev = tzAbbreviation(date, tz);
-  return opts.utc === false ? `${localPart} ${abbrev}` : `${localPart} ${abbrev} (${date.toISOString()})`;
+  const utcIso = date.toISOString();
+  return `${localPart} ${abbrev} (${utcIso})`;
 }
 
 /** Format a start/end pair: a same-day pair shares one date; all-day events print "All day, <date>" or a range. */

@@ -1,6 +1,6 @@
 // THE ONE WRITER OF THE SCHEDULE'S FIRE TIME (`work.next_run_at`), kept out of `WorkPatch`'s generic union so a
 // caller that names it fails to compile. Instants come from `calculateNextRun` (`scheduler/engine.ts`), except the
-// dependency defer (`scheduler/runner.ts`) and `run_now` (`tracker/tools.ts`), which re-fire the SAME occurrence.
+// dependency defer (`scheduler/runner.ts`), which re-fires the SAME occurrence.
 
 import type Database from 'better-sqlite3';
 import { getDb } from '../db/connection.js';

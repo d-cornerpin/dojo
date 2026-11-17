@@ -46,6 +46,8 @@ export interface ClaimInput {
   nowMs: number;
   nextRunMs: number | null;
   agentId: string;
+  /** The run this occurrence is for when it is not the one the schedule waited on (a catch-up of a later missed run). */
+  scheduledForMs?: number | null;
 }
 
 /** Claim an occurrence atomically and return its id, or null when this caller lost: INSERT the
@@ -67,7 +69,7 @@ export function claimOccurrence(input: ClaimInput): string | null {
       `).run(
         occurrenceId, OCCURRENCE_KIND, input.workId, input.agentId, input.agentId,
         input.workId, input.workId,
-        `occurrence #${input.sequence}`, input.sequence, input.occurrenceMs,
+        `occurrence #${input.sequence}`, input.sequence, input.scheduledForMs ?? input.occurrenceMs,
         input.nowMs, input.nowMs,
       );
 
@@ -80,7 +82,7 @@ export function claimOccurrence(input: ClaimInput): string | null {
       if (advanced !== 1) throw new LostClaim();
 
       appendWorkEvent(occurrenceId, OCCURRENCE_EVENT.fired, 'scheduler', {
-        sequence: input.sequence, scheduled_for: input.occurrenceMs,
+        sequence: input.sequence, scheduled_for: input.scheduledForMs ?? input.occurrenceMs,
       });
       won = true;
     });
