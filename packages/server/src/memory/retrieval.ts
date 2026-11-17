@@ -1,9 +1,6 @@
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import {
-  breadcrumbFor, clearQueryDispatched, markQueryDispatched, offThreadBreadcrumb,
-} from '../observability/stall-sentinel.js';
-import {
   agentMessagesFloor, boundedRecencyScan, boundedRecencyScanSync, ftsAgentCandidateFloor,
   logBoundedFallback, FTS_CANDIDATE_ROWS,
 } from './search-bounds.js';
@@ -18,16 +15,6 @@ import { getLargeFile } from './large-files.js';
 import { clauseFor, requestForAnotherTurn } from './awaiting-own-turn.js';
 
 const logger = createLogger('memory-retrieval');
-
-/**
- * The breadcrumb for a search, carrying WHERE it will run. It is the only place that decides the suffix: a mark
- * naming the serving thread for work that ran on the reader worker would make the stall sentinel confidently
- * wrong. The pool decision is read once per call, since readerPoolAvailable() cannot change inside one.
- */
-function crumbFor(subsystem: string, mode: string): string {
-  const label = breadcrumbFor(subsystem, mode);
-  return readerPoolAvailable() ? offThreadBreadcrumb(label) : label;
-}
 
 // Self-echo filter for history_search: a pure tool-call assistant message persists as JSON that FTS5 indexes, so
 // the agent's OWN previous call matches its next search and sends it round a loop. A message whose content is an
@@ -133,7 +120,7 @@ export async function memoryGrep(
   const results: string[] = [];
 
   if (scope === 'messages' || scope === 'both') {
-    const messageResults = await searchMessages(db, agentId, pattern, mode, since, before, limit);
+    const messageResults = await searchMessagesInner(db, agentId, pattern, mode, since, before, limit);
     if (messageResults.length > 0) {
       results.push(`=== RAW MESSAGES (${messageResults.length} results, exact conversation records) ===`);
       results.push(...messageResults);
@@ -141,7 +128,7 @@ export async function memoryGrep(
   }
 
   if (scope === 'summaries' || scope === 'both') {
-    const summaryResults = await searchSummaries(db, agentId, pattern, mode, limit);
+    const summaryResults = await searchSummariesInner(db, agentId, pattern, mode, limit);
     if (summaryResults.length > 0) {
       results.push(`=== COMPRESSED SUMMARIES (${summaryResults.length} results, condensed history, details may be lost) ===`);
       results.push(...summaryResults);
@@ -154,26 +141,6 @@ export async function memoryGrep(
   }
 
   return results.join('\n');
-}
-
-async function searchMessages(
-  db: ReturnType<typeof getDb>,
-  agentId: string,
-  pattern: string,
-  mode: string,
-  since?: string,
-  before?: string,
-  limit?: number,
-): Promise<string[]> {
-  // Breadcrumb for the stall sentinel: a synchronous B-tree walk cannot be interrupted, so when this query pins the
-  // loop nothing else can name it. It is a SHAPE, never the pattern (this string reaches logs pasted into bug
-  // reports), and it says where the work runs (reader pool or serving thread).
-  const crumb = markQueryDispatched(crumbFor('history_search', mode === 'full_text' ? 'fts' : 'like'));
-  try {
-    return await searchMessagesInner(db, agentId, pattern, mode, since, before, limit);
-  } finally {
-    clearQueryDispatched(crumb);
-  }
 }
 
 async function searchMessagesInner(
@@ -365,21 +332,6 @@ async function searchMessagesLike(
       : '';
     return `[id=${idShort} ${renderInstant(row.created_at) ?? row.created_at}] (${row.role}) ${clauseFor(elsewhere, row.id)}${preview}${expandHint}`;
   });
-}
-
-async function searchSummaries(
-  db: ReturnType<typeof getDb>,
-  agentId: string,
-  pattern: string,
-  mode: string,
-  limit?: number,
-): Promise<string[]> {
-  const crumb = markQueryDispatched(crumbFor('summary_search', mode === 'full_text' ? 'fts' : 'like'));
-  try {
-    return await searchSummariesInner(db, agentId, pattern, mode, limit);
-  } finally {
-    clearQueryDispatched(crumb);
-  }
 }
 
 async function searchSummariesInner(
@@ -631,40 +583,35 @@ async function expandSummariesFts(
   agentId: string,
   query: string,
 ): Promise<ExpandSummaryRow[]> {
-  const crumb = markQueryDispatched(crumbFor('history_expand', 'fts'));
-  try {
-    // `MAX(rowid) AS r` is aliased at the expression level, the form the reader guard accepts; no rowid is projected.
-    // The floor is spelled on the FTS side and the window comes from the same helper as searchSummariesInner.
-    const window = summariesFtsWindow(db, agentId);
-    const candidateFloor = window.candidateFloor;
-    const floorClause = candidateFloor > 0 ? 'AND summaries_fts.rowid > ?' : '';
-    const sql = `
-        SELECT s.id, s.content, s.depth, s.earliest_at, s.latest_at
-        FROM summaries_fts
-        INNER JOIN summaries s ON summaries_fts.rowid = s.rowid
-        WHERE summaries_fts MATCH ?
-          AND s.agent_id = ?
-          ${floorClause}
-        ORDER BY rank
-        LIMIT ?
-      `;
-    const sqlParams: unknown[] = candidateFloor > 0
-      ? [ftsSafeQuery(query), agentId, candidateFloor, EXPAND_SUMMARY_LIMIT]
-      : [ftsSafeQuery(query), agentId, EXPAND_SUMMARY_LIMIT];
-    // Pool up: the ranked read runs on a worker's read-only connection; pool down: the same bounded query on-thread.
-    const rows = (readerPoolAvailable()
-      ? await readerQuery<ExpandSummaryRow>('history_expand:fts', sql, sqlParams)
-      : db.prepare(sql).all(...sqlParams)) as ExpandSummaryRow[];
-    // Operator warn only, deliberately: this helper returns ROWS that feed a synthesis model as raw material, so an
-    // "older history was not scanned" sentence spliced in would be read as content to summarise.
-    void noteBoundedFtsMiss({
-      subsystem: 'history_expand:fts', unit: 'summaries', agentId,
-      candidateFloor, matched: rows.length, limit: EXPAND_SUMMARY_LIMIT, reseated: window.reseated,
-    });
-    return rows;
-  } finally {
-    clearQueryDispatched(crumb);
-  }
+  // `MAX(rowid) AS r` is aliased at the expression level, the form the reader guard accepts; no rowid is projected.
+  // The floor is spelled on the FTS side and the window comes from the same helper as searchSummariesInner.
+  const window = summariesFtsWindow(db, agentId);
+  const candidateFloor = window.candidateFloor;
+  const floorClause = candidateFloor > 0 ? 'AND summaries_fts.rowid > ?' : '';
+  const sql = `
+      SELECT s.id, s.content, s.depth, s.earliest_at, s.latest_at
+      FROM summaries_fts
+      INNER JOIN summaries s ON summaries_fts.rowid = s.rowid
+      WHERE summaries_fts MATCH ?
+        AND s.agent_id = ?
+        ${floorClause}
+      ORDER BY rank
+      LIMIT ?
+    `;
+  const sqlParams: unknown[] = candidateFloor > 0
+    ? [ftsSafeQuery(query), agentId, candidateFloor, EXPAND_SUMMARY_LIMIT]
+    : [ftsSafeQuery(query), agentId, EXPAND_SUMMARY_LIMIT];
+  // Pool up: the ranked read runs on a worker's read-only connection; pool down: the same bounded query on-thread.
+  const rows = (readerPoolAvailable()
+    ? await readerQuery<ExpandSummaryRow>('history_expand:fts', sql, sqlParams)
+    : db.prepare(sql).all(...sqlParams)) as ExpandSummaryRow[];
+  // Operator warn only, deliberately: this helper returns ROWS that feed a synthesis model as raw material, so an
+  // "older history was not scanned" sentence spliced in would be read as content to summarise.
+  void noteBoundedFtsMiss({
+    subsystem: 'history_expand:fts', unit: 'summaries', agentId,
+    candidateFloor, matched: rows.length, limit: EXPAND_SUMMARY_LIMIT, reseated: window.reseated,
+  });
+  return rows;
 }
 
 async function expandSummariesLike(
@@ -672,54 +619,49 @@ async function expandSummariesLike(
   agentId: string,
   query: string,
 ): Promise<ExpandSummaryRow[]> {
-  const crumb = markQueryDispatched(crumbFor('history_expand', 'like'));
-  try {
-    const likeParams: unknown[] = [agentId, `%${query}%`];
-    // Global span (floorRowid on boundedRecencyScan); single-aggregate statements, as at searchMessagesLike.
-    const maxRid = (db.prepare('SELECT MAX(rowid) AS r FROM summaries')
-      .get() as { r: number | null } | undefined)?.r ?? 0;
-    const minRid = Math.max(0, ((db.prepare('SELECT MIN(rowid) AS r FROM summaries')
-      .get() as { r: number | null } | undefined)?.r ?? 1) - 1);
-    const chunkSql = `
-      SELECT id, content, depth, earliest_at, latest_at, rowid AS rid FROM summaries
-      WHERE agent_id = ? AND content LIKE ? AND rowid <= ? AND rowid > ?
-      ORDER BY rowid DESC
-      LIMIT ?
-    `;
-    const costSql = `
-      SELECT COUNT(*) AS n, COALESCE(SUM(LENGTH(content)), 0) AS bytes FROM summaries
-      WHERE agent_id = ? AND rowid <= ? AND rowid > ?
-    `;
-    type ExpandLikeRow = ExpandSummaryRow & { rid: number };
-    type CostRow = { n: number; bytes: number };
-    const scanOpts = { limit: EXPAND_SUMMARY_LIMIT, startRowidCeiling: maxRid, floorRowid: minRid };
-    // Pool up: each chunk is two worker-side reads (cost, then page); pool down: the same arithmetic on-thread.
-    const scan = readerPoolAvailable()
-      ? await boundedRecencyScan<ExpandSummaryRow>({
-        ...scanOpts,
-        fetchChunk: async (ceiling, chunkRows) => {
-          const floor = Math.max(0, ceiling - chunkRows);
-          const cost = (await readerQuery<CostRow>('history_expand:like:cost', costSql, [agentId, ceiling, floor]))[0] ?? { n: 0, bytes: 0 };
-          const found = await readerQuery<ExpandLikeRow>('history_expand:like:page', chunkSql, [...likeParams, ceiling, floor, chunkRows]);
-          return { rows: found, rowsExamined: cost.n, bytesRead: cost.bytes };
-        },
-      })
-      : boundedRecencyScanSync<ExpandSummaryRow>({
-        ...scanOpts,
-        fetchChunk: (ceiling, chunkRows) => {
-          const floor = Math.max(0, ceiling - chunkRows);
-          const cost = db.prepare(costSql).get(agentId, ceiling, floor) as CostRow;
-          const found = db.prepare(chunkSql).all(...likeParams, ceiling, floor, chunkRows) as ExpandLikeRow[];
-          return { rows: found, rowsExamined: cost.n, bytesRead: cost.bytes };
-        },
-      });
-    if (scan.report.truncated || scan.report.chunks > 1) {
-      logBoundedFallback('history_expand:like', 'leading-wildcard LIKE cannot use an index', scan.report, agentId);
-    }
-    return scan.rows.slice(0, EXPAND_SUMMARY_LIMIT);
-  } finally {
-    clearQueryDispatched(crumb);
+  const likeParams: unknown[] = [agentId, `%${query}%`];
+  // Global span (floorRowid on boundedRecencyScan); single-aggregate statements, as at searchMessagesLike.
+  const maxRid = (db.prepare('SELECT MAX(rowid) AS r FROM summaries')
+    .get() as { r: number | null } | undefined)?.r ?? 0;
+  const minRid = Math.max(0, ((db.prepare('SELECT MIN(rowid) AS r FROM summaries')
+    .get() as { r: number | null } | undefined)?.r ?? 1) - 1);
+  const chunkSql = `
+    SELECT id, content, depth, earliest_at, latest_at, rowid AS rid FROM summaries
+    WHERE agent_id = ? AND content LIKE ? AND rowid <= ? AND rowid > ?
+    ORDER BY rowid DESC
+    LIMIT ?
+  `;
+  const costSql = `
+    SELECT COUNT(*) AS n, COALESCE(SUM(LENGTH(content)), 0) AS bytes FROM summaries
+    WHERE agent_id = ? AND rowid <= ? AND rowid > ?
+  `;
+  type ExpandLikeRow = ExpandSummaryRow & { rid: number };
+  type CostRow = { n: number; bytes: number };
+  const scanOpts = { limit: EXPAND_SUMMARY_LIMIT, startRowidCeiling: maxRid, floorRowid: minRid };
+  // Pool up: each chunk is two worker-side reads (cost, then page); pool down: the same arithmetic on-thread.
+  const scan = readerPoolAvailable()
+    ? await boundedRecencyScan<ExpandSummaryRow>({
+      ...scanOpts,
+      fetchChunk: async (ceiling, chunkRows) => {
+        const floor = Math.max(0, ceiling - chunkRows);
+        const cost = (await readerQuery<CostRow>('history_expand:like:cost', costSql, [agentId, ceiling, floor]))[0] ?? { n: 0, bytes: 0 };
+        const found = await readerQuery<ExpandLikeRow>('history_expand:like:page', chunkSql, [...likeParams, ceiling, floor, chunkRows]);
+        return { rows: found, rowsExamined: cost.n, bytesRead: cost.bytes };
+      },
+    })
+    : boundedRecencyScanSync<ExpandSummaryRow>({
+      ...scanOpts,
+      fetchChunk: (ceiling, chunkRows) => {
+        const floor = Math.max(0, ceiling - chunkRows);
+        const cost = db.prepare(costSql).get(agentId, ceiling, floor) as CostRow;
+        const found = db.prepare(chunkSql).all(...likeParams, ceiling, floor, chunkRows) as ExpandLikeRow[];
+        return { rows: found, rowsExamined: cost.n, bytesRead: cost.bytes };
+      },
+    });
+  if (scan.report.truncated || scan.report.chunks > 1) {
+    logBoundedFallback('history_expand:like', 'leading-wildcard LIKE cannot use an index', scan.report, agentId);
   }
+  return scan.rows.slice(0, EXPAND_SUMMARY_LIMIT);
 }
 
 

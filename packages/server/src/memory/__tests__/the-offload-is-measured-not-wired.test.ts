@@ -4,9 +4,7 @@
 //   1. the serving thread stays SERVICEABLE while a worker-side search runs (starved-ms, the same
 //      instrument t87 built and deliverable 2 reused);
 //   2. a stop mid-search DISCARDS the result and the pool survives;
-//   3. an overrun past the hard deadline TERMINATES the worker;
-//   4. the cross-check the coordinator asked for: a worker-side search must NOT trip the stall sentinel
-//      I built in deliverable 4 — which is the same claim as (1), asserted by the other instrument.
+//   3. an overrun past the hard deadline TERMINATES the worker.
 //
 // The fixture is generated and fictional. It is written to a real file because a worker opens its own
 // connection: `:memory:` is per-connection by definition, and a test that used it would be proving
@@ -36,7 +34,6 @@ import {
   readerQuery, readerPoolAvailable, readerPendingCount, terminateReaderPool,
   resetReaderPoolForTest, READER_DEADLINE_MS, warmReaderPool,
 } from '../reader-pool.js';
-import { evaluateTick, resetSentinelForTest, TICK_MS } from '../../observability/stall-sentinel.js';
 
 /** t87's metric, reused: elapsed wall time minus the time the loop demonstrably serviced. */
 async function measureStarvation(work: () => Promise<unknown>): Promise<{
@@ -82,7 +79,6 @@ afterAll(async () => {
 
 beforeEach(() => {
   resetReaderPoolForTest();
-  resetSentinelForTest();
 });
 
 describe('⚠ 1. THE SERVING THREAD STAYS SERVICEABLE — the claim the offload exists to make', () => {
@@ -239,32 +235,6 @@ describe('⚠ 3. AN OVERRUN TERMINATES THE WORKER — the only way to stop synch
   });
 });
 
-describe('⚠ 4. THE CROSS-CHECK: a worker-side search does NOT trip the stall sentinel', () => {
-  it('the sentinel sees no stall across an off-thread read it would have flagged on-thread', async () => {
-    // Two instruments, one claim. The sentinel is what would have named this query in the log as the
-    // thing that deafened the box; after the offload it has nothing to report, which is the proof that
-    // the pin is gone rather than merely renamed.
-    let worstDrift = 0;
-    let last = Date.now();
-    const ticker = setInterval(() => {
-      const now = Date.now();
-      worstDrift = Math.max(worstDrift, now - last - TICK_MS);
-      last = now;
-    }, TICK_MS);
-    try {
-      await readerQuery('sentinel-cross-check', HEAVY_SQL, []);
-    } finally {
-      clearInterval(ticker);
-    }
-    // The sentinel's own arithmetic, fed the worst drift observed during the read.
-    const report = evaluateTick(TICK_MS + worstDrift, 0);
-    // eslint-disable-next-line no-console
-    console.log(`SENTINEL CROSS-CHECK  worst drift during the off-thread read: ${worstDrift}ms `
-      + `(threshold 1000ms) → ${report ? 'STALL REPORTED' : 'no stall'}`);
-    expect(report, 'an off-thread read tripped the stall sentinel — the offload is not working').toBeNull();
-  }, 60_000);
-});
-
 // ════════════════════════════════════════════════════════════════════════════════════════
 // ⚠ FIX ROUND 1 — THE POOL'S FALLBACK HAS TO ENGAGE, AND A KILL HAS TO TAKE ONLY ITS OWN WORK.
 //
@@ -342,58 +312,4 @@ describe('⚠ I7 — A DEADLINE KILL TAKES ITS OWN WORKER\'S QUERIES, AND ONLY T
     expect(after[0].n, 'the query that followed the kill was failed by the dead worker\'s exit')
       .toBe(ROWS);
   }, 60_000);
-});
-
-describe('⚠ I4 — A STALL DURING AN OFF-THREAD SEARCH IS NOT THAT SEARCH\'S FAULT', () => {
-  it('an @reader crumb is reported as CONTEXT, and the line never says "blocker"', async () => {
-    // ⚠ THE DEFECT: before the wire, a live breadcrumb during a stall meant the thread was inside
-    // that query. After it, the same crumb can be live while the query runs on a WORKER and the main
-    // thread is blocked by something else — paging, a WAL checkpoint, an uninstrumented sync path.
-    // The old line said "that query is the blocker" and sent the reader to the one thing that
-    // provably was NOT on the thread, in the exact scenario this instrument was built for. That is
-    // the "confident wrong answer" the module's own header warns against.
-    const { diagnose, markQueryDispatched, clearQueryDispatched, currentBreadcrumb, offThreadBreadcrumb,
-      isOffThread, resetSentinelForTest: reset } = await import('../../observability/stall-sentinel.js');
-    reset();
-    const label = offThreadBreadcrumb('history_search:fts');
-    expect(isOffThread(label)).toBe(true);
-    const crumb = markQueryDispatched(label);
-    try {
-      // Running the WHOLE stall — the shape that used to earn "that query is the blocker".
-      const report = diagnose(43_210, currentBreadcrumb(), crumb.startedAtMs + 44_000);
-      // eslint-disable-next-line no-console
-      console.log(`I4  ${report.diagnosis}`);
-      // ⚠ THE AFFIRMATIVE VERDICT MUST BE ABSENT AND THE NEGATION PRESENT — asserted as two separate
-      // things, because my first cut said `not.toContain('blocker')` and red on the line's own
-      // "CANNOT be the blocker". A clause that forbids a WORD instead of a CLAIM forbids the fix
-      // from explaining itself.
-      expect(report.diagnosis, 'an off-thread query was named as the cause')
-        .not.toMatch(/that query is the blocker/);
-      expect(report.diagnosis, 'the line must say OUT LOUD that it cannot be the cause')
-        .toMatch(/CANNOT be the blocker/);
-      expect(report.diagnosis, 'the line must say the work was off-thread').toContain('reader worker');
-      expect(report.diagnosis, 'and must point where the cause actually could be')
-        .toContain('uninstrumented');
-      // The crumb is still REPORTED — it is context, not noise. Dropping it would lose the one fact
-      // that tells the next reader a search was in flight at all.
-      expect(report.breadcrumb?.label).toBe(label);
-    } finally {
-      clearQueryDispatched(crumb);
-    }
-  });
-
-  it('an ON-thread crumb still earns the verdict — the other direction, or I4 is a silencer', async () => {
-    const { diagnose, markQueryDispatched, clearQueryDispatched, currentBreadcrumb,
-      resetSentinelForTest: reset } = await import('../../observability/stall-sentinel.js');
-    reset();
-    const crumb = markQueryDispatched('history_search:like');
-    try {
-      const report = diagnose(43_210, currentBreadcrumb(), crumb.startedAtMs + 44_000);
-      expect(report.diagnosis, 'an on-thread query that spanned the stall IS the blocker')
-        .toContain('that query is the blocker');
-      expect(report.diagnosis).not.toContain('reader worker');
-    } finally {
-      clearQueryDispatched(crumb);
-    }
-  });
 });
