@@ -30,12 +30,6 @@ vi.mock('../../config/platform.js', () => ({
   getOwnerName: () => 'the owner',
 }));
 
-vi.mock('../../voice/session-record.js', () => ({
-  startVoiceSessionRecord: vi.fn(() => 'vsr-1'),
-  endVoiceSessionRecord: vi.fn(),
-  bumpVoiceSessionTurnCount: vi.fn(),
-  stampSpokenMessage: vi.fn(),
-}));
 
 vi.mock('../auth.js', () => ({
   getTwilioConfig: () => ({ voiceMaxMinutesPerCall: 1 }),

@@ -27,7 +27,7 @@ export async function finalizeTurnRecord(
     agentId, turnCtx, turnNumber, chosenConvKey, chosenConversationId, lastAssembledAtIso,
     terminalAnswerRowId, triggerWorkId,
     toolPhaseEndedBySpinBrake, counterparty, isA2ATurn, isEngineTurn, turnStartedAt,
-    inboundChannel, inboundContext, db,
+    db,
   } = ctx;
 
   // Turns that threw before reaching this `finally` are closed by the runtime recovery site.
@@ -243,13 +243,6 @@ export async function finalizeTurnRecord(
           if (counted.length > 0) engineHandIn(t.id, `turn ${turnNumber} opened this task and delivered it`, { outcome: 'finished', items: counted });
         }
       } catch { /* best effort; the ladder remains the backup */ }
-    }
-    // Phone lane: a call has no TTS-burst message hook, so this stamp binds the reply to its session.
-    if (answerRow && inboundChannel === 'phone' && inboundContext?.phoneCallSid) {
-      try {
-        const { getVoiceSessionIdForCall, stampSpokenMessage } = await import('../../../../voice/session-record.js');
-        stampSpokenMessage(answerRow.id, 'agent', getVoiceSessionIdForCall(inboundContext.phoneCallSid));
-      } catch { /* best effort */ }
     }
     // Per-ask outcome: every row this turn served records the reply that answered it.
     if (answerRow) {

@@ -26,7 +26,7 @@ function sessionWithStuckSocket(): {
   session: HumeStreamSession;
   close: ReturnType<typeof vi.fn>;
 } {
-  const session = new HumeStreamSession({ voiceId: 'fake-voice' });
+  const session = new HumeStreamSession({ voiceId: 'fake-voice', agentId: 'agent-1' });
   const close = vi.fn();
   (session as unknown as { socket: unknown }).socket = {
     sendPublish: vi.fn(),

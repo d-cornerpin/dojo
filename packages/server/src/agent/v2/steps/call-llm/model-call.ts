@@ -127,23 +127,13 @@ export async function callWithRetryAndFallback(
               done: false,
             });
           }
-          // Phone call: flush each completed sentence to the call's TTS queue, so audio starts early.
+          // Phone call: flush completed sentences to the call's TTS queue, so audio starts early. The buffer
+          // releases text only where markdown is balanced; the call cleans it at its own door.
           if (turnCtx.phoneStreamCallSid) {
-            turnCtx.phoneStreamBuffer += chunk;
-            const flushParts: string[] = [];
-            let last = 0;
-            const re = /[.!?\n]+\s+/g;
-            let m: RegExpExecArray | null;
-            while ((m = re.exec(turnCtx.phoneStreamBuffer)) !== null) {
-              const end = m.index + m[0].length;
-              // An echoed time stamp opens the reply, so only the first spoken part carries it.
-              const raw = turnCtx.phoneStreamBuffer.slice(last, end);
-              const part = (turnCtx.phoneStreamFlushedAny || flushParts.length > 0 ? raw : stripLeadingTimeStamp(raw)).trim();
-              if (part) flushParts.push(part);
-              last = end;
-            }
-            if (last > 0) turnCtx.phoneStreamBuffer = turnCtx.phoneStreamBuffer.slice(last);
-            if (flushParts.length > 0) {
+            const raw = turnCtx.phoneStreamBuffer.pushRaw(chunk);
+            // An echoed time stamp opens the reply, so only the first spoken part carries it.
+            const part = (turnCtx.phoneStreamFlushedAny ? raw : stripLeadingTimeStamp(raw)).trim();
+            if (part) {
               // Set before the async enqueue, or the turn-end check could read false and replay the reply.
               // Safe: `ended` is a one-way latch, so a session live at turn end was live when parts queued.
               turnCtx.phoneStreamFlushedAny = true;
@@ -151,12 +141,9 @@ export async function callWithRetryAndFallback(
                 try {
                   const { getCallSession } = await import('../../../../twilio/call-session.js');
                   const session = getCallSession(turnCtx.phoneStreamCallSid as string);
-                  if (!session || session.isEnded()) return;
-                  for (const part of flushParts) {
-                    if (abortController.signal.aborted) return;
-                    // Enqueue only; the session's single-flight drain worker synthesises in order.
-                    void session.queueAgentSay(part);
-                  }
+                  if (!session || session.isEnded() || abortController.signal.aborted) return;
+                  // Enqueue only; the session's single-flight drain worker synthesises in order.
+                  void session.queueAgentSay(part);
                 } catch { /* best effort; one-shot fallback runs at turn end */ }
               })();
             }
@@ -194,7 +181,7 @@ export async function callWithRetryAndFallback(
             attempt, modelId,
           }, agentId);
           // Phone: the retry speaks from the first word, so the abandoned attempt's unspoken fragment goes.
-          if (turnCtx.phoneStreamCallSid) { turnCtx.phoneStreamBuffer = ''; turnCtx.phoneStreamFlushedAny = false; }
+          if (turnCtx.phoneStreamCallSid) { turnCtx.phoneStreamBuffer.takeRaw(); turnCtx.phoneStreamFlushedAny = false; }
           continue;
         }
         revertTriggerStampOnAbort(); // model call failed with no answer, re-arm the ask
@@ -302,7 +289,7 @@ export async function callWithRetryAndFallback(
       }, agentId);
       // Phone: drop the failed stream's unsent tail and the streamed latch before the fallback. A rare
       // duplicate (partial plus full one-shot) beats a caller without the answer; queued audio stays.
-      if (turnCtx.phoneStreamCallSid) { turnCtx.phoneStreamBuffer = ''; turnCtx.phoneStreamFlushedAny = false; }
+      if (turnCtx.phoneStreamCallSid) { turnCtx.phoneStreamBuffer.takeRaw(); turnCtx.phoneStreamFlushedAny = false; }
       modelId = fallback.modelId;
       state = advance(state, { modelId });
     } finally {

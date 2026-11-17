@@ -7,16 +7,15 @@
 // A per-call max-duration cap applies (Settings, Voice). Tools are NOT recorded, transcripts only.
 
 import { v4 as uuidv4 } from 'uuid';
-import { startVoiceSessionRecord, endVoiceSessionRecord, bumpVoiceSessionTurnCount, stampSpokenMessage } from '../voice/session-record.js';
+import { PLATFORM_SENDER } from '@dojo/shared';
 import { resolveOrCreateConversation } from '../memory/conversations.js';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
-import { getPrimaryAgentId, getOwnerName } from '../config/platform.js';
+import { getPrimaryAgentId } from '../config/platform.js';
 import { getAgentRuntime } from '../agent/runtime.js';
 import {
   decodeTwilioFrame,
-  encodeForTwilio,
   chunkForTwilio,
   muLawEncode,
   float32ToInt16At8k,
@@ -32,6 +31,7 @@ import { recordInboundMeta } from '../agent/v2/inbound-channel.js';
 import { insertInboundMessageIfAbsent } from '../work/ask-title.js';
 import { recordAtDoor, recordedId, recordHeld } from '../agent/v2/outbound.js';
 import { mayUseChannel } from '../agent/access/read.js';
+import { sanitizeForSpeech } from '../voice/text-sanitize.js';
 
 const logger = createLogger('twilio-call-session');
 
@@ -64,6 +64,7 @@ export interface CallSessionInit {
 interface PendingTtsChunk {
   pcm: Float32Array;
   sampleRate: number;
+  text: string;
 }
 
 export class CallSession {
@@ -103,19 +104,21 @@ export class CallSession {
   private ttsQueue: PendingTtsChunk[] = [];
   private ttsTimer: ReturnType<typeof setTimeout> | null = null;
   private ttsCarry: Buffer = Buffer.alloc(0);
+  /** The words of the audio in ttsCarry, being sent now. */
+  private playingText = '';
 
   // Serial sentence-text queue: streaming TTS feeds one sentence at a time; one drain worker synthesizes
   // in FIFO order and pushes PCM to ttsQueue in submission order, so audio never plays out of order.
-  private pendingSpeechTexts: Array<{ text: string; generation: number }> = [];
+  // Each sentence's `heard` settles true once its audio is queued to the caller, false when it is dropped.
+  private pendingSpeechTexts: Array<{ text: string; generation: number; heard: (queued: boolean) => void }> = [];
   private speechSynthRunning = false;
   // Bumped on barge-in: sentences still queued or being synthesized under an older generation are dropped.
   private speechGeneration = 0;
   /** Set by the TTS bridge once the cloud voice has failed on this call; the call then stays local. */
-  private voiceState = { cloudDown: false };
+  private voiceState: { cloudDown: boolean; agentId: string };
 
   // Running transcript stitched at the end into twilio_call_log.transcript.
   private transcript: Array<{ at: string; speaker: 'caller' | 'agent'; text: string }> = [];
-  private voiceSessionRecordId: string | null = null;
 
   // Phone-mode call context. AMD flips voicemailDetected when its result arrives; the rest is set
   // at construct time (inbound: defaults; outbound: from voice_call args).
@@ -140,13 +143,9 @@ export class CallSession {
     this.purpose = init.purpose ?? null;
     this.logRowId = uuidv4();
     this.agentId = getPrimaryAgentId();
+    this.voiceState = { cloudDown: false, agentId: this.agentId ?? PLATFORM_SENDER };
     this.startedAt = Date.now();
     this.persistInitialLog();
-    // One session identity space for the spoken lane: this row joins the call to voice identity (speaker
-    // stamps and reply binding key on it); twilio_call_log stays the call's own record.
-    this.voiceSessionRecordId = this.agentId ? startVoiceSessionRecord({
-      agentId: this.agentId, kind: 'phone', externalId: this.callSid,
-    }) : null;
     this.armMaxDuration();
     logger.info('CallSession started', {
       callSid: this.callSid, streamSid: this.streamSid, direction: this.direction,
@@ -271,8 +270,14 @@ export class CallSession {
           const drained = this.ttsQueue.length;
           const carryBytes = this.ttsCarry.length;
           const droppedTexts = this.pendingSpeechTexts.length;
+          // Audio already recorded as said but cut off: one transcript line names it.
+          const unheard = [...(carryBytes > 0 ? [this.playingText] : []), ...this.ttsQueue.map((c) => c.text)];
+          if (unheard.length > 0) {
+            this.transcript.push({ at: new Date().toISOString(), speaker: 'agent', text: `(not heard, the caller spoke over it: ${unheard.join(' ')})` });
+          }
           this.ttsQueue = [];
           this.ttsCarry = Buffer.alloc(0);
+          for (const item of this.pendingSpeechTexts) item.heard(false);
           this.pendingSpeechTexts = [];
           this.speechGeneration += 1;
           if (this.ttsTimer) {
@@ -360,6 +365,7 @@ export class CallSession {
       logger.warn('Inbound utterance STT failed', {
         callSid: this.callSid, error: err instanceof Error ? err.message : String(err),
       });
+      void this.queueAgentSay('Sorry, I did not catch that.');
       return;
     }
     if (!text) return;
@@ -428,8 +434,6 @@ export class CallSession {
         senderId: inboundMetaObj.sender,
         authorized: inboundMetaObj.authorized,
       });
-      stampSpokenMessage(msgId, 'caller', this.voiceSessionRecordId);
-      bumpVoiceSessionTurnCount(this.voiceSessionRecordId);
       recordInboundMeta(msgId, inboundMetaObj);
       broadcast({
         type: 'chat:message',
@@ -461,12 +465,13 @@ export class CallSession {
   // ── Outbound TTS ───────────────────────────────────────────────
 
   /**
-   * Speak text to the caller: sentences are synthesized in order, stitched into 20 ms μ-law frames
-   * and paced out over the Media Streams WebSocket.
+   * Speak text to the caller, cleaned for speech: sentences are synthesized in order, stitched into 20 ms
+   * μ-law frames and paced out over the Media Streams WebSocket. Resolves once the audio is queued to the
+   * caller, or dropped; only queued words are recorded as said.
    */
   async queueAgentSay(text: string): Promise<void> {
     if (this.ended) return;
-    const trimmed = text.trim();
+    const trimmed = sanitizeForSpeech(text).trim();
     if (!trimmed) return;
     // The voice channel grant is checked here, the one door all speech into a live call passes
     // (auto-route arms, engine ack, streaming sentences, pre-tool filler). A null agent is the
@@ -481,6 +486,14 @@ export class CallSession {
       });
       return;
     }
+    logger.info('Agent says', { callSid: this.callSid, text: trimmed.slice(0, 200) });
+    // Enqueue with the current generation and kick the single-flight drain worker, which synthesizes
+    // in FIFO order and skips sentences from before a barge-in.
+    const queued = await new Promise<boolean>((heard) => {
+      this.pendingSpeechTexts.push({ text: trimmed, generation: this.speechGeneration, heard });
+      void this.drainSpeechTexts();
+    });
+    if (!queued) return;
     this.transcript.push({ at: new Date().toISOString(), speaker: 'agent', text: trimmed });
     // Speech-out record: inside an outbound scope the sentences of one reply fold into one row (one thing
     // the caller heard); outside a scope (the call's own opener) each stands as its own row.
@@ -489,11 +502,6 @@ export class CallSession {
       agentId: this.agentId ?? undefined, recipientId: this.fromNumber,
       detail: `call ${this.callSid}`,
     }), 'twilio: call speech-out', { callSid: this.callSid });
-    logger.info('Agent says', { callSid: this.callSid, text: trimmed.slice(0, 200) });
-    // Enqueue with the current generation and kick the single-flight drain worker, which synthesizes
-    // in FIFO order and skips sentences from before a barge-in.
-    this.pendingSpeechTexts.push({ text: trimmed, generation: this.speechGeneration });
-    void this.drainSpeechTexts();
   }
 
   /**
@@ -512,8 +520,10 @@ export class CallSession {
             callSid: this.callSid, textPreview: item.text.slice(0, 60),
             itemGeneration: item.generation, current: this.speechGeneration,
           });
+          item.heard(false);
           continue;
         }
+        let queued = false;
         try {
           const { synthesizeForTwilio } = await import('./tts-bridge.js');
           const pcm = await synthesizeForTwilio(item.text, this.voiceState);
@@ -522,23 +532,23 @@ export class CallSession {
             logger.warn('TTS produced no audio for sentence (skipped)', {
               callSid: this.callSid, textPreview: item.text.slice(0, 60),
             });
-            continue;
-          }
-          // Re-check after synth: the caller may have spoken or hung up meanwhile, so drop the audio.
-          if (item.generation < this.speechGeneration || this.ended) {
+          } else if (item.generation < this.speechGeneration || this.ended) {
+            // The caller spoke or hung up during synthesis, so the audio is dropped.
             logger.info('TTS dropped post-synth (stale generation)', {
               callSid: this.callSid, textPreview: item.text.slice(0, 60),
             });
-            continue;
+          } else {
+            this.ttsQueue.push({ ...pcm, text: item.text });
+            queued = true;
+            if (this.started && !this.ttsTimer) this.kickTtsPump();
           }
-          this.ttsQueue.push(pcm);
-          if (this.started && !this.ttsTimer) this.kickTtsPump();
         } catch (err) {
           logger.warn('TTS for call utterance failed (skipped)', {
             callSid: this.callSid, error: err instanceof Error ? err.message : String(err),
             textPreview: item.text.slice(0, 60),
           });
         }
+        item.heard(queued);
       }
     } finally {
       this.speechSynthRunning = false;
@@ -563,6 +573,7 @@ export class CallSession {
     // Convert one chunk to μ-law, prepend the prior chunk's tail, send one 160-byte frame per tick.
     if (this.ttsCarry.length < 160 && this.ttsQueue.length > 0) {
       const chunk = this.ttsQueue.shift()!;
+      this.playingText = chunk.text;
       const pcm8k = float32ToInt16At8k(chunk.pcm, chunk.sampleRate);
       const muLaw = muLawEncode(pcm8k);
       this.ttsCarry = Buffer.concat([this.ttsCarry, muLaw]);
@@ -603,7 +614,8 @@ export class CallSession {
       clearTimeout(this.ttsTimer);
       this.ttsTimer = null;
     }
-    endVoiceSessionRecord(this.voiceSessionRecordId, reason);
+    for (const item of this.pendingSpeechTexts) item.heard(false);
+    this.pendingSpeechTexts = [];
     const durationSeconds = Math.round((Date.now() - this.startedAt) / 1000);
     const transcriptText = this.transcript.length === 0
       ? null
@@ -768,7 +780,3 @@ export function listActiveCallSessions(): Array<{ callSid: string; direction: st
     toNumber: s.toNumber,
   }));
 }
-
-// Suppress unused-import linting for getOwnerName and encodeForTwilio.
-void encodeForTwilio;
-void getOwnerName;

@@ -620,13 +620,6 @@ export function stampInboundMeta(id: string, metaJson: string): number {
   return db.prepare('UPDATE messages SET inbound_meta = ? WHERE id = ?').run(metaJson, id).changes;
 }
 
-export function stampVoiceSpeaker(id: string, speaker: string, voiceSessionId: string | null): number {
-  const db = getDb();
-  return db.prepare(
-    'UPDATE messages SET speaker = ?, voice_session_id = COALESCE(?, voice_session_id) WHERE id = ?',
-  ).run(speaker, voiceSessionId, id).changes;
-}
-
 /** Routing column only, so the cache prefix is untouched. */
 export function markSpokenAloud(id: string): number {
   const db = getDb();

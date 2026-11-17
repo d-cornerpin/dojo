@@ -65,6 +65,7 @@ vi.mock('../../../../../gateway/ws.js', () => ({
 import { runMigrations } from '../../../../../db/migrations.js';
 import { clearSecretsCache } from '../../../../../config/loader.js';
 import { clearClientCache } from '../../../../model.js';
+import { StreamingSpeechBuffer } from '../../../../../voice/text-sanitize.js';
 import { callWithRetryAndFallback, type ModelCallInputs } from '../model-call.js';
 import type { AgentTurnState } from '../../../../v2/state.js';
 import { FX, FXID } from '../../../../../../../../deploy/checks/fixture-vocabulary.mjs';
@@ -204,10 +205,10 @@ afterEach(() => {
 // ════════════════════════════════════════════════════════════════════════════════════════
 describe('T65b — the phone buffer is cleared on the idle retry', () => {
   /** The turnCtx the last `inputs()` call produced, so the cases can read the buffer after the call. */
-  let currentTurnCtx: { phoneStreamBuffer: string; phoneStreamFlushedAny: boolean; phoneStreamCallSid: string | null } | null = null;
+  let currentTurnCtx: { phoneStreamBuffer: StreamingSpeechBuffer; phoneStreamFlushedAny: boolean; phoneStreamCallSid: string | null } | null = null;
 
   const inputs = (phoneStreamCallSid: string | null = 'CA-test'): ModelCallInputs => {
-    const turnCtx = { phoneStreamBuffer: '', phoneStreamFlushedAny: false, phoneStreamCallSid } as unknown as ModelCallInputs['turnCtx'];
+    const turnCtx = { phoneStreamBuffer: new StreamingSpeechBuffer(), phoneStreamFlushedAny: false, phoneStreamCallSid } as unknown as ModelCallInputs['turnCtx'];
     currentTurnCtx = turnCtx as unknown as typeof currentTurnCtx;
     return {
       agentId: FXID.n4,
@@ -241,7 +242,7 @@ describe('T65b — the phone buffer is cleared on the idle retry', () => {
     // The abandoned attempt's unfinished sentence must not survive into the retry. The retry
     // streams the whole answer from the first word, so the buffer holds the second attempt's
     // text only. At HEAD it is HALF + HALF + REST — the stale fragment plus the new answer.
-    expect(currentTurnCtx!.phoneStreamBuffer).toBe(HALF + REST);
+    expect(currentTurnCtx!.phoneStreamBuffer.takeRaw()).toBe(HALF + REST);
   });
 
   it('and nothing was spoken, so the flushed latch stays false', async () => {
@@ -266,7 +267,7 @@ describe('T65b — the phone buffer is cleared on the idle retry', () => {
       inputs(null),
     );
     expect(requests.openai).toBe(2);
-    expect(currentTurnCtx!.phoneStreamBuffer).toBe('');
+    expect(currentTurnCtx!.phoneStreamBuffer.takeRaw()).toBe('');
   });
 
   // R7 on a live call: the no-finish retry re-dials from the first word, so speech already handed to the call

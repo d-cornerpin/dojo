@@ -80,8 +80,13 @@ export class StreamingSpeechBuffer {
   private buffer = '';
 
   push(chunk: string): string {
-    if (!chunk) return '';
-    this.buffer += chunk;
+    const ready = this.pushRaw(chunk);
+    return ready ? sanitizeForSpeech(ready) : '';
+  }
+
+  /** As push, but the released text is returned uncleaned, for a caller that cleans at its own door. */
+  pushRaw(chunk: string): string {
+    if (chunk) this.buffer += chunk;
     return this.takeSafe();
   }
 
@@ -102,10 +107,6 @@ export class StreamingSpeechBuffer {
     if (!text) return '';
     const out = sanitizeForSpeech(text);
     return out;
-  }
-
-  hasPending(): boolean {
-    return this.buffer.length > 0;
   }
 
   private takeClauses(minLen: number): string[] {
@@ -205,16 +206,12 @@ export class StreamingSpeechBuffer {
                        counts.star1 === 0 && counts.under1 === 0 &&
                        counts.tick === 0 && counts.tick3 === 0;
       if (!balanced) continue;
-      if (/[.!?\n]/.test(c)) {
-        const next = buf[i + 1];
-        if (next === undefined || /\s/.test(next)) {
-          lastSafe = i + 1;
-        }
-      }
+      // A mark at the end of the buffer may be "3." of "3.5": it waits for the next chunk or the flush.
+      if (/[.!?\n]/.test(c) && /\s/.test(buf[i + 1] ?? '')) lastSafe = i + 1;
     }
     if (lastSafe <= 0) return '';
     const ready = this.buffer.slice(0, lastSafe);
     this.buffer = this.buffer.slice(lastSafe);
-    return sanitizeForSpeech(ready);
+    return ready;
   }
 }

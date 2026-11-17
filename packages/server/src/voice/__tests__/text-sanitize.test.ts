@@ -94,11 +94,9 @@ describe('StreamingSpeechBuffer — holds unbalanced markdown', () => {
   it('holds a partial bold until it balances, then flushes it', () => {
     const buf = new StreamingSpeechBuffer();
     expect(buf.push('Hey **bold')).toBe('');
-    expect(buf.hasPending()).toBe(true);
     expect(buf.push(' text**! Next')).toBe('Hey bold text!');
-    expect(buf.hasPending()).toBe(true);
     expect(buf.flushUnsafe()).toBe('Next');
-    expect(buf.hasPending()).toBe(false);
+    expect(buf.flushUnsafe()).toBe('');
   });
 
   it('flushes a balanced sentence, leaving the remainder for flushUnsafe', () => {
