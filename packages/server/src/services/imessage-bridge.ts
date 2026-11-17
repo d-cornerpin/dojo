@@ -802,9 +802,10 @@ export async function processInboundIMessage(
         sender, name: senderRecord.name,
       });
     } else if (wakeAgent) {
-      // Busy-ack: tell the sender once if this message queued behind a running turn older than 60 s.
+      // Busy-ack: tell the sender once if this message queued behind a running turn older than 60 s. Never to another
+      // Dojo's agent: the line would start a turn on that box.
       try {
-        maybeSendBusyAck(primaryId, sender);
+        if (!senderRecord?.is_agent) maybeSendBusyAck(primaryId, sender);
       } catch (ackErr) {
         logger.warn('Busy-ack attempt failed (non-fatal)', {
           error: ackErr instanceof Error ? ackErr.message : String(ackErr),
