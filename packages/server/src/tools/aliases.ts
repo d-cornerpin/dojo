@@ -78,16 +78,6 @@ export const TOOL_ALIASES: Record<string, AliasEntry> = {
 
   tracker_pause_schedule: { to: 'work_schedule', added: 'T8V dc34dfb 2026-07-29', transform: (a) => ({ ...a, action: 'pause' }) },
   tracker_resume_schedule: { to: 'work_schedule', added: 'T8V dc34dfb 2026-07-29', transform: (a) => ({ ...a, action: 'resume' }) },
-  // Not a bare injection: the retired verb's own `action` value "pause" collides with a work_schedule
-  // action and would silently swallow the missed-run alert, so the choice moves to `resolution`.
-  tracker_resolve_missed_runs: {
-    to: 'work_schedule',
-    added: 'T8V dc34dfb 2026-07-29',
-    transform: (a) => {
-      const { action, ...rest } = a as { action?: unknown } & Record<string, unknown>;
-      return { ...rest, action: 'resolve_missed', resolution: rest.resolution ?? action };
-    },
-  },
 
   // Tombstones: the pointer text names the current surface.
   tracker_edit_notes: { added: 'C27p1 2026-07-03', tombstone: 'Error: tracker_edit_notes was removed. To append a note use work_note({ task_id, notes }); to replace the notes field use work_update({ action: "edit", task_id, notes }).' },

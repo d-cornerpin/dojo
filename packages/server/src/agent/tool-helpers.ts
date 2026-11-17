@@ -15,7 +15,7 @@ export type FieldSpec = {
 /** work_schedule reaches the pause op when `action` is missing too; pausing is the one guess that changes the task, so ask instead. */
 export function pauseActionMissing(args: Record<string, unknown>): string | null {
   const a = typeof args.action === 'string' ? args.action.trim().toLowerCase() : '';
-  return a === 'pause' ? null : 'Error: work_schedule needs action: "pause", "resume" or "resolve_missed". Nothing was changed.';
+  return a === 'pause' ? null : 'Error: work_schedule needs action: "pause" or "resume". Nothing was changed.';
 }
 
 export function checkRequired(fields: FieldSpec[]): string | null {

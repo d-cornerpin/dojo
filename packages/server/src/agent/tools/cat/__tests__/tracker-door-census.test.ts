@@ -43,7 +43,6 @@ vi.mock('../../../../tracker/tools.js', () => ({
   trackerPauseSchedule: recorder('work_schedule:pause'),
   trackerResumeSchedule: recorder('work_schedule:resume'),
   trackerRetask: recorder('work_update:reassign'),
-  trackerResolveMissedRuns: recorder('work_schedule:resolve_missed'),
 }));
 vi.mock('../../../../db/connection.js', () => ({
   getDb: () => ({ prepare: () => ({ get: () => undefined, all: () => [], run: () => ({ changes: 0 }) }) }),

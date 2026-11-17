@@ -119,17 +119,6 @@ describe('a schedule set on a finished recurring task', () => {
     expect(row(id)).toEqual(before);
   });
 
-  it('AGENT door (work_schedule resolve_missed run_now / skip): refused up front, nothing changed', async () => {
-    const id = await finishedRecurring();
-    const before = row(id);
-    for (const resolution of ['run_now', 'skip']) {
-      const out = await call('work_schedule:resolve_missed', { task_id: id, resolution });
-      expect(out.content, out.content).toMatch(/finished/i);
-      expect(out.content).toMatch(/nothing was changed/i);
-    }
-    expect(row(id)).toEqual(before);
-  });
-
   const put = (id: string, body: unknown) => trackerRouter.request(`/tasks/${id}`, {
     method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
   });
@@ -177,8 +166,8 @@ describe('a schedule set on a finished recurring task', () => {
     const edit = await call('work_update:edit', { task_id: id, repeat_interval: 2, repeat_unit: 'days' });
     expect(edit.content).toMatch(/\(complete\)/);
     expect(edit.content).not.toMatch(/\(done\)/);
-    const run = await call('work_schedule:resolve_missed', { task_id: id, resolution: 'run_now' });
-    expect(run.content).toMatch(/cannot be started now/);
+    const run = await call('work_schedule:resume', { task_id: id });
+    expect(run.content).toMatch(/cannot be resumed\. /);
   });
 
   it('R5-1 OWNER door: a failed save answers a plain sentence (no raw database text), 500, nothing changed', async () => {

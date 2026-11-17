@@ -269,7 +269,7 @@ export type TrackerAttr =
   | 'a2a_thread_id'
   | 'scheduled_start' | 'repeat_interval' | 'repeat_unit' | 'repeat_end_type'
   | 'repeat_end_value' | 'repeat_days_of_week' | 'schedule_status' | 'is_paused'
-  | 'paused_until' | 'last_run_at' | 'missed_runs_paused_at'
+  | 'paused_until' | 'last_run_at'
   | 'anchor_local' | 'attempts' | 'hold_kind' | 'hold_reason' | 'hold_at'
   // `tz` is the per-reminder zone (see `scheduleRowColumns`); null means the box timezone.
   | 'tz';

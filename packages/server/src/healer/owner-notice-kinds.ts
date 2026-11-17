@@ -59,6 +59,7 @@ const KINDS: Record<string, Kind> = {
   ollama: { cls: () => (heldOllamaVersion() !== null ? 'action' : 'informational'), stands: () => heldOllamaVersion() !== null },
   smallmodel: { cls: (key) => (key === 'smallmodel:stuck' ? 'action' : 'informational'), stands: () => true },
   projectend: { cls: () => 'informational', stands: () => true },
+  missedruns: { cls: () => 'informational', stands: () => true },
   fitunchecked: informational,
   lessons: informational,
 };

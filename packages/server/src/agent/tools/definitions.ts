@@ -1172,23 +1172,18 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'work_schedule',
-    description: '**Scheduled/recurring tasks ONLY.** `action` picks what:\n\n**action="pause"** pauses a recurring task\'s schedule so it stops firing. **DO NOT use this to "finish" a task**: finished work is handed in with `work_update({action:"hand_in"})`. Pausing a one-shot task strands it (it sits in the Paused column and PM monitoring ignores it).\n\n**action="resume"** resumes a paused recurring task.\n\n**action="resolve_missed"** resolves a "missed runs" alert from the scheduler. When a recurring task is overdue by more than one full interval (typically because the platform was offline or the task was paused longer than expected), the scheduler auto-pauses the task and asks the assigned agent how to proceed. Pass `resolution` as one of three: "run_now" (fire ONE catch-up run now, then resume normal anchor schedule, best when work is cumulative like "summarize what happened since last run"), "skip" (skip all missed slots, resume from the NEXT future anchor, best when each scheduled run is independent and stale, like "post today\'s reminder"), or "pause" (leave paused; the human user will resume via the dashboard). Only valid when the task is currently in the missed-runs paused state.',
+    description: '**Scheduled/recurring tasks ONLY.** `action` picks what:\n\n**action="pause"** pauses a recurring task\'s schedule so it stops firing. **DO NOT use this to "finish" a task**: finished work is handed in with `work_update({action:"hand_in"})`. Pausing a one-shot task strands it (it sits in the Paused column and PM monitoring ignores it).\n\n**action="resume"** resumes a paused recurring task.',
     effects: [],
     input_schema: {
       type: 'object',
       properties: {
         action: {
           type: 'string',
-          enum: ['pause', 'resume', 'resolve_missed'],
-          description: 'Which schedule operation. Omit and the engine infers it (a `resolution` → resolve_missed, otherwise pause).',
+          enum: ['pause', 'resume'],
+          description: 'Which schedule operation.',
         },
         task_id: { type: 'string', description: 'The task ID.' },
         resume_at: { type: 'string', description: 'action="pause": ISO 8601 time the schedule resumes by itself ("pause it until Monday"). Omit to pause until it is resumed.' },
-        resolution: {
-          type: 'string',
-          enum: ['run_now', 'skip', 'pause'],
-          description: 'action="resolve_missed": how to resolve. REQUIRED for that action. See the tool description for guidance on which to pick.',
-        },
       },
       required: ['task_id'],
     },

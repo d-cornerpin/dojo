@@ -38,7 +38,7 @@ const call = async (key: string, args: Record<string, unknown>): Promise<Out> =>
 const db = (): Database.Database => mockDb.current!;
 const row = (id: string) => db().prepare('SELECT is_paused, schedule_status, state FROM work WHERE id = ?').get(id) as { is_paused: number; schedule_status: string; state: string };
 
-const REFUSAL = 'Error: work_schedule needs action: "pause", "resume" or "resolve_missed". Nothing was changed.';
+const REFUSAL = 'Error: work_schedule needs action: "pause" or "resume". Nothing was changed.';
 const recurring = { title: 'Nightly sweep', goal: 'inbox sorted', allow_duplicate: true, scheduled_start: new Date(Date.now() + 3_600_000).toISOString(), repeat_interval: 1, repeat_unit: 'days' };
 
 async function openRecurring(): Promise<string> {
