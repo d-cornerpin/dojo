@@ -20,6 +20,7 @@ import { writeAssignee } from '../work/row-authority.js';
 import { recordMove } from '../work/move-record.js';
 import { DECLARED_PATIENCE_EXCEEDED_CODE } from '../agent/stream-patience.js';
 import { holdOf } from '../work/done/hold.js';
+import { endRoomWaitsThatFit } from '../memory/writer.js';
 
 const logger = createLogger('healer-autofix');
 
@@ -76,6 +77,8 @@ export function runFrequentAutoFixes(): void {
   logger.debug('Frequent auto-fix sweep firing');
   try {
     const db = getDb();
+
+    void endRoomWaitsThatFit();   // a summary writer refused for low memory is asked again once memory is free
 
     // Long-paused agents (status='paused' for >30 min).
     const longPaused = db.prepare(`
