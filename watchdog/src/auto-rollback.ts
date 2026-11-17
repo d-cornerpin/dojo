@@ -84,7 +84,7 @@ export function readMarker(statePath: string = UPDATE_STATE_PATH): UpdateMarker 
       dataBackup: str(parsed.dataBackup),
       failedReason: parsed.failedReason === 'exhausted' ? 'exhausted' : null,
       writeSeq: num(parsed.writeSeq),
-      updatedAt: str(parsed.updatedAt) ?? new Date().toISOString(),
+      updatedAt: str(parsed.updatedAt) ?? fs.statSync(statePath).mtime.toISOString(),
     };
   } catch {
     return null;
@@ -189,21 +189,23 @@ export function decideAutoRollback(marker: UpdateMarker | null, nowMs: number): 
   if (marker.phase !== 'booting-new' && marker.phase !== 'rolled-back') return { action: 'none' };
   if (marker.confirmedHealthyAt) return { action: 'none' };
 
-  const attempts = marker.bootAttempts;
-  const firstBootMs = marker.firstBootAt ? Date.parse(marker.firstBootAt) : NaN;
-  const wallClockExceeded = Number.isFinite(firstBootMs) && (nowMs - firstBootMs) >= FAIL_WALL_CLOCK_MS;
-  const failing = attempts >= FAIL_BOOT_ATTEMPTS || wallClockExceeded;
-  if (!failing) return { action: 'none' };
+  if (marker.bootAttempts < FAIL_BOOT_ATTEMPTS && !(sinceStartMs(marker, nowMs) >= FAIL_WALL_CLOCK_MS)) return { action: 'none' };
 
   if (marker.rollbackCount >= MAX_AUTO_ROLLBACKS) return { action: 'escalate', reason: 'exhausted' };
   return { action: 'rollback' };
 }
 
+// How long this update has had to start: from its first boot, or, for a build that died before its own code
+// ran (no first boot stamped), from when the update was marked. NaN (never in or past the window) if unreadable.
+function sinceStartMs(marker: UpdateMarker, nowMs: number): number {
+  return nowMs - Date.parse(marker.firstBootAt ?? marker.updatedAt);
+}
+
 // An update's first start (the new build, or the restored one after a rollback, which stamps a fresh
 // start time) may hold health down: inside FAIL_WALL_CLOCK_MS the restart and the "down" texts wait.
 export function updateIsStarting(marker: UpdateMarker | null, nowMs: number): boolean {
-  if ((marker?.phase !== 'booting-new' && marker?.phase !== 'rolled-back') || marker.confirmedHealthyAt || !marker.firstBootAt) return false;
-  return nowMs - Date.parse(marker.firstBootAt) < FAIL_WALL_CLOCK_MS;
+  if ((marker?.phase !== 'booting-new' && marker?.phase !== 'rolled-back') || marker.confirmedHealthyAt) return false;
+  return sinceStartMs(marker, nowMs) < FAIL_WALL_CLOCK_MS;
 }
 
 // The generic "down" texts wait while an update owns the outage: it is still starting, or its failure was
