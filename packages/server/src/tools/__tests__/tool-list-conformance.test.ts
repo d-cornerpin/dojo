@@ -42,7 +42,7 @@ import { TOOL_CATEGORIES } from '../categories.js';
 // in section (e) below could not see, because the twins are not in `TOOL_CATEGORIES`).
 import { STRUCTURING_OPS } from '../../agent/v2/classifiers/hoarding.js';
 import { canonicalToolSignature } from '../../agent/v2/classifiers/loop.js';
-import { TOOL_CATEGORY, WORK_OP_CONCURRENCY } from '../../agent/v2/classifiers/concurrency.js';
+import { WORK_OP_CONCURRENCY } from '../../agent/v2/classifiers/concurrency.js';
 import { isWorkOp } from '../work-verbs.js';
 import { RECEIPT_TOOLS, RECEIPT_EXEMPT } from '../../receipts/store.js';
 import { SEND_TO_PEOPLE, USER_TWINNED_SEND_PREFIXES } from '../../agent/sensei-policy.js';
@@ -82,7 +82,6 @@ const HAND_LISTS: Array<{ label: string; names: string[] }> = [
   // phantoms only (an omission there merely over-nudges; see its docstring for
   // why it does NOT earn full registry-exhaustive accounting).
   { label: 'hoarding.STRUCTURING_OPS', names: [...STRUCTURING_OPS] },
-  { label: 'concurrency.TOOL_CATEGORY (keys)', names: Object.keys(TOOL_CATEGORY) },
   { label: 'concurrency.WORK_OP_CONCURRENCY (keys)', names: Object.keys(WORK_OP_CONCURRENCY) },
   // `ack.SELF_ACKNOWLEDGING_TOOLS` was a hand list here until UX-REPAIR T71b.
   // It and its only reader, `ackInjector`, are DELETED: the classifier was

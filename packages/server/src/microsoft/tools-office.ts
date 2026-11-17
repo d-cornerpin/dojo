@@ -16,6 +16,7 @@ const logger = createLogger('office-tools');
 import { graphFetch, GRAPH_BASE } from './graph-fetch.js';
 import { outsideSpan } from '../tools/external-content.js';
 import { odataQuoted } from './tools-read.js';
+import { registerConcurrency } from '../agent/v2/classifiers/concurrency.js';
 
 // Shared edit helpers. .docx and .pptx are ZIP archives of XML: download the bytes, unzip with JSZip, modify
 // the XML, re-zip and PUT back to the same OneDrive path (keeps the file_id, so share links stay alive).
@@ -611,6 +612,7 @@ export const officeToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'office_get_word_document_outline',
+    concurrency: 'safe',
     description: 'Read the structure of an existing Word document: a list of blocks (paragraphs, headings, tables) with zero-based index numbers and a short text preview of each. Use this BEFORE office_insert_in_word_document or office_delete_block_in_word_document to know which index to target. For the actual content of the document, use office_read_word_document instead.',
     effects: [{ kind: 'fs_read', from: 'args.path' }, { kind: 'fs_read', from: 'args.file_id', via: 'office_local_path' }],
     input_schema: {
@@ -700,6 +702,7 @@ export const officeToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'office_get_spreadsheet_range',
+    concurrency: 'safe',
     description: 'Read a range of cells from an existing Excel spreadsheet. Works on a LOCAL .xlsx (pass path="...") or one on OneDrive (pass file_id). Returns the cell values as a 2D array. Use this to inspect data before editing.',
     effects: [{ kind: 'fs_read', from: 'args.path' }, { kind: 'fs_read', from: 'args.file_id', via: 'office_local_path' }],
     input_schema: {
@@ -838,6 +841,7 @@ export const officeToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'office_get_presentation_outline',
+    concurrency: 'safe',
     description: 'Read the structure of an existing PowerPoint: a list of slides with index numbers and the title text of each. Use this BEFORE office_insert_slide or office_delete_slide. For the actual slide content, use office_read_presentation instead.',
     effects: [],
     input_schema: {
@@ -1006,6 +1010,11 @@ export const officeToolDefinitions: ToolDefinition[] = [
     },
   },
 ];
+
+// Register each Office tool's run class with the partitioner, as the other definition files do.
+for (const def of officeToolDefinitions) {
+  if (def.concurrency) registerConcurrency(def.name, def.concurrency);
+}
 
 // ── Helpers ──
 

@@ -295,8 +295,8 @@ for (const baseDef of googleReadBaseTools) {
   });
 }
 
-// Register concurrency + maxResultTokens overrides with the partitioner / cap registry. Defs without them
-// fall through to the hardcoded TOOL_CATEGORY map (concurrency) or get no cap.
+// Register concurrency + maxResultTokens with the partitioner / cap registry. A def without `concurrency`
+// runs one call at a time; one without `maxResultTokens` gets no cap.
 import { registerConcurrency, registerMaxResultTokens } from '../agent/v2/classifiers/concurrency.js';
 import { compactCountNote } from '../agent/tool-helpers.js';
 for (const def of googleReadToolDefinitions) {
