@@ -8,6 +8,7 @@ import { useActiveAgent } from '../components/ActiveAgentProvider';
 import { QuietTimeCard } from '../components/QuietTimeCard';
 import { useGuardedLoad } from '../lib/load-guard';
 import { AgentModelOption } from '../components/AgentModelOption';
+import { isListedAgentModel } from '../lib/role-models';
 
 // Agent config overlay. This is the element for the /agents/:id route and
 // renders as a self-headered dojo3 panel (an overlay over the chat in the
@@ -142,7 +143,7 @@ const ConfigBody = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: (
         api.getModels(),
         api.getProviders(),
       ]);
-      if (modelsResult.ok) setModels(modelsResult.data.filter((m: Model) => m.isEnabled && !m.capabilities.includes('decision')));   // never the Dojo's decision model
+      if (modelsResult.ok) setModels(modelsResult.data.filter(isListedAgentModel));
       if (providersResult.ok) {
         const map: Record<string, string> = {};
         for (const p of providersResult.data) map[p.id] = p.name;

@@ -42,9 +42,9 @@ import { defaultRoleModel, saveRoleAgent, isPickableAgentModel } from '../lib/ro
 import { PMAgentStep, DreamerStep } from '../pages/Setup';
 import { DreamingTab } from '../components/settings/DreamingTab';
 
-const model = (id: string, cost: number | null, caps: string[] = ['chat']) =>
-  ({ id, name: id, apiModelId: id, providerId: 'p', capabilities: caps, isEnabled: true, inputCostPerM: cost, outputCostPerM: cost }) as never;
-const MODELS = [model('local-9b', 0), model('decider', 0, ['decision']), model('cloud-small', 0.25), model('cloud-big', 3)];
+const model = (id: string, cost: number | null, caps: string[] = ['chat'], notForAgents: string | null = null) =>
+  ({ id, name: id, apiModelId: id, providerId: 'p', capabilities: caps, isEnabled: true, inputCostPerM: cost, outputCostPerM: cost, notForAgents }) as never;
+const MODELS = [model('local-9b', 0), model('decider', 0, ['decision'], 'not a chat model'), model('cloud-small', 0.25), model('cloud-big', 3)];
 
 beforeEach(() => {
   server.puts.length = 0;
