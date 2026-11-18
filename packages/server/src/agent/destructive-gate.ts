@@ -155,7 +155,6 @@ export function grantApprovalForSignature(input: {
   agentId: string;
   signature: string;
   requestText: string;
-  decidedBy: string;
   // A NULL args_json keeps the legacy signature-only consumption for that row.
   argsJson?: string | null;
 }): void {
@@ -163,9 +162,9 @@ export function grantApprovalForSignature(input: {
   const toolName = input.signature.slice(0, input.signature.indexOf(':')) || 'unknown';
   getDb().prepare(`
     INSERT INTO destructive_approvals
-      (token, agent_id, tool_name, signature, request_text, args_json, status, decided_by, decided_at, wake_delivered)
-    VALUES (?, ?, ?, ?, ?, ?, 'approved', ?, datetime('now'), 1)
-  `).run(token, input.agentId, toolName, input.signature, input.requestText, input.argsJson ?? null, input.decidedBy);
+      (token, agent_id, tool_name, signature, request_text, args_json, status, decided_at)
+    VALUES (?, ?, ?, ?, ?, ?, 'approved', datetime('now'))
+  `).run(token, input.agentId, toolName, input.signature, input.requestText, input.argsJson ?? null);
   logger.info('destructive-gate: minted consumable approval from owner-approved proposal', {
     agentId: input.agentId, token,
   });
@@ -262,12 +261,6 @@ export async function requestApproval(input: {
     }),
   });
 
-  if (delivered) {
-    try {
-      getDb().prepare(`UPDATE destructive_approvals SET wake_delivered = 1, updated_at = datetime('now') WHERE token = ?`).run(token);
-    } catch { /* best effort, the row is already filed pending */ }
-  }
-
   logger.warn('destructive-gate: call held for primary approval', {
     agentId: input.agentId,
     toolName: input.toolName,
@@ -343,9 +336,6 @@ export async function sweepStaleApprovals(): Promise<void> {
         agentName: name, agentId: row.agent_id, callDescription: row.request_text, token: row.token,
       }),
     });
-    if (delivered) {
-      db.prepare(`UPDATE destructive_approvals SET wake_delivered = 1, updated_at = datetime('now') WHERE token = ?`).run(row.token);
-    }
     logger.info('destructive-gate: re-woke primary for stale pending approval', {
       token: row.token, agentId: row.agent_id, delivered,
     });
