@@ -77,9 +77,12 @@ export type ResolveResult = { ok: true; id: string } | { ok: false; error: strin
 export function resolveAgentRef(value: string | undefined | null, context?: string): ResolveResult {
   if (!value) return { ok: false, error: `Error: agent ID or name is required${context ? ` for ${context}` : ''}.` };
   if (typeof value !== 'string') return { ok: false, error: `Error: agent reference must be a string (got ${typeof value}).` };
-  // UUID-shaped: trusted; if it is stale the FK catches it and `friendlyDbError`
-  // translates.
-  if (value.match(/^[0-9a-f]{8}-[0-9a-f]{4}-/)) return { ok: true, id: value };
+  // UUID-shaped: looked up by id in any status, so an ended agent still resolves (kill_agent says it is ended).
+  if (value.match(/^[0-9a-f]{8}-[0-9a-f]{4}-/)) {
+    const known = getDb().prepare('SELECT id FROM agents WHERE id = ?').get(value) as { id: string } | undefined;
+    if (known) return { ok: true, id: known.id };
+    return { ok: false, error: `Agent "${value}" doesn't exist. Use list_agents to see the agents there are.` };
+  }
   const db = getDb();
   const row = db.prepare(
     `SELECT id FROM agents
