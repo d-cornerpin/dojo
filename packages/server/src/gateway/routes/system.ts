@@ -23,7 +23,7 @@ systemRouter.get('/health', (c) => {
 
   try {
     const db = getDb();
-    agentCount = (db.prepare('SELECT COUNT(*) as count FROM agents').get() as { count: number }).count;
+    agentCount = (db.prepare("SELECT COUNT(*) as count FROM agents WHERE status != 'terminated'").get() as { count: number }).count;
     // Quick DB check
     db.prepare('SELECT 1').get();
   } catch {
