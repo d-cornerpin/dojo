@@ -1,11 +1,11 @@
-// Detects, enables and disables macOS Screen Sharing (the built-in VNC server). Enabling needs root, so it
-// runs via osascript with admin privileges (a prompt on the Mac). No password is stored: macOS
-// authenticates each connection with the user's Mac login.
+// Detects, enables and disables macOS Screen Sharing (the built-in VNC server), never Remote Management. Enabling
+// needs root, so it runs via osascript with admin privileges (a prompt on the Mac), off the server thread. A VNC
+// password is kept only when the viewer chooses to save one (below).
 // No-clobber: if Screen Sharing was already on, never turn it off or change its config; only manage the
 // service when we enabled it (screen_share_managed_by_dojo).
 
 import net from 'node:net';
-import { execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import {
@@ -18,7 +18,7 @@ import {
 const logger = createLogger('screen-share');
 
 const VNC_PORT = 5900;
-const KICKSTART = '/System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart';
+const SCREEN_SHARING_PLIST = '/System/Library/LaunchDaemons/com.apple.screensharing.plist';
 
 export type ScreenShareState = 'ready' | 'error';
 
@@ -130,11 +130,13 @@ export function clearSavedVncPassword(): void {
 
 // ── Privileged execution ──
 
-// Run a shell command as root via the native macOS admin prompt. Throws on cancel/failure. The command is a
-// fixed path plus fixed flags (no interpolated data), so there is nothing to escape.
-function runPrivileged(shellCommand: string): void {
+// Run a shell command as root via the native macOS admin prompt, without blocking the server while the prompt
+// waits. Rejects on cancel or failure. The command is a fixed path plus fixed flags, so there is nothing to escape.
+function runPrivileged(shellCommand: string): Promise<void> {
   const appleScript = `do shell script "${shellCommand}" with administrator privileges`;
-  execFileSync('osascript', ['-e', appleScript], { timeout: 180_000, encoding: 'utf-8' });
+  return new Promise((resolve, reject) => {
+    execFile('osascript', ['-e', appleScript], { timeout: 180_000, encoding: 'utf-8' }, (err) => (err ? reject(err) : resolve()));
+  });
 }
 
 function friendlyError(err: unknown): string {
@@ -144,13 +146,13 @@ function friendlyError(err: unknown): string {
   return `Could not change Screen Sharing: ${msg.slice(0, 200)}`;
 }
 
-// Turn on Screen Sharing for all local accounts; no VNC password is set.
+// Plain Screen Sharing only: the system service, switched on and off with launchctl.
 function enableCommand(): string {
-  return `${KICKSTART} -activate -configure -access -on -allowAccessFor -allUsers -privs -all -restart -agent`;
+  return `/bin/launchctl load -w ${SCREEN_SHARING_PLIST}`;
 }
 
 function disableCommand(): string {
-  return `${KICKSTART} -deactivate -configure -access -off`;
+  return `/bin/launchctl unload -w ${SCREEN_SHARING_PLIST}`;
 }
 
 // ── Actions ──
@@ -166,7 +168,7 @@ export async function enable(): Promise<ActionResult> {
   }
 
   try {
-    runPrivileged(enableCommand());
+    await runPrivileged(enableCommand());
   } catch (err) {
     logger.warn('Managed enable failed', { error: err instanceof Error ? err.message : String(err) });
     return { state: 'error', status: await getStatus(), error: friendlyError(err) };
@@ -186,7 +188,7 @@ export async function disable(): Promise<{ ok: boolean; error?: string; status: 
   const managed = getFlag('screen_share_managed_by_dojo');
   if (managed) {
     try {
-      runPrivileged(disableCommand());
+      await runPrivileged(disableCommand());
     } catch (err) {
       return { ok: false, error: friendlyError(err), status: await getStatus() };
     }
