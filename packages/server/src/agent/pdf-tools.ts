@@ -577,7 +577,7 @@ async function reorderPages(inputPath: string, newOrder: number[], outputPath: s
   const src = await loadPdf(inputPath) as any;
   const total = src.getPageCount();
   const order = normalizePageList(newOrder, total);
-  if (order.length !== total) throw new Error(`Reorder list must include all ${total} pages exactly once; got ${order.length}.`);
+  if (order.length !== total) throw new Error(`Reorder list must include all ${total} pages exactly once (pages count from 1); got ${order.length}.`);
   const out = await PDFDocument.create();
   const copied = await out.copyPages(src, order);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

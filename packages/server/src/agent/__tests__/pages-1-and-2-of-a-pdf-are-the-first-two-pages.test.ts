@@ -47,7 +47,7 @@ const grants = (): ResourceGrant[] => [
   { kind: 'fs_write', at: 'tree', root: UPLOADS },
 ];
 
-type PdfPageTool = 'pdf_extract_pages' | 'pdf_delete_pages' | 'pdf_rotate_pages' | 'pdf_get_info';
+type PdfPageTool = 'pdf_extract_pages' | 'pdf_delete_pages' | 'pdf_rotate_pages' | 'pdf_get_info' | 'pdf_reorder_pages';
 
 function drive(tool: PdfPageTool, args: Record<string, unknown>): Promise<string> {
   return inCall(grants(), tool, () => executePdfTool(tool, args, AGENT));
@@ -96,6 +96,11 @@ describe('every page number counts from 1', () => {
   it('page 0 is refused', async () => {
     const reply = await drive('pdf_extract_pages', { path: SRC, pages: [0], output_filename: 'zero' });
     expect(reply.startsWith('Error: none of the pages [0] exist in this 5-page PDF (pages count from 1)')).toBe(true);
+  });
+
+  it('a reorder list that starts at 0 is refused and says pages count from 1', async () => {
+    const reply = await drive('pdf_reorder_pages', { path: SRC, new_order: [0, 1, 2, 3, 4], output_filename: 'reorder' });
+    expect(reply).toContain('pages count from 1');
   });
 
   it('the info names pages from 1', async () => {
