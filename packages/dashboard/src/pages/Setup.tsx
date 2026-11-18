@@ -940,7 +940,7 @@ export const PrimaryAgentStep = ({ onReady }: { onReady?: (ready: boolean) => vo
         </label>
         <p className="text-xs text-ui/40 mb-2">
           Describe how this agent should behave, its tone, areas of expertise, things to avoid, or any special instructions.
-          You can edit this later from the agent's Config tab.
+          You can change this later from the gear on the agent's card on the Agents page.
         </p>
         <textarea value={personality} onChange={(e) => { setPersonality(e.target.value); setRestyled(true); setSaved(false); }} rows={4}
           placeholder="e.g., Always explain your reasoning. Be proactive about suggesting improvements. Avoid making changes without asking first."
@@ -1020,8 +1020,8 @@ export const PMAgentStep = ({ onReady }: { onReady?: (ready: boolean) => void })
   return (
     <div className="space-y-4">
       <p className="text-sm text-ui/55">
-        The <strong className="text-ui/90">project manager</strong> tracks tasks,
-        pokes stalled work, and escalates issues. It runs on a lighter model to save costs and keeps your primary agent accountable.
+        The <strong className="text-ui/90">project manager</strong> keeps track of tasks,
+        reminds agents about work that has stopped moving, and tells you about problems. It runs on a lighter model to save costs and keeps your primary agent accountable.
       </p>
 
       <div>
@@ -1035,7 +1035,7 @@ export const PMAgentStep = ({ onReady }: { onReady?: (ready: boolean) => void })
         <div>
           <label className="block text-sm font-medium text-ui/70 mb-1">Model</label>
           <p className="text-xs text-ui/40 mb-2">
-            The PM uses a lighter model to save costs. A free local model works well here.
+            The PM uses a lighter model to save costs.
           </p>
           <select value={selectedModel} onChange={(e) => { setSelectedModel(e.target.value); setSaved(false); }}
             className="glass-select w-full">
@@ -1218,7 +1218,7 @@ export const DreamerStep = ({ onReady }: { onReady?: (ready: boolean) => void })
     <div className="space-y-4">
       <p className="text-sm text-ui/55">
         Every night, the dojo <strong className="text-ui/90">dreams</strong>. Just like humans consolidate memories during sleep,
-        a temporary <strong className="text-ui/90">Dreamer</strong> agent wakes up, processes the day's conversations, and
+        the <strong className="text-ui/90">Dreamer</strong> agent wakes up, processes the day's conversations, and
         extracts the important stuff into the dojo's long-term memory vault: facts, preferences, decisions,
         procedures, relationships, and events.
       </p>
