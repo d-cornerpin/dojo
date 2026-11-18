@@ -388,11 +388,9 @@ ${groupInfo ? `- ${groupInfo}` : ''}
 /** Parses the phone-mode trailer of an inbound utterance; absent fields default, order does not matter. */
 interface PhoneCallContext {
   direction: 'inbound' | 'outbound';
-  voicemailDetected: boolean;
   disclosuresRequired: string[];
   theirName: string | null;
   purpose: string | null;
-  callbackNumber: string | null;
 }
 function parsePhoneCallContext(content: string): PhoneCallContext {
   const pick = (re: RegExp): string | null => {
@@ -400,18 +398,15 @@ function parsePhoneCallContext(content: string): PhoneCallContext {
     return m?.[1]?.trim() || null;
   };
   const directionRaw = pick(/^Direction:\s*(\S+)/m);
-  const voicemailRaw = pick(/^Voicemail:\s*(\S+)/m);
   const disclosuresRaw = pick(/^Disclosures:\s*([^\n]*)/m) ?? '';
   return {
     direction: directionRaw === 'outbound' ? 'outbound' : 'inbound',
-    voicemailDetected: voicemailRaw === 'true',
     disclosuresRequired: disclosuresRaw
       .split(',')
       .map(s => s.trim())
       .filter(s => s.length > 0),
     theirName: pick(/^Their Name:\s*([^\n]*)/m),
     purpose: pick(/^Purpose:\s*([^\n]*)/m),
-    callbackNumber: pick(/^Callback:\s*([^\n]*)/m),
   };
 }
 
@@ -1249,23 +1244,15 @@ export function renderPhoneConduct(
   try {
     const phoneCtx = parsePhoneCallContext(lastContent);
     const theirName = phoneCtx.theirName?.trim();
-    const callbackNumber = phoneCtx.callbackNumber?.trim() || '(unknown)';
     const purpose = phoneCtx.purpose?.trim();
     const isOutbound = phoneCtx.direction === 'outbound';
-    const isVoicemail = phoneCtx.voicemailDetected;
     const disclosures = phoneCtx.disclosuresRequired ?? [];
 
     const sections: string[] = [];
 
     sections.push(`You are on a live phone call, not a text chat. The other party hears you as speech and cannot see you. Every signal you would normally carry with formatting or visual cues must now be carried by sound and timing.`);
 
-    if (isVoicemail) {
-      sections.push(`### Voicemail mode
-
-This call reached voicemail, NOT a live person. Do NOT respond conversationally to the greeting, that is the classic robocall tell. Wait for the beep, then leave ONE short message: who you are, why you called, the callback number ${callbackNumber}, and repeat the number once. Then stop. Do not attempt back-and-forth.
-
-Example: "Hi ${theirName ?? 'this'}, this is ${getPrimaryAgentName()} calling${purpose ? ` about ${purpose}` : ''}. Give me a call back when you get a chance at ${callbackNumber}. Again, that's ${callbackNumber}. Thanks, bye."`);
-    } else if (isOutbound) {
+    if (isOutbound) {
       sections.push(`### Who speaks first
 
 This is an OUTBOUND call you placed. The other party speaks first (usually "Hello?"). The instant you hear them, identify yourself and state your purpose. **Do NOT leave silence after their greeting**, silence after a pickup is the signature of a spam call, and people hang up on it.
