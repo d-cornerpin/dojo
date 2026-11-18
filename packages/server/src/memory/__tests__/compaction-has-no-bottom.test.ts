@@ -135,7 +135,7 @@ import { compactionIsBraked, LOW_YIELD_BACKOFF_MS, __resetBrakesForTests } from 
 import { compactionFailureReason } from '../compaction-defect.js';
 import { __resetEstimateCacheForTests } from '../assembled-estimate-cache.js';
 import {
-  noteProviderFailure, noteProviderSuccess, noteSummaryWriterFailure, permanentFailureReason,
+  noteProviderFailure, noteProviderSuccess, permanentFailureReason,
   providerBreaker, __resetBreakersForTests,
 } from '../../providers/billing-breaker.js';
 import { classifyProviderError } from '../../agent/provider-error.js';
@@ -618,16 +618,15 @@ describe('§3 a failing compaction is a repairable defect, never a dead end', ()
    * incident's own door. Every throw site already attaches `provider: ProviderErrorFacts` with
    * `basis: 'status'`; the fix is to stop discarding it.
    *
-   * THE MUTANT: drop the `facts` argument in `summarize.ts`'s catch (or stop forwarding it in
-   * `noteSummaryWriterFailure`) and the first row goes RED.
+   * THE MUTANT: stop forwarding `facts` to `noteProviderFailure` and the first row goes RED.
    */
   it('a WRAPPED 402 still opens the breaker, because the SDK\'s own facts travel with it', () => {
     const wrapped = 'OpenAI call failed: 402 Payment Required';
     const facts = classifyProviderError({ status: 402, message: '402 Payment Required' });
     expect(facts.basis, 'precondition: the SDK read the status off a real field').toBe('status');
 
-    expect(noteSummaryWriterFailure(MODEL_64K, wrapped, AGENT, facts), 'the facts carry the verdict').toBe('no_balance');
-    expect(noteSummaryWriterFailure(MODEL_64K, wrapped, AGENT, facts)).toBe('no_balance');
+    expect(noteProviderFailure(PROVIDER, wrapped, AGENT, facts), 'one is only counted').toBeNull();
+    expect(noteProviderFailure(PROVIDER, wrapped, AGENT, facts)?.reason, 'the facts carry the verdict').toBe('no_balance');
     expect(providerBreaker(PROVIDER), 'two of them open the breaker, as they always did').toBeTruthy();
 
     // ⚠ THE CONTROL, AND IT IS A RECORDED GAP RATHER THAN A PASS: the SAME string with no

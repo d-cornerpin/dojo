@@ -72,7 +72,7 @@ import {
   __resetEstimateCacheForTests, type AssembledEstimate,
 } from '../assembled-estimate-cache.js';
 import {
-  noteProviderFailure, noteSummaryWriterFailure, permanentFailureReason, mayDialProvider,
+  noteProviderFailure, permanentFailureReason, mayDialProvider,
   providerBreaker, noteProviderSuccess, PERMANENT_FAILURES_TO_BREAK, __resetBreakersForTests,
 } from '../../providers/billing-breaker.js';
 // t87b reads the position rule directly — see the STILL_ANCHORED table for why.
@@ -339,10 +339,10 @@ describe('§1 a 402 is permanent, and two of them end the dialling', () => {
     expect(noteProviderFailure(DEAD_PROVIDER, HTTP_402), 'the count restarted from zero').toBeNull();
   });
 
-  it('the summary writer\'s own failure opens its provider\'s breaker, by model id', () => {
+  it('the summary writer\'s provider opens its breaker, and the chunk loop stops on it', () => {
     seedBox({ messages: 10, summaryTokens: 2_000 });
-    expect(noteSummaryWriterFailure(MODEL_64K, HTTP_402, AGENT)).toBe('no_balance');
-    expect(noteSummaryWriterFailure(MODEL_64K, HTTP_402, AGENT)).toBe('no_balance');
+    noteProviderFailure(DEAD_PROVIDER, HTTP_402, AGENT);
+    noteProviderFailure(DEAD_PROVIDER, HTTP_402, AGENT);
     expect(providerBreaker(DEAD_PROVIDER), 'the model\'s provider is the one that broke').toBeTruthy();
     // …which is exactly what the chunk loop reads before it builds anything.
     expect(summaryWriterUnavailable(AGENT, MODEL_64K), 'the loop must stop').toBe(true);

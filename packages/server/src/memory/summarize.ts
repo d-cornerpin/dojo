@@ -2,7 +2,6 @@ import { callModel } from '../agent/model.js';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { estimateTokens } from './budget.js';
-import type { ProviderErrorFacts } from '../agent/provider-error.js';
 import { isContextOverflowError } from '../agent/context-overflow.js';
 import { writeThenCheck, rewriteInstruction } from './summary-check.js';
 import { settleSummaryCall, refuseWhatTheWriterCannotHold, refuseFallbackOverFreeMemory, summaryCallStarts } from './writer.js';
@@ -231,11 +230,9 @@ async function writeSummary(params: {
     const message = err instanceof Error ? err.message : String(err);
     // The writer's own "too long" answer is `tooBig` (halve, or the next writer that holds it), not a failure.
     if (isContextOverflowError(message)) { logger.warn('SUMMARY_REFUSED the writer said the input is too long', { modelId, depth }, agentId); return { ok: false, reason: 'the summary writer cannot hold this input', tooBig: true }; }
-    // A permanent failure (no balance, dead credential, refused access) opens the provider's breaker, which the
-    // chunk loop reads and stops on; transient ones return `ok:false` and retry next drain. Classify from the
-    // throw's structured `provider` facts, not the wrapped message prose, and without importing `AgentError`.
-    const facts = (err as { provider?: ProviderErrorFacts | null } | null)?.provider ?? undefined;
-    noteSummaryCallFailed({ modelId, message, agentId, facts, depth, targetTokens, abortSignal });   // not for a call its caller stopped
+    // A permanent failure (no balance, dead credential, refused access) opens the provider's breaker in the
+    // transport's own catch, which the chunk loop reads and stops on; transient ones return `ok:false` and retry next drain.
+    noteSummaryCallFailed({ modelId, message, agentId, depth, targetTokens, abortSignal });   // not for a call its caller stopped
     return { ok: false, reason: `summarizer model call failed: ${message}` };
   }
 }

@@ -152,23 +152,6 @@ export function mayDialProvider(providerId: string, isOnlyOption = false): boole
   return false;
 }
 
-/**
- * The summary writer's door: takes a MODEL id, records a permanent failure against its provider, returns the
- * reason (null when transient). Pass `facts`: model.ts wraps failures, so prose alone can classify unknown.
- * Swallows lookup errors: throwing inside a catch block would turn an outage into a crash.
- */
-export function noteSummaryWriterFailure(
-  modelId: string | undefined, errText: string, agentId?: string, facts?: ProviderErrorFacts,
-): PermanentReason | null {
-  const reason = permanentFailureReason(errText, facts);
-  if (!reason || !modelId) return reason;
-  try {
-    const row = getDb().prepare('SELECT provider_id FROM models WHERE id = ?').get(modelId) as { provider_id?: string } | undefined;
-    if (row?.provider_id) recordPermanentFailure(row.provider_id, reason, errText, agentId);
-  } catch { /* see the note above: never throw from inside somebody's catch */ }
-  return reason;
-}
-
 export function __resetBreakersForTests(): void {
   permanentFailureCounts.clear();
   openBreakers.clear();
