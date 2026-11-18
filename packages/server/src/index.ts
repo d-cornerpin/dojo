@@ -23,7 +23,6 @@ import { recordBootAttempt, confirmHealthy, readMarker, synthesizeMigrationBootE
 import { probeFsCaseInsensitive, setFsCaseInsensitive } from './agent/path-guards.js';
 import { homeDir } from './home.js';
 import { refuseSmallMainModel } from './agent/main-model-floor.js';
-import { startStallSentinel } from './observability/stall-sentinel.js';
 import { terminateReaderPool, warmReaderPool } from './memory/reader-pool.js';
 import { scheduleFtsHealthCheck, stopFtsRepair } from './memory/fts-health.js';
 import { stopBackgroundClocks } from './shutdown-clocks.js';
@@ -872,8 +871,6 @@ async function main(): Promise<void> {
 
   const { cleanupOldUploads } = await import('./gateway/routes/upload.js');
   setInterval(cleanupOldUploads, 24 * 60 * 60 * 1000);
-
-  startStallSentinel();
 
   // Warm the reader pool now so no user's first search pays the spawn; best-effort, since a box without
   // worker threads runs searches on the serving thread.
