@@ -16,7 +16,7 @@ import { getAgentPermissions } from './manifest.js';
 import { grantForManifest } from './brokers/grants.js';
 import { authorizeFs } from './brokers/fs.js';
 import { EXEC_DOOR_ARG, authorizeExecShapedArgs, execCallText, execDoorFor } from './brokers/exec-seam.js';
-import { destroysDojoData, destroysDojoFiles, overwritesFile } from './brokers/dojo-redirect.js';
+import { destroysDojoData, destroysDojoFiles, overwritesFile, writesCoreDojoRows } from './brokers/dojo-redirect.js';
 import { floorReadings } from './brokers/proc.js';
 import { authorizeAppleScript, shellPayloads } from './brokers/applescript.js';
 import { wrappedProgramIndex } from './brokers/sudo-policy.js';
@@ -83,6 +83,7 @@ export function isDestructiveCall(
   const argv = Array.isArray(raw) && raw.every((e) => typeof e === 'string') ? (raw as string[]) : null;
   if (door && text === null) return 'destructive shell command';
   if (shellLinesOf(toolName, args).some(runsDestroyer) || (text !== null && destroysDojoData(argv ?? text))) return 'destructive shell command';
+  if (callerAgentId && isHealerAgent(callerAgentId) && text !== null && writesCoreDojoRows(argv ?? text)) return 'change to the Dojo\'s own records';
   // A login key lets whoever holds it sign in to the Mac: a write onto one is held, whatever door writes it.
   const written = callerWrites(toolName, args);
   if (written.some((p) => isLoginKeyFile(p.lexical) || isLoginKeyFile(p.real))
