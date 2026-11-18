@@ -2,7 +2,7 @@
 
 import { Hono } from 'hono';
 import { getDb } from '../../db/connection.js';
-import { refuseAgentModel, refuseSmallMainModel } from '../../agent/main-model-floor.js';
+import { refuseAgentModel, notForAgentsReason } from '../../agent/main-model-floor.js';
 import { createLogger } from '../../logger.js';
 import { scoreQuery, clearDimensionCache } from '../../router/scorer.js';
 import type { RouterConfig, TierConfig } from '../../router/types.js';
@@ -89,7 +89,7 @@ routerRouter.get('/available-models', (c) => {
     provider_type: string;
   }>;
 
-  return c.json({ ok: true, data: models.map((m) => ({ ...m, tooSmallForAgents: refuseSmallMainModel(m.id) !== null })) });
+  return c.json({ ok: true, data: models.map((m) => ({ ...m, notForAgents: notForAgentsReason(m.id) })) });
 });
 
 // PUT /tiers/:tierId/models (reorder models in tier)

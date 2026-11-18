@@ -23,7 +23,7 @@ import { servedOwnerNotices } from '../../healer/owner-notice-kinds.js';
 import { writeOobeSoul } from '../../prompt/soul-rerun.js';
 import { isPastFirstRun } from '../../config/setup-state.js';
 import { refuseUnfitLocalModel } from '../../agent/local-model-fit.js';
-import { refuseAgentModel, refuseSmallMainModel, passesMainModelFloor, reassignAffectedAgents, windowOf, MAIN_MODEL_SETTING_KEYS, LOCAL_MODEL_SETTING_KEYS } from '../../agent/main-model-floor.js';
+import { refuseAgentModel, refuseSmallMainModel, notForAgentsReason, reassignAffectedAgents, windowOf, MAIN_MODEL_SETTING_KEYS, LOCAL_MODEL_SETTING_KEYS } from '../../agent/main-model-floor.js';
 import { parsePrice } from '../../services/price-per-million.js';
 import { refuseBadClockTime, CLOCK_TIME_SETTING_KEYS } from '../../config/clock-time.js';
 import { refuseStaleWholeDocument } from './whole-document-guard.js';
@@ -2426,7 +2426,7 @@ function rowToModel(row: Record<string, unknown>): Model {
     costPerMegapixel,
     priceUnknown,
     isEnabled: Boolean(row.is_enabled),
-    tooSmallForAgents: !passesMainModelFloor(row.id as string),
+    notForAgents: notForAgentsReason(row.id as string),
     thinkingEnabled,
     thinkingLevel: row.thinking_level === 'low' || row.thinking_level === 'max' ? row.thinking_level : 'high',
     thinkingLevels: thinkingLevelsForRow(row),
