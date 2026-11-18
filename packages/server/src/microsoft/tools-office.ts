@@ -5,7 +5,8 @@ import * as effectFs from '../agent/effects/fs.js';
 import { officeLocalPath } from './office-local-path.js';
 import path from 'node:path';
 import type { ToolDefinition } from '../agent/tools/types.js';
-import { getValidAccessToken } from './auth.js';
+import { getValidAccessTokenForAccount } from './auth.js';
+import { listMicrosoftAccounts } from './accounts.js';
 import { logMicrosoftActivity } from './activity-log.js';
 import { createLogger } from '../logger.js';
 import JSZip from 'jszip';
@@ -35,8 +36,25 @@ function officeTimeoutForBytes(baseMs: number, bytes: number | undefined): numbe
   return Math.min(scaled, OFFICE_MAX_TIMEOUT_MS);
 }
 
-async function downloadFileBytes(fileId: string, agentId?: string): Promise<Buffer> {
-  const token = await getValidAccessToken();
+/** The Microsoft account an Office call works on: the one `account` names (either kind), else the agent's first connected one. */
+function officeAccount(args: Record<string, unknown>): { id: string | null } | { error: string } {
+  const connected = listMicrosoftAccounts().filter((a) => a.connected);
+  const named = typeof args.account === 'string' ? args.account.trim() : '';
+  if (named) {
+    const hit = connected.find((a) => (a.email ?? '').toLowerCase() === named.toLowerCase());
+    if (hit) return { id: hit.id };
+    return { error: `No connected Microsoft account matches "${named}". Connected: ${connected.map((a) => a.email ?? a.id).join(', ') || 'none'}.` };
+  }
+  return { id: connected.find((a) => a.kind === 'agent')?.id ?? null };
+}
+
+/** The account's token, or null when no account is in use or it cannot sign in. */
+async function officeToken(accountId: string | null): Promise<string | null> {
+  return accountId ? getValidAccessTokenForAccount(accountId) : null;
+}
+
+async function downloadFileBytes(fileId: string, accountId: string | null, agentId: string): Promise<Buffer> {
+  const token = await officeToken(accountId);
   if (!token) throw new Error('Not authenticated with Microsoft');
   const resp = await graphFetch(agentId, `${GRAPH_BASE}/me/drive/items/${encodeURIComponent(fileId)}/content`, {
     headers: { Authorization: `Bearer ${token}` },
@@ -48,8 +66,8 @@ async function downloadFileBytes(fileId: string, agentId?: string): Promise<Buff
   return Buffer.from(ab);
 }
 
-async function getFileMeta(fileId: string, agentId?: string): Promise<{ name: string; parentId?: string }> {
-  const token = await getValidAccessToken();
+async function getFileMeta(fileId: string, accountId: string | null, agentId: string): Promise<{ name: string; parentId?: string }> {
+  const token = await officeToken(accountId);
   if (!token) throw new Error('Not authenticated with Microsoft');
   const resp = await graphFetch(agentId, `${GRAPH_BASE}/me/drive/items/${encodeURIComponent(fileId)}?$select=name,parentReference`, {
     headers: { Authorization: `Bearer ${token}` },
@@ -74,7 +92,7 @@ interface OfficeEditTarget {
 
 async function resolveOfficeEditTarget(
   args: Record<string, unknown>,
-  ext: '.docx' | '.xlsx', agentId?: string,
+  ext: '.docx' | '.xlsx', accountId: string | null, agentId: string,
 ): Promise<OfficeEditTarget | string> {
   const fileId = typeof args.file_id === 'string' && args.file_id.trim() ? args.file_id.trim() : undefined;
   // A file_id that is really a filesystem path (starts with / or ~) is local. The one predicate lives in
@@ -98,14 +116,14 @@ async function resolveOfficeEditTarget(
   }
 
   if (fileId) {
-    const meta = await getFileMeta(fileId, agentId);
+    const meta = await getFileMeta(fileId, accountId, agentId);
     return {
       isLocal: false,
       name: meta.name,
       handle: fileId,
-      read: async () => downloadFileBytes(fileId, agentId),
+      read: async () => downloadFileBytes(fileId, accountId, agentId),
       writeBack: async (buf, mimeType) => {
-        const r = await uploadToOneDrive(buf, meta.name, mimeType, meta.parentId, agentId);
+        const r = await uploadToOneDrive(buf, meta.name, mimeType, meta.parentId, accountId, agentId);
         return { name: r.name, ref: `File ID: ${r.id}\nOpen: ${r.webUrl}` };
       },
     };
@@ -1007,6 +1025,17 @@ export const officeToolDefinitions: ToolDefinition[] = [
   },
 ];
 
+// Every Office tool can work on a named Microsoft account; omitted, it is the agent's own.
+for (const def of officeToolDefinitions) {
+  const schema = def.input_schema as { properties?: Record<string, unknown> };
+  if (schema.properties && !schema.properties.account) {
+    schema.properties.account = {
+      type: 'string',
+      description: "Which connected Microsoft account's OneDrive to work on, by its email address (the agent's own or the user's). Omit to use the agent's own account.",
+    };
+  }
+}
+
 // ── Helpers ──
 
 // Word document schema: the canonical shape an agent passes to office_create_word_document and its append
@@ -1206,15 +1235,15 @@ async function saveOfficeBuffer(
   agentId: string,
   folderId: string | undefined,
   kind: 'word' | 'excel' | 'powerpoint',
+  accountId: string | null,
 ): Promise<string> {
-  const { isMicrosoftConnected } = await import('./auth.js');
   // OneDrive is the destination only for the primary agent: mutating the connected Microsoft account is
   // primary-only, while a local office doc is a file on disk allowed for any agent under its file_write
   // manifest. Keying on connection alone would classify a sub-agent's create as an account write and deny
   // it upstream.
   const { getPrimaryAgentId } = await import('../config/platform.js');
-  if (isMicrosoftConnected('agent') && agentId === getPrimaryAgentId()) {
-    const result = await uploadToOneDrive(buffer, filename, mimeType, folderId, agentId);
+  if (accountId !== null && agentId === getPrimaryAgentId()) {
+    const result = await uploadToOneDrive(buffer, filename, mimeType, folderId, accountId, agentId);
     const kindLabel = kind === 'word' ? 'Word document' : kind === 'excel' ? 'Excel spreadsheet' : 'PowerPoint presentation';
     return `${kindLabel} "${result.name}" created on OneDrive.\nFile ID: ${result.id}\nOpen: ${result.webUrl}${result.shareLink ? `\nShare link: ${result.shareLink}` : ''}`;
   }
@@ -1257,9 +1286,9 @@ async function uploadToOneDrive(
   buffer: Buffer,
   filename: string,
   mimeType: string,
-  folderId?: string, agentId?: string,
+  folderId: string | undefined, accountId: string | null, agentId: string,
 ): Promise<{ id: string; name: string; webUrl: string; shareLink: string | null }> {
-  const token = await getValidAccessToken();
+  const token = await officeToken(accountId);
   if (!token) throw new Error('Not authenticated with Microsoft');
 
   const encodedName = encodeURIComponent(filename);
@@ -2491,6 +2520,9 @@ export async function executeOfficeTool(
   agentId: string,
   agentName: string,
 ): Promise<string> {
+  const account = officeAccount(args);
+  if ('error' in account) return `Error: ${account.error}`;
+  const accountId = account.id;
 
   switch (name) {
     case 'office_create_word_document': {
@@ -2517,7 +2549,7 @@ export async function executeOfficeTool(
           revision_author: args.revision_author as string | undefined,
         };
         const buffer = await generateWordBuffer(blocks, docOptions);
-        const summary = await saveOfficeBuffer(buffer, filename, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', agentId, folderId, 'word');
+        const summary = await saveOfficeBuffer(buffer, filename, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', agentId, folderId, 'word', accountId);
         logMicrosoftActivity({ agentId, agentName, action: 'office_create_word_document', actionType: 'write', details: JSON.stringify({ filename }), apiEndpoint: 'drive/upload', success: true });
         return summary;
       } catch (err) {
@@ -2527,7 +2559,7 @@ export async function executeOfficeTool(
 
     case 'office_append_to_word_document': {
       try {
-        const target = await resolveOfficeEditTarget(args, '.docx', agentId);
+        const target = await resolveOfficeEditTarget(args, '.docx', accountId, agentId);
         if (typeof target === 'string') return target;
         const blocks = args.content as ContentBlock[];
 
@@ -2552,7 +2584,7 @@ export async function executeOfficeTool(
 
     case 'office_get_word_document_outline': {
       try {
-        const target = await resolveOfficeEditTarget(args, '.docx', agentId);
+        const target = await resolveOfficeEditTarget(args, '.docx', accountId, agentId);
         if (typeof target === 'string') return target;
         const buf = await target.read();
         const zip = await JSZip.loadAsync(buf);
@@ -2582,7 +2614,7 @@ export async function executeOfficeTool(
 
     case 'office_read_word_document': {
       try {
-        const target = await resolveOfficeEditTarget(args, '.docx', agentId);
+        const target = await resolveOfficeEditTarget(args, '.docx', accountId, agentId);
         if (typeof target === 'string') return target;
         const offset = Math.max(0, Math.floor((args.offset as number | undefined) ?? 0));
         const limit = Math.min(500, Math.max(1, Math.floor((args.limit as number | undefined) ?? 200)));
@@ -2671,7 +2703,7 @@ export async function executeOfficeTool(
 
     case 'office_replace_in_word_document': {
       try {
-        const target = await resolveOfficeEditTarget(args, '.docx', agentId);
+        const target = await resolveOfficeEditTarget(args, '.docx', accountId, agentId);
         if (typeof target === 'string') return target;
         const find = args.find as string;
         const replace = args.replace as string;
@@ -2697,7 +2729,7 @@ export async function executeOfficeTool(
 
     case 'office_insert_in_word_document': {
       try {
-        const target = await resolveOfficeEditTarget(args, '.docx', agentId);
+        const target = await resolveOfficeEditTarget(args, '.docx', accountId, agentId);
         if (typeof target === 'string') return target;
         const position = args.position as number;
         const blocks = args.content as ContentBlock[];
@@ -2729,7 +2761,7 @@ export async function executeOfficeTool(
 
     case 'office_delete_block_in_word_document': {
       try {
-        const target = await resolveOfficeEditTarget(args, '.docx', agentId);
+        const target = await resolveOfficeEditTarget(args, '.docx', accountId, agentId);
         if (typeof target === 'string') return target;
         const start = args.start as number;
         const count = (args.count as number | undefined) ?? 1;
@@ -2782,7 +2814,7 @@ export async function executeOfficeTool(
         }
 
         const fileId = args.file_id as string;
-        const token = await getValidAccessToken();
+        const token = await officeToken(accountId);
         if (!token) return 'Error: Not authenticated with Microsoft';
 
         // Resolve sheet name if not specified: use the first one
@@ -2847,7 +2879,7 @@ export async function executeOfficeTool(
         }
 
         const fileId = args.file_id as string;
-        const token = await getValidAccessToken();
+        const token = await officeToken(accountId);
         if (!token) return 'Error: Not authenticated with Microsoft';
 
         let resolvedSheet = sheetName;
@@ -2866,7 +2898,7 @@ export async function executeOfficeTool(
         });
         if (!resp.ok) return `Error writing range: HTTP ${resp.status} ${(await resp.text()).slice(0, 300)}`;
         logMicrosoftActivity({ agentId, agentName, action: 'office_write_spreadsheet_range', actionType: 'write', details: JSON.stringify({ fileId, sheetName: resolvedSheet, range, rowCount: values.length }), apiEndpoint: 'workbook/range', success: true });
-        const meta = await getFileMeta(fileId, agentId);
+        const meta = await getFileMeta(fileId, accountId, agentId);
         return `Wrote ${values.length} row(s) to ${resolvedSheet}!${range} in "${meta.name}".\nFile ID: ${fileId}`;
       } catch (err) {
         return `Error writing range: ${err instanceof Error ? err.message : String(err)}`;
@@ -2892,7 +2924,7 @@ export async function executeOfficeTool(
         }
 
         const fileId = args.file_id as string;
-        const token = await getValidAccessToken();
+        const token = await officeToken(accountId);
         if (!token) return 'Error: Not authenticated with Microsoft';
 
         let resolvedSheet = sheetName;
@@ -2922,7 +2954,7 @@ export async function executeOfficeTool(
         });
         if (!resp.ok) return `Error appending rows: HTTP ${resp.status} ${(await resp.text()).slice(0, 300)}`;
         logMicrosoftActivity({ agentId, agentName, action: 'office_append_spreadsheet_rows', actionType: 'write', details: JSON.stringify({ fileId, sheetName: resolvedSheet, rowCount: rows.length, range }), apiEndpoint: 'workbook/range', success: true });
-        const meta = await getFileMeta(fileId, agentId);
+        const meta = await getFileMeta(fileId, accountId, agentId);
         return `Appended ${rows.length} row(s) to ${resolvedSheet} at ${range} in "${meta.name}".\nFile ID: ${fileId}`;
       } catch (err) {
         return `Error appending rows: ${err instanceof Error ? err.message : String(err)}`;
@@ -2945,7 +2977,7 @@ export async function executeOfficeTool(
         }
 
         const fileId = args.file_id as string;
-        const token = await getValidAccessToken();
+        const token = await officeToken(accountId);
         if (!token) return 'Error: Not authenticated with Microsoft';
         const resp = await graphFetch(agentId, `${GRAPH_BASE}/me/drive/items/${encodeURIComponent(fileId)}/workbook/worksheets/add`, {
           method: 'POST',
@@ -2978,7 +3010,7 @@ export async function executeOfficeTool(
         }
 
         const fileId = args.file_id as string;
-        const token = await getValidAccessToken();
+        const token = await officeToken(accountId);
         if (!token) return 'Error: Not authenticated with Microsoft';
         const resp = await graphFetch(agentId, `${GRAPH_BASE}/me/drive/items/${encodeURIComponent(fileId)}/workbook/worksheets('${odataQuoted(sheetName)}')`, {
           method: 'DELETE',
@@ -3028,7 +3060,7 @@ export async function executeOfficeTool(
         }
 
         const buffer = await generateExcelBuffer(sheets);
-        const summary = await saveOfficeBuffer(buffer, filename, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', agentId, folderId, 'excel');
+        const summary = await saveOfficeBuffer(buffer, filename, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', agentId, folderId, 'excel', accountId);
         logMicrosoftActivity({ agentId, agentName, action: 'office_create_spreadsheet', actionType: 'write', details: JSON.stringify({ filename, sheetCount: sheets.length }), apiEndpoint: 'drive/upload', success: true });
         return summary;
       } catch (err) {
@@ -3039,7 +3071,7 @@ export async function executeOfficeTool(
     case 'office_get_presentation_outline': {
       try {
         const fileId = args.file_id as string;
-        const buf = await downloadFileBytes(fileId, agentId);
+        const buf = await downloadFileBytes(fileId, accountId, agentId);
         const zip = await JSZip.loadAsync(buf);
         const order = await getSlideOrder(zip);
         const outline: Array<{ index: number; title: string }> = [];
@@ -3048,7 +3080,7 @@ export async function executeOfficeTool(
           const title = file ? slideTitleFromXml(await file.async('string')) : '[unreadable]';
           outline.push({ index: i, title: title || '[untitled]' });
         }
-        const meta = await getFileMeta(fileId, agentId);
+        const meta = await getFileMeta(fileId, accountId, agentId);
         logMicrosoftActivity({ agentId, agentName, action: 'office_get_presentation_outline', actionType: 'read', details: JSON.stringify({ fileId, slideCount: outline.length }), apiEndpoint: 'drive/download', success: true });
         return outsideSpan(JSON.stringify({ file: meta.name, file_id: fileId, slides: outline }));
       } catch (err) {
@@ -3062,10 +3094,10 @@ export async function executeOfficeTool(
         const offset = Math.max(0, Math.floor((args.offset as number | undefined) ?? 0));
         const limit = Math.min(200, Math.max(1, Math.floor((args.limit as number | undefined) ?? 50)));
         const format = (args.format as string | undefined) === 'json' ? 'json' : 'text';
-        const buf = await downloadFileBytes(fileId, agentId);
+        const buf = await downloadFileBytes(fileId, accountId, agentId);
         const zip = await JSZip.loadAsync(buf);
         const order = await getSlideOrder(zip);
-        const meta = await getFileMeta(fileId, agentId);
+        const meta = await getFileMeta(fileId, accountId, agentId);
         const totalSlides = order.length;
         const slice = order.slice(offset, offset + limit);
 
@@ -3124,7 +3156,7 @@ export async function executeOfficeTool(
         const find = args.find as string;
         const replace = args.replace as string;
         if (!find) return 'Error: find cannot be empty';
-        const buf = await downloadFileBytes(fileId, agentId);
+        const buf = await downloadFileBytes(fileId, accountId, agentId);
         const zip = await JSZip.loadAsync(buf);
         const order = await getSlideOrder(zip);
         let totalReplacements = 0;
@@ -3142,8 +3174,8 @@ export async function executeOfficeTool(
           return `No matches for "${find}" found in any slide. Note: find/replace only matches text within a single formatted run.`;
         }
         const updatedBuffer = Buffer.from(await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' }));
-        const meta = await getFileMeta(fileId, agentId);
-        const result = await uploadToOneDrive(updatedBuffer, meta.name, 'application/vnd.openxmlformats-officedocument.presentationml.presentation', meta.parentId, agentId);
+        const meta = await getFileMeta(fileId, accountId, agentId);
+        const result = await uploadToOneDrive(updatedBuffer, meta.name, 'application/vnd.openxmlformats-officedocument.presentationml.presentation', meta.parentId, accountId, agentId);
         logMicrosoftActivity({ agentId, agentName, action: 'office_replace_in_presentation', actionType: 'write', details: JSON.stringify({ fileId, replacements: totalReplacements }), apiEndpoint: 'drive/upload', success: true });
         return `Replaced ${totalReplacements} occurrence(s) of "${find}" across ${order.length} slide(s) in "${result.name}".\nFile ID: ${result.id}\nOpen: ${result.webUrl}`;
       } catch (err) {
@@ -3155,7 +3187,7 @@ export async function executeOfficeTool(
       try {
         const fileId = args.file_id as string;
         const position = args.position as number;
-        const buf = await downloadFileBytes(fileId, agentId);
+        const buf = await downloadFileBytes(fileId, accountId, agentId);
         const zip = await JSZip.loadAsync(buf);
         const order = await getSlideOrder(zip);
         if (position < 0 || position >= order.length) {
@@ -3198,8 +3230,8 @@ export async function executeOfficeTool(
         }
 
         const updatedBuffer = Buffer.from(await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' }));
-        const meta = await getFileMeta(fileId, agentId);
-        const result = await uploadToOneDrive(updatedBuffer, meta.name, 'application/vnd.openxmlformats-officedocument.presentationml.presentation', meta.parentId, agentId);
+        const meta = await getFileMeta(fileId, accountId, agentId);
+        const result = await uploadToOneDrive(updatedBuffer, meta.name, 'application/vnd.openxmlformats-officedocument.presentationml.presentation', meta.parentId, accountId, agentId);
         logMicrosoftActivity({ agentId, agentName, action: 'office_delete_slide', actionType: 'write', details: JSON.stringify({ fileId, position }), apiEndpoint: 'drive/upload', success: true });
         return `Deleted slide at position ${position} from "${result.name}". ${order.length - 1} slide(s) remain.\nFile ID: ${result.id}\nOpen: ${result.webUrl}`;
       } catch (err) {
@@ -3214,7 +3246,7 @@ export async function executeOfficeTool(
         const title = args.title as string;
         const body = (args.body as string | undefined) ?? '';
 
-        const buf = await downloadFileBytes(fileId, agentId);
+        const buf = await downloadFileBytes(fileId, accountId, agentId);
         const zip = await JSZip.loadAsync(buf);
         const order = await getSlideOrder(zip);
         if (position < 0 || position > order.length) {
@@ -3323,8 +3355,8 @@ export async function executeOfficeTool(
         }
 
         const updatedBuffer = Buffer.from(await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' }));
-        const meta = await getFileMeta(fileId, agentId);
-        const result = await uploadToOneDrive(updatedBuffer, meta.name, 'application/vnd.openxmlformats-officedocument.presentationml.presentation', meta.parentId, agentId);
+        const meta = await getFileMeta(fileId, accountId, agentId);
+        const result = await uploadToOneDrive(updatedBuffer, meta.name, 'application/vnd.openxmlformats-officedocument.presentationml.presentation', meta.parentId, accountId, agentId);
         logMicrosoftActivity({ agentId, agentName, action: 'office_insert_slide', actionType: 'write', details: JSON.stringify({ fileId, position }), apiEndpoint: 'drive/upload', success: true });
         return `Inserted slide at position ${position} in "${result.name}". ${order.length + 1} slide(s) total.\nFile ID: ${result.id}\nOpen: ${result.webUrl}`;
       } catch (err) {
@@ -3341,7 +3373,7 @@ export async function executeOfficeTool(
         const pptxOptions: PptxOptions = { theme: args.theme as PptxTheme | undefined };
 
         const buffer = await generatePptxBuffer(slides, pptxOptions);
-        const summary = await saveOfficeBuffer(buffer, filename, 'application/vnd.openxmlformats-officedocument.presentationml.presentation', agentId, folderId, 'powerpoint');
+        const summary = await saveOfficeBuffer(buffer, filename, 'application/vnd.openxmlformats-officedocument.presentationml.presentation', agentId, folderId, 'powerpoint', accountId);
         logMicrosoftActivity({ agentId, agentName, action: 'office_create_presentation', actionType: 'write', details: JSON.stringify({ filename, slideCount: slides.length }), apiEndpoint: 'drive/upload', success: true });
         return summary;
       } catch (err) {

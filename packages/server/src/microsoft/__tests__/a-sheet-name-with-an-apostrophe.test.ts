@@ -7,7 +7,8 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-vi.mock('../auth.js', () => ({ getValidAccessToken: vi.fn(async () => 'token') }));
+vi.mock('../auth.js', () => ({ getValidAccessTokenForAccount: vi.fn(async () => 'token') }));
+vi.mock('../accounts.js', () => ({ listMicrosoftAccounts: () => [{ id: 'agent-acct', kind: 'agent', email: 'agent@example.com', connected: true }] }));
 vi.mock('../activity-log.js', () => ({ logMicrosoftActivity: vi.fn() }));
 vi.mock('../graph-fetch.js', () => ({
   GRAPH_BASE: 'https://graph.test/v1.0',
