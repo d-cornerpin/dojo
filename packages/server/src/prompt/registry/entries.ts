@@ -41,13 +41,7 @@ const SYSTEM_ENTRIES: SystemInjection[] = [
     id: 'sys.time',
     target: 'system',
     slot: SystemSlot.Time,
-    reason:
-      'Temporal INSTRUCTION, carrying no date: it tells the agent where the ' +
-      'clock lives (msg.current-time, the volatile tail) and how to use it to ' +
-      'judge the age of context. The date itself used to be here and rolled at ' +
-      'midnight — as the first slot of the system prompt it invalidated the ' +
-      'whole system+tools prefix nightly, so it moved to the tail message that ' +
-      'already renders it (T72b claim 4).',
+    reason: 'Tells the agent where the clock lives (msg.current-time, in the tail) and how to judge the age of context; it carries no date, so the cached prefix does not roll at midnight.',
     render: () => renderTimeHeader(),
   },
   {
@@ -82,12 +76,7 @@ const SYSTEM_ENTRIES: SystemInjection[] = [
     id: 'sys.techniques-index',
     target: 'system',
     slot: SystemSlot.TechniquesIndex,
-    reason:
-      'The Available Techniques index (published techniques) so the agent can ' +
-      'discover and use_technique() a matching procedure; ladder-anchored (the ' +
-      'live user message outranks a technique). UX-ACCESS A4: it takes ctx.agentId ' +
-      'now — the index is filtered to the agent\'s technique grant, so it can no ' +
-      'longer advertise a procedure the use_technique door would refuse.',
+    reason: 'The published techniques this agent is granted, so it can find and use a matching procedure; the live user message outranks a technique.',
     render: (ctx) => generateTechniqueIndex(ctx.agentId),
   },
   {
@@ -300,13 +289,7 @@ const MESSAGE_ENTRIES: MessageInjection[] = [
     id: 'msg.delegation-hint',
     target: 'messages',
     slot: MessageSlot.DelegationHint,
-    reason:
-      'F9: when the user EXPLICITLY routes work to the agent\'s own agents ("have ' +
-      'one of your agents research it and report back to me"), the floor model was ' +
-      'observed doing the work itself and never mentioning the choice. Advice-voice ' +
-      'engine hint (tier 7): delegate, or briefly say why you are handling it ' +
-      'directly, never silently override. Content is computed by the loop detector; ' +
-      'the entry renders + injects it.',
+    reason: 'When the user explicitly asks for the work to go to the agent\'s own helpers, an advice-voice hint: delegate, or say briefly why not. The loop computes the text; the entry renders it.',
     render: (ctx) => (ctx.delegationHint ? { role: 'user', content: ctx.delegationHint } : null),
   },
   {
@@ -324,13 +307,7 @@ const MESSAGE_ENTRIES: MessageInjection[] = [
     id: 'msg.technique-weak',
     target: 'messages',
     slot: MessageSlot.TechniqueWeak,
-    reason:
-      'Weak-match "consider these techniques" hint. Was raw-appended to the system ' +
-      'prompt (legacy), which broke prompt caching: the matched-strength wording ' +
-      'changes per user message, so a volatile string lived inside the otherwise ' +
-      'stable cached prefix. Now injected as a post-tail engine message (the R5 ' +
-      'move the slot enum always anticipated), keeping the system prefix cacheable. ' +
-      'Content is computed by the loop matcher; the entry renders + injects it.',
+    reason: 'A weak-match "consider these techniques" hint, after the tail because its wording changes with each user message. The loop matcher computes it; the entry renders it.',
     render: (ctx) => {
       const h = ctx.techniqueWeakHint?.trimStart();
       return h ? { role: 'user', content: h } : null;
@@ -340,49 +317,21 @@ const MESSAGE_ENTRIES: MessageInjection[] = [
     id: 'msg.turn-context',
     target: 'messages',
     slot: MessageSlot.TurnContext,
-    reason:
-      'C28 Part 1: the per-turn volatile routing/presence block (reply destination, ' +
-      'who the reply goes to (from the turn address), channel landscape, phone conduct, counterparty ' +
-      'header, live iMessage bridge state, othersWaiting / conversational-turn hints) ' +
-      'as ONE near-tail engine message. Moved out of the cached system prefix so a ' +
-      'channel/presence/waiting-count change no longer invalidates it (all-provider ' +
-      'cache fix, P-1). Sits just before the current-time tail.',
+    reason: 'The per-turn routing and presence block (reply destination, channel landscape, phone and voice conduct, counterparty header, iMessage bridge state, waiting hints) as one near-tail message, so its changes never touch the cached prefix.',
     render: (ctx) => renderTurnContext(ctx),
   },
   {
     id: 'msg.deliveries',
     target: 'messages',
     slot: MessageSlot.Deliveries,
-    reason:
-      'PHASE-3 T7: THE DELIVERIES LANE — what this agent has already sent the ' +
-      'counterparty, read from the `deliveries` rows (mig 121) by ' +
-      '`memory/deliveries-lane.ts`, so the recipient\'s next turn sees the question it ' +
-      'was asked. It replaces RC-1\'s cross-conversation ECHO ROW DUPLICATION (an extra ' +
-      'assistant message written into the recipient\'s conversation) and the ' +
-      'registry-exempt pending-question header that echo suppressed. Volatile by shape ' +
-      '(relative times) and scoped to the conversation being served, so it lives past ' +
-      'the cache boundary at 1860 — the physical position the header already held, ' +
-      'between turn-context and peer-status. Content is rendered + fitted to the lane\'s ' +
-      'declared reserve by the lane module; the loop supplies it because the dedup ' +
-      'against the not-yet-stripped echo rows is a fact about the in-flight array.',
+    reason: 'What this agent has already sent the counterparty in the served conversation, from the deliveries rows (memory/deliveries-lane.ts). Volatile, so it sits past the cache boundary, between turn-context and peer-status.',
     render: (ctx) => (ctx.deliveriesLane ? { role: 'user', content: ctx.deliveriesLane } : null),
   },
   {
     id: 'msg.relevant-memory',
     target: 'messages',
     slot: MessageSlot.RecalledMemory,
-    reason:
-      'SWEEP CORE-2 item 4 (SWEEP-C T4, owner-decided GO 2026-07-26): THE RECALL LANE — ' +
-      'per-message semantic recall, and the conclusions it carries. It was a `fitLanes` ' +
-      'candidate at MessageSlot.RelevantMemory = 400 while its content was re-derived from ' +
-      'the LIVE ASK every turn, which is the exact cache-buster roadmap non-negotiable #10 ' +
-      'forbids; per-turn retrieval rides the TAIL, at 1870, between deliveries and ' +
-      'peer-status. It also carries what the agent ALREADY ANSWERED, resolved through ' +
-      '`answered-edge.ts` from the migration-113 answer stamps — never from prose — so an ' +
-      'ask recalled by meaning arrives with its conclusion instead of on its own. The ' +
-      'assembler computes it (it owns the window policy); the loop appends it past ' +
-      '`volatileFrom`. T67b moved it 1870 -> 1880, behind peer-status: the tail orders ' +
-      'most-stable-first and a peer status flip is rarer than a new ask.',
+    reason: 'Per-message semantic recall and the answers already given to recalled asks (answered-edge.ts). It changes with every ask, so it rides the tail, behind peer-status.',
     render: (ctx) => (ctx.recallLane ? { role: 'user', content: ctx.recallLane } : null),
   },
   // Lanes that must render below the conversation: whatever a tool can mutate would otherwise re-bill
@@ -391,75 +340,35 @@ const MESSAGE_ENTRIES: MessageInjection[] = [
     id: 'msg.attempt-ledger',
     target: 'messages',
     slot: MessageSlot.AttemptLedgerTail,
-    reason:
-      'W81: THE ATTEMPT LEDGER. It was a `fitLanes` candidate at MessageSlot.AttemptLedger = '
-      + '500, and it states the engine\'s record of work on the agent\'s active tasks — so '
-      + 'every `work_*` write reaches it through the spine\'s `work_events` transition branch '
-      + '(`work/audit-trail.ts`), plus `work_note` directly. Two of the owner\'s six '
-      + 'occurrences were `work_update`. Rendered by the assembler from the same single '
-      + '`listTasks` read as `msg.active-tasks` (`memory/work-board-lane.ts`); appended by '
-      + 'the loop past `volatileFrom`. First of the four because it is the most stable: it '
-      + 'moves only when a work row is actually touched.',
+    reason: 'The engine\'s record of work on the agent\'s active tasks (memory/work-board-lane.ts). Every work write moves it, so it renders below the conversation; first of the four tail lanes because it is the most stable.',
     render: (ctx) => (ctx.attemptLedgerLane ? { role: 'user', content: ctx.attemptLedgerLane } : null),
   },
   {
     id: 'msg.active-tasks',
     target: 'messages',
     slot: MessageSlot.ActiveTasksTail,
-    reason:
-      'W81: THE ACTIVE-TASK BOARD. It was a `fitLanes` candidate at MessageSlot.ActiveTasks = '
-      + '600 with `maxTokens: Infinity`, stating the work board — the most-written surface an '
-      + 'agent has. Every `work_*` tool moves it, and so does the ENGINE: the '
-      + '>=6-non-trivial-tool-call tracker floor (`agent/v2/steps/execute/tracker-floors.ts`) '
-      + 'mints an in_progress row out of six PURE READS, which is why `plaud_*` and '
-      + '`outlook_*` appear in the owner\'s six alongside the two writes. Driven at '
-      + '`0cc9a3ba`, one `work_update` moved the merged prefix block at index 0 — and index 0 '
-      + 'is what the entire array sits behind. Same read as `msg.attempt-ledger`, appended by '
-      + 'the loop past `volatileFrom`.',
+    reason: 'The agent\'s work board, from the same read as msg.attempt-ledger. Work tools and engine floors move it, so it renders below the conversation.',
     render: (ctx) => (ctx.activeTasksLane ? { role: 'user', content: ctx.activeTasksLane } : null),
   },
   {
     id: 'msg.scratchpad',
     target: 'messages',
     slot: MessageSlot.ScratchpadTail,
-    reason:
-      'W81: THE SCRATCHPAD. It was a `fitLanes` candidate at MessageSlot.Scratchpad = 800 '
-      + 'holding PRIORITY 20 — the highest content priority in the assembly — while three '
-      + 'tools rewrite `agents.config.scratchpad` mid-conversation: `scratchpad_set`, '
-      + '`scratchpad_clear` and `reset_session`. The scaffolding ack\'s own sentence said the '
-      + 'volatility out loud ("I maintain it via scratchpad_set as I make progress"), which '
-      + 'is the same self-witness the (since deleted) directive pin carried at T67b §7. Its pad is capped at '
-      + 'LANE_LIMITS[\'lane.scratchpad\'].chars.pad now, because a post-budget lane must be '
-      + 'able to declare a worst case and an unbounded pad cannot.',
+    reason: 'The agent\'s scratchpad. Three tools rewrite it mid-conversation (scratchpad_set, scratchpad_clear, reset_session), so it renders below the conversation, capped by LANE_LIMITS[\'lane.scratchpad\'].',
     render: (ctx) => (ctx.scratchpadLane ? { role: 'user', content: ctx.scratchpadLane } : null),
   },
   {
     id: 'msg.events',
     target: 'messages',
     slot: MessageSlot.EventsTail,
-    reason:
-      'W81: EVENTS & NOTICES, and it is the subtlest of the four because NO TOOL WRITES IT. '
-      + 'Its content is `awarenessEvents.slice(-10)` over the fresh tail\'s FIXED ROW WINDOW '
-      + '(`getRecentMessages(agentId, policy.freshTailCount)`), so every tool call appends two '
-      + 'rows and eventually pushes an awareness row out of the window — the block re-renders '
-      + 'because the CONVERSATION moved, with nothing mutated anywhere. Driven at `0cc9a3ba` '
-      + 'across a single `outlook_search` on a 14-notice body: 1,344 -> 1,276 chars at slot '
-      + '1050, ahead of every message in the array. Same scrolling-window defect T67b deleted '
-      + 'from `lane.active-tasks`\'s recent-mention suppression. A scrolling window cannot be '
-      + 're-keyed into stability — the window IS the content — so position is the only door. '
-      + 'Last of the four: it is the most volatile, moving every few tool calls.',
+    reason: 'Recent events and notices from the fresh tail\'s row window. The window moves with every tool call, so it renders below the conversation; last of the four tail lanes because it is the most volatile.',
     render: (ctx) => (ctx.eventsLane ? { role: 'user', content: ctx.eventsLane } : null),
   },
   {
     id: 'msg.peer-status',
     target: 'messages',
     slot: MessageSlot.PeerStatus,
-    reason:
-      'Live group-peer statuses as a near-tail volatile message. The cached ' +
-      'group roster (sys.group) carries member NAMES only; the idle/working ' +
-      'state changes with every peer turn and every Dreamer batch, so it lives ' +
-      'here where its churn costs no cache (2026-07-16 finding, same relocation ' +
-      'pattern as msg.current-time).',
+    reason: 'Live group-peer statuses. The cached group roster (sys.group) carries names only; idle and working flips land here, where they cost no cache.',
     render: (ctx) => {
       const line = renderPeerStatusLine(ctx.agentId);
       return line ? { role: 'user', content: line } : null;
@@ -469,26 +378,7 @@ const MESSAGE_ENTRIES: MessageInjection[] = [
     id: 'msg.integration-status',
     target: 'messages',
     slot: MessageSlot.IntegrationStatusTail,
-    reason:
-      'T76b (W85): THE LIVE INTEGRATION-STATUS LINE. W84\'s Plaud regex matched zero of 23 '
-      + 'rows and the tool answered `No recordings found.` — and during that diagnosis the '
-      + 'agent concluded Plaud "flaps" and WROTE IT INTO ITS VAULT. A false memory about a '
-      + 'connection is self-sealing: it returns through `msg.relevant-memory`, the agent '
-      + 'declines to call the tool, and reports the remembered breakage as current fact. '
-      + 'Deleting the row fixes one row; this entry fixes the mechanism, in HL5\'s shape — '
-      + 'publish the complete current set and say out loud that it supersedes every earlier '
-      + 'mention. LEDGER-BACKED ONLY: state from `listIntegrationStatuses()`, last successful '
-      + 'use from `google_activity` / `microsoft_activity` scoped to this agent, unresolved '
-      + 'failures from `agent_tool_outcomes` (per tool: a tool\'s own success ends its failure, '
-      + 'which is what makes "no unresolved failure on record" a printable fact). A family with no outcome '
-      + 'ledger states no last use and the block\'s footer says why, because an unexplained '
-      + 'blank is the W84 defect one surface over. GRANT-SCOPED via `mayUsePlaud` and '
-      + '`widestIntegrationLevel` — the same readers `agent/tools/surface.ts` filters the '
-      + 'toolset with — so the line never advertises what the agent cannot call. The '
-      + 'ASSEMBLER computes it and the loop appends it past `volatileFrom`, at 1877: the last '
-      + 'position among the stable blocks, immediately ahead of the four registered '
-      + 'deliberate-churn injections, so a successful call moving its last-use term re-bills '
-      + 'only blocks that were going to be re-billed anyway.',
+    reason: 'Each granted integration\'s current state, last successful use and unresolved failures, from the platform\'s own records, stated as superseding any earlier mention. It sits at the last stable seat of the tail.',
     render: (ctx) => (ctx.integrationStatusLane ? { role: 'user', content: ctx.integrationStatusLane } : null),
   },
   {
