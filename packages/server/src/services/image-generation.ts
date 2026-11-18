@@ -95,21 +95,21 @@ function capabilitiesInclude(capsJson: string | null, capability: string): boole
   }
 }
 
-// Decode a `data:image/png;base64,...` URL into raw bytes; also accepts plain base64 without the prefix.
+// A real picture starts with its format's signature; a link or other text decoded as base64 does not.
+function looksLikeImage(b: Buffer): boolean {
+  return (b.length >= 8 && b[0] === 0x89 && b.toString('latin1', 1, 4) === 'PNG')
+    || (b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff)
+    || (b.length >= 6 && b.toString('latin1', 0, 4) === 'GIF8')
+    || (b.length >= 12 && b.toString('latin1', 0, 4) === 'RIFF' && b.toString('latin1', 8, 12) === 'WEBP');
+}
+
+// Decode a `data:image/png;base64,...` URL (or plain base64) into picture bytes; null when it is not a picture.
 function decodeImageUrl(url: string): { bytes: Buffer; mimeType: string } | null {
   if (!url) return null;
-  if (url.startsWith('data:')) {
-    const match = url.match(/^data:([^;]+);base64,(.+)$/);
-    if (!match) return null;
-    const mimeType = match[1] || 'image/png';
-    try {
-      return { bytes: Buffer.from(match[2], 'base64'), mimeType };
-    } catch { return null; }
-  }
-  // Plain base64 (no data prefix)
-  try {
-    return { bytes: Buffer.from(url, 'base64'), mimeType: 'image/png' };
-  } catch { return null; }
+  const match = url.startsWith('data:') ? url.match(/^data:([^;]+);base64,(.+)$/) : null;
+  if (url.startsWith('data:') && !match) return null;
+  const bytes = Buffer.from(match ? match[2] : url, 'base64');
+  return looksLikeImage(bytes) ? { bytes, mimeType: (match && match[1]) || 'image/png' } : null;
 }
 
 // Image models routinely take several minutes (OpenRouter under load). Generation runs as a background job and
