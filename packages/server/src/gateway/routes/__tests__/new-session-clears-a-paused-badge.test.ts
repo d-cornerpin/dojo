@@ -41,7 +41,6 @@ describe('new session clears a paused badge', () => {
 
   it('new session clears a paused badge', async () => {
     const res = await app.request(`/api/chat/${AGENT}/new-session`, { method: 'POST', headers: auth });
-    const body = await res.json() as { ok: boolean; error?: string };
     expect(res.status).toBe(200);
     expect(row().status).toBe('idle');
     expect(row().last_error).toBeNull();
@@ -50,7 +49,6 @@ describe('new session clears a paused badge', () => {
   it('new session clears an error badge', async () => {
     mockDb.current!.prepare("UPDATE agents SET status = 'error' WHERE id = 'agent-stuck'").run();
     const res = await app.request(`/api/chat/${AGENT}/new-session`, { method: 'POST', headers: auth });
-    const body = await res.json() as { ok: boolean; error?: string };
     expect(res.status).toBe(200);
     expect(row().status).toBe('idle');
     expect(row().last_error).toBeNull();
