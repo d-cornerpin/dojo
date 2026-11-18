@@ -11,6 +11,9 @@ import { readAllPages, teamsBodyShown, type TeamsMessage } from './graph-pages.j
 import { msGraphRead, calendarPrefix, drivePrefix, graphFetch } from './client.js';
 import { conversationLine } from './outlook-conversation.js';
 
+/** A list with no size of its own is read to its end, up to this many items. */
+const LIST_READ_LIMIT = 500;
+
 // ── Tool Definitions ──
 
 export const microsoftReadToolDefinitions: ToolDefinition[] = [
@@ -892,13 +895,13 @@ export async function executeMicrosoftReadTool(
     }
 
     case 'calendar_list_ms': {
-      const result = await msGraphRead(
+      const result = await readAllPages<{ id: string; name: string; owner?: { name?: string; address?: string }; canEdit?: boolean; canShare?: boolean; canViewPrivateItems?: boolean; isDefaultCalendar?: boolean }>(
         'me/calendars?$select=id,name,owner,canEdit,canShare,canViewPrivateItems,isDefaultCalendar,color',
-        agentId, agentName, 'calendar_list_ms', {}, slot,
+        agentId, agentName, 'calendar_list_ms', {}, slot, LIST_READ_LIMIT,
       );
       if (!result.ok) return `Error listing calendars: ${result.error}`;
-      const data = result.data as { value?: Array<{ id: string; name: string; owner?: { name?: string; address?: string }; canEdit?: boolean; canShare?: boolean; canViewPrivateItems?: boolean; isDefaultCalendar?: boolean }> };
-      if (!data?.value || data.value.length === 0) return 'No calendars accessible.';
+      const data = { value: result.value };
+      if (data.value.length === 0) return 'No calendars accessible.';
       const lines = data.value.map(c => {
         const perms: string[] = [];
         if (c.isDefaultCalendar) perms.push('default');
@@ -1221,14 +1224,14 @@ export async function executeMicrosoftReadTool(
     }
 
     case 'teams_list_teams': {
-      const result = await msGraphRead(
+      const result = await readAllPages<{ id: string; displayName: string; description?: string }>(
         'me/joinedTeams?$select=id,displayName,description',
-        agentId, agentName, 'teams_list_teams', {}, slot,
+        agentId, agentName, 'teams_list_teams', {}, slot, LIST_READ_LIMIT,
       );
       if (!result.ok) return `Error listing Teams: ${result.error}`;
 
-      const data = result.data as { value?: Array<{ id: string; displayName: string; description?: string }> };
-      if (!data?.value || data.value.length === 0) {
+      const data = { value: result.value };
+      if (data.value.length === 0) {
         return 'No Teams found. (Requires a Microsoft work/school account and membership in at least one Team.)';
       }
 
@@ -1241,14 +1244,14 @@ export async function executeMicrosoftReadTool(
     case 'teams_list_channels': {
       const teamId = encodeURIComponent(args.team_id as string);
 
-      const result = await msGraphRead(
+      const result = await readAllPages<{ id: string; displayName: string; description?: string }>(
         `teams/${teamId}/channels?$select=id,displayName,description`,
-        agentId, agentName, 'teams_list_channels', { teamId: args.team_id }, slot,
+        agentId, agentName, 'teams_list_channels', { teamId: args.team_id }, slot, LIST_READ_LIMIT,
       );
       if (!result.ok) return `Error listing channels: ${result.error}`;
 
-      const data = result.data as { value?: Array<{ id: string; displayName: string; description?: string }> };
-      if (!data?.value || data.value.length === 0) return 'No channels found in this Team.';
+      const data = { value: result.value };
+      if (data.value.length === 0) return 'No channels found in this Team.';
 
       const channels = data.value.map(c =>
         `- ${c.displayName}\n  ID: ${c.id}${c.description ? `\n  ${c.description}` : ''}`
@@ -1418,13 +1421,12 @@ export async function executeMicrosoftReadTool(
     }
 
     case 'tasks_list_lists': {
-      const result = await msGraphRead(
+      const result = await readAllPages<{ id: string; displayName: string; wellknownListName?: string; isOwner?: boolean; isShared?: boolean }>(
         'me/todo/lists',
-        agentId, agentName, 'tasks_list_lists', {}, slot,
+        agentId, agentName, 'tasks_list_lists', {}, slot, LIST_READ_LIMIT,
       );
       if (!result.ok) return `Error listing task lists: ${result.error}`;
-      const data = result.data as { value?: Array<{ id: string; displayName: string; wellknownListName?: string; isOwner?: boolean; isShared?: boolean }> };
-      const lists = data?.value ?? [];
+      const lists = result.value;
       if (lists.length === 0) return 'No task lists found. The default list is created automatically the first time you use Microsoft To Do.';
       const lines = lists.map(l => {
         const tags: string[] = [];
@@ -1530,13 +1532,12 @@ export async function executeMicrosoftReadTool(
     }
 
     case 'onenote_list_notebooks': {
-      const result = await msGraphRead(
+      const result = await readAllPages<{ id: string; displayName: string; isDefault?: boolean; isShared?: boolean }>(
         'me/onenote/notebooks?$select=id,displayName,isDefault,isShared,createdDateTime,lastModifiedDateTime',
-        agentId, agentName, 'onenote_list_notebooks', {}, slot,
+        agentId, agentName, 'onenote_list_notebooks', {}, slot, LIST_READ_LIMIT,
       );
       if (!result.ok) return `Error listing notebooks: ${result.error}`;
-      const data = result.data as { value?: Array<{ id: string; displayName: string; isDefault?: boolean; isShared?: boolean }> };
-      const books = data?.value ?? [];
+      const books = result.value;
       if (books.length === 0) return 'No OneNote notebooks found.';
       const lines = books.map(n => {
         const tags: string[] = [];
@@ -1550,13 +1551,12 @@ export async function executeMicrosoftReadTool(
 
     case 'onenote_list_sections': {
       const notebookId = encodeURIComponent(args.notebook_id as string);
-      const result = await msGraphRead(
+      const result = await readAllPages<{ id: string; displayName: string }>(
         `me/onenote/notebooks/${notebookId}/sections?$select=id,displayName,createdDateTime,lastModifiedDateTime`,
-        agentId, agentName, 'onenote_list_sections', { notebookId: args.notebook_id }, slot,
+        agentId, agentName, 'onenote_list_sections', { notebookId: args.notebook_id }, slot, LIST_READ_LIMIT,
       );
       if (!result.ok) return `Error listing sections: ${result.error}`;
-      const data = result.data as { value?: Array<{ id: string; displayName: string }> };
-      const sections = data?.value ?? [];
+      const sections = result.value;
       if (sections.length === 0) return 'No sections in this notebook.';
       return `${sections.length} section(s):\n\n${outsideSpan(sections.map(s => `- ${s.displayName}\n    ID: ${s.id}`).join('\n'))}\n\nUse onenote_list_pages(section_id) to see pages.`;
     }
