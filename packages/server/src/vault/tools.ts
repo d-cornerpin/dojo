@@ -3,6 +3,7 @@
 import { getDb } from '../db/connection.js';
 import { TECHNIQUE_FRESH_SENTINEL } from '@dojo/shared';
 import { createLogger } from '../logger.js';
+import { isPrimaryAgent } from '../config/platform.js';
 import { createEntry, semanticSearch, findNearDuplicateEntry, markObsolete, getEntry, updateEntry, isOverEntryLimit, AGENT_ENTRY_CUT_NOTE, listEntriesBounded, lastSemanticSearchWindow, formatCitationSuffix, resolveRecallScope, OWNER_VAULT_AGENT_ID } from './store.js';
 import { searchUnfiledArchives, UNFILED_ARCHIVE_LABEL, type UnfiledArchiveSnippet } from './retrieval.js';
 import { isObligationNote, obligationTags } from '../work/obligation-memory.js';
@@ -377,12 +378,12 @@ export async function executeVaultSearch(
   }
 }
 
-// By-id access guard: an entry id leaked across agents must not grant read, update or forget on another
-// agent's private entry. Namespaced and owner-authored entries stay accessible. Reads as "not found" so
-// it does not leak existence. AUTHOR-restricted, for vault_update / vault_forget: cross-agent edits go
-// via the owner.
+// By-id access guard for vault_update / vault_forget: a leaked entry id must not grant an edit of another
+// agent's private entry. The author, squad-shared and owner-authored entries pass, and the main agent may
+// correct or forget any household entry. Reads as "not found" so it does not leak existence.
 function ownedByOtherAgent(entry: { agentId: string; namespace: string | null }, callerAgentId: string): boolean {
-  return entry.agentId !== callerAgentId && entry.namespace === null && entry.agentId !== OWNER_VAULT_AGENT_ID;
+  if (entry.agentId === callerAgentId || entry.namespace !== null || entry.agentId === OWNER_VAULT_AGENT_ID) return false;
+  return !(isPrimaryAgent(callerAgentId) && resolveRecallScope(callerAgentId).includes(entry.agentId));
 }
 
 // READ gate for vault_get: a member may open a hit authored by another household member (recall surfaced it);
