@@ -251,12 +251,6 @@ export async function getValidAccessTokenForAccount(accountId: string): Promise<
   return promise;
 }
 
-export async function getValidAccessToken(slot: AccountSlot = 'agent'): Promise<string | null> {
-  const acc = getPrimaryMicrosoftAccount(slot);
-  if (!acc) return null;
-  return getValidAccessTokenForAccount(acc.id);
-}
-
 /**
  * Bench an account: mark it disconnected and, only on the connected to benched transition, broadcast the
  * disconnect and record the expired-sign-in card. Gating on the prior state stops the recovery probe
