@@ -45,12 +45,14 @@ export function dreamerIgnoreRefusal(agentId: string, ignore: boolean): string |
 
 const agentsRouter = new Hono();
 
-// GET / - list all agents with detail
+// GET / - live agents with detail; ?all=1 adds the ended ones (the Agents page's history)
 agentsRouter.get('/', (c) => {
   const db = getDb();
-  const rows = db.prepare('SELECT * FROM agents ORDER BY created_at ASC').all() as Array<Record<string, unknown>>;
+  const live = c.req.query('all') === '1' ? '' : "WHERE status != 'terminated' ";
+  const rows = db.prepare(`SELECT * FROM agents ${live}ORDER BY created_at ASC`).all() as Array<Record<string, unknown>>;
 
-  const agents: AgentDetail[] = rows.map(row => rowToAgentDetail(row));
+  const facts = rosterFacts(rows);
+  const agents: AgentDetail[] = rows.map(row => rowToAgentDetail(row, facts));
   return c.json({ ok: true, data: agents });
 });
 
@@ -669,18 +671,30 @@ agentsRouter.post('/:id/purge', (c) => {
   return c.json({ ok: true, data: { agentId: id, deleted: true } });
 });
 
-function rowToAgentDetail(row: Record<string, unknown>): AgentDetail {
+/** Message counts and model rows for a set of agent rows: two queries, whatever the number of rows. */
+interface RosterFacts { counts: Map<string, number>; models: Map<string, Record<string, unknown>> }
+function rosterFacts(rows: Array<Record<string, unknown>>): RosterFacts {
   const db = getDb();
+  const ids = JSON.stringify(rows.map((r) => r.id));
+  const counts = new Map((db.prepare(
+    'SELECT agent_id AS id, COUNT(*) AS n FROM messages WHERE agent_id IN (SELECT value FROM json_each(?)) GROUP BY agent_id',
+  ).all(ids) as Array<{ id: string; n: number }>).map((r) => [r.id, r.n] as const));
+  const modelIds = JSON.stringify([...new Set(rows.map((r) => r.model_id).filter((m): m is string => typeof m === 'string'))]);
+  const models = new Map((db.prepare('SELECT * FROM models WHERE id IN (SELECT value FROM json_each(?))')
+    .all(modelIds) as Array<Record<string, unknown>>).map((m) => [m.id as string, m] as const));
+  return { counts, models };
+}
+
+function rowToAgentDetail(row: Record<string, unknown>, facts: RosterFacts = rosterFacts([row])): AgentDetail {
   const agentId = row.id as string;
   const modelId = row.model_id as string | null;
 
-  // Get message count
-  const msgCount = (db.prepare('SELECT COUNT(*) as count FROM messages WHERE agent_id = ?').get(agentId) as { count: number }).count;
+  const msgCount = facts.counts.get(agentId) ?? 0;
 
   // Get model if set
   let model: Model | null = null;
   if (modelId) {
-    const modelRow = db.prepare('SELECT * FROM models WHERE id = ?').get(modelId) as Record<string, unknown> | undefined;
+    const modelRow = facts.models.get(modelId);
     if (modelRow) {
       model = {
         id: modelRow.id as string,
