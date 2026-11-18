@@ -292,7 +292,7 @@ function ownerMoveRefusal(id: string, status: string): string | null {
     return held.ok ? null : held.why;
   }
   if (getTask(id)?.status === status) clearHold(id, 'owner');   // already there: only the hold lifts
-  const { result } = setTaskStatusResult(id, status as TrackerStatus, { by: 'owner', actorId: 'user', reason: 'dashboard PUT /tracker/tasks/:id' });
+  const { result } = setTaskStatusResult(id, status as TrackerStatus, { by: 'owner', actorId: 'user', reason: 'moved on the task board' });
   if (workSettled(result)) return null;
   return isStateConflict(result) ? `the task moved to "${result.actual}" while this request was in flight` : `${result.reason}: ${result.detail}`;
 }
@@ -378,7 +378,7 @@ trackerRouter.put('/tasks/:id', async (c) => {
           entryKind: 'transition',
           fromStatus,
           toStatus: body.status,
-          actionTaken: 'dashboard PUT /tracker/tasks/:id',
+          actionTaken: 'moved on the task board',
         });
       }
     }
