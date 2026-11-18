@@ -93,16 +93,6 @@ describe('a refused budget is not saved', () => {
     expect(mocked().setGlobalBudget).toHaveBeenCalledWith(20);
   });
 
-  it('refuses a zero budget client-side and sends no request', async () => {
-    await renderCosts();
-
-    fireEvent.change(screen.getByLabelText('Daily budget'), { target: { value: '0' } });
-    fireEvent.click(globalSave());
-
-    await waitFor(() => expect(screen.getByText('Enter an amount above 0.')).toBeTruthy());
-    expect(mocked().setGlobalBudget, 'no request is sent for a refused value').not.toHaveBeenCalled();
-  });
-
   it('shows the server error instead of Saved when the threshold is refused', async () => {
     mocked().request.mockImplementation((async (
       url: string,

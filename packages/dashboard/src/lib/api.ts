@@ -1474,7 +1474,7 @@ export const getBudgets = async (): Promise<ApiResponse<{
   return request('/costs/budget');
 };
 
-export const setGlobalBudget = async (limitUsd: number): Promise<ApiResponse<void>> => {
+export const setGlobalBudget = async (limitUsd: number | null): Promise<ApiResponse<void>> => {
   return request<void>('/costs/budget/global', {
     method: 'PUT',
     body: JSON.stringify({ limitUsd }),
@@ -1483,7 +1483,7 @@ export const setGlobalBudget = async (limitUsd: number): Promise<ApiResponse<voi
 
 export const setAgentBudget = async (
   agentId: string,
-  limitUsd: number,
+  limitUsd: number | null,
   period: string,
 ): Promise<ApiResponse<void>> => {
   return request<void>(`/costs/budget/agent/${agentId}`, {
