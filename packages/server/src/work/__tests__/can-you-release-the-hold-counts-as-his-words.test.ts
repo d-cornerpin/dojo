@@ -19,7 +19,6 @@ const platform = await import('../../config/platform.js');
 const { executeTool, toolResultOf } = await import('../../agent/tools/index.js');
 const { setHold, holdOf } = await import('../done/hold.js');
 const { openTurnContext, endTurnContext } = await import('../../agent/turn-context.js');
-const { AUDIT_KIND } = await import('../audit-trail.js');
 
 let n = 0;
 beforeAll(() => {
@@ -66,11 +65,6 @@ const resume = async (agentId: string, taskId: string, quote?: string) =>
     id: `call-${++n}`, name: 'work_update',
     arguments: { action: 'status', task_id: taskId, status: 'in_progress', ...(quote ? { user_quote: quote } : {}) },
   })).content;
-
-const holdClears = (taskId: string) =>
-  (connection.getDb().prepare('SELECT actor, payload FROM work_events WHERE work_id = ? AND kind = ? ORDER BY id').all(taskId, AUDIT_KIND) as Array<{ actor: string; payload: string }>)
-    .map((e) => ({ actor: e.actor, ...JSON.parse(e.payload) as { entry_kind: string; note: string | null } }))
-    .filter((e) => e.entry_kind === 'hold_cleared');
 
 describe('a question that asks the agent to act counts as the owner\'s words', () => {
   it('"Can you release the hold?" lets the main agent lift his hold', async () => {
