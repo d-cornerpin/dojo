@@ -79,7 +79,7 @@ routerRouter.get('/available-models', (c) => {
     SELECT m.id, m.name, m.api_model_id, p.name as provider_name, p.type as provider_type
     FROM models m
     JOIN providers p ON m.provider_id = p.id
-    WHERE m.is_enabled = 1 AND m.capabilities NOT LIKE '%"decision"%'   -- v3.5: the Dojo's decision model runs no tier or opener
+    WHERE m.is_enabled = 1 AND m.capabilities NOT LIKE '%"decision"%'   -- the Dojo's decision model runs no tier or opener
     ORDER BY p.name, m.name
   `).all() as Array<{
     id: string;
