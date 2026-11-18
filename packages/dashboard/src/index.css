@@ -930,7 +930,7 @@
   padding: 26px 30px 60px;
   box-sizing: border-box;
   background: rgba(255, 253, 248, 0.62);
-  color: var(--dojo3-ink-1);
+  color: var(--dojo3-ink);
 }
 .dojo3-canvas__code {
   margin: 0;
@@ -941,7 +941,7 @@
 }
 /* Syntax highlighting tokens (code files, pretty JSON, the HTML Code tab).
    A warm-leaning palette tuned for the canvas's light document background. */
-.dojo3-canvas__code--hl { color: var(--dojo3-ink-1); }
+.dojo3-canvas__code--hl { color: var(--dojo3-ink); }
 .dojo3-canvas__code--hl .tok-com  { color: #a0937e; font-style: italic; }
 .dojo3-canvas__code--hl .tok-str  { color: #6f8a45; }
 .dojo3-canvas__code--hl .tok-num,
@@ -987,11 +987,11 @@
   letter-spacing: 0;
 }
 /* Markdown prose inside the canvas */
-.dojo3-canvas__doc--md { font: 400 14px/1.7 var(--dojo3-font-sans, inherit); }
+.dojo3-canvas__doc--md { font: 400 14px/1.7 inherit; }
 .dojo3-canvas__doc--md h1,
 .dojo3-canvas__doc--md h2,
 .dojo3-canvas__doc--md h3,
-.dojo3-canvas__doc--md h4 { color: var(--dojo3-ink-1); font-weight: 650; line-height: 1.25; margin: 1.4em 0 0.5em; }
+.dojo3-canvas__doc--md h4 { color: var(--dojo3-ink); font-weight: 650; line-height: 1.25; margin: 1.4em 0 0.5em; }
 .dojo3-canvas__doc--md h1 { font-size: 1.7em; margin-top: 0.2em; }
 .dojo3-canvas__doc--md h2 { font-size: 1.35em; }
 .dojo3-canvas__doc--md h3 { font-size: 1.15em; }
@@ -2052,14 +2052,6 @@
   pointer-events: none;
   transition: opacity 0.4s ease, filter 0.4s ease, transform 0.4s ease;
 }
-.dojo3-panel-dismiss {
-  position: absolute;
-  inset: 0;
-  z-index: 2;
-  border: 0;
-  background: transparent;
-  cursor: default;
-}
 .dojo3-stage .bubble-user {
   background:
     linear-gradient(170deg, rgba(255, 253, 249, 0.74), rgba(251, 243, 229, 0.46)) padding-box,
@@ -2401,7 +2393,7 @@
   white-space: nowrap;
   transition: background .2s ease, color .2s ease;
 }
-.dojo3-stage .composer__presence:hover { background: rgba(250, 240, 222, 0.5); color: var(--dojo3-ink-1); }
+.dojo3-stage .composer__presence:hover { background: rgba(250, 240, 222, 0.5); color: var(--dojo3-ink); }
 .dojo3-stage .composer__presence:focus-visible { outline: 2px solid var(--dojo3-focus); outline-offset: 2px; }
 .dojo3-stage .composer__presence-dot {
   width: 8px; height: 8px; border-radius: 50%; flex: none;
@@ -2425,7 +2417,7 @@
   cursor: pointer;
   transition: background .2s ease, color .2s ease, box-shadow .2s ease, transform .15s ease;
 }
-.dojo3-stage .composer__btn:hover { background: rgba(250, 240, 222, 0.6); color: var(--dojo3-ink-1); }
+.dojo3-stage .composer__btn:hover { background: rgba(250, 240, 222, 0.6); color: var(--dojo3-ink); }
 .dojo3-stage .composer__btn:active { transform: scale(0.94); }
 .dojo3-stage .composer__btn:focus-visible { outline: 2px solid var(--dojo3-focus); outline-offset: 2px; }
 .dojo3-stage .composer__btn svg { width: 19px; height: 19px; display: none; }
@@ -2982,15 +2974,8 @@
   }
 }
 
-/* Safe area padding for notched devices (iPhone X+, Dynamic Island) */
-@supports (padding-top: env(safe-area-inset-top)) {
-  .safe-area-top { padding-top: env(safe-area-inset-top); }
-  .safe-area-bottom { padding-bottom: env(safe-area-inset-bottom); }
-}
-
 @supports not (backdrop-filter: blur(1px)) {
   .glass-card { background: rgb(var(--cp-sidebar-ch) / 0.92); }
-  .glass-sidebar { background: rgb(var(--cp-sidebar-ch) / 0.95); }
 }
 
 /* ── Typing / Thinking Indicator ── */
@@ -3076,7 +3061,7 @@
   box-shadow: inset 0 1px 0 rgba(255,255,255,.6), inset 0 -12px 20px -14px rgba(226,178,106,.45), 0 16px 34px -18px rgba(108,80,42,.38);
   padding: 14px 16px 13px; transition: transform .25s ease, box-shadow .25s ease;
 }
-.dojo3-stage .dojo3-panel .agent-card { animation: msgIn .45s cubic-bezier(.22,.9,.26,1) backwards; animation-delay: var(--ci); }
+.dojo3-stage .dojo3-panel .agent-card { animation: dojo3-msgIn .45s cubic-bezier(.22,.9,.26,1) backwards; animation-delay: var(--ci); }
 .dojo3-stage .agent-card:hover {
   transform: translateY(-2px);
   box-shadow: inset 0 1px 0 rgba(255,255,255,.7), inset 0 -12px 20px -14px rgba(226,178,106,.50), 0 22px 40px -18px rgba(108,80,42,.45), 0 0 24px -8px rgba(243,221,180,.50);
@@ -3138,14 +3123,6 @@
 .dojo3-stage .agent-card:hover .agent-card__cog { display: grid; }
 .dojo3-stage .agent-card__cog:hover { color: var(--dojo3-ink); background: rgba(255, 253, 248, 0.55); }
 .dojo3-stage .agent-card__cog:focus-visible { display: grid; outline: 2px solid var(--dojo3-focus); outline-offset: 2px; }
-.dojo3-stage .agent-card--ghost {
-  appearance: none; display: grid; place-items: center; min-height: 150px;
-  background: rgba(255,253,248,.22); box-shadow: inset 0 0 0 1px rgba(152,126,92,.22);
-  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
-  font: 500 10.5px/1 var(--dojo3-font-mono); letter-spacing: .16em; text-transform: uppercase; color: var(--dojo3-ink-4);
-  cursor: pointer; transition: color .2s ease, box-shadow .2s ease, background .2s ease;
-}
-.dojo3-stage .agent-card--ghost:hover { color: var(--dojo3-ink-3); background: rgba(250,233,202,.28); box-shadow: inset 0 0 0 1px rgba(216,170,100,.45); transform: none; }
 
 /* stub */
 .dojo3-stage .stub {
@@ -3288,7 +3265,7 @@
   background: linear-gradient(170deg, rgba(252,240,236,.72), rgba(248,228,222,.46)) padding-box, linear-gradient(135deg, rgba(224,140,118,.5), rgba(255,250,246,.85) 50%, rgba(218,130,108,.42)) border-box;
   box-shadow: inset 0 1px 0 rgba(255,255,255,.6), 0 16px 34px -18px rgba(130,70,50,.3);
 }
-.dojo3-stage .dojo3-panel .anim { animation: msgIn .45s cubic-bezier(.22,.9,.26,1) backwards; animation-delay: var(--ci, 0ms); }
+.dojo3-stage .dojo3-panel .anim { animation: dojo3-msgIn .45s cubic-bezier(.22,.9,.26,1) backwards; animation-delay: var(--ci, 0ms); }
 
 /* stats */
 .dojo3-stage .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 16px; }
@@ -3486,20 +3463,15 @@
   border: solid #fffdf8; border-width: 0 2px 2px 0; transform: rotate(42deg);
 }
 .dojo3-stage .acx-check input[type="checkbox"]:focus-visible { outline: 2px solid var(--dojo3-focus); outline-offset: 2px; }
-.dojo3-stage .acx-check.is-disabled { opacity: .48; cursor: not-allowed; }
-.dojo3-stage .acx-check.is-disabled input[type="checkbox"] { cursor: not-allowed; }
 .dojo3-stage .acx-check__body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .dojo3-stage .acx-check__name { font: 500 12px/1.35 var(--dojo3-font-ui); color: var(--dojo3-ink); }
 .dojo3-stage .acx-check__hint { font: 400 10px/1.4 var(--dojo3-font-body); color: var(--dojo3-ink-4); }
-.dojo3-stage .acx-acct { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-.dojo3-stage .acx-acct .acx-check { flex: 1 1 190px; }
 .dojo3-stage .acx-level { width: auto; min-width: 128px; height: 30px; font-size: 11.5px; line-height: 28px; }
 .dojo3-stage .acx-tier { display: inline-flex; gap: 2px; padding: 2px; border-radius: 999px; background: rgba(255,252,246,.6); box-shadow: inset 0 0 0 1px rgba(152,126,92,.22); }
 .dojo3-stage .acx-tier__opt { border: 0; cursor: pointer; padding: 5px 11px; border-radius: 999px; background: transparent; color: var(--dojo3-ink-3); font: 500 10.5px/1 var(--dojo3-font-mono); letter-spacing: .03em; transition: background .18s ease, color .18s ease; }
 .dojo3-stage .acx-tier__opt:hover:not(:disabled) { color: var(--dojo3-ink); }
 .dojo3-stage .acx-tier__opt.is-on { background: linear-gradient(180deg, #f0c577, #d99c4b); color: #fffdf8; box-shadow: 0 0 10px -3px rgba(238,188,110,.8); }
 .dojo3-stage .acx-tier__opt:disabled { cursor: not-allowed; opacity: .5; }
-.dojo3-stage .acx-master { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 11px 13px; border-radius: 14px; background: rgba(250,233,202,.3); box-shadow: inset 0 0 0 1px rgba(217,165,92,.32); }
 .dojo3-stage .acx-children { margin-top: 10px; padding-left: 12px; border-left: 2px solid rgba(217,165,92,.35); }
 /* ⚰ .acx-children.is-off DELETED (UX-ACCESS A5). A section's children are HIDDEN
    under a `false` switch now rather than drawn at 45% and disabled, so there is
@@ -3513,7 +3485,7 @@
    grant checkboxes it depends on. Same left-rule idiom as .acx-children, which
    is the panel's existing way of saying "these sit beneath the thing above". */
 .dojo3-stage .acx-sub { margin-top: 14px; padding-left: 12px; border-left: 2px solid rgba(217,165,92,.35); }
-.dojo3-stage .acx-sub__title { font: 600 11px/1.35 var(--dojo3-font-ui); letter-spacing: .02em; text-transform: uppercase; color: var(--dojo3-ink-soft, rgba(60,45,25,.6)); margin-bottom: 8px; }
+.dojo3-stage .acx-sub__title { font: 600 11px/1.35 var(--dojo3-font-ui); letter-spacing: .02em; text-transform: uppercase; color: rgba(60,45,25,.6); margin-bottom: 8px; }
 
 /* panel body gets the prototype's content padding when a rebuilt page
    opts in with .dojo3-pbody (so not-yet-rebuilt pages keep their own) */
@@ -3739,37 +3711,6 @@
   position: absolute; inset: 0;
   width: 100%; height: 100%;
   object-fit: cover;
-}
-.dojo3-stage .media__play {
-  position: absolute; width: 46px; height: 46px; border-radius: 50%;
-  background: rgba(255, 253, 248, 0.55);
-  backdrop-filter: blur(10px) saturate(1.2);
-  -webkit-backdrop-filter: blur(10px) saturate(1.2);
-  border: 1px solid rgba(255, 255, 255, 0.75);
-  display: grid; place-items: center;
-  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.20), inset 0 1px 0 rgba(255, 255, 255, 0.9);
-  transition: transform .2s ease, box-shadow .2s ease;
-  z-index: 1;
-}
-.dojo3-stage .media__poster:hover .media__play {
-  transform: scale(1.06);
-  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.9),
-              0 0 20px -4px rgba(255, 255, 255, 0.8);
-}
-.dojo3-stage .media__play::after {
-  content: ""; border-style: solid;
-  border-width: 8px 0 8px 13px;
-  border-color: transparent transparent transparent #3f352a;
-  margin-left: 3px;
-}
-.dojo3-stage .media__dur {
-  position: absolute; right: 9px; bottom: 8px; z-index: 1;
-  font: 500 10px/1 var(--dojo3-font-mono);
-  letter-spacing: .04em;
-  color: #fff; background: rgba(28, 24, 19, 0.55);
-  backdrop-filter: blur(6px);
-  -webkit-backdrop-filter: blur(6px);
-  padding: 4px 7px; border-radius: 7px;
 }
 .dojo3-stage .media__meta {
   display: flex; justify-content: space-between; align-items: center; gap: 12px;
