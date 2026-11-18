@@ -1585,8 +1585,7 @@ export async function sendAlert(message: string, urgency: 'info' | 'warning' | '
   }
 }
 
-/** iMessage is switched on unless the owner switched it off in Settings (`imessage_enabled` is 'false'). The one
- *  answer every sender and router asks; the Dojo's own alerts do not ask it. */
+/** iMessage is switched on unless the owner switched it off in Settings (`imessage_enabled` is 'false'). The Dojo's own alerts do not ask it. */
 export function isIMessageSwitchedOn(): boolean {
   try {
     return (getDb().prepare("SELECT value FROM config WHERE key = 'imessage_enabled'").get() as { value: string } | undefined)?.value !== 'false';
