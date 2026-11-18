@@ -23,11 +23,8 @@ import {
   removeTwilioSmsSafeSender,
   getTwilioVoiceSafeCallers,
   appendTwilioVoiceSafeCaller,
-<<<<<<< HEAD
   removeTwilioVoiceSafeCaller,
-=======
   senderWakes,
->>>>>>> q2/403-r10-a-voicemail-knows-its-caller
 } from '../../services/channel-safe-senders.js';
 import { SHARING_LEVELS, type SharingLevel } from '../../services/safe-senders.js';
 import { getDb } from '../../db/connection.js';
