@@ -646,28 +646,6 @@ async function main(): Promise<void> {
 
   {
     try {
-      const { checkGoogleOnStartup } = await import('./google/auth.js');
-      await checkGoogleOnStartup();
-    } catch (err) {
-      logger.warn('Google Workspace startup check failed', {
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
-
-  {
-    try {
-      const { checkMicrosoftOnStartup } = await import('./microsoft/auth.js');
-      await checkMicrosoftOnStartup();
-    } catch (err) {
-      logger.warn('Microsoft startup check failed', {
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
-
-  {
-    try {
       // Lists saved under a slot name move to their mailbox before the first poll reads them.
       try { (await import('./services/channel-safe-senders.js')).moveSlotListsToMailboxes(); } catch { /* retried next start */ }
       const { startGmailWatcher } = await import('./services/gmail-watcher.js');
