@@ -48,8 +48,9 @@ export interface ExceededBudget {
   limitUsd: number;
 }
 
-/** The pure half of `checkBudget` (`costs/budget.ts`): the same two comparisons, with none of its alerts. */
+/** Which limit a call of `estimatedCost` would go over, or null. A call that costs nothing is never over a limit. */
 export function exceededBudget(agentId: string, estimatedCost: number): ExceededBudget | null {
+  if (estimatedCost <= 0) return null;
   const db = getDb();
   const globalBudget = db.prepare(`SELECT limit_usd FROM budgets WHERE id = 'global_daily'`).get() as { limit_usd: number } | undefined;
   if (globalBudget) {
