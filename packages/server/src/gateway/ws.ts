@@ -151,7 +151,6 @@ export function stampPersistedRow(event: WsEvent): 'stamped' | 'orphan' | 'not-c
   } else {
     logger.warn(`${event.type} broadcast with NO persisted row (BROADCAST_EQUALS_ROW)`, {
       agentId: event.agentId, messageId: msg.id, role: msg.role,
-      preview: (msg.content ?? '').slice(0, 80),
     }, event.agentId);
   }
 
