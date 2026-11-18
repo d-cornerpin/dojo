@@ -1,7 +1,7 @@
 // The Healer's DELETE, DROP, ALTER, REPLACE (INSERT or UPDATE OR REPLACE too) and
 // writable_schema, quoted or not, against the Dojo's own database are
 // held for the owner by the destructive-action approval, comments or not; so is its INSERT or UPDATE of a core
-// table (lead ruling Q25). An UPDATE of another table runs directly, whatever its string literals say, and a pragma whose value is DELETE.
+// table. An UPDATE of another table runs directly, whatever its string literals say, and a pragma whose value is DELETE.
 // Driven through the two functions the dispatcher asks before it holds a call.
 
 import { describe, it, expect, vi } from 'vitest';

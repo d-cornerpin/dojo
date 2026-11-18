@@ -58,7 +58,7 @@ const stringLeaves = (v: unknown): string[] =>
   typeof v === 'string' ? [v] : Array.isArray(v) ? v.flatMap(stringLeaves)
     : v !== null && typeof v === 'object' ? Object.values(v).flatMap(stringLeaves) : [];
 
-/** Lead ruling Q27: a held call is critical when it touches the Dojo's data or names an agent in error or paused. */
+/** A held call is critical when it touches the Dojo's data or names an agent in error or paused. */
 export function heldActionSeverity(argsJson: string | null | undefined): EngineSeverity {
   let leaves: string[] = [];
   try { leaves = stringLeaves(JSON.parse(argsJson ?? '{}')); } catch { /* an unreadable call names nothing */ }

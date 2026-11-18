@@ -12,8 +12,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { resetFrames } from './helpers/frames';
 
-// The permissive factory the smoke floor uses — every exported FUNCTION answers
-// `{ ok: true, data: [] }`, every exported constant stays real — so the page
+// The permissive factory the smoke floor uses, every exported FUNCTION answers
+// `{ ok: true, data: [] }`, every exported constant stays real, so the page
 // mounts on its own terms and the doors this file is about are the only overrides.
 vi.mock('../lib/api', async () => {
   const actual = await vi.importActual<Record<string, unknown>>('../lib/api');

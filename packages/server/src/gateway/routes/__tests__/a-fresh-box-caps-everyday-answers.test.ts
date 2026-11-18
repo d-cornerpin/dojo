@@ -15,7 +15,7 @@ import fs from 'node:fs';
 import realOs from 'node:os';
 import path from 'node:path';
 
-// The platform resolves `~/.dojo` in exactly one place — `src/home.ts` — so that is
+// The platform resolves `~/.dojo` in exactly one place, `src/home.ts`, so that is
 // what a test redirects. Computed inside the factory, which runs before this module's
 // own bindings initialise.
 vi.mock('../../../home.js', async () => {

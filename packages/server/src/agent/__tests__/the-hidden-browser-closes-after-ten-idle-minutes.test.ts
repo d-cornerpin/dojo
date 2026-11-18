@@ -12,7 +12,7 @@ vi.mock('playwright', () => ({ chromium: { launch } }));
 const assertPublicHttpTarget = vi.hoisted(() => vi.fn());
 vi.mock('../net-guard.js', () => ({ assertPublicHttpTarget }));
 
-// Empty stubs so importing browser.ts stays light — navigate() reaches none of them.
+// Empty stubs so importing browser.ts stays light, navigate() reaches none of them.
 vi.mock('../model.js', () => ({}));
 vi.mock('../../services/vision-model.js', () => ({}));
 vi.mock('../../db/connection.js', () => ({}));

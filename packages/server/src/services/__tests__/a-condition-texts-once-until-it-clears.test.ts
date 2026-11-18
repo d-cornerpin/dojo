@@ -2,7 +2,7 @@
 // t138 round 3 — A CONDITION TEXTS ONCE WHEN IT STARTS, AND AGAIN ONLY AFTER IT CLEARED.
 //
 // The round-2 census found three owner texts that repeat while NOTHING has changed:
-//   - "System memory below 512 MB" — once a minute for as long as memory stays low (a one-minute
+//   - "System memory below 512 MB", once a minute for as long as memory stays low (a one-minute
 //     cooldown was the only brake);
 //   - "The Healer agent is broken" — on every injury of the Healer;
 //   - "<agent> is stuck and the Healer agent is missing" — on every injury of any agent while

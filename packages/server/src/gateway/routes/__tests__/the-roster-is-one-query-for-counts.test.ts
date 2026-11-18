@@ -1,6 +1,5 @@
-// GET / used to read message counts and model rows once PER ROW: a roster of N agents cost
-// 2N queries on every Ledger reload. The roster now reads all counts in one grouped query and
-// all model rows in one query, whatever the number of rows.
+// GET / reads all message counts in one grouped query and all model rows in one query,
+// whatever the number of roster rows.
 
 import { it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';

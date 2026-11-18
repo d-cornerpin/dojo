@@ -4,7 +4,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, within, fireEvent, waitFor } from '@testing-library/react';
 
-// The permissive factory the smoke floor uses — every exported FUNCTION answers
+// The permissive factory the smoke floor uses, every exported FUNCTION answers
 // `{ ok: true, data: [] }`, every exported constant stays real.
 vi.mock('../lib/api', async () => {
   const actual = await vi.importActual<Record<string, unknown>>('../lib/api');

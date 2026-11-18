@@ -344,9 +344,7 @@ trackerRouter.put('/tasks/:id', async (c) => {
     if (body.priority) updates.priority = body.priority;
 
     if (Object.keys(updates).length > 0) {
-      // Snapshot the prior status before the write so the transition entry is accurate.
       const prior = getTask(id);
-      const fromStatus = prior?.status ?? null;
       const { status: statusUpdate, ...columnUpdates } = updates;
       if (Object.keys(columnUpdates).length > 0) updateTask(id, columnUpdates);
       // A PERSON moving a task is the only reassignment this platform still has (the PM has no such verb),

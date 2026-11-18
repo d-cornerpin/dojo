@@ -254,7 +254,7 @@ export function destroysDojoData(command: string | readonly string[]): boolean {
   });
 }
 
-/** The Dojo's core tables: the Healer's raw INSERT or UPDATE of one waits for the owner (lead ruling Q25). */
+/** The Dojo's core tables: the Healer's raw INSERT or UPDATE of one waits for the owner. */
 const CORE_TABLES = new Set(['messages', 'agents', 'work', 'config']);
 const CONFLICT_WORDS = ['or', 'rollback', 'abort', 'replace', 'fail', 'ignore'];
 /** A statement with literals emptied, comments blanked and name quotes dropped, so `"agents"` and `main.agents` read as words. */

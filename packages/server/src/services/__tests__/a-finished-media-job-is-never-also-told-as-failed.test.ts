@@ -1,7 +1,5 @@
-// A job that already finished must never also report a failure. When a speech/music job succeeds and
-// something then throws while posting the file, the catch used to tell the agent "could not be finished"
-// even though the row is terminal 'succeeded' — so the agent told the person it failed. The failure
-// notice now goes only when the job was really moved to failed.
+// A job that already finished is never also reported as failed: when a speech/music job succeeds and posting the
+// file then throws, the failure notice goes only when the job was really moved to failed.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';

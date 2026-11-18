@@ -2,7 +2,7 @@
 // WHAT pdf_create REPORTS IS WHAT IT DREW.
 //
 // `pdf_create` counted every block it was given as "rendered", even ones it
-// skipped — a missing image file, a non-PNG/JPG image, an unknown block type —
+// skipped, a missing image file, a non-PNG/JPG image, an unknown block type,
 // so the agent told the owner the chart was in the report when the PDF never
 // contained it. The result now says how many blocks were drawn and names each
 // skipped block and why.

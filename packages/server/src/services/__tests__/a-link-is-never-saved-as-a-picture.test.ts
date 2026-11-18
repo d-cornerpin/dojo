@@ -1,6 +1,6 @@
-// A provider that answers with a web link instead of a base64 picture used to have the link's letters
-// decoded as base64, saved as a .png, and reported to the agent as a made picture. A real picture starts
-// with its format's signature; anything else must land on the decode failure the service already has.
+// A provider that answers with a web link instead of a base64 picture never has the link's letters saved
+// as a .png and reported as a made picture. A real picture starts with its format's signature; anything
+// else lands on the decode failure.
 // No real provider is contacted: `globalThis.fetch` is stubbed in every case.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';

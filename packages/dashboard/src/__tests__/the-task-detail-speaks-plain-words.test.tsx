@@ -1,17 +1,15 @@
 // ════════════════════════════════════════════════════════════════════════════
-// THE TASK DETAIL SPEAKS PLAIN WORDS: the Activity log printed engine words
-// ("[user]", "user_verdict_request", "on_deck → in_progress"), a "Phase:" line,
-// and "Legacy notes (pre-Phase B.0)". Each row now names who and what in words,
-// the states carry the board's own words, the Phase line is gone and the old
-// notes are "Earlier notes".
+// THE TASK DETAIL SPEAKS PLAIN WORDS: each Activity log row names who and what in words
+// (never "[user]", "user_verdict_request" or "on_deck → in_progress"), the states carry the
+// board's own words, there is no "Phase:" line, and the old notes are "Earlier notes".
 // ════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import type { Task, AgentDetail } from '@dojo/shared';
 
-// The permissive factory the smoke floor uses — every exported FUNCTION answers
-// `{ ok: true, data: [] }`, every exported constant stays real — so the panel
+// The permissive factory the smoke floor uses, every exported FUNCTION answers
+// `{ ok: true, data: [] }`, every exported constant stays real, so the panel
 // mounts on its own terms (its task_log feed included) and the door this file is
 // about is the only override.
 vi.mock('../lib/api', async () => {

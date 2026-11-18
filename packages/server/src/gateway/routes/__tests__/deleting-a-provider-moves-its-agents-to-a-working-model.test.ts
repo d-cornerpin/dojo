@@ -1,9 +1,8 @@
 // ════════════════════════════════════════════════════════════════════════════════════
 // DELETING A PROVIDER MOVES ITS AGENTS TO A WORKING MODEL.
 //
-// `DELETE /providers/:id` used to null every agent's model_id and clear only two config
-// keys, so each agent on a deleted model showed "no model" until the owner picked one, and
-// the service-agent settings could still name a deleted model. The delete now runs the one
+// `DELETE /providers/:id` leaves no agent on "no model" and no service-agent setting naming a
+// deleted model. The delete runs the one
 // mover `reassignAffectedAgents` (agents and the service-agent model settings move to the
 // cheapest working model with the usual "model changed" note; with none, they are left
 // without a model as before), forgets every key of `LOCAL_MODEL_SETTING_KEYS`, and refuses

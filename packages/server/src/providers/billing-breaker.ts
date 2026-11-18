@@ -9,7 +9,6 @@ import { broadcast } from '../gateway/ws.js';
 import {
   classifyProviderErrorText, statusIsAnchored, type ProviderErrorFacts,
 } from '../agent/provider-error.js';
-import { getDb } from '../db/connection.js';
 
 const logger = createLogger('billing-breaker');
 

@@ -5,7 +5,7 @@
 //   1. TOOL READS. The candidate tools are DERIVED from the definitions: every tool that reads
 //      (its display class is `retrieval`, or its name carries a reading word). Each must be
 //      registered in `tools/inbound-fences.ts`: door-fenced, or fenced by the mailbox
-//      banner — or named in NOT_OUTSIDE_CONTENT (tools/__tests__/fence-census.ts) with a reason. A new read tool fails here
+//      banner, or named in NOT_OUTSIDE_CONTENT (tools/__tests__/fence-census.ts) with a reason. A new read tool fails here
 //      until someone decides which it is. Registering IS fencing: the one tool door calls
 //      `fenceToolResult` (checked below, comments stripped).
 //   2. INBOUND PRODUCERS. Each producer of channel text calls its own fenced builder (output-tested
