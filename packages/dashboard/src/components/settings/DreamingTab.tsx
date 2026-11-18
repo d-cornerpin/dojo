@@ -6,7 +6,7 @@ import type { Model } from '@dojo/shared';
 import * as api from '../../lib/api';
 import { formatDate } from '../../lib/dates';
 import { HealerCard } from './CapabilityModelCards';
-import { isPickableAgentModel } from '../../lib/role-models';
+import { isListedAgentModel } from '../../lib/role-models';
 import { useGuardedLoad } from '../../lib/load-guard';
 import { AgentModelOption } from '../AgentModelOption';
 
@@ -44,7 +44,7 @@ const DreamingEditor = ({ initial }: { initial: DreamingConfig }) => {
   useEffect(() => {
     const load = async () => {
       const [modelsResult, latestResult] = await Promise.all([api.getModels(), api.getLatestDream()]);
-      if (modelsResult.ok) setModels(modelsResult.data.filter(isPickableAgentModel));
+      if (modelsResult.ok) setModels(modelsResult.data.filter(isListedAgentModel));
       if (latestResult.ok) setLastDream(latestResult.data);
     };
     load();

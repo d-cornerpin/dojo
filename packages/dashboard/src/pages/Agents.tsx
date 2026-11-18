@@ -14,6 +14,7 @@ import { createAgentAccess, readLegacyAccess } from '../lib/manifest-edits';
 import { TechniqueSelector } from '../components/TechniqueSelector';
 import { ModalShell } from '../components/ModalShell';
 import { AgentModelOption } from '../components/AgentModelOption';
+import { isListedAgentModel } from '../lib/role-models';
 
 // ── Create Agent Modal ──
 
@@ -365,7 +366,7 @@ export const Agents = () => {
         api.getProviders(),
       ]);
       if (modelsResult.ok) {
-        setModels(modelsResult.data.filter((m) => m.isEnabled && !m.capabilities.includes('decision')));   // never the Dojo's decision model
+        setModels(modelsResult.data.filter(isListedAgentModel));
       }
       if (providersResult.ok) {
         const map: Record<string, string> = {};

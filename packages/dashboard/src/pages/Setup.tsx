@@ -4,7 +4,7 @@ import type { Model, Provider } from '@dojo/shared';
 import * as api from '../lib/api';
 import { ownerChanged, confirmRemoveOwner } from '../lib/owner-star';
 import { isEnterNotComposing } from '../lib/enter-key';
-import { isPickableAgentModel, defaultRoleModel, saveRoleAgent } from '../lib/role-models';
+import { isListedAgentModel, isPickableAgentModel, defaultRoleModel, saveRoleAgent } from '../lib/role-models';
 import { AUTOMATION_SEND_HINT } from '../lib/automation-permission';
 import { SetupDeps, SetupPermissions } from '../components/SetupDeps';
 import { VoiceSetupStep } from '../components/VoiceSetupStep';
@@ -836,7 +836,7 @@ export const PrimaryAgentStep = ({ onReady }: { onReady?: (ready: boolean) => vo
       // A failed read of the saved settings is not "nothing saved": nothing here may be saved from it.
       if (!(nameRes.ok && idRes.ok)) { setLoadFailed(true); return; }
       setLoadFailed(false);
-      const enabled = modelsRes.ok ? modelsRes.data.filter(isPickableAgentModel) : [];
+      const enabled = modelsRes.ok ? modelsRes.data.filter(isListedAgentModel) : [];
       setModels(enabled);
       const existingName = nameRes.ok ? (nameRes.data.value ?? '') : '';
       const existingId = idRes.ok ? (idRes.data.value ?? '') : '';
@@ -847,7 +847,7 @@ export const PrimaryAgentStep = ({ onReady }: { onReady?: (ready: boolean) => vo
       }
       if (cancelled) return;
       if (existingName) setAgentName(existingName);
-      setSelectedModel(existingModel || (enabled.find((m) => !m.tooSmallForAgents)?.id ?? ''));
+      setSelectedModel(existingModel || (enabled.find(isPickableAgentModel)?.id ?? ''));
       if (existingName) setSaved(true);
     })();
     return () => { cancelled = true; };
@@ -990,7 +990,7 @@ export const PMAgentStep = ({ onReady }: { onReady?: (ready: boolean) => void })
       // A failed read of the saved settings is not "nothing saved": nothing here may be saved from it.
       if (!(nameRes.ok && modelRes.ok)) { setLoadFailed(true); return; }
       setLoadFailed(false);
-      const enabled = modelsRes.ok ? modelsRes.data.filter(isPickableAgentModel) : [];
+      const enabled = modelsRes.ok ? modelsRes.data.filter(isListedAgentModel) : [];
       setModels(enabled);
       const existingName = nameRes.ok ? (nameRes.data.value ?? '') : '';
       const existingModel = modelRes.ok ? (modelRes.data.value ?? '') : '';
@@ -1087,7 +1087,7 @@ const TrainerAgentStep = ({ onReady }: { onReady?: (ready: boolean) => void }) =
       // A failed read of the saved settings is not "nothing saved": nothing here may be saved from it.
       if (!(nameRes.ok && modelRes.ok)) { setLoadFailed(true); return; }
       setLoadFailed(false);
-      const enabledModels = modelsRes.ok ? modelsRes.data.filter(isPickableAgentModel) : [];
+      const enabledModels = modelsRes.ok ? modelsRes.data.filter(isListedAgentModel) : [];
       setModels(enabledModels);
       const existingName = nameRes.ok ? (nameRes.data.value ?? '') : '';
       const existingModel = modelRes.ok ? (modelRes.data.value ?? '') : '';
@@ -1185,7 +1185,7 @@ export const DreamerStep = ({ onReady }: { onReady?: (ready: boolean) => void })
       // A failed read of the saved settings is not "nothing saved": nothing here may be saved from it.
       if (!(cfgRes.ok)) { setLoadFailed(true); return; }
       setLoadFailed(false);
-      const enabledModels = modelsRes.ok ? modelsRes.data.filter(isPickableAgentModel) : [];
+      const enabledModels = modelsRes.ok ? modelsRes.data.filter(isListedAgentModel) : [];
       setModels(enabledModels);
       const cfg = cfgRes.ok ? cfgRes.data : null;
       // Default to a Sonnet-class model, else the cheapest the server accepts for an agent
