@@ -368,17 +368,6 @@ trackerRouter.put('/tasks/:id', async (c) => {
           }, 409);
         }
       }
-      if (body.status && body.status !== fromStatus && body.status !== 'paused' && body.status !== 'blocked') {   // a hold writes its own entry
-        const { writeTaskLog } = await import('../../tracker/task-log.js');
-        writeTaskLog({
-          taskId: id,
-          fromEntity: 'user',
-          entryKind: 'transition',
-          fromStatus,
-          toStatus: body.status,
-          actionTaken: 'moved on the task board',
-        });
-      }
     }
 
     if (body.scheduled_start !== undefined) {
