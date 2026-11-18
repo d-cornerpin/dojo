@@ -4,10 +4,9 @@
 // open can never replace it. No GC of per-agent rows: accepted at this scale. This module touches no file.
 // ════════════════════════════════════════
 
-import path from 'node:path';
 import { getDb } from '../db/connection.js';
+import { resolveHomePath } from './path-resolve.js';
 import { startCanvasWatch, stopCanvasWatch } from './canvas-watch.js';
-import { homeDir } from '../home.js';
 
 export interface CanvasState {
   kind: 'canvas' | 'iframe' | 'screenshot';
@@ -84,17 +83,11 @@ export function setCanvasStatus(agentId: string, status: CanvasStatus): void {
   persistCanvas(agentId);
 }
 
-export function resolveHome(p: string): string {
-  if (p === '~') return homeDir();
-  if (p.startsWith('~/')) return path.join(homeDir(), p.slice(2));
-  return p;
-}
-
 // THE one resolution point for "which file is this agent's canvas showing?"; null when nothing is open.
 // canvas_read takes a prompt, no path: the file the agent put on its own canvas earlier, keyed by its id.
 // The gate loop resolves it with THIS function: the handler's own reader plus its own home expansion,
 // so the two cannot answer differently; null means no grant, leaving the handler's own message intact.
 export function canvasFilePath(agentId: string): { path: string } | null {
   const state = getCurrentCanvas(agentId);
-  return state?.path ? { path: resolveHome(state.path) } : null;
+  return state?.path ? { path: resolveHomePath(state.path) } : null;
 }
