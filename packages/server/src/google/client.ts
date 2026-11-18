@@ -137,7 +137,8 @@ export function googleRead(
   accountId: string = 'agent',
 ): Promise<GoogleApiResult> {
   return googleFetch('GET', url, undefined, undefined, accountId, agentId).then(result => {
-    logGoogleActivity({
+    // A watcher's own poll ('system') is not logged: only reads made for an agent are activity.
+    if (agentId !== 'system') logGoogleActivity({
       agentId, agentName, action, actionType: 'read',
       details: JSON.stringify({ ...details, account: accountId }),
       gwsCommand: result.apiEndpoint,

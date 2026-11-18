@@ -148,7 +148,8 @@ export function msGraphRead(
   accountId: string = 'agent',
 ): Promise<MsGraphResult> {
   return graphFetch('GET', endpoint, undefined, accountId, agentId).then(result => {
-    logMicrosoftActivity({
+    // A watcher's own poll ('system') is not logged: only reads made for an agent are activity.
+    if (agentId !== 'system') logMicrosoftActivity({
       agentId, agentName, action, actionType: 'read',
       details: JSON.stringify({ ...details, account: accountId }),
       apiEndpoint: result.apiEndpoint,
