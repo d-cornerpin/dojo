@@ -487,7 +487,7 @@ export const agentsHandlers: ToolHandlerMap = {
               requiresResponse = false;
             }
 
-            // Check if target is injured, healer bypass
+            // An injured or paused target is refused, except to the main agent and the Healer.
             const sendDb = getDb();
             let targetCheck = sendDb.prepare('SELECT id, name, status, created_at FROM agents WHERE id = ?').get(agentRef) as { id: string; name: string; status: string; created_at: string } | undefined;
             let named: LiveAgentByName[] = [];   // names ignore case; the newest of several wins
@@ -520,17 +520,12 @@ export const agentsHandlers: ToolHandlerMap = {
                 }
               }
             }
-            if (targetCheck && (targetCheck.status === 'error' || targetCheck.status === 'paused')) {
-              let isHealerSender = false;
-              try {
-                isHealerSender = isHealerAgent(agentId);
-              } catch { /* */ }
-              if (!isHealerSender) {
-                const stateLabel = targetCheck.status === 'error' ? 'INJURED' : 'PAUSED';
-                content = `Agent "${targetCheck.name}" is ${stateLabel}. Message NOT delivered. Use reset_session(agent_id="${targetCheck.id}") to heal them, or reassign the work.`;
-                isError = true;
-                return { content, isError };
-              }
+            if (targetCheck && (targetCheck.status === 'error' || targetCheck.status === 'paused')
+              && !isHealerAgent(agentId) && !isPrimaryAgent(agentId)) {
+              const stateLabel = targetCheck.status === 'error' ? 'INJURED' : 'PAUSED';
+              content = `Agent "${targetCheck.name}" is ${stateLabel}. Message NOT delivered. Only the main agent or the Healer can reach it now: tell the main agent, which can heal it with reset_session(agent_id="${targetCheck.id}"), or do the work another way.`;
+              isError = true;
+              return { content, isError };
             }
 
             // send_to_agent reaches OTHER agents; naming yourself stores and wakes your own inbox.
