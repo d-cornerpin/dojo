@@ -13,9 +13,6 @@ export const PART_JOINER = '\n\n---\n\n';
 
 
 export enum SystemSlot {
-  ReplyDestination = 100,
-  ChannelLandscape = 200,
-  PhoneConduct = 300,
   Time = 400,
   VisionCap = 500,
   Identity = 600,
@@ -26,17 +23,15 @@ export enum SystemSlot {
   PmAwareness = 1000,
   TrainerAwareness = 1100,
   HealerAwareness = 1200,
-  // 1300 is retired and never reused.
+  // 100, 200, 300, 1300, 1700 and 2300 are retired and never reused.
   MessageSources = 1400,
   GoogleAccess = 1500,
   MsAccess = 1600,
-  IntegrationReconnect = 1700,
   Group = 1800,
   TechniquesIndex = 1900,
   TechniquesDraft = 2000,
   TechniquesEquipped = 2100,
   Runtime = 2200,
-  VoiceConduct = 2300,
 }
 
 /** Message-side slots in build order; integrity repairs are a final applyIntegrityPass, not slots. */
