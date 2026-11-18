@@ -20,6 +20,6 @@ describe('the door keeps the HTTP status', () => {
     expect(await request('/x')).toEqual({ ok: true, data: { a: 1 } });
     vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('down'); }));
     const r = await request('/x');
-    expect(r).toEqual({ ok: false, error: 'down' });
+    expect(r).toEqual({ ok: false, error: 'The Dojo could not be reached. Check that it is running, then try again.' });
   });
 });
