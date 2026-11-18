@@ -197,19 +197,6 @@ const SYSTEM_ENTRIES: SystemInjection[] = [
     render: (ctx) => renderMsAccess(ctx.agentId),
   },
   {
-    id: 'sys.integration-reconnect',
-    target: 'system',
-    slot: SystemSlot.IntegrationReconnect,
-    reason:
-      'Honesty (Inv I): a configured-but-disconnected integration shows a reconnect ' +
-      'breadcrumb instead of vanishing (so the agent does not claim the capability is ' +
-      'unsupported). 0+ parts. FA-PT1 (C28): MOVED to the msg.turn-context tail message; ' +
-      'the breadcrumb flips in/out of the prefix on live connection health, so keeping it ' +
-      'in the cached system block busted the cache on every reconnect/expire. The render ' +
-      'fn is called from renderTurnContext. This entry now emits nothing.',
-    render: () => null,
-  },
-  {
     id: 'sys.techniques-equipped',
     target: 'system',
     slot: SystemSlot.TechniquesEquipped,
@@ -217,49 +204,6 @@ const SYSTEM_ENTRIES: SystemInjection[] = [
       'Full TECHNIQUE.md bodies for equipped techniques, pre-loaded; ladder-anchored ' +
       '(the live user message outranks a technique).',
     render: (ctx) => renderEquippedTechniques(ctx.agentId),
-  },
-  {
-    id: 'sys.reply-destination',
-    target: 'system',
-    slot: SystemSlot.ReplyDestination,
-    reason:
-      'Primary only: the engine-resolved per-turn route + the voice to write in. ' +
-      'The reply tag, built from the turn address. C28 Part 1: MOVED to the msg.turn-context tail ' +
-      'message so the volatile route no longer breaks the cached system prefix; the ' +
-      'render fn is called from renderTurnContext. This SYSTEM entry now emits nothing.',
-    render: () => null,
-  },
-  {
-    id: 'sys.channel-landscape',
-    target: 'system',
-    slot: SystemSlot.ChannelLandscape,
-    reason:
-      'Primary, non-dashboard inbound: channel presence (C11). C28 Part 1: MOVED to ' +
-      'the msg.turn-context tail message (volatile per channel). This entry emits nothing.',
-    render: () => null,
-  },
-  {
-    id: 'sys.phone-conduct',
-    target: 'system',
-    slot: SystemSlot.PhoneConduct,
-    reason:
-      'Live phone-call conduct (C7). C28 Part 1: MOVED to the msg.turn-context tail ' +
-      'message (present only on phone turns → volatile). This entry emits nothing.',
-    render: () => null,
-  },
-  {
-    id: 'sys.voice-conduct',
-    target: 'system',
-    slot: SystemSlot.VoiceConduct,
-    reason:
-      'Generic voice-mode conduct on a voice (non-phone) turn; TTS-conditional ' +
-      'filler advice (C6). Mutually exclusive with phone-conduct. FA-PT1 (C28): MOVED ' +
-      'to the msg.turn-context tail message (present only on voice turns, so it is ' +
-      'volatile); leaving it in the prefix meant every voice/text modality switch and ' +
-      'every non-voice turn interleaved into a voice conversation busted the cached ' +
-      'system prefix. The render fn is called from renderTurnContext. This entry now ' +
-      'emits nothing.',
-    render: () => null,
   },
 ];
 
