@@ -1,6 +1,5 @@
 import { useFollowGrowth } from '../hooks/useFollowGrowth';
 import { useState, useEffect, useRef, useCallback, useMemo, type ReactNode } from 'react';
-import type { Message } from '@dojo/shared';
 import type { ChatChunkEvent, ChatReasoningChunkEvent, ChatMessageEvent, ChatToolCallEvent, ChatToolResultEvent, ChatErrorEvent, ChatWorkingNoteEvent, WsEvent } from '@dojo/shared';
 import { classifyMessageForDisplay, classifyTool, parseInboundChannel, stripInboundChannelMarker, parseOutboundRouting, channelOfSendTool, parseWorkingNote, isOwnerAlertSystemNote, stripSourceEnvelope, OWNER_ALERT_PROJECT_ATTENTION_PREFIX, WORKING_NOTE_PREFIX, INTERNAL_WORKING_NOTE_PREFIX, NO_REPLY_CLOSED_MARKER } from '@dojo/shared';
 import type { MessageOrigin } from '@dojo/shared';
@@ -1405,7 +1404,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
       // refetch replaces the whole pane, so a wordy-blind fetch drops own-output rows.
       const result = await api.getChatHistory(AGENT_ID, 200, undefined, wordyMode);
       if (result.ok) {
-        setMessages(result.data.map((m: Message) => ({ ...m, isStreaming: false })));
+        setMessages(result.data.map(toMessage));
       } else {
         toast.error('The new conversation started but the page could not reload it. Refresh the page.');
       }

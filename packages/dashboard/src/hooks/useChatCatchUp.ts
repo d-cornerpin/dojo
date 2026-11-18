@@ -16,6 +16,7 @@ export const toMessage = (m: Message) => ({
   inboundMeta: m.inboundMeta ?? null,
   conversationId: m.conversationId,
   displayKind: m.displayKind ?? null,
+  reasoningContent: m.reasoningContent ?? null,
 });
 
 interface CatchUp<T extends { id: string; createdAt: string; isStreaming?: boolean }> {
