@@ -17,13 +17,13 @@ const logger = createLogger('public-share');
 const PORT = parseInt(process.env.DOJO_PORT ?? '3001', 10);
 export const OUT_DIR = path.join(homeDir(), '.dojo', 'out');
 
-/** Slug shape: YYYYMMDD-HHMMSS-<7-char hex>. ~28-bit collision space. */
+/** Slug shape: YYYYMMDD-HHMMSS-<32 hex>: the 122 random bits of a download link's id. */
 function makeSlug(): string {
   const now = new Date();
   const pad = (n: number, w = 2) => String(n).padStart(w, '0');
   const date = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}`;
   const time = `${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
-  const rand = crypto.randomBytes(4).toString('hex').slice(0, 7);
+  const rand = crypto.randomUUID().replace(/-/g, '');
   return `${date}-${time}-${rand}`;
 }
 
