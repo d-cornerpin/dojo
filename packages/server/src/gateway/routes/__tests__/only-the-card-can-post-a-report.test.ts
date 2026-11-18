@@ -509,18 +509,6 @@ describe('the card is shown exactly the rows that still hold a decision (contrac
     expect(ids).not.toContain(drafting.id);
     expect(ids).not.toContain(decided);
   });
-
-  it('GET /:id serves the brief and the telemetry the card renders', async () => {
-    const id = awaiting();
-    const body = await bodyOf(await get(`/${id}`));
-    expect(body.ok).toBe(true);
-    expect(body.data?.brief).toEqual(BRIEF);
-    expect(body.data?.telemetry).toEqual(TELEMETRY);
-  });
-
-  it('GET /:id on an unknown id is 404', async () => {
-    expect((await get('/00000000-0000-4000-8000-000000000000')).status).toBe(404);
-  });
 });
 
 // ── 2. THE EDIT DOOR ────────────────────────────────────────────────────────────────────
@@ -677,7 +665,7 @@ describe('what the card shows is what leaves, byte for byte', () => {
 
   it('the bytes the card is served are the bytes that reach the exported file', async () => {
     const id = awaiting('ds1-eeeeeeeeeeee', HOSTILE);
-    const served = (await bodyOf(await get(`/${id}`))).data?.brief as ReportBrief;
+    const served = getReport(id)?.brief as ReportBrief;
     for (const key of Object.keys(HOSTILE) as Array<keyof ReportBrief>) {
       expect(served[key], `the route transformed \`${key}\` on the way to the card`)
         .toBe(HOSTILE[key]);
@@ -711,7 +699,7 @@ describe('what the card shows is what leaves, byte for byte', () => {
     expect((await patch(`/${id}`, { title: EDITED, fixIdeas: EDITED_FIX })).status).toBe(200);
 
     // The card re-reads before the owner presses Post: saving is never approving.
-    const reread = (await bodyOf(await get(`/${id}`))).data?.brief as ReportBrief;
+    const reread = getReport(id)?.brief as ReportBrief;
     expect(reread.title).toBe(EDITED);
 
     expect((await post(`/${id}/approve`)).status).toBe(200);
@@ -839,7 +827,7 @@ describe('the card is told WHERE the report goes, by the door that decides it', 
 
 describe('the route list and the frame list check themselves', () => {
   const ROUTE_PATHS: ReadonlyArray<readonly [string, string]> = [
-    ['GET', '/'], ['GET', '/:id'], ['PATCH', '/:id'],
+    ['GET', '/'], ['PATCH', '/:id'],
     ['POST', '/:id/approve'], ['POST', '/:id/cancel'],
   ];
 
