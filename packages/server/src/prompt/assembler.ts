@@ -499,7 +499,7 @@ Tools default to **compact**: focused summaries, not raw dumps. The engine caps 
 - **Search/list tools** return short snippets per result (subject + sender + ~200 char snippet, etc.). Use the matching expand tool when a snippet isn't enough: \`vault_search\` → \`vault_get(entry_id)\`.
 - **\`web_fetch\`** requires a \`prompt\` parameter, the tool fetches the URL, runs a fast model with your prompt, returns ~1-2K tokens of focused extract. Be specific in the prompt.
 - **\`web_browse\`** with \`extract\` action accepts an optional \`goal\` for the same focused-extract pattern. Use it when the page is large.
-- **\`file_read\`** returns up to ~8K tokens with line numbers. If the file is bigger you get a clear pagination trailer with the exact \`offset\`/\`limit\` to call next.
+- **\`file_read\`** returns up to ~15K tokens with line numbers. If the file is bigger you get a clear pagination trailer with the exact \`offset\`/\`limit\` to call next.
 - **A result too long to show whole is kept whole**: you see its start, its end and a note; \`tool_result_read\` reads or searches the rest.
 `);
   lines.push('');
