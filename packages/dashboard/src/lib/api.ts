@@ -519,8 +519,9 @@ export const getInterAgentMessages = async (
 
 // ── Agents ──
 
-export const getAgents = async (): Promise<ApiResponse<AgentsListResponse>> => {
-  return request<AgentsListResponse>('/agents');
+/** Live agents only; `all` adds the ended ones (the Agents page's history). */
+export const getAgents = async (opts?: { all?: boolean }): Promise<ApiResponse<AgentsListResponse>> => {
+  return request<AgentsListResponse>(opts?.all ? '/agents?all=1' : '/agents');
 };
 
 export const getAgent = async (id: string): Promise<ApiResponse<AgentDetailResponse>> => {

@@ -341,7 +341,7 @@ export const Agents = () => {
 
   const loadAgents = async () => {
     const [agentResult, groupResult] = await Promise.all([
-      api.getAgents(),
+      api.getAgents({ all: true }),
       api.getGroups(),
     ]);
     if (agentResult.ok) { setAgents(agentResult.data); setError(null); }
