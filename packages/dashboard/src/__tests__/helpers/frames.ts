@@ -57,7 +57,7 @@ export function fakeToast() {
     value: {
       toasts: [],
       addToast: () => {},
-      addActionToast: () => {},
+      addActionToast: (opts: { message: string; level?: string }) => { calls.push({ level: `sticky-${opts.level ?? 'warning'}`, message: opts.message }); },
       removeToast: () => {},
       removeToastByKey: () => {},
       info: record('info'),
