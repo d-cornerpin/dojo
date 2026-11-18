@@ -10,7 +10,7 @@ export async function readAllPages<T = unknown>(
   agentName: string,
   action: string,
   details: Record<string, unknown>,
-  accountId?: string,
+  accountId: string,
   /** Stop once this many items are read (and give back exactly that many). Absent: read to the end. */
   limit?: number,
 ): Promise<{ ok: true; value: T[] } | { ok: false; error: string }> {

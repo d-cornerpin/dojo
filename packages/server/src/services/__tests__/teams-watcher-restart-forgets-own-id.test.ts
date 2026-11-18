@@ -69,6 +69,7 @@ vi.mock('../watcher-status.js', () => ({
 vi.mock('../../microsoft/client.js', () => ({
   msGraphRead,
 }));
+vi.mock('../../microsoft/accounts.js', () => ({ getPrimaryMicrosoftAccount: () => ({ id: 'acct-1' }) }));
 
 import { startTeamsWatcher, stopTeamsWatcher } from '../teams-watcher.js';
 

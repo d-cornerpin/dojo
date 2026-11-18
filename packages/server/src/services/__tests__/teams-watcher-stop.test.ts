@@ -17,6 +17,7 @@ import { startTeamsWatcher, stopTeamsWatcher } from '../teams-watcher.js';
 
 const { msGraphRead } = vi.hoisted(() => ({ msGraphRead: vi.fn() }));
 vi.mock('../../microsoft/client.js', () => ({ msGraphRead }));
+vi.mock('../../microsoft/accounts.js', () => ({ getPrimaryMicrosoftAccount: () => ({ id: 'acct-1' }) }));
 vi.mock('../../microsoft/auth.js', () => ({
   isMicrosoftEnabled: () => true,
   isMicrosoftConnected: () => true,

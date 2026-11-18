@@ -17,6 +17,7 @@ import { getAgentRuntime } from '../agent/runtime.js';
 import { msGraphRead } from '../microsoft/client.js';
 import { teamsInboundContent } from '../tools/inbound-fences.js';
 import { isMicrosoftEnabled, isMicrosoftConnected, getEnabledMsServices } from '../microsoft/auth.js';
+import { getPrimaryMicrosoftAccount } from '../microsoft/accounts.js';
 import { type WatcherStatus, type RecentNotification, pushRecent, maybeAlertOnFailure, maybeAlertOnRecovery, normalizeError, watcherFailingOnRecord } from './watcher-status.js';
 
 const logger = createLogger('teams-watcher');
@@ -114,9 +115,9 @@ const POLL_INTERVAL_MS = 15_000;
 
 // ── Own user ID (cached) ──
 
-async function getOwnUserId(): Promise<string | null> {
+async function getOwnUserId(accountId: string): Promise<string | null> {
   if (ownUserId) return ownUserId;
-  const result = await msGraphRead('me?$select=id', 'system', 'Teams Watcher', 'teams_watcher_me', {});
+  const result = await msGraphRead('me?$select=id', 'system', 'Teams Watcher', 'teams_watcher_me', {}, accountId);
   if (!result.ok) return null;
   const me = result.data as { id?: string };
   ownUserId = me?.id ?? null;
@@ -126,12 +127,12 @@ async function getOwnUserId(): Promise<string | null> {
 // ── Fetch chat members to build userId → email map ──
 // No $select: userId and email are on the derived aadUserConversationMember type, so base-field $select rejects them.
 
-async function fetchChatMembers(chatId: string): Promise<void> {
+async function fetchChatMembers(chatId: string, accountId: string): Promise<void> {
   if (membersFetched.has(chatId)) return;
 
   const result = await msGraphRead(
     `chats/${encodeURIComponent(chatId)}/members`,
-    'system', 'Teams Watcher', 'teams_watcher_members', { chatId },
+    'system', 'Teams Watcher', 'teams_watcher_members', { chatId }, accountId,
   );
   if (!result.ok) return;
 
@@ -164,8 +165,15 @@ async function pollForNewMessages(): Promise<void> {
     return;
   }
 
+  // The watched account is the agent's first Microsoft account, the one the checks above read.
+  const accountId = getPrimaryMicrosoftAccount('agent')?.id;
+  if (!accountId) {
+    recordPollSkip('Microsoft not connected. Sign in again in Settings → Channels (the Microsoft cards).');
+    return;
+  }
+
   try {
-    const myId = await getOwnUserId();
+    const myId = await getOwnUserId(accountId);
     if (!myId) {
       logger.warn('Teams watcher: could not determine own user ID, skipping poll');
       recordPollFailure('Could not determine own user ID');
@@ -175,7 +183,7 @@ async function pollForNewMessages(): Promise<void> {
     // Step 1: Get all chats with their last-updated timestamp
     const chatsResult = await msGraphRead(
       'me/chats?$top=50&$select=id,topic,chatType,lastUpdatedDateTime',
-      'system', 'Teams Watcher', 'teams_watcher_list_chats', {},
+      'system', 'Teams Watcher', 'teams_watcher_list_chats', {}, accountId,
     );
     if (!chatsResult.ok) {
       logger.warn('Teams watcher: chat list error', { error: chatsResult.error });
@@ -217,10 +225,10 @@ async function pollForNewMessages(): Promise<void> {
 
     const chatResults = await Promise.all(
       chatsData.value.map(async (chat) => {
-        await fetchChatMembers(chat.id);
+        await fetchChatMembers(chat.id, accountId);
         const msgsResult = await msGraphRead(
           `chats/${encodeURIComponent(chat.id)}/messages?$top=10&$orderby=createdDateTime desc`,
-          'system', 'Teams Watcher', 'teams_watcher_messages', { chatId: chat.id },
+          'system', 'Teams Watcher', 'teams_watcher_messages', { chatId: chat.id }, accountId,
         );
         return { chat, msgsResult };
       }),
