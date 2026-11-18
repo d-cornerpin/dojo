@@ -825,6 +825,8 @@ async function main(): Promise<void> {
 
   const { removeAbandonedPartFiles } = await import('./gateway/routes/upload.js');
   setInterval(removeAbandonedPartFiles, 24 * 60 * 60 * 1000);
+  const { runDailyDatabaseUpkeep } = await import('./db/daily-upkeep.js');
+  setInterval(() => { void runDailyDatabaseUpkeep(); }, 24 * 60 * 60 * 1000);
 
   // Warm the reader pool now so no user's first search pays the spawn; best-effort, since a box without
   // worker threads runs searches on the serving thread.
@@ -834,6 +836,7 @@ async function main(): Promise<void> {
   // no database; the repair runs on its own thread and search uses the bounded fallback until it finishes.
   scheduleFtsHealthCheck();
   removeAbandonedPartFiles(); // Run once on startup
+  void runDailyDatabaseUpkeep();
 
   setTimeout(async () => {
     try {
