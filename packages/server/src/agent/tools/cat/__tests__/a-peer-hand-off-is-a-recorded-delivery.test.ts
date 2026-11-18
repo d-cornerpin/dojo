@@ -242,7 +242,7 @@ describe('§2 a hand-off that did NOT happen is recorded honestly', () => {
   //
   // The first cut of this door allowlisted `failed` for `AGENT_NOT_FOUND` and defaulted every
   // other reason to `suppressed` — the inverse of the sentence written directly above it. The
-  // reason union has seven members and that ternary recognised two, so `MALFORMED_ENVELOPE` and
+  // reason union has six members and that ternary recognised two, so `MALFORMED_ENVELOPE` and
   // `PERSIST_SKIPPED` were both filed as the platform working as designed. `PERSIST_SKIPPED`'s
   // own doc says the receiver's row persisted nothing, so there is no message to deliver: a
   // message that vanished, recorded as a protocol decision.
