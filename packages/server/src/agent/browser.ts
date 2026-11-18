@@ -17,6 +17,27 @@ const logger = createLogger('browser');
 
 const sessions = new Map<string, BrowserSession>();
 
+// ── Idle close: a browser with no action for 10 minutes is closed (the next action opens a new one) ──
+
+const IDLE_CLOSE_MS = 10 * 60_000;
+const idleTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+function stopIdleClock(agentId: string): void {
+  const t = idleTimers.get(agentId);
+  if (t) clearTimeout(t);
+  idleTimers.delete(agentId);
+}
+
+function startIdleClock(agentId: string): void {
+  stopIdleClock(agentId);
+  const t = setTimeout(() => {
+    idleTimers.delete(agentId);
+    closeSession(agentId).catch(() => {});
+  }, IDLE_CLOSE_MS);
+  if (typeof t.unref === 'function') t.unref();
+  idleTimers.set(agentId, t);
+}
+
 // ── Rate Limiting ──
 
 const actionTimestamps = new Map<string, number[]>();
@@ -299,6 +320,7 @@ export function getOrCreateSession(agentId: string): BrowserSession {
 }
 
 export async function closeSession(agentId: string): Promise<void> {
+  stopIdleClock(agentId);
   const session = sessions.get(agentId);
   if (session) {
     await session.close();
@@ -328,6 +350,7 @@ export async function executeWebBrowse(
   }
 
   const session = getOrCreateSession(agentId);
+  stopIdleClock(agentId);
 
   try {
     switch (action) {
@@ -417,9 +440,8 @@ export async function executeWebBrowse(
       }
 
       case 'close':
-        const result = await session.close();
-        sessions.delete(agentId);
-        return result;
+        await closeSession(agentId);
+        return 'Browser session closed.';
 
       default:
         return `Error: Unknown action "${action}". Valid actions: navigate, screenshot, click, type, scroll, extract, close`;
@@ -428,5 +450,8 @@ export async function executeWebBrowse(
     const msg = err instanceof Error ? err.message : String(err);
     logger.error('web_browse action failed', { action, error: msg }, agentId);
     return `Error: Browser action "${action}" failed: ${msg}`;
+  } finally {
+    // Every action but close restarts the 10-minute clock; close leaves none running.
+    if (action !== 'close') startIdleClock(agentId);
   }
 }
