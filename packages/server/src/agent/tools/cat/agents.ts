@@ -231,8 +231,6 @@ export function accessLine(agentId: string): string {
  *  unknown or future reasons) files `failed`, mirroring `DROPS_THE_SENDER_IS_TOLD_ABOUT`
  *  in `a2a-transport.ts`. `SEMANTIC_DUPLICATE` and `AWAITING_REPLY` are explanations the
  *  sender already holds; `HOP_LIMIT_EXCEEDED` is the protocol's own bound.
- *  `TERMINAL_THREAD_CLOSED` is deliberately NOT here: it has no emit site, so if it ever
- *  surfaces it marks an uncleared closure flag, i.e. a bug and a loss, never policy.
  *  Keep this set and the handler's switch case in step, see `a2aDropOutcome` below. */
 const A2A_DROPS_THAT_ARE_POLICY: ReadonlySet<string> = new Set([
   'SEMANTIC_DUPLICATE', 'AWAITING_REPLY', 'HOP_LIMIT_EXCEEDED',
@@ -654,12 +652,6 @@ export const agentsHandlers: ToolHandlerMap = {
                   from: agentId, to: agentRef, thread: result.threadId, reason: result.reason,
                 });
                 switch (result.reason) {
-                  case 'TERMINAL_THREAD_CLOSED':
-                    // No emit site: the rejection and the flag behind it were both removed, so
-                    // if this surfaces it is a stale uncleared marker, i.e. a transport bug.
-                    // The ledger agrees: `a2aDropOutcome` files a bug as `failed`, never policy.
-                    content = `Thread ${result.threadId.slice(0, 8)} reported a stale closure marker (engine bug, the transport should have auto-cleared it). Try again, or omit thread_id to start a fresh thread.`;
-                    break;
                   case 'HOP_LIMIT_EXCEEDED':
                     content = `Thread ${result.threadId.slice(0, 8)} has reached the maximum of 8 messages. Start a new thread (omit thread_id) if you need to continue.`;
                     break;
