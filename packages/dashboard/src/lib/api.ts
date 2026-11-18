@@ -492,15 +492,10 @@ export const getChatHistory = async (
   agentId: string,
   limit?: number,
   before?: string,
-  // wordy mode is a DIFFERENT server query (it also serves the agent's own
-  // inter-agent coordination output from the store), so it must be sent through
-  // to every page fetch, not filtered client-side out of one feed.
-  wordy?: boolean,
 ): Promise<ApiResponse<ChatHistoryResponse>> => {
   const params = new URLSearchParams();
   if (limit) params.set('limit', String(limit));
   if (before) params.set('before', before);
-  if (wordy) params.set('wordy', '1');
   const query = params.toString();
   return request<ChatHistoryResponse>(`/chat/${agentId}/messages${query ? `?${query}` : ''}`);
 };
