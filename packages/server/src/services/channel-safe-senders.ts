@@ -71,6 +71,13 @@ export interface AppendChannelSenderResult {
   totalSenders: number;
 }
 
+function writeKey(key: string, list: SafeSender[]): void {
+  getDb().prepare(`
+    INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
+  `).run(key, JSON.stringify(list));
+}
+
 function appendToKey(key: string, sender: SafeSender): AppendChannelSenderResult {
   const list = readByKey(key);
   const target = sender.address.toLowerCase();
@@ -78,16 +85,21 @@ function appendToKey(key: string, sender: SafeSender): AppendChannelSenderResult
     return { ok: true, added: false, totalSenders: list.length };
   }
   const next = [...list, sender];
-  const db = getDb();
-  db.prepare(`
-    INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
-    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
-  `).run(key, JSON.stringify(next));
+  writeKey(key, next);
   // Mirror the new sender into the contacts store (best-effort) so a trusted
   // name resolves when the user later asks the agent to reach them.
   const channel = configKeyToChannel(key);
   if (channel) syncSafeSenderToContacts(channel, sender, null);
   return { ok: true, added: true, totalSenders: next.length };
+}
+
+// Remove a sender from a channel's list by address, case-insensitive; its mirrored contact stays.
+function removeFromKey(key: string, address: string): { removed: boolean; totalSenders: number } {
+  const list = readByKey(key);
+  const next = list.filter((s) => s.address.toLowerCase() !== address.toLowerCase());
+  if (next.length === list.length) return { removed: false, totalSenders: list.length };
+  writeKey(key, next);
+  return { removed: true, totalSenders: next.length };
 }
 
 /** A list saved under a slot name ('agent', 'user') belongs to that kind's first mailbox when no account has that
@@ -115,6 +127,12 @@ export function appendTwilioSmsSafeSender(sender: SafeSender): AppendChannelSend
 }
 export function appendTwilioVoiceSafeCaller(sender: SafeSender): AppendChannelSenderResult {
   return appendToKey(TWILIO_VOICE_CONFIG_KEY, sender);
+}
+export function removeTwilioSmsSafeSender(address: string): { removed: boolean; totalSenders: number } {
+  return removeFromKey(TWILIO_SMS_CONFIG_KEY, address);
+}
+export function removeTwilioVoiceSafeCaller(address: string): { removed: boolean; totalSenders: number } {
+  return removeFromKey(TWILIO_VOICE_CONFIG_KEY, address);
 }
 
 // Boot-time reconcile: mirror every safe-sender list into the contacts store on EVERY startup, so a trusted sender
