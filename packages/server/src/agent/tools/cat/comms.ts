@@ -20,7 +20,7 @@ import { writeToolReceipt } from '../../../receipts/store.js';
 import { turnContext } from '../../turn-context.js';
 import { refuseSendWithNoRecipient, routedReplyWords } from '../../v2/send-recipient.js';
 import { sharePathGuard } from '../../path-guards.js';
-import { auditLog, permissionDeniedMessage, registerSharedFile } from '../util.js';
+import { auditLog, linkReach, permissionDeniedMessage, registerSharedFile } from '../util.js';
 import { appendTeamsSafeSender, appendMailSafeSender } from '../../../services/channel-safe-senders.js';
 import { createPublicShare } from '../../../services/public-share.js';
 import { executeSmsSend } from '../../../twilio/sms-outbound.js';
@@ -75,7 +75,7 @@ export const commsHandlers: ToolHandlerMap = {
       return { content, isError, ...(errorCode !== undefined ? { errorCode } : {}) };
     }
     const filename = path.basename(sharePath);
-    content = `Download link for ${filename}: ${downloadUrl}`;
+    content = `Download link for ${filename}: ${downloadUrl}\n\n${linkReach(downloadUrl)}`;
     auditLog(agentId, 'share_file', sharePath, 'success', downloadUrl);
     return { content, isError, ...(errorCode !== undefined ? { errorCode } : {}) };
   },
@@ -596,9 +596,7 @@ export const commsHandlers: ToolHandlerMap = {
       // only accepts absolutes), never the raw source_path.
       const result = createPublicShare({ sourcePath: publishGuard.absPath, entryFilename });
       auditLog(agentId, 'share_publicly', publishGuard.absPath, 'success', `Slug ${result.slug}, base ${result.baseSource}`);
-      const tunnelLine = result.baseSource === 'tunnel'
-        ? 'Cloudflare tunnel is active, this URL is reachable from anywhere on the internet.'
-        : 'No tunnel is running, so this URL only works from the same machine. To share off-device, start the Cloudflare tunnel from the dashboard and run share_publicly again.';
+      const tunnelLine = linkReach(result.url);
       let assetLine = '';
       if (result.inlinedAssets) {
         const { copied, skipped, notFound, warnings } = result.inlinedAssets;
