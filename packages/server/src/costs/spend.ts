@@ -4,6 +4,7 @@
 
 import { getDb } from '../db/connection.js';
 import { windowOf } from './budget-cards.js';
+import { LOCAL_PROVIDER_TYPES } from '../agent/stream-patience.js';
 
 // Daily spend, cached for 5 seconds to avoid redundant SUM queries.
 
@@ -48,9 +49,16 @@ export interface ExceededBudget {
   limitUsd: number;
 }
 
-/** Which limit a call of `estimatedCost` would go over, or null. A call that costs nothing is never over a limit. */
-export function exceededBudget(agentId: string, estimatedCost: number): ExceededBudget | null {
-  if (estimatedCost <= 0) return null;
+/** A model on a local provider, or priced an explicit 0 per unit, costs nothing. */
+function costsNothing(modelId: string): boolean {
+  const row = getDb().prepare('SELECT m.cost_per_unit AS unit, p.type AS type FROM models m JOIN providers p ON p.id = m.provider_id WHERE m.id = ?')
+    .get(modelId) as { unit: number | null; type: string } | undefined;
+  return !!row && (row.unit === 0 || LOCAL_PROVIDER_TYPES.has(row.type));
+}
+
+/** Which limit a call of `estimatedCost` would go over, or null. A call that costs nothing (an estimate of 0, or a free `modelId`) is never over a limit. */
+export function exceededBudget(agentId: string, estimatedCost: number, modelId?: string): ExceededBudget | null {
+  if (estimatedCost <= 0 || (modelId && costsNothing(modelId))) return null;
   const db = getDb();
   const globalBudget = db.prepare(`SELECT limit_usd FROM budgets WHERE id = 'global_daily'`).get() as { limit_usd: number } | undefined;
   if (globalBudget) {

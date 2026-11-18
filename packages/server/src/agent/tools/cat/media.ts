@@ -51,9 +51,9 @@ import { turnContext } from '../../turn-context.js';
 import { userWords, currentAddress } from '../../v2/turn-address.js';
 import { outsideSpan } from '../../../tools/external-content.js';
 
-/** The one spending-limit check for a paid media job: the refusal the tool returns, or null to go ahead. */
-function limitRefusal(agentId: string, what: string): string | null {
-  const over = exceededBudget(agentId, WALL_ESTIMATE_USD);
+/** The one spending-limit check for a media job (a free model is never over a limit): the refusal the tool returns, or null to go ahead. */
+function limitRefusal(agentId: string, what: string, modelId: string): string | null {
+  const over = exceededBudget(agentId, WALL_ESTIMATE_USD, modelId);
   if (!over) return null;
   const which = over.scope === 'global' ? 'The daily spending limit' : `This agent's ${over.period} spending limit`;
   return `${which} is reached ($${over.spend.toFixed(2)} spent of $${over.limitUsd.toFixed(2)}), so no ${what} was started. ` +
@@ -95,7 +95,7 @@ const handlers = {
       return { content, isError };
     }
 
-    const overLimit = limitRefusal(agentId, 'picture');
+    const overLimit = limitRefusal(agentId, 'picture', modelChoice.modelId);
     if (overLimit) return { content: overLimit, isError: true };
 
     // Tracked as a generation_job so the orb shows it;
@@ -434,7 +434,7 @@ const handlers = {
       return { content, isError };
     }
 
-    const overLimit = limitRefusal(agentId, isMusic ? 'music' : 'audio');
+    const overLimit = limitRefusal(agentId, isMusic ? 'music' : 'audio', modelChoice.modelId);
     if (overLimit) return { content: overLimit, isError: true };
 
     // A voice outside the model's catalog is kicked back: the provider's voice enum
@@ -502,7 +502,7 @@ const handlers = {
       return { content, isError };
     }
 
-    const overLimit = limitRefusal(agentId, 'video');
+    const overLimit = limitRefusal(agentId, 'video', modelChoice.modelId);
     if (overLimit) return { content: overLimit, isError: true };
 
     // Canonical params are engine-enforced at the boundary: a missing or

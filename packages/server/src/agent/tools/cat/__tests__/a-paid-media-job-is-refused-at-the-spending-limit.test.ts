@@ -123,6 +123,20 @@ describe('a paid media job is refused at the spending limit', () => {
     expect(r.content).toContain("This agent's weekly spending limit is reached ($30.00 spent of $10.00), so no picture was started.");
   });
 
+  it('at the limit a free local model still runs and a paid one is refused', async () => {
+    const db = mockDb.current!;
+    db.exec(`
+      INSERT INTO providers (id, name, type, base_url, auth_type) VALUES ('fake-provider', 'Local', 'ollama', 'http://localhost:11434', 'none');
+      INSERT INTO models (id, provider_id, name, api_model_id, capabilities, is_enabled) VALUES ('fake-image-model', 'fake-provider', 'Local picture', 'x', '["image_generation"]', 1);
+    `);
+    const free = await call('image_create', { description: 'a cat' });
+    expect(free.content).toContain('Image generation kicked off');
+    db.exec(`UPDATE providers SET type = 'openai-compatible' WHERE id = 'fake-provider'`);
+    const paid = await call('image_create', { description: 'a dog' });
+    expect(paid.isError).toBe(true);
+    expect(paid.content).toContain('so no picture was started.');
+  });
+
   it('under the limit the picture starts', async () => {
     mockDb.current!.exec('DELETE FROM cost_records');
     invalidateDailySpendCache();
