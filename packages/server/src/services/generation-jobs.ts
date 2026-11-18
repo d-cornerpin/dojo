@@ -37,7 +37,6 @@ interface GenerationJobRow {
   voice: string | null;
   status: GenerationStatus;
   asset_path: string | null;
-  asset_mime: string | null;
   duration_seconds: number | null;
   cost_usd: number | null;
   error: string | null;
@@ -128,7 +127,6 @@ export function setRunning(jobId: string): boolean {
 
 export interface SucceededFields {
   assetPath: string;
-  assetMime: string;
   durationSeconds?: number | null;
   costUsd?: number | null;
 }
@@ -141,10 +139,10 @@ export interface SucceededFields {
 export function setSucceeded(jobId: string, f: SucceededFields): boolean {
   const res = getDb().prepare(`
     UPDATE generation_jobs
-    SET status='succeeded', asset_path=?, asset_mime=?, duration_seconds=?, cost_usd=?,
+    SET status='succeeded', asset_path=?, duration_seconds=?, cost_usd=?,
         finished_at=datetime('now'), updated_at=datetime('now')
     WHERE id = ? AND status='running'
-  `).run(f.assetPath, f.assetMime, f.durationSeconds ?? null, f.costUsd ?? null, jobId);
+  `).run(f.assetPath, f.durationSeconds ?? null, f.costUsd ?? null, jobId);
   if (res.changes === 0) return false;
   const row = getJob(jobId);
   if (row) emitUpdate(row);
@@ -353,7 +351,6 @@ async function runAudioOrMusicJob(jobId: string): Promise<void> {
 
     const delivered = setSucceeded(jobId, {
       assetPath: result.filePath,
-      assetMime: result.mimeType,
       durationSeconds: result.durationSeconds,
       costUsd,
     });

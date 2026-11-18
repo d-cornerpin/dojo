@@ -280,7 +280,7 @@ const handlers = {
             messageId: deliveryMsgId, content: '', done: true, modelId: null,
           });
 
-          setImgSucceeded(imgJobId, { assetPath: deliveredPath, assetMime: mimeType });
+          setImgSucceeded(imgJobId, { assetPath: deliveredPath });
           settleAskOnAsyncResult({ agentId, askMessageId: resultSubject.rootId, resultMessageId: deliveryMsgId });   // the job is finished and its result reached the owner
 
           try {
