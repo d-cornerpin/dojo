@@ -389,10 +389,10 @@ export function renderTable(ctx: RenderCtx, block: PdfTableBlock): void {
   ctx.cursorY -= 4;
 }
 
-async function renderImage(ctx: RenderCtx, block: PdfImageBlock): Promise<void> {
+async function renderImage(ctx: RenderCtx, block: PdfImageBlock): Promise<string | null> {
   if (!block.path || !effectFs.existsSync(block.path)) {
     logger.warn('PDF image block: file not found, skipping', { path: block.path });
-    return;
+    return `image not found: ${block.path ?? '(no path)'}`;
   }
   const data = effectFs.readFileSync(block.path);
   const ext = path.extname(block.path).toLowerCase();
@@ -403,7 +403,7 @@ async function renderImage(ctx: RenderCtx, block: PdfImageBlock): Promise<void> 
     img = await ctx.pdfDoc.embedJpg(data);
   } else {
     logger.warn('PDF image block: only PNG/JPG supported', { ext });
-    return;
+    return `image is not PNG or JPG: ${block.path}`;
   }
   const w = (block.width_in ?? 3) * 72;
   const h = (block.height_in ?? 3) * 72;
@@ -414,6 +414,7 @@ async function renderImage(ctx: RenderCtx, block: PdfImageBlock): Promise<void> 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ctx.currentPage.drawImage(img as any, { x, y: ctx.cursorY - h, width: w, height: h });
   ctx.cursorY -= h + 4;
+  return null;
 }
 
 function drawHeaderFooter(ctx: RenderCtx): void {
@@ -452,7 +453,7 @@ function drawHeaderFooter(ctx: RenderCtx): void {
   });
 }
 
-async function generatePdfBuffer(blocks: PdfBlock[], options: PdfDocOptions = {}): Promise<Buffer> {
+async function generatePdfBuffer(blocks: PdfBlock[], options: PdfDocOptions = {}): Promise<{ buffer: Buffer; skipped: string[] }> {
   const pdfDoc = await PDFDocument.create();
   const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
   const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
@@ -476,22 +477,28 @@ async function generatePdfBuffer(blocks: PdfBlock[], options: PdfDocOptions = {}
   };
   newPage(ctx);
 
-  for (const block of blocks) {
+  const skipped: string[] = [];
+  for (const [i, block] of blocks.entries()) {
     switch (block.type) {
       case 'heading':         renderHeading(ctx, block); break;
       case 'paragraph':       renderParagraph(ctx, block); break;
       case 'bullet_list':     renderList(ctx, block.items, 'bullet'); break;
       case 'numbered_list':   renderList(ctx, block.items, 'numbered'); break;
       case 'table':           renderTable(ctx, block); break;
-      case 'image':           await renderImage(ctx, block); break;
+      case 'image': {
+        const why = await renderImage(ctx, block);
+        if (why) skipped.push(`block ${i + 1} (${why})`);
+        break;
+      }
       case 'horizontal_rule': renderHorizontalRule(ctx, block); break;
       case 'page_break':      newPage(ctx); break;
+      default: skipped.push(`block ${i + 1} (unknown type "${String((block as { type?: unknown }).type)}")`);
     }
   }
 
   drawHeaderFooter(ctx);
   const bytes = await pdfDoc.save();
-  return Buffer.from(bytes);
+  return { buffer: Buffer.from(bytes), skipped };
 }
 
 // ── Per-operation helpers (merge, extract, rotate, etc.) ──
@@ -501,12 +508,22 @@ async function loadPdf(filePath: string): Promise<unknown> {
   return await PDFDocument.load(bytes);
 }
 
+/** Page numbers as a person says them (the first page is 1) to the zero-based indices pdf-lib takes;
+ *  a number that is not a page of this file is dropped. */
 export function normalizePageList(input: number[] | undefined, total: number): number[] {
   if (!input || input.length === 0) return [];
-  // Accept either 0-based or 1-based: if any index is >= total, assume
-  // the agent passed 1-based. Both forms are common in tool callers.
-  const oneBased = input.some((p) => p === total);
-  return input.map((p) => oneBased ? p - 1 : p).filter((p) => p >= 0 && p < total);
+  return input.filter((p) => Number.isInteger(p) && p >= 1 && p <= total).map((p) => p - 1);
+}
+
+/** The page numbers a person reads ("1, 3") for zero-based indices. */
+function pageNumbers(indices: number[]): string {
+  return indices.map((i) => i + 1).join(', ');
+}
+
+/** " Skipped 7, 9: this PDF has 3 pages." for asked numbers that are not pages of this file; '' when none. */
+function skippedPages(asked: number[], total: number): string {
+  const bad = asked.filter((p) => !(Number.isInteger(p) && p >= 1 && p <= total));
+  return bad.length === 0 ? '' : ` Skipped ${bad.join(', ')}: this PDF has ${total} page${total === 1 ? '' : 's'}.`;
 }
 
 async function mergePdfs(inputPaths: string[], outputPath: string): Promise<{ pageCount: number }> {
@@ -538,21 +555,21 @@ async function extractPages(inputPath: string, pageIndices: number[], outputPath
   return { pageCount: pageIndices.length };
 }
 
-async function rotatePages(inputPath: string, rotations: Array<{ page: number; degrees: number }>, outputPath: string): Promise<{ rotated: number }> {
+async function rotatePages(inputPath: string, rotations: Array<{ page: number; degrees: number }>, outputPath: string): Promise<{ rotated: number[]; total: number }> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const src = await loadPdf(inputPath) as any;
   const total = src.getPageCount();
-  let rotated = 0;
+  const rotated: number[] = [];
   for (const r of rotations) {
-    const idx = r.page >= total ? r.page - 1 : r.page; // tolerate 1-based
-    if (idx < 0 || idx >= total) continue;
+    const idx = r.page - 1;
+    if (!Number.isInteger(r.page) || idx < 0 || idx >= total) continue;
     src.getPage(idx).setRotation(degrees(r.degrees));
-    rotated++;
+    rotated.push(idx);
   }
   // Not one rotation applied: write no copy, so a refusal leaves no file.
-  if (rotated === 0) return { rotated };
+  if (rotated.length === 0) return { rotated, total };
   effectFs.writeFileSync(outputPath, await src.save());
-  return { rotated };
+  return { rotated, total };
 }
 
 async function reorderPages(inputPath: string, newOrder: number[], outputPath: string): Promise<void> {
@@ -572,16 +589,16 @@ async function deletePages(
   inputPath: string,
   removeIndices: number[],
   outputPath: string,
-): Promise<{ pageCount: number; removed: number; total: number }> {
+): Promise<{ pageCount: number; removed: number[]; total: number }> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const src = await loadPdf(inputPath) as any;
   const total = src.getPageCount();
   const toRemove = new Set(normalizePageList(removeIndices, total));
+  const removed = [...toRemove].sort((a, b) => a - b);
   const keep: number[] = [];
   for (let i = 0; i < total; i++) if (!toRemove.has(i)) keep.push(i);
-  const removed = total - keep.length;
   // Nothing matched: write no copy, so a refusal leaves no file.
-  if (removed === 0) return { pageCount: keep.length, removed, total };
+  if (removed.length === 0) return { pageCount: keep.length, removed, total };
   const out = await PDFDocument.create();
   const copied = await out.copyPages(src, keep);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -594,7 +611,7 @@ async function watermarkPdf(
   inputPath: string,
   outputPath: string,
   opts: { text: string; opacity?: number; size_pt?: number; color?: string; rotation_deg?: number; pages?: number[] },
-): Promise<void> {
+): Promise<{ stamped: number[]; total: number }> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const src = await loadPdf(inputPath) as any;
   const font = await src.embedFont(StandardFonts.HelveticaBold);
@@ -602,6 +619,8 @@ async function watermarkPdf(
   const targetPages = opts.pages && opts.pages.length > 0
     ? new Set(normalizePageList(opts.pages, total))
     : new Set<number>(Array.from({ length: total }, (_, i) => i));
+  const stamped = [...targetPages].sort((a, b) => a - b);
+  if (stamped.length === 0) return { stamped, total };
   const size = opts.size_pt ?? 60;
   const color = hexToRgb01(opts.color ?? '888888');
   const opacity = Math.min(1, Math.max(0, opts.opacity ?? 0.18));
@@ -622,6 +641,7 @@ async function watermarkPdf(
     });
   }
   effectFs.writeFileSync(outputPath, await src.save());
+  return { stamped, total };
 }
 
 async function fillForm(
@@ -666,7 +686,7 @@ async function getPdfInfo(filePath: string): Promise<Record<string, unknown>> {
   const pageSizes = Array.from({ length: total }, (_, i) => {
     const p = src.getPage(i);
     const { width, height } = p.getSize();
-    return { index: i, width_pt: width, height_pt: height, width_in: width / 72, height_in: height / 72 };
+    return { page: i + 1, width_pt: width, height_pt: height, width_in: width / 72, height_in: height / 72 };
   });
   let fields: string[] = [];
   try {
@@ -773,7 +793,7 @@ export const pdfToolDefinitions: ToolDefinition[] = [
       type: 'object',
       properties: {
         path: { type: 'string', description: 'Absolute path to the source PDF.' },
-        pages: { type: 'array', items: { type: 'number' }, description: 'Pages to keep (zero-based; if you pass 1-based indices the tool detects and adjusts).' },
+        pages: { type: 'array', items: { type: 'number' }, description: 'Page numbers to copy into the new file, counting from 1 (the first page is 1).' },
         output_filename: { type: 'string', description: 'Output filename. ".pdf" added if missing.' },
       },
       required: ['path', 'pages', 'output_filename'],
@@ -796,7 +816,7 @@ export const pdfToolDefinitions: ToolDefinition[] = [
           items: {
             type: 'object',
             properties: {
-              page: { type: 'number', description: 'Zero-based page index.' },
+              page: { type: 'number', description: 'Page number, counting from 1 (the first page is 1).' },
               degrees: { type: 'number', description: 'Rotation in degrees (90, 180, 270).' },
             },
             required: ['page', 'degrees'],
@@ -818,7 +838,7 @@ export const pdfToolDefinitions: ToolDefinition[] = [
       type: 'object',
       properties: {
         path: { type: 'string', description: 'Absolute path to the source PDF.' },
-        new_order: { type: 'array', items: { type: 'number' }, description: 'New ordering of zero-based page indices. Length must equal the source page count.' },
+        new_order: { type: 'array', items: { type: 'number' }, description: 'Every page number in its new order, counting from 1 (the first page is 1). Length must equal the source page count.' },
         output_filename: { type: 'string' },
       },
       required: ['path', 'new_order', 'output_filename'],
@@ -835,7 +855,7 @@ export const pdfToolDefinitions: ToolDefinition[] = [
       type: 'object',
       properties: {
         path: { type: 'string', description: 'Absolute path to the source PDF.' },
-        pages: { type: 'array', items: { type: 'number' }, description: 'Zero-based page indices to remove.' },
+        pages: { type: 'array', items: { type: 'number' }, description: 'Page numbers to remove, counting from 1 (the first page is 1).' },
         output_filename: { type: 'string' },
       },
       required: ['path', 'pages', 'output_filename'],
@@ -857,7 +877,7 @@ export const pdfToolDefinitions: ToolDefinition[] = [
         size_pt: { type: 'number', description: 'Font size in points. Default 60.' },
         color: { type: 'string', description: 'Hex color without "#". Default "888888".' },
         rotation_deg: { type: 'number', description: 'Rotation in degrees. Default 45.' },
-        pages: { type: 'array', items: { type: 'number' }, description: 'Zero-based page indices to stamp. Omit to stamp every page.' },
+        pages: { type: 'array', items: { type: 'number' }, description: 'Page numbers to stamp, counting from 1 (the first page is 1). Omit to stamp every page.' },
         output_filename: { type: 'string' },
       },
       required: ['path', 'text', 'output_filename'],
@@ -911,11 +931,12 @@ export async function executePdfTool(
           footer_text: args.footer_text as string | undefined,
           footer_includes_page_number: args.footer_includes_page_number as boolean | undefined,
         };
-        const buf = await generatePdfBuffer(blocks, opts);
+        const { buffer: buf, skipped } = await generatePdfBuffer(blocks, opts);
         const out = resolveOutputPath(agentId, filename);
         effectFs.writeFileSync(out, buf);
         return (
-          `PDF created at ${out} (${buf.length} bytes, ${blocks.length} block(s) rendered). ` +
+          `PDF created at ${out} (${buf.length} bytes, ${blocks.length - skipped.length} of ${blocks.length} block(s) drawn). ` +
+          (skipped.length > 0 ? `Skipped: ${skipped.join('; ')}. ` : '') +
           `To give the person you are talking to a downloadable URL for this file, call share_file with path="${out}" — do NOT invent or guess a URL.`
         );
       }
@@ -964,10 +985,10 @@ export async function executePdfTool(
         const src = await loadPdf(p) as any;
         const total = src.getPageCount();
         const indices = normalizePageList(pages, total);
-        if (indices.length === 0) return 'Error: no valid page indices after normalization.';
+        if (indices.length === 0) return `Error: none of the pages ${JSON.stringify(pages)} exist in this ${total}-page PDF (pages count from 1), so nothing was extracted.`;
         const out = resolveOutputPath(agentId, outFile);
-        const { pageCount } = await extractPages(p, indices, out);
-        return `Extracted ${pageCount} page(s) → ${out}.`;
+        await extractPages(p, indices, out);
+        return `Extracted page(s) ${pageNumbers(indices)} → ${out}.${skippedPages(pages, total)}`;
       }
       case 'pdf_rotate_pages': {
         const p = args.path as string;
@@ -979,9 +1000,9 @@ export async function executePdfTool(
           if (r.degrees % 90 !== 0) return `Error: rotation must be a multiple of 90; got ${r.degrees}.`;
         }
         const out = resolveOutputPath(agentId, outFile);
-        const { rotated } = await rotatePages(p, rotations, out);
-        if (rotated === 0) return 'Error: none of the requested pages exist in this PDF (indices are zero-based), so nothing was rotated.';
-        return `Rotated ${rotated} page(s) → ${out}.`;
+        const { rotated, total } = await rotatePages(p, rotations, out);
+        if (rotated.length === 0) return 'Error: none of the requested pages exist in this PDF (pages count from 1), so nothing was rotated.';
+        return `Rotated page(s) ${pageNumbers(rotated)} → ${out}.${skippedPages(rotations.map((r) => r.page), total)}`;
       }
       case 'pdf_reorder_pages': {
         const p = args.path as string;
@@ -1001,10 +1022,10 @@ export async function executePdfTool(
         if (!effectFs.existsSync(p)) return `Error: file not found: ${p}`;
         const out = resolveOutputPath(agentId, outFile);
         const { pageCount, removed, total } = await deletePages(p, pages, out);
-        if (removed === 0) {
-          return `Error: none of the pages ${JSON.stringify(pages)} exist in this ${total}-page PDF (indices are zero-based), so nothing was deleted.`;
+        if (removed.length === 0) {
+          return `Error: none of the pages ${JSON.stringify(pages)} exist in this ${total}-page PDF (pages count from 1), so nothing was deleted.`;
         }
-        return `Deleted ${removed} page(s); ${pageCount} remain → ${out}.`;
+        return `Deleted page(s) ${pageNumbers(removed)}; ${pageCount} remain → ${out}.${skippedPages(pages, total)}`;
       }
       case 'pdf_watermark': {
         const p = args.path as string;
@@ -1013,7 +1034,7 @@ export async function executePdfTool(
         if (!p || !text || !outFile) return 'Error: path, text, and output_filename are required.';
         if (!effectFs.existsSync(p)) return `Error: file not found: ${p}`;
         const out = resolveOutputPath(agentId, outFile);
-        await watermarkPdf(p, out, {
+        const { stamped, total } = await watermarkPdf(p, out, {
           text,
           opacity: args.opacity as number | undefined,
           size_pt: args.size_pt as number | undefined,
@@ -1021,7 +1042,11 @@ export async function executePdfTool(
           rotation_deg: args.rotation_deg as number | undefined,
           pages: args.pages as number[] | undefined,
         });
-        return `Watermarked PDF saved → ${out}.`;
+        const asked = (args.pages as number[] | undefined) ?? [];
+        if (stamped.length === 0) {
+          return `Error: none of the pages ${JSON.stringify(asked)} exist in this ${total}-page PDF (pages count from 1), so nothing was stamped.`;
+        }
+        return `Watermarked page(s) ${pageNumbers(stamped)} → ${out}.${skippedPages(asked, total)}`;
       }
       case 'pdf_fill_form': {
         const p = args.path as string;
