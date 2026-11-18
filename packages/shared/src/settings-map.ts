@@ -1,7 +1,5 @@
-// The one list of Settings tabs and the cards a message may name. The dashboard tab bar reads it and
-// the server builds every "Settings → Tab → Card" line from it, so a message cannot name a path that
-// is not on screen. A source test (server/src/__tests__/settings-paths-are-real.test.ts) checks the
-// card titles here against the dashboard and scans both packages for hand-typed paths.
+// The one list of Settings tabs, and the cards a message names. The dashboard tab bar reads the tabs and the
+// server builds its "Settings → Tab → Card" lines from here. A card is listed only when a message names it.
 
 export type SettingsTabKey = 'platform' | 'providers' | 'models' | 'router' | 'profile' | 'security' | 'sensei' | 'channels' | 'integrations' | 'voice' | 'update';
 
@@ -23,26 +21,8 @@ export const SETTINGS_TAB_LIST: { key: SettingsTabKey; label: string }[] = [
 /** Cards a message may name: the tab that holds each, and the title the card shows. */
 export const SETTINGS_CARDS = {
   ollama: { tab: 'platform', title: 'Ollama (Local Models)' },
-  remoteAccess: { tab: 'platform', title: 'Remote Access' },
-  webSearch: { tab: 'platform', title: 'Web Search Provider' },
-  fallbackVision: { tab: 'models', title: 'Fallback Vision Model' },
-  imageGeneration: { tab: 'models', title: 'Image Generation Model' },
-  videoGeneration: { tab: 'models', title: 'Video Generation Model' },
-  textToSpeech: { tab: 'models', title: 'Text-to-Speech (TTS) Model' },
-  musicGeneration: { tab: 'models', title: 'Music Generation Model' },
-  transcription: { tab: 'models', title: 'Transcription Model' },
-  yourMailboxes: { tab: 'profile', title: 'Your Mailboxes' },
-  healing: { tab: 'sensei', title: 'Healing' },
-  imessage: { tab: 'channels', title: 'iMessage Bridge' },
-  twilio: { tab: 'channels', title: 'Twilio' },
   agentGoogle: { tab: 'channels', title: "Agent's Google Accounts" },
   userGoogle: { tab: 'channels', title: "User's Google Accounts" },
-  agentMicrosoft: { tab: 'channels', title: "Agent's Microsoft Accounts" },
-  userMicrosoft: { tab: 'channels', title: "User's Microsoft Accounts" },
-  screenSharing: { tab: 'integrations', title: 'Screen Sharing' },
-  plaud: { tab: 'integrations', title: 'Plaud' },
-  github: { tab: 'integrations', title: 'GitHub' },
-  baselineDelivery: { tab: 'voice', title: 'Baseline delivery' },
 } as const satisfies Record<string, { tab: SettingsTabKey; title: string }>;
 
 const settingsTabLabel = (tab: SettingsTabKey): string =>
