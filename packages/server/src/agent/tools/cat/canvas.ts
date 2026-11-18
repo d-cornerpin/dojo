@@ -53,6 +53,10 @@ export const canvasHandlers: ToolHandlerMap = {
       isError = true;
       return { content, isError };
     }
+    // `url` is a web address or a dashboard path; a file on this Mac goes through `path` and its checks.
+    if (url && !canvasPath && !/^https?:\/\//i.test(url) && !/^\/(?!\/)/.test(url)) {
+      return { content: 'Error: canvas_render takes a web address (http:// or https://) in `url`. To show a file on this Mac, pass it as `path` instead.', isError: true };
+    }
     // Our own download URLs serve Content-Disposition: attachment, which makes the canvas iframe
     // download instead of render; flip them to inline. External URLs are left alone.
     if (url && /\/api\/upload\/download\/[^?#]+/.test(url) && !/[?&]inline=1\b/.test(url)) {
