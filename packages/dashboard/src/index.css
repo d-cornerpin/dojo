@@ -987,7 +987,6 @@
   letter-spacing: 0;
 }
 /* Markdown prose inside the canvas */
-.dojo3-canvas__doc--md { font: 400 14px/1.7 inherit; }
 .dojo3-canvas__doc--md h1,
 .dojo3-canvas__doc--md h2,
 .dojo3-canvas__doc--md h3,
