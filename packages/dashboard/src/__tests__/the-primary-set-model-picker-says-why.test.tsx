@@ -20,11 +20,11 @@ import * as api from '../lib/api';
 import { ModelsTab } from '../components/settings/ModelsTab';
 
 const SENTENCE = 'local-9b needs about 11.3 GB of memory to run with its 32K-token window. Choose a smaller local model or a cloud model.';
-const model = (id: string, caps: string[]) => ({ id, name: id, apiModelId: id, providerId: 'p', capabilities: caps, isEnabled: true, inputCostPerM: 0, outputCostPerM: 0 }) as never;
+const model = (id: string, caps: string[], notForAgents: string | null = null) => ({ id, name: id, apiModelId: id, providerId: 'p', capabilities: caps, isEnabled: true, inputCostPerM: 0, outputCostPerM: 0, notForAgents }) as never;
 
 beforeEach(() => {
   vi.mocked(api.getSetting).mockResolvedValue({ ok: true, data: { value: '' } } as never);
-  vi.mocked(api.getModels).mockResolvedValue({ ok: true, data: [model('local-9b', ['chat']), model('decider', ['decision'])] } as never);
+  vi.mocked(api.getModels).mockResolvedValue({ ok: true, data: [model('local-9b', ['chat']), model('decider', ['decision'], 'not a chat model')] } as never);
   vi.mocked(api.getAgent).mockResolvedValue({ ok: true, data: { modelId: null } } as never);
   vi.mocked(api.setAgentModel).mockResolvedValue({ ok: false, error: SENTENCE } as never);
 });
