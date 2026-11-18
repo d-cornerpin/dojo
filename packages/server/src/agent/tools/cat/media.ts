@@ -16,7 +16,6 @@ import path from 'node:path';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../../../db/connection.js';
 import { broadcast } from '../../../gateway/ws.js';
-import { writeAgentStatus } from '../../agent-status.js';
 import { deliveredResult, insertMessageIfAbsent } from '../../../memory/message-store.js';
 import { getModelCapabilities } from '../../../services/capabilities.js';
 import { settleAskOnAsyncResult, settleAskOnJobEnded } from '../../../work/ask-settlement.js';
@@ -148,11 +147,6 @@ const handlers = {
           if (agentRow?.status === 'idle' || agentRow?.status === 'error') break;
           await new Promise<void>(r => setTimeout(r, 500));
         }
-
-        // 'working' keeps the thinking dots visible: without it the agent goes idle
-        // between the ack and the delivery and the user sees a gap of silence.
-        writeAgentStatus(agentId, 'working');
-        broadcast({ type: 'agent:status', agentId, status: 'working' });
 
         // The CAS is READ: a stop pressed during the wait has already lowered its
         // fence, so the abort registry cannot refuse the dial. The row can: a cancelled
@@ -381,10 +375,6 @@ const handlers = {
         });
         // No-op if the job already reached a terminal state.
         setImgFailed(imgJobId, err instanceof Error ? err.message : String(err));
-      } finally {
-        // The caller goes back to idle once the background job has run its course.
-        writeAgentStatus(agentId, 'idle');
-        broadcast({ type: 'agent:status', agentId, status: 'idle' });
       }
     })();
 
