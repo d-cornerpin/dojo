@@ -159,21 +159,6 @@ const ConfigBody = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: (
     if (!trimmed || trimmed === agent.name) return;
     const result = await api.updateAgentConfig(agent.id, { name: trimmed } as Record<string, unknown>);
     if (result.ok) {
-      // For sensei agents, also update the platform config setting so the
-      // primary / PM / trainer name shown elsewhere stays in sync.
-      if (agent.classification === 'sensei') {
-        const primaryResult = await api.getSetting('primary_agent_id');
-        const pmResult = await api.getSetting('pm_agent_id');
-        const trainerResult = await api.getSetting('trainer_agent_id');
-
-        if (primaryResult.ok && primaryResult.data.value === agent.id) {
-          await api.setSetting('primary_agent_name', trimmed);
-        } else if (pmResult.ok && pmResult.data.value === agent.id) {
-          await api.setSetting('pm_agent_name', trimmed);
-        } else if (trainerResult.ok && trainerResult.data.value === agent.id) {
-          await api.setSetting('trainer_agent_name', trimmed);
-        }
-      }
       toast.success('Name updated');
       onUpdated();
     } else {
