@@ -392,6 +392,21 @@ const toolBadgeItems = (
 // dojo3: tool-only turns become one chip pill per visible tool (input + result); bookkeeping tools drop.
 interface ToolResultInfo { content: string; isError: boolean }
 
+// The text of a tool result: a string as is, or the text parts of an array of content blocks.
+const toolResultText = (raw: unknown): string => {
+  if (typeof raw === 'string') return raw;
+  if (!Array.isArray(raw)) return JSON.stringify(raw);
+  return (raw as Array<Record<string, unknown>>)
+    .map((b) => {
+      if (b.type === 'text') return b.text as string;
+      if (b.type === 'image') return '[Image content, visible to model via vision]';
+      if (b.type === 'document') return `[PDF: ${(b.title as string) ?? 'document'}]`;
+      return '';
+    })
+    .filter(Boolean)
+    .join('\n');
+};
+
 // A tool call whose result errored: the engine self-recovers, so a failed chip is noise outside Wordy mode.
 const isErroredToolResult = (info?: ToolResultInfo): boolean => !!info?.isError;
 
@@ -503,33 +518,14 @@ const ToolResultBubble = ({ msg }: { msg: ChatMessage }) => {
       <div className="max-w-[75%]">
         {blocks
           .filter((b) => b.type === 'tool_result')
-          .map((b, i) => {
-            let displayContent: string;
-            const rawContent = b.content as unknown;
-            if (typeof rawContent === 'string') {
-              displayContent = rawContent;
-            } else if (Array.isArray(rawContent)) {
-              displayContent = (rawContent as Array<Record<string, unknown>>)
-                .map((block: Record<string, unknown>) => {
-                  if (block.type === 'text') return block.text as string;
-                  if (block.type === 'image') return '[Image content, visible to model via vision]';
-                  if (block.type === 'document') return `[PDF: ${(block.title as string) ?? 'document'}]`;
-                  return '';
-                })
-                .filter(Boolean)
-                .join('\n');
-            } else {
-              displayContent = JSON.stringify(rawContent);
-            }
-            return (
-              <ToolResultBlock
-                key={`${msg.id}-result-${i}`}
-                toolUseId={b.tool_use_id ?? ''}
-                content={displayContent}
-                isError={!!b.is_error}
-              />
-            );
-          })}
+          .map((b, i) => (
+            <ToolResultBlock
+              key={`${msg.id}-result-${i}`}
+              toolUseId={b.tool_use_id ?? ''}
+              content={toolResultText(b.content)}
+              isError={!!b.is_error}
+            />
+          ))}
       </div>
     </div>
   );
@@ -1183,29 +1179,9 @@ export const Chat = ({ panel = null }: ChatProps) => {
     }
   };
 
-  // tool_use_id → is_error lookup so the ChannelSendBubble hides when its tool
-  // was refused. MUST sit above any early return: hook order must be identical
-  // across renders, and a hook below the exit throws React error #310 on flip.
-  const toolResultErrorById = useMemo(() => {
-    const m = new Map<string, boolean>();
-    for (const msg of messages) {
-      if (msg.role !== 'tool') continue;
-      try {
-        const parsed = JSON.parse(msg.content);
-        if (!Array.isArray(parsed)) continue;
-        for (const block of parsed) {
-          if (block?.type === 'tool_result' && typeof block.tool_use_id === 'string') {
-            m.set(block.tool_use_id, block.is_error === true);
-          }
-        }
-      } catch { /* not JSON */ }
-    }
-    return m;
-  }, [messages]);
-
-  // tool_use_id → { content, isError } for the dojo3 chip-tool expansion. Mirrors
-  // ToolResultBubble's content extraction (string OR array of content blocks) so a
-  // collapsed chip can reveal the same result text wordy mode shows in its cards.
+  // tool_use_id → { content, isError }: the chip expansion shows the text, and a refused
+  // channel send hides its bubble. MUST sit above any early return: hook order must be
+  // identical across renders, and a hook below the exit throws React error #310 on flip.
   const toolResultById = useMemo(() => {
     const m = new Map<string, ToolResultInfo>();
     for (const msg of messages) {
@@ -1215,24 +1191,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
         if (!Array.isArray(parsed)) continue;
         for (const block of parsed) {
           if (block?.type !== 'tool_result' || typeof block.tool_use_id !== 'string') continue;
-          const raw = block.content as unknown;
-          let content: string;
-          if (typeof raw === 'string') {
-            content = raw;
-          } else if (Array.isArray(raw)) {
-            content = (raw as Array<Record<string, unknown>>)
-              .map((b) => {
-                if (b.type === 'text') return b.text as string;
-                if (b.type === 'image') return '[Image content, visible to model via vision]';
-                if (b.type === 'document') return `[PDF: ${(b.title as string) ?? 'document'}]`;
-                return '';
-              })
-              .filter(Boolean)
-              .join('\n');
-          } else {
-            content = JSON.stringify(raw);
-          }
-          m.set(block.tool_use_id, { content, isError: block.is_error === true });
+          m.set(block.tool_use_id, { content: toolResultText(block.content), isError: block.is_error === true });
         }
       } catch { /* not JSON */ }
     }
@@ -1261,7 +1220,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
       if (toolUses.length === 0) return null;
       const channelSend = toolUses.find(b => b.name && isChannelSendBubbleTool(b.name));
       const channelSendErrored = channelSend?.id
-        ? toolResultErrorById.get(channelSend.id) === true
+        ? toolResultById.get(channelSend.id)?.isError === true
         : false;
       if (channelSend && !channelSendErrored) return null;
       return summarizeToolTurn(toolUses.map(b => ({ name: b.name ?? '', input: b.input }))) ? 'visible' : 'hidden';
@@ -1285,7 +1244,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
     }
     closeGroup();
     return { groupByFirstId, skipIds };
-  }, [messages, wordyMode, toolResultErrorById]);
+  }, [messages, wordyMode, toolResultById]);
 
   // Channel routing markers arrive as standalone system messages AFTER the assistant
   // reply they describe. Walk once: attach each marker to its preceding assistant
@@ -1557,9 +1516,9 @@ export const Chat = ({ panel = null }: ChatProps) => {
               (b) => b.type === 'tool_use' && b.name && isChannelSendBubbleTool(b.name),
             );
             // Hide the outbound bubble when the underlying tool call was refused;
-            // `toolResultErrorById` above carries that verdict.
+            // `toolResultById` above carries that verdict.
             const channelSendErrored = channelSend?.id
-              ? toolResultErrorById.get(channelSend.id) === true
+              ? toolResultById.get(channelSend.id)?.isError === true
               : false;
             if (channelSend && !channelSendErrored) {
               // The badge describes the SEND, so it rides on the ChannelSendBubble only:
