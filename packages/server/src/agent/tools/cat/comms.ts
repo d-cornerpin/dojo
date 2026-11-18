@@ -330,9 +330,9 @@ export const commsHandlers: ToolHandlerMap = {
           const acctLabel = accountEmail ? `${accountEmail} (the ${slot} slot)` : `the ${slot} slot`;
           const channelLabel = channelArg === 'gmail' ? 'Gmail' : 'Outlook';
           content =
-            `Refused: ${acctLabel} has "Allow sending email" turned OFF on the ${channelLabel} integration. ` +
+            `Refused: ${acctLabel} has "The agent may send as me" turned OFF on the ${channelLabel} integration. ` +
             `Safe senders are only useful on a slot that can actually auto-reply, so adding them here would be misleading. ` +
-            `Tell ${userWords(currentAddress(agentId))} that the owner needs to open Settings → Channels and toggle "Allow sending email" ON for ${acctLabel}, then retry. ` +
+            `Tell ${userWords(currentAddress(agentId))} that the owner needs to open Settings → Channels and toggle "The agent may send as me" ON for ${acctLabel}, then retry. ` +
             `Don't try this call again until they confirm they've turned it on.`;
           isError = true;
           auditLog(agentId, 'add_safe_sender', `${channelArg}:${address}`, 'denied', `slot=${slot} sendEmail=off; quote: "${auditQuote}"`);
