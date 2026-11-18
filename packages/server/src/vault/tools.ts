@@ -81,6 +81,33 @@ function isProseShaped(content: string, cap: number, terminators: number): boole
   return terminators >= 3;
 }
 
+// The compression contract, one place for vault_remember and vault_update: the per-type cap and the
+// prose-shape bounce. Returns the refusal text, or null when the content fits.
+function compressionRefusal(type: string, content: string, tool: 'vault_remember' | 'vault_update'): string | null {
+  const cap = VAULT_ENTRY_CHAR_CAPS[type] ?? DEFAULT_ENTRY_CHAR_CAP;
+  const retry = tool === 'vault_remember'
+    ? 'then call vault_remember again. (If the person you are talking to told you to remember something word-for-word, pass verbatim: true to save it exactly.) Do not report this as saved or stored; nothing was written.'
+    : 'then call vault_update again. Do not report this as changed; nothing was written.';
+  if (content.length > cap) {
+    return (
+      `Too long for a [${type}] vault entry: ${content.length} chars, cap is ${cap}. ` +
+      `Vault entries are compressed shorthand, not prose. Rewrite it shorter: lead with the noun, ` +
+      `cut filler words, keep only the durable fact (example shape: "Tunnel: Cloudflare named. Reason: self-hosted integration."), ` +
+      retry
+    );
+  }
+  const terminators = countSentenceTerminators(content);
+  if (isProseShaped(content, cap, terminators)) {
+    return (
+      `Reads like narrative prose for a [${type}] vault entry (${terminators} sentences). ` +
+      `Vault entries are one telegraphic line, not a story. Rewrite it as a single compressed line: lead with the noun, ` +
+      `drop the "the user/we/I did X" framing, keep only the durable fact under ${cap} chars, ` +
+      retry
+    );
+  }
+  return null;
+}
+
 // Builds the citation JSON from flat params (source_ref, optional source_page/source_section): the floor
 // model fills flat strings far more reliably than a nested object. `kind` is derived here; null without
 // source_ref.
@@ -185,26 +212,8 @@ export async function executeVaultRemember(
   const exemptFromCompression =
     verbatim || agentId === OWNER_VAULT_AGENT_ID || standingAsWritten;
   if (!exemptFromCompression) {
-    const cap = VAULT_ENTRY_CHAR_CAPS[type] ?? DEFAULT_ENTRY_CHAR_CAP;
-    if (content.length > cap) {
-      return (
-        `Too long for a [${type}] vault entry: ${content.length} chars, cap is ${cap}. ` +
-        `Vault entries are compressed shorthand, not prose. Rewrite it shorter: lead with the noun, ` +
-        `cut filler words, keep only the durable fact (example shape: "Tunnel: Cloudflare named. Reason: self-hosted integration."), ` +
-        `then call vault_remember again. (If the person you are talking to told you to remember something word-for-word, pass verbatim: true to save it exactly.) ` +
-        `Do not report this as saved or stored; nothing was written.`
-      );
-    }
-    const terminators = countSentenceTerminators(content);
-    if (isProseShaped(content, cap, terminators)) {
-      return (
-        `Reads like narrative prose for a [${type}] vault entry (${terminators} sentences). ` +
-        `Vault entries are one telegraphic line, not a story. Rewrite it as a single compressed line: lead with the noun, ` +
-        `drop the "the user/we/I did X" framing, keep only the durable fact under ${cap} chars, ` +
-        `then call vault_remember again. (If the person you are talking to told you to remember something word-for-word, pass verbatim: true to save it exactly.) ` +
-        `Do not report this as saved or stored; nothing was written.`
-      );
-    }
+    const refusal = compressionRefusal(type, content, 'vault_remember');
+    if (refusal) return refusal;
   }
 
   // Prepend today's date unless present (non-verbatim only), after the cap gate so it is never counted.
@@ -414,6 +423,13 @@ export async function executeVaultUpdate(
   if (!existing || ownedByOtherAgent(existing, agentId)) return `Error: Vault entry "${entryId}" not found.`;
   if (existing.isObsolete) {
     return `Error: Entry "${entryId}" is already marked obsolete. Use vault_remember to create a fresh entry instead.`;
+  }
+
+  // The same compression contract as vault_remember; the owner's entries, pinned entries and standing
+  // instructions keep their length. A leading date stamp is not counted, as on vault_remember.
+  if (agentId !== OWNER_VAULT_AGENT_ID && !existing.isPinned && !isStandingInstruction(newContent)) {
+    const refusal = compressionRefusal(existing.type, newContent.replace(/^\[\d{4}-\d{2}-\d{2}\]\s*/, ''), 'vault_update');
+    if (refusal) return refusal;
   }
 
   const cutNote = isOverEntryLimit(newContent) ? `\n${AGENT_ENTRY_CUT_NOTE}` : '';
