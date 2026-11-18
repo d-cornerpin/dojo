@@ -333,18 +333,6 @@ trackerRouter.put('/tasks/:id', async (c) => {
     if (body.assignedTo !== undefined) updates.assignedTo = body.assignedTo;
     if (body.priority) updates.priority = body.priority;
 
-    // Dashboard observations go through task_log; a caller-supplied `notes` is routed as a user-observation
-    // entry for older dashboard builds.
-    if (body.notes) {
-      const { writeTaskLog } = await import('../../tracker/task-log.js');
-      writeTaskLog({
-        taskId: id,
-        fromEntity: 'user',
-        entryKind: 'observation',
-        note: body.notes,
-      });
-    }
-
     if (Object.keys(updates).length > 0) {
       // Snapshot the prior status before the write so the transition entry is accurate.
       const prior = getTask(id);
