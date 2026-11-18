@@ -4,7 +4,7 @@
 // human's, never answered even from a safe sender; and (b) the sender is on that channel's
 // safe-sender allowlist. Phone is the exception: a live call is already connected (callers
 // pass channel !== 'phone'); iMessage is owned by the bridge, whose callers vet the sender.
-import { getTeamsSafeSenders, getTwilioSmsSafeSenders, mailboxesSafeSenders } from '../../services/channel-safe-senders.js';
+import { mailboxesSafeSenders, senderWakes } from '../../services/channel-safe-senders.js';
 import { addressesMatch, findSafeSenderByAddress, getSafeSenders } from '../../services/imessage-bridge.js';
 import { isOwnerAddress } from '../../services/owner-mailboxes.js';
 
@@ -27,9 +27,8 @@ export function isSenderAuthorized(
       return services.some((svc) => mailboxesSafeSenders(svc, 'agent').some(x => addressesMatch(x.address, s)));
     }
     case 'teams':
-      return getTeamsSafeSenders().some(x => addressesMatch(x.address, s));
     case 'sms':
-      return getTwilioSmsSafeSenders().some(x => addressesMatch(x.address, s));
+      return senderWakes(channel, null, s);
     case 'imessage':
       return true;
     default:

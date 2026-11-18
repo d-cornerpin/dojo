@@ -12,8 +12,8 @@ import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getPrimaryAgentId, getOwnerName } from '../config/platform.js';
 import { getAgentRuntime } from '../agent/runtime.js';
-import { getTwilioSmsSafeSenders } from '../services/channel-safe-senders.js';
-import { addressesMatch, isOwnerIMessageRecipient } from '../services/safe-senders.js';
+import { senderWakes } from '../services/channel-safe-senders.js';
+import { isOwnerIMessageRecipient } from '../services/safe-senders.js';
 import { fenceExternal } from '../tools/external-content.js';
 import { resolveRecipientDisplay } from '../contacts/resolve-recipient.js';
 import { isSmsEnabled, getTwilioCreds } from './auth.js';
@@ -237,9 +237,9 @@ export function buildContent(payload: InboundSmsPayload, knownSender: boolean, o
 }
 
 /**
- * Persist the inbound SMS as a user-role message on the primary agent and wake the runtime; idempotent on
- * MessageSid. Returns whether it was ingested. Dropped (false) when SMS is disabled in Settings; the route
- * still answers 200 so Twilio does not retry.
+ * Persist the inbound SMS as a user-role message on the primary agent; idempotent on MessageSid. A text from the
+ * owner or an approved sender wakes the runtime; any other is stored and seen at the agent's next turn. Returns
+ * whether it was ingested. Dropped (false) when SMS is disabled in Settings; the route still answers 200.
  */
 export async function ingestInboundSms(payload: InboundSmsPayload): Promise<boolean> {
   if (!isSmsEnabled()) {
@@ -252,20 +252,18 @@ export async function ingestInboundSms(payload: InboundSmsPayload): Promise<bool
     return false;
   }
   const db = getDb();
-  // Idempotency (Twilio retries on slow ACKs): the stored external_message_id lookup is the primary check;
-  // the tail-anchored content match is the fallback for rows stored before that column existed.
-  const existing = (db.prepare(
+  // Idempotency (Twilio retries on slow ACKs): the stored external_message_id is the check.
+  const existing = db.prepare(
     `SELECT id FROM messages WHERE external_message_id = ? AND role = 'user' LIMIT 1`,
-  ).get(payload.messageSid) ?? db.prepare(
-    `SELECT id FROM messages WHERE content LIKE ? AND role = 'user' LIMIT 1`,
-  ).get(`%Message SID: ${payload.messageSid}`)) as { id: string } | undefined;
+  ).get(payload.messageSid) as { id: string } | undefined;
   if (existing) {
     logger.info('Inbound SMS already ingested, skipping', { messageSid: payload.messageSid });
     return true;
   }
 
-  const safeSenders = getTwilioSmsSafeSenders();
-  const knownSender = safeSenders.some(s => addressesMatch(s.address, payload.fromNumber));
+  // The owner (his own number) and the senders on the SMS approved list wake the agent; anyone else is stored and waits.
+  const knownSender = senderWakes('sms', null, payload.fromNumber);
+  const fromOwner = isOwnerIMessageRecipient(payload.fromNumber);
   const ownerName = getOwnerName();
 
   // Download MMS media for AUTHORIZED senders only, like the iMessage bridge: unknown-sender media stays
@@ -281,8 +279,8 @@ export async function ingestInboundSms(payload: InboundSmsPayload): Promise<bool
   const conversationId = resolveOrCreateConversation(primaryId, {
     channel: 'sms', provider: 'twilio', counterpartyId: payload.fromNumber, threadRoot: null,
   });
-  // Structured routing metadata. knownSender already encodes the safe-sender verdict; an unknown number
-  // is authorized:false, so the agent sees a notification and does not auto-text back.
+  // Structured routing metadata. An unknown number is authorized:false, so the agent sees a notice and does not
+  // text back; `relation` says the owner is the owner, so his words by SMS count as his.
   const inboundMetaObj = {
     channel: 'sms' as const,
     accountKind: 'agent' as const,
@@ -291,6 +289,7 @@ export async function ingestInboundSms(payload: InboundSmsPayload): Promise<bool
     smsFromNumber: payload.fromNumber,
     smsToNumber: payload.toNumber,
     recipientAddress: payload.fromNumber,
+    relation: (fromOwner ? 'owner' : knownSender ? 'known_contact' : 'third_party') as 'owner' | 'known_contact' | 'third_party',
   };
   // Channel, sender and the safe-sender verdict are stamped in the write from the meta above, never
   // re-derived. recordInboundMeta below records the full blob (from/to numbers, reply address); the unique
@@ -337,17 +336,19 @@ export async function ingestInboundSms(payload: InboundSmsPayload): Promise<bool
     },
   });
 
-  try {
-    const runtime = getAgentRuntime();
-    void runtime.handleMessage(primaryId, content).catch(err => {
-      logger.error('Runtime handleMessage failed for inbound SMS', {
+  if (knownSender) {
+    try {
+      const runtime = getAgentRuntime();
+      void runtime.handleMessage(primaryId, content).catch(err => {
+        logger.error('Runtime handleMessage failed for inbound SMS', {
+          error: err instanceof Error ? err.message : String(err), messageSid: payload.messageSid,
+        });
+      });
+    } catch (err) {
+      logger.error('Failed to wake runtime for inbound SMS', {
         error: err instanceof Error ? err.message : String(err), messageSid: payload.messageSid,
       });
-    });
-  } catch (err) {
-    logger.error('Failed to wake runtime for inbound SMS', {
-      error: err instanceof Error ? err.message : String(err), messageSid: payload.messageSid,
-    });
+    }
   }
 
   logger.info('Inbound SMS ingested', {

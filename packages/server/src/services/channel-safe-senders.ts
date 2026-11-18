@@ -9,6 +9,7 @@ import { configKeyToChannel, syncSafeSenderToContacts, syncSafeSendersToContacts
 import { listGoogleAccounts } from '../google/accounts.js';
 import { listMicrosoftAccounts } from '../microsoft/accounts.js';
 import { isOwnerAddress } from './owner-mailboxes.js';
+import { isOwnerIMessageRecipient } from './safe-senders.js';
 
 export type MailService = 'gmail' | 'outlook';
 
@@ -46,10 +47,20 @@ export function onMailList(service: MailService, accountId: string, address: str
   return !!address && getMailSafeSenders(service, accountId).some((s) => addressesMatch(s.address, address));
 }
 
-/** Whether a new message wakes the main agent: mail to its own mailbox, from the owner, or from a sender on that
- *  mailbox's approved list. Anything else waits for the agent's next turn. */
-export function senderWakes(channel: MailService, account: { id: string; kind: 'agent' | 'user' }, address: string): boolean {
-  return account.kind === 'agent' || isOwnerAddress(address) || onMailList(channel, account.id, address.trim().toLowerCase());
+/** The channels whose new messages may wake the main agent through `senderWakes`. */
+export type WakeChannel = MailService | 'sms' | 'phone' | 'teams';
+
+/** Whether a new message wakes the main agent. Mail: to its own mailbox, from the owner, or from a sender on that
+ *  mailbox's approved list. SMS, calls and Teams: the owner (his own number or mailbox) or a sender on that
+ *  channel's approved list. Anything else waits for the agent's next turn. */
+export function senderWakes(channel: WakeChannel, account: { id: string; kind: 'agent' | 'user' } | null, address: string): boolean {
+  if (channel === 'gmail' || channel === 'outlook') {
+    return account?.kind === 'agent' || isOwnerAddress(address) || (!!account && onMailList(channel, account.id, address.trim().toLowerCase()));
+  }
+  const a = address.trim();
+  if (!a) return false;
+  const list = channel === 'sms' ? getTwilioSmsSafeSenders() : channel === 'phone' ? getTwilioVoiceSafeCallers() : getTeamsSafeSenders();
+  return isOwnerIMessageRecipient(a) || isOwnerAddress(a) || list.some((s) => addressesMatch(s.address, a));
 }
 
 export function getTeamsSafeSenders(): SafeSender[] {
