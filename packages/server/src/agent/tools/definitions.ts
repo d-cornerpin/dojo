@@ -373,7 +373,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'share_file',
-    description: 'Get a download URL for an existing file so the user can access it from any device. Use this when the user asks for a link to a file, wants to download something, or you need to share a file that already exists on disk. Returns a full clickable URL. IMPORTANT: Give the user the URL exactly ONCE as plain text. Do NOT repeat it, do NOT wrap it in markdown, do NOT add extra formatting.',
+    description: 'Get a download URL for an existing file. The link opens from any device while the Cloudflare tunnel runs; without it, only on this Mac, and the result says which. Use this when the user asks for a link to a file, wants to download something, or you need to share a file that already exists on disk. Returns a full clickable URL. IMPORTANT: Give the user the URL exactly ONCE as plain text. Do NOT repeat it, do NOT wrap it in markdown, do NOT add extra formatting.',
     effects: [{ kind: 'fs_read', from: 'args.path' }],
     input_schema: {
       type: 'object',
