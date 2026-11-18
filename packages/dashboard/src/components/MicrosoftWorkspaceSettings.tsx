@@ -210,9 +210,9 @@ export const MicrosoftWorkspaceSettings = () => {
 
             <label className="flex items-center justify-between py-1.5 cursor-pointer">
               <div className="min-w-0 pr-3">
-                <span className="text-sm text-ui/70">Allow sending email</span>
+                <span className="text-sm text-ui/70">{acc.kind === 'user' ? 'The agent may send as me' : 'The agent may send from this account'}</span>
                 <span className="text-xs text-ui/25 block mt-0.5">
-                  {outlookOn ? `Lets the agent send, reply, and forward from ${acc.email ?? 'this account'}.` : 'Enable Outlook above first.'}
+                  {outlookOn ? `Lets the agent send, reply and forward mail, answer meeting invitations, invite guests, send file invitations and post in Teams from ${acc.email ?? 'this account'}.` : 'Enable Outlook above first.'}
                 </span>
               </div>
               <input type="checkbox" checked={acc.sendEmail && outlookOn} disabled={!outlookOn}
