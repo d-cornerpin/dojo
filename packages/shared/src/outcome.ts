@@ -1,19 +1,5 @@
-// Outcome<T>: the five-way answer to "what happened?" (applied with proof, no_change, refused by a named
-// gate, failed, or unknown). `unknown` is legal only for non-live data (messages.provenance), and
-// OutcomeUnknown demands NonLiveProvenance. Boundaries refuse by returning, never throwing, and a
-// caller is expected to read the `kind` it gets back.
-
-export type OutcomeKind = 'applied' | 'no_change' | 'refused' | 'failed' | 'unknown';
-
-export const OUTCOME_KINDS: readonly OutcomeKind[] = [
-  'applied', 'no_change', 'refused', 'failed', 'unknown',
-] as const;
-
-
-export type Provenance = 'live' | 'migrated' | 'rescued';
-
-export type NonLiveProvenance = Exclude<Provenance, 'live'>;
-
+// Outcome: the answer to "what happened?" (applied with proof, no_change, refused by a named gate, or failed).
+// Boundaries refuse by returning, never throwing, and a caller is expected to read the `kind` it gets back.
 
 // blocked: a gate said no, nothing ran. crashed: it ran and broke, the effect may have landed. cancelled:
 // abandoned before an answer. invalid_args: a malformed call the door refused; retry with corrected arguments.
@@ -46,21 +32,7 @@ export interface OutcomeFailed<R extends string = string> {
   readonly detail: string;
 }
 
-export interface OutcomeUnknown<R extends string = string> {
-  readonly kind: 'unknown';
-  readonly reason: R;
-  readonly detail: string;
-  readonly provenance: NonLiveProvenance;
-}
-
-export type Outcome<T = void, R extends string = string> =
-  | OutcomeApplied<T>
-  | OutcomeNoChange<R>
-  | OutcomeRefused<R>
-  | OutcomeFailed<R>
-  | OutcomeUnknown<R>;
-
-/** The four-way for a boundary whose data is always live: `unknown` is unrepresentable there. */
+/** The four-way answer every boundary returns. */
 export type LiveOutcome<T = void, R extends string = string> =
   | OutcomeApplied<T>
   | OutcomeNoChange<R>
