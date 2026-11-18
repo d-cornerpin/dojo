@@ -2922,12 +2922,10 @@ export async function executeOfficeTool(
         }
 
         // Find the next empty row: read usedRange.address to get the bottom-right cell.
-        const usedResp = await graphFetch(agentId, `${GRAPH_BASE}/me/drive/items/${encodeURIComponent(fileId)}/workbook/worksheets('${odataQuoted(resolvedSheet)}')/usedRange?$select=address,rowCount,columnCount`, { headers: { Authorization: `Bearer ${token}` } });
-        let firstAppendRow = 1;
-        if (usedResp.ok) {
-          const usedData = await usedResp.json() as { rowIndex?: number; rowCount?: number };
-          firstAppendRow = (usedData.rowIndex ?? 0) + (usedData.rowCount ?? 0) + 1;
-        }
+        const usedResp = await graphFetch(agentId, `${GRAPH_BASE}/me/drive/items/${encodeURIComponent(fileId)}/workbook/worksheets('${odataQuoted(resolvedSheet)}')/usedRange?$select=address,rowIndex,rowCount,columnCount`, { headers: { Authorization: `Bearer ${token}` } });
+        if (!usedResp.ok) return `Error appending rows: the sheet's used range could not be read (HTTP ${usedResp.status}), so no rows were written.`;
+        const usedData = await usedResp.json() as { rowIndex?: number; rowCount?: number };
+        const firstAppendRow = (usedData.rowIndex ?? 0) + (usedData.rowCount ?? 0) + 1;
         const colCount = (rows[0] as unknown[]).length;
         const endCol = columnIndexToLetter(colCount - 1);
         const range = `A${firstAppendRow}:${endCol}${firstAppendRow + rows.length - 1}`;

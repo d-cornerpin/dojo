@@ -83,7 +83,7 @@ describe('a sheet name with an apostrophe — the apostrophe is written twice', 
     mockGraph('Other');
     await executeOfficeTool('office_append_spreadsheet_rows', { file_id: 'f1', sheet_name: "Bob's Sheet", rows: [['x']] }, 'a1', 'Agent');
     expect(sheetUrls()).toEqual([
-      `https://graph.test/v1.0/me/drive/items/f1/workbook/${NAMED}/usedRange?$select=address,rowCount,columnCount`,
+      `https://graph.test/v1.0/me/drive/items/f1/workbook/${NAMED}/usedRange?$select=address,rowIndex,rowCount,columnCount`,
       `https://graph.test/v1.0/me/drive/items/f1/workbook/${NAMED}/range(address='A3%3AA3')`,
     ]);
   });
@@ -92,7 +92,7 @@ describe('a sheet name with an apostrophe — the apostrophe is written twice', 
     mockGraph("Bob's Sheet");
     await executeOfficeTool('office_append_spreadsheet_rows', { file_id: 'f1', rows: [['x']] }, 'a1', 'Agent');
     expect(sheetUrls()).toEqual([
-      `https://graph.test/v1.0/me/drive/items/f1/workbook/${NAMED}/usedRange?$select=address,rowCount,columnCount`,
+      `https://graph.test/v1.0/me/drive/items/f1/workbook/${NAMED}/usedRange?$select=address,rowIndex,rowCount,columnCount`,
       `https://graph.test/v1.0/me/drive/items/f1/workbook/${NAMED}/range(address='A3%3AA3')`,
     ]);
   });
