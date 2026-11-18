@@ -3,7 +3,7 @@
 
 import { createLogger } from '../logger.js';
 import { recordProviderError } from '../gateway/routes/services.js';
-import { noteSummaryWriterFailure } from '../providers/billing-breaker.js';
+import { noteSummaryWriterFailure, noteProviderFailure } from '../providers/billing-breaker.js';
 import type { ProviderErrorFacts } from './provider-error.js';
 import { callerStopped, stopReason } from './caller-stop.js';
 
@@ -21,6 +21,7 @@ export function settleFailedCall(
     return;
   }
   recordProviderError(o.providerId);
+  noteProviderFailure(o.providerId, message, o.agentId);   // permanent refusals open the breaker; passing ones are ignored
   logger[o.bestEffort ? 'warn' : 'error'](`${what} failed: ${message}`, { ...detail, bestEffort: o.bestEffort ?? false }, o.agentId);
 }
 
