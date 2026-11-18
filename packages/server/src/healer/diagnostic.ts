@@ -302,7 +302,7 @@ function getBulletproofToolHealth(): DiagnosticItem[] {
       severity: 'info',
       code: 'APPRENTICE_NEVER_POKED',
       title: `"${row.name}" was spawned 30+ min ago and never started their task`,
-      detail: `${row.name} (${row.id}) has been idle since spawn — their assigned task "${row.task_title}" hasn't been worked on. If you spawned them with auto_start: false, send_to_agent or assign a task to wake them. Otherwise, terminate them.`,
+      detail: `${row.name} (${row.id}) has been idle since it was made: its assigned task "${row.task_title}" hasn't been worked on. If you spawned them with auto_start: false, send_to_agent or assign a task to wake them. Otherwise, terminate them.`,
       agentId: row.id,
       agentName: row.name,
     });
@@ -386,7 +386,7 @@ function getDreamHealth(): DiagnosticItem[] {
       severity: 'info',
       code: 'DREAM_BACKLOG',
       title: `${backlog} conversations are waiting to be dreamed`,
-      detail: `The Dreamer hasn't processed these archives yet. Memories from these conversations aren't searchable until it runs. Trigger a cycle now with dreamer_run_now, or wait for the next scheduled run.`,
+      detail: `The Dreamer hasn't processed these archives yet. Memories from these conversations aren't searchable until it runs. The main agent can start a cycle now with dreamer_run_now (you cannot), or it runs at the next scheduled time.`,
     });
   }
 
@@ -637,7 +637,7 @@ export function compileDiagnosticReport(): DiagnosticReport {
   // Build report text
   const lines: string[] = [];
   const now = new Date().toISOString().replace('T', ' ').slice(0, 16);
-  lines.push(`═══ DOJO DAILY DIAGNOSTIC — ${now} ═══`);
+  lines.push(`═══ DOJO DAILY DIAGNOSTIC, ${now} ═══`);
   lines.push('');
 
   if (criticalCount > 0) {
@@ -674,7 +674,7 @@ export function compileDiagnosticReport(): DiagnosticReport {
   }
 
   if (items.length === 0) {
-    lines.push('Everything looks good — no issues found in the last 24 hours.');
+    lines.push('Everything looks good: no issues found in the last 24 hours.');
     lines.push('');
   }
 
