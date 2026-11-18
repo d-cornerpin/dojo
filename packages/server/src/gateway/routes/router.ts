@@ -213,7 +213,7 @@ routerRouter.post('/test', async (c) => {
   const db = getDb();
   let selectedModel = '(no model available)';
   try {
-    const sel = selectModel(result.tier, 'router-test');
+    const sel = selectModel(result.tier, 'router-test', undefined, ['tools']);
     if (sel) {
       // Show the human-readable model NAME, not the internal id. Fall back to
       // the id if the model row is gone.
