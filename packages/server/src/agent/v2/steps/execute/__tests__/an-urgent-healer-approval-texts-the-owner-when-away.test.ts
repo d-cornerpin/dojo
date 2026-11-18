@@ -1,4 +1,4 @@
-// A held Healer change texts the owner only when the newest diagnostic is critical and he is away.
+// A held Healer change texts the owner only when the held call is critical (it touches the Dojo's own data) and he is away.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
@@ -26,28 +26,31 @@ beforeEach(() => {
   kit.sends.length = 0;
 });
 
-async function holdWith(critical: number, presence: string): Promise<number> {
+const CRITICAL = 'git reset --hard   # Rowan';   // names an agent that is in error
+const ROUTINE = 'git reset --hard';
+
+async function holdWith(script: string, presence: string): Promise<number> {
   kit.presence = presence;
-  kit.db!.prepare("INSERT INTO healer_diagnostics (id, report, critical_count, warning_count, info_count) VALUES ('d1', 'r', ?, 1, 0)").run(critical);
+  kit.db!.prepare("INSERT OR IGNORE INTO agents (id, name, status) VALUES ('rowan-id', 'Rowan', 'error')").run();
   const state = initState({
     agentId: HEALER, contextWindow: 200_000, isAutoRouted: false, configuredModelId: 'test', turnNumber: 1,
     triggeredByIMessage: false, triggeredByA2AReplyIntent: null, lastUserMessageContent: null, lastUserMessageId: null,
   } as Parameters<typeof initState>[0]);
-  const out = await recordDispatchAndHold(state, { id: 'tc-1', name: 'shell', arguments: { script: 'git reset --hard' } } as never,
+  const out = await recordDispatchAndHold(state, { id: 'tc-1', name: 'shell', arguments: { script } } as never,
     { agentId: HEALER, db: kit.db } as never);
   expect(out.refusal).not.toBeNull();
   return kit.sends.length;
 }
 
 describe('an urgent Healer approval texts the owner when he is away', () => {
-  it('a critical diagnostic and an away owner give one text', async () => {
-    expect(await holdWith(1, 'away')).toBe(1);
+  it('a critical held call and an away owner give one text', async () => {
+    expect(await holdWith(CRITICAL, 'away')).toBe(1);
   });
 
-  it('no critical finding, or the owner present, gives no text', async () => {
-    expect(await holdWith(0, 'away')).toBe(0);
+  it('a routine call, or the owner present, gives no text', async () => {
+    expect(await holdWith(ROUTINE, 'away')).toBe(0);
     kit.db = new Database(':memory:');
     runMigrations(kit.db);
-    expect(await holdWith(1, 'in_dojo')).toBe(0);
+    expect(await holdWith(CRITICAL, 'in_dojo')).toBe(0);
   });
 });
