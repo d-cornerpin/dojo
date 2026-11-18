@@ -794,7 +794,7 @@ function rowToAgentDetail(row: Record<string, unknown>, facts: RosterFacts = ros
 agentsRouter.post('/archive', (c) => {
   const db = getDb();
   const days = 7;
-  const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+  const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().slice(0, 19).replace('T', ' ');   // the text datetime('now') writes
 
   // Mark old terminated agents as archived by setting agent_type to 'archived'
   const result = db.prepare(`
