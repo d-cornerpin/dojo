@@ -517,7 +517,7 @@ const ProviderEditForm = ({ provider, onSaved, onCancel }: {
   );
 };
 
-export const AddProviderForm = ({ onAdded, onCreated, onCancel }: { onAdded: () => void; onCreated?: () => void; onCancel?: () => void }) => {
+const AddProviderForm = ({ onAdded, onCreated, onCancel }: { onAdded: () => void; onCreated?: () => void; onCancel: () => void }) => {
   const [name, setName] = useState('');
   // The dropdown 'preset' is UI-only: deepseek, openrouter and manual all map to backend type
   // 'openai-compatible' with different default base URLs and seeded catalogs, at submit time.
@@ -876,16 +876,14 @@ export const AddProviderForm = ({ onAdded, onCreated, onCancel }: { onAdded: () 
         >
           {status === 'saving' ? 'Adding...' : status === 'validating' ? 'Validating...' : 'Add & Validate'}
         </button>
-        {onCancel && (
-          <button
-            type="button"
-            onClick={onCancel}
-            disabled={status === 'saving' || status === 'validating'}
-            className="px-4 py-2 text-sm text-ui/55 hover:text-ui/90 disabled:text-gray-700 transition-colors"
-          >
-            Cancel
-          </button>
-        )}
+        <button
+          type="button"
+          onClick={onCancel}
+          disabled={status === 'saving' || status === 'validating'}
+          className="px-4 py-2 text-sm text-ui/55 hover:text-ui/90 disabled:text-gray-700 transition-colors"
+        >
+          Cancel
+        </button>
       </div>
     </form>
   );
