@@ -254,6 +254,7 @@ export const TaskDetailPanel = ({
               className="glass-select w-full"
             >
               <option value="">Unassigned</option>
+              {task.assignedTo && !agents.some((a) => a.id === task.assignedTo) && <option value={task.assignedTo}>Ended agent</option>}
               {agents.map((a) => (
                 <option key={a.id} value={a.id}>{a.name}</option>
               ))}
