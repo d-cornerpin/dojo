@@ -194,16 +194,18 @@ export function cancelAgentGenerationJobs(agentId: string): number {
   return moved;
 }
 
-export function setFailed(jobId: string, error: string): void {
+/** Moves an open job to failed; true when it did, false when the job had already finished. */
+export function setFailed(jobId: string, error: string): boolean {
   // Fenced on 'not already finished' so any open row can record a failure; a terminal row keeps its verdict.
   const res = getDb().prepare(`
     UPDATE generation_jobs SET status='failed', error=?, finished_at=datetime('now'), updated_at=datetime('now')
     WHERE id = ? AND status NOT IN (${TERMINAL_JOB_STATUS_SQL})
   `).run(error.slice(0, 1000), jobId);
-  if (res.changes === 0) return;
+  if (res.changes === 0) return false;
   const row = getJob(jobId);
   if (row) emitUpdate(row);
   logger.warn('generation job failed', { jobId, error: error.slice(0, 200) });
+  return true;
 }
 
 // ── Synthetic chat delivery ──
@@ -370,9 +372,11 @@ async function runAudioOrMusicJob(jobId: string): Promise<void> {
     });
   } catch (err) {
     logger.error('generation run loop threw', { jobId, error: err instanceof Error ? err.message : String(err) });
-    setFailed(jobId, `Internal generator error: ${err instanceof Error ? err.message : String(err)}`);
-    const fresh = getJob(jobId);
-    if (fresh) deliverError(fresh, err instanceof Error ? err.message : String(err));
+    // A job that already finished (it succeeded, then posting it threw) keeps its verdict and sends no failure.
+    if (setFailed(jobId, `Internal generator error: ${err instanceof Error ? err.message : String(err)}`)) {
+      const fresh = getJob(jobId);
+      if (fresh) deliverError(fresh, err instanceof Error ? err.message : String(err));
+    }
   } finally {
     inFlight.delete(jobId);
   }
