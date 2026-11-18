@@ -33,6 +33,13 @@ export function getDb(): Database.Database {
   db.pragma('mmap_size = 268435456');
   // Sorts, GROUP BY spills and temp b-trees stay in RAM instead of a scratch file.
   db.pragma('temp_store = MEMORY');
+  // Planner statistics for every table, sampled at most 400 rows per index so it stays quick on any history.
+  try {
+    db.pragma('analysis_limit = 400');
+    db.pragma('optimize = 0x10002');
+  } catch (err) {
+    logger.warn('Planner statistics could not be refreshed at open', { error: err instanceof Error ? err.message : String(err) });
+  }
 
   const fkStatus = db.pragma('foreign_keys', { simple: true });
   if (fkStatus !== 1) {
@@ -60,6 +67,7 @@ export function closeDb(): void {
   readOnlyDb?.close();
   readOnlyDb = null;
   if (db) {
+    try { db.pragma('optimize'); } catch { /* a close never fails on statistics */ }
     db.close();
     db = null;
     logger.info('Database connection closed');
