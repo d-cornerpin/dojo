@@ -7,6 +7,7 @@ vi.mock('../../db/connection.js', async () => (await import('./mail-world.js')).
 vi.mock('../../gateway/ws.js', async () => (await import('./mail-world.js')).wsModule());
 vi.mock('../../agent/runtime.js', async () => (await import('./mail-world.js')).runtimeModule());
 vi.mock('../../microsoft/client.js', async () => (await import('./mail-world.js')).graphClientModule());
+vi.mock('../../microsoft/accounts.js', async (orig) => ({ ...(await orig<typeof import('../../microsoft/accounts.js')>()), getPrimaryMicrosoftAccount: () => ({ id: 'acct-1' }) }));
 vi.mock('../../microsoft/auth.js', async (orig) => ({ ...(await orig<typeof import('../../microsoft/auth.js')>()), isMicrosoftEnabled: () => true, isMicrosoftConnected: () => true, getEnabledMsServices: () => ({ teams: true }) }));
 import '../../db/migrations.js';
 import { startTeamsWatcher, stopTeamsWatcher } from '../teams-watcher.js';
