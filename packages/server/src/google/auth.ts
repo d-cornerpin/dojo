@@ -252,14 +252,6 @@ export function setEmailSendingEnabled(enabled: boolean, slot: AccountSlot = 'ag
   updateGoogleAccount(ensureSlotAccount(slot).id, { sendEmail: enabled });
 }
 
-
-export function setGoogleConnected(connected: boolean, email?: string, slot: AccountSlot = 'agent'): void {
-  const patch: Partial<Omit<GoogleAccount, 'id' | 'kind' | 'position'>> = { connected };
-  if (email) patch.email = email;
-  if (connected) patch.lastVerifiedAt = new Date().toISOString();
-  updateGoogleAccount(ensureSlotAccount(slot).id, patch);
-}
-
 export function setEnabledServices(services: Partial<GoogleWorkspaceConfig['enabledServices']>, slot: AccountSlot = 'agent'): void {
   const current = getEnabledServices(slot);
   updateGoogleAccount(ensureSlotAccount(slot).id, { enabledServices: JSON.stringify({ ...current, ...services }) });
@@ -573,40 +565,6 @@ export async function exchangeCodeForTokens(code: string, redirectUri: string, c
     return { success: false, error: err instanceof Error ? err.message : String(err) };
   }
 }
-
-
-export async function testGoogleAuth(slot: AccountSlot = 'agent'): Promise<{ authenticated: boolean; email: string | null }> {
-  const token = await getValidAccessToken(slot);
-  if (!token) return { authenticated: false, email: null };
-
-  try {
-    const resp = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
-      headers: { Authorization: `Bearer ${token}` },
-      signal: AbortSignal.timeout(10000),
-    });
-    if (!resp.ok) return { authenticated: false, email: null };
-    const user = await resp.json() as { email?: string };
-    updateGoogleAccount(ensureSlotAccount(slot).id, { lastVerifiedAt: new Date().toISOString() });
-    return { authenticated: true, email: user.email ?? null };
-  } catch {
-    return { authenticated: false, email: null };
-  }
-}
-
-export async function checkGoogleOnStartup(): Promise<void> {
-  // Check both slots on startup; each runs independently, so one failing does not disable the other.
-  for (const slot of ACCOUNT_SLOTS) {
-    if (!isGoogleConnected(slot)) continue;
-    const auth = await testGoogleAuth(slot);
-    if (auth.authenticated) {
-      logger.info('Google Workspace auth verified', { slot, email: auth.email });
-    } else {
-      logger.warn('Google Workspace auth expired, marking disconnected', { slot });
-      setGoogleConnected(false, undefined, slot);
-    }
-  }
-}
-
 
 export function disconnectGoogle(slot: AccountSlot = 'agent'): void {
   const acc = slotAccount(slot);

@@ -624,14 +624,14 @@ async function main(): Promise<void> {
     const imRecipient = db.prepare("SELECT value FROM config WHERE key = 'imessage_recipient'").get() as { value: string } | undefined;
     logger.info('iMessage bridge startup gate', {
       imEnabled: imEnabled?.value ?? '<missing>',
-      imRecipient: imRecipient?.value ?? '<missing>',
+      hasRecipient: !!imRecipient?.value,
       willStart: imEnabled?.value === 'true' && !!imRecipient?.value,
     });
     if (imEnabled?.value === 'true' && imRecipient?.value) {
       try {
         const { startIMBridge } = await import('./services/imessage-bridge.js');
         startIMBridge(imRecipient.value);
-        logger.info('iMessage bridge started', { recipient: imRecipient.value });
+        logger.info('iMessage bridge started');
       } catch (err) {
         logger.error('Failed to start iMessage bridge', {
           error: err instanceof Error ? err.message : String(err),
@@ -641,28 +641,6 @@ async function main(): Promise<void> {
     // Replies left waiting by the last run go out once the bridge is up.
     const { armSenderTimer } = await import('./agent/v2/channel-sender.js');
     armSenderTimer();
-  }
-
-  {
-    try {
-      const { checkGoogleOnStartup } = await import('./google/auth.js');
-      await checkGoogleOnStartup();
-    } catch (err) {
-      logger.warn('Google Workspace startup check failed', {
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
-
-  {
-    try {
-      const { checkMicrosoftOnStartup } = await import('./microsoft/auth.js');
-      await checkMicrosoftOnStartup();
-    } catch (err) {
-      logger.warn('Microsoft startup check failed', {
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
   }
 
   {
