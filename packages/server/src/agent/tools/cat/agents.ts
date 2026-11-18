@@ -1388,8 +1388,8 @@ export const agentsHandlers: ToolHandlerMap = {
     if (!dgResolved.ok) { content = dgResolved.error; isError = true; return { content, isError }; }
     const groupId = dgResolved.id;
 
-    if (groupId === SYS_GROUP && !isPrimaryAgent(agentId)) {
-      content = 'Cannot delete the System group.';
+    if (groupId === SYS_GROUP) {
+      content = 'Cannot delete the System group. Nothing was changed.';
       isError = true;
       return { content, isError };
     }

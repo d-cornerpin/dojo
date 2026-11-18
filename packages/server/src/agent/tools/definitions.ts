@@ -1477,7 +1477,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'delete_group',
-    description: 'Delete an agent group (squad) entirely. This is THE tool for removing a group, do NOT try to update the database directly. By default, member agents are moved to ungrouped (not terminated). Pass terminate_members=true to also kill every member in the group as part of the cleanup.\n\nOWNERSHIP: the main agent may delete any group. Any other agent cannot delete the System group and can only delete squads it created; squads created by the user (from the dashboard) are dismissed only by the user.',
+    description: 'Delete an agent group (squad) entirely. This is THE tool for removing a group, do NOT try to update the database directly. By default, member agents are moved to ungrouped (not terminated). Pass terminate_members=true to also kill every member in the group as part of the cleanup.\n\nOWNERSHIP: the System group cannot be deleted, and asking for it changes nothing. The main agent may delete any other group. Any other agent can only delete squads it created; squads created by the user (from the dashboard) are dismissed only by the user.',
     effects: [],
     input_schema: {
       type: 'object',
