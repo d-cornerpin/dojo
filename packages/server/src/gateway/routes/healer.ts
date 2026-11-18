@@ -172,7 +172,6 @@ export function resolveHealerProposal(input: {
           agentId: proposal.agent_id as string,
           signature: proposal.approval_signature as string,
           requestText: (proposal.proposed_fix as string | null) ?? (proposal.title as string),
-          decidedBy: 'owner',
           // The proposal carries the held call's full args, so the grant is exact-call.
           argsJson: (proposal.approval_args_json as string | null) ?? null,
         });
