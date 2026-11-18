@@ -1551,7 +1551,7 @@ export const toolDefinitions: ToolDefinition[] = [
   // ── Show files to user ──
   {
     name: 'show_to_user',
-    description: 'Display one or more IMAGES (and short audio/video clips) to the user IN THE CHAT as inline thumbnails, as part of your reply. Use this for a picture you want the user to actually look at right in the conversation, a slide PNG a sub-agent sent you, a Drive image you downloaded, a photo from your uploads folder. WITHOUT this tool, "take a look at this image" is a lie, the file is on disk but the user sees no thumbnail.\n\nDOCUMENTS GO IN THE CANVAS, NOT HERE. A PDF, Word/Excel/PowerPoint, Markdown, text, or code file passed to show_to_user is REJECTED, those render as a real formatted preview in the canvas. Canvas-renderable files auto-open the moment you write them (file_write, or creating a Word/Excel/PDF); use canvas_render({ path }) to (re)open one. Reserve show_to_user for images/media.\n\nThis tool inserts an assistant-role message into your chat with the files attached and your `caption` as the bubble text. The user sees: your caption + thumbnails. After calling, end your turn (or continue with more tool calls if needed).\n\nExample (forwarding a slide preview a sub-agent sent):\n  show_to_user({ file_paths: ["/Users/.../uploads/<your-agent-id>/draft_slide_preview.png"], caption: "Sub-agent finished a draft of the title slide. Looks good to me, anything you want changed?" })\n\nFile paths must already exist (typically under ~/.dojo/uploads/<your-agent-id>/ or wherever a sub-agent delivered them). Files outside the uploads dir are copied in.',
+    description: 'Display one or more IMAGES (and short audio/video clips) to the user IN THE CHAT as inline thumbnails, as part of your reply. Use this for a picture you want the user to actually look at right in the conversation, a slide PNG a sub-agent sent you, a Drive image you downloaded, a photo from your uploads folder. WITHOUT this tool, "take a look at this image" is a lie, the file is on disk but the user sees no thumbnail.\n\nDOCUMENTS GO IN THE CANVAS, NOT HERE. A PDF, Word/Excel/PowerPoint, Markdown, text, or code file passed to show_to_user is REJECTED, those render as a real formatted preview in the canvas. Canvas-renderable files auto-open the moment you write them (file_write, or creating a Word/Excel/PDF); use canvas_render({ path }) to (re)open one. Reserve show_to_user for images/media.\n\nThis tool attaches the files to your next reply as thumbnails. After calling it, write your reply text as usual; the `caption` is used as the reply only if you end the turn without writing one.\n\nExample (forwarding a slide preview a sub-agent sent):\n  show_to_user({ file_paths: ["/Users/.../uploads/<your-agent-id>/draft_slide_preview.png"], caption: "Sub-agent finished a draft of the title slide. Looks good to me, anything you want changed?" })\n\nFile paths must already exist (typically under ~/.dojo/uploads/<your-agent-id>/ or wherever a sub-agent delivered them). Files outside the uploads dir are copied in.',
     // Files outside the uploads dir are copied in so the dashboard's serve
     // route finds them: the write is declared, and the scope is the CALLING
     // agent's own uploads dir, so no agent writes into another's.
@@ -1565,11 +1565,11 @@ export const toolDefinitions: ToolDefinition[] = [
         file_paths: {
           type: 'array',
           items: { type: 'string' },
-          description: 'Absolute paths to the files to display. Images render as thumbnails; PDFs render as document chips. Up to 10 files per call.',
+          description: 'Absolute paths to the images (or short audio/video clips) to display. Images render as thumbnails; a PDF or other document is refused. Up to 10 files per call.',
         },
         caption: {
           type: 'string',
-          description: 'Your message text accompanying the files. This becomes the bubble content (e.g., "Here\'s the slide, looks good?"). Keep it natural; this is your reply to the user.',
+          description: 'Used as your reply only if you end the turn without writing reply text (e.g., "Here\'s the slide, looks good?"). When you write a reply, the files attach to it.',
         },
       },
       required: ['file_paths'],
