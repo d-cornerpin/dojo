@@ -20,6 +20,7 @@ import { execSimpleCommands, commandWords } from '../agent/exec-grammar.js';
 import { healerApprovalText, healerApprovalBody } from '../agent/engine-lines.js';
 import { tellAgentWhatDojoSent } from '../agent/dojo-voice.js';
 import { getPrimaryAgentId } from '../config/platform.js';
+import { refersToDojoDatabase } from '../agent/brokers/dojo-redirect.js';
 
 const logger = createLogger('healer-approval-routing');
 
@@ -49,6 +50,21 @@ export function selectHealerApprovalRouting(input: {
   const surface: HealerApprovalSurface = criticalTexted ? 'imessage' : 'vitals';
   const urgency: HealerApprovalUrgency = criticalTexted ? 'urgent' : 'routine';
   return { urgency, surface };
+}
+
+/** Every string inside a call's arguments, however deep. */
+const stringLeaves = (v: unknown): string[] =>
+  typeof v === 'string' ? [v] : Array.isArray(v) ? v.flatMap(stringLeaves)
+    : v !== null && typeof v === 'object' ? Object.values(v).flatMap(stringLeaves) : [];
+
+/** Lead ruling Q27: a held call is critical when it touches the Dojo's data or names an agent in error or paused. */
+export function heldActionSeverity(argsJson: string | null | undefined): EngineSeverity {
+  let leaves: string[] = [];
+  try { leaves = stringLeaves(JSON.parse(argsJson ?? '{}')); } catch { /* an unreadable call names nothing */ }
+  if (leaves.some(refersToDojoDatabase)) return 'critical';
+  const broken = getDb().prepare("SELECT id, name FROM agents WHERE status IN ('error', 'paused')").all() as Array<{ id: string; name: string }>;
+  const named = (word: string): RegExp => new RegExp(`(^|[^\\w])${word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}($|[^\\w])`, 'i');
+  return broken.some((a) => leaves.some((s) => named(a.id).test(s) || named(a.name).test(s))) ? 'critical' : 'warning';
 }
 
 // Scratch-zone auto-approve: a Healer destructive call whose EVERY target resolves strictly inside
