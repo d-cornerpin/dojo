@@ -501,12 +501,11 @@ async function loadPdf(filePath: string): Promise<unknown> {
   return await PDFDocument.load(bytes);
 }
 
+/** Page numbers as a person says them (the first page is 1) to the zero-based indices pdf-lib takes;
+ *  a number that is not a page of this file is dropped. */
 export function normalizePageList(input: number[] | undefined, total: number): number[] {
   if (!input || input.length === 0) return [];
-  // Accept either 0-based or 1-based: if any index is >= total, assume
-  // the agent passed 1-based. Both forms are common in tool callers.
-  const oneBased = input.some((p) => p === total);
-  return input.map((p) => oneBased ? p - 1 : p).filter((p) => p >= 0 && p < total);
+  return input.filter((p) => Number.isInteger(p) && p >= 1 && p <= total).map((p) => p - 1);
 }
 
 async function mergePdfs(inputPaths: string[], outputPath: string): Promise<{ pageCount: number }> {
@@ -544,8 +543,8 @@ async function rotatePages(inputPath: string, rotations: Array<{ page: number; d
   const total = src.getPageCount();
   let rotated = 0;
   for (const r of rotations) {
-    const idx = r.page >= total ? r.page - 1 : r.page; // tolerate 1-based
-    if (idx < 0 || idx >= total) continue;
+    const idx = r.page - 1;
+    if (!Number.isInteger(r.page) || idx < 0 || idx >= total) continue;
     src.getPage(idx).setRotation(degrees(r.degrees));
     rotated++;
   }
@@ -666,7 +665,7 @@ async function getPdfInfo(filePath: string): Promise<Record<string, unknown>> {
   const pageSizes = Array.from({ length: total }, (_, i) => {
     const p = src.getPage(i);
     const { width, height } = p.getSize();
-    return { index: i, width_pt: width, height_pt: height, width_in: width / 72, height_in: height / 72 };
+    return { page: i + 1, width_pt: width, height_pt: height, width_in: width / 72, height_in: height / 72 };
   });
   let fields: string[] = [];
   try {
@@ -773,7 +772,7 @@ export const pdfToolDefinitions: ToolDefinition[] = [
       type: 'object',
       properties: {
         path: { type: 'string', description: 'Absolute path to the source PDF.' },
-        pages: { type: 'array', items: { type: 'number' }, description: 'Pages to keep (zero-based; if you pass 1-based indices the tool detects and adjusts).' },
+        pages: { type: 'array', items: { type: 'number' }, description: 'Page numbers to copy into the new file, counting from 1 (the first page is 1).' },
         output_filename: { type: 'string', description: 'Output filename. ".pdf" added if missing.' },
       },
       required: ['path', 'pages', 'output_filename'],
@@ -796,7 +795,7 @@ export const pdfToolDefinitions: ToolDefinition[] = [
           items: {
             type: 'object',
             properties: {
-              page: { type: 'number', description: 'Zero-based page index.' },
+              page: { type: 'number', description: 'Page number, counting from 1 (the first page is 1).' },
               degrees: { type: 'number', description: 'Rotation in degrees (90, 180, 270).' },
             },
             required: ['page', 'degrees'],
@@ -818,7 +817,7 @@ export const pdfToolDefinitions: ToolDefinition[] = [
       type: 'object',
       properties: {
         path: { type: 'string', description: 'Absolute path to the source PDF.' },
-        new_order: { type: 'array', items: { type: 'number' }, description: 'New ordering of zero-based page indices. Length must equal the source page count.' },
+        new_order: { type: 'array', items: { type: 'number' }, description: 'Every page number in its new order, counting from 1 (the first page is 1). Length must equal the source page count.' },
         output_filename: { type: 'string' },
       },
       required: ['path', 'new_order', 'output_filename'],
@@ -835,7 +834,7 @@ export const pdfToolDefinitions: ToolDefinition[] = [
       type: 'object',
       properties: {
         path: { type: 'string', description: 'Absolute path to the source PDF.' },
-        pages: { type: 'array', items: { type: 'number' }, description: 'Zero-based page indices to remove.' },
+        pages: { type: 'array', items: { type: 'number' }, description: 'Page numbers to remove, counting from 1 (the first page is 1).' },
         output_filename: { type: 'string' },
       },
       required: ['path', 'pages', 'output_filename'],
@@ -857,7 +856,7 @@ export const pdfToolDefinitions: ToolDefinition[] = [
         size_pt: { type: 'number', description: 'Font size in points. Default 60.' },
         color: { type: 'string', description: 'Hex color without "#". Default "888888".' },
         rotation_deg: { type: 'number', description: 'Rotation in degrees. Default 45.' },
-        pages: { type: 'array', items: { type: 'number' }, description: 'Zero-based page indices to stamp. Omit to stamp every page.' },
+        pages: { type: 'array', items: { type: 'number' }, description: 'Page numbers to stamp, counting from 1 (the first page is 1). Omit to stamp every page.' },
         output_filename: { type: 'string' },
       },
       required: ['path', 'text', 'output_filename'],
@@ -964,7 +963,7 @@ export async function executePdfTool(
         const src = await loadPdf(p) as any;
         const total = src.getPageCount();
         const indices = normalizePageList(pages, total);
-        if (indices.length === 0) return 'Error: no valid page indices after normalization.';
+        if (indices.length === 0) return `Error: none of the pages ${JSON.stringify(pages)} exist in this ${total}-page PDF (pages count from 1), so nothing was extracted.`;
         const out = resolveOutputPath(agentId, outFile);
         const { pageCount } = await extractPages(p, indices, out);
         return `Extracted ${pageCount} page(s) → ${out}.`;
@@ -980,7 +979,7 @@ export async function executePdfTool(
         }
         const out = resolveOutputPath(agentId, outFile);
         const { rotated } = await rotatePages(p, rotations, out);
-        if (rotated === 0) return 'Error: none of the requested pages exist in this PDF (indices are zero-based), so nothing was rotated.';
+        if (rotated === 0) return 'Error: none of the requested pages exist in this PDF (pages count from 1), so nothing was rotated.';
         return `Rotated ${rotated} page(s) → ${out}.`;
       }
       case 'pdf_reorder_pages': {
@@ -1002,7 +1001,7 @@ export async function executePdfTool(
         const out = resolveOutputPath(agentId, outFile);
         const { pageCount, removed, total } = await deletePages(p, pages, out);
         if (removed === 0) {
-          return `Error: none of the pages ${JSON.stringify(pages)} exist in this ${total}-page PDF (indices are zero-based), so nothing was deleted.`;
+          return `Error: none of the pages ${JSON.stringify(pages)} exist in this ${total}-page PDF (pages count from 1), so nothing was deleted.`;
         }
         return `Deleted ${removed} page(s); ${pageCount} remain → ${out}.`;
       }
