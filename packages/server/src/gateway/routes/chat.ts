@@ -6,12 +6,11 @@ import { SendMessageSchema } from '../../config/schema.js';
 import { createLogger } from '../../logger.js';
 import { getAgentRuntime } from '../../agent/runtime.js';
 import { queueEmbedding } from '../../memory/embeddings.js';
-import { insertMessageIfAbsent } from '../../memory/message-store.js';
 import { insertInboundMessageIfAbsent } from '../../work/ask-title.js';
-import { archiveAgentConversation } from '../../vault/archive.js';
+import { resetSession } from '../../agent/reset-session.js';
 import { broadcast } from '../ws.js';
 import type { Message } from '@dojo/shared';
-import { deriveOrigin, legacyOriginInputs, NEW_SESSION_DIVIDER} from '@dojo/shared';
+import { deriveOrigin, legacyOriginInputs } from '@dojo/shared';
 
 const logger = createLogger('chat-routes');
 
@@ -277,73 +276,11 @@ function rowToMessage(row: Record<string, unknown>): Message {
 
 chatRouter.post('/:agentId/new-session', async (c) => {
   const agentId = c.req.param('agentId');
-  const db = getDb();
-
-  const agent = db.prepare('SELECT id, name, status FROM agents WHERE id = ?').get(agentId) as { id: string; name: string; status: string } | undefined;
-  if (!agent) {
-    return c.json({ ok: false, error: 'Agent not found' }, 404);
-  }
-
-  if (agent.status === 'working') {
-    return c.json({ ok: false, error: 'Cannot start new session while agent is working' }, 400);
-  }
-
   try {
-    // 1. Archive the current conversation to the vault (for the Dreamer); force=true always archives the
-    // pre-reset tail, like reset_session.
-    const archiveId = archiveAgentConversation(agentId, true);
-    logger.info('Session archived for new session', { agentId, archiveId });
-
-    // 2. Keep context items (summaries): with old raw messages hidden they are the only continuity.
-
-    // Forget the per-session scratch: loaded tool docs and turn-continuity scratch (see `agent/session-forget.ts`).
-    await (await import('../../agent/session-forget.js')).forgetSessionScratch(agentId);
-
-    // 3. Set the session boundary (earlier messages are excluded from context), in SQLite datetime format.
-    const now = new Date();
-    const boundary = now.toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
-    // Clear the session-scoped scratchpad. Matches the agents.ts reset.
-    db.prepare("UPDATE agents SET session_started_at = ?, updated_at = ?, config = json_remove(COALESCE(config, '{}'), '$.scratchpad') WHERE id = ?").run(boundary, boundary, agentId);
-
-    // Carry fired-but-undelivered reminder/scheduler events across the boundary (queries gate on session_started_at).
-    try {
-      const { rehomeUnclaimedEngineEvents } = await import('../../agent/v2/counterparty.js');
-      rehomeUnclaimedEngineEvents(agentId, boundary);
-    } catch { /* best-effort carry-over, never block the reset */ }
-
-    // 4. Insert the UI divider only. Its created_at is stamped at insert, at or after `boundary`, so it still
-    // lands inside the new session; the broadcast quotes `boundary`.
-    const markerId = uuidv4();
-
-    insertMessageIfAbsent({ id: markerId, agentId, role: 'system', content: NEW_SESSION_DIVIDER });
-
-    // 5. Broadcast the divider so the chat UI updates in real time.
-    broadcast({
-      type: 'chat:message',
-      agentId,
-      message: {
-        id: markerId,
-        agentId,
-        role: 'system',
-        content: NEW_SESSION_DIVIDER,
-        tokenCount: null,
-        modelId: null,
-        cost: null,
-        latencyMs: null,
-        createdAt: boundary,
-      },
-    });
-
-    // 6. Inject the reorientation prompt. The helper picks full reorient (active tasks) or fresh start (none).
-    const { buildSessionResetMessage } = await import('../../agent/session-reset.js');
-    const reorientId = uuidv4();
-    const reorientContent = buildSessionResetMessage(agentId);
-    insertMessageIfAbsent({ id: reorientId, agentId, role: 'system', content: reorientContent });
-    broadcast({ type: 'chat:message', agentId, message: { id: reorientId, agentId, role: 'system', content: reorientContent, tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: boundary } });
-
-    logger.info('New session started', { agentId, agentName: agent.name, archiveId });
-
-    return c.json({ ok: true, data: { archiveId, sessionStartedAt: boundary } });
+    const result = await resetSession(agentId, { callerAgentId: null });
+    if (!result.ok) return c.json({ ok: false, error: result.error }, result.code === 'not_found' ? 404 : 400);
+    logger.info('New session started', { agentId, agentName: result.name, archiveId: result.archiveId });
+    return c.json({ ok: true, data: { archiveId: result.archiveId, sessionStartedAt: result.boundary } });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error('Failed to start new session', { agentId, error: msg });
