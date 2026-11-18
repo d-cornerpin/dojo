@@ -40,7 +40,7 @@ interface VideoJobRow {
   status: string;
   started_at: string;
   attempt_count: number;
-  conversation_id?: string | null; source_message_id?: string | null;
+  conversation_id?: string | null; source_message_id?: string | null; duration_seconds?: number | null;
 }
 
 const inFlight = new Set<string>();
@@ -201,8 +201,10 @@ async function handleSuccess(row: VideoJobRow, durationSeconds: number | null): 
     return;
   }
 
-  // Unknown duration records $0 rather than a guess; the dollar figure here is only for the video_jobs row.
-  const units = typeof durationSeconds === 'number' && durationSeconds > 0 ? durationSeconds : 0;
+  // The provider's length, else the length asked for at submit: a paid video is never recorded at $0 for want of one.
+  const reported = typeof durationSeconds === 'number' && durationSeconds > 0 ? durationSeconds : null;
+  const asked = typeof row.duration_seconds === 'number' && row.duration_seconds > 0 ? row.duration_seconds : null;
+  const units = reported ?? asked ?? 0;
   let costUsd: number | null = null;
   try {
     const { recordCost } = await import('../costs/tracker.js');
@@ -233,7 +235,7 @@ async function handleSuccess(row: VideoJobRow, durationSeconds: number | null): 
     UPDATE video_jobs
     SET status='succeeded', asset_path=?, duration_seconds=?, cost_usd=?, finished_at=datetime('now'), updated_at=datetime('now')
     WHERE id = ? AND status NOT IN (${TERMINAL_JOB_STATUS_SQL})
-  `).run(asset.filePath, durationSeconds, costUsd, row.id);
+  `).run(asset.filePath, units > 0 ? units : null, costUsd, row.id);
   if (res.changes === 0) {
     // A cancel raced us: the asset is downloaded but the user asked to stop, so do not deliver.
     logger.info('video job: success raced a cancel, not delivering', { jobId: row.id });
