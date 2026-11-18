@@ -31,6 +31,7 @@ import { getEffectiveImageGenModel } from '../../../services/image-gen-model.js'
 import { getEffectiveMusicGenModel } from '../../../services/music-gen-model.js';
 import { getEffectiveTranscriptionModel } from '../../../services/transcription-model.js';
 import { getEffectiveVideoGenModel } from '../../../services/video-gen-model.js';
+import { standInSentence } from '../../../services/capability-model.js';
 import { getModelGenerationParams, defaultVideoSpecFor, validateCanonicalParams, VIDEO_CANONICAL_PARAMS } from '../../../services/generation-params.js';
 import { getModelVoiceCatalog, defaultVoiceCatalogFor, isKnownVoice, formatVoiceCatalog } from '../../../services/voice-catalog.js';
 import { getPresence } from '../../../services/presence.js';
@@ -411,6 +412,7 @@ const handlers = {
     content =
       `Image generation kicked off (request_id: ${requestId}). ${deliveryClause} ` +
       `The engine adds no caption: the line you write in this turn is the only text that arrives with the image.` +
+      standInSentence(modelChoice) +
       visionTail;
     return { content, isError };
   },
@@ -474,7 +476,8 @@ const handlers = {
     enqueueAudioOrMusicJob(jobId);
 
     content =
-      `${isMusic ? 'Music' : 'Audio'} generation started (job_id: ${jobId}). The engine is generating the asset in the background. When it's ready the engine will post it directly to the chat. You do NOT get a second turn and must NOT call ${name} again. The engine adds no caption: the words you write in this turn are the only text that arrives with the ${kind}, so write them now, in your next reply (it is text only, no more tools run).`;
+      `${isMusic ? 'Music' : 'Audio'} generation started (job_id: ${jobId}). The engine is generating the asset in the background. When it's ready the engine will post it directly to the chat. You do NOT get a second turn and must NOT call ${name} again. The engine adds no caption: the words you write in this turn are the only text that arrives with the ${kind}, so write them now, in your next reply (it is text only, no more tools run).` +
+      standInSentence(modelChoice);
     return { content, isError };
   },
 
@@ -497,6 +500,14 @@ const handlers = {
         `No video-generation model is configured. ` +
         `Go to Settings → Models → Video Generation Model and pick a video-capable model. ` +
         `Tell ${userWords(currentAddress(agentId))} video generation is unavailable until this is configured, do not retry.`;
+      isError = true;
+      return { content, isError };
+    }
+
+    if (modelChoice.source === 'failover') {
+      content =
+        `The video model chosen in Settings is not usable right now, so no video was started: the Dojo never starts a video on a stand-in model by itself. ` +
+        `Ask ${userWords(currentAddress(agentId))} which video model to use (Settings, Models, Video Generation Model), then call video_create again.`;
       isError = true;
       return { content, isError };
     }
