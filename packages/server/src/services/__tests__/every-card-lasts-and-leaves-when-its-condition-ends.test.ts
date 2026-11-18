@@ -381,7 +381,7 @@ describe('ruling 3: the clearing is noticed on the existing clocks', () => {
     const m = await boot();
     memory.freeMb = 300;
     m.resources.canSpawnAgent();
-    const words = (await m.cards()).find((c) => c.words.includes('512MB'))?.words;
+    const words = (await m.cards()).find((c) => c.words.includes('512 MB'))?.words;
     expect(words).toBeDefined();
     memory.freeMb = 6000;
     await m.tick();

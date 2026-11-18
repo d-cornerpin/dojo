@@ -2,7 +2,7 @@
 // t138 round 3 — A CONDITION TEXTS ONCE WHEN IT STARTS, AND AGAIN ONLY AFTER IT CLEARED.
 //
 // The round-2 census found three owner texts that repeat while NOTHING has changed:
-//   - "System memory below 512MB" — once a minute for as long as memory stays low (a one-minute
+//   - "System memory below 512 MB" — once a minute for as long as memory stays low (a one-minute
 //     cooldown was the only brake);
 //   - "The Healer agent is broken" — on every injury of the Healer;
 //   - "<agent> is stuck and the Healer agent is missing" — on every injury of any agent while
@@ -138,7 +138,7 @@ const sendsSettle = (): Promise<void> => new Promise((r) => realSetImmediate(r))
 const texts = (): string[] => transport.filter((t) => !t.includes('--help') && !t.includes('which'));
 const about = (word: string): string[] => texts().filter((t) => t.includes(word));
 
-describe('memory below 512MB', () => {
+describe('memory below 512 MB', () => {
   it('texts once while it stays low, however long; again only after it recovered and fell again', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     let now = Date.now();
@@ -149,7 +149,7 @@ describe('memory below 512MB', () => {
       expect(canSpawnAgent().allowed).toBe(false);
       now += 3 * 60_000; vi.setSystemTime(now);
     }
-    expect(about('512MB'), 'one text for one low-memory stretch').toHaveLength(1);
+    expect(about('512 MB'), 'one text for one low-memory stretch').toHaveLength(1);
 
     memory.freeMb = 6000; // it genuinely cleared
     expect(canSpawnAgent().allowed).toBe(true);
@@ -157,7 +157,7 @@ describe('memory below 512MB', () => {
     now += 3 * 60_000; vi.setSystemTime(now);
     canSpawnAgent();
     await sendsSettle();
-    expect(about('512MB')).toHaveLength(2);
+    expect(about('512 MB')).toHaveLength(2);
   });
 
   it('a restart in the middle of a low stretch does not text again', async () => {
@@ -165,7 +165,7 @@ describe('memory below 512MB', () => {
     (await import('../resource-monitor.js')).canSpawnAgent();
     vi.resetModules();
     (await import('../resource-monitor.js')).canSpawnAgent();
-    expect(about('512MB')).toHaveLength(1);
+    expect(about('512 MB')).toHaveLength(1);
   });
 });
 
