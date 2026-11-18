@@ -293,8 +293,8 @@ export async function fileHealerApprovalProposal(
     getDb().prepare(`
       INSERT INTO healer_proposals
         (id, category, severity, title, description, proposed_fix, status, agent_id,
-         evidence_json, urgency, surface, notified_at, approval_token, approval_signature, approval_args_json, created_at)
-      VALUES (?, 'destructive_action', ?, ?, ?, ?, 'pending', ?, ?, ?, ?, datetime('now'), ?, ?, ?, datetime('now'))
+         evidence_json, urgency, surface, approval_token, approval_signature, approval_args_json, created_at)
+      VALUES (?, 'destructive_action', ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, datetime('now'))
     `).run(
       proposalId,
       severity,
@@ -394,7 +394,7 @@ export function markHealerProposalAppliedBySignature(agentId: string, signature:
 
 /**
  * Text the owner an approval request for an 'imessage'-surface proposal. The reply must name the short
- * id (first 8 chars of the proposal id); a bare yes/no is ordinary chat. Refreshes notified_at on send.
+ * id (first 8 chars of the proposal id); a bare yes/no is ordinary chat.
  * The bridge is imported dynamically so loop.ts -> approval-routing.ts never statically links it.
  */
 async function sendHealerApprovalRequestOverIMessage(proposalId: string, what: string): Promise<void> {
@@ -426,9 +426,6 @@ async function sendHealerApprovalRequestOverIMessage(proposalId: string, what: s
       });
       return;
     }
-    try {
-      getDb().prepare(`UPDATE healer_proposals SET notified_at = datetime('now') WHERE id = ?`).run(proposalId);
-    } catch { /* notified_at refresh is best-effort; the row is already filed */ }
     logger.info('healer approval-routing: approval request texted to owner', { proposalId });
   } catch (err) {
     logger.error('healer approval-routing: iMessage approval send threw; approval stays in Vitals', {
