@@ -23,6 +23,7 @@ import { workOperation } from '../../tools/work-verbs.js';
 import { withOutboundAsyncIfAbsent, outboundIntentForTool } from '../v2/outbound.js';
 import { resolveAgentRef, resolveGroupRef } from '../tool-helpers.js';
 import { gatesForCall } from './gates.js';
+import { redactDeclaredSecretArgs } from '../../credentials/secret-fields.js';
 import { validateToolArgs } from './validate-args.js';
 import { toolDefinitions, toolDefinitionsByName, isBoundaryValidated, getAllToolDefinitions } from './definitions.js';
 import { getFilteredTools, getAgentDenySet } from './surface.js';
@@ -108,7 +109,7 @@ async function dispatchResolved(
 async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<ToolResult> {
   const { id, name, arguments: args } = toolCall;
 
-  logger.info('Executing tool', { tool: name, args }, agentId);
+  logger.info('Executing tool', { tool: name, args: redactDeclaredSecretArgs(name, args) }, agentId);
 
   // tools_policy.deny: the surface strip is only advice, so a floor model can still emit a
   // denied name. Re-check the SAME deny set ahead of any outbound capture (name is canonical).
