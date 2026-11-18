@@ -62,8 +62,8 @@ export function formatTierBNoteForAgent(kind: ErrorKind, ctx: ErrorContext = {})
 
     case 'tool_name_unknown':
       return ctx.toolName
-        ? `Your last tool call referenced "${ctx.toolName}" which isn't a registered tool. Use list_tool_docs to see what's available, then adjust and continue.`
-        : `Your last tool call referenced a tool that doesn't exist. Use list_tool_docs to see what's available, then adjust and continue.`;
+        ? `Your last tool call referenced "${ctx.toolName}" which isn't a registered tool. Pick a name from your tool index (load_tool_docs shows a tool's full instructions), then adjust and continue.`
+        : `Your last tool call referenced a tool that doesn't exist. Pick a name from your tool index (load_tool_docs shows a tool's full instructions), then adjust and continue.`;
 
     case 'tool_args_invalid_json':
       return `Your last tool call had invalid JSON arguments. Re-issue with valid JSON.`;
