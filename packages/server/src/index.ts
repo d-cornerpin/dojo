@@ -18,7 +18,7 @@ import { keepMacAwake } from './services/keep-awake.js';
 import { broadcast } from './gateway/ws.js';
 import { checkTimeouts, reArmSpawnTimeouts } from './agent/spawner.js';
 import { killTunnelSync } from './services/tunnel.js';
-import { getPrimaryAgentId, getPrimaryAgentName, setPlatformConfig, HOUSEHOLD_AGENT_IDS_KEY } from './config/platform.js';
+import { getPrimaryAgentId, getPrimaryAgentName } from './config/platform.js';
 import { recordBootAttempt, confirmHealthy, readMarker, synthesizeMigrationBootEpisode } from './update-state.js';
 import { probeFsCaseInsensitive, setFsCaseInsensitive } from './agent/path-guards.js';
 import { homeDir } from './home.js';
@@ -160,26 +160,6 @@ function ensurePrimaryAgent(): void {
   );
 
   logger.info('Created primary agent', { id: primaryId, name: primaryName, modelId: fallbackModelId ?? 'none' });
-}
-
-// Seed the `household_agent_ids` allow-list with the primary agent id when the key is absent. Only a
-// missing row is seeded (a second primary's list is never overwritten); no-op until setup completes.
-function ensureHouseholdConfig(): void {
-  const db = getDb();
-
-  const setupDone = db.prepare("SELECT value FROM config WHERE key = 'setup_completed'").get() as { value: string } | undefined;
-  if (!setupDone || setupDone.value !== 'true') {
-    return;
-  }
-
-  const existing = db.prepare('SELECT value FROM config WHERE key = ?').get(HOUSEHOLD_AGENT_IDS_KEY) as { value: string } | undefined;
-  if (existing) {
-    return;
-  }
-
-  const primaryId = getPrimaryAgentId();
-  setPlatformConfig(HOUSEHOLD_AGENT_IDS_KEY, JSON.stringify([primaryId]));
-  logger.info('Seeded household_agent_ids allow-list', { members: [primaryId] });
 }
 
 // The port is the mutual exclusion, so it is taken FIRST: everything after it mutates the real database.
@@ -361,8 +341,6 @@ async function main(): Promise<void> {
   }
 
   ensurePrimaryAgent();
-
-  ensureHouseholdConfig();
 
   try {
     const { ensureSystemGroup } = await import('./agent/groups.js');
