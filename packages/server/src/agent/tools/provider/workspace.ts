@@ -45,7 +45,7 @@ function handlersFor(defs: readonly ToolDefinition[], provider: WorkspaceProvide
 export const workspaceHandlers: ToolHandlerMap = Object.fromEntries([
   ...handlersFor(googleReadToolDefinitions, 'google', (...a) => executeGoogleReadTool(...a), (k, e) => resolveGoogleAccountForRead(k, e)),
   ...handlersFor(googleWriteToolDefinitions, 'google', (...a) => executeGoogleWriteTool(...a), (k, e) => resolveGoogleAccountForTool(k, e)),
-  ...handlersFor(slidesToolDefinitions, 'google', (...a) => executeGoogleSlidesTool(...a), NO_ACCOUNT),
+  ...handlersFor(slidesToolDefinitions, 'google', (...a) => executeGoogleSlidesTool(...a), (k, e) => resolveGoogleAccountForTool(k, e)),
   ...handlersFor(formsToolDefinitions, 'google', (...a) => executeGoogleFormsTool(...a), NO_ACCOUNT),
   ...handlersFor(microsoftReadToolDefinitions, 'microsoft', (...a) => executeMicrosoftReadTool(...a), (k, e) => resolveMicrosoftAccountForRead(k, e)),
   ...handlersFor(microsoftWriteToolDefinitions, 'microsoft', (...a) => executeMicrosoftWriteTool(...a), (k, e) => resolveMicrosoftAccountForTool(k, e)),
