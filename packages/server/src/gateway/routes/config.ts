@@ -154,7 +154,7 @@ const DEEPSEEK_MODELS = [
     apiModelId: 'deepseek-v4-flash',
     capabilities: ['chat', 'code', 'tools', 'thinking'],
     contextWindow: 1_000_000,
-    maxOutputTokens: 384_000,
+    maxOutputTokens: 32_000,   // the everyday cap; a cut-off call may be given up to the contract's 384K once
     inputCostPerM: 0.14,
     outputCostPerM: 0.28,
   },
@@ -163,7 +163,7 @@ const DEEPSEEK_MODELS = [
     apiModelId: 'deepseek-v4-pro',
     capabilities: ['chat', 'code', 'tools', 'thinking'],
     contextWindow: 1_000_000,
-    maxOutputTokens: 384_000,
+    maxOutputTokens: 32_000,
     inputCostPerM: 0.435,
     outputCostPerM: 0.87,
   },
