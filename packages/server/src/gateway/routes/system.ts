@@ -3,7 +3,6 @@ import os from 'node:os';
 import { getDb } from '../../db/connection.js';
 import { readLogEntries } from '../../logger.js';
 import { broadcast } from '../ws.js';
-import { getPrimaryAgentId } from '../../config/platform.js';
 import { assertPublicHttpTarget } from '../../agent/net-guard.js';
 import { toolDocsStatus } from '../../tools/doc-freshness.js';
 import type { HealthData, LogEntry } from '@dojo/shared';
@@ -159,24 +158,6 @@ systemRouter.get('/og-preview', async (c) => {
     noteRouteFailure(c, logger, err);
     return c.json({ ok: true, data: { url, title: null, description: null, image: null } });
   }
-});
-
-// POST /system/debug-toast: fire a chat:error broadcast to exercise the dashboard's three-tier toasts.
-// Body: { agentId, severity: 'info'|'warning'|'error', message }.
-systemRouter.post('/debug-toast', async (c) => {
-  const body = await c.req.json().catch(() => ({}));
-  const agentId = (body.agentId as string | undefined) ?? getPrimaryAgentId();
-  const severity = (body.severity as 'info' | 'warning' | 'error' | undefined) ?? 'info';
-  const message = (body.message as string | undefined) ?? `Test ${severity.toUpperCase()} toast at ${new Date().toLocaleTimeString()}`;
-  broadcast({
-    type: 'chat:error', cardClass: 'informational',
-    agentId,
-    error: message,
-    code: severity === 'info' ? 'AGENT_RECOVERED' : severity === 'warning' ? 'CONTEXT_HIGH' : 'MODEL_FAILED',
-    severity,
-    retryable: false,
-  });
-  return c.json({ ok: true, data: { agentId, severity, message } });
 });
 
 /** Exit so launchd (KeepAlive) brings the Dojo back within a couple of seconds; under `tsx watch` the exit
