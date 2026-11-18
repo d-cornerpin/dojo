@@ -557,7 +557,7 @@ configRouter.post('/providers', async (c) => {
 function forgetModelReferences(modelId: string): void {
   const db = getDb();
   db.prepare('DELETE FROM router_tier_models WHERE model_id = ?').run(modelId);
-  for (const key of ['pm_agent_model', 'dreaming_model_id']) {
+  for (const key of LOCAL_MODEL_SETTING_KEYS) {
     db.prepare('DELETE FROM config WHERE key = ? AND value = ?').run(key, modelId);
   }
 }
@@ -575,6 +575,15 @@ configRouter.delete('/providers/:id', (c) => {
 
     const providerModels = db.prepare('SELECT id FROM models WHERE provider_id = ?').all(id) as Array<{ id: string }>;
     const modelIds = providerModels.map(m => m.id);
+
+    // The Dojo's own two models live on the local provider; deleting it would take the Dojo's memory work down.
+    if (modelIds.some(isStandardModelRow)) {
+      return c.json({ ok: false, error: 'The Dojo itself runs on a model from this provider for memory summaries and quick checks, so this provider stays.' }, 409);
+    }
+
+    // Agents and service-agent settings on these models move to the cheapest working model, with the usual
+    // change note; with none, the loop below leaves them without a model, as before.
+    reassignAffectedAgents(modelIds);
 
     for (const mid of modelIds) {
       db.prepare("UPDATE agents SET model_id = NULL WHERE model_id = ?").run(mid);
