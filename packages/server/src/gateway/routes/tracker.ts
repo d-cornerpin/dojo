@@ -17,6 +17,7 @@ import { calculateNextRun, scheduledTaskFromRow } from '../../scheduler/engine.j
 import { scheduleError } from '../../tracker/tools.js';
 import { deleteOccurrencesOf } from '../../work/occurrences.js';
 import { recordReassignment } from '../../tracker/assignee-patience.js';
+import { isLiveAgent } from '../../work/row-authority.js';
 import { createLogger } from '../../logger.js';
 import type { TaskLogEntryKind } from '../../tracker/task-log.js';
 import { getPrimaryAgentId, getDashboardHiddenAgentIds } from '../../config/platform.js';
@@ -24,6 +25,10 @@ import { routeFailure } from './route-failure.js';
 
 const logger = createLogger('tracker-routes');
 const trackerRouter = new Hono();
+
+// A task is never given to an agent that has ended: it would sit with nobody.
+const ENDED_ASSIGNEE = 'That agent has ended, so it cannot take a task. Pick a live agent.';
+const endedAssignee = (id: unknown): boolean => typeof id === 'string' && id !== '' && !isLiveAgent(id);
 
 // Projects and tasks owned by internal system agents (Dreamer, PM, Healer) are engine artifacts: the
 // dashboard list endpoints hide them by default (?includeSystem=true shows them); agent-side tools still see
@@ -67,6 +72,9 @@ trackerRouter.post('/projects', async (c) => {
           phase: t.phase as number | undefined,
         }))
       : undefined;
+    if (tasksInput?.some((t: { assignedTo?: string }) => endedAssignee(t.assignedTo))) {
+      return c.json({ ok: false, error: ENDED_ASSIGNEE }, 400);
+    }
 
     // createdBy must be a real agent id (tasks.assigned_to has a FK to agents(id) and createProject defaults
     // the task assignee to it), so the primary agent stands in for the dashboard user.
@@ -210,6 +218,7 @@ trackerRouter.post('/tasks', async (c) => {
   // is never told 201 for a "waiting" schedule that will never fire.
   const scheduleErr = scheduleError(body);
   if (scheduleErr) return c.json({ ok: false, error: scheduleErr }, 400);
+  if (endedAssignee(body.assignedTo)) return c.json({ ok: false, error: ENDED_ASSIGNEE }, 400);
 
   try {
     const taskId = createTask({
@@ -326,6 +335,7 @@ trackerRouter.put('/tasks/:id', async (c) => {
 
   // The hand-in states are never a board write: the worker hands in, and a send-back is the owner's decision.
   if (Object.hasOwn(BOARD_REFUSES, body.status)) return c.json({ ok: false, error: BOARD_REFUSES[body.status] }, 409);
+  if (endedAssignee(body.assignedTo)) return c.json({ ok: false, error: ENDED_ASSIGNEE }, 400);
 
   try {
     const updates: Record<string, string> = {};
