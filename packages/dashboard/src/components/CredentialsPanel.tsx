@@ -15,6 +15,7 @@ import { formatDate } from '../lib/dates';
 export const CredentialsPanel = () => {
   const [credentials, setCredentials] = useState<api.CredentialSummary[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [revealed, setRevealed] = useState<Record<string, Record<string, unknown>>>({});
   const [revealing, setRevealing] = useState<string | null>(null);
   const [showAdd, setShowAdd] = useState(false);
@@ -24,7 +25,8 @@ export const CredentialsPanel = () => {
   const load = async () => {
     setLoading(true);
     const result = await api.listCredentials();
-    if (result.ok) setCredentials(result.data.credentials);
+    if (result.ok) { setCredentials(result.data.credentials); setLoadError(null); }
+    else setLoadError(result.error ?? 'unknown');
     setLoading(false);
   };
   useEffect(() => { load(); }, []);
@@ -114,7 +116,14 @@ export const CredentialsPanel = () => {
 
         {loading && <p className="text-xs text-ui/40 italic">Loading…</p>}
 
-        {!loading && credentials.length === 0 && !showAdd && (
+        {!loading && loadError && (
+          <div className="note--warn" role="alert">
+            Could not load your saved logins, so they can&apos;t be shown right now. Nothing has been changed.{' '}
+            <button type="button" className="btn btn--sm" onClick={() => { void load(); }}>Retry</button>
+          </div>
+        )}
+
+        {!loading && !loadError && credentials.length === 0 && !showAdd && (
           <p className="text-sm text-ui/40 italic text-center py-8">
             No credentials stored yet. Agents add these via <code>credential_add</code> when the user provides API keys for techniques. You can also add one manually with the button above.
           </p>
