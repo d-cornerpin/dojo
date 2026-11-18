@@ -45,10 +45,11 @@ export function dreamerIgnoreRefusal(agentId: string, ignore: boolean): string |
 
 const agentsRouter = new Hono();
 
-// GET / - list all agents with detail
+// GET / - live agents with detail; ?all=1 adds the ended ones (the Agents page's history)
 agentsRouter.get('/', (c) => {
   const db = getDb();
-  const rows = db.prepare('SELECT * FROM agents ORDER BY created_at ASC').all() as Array<Record<string, unknown>>;
+  const live = c.req.query('all') === '1' ? '' : "WHERE status != 'terminated' ";
+  const rows = db.prepare(`SELECT * FROM agents ${live}ORDER BY created_at ASC`).all() as Array<Record<string, unknown>>;
 
   const facts = rosterFacts(rows);
   const agents: AgentDetail[] = rows.map(row => rowToAgentDetail(row, facts));
