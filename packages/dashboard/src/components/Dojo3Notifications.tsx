@@ -1,7 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { PLATFORM_SENDER, type WsEvent, type ChatErrorEvent } from '@dojo/shared';
 import { useToast, type ToastAction } from '../hooks/useToast';
-import { useWebSocket } from '../hooks/useWebSocket';
 import { useDojoOrb } from './orb/OrbProvider';
 
 // Button classes reused from the Vitals card (HealerVitals.tsx) so a decision
@@ -12,16 +10,12 @@ const ACTION_BTN_CLASS: Record<ToastAction['variant'], string> = {
     'px-3 py-1 text-xs rounded bg-ui/[0.08] text-ui/55 hover:text-ui/70 border border-ui/[0.10] hover:border-ui/[0.15] transition-colors disabled:opacity-50',
 };
 
-// The dojo3 notification surface: tiered glass cards under the orb that drive
-// its reaction, fed by the shared toast queue (useToast) like every other
-// toast. Tiers: info/success -> teal + pulse; warning -> amber + startle;
-// error -> coral, tint held and card pinned until dismissed or AGENT_RECOVERED.
-// A decision toast adds Approve/Decline (flagged alertOrb); its tint holds the
-// orb red until the last one is acted on.
+// The dojo3 notification surface: tiered glass cards under the orb that drive its reaction, fed by the
+// shared toast queue (useToast). info/success: teal and a pulse; warning and a plain error: amber and a
+// startle, gone by their timer; a card that needs the person to act (alertOrb) holds the orb red until acted on.
 
 export function Dojo3Notifications() {
   const { toasts, removeToast } = useToast();
-  const { subscribe } = useWebSocket();
   const dojoOrb = useDojoOrb();
 
   // Per-toast in-flight guard for decision-toast buttons: stops a
@@ -56,9 +50,8 @@ export function Dojo3Notifications() {
     for (const id of [...seen.current]) if (!present.has(id)) seen.current.delete(id);
   }, [toasts, dojoOrb]);
 
-  // Held red tint while any error or pending decision (alertOrb) is active;
-  // `.some` keeps it until none remain and clears the moment the last clears.
-  const needsAlert = toasts.some((t) => t.level === 'error' || t.alertOrb);
+  // Held red tint only while a card that needs the person (alertOrb) is on screen.
+  const needsAlert = toasts.some((t) => t.alertOrb);
   useEffect(() => {
     dojoOrb.setAlert(needsAlert ? 1 : 0);
   }, [needsAlert, dojoOrb]);
@@ -76,27 +69,12 @@ export function Dojo3Notifications() {
   // Release the tint + glyph if this surface unmounts (e.g. to a full page).
   useEffect(() => () => { dojoOrb.setAlert(0); dojoOrb.setNoteGlyph(null); }, [dojoOrb]);
 
-  // Engine recovery clears non-sticky errors (dismiss OR recovery): the server
-  // emits chat:error AGENT_RECOVERED / info. Sticky cards wait for their X.
-  const toastsRef = useRef(toasts);
-  toastsRef.current = toasts;
-  useEffect(() => {
-    const unsub = subscribe('chat:error', (event: WsEvent) => {
-      const e = event as ChatErrorEvent;
-      if (e.agentId === PLATFORM_SENDER) return; // an owner all-clear is no agent recovering
-      if (e.code === 'AGENT_RECOVERED' || e.severity === 'info') {
-        for (const t of toastsRef.current) if (t.level === 'error' && !t.sticky) removeToast(t.id);
-      }
-    });
-    return unsub;
-  }, [subscribe, removeToast]);
-
   if (toasts.length === 0) return null;
 
   return (
     <div className="dojo3-notes" role="region" aria-label="Notifications">
       {toasts.map((t) => {
-        const tier = t.level === 'success' ? 'info' : t.level;
+        const tier = t.level === 'success' ? 'info' : t.level === 'error' && !t.alertOrb ? 'warning' : t.level;
         const hasActions = !!t.actions && t.actions.length > 0;
         return (
           <div

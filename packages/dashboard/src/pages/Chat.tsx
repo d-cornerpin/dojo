@@ -972,7 +972,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
         toast.warning(e.error);
         if (declared === 'error') { setIsWorking(false); reconcileStreamingBubbles(); }   // the turn ended either way
       } else {
-        toast.error(e.error); // stays until dismissed
+        toast.addActionToast({ title: '', message: e.error, actions: [], dedupeKey: `agent-error:${e.agentId}:${e.error}`, level: 'error' });   // the owner must act: it stays, red
         setIsWorking(false);
         reconcileStreamingBubbles();
       }

@@ -90,13 +90,13 @@ describe('the owner card arrives and stays until he dismisses it', () => {
     expect(screen.queryByText(BUDGET)).toBeNull();
   });
 
-  it('an agent recovering elsewhere sweeps its own error cards, never the owner card', () => {
+  it('a plain error card fades after 15 seconds; the owner card stays', () => {
     mount();
     ownerAlert('Helper has been paused after repeated errors. Open the dashboard to investigate.', 'error');
     fireEvent.click(screen.getByText('post plain error'));
     expect(screen.getByText('An agent error card.')).toBeTruthy();
-    act(() => { emitFrame('chat:error', { agentId: 'a-0001', error: 'Recovered.', code: 'AGENT_RECOVERED', severity: 'info' }); });
-    expect(screen.queryByText('An agent error card.'), 'the sweep is live (control)').toBeNull();
+    act(() => { vi.advanceTimersByTime(15_001); });
+    expect(screen.queryByText('An agent error card.')).toBeNull();
     expect(screen.getByText('Helper has been paused after repeated errors. Open the dashboard to investigate.')).toBeTruthy();
   });
 });
