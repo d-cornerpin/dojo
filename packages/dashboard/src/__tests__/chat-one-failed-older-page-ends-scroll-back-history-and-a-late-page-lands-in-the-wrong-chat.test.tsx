@@ -89,7 +89,8 @@ describe('scroll-back history', () => {
 
   it('(b) an older page that arrives after wordy mode was toggled is not pasted into the new feed', async () => {
     let release: (v: unknown) => void = () => {};
-    vi.mocked(api).getChatHistory.mockImplementation((async (_id: string, _l?: number, before?: string, wordy?: boolean) => {
+    vi.mocked(api).getChatHistory.mockImplementation((async (_id: string, _l?: number, before?: string) => {
+      const wordy = localStorage.getItem('dojo_wordy_mode') === 'true';
       if (!before) return { ok: true, data: wordy ? [row('w0', 'the wordy feed newest')] : newest };
       if (wordy) return { ok: true, data: [] };
       return new Promise((r) => { release = r; });

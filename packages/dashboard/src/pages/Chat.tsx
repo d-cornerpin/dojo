@@ -677,7 +677,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
   useFollowGrowth(messagesContentRef, !loading, () => pinnedToBottomRef.current, scrollToBottom, AGENT_ID);
 
   useChatCatchUp<ChatMessage>({
-    reconnectCount, agentId: AGENT_ID, agentIdRef, wordyMode, ready: !(techSession.active && !techSession.ready),
+    reconnectCount, agentId: AGENT_ID, agentIdRef, ready: !(techSession.active && !techSession.ready),
     statusFrameSeqRef, setMessages, setIsWorking, setBackgroundStoppable, toChat: toMessage,
   });
 
@@ -715,12 +715,12 @@ export const Chat = ({ panel = null }: ChatProps) => {
         setModelNames(lookup);
       }
 
-      const result = await api.getChatHistory(AGENT_ID, 200, undefined, wordyMode);
+      const result = await api.getChatHistory(AGENT_ID, 200);
       if (!active) return;
       if (result.ok) {
         // Dig up older pages until real conversation renders (the blank-chat guarantee).
         const loaded = await backfillUntilRenderable(result.data, wordyMode,
-          (oldest) => api.getChatHistory(AGENT_ID, 200, oldest, wordyMode), () => active);
+          (oldest) => api.getChatHistory(AGENT_ID, 200, oldest), () => active);
         if (!loaded) return;
         setMessages(
           loaded.map(toMessage),
@@ -739,7 +739,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
     };
     loadHistory();
     return () => { active = false; };
-    // wordyMode is a dep: wordy adds own-output SERVER rows, so toggling must refetch history.
+    // wordyMode is a dep: Wordy changes which rows can be drawn, so the dig for a drawable page runs again.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [AGENT_ID, techSession.active, techSession.ready, wordyMode]);
 
@@ -753,7 +753,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
     const prevScrollHeight = container?.scrollHeight ?? 0;
 
     const startedFor = `${AGENT_ID}:${wordyMode}`;
-    const result = await api.getChatHistory(AGENT_ID, 50, oldestId, wordyMode);
+    const result = await api.getChatHistory(AGENT_ID, 50, oldestId);
     if (viewKeyRef.current !== startedFor) { setLoadingMore(false); return; }
     if (!result.ok) {
       // A failed request says nothing about history: leave hasMore so the next scroll retries.
@@ -1400,9 +1400,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
   const startNewSession = async () => {
     const res = await api.request<{ archiveId: string; sessionStartedAt: string }>(`/chat/${AGENT_ID}/new-session`, { method: 'POST' });
     if (res.ok) {
-      // wordyMode rides along: the modes are different server queries and this
-      // refetch replaces the whole pane, so a wordy-blind fetch drops own-output rows.
-      const result = await api.getChatHistory(AGENT_ID, 200, undefined, wordyMode);
+      const result = await api.getChatHistory(AGENT_ID, 200);
       if (result.ok) {
         setMessages(result.data.map(toMessage));
       } else {
