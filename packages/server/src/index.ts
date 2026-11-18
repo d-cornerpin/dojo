@@ -536,16 +536,14 @@ async function main(): Promise<void> {
     }
   }
 
-  // 4c6. Router background tasks (embedder keep-warm, self-training); no-ops unless an agent uses auto.
+  // 4c6. Router background task (embedder keep-warm); a no-op unless an agent uses auto.
   {
     const { isSetupCompleted: isSetupDone } = await import('./config/platform.js');
     if (isSetupDone()) {
       try {
         const { startEmbedderWarmer } = await import('./router/semantic.js');
         startEmbedderWarmer();
-        const { startRouterMaintenance } = await import('./router/maintenance.js');
-        startRouterMaintenance();
-        logger.info('Router background tasks started');
+        logger.info('Router background task started');
       } catch (err) {
         logger.warn('Failed to start router background tasks', {
           error: err instanceof Error ? err.message : String(err),
