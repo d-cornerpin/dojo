@@ -261,12 +261,14 @@ function deliverAsset(row: GenerationJobRow, assetPath: string, sizeBytes: numbe
   });
 }
 
+const KIND_WORD: Record<GenerationKind, string> = { image: 'picture', audio: 'audio', music: 'music' };
+
 function deliverError(row: GenerationJobRow, error: string): void {
   // The engine writes no failure bubble in the agent's voice: the agent is handed the failure and WOKEN
   // (agent/wake-with-notice.ts) to tell the person now.
   void tellAgentAndWake({
     agentId: row.agent_id, from: 'Media generation', inFailureTurn: takeJobStartedInFailureTurn(row.id),
-    brief: `the ${row.kind === 'music' ? 'music' : 'audio'} you asked for could not be finished. The provider said: ${error}. Nothing was sent to the person. ` +
+    brief: `the ${KIND_WORD[row.kind]} you asked for could not be finished. The provider said: ${error}. Nothing was sent to the person. ` +
       'Tell them in your own words that it failed and offer a next step; do not start the same one again unless they ask.',
   });
   settleAskOnJobEnded(row.agent_id, row.id);
