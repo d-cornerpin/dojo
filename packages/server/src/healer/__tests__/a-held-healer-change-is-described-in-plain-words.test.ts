@@ -1,6 +1,7 @@
 // A held Healer change reaches the owner in plain words: the Vitals card and the text message carry the same
 // sentence about what will be done and what it affects, with no first person and no raw tool call.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import os from 'node:os';
 
 vi.mock('../../db/connection.js', async () => (await import('../../work/done/__tests__/helpers/done-db.js')).connectionMock());
 vi.mock('../../gateway/ws.js', () => ({ broadcast: () => undefined, stampPersistedRow: (e: unknown) => e }));
@@ -76,7 +77,7 @@ describe('a held Healer change', () => {
     expect(sentence.length).toBeLessThanOrEqual(300);
     expect(sentence).toMatch(/^Delete \/Users\/example\/.*\.\.\..*file\.bin, including everything inside\. Deleted files do not go to the Trash/);
     expect(await held({ argv: ['rm', '-rf', '../shared'] })).toBe(`${generic} It touches ../shared.`);
-    expect(await held({ argv: ['rm', '-rf', 'build'] })).toBe(`Delete "build" in the folder this command runs from, including everything inside. ${GONE}`);
+    expect(await held({ argv: ['rm', '-rf', 'build'], cwd: os.tmpdir() })).toBe(`Delete "build" in ${os.tmpdir()}, including everything inside. ${GONE}`);
   });
 
   it('the card and the text carry the sentence once, plain, with no first person or raw call', async () => {
