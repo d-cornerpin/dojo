@@ -9,6 +9,7 @@ import { isStructuringTool } from '../../classifiers/hoarding.js';
 import { canonicalToolSignature } from '../../classifiers/loop.js';
 import { advance, type AgentTurnState } from '../../state.js';
 import { createLogger } from '../../../../logger.js';
+import { redactDeclaredSecretArgs } from '../../../../credentials/secret-fields.js';
 import type { ToolCall } from '@dojo/shared';
 import type { ExecuteContext, PendingToolResult } from './index.js';
 
@@ -23,7 +24,7 @@ export async function recordDispatchAndHold(
   const { agentId, db } = ctx;
 
   try {
-    broadcast({ type: 'chat:tool_call', agentId, tool: tc.name, args: tc.arguments });
+    broadcast({ type: 'chat:tool_call', agentId, tool: tc.name, args: redactDeclaredSecretArgs(tc.name, tc.arguments) ?? {} });
   } catch { /* best effort */ }
   if (tc.name === 'send_to_agent' || tc.name === 'broadcast_to_group') {
     state = advance(state, { sentToAgentThisTurn: true });
