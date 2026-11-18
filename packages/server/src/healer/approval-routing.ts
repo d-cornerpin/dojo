@@ -91,7 +91,9 @@ export function evaluateScratchZoneAutoApprove(
   args: Record<string, unknown>,
 ): ScratchZoneDecision | null {
   if (toolName !== 'exec') return null;
-  const command = typeof args.command === 'string' ? args.command.trim() : '';
+  // An argv element holding a space would be split into two words below, so it holds instead.
+  if (Array.isArray(args.argv) && args.argv.some((w) => typeof w !== 'string' || /\s/.test(w))) return null;
+  const command = execCallText(toolName, args)?.trim() ?? '';
   if (!command || SHELL_META_RE.test(command)) return null;
 
   const tokens = command.split(/\s+/);
