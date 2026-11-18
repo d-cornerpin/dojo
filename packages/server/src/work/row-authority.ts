@@ -118,7 +118,7 @@ export function ownerAskedInThisTurn(agentId: string, quote: unknown): OwnerAskP
   const rootMsg = getDb().prepare('SELECT sent_at FROM messages WHERE id = ?').get(root.sourceMessageId) as
     { sent_at: number } | undefined;
   if (!rootMsg) return { ok: false, why: 'the message this turn is answering could not be found' };
-  return ownerSaidSince(rootMsg.sent_at, q, agentId)
+  return ownerSaidSince(rootMsg.sent_at, q, agentId, true)
     ? { ok: true }
     : { ok: false, why: 'the quoted words are not a whole sentence the owner wrote in the message this turn is answering' };
 }
