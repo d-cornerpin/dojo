@@ -185,7 +185,7 @@ chatRouter.get('/:agentId/messages', (c) => {
   const agentId = c.req.param('agentId');
   const limit = parseInt(c.req.query('limit') ?? '50', 10);
   const before = c.req.query('before'); // cursor: message ID for pagination
-  // `?wordy=1` is still sent by the dashboard and ignored here: it is a client render mode, not a served set.
+  // Wordy is a client render mode, not a served set.
 
   const db = getDb();
 
