@@ -80,6 +80,12 @@ function slugify(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 50);
 }
 
+/** The live turn's lineage a media job row carries: source message, turn number, task, conversation (NULL outside a turn). */
+export function jobLineage(agentId: string): [string | null, number | null, string | null, string | null] {
+  const t = turnContext(agentId);
+  return [t?.root?.sourceMessageId ?? null, t?.turnNumber ?? null, t?.servedWork?.taskId ?? null, t?.root?.conversationId ?? null];
+}
+
 // ── Lifecycle helpers (also used directly by image_create) ──
 
 export interface CreateGenerationJobParams {
@@ -102,11 +108,7 @@ export function createGenerationJob(params: CreateGenerationJobParams): string {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, datetime('now'), datetime('now'))
   `).run(id, params.kind, params.agentId, params.modelId, params.providerId, params.prompt,
     params.title ?? null, params.voice ?? null,
-    // Execution lineage from the live turn (best-effort; NULL outside a turn).
-    turnContext(params.agentId)?.root?.sourceMessageId ?? null,
-    turnContext(params.agentId)?.turnNumber ?? null,
-    turnContext(params.agentId)?.servedWork?.taskId ?? null,
-    turnContext(params.agentId)?.root?.conversationId ?? null);
+    ...jobLineage(params.agentId));
   const row = getJob(id);
   if (row) emitUpdate(row);
   return id;
