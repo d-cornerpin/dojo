@@ -1103,7 +1103,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
     const unsubTerminated = subscribe('agent:terminated', (event: WsEvent) => {
       const e = event as { agentId: string; reason: string };
       if (e.agentId !== agentIdRef.current) return;
-      toast.error(`Agent terminated: ${e.reason}`);
+      toast.info('This agent has ended, so it will not answer here any more.');
       setIsWorking(false);
       setAwaitingUserReply(false);
       reconcileStreamingBubbles();
