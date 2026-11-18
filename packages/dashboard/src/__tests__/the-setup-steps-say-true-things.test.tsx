@@ -23,8 +23,9 @@ const text = () => document.body.textContent ?? '';
 
 describe('the setup steps say true things', () => {
   it('the PM step: no jargon, no promise about free local models', async () => {
+    fns.getModels.mockResolvedValue(ok([{ id: 'm1', name: 'Model One', apiModelId: 'm1', providerId: 'p', capabilities: ['chat'], isEnabled: true, notForAgents: null }]));
     render(<PMAgentStep />);
-    await waitFor(() => expect(text()).toContain('project manager'));
+    await waitFor(() => expect(text()).toContain('Model One'));
     expect(text()).toContain('reminds agents about work that has stopped moving');
     expect(text()).not.toContain('pokes');
     expect(text()).not.toContain('free local model');
