@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, type FormEvent } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { Model, Provider } from '@dojo/shared';
 import * as api from '../lib/api';
@@ -23,6 +23,7 @@ import { formatCost } from '../lib/model-cost';
 import { ImportWizard } from '../components/ImportWizard';
 import { LaunchButton } from '../components/SetupLaunchButton';
 import { AgentModelOption } from '../components/AgentModelOption';
+import { AddProviderForm } from '../components/settings/ProvidersTab';
 
 type Step = 'welcome' | 'dependencies' | 'permissions' | 'provider' | 'models' | 'your-profile' | 'primary-agent' | 'pm-agent' | 'trainer-agent' | 'dreamer' | 'imessage' | 'workspace' | 'web-search' | 'voice' | 'complete';
 
@@ -354,39 +355,10 @@ const WelcomeStep = () => {
 
 // ── Provider ──
 
-const ProviderStep = ({ onReady, onCloudProviderChange }: { onReady?: (ready: boolean) => void; onCloudProviderChange?: (has: boolean) => void }) => {
-  const [name, setName] = useState('');
-  // Same preset → backend mapping as Settings.tsx's AddProviderForm.
-  // 'openrouter' and 'deepseek' both map to backend type 'openai-compatible'
-  // with their respective default base URLs.
-  const [preset, setPreset] = useState('anthropic');
-  const [authType, setAuthType] = useState('api_key');
-  const [credential, setCredential] = useState('');
-  const [baseUrl, setBaseUrl] = useState('');
-  const [status, setStatus] = useState<'idle' | 'validating' | 'valid' | 'invalid'>('idle');
-  const [error, setError] = useState<string | null>(null);
+export const ProviderStep = ({ onReady, onCloudProviderChange }: { onReady?: (ready: boolean) => void; onCloudProviderChange?: (has: boolean) => void }) => {
   const [hasCloudProvider, setHasCloudProvider] = useState(false);
   const [providers, setProviders] = useState<Provider[]>([]);
-
-  const presetConfig = (() => {
-    switch (preset) {
-      case 'anthropic':   return { backendType: 'anthropic',          defaultBaseUrl: undefined,                     suggestedName: 'Anthropic' };
-      case 'openai':      return { backendType: 'openai',             defaultBaseUrl: 'https://api.openai.com',      suggestedName: 'OpenAI' };
-      case 'openrouter':  return { backendType: 'openai-compatible',  defaultBaseUrl: 'https://openrouter.ai/api',   suggestedName: 'OpenRouter' };
-      case 'deepseek':    return { backendType: 'openai-compatible',  defaultBaseUrl: 'https://api.deepseek.com',    suggestedName: 'DeepSeek' };
-      case 'ollama':      return { backendType: 'ollama',             defaultBaseUrl: 'http://localhost:11434',      suggestedName: 'Ollama' };
-      default:            return { backendType: 'anthropic',          defaultBaseUrl: undefined,                     suggestedName: 'Anthropic' };
-    }
-  })();
-
-  // Autofill name when preset changes (only if user hasn't typed something custom).
-  useEffect(() => {
-    setName((current) => {
-      const isAutoFilled = current === '' ||
-        ['Anthropic', 'OpenAI', 'OpenRouter', 'DeepSeek', 'Ollama'].includes(current);
-      return isAutoFilled ? presetConfig.suggestedName : current;
-    });
-  }, [preset, presetConfig.suggestedName]);
+  const [formKey, setFormKey] = useState(0);   // a fresh, empty form after each provider is added
 
   // Always allow Next (we handle the "are you sure" in the parent via onReady)
   useEffect(() => { onReady?.(true); }, [onReady]);
@@ -405,48 +377,11 @@ const ProviderStep = ({ onReady, onCloudProviderChange }: { onReady?: (ready: bo
 
   useEffect(() => { void loadProviders(); }, [loadProviders]);
 
-  const handleAdd = async (e: FormEvent) => {
-    e.preventDefault();
-    if (!name.trim() || (preset !== 'ollama' && !credential.trim())) return;
-
-    setStatus('validating');
-    setError(null);
-
-    const id = name.toLowerCase().replace(/[^a-z0-9]/g, '-');
-    const result = await api.createProvider({
-      id, name,
-      type: presetConfig.backendType,
-      baseUrl: baseUrl.trim() || presetConfig.defaultBaseUrl,
-      authType: preset === 'ollama' ? 'none' : authType,
-      credential: preset === 'ollama' ? undefined : credential,
-    });
-
-    if (!result.ok) {
-      setError(result.error);
-      setStatus('invalid');
-      return;
-    }
-
-    const valResult = await api.validateProvider(id);
-    if (valResult.ok && valResult.data.valid) {
-      setStatus('valid');
-      if (preset !== 'ollama') {
-        setHasCloudProvider(true);
-        onCloudProviderChange?.(true);
-      }
-      void loadProviders();
-    } else {
-      setStatus('invalid');
-      setError(`Provider added but validation failed: ${!valResult.ok ? valResult.error : 'Unexpected result'}`);
-    }
-  };
-
   return (
     <div className="space-y-4">
       <p className="text-sm text-ui/55">
         Connect a cloud AI provider for your agents. You can add more providers later in Settings.
       </p>
-
       {/* Everything already configured, so a re-run of the wizard shows what's
           set up instead of looking empty */}
       {providers.length > 0 && (
@@ -468,113 +403,10 @@ const ProviderStep = ({ onReady, onCloudProviderChange }: { onReady?: (ready: bo
           </div>
         </div>
       )}
-
-      {/* Add provider form */}
-      <form onSubmit={handleAdd} className="space-y-4">
+      <div className="space-y-4">
         <h3 className="text-sm font-medium text-ui/70">{hasCloudProvider ? 'Add Another Provider' : 'Add a Cloud Provider'}</h3>
-
-        <div>
-          <label className="block text-sm font-medium text-ui/70 mb-1">Provider Name</label>
-          <input type="text" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g., My Anthropic"
-            className="glass-input" />
-        </div>
-
-        <div>
-          <label className="block text-sm font-medium text-ui/70 mb-1">Type</label>
-          <select value={preset} onChange={(e) => setPreset(e.target.value)}
-            className="glass-select w-full">
-            <option value="anthropic">Anthropic</option>
-            <option value="openai">OpenAI</option>
-            <option value="openrouter">OpenRouter</option>
-            <option value="deepseek">DeepSeek</option>
-            <option value="ollama">Ollama</option>
-          </select>
-        </div>
-
-        {preset === 'ollama' && (
-          <div>
-            <label className="block text-sm font-medium text-ui/70 mb-1">Base URL</label>
-            <input type="text" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="http://localhost:11434"
-              className="glass-input" />
-          </div>
-        )}
-
-        {preset !== 'ollama' && (
-          <>
-            {preset === 'anthropic' && (
-              <div>
-                <label className="block text-sm font-medium text-ui/70 mb-1">Auth Type</label>
-                <select value={authType} onChange={(e) => setAuthType(e.target.value)}
-                  className="glass-select w-full">
-                  <option value="api_key">API Key</option>
-                  <option value="oauth">OAuth Token</option>
-                  <option value="agent-sdk">Agent SDK (Subscription)</option>
-                </select>
-              </div>
-            )}
-
-            {authType === 'agent-sdk' && preset === 'anthropic' ? (
-              <div className="space-y-3">
-                <p className="text-xs text-ui/40">
-                  Use your Claude Pro or Max subscription. Two steps needed before adding this provider:
-                </p>
-                <div className="text-xs text-ui/55 space-y-2">
-                  <div>
-                    <p className="font-medium text-ui/70">Step 1: Install Claude Code CLI</p>
-                    <p className="text-ui/40 mt-0.5">Run this in your terminal:</p>
-                    <code className="block bg-ui/[0.05] px-2 py-1 rounded text-[11px] mt-1">curl -fsSL https://claude.ai/install.sh | bash</code>
-                  </div>
-                  <div>
-                    <p className="font-medium text-ui/70">Step 2: Sign in to Claude</p>
-                    <p className="text-ui/40 mt-0.5">Run this in your terminal and sign in with your Claude Pro/Max account:</p>
-                    <code className="block bg-ui/[0.05] px-2 py-1 rounded text-[11px] mt-1">claude</code>
-                  </div>
-                </div>
-                <p className="text-[11px] text-ui/25">
-                  Once both steps are done, click "Add & Validate Provider" below. The dojo will verify your connection.
-                </p>
-                <div className="alert-banner alert-warning">
-                  <p className="text-[10px] text-amber-400/70">
-                    Agent SDK billing is subject to Anthropic's usage policies. If you experience issues, switch to API Key.
-                  </p>
-                </div>
-              </div>
-            ) : (
-              <>
-                <div>
-                  <label className="block text-sm font-medium text-ui/70 mb-1">{authType === 'oauth' && preset === 'anthropic' ? 'OAuth Token' : 'API Key'}</label>
-                  <input type="password" value={credential} onChange={(e) => setCredential(e.target.value)}
-                    placeholder={
-                      preset === 'deepseek' ? 'sk-... (DeepSeek API key from platform.deepseek.com)' :
-                      preset === 'openai' ? 'sk-...' :
-                      authType === 'oauth' ? 'sk-ant-oat...' : 'sk-...'
-                    }
-                    className="glass-input" />
-                </div>
-
-                {/* OAuth hint for Anthropic */}
-                {preset === 'anthropic' && authType === 'oauth' && (
-                  <div className="px-3 py-2.5 rounded-lg bg-blue-500/5 border border-blue-500/10 text-[11px] text-blue-300/70 leading-relaxed space-y-1.5">
-                    <p className="font-medium text-blue-300/90">How to get your OAuth token:</p>
-                    <p>1. Install Claude Code (if you haven't already):</p>
-                    <code className="block px-2 py-1 rounded bg-ui/[0.05] font-mono text-[10px] text-ui/55">curl -fsSL https://claude.ai/install.sh | bash</code>
-                    <p>2. Generate your token:</p>
-                    <code className="block px-2 py-1 rounded bg-ui/[0.05] font-mono text-[10px] text-ui/55">claude setup-token</code>
-                    <p>3. Copy the token (starts with <span className="font-mono">sk-ant-oat</span>) and paste it above.</p>
-                  </div>
-                )}
-              </>
-            )}
-          </>
-        )}
-
-        {error && <div className="px-3 py-2 rounded-lg bg-cp-coral/10 border border-cp-coral/20 text-cp-coral text-sm">{error}</div>}
-
-        <button type="submit" disabled={status === 'validating' || !name.trim() || (preset !== 'ollama' && authType !== 'agent-sdk' && !credential.trim())}
-          className="px-4 py-2 text-ui text-sm font-medium rounded-lg transition-colors glass-btn glass-btn-primary">
-          {status === 'validating' ? 'Validating...' : 'Add & Validate Provider'}
-        </button>
-      </form>
+        <AddProviderForm key={formKey} onCreated={() => { void loadProviders(); }} onAdded={() => { void loadProviders(); setFormKey((k) => k + 1); }} />
+      </div>
     </div>
   );
 };
