@@ -3,7 +3,6 @@ import type {
   OrbEngine,
   OrbEmotionName,
   OrbStateName,
-  OrbSystemName,
   OrbTaskName,
   OrbTaskOpts,
 } from './dojoOrbEngine';
@@ -14,10 +13,8 @@ import type {
 export interface DojoOrbApi {
   setState: (name: OrbStateName) => void;
   setEmotion: (name: OrbEmotionName | null | 'none') => void;
-  setSystem: (name: OrbSystemName | null | 'none' | 'wake') => void;
   pulse: () => void;
   startTask: (name: OrbTaskName, opts?: OrbTaskOpts) => void;
-  updateTask: (progress: number) => void;
   endTask: (name?: OrbTaskName) => void;
   /** Re-run the orb's layout (e.g. after the stage width changes). */
   resize: () => void;
@@ -51,10 +48,8 @@ export function OrbProvider({ children }: { children: ReactNode }) {
     () => ({
       setState: (name) => engineRef.current?.setState(name),
       setEmotion: (name) => engineRef.current?.setEmotion(name),
-      setSystem: (name) => engineRef.current?.setSystem(name),
       pulse: () => engineRef.current?.pulse(),
       startTask: (name, opts) => engineRef.current?.startTask(name, opts),
-      updateTask: (progress) => engineRef.current?.updateTask(progress),
       endTask: (name) => engineRef.current?.endTask(name),
       resize: () => engineRef.current?.resize(),
       setHue: (deg) => engineRef.current?.setHue(deg),
@@ -90,10 +85,8 @@ export function useDojoOrb(): DojoOrbApi {
 const NOOP_ORB: DojoOrbApi = {
   setState: () => {},
   setEmotion: () => {},
-  setSystem: () => {},
   pulse: () => {},
   startTask: () => {},
-  updateTask: () => {},
   endTask: () => {},
   resize: () => {},
   setHue: () => {},
