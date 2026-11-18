@@ -4,7 +4,8 @@ import { Hono } from 'hono';
 import { getDb } from '../../db/connection.js';
 import { refuseAgentModel, refuseSmallMainModel } from '../../agent/main-model-floor.js';
 import { createLogger } from '../../logger.js';
-import { scoreQuery, clearDimensionCache } from '../../router/scorer.js';
+import { clearDimensionCache } from '../../router/scorer.js';
+import { decideTier } from '../../router/decide.js';
 import type { RouterConfig, TierConfig } from '../../router/types.js';
 
 const logger = createLogger('router-routes');
@@ -195,7 +196,7 @@ routerRouter.put('/dimensions/:dimensionId', async (c) => {
   }
 });
 
-// POST /test (test scorer with a prompt)
+// POST /test: the decision a turn with this prompt would get, and the model it would dial
 routerRouter.post('/test', async (c) => {
   const body = await c.req.json().catch(() => null);
 
@@ -203,15 +204,11 @@ routerRouter.post('/test', async (c) => {
     return c.json({ ok: false, error: 'prompt (string) is required' }, 400);
   }
 
-  const systemPrompt = (body.systemPrompt as string) ?? '';
-  const messages = [{ role: 'user', content: body.prompt as string }];
+  const prompt = body.prompt as string;
+  const result = await decideTier([{ role: 'user', content: prompt }], 'router-test', prompt);
 
-  const result = scoreQuery(systemPrompt, messages);
-
-  // Shape the response for the Settings router test panel: it reads `score` on each dimension
-  // (the scorer returns `raw`, so alias it) and a `selectedModel` string (the scorer does not run the
-  // selector, so call selectModel(tier, ...)). selectModel can return null when every tier is
-  // exhausted (rate-limited, no enabled models, budget cap hit); surface that explicitly.
+  // `scores` are the keyword backup's dimension scores, present only when the backup decided; the panel reads
+  // `score` on each, so `raw` is aliased. selectModel can return null when every tier is exhausted; say so.
   const { selectModel } = await import('../../router/selector.js');
   const db = getDb();
   let selectedModel = '(no model available)';
@@ -243,6 +240,7 @@ routerRouter.post('/test', async (c) => {
       rawScore: result.rawScore,
       confidence: result.confidence,
       tier: result.tier,
+      method: result.method,
       latencyMs: result.latencyMs,
       selectedModel,
     },
