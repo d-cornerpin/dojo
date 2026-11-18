@@ -23,13 +23,18 @@ import {
   removeTwilioSmsSafeSender,
   getTwilioVoiceSafeCallers,
   appendTwilioVoiceSafeCaller,
+<<<<<<< HEAD
   removeTwilioVoiceSafeCaller,
+=======
+  senderWakes,
+>>>>>>> q2/403-r10-a-voicemail-knows-its-caller
 } from '../../services/channel-safe-senders.js';
 import { SHARING_LEVELS, type SharingLevel } from '../../services/safe-senders.js';
 import { getDb } from '../../db/connection.js';
 import { insertInboundMessageIfAbsent } from '../../work/ask-title.js';
 import { getTunnelStatus } from '../../services/tunnel.js';
 import { voicemailNoticeContent } from '../../tools/inbound-fences.js';
+import { isOwnerIMessageRecipient } from '../../services/safe-senders.js';
 
 const logger = createLogger('twilio-routes');
 
@@ -218,7 +223,10 @@ twilioRouter.post('/webhook/voicemail-transcription', async (c) => {
       const primaryId = getPrimaryAgentId();
       if (primaryId) {
         const ownerName = getOwnerName();
-        const content = voicemailNoticeContent(ownerName, to, from, transcript, callSid);
+        // The owner (his own number) and approved callers wake the agent; anyone else's voicemail waits for its next turn.
+        const wakes = senderWakes('phone', null, from);
+        const caller = isOwnerIMessageRecipient(from) ? 'owner' : wakes ? 'approved' : 'unknown';
+        const content = voicemailNoticeContent(ownerName, to, from, transcript, callSid, caller);
         const { v4: uuidv4 } = await import('uuid');
         const msgId = uuidv4();
         // The routing facts known here (phone channel, caller as sender, authorized:false) are stamped IN
@@ -239,9 +247,7 @@ twilioRouter.post('/webhook/voicemail-transcription', async (c) => {
           senderId: from,
           authorized: false,
         });
-        // Structured origin puts this notification on the awareness lane by data. A voicemail is a
-        // phone-channel notification ABOUT the owner's number: the agent surfaces it and never auto-replies,
-        // so authorized:false.
+        // A voicemail has no line to answer on, so it is never authorized for an auto-reply; `relation` says who left it.
         const { recordInboundMeta } = await import('../../agent/v2/inbound-channel.js');
         recordInboundMeta(msgId, {
           channel: 'phone',
@@ -250,6 +256,7 @@ twilioRouter.post('/webhook/voicemail-transcription', async (c) => {
           sender: from,
           phoneFromNumber: from,
           phoneCallSid: callSid,
+          relation: (caller === 'owner' ? 'owner' : caller === 'approved' ? 'known_contact' : 'third_party') as 'owner' | 'known_contact' | 'third_party',
         });
         const { broadcast } = await import('../ws.js');
         broadcast({
@@ -264,12 +271,14 @@ twilioRouter.post('/webhook/voicemail-transcription', async (c) => {
             createdAt: new Date().toISOString(),
           },
         });
-        const runtime = getAgentRuntime();
-        void runtime.handleMessage(primaryId, content).catch(err => {
-          logger.error('Runtime handleMessage failed for voicemail', {
-            error: err instanceof Error ? err.message : String(err),
+        if (wakes) {
+          const runtime = getAgentRuntime();
+          void runtime.handleMessage(primaryId, content).catch(err => {
+            logger.error('Runtime handleMessage failed for voicemail', {
+              error: err instanceof Error ? err.message : String(err),
+            });
           });
-        });
+        }
       }
     }
   } catch (err) {
