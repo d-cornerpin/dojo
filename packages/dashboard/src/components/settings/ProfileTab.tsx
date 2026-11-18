@@ -18,6 +18,7 @@ export const ProfileTab = () => {
   const [savingProfile, setSavingProfile] = useState(false);
   const [savedProfile, setSavedProfile] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [nameError, setNameError] = useState<string | null>(null);
   // Both reads go through the shared load guard (lib/load-guard.ts): a failed read is never an empty
   // name or an empty profile, and nothing is offered to save on top of one.
   const nameLoad = useGuardedLoad<string | null>('owner_name', async (key) => {
@@ -38,8 +39,10 @@ export const ProfileTab = () => {
     if (!nameLoad.canSave('owner_name')) return;
     setSavingName(true);
     setSavedName(false);
+    setNameError(null);
     const result = await api.setSetting('owner_name', userName.trim());
     if (result.ok) { setSavedName(true); setTimeout(() => setSavedName(false), 2000); if (profileNow.current === loadedProfile) profileLoad.reload(); }   // the profile's name line follows; an edit in progress is left alone
+    else setNameError(result.error || 'Your name was not saved.');
     setSavingName(false);
   };
 
@@ -90,6 +93,7 @@ export const ProfileTab = () => {
               </button>
               {savedName && <span className="text-xs text-cp-teal">Saved!</span>}
             </div>
+            {nameError && <div className="fhelp" role="alert">{nameError}</div>}
           </>
         )}
       </div>
@@ -121,7 +125,7 @@ export const ProfileTab = () => {
           <div>
             <div className="scard__title">About You</div>
             <div className="scard__desc" style={{ marginBottom: 0 }}>
-              Information about you that agents will know when "Share User Profile" is enabled.
+              Information about you that an agent knows when "Knows who you are" is on in its settings, under "What it knows".
               Your preferences, businesses, projects, communication style, etc.
             </div>
           </div>
