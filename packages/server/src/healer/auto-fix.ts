@@ -12,7 +12,6 @@ import { writeAgentStatus } from '../agent/agent-status.js';
 // logger), so importing it here cannot form a cycle with agent/runtime.ts.
 import { activeRuns } from '../agent/shared-state.js';
 import { v4 as uuidv4 } from 'uuid';
-import { sanitizeMessagesOnModelChange } from '../agent/model-switch.js';
 import type { DiagnosticItem } from './diagnostic.js';
 import { setTrackerStatus } from '../work/tracker-store.js';
 import { workSettled } from '../work/store.js';
@@ -240,22 +239,6 @@ function fixErrorAgent(item: DiagnosticItem): AutoFixResult {
   };
 }
 
-function fixOrphanedToolMessages(item: DiagnosticItem): AutoFixResult {
-  if (item.code !== 'ORPHANED_TOOL_MESSAGES' || !item.agentId) return { applied: false, description: '' };
-
-  const result = sanitizeMessagesOnModelChange(item.agentId);
-
-  if (result.collapsed > 0) {
-    return {
-      applied: true,
-      description: `Cleaned up ${result.collapsed} corrupted message(s) in ${item.agentName ?? item.agentId}'s conversation`,
-      agentId: item.agentId,
-    };
-  }
-
-  return { applied: false, description: '' };
-}
-
 function fixOrphanedTask(item: DiagnosticItem): AutoFixResult {
   if (item.code !== 'ORPHANED_TASK') return { applied: false, description: '' };
 
@@ -333,7 +316,6 @@ const FIX_MAP: Record<string, (item: DiagnosticItem) => AutoFixResult> = {
   STUCK_AGENT: fixStuckAgent,
   AGENT_PAUSED: fixPausedAgent,
   AGENT_ERROR: fixErrorAgent,
-  ORPHANED_TOOL_MESSAGES: fixOrphanedToolMessages,
   ORPHANED_TASK: fixOrphanedTask,
   AGENT_RATE_LIMITED: fixStaleRateLimit,
 };
