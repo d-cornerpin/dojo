@@ -1359,6 +1359,7 @@ export const testRouter = async (
   rawScore: number;
   confidence: number;
   tier: string;
+  method?: string;
   selectedModel: string;
 }>> => {
   return request('/router/test', {
