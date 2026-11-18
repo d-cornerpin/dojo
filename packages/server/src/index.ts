@@ -872,6 +872,8 @@ async function main(): Promise<void> {
 
   const { cleanupOldUploads } = await import('./gateway/routes/upload.js');
   setInterval(cleanupOldUploads, 24 * 60 * 60 * 1000);
+  const { runDailyDatabaseUpkeep } = await import('./db/daily-upkeep.js');
+  setInterval(() => { void runDailyDatabaseUpkeep(); }, 24 * 60 * 60 * 1000);
 
   startStallSentinel();
 
@@ -883,6 +885,7 @@ async function main(): Promise<void> {
   // no database; the repair runs on its own thread and search uses the bounded fallback until it finishes.
   scheduleFtsHealthCheck();
   cleanupOldUploads(); // Run once on startup
+  void runDailyDatabaseUpkeep();
 
   setTimeout(async () => {
     try {
