@@ -261,7 +261,7 @@ export async function fileHealerApprovalProposal(
   try {
     const presenceMod = await import('../services/presence.js');
     presence = presenceMod.getPresence();
-    imessageEnabled = presenceMod.isImessageEnabled();
+    imessageEnabled = presenceMod.isImessageConfigured();
   } catch (err) {
     // Presence unavailable: default to in_dojo (quiet Vitals lane); never block the hold on it.
     logger.warn('healer approval-routing: presence lookup failed, defaulting to in_dojo', {
