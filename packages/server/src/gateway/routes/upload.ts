@@ -415,11 +415,6 @@ uploadRouter.get('/download/:fileId', async (c) => {
     return routeFailure(c, logger, err, { status: 500, message: 'Database not available' });
   }
 
-  const tableExists = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='shared_files'").get();
-  if (!tableExists) {
-    return c.json({ ok: false, error: 'File sharing not available, server needs to be restarted to run migrations' }, 500);
-  }
-
   const row = db.prepare('SELECT file_path, filename, mime_type FROM shared_files WHERE id = ?').get(fileId) as {
     file_path: string; filename: string; mime_type: string;
   } | undefined;
@@ -435,7 +430,7 @@ uploadRouter.get('/download/:fileId', async (c) => {
 
   // `?inline=1` asks for in-page rendering (Content-Disposition: inline); the right-dock canvas and the
   // attachment chips use it. The disposition rules below decide which types still get it.
-  const inline = c.req.query('inline') === '1' || c.req.query('disposition') === 'inline';
+  const inline = c.req.query('inline') === '1';
   const ext = path.extname(row.filename).toLowerCase();
   const isHtml = ext === '.html' || ext === '.htm' || row.mime_type === 'text/html';
 
@@ -475,8 +470,6 @@ uploadRouter.get('/render/:fileId', async (c) => {
   } catch (err) {
     return routeFailure(c, logger, err, { status: 500, message: 'Database not available' });
   }
-  const tableExists = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='shared_files'").get();
-  if (!tableExists) return c.json({ ok: false, error: 'File sharing not available' }, 500);
 
   const row = db.prepare('SELECT file_path, filename FROM shared_files WHERE id = ?').get(fileId) as {
     file_path: string; filename: string;
@@ -516,11 +509,6 @@ uploadRouter.get('/describe/:fileId', async (c) => {
     db = (await import('../../db/connection.js')).getDb();
   } catch (err) {
     return routeFailure(c, logger, err, { status: 500, message: 'Database not available' });
-  }
-
-  const tableExists = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='shared_files'").get();
-  if (!tableExists) {
-    return c.json({ ok: false, error: 'File sharing not available' }, 500);
   }
 
   const row = db.prepare('SELECT file_path, filename, mime_type FROM shared_files WHERE id = ?').get(fileId) as {
