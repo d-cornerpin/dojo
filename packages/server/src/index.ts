@@ -870,8 +870,8 @@ async function main(): Promise<void> {
   // The server is listening: for a self-update boot, arm the ~90s timer that flips the marker to healthy.
   scheduleUpdateHealthConfirm();
 
-  const { cleanupOldUploads } = await import('./gateway/routes/upload.js');
-  setInterval(cleanupOldUploads, 24 * 60 * 60 * 1000);
+  const { removeAbandonedPartFiles } = await import('./gateway/routes/upload.js');
+  setInterval(removeAbandonedPartFiles, 24 * 60 * 60 * 1000);
 
   startStallSentinel();
 
@@ -882,7 +882,7 @@ async function main(): Promise<void> {
   // FTS health check: never boot-blocking, because scheduleFtsHealthCheck returns immediately and touches
   // no database; the repair runs on its own thread and search uses the bounded fallback until it finishes.
   scheduleFtsHealthCheck();
-  cleanupOldUploads(); // Run once on startup
+  removeAbandonedPartFiles(); // Run once on startup
 
   setTimeout(async () => {
     try {

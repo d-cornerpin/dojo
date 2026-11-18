@@ -128,8 +128,7 @@ uploadRouter.post('/:agentId', async (c) => {
 // file (chunks must arrive in order, one at a time); POST /upload/finish/:agentId/:uploadId checks the
 // assembled size against the declared one, renames `.part` to the final stored name, registers the
 // attachment and returns the same UploadedFile shape as the one-shot endpoint. Idle sessions drop after 1h,
-// and a `.part` file left by a disconnect is removed by the older-than-7-days sweep that cleans regular
-// uploads (no dedicated GC pass).
+// and a `.part` file left by a disconnect is removed a week later by `removeAbandonedPartFiles`.
 interface ChunkSession {
   agentId: string;
   filename: string;
@@ -288,37 +287,24 @@ uploadRouter.post('/finish/:agentId/:uploadId', async (c) => {
   return c.json({ ok: true, data: uploaded });
 });
 
-// Cleanup job: delete uploads older than 7 days
-export function cleanupOldUploads(): void {
+/** Removes the `.part` file of a chunked upload left unfinished for over a week; every finished upload is kept. */
+export function removeAbandonedPartFiles(): void {
   try {
     if (!fs.existsSync(UPLOAD_DIR)) return;
     const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
-    const agentDirs = fs.readdirSync(UPLOAD_DIR, { withFileTypes: true });
-
-    for (const agentDir of agentDirs) {
+    for (const agentDir of fs.readdirSync(UPLOAD_DIR, { withFileTypes: true })) {
       if (!agentDir.isDirectory()) continue;
       const dirPath = path.join(UPLOAD_DIR, agentDir.name);
-      const files = fs.readdirSync(dirPath);
-
-      for (const file of files) {
+      for (const file of fs.readdirSync(dirPath)) {
+        if (!file.endsWith('.part')) continue;
         const filePath = path.join(dirPath, file);
         try {
-          const stat = fs.statSync(filePath);
-          if (stat.mtimeMs < cutoff) {
-            fs.unlinkSync(filePath);
-          }
+          if (fs.statSync(filePath).mtimeMs < cutoff) fs.unlinkSync(filePath);
         } catch { /* skip */ }
       }
-
-      try {
-        const remaining = fs.readdirSync(dirPath);
-        if (remaining.length === 0) {
-          fs.rmdirSync(dirPath);
-        }
-      } catch { /* skip */ }
     }
   } catch (err) {
-    logger.error('Upload cleanup failed', { error: err instanceof Error ? err.message : String(err) });
+    logger.error('Removing unfinished uploads failed', { error: err instanceof Error ? err.message : String(err) });
   }
 }
 
