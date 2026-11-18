@@ -389,10 +389,10 @@ export function renderTable(ctx: RenderCtx, block: PdfTableBlock): void {
   ctx.cursorY -= 4;
 }
 
-async function renderImage(ctx: RenderCtx, block: PdfImageBlock): Promise<void> {
+async function renderImage(ctx: RenderCtx, block: PdfImageBlock): Promise<string | null> {
   if (!block.path || !effectFs.existsSync(block.path)) {
     logger.warn('PDF image block: file not found, skipping', { path: block.path });
-    return;
+    return `image not found: ${block.path ?? '(no path)'}`;
   }
   const data = effectFs.readFileSync(block.path);
   const ext = path.extname(block.path).toLowerCase();
@@ -403,7 +403,7 @@ async function renderImage(ctx: RenderCtx, block: PdfImageBlock): Promise<void> 
     img = await ctx.pdfDoc.embedJpg(data);
   } else {
     logger.warn('PDF image block: only PNG/JPG supported', { ext });
-    return;
+    return `image is not PNG or JPG: ${block.path}`;
   }
   const w = (block.width_in ?? 3) * 72;
   const h = (block.height_in ?? 3) * 72;
@@ -414,6 +414,7 @@ async function renderImage(ctx: RenderCtx, block: PdfImageBlock): Promise<void> 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ctx.currentPage.drawImage(img as any, { x, y: ctx.cursorY - h, width: w, height: h });
   ctx.cursorY -= h + 4;
+  return null;
 }
 
 function drawHeaderFooter(ctx: RenderCtx): void {
@@ -452,7 +453,7 @@ function drawHeaderFooter(ctx: RenderCtx): void {
   });
 }
 
-async function generatePdfBuffer(blocks: PdfBlock[], options: PdfDocOptions = {}): Promise<Buffer> {
+async function generatePdfBuffer(blocks: PdfBlock[], options: PdfDocOptions = {}): Promise<{ buffer: Buffer; skipped: string[] }> {
   const pdfDoc = await PDFDocument.create();
   const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
   const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
@@ -476,22 +477,28 @@ async function generatePdfBuffer(blocks: PdfBlock[], options: PdfDocOptions = {}
   };
   newPage(ctx);
 
-  for (const block of blocks) {
+  const skipped: string[] = [];
+  for (const [i, block] of blocks.entries()) {
     switch (block.type) {
       case 'heading':         renderHeading(ctx, block); break;
       case 'paragraph':       renderParagraph(ctx, block); break;
       case 'bullet_list':     renderList(ctx, block.items, 'bullet'); break;
       case 'numbered_list':   renderList(ctx, block.items, 'numbered'); break;
       case 'table':           renderTable(ctx, block); break;
-      case 'image':           await renderImage(ctx, block); break;
+      case 'image': {
+        const why = await renderImage(ctx, block);
+        if (why) skipped.push(`block ${i + 1} (${why})`);
+        break;
+      }
       case 'horizontal_rule': renderHorizontalRule(ctx, block); break;
       case 'page_break':      newPage(ctx); break;
+      default: skipped.push(`block ${i + 1} (unknown type "${String((block as { type?: unknown }).type)}")`);
     }
   }
 
   drawHeaderFooter(ctx);
   const bytes = await pdfDoc.save();
-  return Buffer.from(bytes);
+  return { buffer: Buffer.from(bytes), skipped };
 }
 
 // ── Per-operation helpers (merge, extract, rotate, etc.) ──
@@ -924,11 +931,12 @@ export async function executePdfTool(
           footer_text: args.footer_text as string | undefined,
           footer_includes_page_number: args.footer_includes_page_number as boolean | undefined,
         };
-        const buf = await generatePdfBuffer(blocks, opts);
+        const { buffer: buf, skipped } = await generatePdfBuffer(blocks, opts);
         const out = resolveOutputPath(agentId, filename);
         effectFs.writeFileSync(out, buf);
         return (
-          `PDF created at ${out} (${buf.length} bytes, ${blocks.length} block(s) rendered). ` +
+          `PDF created at ${out} (${buf.length} bytes, ${blocks.length - skipped.length} of ${blocks.length} block(s) drawn). ` +
+          (skipped.length > 0 ? `Skipped: ${skipped.join('; ')}. ` : '') +
           `To give the person you are talking to a downloadable URL for this file, call share_file with path="${out}" — do NOT invent or guess a URL.`
         );
       }
