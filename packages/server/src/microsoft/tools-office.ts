@@ -1245,7 +1245,7 @@ async function saveOfficeBuffer(
   if (accountId !== null && agentId === getPrimaryAgentId()) {
     const result = await uploadToOneDrive(buffer, filename, mimeType, folderId, accountId, agentId);
     const kindLabel = kind === 'word' ? 'Word document' : kind === 'excel' ? 'Excel spreadsheet' : 'PowerPoint presentation';
-    return `${kindLabel} "${result.name}" created on OneDrive.\nFile ID: ${result.id}\nOpen: ${result.webUrl}${result.shareLink ? `\nShare link: ${result.shareLink}` : ''}`;
+    return `${kindLabel} "${result.name}" created on OneDrive.\nFile ID: ${result.id}\nOpen: ${result.webUrl}`;
   }
   // Local fallback: the PDF tools' uploads-dir pattern, so generated files live in one predictable place.
   const dir = path.join(homeDir(), '.dojo', 'uploads', agentId);
@@ -1287,7 +1287,7 @@ async function uploadToOneDrive(
   filename: string,
   mimeType: string,
   folderId: string | undefined, accountId: string | null, agentId: string,
-): Promise<{ id: string; name: string; webUrl: string; shareLink: string | null }> {
+): Promise<{ id: string; name: string; webUrl: string }> {
   const token = await officeToken(accountId);
   if (!token) throw new Error('Not authenticated with Microsoft');
 
@@ -1310,22 +1310,7 @@ async function uploadToOneDrive(
   }
 
   const data = await resp.json() as { id: string; name: string; webUrl: string };
-
-  // Auto-generate shareable link
-  let shareLink: string | null = null;
-  try {
-    const linkResp = await graphFetch(agentId, `${GRAPH_BASE}/me/drive/items/${data.id}/createLink`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ type: 'view', scope: 'anonymous' }),
-    });
-    if (linkResp.ok) {
-      const linkData = await linkResp.json() as { link?: { webUrl?: string } };
-      shareLink = linkData.link?.webUrl ?? null;
-    }
-  } catch { /* best effort */ }
-
-  return { id: data.id, name: data.name, webUrl: data.webUrl, shareLink };
+  return { id: data.id, name: data.name, webUrl: data.webUrl };
 }
 
 // ── Word Document Generation ──
