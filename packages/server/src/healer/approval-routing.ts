@@ -21,6 +21,7 @@ import { healerApprovalText, healerApprovalBody } from '../agent/engine-lines.js
 import { tellAgentWhatDojoSent } from '../agent/dojo-voice.js';
 import { getPrimaryAgentId } from '../config/platform.js';
 import { refersToDojoDatabase } from '../agent/brokers/dojo-redirect.js';
+import { resolveProcessCwd } from '../agent/tools/process-run.js';
 
 const logger = createLogger('healer-approval-routing');
 
@@ -256,7 +257,8 @@ export function describeHeldAction(toolName: string, argsJson: string | null | u
   }
   const targets = rest.filter((w) => !w?.startsWith('-'));
   if ((head === 'rm' || head === 'rmdir') && targets.length > 0 && targets.every((t) => t !== null && !t.startsWith('..'))) {
-    const named = (targets as string[]).map((t) => (/^[/~]/.test(t) ? t : `"${clip(t, 80)}" in the folder this command runs from`));
+    const folder = resolveProcessCwd(args.cwd).cwd ?? process.cwd();
+    const named = (targets as string[]).map((t) => (/^[/~]/.test(t) ? t : `"${clip(t, 80)}" in ${folder}`));
     const recursive = rest.some((w) => /^-[a-zA-Z]*[rR]|^--recursive$/.test(w ?? ''));
     return `Delete ${nameList(named)}${recursive ? ', including everything inside' : ''}. `
       + 'Deleted files do not go to the Trash and cannot be brought back.';
