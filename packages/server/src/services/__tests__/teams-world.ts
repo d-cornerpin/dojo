@@ -2,7 +2,7 @@
 // (newest first), with the chat's newest message time on the chat list. Uses the Graph fake of `mail-world.ts`.
 import * as w from './mail-world.js';
 
-export interface TeamsMsg { id: string; email: string; text: string; at: string; files?: string[] }
+export interface TeamsMsg { id: string; email: string; text: string; at: string; files?: string[]; mine?: boolean }
 export const chat = { type: 'oneOnOne' as 'oneOnOne' | 'group', messages: [] as TeamsMsg[] };
 const MEMBERS = ['colleague@example.com', 'stranger@example.com'].map((email) => ({ userId: `u-${email}`, email }));
 
@@ -18,7 +18,7 @@ export function serveTeams(): void {
     if (url.startsWith('chats/chat-1/members')) return { ok: true, data: { value: MEMBERS } };
     if (url.startsWith('chats/chat-1/messages')) {
       return { ok: true, data: { value: [...chat.messages].reverse().map((m) => ({
-        id: m.id, createdDateTime: m.at, from: { user: { id: `u-${m.email}`, displayName: 'Someone' } },
+        id: m.id, createdDateTime: m.at, from: { user: { id: m.mine ? 'me-1' : `u-${m.email}`, displayName: 'Someone' } },
         body: { content: m.text, contentType: 'text' }, messageType: 'message', attachments: (m.files ?? []).map((name) => ({ name })),
       })) } };
     }

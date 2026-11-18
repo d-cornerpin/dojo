@@ -1,6 +1,7 @@
 // Teams watcher: polls for new incoming Teams messages and notifies the primary agent every 15 seconds.
-//   - Fetch the chat list, keep chats updated since the last poll, fetch their recent messages and filter by
-//     timestamp client-side (Graph delta queries are NOT supported for chatMessage).
+//   - Fetch the chat list with each chat's newest message time, read only chats newer than their saved cursor
+//     (all cursors live in one config row) and filter by timestamp client-side (Graph delta queries are NOT
+//     supported for chatMessage).
 //   - Each chat's member list is fetched once on first sight, with no $select: userId lives on the derived
 //     aadUserConversationMember type, not the base conversationMember type.
 
@@ -372,8 +373,9 @@ async function pollForNewMessages(): Promise<void> {
         });
       }
 
-      // Advance the per-chat message window so these are not re-processed.
-      cursors.chats[chat.id] = newestMessageAt;
+      // Advance the per-chat window past what was read, including his own newest message or a system event, so a quiet chat is not read again.
+      const previewAt = chat.lastMessagePreview?.createdDateTime;
+      cursors.chats[chat.id] = previewAt && previewAt > newestMessageAt ? previewAt : newestMessageAt;
     }
 
     if (totalNewCount > 0) {

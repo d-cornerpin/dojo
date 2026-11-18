@@ -32,4 +32,14 @@ describe('a quiet Teams chat', () => {
     expect(stored('tm-q2')).toBe(1);
     stopTeamsWatcher();
   });
+
+  it('is not read again after the agent answered in it, his own newest message being the chat preview', async () => {
+    chat.messages = [{ id: 'tm-own', email: 'colleague@example.com', text: 'My own reply', at: soon(), mine: true }];
+    startTeamsWatcher();
+    await vi.advanceTimersByTimeAsync(16_000);
+    expect(messageReads()).toBe(1);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(messageReads()).toBe(1);
+    stopTeamsWatcher();
+  });
 });
