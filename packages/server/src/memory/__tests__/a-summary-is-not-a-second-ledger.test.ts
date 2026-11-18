@@ -80,25 +80,25 @@ beforeEach(() => {
 // ══════════════════════════════════════════════════════════════════════════════
 describe('the summarizer contract implements its own sentence', () => {
   it('an obligation line must cite a work id or not be written at all', () => {
-    const p = getDepthPrompt(0, 1200, undefined, undefined);
+    const p = getDepthPrompt(0, 1200);
     expect(p).toContain('the id is the record, the summary is the context around it');
     expect(p.toLowerCase()).toContain('leave it out');
   });
 
   it('and the prompt says which block is the CURRENT record of what is owed', () => {
-    const p = getDepthPrompt(0, 1200, undefined, undefined);
+    const p = getDepthPrompt(0, 1200);
     expect(p).toContain('OPEN WORK');
   });
 
   it('depths 1 and 2 carry the obligation rule too — a dead line condensed upward is the same lie', () => {
     for (const depth of [1, 2]) {
-      const p = getDepthPrompt(depth, 1200, undefined, undefined);
+      const p = getDepthPrompt(depth, 1200);
       expect(p, `depth ${depth}`).toContain('OPEN WORK');
     }
   });
 
   it('CONTROL: everything else the depth-0 prompt guarantees is untouched', () => {
-    const p = getDepthPrompt(0, 1200, undefined, undefined);
+    const p = getDepthPrompt(0, 1200);
     for (const kept of [
       'Preserve ALL proper nouns',
       'TEMPORAL ANCHORING',

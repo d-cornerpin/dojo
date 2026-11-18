@@ -38,10 +38,7 @@ export function condensedSummaryInput(batch: readonly Summary[]): string {
   }).join('\n\n');
 }
 
-export function getDepthPrompt(depth: number, targetTokens: number, previousContext?: string, agentId?: string): string {
-  const contextBlock = previousContext
-    ? `\n\nPrevious context for continuity:\n${previousContext}\n`
-    : '';
+export function getDepthPrompt(depth: number, targetTokens: number, agentId?: string): string {
 
   const identity = agentId ? getIdentityContext(agentId) : '';
 
@@ -94,7 +91,7 @@ GOOD: "[2026-04-19 09:00–11:30] The user runs two businesses: Acme Corp (adver
 
 BAD: "The user mentioned their drink and hobby preferences"
 GOOD: "The user's favorite tea is jasmine green. Favorite board game is chess."
-${contextBlock}`;
+`;
   }
 
   if (depth === 1) {
@@ -129,7 +126,7 @@ ABSOLUTE RULES:
 - Maintain correct attribution — never confuse who said or did what. CARRY the party and conversation labels forward; never merge different parties' requests into an unattributed statement.
 - Target approximately ${targetTokens} tokens, sized to these summaries — use the space for facts, not narrative
 - Do NOT include preamble — write the condensed summary directly
-${contextBlock}`;
+`;
   }
 
   // depth >= 2: high-level strategic summary
@@ -157,7 +154,7 @@ ABSOLUTE RULES:
 - Maintain correct attribution
 - Target approximately ${targetTokens} tokens, sized to these summaries
 - Do NOT include preamble — write the reference summary directly
-${contextBlock}`;
+`;
 }
 
 /**
@@ -191,14 +188,13 @@ async function writeSummary(params: {
   targetTokens: number;
   agentId: string;
   modelId?: string;
-  previousContext?: string;
   // Cancels the routine gap-trigger drain's call so a hanging summarizer cannot continue in the background.
   abortSignal?: AbortSignal;
   checkFeedback?: string;   // the rewrite after a failed accuracy check names what failed
   spanIds?: readonly string[];   // the rows summarised: a span whose check failed is known by them
   spanOpen?: boolean;   // the last chunk of a fold, still growing (see summary-check.ts writeThenCheck)
 }): Promise<SummaryResult> {
-  const { content, depth, targetTokens, agentId, modelId, previousContext, abortSignal, checkFeedback } = params;
+  const { content, depth, targetTokens, agentId, modelId, abortSignal, checkFeedback } = params;
 
   // No model means no summary: saying so costs only a retry, where persisting the raw chunk would pass as one.
   if (!modelId) {
@@ -206,7 +202,7 @@ async function writeSummary(params: {
     return { ok: false, reason: 'no summarizer model configured for this agent' };
   }
 
-  const systemPrompt = getDepthPrompt(depth, targetTokens, previousContext, agentId) + rewriteInstruction(checkFeedback);
+  const systemPrompt = getDepthPrompt(depth, targetTokens, agentId) + rewriteInstruction(checkFeedback);
   const tooBig = refuseWhatTheWriterCannotHold(modelId, systemPrompt, content, agentId) ?? await refuseFallbackOverFreeMemory(modelId, systemPrompt, content, targetTokens, agentId);
   if (tooBig) return tooBig;
 
