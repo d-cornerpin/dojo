@@ -11,7 +11,8 @@ import { callModel } from './model.js';
 import { getEffectiveVisionModel } from '../services/vision-model.js';
 import { inlineHtmlAssets, canvasMayRead } from '../services/canvas-html.js';
 import { renderOfficeToHtml, isOfficeRenderable } from '../services/office-render.js';
-import { getCurrentCanvas, resolveHome, type CanvasState } from './canvas-state.js';
+import { getCurrentCanvas, type CanvasState } from './canvas-state.js';
+import { resolveHomePath } from './path-resolve.js';
 
 const logger = createLogger('canvas-view');
 
@@ -116,7 +117,7 @@ export async function viewCanvas(agentId: string, args: Record<string, unknown>)
   try {
     // File-backed canvas: branch by type.
     if (target.path) {
-      const filePath = resolveHome(target.path);
+      const filePath = resolveHomePath(target.path);
       if (!effectFs.existsSync(filePath)) {
         return `Error: the canvas file no longer exists on disk (${filePath}).`;
       }
