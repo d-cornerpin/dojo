@@ -385,7 +385,8 @@ export type WsEvent =
   | TaskRunStartedEvent
   | TaskRunCompleteEvent
   | MigrationDepsetupEvent
-  | SystemRestartEvent;
+  | SystemRestartEvent
+  | PresenceChangedEvent;
 
 /** The canvas/dock was collapsed to the edge handle (by the user or another device); content stays
  *  server-side. */
@@ -659,4 +660,10 @@ export interface SystemRestartEvent {
   type: 'system:restart';
   initiatedAt: string;
   mode: 'dev' | 'production';
+}
+
+/** The owner's presence changed (his toggle, or the agent on his ask); every open dashboard shows it. */
+export interface PresenceChangedEvent {
+  type: 'presence:changed';
+  status: 'in_dojo' | 'away';
 }

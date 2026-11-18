@@ -1,6 +1,7 @@
 // The in_dojo / away toggle; iMessage delivery is a deliberate `imessage_send`, never an automatic forward.
 
 import { getDb } from '../db/connection.js';
+import { broadcast } from '../gateway/ws.js';
 import { createLogger } from '../logger.js';
 import { getIMBridgeStatus, getDefaultSender } from './imessage-bridge.js';
 
@@ -28,6 +29,7 @@ export function setPresence(status: PresenceStatus): void {
     ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = datetime('now')
   `).run(status, status);
   logger.info('User presence changed', { status });
+  broadcast({ type: 'presence:changed', status });
 }
 
 export function isImessageConfigured(): boolean {
