@@ -8,6 +8,7 @@ import { renderOfficeToHtml, isOfficeRenderable } from '../../services/office-re
 import { routeFailure } from './route-failure.js';
 import { homeDir } from '../../home.js';
 import { insideFolder } from '../../techniques/technique-folder.js';
+import { isSensitivePath } from '../../agent/path-guards.js';
 
 const logger = createLogger('upload');
 
@@ -431,6 +432,10 @@ uploadRouter.get('/download/:fileId', async (c) => {
 
   if (!fs.existsSync(row.file_path)) {
     return c.json({ ok: false, error: `File was registered but no longer exists on disk.` /* never leak the absolute file_path to the client */ }, 404);
+  }
+
+  if (isSensitivePath(row.file_path)) {
+    return c.json({ ok: false, error: 'This file holds keys or passwords, so it is never served by a download link.' }, 403);
   }
 
   // `?inline=1` asks for in-page rendering (Content-Disposition: inline); the right-dock canvas and the
