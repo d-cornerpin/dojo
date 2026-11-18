@@ -10,6 +10,7 @@ import { getDb } from '../db/connection.js';
 import { recordInboundMeta } from '../agent/v2/inbound-channel.js';
 import { insertInboundMessageIfAbsent } from '../work/ask-title.js';
 import { isSenderAuthorized } from '../agent/v2/channel-auth.js';
+import { senderWakes } from './channel-safe-senders.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getPrimaryAgentId } from '../config/platform.js';
@@ -99,11 +100,19 @@ let pollTimer: ReturnType<typeof setInterval> | null = null;
 let firstPollTimer: ReturnType<typeof setTimeout> | null = null;
 let ownUserId: string | null = null;
 
-// chatId to the ISO timestamp of the newest message processed from that chat; filters out already-seen messages.
-const chatLastMessageAt = new Map<string, string>();
+// One saved time per chat (its newest message handled) and the start of the last good poll, the baseline for a chat
+// not seen yet. Kept in one config row, so a message sent while the Dojo restarts is read after it.
+const CURSORS_KEY = 'teams_chat_cursors';
+interface TeamsCursors { since: string; chats: Record<string, string> }
+let cursors: TeamsCursors = { since: new Date(0).toISOString(), chats: {} };
 
-// When the watcher started: the baseline for chats not yet seen, so earlier messages are not replayed.
-let watcherStartedAt = new Date(0).toISOString();
+function loadCursors(): TeamsCursors | null {
+  try {
+    const row = getDb().prepare('SELECT value FROM config WHERE key = ?').get(CURSORS_KEY) as { value: string } | undefined;
+    const c = row ? JSON.parse(row.value) as Partial<TeamsCursors> : null;
+    return c && typeof c.since === 'string' && c.chats && typeof c.chats === 'object' ? { since: c.since, chats: c.chats } : null;
+  } catch { return null; }
+}
 
 // userId → email populated from chat member list on first sight of each chat
 const userEmails = new Map<string, string>();
@@ -112,6 +121,7 @@ const userEmails = new Map<string, string>();
 const membersFetched = new Set<string>();
 
 const POLL_INTERVAL_MS = 15_000;
+const TEAMS_BODY_MAX = 4_000;   // a longer message is cut here and says so
 
 // ── Own user ID (cached) ──
 
@@ -179,10 +189,11 @@ async function pollForNewMessages(): Promise<void> {
       recordPollFailure('Could not determine own user ID');
       return;
     }
+    const pollStartIso = new Date().toISOString();
 
-    // Step 1: Get all chats with their last-updated timestamp
+    // Step 1: Get the chats, newest activity first, each with the time of its newest message
     const chatsResult = await msGraphRead(
-      'me/chats?$top=50&$select=id,topic,chatType,lastUpdatedDateTime',
+      'me/chats?$top=50&$expand=lastMessagePreview&$orderby=lastMessagePreview/createdDateTime desc',
       'system', 'Teams Watcher', 'teams_watcher_list_chats', {}, accountId,
     );
     if (!chatsResult.ok) {
@@ -192,7 +203,7 @@ async function pollForNewMessages(): Promise<void> {
     }
 
     const chatsData = chatsResult.data as {
-      value?: Array<{ id: string; topic: string | null; chatType: string; lastUpdatedDateTime: string }>;
+      value?: Array<{ id: string; topic: string | null; chatType: string; lastMessagePreview?: { createdDateTime?: string } | null }>;
     };
     if (!chatsData?.value) {
       // No chats is not an error; still record success so the status panel does not go stale.
@@ -213,6 +224,7 @@ async function pollForNewMessages(): Promise<void> {
     }
 
     let totalNewCount = 0;
+    let wakeCount = 0;
 
     // Fetch members + messages for all chats in parallel
     type ChatMessage = {
@@ -221,10 +233,17 @@ async function pollForNewMessages(): Promise<void> {
       from?: { user?: { id?: string; displayName?: string } };
       body?: { content: string; contentType: string };
       messageType?: string;
+      attachments?: Array<{ name?: string | null }>;
     };
 
+    // Only chats whose newest message is newer than what was handled are read; a chat with no preview is read.
+    const moved = chatsData.value.filter((chat) => {
+      const newest = chat.lastMessagePreview?.createdDateTime;
+      return !newest || newest > (cursors.chats[chat.id] ?? cursors.since);
+    });
+
     const chatResults = await Promise.all(
-      chatsData.value.map(async (chat) => {
+      moved.map(async (chat) => {
         await fetchChatMembers(chat.id, accountId);
         const msgsResult = await msGraphRead(
           `chats/${encodeURIComponent(chat.id)}/messages?$top=10&$orderby=createdDateTime desc`,
@@ -235,6 +254,9 @@ async function pollForNewMessages(): Promise<void> {
     );
 
     for (const { chat, msgsResult } of chatResults) {
+      // A chat seen for the first time keeps the current baseline, so a failed read is tried again from it.
+      const lastSeenAt = cursors.chats[chat.id] ?? cursors.since;
+      cursors.chats[chat.id] = lastSeenAt;
       if (!msgsResult.ok) {
         logger.debug('Teams watcher: messages fetch error', { chatId: chat.id, error: msgsResult.error });
         continue;
@@ -243,8 +265,6 @@ async function pollForNewMessages(): Promise<void> {
       const msgsData = msgsResult.data as { value?: ChatMessage[] };
       if (!msgsData?.value) continue;
 
-      // A chat never processed before uses watcherStartedAt as the baseline.
-      const lastSeenAt = chatLastMessageAt.get(chat.id) ?? watcherStartedAt;
       let newestMessageAt = lastSeenAt;
 
       for (const msg of msgsData.value) {
@@ -267,9 +287,14 @@ async function pollForNewMessages(): Promise<void> {
         if (msg.body?.contentType === 'html') {
           body = body.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
         }
-        body = body.slice(0, 1000);
+        // A long message says where it was cut, and attached files are named, so the agent knows what it has not seen.
+        if (body.length > TEAMS_BODY_MAX) body = `${body.slice(0, TEAMS_BODY_MAX)}\n[The message is longer than 4,000 characters and was cut here.]`;
+        const files = (msg.attachments ?? []).map((a) => a.name).filter((n): n is string => !!n);
+        if (files.length > 0) body += `\n[Attached files: ${files.join(', ')}]`;
 
-        const content = teamsInboundContent({ senderEmail, senderName, chatTopic: chat.topic ?? null, chatType: chat.chatType, time: msg.createdDateTime, body, chatId: chat.id });
+        // He and the people on the Teams approved list wake the agent; anyone else waits for its next turn.
+        const wakes = senderWakes('teams', null, senderEmail ?? '');
+        const content = teamsInboundContent({ senderEmail, senderName, chatTopic: chat.topic ?? null, chatType: chat.chatType, time: msg.createdDateTime, body, chatId: chat.id, replyInGroup: wakes && chat.chatType !== 'oneOnOne' });
 
         const msgId = uuidv4();
         // Conversation identity is the Teams chat id.
@@ -333,6 +358,7 @@ async function pollForNewMessages(): Promise<void> {
 
         notifiedIds.add(msg.id);
         totalNewCount++;
+        if (wakes) wakeCount++;
         recordNotification({
           at: new Date().toISOString(),
           from: senderLabel,
@@ -347,22 +373,10 @@ async function pollForNewMessages(): Promise<void> {
       }
 
       // Advance the per-chat message window so these are not re-processed.
-      chatLastMessageAt.set(chat.id, newestMessageAt);
+      cursors.chats[chat.id] = newestMessageAt;
     }
 
-    // Trigger the agent once for all new messages this poll
     if (totalNewCount > 0) {
-      const runtime = getAgentRuntime();
-      const summary = totalNewCount === 1
-        ? `[SOURCE: TEAMS MESSAGE] An incoming Teams message is waiting above — review it and reply using teams_send_message with the chat_id provided.`
-        : `[SOURCE: TEAMS MESSAGE] ${totalNewCount} incoming Teams messages are waiting above — review each one and reply using teams_send_message with the chat_id provided in each.`;
-
-      runtime.handleMessage(primaryId, summary).catch(err => {
-        logger.error('Failed to trigger runtime for Teams notification', {
-          error: err instanceof Error ? err.message : String(err),
-        });
-      });
-
       // Persist notified IDs (last 200)
       const recentIds = [...notifiedIds].slice(-200);
       db.prepare(`
@@ -370,6 +384,24 @@ async function pollForNewMessages(): Promise<void> {
         ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = datetime('now')
       `).run(notifiedKey, JSON.stringify(recentIds), JSON.stringify(recentIds));
     }
+
+    // Wake the agent once for the new messages from him or approved senders; the rest wait for its next turn.
+    if (wakeCount > 0) {
+      const summary = wakeCount === 1
+        ? '[SOURCE: TEAMS MESSAGE] New Teams message. Details above: act on it as the framing there indicates.'
+        : `[SOURCE: TEAMS MESSAGE] ${wakeCount} new Teams messages. Details above: act on each as the framing there indicates.`;
+      getAgentRuntime().handleMessage(primaryId, summary).catch(err => {
+        logger.error('Failed to trigger runtime for Teams notification', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
+    }
+
+    cursors.since = pollStartIso;
+    db.prepare(`
+      INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
+    `).run(CURSORS_KEY, JSON.stringify(cursors));
 
     recordPollSuccess();
   } catch (err) {
@@ -398,8 +430,8 @@ export function startTeamsWatcher(): void {
     return;
   }
 
-  watcherStartedAt = new Date().toISOString();
-  logger.info('Starting Teams watcher', { pollInterval: POLL_INTERVAL_MS, watcherStartedAt });
+  cursors = loadCursors() ?? { since: new Date().toISOString(), chats: {} };
+  logger.info('Starting Teams watcher', { pollInterval: POLL_INTERVAL_MS, since: cursors.since });
 
   pollTimer = setInterval(() => {
     pollForNewMessages().catch(err => {
@@ -423,7 +455,6 @@ export function stopTeamsWatcher(): void {
       clearTimeout(firstPollTimer);
       firstPollTimer = null;
     }
-    chatLastMessageAt.clear();
     membersFetched.clear();
     ownUserId = null;
     userEmails.clear();

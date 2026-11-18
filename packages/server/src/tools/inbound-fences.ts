@@ -21,15 +21,16 @@ export function callUtteranceText(otherPartyNumber: string, otherPartyDisplay: s
   return isOwnerIMessageRecipient(otherPartyNumber) ? text : fenceExternal('transcript', `a phone call with ${otherPartyDisplay}`, text, { addressedToAgent: true });
 }
 
-/** The row an inbound Teams message becomes (`services/teams-watcher.ts`). Outside the fence: the
- *  sender's address and the chat's type and id. The display name and group topic sit inside. */
-export function teamsInboundContent(m: { senderEmail: string | null; senderName: string; chatTopic: string | null; chatType: string; time: string | undefined; body: string; chatId: string }): string {
+/** The row an inbound Teams message becomes (`services/teams-watcher.ts`). Outside the fence: the sender's address
+ *  and the chat's type and id. The display name and group topic sit inside. The reply line is only for an approved
+ *  sender's group message: the engine answers a one-to-one chat itself. */
+export function teamsInboundContent(m: { senderEmail: string | null; senderName: string; chatTopic: string | null; chatType: string; time: string | undefined; body: string; chatId: string; replyInGroup?: boolean }): string {
   const theirs = [`From: ${m.senderName}`, ...(m.chatTopic ? [`Chat topic: ${m.chatTopic}`] : []), '', m.body].join('\n');
   return [
     `[SOURCE: TEAMS MESSAGE FROM ${m.senderEmail ?? 'a Teams contact'}]`,
     ``,
     `This is an incoming Microsoft Teams message — NOT a message from the dashboard user.`,
-    `To reply, call teams_send_message with the chat_id shown below.`,
+    ...(m.replyInGroup ? ['To reply in this group chat, call teams_send_message with the chat_id shown below.'] : []),
     ``,
     `Chat: ${m.chatType === 'oneOnOne' ? 'a 1:1 chat' : 'a group chat'} (${m.chatType})`,
     `Time: ${m.time}`,
