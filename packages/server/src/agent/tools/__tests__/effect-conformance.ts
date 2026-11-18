@@ -1,7 +1,7 @@
 // THE EFFECTS-DECLARATION WALK, read by the conformance tests (a test-support module, not product).
 // The declaration is the source of truth; this scan is the tripwire the other way: silence fails.
-// Coverage is reported from the registry, never from usage; a field scan alone misses fixed-host and
-// no-argument effects (web_search) and nested fields (repos[].url), so the declaration is the truth.
+// A field scan alone misses fixed-host and no-argument effects (web_search) and nested fields
+// (repos[].url), so the declaration is the truth.
 
 import {
   EFFECT_FROM_ARGS,
