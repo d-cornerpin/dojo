@@ -21,9 +21,6 @@ type Run = (name: string, args: Record<string, unknown>, agentId: string, agentN
 type Resolve = (kind: AccountKind, email?: string) =>
   { account: { id: string | null; enabledServices: string | null } } | { error: string };
 
-// Slides and Forms take no account yet: they act on the kind's default account, so only the kind's grant is asked.
-const NO_ACCOUNT: Resolve = () => ({ account: { id: null, enabledServices: null } });
-
 function handlersFor(defs: readonly ToolDefinition[], provider: WorkspaceProvider, run: Run, resolve: Resolve) {
   return defs.map((def): [string, ToolHandler] => [def.name, async ({ agentId, name, args }) => {
     const kind = accountKindForTool(name);
@@ -46,7 +43,7 @@ export const workspaceHandlers: ToolHandlerMap = Object.fromEntries([
   ...handlersFor(googleReadToolDefinitions, 'google', (...a) => executeGoogleReadTool(...a), (k, e) => resolveGoogleAccountForRead(k, e)),
   ...handlersFor(googleWriteToolDefinitions, 'google', (...a) => executeGoogleWriteTool(...a), (k, e) => resolveGoogleAccountForTool(k, e)),
   ...handlersFor(slidesToolDefinitions, 'google', (...a) => executeGoogleSlidesTool(...a), (k, e) => resolveGoogleAccountForTool(k, e)),
-  ...handlersFor(formsToolDefinitions, 'google', (...a) => executeGoogleFormsTool(...a), NO_ACCOUNT),
+  ...handlersFor(formsToolDefinitions, 'google', (...a) => executeGoogleFormsTool(...a), (k, e) => resolveGoogleAccountForTool(k, e)),
   ...handlersFor(microsoftReadToolDefinitions, 'microsoft', (...a) => executeMicrosoftReadTool(...a), (k, e) => resolveMicrosoftAccountForRead(k, e)),
   ...handlersFor(microsoftWriteToolDefinitions, 'microsoft', (...a) => executeMicrosoftWriteTool(...a), (k, e) => resolveMicrosoftAccountForTool(k, e)),
 ]);
