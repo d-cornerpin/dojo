@@ -118,6 +118,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'load_tool_docs',
+    concurrency: 'safe',
     description: 'Load the full documentation for one or more tools before using them. Call this when you need to review a tool\'s parameters or usage details. After loading, the tools become callable on subsequent turns. Your always-loaded tools are already available without needing this.',
     // The docs are markdown files written to disk at boot. The directory is the
     // whole reach: the handler intersects names with the agent's accessible tools.
@@ -355,6 +356,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'file_list',
+    concurrency: 'safe',
     description: 'List the contents of a directory at the given absolute path. Returns file names, sizes, and types. Example: file_list({ path: "~/projects" }).',
     // Stats every entry IN the directory, so the tree is the effect; without it per-entry refusals
     // show as `-`. `file_read`'s identical `from` deliberately carries no tree.
@@ -373,6 +375,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'share_file',
+    concurrency: 'safe',
     description: 'Get a download URL for an existing file so the user can access it from any device. Use this when the user asks for a link to a file, wants to download something, or you need to share a file that already exists on disk. Returns a full clickable URL. IMPORTANT: Give the user the URL exactly ONCE as plain text. Do NOT repeat it, do NOT wrap it in markdown, do NOT add extra formatting.',
     effects: [{ kind: 'fs_read', from: 'args.path' }],
     input_schema: {
@@ -480,6 +483,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'history_get',
+    concurrency: 'safe',
     description: 'Look up the full content of a stored item by its ID. Accepts THREE id types:\n  - Summary IDs (sum_*), returns full summary text + metadata\n  - Large file IDs (file_*), returns the exploration summary + metadata\n  - Raw message UUIDs, returns the full message body\n\nUse this AFTER history_search when a snippet is truncated and you need the full message. history_search emits a ready-to-copy hint at the end of each truncated result line: `[snippet only, call history_get(id="…") for full N-char message]`. Copy the full UUID from inside those quotes, the short `id=<8chars>` shown at the start of the result line is for visual scanning only and is NOT enough.',
     // `file_*` ids are served by reading the stored body off disk, so the read
     // is declared; the per-agent ownership check still runs after the read.
@@ -499,6 +503,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'history_expand',
+    concurrency: 'safe',
     description: 'Deep recall: walks the summary DAG to retrieve original source messages, optionally uses an LLM to synthesize an answer from expanded material. Use when summaries lack detail.',
     effects: [],
     input_schema: {
@@ -1275,6 +1280,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'get_current_time',
+    concurrency: 'safe',
     description: 'Get the current date and time in UTC and local. Returns utc (ISO 8601), local (human-readable), and timezone. ALWAYS use the utc value when setting scheduled_start on tasks.',
     effects: [],
     input_schema: {
@@ -2744,8 +2750,8 @@ export const toolDefinitions: ToolDefinition[] = [
   },
 ];
 
-// Module-load registration of per-tool concurrency and maxResultTokens for the
-// concurrency classifiers; tools omitting `concurrency` fall through to the TOOL_CATEGORY map.
+// Module-load registration of per-tool concurrency and maxResultTokens for the concurrency classifier;
+// a tool omitting `concurrency` runs one call at a time.
 import { registerConcurrency, registerMaxResultTokens } from '../v2/classifiers/concurrency.js';
 for (const def of toolDefinitions) {
   if (def.concurrency) registerConcurrency(def.name, def.concurrency);
