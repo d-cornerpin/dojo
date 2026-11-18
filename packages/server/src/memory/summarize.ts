@@ -39,7 +39,6 @@ export function condensedSummaryInput(batch: readonly Summary[]): string {
 }
 
 export function getDepthPrompt(depth: number, targetTokens: number, agentId?: string): string {
-
   const identity = agentId ? getIdentityContext(agentId) : '';
 
   if (depth === 0) {
