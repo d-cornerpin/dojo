@@ -41,6 +41,8 @@ import { tellAgentAndWake, requesterReachSentence, isFailureWokenTurn, noteJobSt
 import { resolvePath, isSensitivePath } from '../../path-guards.js';
 import { isPrimaryAgent } from '../../../config/platform.js';
 import { recordCost } from '../../../costs/tracker.js';
+import { exceededBudget } from '../../../costs/spend.js';
+import { WALL_ESTIMATE_USD } from '../../../costs/budget.js';
 import { resolveAttachmentPath, fetchAudioUrl, transcribeAudio } from '../../../services/transcription.js';
 import { submitVideoJob } from '../../../services/video-generation.js';
 import type { ToolHandler, ToolHandlerMap } from '../handler.js';
@@ -48,6 +50,15 @@ import { homeDir } from '../../../home.js';
 import { turnContext } from '../../turn-context.js';
 import { userWords, currentAddress } from '../../v2/turn-address.js';
 import { outsideSpan } from '../../../tools/external-content.js';
+
+/** The one spending-limit check for a paid media job: the refusal the tool returns, or null to go ahead. */
+function limitRefusal(agentId: string, what: string): string | null {
+  const over = exceededBudget(agentId, WALL_ESTIMATE_USD);
+  if (!over) return null;
+  const which = over.scope === 'global' ? 'The daily spending limit' : `This agent's ${over.period} spending limit`;
+  return `${which} is reached ($${over.spend.toFixed(2)} spent of $${over.limitUsd.toFixed(2)}), so no ${what} was started. ` +
+    `Tell ${userWords(currentAddress(agentId))} the limit is reached; they can raise or remove it on the Costs page. Do not retry.`;
+}
 
 const handlers = {
   async "image_create"({ agentId, args }) {
@@ -83,6 +94,9 @@ const handlers = {
       isError = true;
       return { content, isError };
     }
+
+    const overLimit = limitRefusal(agentId, 'picture');
+    if (overLimit) return { content: overLimit, isError: true };
 
     // Tracked as a generation_job so the orb shows it;
     // image_create keeps its own delivery path, driven around the job lifecycle.
@@ -428,6 +442,9 @@ const handlers = {
       return { content, isError };
     }
 
+    const overLimit = limitRefusal(agentId, isMusic ? 'music' : 'audio');
+    if (overLimit) return { content: overLimit, isError: true };
+
     // A voice outside the model's catalog is kicked back: the provider's voice enum
     // is closed, so character or age go into the spoken text, not the id.
     if (!isMusic && voice) {
@@ -483,6 +500,9 @@ const handlers = {
       isError = true;
       return { content, isError };
     }
+
+    const overLimit = limitRefusal(agentId, 'video');
+    if (overLimit) return { content: overLimit, isError: true };
 
     // Canonical params are engine-enforced at the boundary: a missing or
     // out-of-range value kicks the call back so the agent re-picks.
