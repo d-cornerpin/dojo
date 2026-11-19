@@ -58,6 +58,11 @@ describe('an engine event is handed back by how its turn ended', () => {
     expect(event()).toMatchObject({ served: null, swept: null, attempts: 1 });
   });
 
+  it('an engine cut with no abort call releases it and counts the failed delivery', async () => {
+    await turnEnds(advance(latchEngineCut(fresh(), 'terminated'), { loopCount: 2 }));
+    expect(event()).toMatchObject({ served: null, swept: null, attempts: 1 });
+  });
+
   it('a silent read-only turn keeps it served', async () => {
     await turnEnds(fresh());
     expect(event()).toEqual({ served: TURN, swept: null, attempts: 0, due: null });
