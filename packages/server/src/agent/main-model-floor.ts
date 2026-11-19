@@ -5,7 +5,7 @@ import { getDb } from '../db/connection.js';
 import { effectiveContextWindow, resolveNumCtx } from './model.js';
 import { refuseUnfitLocalModel } from './local-model-fit.js';
 import { createLogger } from '../logger.js';
-import { sanitizeMessagesOnModelChange } from './model-switch.js';
+import { setAgentModel } from './model-switch.js';
 import { tellOwner, ownerConditionCleared } from '../healer/owner-notices.js';
 import { isStandardModelRow } from '../services/local-standard.js';
 const logger = createLogger('main-model-floor');
@@ -106,37 +106,30 @@ export function cheapestAgentModel(exclude: readonly string[] = []): string | nu
 }
 
 /** Moves every live agent on one of `modelIds` (and the service agents' model settings) to the cheapest big-enough
- *  model, with the effects of any model change; with none, the agents are left without a model and counted. */
-export function reassignAffectedAgents(
+ *  model through the one setter; with none, the agents are left without a model and counted. */
+export async function reassignAffectedAgents(
   modelIds: string[], fallbackId = cheapestAgentModel(modelIds),
-): { agentsMoved: number; agentsWithoutModel: number } {
+): Promise<{ agentsMoved: number; agentsWithoutModel: number }> {
   const db = getDb();
-  let reassigned = 0;
-  const movedIds = fallbackId
-    ? (db.prepare(`SELECT id FROM agents WHERE model_id IN (${modelIds.map(() => '?').join(',')}) AND status != 'terminated'`)
-      .all(...modelIds) as Array<{ id: string }>).map((a) => a.id)
-    : [];
-  for (const mid of modelIds) {
-    const result = db.prepare(
-      "UPDATE agents SET model_id = ?, updated_at = datetime('now') WHERE model_id = ? AND status != 'terminated'"
-    ).run(fallbackId, mid);
-    reassigned += result.changes;
-    if (fallbackId) {
-      db.prepare(
-        `UPDATE config SET value = ?, updated_at = datetime('now')
-          WHERE value = ? AND key IN (${MAIN_MODEL_SETTING_KEYS.map(() => '?').join(',')})`,
-      ).run(fallbackId, mid, ...MAIN_MODEL_SETTING_KEYS);
+  const marks = modelIds.map(() => '?').join(',');
+  const live = (db.prepare(`SELECT id FROM agents WHERE model_id IN (${marks}) AND status != 'terminated'`)
+    .all(...modelIds) as Array<{ id: string }>).map((a) => a.id);
+  if (!fallbackId) {
+    db.prepare(`UPDATE agents SET model_id = NULL, updated_at = datetime('now') WHERE model_id IN (${marks}) AND status != 'terminated'`).run(...modelIds);
+    return { agentsMoved: 0, agentsWithoutModel: live.length };
+  }
+  db.prepare(
+    `UPDATE config SET value = ?, updated_at = datetime('now')
+      WHERE value IN (${marks}) AND key IN (${MAIN_MODEL_SETTING_KEYS.map(() => '?').join(',')})`,
+  ).run(fallbackId, ...modelIds, ...MAIN_MODEL_SETTING_KEYS);
+  for (const id of live) {
+    try { await setAgentModel(id, fallbackId); } catch (err) {
+      logger.warn('A moved agent\'s no-fit park could not be looked at again', {
+        agentId: id, error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
-  for (const id of movedIds) {   // the effects every model change has: a new model's tool ids, a no-fit park looked at again
-    sanitizeMessagesOnModelChange(id);
-    void import('./v2/honest-stop-lock.js').then((m) => m.noteModelsChanged(id))
-      .catch((err: unknown) => logger.warn('A moved agent\'s no-fit park could not be looked at again', {
-        agentId: id, error: err instanceof Error ? err.message : String(err),
-      }));
-  }
-
-  return fallbackId ? { agentsMoved: reassigned, agentsWithoutModel: 0 } : { agentsMoved: 0, agentsWithoutModel: reassigned };
+  return { agentsMoved: live.length, agentsWithoutModel: 0 };
 }
 
 /** Live agents on a model known to be under the floor; an unknown window is not small. */
@@ -153,7 +146,7 @@ export function agentsUnderFloor(): Array<{ name: string; modelId: string; model
 /** At start: each live agent on a too-small model moves to the cheapest big-enough model that is switched on, and the
  *  owner gets one card naming them; with no such model they stay and the card says who needs a pick. Nothing to do
  *  once nobody is under the floor, so every start may run it. */
-export function moveAgentsOffSmallModels(): void {
+export async function moveAgentsOffSmallModels(): Promise<void> {
   const small = agentsUnderFloor();
   const to = cheapestAgentModel();
   if (small.length === 0 || to) ownerConditionCleared('smallmodel:stuck');
@@ -166,7 +159,7 @@ export function moveAgentsOffSmallModels(): void {
       + 'Switch on a model with a bigger memory window in Settings, or pick one on the agent\'s detail page.');
     return;
   }
-  reassignAffectedAgents([...new Set(small.map((a) => a.modelId))], to);
+  await reassignAffectedAgents([...new Set(small.map((a) => a.modelId))], to);
   const target = getDb().prepare('SELECT name, input_cost_per_m AS cost FROM models WHERE id = ?').get(to) as { name: string; cost: number | null };
   ownerConditionCleared('smallmodel:moved');   // a new move is a new telling
   const moved = small.map((a) => `${a.name} (from ${a.modelName})`).join(', ');

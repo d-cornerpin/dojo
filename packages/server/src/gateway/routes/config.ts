@@ -564,7 +564,7 @@ function forgetModelReferences(modelId: string): void {
 }
 
 // DELETE /providers/:id
-configRouter.delete('/providers/:id', (c) => {
+configRouter.delete('/providers/:id', async (c) => {
   try {
     const db = getDb();
     const id = c.req.param('id');
@@ -584,7 +584,7 @@ configRouter.delete('/providers/:id', (c) => {
 
     // Agents and service-agent settings on these models move to the cheapest working model, with the usual
     // change note; with none, the loop below leaves them without a model, as before.
-    reassignAffectedAgents(modelIds);
+    await reassignAffectedAgents(modelIds);
 
     for (const mid of modelIds) {
       db.prepare("UPDATE agents SET model_id = NULL WHERE model_id = ?").run(mid);
@@ -1965,7 +1965,7 @@ configRouter.post('/models/disable', async (c) => {
 
   disableMany(modelIds);
 
-  const moved = reassignAffectedAgents(modelIds);
+  const moved = await reassignAffectedAgents(modelIds);
 
   logger.info('Models disabled', { count: modelIds.length, ...moved });
 
