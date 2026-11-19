@@ -106,7 +106,7 @@ const seed = (): void => {
   db.prepare("INSERT INTO router_tier_models (tier_id, model_id, priority) VALUES ('light', 'm2', 0)").run();
   db.prepare("INSERT INTO config (key, value) VALUES ('dreaming_model_id', 'm1')").run();
   db.prepare("INSERT INTO config (key, value) VALUES ('pm_agent_model', 'm2')").run();
-  db.prepare("INSERT INTO agents (id, name, model_id, status, config) VALUES ('a1', 'Agent One', 'm1', 'idle', '{}')").run();
+  db.prepare("INSERT INTO agents (id, name, model_id, status, config) VALUES ('a1', 'Agent One', 'm1', 'terminated', '{}')").run();
 };
 
 const tierModelIds = (): string[] =>
@@ -121,7 +121,7 @@ describe('S07/F3 — deleting a provider clears its tier rows and model referenc
     expect(tierModelIds()).toEqual(['m3']);
   });
 
-  it('clears the config keys that pointed at its models, and nulls the agent pointer', async () => {
+  it("clears the config keys that pointed at its models, and nulls a terminated agent's pointer", async () => {
     const res = await del('/providers/p1');
     expect(res.status).toBe(200);
     expect(mockDb.current!.prepare('SELECT value FROM config WHERE key = ?').get('dreaming_model_id')).toBeUndefined();
