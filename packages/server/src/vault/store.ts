@@ -424,25 +424,23 @@ export function recordVaultUse(ids: readonly string[]): void {
 }
 
 // The clean-up's hides since 2026-08-31 were blind to use: they come back once, counted as used once today.
-// A correction, a stored vault_forget call or a logged Obsolete mark is purposeful and stays hidden.
+// A correction, a stored vault_forget call, a logged Obsolete mark or a closed commitment stays hidden.
 const CLEANUP_RESTORE_KEY = 'vault_cleanup_restore';
 
-export function restoreCleanupHidesOnce(): void {
+export function restoreCleanupHidesOnce(isClosedCommitment: (content: string) => boolean): void {
   const db = getDb();
   if (db.prepare('SELECT 1 FROM config WHERE key = ?').get(CLEANUP_RESTORE_KEY)) return;
   const forgets = db.prepare(`SELECT content FROM messages WHERE content LIKE '%"vault_forget"%'`).all() as Array<{ content: string }>;
   const marks = readLogFiles().flatMap((f) => f.split('\n')).filter((line) => line.includes(MARKED_OBSOLETE_LOG));
   const purposeful = [...forgets.map((r) => r.content), ...marks].join('\n');
   const hidden = db.prepare(
-    `SELECT id FROM vault_entries WHERE is_obsolete = 1 AND superseded_by IS NULL AND updated_at >= '2026-08-31 00:00:00'`,
-  ).all() as Array<{ id: string }>;
-  const ids = hidden.map((r) => r.id).filter((id) => !purposeful.includes(id));
+    `SELECT id, content FROM vault_entries WHERE is_obsolete = 1 AND superseded_by IS NULL AND updated_at >= '2026-08-31 00:00:00'`,
+  ).all() as Array<{ id: string; content: string }>;
+  const ids = hidden.filter((r) => !purposeful.includes(r.id) && !isClosedCommitment(r.content)).map((r) => r.id);
   const back = db.prepare(`UPDATE vault_entries SET is_obsolete = 0, confidence = MAX(confidence, 0.5), updated_at = datetime('now') WHERE id = ?`);
   db.transaction(() => {
-    for (const id of ids) {
-      back.run(id);
-      recordVaultUse([id]);
-    }
+    for (const id of ids) back.run(id);
+    recordVaultUse(ids);
     db.prepare(`INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))`)
       .run(CLEANUP_RESTORE_KEY, JSON.stringify({ at: sqlUtcStamp(new Date()), restored: ids.length }));
   })();

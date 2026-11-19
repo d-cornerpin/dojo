@@ -35,6 +35,7 @@ import {
 } from './store.js';
 import { buildRoughTasksBatch, lessonsCensusSince, advanceLessonsCensus } from './rough-tasks-batch.js';
 import { homeDir } from '../home.js';
+import { obligationVerdict } from '../work/obligation-memory.js';
 import { fenceExternal } from '../tools/external-content.js';
 import { nextDailyRunDelayMs } from '../config/clock-time.js';
 import { isFiller, beginFillerPass } from './filler.js';
@@ -141,7 +142,7 @@ function getDefaultDreamModel(): string | null {
 
 
 export function runEngineMaintenance(): { pruned: number; decayed: number; unpinned: number; agedOut: number } {
-  restoreCleanupHidesOnce();
+  restoreCleanupHidesOnce((content) => obligationVerdict(content).kind === 'closed');
   const db = getDb();
   let pruned = 0;
 
