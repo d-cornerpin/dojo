@@ -1004,9 +1004,6 @@ export const DreamerStep = ({ onReady }: { onReady?: (ready: boolean) => void })
   const [models, setModels] = useState<Model[]>([]);
   const [selectedModel, setSelectedModel] = useState('');
   const [dreamTime, setDreamTime] = useState('03:00');
-  const [dreamMode, setDreamMode] = useState<'full' | 'light'>('full');
-  // The stored mode is only rewritten when the owner picks one here; otherwise it is left exactly as stored.
-  const [modeTouched, setModeTouched] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -1033,7 +1030,6 @@ export const DreamerStep = ({ onReady }: { onReady?: (ready: boolean) => void })
       const sonnet = enabledModels.find((m: Model) => m.apiModelId.includes('sonnet'));
       setSelectedModel(cfg?.modelId || sonnet?.id || await defaultRoleModel(enabledModels));
       if (cfg?.dreamTime) setDreamTime(cfg.dreamTime);
-      if (cfg?.dreamMode === 'full' || cfg?.dreamMode === 'light') setDreamMode(cfg.dreamMode);
       // An existing dreamer config (a model was chosen) → step through freely.
       if (cfg?.modelId) setSaved(true);
     })();
@@ -1041,7 +1037,7 @@ export const DreamerStep = ({ onReady }: { onReady?: (ready: boolean) => void })
   }, [loadTry]);
 
   const handleSave = async () => {
-    const r = await api.updateDreamingConfig({ modelId: selectedModel || undefined, dreamTime, ...(modeTouched ? { dreamMode } : {}) });
+    const r = await api.updateDreamingConfig({ modelId: selectedModel || undefined, dreamTime });
     setError(r.ok ? null : r.error);   // the server's refusal, never "saved"
     setSaved(r.ok);
   };
@@ -1093,44 +1089,6 @@ export const DreamerStep = ({ onReady }: { onReady?: (ready: boolean) => void })
           onChange={(e) => { setDreamTime(e.target.value); setSaved(false); }}
           className="glass-input w-full"
         />
-      </div>
-
-      <div>
-        <label className="block text-sm font-medium text-ui/70 mb-2">Dream Mode</label>
-        <div className="space-y-3">
-          <label className="flex items-start gap-3 cursor-pointer">
-            <input
-              type="radio"
-              name="setupDreamMode"
-              checked={dreamMode === 'full'}
-              onChange={() => { setDreamMode('full'); setModeTouched(true); setSaved(false); }}
-              className="mt-1 accent-cp-amber"
-            />
-            <div>
-              <span className="text-sm text-ui/70 font-medium">Full Dream</span>
-              <p className="text-xs text-ui/40 mt-0.5">
-                Extract memories from conversations AND identify reusable techniques.
-                When the Dreamer spots a procedure that other agents could benefit from,
-                it sends it to the Trainer to be turned into a proper technique.
-              </p>
-            </div>
-          </label>
-          <label className="flex items-start gap-3 cursor-pointer">
-            <input
-              type="radio"
-              name="setupDreamMode"
-              checked={dreamMode === 'light'}
-              onChange={() => { setDreamMode('light'); setModeTouched(true); setSaved(false); }}
-              className="mt-1 accent-cp-amber"
-            />
-            <div>
-              <span className="text-sm text-ui/70 font-medium">Light Dream</span>
-              <p className="text-xs text-ui/40 mt-0.5">
-                Extract memories only. Faster and cheaper, but won't discover new techniques automatically.
-              </p>
-            </div>
-          </label>
-        </div>
       </div>
 
       {saved && (

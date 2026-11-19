@@ -18,23 +18,13 @@ beforeEach(() => {
 });
 
 describe('setup Dreamer step', () => {
-  it('does not send a mode the owner did not touch', async () => {
-    fns.getDreamingConfig.mockResolvedValue(ok({ modelId: 'm1', dreamTime: '03:00', dreamMode: 'off' }));
+  it('offers no dream mode and saves only the model and the time', async () => {
+    fns.getDreamingConfig.mockResolvedValue(ok({ modelId: 'm1', dreamTime: '03:00' }));
     render(<DreamerStep />);
     await screen.findByText(/Saved/);
+    expect(screen.queryByRole('radio')).toBeNull();
     fireEvent.change(document.querySelector('input[type="time"]')!, { target: { value: '04:30' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
-    await waitFor(() => expect(fns.updateDreamingConfig).toHaveBeenCalled());
-    const sent = fns.updateDreamingConfig.mock.calls[0][0];
-    expect(sent.dreamTime).toBe('04:30');
-    expect('dreamMode' in sent).toBe(false);
-  });
-  it('sends the mode once the owner picks one', async () => {
-    fns.getDreamingConfig.mockResolvedValue(ok({ modelId: 'm1', dreamTime: '03:00', dreamMode: 'off' }));
-    render(<DreamerStep />);
-    await screen.findByText(/Saved/);
-    fireEvent.click(screen.getByRole('radio', { name: /Light Dream/ }));
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
-    await waitFor(() => expect(fns.updateDreamingConfig).toHaveBeenCalledWith(expect.objectContaining({ dreamMode: 'light' })));
+    await waitFor(() => expect(fns.updateDreamingConfig).toHaveBeenCalledWith({ modelId: 'm1', dreamTime: '04:30' }));
   });
 });
