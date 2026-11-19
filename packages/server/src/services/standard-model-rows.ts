@@ -1,6 +1,7 @@
 // The database rows the Dojo's two standard models carry, written after each look at what Ollama lists.
 
 import { getDb } from '../db/connection.js';
+import { setConfigValue } from '../config/config-value.js';
 
 /** The `models` row for `tag` on the provider: made, or repaired and re-enabled when discovery made it first. */
 export function registerStandardRow(providerId: string, tag: string, capabilities: string[], info: { contextWindow: number | null; maxOutputTokens: number | null } | null): string {
@@ -22,14 +23,12 @@ export function registerStandardRow(providerId: string, tag: string, capabilitie
 /** The writer owns the `system` tier outright; the summary writer is never set here (each agent's own model does). */
 export function assignStandard(writerId: string | null, decisionId: string | null): void {
   const db = getDb();
-  const upsert = db.prepare(`INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
-    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`);
   db.transaction(() => {
     if (writerId) {
       db.prepare('DELETE FROM router_tier_models WHERE tier_id = ?').run('system');
       db.prepare('INSERT INTO router_tier_models (tier_id, model_id, priority) VALUES (?, ?, 0)').run('system', writerId);
     }
-    if (decisionId) upsert.run('decision_model_id', decisionId);
+    if (decisionId) setConfigValue('decision_model_id', decisionId);
   })();
 }
 
