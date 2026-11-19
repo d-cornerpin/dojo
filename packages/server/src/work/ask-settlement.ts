@@ -215,9 +215,10 @@ const sqlTime = (ms: number): string => new Date(ms).toISOString().replace('T', 
 const JOB_HOLD_REASON = 'held: its job is still running';
 /** When the request was held on its job and the task it names, if that hold is its latest transition. */
 export function jobHeldAt(workId: string): { at: string; task: string | null } | null {
-  const r = getDb().prepare(`SELECT created_at AS at, json_extract(payload, '$.reason') AS why FROM work_events
-    WHERE work_id = ? AND kind = 'transition' ORDER BY id DESC LIMIT 1`).get(workId) as { at: number; why: string | null } | undefined;
-  return r?.why?.startsWith(JOB_HOLD_REASON) ? { at: sqlTime(r.at), task: /\(task (.+)\)$/.exec(r.why)?.[1] ?? null } : null;
+  const r = getDb().prepare(`SELECT created_at AS at, json_extract(payload, '$.reason') AS why, json_extract(payload, '$.evidence_ref') AS task
+    FROM work_events WHERE work_id = ? AND kind = 'transition' ORDER BY id DESC LIMIT 1`)
+    .get(workId) as { at: number; why: string | null; task: string | null } | undefined;
+  return r?.why?.startsWith(JOB_HOLD_REASON) ? { at: sqlTime(r.at), task: r.task } : null;
 }
 
 /** Is task `id` still open, and is it parked (a due time set)? */
@@ -802,7 +803,7 @@ function jobHold(ask: AskRow, ctx: SettlementContext, actorId: string, out: (v: 
     && (handBackCauseOf(turnExitReason(ask.agent_id, ctx.turnNumber), ctx) !== 'silence' || !qualifyingDelivery(ask, ctx.turnNumber));
   if (!taskNow(task).parked && !jobTurnEnded) return null;
   if (ask.state === 'blocked') return out('held', 'already held on its job');
-  const r = transition(ask.id, { to: 'blocked', by: 'agent', actorId, expectedState: ask.state, reason: `${JOB_HOLD_REASON} (task ${task})` });
+  const r = transition(ask.id, { to: 'blocked', by: 'agent', actorId, expectedState: ask.state, reason: JOB_HOLD_REASON, evidenceRef: task });
   return r.kind === 'applied' ? out('held', 'held on its job') : out('unchanged', `job hold refused: ${r.kind}`);
 }
 
