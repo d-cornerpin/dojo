@@ -176,15 +176,15 @@ export function moveAgentsOffSmallModels(): void {
     + 'You can pick a different model for any agent on its detail page.');
 }
 
-/** The model a service agent is created or reactivated on: its setting, else the main agent's. One under the floor
- *  is replaced by the cheapest model that clears it ('auto' when none does), so it never starts on a small model. */
+/** The model a service agent is created or reactivated on: its setting, else the main agent's. One that cannot run an
+ *  agent (under the floor, or not a chat model) is replaced by the cheapest model that can ('auto' when none can). */
 export function serviceAgentModelId(settingKey: string, primaryId: string): string | null {
   const db = getDb();
   const picked = (db.prepare('SELECT value FROM config WHERE key = ?').get(settingKey) as { value: string } | undefined)?.value
     || (db.prepare('SELECT model_id FROM agents WHERE id = ?').get(primaryId) as { model_id: string | null } | undefined)?.model_id || null;
-  if (!picked || !refuseSmallMainModel(picked)) return picked;
+  if (!picked || (refuseSmallMainModel(picked) === null && refuseNonChatModel(picked) === null)) return picked;
   const replacement = cheapestAgentModel([picked]) ?? 'auto';
-  logger.warn('A service agent\'s model is under the 32K floor; replaced', { settingKey, from: picked, to: replacement });
+  logger.warn('A service agent\'s model cannot run an agent; replaced', { settingKey, from: picked, to: replacement });
   return replacement;
 }
 
