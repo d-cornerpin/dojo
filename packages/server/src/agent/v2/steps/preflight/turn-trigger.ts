@@ -61,8 +61,8 @@ export function runTurnTrigger(
   const contextWindow = agentTurnWindow(agentId, contextModelId);
 
 
-  // Serve the human conversation waiting longest (FIFO), classified by structured origin; engine events
-  // and A2A are not human conversations.
+  // Serve the first waiting human conversation in the one order (the owner, then never served, then oldest),
+  // classified by structured origin; engine events and A2A are not human conversations.
   const waitingConvs = getWaitingHumanConversations(agentId);
   // Read before the pickup claim: afterwards this turn's own ask is claimed, and every user turn would
   // look like a settled-context wake.

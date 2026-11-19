@@ -21,7 +21,7 @@ import { postAgentNotice } from '../agent-notice.js';
 
 const logger = createLogger('counterparty');
 // "Unanswered human conversation" = an open `work(kind='ask')` row: real, so it survives a
-// restart; FIFO oldest-first per item; engine events and A2A never open an ask.
+// restart; served in one order (the owner, then never served, then oldest); engine events and A2A never open an ask.
 export interface WaitingConversation {
   key: string;
   /** Conversation id of the OLDEST unanswered row; NULL until pickup re-resolves it via `identity`. */
@@ -45,6 +45,10 @@ export interface WaitingConversation {
   oldestWaitingRowid: number;
   /** The smallest due time of the conversation's asks (0: due now); a conversation waits while it is in the future. */
   dueAt: number;
+  /** The owner wrote it; the owner is served before anyone else. */
+  owner: boolean;
+  /** Its oldest ask was picked up by a turn before (handed back); a never-served one goes first. */
+  served: boolean;
 }
 
 /** ONE projection for every read; `seq AS rowid` must stay: `seq` is the INTEGER PRIMARY KEY. */
@@ -89,14 +93,15 @@ export function getWaitingHumanConversations(agentId: string, opts: { includeNot
   // Narrow INTO the WHERE before the LIMIT: steers/notices/A2A are all role='user', so post-LIMIT
   // filtering lets them eat the window and an older human ask is forgotten.
   const rows = db.prepare(
-    `SELECT ${WAITING_COLS}, COALESCE(w.next_attempt_at, 0) AS due_at
+    `SELECT ${WAITING_COLS}, COALESCE(w.next_attempt_at, 0) AS due_at,
+            EXISTS (SELECT 1 FROM work_events ce WHERE ce.work_id = w.id AND ce.kind = 'claim_turn') AS served
        FROM ${WAITING_HUMAN_CANDIDATE_FROM}
       WHERE ${WAITING_HUMAN_CANDIDATE_WHERE}
       ORDER BY w.opened_at ASC, m.seq ASC LIMIT 50`,
-  ).all({ agentId, sessionStart }) as Array<WaitingConversation['latest'] & { due_at: number }>;
+  ).all({ agentId, sessionStart }) as Array<WaitingConversation['latest'] & { due_at: number; served: number }>;
   const now = Date.now();
   // UNANSWERED iff the row's OWN ask is open: a mid-turn arrival must not ride an unrelated reply.
-  const agg = new Map<string, { latest: WaitingConversation['latest']; oldest: WaitingConversation['latest']; oldestWaitingRowid: number; workId: string; identity: ConversationIdentity; dueAt: number }>();
+  const agg = new Map<string, { latest: WaitingConversation['latest']; oldest: WaitingConversation['latest']; oldestWaitingRowid: number; workId: string; identity: ConversationIdentity; dueAt: number; owner: boolean; served: boolean }>();
   for (const r of rows) {                              // now OLDEST → newest by rowid (ASC)
     const o = originOfCandidate(r);
     // The one "owes a reply" definition: AUTHORIZED human inbound; the rest is Lane-3 awareness.
@@ -109,6 +114,7 @@ export function getWaitingHumanConversations(agentId: string, opts: { includeNot
       e = {
         latest: r, oldest: r, oldestWaitingRowid: r.rowid, workId: r.work_id,
         identity: conversationIdentityOf(o.channel, o.senderId, o.senderName, o.threadId), dueAt: r.due_at,
+        owner: o.relation === 'owner', served: r.served === 1,
       };
       agg.set(key, e);
     }
@@ -126,8 +132,10 @@ export function getWaitingHumanConversations(agentId: string, opts: { includeNot
       oldest: e.oldest,
       oldestWaitingRowid: e.oldestWaitingRowid,
       dueAt: e.dueAt,
+      owner: e.owner,
+      served: e.served,
     }))
-    .sort((a, b) => a.oldestWaitingRowid - b.oldestWaitingRowid);              // FIFO by rowid
+    .sort((a, b) => Number(b.owner) - Number(a.owner) || Number(a.served) - Number(b.served) || a.oldestWaitingRowid - b.oldestWaitingRowid);
 }
 
 /** Has a person's message for `agentId` arrived after the row `sinceSeq`, or, given the conversation a turn
