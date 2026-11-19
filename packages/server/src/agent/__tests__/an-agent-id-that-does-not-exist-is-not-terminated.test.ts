@@ -91,20 +91,26 @@ beforeEach(() => {
   db.prepare("INSERT INTO agent_groups (id, name, created_by) VALUES ('g-user', 'UserSquad', 'dashboard')").run();
   db.prepare("INSERT INTO agent_groups (id, name, created_by) VALUES ('g-mine', 'MySquad', 'primary')").run();
   mockDb.current = db;
-  db.prepare("INSERT INTO agents (id, name, created_by, classification, status) VALUES ('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', 'IdAgent', 'creator', 'apprentice', 'idle')").run();
-  db.prepare("INSERT INTO agents (id, name, created_by, classification, status) VALUES ('bbbbbbbb-cccc-dddd-eeee-ffffffffffff', 'EndedAgent', 'primary', 'apprentice', 'terminated')").run();
+  db.prepare(`INSERT INTO agents (id, name, created_by, classification, status) VALUES ('${LIVE_ID}', 'IdAgent', 'creator', 'apprentice', 'idle')`).run();
+  db.prepare(`INSERT INTO agents (id, name, created_by, classification, status) VALUES ('${ENDED_ID}', 'EndedAgent', 'primary', 'apprentice', 'terminated')`).run();
   vi.mocked(terminateAgent).mockClear();
 });
 
 import { executeTool, toolResultOf } from '../tools/index.js';
 import { terminateAgent } from '../spawner.js';
+import { randomUUID } from 'node:crypto';
+
+// Ids shaped like real agent ids: one that is in no row, one live agent, one ended agent.
+const MISSING_ID = randomUUID();
+const LIVE_ID = randomUUID();
+const ENDED_ID = randomUUID();
 
 describe('an agent id that does not exist is not terminated', () => {
   it('the main agent ending an id that names no agent is told it does not exist', async () => {
     const r = toolResultOf(await executeTool('primary', {
       id: 'tc-1',
       name: 'kill_agent',
-      arguments: { agent_id: '11111111-2222-3333-4444-555555555555' },
+      arguments: { agent_id: MISSING_ID },
     }));
     expect(r.isError).toBe(true);
     expect(r.content).toContain("doesn't exist");
@@ -115,19 +121,19 @@ describe('an agent id that does not exist is not terminated', () => {
     const r = toolResultOf(await executeTool('creator', {
       id: 'tc-2',
       name: 'kill_agent',
-      arguments: { agent_id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' },
+      arguments: { agent_id: LIVE_ID },
     }));
     expect(r.isError).toBeFalsy();
     expect(r.content).toMatch(/terminated/i);
     expect(vi.mocked(terminateAgent)).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(terminateAgent).mock.calls[0][0]).toBe('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+    expect(vi.mocked(terminateAgent).mock.calls[0][0]).toBe(LIVE_ID);
   });
 
   it('an ended agent named by its id gets the already-ended answer', async () => {
     const r = toolResultOf(await executeTool('primary', {
       id: 'tc-3',
       name: 'kill_agent',
-      arguments: { agent_id: 'bbbbbbbb-cccc-dddd-eeee-ffffffffffff' },
+      arguments: { agent_id: ENDED_ID },
     }));
     expect(r.content).toContain('already terminated');
     expect(vi.mocked(terminateAgent)).toHaveBeenCalledTimes(0);

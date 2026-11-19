@@ -26,12 +26,12 @@ beforeEach(() => {
   kit.sends.length = 0;
 });
 
-const CRITICAL = 'git reset --hard   # Rowan';   // names an agent that is in error
+const CRITICAL = 'git reset --hard   # StuckHelper';   // names an agent that is in error
 const ROUTINE = 'git reset --hard';
 
 async function holdWith(script: string, presence: string): Promise<number> {
   kit.presence = presence;
-  kit.db!.prepare("INSERT OR IGNORE INTO agents (id, name, status) VALUES ('rowan-id', 'Rowan', 'error')").run();
+  kit.db!.prepare("INSERT OR IGNORE INTO agents (id, name, status) VALUES ('stuck-helper-id', 'StuckHelper', 'error')").run();
   const state = initState({
     agentId: HEALER, contextWindow: 200_000, isAutoRouted: false, configuredModelId: 'test', turnNumber: 1,
     triggeredByIMessage: false, triggeredByA2AReplyIntent: null, lastUserMessageContent: null, lastUserMessageId: null,
