@@ -413,7 +413,7 @@ describe('t173b amendment: the origin a park borrows is never a guess', () => {
       channel: 'dashboard', senderId: 'owner', conversationId: 'conv-dash',
       inboundMeta: JSON.stringify({ channel: 'dashboard', relation: 'owner' }),
     });
-    script({ reads: 80 });
+    script({ reads: 160 });   // the floor opens this request's own task at the sixth call, which renews the first window once
     await runV2Turn(WORKER);
     const parked = lastTurnNumber();
     expect(turnRow(parked).exit_reason).toBe('iteration_cap');

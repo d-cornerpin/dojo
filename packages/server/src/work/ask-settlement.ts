@@ -794,11 +794,20 @@ function mediaJobs(askRootId: string): { all: number; out: number; cancelled: nu
   return t;
 }
 
+/** A tracker task `t` linked to the request of ask `a` by its message, not ended and not handed in. */
+export const LINKED_OPEN_TASK = (a: string): string =>
+  `t.kind = 'task' AND t.agent_id = ${a}.agent_id AND t.source_message_id = ${a}.root_id`
+  + ` AND t.state NOT IN ('done', 'failed', 'abandoned') AND ${handedInExpr('t')} = 0`;
+
+/** The open task linked to `agentId`'s request `messageId`, or null. */
+export function linkedTaskOf(agentId: string, messageId: string | null): string | null {
+  if (!messageId) return null;
+  return (getDb().prepare(`SELECT t.id AS id FROM (SELECT ? AS agent_id, ? AS root_id) a JOIN work t ON ${LINKED_OPEN_TASK('a')} LIMIT 1`)
+    .get(agentId, messageId) as { id: string } | undefined)?.id ?? null;
+}
+
 function stillOwed(ask: AskRow, ignoreTurn: number | null): string | null {
-  if (getDb().prepare(
-    `SELECT 1 FROM work t WHERE t.kind = 'task' AND t.agent_id = ? AND t.source_message_id = ?
-        AND t.state NOT IN ('done', 'failed', 'abandoned') AND ${handedInExpr('t')} = 0 LIMIT 1`,
-  ).get(ask.agent_id, ask.root_id)) return 'a tracker task linked to this request is still open (its holder has not handed it in)';
+  if (linkedTaskOf(ask.agent_id, ask.root_id)) return 'a tracker task linked to this request is still open (its holder has not handed it in)';
   const bag = turnContext(ask.agent_id);
   if (bag?.root?.kind === 'ask' && bag.root.sourceMessageId === ask.root_id && bag.turnNumber !== ignoreTurn) {
     return 'a turn serving this request is running';
