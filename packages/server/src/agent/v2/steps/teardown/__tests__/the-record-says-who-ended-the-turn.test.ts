@@ -289,9 +289,10 @@ describe('§4 an owner\'s stop is not the model\'s silence, all the way through'
   const reclaim = (turn: number): void => { claimAsk(ASK(), AGENT); stampClaimingTurn(ASK(), turn); };
   const askState = (): string => (db().prepare('SELECT state FROM work WHERE id = ?')
     .get(ASK()) as { state: string }).state;
+  // The silence ladder: an engine cut spends the engine count instead, never a silence rung.
   const rungs = (): number => (db().prepare(
     `SELECT COUNT(*) AS n FROM work_events WHERE work_id = ? AND kind = 'audit'
-       AND json_extract(payload, '$.marker') = ?`,
+       AND json_extract(payload, '$.marker') = ? AND COALESCE(json_extract(payload, '$.cause'), 'silence') = 'silence'`,
   ).get(ASK(), RE_SERVE_MARKER) as { n: number }).n;
   const lastReason = (): string => {
     const rows = db().prepare(
@@ -339,7 +340,7 @@ describe('§4 an owner\'s stop is not the model\'s silence, all the way through'
     expect(askState(), 'a genuine silence at the bound still stands the re-serve down').toBe('blocked');
   });
 
-  it('every one of the eight is exempt, driven through the recorder and the ladder', async () => {
+  it('every one of the eight is exempt from the silence ladder, driven through the recorder and the ladder', async () => {
     const reasons: TurnExitReason[] = ['stop', 'preempt', 'abort', 'terminated', 'budget',
       'provider_error', 'stream_idle', 'identical_call'];
     claimedAsk(1);

@@ -78,12 +78,12 @@ export function isStateConflict(
 }
 
 /** Consume by recording, for the caller with no branch to take: the refusal reaches a log with its
- * gate name and row. `null` is accepted for a deliberate hold already recorded as `rearm_refused`.
+ * gate name and row.
  * Deliberately not a branch: what a refused move does is its own change; each use owes a decision. */
 export function noteUnsettled(
-  o: WorkOutcome | WorkPatchOutcome | null, where: string, ctx: Record<string, unknown> = {},
+  o: WorkOutcome | WorkPatchOutcome, where: string, ctx: Record<string, unknown> = {},
 ): void {
-  if (o === null || o.kind === 'applied' || o.kind === 'no_change') return;
+  if (o.kind === 'applied' || o.kind === 'no_change') return;
   logger.warn(`work write refused: ${where}`, {
     ...ctx,
     reason: o.reason,

@@ -23,12 +23,12 @@ export function chatLine(agentId: string, id: string, content: string, conversat
   return true;
 }
 
-/** The agent cannot run: the open request on message `askRootId` is told ONCE (row id `park-note:<message>`), with
+/** The agent cannot run: the open (or just-claimed) request on message `askRootId` is told ONCE (row id `park-note:<message>`), with
  *  `ownerWords` on the dashboard. A person other than the owner, on a channel the engine's own lines reach, also hears
  *  one neutral line there, once while any request of theirs that was told still waits.
  *  False when no open request waits on that message or it was already told. */
 export async function tellCannotRun(agentId: string, askRootId: string, ownerWords: string): Promise<boolean> {
-  const ask = getDb().prepare(`SELECT conversation_id AS conversationId FROM work WHERE kind = 'ask' AND agent_id = ? AND root_id = ? AND state = 'open'`)
+  const ask = getDb().prepare(`SELECT conversation_id AS conversationId FROM work WHERE kind = 'ask' AND agent_id = ? AND root_id = ? AND state IN ('open', 'claimed')`)
     .get(agentId, askRootId) as { conversationId: string | null } | undefined;
   if (!ask || !chatLine(agentId, `park-note:${askRootId}`, ownerWords, ask.conversationId)) return false;
   const [message] = getMessagesByIds([askRootId]);
@@ -46,6 +46,13 @@ export async function tellCannotRun(agentId: string, askRootId: string, ownerWor
     await queueReply({ agentId, turnNumber: null, root, text: CANNOT_RUN_LINE, address, kind: 'cannot-run' });
   }
   return true;
+}
+
+/** The owner's dashboard line for a request that waits on its provider's reset at `retryAt`. */
+export function providerWaitWords(agentId: string, retryAt: number): string {
+  const name = (getDb().prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined)?.name ?? agentId;
+  const at = new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit' }).format(retryAt);
+  return `${OWNER_ALERT_DOJO_PREFIX} ${name}'s AI provider is limiting requests right now, so this message waits. It is answered when the limit clears, about ${at}.`;
 }
 
 /** Every still-open ask waiting on a parked agent is told (`tellCannotRun`) the plain cause; the message stays

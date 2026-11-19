@@ -63,9 +63,9 @@ vi.mock('../../db/connection.js', async () => {
 
 import { runMigrations } from '../../db/migrations.js';
 import { askIdForMessage, claimAsk, stampClaimingTurn } from '../store.js';
-import { MAX_ASK_RE_SERVES, RE_SERVE_MARKER, settleAsk } from '../ask-settlement.js';
+import { MAX_ASK_RE_SERVES, MAX_ENGINE_HAND_BACKS, RE_SERVE_MARKER, settleAsk } from '../ask-settlement.js';
 import { insertMessage } from '../../memory/message-store.js';
-import { turnWasEngineCut } from '../exit-attribution.js';
+import { turnExitReason } from '../exit-attribution.js';
 const AGENT = 'asker';
 const CONV = 'conv-dashboard';
 const db = (): Database.Database => mockDb.current!;
@@ -77,11 +77,14 @@ const transitionsFor = (messageId: string): Array<{ to: string; reason: string }
     `SELECT payload FROM work_events WHERE work_id = ? AND kind = 'transition' ORDER BY id`,
   ).all(askIdForMessage(messageId)) as Array<{ payload: string }>)
     .map((r) => JSON.parse(r.payload) as { to: string; reason: string });
-const rungsFor = (messageId: string): number =>
+const countOf = (messageId: string, causes: string): number =>
   (db().prepare(
     `SELECT COUNT(*) AS n FROM work_events WHERE work_id = ? AND kind = 'audit'
-       AND json_extract(payload, '$.marker') = ?`,
+       AND json_extract(payload, '$.marker') = ? AND COALESCE(json_extract(payload, '$.cause'), 'silence') IN (${causes})`,
   ).get(askIdForMessage(messageId), RE_SERVE_MARKER) as { n: number }).n;
+/** The silence rungs; an engine cut spends the engine count instead (`cutsFor`). */
+const rungsFor = (messageId: string): number => countOf(messageId, "'silence'");
+const cutsFor = (messageId: string): number => countOf(messageId, "'cut', 'crash'");
 
 /** The turn record the settlement reads. THE POINT OF THIS FILE is which word goes here. */
 function seedTurn(turn: number, exitReason: string, answered = 0): void {
@@ -126,44 +129,47 @@ beforeEach(() => {
 // §2 — THE LADDER CHARGES SILENCES, NOT CUTS.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
-describe('§2 an engine-cut turn hands the ask back without spending a rung', () => {
-  it('the cut hands it back OPEN and the ladder does not move', () => {
+describe('§2 an engine-cut turn hands the ask back without spending a silence rung', () => {
+  it('the cut hands it back OPEN, spends no silence rung, and spends the engine count', () => {
     claimedAsk('m-1', 1);
     seedTurn(1, 'iteration_cap');
     expect(finalize('m-1', 1)).toBe('reopened');
     expect(workFor('m-1').state).toBe('open');
     expect(rungsFor('m-1'), 'an engine cut is not a serve the model spent').toBe(0);
-    expect(transitionsFor('m-1').at(-1)!.reason).toContain('the engine ended the turn');
+    expect(cutsFor('m-1')).toBe(1);
+    expect(transitionsFor('m-1').at(-1)!.reason).toContain('the engine ended the turn (1, iteration_cap)');
   });
 
-  it('FOUR cuts in a row still leave the ask OPEN and never stand it down', () => {
-    // The C2 shape at the bound: without the attribution fix the fourth of these is `held`/
-    // `blocked` and the drain stops serving an ask nobody ever answered or declined.
+  it('cuts in a row never spend the silence ladder; the engine count stands it down after its own bound', () => {
     claimedAsk('m-1', 1);
-    for (let i = 0; i <= MAX_ASK_RE_SERVES; i++) {
+    for (let i = 0; i < MAX_ENGINE_HAND_BACKS; i++) {
       seedTurn(1 + i, 'iteration_cap');
       expect(finalize('m-1', 1 + i), `cut ${i + 1}`).toBe('reopened');
       expect(workFor('m-1').state, `cut ${i + 1}`).toBe('open');
       reclaim('m-1', 2 + i);
     }
     expect(rungsFor('m-1')).toBe(0);
-    expect(transitionsFor('m-1').some((t) => t.to === 'blocked')).toBe(false);
+    seedTurn(1 + MAX_ENGINE_HAND_BACKS, 'iteration_cap');
+    expect(finalize('m-1', 1 + MAX_ENGINE_HAND_BACKS)).toBe('held');
+    expect(workFor('m-1').state).toBe('blocked');
   });
 
-  it('every engine-imposed exit is treated the same way, and the owner\'s STOP is one of them', () => {
-    // `stop` is the OWNER interrupting. It is not the model declining to answer either, and an
-    // ask must not be parked because somebody pressed stop four times.
-    for (const reason of ['iteration_cap', 'park', 'brake', 'stop', 'preempt', 'abort',
-      'provider_error', 'stream_idle', 'terminated', 'budget', 'identical_call']) {
+  it('every engine cut is counted on the engine group; a stop, a barge-in or a budget stop is nobody\'s failure', () => {
+    for (const reason of ['iteration_cap', 'park', 'brake', 'abort', 'provider_error', 'stream_idle', 'terminated', 'identical_call']) {
       claimedAsk(`m-${reason}`, 1);
       seedTurn(1, reason);
       expect(finalize(`m-${reason}`, 1), reason).toBe('reopened');
-      expect(rungsFor(`m-${reason}`), reason).toBe(0);
+      expect([rungsFor(`m-${reason}`), cutsFor(`m-${reason}`)], reason).toEqual([0, 1]);
+    }
+    for (const reason of ['stop', 'preempt', 'budget']) {
+      claimedAsk(`m-${reason}`, 1);
+      seedTurn(1, reason);
+      expect(finalize(`m-${reason}`, 1), reason).toBe('reopened');
+      expect([rungsFor(`m-${reason}`), cutsFor(`m-${reason}`)], reason).toEqual([0, 0]);
     }
   });
 
   it('a cut does not un-spend rungs a real silence already spent', () => {
-    // The ladder's count is a COUNT over the row's own log; a cut simply does not add to it.
     claimedAsk('m-1', 1);
     seedTurn(1, 'no_reply_intended');
     expect(finalize('m-1', 1)).toBe('reopened');
@@ -256,13 +262,13 @@ describe('§3 a genuine silence is charged exactly as it was', () => {
   it('a classifier that CANNOT READ the record does not invent a cut', () => {
     // MUTATION GAP (MC8), and asserted on the CLASSIFIER rather than through the settlement: the
     // settlement's own evidence read joins `turns` too, so breaking that table throws before this
-    // question is ever asked. The catch belongs to `turnWasEngineCut`, so the clause belongs there.
+    // question is ever asked. The catch belongs to `turnExitReason`, so the clause belongs there.
     // The fail direction is load-bearing: failing OPEN would silently disarm the bound the first time
     // the read broke, and a broken read is exactly when nobody is watching.
     seedTurn(1, 'iteration_cap');
-    expect(turnWasEngineCut(AGENT, 1), 'readable and a cut').toBe(true);
+    expect(turnExitReason(AGENT, 1), 'readable and a cut').toBe('iteration_cap');
     db().exec('DROP TABLE turns');
-    expect(turnWasEngineCut(AGENT, 1), 'unreadable ⇒ NOT a cut, so the bound stays armed').toBe(false);
+    expect(turnExitReason(AGENT, 1), 'unreadable ⇒ no exit, read as silence, so the bound stays armed').toBeNull();
   });
 
   it('`unknown` is not read as a cut', () => {

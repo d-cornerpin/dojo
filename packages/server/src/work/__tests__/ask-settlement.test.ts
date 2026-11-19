@@ -762,12 +762,13 @@ describe('ARM 7 — an ask is not served into the same silence for ever', () => 
   it('the count is on the RECORD, so a reader never has to add it up', () => {
     claimedAsk('m-1', 1);
     expect(finalizeWithNothing('m-1', 1)).toBe('reopened');
-    expect(transitionsFor('m-1').at(-1)!.reason).toContain(`serve 2 of ${MAX_ASK_RE_SERVES + 1}`);
     const audits = mockDb.current!.prepare(
       `SELECT payload FROM work_events WHERE work_id = ? AND kind = 'audit' ORDER BY id`,
     ).all(askIdForMessage('m-1')) as Array<{ payload: string }>;
     expect(audits).toHaveLength(1);
-    expect((JSON.parse(audits[0].payload) as { marker: string }).marker).toBe(RE_SERVE_MARKER);
+    const rung = JSON.parse(audits[0].payload) as { marker: string; cause: string; reason: string };
+    expect(rung).toMatchObject({ marker: RE_SERVE_MARKER, cause: 'silence' });
+    expect(rung.reason).toContain(`(2 of ${MAX_ASK_RE_SERVES + 1})`);
   });
 
   it('NEGATIVE CONTROL — an ask that gets ANSWERED never reaches the bound', () => {

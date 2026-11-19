@@ -135,7 +135,8 @@ const relayDeliveries = (): Array<{ id: string }> =>
   db().prepare(`SELECT id FROM deliveries WHERE agent_id = ? AND tool = 'a2a-join-relay' AND outcome = 'delivered' ORDER BY rowid`).all(AGENT) as never;
 const reServes = (id: string): number =>
   (db().prepare(
-    `SELECT COUNT(*) AS n FROM work_events WHERE work_id = ? AND kind = 'audit' AND json_extract(payload, '$.marker') = 'ct0_ask_re_served'`,
+    `SELECT COUNT(*) AS n FROM work_events WHERE work_id = ? AND kind = 'audit' AND json_extract(payload, '$.marker') = 'ct0_ask_re_served'
+       AND COALESCE(json_extract(payload, '$.cause'), 'silence') = 'silence'`,
   ).get(id) as { n: number }).n;
 
 /** The helper's ANSWER, through the REAL transport door. */
@@ -422,7 +423,7 @@ describe('t163 — the three conditions are each load-bearing (controls: the eng
     await getAgentRuntime().handleMessage(AGENT, '');
     await waitForReServe(reServe);
     expect(workState(ASK_B)).toBe('open');
-    expect(reServes(ASK_B), 'an engine cut spends no rung (today\'s rule)').toBe(0);
+    expect(reServes(ASK_B), 'an engine cut spends no silence rung').toBe(0);
   });
 
   it('the relay reached the conversation BEFORE ask B arrived: it is not B\'s answer', async () => {

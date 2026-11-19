@@ -158,6 +158,12 @@ function settleJob(agentId: string): { tasks: string[]; asks: string[] } {
   return { tasks, asks };
 }
 
+/** A parked job's continuation is queued and has not started. */
+export function jobContinuationOwed(agentId: string): boolean {
+  const c = jobWork.get(agentId);
+  return !!c && (c.drainWake || c.timerWakes > 0);
+}
+
 export function runCarriesJob(agentId: string): boolean {
   return jobWork.get(agentId)?.running === true;
 }

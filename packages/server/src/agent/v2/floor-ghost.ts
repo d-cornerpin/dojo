@@ -23,6 +23,8 @@ export const OUT_OF_BAND_GHOST_SUBJECTS = [
   // A scheduled run owed the owner a message and closed unheard; one alert per run, quiet if
   // reminder-silence already ghosted it.
   'run-undelivered',
+  // A request the agent could not answer after its bound of tries; told once on the request's record.
+  'request-stood-down',
 ] as const;
 
 export type FloorGhostSubject = SteerFloorId | (typeof OUT_OF_BAND_GHOST_SUBJECTS)[number];

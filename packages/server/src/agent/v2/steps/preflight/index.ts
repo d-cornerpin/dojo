@@ -133,7 +133,7 @@ export async function runPreflight(
   const {
     revertTriggerStampOnAbort, triggeredByIMessage,
     inboundChannel, inboundContext, unrepliedAssign,
-  } = runInboundAndAbort(turnCtx, ctx, sc, { triggerRow, triggerWorkId, lastUserMessageContent });
+  } = runInboundAndAbort(turnCtx, ctx, sc, { triggerRow, lastUserMessageContent });
 
   const classified = await runTurnClassification(turnCtx, ctx, sc, {
     db, waitingConvs, openHumanWorkAtTurnStart, triggerRow, chosenConvKey,

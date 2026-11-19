@@ -101,6 +101,10 @@ export interface TurnContext {
 
   goingIdleDetectorRanThisTurn: boolean;
 
+  // The provider's reset the last model call met (cleared before each call), and a no-answer abort: finalize reads both.
+  retryAt: number | null;
+  abortHandBack: boolean;
+
   // Timer closures read it at fire time, so it lives on the bag; no driver let beside it.
   state: AgentTurnState | null;
 }
@@ -148,6 +152,8 @@ export function openTurnContext(agentId: string): TurnContext {
     replyFiles: [],
     voiceFillerFired: false,
     goingIdleDetectorRanThisTurn: false,
+    retryAt: null,
+    abortHandBack: false,
     state: null,
   };
   openContexts.set(agentId, ctx);

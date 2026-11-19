@@ -442,6 +442,11 @@ function migratedDb(): Database.Database {
   return db;
 }
 
+/** The backoff a failed turn set on its request has passed: the next run serves it again. */
+function backoffPasses(): void {
+  mockDb.current!.prepare("UPDATE work SET next_attempt_at = ? WHERE kind = 'ask' AND next_attempt_at IS NOT NULL").run(Date.now() - 1);
+}
+
 function setupTestDb(): Database.Database {
   const db = migratedDb();
   mockDb.current = db;
@@ -1389,6 +1394,7 @@ describe('runV2Turn integration', () => {
     onAgentInjuredSpy.mockClear();
 
     // Second identical failure, same kind, same fingerprint → escalate.
+    backoffPasses();
     await runV2Turn('primary');
 
     expect(recordErrorMock).toHaveBeenCalledWith('primary');
@@ -1912,6 +1918,7 @@ describe('runV2Turn integration', () => {
       expect(headsUpMessages()).toHaveLength(1);
 
       callModelSpy.mockRejectedValue(midFlightTimeout());
+      backoffPasses();
       await runV2Turn('primary'); // turn N+1: the retry ALSO dies at patience — ladder exhaustion
 
       const allHeadsUp = headsUpMessages();
@@ -1932,6 +1939,7 @@ describe('runV2Turn integration', () => {
       callModelSpy.mockRejectedValue(midFlightTimeout());
       await runV2Turn('primary');
       callModelSpy.mockRejectedValue(midFlightTimeout());
+      backoffPasses();
       await runV2Turn('primary');
 
       const allHeadsUp = headsUpMessages();
@@ -1961,6 +1969,7 @@ describe('runV2Turn integration', () => {
       callModelSpy.mockRejectedValue(midFlightTimeout());
       await runV2Turn('primary'); // turn N: first death — status line (no ask quoted, unaffected)
       callModelSpy.mockRejectedValue(midFlightTimeout());
+      backoffPasses();
       await runV2Turn('primary'); // turn N+1: ladder exhaustion — the honest-fail line quotes the ask
 
       const allHeadsUpWithMarker = headsUpMessages();
@@ -3731,17 +3740,14 @@ describe('PHASE-6 CUT 5: a turn that dies with no answer hands the ask back — 
     // proof that this turn claimed the ask and then gave it back, carrying the
     // engine's reason with it.
     expect(askRow().state).toBe('open');
-    const handBack = eventsFor(before.id).find((e) => String(e.payload ?? '').includes('handing the ask back to the waiting set'));
-    expect(handBack, 'no hand-back event on the ask').toBeTruthy();
-    expect(kinds(before.id)).not.toContain('rearm_refused');
+    const handBack = eventsFor(before.id).find((e) => String(e.payload ?? '').includes('ct0_ask_re_served'));
+    expect(handBack, 'no hand-back record on the ask').toBeTruthy();
   });
 
-  it('THE REFUSAL IS RECORDED, AND THE TURN BOUNDARY STILL HANDS THE ASK BACK', async () => {
-    // One successful send, then the model dies. The abort arm still REFUSES to re-arm and
-    // writes `rearm_refused`, so "this turn already acted" stays a fact somebody can find —
-    // that half is untouched. What changed is the turn BOUNDARY: the owner ruled on
-    // 2026-08-05 that an ask with no answer behind it is served again rather than parked, and
-    // no ask may outlive its turn `claimed`. So the row ends `open`, carrying both records.
+  it('A TURN THAT ACTED AND THEN DIED: THE TURN BOUNDARY STILL HANDS THE ASK BACK', async () => {
+    // One successful send, then the model dies. The owner ruled on 2026-08-05 that an ask with no
+    // answer behind it is served again rather than parked, and no ask may outlive its turn `claimed`;
+    // the hand-back is the turn boundary's alone, so the row ends `open`.
     let n = 0;
     callModelSpy.mockImplementation(async () => {
       n += 1;
@@ -3757,12 +3763,10 @@ describe('PHASE-6 CUT 5: a turn that dies with no answer hands the ask back — 
       toolCallId: 'tc1', name: 'imessage_send', content: 'sent', isError: false,
     });
 
-    const before = askRow();
     await runV2Turn('primary');
 
     expect(n).toBe(2);                                   // positive control: it did die on the second call
-    expect(kinds(before.id)).toContain('rearm_refused'); // P6b's abort refusal, unchanged
-    expect(askRow().state).toBe('open');                 // …and the boundary hands it back anyway
+    expect(askRow().state).toBe('open');                 // the boundary hands it back
     // The invariant the reversal exists for: nothing is left claimed by a turn that is over.
     expect(askRow().state).not.toBe('claimed');
   });

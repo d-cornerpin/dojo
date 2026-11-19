@@ -327,9 +327,9 @@ export function sweepBootStaleness(): { suppressed: number; swept: number; heldT
   const db = getDb();
   // A quick restart with a handful of genuine human asks is a person waiting, so those are HELD for the
   // re-drain; a larger backlog is stale history. Counted PER agent, and only servable rows (opened since
-  // the agent's session start, the re-drain's own floor) count.
+  // the agent's session start, the re-drain's own floor) count. An ask that waits on its own due time is kept.
   const STALE_ASK_WHERE =
-    `w.kind = 'ask' AND w.state = 'open'
+    `w.kind = 'ask' AND w.state = 'open' AND w.next_attempt_at IS NULL
      AND w.opened_at < (unixepoch('now', '-30 minutes') * 1000)
      AND w.opened_at >= (unixepoch(COALESCE((SELECT session_started_at FROM agents WHERE id = w.agent_id), '1970-01-01')) * 1000)`;
   const heldAgents = db.prepare(
@@ -353,7 +353,7 @@ export function sweepBootStaleness(): { suppressed: number; swept: number; heldT
   }
 
   // Engine events still inside their delivery lifecycle (a future retry backoff, or recorded attempts under
-  // the max) are excluded; mass backlog is swept. Keeping them cannot storm: `getPendingEngineEvent`
+  // the max) are excluded, and so is a reminder, which runs its own lifecycle; mass backlog is swept. Keeping them cannot storm: `getPendingEngineEvent`
   // (agent/v2/counterparty.ts) never wakes on a row past the expiry horizon or at max attempts.
   // The `IS NOT NULL` guard matters: a NULL `next_attempt_at` makes the whole NOT(...) NULL and would
   // shield all plain engine backlog. `sweepByRowid` does the disposal and re-applies its own guards per
@@ -361,7 +361,7 @@ export function sweepBootStaleness(): { suppressed: number; swept: number; heldT
   const staleRows = db.prepare(
     `SELECT m.seq AS rowid, m.agent_id AS agent_id FROM messages AS m
       WHERE m.role = 'user' AND m.lane = 'events'
-        AND m.served_by_turn IS NULL AND m.swept_at IS NULL
+        AND m.served_by_turn IS NULL AND m.swept_at IS NULL AND m.origin_intent IS NOT 'scheduler'
         AND m.created_at < (unixepoch('now', '-30 minutes') * 1000)
         AND NOT ((m.next_attempt_at IS NOT NULL AND m.next_attempt_at > (unixepoch('now') * 1000))
                  OR (m.delivery_attempts > 0 AND m.delivery_attempts < ${ENGINE_EVENT_MAX_ATTEMPTS}))`,

@@ -7,8 +7,8 @@
 // it closed and then delegated under it -> handed back through the authority.
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
-import { REPLY_IN_FLIGHT, settleAsk } from './ask-settlement.js';
-import { transition, abandonUnservableAsks } from './store.js';
+import { REPLY_IN_FLIGHT, handBackAsk, settleAsk } from './ask-settlement.js';
+import { abandonUnservableAsks } from './store.js';
 import { recordHandBack } from './hand-back-facts.js';
 import { parkInheritedBacklog, PROCESS_STARTED_AT } from './inherited-backlog.js';
 export { handBackFactsFor } from './hand-back-facts.js';
@@ -23,14 +23,15 @@ export const ORPHANED_CLAIM = `(t.turn_number IS NULL OR ${DEAD_TURN})`;
 
 interface Orphan { id: string; agent_id: string; turn_number: number | null; effectful_calls: number }
 
-/** Hand one orphan back to its agent, never held: the facts recorded on the ask name its effects. */
+/** Hand one orphan back to its agent as a crash (counted, so a request that keeps killing its run stands down);
+ *  the facts recorded on the ask name its effects. */
 function reArm(o: Orphan, by: string): boolean {
-  const res = transition(o.id, {
-    to: 'open', by: 'agent', actorId: 'engine', expectedState: 'claimed',
+  const res = handBackAsk(o.id, {
+    agentId: o.agent_id, turnNumber: o.turn_number, cause: 'crash', actorId: 'engine',
     reason: `${by}: the claiming turn died with its process before it answered`
       + (o.effectful_calls > 0 ? ` (it had already made ${o.effectful_calls} effectful call(s); the hand-back names what it can)` : ''),
   });
-  if (res.kind !== 'applied') return false;
+  if (res.verdict !== 'reopened') return false;
   recordHandBack(o, by);
   return true;
 }

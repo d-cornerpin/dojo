@@ -396,25 +396,11 @@ export function claimingTurnOf(workId: string): number | null {
   return r?.t ?? null;
 }
 
-/** A turn that ended with no answer and no effectful call may hand its ask back (re-serving costs a
- *  retry); one that already acted may not, since re-serving would repeat it: a duplicate send is worse
- *  than a stranded ask. Returns the transition, or `null` when held; the refusal is written as an event. */
-export function revertAskClaimOnAbort(
-  workId: string, effectfulCalls: number, reason: string,
-): WorkOutcome | null {
-  if (effectfulCalls > 0) {
-    appendEvent(workId, 'rearm_refused', 'engine', { effectful_calls: effectfulCalls, reason });
-    logger.info('ask claim held: the turn performed effectful calls, so it must not re-fire (P6b)', {
-      workId, effectfulCalls, reason,
-    });
-    return null;
-  }
-  const r = transition(workId, {
-    to: 'open', by: 'agent', actorId: 'engine', expectedState: 'claimed', reason,
-  });
-  return r;
+/** When the request was first served: its first pickup turn's stamp. */
+export function firstServedAt(workId: string): number {
+  return (getDb().prepare(`SELECT MIN(created_at) AS at FROM work_events WHERE work_id = ? AND kind = 'claim_turn'`)
+    .get(workId) as { at: number | null }).at ?? Date.now();
 }
-
 
 /** Asks nobody can ever serve or close get an honest terminal state (`abandoned`), in five structural
  *  classes: no conversation identity, root message gone, sender ignored, agent terminated, below its

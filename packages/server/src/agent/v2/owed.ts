@@ -1,11 +1,10 @@
 // Who is owed what by an agent, and when the engine next wakes it. One timer for every agent and every due reply.
 
 import { getDb } from '../../db/connection.js';
-import { afterCommit } from '../../db/unit.js';
 import { createLogger } from '../../logger.js';
 import { broadcast } from '../../gateway/ws.js';
-import { recordDeliveryAttempt } from '../../memory/message-store.js';
 import { workingExpr } from '../../work/terminal-states.js';
+import { jobContinuationOwed } from '../../work/task-freshness.js';
 import { activeRuns, isRunUnwinding } from '../shared-state.js';
 import { nextReplyDueAt, deliverDueReplies } from './channel-sender.js';
 import { getWaitingHumanConversations, getPendingEngineEvent, getNextEngineEventRetryAt } from './counterparty.js';
@@ -19,23 +18,6 @@ const WAKE_BUDGET_MAX = 30;
 const wakeupTimes = new Map<string, number[]>();
 const wakeBudgetTripped = new Set<string>();
 let timer: ReturnType<typeof setTimeout> | null = null;
-
-export type Owed = { kind: 'ask' | 'task'; id: string } | { kind: 'row'; agentId: string; rowid: number };
-
-/** THE ONE WRITER of "serve this again at". null clears. The clock is armed after the caller's unit commits. */
-export function serveLater(subject: Owed, at: number | null, why: string, opts: { onlyIfParked?: true } = {}): void {
-  const db = getDb();
-  if (subject.kind === 'row') {
-    if (at !== null) recordDeliveryAttempt({ agentId: subject.agentId, rowid: subject.rowid, notBefore: at });
-  } else if (opts.onlyIfParked) {
-    db.prepare(`UPDATE work SET next_attempt_at = MIN(next_attempt_at, ?), updated_at = ?
-      WHERE id = ? AND next_attempt_at IS NOT NULL AND hold_kind IS NULL AND ${workingExpr('work')}`).run(at, Date.now(), subject.id);
-  } else {
-    db.prepare('UPDATE work SET next_attempt_at = ?, updated_at = ? WHERE id = ?').run(at, Date.now(), subject.id);
-  }
-  logger.info('owed: serve again at', { subject, at, why });
-  afterCommit(armOwedClock);
-}
 
 /** The storm guard on the engine's own wakes (never a real inbound): at most 30 in 10 minutes per agent. */
 export function underWakeBudget(agentId: string): boolean {
@@ -61,9 +43,10 @@ function wakeBudgetClearsAt(agentId: string): number | null {
   return wakeBudgetTripped.has(agentId) ? ((wakeupTimes.get(agentId) ?? [])[0] ?? Date.now()) + WAKE_BUDGET_WINDOW_MS : null;
 }
 
-/** Is anything owed now, and the earliest future due time: one read of the waiting person and engine-event readers. */
+/** Is anything owed now, and the earliest future due time: one read of the waiting person and engine-event readers.
+ *  While a parked job's continuation is queued, the persons it serves are left to it. */
 export function dueOf(agentId: string, now = Date.now()): { now: boolean; next: number | null } {
-  const convs = getWaitingHumanConversations(agentId, { includeNotDue: true });
+  const convs = jobContinuationOwed(agentId) ? [] : getWaitingHumanConversations(agentId, { includeNotDue: true });
   const event = getPendingEngineEvent(agentId, { pure: true });
   const future = [...convs.map((c) => c.dueAt).filter((t) => t > now), ...[getNextEngineEventRetryAt(agentId)].filter((t): t is number => t !== null)];
   return { now: event !== null || convs.some((c) => c.dueAt <= now), next: future.length > 0 ? Math.min(...future) : null };

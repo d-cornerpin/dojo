@@ -132,6 +132,10 @@ const THE_DRIVER_CARRIES = [
   // and the branch that reads it is the one that deliberately does NOT steer — so a reset
   // latch produces an EXTRA engine nudge on a turn that was already nudged.
   'goingIdleDetectorRanThisTurn',
+  // The provider's reset the last call met (recovery writes it, finalize reads it) and the no-answer abort mark:
+  // both cross from the model call to the turn's end.
+  'retryAt',
+  'abortHandBack',
   // PHASE-6 T2 (CUT 9) — the LAST tranche's one written crossing, and the crossing the
   // ruling was written about. T2 handed this span back rather than guess: seven closures
   // declared in `preflight` read live crossing mutable state. Eight cuts drained six of

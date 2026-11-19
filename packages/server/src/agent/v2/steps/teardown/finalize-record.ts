@@ -86,7 +86,10 @@ export async function finalizeTurnRecord(
         ? assembledContextAsks(agentId, chosenConvKey, lastAssembledAtIso)
         : [];
       const askedNothing = triggerWorkId && await inboundAsksNothing(turnCtx) ? triggerWorkId : null;
-      settleAsksAtTurnFinalize({ agentId, turnNumber, assembled, continuing, askedNothing });
+      settleAsksAtTurnFinalize({
+        agentId, turnNumber, assembled, continuing, askedNothing, retryAt: turnCtx.retryAt,
+        paidBeforeLimit: turnCtx.retryAt !== null && state.loopCount > 1, parkedTheJob: turnParkedTheJob(agentId),
+      });
     } catch (err) {
       logger.warn('v2: the turn-finalize ask adjudication FAILED — an owner ask may be left mid-flight', {
         agentId, turnNumber, error: err instanceof Error ? err.message : String(err),

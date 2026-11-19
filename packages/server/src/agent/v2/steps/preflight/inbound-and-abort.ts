@@ -1,18 +1,16 @@
-// Resolves the turn's inbound channel and builds the abort revert, which hands back both claims (the
-// human ask and the engine event) when a turn aborts with no answer.
+// Resolves the turn's inbound channel and builds the abort revert: it marks the turn for the hand-back at
+// finalize, and releases an engine event the turn claimed.
 
 import { resolveInbound, type InboundChannel } from '../../inbound-channel.js';
 import { findUnrepliedAssignForAgent, type UnrepliedAssign } from '../../../a2a-replies.js';
 import { releaseEngineEventByRowid } from '../../../../memory/message-store.js';
 import { recordEngineEventDeliveryFailure, type WaitingConversation } from '../../counterparty.js';
-import { revertAskClaimOnAbort, noteUnsettled } from '../../../../work/store.js';
 import type { ChannelInboundContext } from '../../state.js';
 import type { TurnContext } from '../../../turn-context.js';
 import type { PreflightContext, PreflightScratch } from './index.js';
 
 export interface InboundAndAbortInputs {
   readonly triggerRow: WaitingConversation['latest'];
-  readonly triggerWorkId: string | null;
   readonly lastUserMessageContent: string;
 }
 
@@ -31,21 +29,11 @@ export function runInboundAndAbort(
   input: InboundAndAbortInputs,
 ): InboundAndAbortOutputs {
   const { agentId } = ctx;
-  const { triggerRow, triggerWorkId, lastUserMessageContent } = input;
-  // Hands a stranded ask back to the waiting set so the runtime drain re-serves it after a transient
-  // failure. Only on no-answer abort paths, and refused once the turn made a side effect (read live from
-  // the bag at abort time), or the ask would be answered or acted on twice.
+  const { triggerRow, lastUserMessageContent } = input;
+  // A no-answer abort: the ask is handed back at finalize by the turn's exit (`handBackAsk`). An engine
+  // trigger releases its own claim here, and records the failed delivery, only when the turn made no side effect.
   const revertTriggerStampOnAbort = () => {
-    if (triggerWorkId) {
-      try {
-        noteUnsettled(revertAskClaimOnAbort(
-          triggerWorkId, turnCtx.state!.nonIdempotentCallsThisTurn,
-          'turn aborted with no answer; handing the ask back to the waiting set (N-1)',
-        ), 'v2: ask hand-back on abort', { workId: triggerWorkId });
-      } catch { /* best effort, recovery, never block the abort */ }
-    }
-    // Same for an engine trigger: release our own claim and record the failed delivery so the retry
-    // timer re-serves it (bounded), only when the turn made no side effect.
+    turnCtx.abortHandBack = true;
     if (sc.claimedEngineEvent != null) {
       try {
         if (turnCtx.state!.nonIdempotentCallsThisTurn === 0) {

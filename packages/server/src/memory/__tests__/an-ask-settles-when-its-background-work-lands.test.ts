@@ -315,7 +315,8 @@ describe('t152 — an ask whose request was background jobs settles when the las
     imageGate.waiting[0](imageSuccess);
     await until(() => imageBubbles() === 1);
     await new Promise((r) => setTimeout(r, 200));
-    expect(mockDb.current!.prepare(`SELECT state FROM work WHERE id = ?`).get(first.id), 'the other request stays as it was').toEqual({ state: 'blocked' });
+    // The person writing again lifts the held request back to open; the stranger's image never settles it.
+    expect((mockDb.current!.prepare(`SELECT state FROM work WHERE id = ?`).get(first.id) as { state: string }).state, 'the other request is not settled').not.toBe('done');
   });
 });
 
