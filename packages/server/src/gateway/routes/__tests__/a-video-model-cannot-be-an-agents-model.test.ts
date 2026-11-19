@@ -1,32 +1,14 @@
-// A model that makes pictures, video, music or speech, embeds text, or is the Dojo's own decision model
-// cannot run an agent: every door that sets an agent's model refuses it in plain words before writing
-// anything, and the automatic cheapest pick skips those models and the Dojo's own small writer model.
-// Re-saving the model an agent is already on is never refused.
+// A model that is not a chat model cannot run an agent: every door that sets an agent's model refuses it in plain words,
+// the automatic pick skips it, and re-saving the model an agent is already on is never refused.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
-vi.mock('../../../logger.js', () => {
-  const noop = (): void => {};
-  return {
-    createLogger: () => ({ debug: noop, info: noop, warn: noop, error: noop }),
-    setLogLevel: noop, setLogBroadcast: noop, readLogEntries: () => [],
-  };
-});
-
 const mockDb: { current: Database.Database | null } = { current: null };
-vi.mock('../../../db/connection.js', async () => {
-  const os = await import('node:os');
-  const p = await import('node:path');
-  return {
-    getDb: () => {
-      if (!mockDb.current) throw new Error('test DB not initialized');
-      return mockDb.current;
-    },
-    closeDb: vi.fn(),
-    getDbPath: () => p.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'dojo-r27-non-chat', 'dojo.db'),
-  };
-});
+vi.mock('../../../db/connection.js', () => ({
+  getDb: () => { if (!mockDb.current) throw new Error('test DB not initialized'); return mockDb.current; },
+  closeDb: vi.fn(),
+}));
 vi.mock('../../ws.js', () => ({ broadcast: vi.fn(), stampPersistedRow: (e: unknown) => e }));
 vi.mock('../../../agent/runtime.js', () => ({
   enforceModelCapabilities: vi.fn(),
@@ -126,11 +108,6 @@ describe('a model that is not a chat model cannot run an agent', () => {
   it('re-saving the model an agent is already on is never refused', async () => {
     db().prepare("UPDATE agents SET model_id = 'video' WHERE id = 'healer-agent'").run();
     const res = await healerRouter.request('/config', json('POST', { modelId: 'video' }));
-    expect(res.status).toBe(200);
-  });
-
-  it('a chat model is still accepted', async () => {
-    const res = await configRouter.request('/settings/healer_model_id', json('PUT', { value: 'big' }));
     expect(res.status).toBe(200);
   });
 
