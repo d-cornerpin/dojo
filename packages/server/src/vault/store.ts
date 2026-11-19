@@ -911,18 +911,17 @@ export function markConversationProcessed(id: string): void {
   db.prepare('UPDATE vault_conversations SET is_processed = 1, processed_at = datetime(\'now\') WHERE id = ?').run(id);
 }
 
-/**
- * Permanently deletes a conversation archive without extracting entries (the Dreamer's
- * vault_discard_archives tool). Returns true if a row was deleted.
- */
-export function deleteConversation(id: string): boolean {
-  const db = getDb();
-  const res = db.prepare('DELETE FROM vault_conversations WHERE id = ?').run(id);
-  return res.changes > 0;
+// A discarded archive keeps its row, emptied and marked processed: its `latest_rowid` is the archival high-water
+// mark (`getArchiveHighWaterMark`), so deleting the row would make the next reset copy that history again.
+const EMPTY_ARCHIVE = "SET messages = '[]', message_count = 0, token_count = 0, is_processed = 1, processed_at = datetime('now')";
+
+/** Discards a conversation archive without extracting entries (the Dreamer's vault_discard_archives tool). */
+export function discardConversation(id: string): boolean {
+  return getDb().prepare(`UPDATE vault_conversations ${EMPTY_ARCHIVE} WHERE id = ?`).run(id).changes > 0;
 }
 
 /**
- * Bulk-deletes unprocessed archives (the dashboard's backlog discard). Only is_processed = 0 rows, so
+ * Bulk-discards (empties) unprocessed archives (the dashboard's backlog discard). Only is_processed = 0 rows, so
  * archives with extracted entries are never orphaned. Filters: agentId, olderThanIso, or `all`;
  * with none, returns 0 (refuses to delete without intent).
  */
@@ -945,7 +944,7 @@ export function bulkDiscardUnprocessedConversations(filter: {
   }
   if (!filter.agentId && !filter.olderThanIso && !filter.all) return 0;
 
-  const sql = `DELETE FROM vault_conversations WHERE ${conds.join(' AND ')}`;
+  const sql = `UPDATE vault_conversations ${EMPTY_ARCHIVE} WHERE ${conds.join(' AND ')}`;
   const res = db.prepare(sql).run(...params);
   return res.changes;
 }
