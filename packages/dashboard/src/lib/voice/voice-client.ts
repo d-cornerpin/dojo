@@ -260,9 +260,10 @@ export class VoiceClient {
       this.fail('ws_open_failed', err);
       return;
     }
+    const session = this.ws;
 
     try {
-      this.vad = await MicVAD.new({
+      const vad = await MicVAD.new({
         model: 'v5',
         baseAssetPath: VAD_ASSET_BASE,
         onnxWASMBasePath: ORT_ASSET_BASE,
@@ -301,8 +302,14 @@ export class VoiceClient {
           }
         },
       });
-      await this.vad.start();
-      this.setState('listening');
+      // The session ended (a dropped connection, or Stop) while the microphone was opening: release it.
+      if (this.ws !== session) {
+        try { vad.destroy(); } catch { /* ignore */ }
+        return;
+      }
+      this.vad = vad;
+      await vad.start();
+      if (this.ws === session) this.setState('listening');
     } catch (err) {
       // Reword permission errors; the iOS toast alone says "an error occurred".
       const name = err instanceof Error ? err.name : '';
