@@ -10,6 +10,7 @@ import type { TurnCounterparty, WaitingConversation } from '../../counterparty.j
 import type { UnrepliedAssign } from '../../../a2a-replies.js';
 import { preflightProceed, type PreflightOutcome } from '../step-outcome.js';
 import { runTurnTrigger } from './turn-trigger.js';
+import { turnAnswersSpokenRequest } from '../../../../memory/served-ask.js';
 import { runInboundAndAbort } from './inbound-and-abort.js';
 import { runTurnClassification } from './turn-classification.js';
 import { runCounterpartyAndRecord } from './counterparty-and-record.js';
@@ -130,15 +131,20 @@ export async function runPreflight(
   } = trigger.outputs;
 
   const {
-    revertTriggerStampOnAbort, latestUserSource, latestTtsEngine, triggeredByIMessage,
+    revertTriggerStampOnAbort, triggeredByIMessage,
     inboundChannel, inboundContext, unrepliedAssign,
-  } = runInboundAndAbort(turnCtx, ctx, sc, { db, triggerRow, triggerWorkId, lastUserMessageContent });
+  } = runInboundAndAbort(turnCtx, ctx, sc, { triggerRow, triggerWorkId, lastUserMessageContent });
 
   const classified = await runTurnClassification(turnCtx, ctx, sc, {
     db, waitingConvs, openHumanWorkAtTurnStart, triggerRow, chosenConvKey,
     lastUserMessageContent, unrepliedAssign,
   });
   if (classified.directive === 'abandon') return classified;
+  // Roots are final here: whether the request this turn answers was spoken picks the voice-conduct block, the
+  // filler, the no-reply line and read-aloud alike, and the engine picks the flat or the expressive addendum.
+  const latestUserSource = turnAnswersSpokenRequest(ctx.agentId) ? 'voice' : triggerRow ? 'text' : null;
+  const latestTtsEngine = latestUserSource === 'voice'
+    ? (await import('../../../../voice/voice-settings.js')).loadVoiceSettings().ttsEngine : null;
   const {
     mostRecentInbound, mostRecentIsA2A, terminalWakeA2A, hasUnansweredUser, isA2ATurn,
     terminalWakeDrivesTurn, pendingEngineEvent, isEngineTurn, settledContextWakeTurn,

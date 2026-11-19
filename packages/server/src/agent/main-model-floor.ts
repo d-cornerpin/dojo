@@ -208,4 +208,4 @@ export const MAIN_MODEL_SETTING_KEYS: readonly string[] = [
 ];
 
 /** Config keys picking a LOCAL model the memory-fit gate judges: main models above plus the engine jobs. */
-export const LOCAL_MODEL_SETTING_KEYS: readonly string[] = [...MAIN_MODEL_SETTING_KEYS, 'voice.opener_model', 'dojo_fallback_vision_model_id'];
+export const LOCAL_MODEL_SETTING_KEYS: readonly string[] = [...MAIN_MODEL_SETTING_KEYS, 'dojo_fallback_vision_model_id'];

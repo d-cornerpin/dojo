@@ -73,7 +73,7 @@ export const TELEMETRY_WHITELIST: readonly TelemetryField[] = [
       'agent-sdk', 'completion', 'image_generation', 'transcription', 'music_generation',
       'audio_generation', 'video_generation',
       'ask_title', 'multistep_classify', 'memory_summarize', 'continuity_brief',
-      'vision_caption', 'page_summary', 'voice_opener'] },
+      'vision_caption', 'page_summary', 'speech'] },
   { path: 'call.input_tokens',        kind: 'count',     source: 'cost_records.input_tokens' },
   { path: 'call.output_tokens',       kind: 'count',     source: 'cost_records.output_tokens' },
   { path: 'call.cache_read_tokens',   kind: 'count',     source: 'cost_records.cache_read_tokens' },

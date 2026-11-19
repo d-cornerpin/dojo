@@ -21,7 +21,7 @@ describe('a utility dial is declared, never inferred', () => {
   it('every engine artifact the audit found has a dial', () => {
     for (const purpose of [
       'ask_title', 'memory_summarize', 'continuity_brief',
-      'vision_caption', 'page_summary', 'voice_opener',
+      'vision_caption', 'page_summary',
     ]) {
       expect(utilityDial(purpose), purpose).not.toBeNull();
     }

@@ -1,5 +1,5 @@
 // The Dojo's two standard local models: the DECISION model (yes/no and which-one questions via `/v1/systemone`,
-// `agent/decide.ts`) and the WRITER (titles, names, voice openers). Tags live only here.
+// `agent/decide.ts`) and the WRITER (titles, names). Tags live only here.
 // `ollama-upkeep.ts` installs them.
 
 import { getDb } from '../db/connection.js';

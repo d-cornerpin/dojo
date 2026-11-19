@@ -200,7 +200,7 @@ async function speakOnCall(state: AgentTurnState & { lastAssistantTextForIM: str
         agentId, callSid: inbound.phoneCallSid,
       }, agentId);
     } else if (turnCtx.phoneStreamFlushedAny) {
-      const tail = redactHandedCredentials(agentId, turnCtx.phoneStreamBuffer).trim();
+      const tail = redactHandedCredentials(agentId, turnCtx.phoneStreamBuffer.takeRaw()).trim();
       if (tail) {
         // One reply is one outbound row, however many sentences it is spoken in.
         await withOutboundAsync(
@@ -211,13 +211,11 @@ async function speakOnCall(state: AgentTurnState & { lastAssistantTextForIM: str
           },
           () => session.queueAgentSay(tail),
         );
-        turnCtx.phoneStreamBuffer = '';
       }
       persistRoutingMarker(`phone call to ${resolveRecipientDisplay('phone', inbound.phoneFromNumber ?? '(unknown)')}`);
       logger.info('v2.9.23: routed reply via phone TTS (streamed)', {
         agentId,
         callSid: inbound.phoneCallSid,
-        to: inbound.phoneFromNumber,
         tailLength: tail.length,
         totalTextLength: replyOut.length,
       }, agentId);
@@ -234,7 +232,6 @@ async function speakOnCall(state: AgentTurnState & { lastAssistantTextForIM: str
       logger.info('v2.9.18: routed reply via phone TTS', {
         agentId,
         callSid: inbound.phoneCallSid,
-        to: inbound.phoneFromNumber,
         textLength: replyOut.length,
       }, agentId);
     }

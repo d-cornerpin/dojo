@@ -214,10 +214,6 @@ export class ClauseQueue {
   /** No-op for compatibility with kokoro-js's TextSplitterStream API. */
   flush(): void { /* clauses are flushed at push time */ }
 
-  hasPending(): boolean {
-    return this.items.length > 0;
-  }
-
   async *[Symbol.asyncIterator](): AsyncGenerator<string, void, void> {
     while (true) {
       if (this.items.length > 0) {

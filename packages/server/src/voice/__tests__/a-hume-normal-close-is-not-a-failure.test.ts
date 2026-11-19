@@ -1,5 +1,5 @@
-// A reply that Hume finishes and closes normally must not look like a cloud failure; a hang-up or an
-// error frame mid-reply must.
+// A reply that Hume finishes and closes normally must not look like a cloud failure; a hang-up, an
+// error frame or a socket that sends no audio mid-reply must.
 import { describe, it, expect, vi } from 'vitest';
 
 type Handler = (...a: unknown[]) => void;
@@ -16,6 +16,7 @@ vi.mock('hume', () => ({
   HumeClient: class { tts = { streamInput: { connect: async () => socket } }; },
 }));
 vi.mock('../../config/loader.js', () => ({ getProviderCredential: () => 'stand-in-key' }));
+vi.mock('../../costs/tracker.js', () => ({ recordCost: () => {} }));
 vi.mock('../../logger.js', () => {
   const noop = (): void => {};
   return { createLogger: () => ({ debug: noop, info: noop, warn: noop, error: noop }) };
@@ -28,7 +29,7 @@ const audio = (text: string, isLastChunk: boolean) => ({
 });
 
 async function openSession(): Promise<{ s: InstanceType<typeof HumeStreamSession>; errors: string[]; done: string[] }> {
-  const s = new HumeStreamSession({ voiceId: 'v' });
+  const s = new HumeStreamSession({ voiceId: 'v', agentId: 'agent-1' });
   const errors: string[] = [];
   const done: string[] = [];
   s.onDrop = (e) => errors.push(e.message);
@@ -69,5 +70,20 @@ describe('a Hume reply that ends normally is not a failure', () => {
     const { errors } = await openSession();
     fire('message', { code: 'E', message: 'quota exceeded' });
     expect(errors).toEqual(['Hume error frame']);
+  });
+
+  it('words with no audio three seconds after the first push are an error; audio in time is not', async () => {
+    vi.useFakeTimers();
+    try {
+      for (const answers of [false, true]) {
+        const { s } = await openSession();
+        const failures: string[] = [];
+        s.onError = (e) => failures.push(e.message);
+        s.push('Hello.');
+        if (answers) fire('message', audio('Hello.', true));
+        await vi.advanceTimersByTimeAsync(3_000);
+        expect(failures).toEqual(answers ? [] : ['Hume sent no audio within 3 s']);
+      }
+    } finally { vi.useRealTimers(); }
   });
 });

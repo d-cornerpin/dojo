@@ -153,7 +153,7 @@ describe('the arithmetic (figures for the owner)', () => {
 });
 
 describe('N1 (fix round 2): the Dojo\'s writer is never charged twice', () => {
-  it('as a job (summary writer, voice opener) its reserved room IS its fit, even on 16 GB', async () => {
+  it('as a job (summary writer) its reserved room IS its fit, even on 16 GB', async () => {
     expect(await refuseUnfitLocalModel('m-writer', null, 'job')).toBeNull();
     expect((await localModelFit('m-writer', 'job'))!.needBytes).toBe(0);
   });
@@ -283,11 +283,10 @@ describe('the doors answer with the sentence (no new UX: the 400 message is the 
   });
 
   // v3.5 field fix 3 (owner ruling): there is no summary-writer setting, so it is no longer one of these doors.
-  it('service-agent, voice-opener and vision-fallback settings refuse it too', async () => {
-    for (const key of ['healer_model_id', 'voice.opener_model', 'dojo_fallback_vision_model_id']) {
+  it('service-agent and vision-fallback settings refuse it too', async () => {
+    for (const key of ['healer_model_id', 'dojo_fallback_vision_model_id']) {
       expect((await put(`/config/settings/${key}`, { value: 'm-9b' })).status, key).toBe(400);
     }
-    expect((await put('/config/settings/voice.opener_model', { value: 'off' })).status).toBe(200);
   });
 
   it('the router\'s model list offers no decision model', async () => {
@@ -314,7 +313,7 @@ describe('the setup probe the role steps default from (no marks, no cards)', () 
 // t268 fix round 1 (I-2) + ORCHESTRATOR RULING, after the owner's ruling of 2026-10-24 ("The agents model."): each
 // agent's own model writes its summaries, so the Dojo's writer's reserved room follows the jobs it ACTUALLY has
 // here — its summary job's window only when it is the explicit Summarization pick; otherwise its system jobs
-// (titles, the voice opener, the fallback) at the sizes they really ran at (Ollama's own counts, the cost rows).
+// (titles, the fallback) at the sizes they really ran at (Ollama's own counts, the cost rows).
 describe('I-2: the writer\'s reserved room is the jobs it really has', () => {
   const ran = (purpose: string, tokens: number): void => {
     db().prepare(`INSERT INTO cost_records (id, agent_id, model_id, provider_id, input_tokens, output_tokens, cost_usd, latency_ms, request_type, call_purpose, created_at)
@@ -356,7 +355,7 @@ describe('I-2: the writer\'s reserved room is the jobs it really has', () => {
     expect(await writerReservedWindowTokens(null)).toBe(await writerJobWindowTokens(null));
     db().prepare("DELETE FROM router_tier_models WHERE model_id = 'm-writer'").run();
     db().prepare("INSERT INTO router_tier_models (tier_id, model_id, priority) VALUES ('system', 'm-writer', 0)").run();
-    expect(await writerReservedWindowTokens(null), 'the system tier (titles, openers) is not a tier a summary walks').toBe(MIN_UTILITY_NUM_CTX);
+    expect(await writerReservedWindowTokens(null), 'the system tier (titles) is not a tier a summary walks').toBe(MIN_UTILITY_NUM_CTX);
   });
 
   it('an agent whose own model is the writer: its summary job\'s window', async () => {

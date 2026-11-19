@@ -36,6 +36,7 @@ vi.mock('../../voice/hume-engine.js', () => ({
 // Each sentence's local audio is a steady tone whose level names it (First 0.1, Second 0.4, Third 0.7).
 const level = (text: string): number => ({ 'First.': 0.1, 'Second.': 0.4, 'Third.': 0.7 })[text] ?? 0.2;
 vi.mock('../../voice/tts-service.js', () => ({
+  DEFAULT_VOICE: 'af_default',
   synthesizeOnce: async (text: string) => {
     if (localBroken) throw new Error('kokoro down');
     if (text === localGate.text) await localGate.wait;
@@ -57,11 +58,10 @@ vi.mock('../../logger.js', () => {
   const noop = (): void => {};
   return { createLogger: () => ({ debug: noop, info: noop, warn: noop, error: noop }), setLogLevel: noop, setLogBroadcast: noop, readLogEntries: () => [] };
 });
-vi.mock('../../voice/stt-service.js', () => ({ ensureSttReady: async () => {}, transcribeBuffer: vi.fn() }));
-vi.mock('../../config/platform.js', () => ({ getPrimaryAgentId: () => 'primary', getOwnerName: () => 'the owner' }));
-vi.mock('../../voice/session-record.js', () => ({
-  startVoiceSessionRecord: vi.fn(() => 'vsr-1'), endVoiceSessionRecord: vi.fn(), bumpVoiceSessionTurnCount: vi.fn(), stampSpokenMessage: vi.fn(),
+vi.mock('../../voice/stt-service.js', () => ({
+  ensureSttReady: async () => {}, transcribeBuffer: vi.fn(), DEFAULT_STT_MODEL_KEY: 'moonshine-base', parseSttModelKey: () => ({ kind: 'moonshine' }),
 }));
+vi.mock('../../config/platform.js', () => ({ getPrimaryAgentId: () => 'primary', getPrimaryAgentName: () => 'Agent' }));
 vi.mock('../auth.js', () => ({ getTwilioConfig: () => ({ voiceMaxMinutesPerCall: 1 }) }));
 vi.mock('../client.js', () => ({ endCall: vi.fn(async () => ({ ok: true })) }));
 vi.mock('../../memory/conversations.js', () => ({ resolveOrCreateConversation: vi.fn() }));
@@ -78,6 +78,8 @@ vi.mock('../../agent/access/read.js', () => ({ mayUseChannel: () => true }));
 const { synthesizeForTwilio } = await import('../tts-bridge.js');
 const { CallSession } = await import('../call-session.js');
 
+const aCall = (): { cloudDown: boolean; agentId: string } => ({ cloudDown: false, agentId: 'primary' });
+
 beforeEach(() => {
   step = 'ok'; engine = 'cloud'; configured = true; localBroken = false; opens = 0;
   localSaid.length = 0; localGate.wait = null;
@@ -85,7 +87,7 @@ beforeEach(() => {
 
 describe('a failing cloud voice on a call, sentence by sentence', () => {
   it('control: a cloud voice that works speaks the sentence, the local voice is not used', async () => {
-    const r = await synthesizeForTwilio('Hello there.');
+    const r = await synthesizeForTwilio('Hello there.', aCall());
     expect(r?.sampleRate).toBe(48000);
     expect(localSaid).toEqual([]);
   });
@@ -96,26 +98,26 @@ describe('a failing cloud voice on a call, sentence by sentence', () => {
     ['with a provider error frame', 'frame'],
   ])('failing %s: the whole sentence is spoken by the local voice', async (_name, s) => {
     step = s;
-    const r = await synthesizeForTwilio('Hello there.');
+    const r = await synthesizeForTwilio('Hello there.', aCall());
     expect(localSaid).toEqual(['Hello there.']);
     expect(r?.sampleRate).toBe(24000);
   });
 
   it('a missing cloud key is spoken by the local voice too', async () => {
     configured = false;
-    expect((await synthesizeForTwilio('Hello there.'))?.sampleRate).toBe(24000);
+    expect((await synthesizeForTwilio('Hello there.', aCall()))?.sampleRate).toBe(24000);
   });
 
   it('when the local voice cannot speak either, the sentence is skipped', async () => {
     step = 'fail';
     localBroken = true;
-    expect(await synthesizeForTwilio('Hello there.')).toBeNull();
+    expect(await synthesizeForTwilio('Hello there.', aCall())).toBeNull();
   });
 
   it('a box whose phone voice is local never touches the cloud voice', async () => {
     engine = 'local';
     step = 'fail';
-    expect((await synthesizeForTwilio('Hello there.'))?.sampleRate).toBe(24000);
+    expect((await synthesizeForTwilio('Hello there.', aCall()))?.sampleRate).toBe(24000);
     expect(opens).toBe(0);
   });
 });
@@ -159,7 +161,7 @@ describe('a failing cloud voice through a live call', () => {
     let release = (): void => {};
     localGate.wait = new Promise<void>((r) => { release = r; });
     const s = start();
-    for (const t of ['First.', 'Second.', 'Third.']) await s.queueAgentSay(t);
+    for (const t of ['First.', 'Second.', 'Third.']) void s.queueAgentSay(t);
     await settle(80);
     release();
     await settle(900);
@@ -176,7 +178,7 @@ describe('a failing cloud voice through a live call', () => {
       let release = (): void => {};
       localGate.wait = new Promise<void>((r) => { release = r; });
       const s = start();
-      await s.queueAgentSay('Second.');
+      void s.queueAgentSay('Second.');
       await settle();
       if (interrupt === 'hangup') s.end('caller-hangup');
       else (s as unknown as { speechGeneration: number }).speechGeneration += 1;

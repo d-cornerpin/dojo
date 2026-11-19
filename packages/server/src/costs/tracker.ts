@@ -36,6 +36,9 @@ export interface RecordCostParams {
   // row's pricing_unit says which. If unset the recorder falls through to token math; for 'item' a missing
   // count is 1.
   units?: number;
+  // USD per character for speech priced outside the models table (the cloud voice's plan rate); `units` is
+  // the character count.
+  characterRate?: number;
   // Prompt-cache tokens (token-priced calls only), DISJOINT from inputTokens (the UNCACHED input): reads
   // bill at 0.1x the input rate, creation at 1.25x. Undefined (provider reports none) persists as NULL,
   // which a hit-ratio reader must not treat as a miss.
@@ -130,10 +133,12 @@ function getModelPricing(modelId: string): ModelPricing {
 const warnedUnknownPriceModels = new Set<string>();
 
 export function recordCost(params: RecordCostParams): void {
-  const { agentId, modelId, providerId, inputTokens, outputTokens, latencyMs, requestType, imageWidth, imageHeight, units, cacheReadTokens, cacheCreationTokens, estimatedInputTokens, inputTokensEstimated, callPurpose, estimatorCharsPerToken } = params;
+  const { agentId, modelId, providerId, inputTokens, outputTokens, latencyMs, requestType, imageWidth, imageHeight, units, characterRate, cacheReadTokens, cacheCreationTokens, estimatedInputTokens, inputTokensEstimated, callPurpose, estimatorCharsPerToken } = params;
 
   try {
-    const pricing = getModelPricing(modelId);
+    const pricing: ModelPricing = characterRate === undefined ? getModelPricing(modelId) : {
+      unit: 'character', inputCostPerM: 0, outputCostPerM: 0, costPerUnit: characterRate, priceUnknown: false, providerType: '',
+    };
 
     // Resolve the unit count from the model's pricing_unit (megapixel from the image dimensions, the rest
     // from `units`). A missing rate or count falls through to token math rather than recording a silent $0.

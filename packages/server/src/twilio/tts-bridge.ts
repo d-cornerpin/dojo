@@ -1,62 +1,11 @@
 // Twilio TTS bridge: synthesizes one utterance with the engine set in Settings, Voice (Kokoro or Hume) and
-// returns PCM for the call session's μ-law encoder. The engine is read per call, so a Settings change applies
-// on the next utterance; the user's choice wins even though Hume's socket open adds 100-300 ms.
+// returns PCM for the call session's μ-law encoder. The settings are read per utterance, so a change applies
+// on the next one; the user's choice wins even though Hume's socket open adds 100-300 ms.
 
 import { createLogger } from '../logger.js';
+import { loadVoiceSettings, type VoiceSettings } from '../voice/voice-settings.js';
 
 const logger = createLogger('twilio-tts-bridge');
-
-interface TtsSettings {
-  engine: 'local' | 'cloud';
-  voice: string;          // Kokoro voice id, e.g. 'af_bella'
-  speed: number;          // applies to either engine
-  cloudVoice: string;     // Hume voice id
-  cloudVoiceProvider: 'HUME_AI' | 'CUSTOM_VOICE';
-  cloudDescription: string | null;
-  cloudSpeed: number;
-}
-
-async function loadSettings(): Promise<TtsSettings> {
-  let engine: 'local' | 'cloud' = 'local';
-  let voice = 'af_bella';
-  let speed = 1.0;
-  let cloudVoice = '';
-  let cloudVoiceProvider: 'HUME_AI' | 'CUSTOM_VOICE' = 'HUME_AI';
-  let cloudDescription: string | null = null;
-  let cloudSpeed = 1.0;
-  try {
-    const { getDb } = await import('../db/connection.js');
-    const rows = getDb().prepare(`
-      SELECT key, value FROM config WHERE key IN (
-        'voice.tts_engine',
-        'voice.kokoro_voice',
-        'voice.preferred_voice',
-        'voice.kokoro_speed',
-        'voice.playback_speed',
-        'voice.cloud_voice',
-        'voice.cloud_voice_provider',
-        'voice.cloud_voice_description',
-        'voice.cloud_speed'
-      )
-    `).all() as Array<{ key: string; value: string }>;
-    for (const r of rows) {
-      if (r.key === 'voice.tts_engine' && r.value === 'cloud') engine = 'cloud';
-      if ((r.key === 'voice.kokoro_voice' || r.key === 'voice.preferred_voice') && r.value) voice = r.value;
-      if ((r.key === 'voice.kokoro_speed' || r.key === 'voice.playback_speed')) {
-        const n = Number(r.value);
-        if (Number.isFinite(n) && n >= 0.5 && n <= 2) speed = n;
-      }
-      if (r.key === 'voice.cloud_voice' && r.value) cloudVoice = r.value;
-      if (r.key === 'voice.cloud_voice_provider' && r.value === 'CUSTOM_VOICE') cloudVoiceProvider = 'CUSTOM_VOICE';
-      if (r.key === 'voice.cloud_voice_description' && r.value.trim()) cloudDescription = r.value.trim().slice(0, 500);
-      if (r.key === 'voice.cloud_speed') {
-        const n = Number(r.value);
-        if (Number.isFinite(n) && n >= 0.5 && n <= 2) cloudSpeed = n;
-      }
-    }
-  } catch { /* defaults */ }
-  return { engine, voice, speed, cloudVoice, cloudVoiceProvider, cloudDescription, cloudSpeed };
-}
 
 /**
  * Synthesize one utterance: mono Float32 PCM for the call session's μ-law encoder, or `null` if no engine
@@ -67,24 +16,23 @@ async function loadSettings(): Promise<TtsSettings> {
  */
 export async function synthesizeForTwilio(
   text: string,
-  call: { cloudDown: boolean } = { cloudDown: false },
+  call: { cloudDown: boolean; agentId: string },
 ): Promise<{ pcm: Float32Array; sampleRate: number } | null> {
-  const settings = await loadSettings();
-  if (settings.engine === 'cloud' && !call.cloudDown) {
+  const settings = loadVoiceSettings('phone');
+  if (settings.ttsEngine === 'cloud' && !call.cloudDown) {
     try {
-      return await synthesizeCloud(text, settings);
+      return await synthesizeCloud(text, settings, call.agentId);
     } catch (err) {
       call.cloudDown = true;
       logger.warn('Hume TTS failed on live call, the rest of the call uses the local voice', {
         error: err instanceof Error ? err.message : String(err),
-        textPreview: text.slice(0, 60),
       });
     }
   }
   return synthesizeLocal(text, settings);
 }
 
-async function synthesizeLocal(text: string, settings: TtsSettings): Promise<{ pcm: Float32Array; sampleRate: number } | null> {
+async function synthesizeLocal(text: string, settings: VoiceSettings): Promise<{ pcm: Float32Array; sampleRate: number } | null> {
   try {
     const { synthesizeOnce } = await import('../voice/tts-service.js');
     const result = await synthesizeOnce(text, settings.voice, settings.speed);
@@ -92,7 +40,6 @@ async function synthesizeLocal(text: string, settings: TtsSettings): Promise<{ p
   } catch (err) {
     logger.warn('Kokoro synthesis failed (sentence skipped)', {
       error: err instanceof Error ? err.message : String(err),
-      textPreview: text.slice(0, 60),
     });
     return null;
   }
@@ -103,19 +50,14 @@ async function synthesizeLocal(text: string, settings: TtsSettings): Promise<{ p
  * (or the socket closes), and stitch their PCM into one Float32 buffer at HUME_SAMPLE_RATE (48 kHz).
  * Throws on any failure, an error frame or hang-up included; synthesizeForTwilio then uses the local voice.
  */
-async function synthesizeCloud(text: string, settings: TtsSettings): Promise<{ pcm: Float32Array; sampleRate: number }> {
-  if (!settings.cloudVoice) {
-    throw new Error('Hume voice id not configured.');
-  }
-  const { HumeStreamSession, HUME_SAMPLE_RATE, isHumeConfigured } = await import('../voice/hume-engine.js');
-  if (!isHumeConfigured()) {
-    throw new Error('Hume API key not configured.');
-  }
+async function synthesizeCloud(text: string, settings: VoiceSettings, agentId: string): Promise<{ pcm: Float32Array; sampleRate: number }> {
+  const { HumeStreamSession, HUME_SAMPLE_RATE } = await import('../voice/hume-engine.js');
   const hume = new HumeStreamSession({
     voiceId: settings.cloudVoice,
     voiceProvider: settings.cloudVoiceProvider,
     description: settings.cloudDescription ?? undefined,
     speed: settings.cloudSpeed,
+    agentId,
   });
   const chunks: Buffer[] = [];
   let humeError: Error | null = null;
@@ -124,13 +66,9 @@ async function synthesizeCloud(text: string, settings: TtsSettings): Promise<{ p
   hume.onDrop = hume.onError;
 
   await hume.open();
-  try {
-    hume.push(text);
-    hume.flush();
-    await hume.close();
-  } finally {
-    // close() is idempotent.
-  }
+  hume.push(text);
+  hume.flush();
+  await hume.close();
 
   if (humeError !== null) {
     throw humeError as Error;

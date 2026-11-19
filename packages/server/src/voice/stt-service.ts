@@ -372,73 +372,50 @@ function wavToFloat32(wav: Buffer): Float32Array {
   throw new Error(`wavToFloat32: unsupported format code=${formatCode}, bits=${bitsPerSample}`);
 }
 
-// Single resident engine. Switching disposes the old one. An in-flight transcription cannot be cancelled
-// (the ASR pipeline has no hook), so the transcribeBuffer wrapper checks the engine is still the active one
-// on return and throws stt_engine_swapped otherwise, so no stale result surfaces under the new model.
-
-let activeEngine: SttEngine | null = null;
-let activeEngineLoad: Promise<SttEngine> | null = null;
+// One resident engine per model key, kept once loaded: dashboard voice, phone calls and the transcribe tool
+// each name the engine they need, and loading one never unloads another mid-transcription.
+const engines = new Map<string, Promise<SttEngine>>();
+const resident = new Set<SttEngine>();
 
 async function createEngine(parsed: ParsedSttModel): Promise<SttEngine> {
-  if (parsed.kind === 'moonshine') return new MoonshineEngine();
-  return new WhisperEngine(parsed.size as WhisperSize);
+  const engine = parsed.kind === 'moonshine' ? new MoonshineEngine() : new WhisperEngine(parsed.size as WhisperSize);
+  await engine.load();
+  resident.add(engine);
+  return engine;
+}
+
+/** The loaded engine for a model key; a failed load is forgotten, so the next call tries again. */
+function engineFor(modelKey: string): Promise<SttEngine> {
+  const parsed = parseSttModelKey(modelKey);
+  const key = parsed.kind === 'moonshine' ? 'moonshine-base' : parsed.size;
+  let engine = engines.get(key);
+  if (!engine) {
+    const loading = createEngine(parsed);
+    engines.set(key, loading);
+    loading.catch(() => { if (engines.get(key) === loading) engines.delete(key); });
+    engine = loading;
+  }
+  return engine;
 }
 
 export async function ensureSttReady(modelKey: string = DEFAULT_STT_MODEL_KEY): Promise<void> {
-  const parsed = parseSttModelKey(modelKey);
-  const desiredKey = parsed.kind === 'moonshine' ? 'moonshine-base' : parsed.size;
-  if (activeEngine && activeEngine.key === desiredKey) return;
-  if (activeEngineLoad) {
-    const e = await activeEngineLoad;
-    if (e.key === desiredKey) return;
-  }
-  if (activeEngine) {
-    const prev = activeEngine;
-    activeEngine = null;
-    void prev.dispose().catch((err) => {
-      logger.warn('Engine dispose failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
-    });
-  }
-  activeEngineLoad = (async () => {
-    const engine = await createEngine(parsed);
-    await engine.load();
-    return engine;
-  })();
-  try {
-    activeEngine = await activeEngineLoad;
-  } finally {
-    activeEngineLoad = null;
-  }
+  await engineFor(modelKey);
 }
 
 export async function transcribeBuffer(
   audio: Buffer,
   options: { modelKey?: string; language?: string; mime?: string } = {},
 ): Promise<{ text: string; durationMs: number }> {
-  const modelKey = options.modelKey ?? DEFAULT_STT_MODEL_KEY;
-  await ensureSttReady(modelKey);
-  const engineAtStart = activeEngine;
-  if (!engineAtStart) throw new Error('STT engine not available after ensureSttReady');
-  const result = await engineAtStart.transcribeBuffer(audio, { language: options.language, mime: options.mime });
-  // A swap during the call means the result belongs to the old engine; refuse to surface it under the
-  // new active model. The caller decides whether to drop or retry.
-  if (activeEngine !== engineAtStart) {
-    throw new Error('stt_engine_swapped');
-  }
-  return result;
+  const engine = await engineFor(options.modelKey ?? DEFAULT_STT_MODEL_KEY);
+  return engine.transcribeBuffer(audio, { language: options.language, mime: options.mime });
 }
 
-/**
- * Tear down the active whisper-server child and clear the engine registry (gateway shutdown).
- * No-op for Moonshine.
- */
+/** Tear down every whisper-server child and forget all engines (gateway shutdown). */
 export async function stopWhisperServer(): Promise<void> {
-  if (activeEngine instanceof WhisperEngine) {
-    const e = activeEngine;
-    activeEngine = null;
-    activeEngineLoad = null;
-    await e.dispose();
-  }
+  const whispers = [...resident].filter((e) => e instanceof WhisperEngine);
+  resident.clear();
+  engines.clear();
+  await Promise.all(whispers.map((e) => e.dispose()));
 }
 
 

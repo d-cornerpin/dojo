@@ -1,6 +1,5 @@
 import { useState, useEffect } from 'react';
 import * as api from '../lib/api';
-import { useToast } from '../hooks/useToast';
 import { RouterUsage } from './RouterUsage';
 import { AgentModelOption } from './AgentModelOption';
 
@@ -338,98 +337,5 @@ const DimensionRow = ({
         </button>
       </td>
     </tr>
-  );
-};
-
-// Voice fast first-responder: which model speaks the short contextual opener
-// while the full agent spins up. Stored in config key `voice.opener_model`.
-//   ''    → Auto (the Dojo's own writer)
-//   'off' → disabled (no opener)
-//   <id>  → a specific (ideally low-TTFT) model
-// Single-pulldown card matching the other model-picker cards.
-export const VoiceOpenerModelConfig = () => {
-  const toast = useToast();
-  const [selectedId, setSelectedId] = useState('');
-  const [models, setModels] = useState<AvailableModel[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
-
-  const load = async () => {
-    const [setRes, modelsRes] = await Promise.all([
-      api.getSetting('voice.opener_model'),
-      api.getAvailableRouterModels(),
-    ]);
-    if (setRes.ok) setSelectedId(setRes.data.value ?? '');
-    if (modelsRes.ok) setModels(modelsRes.data);
-    setLoading(false);
-  };
-
-  useEffect(() => {
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const flash = () => { setSaved(true); setTimeout(() => setSaved(false), 2000); };
-
-  const handleSave = async () => {
-    setSaving(true);
-    const res = await api.setSetting('voice.opener_model', selectedId);
-    setSaving(false);
-    if (!res.ok) { toast.error(res.error || 'The opener model could not be saved.'); return; }
-    flash();
-  };
-
-  // "Clear" returns to Auto (the Dojo's writer), the unset default.
-  const handleClear = async () => {
-    setSaving(true);
-    const res = await api.setSetting('voice.opener_model', '');
-    setSaving(false);
-    if (!res.ok) { toast.error(res.error || 'The opener model could not be saved.'); return; }
-    setSelectedId('');
-    flash();
-  };
-
-  if (loading) return null;
-
-  return (
-    <div className="tile space-y-4">
-      <div>
-        <div className="scard__title">Voice Opener Model</div>
-        <p className="text-xs text-ui/40 mt-1">
-          In voice chats, this model speaks a short contextual bridge ("sure, let me pull that up")
-          the instant you finish talking, while the full agent spins up. It never states facts, so it
-          can't contradict the answer. Pick a low-latency model (Haiku / Groq-tier) for the snappiest
-          feel. Auto uses the Dojo's own writer; Off disables the opener.
-        </p>
-      </div>
-
-      <div>
-        <label className="flabel">Opener model</label>
-        <select
-          value={selectedId}
-          onChange={(e) => setSelectedId(e.target.value)}
-          className="finput field--select"
-        >
-          <option value="">Auto (the Dojo's writer)</option>
-          <option value="off">Off (no opener)</option>
-          {models.map((m) => (
-            <option key={m.id} value={m.id}>{m.name}</option>
-          ))}
-        </select>
-      </div>
-
-      <div className="srow">
-        <button type="button" onClick={handleSave} disabled={saving} className="btn btn--primary btn--sm">
-          {saving ? 'Saving...' : 'Save'}
-        </button>
-        {selectedId && (
-          <button type="button" onClick={handleClear} disabled={saving} className="btn btn--sm">
-            Clear
-          </button>
-        )}
-        {saved && <span className="text-xs text-cp-teal">Saved!</span>}
-      </div>
-    </div>
   );
 };

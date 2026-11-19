@@ -72,14 +72,12 @@ describe('ClauseQueue', () => {
   it('trims empty clauses and yields only the non-empty ones', async () => {
     const q = createClauseQueue();
     q.push('  a ', '', '   ', 'b');
-    expect(q.hasPending()).toBe(true);
     const got: string[] = [];
     const consumer = (async () => { for await (const c of q) got.push(c); })();
     q.close();
     q.close(); // idempotent — must not throw
     await consumer;
     expect(got).toEqual(['a', 'b']);
-    expect(q.hasPending()).toBe(false);
   });
 
   it('a waiting consumer is woken by push and ends on close', async () => {
