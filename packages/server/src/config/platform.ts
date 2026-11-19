@@ -1,6 +1,7 @@
 // Platform config lookups: agent ids, names and identity, read from the config table and cached.
 
 import { getDb } from '../db/connection.js';
+import { setConfigValue } from './config-value.js';
 
 
 let cache: Record<string, string> = {};
@@ -82,11 +83,7 @@ export function isSetupCompleted(): boolean {
 
 
 export function setPlatformConfig(key: string, value: string): void {
-  const db = getDb();
-  db.prepare(`
-    INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
-    ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = datetime('now')
-  `).run(key, value, value);
+  setConfigValue(key, value);
   clearPlatformConfigCache();
 }
 

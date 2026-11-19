@@ -5,6 +5,7 @@
 // ════════════════════════════════════════
 
 import { getDb } from '../db/connection.js';
+import { setConfigValue } from '../config/config-value.js';
 import { resolveHomePath } from './path-resolve.js';
 import { startCanvasWatch, stopCanvasWatch } from './canvas-watch.js';
 
@@ -32,10 +33,7 @@ function persistCanvas(agentId: string): void {
     const value = state
       ? JSON.stringify({ state, status: canvasStatusByAgent.get(agentId) ?? 'collapsed' })
       : '';
-    getDb().prepare(
-      `INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
-       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`,
-    ).run(canvasConfigKey(agentId), value);
+    setConfigValue(canvasConfigKey(agentId), value);
   } catch { /* best effort, never let persistence break a canvas open */ }
 }
 
