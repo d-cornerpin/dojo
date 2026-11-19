@@ -8,7 +8,7 @@ export const activeRuns = new Set<string>();
 
 export const pendingWakeups = new Set<string>();
 
-// THE FLAG'S LIFETIME IS THE RUN'S LIFETIME: checkpoints read it; the run-exit finally owns the clear.
+// THE FLAG'S LIFETIME IS THE RUN'S LIFETIME: checkpoints read it; the run-exit finally clears it, and a run's start clears one with no fence.
 export const stoppedAgents = new Set<string>();
 
 // The stopped run's own fence: stoppedAgents can be lifted from outside (new message, reset) while the run

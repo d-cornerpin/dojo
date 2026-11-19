@@ -515,6 +515,8 @@ class AgentRuntime {
     }
 
     activeRuns.add(agentId);
+    // A stop pressed while nothing ran raised no fence, so it is stale now; a fenced stop still holds this run.
+    if (!stopFencedRuns.has(agentId)) stoppedAgents.delete(agentId);
     const servedWaiters = queuedRunWaiters.get(agentId) ?? [];
     queuedRunWaiters.delete(agentId);
     agentStartTimes.set(agentId, Date.now()); if (opts?.job || opts?.drained) beginJobRun(agentId, opts.job ? 'timer' : 'drain');
@@ -809,8 +811,8 @@ class AgentRuntime {
       // THE ONE OWNER OF THE STOP FLAG'S CLEAR: a checkpoint that sees the stop honours it (pre-call
       // gate, model-call catch, executor); only this finally retires it, at the end of the run it stopped.
       // The drains below stand down only while the flag stands; cleared early they would restart the
-      // very request the user stopped. The two human-intent clears may lift the FLAG; nothing lifts the
-      // FENCE elsewhere.
+      // very request the user stopped. A new run's start lifts a FLAG that has no fence (a stop pressed
+      // while nothing ran); nothing lifts the FENCE elsewhere.
       stoppedAgents.delete(agentId);
       stopFencedRuns.delete(agentId);
     }
