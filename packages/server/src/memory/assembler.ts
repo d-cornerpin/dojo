@@ -61,7 +61,7 @@ import { turnBoundary } from '../agent/turn-state.js';
 import { turnContext as liveTurnContext } from '../agent/turn-context.js';
 import type { Summary } from './dag.js';
 import type { Message, MessageOrigin } from '@dojo/shared';
-import { A2A_INBOUND_RE, a2aThreadTokenMatches, parseA2AThreadShort, parseTechniqueFreshRead, parseWorkingNote } from '@dojo/shared';
+import { A2A_INBOUND_RE, parseTechniqueFreshRead, parseWorkingNote } from '@dojo/shared';
 
 const logger = createLogger('memory-assembler');
 
@@ -1047,7 +1047,7 @@ async function assembleMessageContext(
     }, policy, systemTokens) };
   }
 
-  let merged = applyIntegrityPass(messages, agentId, endOfHistoryMarker(agentId, tailPayload?.rows ?? []));
+  const merged = applyIntegrityPass(messages, agentId, endOfHistoryMarker(agentId, tailPayload?.rows ?? []));
 
   const postBudget: string[] = [];
   const consumedOneShotFlags: ConsumedOneShotFlags = {};
@@ -1083,7 +1083,7 @@ async function assembleMessageContext(
           agentId,
         }, agentId);
         // The last resort wears the standard row label like every other row, so the model is never handed an
-        // unlabelled message. Applied after the A2A salience pass below, which reads the marker at the START.
+        // unlabelled message. Applied after the markers below are prepended, so the label stays at the start.
         const [row] = withSubjectKinds(agentId, getMessagesByIds([lastUserMsg.id]));
         const msg = tagMessageLane({ role: 'user' as const, content: row ? overRoomRowView(row, contentBudget).content : lastUserMsg.content }, 'lane.empty-context-fallback');   // never whole over the room
         fallbackLabel = { msg, label: row ? `${renderRowLabel(row, new LabelFacts(agentId))} (recovered: the last message sent to you)` : null };
@@ -1182,51 +1182,7 @@ async function assembleMessageContext(
     }
   } catch { /* config may not exist or be malformed */ }
 
-  // A2A reply salience: on a forced A2A turn the inbound A2A is buried behind an answered user exchange, so
-  // move the most-recent unreplied A2A to the tail with a reply directive.
-  if (turnContext?.isA2ATurn && merged.length > 0) {
-    // Replied-thread matching uses the stored FULL thread ids and `a2aThreadTokenMatches` (current token and
-    // legacy front slice), since a front-eight slice collides across named `thread-<hash>-<seed>` ids.
-    const repliedFullIds: string[] = [];
-    try {
-      const rows = getDb().prepare(
-        'SELECT DISTINCT thread_id AS t FROM a2a_replies WHERE agent_id = ?',
-      ).all(agentId) as Array<{ t: string }>;
-      for (const r of rows) if (r.t) repliedFullIds.push(r.t);
-    } catch { /* table may not exist yet */ }
-    const alreadyReplied = (token: string | null): boolean =>
-      !!token && repliedFullIds.some((full) => a2aThreadTokenMatches(token, full));
-    const threadShortOf = (c: string): string | null => parseA2AThreadShort(c);
-    const isA2AMsg = (m: { role: string; content: string | Anthropic.ContentBlockParam[] }) =>
-      m.role === 'user' && typeof m.content === 'string' && A2A_INBOUND_RE.test(m.content);
-    merged = merged.filter((m) => {
-      if (!isA2AMsg(m)) return true;
-      return !alreadyReplied(threadShortOf(m.content as string));
-    });
-    if (merged.length > 0 && !isA2AMsg(merged[merged.length - 1])) {
-      let idx = -1;
-      for (let i = merged.length - 1; i >= 0; i--) {
-        if (isA2AMsg(merged[i])) {
-          if (!alreadyReplied(threadShortOf(merged[i].content as string))) { idx = i; break; }
-        }
-      }
-      if (idx >= 0) {
-        const [a2aMsg] = merged.splice(idx, 1);
-        if (typeof a2aMsg.content === 'string') {
-          a2aMsg.content =
-            `[Engine: inter-agent reply turn. The message below is still awaiting your reply. ` +
-            `Make exactly ONE send_to_agent call on the SAME thread_id (intent ANSWER for a QUESTION, ` +
-            `COMPLETE/STATUS/FAIL for an ASSIGN), then end your turn. Your chat text is invisible to ` +
-            `the sender and is suppressed, send_to_agent is the only way to reply. Any user messages ` +
-            `above were already handled; do not re-answer them.]\n\n${a2aMsg.content}`;
-        }
-        merged.push(a2aMsg);
-        postBudget.push('lane.a2a-salience');
-      }
-    }
-  }
-
-  if (fallbackLabel && merged.includes(fallbackLabel.msg)) fallbackLabel.msg.content = labelContent(fallbackLabel.msg.content, fallbackLabel.label);
+  if (fallbackLabel) fallbackLabel.msg.content = labelContent(fallbackLabel.msg.content, fallbackLabel.label);
 
   // The recall lane: computed here, emitted by the loop past `volatileFrom`. Best-effort: a recall failure
   // costs recall, never the assembly. Computed before the post-budget report so the grant says if it fired.
