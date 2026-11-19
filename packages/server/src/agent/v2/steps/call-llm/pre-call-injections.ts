@@ -10,6 +10,7 @@ import { injectRegistryMessage } from '../../../../prompt/registry/assembler.js'
 import type { AssemblyContext } from '../../../../prompt/registry/types.js';
 import type { AssembledContext } from '../../../../memory/assembler.js';
 import { collectMessageLaneIds } from '../../../../memory/message-lane-tag.js';
+import { recordVaultUse } from '../../../../vault/store.js';
 import { renderDeliveriesLaneMessage } from '../../../../memory/deliveries-lane.js';
 import { buildOpenWorkInjection } from '../../../../work/obligations.js';
 import { buildReportStateInjection } from '../../../../report/state-lane.js';
@@ -185,6 +186,7 @@ export async function injectAndRecord(
   // Latches once recall reached the model this turn; a lane the budget dropped is not a read.
   if (!state.recallLaneReachedModelThisTurn && laneIdsForThisCall.includes('msg.relevant-memory')) {
     state = advance(state, { recallLaneReachedModelThisTurn: true });
+    recordVaultUse(ctx.recalledVaultIds ?? []);
   }
   if (steerAwaitingConfirm) {
     state = advance(state, {
