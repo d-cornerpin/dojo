@@ -546,17 +546,8 @@ export function settleAsk(workId: string, ctx: SettlementContext): AskSettlement
     return out('held', reason);
   }
 
-  // Job hold: the request's task is still running, so a progress text reaches the person and the request stays owed.
-  // Its task is the one linked by its message, or the one this turn parked while serving it.
-  const parked = ctx.parkedTask && ask.claimed_by_turn === ctx.turnNumber && taskNow(ctx.parkedTask).open ? ctx.parkedTask : null;
-  const jobTask = ctx.at === 'boot' ? null : linkedTaskOf(ask.agent_id, ask.root_id) ?? parked;
-  const holdOnJob = (task: string): AskSettlementOutcome => {
-    if (ask.state === 'blocked') return out('held', 'already held on its job');
-    const r = transition(workId, { to: 'blocked', by: 'agent', actorId, expectedState: ask.state, reason: `${JOB_HOLD_REASON} (task ${task})` });
-    return r.kind === 'applied' ? out('held', 'held on its job') : out('unchanged', `job hold refused: ${r.kind}`);
-  };
-  if (jobTask && ctx.at === 'delivery') return out('held', 'its job is still running');
-  if (jobTask && ctx.at === 'finalize' && taskNow(jobTask).parked) return holdOnJob(jobTask);
+  const onJob = jobHold(ask, ctx, actorId, out);
+  if (onJob) return onJob;
 
   const evidence = qualifyingDelivery(ask, ctx.turnNumber)
     ?? (ctx.at === 'finalize' ? delegatedRelayEvidence(ask, ctx.turnNumber, [...ENGINE_JOIN_RELAY_TOOLS]) : null);
@@ -605,8 +596,6 @@ export function settleAsk(workId: string, ctx: SettlementContext): AskSettlement
     const r = transition(workId, { to: 'abandoned', by: 'agent', actorId, expectedState: ask.state, reason: why });
     return r.kind === 'applied' ? out('closed', why) : out('unchanged', `settle refused: ${r.kind}`);
   }
-  // A job turn that answered nothing and did not park waits on its task: a stalled job is not re-served.
-  if (jobTask && ctx.jobTurn === true) return holdOnJob(jobTask);
   // Who ended the turn decides which count moves and when it is served again (the exit table).
   const exit = turnExitReason(ask.agent_id, ctx.turnNumber);
   const cause = handBackCauseOf(exit, ctx);
@@ -793,6 +782,22 @@ function mediaJobs(askRootId: string): { all: number; out: number; cancelled: nu
     t.all += r.n; t.out += r.o ?? 0; t.cancelled += r.c ?? 0;
   }
   return t;
+}
+
+/** Job hold: while the request's task (linked, or parked by this turn for it) runs, a progress text does not close it:
+ *  held at send time while its turn is live; at the end held when parked, or by a job turn not ended on its answer. */
+function jobHold(ask: AskRow, ctx: SettlementContext, actorId: string, out: (v: AskSettlementVerdict, d: string) => AskSettlementOutcome): AskSettlementOutcome | null {
+  if (ctx.at !== 'delivery' && ctx.at !== 'finalize') return null;
+  const parked = ctx.parkedTask && ask.claimed_by_turn === ctx.turnNumber && taskNow(ctx.parkedTask).open ? ctx.parkedTask : null;
+  const task = linkedTaskOf(ask.agent_id, ask.root_id) ?? parked;
+  if (!task) return null;
+  if (ctx.at === 'delivery') return turnContext(ask.agent_id)?.turnNumber === ask.claimed_by_turn ? out('held', 'its job is still running') : null;
+  const jobTurnEnded = ctx.jobTurn === true
+    && (handBackCauseOf(turnExitReason(ask.agent_id, ctx.turnNumber), ctx) !== 'silence' || !qualifyingDelivery(ask, ctx.turnNumber));
+  if (!taskNow(task).parked && !jobTurnEnded) return null;
+  if (ask.state === 'blocked') return out('held', 'already held on its job');
+  const r = transition(ask.id, { to: 'blocked', by: 'agent', actorId, expectedState: ask.state, reason: `${JOB_HOLD_REASON} (task ${task})` });
+  return r.kind === 'applied' ? out('held', 'held on its job') : out('unchanged', `job hold refused: ${r.kind}`);
 }
 
 /** A tracker task `t` linked to the request of ask `a` by its message, not ended and not handed in. */

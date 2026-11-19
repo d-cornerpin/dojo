@@ -8,8 +8,8 @@ vi.mock('../runtime.js', () => ({ getAgentRuntime: () => ({ handleMessage: async
 
 import { runMigrations } from '../../db/migrations.js';
 import { nextOwed, dueOf } from '../v2/owed.js';
-import { freshAgentsDb, HELPER } from './helpers/agent-requests.js';
-import { ownerAsks, stretch, rowOf, tasksOf } from './helpers/long-job.js';
+import { freshAgentsDb, testDb, HELPER } from './helpers/agent-requests.js';
+import { ownerAsks, stretch, rowOf, tasksOf, delivered } from './helpers/long-job.js';
 
 beforeEach(() => { freshAgentsDb(runMigrations); });
 
@@ -31,6 +31,16 @@ describe('a stalled job holds its request and nothing re-serves it', () => {
     await stretch('stalls');
     await ownerAsks('m-2', 'how is it going?');
     expect(nextOwed(HELPER)[0]).toMatchObject({ kind: 'person', rank: 1 });
+    expect(rowOf(ask).state).toBe('blocked');
+  });
+
+  it('a job stretch that delivers a progress line and then stalls: its request stays held, not done', async () => {
+    const ask = await ownerAsks('m-1');
+    await stretch('parks');
+    await stretch('stalls', () => {
+      const turn = (testDb().prepare('SELECT MAX(turn_number) AS n FROM turns WHERE agent_id = ?').get(HELPER) as { n: number }).n;
+      delivered(turn, 'conv-owner');
+    });
     expect(rowOf(ask).state).toBe('blocked');
   });
 });
