@@ -4,7 +4,7 @@ import { A2A_THREAD_SHORT_LENGTH } from '@dojo/shared';
 import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
 import { broadcast } from '../../gateway/ws.js';
-import { repliesSince } from '../../memory/message-store.js';
+import { repliedOnThread } from '../../memory/message-store.js';
 import { workingExpr } from '../../work/terminal-states.js';
 import { askIdForMessage } from '../../work/store.js';
 import { parkedContinuationFor } from '../../work/task-freshness.js';
@@ -48,11 +48,6 @@ export function underWakeBudget(agentId: string): boolean {
 
 function wakeBudgetClearsAt(agentId: string): number | null {
   return wakeBudgetTripped.has(agentId) ? ((wakeupTimes.get(agentId) ?? [])[0] ?? Date.now()) + WAKE_BUDGET_WINDOW_MS : null;
-}
-
-/** Did `fromAgentId` write on `threadId` to `askerId` at or after `sinceMs`? The one "replied" reader. */
-export function repliedOnThread(fromAgentId: string, askerId: string, threadId: string, sinceMs: number): boolean {
-  return repliesSince(askerId, threadId, sinceMs).some((r) => r.from === fromAgentId);
 }
 
 export interface AgentRequest {

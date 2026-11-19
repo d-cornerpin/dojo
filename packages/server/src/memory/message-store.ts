@@ -646,6 +646,11 @@ export function repliesSince(askerId: string, threadId: string, sinceMs: number)
   `).all(askerId, threadId, askerId, sinceMs) as ThreadReply[];
 }
 
+/** Did `fromAgentId` write on `threadId` to `askerId` at or after `sinceMs`? The one "replied" reader. */
+export function repliedOnThread(fromAgentId: string, askerId: string, threadId: string, sinceMs: number): boolean {
+  return repliesSince(askerId, threadId, sinceMs).some((r) => r.from === fromAgentId);
+}
+
 // Add no by-agent conversation wipe: `deleteAllForAgent` is for teardown only, where erasing everything is meant.
 
 /** Scoped by `origin_intent`, so it can never reach ordinary peer A2A traffic. */

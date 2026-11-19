@@ -5,8 +5,8 @@ import { getDb } from '../db/connection.js';
 import { turnContext } from '../agent/turn-context.js';
 import { runCarriesJob, jobCarriedAsks } from '../work/task-freshness.js';
 import { jobOrigin } from '../work/job-origin.js';
-import { repliedOnThread } from '../agent/v2/owed.js';
 import { getMessagesByIds } from './store.js';
+import { repliedOnThread } from './message-store.js';
 import type { Message } from '@dojo/shared';
 import type { Database } from 'better-sqlite3';
 
