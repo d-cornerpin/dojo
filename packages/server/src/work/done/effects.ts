@@ -7,7 +7,7 @@ import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
 import { retireEngineEventsForTask } from '../../agent/v2/counterparty.js';
 import { claimTrackerNoticeForTask } from '../../memory/message-store.js';
-import { taskScope, STATE_TO_STATUS_SQL } from '../tracker-view.js';
+import { taskScope, STATE_TO_STATUS_SQL, heldByOwnerSql, stateToStatus } from '../tracker-view.js';
 import { setTrackerStatus } from '../tracker-store.js';
 import { sendAgentMessage } from '../../agent/agent-bus.js';
 import { getPMAgentId, getPrimaryAgentId } from '../../config/platform.js';
@@ -180,4 +180,31 @@ export function checkDependencies(completedTaskId: string): void {
       });
     }
   }
+}
+
+/** Open steps whose earlier step was cancelled, failed or is gone are handed in as can't be done, once each:
+ *  a handed-in step is no longer open, so the next sweep passes it by. At most 20 a sweep. */
+export async function handInStepsAfterADeadStep(): Promise<number> {
+  const db = getDb();
+  const rows = db.prepare(`
+    SELECT w.id AS id, w.depends_on AS depends_on FROM work w
+    WHERE ${taskScope('w')} AND w.state = 'open' AND NOT ${heldByOwnerSql('w')}
+      AND EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(w.depends_on) THEN w.depends_on ELSE '[]' END) d
+                  LEFT JOIN work x ON x.id = d.value WHERE x.id IS NULL OR x.state IN ('failed', 'abandoned'))
+    LIMIT 20
+  `).all() as Array<{ id: string; depends_on: string }>;
+  if (rows.length === 0) return 0;
+  const { engineHandIn } = await import('./hand-in.js');
+  let handed = 0;
+  for (const row of rows) {
+    const deps = JSON.parse(row.depends_on) as string[];
+    const found = deps.map((id) => db.prepare('SELECT state, title FROM work WHERE id = ?').get(id) as { state: string; title: string | null } | undefined);
+    const dead = found.findIndex((r) => !r || r.state === 'failed' || r.state === 'abandoned');
+    if (dead < 0) continue;
+    const r = found[dead];
+    const step = r ? `"${r.title ?? 'untitled'}" [${deps[dead]!.slice(0, 8)}] is ${stateToStatus(r.state)}` : `[${deps[dead]!.slice(0, 8)}] no longer exists`;
+    const res = engineHandIn(row.id, `the step it waits on, ${step}, so this one can never start`, { scope: 'schedule', outcome: 'cant_be_done' });
+    if (res.kind === 'handed_in') handed += 1;
+  }
+  return handed;
 }

@@ -7,7 +7,7 @@ import { retireEngineEventsForRun, retireEngineEventsForTask } from '../agent/v2
 import { getDb } from '../db/connection.js';
 import { HARD_STUCK_THRESHOLD_MINUTES } from '../agent/stuck-thresholds.js';
 import {
-  taskScope, dueScope, msToText, tsToMs, stateToStatus, scheduleRowColumns,
+  taskScope, dueScope, msToText, tsToMs, scheduleRowColumns,
 } from '../work/tracker-view.js';
 import { patchWork, setTrackerStatus, bumpWorkAttempts } from '../work/tracker-store.js';
 import { engineHandIn } from '../work/done/hand-in.js';
@@ -168,13 +168,7 @@ export async function checkScheduledTasks(): Promise<void> {
         const deps = JSON.parse(dependsOnRaw) as string[];
         if (deps.length > 0) {
           const rows = deps.map((depId) => db.prepare('SELECT state, title FROM work WHERE id = ?').get(depId) as { state: string; title: string | null } | undefined);
-          // A step that can never become done ends this one: handed in once, so it leaves the due scan.
-          const dead = rows.findIndex((r) => !r || r.state === 'failed' || r.state === 'abandoned');
-          if (dead >= 0) {
-            const step = rows[dead] ? `"${rows[dead]!.title ?? 'untitled'}" [${deps[dead]!.slice(0, 8)}] is ${stateToStatus(rows[dead]!.state)}` : `[${deps[dead]!.slice(0, 8)}] no longer exists`;
-            engineHandIn(taskId, `the step it waits on, ${step}, so this one can never start`, { scope: 'schedule', outcome: 'cant_be_done' });
-            continue;
-          }
+          // A dead earlier step is handed in by the reaper's `steps-after-a-dead-step`; until then this waits like any unmet step.
           const incomplete = deps.filter((_, i) => rows[i]?.state !== 'done');
           if (incomplete.length > 0) {
             logger.info('Scheduler: task has unmet dependencies, skipping', { taskId, incomplete });
