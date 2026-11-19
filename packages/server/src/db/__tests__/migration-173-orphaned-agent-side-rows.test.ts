@@ -174,6 +174,8 @@ const fillLivedIn = (): void => {
 beforeEach(async () => {
   mockDb.current = new Database(':memory:');
   await runMigrations();
+  // 173 ran on bodies that still had the drain ladder table (a later step drops it): restore it for the rehearsal.
+  db().exec(fs.readFileSync(path.join(__dirname, '..', 'migrations', '140_drain_state.sql'), 'utf-8'));
   db().pragma('foreign_keys = ON');
 });
 afterEach(() => {

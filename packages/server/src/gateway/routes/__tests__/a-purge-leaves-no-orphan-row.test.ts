@@ -230,8 +230,8 @@ describe('the side tables are swept by the door, not by a pragma', () => {
   });
 
   it('⚠ WITH `foreign_keys = OFF` the sweep STILL leaves nothing — which is the whole point', async () => {
-    // THIS IS THE CLAUSE THAT MAKES THE THREE `CASCADE` DELETES LOAD-BEARING. With the pragma ON
-    // the database would clean `grant_rule`, `drain_state` and `error_loop_state` up whatever the
+    // THIS IS THE CLAUSE THAT MAKES THE `CASCADE` DELETES LOAD-BEARING. With the pragma ON
+    // the database would clean `grant_rule` and `error_loop_state` up whatever the
     // door did, so a test run under `foreign_keys = ON` cannot tell a door that sweeps them from
     // one that forgets them. OFF is not a hypothetical setting either: it is what the migration
     // chain runs under, and what every `sqlite3` CLI writer gets by default — which is exactly
@@ -241,8 +241,6 @@ describe('the side tables are swept by the door, not by a pragma', () => {
 
     seedAgent('doomed');
     seedSideRows('doomed');
-    db().prepare(`INSERT INTO drain_state (agent_id, drain, head, stuck, updated_at)
-                  VALUES (?, 'unserved_wake', '', 0, ?)`).run('doomed', Date.now());
 
     expect((await purge('doomed')).status).toBe(200);
 
@@ -250,7 +248,6 @@ describe('the side tables are swept by the door, not by a pragma', () => {
     expect(sideRowCount('doomed')).toEqual({
       audit_log: 0, grant_rule: 0, briefings: 0, context_items: 0, summaries: 0,
     });
-    expect(n('SELECT COUNT(*) AS n FROM drain_state WHERE agent_id = ?', 'doomed')).toBe(0);
     for (const { table, column } of tablesReferencingAgents()) {
       expect(n(`SELECT COUNT(*) AS n FROM "${table}" WHERE "${column}" = ?`, 'doomed'),
         `${table}.${column} survived a FK-OFF purge`).toBe(0);
@@ -273,7 +270,7 @@ describe('the side tables are swept by the door, not by a pragma', () => {
 // ── THE CENSUS, WHICH IS THE CLAUSE A FUTURE TABLE CANNOT SLIP PAST ──────────────────────
 
 describe('the census — no table that references agents is forgotten', () => {
-  it('names the ten references the schema declares today, so a new one is visible', () => {
+  it('names the nine references the schema declares today, so a new one is visible', () => {
     const refs = tablesReferencingAgents();
     const seen = refs.map(r => `${r.table}.${r.column}`).sort();
     expect(seen).toEqual([
@@ -281,7 +278,6 @@ describe('the census — no table that references agents is forgotten', () => {
       'audit_log.agent_id',
       'briefings.agent_id',
       'context_items.agent_id',
-      'drain_state.agent_id',
       'error_loop_state.agent_id',
       'grant_rule.agent_id',
       'large_files.agent_id',
@@ -289,15 +285,13 @@ describe('the census — no table that references agents is forgotten', () => {
       'summaries.agent_id',
     ]);
     // Non-vacuity: an empty census would pass every clause below it.
-    expect(refs.length).toBe(10);
+    expect(refs.length).toBe(9);
   });
 
   it('⚠ after a purge, NOT ONE of those tables still names the agent', async () => {
     seedAgent('doomed');
     seedSideRows('doomed');
     seedAgent('child', 'idle', 'doomed');
-    db().prepare(`INSERT INTO drain_state (agent_id, drain, head, stuck, updated_at)
-                  VALUES (?, 'unserved_wake', '', 0, ?)`).run('doomed', Date.now());
     // Built by the PRODUCT's own writer rather than hand-rolled: `messages` carries a dozen
     // CHECK constraints and a fixture that guesses them drifts the moment one changes.
     insertMessage({ agentId: 'doomed', role: 'user', content: 'hi' });
