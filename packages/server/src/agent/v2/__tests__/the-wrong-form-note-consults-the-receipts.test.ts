@@ -37,13 +37,13 @@ const ALREADY_REPLIED_NOTE =
 
 describe('the wrong-form note reads the reply on record', () => {
   it('no reply on record: the fresh-miss note fires word for word', () => {
-    const r = a2aReplyEnforcer({ ...base, priorReplyOnSameThread: false, verifiedSendReceiptOnThread: false });
+    const r = a2aReplyEnforcer({ ...base, priorReplyOnSameThread: false });
     expect(r.decision).toBe('nudge');
     if (r.decision === 'nudge') expect(r.nudgeText).toBe(FRESH_MISS_NOTE);
   });
 
-  it('a reply since the request: the note stops claiming the peer got nothing', () => {
-    const r = a2aReplyEnforcer({ ...base, priorReplyOnSameThread: false, verifiedSendReceiptOnThread: true });
+  it('a reply on the thread: the note stops claiming the peer got nothing', () => {
+    const r = a2aReplyEnforcer({ ...base, priorReplyOnSameThread: true });
     expect(r.decision).toBe('nudge');
     if (r.decision === 'nudge') {
       expect(r.nudgeText).toBe(ALREADY_REPLIED_NOTE);
@@ -51,14 +51,8 @@ describe('the wrong-form note reads the reply on record', () => {
     }
   });
 
-  it('an earlier reply on the thread draws the same already-replied note', () => {
-    const r = a2aReplyEnforcer({ ...base, priorReplyOnSameThread: true, verifiedSendReceiptOnThread: false });
-    expect(r.decision).toBe('nudge');
-    if (r.decision === 'nudge') expect(r.nudgeText).toBe(ALREADY_REPLIED_NOTE);
-  });
-
   it('the four no_action arms are untouched by a reply on record', () => {
-    const withReply = { ...base, verifiedSendReceiptOnThread: true };
+    const withReply = { ...base, priorReplyOnSameThread: true };
     expect(a2aReplyEnforcer({ ...withReply, triggeredByReplyNeededIntent: false }).decision).toBe('no_action');
     expect(a2aReplyEnforcer({ ...withReply, sentToAgentThisTurn: true }).decision).toBe('no_action');
     expect(a2aReplyEnforcer({ ...withReply, alreadyNudgedForMissedReply: true }).decision).toBe('no_action');

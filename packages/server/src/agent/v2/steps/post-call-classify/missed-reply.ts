@@ -62,12 +62,10 @@ export function runMissedReply(
     intent: a2aReplyContext?.intent,
     threadShort: a2aReplyContext?.threadShort,
     fromName: a2aReplyContext?.fromName,
-    // Softer nudge when the asker's store already holds a row from this agent on the thread (ever, or since
-    // the request), so a reply that landed is never called "got nothing".
+    // Softer nudge when the asker's store already holds a row from this agent on the thread, so a reply that
+    // landed is never called "got nothing".
     priorReplyOnSameThread:
       !!unrepliedAssign && repliedOnThread(agentId, unrepliedAssign.fromId, unrepliedAssign.threadId, 0),
-    verifiedSendReceiptOnThread:
-      !!unrepliedAssign && repliedOnThread(agentId, unrepliedAssign.fromId, unrepliedAssign.threadId, unrepliedAssign.createdAt),
   });
   if (replyDecision.decision === 'nudge') {
     // Keyed on the assign id, so the next pass's enforcer finds it fired and the hardcap engages.
