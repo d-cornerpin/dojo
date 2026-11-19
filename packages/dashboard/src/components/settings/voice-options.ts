@@ -21,3 +21,6 @@ export function formatBytes(b: number): string {
   if (b < 1024 * 1024 * 1024) return `${(b / (1024 * 1024)).toFixed(0)} MB`;
   return `${(b / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
+
+/** A key that moves a slider; the setting saves when one is released, as it does when the mouse or a finger lets go. */
+export const movesSlider = (key: string): boolean => /^(Arrow|Page)/.test(key) || key === 'Home' || key === 'End';
