@@ -591,7 +591,7 @@ export const ModelsTab = () => {
         if (!window.confirm(`Could not check which agents use this model (${usage.error}). Turn it off anyway?`)) return;
       } else if (usage.data.usages.length > 0) {
         const affected = usage.data.usages[0].usedBy.map(u => u.name).join(', ');
-        if (!window.confirm(`This model is currently used by: ${affected}.\n\nDisabling it moves them to another model of 32K or more, or leaves them with no model if there is none. Continue?`)) {
+        if (!window.confirm(`This model is currently used by: ${affected}.\n\nDisabling it moves them to another model of 32K or more. Continue?`)) {
           return;
         }
       }
@@ -600,8 +600,7 @@ export const ModelsTab = () => {
         setModels((prev) =>
           prev.map((m) => (m.id === model.id ? { ...m, isEnabled: false } : m)),
         );
-        const { agentsMoved: moved, agentsWithoutModel: none } = result.data;
-        if (moved + none > 0) toast.info(`${moved} agent(s) moved to another model and ${none} left with no model.`);
+        if (result.data.agentsMoved > 0) toast.info(`${result.data.agentsMoved} agent(s) moved to another model.`);
       } else {
         toast.error(result.error ?? 'The change could not be saved.');
       }
