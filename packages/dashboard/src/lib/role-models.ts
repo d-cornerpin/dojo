@@ -2,7 +2,7 @@ import type { Model } from '@dojo/shared';
 import { request } from './door';
 
 /** May this model appear in an agent's model picker? Enabled and a chat model; a too-small one appears, disabled. */
-export const isListedAgentModel = (m: Model): boolean => m.isEnabled && m.notForAgents !== 'not a chat model';
+export const isListedAgentModel = (m: Model): boolean => m.isEnabled && !m.notAChatModel;
 
 /** May a person choose this model for an agent? Enabled, and the server names no reason against it. */
 export const isPickableAgentModel = (m: Model): boolean => m.isEnabled && !m.notForAgents;
