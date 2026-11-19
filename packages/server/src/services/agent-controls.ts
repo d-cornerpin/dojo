@@ -3,6 +3,7 @@
 // written, so a bad pick returns the valid options.
 
 import { getDb } from '../db/connection.js';
+import { setConfigValue } from '../config/config-value.js';
 import { getModelCapabilities, type Capability } from './capabilities.js';
 import { setConfiguredImageGenModelId } from './image-gen-model.js';
 import { setConfiguredVideoGenModelId } from './video-gen-model.js';
@@ -12,14 +13,6 @@ import { setConfiguredFallbackVisionModelId } from './vision-model.js';
 import { setConfiguredTranscriptionModelId, LOCAL_TRANSCRIPTION_IDS } from './transcription-model.js';
 import { listVoices } from '../voice/tts-service.js';
 import { isHumeConfigured, listHumeVoices } from '../voice/hume-engine.js';
-
-/** Upsert a single config key. Mirrors the resolver setters' write shape. */
-function setConfig(key: string, value: string): void {
-  getDb().prepare(`
-    INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
-    ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = datetime('now')
-  `).run(key, value, value);
-}
 
 export type CapabilitySlot = 'image' | 'video' | 'tts' | 'music' | 'vision' | 'transcription';
 
@@ -157,8 +150,8 @@ export async function setVoice(opts: { voice?: string; speed?: number }): Promis
       local.find(v => v.name.toLowerCase() === wantLower) ??
       local.find(v => v.name.toLowerCase().includes(wantLower));
     if (localMatch) {
-      setConfig('voice.preferred_voice', localMatch.id);
-      setConfig('voice.tts_engine', 'local');
+      setConfigValue('voice.preferred_voice', localMatch.id);
+      setConfigValue('voice.tts_engine', 'local');
       changes.push(`voice set to ${localMatch.name} (${localMatch.id}, on-device)`);
     } else {
       // 2. Hume cloud library, if configured.
@@ -173,9 +166,9 @@ export async function setVoice(opts: { voice?: string; speed?: number }): Promis
         } catch { /* fall through to the not-found message */ }
       }
       if (cloudMatch) {
-        setConfig('voice.cloud_voice', cloudMatch.id);
-        setConfig('voice.cloud_voice_provider', cloudMatch.provider);
-        setConfig('voice.tts_engine', 'cloud');
+        setConfigValue('voice.cloud_voice', cloudMatch.id);
+        setConfigValue('voice.cloud_voice_provider', cloudMatch.provider);
+        setConfigValue('voice.tts_engine', 'cloud');
         changes.push(`voice set to ${cloudMatch.name} (cloud / Hume)`);
       } else {
         const sample = local.slice(0, 12).map(v => v.name).join(', ');
@@ -191,8 +184,8 @@ export async function setVoice(opts: { voice?: string; speed?: number }): Promis
       return { ok: false, message: `Speed must be a number between ${SPEED_MIN} and ${SPEED_MAX} (1 = normal).` };
     }
     // Set both engine speeds so slowing down or speeding up behaves the same on local or cloud.
-    setConfig('voice.playback_speed', String(s));
-    setConfig('voice.cloud_speed', String(s));
+    setConfigValue('voice.playback_speed', String(s));
+    setConfigValue('voice.cloud_speed', String(s));
     changes.push(`playback speed set to ${s}x`);
   }
 
@@ -222,7 +215,7 @@ export async function setChannelEnabled(channel: ChannelKey, enabled: boolean): 
         if (!recipient) {
           return { ok: false, message: "Can't enable the iMessage bridge yet — no bridge recipient is configured. Set that up in Settings → Channels first." };
         }
-        setConfig('imessage_enabled', 'true');
+        setConfigValue('imessage_enabled', 'true');
         try {
           const { startIMBridge } = await import('./imessage-bridge.js');
           startIMBridge(recipient);
@@ -231,7 +224,7 @@ export async function setChannelEnabled(channel: ChannelKey, enabled: boolean): 
         }
         return { ok: true, message: 'iMessage bridge enabled and started.' };
       }
-      setConfig('imessage_enabled', 'false');
+      setConfigValue('imessage_enabled', 'false');
       try {
         const { stopIMBridge } = await import('./imessage-bridge.js');
         stopIMBridge();

@@ -7,7 +7,6 @@ import { useToast } from '../../hooks/useToast';
 import { parseUtc } from '../../lib/dates';
 import { formatCost } from '../../lib/model-cost';
 import { isEnterNotComposing } from '../../lib/enter-key';
-import { VoiceOpenerModelConfig } from '../RouterConfig';
 import { ProviderModelGroup } from './ModelRows';
 import {
   FallbackVisionModelCard, ImageGenModelCard, VideoGenModelCard, AudioGenModelCard,
@@ -695,7 +694,6 @@ export const ModelsTab = () => {
         <AudioGenModelCard models={models} />
         <MusicGenModelCard models={models} />
         <TranscriptionModelCard models={models} />
-        <VoiceOpenerModelConfig />
       </div>
     </div>
   );

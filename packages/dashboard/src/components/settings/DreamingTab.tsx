@@ -10,11 +10,10 @@ import { isListedAgentModel } from '../../lib/role-models';
 import { useGuardedLoad } from '../../lib/load-guard';
 import { AgentModelOption } from '../AgentModelOption';
 
-
 type DreamingConfig = Awaited<ReturnType<typeof api.getDreamingConfig>> extends infer R ? (R extends { ok: true; data: infer D } ? D : never) : never;
 
 export const DreamingTab = () => {
-  // The schedule is read before it is shown: a failed read must not appear as 03:00 / full, because Save
+  // The schedule is read before it is shown: a failed read must not appear as 03:00, because Save
   // writes whatever is on screen over the real schedule.
   const load = useGuardedLoad<DreamingConfig>('dreaming', () => api.getDreamingConfig());
   if (load.status === 'loading') return <div className="tile loading-state">Loading...</div>;
@@ -33,7 +32,6 @@ const DreamingEditor = ({ initial }: { initial: DreamingConfig }) => {
   const [models, setModels] = useState<Model[]>([]);
   const [dreamModelId, setDreamModelId] = useState(initial.modelId ?? '');
   const [dreamTime, setDreamTime] = useState(initial.dreamTime);
-  const [dreamMode, setDreamMode] = useState<'full' | 'light'>(initial.dreamMode === 'light' ? 'light' : 'full');
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);   // the server's refusal, shown
@@ -55,7 +53,6 @@ const DreamingEditor = ({ initial }: { initial: DreamingConfig }) => {
     const result = await api.updateDreamingConfig({
       modelId: dreamModelId || undefined,
       dreamTime,
-      dreamMode,
     });
     setSaveError(result.ok ? null : result.error);
     if (result.ok) {
@@ -116,31 +113,6 @@ const DreamingEditor = ({ initial }: { initial: DreamingConfig }) => {
           />
           <div className="fhelp">
             When the Dreamer agent wakes up to process the day's conversations. Default: 3:00 AM.
-          </div>
-        </div>
-
-        <div>
-          <label className="flabel mb-2">Dream Mode</label>
-          <div className="space-y-2">
-            {([
-              { value: 'full', label: 'Full Dream', desc: 'Extract memories + identify technique candidates + vault maintenance' },
-              { value: 'light', label: 'Light Dream', desc: 'Extract memories + vault maintenance only, no technique identification' },
-            ] as const).map((option) => (
-              <label key={option.value} className="flex items-start gap-2 cursor-pointer">
-                <input
-                  type="radio"
-                  name="dreamMode"
-                  value={option.value}
-                  checked={dreamMode === option.value}
-                  onChange={() => setDreamMode(option.value)}
-                  className="mt-1 accent-cp-amber"
-                />
-                <div>
-                  <span className="text-sm text-ui/70">{option.label}</span>
-                  <p className="text-[10px] text-ui/25">{option.desc}</p>
-                </div>
-              </label>
-            ))}
           </div>
         </div>
 

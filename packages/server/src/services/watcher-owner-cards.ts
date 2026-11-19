@@ -1,4 +1,5 @@
 import { getDb } from '../db/connection.js';
+import { setConfigValue } from '../config/config-value.js';
 import { ownerConditionCleared, tellOwner } from '../healer/owner-notices.js';
 
 // The owner's card for a failing watcher, and its record: one config row per watcher maps account to what was told,
@@ -24,8 +25,7 @@ function writeRecord(name: Name, record: Record<string, Entry>): void {
   try {
     const db = getDb();
     if (Object.keys(record).length === 0) db.prepare('DELETE FROM config WHERE key = ?').run(LATCH_KEY[name]);
-    else db.prepare(`INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
-                     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`).run(LATCH_KEY[name], JSON.stringify(record));
+    else setConfigValue(LATCH_KEY[name], JSON.stringify(record));
   } catch { /* the text still goes; only the lasting card is lost */ }
 }
 

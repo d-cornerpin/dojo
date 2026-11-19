@@ -9,7 +9,7 @@
 // Its reserve is DERIVED FROM THE GENERATOR (the worst case under its own caps); `deliveries-lane.test.ts` pins
 // the POST_BUDGET_LANES literal to it.
 
-import { recentDeliveriesToConversation, mostRecentDeliveryTo, type OutboundDelivery } from '../agent/v2/outbound-ledger.js';
+import { recentDeliveriesToConversation, findRecentDeliveriesKeyed, type OutboundDelivery } from '../agent/v2/outbound-ledger.js';
 import { recordedInstant } from './message-stamp.js';
 import { MessageSlot } from '../prompt/registry/types.js';
 import {
@@ -23,7 +23,7 @@ export interface DeliveriesLaneContext {
   agentId: string;
   conversationId: string | null;
   counterpartyName: string;
-  /** Legacy prong: alias hints for pre-121 history with no `deliveries` row. */
+  /** The counterparty's address and name: when the served conversation has no delivery, the newest delivery to them. */
   recipientHints: string[];
   /** Is this text ALREADY in the assembled array? Then it is not quoted twice. It matches nothing on a fresh
    *  body but stays for old echo rows still in older histories. */
@@ -77,8 +77,8 @@ export function readDeliveriesLaneRows(ctx: DeliveriesLaneContext): OutboundDeli
     : [];
   if (rows.length === 0) {
     for (const h of ctx.recipientHints) {
-      const legacy = mostRecentDeliveryTo(ctx.agentId, h, windowHours());
-      if (legacy) { rows = [legacy]; break; }
+      const newest = findRecentDeliveriesKeyed(ctx.agentId, h, windowHours())[0];
+      if (newest) { rows = [newest]; break; }
     }
   }
   return rows;

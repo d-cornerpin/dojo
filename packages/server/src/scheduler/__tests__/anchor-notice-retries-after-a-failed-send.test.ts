@@ -25,7 +25,7 @@ const FAR_FUTURE = Date.parse('2099-01-01T00:00:00Z');
 function seed(withSuspect: boolean): void {
   const db = new Database(':memory:');
   db.exec(`
-    CREATE TABLE config (key TEXT PRIMARY KEY, value TEXT);
+    CREATE TABLE config (key TEXT PRIMARY KEY, value TEXT, updated_at TEXT);
     CREATE TABLE work (
       id TEXT PRIMARY KEY, title TEXT, anchor_local TEXT, scheduled_start INTEGER,
       next_run_at INTEGER, updated_at INTEGER, state TEXT, is_paused INTEGER,

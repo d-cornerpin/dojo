@@ -45,7 +45,7 @@ function technique(id: string, name: string, description: string, md: string): v
 async function inject(ask: string): Promise<Array<{ role: string; content: unknown }>> {
   const messages: Array<{ role: string; content: unknown }> = [{ role: 'user', content: ask }];
   const state = advance(initState({ agentId: AGENT } as Parameters<typeof initState>[0]), { loopCount: 1 });
-  await injectTechniqueAndGapHints(state, { agentId: AGENT, turnCtx: {} as never, lastUserMessageContent: ask, mctx: {} as never, messages: messages as never });
+  await injectTechniqueAndGapHints(state, { agentId: AGENT, lastUserMessageContent: ask, mctx: {} as never, messages: messages as never });
   return messages.slice(1);
 }
 const text = (ms: Array<{ content: unknown }>): string => ms.map((m) => (typeof m.content === 'string' ? m.content : JSON.stringify(m.content))).join('\n');

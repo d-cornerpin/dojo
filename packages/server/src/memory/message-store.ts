@@ -53,8 +53,6 @@ export interface NewMessage {
   inboundMeta?: string | null;
   attachments?: string | null;
   externalMessageId?: string | null;
-  speaker?: string | null;
-  voiceSessionId?: string | null;
   taskId?: string | null;
   runId?: string | null;
   rootKind?: string | null;
@@ -143,14 +141,14 @@ const INSERT_SQL = `
       display_kind, display_tier, turn_number, group_id, channel, sender_id, authorized,
       source_agent_id, a2a_thread_id, a2a_intent, a2a_requires_response, token_count,
       model_id, cost, latency_ms, reasoning_content, inbound_meta, attachments,
-      external_message_id, speaker, voice_session_id, task_id, run_id, root_kind, root_id,
+      external_message_id, task_id, run_id, root_kind, root_id,
       subject_kind, sent_at, created_at
     ) VALUES (
       @id, @agentId, @conversationId, @lane, @originIntent, @role, @content, @mood,
       @displayKind, @displayTier, @turnNumber, @groupId, @channel, @senderId, @authorized,
       @sourceAgentId, @a2aThreadId, @a2aIntent, @a2aRequiresResponse, @tokenCount,
       @modelId, @cost, @latencyMs, @reasoningContent, @inboundMeta, @attachments,
-      @externalMessageId, @speaker, @voiceSessionId, @taskId, @runId, @rootKind, @rootId,
+      @externalMessageId, @taskId, @runId, @rootKind, @rootId,
       @subjectKind, @sentAt, ${NOW_MS}
     )`;
 
@@ -237,8 +235,7 @@ function bind(m: NewMessage): { lane: Lane; id: string; displayKind: DisplayKind
       tokenCount, modelId: m.modelId ?? null, cost: m.cost ?? null,
       latencyMs: m.latencyMs ?? null, reasoningContent: m.reasoningContent ?? null,
       inboundMeta: m.inboundMeta ?? null, attachments: m.attachments ?? null,
-      externalMessageId: m.externalMessageId ?? null, speaker: m.speaker ?? null,
-      voiceSessionId: m.voiceSessionId ?? null, taskId: m.taskId ?? null, runId: m.runId ?? null,
+      externalMessageId: m.externalMessageId ?? null, taskId: m.taskId ?? null, runId: m.runId ?? null,
       rootKind: m.rootKind ?? null, rootId: m.rootId ?? null,
       subjectKind: subject.subjectKind,
       sentAt,
@@ -618,13 +615,6 @@ export function rehomeUndeliveredCreatedAt(
 export function stampInboundMeta(id: string, metaJson: string): number {
   const db = getDb();
   return db.prepare('UPDATE messages SET inbound_meta = ? WHERE id = ?').run(metaJson, id).changes;
-}
-
-export function stampVoiceSpeaker(id: string, speaker: string, voiceSessionId: string | null): number {
-  const db = getDb();
-  return db.prepare(
-    'UPDATE messages SET speaker = ?, voice_session_id = COALESCE(?, voice_session_id) WHERE id = ?',
-  ).run(speaker, voiceSessionId, id).changes;
 }
 
 /** Routing column only, so the cache prefix is untouched. */

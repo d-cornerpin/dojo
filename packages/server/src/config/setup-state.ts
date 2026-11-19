@@ -4,6 +4,7 @@
 // login and an import restores the flag mid-wizard, so only markFirstRunComplete() may shut the doors.
 
 import { getDb } from '../db/connection.js';
+import { setConfigValue } from './config-value.js';
 import { getDashboardPasswordHash } from './loader.js';
 
 let cached: boolean | null = null;
@@ -29,11 +30,6 @@ export function isPastFirstRun(): boolean {
 }
 
 export function markFirstRunComplete(): void {
-  getDb()
-    .prepare(
-      `INSERT INTO config (key, value, updated_at) VALUES ('setup_completed', 'true', datetime('now'))
-       ON CONFLICT(key) DO UPDATE SET value = 'true', updated_at = datetime('now')`,
-    )
-    .run();
+  setConfigValue('setup_completed', 'true');
   cached = true;
 }

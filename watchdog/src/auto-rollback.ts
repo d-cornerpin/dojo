@@ -188,6 +188,8 @@ export function decideAutoRollback(marker: UpdateMarker | null, nowMs: number): 
   // Only a proven self-update episode is actionable; any other phase is a generic outage: hands off.
   if (marker.phase !== 'booting-new' && marker.phase !== 'rolled-back') return { action: 'none' };
   if (marker.confirmedHealthyAt) return { action: 'none' };
+  // A booting-new marker that never stamped a first start and is over a day old is history, not a failing update.
+  if (marker.phase === 'booting-new' && !marker.firstBootAt && nowMs - Date.parse(marker.updatedAt) > 24 * 3_600_000) return { action: 'none' };
 
   if (marker.bootAttempts < FAIL_BOOT_ATTEMPTS && !(sinceStartMs(marker, nowMs) >= FAIL_WALL_CLOCK_MS)) return { action: 'none' };
 

@@ -82,7 +82,6 @@ const THE_DRIVER_CARRIES = [
   // t202 (A2) — the id of the note the seam wrote for the text above; written in the post-call
   // seam, read once by finalize's recovery. Same crossing, same rule as its sibling.
   'deferredNoteId',
-  'turnInjectedTechniqueId',
   // PHASE-6 T4 (CUT 6) — the `assemble` tranche's crossings. The assembler-bookkeeping
   // trio is the family whose by-value alternative is measurably WRONG in three
   // different ways: the stamp dies at the boundary, the overhead never reaches the next

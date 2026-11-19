@@ -8,22 +8,22 @@
  */
 
 import type { WSContext } from 'hono/ws';
-import { startVoiceSessionRecord, endVoiceSessionRecord, bumpVoiceSessionTurnCount, stampSpokenMessage } from './session-record.js';
 import jwt from 'jsonwebtoken';
 import { getJwtSecret } from '../config/loader.js';
 import { createLogger } from '../logger.js';
 import { broadcast, onBroadcast } from '../gateway/ws.js';
+import { turnAnswersSpokenRequest } from '../memory/served-ask.js';
 import { submitUserMessage } from '../gateway/routes/chat.js';
-import { transcribeBuffer, pcmFloatToWav, ensureSttReady, DEFAULT_STT_MODEL_KEY, parseSttModelKey } from './stt-service.js';
+import { transcribeBuffer, pcmFloatToWav, ensureSttReady } from './stt-service.js';
+import { loadVoiceSettings, type VoiceSettings } from './voice-settings.js';
 import { synthesizeClauseStream, createClauseQueue, DEFAULT_VOICE, loadKokoro, isKokoroLoaded } from './tts-service.js';
 import { recordAtDoor, recordedId } from '../agent/v2/outbound.js';
 import { checkCustomVoiceUsable } from './custom-voices.js';
 import { StreamingSpeechBuffer } from './text-sanitize.js';
-import { HumeStreamSession, isHumeConfigured } from './hume-engine.js';
+import { HumeStreamSession } from './hume-engine.js';
 import { createCueExtractor } from './cue-parser.js';
 import { getDb } from '../db/connection.js';
 import { markSpokenAloud } from '../memory/message-store.js';
-import { getPrimaryAgentName } from '../config/platform.js';
 import { KOKORO_MODEL_ID } from './model-manager.js';
 import { predictTurnComplete, TURN_COMPLETE_THRESHOLD, warmUpSmartTurn } from './smart-turn.js';
 import type { WsEvent } from '@dojo/shared';
@@ -35,12 +35,6 @@ interface VoiceSession {
   ws: WSContext;
   userId: string;
   agentId: string;
-  /** Durable voice_sessions row for this WS session; null when recording failed (runs unrecorded). */
-  recordId: string | null;
-  voice: string;
-  speed: number;
-  /** STT model key: 'moonshine-base' (default) or a WhisperSize served by the native whisper.cpp server. */
-  sttModel: string;
   pcmChunks: Float32Array[];
   pcmSampleRate: number;
   unsubscribeChunk: (() => void) | null;
@@ -61,101 +55,25 @@ interface VoiceSession {
   // Catches proactive agent messages (watchers, pokes) while no TTS is active and starts a TTS burst.
   unsubscribeProactive: (() => void) | null;
   /** Transcript held after a mid-thought utterance; the timer submits it unless a continuation arrives
-   *  and merges with it (clearing the timer). */
-  pendingTurnExtension: { transcript: string; timer: ReturnType<typeof setTimeout> } | null;
+   *  and merges with it. `speaking` marks a hold stretched because the person started speaking again. */
+  pendingTurnExtension: { transcript: string; timer: ReturnType<typeof setTimeout>; speaking: boolean } | null;
   // Set by 'utterance_canonical': the next binary frame is vad-web's canonical buffer (with preroll)
   // and REPLACES pcmChunks, restoring the first word the live frame stream cuts off.
   expectingCanonicalFrame: boolean;
-  // Active TTS engine: 'local' (Kokoro) or 'cloud' (Hume). Read at session open and on each 'config'
-  // message; cloud degrades to local when Hume is not configured.
-  ttsEngine: 'local' | 'cloud';
-  cloudVoice: string;
-  /** Hume provider: HUME_AI (Voice Library) or CUSTOM_VOICE (the user's). */
-  cloudVoiceProvider: 'HUME_AI' | 'CUSTOM_VOICE';
-  /** Standing delivery description for cloud TTS. null = let Octave decide. */
-  cloudDescription: string | null;
-  cloudSpeed: number;
   // Engine-agnostic handle for pushing text into the active TTS burst (set by the running burst, cleared
   // in its teardown); pushVoiceFiller uses it.
   activeBurstPush: ((text: string) => void) | null;
   /** Time (ms) of the last utterance_end processed; drops vad-web's duplicate onSpeechEnd. */
   lastUtteranceEndAt: number;
-  // True from prompt submit until the real reply's first content arrives; the opener speaks only while
-  // true.
-  openerWindowOpen: boolean;
-  // True once the fast opener spoke this turn; suppresses the generic pre-tool filler. Reset each submit.
-  openerSpoken: boolean;
   // One-shot guard: the cloud-to-local fallback notice is sent at most once per session.
   cloudFallbackNotified: boolean;
   // One-shot guard: the custom-voice-unavailable warning is logged at most once per session.
   customVoiceWarned: boolean;
 }
 
-/** Load saved voice settings from the config table; defaults on any missing or malformed key. */
-function loadVoiceSettings(): {
-  voice: string; speed: number; sttModel: string;
-  wakeWordEnabled: boolean; wakePhrase: string; sleepPhrase: string;
-  ttsEngine: 'local' | 'cloud';
-  cloudVoice: string;
-  cloudVoiceProvider: 'HUME_AI' | 'CUSTOM_VOICE';
-  cloudDescription: string | null;
-  cloudSpeed: number;
-} {
-  const db = getDb();
-  let voice = DEFAULT_VOICE;
-  let speed = 1;
-  let sttModel: string = DEFAULT_STT_MODEL_KEY;
-  let wakeWordEnabled = false;
-  let wakePhrase = `hey ${getPrimaryAgentName().toLowerCase()}`;
-  let sleepPhrase = 'stop listening';
-  let ttsEngine: 'local' | 'cloud' = 'local';
-  let cloudVoice = '';
-  let cloudVoiceProvider: 'HUME_AI' | 'CUSTOM_VOICE' = 'HUME_AI';
-  let cloudDescription: string | null = null;
-  let cloudSpeed = 1;
-  try {
-    const row = db.prepare(
-      "SELECT key, value FROM config WHERE key IN ('voice.preferred_voice', 'voice.playback_speed', 'voice.stt_model', 'voice.wake_word_enabled', 'voice.wake_phrase', 'voice.sleep_phrase', 'voice.tts_engine', 'voice.cloud_voice', 'voice.cloud_voice_provider', 'voice.cloud_voice_description', 'voice.cloud_speed')",
-    ).all() as Array<{ key: string; value: string }>;
-    for (const r of row) {
-      if (r.key === 'voice.preferred_voice' && r.value) voice = r.value;
-      if (r.key === 'voice.playback_speed') {
-        const n = Number(r.value);
-        if (Number.isFinite(n) && n >= 0.5 && n <= 2) speed = n;
-      }
-      if (r.key === 'voice.stt_model' && r.value) {
-        const parsed = parseSttModelKey(r.value);
-        sttModel = parsed.kind === 'moonshine' ? 'moonshine-base' : parsed.size;
-      }
-      if (r.key === 'voice.wake_word_enabled') wakeWordEnabled = r.value === 'true';
-      if (r.key === 'voice.wake_phrase' && r.value.trim()) wakePhrase = r.value.trim().toLowerCase();
-      if (r.key === 'voice.sleep_phrase' && r.value.trim()) sleepPhrase = r.value.trim().toLowerCase();
-      if (r.key === 'voice.tts_engine' && r.value === 'cloud') ttsEngine = 'cloud';
-      if (r.key === 'voice.cloud_voice' && r.value) cloudVoice = r.value;
-      if (r.key === 'voice.cloud_voice_provider' && r.value === 'CUSTOM_VOICE') cloudVoiceProvider = 'CUSTOM_VOICE';
-      if (r.key === 'voice.cloud_voice_description' && r.value.trim()) cloudDescription = r.value.trim().slice(0, 500);
-      if (r.key === 'voice.cloud_speed') {
-        const n = Number(r.value);
-        if (Number.isFinite(n) && n >= 0.5 && n <= 2) cloudSpeed = n;
-      }
-    }
-  } catch { /* table may not yet have these rows, defaults are fine */ }
-  // Cloud without a Hume key or a chosen voice falls back to local so voice mode never breaks.
-  if (ttsEngine === 'cloud' && (!isHumeConfigured() || cloudVoice.length === 0)) {
-    ttsEngine = 'local';
-  }
-  return {
-    voice, speed, sttModel,
-    wakeWordEnabled, wakePhrase, sleepPhrase,
-    ttsEngine, cloudVoice, cloudVoiceProvider, cloudDescription, cloudSpeed,
-  };
-}
-
 // Mark an assistant message as voice-delivered and broadcast chat:source_updated so dashboards update
 // the "via voice" badge in place. Idempotent: markSpokenAloud only updates rows not yet on a channel.
-function markAssistantMessageVoiced(agentId: string, messageId: string, recordId?: string | null): void {
-  // Binds the spoken reply to its voice session by id (speaker 'agent').
-  stampSpokenMessage(messageId, 'agent', recordId ?? null);
+function markAssistantMessageVoiced(agentId: string, messageId: string): void {
   if (!messageId) return;
   try {
     if (markSpokenAloud(messageId) > 0) {
@@ -261,22 +179,26 @@ function findPhrase(transcript: string, phrase: string): { matched: boolean; rem
 
 const sessions = new Map<WSContext, VoiceSession>();
 
-// Push a filler phrase into the agent's active TTS burst so the user is not left in silence while a
-// voice turn runs tools. Returns false when no session or burst is active, or a fast opener already
-// spoke this turn (one bridge per turn).
+// Push a filler phrase into the agent's active TTS bursts so the user is not left in silence while a
+// voice turn runs tools. Returns false when no voice session of the agent has a burst running.
 export function pushVoiceFiller(agentId: string, phrase: string): boolean {
+  let pushed = false;
   for (const session of sessions.values()) {
-    if (session.agentId !== agentId) continue;
-    if (session.openerSpoken) return false;
-    if (!session.activeBurstPush) return false;
+    if (session.agentId !== agentId || !session.activeBurstPush) continue;
     try {
       session.activeBurstPush(phrase);
-      return true;
-    } catch {
-      return false;
-    }
+      pushed = true;
+    } catch { /* that burst is closing */ }
   }
-  return false;
+  return pushed;
+}
+
+// Only a turn answering a spoken request is read aloud: chunks of any other turn never reach speech.
+function onSpokenEvent(handler: (event: WsEvent) => void): () => void {
+  return onBroadcast((event) => {
+    if (event.type === 'chat:chunk' && !turnAnswersSpokenRequest(event.agentId)) return;
+    handler(event);
+  });
 }
 
 function sendJson(ws: WSContext, payload: object): void {
@@ -354,9 +276,6 @@ export function verifyAndOpenVoiceSession(ws: WSContext, url: string): boolean {
       ws,
       userId: payload.userId,
       agentId,
-      voice: saved.voice,
-      speed: saved.speed,
-      sttModel: saved.sttModel,
       pcmChunks: [],
       pcmSampleRate: 16_000,
       unsubscribeChunk: null,
@@ -374,24 +293,11 @@ export function verifyAndOpenVoiceSession(ws: WSContext, url: string): boolean {
       unsubscribeProactive: null,
       pendingTurnExtension: null,
       expectingCanonicalFrame: false,
-      ttsEngine: saved.ttsEngine,
-      cloudVoice: saved.cloudVoice,
-      cloudVoiceProvider: saved.cloudVoiceProvider,
-      cloudDescription: saved.cloudDescription,
-      cloudSpeed: saved.cloudSpeed,
       activeBurstPush: null,
       lastUtteranceEndAt: 0,
-      openerWindowOpen: false,
-      openerSpoken: false,
       cloudFallbackNotified: false,
       customVoiceWarned: false,
-      // Set from startVoiceSessionRecord just below.
-      recordId: null,
     };
-    session.recordId = startVoiceSessionRecord({
-      agentId, kind: 'dashboard',
-      sttModel: saved.sttModel, ttsEngine: saved.ttsEngine, voiceId: saved.voice,
-    });
     sessions.set(ws, session);
     // Heartbeat every 25s, under typical tunnel and proxy idle timeouts (Cloudflare, nginx's 30s).
     session.pingInterval = setInterval(() => {
@@ -412,7 +318,7 @@ export function verifyAndOpenVoiceSession(ws: WSContext, url: string): boolean {
 
     // Pre-warm STT and TTS during the first utterance: first load is slow on both (whisper-server,
     // Kokoro), so waiting for the reply text would miss the whole first response.
-    void ensureSttReady(session.sttModel).catch((err) => {
+    void ensureSttReady(saved.sttModel).catch((err) => {
       logger.warn('STT preload failed', { error: err instanceof Error ? err.message : String(err) });
     });
     if (!isKokoroLoaded()) {
@@ -422,7 +328,7 @@ export function verifyAndOpenVoiceSession(ws: WSContext, url: string): boolean {
     }
     // Preload Smart Turn; until ready the turn gate uses the conjunction heuristic.
     void warmUpSmartTurn();
-    // Speak unsolicited agent messages (watchers, A2A pokes, scheduled triggers) too.
+    // A spoken turn with no burst waiting (a continuation, a late answer) is read aloud too.
     session.unsubscribeProactive = subscribeProactiveWatcher(session);
     return true;
   } catch (err) {
@@ -446,7 +352,6 @@ export function closeVoiceSession(ws: WSContext): void {
     session.pendingTurnExtension = null;
   }
   sessions.delete(ws);
-  endVoiceSessionRecord(session.recordId, 'ws-closed');
   logger.info('Voice session closed', { userId: session.userId, agentId: session.agentId });
 }
 
@@ -483,63 +388,18 @@ export async function handleVoiceMessage(ws: WSContext, data: string | ArrayBuff
 
   switch (msg.type) {
     case 'config': {
-      if (typeof msg.voice === 'string') session.voice = msg.voice;
-      if (typeof msg.speed === 'number' && msg.speed >= 0.5 && msg.speed <= 2) session.speed = msg.speed;
-      if (typeof msg.pcmSampleRate === 'number') session.pcmSampleRate = msg.pcmSampleRate;
-      if (typeof msg.ttsEngine === 'string') {
-        const next: 'local' | 'cloud' = msg.ttsEngine === 'cloud' ? 'cloud' : 'local';
-        // Same fallback as the initial load: cloud needs a Hume key and a chosen voice.
-        session.ttsEngine = (next === 'cloud' && (!isHumeConfigured() || session.cloudVoice.length === 0))
-          ? 'local' : next;
-      }
-      if (typeof msg.cloudVoice === 'string' && msg.cloudVoice.length > 0) session.cloudVoice = msg.cloudVoice;
-      if (msg.cloudVoiceProvider === 'CUSTOM_VOICE' || msg.cloudVoiceProvider === 'HUME_AI') {
-        session.cloudVoiceProvider = msg.cloudVoiceProvider;
-      }
-      if (typeof msg.cloudDescription === 'string') {
-        session.cloudDescription = msg.cloudDescription.trim().length > 0
-          ? msg.cloudDescription.trim().slice(0, 500) : null;
-      }
-      if (typeof msg.cloudSpeed === 'number' && msg.cloudSpeed >= 0.5 && msg.cloudSpeed <= 2) {
-        session.cloudSpeed = msg.cloudSpeed;
-      }
-      if (typeof msg.sttModel === 'string' && msg.sttModel.length > 0) {
-        // Accepts the canonical key or a WhisperSize; unknown values fall back to Moonshine.
-        const parsed = parseSttModelKey(msg.sttModel);
-        session.sttModel = parsed.kind === 'moonshine' ? 'moonshine-base' : parsed.size;
-        void ensureSttReady(session.sttModel).catch(() => { /* ignore */ });
-      }
-      if (typeof msg.wakeWordEnabled === 'boolean') {
-        const wasEnabled = session.wakeWordEnabled;
-        session.wakeWordEnabled = msg.wakeWordEnabled;
-        // Enabling wake-word mode mid-session goes passive; disabling it goes active.
-        if (!wasEnabled && msg.wakeWordEnabled) {
-          session.passive = true;
-          sendJson(ws, { type: 'voice:state', agentId: session.agentId, state: 'passive' });
-        } else if (wasEnabled && !msg.wakeWordEnabled) {
-          session.passive = false;
-          sendJson(ws, { type: 'voice:state', agentId: session.agentId, state: 'listening' });
-        }
-      }
-      if (typeof msg.wakePhrase === 'string' && msg.wakePhrase.trim()) {
-        session.wakePhrase = msg.wakePhrase.trim().toLowerCase();
-      }
-      if (typeof msg.sleepPhrase === 'string' && msg.sleepPhrase.trim()) {
-        session.sleepPhrase = msg.sleepPhrase.trim().toLowerCase();
-      }
-      sendJson(ws, {
-        type: 'voice:config_ack',
-        voice: session.voice, speed: session.speed, sttModel: session.sttModel,
-        wakeWordEnabled: session.wakeWordEnabled, passive: session.passive,
-        ttsEngine: session.ttsEngine,
-        cloudVoice: session.cloudVoice,
-        cloudVoiceProvider: session.cloudVoiceProvider,
-        cloudSpeed: session.cloudSpeed,
-      });
+      // Voice, speed and engines come from the saved settings (read per reply and utterance), not the page.
+      const rate = msg.pcmSampleRate;
+      if (typeof rate === 'number' && rate >= 8_000 && rate <= 48_000) session.pcmSampleRate = rate;
+      sendJson(ws, { type: 'voice:config_ack', ...loadVoiceSettings(), passive: session.passive });
       return;
     }
 
     case 'utterance_start': {
+      // Speaking again during a mid-thought hold: the held words wait longer for this utterance to end,
+      // and still go if it never does (a cough the browser starts and never ends).
+      const held = session.pendingTurnExtension;
+      if (held) holdTranscript(session, held.transcript, SPEAKING_AGAIN_HOLD_MS, true);
       session.pcmChunks = [];
       session.partialLastChunkCount = 0;
       session.lastPartialText = '';
@@ -555,7 +415,10 @@ export async function handleVoiceMessage(ws: WSContext, data: string | ArrayBuff
     }
 
     case 'utterance_end': {
+      const held = session.pendingTurnExtension;
       await handleUtteranceEnd(session);
+      // The utterance that stretched a hold brought nothing to merge: the held words go after the usual wait.
+      if (held?.speaking && session.pendingTurnExtension === held) holdTranscript(session, held.transcript, TURN_EXTENSION_MS, false);
       return;
     }
 
@@ -586,13 +449,15 @@ async function runPartialTranscribe(session: VoiceSession): Promise<void> {
   if (session.pcmChunks.length === 0) return;
   session.partialInFlight = true;
   session.partialLastChunkCount = session.pcmChunks.length;
+  const utterance = session.pcmChunks;
   try {
-    const pcm = concatPcm(session.pcmChunks); // snapshot, not drain
+    const pcm = concatPcm(utterance); // snapshot, not drain
     if (pcm.length < PARTIAL_MIN_SAMPLES) return;
     const wav = pcmFloatToWav(pcm, session.pcmSampleRate);
-    const result = await transcribeBuffer(wav, { modelKey: session.sttModel });
+    const result = await transcribeBuffer(wav, { modelKey: loadVoiceSettings().sttModel });
     const text = result.text.trim();
-    if (!text || text === session.lastPartialText) return;
+    // The utterance ended (its chunks were taken) while this ran: a late partial is not live text.
+    if (session.pcmChunks !== utterance || !text || text === session.lastPartialText) return;
     session.lastPartialText = text;
     sendJson(session.ws, {
       type: 'voice:stt_partial',
@@ -665,36 +530,26 @@ const HOLD_RANGES: Record<'quick' | 'normal' | 'patient', { min: number; max: nu
   patient: { min: 1200, max: 4000 },
 };
 
-function getTurnPatience(): 'quick' | 'normal' | 'patient' {
-  try {
-    const row = getDb()
-      .prepare("SELECT value FROM config WHERE key = 'voice.vad_sensitivity'")
-      .get() as { value: string } | undefined;
-    const v = row?.value;
-    if (v === 'quick' || v === 'normal' || v === 'patient') return v;
-  } catch { /* fall back to the default below */ }
-  // The unset default matches the dashboard's initial 'quick'; migration 097 seeds the row.
-  return 'quick';
-}
-
-function smartTurnHoldMs(pComplete: number, threshold: number): number {
-  const { min, max } = HOLD_RANGES[getTurnPatience()];
+function smartTurnHoldMs(pComplete: number, threshold: number, patience: VoiceSettings['turnPatience']): number {
+  const { min, max } = HOLD_RANGES[patience];
   // frac = 0 at the threshold (barely incomplete), 1 at p=0 (certain mid-thought).
   const frac = Math.max(0, Math.min(1, (threshold - pComplete) / Math.max(threshold, 1e-6)));
   return Math.round(min + frac * (max - min));
 }
 
-// P(complete) at or above this submits, below holds. Tunable via `voice.turn_complete_threshold` (0..1);
-// higher is more patient. Defaults to the Smart Turn module default.
-function getTurnCompleteThreshold(): number {
-  try {
-    const row = getDb()
-      .prepare("SELECT value FROM config WHERE key = 'voice.turn_complete_threshold'")
-      .get() as { value: string } | undefined;
-    const v = row?.value ? Number(row.value) : NaN;
-    if (Number.isFinite(v) && v > 0 && v < 1) return v;
-  } catch { /* fall back to default */ }
-  return TURN_COMPLETE_THRESHOLD;
+// How long held words wait once the person speaks again, for that utterance to end and merge.
+const SPEAKING_AGAIN_HOLD_MS = 15_000;
+
+// Hold a transcript for `holdMs`, replacing any earlier hold; the timer submits it unless a continuation
+// merges into it first (a continuation clears the hold and moves the words forward).
+function holdTranscript(session: VoiceSession, transcript: string, holdMs: number, speaking: boolean): void {
+  if (session.pendingTurnExtension) clearTimeout(session.pendingTurnExtension.timer);
+  const timer = setTimeout(() => {
+    if (session.pendingTurnExtension?.timer !== timer) return;
+    session.pendingTurnExtension = null;
+    void submitTranscriptAndStartTts(session, transcript);
+  }, holdMs);
+  session.pendingTurnExtension = { transcript, timer, speaking };
 }
 
 // Merge a held transcript with a continuation, collapsing the case where both are the SAME utterance
@@ -742,11 +597,9 @@ function lastAssistantWasQuestion(agentId: string): boolean {
       FROM messages
       WHERE agent_id = ?
         AND role = 'assistant'
-        -- PHASE-1 T4: the agent's a2a own output now shares this table (lane='a2a').
-        -- "Did the agent just ask the person a question?" must only ever consider what
-        -- was said to the PERSON; without the lane predicate a coordination reply to a
-        -- peer would start driving the voice follow-up window.
+        -- Only what was said to the owner here counts: not a peer agent, not another channel.
         AND lane = 'owner'
+        AND COALESCE(channel, '') IN ('', 'dashboard', 'voice')
         AND content IS NOT NULL
         AND content <> ''
       ORDER BY created_at DESC, rowid DESC
@@ -814,8 +667,9 @@ async function handleUtteranceEnd(session: VoiceSession): Promise<void> {
   // fully captured speech.
   const audioSeconds = pcm.length / session.pcmSampleRate;
   const transcribeBudgetMs = transcribeBudgetMsFor(pcm.length, session.pcmSampleRate);
+  const settings = loadVoiceSettings();
   const runTranscribe = () => Promise.race([
-    transcribeBuffer(wav, { modelKey: session.sttModel }),
+    transcribeBuffer(wav, { modelKey: settings.sttModel }),
     new Promise<never>((_, reject) =>
       setTimeout(
         // The reason carries both numbers so the bound is visibly sized for the recording.
@@ -842,26 +696,9 @@ async function handleUtteranceEnd(session: VoiceSession): Promise<void> {
     durationMs = result.durationMs;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    // stt-service refused a result from a stale engine (a settings change swapped the model
-    // mid-utterance). This is the real utterance, so retry once against the now-active engine; other
-    // failures are hard errors.
-    if (msg === 'stt_engine_swapped') {
-      logger.warn('STT engine swapped during final transcribe, retrying once against the active engine', { agentId: session.agentId }, session.agentId);
-      try {
-        const result = await runTranscribe();
-        transcript = result.text.trim();
-        durationMs = result.durationMs;
-      } catch (retryErr) {
-        const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
-        logger.error('Transcription failed after engine-swap retry', { error: retryMsg }, session.agentId);
-        emitTranscribeError(retryMsg);
-        return;
-      }
-    } else {
-      logger.error('Transcription failed', { error: msg }, session.agentId);
-      emitTranscribeError(msg);
-      return;
-    }
+    logger.error('Transcription failed', { error: msg }, session.agentId);
+    emitTranscribeError(msg);
+    return;
   }
 
   if (!transcript) {
@@ -882,7 +719,7 @@ async function handleUtteranceEnd(session: VoiceSession): Promise<void> {
         return;
       }
       session.passive = false;
-      logger.info('Wake phrase detected', { agentId: session.agentId, phrase: session.wakePhrase, remainder: remainder.slice(0, 80) });
+      logger.debug('Wake phrase detected', { agentId: session.agentId, phrase: session.wakePhrase, remainder: remainder.slice(0, 80) });
       sendJson(session.ws, {
         type: 'voice:wake_detected', agentId: session.agentId,
         phrase: session.wakePhrase, remainder: remainder || null,
@@ -930,12 +767,12 @@ async function handleUtteranceEnd(session: VoiceSession): Promise<void> {
   // end on a conjunction and submits at once when the user is done, even after "and". The conjunction
   // heuristic applies only when the model is unavailable (null). The timer submits a held transcript
   // unless a continuation merges into it first.
-  const threshold = getTurnCompleteThreshold();
+  const threshold = TURN_COMPLETE_THRESHOLD;
   const turnComplete = await turnCompletePromise;
   const holdForContinuation = turnComplete !== null
     ? turnComplete < threshold
     : endsWithUnfinishedConjunction(transcript);
-  const holdMs = turnComplete !== null ? smartTurnHoldMs(turnComplete, threshold) : TURN_EXTENSION_MS;
+  const holdMs = turnComplete !== null ? smartTurnHoldMs(turnComplete, threshold, settings.turnPatience) : TURN_EXTENSION_MS;
 
   logger.debug('Smart Turn decision', {
     agentId: session.agentId, pComplete: turnComplete, threshold,
@@ -948,14 +785,7 @@ async function handleUtteranceEnd(session: VoiceSession): Promise<void> {
       reason: turnComplete !== null ? `smart-turn p=${turnComplete.toFixed(3)}` : 'conjunction',
     });
     sendJson(session.ws, { type: 'voice:state', agentId: session.agentId, state: 'listening' });
-    const heldTranscript = transcript;
-    const timer = setTimeout(() => {
-      // A continuation clears this timer and moves the transcript forward; only fire if still current.
-      if (session.pendingTurnExtension?.timer !== timer) return;
-      session.pendingTurnExtension = null;
-      void submitTranscriptAndStartTts(session, heldTranscript);
-    }, holdMs);
-    session.pendingTurnExtension = { transcript: heldTranscript, timer };
+    holdTranscript(session, transcript, holdMs, false);
     return;
   }
 
@@ -967,11 +797,6 @@ async function handleUtteranceEnd(session: VoiceSession): Promise<void> {
 async function submitTranscriptAndStartTts(session: VoiceSession, transcript: string): Promise<void> {
   // source='voice' so the dashboard shows a mic icon on this user bubble.
   const submit = await submitUserMessage(session.agentId, transcript, undefined, 'voice');
-  // Speaker stamp on the id we hold (the row is ours, so no read-back race).
-  if (submit.ok && submit.messageId) {
-    stampSpokenMessage(submit.messageId, 'owner', session.recordId);
-    bumpVoiceSessionTurnCount(session.recordId);
-  }
   if (!submit.ok) {
     sendJson(session.ws, { type: 'voice:state', agentId: session.agentId, state: 'error', detail: submit.error });
     return;
@@ -980,93 +805,7 @@ async function submitTranscriptAndStartTts(session: VoiceSession, transcript: st
   // Tells the client the prompt was submitted (not dropped as a backchannel or wake-only utterance).
   sendJson(session.ws, { type: 'voice:prompt_submitted', agentId: session.agentId });
 
-  // Fast first responder: open the opener window, start the burst (which sets activeBurstPush), then race
-  // a low-latency model for a short contextual bridge that plays first. If the real reply arrives first
-  // the window is already closed and the opener is dropped.
-  session.openerWindowOpen = true;
-  session.openerSpoken = false;
-
   startTtsForAgent(session);
-
-  void fireFastOpener(session, transcript);
-}
-
-// ── Fast first responder ──
-// The opener is a spoken bridge, never an answer: no facts, numbers, names or opinions, so it cannot
-// contradict the full reply.
-const OPENER_SYSTEM_PROMPT =
-  'You are the voice of an assistant. The user just spoke a request. Reply with ONE very short ' +
-  'spoken bridge phrase (3 to 8 words) that warmly acknowledges the request and signals you are ' +
-  'about to handle it — like a person saying "sure, let me take a look" or "good question, one sec". ' +
-  'Hard rules: do NOT answer the request; do NOT state any fact, number, name, date, or opinion; ' +
-  'do NOT ask a question; do NOT repeat the request back. Output ONLY the phrase, no quotes, no prose.';
-
-const OPENER_TIMEOUT_MS = 1500;
-const OPENER_MAX_CHARS = 80;
-
-// Model for the spoken opener: `voice.opener_model` if set ('off' disables the opener), else the System
-// model.
-async function resolveOpenerModel(): Promise<string | null> {
-  let configured: string | undefined;
-  try {
-    const row = getDb()
-      .prepare("SELECT value FROM config WHERE key = 'voice.opener_model'")
-      .get() as { value: string } | undefined;
-    configured = row?.value?.trim();
-  } catch { /* config table read failed, fall through to system model */ }
-  if (configured === 'off') return null;
-  if (configured) return configured;
-  try {
-    const { getSystemModel } = await import('../router/selector.js');
-    return getSystemModel() ?? null;
-  } catch {
-    return null;
-  }
-}
-
-/** Tidy the model's opener: strip wrapping quotes, collapse to one line, cap
- *  length, and ensure clean terminal punctuation for the TTS clause splitter. */
-function sanitizeOpener(raw: string): string {
-  let t = raw.trim().replace(/\s+/g, ' ');
-  t = t.replace(/^["'“”‘’]+/, '').replace(/["'“”‘’]+$/, '').trim();
-  t = t.split('\n')[0].trim();
-  if (t.length > OPENER_MAX_CHARS) t = t.slice(0, OPENER_MAX_CHARS).trim();
-  if (t && !/[.!?,…]$/.test(t)) t += '.';
-  return t;
-}
-
-/** Race a fast model to speak an opener while the agent spins up; best-effort, failures are silent. */
-async function fireFastOpener(session: VoiceSession, transcript: string): Promise<void> {
-  try {
-    const modelId = await resolveOpenerModel();
-    if (!modelId) return;
-    const { callModel } = await import('../agent/model.js');
-    const result = await callModel({
-      agentId: session.agentId,
-      modelId,
-      systemPrompt: OPENER_SYSTEM_PROMPT,
-      messages: [{ role: 'user', content: transcript }],
-      tools: false,
-      // Spoken filler written while the real reply is produced: short output that must land first.
-      purpose: 'voice_opener',
-      abortSignal: AbortSignal.timeout(OPENER_TIMEOUT_MS),
-      // A failure means silence, which the real reply covers: WARN, not ERROR.
-      bestEffort: true,
-    });
-    const text = sanitizeOpener(result.content ?? '');
-    if (!text) return;
-    // Ordering guard: only speak if the full agent's real reply hasn't already
-    // started (and the burst is still alive).
-    if (!session.openerWindowOpen || !session.activeBurstPush) return;
-    session.activeBurstPush(text);
-    session.openerSpoken = true;
-    logger.info('Voice fast-opener spoken', { agentId: session.agentId, model: modelId, text });
-  } catch (err) {
-    logger.warn('Voice fast-opener failed (non-fatal)', {
-      agentId: session.agentId,
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
 }
 
 // Strip engine control markers (such as `[no-reply]`) from TTS text: they are routing signals, and a
@@ -1106,24 +845,25 @@ function startTtsForAgent(
   }
 
   // Cloud (Hume) streams differently (one socket per turn, no clause queue) so it has its own handler.
-  // forceLocal re-drives THIS burst through local after a transient cloud failure, leaving
-  // session.ttsEngine alone.
-  if (session.ttsEngine === 'cloud' && !opts?.forceLocal) {
-    startCloudTtsBurst(session, initialContent);
+  // forceLocal re-drives THIS burst through local after a transient cloud failure; the next burst reads
+  // the saved engine again.
+  const settings = loadVoiceSettings();
+  if (settings.ttsEngine === 'cloud' && !opts?.forceLocal) {
+    startCloudTtsBurst(session, settings, initialContent);
     return;
   }
 
   // Pre-flight a custom voicepack (and the model-version pin); if unusable, fall back to the default
   // voice for this burst and warn once per session, instead of failing on every clause.
-  let effectiveVoice = session.voice;
-  const voiceCheck = checkCustomVoiceUsable(session.voice, KOKORO_MODEL_ID);
+  let effectiveVoice = settings.voice;
+  const voiceCheck = checkCustomVoiceUsable(settings.voice, KOKORO_MODEL_ID);
   if (!voiceCheck.ok) {
     effectiveVoice = DEFAULT_VOICE;
     if (!session.customVoiceWarned) {
       session.customVoiceWarned = true;
       logger.warn('Custom voice unavailable, using default voice for this session', {
         agentId: session.agentId,
-        requestedVoice: session.voice,
+        requestedVoice: settings.voice,
         fallbackVoice: DEFAULT_VOICE,
         reason: voiceCheck.reason,
       });
@@ -1159,7 +899,7 @@ function startTtsForAgent(
     sendJson(session.ws, { type: 'voice:state', agentId: session.agentId, state: 'speaking' });
     void (async () => {
       try {
-        for await (const chunk of synthesizeClauseStream(splitter, effectiveVoice, session.speed, abort.signal)) {
+        for await (const chunk of synthesizeClauseStream(splitter, effectiveVoice, settings.speed, abort.signal)) {
           if (abort.signal.aborted) break;
           sentenceCount++;
           logger.debug('TTS sentence sent', {
@@ -1268,7 +1008,6 @@ function startTtsForAgent(
   const pushContent = (raw: string): void => {
     let combined = bracketPending + raw;
     // Hold back from the last unmatched `[` (depth-tracked for nesting) until its `]` arrives.
-    let cursor = 0;
     let depth = 0;
     let holdFrom = -1;
     for (let i = 0; i < combined.length; i++) {
@@ -1278,10 +1017,7 @@ function startTtsForAgent(
         depth++;
       } else if (ch === ']') {
         if (depth > 0) depth--;
-        if (depth === 0) {
-          holdFrom = -1;
-          cursor = i + 1;
-        }
+        if (depth === 0) holdFrom = -1;
       }
     }
     if (holdFrom >= 0) {
@@ -1290,7 +1026,6 @@ function startTtsForAgent(
     } else {
       bracketPending = '';
     }
-    void cursor; // silence unused, depth/holdFrom carry the logic
     const stripped = stripEngineControlMarkers(combined);
     if (stripped.length === 0) return;
     const { content } = cueExtractor.consume(stripped);
@@ -1334,8 +1069,6 @@ function startTtsForAgent(
       // New content is activity: cancel any pending close until the next done.
       cancelQuietTimer();
       if (event.content) {
-        // Real content began: close the fast-opener window so a late opener cannot play out of order.
-        session.openerWindowOpen = false;
         bubbleChars += event.content.length;
         bubbleDoneSeen = false;  // new content means this bubble isn't done anymore
         pushContent(event.content);
@@ -1344,7 +1077,7 @@ function startTtsForAgent(
         bubbleCount++;
         // Stamp the message voice-delivered on `done`, not in the content branch: loop.ts INSERTs the row
         // after streaming completes, so earlier the UPDATE would match nothing.
-        markAssistantMessageVoiced(session.agentId, event.messageId, session.recordId);
+        markAssistantMessageVoiced(session.agentId, event.messageId);
         // Flush text held back after an unclosed `[` (complete markers were stripped in pushContent).
         flushBracketPending();
         // Release an unclosed ((deliver: ...)) cue as normal speech (it was not a real cue), before the
@@ -1411,7 +1144,7 @@ function startTtsForAgent(
       return;
     }
   };
-  const unsubscribe = onBroadcast(handleLocalEvent);
+  const unsubscribe = onSpokenEvent(handleLocalEvent);
   session.unsubscribeChunk = unsubscribe;
   // Cloud fallback re-drive: replay the chat events the cloud burst buffered during its failed open, in
   // order, so the local burst speaks the whole reply. Synchronous after subscribing, so no live event
@@ -1425,9 +1158,9 @@ function startTtsForAgent(
  * Cloud (Hume) TTS burst: same lifecycle as the Kokoro burst (chat:chunk, agent:status idle, quiet-timer
  * fallback) but one HumeStreamSession socket per burst, flushed at sentence boundaries. A leading
  * ((deliver: ...)) cue becomes the turn's description. A failed open or a mid-reply failure re-drives the
- * unspoken rest of the reply through local (session.ttsEngine is untouched, so the next reply tries cloud).
+ * unspoken rest of the reply through local (the next reply tries cloud again).
  */
-function startCloudTtsBurst(session: VoiceSession, initialContent?: string): void {
+function startCloudTtsBurst(session: VoiceSession, settings: VoiceSettings, initialContent?: string): void {
   const abort = new AbortController();
   const messageId = `tts-cloud-${Date.now()}`;
   session.activeTts = { abort, messageId };
@@ -1436,10 +1169,11 @@ function startCloudTtsBurst(session: VoiceSession, initialContent?: string): voi
   const cueExtractor = createCueExtractor();
 
   const hume = new HumeStreamSession({
-    voiceId: session.cloudVoice,
-    voiceProvider: session.cloudVoiceProvider,
-    description: session.cloudDescription ?? undefined,
-    speed: session.cloudSpeed,
+    voiceId: settings.cloudVoice,
+    voiceProvider: settings.cloudVoiceProvider,
+    description: settings.cloudDescription ?? undefined,
+    speed: settings.cloudSpeed,
+    agentId: session.agentId,
   });
   // Engine-agnostic push handle. Hume is not open for the first 100-300ms and hume.push would drop text,
   // so pre-open pushes (e.g. the loop's filler) are buffered and drained once open() resolves.
@@ -1453,7 +1187,7 @@ function startCloudTtsBurst(session: VoiceSession, initialContent?: string): voi
       agentId: session.agentId, recipientId: 'owner', messageId, detail: 'cloud',
     }), 'voice: cloud TTS spoke', { agentId: session.agentId, messageId });
     logger.info('Cloud TTS streaming started', {
-      agentId: session.agentId, messageId, voice: session.cloudVoice,
+      agentId: session.agentId, messageId, voice: settings.cloudVoice,
     });
     sendJson(session.ws, { type: 'voice:tts_start', agentId: session.agentId, messageId });
     sendJson(session.ws, { type: 'voice:state', agentId: session.agentId, state: 'speaking' });
@@ -1528,7 +1262,7 @@ function startCloudTtsBurst(session: VoiceSession, initialContent?: string): voi
   // burst, so events during the hume.open() handshake would otherwise have no listener.
   const pendingEvents: WsEvent[] = [];
   let handler: ((event: WsEvent) => void) | null = null;
-  const unsubscribe = onBroadcast((event: WsEvent) => {
+  const unsubscribe = onSpokenEvent((event: WsEvent) => {
     if (handler) handler(event);
     else pendingEvents.push(event);
   });
@@ -1546,7 +1280,7 @@ function startCloudTtsBurst(session: VoiceSession, initialContent?: string): voi
         return;
       }
       // A transient open failure on a correctly configured cloud voice: re-drive THIS burst through
-      // local, replaying the buffered events, and tell the user once. session.ttsEngine is untouched so
+      // local, replaying the buffered events, and tell the user once. The saved engine is untouched so
       // the next turn retries cloud.
       logger.warn('Cloud TTS open failed, falling back to local voice for this burst', { error: msg }, session.agentId);
       const buffered = pendingEvents.splice(0);
@@ -1672,7 +1406,6 @@ function startCloudTtsBurst(session: VoiceSession, initialContent?: string): voi
         cancelQuietTimer();
         lastMessageId = event.messageId;
         if (event.content) {
-          session.openerWindowOpen = false;
           bubbleChars += event.content.length;
           bubbleDoneSeen = false;
           pushContent(event.content);
@@ -1680,7 +1413,7 @@ function startCloudTtsBurst(session: VoiceSession, initialContent?: string): voi
         if (event.done) {
           bubbleCount++;
           // Stamp voice-delivered on done: the row is persisted by then.
-          markAssistantMessageVoiced(session.agentId, event.messageId, session.recordId);
+          markAssistantMessageVoiced(session.agentId, event.messageId);
           // Flush held-back bracket text so it is not dropped at stream end.
           flushBracketPending();
           // Release an unclosed cue as speech, before the sanitizer flush.
@@ -1746,11 +1479,11 @@ function startCloudTtsBurst(session: VoiceSession, initialContent?: string): voi
   })();
 }
 
-// Route proactive agent messages (watchers, A2A pokes, scheduled triggers) into a TTS burst. Unsubscribes
-// itself when it triggers one, so the burst's own listener does not double-process the event; the burst
-// teardown re-subscribes it.
+// Start a TTS burst for a spoken turn that arrives with no burst running. Unsubscribes itself when it
+// triggers one, so the burst's own listener does not double-process the event; the burst teardown
+// re-subscribes it.
 function subscribeProactiveWatcher(session: VoiceSession): () => void {
-  const unsubscribe = onBroadcast((event: WsEvent) => {
+  const unsubscribe = onSpokenEvent((event: WsEvent) => {
     if (event.type !== 'chat:chunk') return;
     if (event.agentId !== session.agentId) return;
     if (!event.content) return;        // ignore done-only / empty events
@@ -1759,7 +1492,7 @@ function subscribeProactiveWatcher(session: VoiceSession): () => void {
     if (session.unsubscribeProactive === unsubscribe) {
       session.unsubscribeProactive = null;
     }
-    logger.info('Voice TTS: starting burst for proactive agent message', {
+    logger.info('Voice TTS: starting burst for a spoken turn', {
       agentId: session.agentId, chars: event.content.length,
     });
     startTtsForAgent(session, event.content);

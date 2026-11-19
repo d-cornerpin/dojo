@@ -36,7 +36,7 @@ export interface FinalizeContext {
 }
 
 export async function runFinalize(state: AgentTurnState, ctx: FinalizeContext): Promise<StepOutcome> {
-  const { agentId, turnCtx, db, stopStatusHeartbeat } = ctx;
+  const { agentId, db, stopStatusHeartbeat } = ctx;
 
   state = recoverDeferredReply(state, ctx);
   const said = state.lastAssistantTextForIM ?? '';
@@ -65,14 +65,6 @@ export async function runFinalize(state: AgentTurnState, ctx: FinalizeContext): 
         const { onAgentRecovered } = await import('../../../../healer/injury-recovery.js');
         onAgentRecovered(agentId);
       }
-    } catch { /* best effort */ }
-  }
-
-  // The injected technique's usage row learns the turn's outcome.
-  if (turnCtx.turnInjectedTechniqueId) {
-    try {
-      const { recordTechniqueOutcome } = await import('../../../../techniques/store.js');
-      recordTechniqueOutcome(turnCtx.turnInjectedTechniqueId, agentId, true);
     } catch { /* best effort */ }
   }
 

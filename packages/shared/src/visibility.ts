@@ -574,12 +574,25 @@ function toolTurnTier(rawBlocks: string): VisibilityTier {
   return 'agent-only';
 }
 
+/** One row per tool that reaches people on an owner channel, by base name: its channel, and whether a call sends
+ *  something. The contact list, the call status and the hang-up keep their channel but are not sends. */
+export interface PeopleTool { readonly channel: ChannelKind; readonly sends: boolean }
+const on = (channel: ChannelKind, sends = true): PeopleTool => ({ channel, sends });
+export const PEOPLE_TOOLS: ReadonlyMap<string, PeopleTool> = new Map<string, PeopleTool>([
+  ['imessage_send', on('imessage')], ['imessage_list_contacts', on('imessage', false)],
+  ['sms_send', on('sms')],
+  ['teams_send_message', on('teams')], ['teams_send_channel_message', on('teams')],
+  ['gmail_send', on('email')], ['gmail_reply', on('email')], ['gmail_forward', on('email')],
+  ['outlook_send', on('email')], ['outlook_reply', on('email')], ['outlook_forward', on('email')],
+  ['voice_call', on('phone')], ['voice_call_end', on('phone', false)], ['voice_call_status', on('phone', false)],
+]);
+
+/** The row for a tool or its `user_` twin (a twin runs its base tool's executor), or null. */
+export function peopleToolOf(name: string): PeopleTool | null {
+  return PEOPLE_TOOLS.get(name.startsWith('user_') ? name.slice('user_'.length) : name) ?? null;
+}
+
 export function channelOfSendTool(name: string): ChannelKind | null {
-  if (name === 'imessage_send') return 'imessage';
-  if (name === 'teams_send_message') return 'teams';
-  if (name === 'sms_send') return 'sms';
-  if (name === 'gmail_send' || name === 'gmail_reply' || name === 'gmail_forward') return 'email';
-  if (name === 'outlook_send' || name === 'outlook_reply' || name === 'outlook_forward') return 'email';
-  if (name === 'voice_call') return 'phone';
-  return null;
+  const tool = peopleToolOf(name);
+  return tool?.sends ? tool.channel : null;
 }

@@ -11,8 +11,8 @@ import {
 
 const logger = createLogger('vault-retrieval');
 
-// Maximum pinned/permanent entries included in every turn; the Dreamer unpins the overflow nightly.
-export const MAX_PINNED_ENTRIES = 20;
+// Ordinary pins shown in every turn, newest first; every permanent entry is shown besides them.
+const MAX_PINNED_ENTRIES = 20;
 
 
 
@@ -199,15 +199,9 @@ export function searchUnfiledArchives(
 export function pinnedContextSection(
   agentId: string | undefined,
 ): { section: string; entryIds: string[] } {
-  let pinned = getPinnedEntries(agentId);
-  if (pinned.length > MAX_PINNED_ENTRIES) {
-    pinned.sort((a, b) => {
-      if (a.isPermanent && !b.isPermanent) return -1;
-      if (!a.isPermanent && b.isPermanent) return 1;
-      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
-    });
-    pinned = pinned.slice(0, MAX_PINNED_ENTRIES);
-  }
+  const all = getPinnedEntries(agentId);
+  const newestOthers = new Set(all.filter((e) => !e.isPermanent).slice(0, MAX_PINNED_ENTRIES));
+  const pinned = all.filter((e) => e.isPermanent || newestOthers.has(e));
 
   const lines: string[] = [];
   const includedIds: string[] = [];
@@ -216,8 +210,7 @@ export function pinnedContextSection(
     includedIds.push(entry.id);
   }
   if (lines.length === 0) return { section: '', entryIds: [] };
-  // No token budget: the pinned set is bounded by MAX_PINNED_ENTRIES and the Dreamer unpins the
-  // overflow nightly.
+  // No token budget here: every standing rule is in the section; the ordinary pins are bounded by MAX_PINNED_ENTRIES.
   return { section: `${VAULT_SECTION_HEAD}\n${lines.join('\n')}\n${VAULT_SECTION_TAIL}`, entryIds: includedIds };
 }
 

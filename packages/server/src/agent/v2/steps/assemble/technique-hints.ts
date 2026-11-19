@@ -9,7 +9,6 @@ import { injectRegistryMessage } from '../../../../prompt/registry/assembler.js'
 import type { AssemblyContext } from '../../../../prompt/registry/types.js';
 import type { AssembledContext } from '../../../../memory/assembler.js';
 import type { AgentTurnState } from '../../state.js';
-import type { TurnContext } from '../../../turn-context.js';
 import { techniqueFitsRoom } from '../../../../memory/technique-room.js';
 import { createLogger } from '../../../../logger.js';
 import { techniqueFamilies, usableIntegrationFamilies } from '../../../../memory/integration-status-lane.js';
@@ -17,7 +16,6 @@ import { techniqueFamilies, usableIntegrationFamilies } from '../../../../memory
 const logger = createLogger('v2-loop');
 export interface TechniqueHintsInput {
   readonly agentId: string;
-  readonly turnCtx: TurnContext;
   readonly lastUserMessageContent: string | null;
   readonly mctx: AssemblyContext;
   readonly messages: AssembledContext['messages'];
@@ -26,14 +24,14 @@ export interface TechniqueHintsInput {
 
 /** Appends nothing to `state`: neither block writes it; both mutate `mctx` and the messages in place. */
 export async function injectTechniqueAndGapHints(state: AgentTurnState, input: TechniqueHintsInput): Promise<void> {
-  const { agentId, turnCtx, lastUserMessageContent, mctx, messages, roomTokens } = input;
+  const { agentId, lastUserMessageContent, mctx, messages, roomTokens } = input;
 
   // Engine-side fuzzy matching of the ask against published techniques, not a prompt instruction.
   // Fires only: first loop iteration, a real user message, never the PM (its reports land as role='user').
   if (state.loopCount === 1 && lastUserMessageContent && !isPMAgent(agentId)) {
     try {
-      // The candidate set is the agent's GRANT, not the box's: a strong match inlines the whole TECHNIQUE.md
-      // and records usage, so this filter is the door, the same `mayUseTechnique` every technique reader asks.
+      // The candidate set is the agent's GRANT, not the box's: a strong match inlines the whole TECHNIQUE.md,
+      // so this filter is the door, the same `mayUseTechnique` every technique reader asks.
       const techniques = listTechniques({ state: 'published' })
         .filter((t) => mayUseTechnique(agentId, t.id))
         .map((t) => ({
@@ -61,7 +59,7 @@ export async function injectTechniqueAndGapHints(state: AgentTurnState, input: T
         let techniqueInjection: string | null = null;
         if (strongMatch) {
           try {
-            const { getTechniqueDetail, recordTechniqueUsage } = await import('../../../../techniques/store.js');
+            const { getTechniqueDetail } = await import('../../../../techniques/store.js');
             const detail = getTechniqueDetail(strongMatch.technique.id);
             if (detail?.instructions && detail.instructions.length > 0) {
               const md = detail.instructions;
@@ -79,8 +77,6 @@ export async function injectTechniqueAndGapHints(state: AgentTurnState, input: T
                   `--- TECHNIQUE: ${strongMatch.technique.name} ---\n${md}\n--- END TECHNIQUE ---`;
               }
               injectedTechniqueId = strongMatch.technique.id;
-              turnCtx.turnInjectedTechniqueId = strongMatch.technique.id;
-              try { recordTechniqueUsage(strongMatch.technique.id, agentId); } catch { /* best effort */ }
               logger.info('v2 techniqueMatcher: injecting strong-match technique as engine message', {
                 agentId,
                 techniqueId: strongMatch.technique.id,

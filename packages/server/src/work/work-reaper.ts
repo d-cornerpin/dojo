@@ -254,6 +254,18 @@ export const REAPER_KINDS: readonly ReaperKind[] = [
     },
   },
   {
+    id: 'steps-after-a-dead-step',
+    everyMs: 30_000,
+    cadenceFrom:
+      'the 30s scheduler tick that checked a due step\'s dead dependency inside checkScheduledTasks; the period is carried, not chosen',
+    wakes: true, // each hand-in arms the decider's review
+    run: async () => {
+      const { handInStepsAfterADeadStep } = await import('./done/effects.js');
+      const handed = await handInStepsAfterADeadStep();
+      if (handed > 0) logger.info('reaper: handed in step(s) whose earlier step can never finish', { handed });
+    },
+  },
+  {
     id: 'ladder',
     everyMs: 30_000,
     cadenceFrom:

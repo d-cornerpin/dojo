@@ -7,7 +7,7 @@ import { useWebSocket } from '../../hooks/useWebSocket';
 import { invalidateSavedVoiceSettings } from '../../hooks/useVoiceMode';
 import { useToast } from '../../hooks/useToast';
 import { voiceSaveRefusal } from './voice-save-error';
-import { VAD_OPTIONS, STT_LABELS, formatBytes } from './voice-options';
+import { VAD_OPTIONS, STT_LABELS, formatBytes, movesSlider } from './voice-options';
 
 
 export const VoiceTab = () => {
@@ -511,8 +511,8 @@ export const VoiceTab = () => {
             min={0.8} max={1.4} step={0.05}
             value={speed}
             onChange={(e) => setSpeed(Number(e.target.value))}
-            onMouseUp={() => void saveSetting('voice.playback_speed', String(speed), 'speed')}
-            onTouchEnd={() => void saveSetting('voice.playback_speed', String(speed), 'speed')}
+            onPointerUp={() => void saveSetting('voice.playback_speed', String(speed), 'speed')}
+            onKeyUp={(e) => { if (movesSlider(e.key)) void saveSetting('voice.playback_speed', String(speed), 'speed'); }}
             className="flex-1 accent-cp-teal"
           />
           <span className="text-sm font-mono text-ui w-12 text-right">{speed.toFixed(2)}x</span>
@@ -782,8 +782,8 @@ export const VoiceTab = () => {
             min={0.8} max={1.4} step={0.05}
             value={cloudSpeed}
             onChange={(e) => setCloudSpeed(Number(e.target.value))}
-            onMouseUp={() => void saveSetting('voice.cloud_speed', String(cloudSpeed), 'cloud_speed')}
-            onTouchEnd={() => void saveSetting('voice.cloud_speed', String(cloudSpeed), 'cloud_speed')}
+            onPointerUp={() => void saveSetting('voice.cloud_speed', String(cloudSpeed), 'cloud_speed')}
+            onKeyUp={(e) => { if (movesSlider(e.key)) void saveSetting('voice.cloud_speed', String(cloudSpeed), 'cloud_speed'); }}
             className="flex-1 accent-cp-teal"
           />
           <span className="text-sm font-mono text-ui w-12 text-right">{cloudSpeed.toFixed(2)}x</span>
@@ -1170,12 +1170,7 @@ export const VoiceTab = () => {
                   </button>
                 )}
                 {models.kokoro.installed && (
-                  <button
-                    onClick={() => void handleDelete('kokoro', models.kokoro!.id)}
-                    className="px-3 py-1.5 text-xs text-cp-coral hover:bg-cp-coral/10 rounded-lg"
-                  >
-                    Delete
-                  </button>
+                  <span className="text-xs text-ui/40">The backup voice: it speaks when a cloud voice fails, so it stays installed.</span>
                 )}
               </div>
             </div>

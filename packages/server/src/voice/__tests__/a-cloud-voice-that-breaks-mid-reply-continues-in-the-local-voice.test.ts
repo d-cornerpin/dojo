@@ -16,6 +16,7 @@ let openFails = false;
 let live: { onError: ((e: Error) => void) | null } | null = null;
 const pushed: string[] = [];
 let gate: Promise<void> | null = null;
+let saved: Record<string, string> = {};
 
 vi.mock('hume', () => ({ HumeClient: class {} }));
 vi.mock('../hume-engine.js', () => ({
@@ -50,6 +51,7 @@ vi.mock('../hume-engine.js', () => ({
   },
 }));
 vi.mock('../../agent/runtime.js', () => ({ preemptAgentForUrgentMessage: () => {} }));
+vi.mock('../../memory/served-ask.js', () => ({ turnAnswersSpokenRequest: () => true }));
 
 let heard = '';
 const localSaid: string[] = [];
@@ -68,9 +70,6 @@ vi.mock('../stt-service.js', () => ({
   parseSttModelKey: () => ({ kind: 'moonshine' }), pcmFloatToWav: () => Buffer.from('local'),
 }));
 vi.mock('../smart-turn.js', () => ({ predictTurnComplete: vi.fn(), TURN_COMPLETE_THRESHOLD: 0.5, warmUpSmartTurn: async () => {} }));
-vi.mock('../session-record.js', () => ({
-  startVoiceSessionRecord: () => null, endVoiceSessionRecord: () => {}, bumpVoiceSessionTurnCount: () => {}, stampSpokenMessage: () => {},
-}));
 vi.mock('../custom-voices.js', () => ({ checkCustomVoiceUsable: () => ({ ok: true }) }));
 vi.mock('../model-manager.js', () => ({ KOKORO_MODEL_ID: 'k' }));
 vi.mock('../../gateway/ws.js', () => ({
@@ -83,7 +82,9 @@ vi.mock('../../config/platform.js', () => ({ getPrimaryAgentName: () => 'Agent' 
 vi.mock('../../agent/v2/outbound.js', () => ({ recordAtDoor: () => ({}), recordedId: () => '' }));
 vi.mock('../../memory/message-store.js', () => ({ markSpokenAloud: () => 0 }));
 vi.mock('../../db/connection.js', () => ({
-  getDb: () => ({ prepare: () => ({ all: () => [], get: () => undefined, run: () => ({}) }) }),
+  getDb: () => ({
+    prepare: () => ({ all: () => Object.entries(saved).map(([key, value]) => ({ key, value })), get: () => undefined, run: () => ({}) }),
+  }),
 }));
 vi.mock('../../logger.js', () => {
   const noop = (): void => {};
@@ -113,17 +114,15 @@ const localReplyEnded = (): Promise<void> =>
   vi.waitFor(() => expect(types('voice:tts_end').some((m) => Number(String(m.messageId).slice(4)) >= t0)).toBe(true));
 
 async function openCloudSession(): Promise<void> {
-  const token = jwt.sign({ userId: 'u1' }, 'secret');
-  verifyAndOpenVoiceSession(ws as never, `/voice?token=${token}&agentId=${A}`);
-  await handleVoiceMessage(ws as never, JSON.stringify({ type: 'config', cloudVoice: 'v1' }));
-  await handleVoiceMessage(ws as never, JSON.stringify({ type: 'config', ttsEngine: 'cloud' }));
+  saved = { 'voice.tts_engine': 'cloud', 'voice.cloud_voice': 'v1' };
+  verifyAndOpenVoiceSession(ws as never, `/voice?token=${jwt.sign({ userId: 'u1' }, 'secret')}&agentId=${A}`);
 }
 
 beforeEach(() => {
   closeVoiceSession(ws as never);
   bus.clear();
   t0 = Date.now(); sent = []; binaries = 0; localSaid.length = 0;
-  script = []; pushes = 0; localBroken = false; openFails = false; gate = null; pushed.length = 0;
+  script = []; pushes = 0; localBroken = false; openFails = false; gate = null; pushed.length = 0; saved = {};
 });
 
 // Streams a reply part by part (the last one done), then waits for the local voice to finish it.
@@ -253,8 +252,8 @@ describe('a cloud voice that breaks mid-reply continues in the local voice', () 
     };
     let release = (): void => {};
     gate = new Promise<void>((r) => { release = r; });
+    saved = { 'voice.wake_word_enabled': 'true' };
     verifyAndOpenVoiceSession(ws as never, `/voice?token=${jwt.sign({ userId: 'u1' }, 'secret')}&agentId=${A}`);
-    await handleVoiceMessage(ws as never, JSON.stringify({ type: 'config', wakeWordEnabled: true }));
     await hear('hey agent');
     await new Promise((r) => setTimeout(r, 260));
     emit(chunk('First part. ', true));
@@ -281,8 +280,8 @@ describe('a cloud voice that breaks mid-reply continues in the local voice', () 
 describe('what is spoken from the streamed chunks', () => {
   const STAMP = '[Nov 14, 2026, 07:05 AM UTC-08:00]';
   async function openLocalSession(): Promise<void> {
+    saved = {};
     verifyAndOpenVoiceSession(ws as never, `/voice?token=${jwt.sign({ userId: 'u1' }, 'secret')}&agentId=${A}`);
-    await handleVoiceMessage(ws as never, JSON.stringify({ type: 'config' }));
   }
   const spoken = async (open: () => Promise<void>, parts: string[]): Promise<string> => {
     await open();

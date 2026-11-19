@@ -100,7 +100,7 @@ function applySchema(db: Database.Database): void {
       turn_number INTEGER, task_id TEXT, run_id TEXT, conv_key TEXT DEFAULT NULL,
       provenance TEXT NOT NULL DEFAULT 'live',
       swept_at TEXT, served_by_turn INTEGER, answer_message_id TEXT,
-      channel TEXT, source_agent_id TEXT, a2a_thread_id TEXT, a2a_intent TEXT, a2a_requires_response INTEGER,
+      channel TEXT, sender_id TEXT, source_agent_id TEXT, a2a_thread_id TEXT, a2a_intent TEXT, a2a_requires_response INTEGER,
       inbound_meta TEXT, sent_at INTEGER NOT NULL DEFAULT 0,
       created_at INTEGER NOT NULL DEFAULT 0
     );

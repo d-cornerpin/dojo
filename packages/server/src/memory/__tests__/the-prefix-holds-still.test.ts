@@ -270,28 +270,17 @@ afterEach(() => {
 // ── §1 THE DATE THE OWNER'S TRACE DIVERGED ON ───────────────────────────────────────────
 
 describe('T67b §1 — the briefing stamp is the ROW\'s date, never the assembly clock', () => {
-  it('RED: two assemblies of an unchanged briefing across midnight are byte-identical', async () => {
+  it('two assemblies of an unchanged briefing ten minutes apart are byte-identical', async () => {
     seedTurn(1);
     seedBriefing();
     row('user', 'what is on for today', 1);
 
     const first = clone((await assembleContext(AGENT, MODEL)).messages);
     // Nothing changed but the wall clock. The briefing row is the same row.
-    vi.setSystemTime(DAY_ONE + 12 * 3_600_000);   // over midnight UTC
+    vi.setSystemTime(DAY_ONE + 10 * 60_000);   // the same day
     const second = clone((await assembleContext(AGENT, MODEL)).messages);
 
     expect(JSON.stringify(second)).toBe(JSON.stringify(first));
-  });
-
-  it('the stamp states the date the briefing was GENERATED, not today', async () => {
-    seedTurn(1);
-    seedBriefing();
-    row('user', 'what is on for today', 1);
-    vi.setSystemTime(Date.parse('2026-09-05T12:00:00Z'));
-
-    const text = textOf((await assembleContext(AGENT, MODEL)).messages);
-    expect(text).toContain('generated="2026-08-30"');
-    expect(text).not.toContain('generated="2026-09-05"');
   });
 });
 

@@ -15,6 +15,7 @@ import { CallSession, getCallSession, registerCallSession, listActiveCallSession
 import { getTunnelStatus } from '../services/tunnel.js';
 import { getTwilioVoiceSafeCallers } from '../services/channel-safe-senders.js';
 import { resolveRecipient } from './approved-number.js';
+import { recipientKind } from '../services/safe-senders.js';
 
 const logger = createLogger('twilio-voice-outbound');
 
@@ -80,7 +81,7 @@ export async function executeVoiceCall(input: VoiceCallInput): Promise<VoiceCall
   const slot = input.agentId === undefined ? null : openAgentCall(input.agentId, 'turn');
   const res = await placeCall(to, from, voiceWebhook, statusWebhook, slot?.signal).finally(() => slot?.release());
   if (!res.ok) {
-    logger.warn('Outbound voice call failed', { to, from, error: res.error });
+    logger.warn('Outbound voice call failed', { to: recipientKind(to), from, error: res.error });
     return { ok: false, message: `Voice NOT placed - Twilio rejected the call: ${res.error}` };
   }
 
@@ -106,7 +107,7 @@ export async function executeVoiceCall(input: VoiceCallInput): Promise<VoiceCall
     void session.queueAgentSay(input.opening_message.trim()).catch(() => { /* swallow */ });
   }
 
-  logger.info('Outbound voice call placed', { callSid: res.data.sid, to, from });
+  logger.info('Outbound voice call placed', { callSid: res.data.sid, to: recipientKind(to), from });
   return { ok: true, callSid: res.data.sid, message: `Voice call placed to ${to} (sid=${res.data.sid}). Connecting…` };
 }
 

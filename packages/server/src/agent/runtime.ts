@@ -25,6 +25,7 @@ import { handBackOrphansOf } from '../work/orphaned-claims.js';
 import { transition } from '../work/store.js';
 import { withUnit } from '../db/unit.js';
 import { suppressQueuedReplies } from './v2/deliveries.js';
+import { setAgentModel } from './model-switch.js';
 
 // Dedup: the "model does not support tools" banner fires once per (agent, model) pair per process.
 const toolsUnavailableNotified = new Set<string>();
@@ -515,6 +516,8 @@ class AgentRuntime {
     }
 
     activeRuns.add(agentId);
+    // A stop pressed while nothing ran raised no fence, so it is stale now; a fenced stop still holds this run.
+    if (!stopFencedRuns.has(agentId)) stoppedAgents.delete(agentId);
     const servedWaiters = queuedRunWaiters.get(agentId) ?? [];
     queuedRunWaiters.delete(agentId);
     agentStartTimes.set(agentId, Date.now()); if (opts?.job || opts?.drained) beginJobRun(agentId, opts.job ? 'timer' : 'drain');
@@ -809,8 +812,8 @@ class AgentRuntime {
       // THE ONE OWNER OF THE STOP FLAG'S CLEAR: a checkpoint that sees the stop honours it (pre-call
       // gate, model-call catch, executor); only this finally retires it, at the end of the run it stopped.
       // The drains below stand down only while the flag stands; cleared early they would restart the
-      // very request the user stopped. The two human-intent clears may lift the FLAG; nothing lifts the
-      // FENCE elsewhere.
+      // very request the user stopped. A new run's start lifts a FLAG that has no fence (a stop pressed
+      // while nothing ran); nothing lifts the FENCE elsewhere.
       stoppedAgents.delete(agentId);
       stopFencedRuns.delete(agentId);
     }
@@ -1197,9 +1200,10 @@ function repairOrphanedModelPointers(): void {
     `).all() as Array<{ id: string; name: string; model_id: string }>;
 
     for (const agent of orphans) {
-      db.prepare(`
-        UPDATE agents SET model_id = 'auto', updated_at = datetime('now') WHERE id = ?
-      `).run(agent.id);
+      // The one model writer: the row, the role's setting, the change note, and another look at a parked turn.
+      void setAgentModel(agent.id, 'auto').catch((err: unknown) => logger.warn('A repaired agent\'s model change did not finish', {
+        agentId: agent.id, error: err instanceof Error ? err.message : String(err),
+      }));
       logger.warn('Repaired orphaned model_id pointer, set to auto-router', {
         agentId: agent.id,
         agentName: agent.name,

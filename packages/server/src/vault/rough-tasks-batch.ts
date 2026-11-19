@@ -4,6 +4,7 @@
 // in the archive-processing instructions.
 
 import { getDb } from '../db/connection.js';
+import { setConfigValue } from '../config/config-value.js';
 import { createLogger } from '../logger.js';
 import { estimateTokens } from '../memory/budget.js';
 import { timeline } from '../inspect/timeline.js';
@@ -88,8 +89,6 @@ export function lessonsCensusSince(now: number = Date.now()): number {
 /** The cycle that started at `ms` finished: the next census starts there. */
 export function advanceLessonsCensus(ms: number): void {
   try {
-    getDb().prepare(`INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
-                     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`)
-      .run(CURSOR_KEY, String(ms));
+    setConfigValue(CURSOR_KEY, String(ms));
   } catch { /* the next census just looks back a little further */ }
 }

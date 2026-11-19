@@ -223,3 +223,8 @@ export function isOwnerIMessageRecipient(recipient: string | null | undefined): 
     return false;
   }
 }
+
+/** Who a message went to or came from, for a log line: the kind of person, never the address or number. */
+export function recipientKind(recipient: string): string {
+  return isOwnerIMessageRecipient(recipient) ? 'the owner' : 'an approved sender';
+}

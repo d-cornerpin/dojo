@@ -5,7 +5,7 @@
 // Email counts only when the mail watcher stamped `relation: 'owner'` after the provider's DMARC result
 // (`services/mail-owner-intake.ts`), and then only the `ownerWords` it stored, never the row's content (a From
 // header is nobody authenticated, and replies quote the agent).
-import { deriveOrigin, legacyOriginInputs, stripInboundChannelMarker, type InboundMeta } from '@dojo/shared';
+import { deriveOrigin, fenceRanges, legacyOriginInputs, stripInboundChannelMarker, type InboundMeta } from '@dojo/shared';
 import { getDb } from '../db/connection.js';
 import { WORK_EVENT } from '../work/tracker-view.js';
 
@@ -17,7 +17,7 @@ export function normalizeQuote(s: string): string {
 interface Row {
   content: string; lane: string; channel: string; source_agent_id: string | null;
   a2a_thread_id: string | null; a2a_intent: string | null; a2a_requires_response: number | null;
-  inbound_meta: string | null; origin_intent: string | null;
+  inbound_meta: string | null; origin_intent: string | null; sender_id: string | null;
 }
 
 /** The owner's new words in an email row the watcher stamped as the owner's, or null; every stamp must agree. */
@@ -59,12 +59,16 @@ const quotableUnits = (words: string, asks: boolean): string[] => {
 };
 
 const ROW_COLS = `content, lane, channel, source_agent_id, a2a_thread_id, a2a_intent, a2a_requires_response,
-            inbound_meta, origin_intent`;
+            inbound_meta, origin_intent, sender_id`;
 const PERSON_INBOUND = "role = 'user' AND channel IS NOT NULL AND source_agent_id IS NULL";
 
-const saidIn = (rows: Row[], q: string, floorMs: number, asks: boolean): boolean =>
+/** A contact's own words in a row: the text inside its fences, never the platform's lines around them. */
+const fencedWords = (content: string): string | null =>
+  fenceRanges(content).map((r) => content.slice(r.bodyStart, r.bodyEnd)).join('\n') || null;
+
+const saidIn = (rows: Row[], q: string, floorMs: number, asks: boolean, sender: string | null): boolean =>
   rows.some((m) => {
-    const words = ownerWords(m, floorMs);
+    const words = ownerWords(m, floorMs) ?? (sender !== null && m.sender_id === sender ? fencedWords(m.content) : null);
     return words !== null && quotableUnits(words, asks).includes(q);
   });
 
@@ -76,13 +80,14 @@ function askedAt(taskId: string, kind: string): number | null {
 }
 
 /** Did the owner write `q` (normalised) as a whole message or sentence to this agent at or after `atMs`?
- *  `asks` admits a question that asks the agent to act (words for a control or a hold, never an approval). */
-export function ownerSaidSince(atMs: number, q: string, agentId: string, asks = false): boolean {
+ *  `asks` admits a question that asks the agent to act (words for a control or a hold, never an approval);
+ *  `sender` also counts the words that contact wrote in its own rows. */
+export function ownerSaidSince(atMs: number, q: string, agentId: string, asks = false, sender: string | null = null): boolean {
   const floor = Math.floor(atMs / 1000) * 1000;   // `sent_at`'s default is second-resolution
   const rows = getDb().prepare(
     `SELECT ${ROW_COLS} FROM messages WHERE ${PERSON_INBOUND} AND agent_id = ? AND sent_at >= ?`,
   ).all(agentId, floor) as Row[];
-  return saidIn(rows, q, floor, asks);
+  return saidIn(rows, q, floor, asks, sender);
 }
 
 // A relayed owner decision is verified here: agents must not close jobs themselves.

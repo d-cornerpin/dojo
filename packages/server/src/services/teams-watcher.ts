@@ -8,6 +8,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { resolveOrCreateConversation } from '../memory/conversations.js';
 import { getDb } from '../db/connection.js';
+import { setConfigValue } from '../config/config-value.js';
 import { recordInboundMeta } from '../agent/v2/inbound-channel.js';
 import { insertInboundMessageIfAbsent } from '../work/ask-title.js';
 import { isSenderAuthorized } from '../agent/v2/channel-auth.js';
@@ -381,10 +382,7 @@ async function pollForNewMessages(): Promise<void> {
     if (totalNewCount > 0) {
       // Persist notified IDs (last 200)
       const recentIds = [...notifiedIds].slice(-200);
-      db.prepare(`
-        INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
-        ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = datetime('now')
-      `).run(notifiedKey, JSON.stringify(recentIds), JSON.stringify(recentIds));
+      setConfigValue(notifiedKey, JSON.stringify(recentIds));
     }
 
     // Wake the agent once for the new messages from him or approved senders; the rest wait for its next turn.
@@ -400,10 +398,7 @@ async function pollForNewMessages(): Promise<void> {
     }
 
     cursors.since = pollStartIso;
-    db.prepare(`
-      INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
-      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
-    `).run(CURSORS_KEY, JSON.stringify(cursors));
+    setConfigValue(CURSORS_KEY, JSON.stringify(cursors));
 
     recordPollSuccess();
   } catch (err) {

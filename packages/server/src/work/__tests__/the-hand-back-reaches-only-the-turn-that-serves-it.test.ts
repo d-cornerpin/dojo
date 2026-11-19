@@ -3,7 +3,7 @@
 //
 // Review B1/M1 on proof-fix-f: the hand-back was an events-lane notice. The lane gists every
 // engine row to 400 characters, so the part that prevents a second answer (what the dead turn
-// already did, what may already have reached the person) never reached the model; and the lane
+// already did, a send it died inside included) never reached the model; and the lane
 // is shown in every conversation's turn, so a contact's turn saw the owner's message.
 //
 // DRIVEN through the engine's real turn entry (`runV2Turn`) with the REAL assembler; only the
@@ -122,12 +122,11 @@ async function turnSees(reply: string): Promise<string> {
   return seen.slice(before).map((call) => call.map(textOf).join('\n\n')).join('\n\n');
 }
 
-/** The owner's ask, picked up by a turn that sent an email, began a text, and died with the process. */
+/** The owner's ask, picked up by a turn that sent an email, died inside a text, and died with the process. */
 async function ownerAskStrandedByADeadTurn(): Promise<string> {
   const r = await submitUserMessage(AGENT, OWNER_ASK);
   expect(r.ok).toBe(true);
   const id = (mockDb.current!.prepare("SELECT id FROM messages WHERE role = 'user' AND content LIKE '%book the roofer%'").get() as { id: string }).id;
-  const conv = (mockDb.current!.prepare('SELECT conversation_id AS c FROM work WHERE id = ?').get(askIdForMessage(id)) as { c: string }).c;
   claimAsk(askIdForMessage(id), AGENT);
   stampClaimingTurn(askIdForMessage(id), 900);
   mockDb.current!.prepare(
@@ -138,10 +137,8 @@ async function ownerAskStrandedByADeadTurn(): Promise<string> {
     content: JSON.stringify([{ type: 'tool_use', id: 'c900', name: 'gmail_send', input: { to: 'roofer@example.com', subject: 'Thursday booking' } }]) } as never);
   insertMessageIfAbsent({ id: 'r-900', agentId: AGENT, role: 'tool', turnNumber: 900,
     content: JSON.stringify([{ type: 'tool_result', tool_use_id: 'c900', content: 'sent', is_error: false }]) } as never);
-  mockDb.current!.prepare(
-    `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, recipient_id, conversation_id, outcome, detail)
-     VALUES ('d-maybe', ?, 900, 'auto-route', 'imessage', '+15550000', ?, 'pending', 'Booked the roofer for Thursday at nine.')`,
-  ).run(AGENT, conv);
+  insertMessageIfAbsent({ id: 'u-901', agentId: AGENT, role: 'assistant', turnNumber: 900,
+    content: JSON.stringify([{ type: 'tool_use', id: 'c901', name: 'imessage_send', input: { recipient: '+15550000', message: 'Booked the roofer for Thursday at nine.' } }]) } as never);
   mockDb.current!.prepare("UPDATE agents SET status = 'working' WHERE id = ?").run(AGENT);
   // The restart: the boot sweep closes the dead turn, the reconcile hands the ask back.
   resetWorkingAgentsToIdleAtBoot();
@@ -151,7 +148,7 @@ async function ownerAskStrandedByADeadTurn(): Promise<string> {
 
 const FACTS = [
   'gmail_send', 'roofer@example.com',                                        // what the dead turn already did
-  'may already have reached', 'imessage', '+15550000', 'Booked the roofer for Thursday at nine.', // what may have gone out
+  'may not have gone', 'imessage_send', '+15550000', 'Booked the roofer for Thursday at nine.', // the send it died inside
   'book the roofer for Thursday', 'received', 'ago',                         // the message and its age
   'Answer it now',                                                           // the instruction
 ];
@@ -190,7 +187,7 @@ describe('the hand-back facts, in the real model context', () => {
     } as never);
     const wire = await turnSees('Yes, Saturday at two.');
     expect(wire, 'this turn must be the contact\'s').toContain('garden party');
-    for (const f of ['roofer@example.com', 'may already have reached', 'Booked the roofer', 'book the roofer', 'Answer it now']) {
+    for (const f of ['roofer@example.com', 'may not have gone', 'Booked the roofer', 'book the roofer', 'Answer it now']) {
       expect(wire, `a contact's turn was shown: ${f}`).not.toContain(f);
     }
   });

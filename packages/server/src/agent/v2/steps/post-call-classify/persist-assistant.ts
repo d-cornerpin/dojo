@@ -113,7 +113,7 @@ export async function runPersistAssistant(
         const phrase = pickFillerPhrase();
         const session = getCallSession(turnCtx.phoneStreamCallSid);
         if (session && !session.isEnded()) {
-          await session.queueAgentSay(phrase);
+          void session.queueAgentSay(phrase);   // tools start at once; the filler plays while they run
           turnCtx.voiceFillerFired = true;
           logger.info('Phone filler pushed before tool execution', {
             agentId, callSid: turnCtx.phoneStreamCallSid, phrase, toolCount: result.toolCalls.length,

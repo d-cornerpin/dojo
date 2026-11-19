@@ -7,6 +7,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { AgentTurnState } from './v2/state.js';
 import type { PendingAttachment } from './pending-attachments.js';
+import { StreamingSpeechBuffer } from '../voice/text-sanitize.js';
 
 // Origin of the turn; the kind vocabulary must match migration 112.
 export interface TurnRoot {
@@ -50,7 +51,7 @@ export interface TurnContext {
   startAckTimer: ReturnType<typeof setTimeout> | null;
 
   // Written from the streaming TTS callback; only the bag carries the write to its readers.
-  phoneStreamBuffer: string;
+  phoneStreamBuffer: StreamingSpeechBuffer;
 
   phoneStreamFlushedAny: boolean;
 
@@ -69,8 +70,6 @@ export interface TurnContext {
   deferredUserReplyWithTools: string | null;
 
   deferredNoteId: string | null;
-
-  turnInjectedTechniqueId: string | null;
 
   // Stamped by assemble, read by teardown to claim in-window rows; null is legal, so a lost write is silent.
   lastAssembledAtIso: string | null;
@@ -122,7 +121,7 @@ export function openTurnContext(agentId: string): TurnContext {
     servedWork: undefined,
     triggerMessageId: undefined,
     startAckTimer: null,
-    phoneStreamBuffer: '',
+    phoneStreamBuffer: new StreamingSpeechBuffer(),
     phoneStreamFlushedAny: false,
     phoneStreamCallSid: null,
     toolPhaseEndedBySpinBrake: false,
@@ -133,7 +132,6 @@ export function openTurnContext(agentId: string): TurnContext {
     ownerAffinityDestination: null,
     deferredUserReplyWithTools: null,
     deferredNoteId: null,
-    turnInjectedTechniqueId: null,
     lastAssembledAtIso: null,
     pickupSeq: null,
     freshTailDropWarned: false,

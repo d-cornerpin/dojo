@@ -52,10 +52,6 @@ vi.mock('../../services/channel-safe-senders.js', () => ({
 vi.mock('../../services/imessage-bridge.js', () => ({ addressesMatch: (a: string, b: string) => a === b }));
 vi.mock('../../services/safe-senders.js', async (orig) => ({ ...(await orig<typeof import('../../services/safe-senders.js')>()), ownerIMessageRecords: () => [], addressesMatch: vi.fn(), isOwnerIMessageRecipient: vi.fn() }));
 vi.mock('../sms-inbound.js', () => ({ ingestInboundSms: vi.fn() }));
-vi.mock('../../voice/session-record.js', () => ({
-  startVoiceSessionRecord: vi.fn(() => 'vsr-1'), endVoiceSessionRecord: vi.fn(),
-  bumpVoiceSessionTurnCount: vi.fn(), stampSpokenMessage: vi.fn(),
-}));
 vi.mock('../../voice/stt-service.js', () => ({ transcribeBuffer: vi.fn(async () => ({ text: 'it is me, the owner' })), ensureSttReady: vi.fn(async () => {}) }));
 vi.mock('../audio-codec.js', () => ({
   decodeTwilioFrame: vi.fn(() => new Float32Array(160)), encodeForTwilio: vi.fn(), chunkForTwilio: vi.fn(),

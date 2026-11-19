@@ -3,8 +3,8 @@
 // turn, never the clock: still open at boot, or closed `terminated` by the dead-run verdict
 // (`agent/v2/turn-record.ts markTurnsTerminated`). Outcomes, and no fourth: the dead turn delivered
 // -> the authority closes the ask; it did not answer -> the ask goes back to the agent with the
-// facts recorded on it (`work/hand-back-facts.ts`), a begun outside send named "may already have
-// reached the person"; it closed and then delegated under it -> handed back through the authority.
+// facts recorded on it (`work/hand-back-facts.ts`), a send it died inside named so it is sent again;
+// it closed and then delegated under it -> handed back through the authority.
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { REPLY_IN_FLIGHT, settleAsk } from './ask-settlement.js';

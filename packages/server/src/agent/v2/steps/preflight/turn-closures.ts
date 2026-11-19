@@ -141,7 +141,7 @@ export function runTurnClosures(
         if (session && !session.isEnded()) {
           await withOutboundAsync(
             {
-              agentId, tool: 'engine-ack', channel: 'phone', text,
+              agentId, tool: 'engine-ack', channel: 'phone',
               recipientId: inbound.phoneFromNumber ?? counterparty.senderId ?? null,
               conversationId: turnCtx.root?.conversationId ?? null,
             },
@@ -155,7 +155,7 @@ export function runTurnClosures(
       const address = replyAddressFor({ ...inbound, channel: counterparty.channel, sender: counterparty.senderId });
       if (!address) return;
       const startLine = originIntent === START_ACK_ORIGIN_INTENT;
-      const queued = await queueReply({ agentId, turnNumber, root: turnCtx.root ?? null, text, address, startLine });
+      const queued = await queueReply({ agentId, turnNumber, root: turnCtx.root ?? null, text, address, kind: startLine ? 'start-line' : 'reply' });
       if (queued && !startLine) turnCtx.earlyAnswerRowId = queued.id;
     } catch (err) {
       logger.warn('v2: engine user-ack channel delivery failed (non-fatal)', {

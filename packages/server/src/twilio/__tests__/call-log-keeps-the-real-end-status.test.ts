@@ -7,12 +7,6 @@ const transcribeBuffer = vi.fn(async () => ({ text: 'hello there' }));
 const ensureSttReady = vi.fn(async () => {});
 const runs: Array<{ sql: string; args: unknown[] }> = [];
 
-vi.mock('../../voice/session-record.js', () => ({
-  startVoiceSessionRecord: () => 'vs1',
-  endVoiceSessionRecord: vi.fn(),
-  bumpVoiceSessionTurnCount: vi.fn(),
-  stampSpokenMessage: vi.fn(),
-}));
 vi.mock('../../memory/conversations.js', () => ({
   resolveOrCreateConversation: () => 'conv1',
 }));

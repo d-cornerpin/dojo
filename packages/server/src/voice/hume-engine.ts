@@ -8,6 +8,7 @@
 import { HumeClient } from 'hume';
 import { getProviderCredential } from '../config/loader.js';
 import { createLogger } from '../logger.js';
+import { recordCost } from '../costs/tracker.js';
 import { pcmFloatToWav } from './tts-service.js';
 
 // Hume's PCM output sample rate; pcmFloatToWav needs it for correct pitch.
@@ -15,6 +16,12 @@ export const HUME_SAMPLE_RATE = 48_000;
 
 // Provider key in secrets.yaml's `providers` map (the per-provider api_key slot).
 const HUME_PROVIDER_KEY = 'hume';
+
+// A socket that took text and sent no audio this long after the first push counts as failed.
+const FIRST_AUDIO_LIMIT_MS = 3_000;
+
+// The owner's Hume plan, 30,000 characters for $3 a month: what each spoken burst is worth on the cost page.
+const HUME_USD_PER_CHARACTER = 0.0001;
 
 const logger = createLogger('voice-hume');
 
@@ -33,7 +40,6 @@ interface SdkAudioMessage {
   type: 'audio';
   audio: string;
   text: string;
-  generationId: string;
   isLastChunk: boolean;
   chunkIndex?: number;
   snippetId?: string;
@@ -147,7 +153,8 @@ export interface HumeStreamSessionOpts {
   description?: string;
   /** Speed multiplier. 1.0 default; extreme values can destabilise output. */
   speed?: number;
-  contextGenerationId?: string;
+  /** The agent whose words are spoken: the burst's cost row is written under it. */
+  agentId: string;
 }
 
 /**
@@ -159,9 +166,13 @@ export class HumeStreamSession {
   private voice: { id: string; provider: 'HUME_AI' | 'CUSTOM_VOICE' };
   private description: string | undefined;
   private speed: number | undefined;
-  private generationId: string | null = null;
-  private contextGenerationId: string | undefined;
+  private agentId: string;
   private closed = false;
+  private chars = 0;
+  private firstAudioTimer: ReturnType<typeof setTimeout> | null = null;
+  private audioSeen = false;
+  /** The first-audio limit passed: close() stops waiting for a socket that is not talking. */
+  private silent = false;
   /** The socket 'close' event fired, so close() can resolve as soon as Hume hangs up. */
   private sawSocketClose = false;
 
@@ -173,13 +184,12 @@ export class HumeStreamSession {
   onError: ((err: Error) => void) | null = null;
   /** Opt-in: also called for a provider error frame or a hang-up we did not ask for. */
   onDrop: ((err: Error) => void) | null = null;
-  onClose: (() => void) | null = null;
 
   constructor(opts: HumeStreamSessionOpts) {
     this.voice = { id: opts.voiceId, provider: opts.voiceProvider ?? 'HUME_AI' };
     this.description = opts.description && opts.description.length > 0 ? opts.description : undefined;
     this.speed = opts.speed;
-    this.contextGenerationId = opts.contextGenerationId;
+    this.agentId = opts.agentId;
   }
 
   async open(): Promise<void> {
@@ -212,7 +222,6 @@ export class HumeStreamSession {
       // noBinary is required: the SDK JSON.parses every message, and binary audio frames throw from its
       // own listener and crash the process. With it the server sends audio as base64 inside JSON.
       noBinary: true,
-      contextGenerationId: this.contextGenerationId,
       });
       // Attach open/error listeners before waitForOpen so the first lifecycle events are not missed;
       // these only track the handshake, the live-phase listeners are attached below.
@@ -273,7 +282,8 @@ export class HumeStreamSession {
         return;
       }
       if (!isAudioMessage(m)) return;
-      this.generationId = m.generationId;
+      this.audioSeen = true;
+      if (this.firstAudioTimer) clearTimeout(this.firstAudioTimer);
       try {
         const f32 = decodeHumePcm(m.audio);
         if (f32.length > 0) this.onWav?.(pcmFloatToWav(f32, HUME_SAMPLE_RATE));
@@ -293,7 +303,6 @@ export class HumeStreamSession {
     this.socket.on('close', () => {
       this.sawSocketClose = true;
       if (!this.closed) this.onDrop?.(new Error('Hume hung up mid-stream'));
-      this.onClose?.();
     });
   }
 
@@ -310,7 +319,14 @@ export class HumeStreamSession {
     };
     if (this.description) msg.description = this.description;
     if (this.speed != null) msg.speed = this.speed;
-    logger.info('Hume sendPublish', {
+    this.chars += text.length;
+    if (!this.audioSeen && !this.firstAudioTimer) {
+      this.firstAudioTimer = setTimeout(() => {
+        this.silent = true;
+        this.onError?.(new Error(`Hume sent no audio within ${FIRST_AUDIO_LIMIT_MS / 1000} s`));
+      }, FIRST_AUDIO_LIMIT_MS);
+    }
+    logger.debug('Hume sendPublish', {
       textPreview: text.length > 60 ? text.slice(0, 60) + '…' : text,
       textLen: text.length,
       voiceId: this.voice.id,
@@ -341,14 +357,10 @@ export class HumeStreamSession {
     this.description = description && description.length > 0 ? description : undefined;
   }
 
-  /** Last seen generationId. Pass to the next session's contextGenerationId for continuity. */
-  get lastGenerationId(): string | null {
-    return this.generationId;
-  }
-
   /**
    * End the stream: send `close: true` so Hume generates the buffered tail audio, then wait for the server
-   * to close the socket, capped at 10 s so a stuck socket cannot hang the burst.
+   * to close the socket, capped at 10 s so a stuck socket cannot hang the burst. The first-audio limit keeps
+   * running through the wait. Once it ends, the burst's words are billed as one cost row if audio came back.
    */
   async close(): Promise<void> {
     if (!this.socket || this.closed) return;
@@ -362,7 +374,7 @@ export class HumeStreamSession {
     await new Promise<void>((resolve) => {
       // The cap also clears the tick, or a stuck socket would leave the 50 ms interval running forever.
       const tick = setInterval(() => {
-        if (this.sawSocketClose) {
+        if (this.sawSocketClose || this.silent) {
           clearInterval(tick);
           clearTimeout(hardCap);
           resolve();
@@ -376,6 +388,13 @@ export class HumeStreamSession {
 
     try { this.socket.close(); } catch { /* ignore */ }
     this.socket = null;
+    if (this.firstAudioTimer) clearTimeout(this.firstAudioTimer);
+    if (this.chars > 0 && this.audioSeen) {
+      recordCost({
+        agentId: this.agentId, modelId: 'hume-octave', providerId: HUME_PROVIDER_KEY,
+        inputTokens: 0, outputTokens: 0, units: this.chars, characterRate: HUME_USD_PER_CHARACTER, requestType: 'speech',
+      });
+    }
   }
 }
 

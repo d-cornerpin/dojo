@@ -133,31 +133,18 @@ Do NOT include preamble like "Here is your briefing" — start directly with the
   }
 }
 
-// ── Get Latest Briefing ──
+// ── Today's Briefing ──
 
-/**
- * `generatedAt` is returned so the briefing lane can state the row's own generation date. Reading the
- * assembly clock instead would put a changing date in the cacheable region. Format is the column's own
- * (`YYYY-MM-DD HH:MM:SS`, or an ISO string from `updateBriefing`); the lane takes the leading date only.
- */
-export function getLatestBriefing(
-  agentId: string,
-): { content: string; tokenCount: number; generatedAt: string | null } | null {
-  const db = getDb();
-  const row = db.prepare(`
-    SELECT content, token_count, generated_at FROM briefings
-    WHERE agent_id = ?
-    ORDER BY generated_at DESC
-    LIMIT 1
-  `).get(agentId) as { content: string; token_count: number; generated_at: string | null } | undefined;
-
-  if (!row) return null;
-
-  return {
-    content: row.content,
-    tokenCount: row.token_count,
-    generatedAt: row.generated_at,
-  };
+/** The newest briefing when it was made on today's local date, else null: yesterday's briefing is stale news.
+ *  `day` is the briefing's own local date, so the lane's stamp never reads the clock. */
+export function todaysBriefing(agentId: string, nowMs = Date.now()): { content: string; day: string } | null {
+  const row = getDb().prepare(
+    'SELECT content, generated_at FROM briefings WHERE agent_id = ? ORDER BY generated_at DESC LIMIT 1',
+  ).get(agentId) as { content: string; generated_at: string | null } | undefined;
+  if (!row?.generated_at) return null;
+  const made = new Date(row.generated_at.includes('T') ? row.generated_at : `${row.generated_at.replace(' ', 'T')}Z`);
+  const day = made.toLocaleDateString('en-CA');
+  return day === new Date(nowMs).toLocaleDateString('en-CA') ? { content: row.content, day } : null;
 }
 
 // ── Update Briefing ──

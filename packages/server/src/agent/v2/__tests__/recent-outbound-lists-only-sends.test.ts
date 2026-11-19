@@ -25,7 +25,7 @@ vi.mock('../../../gateway/ws.js', () => ({ broadcast: () => undefined }));
 import { runMigrations } from '../../../db/migrations.js';
 import { writeToolReceipt } from '../../../receipts/store.js';
 import {
-  findRecentDeliveries, getRecentOutbound, renderRecentOutboundBlock,
+  findRecentDeliveriesKeyed, getRecentOutbound, renderRecentOutboundBlock,
 } from '../outbound-ledger.js';
 
 const AGENT = 'worker-1';
@@ -60,7 +60,7 @@ describe('recent outbound lists only sends', () => {
       agentId: AGENT, tool: 'calendar_update', tier: 1, verified: true, basis: 'provider-id',
       recipient: null,
     } as never);
-    expect(findRecentDeliveries(AGENT, null, 1)).toEqual([]);
+    expect(findRecentDeliveriesKeyed(AGENT, null, 1)).toEqual([]);
   });
 
   it('an unverified iMessage send stays in the ledger', () => {

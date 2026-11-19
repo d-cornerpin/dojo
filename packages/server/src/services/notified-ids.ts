@@ -1,6 +1,6 @@
 // Watchers' "already notified" list (`*_notified_<account>` in `config`), saved after EACH message acted on:
 // a poll that throws part-way must not make the next poll re-read the same messages.
-import { getDb } from '../db/connection.js';
+import { setConfigValue } from '../config/config-value.js';
 
 /** The most mails one poll of a mail watcher handles. */
 export const MAX_MAILS_PER_POLL = 500;
@@ -9,8 +9,5 @@ const KEPT_IDS = 2 * MAX_MAILS_PER_POLL;
 
 export function persistNotifiedIds(key: string, ids: ReadonlySet<string>): void {
   const value = JSON.stringify([...ids].slice(-KEPT_IDS));
-  getDb().prepare(`
-    INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
-    ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = datetime('now')
-  `).run(key, value, value);
+  setConfigValue(key, value);
 }

@@ -7,6 +7,7 @@ import { estimateTokens } from '../memory/budget.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getDb } from '../db/connection.js';
+import { setConfigValue } from '../config/config-value.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { spawnAgent } from '../agent/spawner.js';
@@ -30,11 +31,12 @@ import {
   incrementArchiveAttempt,
   markArchivePoisoned,
   sqlUtcStamp,
+  restoreCleanupHidesOnce,
   type VaultConversation,
 } from './store.js';
-import { MAX_PINNED_ENTRIES } from './retrieval.js';
 import { buildRoughTasksBatch, lessonsCensusSince, advanceLessonsCensus } from './rough-tasks-batch.js';
 import { homeDir } from '../home.js';
+import { obligationVerdict } from '../work/obligation-memory.js';
 import { fenceExternal } from '../tools/external-content.js';
 import { nextDailyRunDelayMs } from '../config/clock-time.js';
 import { isFiller, beginFillerPass } from './filler.js';
@@ -44,10 +46,6 @@ import { settleFiller } from '../memory/shape-judgment.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const logger = createLogger('vault-dreaming');
-
-// Dreaming can never be switched off, so there is no 'off' mode; a stored 'off' is read as 'full'.
-export const DREAM_MODES = ['full', 'light'] as const;
-export type DreamMode = typeof DREAM_MODES[number];
 
 // A Dreamer that dies mid-batch stays 'working' and would block every cycle (the cycle advances only via a
 // terminal complete_task). A genuinely running turn keeps the row's updated_at fresh (30s status heartbeat)
@@ -59,36 +57,21 @@ const DREAMER_CONTINUATION_QUIET_MS = DREAMER_STALE_MINUTES * 60 * 1000;
 let lastDreamerWakeMs = 0;
 
 
-export function getDreamingConfig(): { modelId: string | null; dreamTime: string; dreamMode: DreamMode } {
+export function getDreamingConfig(): { modelId: string | null; dreamTime: string } {
   const db = getDb();
 
   const modelRow = db.prepare("SELECT value FROM config WHERE key = 'dreaming_model_id'").get() as { value: string } | undefined;
   const timeRow = db.prepare("SELECT value FROM config WHERE key = 'dreaming_time'").get() as { value: string } | undefined;
-  const modeRow = db.prepare("SELECT value FROM config WHERE key = 'dreaming_mode'").get() as { value: string } | undefined;
 
   return {
     modelId: modelRow?.value ?? null,
     dreamTime: timeRow?.value ?? '03:00',
-    dreamMode: modeRow?.value === 'light' ? 'light' : 'full',
   };
 }
 
-export function setDreamingConfig(config: { modelId?: string; dreamTime?: string; dreamMode?: DreamMode }): void {
-  const db = getDb();
-  const upsert = db.prepare(`
-    INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
-    ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = datetime('now')
-  `);
-
-  if (config.modelId !== undefined) {
-    upsert.run('dreaming_model_id', config.modelId, config.modelId);
-  }
-  if (config.dreamTime !== undefined) {
-    upsert.run('dreaming_time', config.dreamTime, config.dreamTime);
-  }
-  if (config.dreamMode !== undefined) {
-    upsert.run('dreaming_mode', config.dreamMode, config.dreamMode);
-  }
+export function setDreamingConfig(config: { modelId?: string; dreamTime?: string }): void {
+  if (config.modelId !== undefined) setConfigValue('dreaming_model_id', config.modelId);
+  if (config.dreamTime !== undefined) setConfigValue('dreaming_time', config.dreamTime);
 }
 
 // DB-persisted flag (config table, so it survives a restart) that a NIGHTLY dream cycle is draining
@@ -108,11 +91,7 @@ export function isDreamCycleOpen(): boolean {
 }
 
 export function setDreamCycleOpen(open: boolean): void {
-  const db = getDb();
-  db.prepare(`
-    INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
-    ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = datetime('now')
-  `).run(DREAM_CYCLE_OPEN_KEY, open ? '1' : '0', open ? '1' : '0');
+  setConfigValue(DREAM_CYCLE_OPEN_KEY, open ? '1' : '0');
 }
 
 
@@ -141,6 +120,7 @@ function getDefaultDreamModel(): string | null {
 
 
 export function runEngineMaintenance(): { pruned: number; decayed: number; unpinned: number; agedOut: number } {
+  restoreCleanupHidesOnce((content) => obligationVerdict(content).kind === 'closed');
   const db = getDb();
   let pruned = 0;
 
@@ -532,7 +512,6 @@ function buildDreamerCycleMessage(
   stats: ReturnType<typeof getVaultStats>,
   profilePath: string,
   soulPath: string,
-  dreamMode: DreamMode,
   allUnprocessed: VaultConversation[],
 ): string {
   const batchNote = totalBatches > 1
@@ -550,7 +529,7 @@ function buildDreamerCycleMessage(
   void profilePath; void soulPath;
 
   return `═══ DREAM CYCLE ═══
-Vault state: ${stats.totalEntries} entries (${stats.pinnedCount} pinned, ${stats.permanentCount} permanent). Pin cap: ${MAX_PINNED_ENTRIES}${stats.pinnedCount > MAX_PINNED_ENTRIES ? ', OVER CAP, prune now' : ''}.${archiveSummary}${batchNote}
+Vault state: ${stats.totalEntries} entries (${stats.pinnedCount} pinned, ${stats.permanentCount} permanent).${archiveSummary}${batchNote}
 
 Process the archives below. Extract durable memories and route each to the right store per your SOUL: vault_remember for general knowledge, contact_remember for person-as-entity facts (who someone is, role/company, relationships, channel preferences, a new email/phone), and credential_add ONLY when an archive contains the actual value of a service credential (follow your SOUL's cautions: never guess, skip anything personal-financial). Discard junk archives. Only update USER.md if an archive has a clear, explicit, FUNDAMENTAL profile change you can quote (see your SOUL). Never edit SOUL.md. Then call complete_task.
 
@@ -831,7 +810,6 @@ export async function runDreamingCycle(): Promise<{ dreamerId: string | null }> 
   if (rough) batches.push(rough);
 
   logger.info(`Waking Dreamer to process ${unprocessed.length} archives in ${batches.length} batch(es)`, {
-    mode: config.dreamMode,
     modelId,
     contextWindow,
     batches: batches.length,
@@ -890,7 +868,7 @@ export async function runDreamingCycle(): Promise<{ dreamerId: string | null }> 
     WHERE id = ?
   `).run(JSON.stringify(firstBatch.ids), dreamerId);
 
-  const cycleMessage = buildDreamerCycleMessage(firstBatch.text, 0, batches.length, stats, profilePath, soulPath, config.dreamMode, unprocessed);
+  const cycleMessage = buildDreamerCycleMessage(firstBatch.text, 0, batches.length, stats, profilePath, soulPath, unprocessed);
 
   // A nightly cycle is committing to a drain: open the cycle-in-flight marker (cleared at finalize).
   // Setting it here, reached only via runDreamingCycle, also heals a marker leaked by a crashed finalize.
@@ -951,7 +929,7 @@ function writeDreamReportForCycle(state: PendingBatchState, outcome: 'complete' 
       `Vault entries: ${before.totalEntries} → ${after.totalEntries} (${memoriesExtracted >= 0 ? '+' : ''}${memoriesExtracted}).`,
       `Pinned: ${before.pinnedCount} → ${after.pinnedCount}. Permanent: ${before.permanentCount} → ${after.permanentCount}.`,
       `Engine maintenance: pruned ${state.maintenanceAtStart.pruned}, decayed ${state.maintenanceAtStart.decayed}, unpinned ${state.maintenanceAtStart.unpinned}, aged-out ${state.maintenanceAtStart.agedOut}.`,
-      `Batches: ${state.batches.length}. Duration: ${Math.round(durationMs / 1000)}s. Mode: ${state.config.dreamMode}.`,
+      `Batches: ${state.batches.length}. Duration: ${Math.round(durationMs / 1000)}s.`,
     ].join('\n');
 
     createDreamReport({
@@ -966,7 +944,6 @@ function writeDreamReportForCycle(state: PendingBatchState, outcome: 'complete' 
       pinnedCount: after.pinnedCount,
       permanentCount: after.permanentCount,
       reportText,
-      dreamMode: state.config.dreamMode,
       modelId: state.modelId,
       durationMs,
     });
@@ -1024,7 +1001,6 @@ function writeResumedDreamReport(): void {
       permanentCount: after.permanentCount,
       reportText:
         'Dream cycle finished after a mid-cycle restart. The in-memory cycle counters were lost, so per-archive totals are not available; the remaining archives were filed by the stateless DB-driven continuation.',
-      dreamMode: config.dreamMode,
       modelId: config.modelId ?? undefined,
     });
     logger.info('Resumed dream report written (post-restart continuation)');
@@ -1120,7 +1096,7 @@ async function wakeNextBatchFromDb(primaryId: string, state: PendingBatchState |
   const soulPath = path.join(homeDir(), '.dojo', 'prompts', 'SOUL.md');
   // batchIndex 0 / totalBatches 1 keeps the "batch X of N" note off (N is not known statelessly).
   const cycleMessage = buildDreamerCycleMessage(
-    batch.text, 0, 1, stats, profilePath, soulPath, (state?.config ?? getDreamingConfig()).dreamMode, [],
+    batch.text, 0, 1, stats, profilePath, soulPath, [],
   );
   wakeupDreamer(cycleMessage);
   logger.info('Dreamer woken for next batch (stateless DB continuation)', {
@@ -1166,7 +1142,6 @@ export async function spawnNextDreamerBatch(primaryId: string): Promise<void> {
         state.stats,
         profilePath,
         soulPath,
-        state.config.dreamMode,
         [],
       );
 
@@ -1194,14 +1169,15 @@ export async function spawnNextDreamerBatch(primaryId: string): Promise<void> {
 }
 
 
-// Called when the Dreamer ends a batch on ANY terminal status. 'complete': every assigned archive is marked
+// Called when the Dreamer ends a batch on ANY terminal status, and by the continuation sweep with 'stalled' for a
+// batch it re-sends. 'complete': every assigned archive is marked
 // processed. 'blocked'/'fallen': the batch was NOT distilled, so never mark it processed; bump each
 // archive's attempt counter and poison any that reached MAX_DREAM_ATTEMPTS (surfaced via the DREAM_POISONED
 // diagnostic). Either way the cycle advances (spawnNextDreamerBatch). dreamerAgentId may be the permanent
 // 'dreamer' ID or a legacy temporary agent ID.
 export function markDreamerArchivesProcessed(
   dreamerAgentId: string,
-  status: 'complete' | 'fallen' | 'blocked' = 'complete',
+  status: 'complete' | 'fallen' | 'blocked' | 'stalled' = 'complete',
 ): void {
   const db = getDb();
 
@@ -1413,7 +1389,6 @@ export async function recoverDreamerFromContextOverflow(
     state.stats,
     profilePath,
     soulPath,
-    state.config.dreamMode,
     [],
   );
 
@@ -1588,7 +1563,7 @@ export async function sweepDreamerHealth(): Promise<void> {
 // Re-arms the stateless DB-driven continuation when a batch advance was dropped (a Dreamer that died
 // mid-cycle, a lost in-memory map). Only when dreaming is enabled and setup complete, non-poisoned
 // non-trivial archives remain, the Dreamer is idle (not 'working', no live run) and no batch was woken
-// within the quiet window. Idempotent: it calls spawnNextDreamerBatch, which re-derives from the DB. No timer
+// within the quiet window. The re-send counts as a stalled pass (markDreamerArchivesProcessed), then advances. No timer
 // of its own: it runs on the nightly scheduler tick and on the runtime's stuck-agent sweep (sweepDreamerHealth).
 export async function runDreamerContinuationSweep(): Promise<void> {
   try {
@@ -1630,7 +1605,8 @@ export async function runDreamerContinuationSweep(): Promise<void> {
       dreamerId,
       remaining: remainingMeta.length,
     });
-    await spawnNextDreamerBatch(primaryId);
+    // A re-send counts as a pass that ended without filing its batch, so a batch is sent at most three times.
+    markDreamerArchivesProcessed(dreamerId, 'stalled');
   } catch (err) {
     logger.warn('Dreamer continuation sweep failed (non-fatal)', {
       error: err instanceof Error ? err.message : String(err),
@@ -1663,7 +1639,6 @@ export function scheduleDreamingCycle(): void {
   logger.info('Dreaming cycle scheduled', {
     nextDream: next.toISOString(),
     delayMs: delay,
-    mode: config.dreamMode,
   });
 
   dreamTimer = setTimeout(async () => {

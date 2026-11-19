@@ -1,6 +1,5 @@
-// A scheduled step whose earlier step was cancelled, or is gone, is handed in as "can't be done" with that
-// reason, once, instead of being re-checked every 30 seconds for ever. Driven through the tool executor and
-// the scheduler tick in a scratch home.
+// A step whose earlier step was cancelled, or is gone, is handed in as "can't be done" with that reason, once,
+// within one reaper sweep, whenever its own start time is. Driven through the tool executor and the reaper kind.
 
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import fs from 'node:fs';
@@ -19,7 +18,8 @@ const connection = await import('../../db/connection.js');
 const migrations = await import('../../db/migrations.js');
 const platform = await import('../../config/platform.js');
 const { executeTool, toolResultOf } = await import('../../agent/tools/index.js');
-const { checkScheduledTasks } = await import('../runner.js');
+const { REAPER_KINDS } = await import('../../work/work-reaper.js');
+const sweep = () => REAPER_KINDS.find((k) => k.id === 'steps-after-a-dead-step')!.run();
 
 beforeAll(() => {
   migrations.runMigrations();
@@ -41,37 +41,39 @@ async function open(args: Record<string, unknown>): Promise<string> {
   return /task_id=([\w-]+)/.exec(res.content)![1]!;
 }
 const handIns = (id: string) => connection.getDb().prepare(
-  "SELECT json_extract(payload, '$.outcome') AS outcome, json_extract(payload, '$.note') AS note FROM work_events WHERE work_id = ? AND kind = 'handed_in'",
-).all(id) as Array<{ outcome: string; note: string | null }>;
-const stateOf = (id: string) => (connection.getDb().prepare('SELECT state FROM work WHERE id = ?').get(id) as { state: string }).state;
+  "SELECT json_extract(payload, '$.outcome') AS outcome FROM work_events WHERE work_id = ? AND kind = 'handed_in'",
+).all(id) as Array<{ outcome: string }>;
+const cancel = (id: string) => connection.getDb().prepare("UPDATE work SET state = 'abandoned', closed_at = ? WHERE id = ?").run(Date.now(), id);
+const inAnHour = () => new Date(Date.now() + 3_600_000).toISOString();
 
 describe('a step after a cancelled step is handed in as cannot be done, once', () => {
-  it('a cancelled earlier step', async () => {
-    const step2 = await open({ title: 'Book the venue', goal: 'the venue is booked' });
-    const step3 = await open({
-      title: 'Send the invitations', goal: 'the invitations are sent', depends_on: [step2],
-      scheduled_start: new Date(Date.now() - 60_000).toISOString(),
-    });
-    connection.getDb().prepare("UPDATE work SET state = 'abandoned', closed_at = ? WHERE id = ?").run(Date.now(), step2);
-
-    await checkScheduledTasks();
-    await checkScheduledTasks();
-
-    expect(stateOf(step3)).toBe('handed_in');
-    expect(handIns(step3)).toHaveLength(1);
-    expect(handIns(step3)[0]!.outcome).toBe('cant_be_done');
+  it('a cancelled earlier step, the step due an hour from now: handed in on this sweep, once', async () => {
+    const earlier = await open({ title: 'Book the venue', goal: 'the venue is booked' });
+    const step = await open({ title: 'Send the invitations', goal: 'the invitations are sent', depends_on: [earlier], scheduled_start: inAnHour() });
+    cancel(earlier);
+    await sweep();
+    await sweep();
+    expect(handIns(step)).toEqual([{ outcome: 'cant_be_done' }]);
   });
 
-  it('an earlier step that no longer exists', async () => {
-    const step3 = await open({
-      title: 'Print the programmes', goal: 'the programmes are printed', depends_on: ['no-such-step'],
-      scheduled_start: new Date(Date.now() - 60_000).toISOString(),
-    });
+  it('an earlier step that no longer exists: handed in once', async () => {
+    const step = await open({ title: 'Print the programmes', goal: 'the programmes are printed', depends_on: ['no-such-step'], scheduled_start: inAnHour() });
+    await sweep();
+    await sweep();
+    expect(handIns(step)).toEqual([{ outcome: 'cant_be_done' }]);
+  });
 
-    await checkScheduledTasks();
-    await checkScheduledTasks();
+  it('an earlier step that is still open: nothing is handed in', async () => {
+    const earlier = await open({ title: 'Order the flowers', goal: 'the flowers are ordered' });
+    const step = await open({ title: 'Collect the flowers', goal: 'the flowers are collected', depends_on: [earlier], scheduled_start: inAnHour() });
+    await sweep();
+    expect(handIns(step)).toEqual([]);
+  });
 
-    expect(handIns(step3)).toHaveLength(1);
-    expect(handIns(step3)[0]!.outcome).toBe('cant_be_done');
+  it('a step whose dependency list is valid JSON but not a list: the sweep goes on and hands it nothing', async () => {
+    const odd = await open({ title: 'Tidy the hall', goal: 'the hall is tidy' });
+    connection.getDb().prepare("UPDATE work SET depends_on = '\"not-a-list\"' WHERE id = ?").run(odd);
+    await expect(sweep()).resolves.toBeUndefined();
+    expect(handIns(odd)).toEqual([]);
   });
 });

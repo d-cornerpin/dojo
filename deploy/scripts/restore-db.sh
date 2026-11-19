@@ -38,7 +38,7 @@ STAMP="$(date +%Y-%m-%dT%H-%M-%S)"
 # THE one way these scripts read a database: read-only, and whether or not its WAL side files exist.
 # immutable=1 is safe only with no -wal file and nothing else holding the database open.
 db_read() {
-    if [ -e "$1-wal" ]; then sqlite3 -readonly "$1" "$2"; return; fi
+    if [ -e "$1-wal" ]; then sqlite3 -cmd '.timeout 5000' -readonly "$1" "$2"; return; fi
     local p="${1//%/%25}"; p="${p//\?/%3F}"; p="${p//#/%23}"
     sqlite3 "file:$p?mode=ro&immutable=1" "$2"
 }

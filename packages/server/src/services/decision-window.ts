@@ -4,6 +4,7 @@
 // this box's density; the memory fit reserves exactly the window recorded here (dojo-working-memory.ts).
 
 import { getDb } from '../db/connection.js';
+import { setConfigValue } from '../config/config-value.js';
 import { createLogger } from '../logger.js';
 import { STANDARD_DECISION_MODEL } from './local-standard.js';
 import { writerJobWindowTokens, DECISION_WINDOW_KEY } from './dojo-working-memory.js';
@@ -40,8 +41,7 @@ async function tagWindow(baseUrl: string): Promise<number | null> {
 function recordWindow(window: number | null): void {
   const db = getDb();
   if (window === null) { db.prepare('DELETE FROM config WHERE key = ?').run(DECISION_WINDOW_KEY); return; }
-  db.prepare(`INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
-    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`).run(DECISION_WINDOW_KEY, String(window));
+  setConfigValue(DECISION_WINDOW_KEY, String(window));
 }
 
 let inFlight: Promise<number | null> | null = null;

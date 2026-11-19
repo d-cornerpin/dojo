@@ -8,6 +8,7 @@ import { createLogger } from '../logger.js';
 import { insertMessageIfAbsent } from '../memory/message-store.js';
 import { clearOn } from '../memory/writer.js';
 import { getDb } from '../db/connection.js';
+import { setConfigValue } from '../config/config-value.js';
 import { getHealerAgentId, getDreamerAgentId, getPMAgentId, getTrainerAgentId } from '../config/platform.js';
 import { MAIN_MODEL_SETTING_KEYS } from './main-model-floor.js';
 
@@ -71,8 +72,7 @@ export async function setAgentModel(agentId: string, modelId: string): Promise<v
   db.prepare("UPDATE agents SET model_id = ?, updated_at = datetime('now') WHERE id = ?").run(modelId, agentId);
   const roleKey = MAIN_MODEL_SETTING_KEYS.find((k) => modelKeyAgentId(k) === agentId);
   if (roleKey) {
-    db.prepare(`INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
-      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`).run(roleKey, modelId);
+    setConfigValue(roleKey, modelId);
   }
   sanitizeMessagesOnModelChange(agentId);
   await (await import('./v2/honest-stop-lock.js')).noteModelsChanged(agentId);

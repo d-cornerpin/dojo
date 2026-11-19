@@ -41,6 +41,24 @@ export function servedOwnerMessageIds(agentId: string): string[] {
   }
 }
 
+const spokenByTurn = new WeakMap<object, boolean>();
+
+/** The running turn answers a request spoken in voice mode, so its reply is read aloud. Decided once per turn
+ *  from the first owner message it serves: an ask, its continuation, or an engine wake rooted in the ask. */
+export function turnAnswersSpokenRequest(agentId: string): boolean {
+  const bag = turnContext(agentId);
+  if (!bag) return false;
+  let spoken = spokenByTurn.get(bag);
+  if (spoken === undefined) {
+    const first = servedOwnerMessageIds(agentId)[0];
+    try {
+      spoken = !!first && (getDb().prepare('SELECT channel FROM messages WHERE id = ?').get(first) as { channel: string | null } | undefined)?.channel === 'voice';
+    } catch { spoken = false; }
+    spokenByTurn.set(bag, spoken);
+  }
+  return spoken;
+}
+
 /** The reply-needed message a running A2A turn answers, until answered, else `[]`. Same finder as preflight
  *  (`findUnrepliedAssignForAgent`) so both agree; kept apart from the owner's words, which a park carries. */
 export function servedAssignMessageIds(agentId: string): string[] {

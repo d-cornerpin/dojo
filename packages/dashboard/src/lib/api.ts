@@ -1755,7 +1755,6 @@ export interface DreamReport {
   pinnedCount: number;
   permanentCount: number;
   reportText: string | null;
-  dreamMode: string;
   modelId: string | null;
   durationMs: number | null;
   createdAt: string;
@@ -1764,7 +1763,6 @@ export interface DreamReport {
 export interface DreamingConfig {
   modelId: string | null;
   dreamTime: string;
-  dreamMode: 'full' | 'light';
 }
 
 export const getVaultEntries = async (params?: {

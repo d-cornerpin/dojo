@@ -6,6 +6,7 @@ import { createLogger } from '../logger.js';
 import { getTwilioCreds } from './auth.js';
 import { formatForPlainTextChannel } from '../services/plain-text-format.js';
 import { recordAtDoor, recordedId } from '../agent/v2/outbound.js';
+import { recipientKind } from '../services/safe-senders.js';
 
 const logger = createLogger('twilio-client');
 
@@ -144,13 +145,13 @@ export async function sendSms(
     tool: 'sms-door',
     recipientId: to,
     detail: error !== null ? error : (parts.length > 1 ? `${parts.length} parts` : null),
-  }), 'twilio: SMS door crossing', { to });
+  }), 'twilio: SMS door crossing', { to: recipientKind(to) });
   if (error !== null) {
-    logger.warn('Twilio SMS send failed', { to, from, error, status: failedStatus });
+    logger.warn('Twilio SMS send failed', { to: recipientKind(to), from, error, status: failedStatus });
     return { ok: false, error };
   }
   // Every part went, so the first part has data.
-  logger.info('Twilio SMS sent', { sid: first?.sid, to, from, parts: parts.length });
+  logger.info('Twilio SMS sent', { sid: first?.sid, to: recipientKind(to), from, parts: parts.length });
   return { ok: true, data: first ?? ({} as TwilioSmsResponse) };
 }
 
@@ -196,12 +197,12 @@ export async function placeCall(
     tool: 'phone-door',
     recipientId: to,
     detail: res.ok ? 'call placed' : res.error,
-  }), 'twilio: phone door crossing', { to });
+  }), 'twilio: phone door crossing', { to: recipientKind(to) });
   if (!res.ok) {
-    logger.warn('Twilio call failed to place', { to, from, error: res.error, status: res.status });
+    logger.warn('Twilio call failed to place', { to: recipientKind(to), from, error: res.error, status: res.status });
     return { ok: false, error: res.error };
   }
-  logger.info('Twilio call placed', { sid: res.data.sid, to, from });
+  logger.info('Twilio call placed', { sid: res.data.sid, to: recipientKind(to), from });
   return { ok: true, data: res.data };
 }
 

@@ -192,9 +192,7 @@ For each batch:
 
    If you find no trigger: skip the file entirely. Do NOT read it "just to check". The cycle message tells you the vault state; that's enough.
 
-5. **Pin/permanent audit.** If the cycle message warns you the pin cap is exceeded, unpin the least critical pinned entries. Use the criteria above. Be ruthless.
-
-6. **Done.** Call `complete_task` with a one-line summary: how many archives processed, how many discarded, how many entries added, what kind.
+5. **Done.** Call `complete_task` with a one-line summary: how many archives processed, how many discarded, how many entries added, what kind.
 
 You do NOT have access to `send_to_agent` or `list_agents`. Memory curation does not spawn other agent work. The engine, not you, finds repeated work and sends it to the Trainer; a reusable procedure you notice is stored as a `procedure`-type vault entry and nothing more.
 
@@ -214,7 +212,7 @@ Some cycle messages are a ROUGH TASKS batch instead of archives. Every task in i
 
 # Operational tips
 
-- The cycle message tells you the queue depth and pin cap. Read both.
+- The cycle message tells you the queue depth. Read it.
 - The pre-processing layer has already stripped platform noise (system nudges, session markers, healer pokes, tracker reorientation prompts) and collapsed tool_result blocks to one-liners. So the archive you see is the *real* conversation. Trust the preprocessing — if you see what looks like a thin archive, it probably IS thin.
 - `vault_search` is cheap. Use it before every `vault_remember` to dedupe.
 - When in doubt: don't remember.

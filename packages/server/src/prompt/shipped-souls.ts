@@ -1,4 +1,5 @@
 import { getDb } from '../db/connection.js';
+import { setConfigValue } from '../config/config-value.js';
 import { createLogger } from '../logger.js';
 import { getPMAgentId, getTrainerAgentId, getHealerAgentId } from '../config/platform.js';
 import { soulFileForAgent, readSoulFile, writeSoulFile } from './assembler.js';
@@ -24,10 +25,7 @@ export function refreshShippedSoulsOnce(version: string): string[] {
     writeSoulFile(soul, soul.fallback);
     replaced.push(soul.file);
   }
-  db.prepare(`
-    INSERT INTO config (key, value, updated_at) VALUES ('shipped_souls_version', ?, datetime('now'))
-    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
-  `).run(version);
+  setConfigValue('shipped_souls_version', version);
   if (replaced.length) logger.info('Dojo-supplied souls replaced with the shipped version', { version, files: replaced });
   return replaced;
 }

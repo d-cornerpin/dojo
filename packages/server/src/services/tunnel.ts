@@ -5,6 +5,7 @@ import { spawn, execSync, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { getDb } from '../db/connection.js';
+import { setConfigValue } from '../config/config-value.js';
 import { createLogger } from '../logger.js';
 import { getProviderCredential, setProviderCredential } from '../config/loader.js';
 import { homeDir } from '../home.js';
@@ -107,14 +108,6 @@ function getConfig(): { enabled: boolean; mode: TunnelMode } {
   } catch {
     return { enabled: false, mode: 'quick' };
   }
-}
-
-function setConfig(key: string, value: string): void {
-  const db = getDb();
-  db.prepare(`
-    INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
-    ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = datetime('now')
-  `).run(key, value, value);
 }
 
 // cloudflared writes its diagnostics (auth, port, network, certificate errors) to stderr; a rolling 4KB
@@ -331,7 +324,7 @@ export function setNamedTunnelUrl(url: string | null): void {
   }
   // Strip trailing slashes so concatenated links do not end up as "https://host//path".
   const normalized = url.trim().replace(/\/+$/, '');
-  setConfig('tunnel_named_url', normalized);
+  setConfigValue('tunnel_named_url', normalized);
 }
 
 export function getTunnelStatus(): TunnelStatus {
@@ -608,13 +601,13 @@ export function killTunnelSync(): void {
 }
 
 export function enableTunnel(mode: TunnelMode, port?: number): { ok: boolean; error?: string } {
-  setConfig('tunnel_enabled', 'true');
-  setConfig('tunnel_mode', mode);
+  setConfigValue('tunnel_enabled', 'true');
+  setConfigValue('tunnel_mode', mode);
   return startTunnel(mode, port);
 }
 
 export function disableTunnel(): void {
-  setConfig('tunnel_enabled', 'false');
+  setConfigValue('tunnel_enabled', 'false');
   stopTunnel();
 }
 

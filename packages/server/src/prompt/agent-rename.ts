@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
+import { setConfigValue } from '../config/config-value.js';
 import { createLogger } from '../logger.js';
 import { clearPlatformConfigCache } from '../config/platform.js';
 import { UNSUBSTITUTED } from './assembler.js';
@@ -91,10 +92,7 @@ export function renameAgent(agentId: string, requestedName: string): RenameOutco
   db.transaction(() => {
     db.prepare("UPDATE agents SET name = ?, updated_at = datetime('now') WHERE id = ?").run(newName, agentId);
     if (nameKey) {
-      db.prepare(
-        `INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`,
-      ).run(nameKey, newName);
+      setConfigValue(nameKey, newName);
     }
   })();
   if (nameKey) clearPlatformConfigCache();

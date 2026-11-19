@@ -3,6 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { getDb } from '../db/connection.js';
+import { setConfigValue } from '../config/config-value.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getPrimaryAgentId } from '../config/platform.js';
@@ -27,7 +28,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { inboundIMessageText } from '../tools/inbound-fences.js';
 import { homeDir } from '../home.js';
 import {
-  type SafeSender, parseSafeSenders, findSafeSenderByAddress, ownerIMessageRecord, isOwnerIMessageRecipient,
+  type SafeSender, parseSafeSenders, findSafeSenderByAddress, ownerIMessageRecord, recipientKind,
 } from './safe-senders.js';
 
 // Attachments: each file joined to a chat.db message is copied into `~/.dojo/uploads/<agentId>/` (HEIC to JPEG)
@@ -440,7 +441,7 @@ export function maybeSendBusyAck(agentId: string, sender: string): void {
   // No 'queued' broadcast: the busy-ack above tells the person and the 30 s heartbeat re-asserts 'working'.
   logger.info('Busy-ack sent: inbound iMessage queued behind a running turn', {
     agentId,
-    sender,
+    to: recipientKind(sender),
     turnAgeMs: Date.now() - turnStartedAt,
   });
 }
@@ -485,11 +486,7 @@ function loadLastSeenRowId(): number {
 
 function saveLastSeenRowId(rowId: number): void {
   try {
-    const db = getDb();
-    db.prepare(`
-      INSERT INTO config (key, value, updated_at) VALUES ('imessage_last_rowid', ?, datetime('now'))
-      ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = datetime('now')
-    `).run(String(rowId), String(rowId));
+    setConfigValue('imessage_last_rowid', String(rowId));
   } catch (err) {
     logger.error('Failed to save last seen rowid', {
       error: err instanceof Error ? err.message : String(err),
@@ -526,12 +523,7 @@ function rememberProcessedGuid(guid: string | null): void {
     if (evicted !== undefined) recentGuidSet.delete(evicted);
   }
   try {
-    const db = getDb();
-    const json = JSON.stringify(recentGuids);
-    db.prepare(`
-      INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
-      ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = datetime('now')
-    `).run(RECENT_GUIDS_CONFIG_KEY, json, json);
+    setConfigValue(RECENT_GUIDS_CONFIG_KEY, JSON.stringify(recentGuids));
   } catch (err) {
     logger.warn('Failed to persist recent iMessage guids', {
       error: err instanceof Error ? err.message : String(err),
@@ -720,10 +712,7 @@ export async function processInboundIMessage(
     if (advanceRowId !== null) {
       // The cursor moves even when the insert was the designed no-op: an old text re-inserted under a fresh ROWID
       // (the guid ring forgot it, the unique index did not) must still be passed, or the poll re-reads it forever.
-      db.prepare(`
-        INSERT INTO config (key, value, updated_at) VALUES ('imessage_last_rowid', ?, datetime('now'))
-        ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = datetime('now')
-      `).run(String(advanceRowId), String(advanceRowId));
+      setConfigValue('imessage_last_rowid', String(advanceRowId));
     }
   })();
 
@@ -799,7 +788,7 @@ export async function processInboundIMessage(
         });
       }
       logger.info('RC-8: damped content-free courtesy from agent sender (no turn taken)', {
-        sender, name: senderRecord.name,
+        from: recipientKind(sender), name: senderRecord.name,
       });
     } else if (wakeAgent) {
       // Busy-ack: tell the sender once if this message queued behind a running turn older than 60 s. Never to another
@@ -989,7 +978,6 @@ async function pollMessages(): Promise<void> {
         // Tighten the SQL LIKE filter: the chat_identifier must match a saved safe-sender record (drops group chats).
         if (!findSafeSenderByAddress(sendersThisPoll, sender)) {
           logger.warn('iMessage dropped: chat_identifier matched SQL filter but no safe-sender record', {
-            chatIdentifier: sender,
             rowid: msg.ROWID,
           });
           advancePastRow(msg.ROWID); // deliberate skip, advance as before
@@ -1029,8 +1017,8 @@ async function pollMessages(): Promise<void> {
         }
 
         logger.info('iMessage received', {
-          from: sender,
-          text: cleanedText.slice(0, 100),
+          from: recipientKind(sender),
+          textLength: cleanedText.length,
           uploaded: attachmentResult.uploadedFiles.length,
           inlined: attachmentResult.inlinedTextBlocks.length,
           mentioned: attachmentResult.mentionedAttachments.length,
@@ -1186,7 +1174,7 @@ export function reloadApprovedSenders(): void {
     return;
   }
   approvedSenders = parsed;
-  logger.info('Reloaded approved senders from config', { count: approvedSenders.length, addresses: approvedSenders.map(s => s.address) });
+  logger.info('Reloaded approved senders from config', { count: approvedSenders.length });
 }
 
 // iMessage sending uses the `imsg` CLI (github.com/steipete/imsg), installed by the dojo installer, which handles
@@ -1287,9 +1275,6 @@ function oneAtATime<T>(send: () => Promise<T>): Promise<T> {
 /** An agent's own send (the `imessage_send` tool) names the agent, and is bound to that agent's Stop.
  *  A platform send (an owner notice, the auto-route) names nobody and no Stop cuts it. */
 export interface SendOpts { agentId?: string }
-
-/** Who a send went to, for the log: the kind of person, never the address or number. */
-const recipientKind = (recipient: string): string => (isOwnerIMessageRecipient(recipient) ? 'the owner' : 'an approved sender');
 
 // Returns true only if the send succeeded, so imessage_send callers never report "sent" for a failure.
 export async function sendIMessage(recipient: string, rawText: string, opts: SendOpts = {}): Promise<boolean> {

@@ -19,6 +19,7 @@ import type { ReplyDestination } from '../../reply-destination.js';
 import { advance, type AgentTurnState } from '../../state.js';
 import { appendUndeliveredLinks } from './link-backstop.js';
 import type { FinalizeContext } from './index.js';
+import { postAgentNotice } from '../../../agent-notice.js';
 
 const logger = createLogger('v2-loop');
 
@@ -153,6 +154,7 @@ async function sendOrHold(stateIn: AgentTurnState, ctx: FinalizeContext, r: Rout
     logger.warn('auto-route withheld: the sending agent holds no grant on this channel', {
       agentId, turnNumber, destination,
     }, agentId);
+    tellAgentReplyHeld(agentId, destination, 'you have no permission to send on that channel');
   } else if (destination === 'phone' && !state.repliedToCounterpartyThisTurn.phone && state.inboundContext?.phoneCallSid) {
     await speakOnCall(state, ctx);
   } else if (isTextChannel(destination) && !state.repliedToCounterpartyThisTurn[destination]) {
@@ -163,12 +165,21 @@ async function sendOrHold(stateIn: AgentTurnState, ctx: FinalizeContext, r: Rout
     const address = destination === 'imessage' && !r.imessageConfigured
       ? null
       : replyAddressFor({ ...state.inboundContext, channel: destination, sender, relation: counterparty.kind === 'user' ? counterparty.relation : undefined });
-    const queued = address !== null && await queueReply({ agentId, turnNumber, root: turnCtx.root ?? null, text, address, files: r.files, downloadLinks: !!turnCtx.earlyAnswerRowId }) !== null;
+    const queued = address !== null && await queueReply({ agentId, turnNumber, root: turnCtx.root ?? null, text, address, files: r.files, kind: turnCtx.earlyAnswerRowId ? 'download-links' : 'reply' }) !== null;
     if (!queued) {
       recordedId(recordHeld({ agentId, tool: 'auto-route', channel: destination, conversationId }, `no ${destination} address to reply to; the reply is in the dashboard chat`),
         'v2: auto-route held (no address)', { agentId, turnNumber, destination });
+      if (address === null) tellAgentReplyHeld(agentId, destination, `there was no ${destination} address to send it to`);
     }
   }
+}
+
+/** The agent is told once that its reply stayed in the dashboard: nothing sends a held reply later. */
+function tellAgentReplyHeld(agentId: string, destination: ReplyDestination, why: string): void {
+  postAgentNotice({
+    toAgentId: agentId, fromName: 'Reply delivery', selfIntro: false,
+    brief: `Your reply did not go out on the ${destination} channel: ${why}, so it stayed in the dashboard chat and will not be sent later. Do not say it arrived. If they need to hear it, reach them another way in your own words.`,
+  });
 }
 
 /** Speaks the reply on the active call. If streaming TTS already spoke the body, only the remaining tail is
@@ -189,31 +200,29 @@ async function speakOnCall(state: AgentTurnState & { lastAssistantTextForIM: str
         agentId, callSid: inbound.phoneCallSid,
       }, agentId);
     } else if (turnCtx.phoneStreamFlushedAny) {
-      const tail = redactHandedCredentials(agentId, turnCtx.phoneStreamBuffer).trim();
+      const tail = redactHandedCredentials(agentId, turnCtx.phoneStreamBuffer.takeRaw()).trim();
       if (tail) {
         // One reply is one outbound row, however many sentences it is spoken in.
         await withOutboundAsync(
           {
-            agentId, tool: 'auto-route', channel: 'phone', text: tail,
+            agentId, tool: 'auto-route', channel: 'phone',
             recipientId: inbound.phoneFromNumber ?? null,
             conversationId: turnCtx.root?.conversationId ?? null,
           },
           () => session.queueAgentSay(tail),
         );
-        turnCtx.phoneStreamBuffer = '';
       }
       persistRoutingMarker(`phone call to ${resolveRecipientDisplay('phone', inbound.phoneFromNumber ?? '(unknown)')}`);
       logger.info('v2.9.23: routed reply via phone TTS (streamed)', {
         agentId,
         callSid: inbound.phoneCallSid,
-        to: inbound.phoneFromNumber,
         tailLength: tail.length,
         totalTextLength: replyOut.length,
       }, agentId);
     } else {
       await withOutboundAsync(
         {
-          agentId, tool: 'auto-route', channel: 'phone', text: replyOut,
+          agentId, tool: 'auto-route', channel: 'phone',
           recipientId: inbound.phoneFromNumber ?? null,
           conversationId: turnCtx.root?.conversationId ?? null,
         },
@@ -223,7 +232,6 @@ async function speakOnCall(state: AgentTurnState & { lastAssistantTextForIM: str
       logger.info('v2.9.18: routed reply via phone TTS', {
         agentId,
         callSid: inbound.phoneCallSid,
-        to: inbound.phoneFromNumber,
         textLength: replyOut.length,
       }, agentId);
     }

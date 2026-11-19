@@ -1,6 +1,7 @@
 // Ollama version checks: no other file compares versions (minimums sit beside the model tag in `local-standard.ts`).
 
 import { getDb } from '../db/connection.js';
+import { setConfigValue } from '../config/config-value.js';
 
 /** `0.40.13`, `v0.35.0`, `0.36.0-rc2` → [0, 40, 13]; anything else → null. */
 export function parseOllamaVersion(v: string | null | undefined): number[] | null {
@@ -53,7 +54,6 @@ export function upkeepRecord(): UpkeepRecord {
 }
 /** Merge `change` into the record; a field set to undefined is removed. */
 export function noteUpkeep(change: Partial<Record<keyof UpkeepRecord, unknown>>): void {
-  getDb().prepare(`INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
-    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`).run(RECORD, JSON.stringify({ ...upkeepRecord(), ...change }));
+  setConfigValue(RECORD, JSON.stringify({ ...upkeepRecord(), ...change }));
 }
 export const heldOllamaVersion = (): string | null => upkeepRecord().held ?? null;

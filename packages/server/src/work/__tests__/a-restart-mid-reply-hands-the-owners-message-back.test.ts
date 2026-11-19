@@ -222,22 +222,31 @@ describe('the hand-back carries the message\'s real age — no timer decides its
   });
 });
 
-describe('a send the process died inside is "may have been delivered", never silently re-sent', () => {
-  it('hands the message back saying a reply may already have reached the person, by which channel, with what text', () => {
-    ownerAskClaimedBy(7);
-    // The intent the outbound scope writes BEFORE an outside send; the door never came back.
-    db().prepare(
-      `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, recipient_id, conversation_id, outcome, detail)
-       VALUES ('d-maybe', ?, 7, 'auto-route', 'imessage', '+15550000', 'conv-1', 'pending', 'The roof quote is fine.')`,
-    ).run(AGENT);
+describe('a send the process died inside leaves no row and is named so it is sent again', () => {
+  it('hands the message back naming the unfinished send, by which tool, to whom, with what text, and says send it again', () => {
+    ownerAskClaimedBy(7, 1);
+    // The dead turn's own record: the send call is stored, its result never came back, and a tool send
+    // writes its row only when the send ends, so the ledger has none.
+    insertMessageIfAbsent({ id: 'u-c1', agentId: AGENT, role: 'assistant', turnNumber: 7,
+      content: JSON.stringify([{ type: 'tool_use', id: 'c1', name: 'imessage_send', input: { recipient: '+15550000', message: 'The roof quote is fine.' } }]) } as never);
     restart();
     expect(askOf('m-1').state, 'not closed: nobody knows it arrived').toBe('open');
     const notice = facts()!;
-    expect(notice).toMatch(/may already have reached/);
-    expect(notice).toContain('imessage');
+    expect(notice).toContain('imessage_send');
     expect(notice).toContain('+15550000');
     expect(notice).toContain('The roof quote is fine.');
-    expect(notice).toMatch(/check/i);
+    expect(notice).toMatch(/may not have gone\. If you cannot tell, send it again; a duplicate is the lesser harm/);
+    expect(notice).not.toContain('Do not repeat any of it');
+  });
+
+  it('an unfinished phone call is to be checked, never placed again blindly', () => {
+    ownerAskClaimedBy(7, 1);
+    insertMessageIfAbsent({ id: 'u-c1', agentId: AGENT, role: 'assistant', turnNumber: 7,
+      content: JSON.stringify([{ type: 'tool_use', id: 'c1', name: 'voice_call', input: { to: '+15550000' } }]) } as never);
+    restart();
+    const notice = facts()!;
+    expect(notice).toContain('the call may not have been placed. Check before calling again.');
+    expect(notice).not.toContain('send it again');
   });
 });
 
@@ -249,21 +258,19 @@ describe('the facts reach the model whole, ordered so what already happened come
     expect(facts()).toContain('roof quote');
   });
 
-  it('what already happened and what may have been sent come first, then the message and its age, then the instruction', () => {
+  it('what already happened, an unfinished send included, comes first, then the message and its age, then the instruction', () => {
     ownerAskClaimedBy(7, 1);
     insertMessageIfAbsent({ id: 'u-c1', agentId: AGENT, role: 'assistant', turnNumber: 7,
       content: JSON.stringify([{ type: 'tool_use', id: 'c1', name: 'gmail_send', input: { to: 'roofer@example.com' } }]) } as never);
     insertMessageIfAbsent({ id: 'r-c1', agentId: AGENT, role: 'tool', turnNumber: 7,
       content: JSON.stringify([{ type: 'tool_result', tool_use_id: 'c1', content: 'ok', is_error: false }]) } as never);
-    db().prepare(
-      `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, recipient_id, conversation_id, outcome, detail)
-       VALUES ('d-maybe', ?, 7, 'auto-route', 'imessage', '+15550000', 'conv-1', 'pending', 'The roof quote is fine.')`,
-    ).run(AGENT);
+    insertMessageIfAbsent({ id: 'u-c2', agentId: AGENT, role: 'assistant', turnNumber: 7,
+      content: JSON.stringify([{ type: 'tool_use', id: 'c2', name: 'imessage_send', input: { recipient: '+15550000', message: 'Booked.' } }]) } as never);
     restart();
     const f = facts()!;
     const at = (needle: string): number => { const i = f.indexOf(needle); expect(i, needle).toBeGreaterThanOrEqual(0); return i; };
     expect(at('gmail_send')).toBeLessThan(at('can you check the roof quote?'));
-    expect(at('may already have reached')).toBeLessThan(at('can you check the roof quote?'));
+    expect(at('may not have gone')).toBeLessThan(at('can you check the roof quote?'));
     expect(at('can you check the roof quote?')).toBeLessThan(at('Answer it now'));
   });
 

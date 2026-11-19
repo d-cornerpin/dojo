@@ -17,6 +17,8 @@ export { deliveryIdOf, recordedId, type LedgerOutcome } from './delivery-outcome
 const logger = createLogger('deliveries');
 
 export interface DeliveryInput {
+  /** The row's id, when the caller named it before the send (an outbound scope). */
+  id?: string;
   agentId: string;
   tool: string;
   /** `a2a` is the peer lane: an agent hand-back is a delivery, and delegated pieces point at
@@ -29,8 +31,8 @@ export interface DeliveryInput {
   threadRoot?: string | null;
   messageId?: string | null;
   receiptId?: string | null;
-  /** `owner_closed` is NOT a send and never claims to be one; `pending` is an outside send's
-   *  intent, written before its transport runs (`resolvePendingDelivery` below). */
+  /** `owner_closed` is NOT a send and never claims to be one; `pending` is a queued reply the sender has
+   *  not finished (`resolvePendingDelivery` below). */
   outcome: 'delivered' | 'suppressed' | 'failed' | 'held' | 'owner_closed' | 'pending';
   detail?: string | null;
   /** Explicit conversation identity: pass it (the turn's own conversation) and nothing resolves;
@@ -71,7 +73,7 @@ export function conversationFor(input: DeliveryInput): string | null {
 export function recordDelivery(input: DeliveryInput): LedgerOutcome {
   try {
     const db = getDb();
-    const id = uuidv4();
+    const id = input.id ?? uuidv4();
     return withUnit((): LedgerOutcome => {
       const conversationId = conversationFor(input);
       const { turnNumber, root } = turnStamp(input.agentId);
@@ -143,6 +145,12 @@ export function recordDecisionReceipt(workId: string, decider: string, surface: 
   });
 }
 
+/** A start line ("on it") is tried once and never an answer; what follows an early answer (download links, a later
+ *  caption, files) goes like a reply but is never the answer; the cannot-run line is never an answer and never goes
+ *  to another Dojo's agent. Each kind is recorded under its own tool. */
+const REPLY_TOOL = { reply: 'auto-route', 'start-line': 'engine-ack', 'download-links': 'download-links', 'cannot-run': 'cannot-run' } as const;
+export type ReplyKind = keyof typeof REPLY_TOOL;
+
 /** A reply for a person's channel, with the turn and request that wrote it (never the agent's live turn). */
 export interface QueuedReply {
   agentId: string;
@@ -150,12 +158,8 @@ export interface QueuedReply {
   root: TurnRoot | null;
   text: string;
   address: ReplyAddress;
-  /** A start line ("on it"): tried once, and never an answer. */
-  startLine?: boolean;
-  /** What follows an early answer (download links, a later caption, files): it goes like a reply but is never the answer. */
-  downloadLinks?: boolean;
-  /** The Dojo's line that the agent cannot run: never an answer, and never sent to another Dojo's agent. */
-  cannotRun?: boolean;
+  /** What the row is; omitted, the reply. */
+  kind?: ReplyKind;
   /** A Dojo line about a delegated request: the helper's `answer` (empty for a notice), the request, the hand-in it reports. */
   relay?: { tool: string; answer: string; joinId: string; reports: string | null };
   /** Paths of files sent after the words; only iMessage carries files. */
@@ -170,7 +174,7 @@ export async function queueReply(r: QueuedReply): Promise<{ id: string; held: bo
   const { redactHandedCredentials } = await import('../../credentials/secret-fields.js');
   const { armSenderTimer } = await import('./channel-sender.js');
   const { announceLiveWork } = await import('../live-work.js');
-  const bare = (r.relay !== undefined || r.cannotRun === true) && r.address.toAgent === true;
+  const bare = (r.relay !== undefined || r.kind === 'cannot-run') && r.address.toAgent === true;
   const text = redactHandedCredentials(r.agentId, bare ? r.relay?.answer ?? '' : r.text).trim();
   const held = bare && !text;
   const files = r.address.channel === 'imessage' ? r.files ?? [] : [];
@@ -178,7 +182,7 @@ export async function queueReply(r: QueuedReply): Promise<{ id: string; held: bo
   const label = await pillLabel(r.address, r.address.to);
   const { relay } = r;
   const id = deliveryIdOf(asTurn(r.agentId, { turnNumber: r.turnNumber, root: r.root, convKey: null }, () => recordDelivery({
-    agentId: r.agentId, tool: relay?.tool ?? (r.startLine ? 'engine-ack' : r.downloadLinks ? 'download-links' : r.cannotRun ? 'cannot-run' : 'auto-route'), channel: r.address.channel,
+    agentId: r.agentId, tool: relay?.tool ?? REPLY_TOOL[r.kind ?? 'reply'], channel: r.address.channel,
     recipientId: r.address.to, conversationId: r.root?.conversationId ?? null, outcome: held ? 'held' : 'pending',
     detail: held ? 'a Dojo notice is never sent to another Dojo\'s agent' : null,
     payload: { text, address: r.address, ...(files.length > 0 ? { files } : {}), ...(relay ? { joinId: relay.joinId, reports: relay.reports } : {}) },
@@ -192,8 +196,6 @@ export async function queueReply(r: QueuedReply): Promise<{ id: string; held: bo
   return { id, held };
 }
 
-// The intent row is written pending before transport; a crash leaves it, orphaned-claims hands the ask back.
-
 export interface DoorVerdict {
   outcome: Exclude<DeliveryInput['outcome'], 'pending'>;
   detail?: string | null;
@@ -205,7 +207,7 @@ export interface DoorVerdict {
   receiptId?: string | null;
 }
 
-// The door's verdict on an intent; null when no pending row of that id stands (the caller writes a new one).
+// The sender's verdict on a queued reply; null when no pending row of that id stands.
 export function resolvePendingDelivery(id: string, seen: DoorVerdict): LedgerOutcome | null {
   try {
     const db = getDb();
@@ -221,7 +223,7 @@ export function resolvePendingDelivery(id: string, seen: DoorVerdict): LedgerOut
       if (!row) return null;
       const recipientId = row.recipient_id ?? seen.recipientId ?? null;
       const recipientDisplay = row.recipient_display ?? seen.recipientDisplay ?? null;
-      // The intent may not have known the resolved address; the conversation resolves from what the door saw.
+      // A queued row with no conversation takes it from the address the verdict names.
       const conversationId = row.conversation_id ?? conversationFor({
         agentId: row.agent_id, tool: row.tool, channel: row.channel, recipientId, recipientDisplay,
         provider: seen.provider ?? null, threadRoot: seen.threadRoot ?? null, outcome: seen.outcome,
@@ -271,12 +273,4 @@ export function suppressQueuedReplies(agentId: string): { repliesNotSent: number
       .then((label) => writeRoutingPill(agentId, row.turn_number, withRoutingState(label, 'not sent', 'stopped by you'))));
   }
   return { repliesNotSent, askIds: [...askIds] };
-}
-
-export function dropPendingDelivery(id: string): void {
-  try {
-    getDb().prepare("DELETE FROM deliveries WHERE id = ? AND outcome = 'pending'").run(id);
-  } catch (err) {
-    logger.warn('an unsent intent row could not be removed; it reads pending', { id, error: err instanceof Error ? err.message : String(err) });
-  }
 }
