@@ -1,21 +1,11 @@
-// ════════════════════════════════════════════════════════════════════════════════════
-// DELETING A PROVIDER MOVES ITS AGENTS TO A WORKING MODEL.
-//
-// `DELETE /providers/:id` leaves no live agent on "no model" and no service-agent setting naming a
-// deleted model. The delete runs the one mover `reassignAffectedAgents` (agents and the service-agent
-// model settings move to the cheapest model that can run an agent, with the usual "model changed" note;
-// with none to move live agents to, the delete is refused), forgets every key of `LOCAL_MODEL_SETTING_KEYS`,
-// and refuses to delete the provider that holds the Dojo's own two standard models.
-// ════════════════════════════════════════════════════════════════════════════════════
+// Deleting a provider moves its agents and service-agent settings to a working model, clears settings when none is left,
+// and refuses to delete the provider that holds the Dojo's own models.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import realOs from 'node:os';
 import path from 'node:path';
 
-// The platform resolves `~/.dojo` in exactly one place, `src/home.ts`, so that is
-// what a test redirects. Computed inside the factory, which runs before this module's
-// own bindings initialise.
 vi.mock('../../../home.js', async () => {
   const p = await import('node:path');
   const o = await import('node:os');
@@ -62,14 +52,7 @@ afterEach(() => {
   mockDb.current = null;
 });
 
-const send = (method: string, p: string, body?: unknown): Promise<Response> =>
-  configRouter.request(p, {
-    method,
-    headers: { 'content-type': 'application/json' },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-  });
-
-const del = (p: string): Promise<Response> => send('DELETE', p);
+const del = (p: string): Promise<Response> => configRouter.request(p, { method: 'DELETE' });
 
 const db = () => mockDb.current!;
 const model = (id: string, provider: string, window: number, cost: number, apiId = id): void => {
