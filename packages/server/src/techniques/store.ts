@@ -399,21 +399,6 @@ export function updateTechniqueDependencies(id: string, manifest: DependencyMani
   return getTechnique(id);
 }
 
-// Record the turn's outcome on the most recent usage row for this (technique, agent). Deliberately coarse
-// (completed vs errored): it only needs to separate "keeps working" from "keeps failing" for ranking.
-export function recordTechniqueOutcome(techniqueId: string, agentId: string, success: boolean): void {
-  try {
-    getDb().prepare(`
-      UPDATE technique_usage SET success = ?
-      WHERE id = (
-        SELECT id FROM technique_usage
-        WHERE technique_id = ? AND agent_id = ?
-        ORDER BY used_at DESC LIMIT 1
-      )
-    `).run(success ? 1 : 0, techniqueId, agentId);
-  } catch { /* best effort */ }
-}
-
 /** Read a technique's import manifest, or null if it was created locally (not imported). */
 export function readImportManifest(directoryPath: string): ImportedManifest | null {
   const manifestPath = path.join(directoryPath, 'IMPORT_MANIFEST.json');

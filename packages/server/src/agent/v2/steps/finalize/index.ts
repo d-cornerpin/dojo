@@ -68,13 +68,5 @@ export async function runFinalize(state: AgentTurnState, ctx: FinalizeContext): 
     } catch { /* best effort */ }
   }
 
-  // The injected technique's usage row learns the turn's outcome.
-  if (turnCtx.turnInjectedTechniqueId) {
-    try {
-      const { recordTechniqueOutcome } = await import('../../../../techniques/store.js');
-      recordTechniqueOutcome(turnCtx.turnInjectedTechniqueId, agentId, true);
-    } catch { /* best effort */ }
-  }
-
   return proceed(state);
 }

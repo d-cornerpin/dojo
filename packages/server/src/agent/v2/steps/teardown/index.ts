@@ -53,7 +53,7 @@ export async function runTurnRecovery(
 ): Promise<StepOutcome> {
   const {
     agentId, counterparty, isA2ATurn, isEngineTurn,
-    turnInjectedTechniqueId, reArmIfStrandedNoAnswer, stopStatusHeartbeat,
+    reArmIfStrandedNoAnswer, stopStatusHeartbeat,
   } = ctx;
 
   // Ask the throw what ended the turn BEFORE recoverFromError: recordInjury closes the turn row itself,
@@ -70,13 +70,6 @@ export async function runTurnRecovery(
   // Re-serve a trigger stamped served at pickup only on a clean retry (no reply, no send, no
   // non-idempotent call): re-serving after a side effect would duplicate it.
   reArmIfStrandedNoAnswer();
-
-  if (turnInjectedTechniqueId) {
-    try {
-      const { recordTechniqueOutcome } = await import('../../../../techniques/store.js');
-      recordTechniqueOutcome(turnInjectedTechniqueId, agentId, false);
-    } catch { /* best effort */ }
-  }
 
   try {
     const { recoverFromError } = await import('../../recovery.js');
