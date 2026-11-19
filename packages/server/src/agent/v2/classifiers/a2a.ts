@@ -14,8 +14,7 @@ export interface A2AReplyEnforcerInput {
   fromName?: string;
   /** Prior reply on this thread: avoids the nudge claiming the receiver got nothing. */
   priorReplyOnSameThread?: boolean;
-  /** The engine's own verified send receipt: the same fact, for when an
-   *  a2a_replies row is missing because the sender omitted thread_id. */
+  /** A reply from this agent on the thread since the request arrived, read from the asker's store. */
   verifiedSendReceiptOnThread?: boolean;
 }
 

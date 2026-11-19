@@ -6,7 +6,7 @@
 import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
 import { retireEngineEventsForTask } from '../../agent/v2/counterparty.js';
-import { claimTrackerNoticeForTask } from '../../memory/message-store.js';
+import { claimTrackerNoticeForTask, repliedOnThread } from '../../memory/message-store.js';
 import { taskScope, STATE_TO_STATUS_SQL, heldByOwnerSql, stateToStatus } from '../tracker-view.js';
 import { setTrackerStatus } from '../tracker-store.js';
 import { sendAgentMessage } from '../../agent/agent-bus.js';
@@ -81,9 +81,7 @@ function relayAssignHandbackIfMissing(workId: string, note: string): void {
     { requester_id: string | null; agent_id: string; a2a_thread_id: string | null; opened_at: number; title: string | null } | undefined;
   if (!row?.a2a_thread_id || !row.requester_id || row.requester_id === row.agent_id) return;
   const thread = row.a2a_thread_id, asker = row.requester_id;
-  const heard = (): boolean => !!getDb().prepare(
-    'SELECT 1 FROM messages WHERE agent_id = ? AND source_agent_id = ? AND a2a_thread_id = ? AND created_at >= ? LIMIT 1',
-  ).get(asker, row.agent_id, thread, row.opened_at);
+  const heard = (): boolean => repliedOnThread(row.agent_id, asker, thread, row.opened_at);
   if (heard()) return;
   // A grace period first: the worker often sends the work back in the same batch as its hand-in.
   setTimeout(() => {
