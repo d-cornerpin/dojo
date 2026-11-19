@@ -22,6 +22,7 @@ import { resolveOrCreateConversation } from '../memory/conversations.js';
 import { a2aPayloadForModel } from '../tools/inbound-fences.js';
 import { queueReply, recordDelivery } from './v2/deliveries.js';
 import { replyAddressFor } from './v2/channel-sender.js';
+import { resultForEndedRequest } from './v2/counterparty.js';
 import { recordAtDoor, recordedId } from './v2/outbound.js';
 import { asTurn } from './turn-context.js';
 // The join lives in `work`; everything here is transport: it lands pieces and relays answers.
@@ -559,6 +560,8 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
   let primaryDeliverableHint = '';
   // Read BEFORE the piece lands: landing settles the child, and this one lookup serves the hint and the join.
   const joinChild = findJoinChildByThread(target.id, threadId), joinHandlesDelivery = !!joinChild;
+  // A result for a request the owner stopped is stored and starts nothing: no hint, no wake.
+  const forEndedRequest = resultForEndedRequest(target.id, threadId);
   try {
     const { isPrimaryAgent, isPMAgent, isHealerAgent } = await import('../config/platform.js');
     const targetIsPrimary = isPrimaryAgent(target.id);
@@ -566,7 +569,7 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
     const isDeliverableShape =
       autoPromotedFromFyi ||
       (effectiveIntent === 'DELIVERABLE' || effectiveIntent === 'ANSWER');
-    if (targetIsPrimary && !senderIsOps && isDeliverableShape && !joinHandlesDelivery) {
+    if (targetIsPrimary && !senderIsOps && isDeliverableShape && !joinHandlesDelivery && !forEndedRequest) {
       primaryDeliverableHint = deliverableArrivedNote(senderName);
     }
   } catch { /* best effort */ }
@@ -767,7 +770,8 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
   });
 
   // ── 13. Route based on requires_response ──
-  if (requiresResponse) {
+  if (forEndedRequest) logger.info('A2A delivery: a result for a request the owner stopped; stored, no wake', { targetId: target.id, threadId });
+  else if (requiresResponse) {
     // Wake-block is paused-only: re-waking an error agent is safe; paused is the error-loop signal, which the main agent and the Healer may lift.
     const targetIsLockedOut = target.status === 'paused';
     let senderCanWakeLockedOut = envelope.fromAgent === 'system';
@@ -1725,6 +1729,7 @@ export async function resolveJoinsAtBoot(): Promise<{ relayedReplies: number; fa
  *  abandoning does NOT fail the whole join; the others may land and the reaper owns the rest. */
 export async function failJoinPieceForAbandonedAsk(
   inboundAskMessageId: string, threadShort: string, askedAgentId?: string,
+  reason = `the request on thread ${threadShort} went unanswered for its budget of turns and was given up`,
 ): Promise<void> {
   try {
     const db = getDb();
@@ -1736,8 +1741,7 @@ export async function failJoinPieceForAbandonedAsk(
       if (isTerminal(child.state)) continue;
       const settled = settlePieceWithoutResult(child.id, {
         to: 'abandoned',
-        reason: `the request on thread ${threadShort} went unanswered for its budget of turns and was given up`,
-        actorId: askedAgentId ?? null,
+        reason, actorId: askedAgentId ?? null,
       });
       if (settled.result.kind !== 'applied') continue;
       if (settled.join.complete) {

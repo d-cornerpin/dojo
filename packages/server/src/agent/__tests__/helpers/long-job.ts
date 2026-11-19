@@ -20,8 +20,8 @@ export async function ownerAsks(id: string, content = 'Rename every file in the 
 }
 
 /** How a stretch ends: it parks its job, it ends with nothing moved, it answers in its conversation, its first call
- *  meets a rate limit, the Dojo dies, or the real checkpoint gate decides at the stretch's first step. */
-export type StretchEnd = 'parks' | 'stalls' | 'answers' | { limitUntil: number } | 'crash' | 'gate';
+ *  meets a rate limit, the Dojo dies, the owner's Stop ended it, or the real checkpoint gate decides at the stretch's first step. */
+export type StretchEnd = 'parks' | 'stalls' | 'stopped' | 'answers' | { limitUntil: number } | 'crash' | 'gate';
 export interface StretchSeen { root: string | null; kind: string | undefined; servedJob: string | null; parkedOn: string | null }
 
 /** One turn: null when the preflight found nothing to serve. `before` runs inside the turn, before it ends. */
@@ -35,6 +35,7 @@ export async function stretch(end: StretchEnd = 'parks', before?: () => unknown)
   let state = bag.state!;
   if (end === 'parks') { p.parkJob(HELPER, 'turn-budget-continuation', Date.now()); state = p.latchEngineCut(state, 'iteration_cap'); }
   if (end === 'stalls') state = p.latchEngineCut(state, 'iteration_cap');
+  if (end === 'stopped') state = p.latchEngineCut(state, 'stop');
   if (end === 'answers') {
     const id = `reply-${bag.turnNumber}`;
     p.insertMessage({ id, agentId: HELPER, role: 'assistant', content: 'All the archive files are renamed by their date now.', conversationId: bag.conversationId ?? null, turnNumber: bag.turnNumber });

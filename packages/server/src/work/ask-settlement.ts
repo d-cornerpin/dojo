@@ -213,11 +213,11 @@ function inheritedParkedAt(workId: string): string | null {
 }
 const sqlTime = (ms: number): string => new Date(ms).toISOString().replace('T', ' ').slice(0, 19);
 const JOB_HOLD_REASON = 'held: its job is still running';
-/** When the request was held on its job, if that hold is its latest transition. */
-function jobHeldAt(workId: string): string | null {
+/** When the request was held on its job and the task it names, if that hold is its latest transition. */
+export function jobHeldAt(workId: string): { at: string; task: string | null } | null {
   const r = getDb().prepare(`SELECT created_at AS at, json_extract(payload, '$.reason') AS why FROM work_events
     WHERE work_id = ? AND kind = 'transition' ORDER BY id DESC LIMIT 1`).get(workId) as { at: number; why: string | null } | undefined;
-  return r?.why?.startsWith(JOB_HOLD_REASON) ? sqlTime(r.at) : null;
+  return r?.why?.startsWith(JOB_HOLD_REASON) ? { at: sqlTime(r.at), task: /\(task (.+)\)$/.exec(r.why)?.[1] ?? null } : null;
 }
 
 /** Is task `id` still open, and is it parked (a due time set)? */
@@ -850,7 +850,7 @@ function settleOnAsyncResult(
   // on a real answer since the hold, else goes back owed so the agent tells the person where it stands.
   const heldAt = ask.state === 'blocked' && jobs.out === 0 ? jobHeldAt(ask.id) : null;
   if (heldAt && !linkedTaskOf(ask.agent_id, ask.root_id, { ownerHeldEnds: true })) {
-    const late = realAnswerInConversationSince(ask.agent_id, ask.conversation_id, heldAt);
+    const late = realAnswerInConversationSince(ask.agent_id, ask.conversation_id, heldAt.at);
     // The owner called the job off: so is the request (the async arm's own rule).
     const calledOff = !late && !!getDb().prepare(`SELECT 1 FROM work t JOIN work_events e ON e.work_id = t.id AND e.kind = 'transition'
       WHERE t.kind = 'task' AND t.agent_id = ? AND t.source_message_id = ? AND t.state = 'abandoned'

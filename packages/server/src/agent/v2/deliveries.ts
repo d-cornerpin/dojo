@@ -249,12 +249,15 @@ export function resolvePendingDelivery(id: string, seen: DoorVerdict): LedgerOut
   }
 }
 
-/** Stop: each reply of the agent still waiting to go, except one mid-send, ends `suppressed`. Synchronous, so the
- *  caller ends the requests in the same transaction; returns those requests (the asks each reply answered). */
-export function suppressQueuedReplies(agentId: string): { repliesNotSent: number; askIds: string[] } {
+/** Stop: each reply of the agent still waiting to go (only those for the asks `roots`, when given), except one
+ *  mid-send, ends `suppressed`. Synchronous, so the caller ends the requests in the same transaction; returns those
+ *  requests (the asks each reply answered). */
+export function suppressQueuedReplies(agentId: string, roots?: string[]): { repliesNotSent: number; askIds: string[] } {
   const rows = getDb().prepare(
-    "SELECT id, turn_number, conversation_id, payload_json FROM deliveries WHERE agent_id = ? AND outcome = 'pending' AND payload_json IS NOT NULL ORDER BY rowid",
-  ).all(agentId) as Array<{ id: string; turn_number: number | null; conversation_id: string | null; payload_json: string }>;
+    `SELECT id, turn_number, conversation_id, payload_json FROM deliveries WHERE agent_id = @agentId AND outcome = 'pending' AND payload_json IS NOT NULL
+       AND (@roots IS NULL OR 'ask:' || root_id IN (SELECT value FROM json_each(@roots)) OR json_extract(payload_json, '$.joinId') IN (SELECT value FROM json_each(@roots)))
+     ORDER BY rowid`,
+  ).all({ agentId, roots: roots ? JSON.stringify(roots) : null }) as Array<{ id: string; turn_number: number | null; conversation_id: string | null; payload_json: string }>;
   const askIds = new Set<string>();
   let repliesNotSent = 0;
   for (const row of rows) {

@@ -13,15 +13,15 @@ import { broadcast } from '../gateway/ws.js';
 import { getModelCapabilities } from '../services/capabilities.js';
 import { cancelAgentGenerationJobs } from '../services/generation-jobs.js';
 import { notifyUserStop } from './stop-waiters.js';
-import { insertMessageIfAbsent } from '../memory/message-store.js';
+import { insertMessageIfAbsent, sweepByRowid } from '../memory/message-store.js';
 import { tagMessageLane } from '../memory/message-lane-tag.js';
 import { rectifyAttachment } from './input-rectification.js';
 import { runV2Turn } from './v2/loop.js';
 import { writeAgentStatus } from './agent-status.js';
 import { STUCK_AGENT_THRESHOLD_MINUTES } from './stuck-thresholds.js';
 import { handBackOrphansOf } from '../work/orphaned-claims.js';
-import { transition } from '../work/store.js';
-import { withUnit } from '../db/unit.js';
+import { transition, joinPieces, isTerminal } from '../work/store.js';
+import { withUnit, afterCommit } from '../db/unit.js';
 import { suppressQueuedReplies } from './v2/deliveries.js';
 import { setAgentModel } from './model-switch.js';
 
@@ -309,11 +309,14 @@ import { currentTurnNumber, markTurnsTerminated } from './v2/turn-record.js';
 
 import { turnBoundary } from './turn-state.js';
 import { replacePlaceholdersInBackground } from '../memory/out-of-view.js';
-import { armOwedClock } from './v2/owed.js';
+import { armOwedClock, stoppedRequestsOf, type StoppedRequests } from './v2/owed.js';
+import { runIsLive } from './ended-mid-run.js';
+import { serveLater } from './v2/serve-later.js';
+import { A2A_THREAD_SHORT_LENGTH } from '@dojo/shared';
 import { taskScope, STATE_TO_STATUS_SQL } from '../work/tracker-view.js';
 import { attachmentFenceOf, bracketed, droppedAttachmentNote } from '../tools/inbound-fences.js';
 import { userWords, currentAddress } from './v2/turn-address.js';
-import { workingExpr } from '../work/done/hold.js';
+import { workingExpr, setHold } from '../work/done/hold.js';
 
 
 export function stopStatusHeartbeat(agentId: string): void {
@@ -351,14 +354,14 @@ export function stopAgent(agentId: string): void {
   // THE STATUS DOES NOT LIE: idle only when nothing is in flight; stopping: true is broadcast-only,
   // the CHECK stays unwidened; the unwinding run keeps 'working' plus heartbeat, safe from the reaper.
   try {
+    const status = (getDb().prepare('SELECT status FROM agents WHERE id = ?')
+      .get(agentId) as { status?: string } | undefined)?.status ?? 'working';
     if (runInFlight) {
-      const status = (getDb().prepare('SELECT status FROM agents WHERE id = ?')
-        .get(agentId) as { status?: string } | undefined)?.status ?? 'working';
       broadcast({ type: 'agent:status', agentId, status: status as AgentStatus, stopping: true });
     } else {
       stopStatusHeartbeat(agentId);
-      writeAgentStatus(agentId, 'idle');
-      broadcast({ type: 'agent:status', agentId, status: 'idle' });
+      // Only a working agent goes idle; a paused or errored one keeps its status.
+      if (status === 'working') { writeAgentStatus(agentId, 'idle'); broadcast({ type: 'agent:status', agentId, status: 'idle' }); }
     }
   } catch { /* best effort */ }
 
@@ -378,21 +381,36 @@ export function stopAgent(agentId: string): void {
   logger.info('Agent stop requested', { runInFlight, callsAborted: cut }, agentId);
 }
 
-/** The owner's Stop: replies still waiting to go are dropped and the requests they answered end as called off
- *  by him, in one transaction; then the agent stops, whatever the drop did. Import and terminate call `stopAgent` alone. */
-export function stopByOwner(agentId: string): { repliesNotSent: number } {
+/** The owner's Stop ends the request being served (`stoppedRequestsOf`) in one transaction: its unsent replies, its
+ *  pieces, the request, its job tasks (no due; held unless a schedule); then the agent stops, whatever that did, and
+ *  the run is settled. Nothing running and nothing to end: nothing is done. Import and terminate call `stopAgent`. */
+export function stopByOwner(agentId: string): { ended: number; repliesNotSent: number; nothingRunning?: true } {
+  let s: StoppedRequests = { liveRun: false, asks: [], runTasks: [], requests: [], jobs: [] };
+  try { s = stoppedRequestsOf(agentId); } catch (err) { logger.error('stop: the request being served could not be read', { error: String(err) }, agentId); }
+  if (s.asks.length + s.runTasks.length + s.requests.length === 0 && !runIsLive(agentId)) return { ended: 0, repliesNotSent: 0, nothingRunning: true };
   try {
     return withUnit(() => {
-      const dropped = suppressQueuedReplies(agentId);
-      for (const id of dropped.askIds) {
+      const dropped = suppressQueuedReplies(agentId, s.liveRun ? s.asks : undefined);
+      let ended = s.requests.length + s.runTasks.length;
+      for (const id of new Set([...s.asks, ...dropped.askIds])) {
+        for (const p of joinPieces(id)) if (!isTerminal(p.state)) transition(p.childId, { to: 'abandoned', by: 'owner', reason: 'the owner stopped the request this piece was for' });
         const r = transition(id, { to: 'abandoned', by: 'owner', reason: 'called off by the owner: he pressed Stop' });
-        if (r.kind !== 'applied') logger.debug('stop: a request was not called off', { workId: id, outcome: r.kind }, agentId);
+        if (r.kind === 'applied') ended++; else logger.debug('stop: a request was not called off', { workId: id, outcome: r.kind }, agentId);
       }
-      return { repliesNotSent: dropped.repliesNotSent };
+      for (const r of s.requests) sweepByRowid({ rowid: r.rowid, agentId });
+      for (const t of s.jobs) {
+        serveLater({ kind: 'task', id: t }, null, 'owner stop');
+        if (getDb().prepare('SELECT 1 FROM work WHERE id = ? AND schedule_status IS NULL').get(t)) setHold(t, 'paused', 'stopped by you', 'owner');
+      }
+      afterCommit(() => void Promise.all([import('../scheduler/runner.js'), import('./a2a-transport.js')]).then(async ([runner, transport]) => {
+        for (const t of s.runTasks) await runner.onTaskRunComplete(t, 'skipped', 'stopped by the owner');
+        for (const r of s.requests) await transport.failJoinPieceForAbandonedAsk(r.messageId, r.threadId.slice(0, A2A_THREAD_SHORT_LENGTH), agentId, 'the owner stopped this work');
+      }).catch((err: unknown) => logger.warn('stop: its run or the asker was not settled', { error: String(err) }, agentId)));
+      return { ended, repliesNotSent: dropped.repliesNotSent };
     });
   } catch (err) {
-    logger.error('stop: queued replies could not be dropped; the agent is stopped anyway', { error: err instanceof Error ? err.message : String(err) }, agentId);
-    return { repliesNotSent: 0 };
+    logger.error('stop: the request could not be ended; the agent is stopped anyway', { error: err instanceof Error ? err.message : String(err) }, agentId);
+    return { ended: 0, repliesNotSent: 0 };
   } finally {
     stopAgent(agentId);
   }

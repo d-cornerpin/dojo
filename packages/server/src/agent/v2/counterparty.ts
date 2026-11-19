@@ -386,6 +386,15 @@ export function rehomeUnclaimedEngineEvents(agentId: string, newBoundary: string
 /** How long a helper's result, or another agent's request once served, stays owed. */
 export const TERMINAL_WAKE_WINDOW_MS = 45 * 60_000;
 
+/** A result on thread `m.a2a_thread_id` belongs to a request the owner ended: this agent's NEWEST piece on that thread
+ *  is abandoned and so is its parent ask. A later request on the same thread has a newer, live piece, so it is not. */
+export const RESULT_FOR_ENDED_REQUEST = (m: string): string => `EXISTS (SELECT 1 FROM work p JOIN work a ON a.id = p.parent_id
+  WHERE p.id = (SELECT n.id FROM work n WHERE n.agent_id = ${m}.agent_id AND n.root_kind = 'a2a_thread'
+                  AND n.root_id = ${m}.a2a_thread_id AND n.parent_id IS NOT NULL ORDER BY n.opened_at DESC LIMIT 1)
+    AND p.state = 'abandoned' AND a.state = 'abandoned')`;
+export const resultForEndedRequest = (agentId: string, threadId: string): boolean => !!getDb().prepare(
+  `SELECT 1 FROM (SELECT ? AS agent_id, ? AS a2a_thread_id) m WHERE ${RESULT_FOR_ENDED_REQUEST('m')}`).get(agentId, threadId);
+
 /** Newest never-served terminal-wake A2A row, by unserved-ness, not recency alone; the owed items (`owed.ts`)
  *  read it. */
 export function findUnservedTerminalWake(agentId: string): { rowid: number } | null {
@@ -393,15 +402,15 @@ export function findUnservedTerminalWake(agentId: string): { rowid: number } | n
   // AGE-BOUNDED on purpose: an unbounded finder frames turns on stale rows, and those turns create
   // REAL new threads, so the storm feeds itself; "unserved" means `served_by_turn IS NULL` only.
   const row = db.prepare(`
-    SELECT seq AS rowid FROM messages
-     WHERE agent_id = @agentId AND role = 'user'
+    SELECT m.seq AS rowid FROM messages m
+     WHERE m.agent_id = @agentId AND role = 'user'
        AND lane <> 'events'
        AND a2a_thread_id IS NOT NULL
        AND a2a_intent IN ('DELIVERABLE', 'ANSWER', 'COMPLETE', 'FAIL')
        AND a2a_requires_response = 1
        AND served_by_turn IS NULL AND swept_at IS NULL
-       AND created_at >= (unixepoch('now') * 1000 - ${TERMINAL_WAKE_WINDOW_MS})
-    ORDER BY created_at DESC, rowid DESC LIMIT 1
+       AND created_at >= (unixepoch('now') * 1000 - ${TERMINAL_WAKE_WINDOW_MS}) AND NOT ${RESULT_FOR_ENDED_REQUEST('m')}
+    ORDER BY m.created_at DESC, m.rowid DESC LIMIT 1
   `).get({ agentId }) as { rowid: number } | undefined;
   return row ? { rowid: row.rowid } : null;
 }

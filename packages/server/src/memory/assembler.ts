@@ -1164,7 +1164,7 @@ async function assembleMessageContext(
       if (config.stopMarkerPending === true) {
         // The marker is PREPENDED to the user's message, so it must not say "the next user message" (weaker models
         // read that as "wait for one to arrive").
-        const STOP_MARKER = '[Context note: the user just hit the Stop button on your previous turn. Your previous plan is CANCELLED. Do NOT continue the tool loop you were executing. Do NOT retry the last action with a different approach. Do NOT resume your prior work. The user\'s new request follows IMMEDIATELY BELOW, respond to that message as a fresh ask, not whatever you were doing before.]';
+        const STOP_MARKER = '[Context note: the owner pressed Stop on your previous work, and that request is ended. Do not resume it or retry its last action. Answer what is in front of you now on its own.]';
         if (merged.length > 0 && merged[merged.length - 1].role === 'user') {
           const lastMsg = merged[merged.length - 1];
           if (typeof lastMsg.content === 'string') {
