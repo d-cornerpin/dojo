@@ -51,6 +51,13 @@ describe('the main agent can message an injured or paused agent', () => {
     expect(deliverSpy).toHaveBeenCalledTimes(1);
   });
 
+  it("the main agent's message to an injured agent is delivered", async () => {
+    mockDb.current!.prepare("UPDATE agents SET status = 'error' WHERE id = 'agent-target'").run();
+    const r = await send('agent-main');
+    expect(r.isError).toBeFalsy();
+    expect(deliverSpy).toHaveBeenCalledTimes(1);
+  });
+
   it('a helper is refused and told who can help', async () => {
     const r = await send('agent-helper');
     expect(r.isError).toBe(true);
