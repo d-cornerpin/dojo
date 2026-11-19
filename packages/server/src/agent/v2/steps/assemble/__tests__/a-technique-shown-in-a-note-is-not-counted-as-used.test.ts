@@ -41,7 +41,7 @@ describe('a technique shown in a note is not counted as used', () => {
     const ask = 'Write me the weekly summary.';
     const messages: Array<{ role: string; content: unknown }> = [{ role: 'user', content: ask }];
     const state = advance(initState({ agentId: AGENT } as Parameters<typeof initState>[0]), { loopCount: 1 });
-    await injectTechniqueAndGapHints(state, { agentId: AGENT, turnCtx: {} as never, lastUserMessageContent: ask, mctx: {} as never, messages: messages as never });
+    await injectTechniqueAndGapHints(state, { agentId: AGENT, lastUserMessageContent: ask, mctx: {} as never, messages: messages as never });
     expect(messages.slice(1).map((m) => String(m.content)).join('\n')).toContain('"Weekly summary"');
     expect(mockDb.current!.prepare("SELECT COUNT(*) AS n FROM technique_usage WHERE technique_id = 't-summary'").get()).toEqual({ n: 0 });
     expect(mockDb.current!.prepare("SELECT usage_count FROM techniques WHERE id = 't-summary'").get()).toEqual({ usage_count: 0 });

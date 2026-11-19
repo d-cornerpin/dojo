@@ -9,7 +9,6 @@ import { injectRegistryMessage } from '../../../../prompt/registry/assembler.js'
 import type { AssemblyContext } from '../../../../prompt/registry/types.js';
 import type { AssembledContext } from '../../../../memory/assembler.js';
 import type { AgentTurnState } from '../../state.js';
-import type { TurnContext } from '../../../turn-context.js';
 import { techniqueFitsRoom } from '../../../../memory/technique-room.js';
 import { createLogger } from '../../../../logger.js';
 import { techniqueFamilies, usableIntegrationFamilies } from '../../../../memory/integration-status-lane.js';
@@ -17,7 +16,6 @@ import { techniqueFamilies, usableIntegrationFamilies } from '../../../../memory
 const logger = createLogger('v2-loop');
 export interface TechniqueHintsInput {
   readonly agentId: string;
-  readonly turnCtx: TurnContext;
   readonly lastUserMessageContent: string | null;
   readonly mctx: AssemblyContext;
   readonly messages: AssembledContext['messages'];
@@ -26,7 +24,7 @@ export interface TechniqueHintsInput {
 
 /** Appends nothing to `state`: neither block writes it; both mutate `mctx` and the messages in place. */
 export async function injectTechniqueAndGapHints(state: AgentTurnState, input: TechniqueHintsInput): Promise<void> {
-  const { agentId, turnCtx, lastUserMessageContent, mctx, messages, roomTokens } = input;
+  const { agentId, lastUserMessageContent, mctx, messages, roomTokens } = input;
 
   // Engine-side fuzzy matching of the ask against published techniques, not a prompt instruction.
   // Fires only: first loop iteration, a real user message, never the PM (its reports land as role='user').

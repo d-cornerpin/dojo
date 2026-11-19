@@ -36,7 +36,7 @@ export interface FinalizeContext {
 }
 
 export async function runFinalize(state: AgentTurnState, ctx: FinalizeContext): Promise<StepOutcome> {
-  const { agentId, turnCtx, db, stopStatusHeartbeat } = ctx;
+  const { agentId, db, stopStatusHeartbeat } = ctx;
 
   state = recoverDeferredReply(state, ctx);
   const said = state.lastAssistantTextForIM ?? '';

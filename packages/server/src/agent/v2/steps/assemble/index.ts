@@ -157,7 +157,7 @@ export async function runAssemble(stateIn: AgentTurnState, ctxIn: AssembleContex
     { loopCount: state.loopCount, turnNumber, lastUserMessageContent: lastUserMessageContent ?? '', pendingSteer: null },
   );
 
-  await injectTechniqueAndGapHints(state, { agentId, turnCtx, lastUserMessageContent, mctx, messages, roomTokens: techniqueRoomTokens(ctx) });
+  await injectTechniqueAndGapHints(state, { agentId, lastUserMessageContent, mctx, messages, roomTokens: techniqueRoomTokens(ctx) });
 
   state = await detectMultistepAndScaffold(state, {
     agentId, turnNumber, turnCtx, db, counterparty, counterpartyIsAgentSender, lastUserMessageContent,
