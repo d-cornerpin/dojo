@@ -4,6 +4,7 @@
 // longer `claimed`, so a repeated boot finds nothing.
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
+import { setConfigValue } from '../config/config-value.js';
 import { createLogger } from '../logger.js';
 import { appendWorkEvent, dismissCommitment, transition } from './store.js';
 import { insertEngineEventIfAbsent } from '../memory/message-store.js';
@@ -75,10 +76,7 @@ export function parkInheritedBacklog(deadTurn: string, bootAt = PROCESS_STARTED_
   // COMPLETE means every orphan this pass found was parked; one that refused the move is still `claimed`, and a
   // marker moved past it would let the next boot hand it back as fresh.
   const rec: PassRecord = { at: bootAt, examined: rows.length, parked, completed: parked === rows.length };
-  db.prepare(
-    `INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
-     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
-  ).run(PASS_KEY, JSON.stringify(rec));
+  setConfigValue(PASS_KEY, JSON.stringify(rec));
   if (parked > 0 || !rec.completed) logger.warn('inherited orphaned asks parked owed (first boot of this build)', { ...rec, agents: byAgent.size });
   return { examined: rec.examined, parked };
 }
