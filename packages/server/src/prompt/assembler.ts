@@ -25,6 +25,7 @@ import { generateToolIndex } from '../tools/categories.js';
 import { getAgentAlwaysLoadedTools, partitionToolsForApiCall } from '../tools/tool-docs.js';
 import { homeDir } from '../home.js';
 import { readUserProfile } from './user-profile.js';
+import { loadVoiceSettings } from '../voice/voice-settings.js';
 
 const logger = createLogger('prompt-assembler');
 const PROMPTS_DIR = path.join(homeDir(), '.dojo', 'prompts');
@@ -655,7 +656,7 @@ function shouldShareUserProfile(agentId: string): boolean {
 /** Per-turn context for prompt composition; computed once per turn and shared by every model call in it. */
 export interface PromptTurnContext {
   latestUserSource: 'voice' | 'text' | null;
-  /** Active TTS engine for voice; read from `voice.tts_engine` when omitted. */
+  /** Active TTS engine for voice; read from the saved voice settings when omitted. */
   ttsEngine?: 'local' | 'cloud' | null;
   /** A dedicated A2A turn; other turns strip inter-agent traffic from context (see turn-state.ts). */
   isA2ATurn?: boolean;
@@ -792,18 +793,9 @@ Use [pause] for a short beat, [long pause] for a deliberate hold. Don't
 overuse them; one or two in a reply is plenty. They go in the body of the
 text, never in the cue.`;
 
-/** The TTS engine: the turn context's value (stable across a turn), else `voice.tts_engine` from config. */
+/** The TTS engine: the turn context's value (stable across a turn), else the saved voice settings. */
 export function resolveTtsEngine(turnContext: PromptTurnContext | undefined): 'local' | 'cloud' {
-  if (turnContext?.ttsEngine === 'cloud') return 'cloud';
-  if (turnContext?.ttsEngine === 'local') return 'local';
-  try {
-    const db = getDb();
-    const row = db.prepare("SELECT value FROM config WHERE key = ?")
-      .get('voice.tts_engine') as { value: string } | undefined;
-    return row?.value === 'cloud' ? 'cloud' : 'local';
-  } catch {
-    return 'local';
-  }
+  return turnContext?.ttsEngine ?? loadVoiceSettings().ttsEngine;
 }
 
 /** Channel landscape for non-dashboard triggers, from the same getters the access banners use. */

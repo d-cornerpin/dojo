@@ -1,6 +1,6 @@
 /**
- * Shown the FIRST time the user toggles voice mode if the required models
- * (Kokoro TTS + the currently-selected Whisper STT model) aren't on disk.
+ * Shown the FIRST time the user toggles voice mode if the models the saved
+ * engines need (the server's `missing` list) aren't on disk.
  *
  *   - Lists what needs to download and the total size.
  *   - Refuses if free disk space is under 2 GB.
@@ -16,8 +16,6 @@ import * as api from '../lib/api';
 import { useWebSocket } from '../hooks/useWebSocket';
 
 interface VoiceFirstRunModalProps {
-  /** Whisper STT model id the user has selected as Default. */
-  whisperModelId: string;
   /** Called when all required models are installed (or user dismisses). */
   onComplete: () => void;
   /** Called when the user cancels the setup without installing. */
@@ -34,7 +32,7 @@ function formatBytes(b: number): string {
 
 const MIN_FREE_GB = 2;
 
-export const VoiceFirstRunModal = ({ whisperModelId, onComplete, onCancel }: VoiceFirstRunModalProps) => {
+export const VoiceFirstRunModal = ({ onComplete, onCancel }: VoiceFirstRunModalProps) => {
   const ws = useWebSocket();
   const [models, setModels] = useState<api.VoiceModelsResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -86,30 +84,8 @@ export const VoiceFirstRunModal = ({ whisperModelId, onComplete, onCancel }: Voi
     return unsub;
   }, [ws]);
 
-  // Figure out what actually needs to download.
-  const missing = useMemo(() => {
-    if (!models) return null;
-    const items: Array<{ kind: 'whisper' | 'kokoro'; id: string; label: string; approxBytes: number | null }> = [];
-    if (!models.kokoro?.installed) {
-      items.push({
-        kind: 'kokoro',
-        id: models.kokoro?.id ?? 'onnx-community/Kokoro-82M-v1.0-ONNX',
-        label: 'Kokoro voice synthesis',
-        // q8 quantized onnx file on disk (≈96 MB), not the fp32 size.
-        approxBytes: 96 * 1024 * 1024,
-      });
-    }
-    const whisper = models.whisper.find((m) => m.id === whisperModelId);
-    if (whisper && !whisper.installed) {
-      items.push({
-        kind: 'whisper',
-        id: whisper.id,
-        label: `Whisper speech recognition (${whisper.id})`,
-        approxBytes: whisper.approxBytes ?? null,
-      });
-    }
-    return items;
-  }, [models, whisperModelId]);
+  // What needs to download: the server's list for the saved engines, as read when the panel opened.
+  const missing = models?.missing ?? null;
 
   // Auto-close once all required items finished downloading.
   useEffect(() => {
@@ -144,18 +120,8 @@ export const VoiceFirstRunModal = ({ whisperModelId, onComplete, onCancel }: Voi
       }
       return next;
     });
-    // Kokoro FIRST and serially: in parallel with the whisper download it
-    // contends for fetch sockets and crashes the transformers.js FS cache.
-    const kokoro = missing.find((m) => m.kind === 'kokoro');
-    const whisper = missing.find((m) => m.kind === 'whisper');
-    if (kokoro) {
-      const res = await api.installVoiceModel(kokoro.kind, kokoro.id);
-      if (!res.ok) { setError(res.error); setInstalling(false); return; }
-    }
-    if (whisper) {
-      const res = await api.installVoiceModel(whisper.kind, whisper.id);
-      if (!res.ok) { setError(res.error); setInstalling(false); }
-    }
+    const res = await api.installMissingVoiceModels(missing);
+    if (!res.ok) { setError(res.error); setInstalling(false); }
   };
 
   // Anchored to the bottom of the chat-input wrapper: upstream CSS transforms

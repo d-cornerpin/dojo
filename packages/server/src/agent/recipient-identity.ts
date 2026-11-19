@@ -39,7 +39,8 @@ function parseArray(raw: string): string[] {
 }
 
 // Resolve a recipient string to a stable canonical identity, or null when no store
-// knows it. Contacts win so both channels of one person converge on one id.
+// knows it. Contacts win so both channels of one person converge on one id. A name two
+// contacts answer to is no identity: which one is meant cannot be told, so it is not guessed.
 export function resolveCanonicalRecipientId(raw: unknown): string | null {
   const norm = normRecipientId(raw);
   if (!norm) return null;
@@ -48,6 +49,7 @@ export function resolveCanonicalRecipientId(raw: unknown): string | null {
     const contacts = db.prepare(
       'SELECT id, display_name, preferred_name, emails, phones, imessage_handles FROM contacts',
     ).all() as ContactIdentityRow[];
+    const named: string[] = [];
     for (const c of contacts) {
       const addresses = [...parseArray(c.emails), ...parseArray(c.phones), ...parseArray(c.imessage_handles)];
       for (const a of addresses) {
@@ -55,9 +57,11 @@ export function resolveCanonicalRecipientId(raw: unknown): string | null {
         if (an === norm || phoneLikeEqual(an, norm)) return `contact:${c.id}`;
       }
       if (c.display_name.trim().toLowerCase() === norm || c.preferred_name?.trim().toLowerCase() === norm) {
-        return `contact:${c.id}`;
+        named.push(`contact:${c.id}`);
       }
     }
+    if (named.length > 1) return null;
+    if (named.length === 1) return named[0];
     const rawSenders = (db.prepare("SELECT value FROM config WHERE key = 'imessage_approved_senders'")
       .get() as { value: string } | undefined)?.value ?? null;
     if (rawSenders) {

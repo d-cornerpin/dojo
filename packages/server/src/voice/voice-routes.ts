@@ -25,8 +25,10 @@ import {
   deleteModel,
   totalVoiceDiskBytes,
   freeDiskMb,
+  KOKORO_MODEL_ID,
   type WhisperSize,
 } from './model-manager.js';
+import { loadVoiceSettings } from './voice-settings.js';
 import { synthesizeOnce, listVoices, DEFAULT_VOICE, loadKokoro, isKokoroLoaded } from './tts-service.js';
 import { DEFAULT_STT_MODEL_KEY, isWhisperBinaryAvailable, ensureSttReady } from './stt-service.js';
 import {
@@ -83,12 +85,24 @@ voiceRouter.get('/models', async (c) => {
   const kokoro = models.find((m) => m.kind === 'kokoro') ?? null;
   const moonshine = models.find((m) => m.kind === 'moonshine') ?? null;
 
+  // What the saved engines still need on disk, in install order: the local voice (cloud voice falls back to
+  // it) and the speech model the owner chose. The setup screens and the voice button all read this list.
+  const stt = loadVoiceSettings().sttModel;
+  const missing: Array<{ kind: 'kokoro' | 'whisper' | 'moonshine'; id: string; label: string; approxBytes: number }> = [];
+  if (!kokoro?.installed) missing.push({ kind: 'kokoro', id: KOKORO_MODEL_ID, label: 'Kokoro voice synthesis', approxBytes: 96 * 1024 * 1024 });
+  if (stt === 'moonshine-base') {
+    if (!moonshine?.installed) missing.push({ kind: 'moonshine', id: stt, label: 'Moonshine speech recognition', approxBytes: 64 * 1024 * 1024 });
+  } else if (!whisper.find((m) => m.id === stt)?.installed) {
+    missing.push({ kind: 'whisper', id: stt, label: `Whisper speech recognition (${stt})`, approxBytes: WHISPER_MODELS[stt as WhisperSize].approxBytes });
+  }
+
   return c.json({
     ok: true,
     data: {
       whisper,
       kokoro,
       moonshine,
+      missing,
       defaultWhisper: DEFAULT_WHISPER,
       defaultSttModel: DEFAULT_STT_MODEL_KEY,
       // The dashboard greys out the Whisper engine option (and the per-size

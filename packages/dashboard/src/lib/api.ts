@@ -161,8 +161,8 @@ export const enableModels = async (modelIds: string[]): Promise<ApiResponse<void
   });
 };
 
-export const disableModels = async (modelIds: string[]): Promise<ApiResponse<{ disabled: number; agentsMoved: number; agentsWithoutModel: number }>> => {
-  return request<{ disabled: number; agentsMoved: number; agentsWithoutModel: number }>('/config/models/disable', {
+export const disableModels = async (modelIds: string[]): Promise<ApiResponse<{ disabled: number; agentsMoved: number }>> => {
+  return request<{ disabled: number; agentsMoved: number }>('/config/models/disable', {
     method: 'POST',
     body: JSON.stringify({ modelIds }),
   });
@@ -904,6 +904,15 @@ export interface VoiceModelsResponse {
   kokoroLoaded: boolean;
   totalDiskBytes: number;
   freeDiskMb: number;
+  /** What the saved voice engines still need on disk, in install order; empty when voice is ready. */
+  missing: VoiceMissingModel[];
+}
+
+export interface VoiceMissingModel {
+  kind: 'whisper' | 'kokoro' | 'moonshine';
+  id: string;
+  label: string;
+  approxBytes: number;
 }
 
 export const getVoicePresets = async (): Promise<ApiResponse<{ voices: VoicePreset[]; defaultVoice: string }>> => {
@@ -911,7 +920,9 @@ export const getVoicePresets = async (): Promise<ApiResponse<{ voices: VoicePres
 };
 
 export const getVoiceModels = async (): Promise<ApiResponse<VoiceModelsResponse>> => {
-  return request('/voice/models');
+  const res = await request<VoiceModelsResponse>('/voice/models');
+  // A server mid-update may not send `missing` yet: read it as nothing missing.
+  return res.ok ? { ok: true, data: { ...res.data, missing: res.data.missing ?? [] } } : res;
 };
 
 export const installVoiceModel = async (kind: 'whisper' | 'kokoro' | 'moonshine', id: string): Promise<ApiResponse<{ kind: string; id: string }>> => {
@@ -935,6 +946,16 @@ export const installVoiceModel = async (kind: 'whisper' | 'kokoro' | 'moonshine'
     if (installed) return { ok: true, data: { kind, id } };
     if (sawDown) return { ok: false, error: VOICE_INSTALL_RESTARTED };  // back up, no model: the download died with it
   }
+};
+
+// The one installer for the setup screens: one model at a time, since two downloads at once fight over the
+// model cache. The first refusal ends it.
+export const installMissingVoiceModels = async (missing: VoiceMissingModel[]): Promise<ApiResponse<null>> => {
+  for (const m of missing) {
+    const res = await installVoiceModel(m.kind, m.id);
+    if (!res.ok) return res;
+  }
+  return { ok: true, data: null };
 };
 
 export const deleteVoiceModel = async (kind: 'whisper' | 'kokoro' | 'moonshine', id: string): Promise<ApiResponse<{ kind: string; id: string; deleted: boolean }>> => {

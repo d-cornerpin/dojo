@@ -2,11 +2,12 @@
 // the server socket closes and the microphone is released.
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const fake = vi.hoisted(() => ({ refuse: false, vads: [] as Array<{ destroyed: number }>, sockets: [] as Array<{ closed: boolean; readyState: number; sent: string[]; onclose: (() => void) | null }> }));
+const fake = vi.hoisted(() => ({ refuse: false, hold: null as Promise<void> | null, vads: [] as Array<{ destroyed: number }>, sockets: [] as Array<{ closed: boolean; readyState: number; sent: string[]; onclose: (() => void) | null }> }));
 
 vi.mock('@ricky0123/vad-web', () => ({
   MicVAD: {
     new: async () => {
+      if (fake.hold) await fake.hold;
       if (fake.refuse) { const e = new Error('blocked'); e.name = 'NotAllowedError'; throw e; }
       const vad = { destroyed: 0, destroy() { this.destroyed += 1; }, start: async () => {}, pause: async () => {} };
       fake.vads.push(vad);
@@ -49,6 +50,7 @@ import { VoiceClient } from '../lib/voice/voice-client';
 
 beforeEach(() => {
   fake.refuse = false;
+  fake.hold = null;
   fake.vads.length = 0;
   fake.sockets.length = 0;
   vi.stubGlobal('WebSocket', FakeSocket);
@@ -90,6 +92,20 @@ describe('ending a voice session', () => {
     fake.sockets[0].readyState = 3;
     fake.sockets[0].onclose?.();
     await flush();
+    expect(fake.vads[0].destroyed).toBe(1);
+    expect(client.state).toBe('idle');
+  });
+
+  it('a connection that drops while the microphone is still opening releases it', async () => {
+    let open: () => void = () => {};
+    fake.hold = new Promise<void>((resolve) => { open = resolve; });
+    const client = new VoiceClient({ agentId: 'a1' });
+    const started = client.start();
+    await flush();
+    fake.sockets[0].readyState = 3;
+    fake.sockets[0].onclose?.();
+    open();
+    await started;
     expect(fake.vads[0].destroyed).toBe(1);
     expect(client.state).toBe('idle');
   });
