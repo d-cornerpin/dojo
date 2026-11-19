@@ -7,6 +7,7 @@ import { estimateTokens } from '../memory/budget.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getDb } from '../db/connection.js';
+import { setConfigValue } from '../config/config-value.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { spawnAgent } from '../agent/spawner.js';
@@ -74,21 +75,9 @@ export function getDreamingConfig(): { modelId: string | null; dreamTime: string
 }
 
 export function setDreamingConfig(config: { modelId?: string; dreamTime?: string; dreamMode?: DreamMode }): void {
-  const db = getDb();
-  const upsert = db.prepare(`
-    INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
-    ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = datetime('now')
-  `);
-
-  if (config.modelId !== undefined) {
-    upsert.run('dreaming_model_id', config.modelId, config.modelId);
-  }
-  if (config.dreamTime !== undefined) {
-    upsert.run('dreaming_time', config.dreamTime, config.dreamTime);
-  }
-  if (config.dreamMode !== undefined) {
-    upsert.run('dreaming_mode', config.dreamMode, config.dreamMode);
-  }
+  if (config.modelId !== undefined) setConfigValue('dreaming_model_id', config.modelId);
+  if (config.dreamTime !== undefined) setConfigValue('dreaming_time', config.dreamTime);
+  if (config.dreamMode !== undefined) setConfigValue('dreaming_mode', config.dreamMode);
 }
 
 // DB-persisted flag (config table, so it survives a restart) that a NIGHTLY dream cycle is draining
@@ -108,11 +97,7 @@ export function isDreamCycleOpen(): boolean {
 }
 
 export function setDreamCycleOpen(open: boolean): void {
-  const db = getDb();
-  db.prepare(`
-    INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
-    ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = datetime('now')
-  `).run(DREAM_CYCLE_OPEN_KEY, open ? '1' : '0', open ? '1' : '0');
+  setConfigValue(DREAM_CYCLE_OPEN_KEY, open ? '1' : '0');
 }
 
 

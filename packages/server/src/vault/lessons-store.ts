@@ -7,6 +7,7 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
+import { setConfigValue } from '../config/config-value.js';
 import { SEMANTIC_DEDUP_THRESHOLD } from '../memory/dedup-threshold.js';
 import { cosineSimilarity } from './bounded-reads.js';
 
@@ -36,9 +37,7 @@ export interface LessonRow {
 const CYCLE_KEY = 'dreamer.lessons_batch_ms';
 
 export function markLessonCycleStart(now: number = Date.now()): void {
-  getDb().prepare(`INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
-                   ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`)
-    .run(CYCLE_KEY, String(now));
+  setConfigValue(CYCLE_KEY, String(now));
 }
 
 function lessonCycleStart(): number {
