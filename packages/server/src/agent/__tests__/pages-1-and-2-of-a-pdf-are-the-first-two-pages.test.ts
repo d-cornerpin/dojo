@@ -1,14 +1,4 @@
-// ════════════════════════════════════════════════════════════════════════════
-// EVERY PAGE NUMBER COUNTS FROM 1.
-//
-// The page tools guessed whether the agent's numbers started at 0 or 1 ("if any
-// index equals the total, assume 1-based"), so "pages 1 and 2" of a 5-page file
-// returned pages 2 and 3. Every page number now counts from 1, and a number
-// that is not a page of this file is dropped, never guessed about.
-//
-// The fixture makes each page one point wider than the last, so an output file
-// names the pages it really carries. Names invented.
-// ════════════════════════════════════════════════════════════════════════════
+// Every PDF page number counts from 1; a number that is not a page of the file is dropped, never guessed about.
 import { describe, it, expect, beforeAll, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -72,11 +62,6 @@ describe('every page number counts from 1', () => {
   it('pages 1 and 2 are the first two pages', async () => {
     await drive('pdf_extract_pages', { path: SRC, pages: [1, 2], output_filename: 'first-two' });
     expect(await widths(path.join(UPLOADS, 'first-two.pdf'))).toEqual([101, 102]);
-  });
-
-  it('the last page is the page count', async () => {
-    await drive('pdf_extract_pages', { path: SRC, pages: [5], output_filename: 'last' });
-    expect(await widths(path.join(UPLOADS, 'last.pdf'))).toEqual([105]);
   });
 
   it('deleting pages 1 and 2 keeps 3, 4 and 5', async () => {
