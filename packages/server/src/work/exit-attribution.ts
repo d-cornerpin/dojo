@@ -19,14 +19,13 @@ export function turnExitReason(agentId: string, turnNumber: number | null): stri
 }
 
 /** THE EXIT TABLE: how a turn that did not answer hands its request back. A provider limit on the turn's
- *  first call waits for the reset; after paid calls it is a counted cut. A turn that parked its job re-opens
- *  it uncounted with no due: the job's own continuation serves it. */
+ *  first call waits for the reset; after paid calls it is a counted cut. A turn that parked its job, whatever
+ *  its exit (a full context, a turn budget), re-opens it uncounted with no due: the job's continuation serves it. */
 export function handBackCauseOf(
   exit: string | null, t: { retryAt?: number | null; paidBeforeLimit?: boolean; parkedTheJob?: boolean },
 ): HandBackCause {
   if (exit === null) return 'silence';
-  if (FREE_EXITS.has(exit)) return 'free';
-  if ((exit === 'iteration_cap' || exit === 'park') && t.parkedTheJob) return 'free';
+  if (t.parkedTheJob || FREE_EXITS.has(exit)) return 'free';
   if (PROVIDER_EXITS.has(exit) && t.retryAt && !t.paidBeforeLimit) return 'wait';
   return CUT_EXITS.has(exit) ? 'cut' : 'silence';
 }

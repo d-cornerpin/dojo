@@ -4283,3 +4283,55 @@ describe('BUG-2, inherited: the compile gate never arms on a turn a human is wai
     expect(executeToolSpy).toHaveBeenCalledTimes(1);
   });
 });
+
+// ════════════════════════════════════════════════════════════════════════════════
+// A CONTEXT OVERFLOW NEVER SETS THE OWNER'S MESSAGE ASIDE (owner decision 12), through the real turn: the
+// provider refuses a prompt that is too long, recovery forces a pass and parks the job, and the hand-back counts
+// nothing and writes no due; the clock leaves the person to the parked continuation.
+// ════════════════════════════════════════════════════════════════════════════════
+describe('a context overflow never sets the owner\'s message aside, through the real turn', () => {
+  const ask = (): { state: string; due: number | null } => mockDb.current!
+    .prepare("SELECT state, next_attempt_at AS due FROM work WHERE id = 'ask:msg-user-1'").get() as { state: string; due: number | null };
+  const marks = (): number => (mockDb.current!.prepare(`SELECT COUNT(*) AS n FROM work_events WHERE work_id = 'ask:msg-user-1'
+    AND ((kind = 'audit' AND json_extract(payload, '$.marker') = 'ct0_ask_re_served') OR kind = 'floor_ghosted')`).get() as { n: number }).n;
+  afterEach(async () => { (await import('../../../work/task-freshness.js')).endJobCarry('primary'); });
+
+  it('six full-context turns leave it owed, uncounted and undated; the clock leaves it to the parked job; it is served when room returns', async () => {
+    const { dueOf } = await import('../owed.js');
+    isContextOverflowErrorMock.mockImplementation(() => true);
+    callModelSpy.mockRejectedValue(new Error('400 prompt is too long: 250000 tokens > 200000 maximum'));
+    for (let turn = 1; turn <= 6; turn++) {
+      await runV2Turn('primary');
+      expect(ask(), `overflow ${turn}`).toEqual({ state: 'open', due: null });
+      expect(dueOf('primary').now, `overflow ${turn}: the parked job's continuation serves it`).toBe(false);
+    }
+    expect(marks(), 'no count and no stand-down record').toBe(0);
+    isContextOverflowErrorMock.mockImplementation(() => false);
+    callModelSpy.mockReset();
+    callModelSpy.mockResolvedValue({ content: 'Here is the summary.', toolCalls: [] as ToolCall[], inputTokens: 100, outputTokens: 5, stopReason: 'end_turn' });
+    await runV2Turn('primary');
+    expect(callModelSpy).toHaveBeenCalled();
+    expect(ask().state, 'served again once there is room').not.toBe('blocked');
+  });
+});
+
+describe('a provider limit after a paid call is counted, through the real turn', () => {
+  it('one tool call, then a 429: the request is counted once and waits for the later of the reset and the backoff', async () => {
+    let n = 0;
+    callModelSpy.mockImplementation(async () => {
+      n += 1;
+      if (n === 1) return { content: '', toolCalls: [{ id: 'tc1', name: 'file_read', arguments: { path: '/tmp/x' } }] as ToolCall[], inputTokens: 100, outputTokens: 5, stopReason: 'tool_use' };
+      throw new Error('429 Rate limit exceeded');
+    });
+    executeToolSpy.mockResolvedValue({ toolCallId: 'tc1', name: 'file_read', content: 'ok', isError: false });
+    const before = Date.now();
+    await runV2Turn('primary');
+    expect(n).toBe(2);
+    const row = mockDb.current!.prepare("SELECT state, next_attempt_at AS due FROM work WHERE id = 'ask:msg-user-1'").get() as { state: string; due: number };
+    expect(row.state).toBe('open');
+    expect(row.due).toBeGreaterThanOrEqual(before + 60_000);
+    const engine = (mockDb.current!.prepare(`SELECT COUNT(*) AS n FROM work_events WHERE work_id = 'ask:msg-user-1' AND kind = 'audit'
+      AND json_extract(payload, '$.cause') = 'cut'`).get() as { n: number }).n;
+    expect(engine).toBe(1);
+  });
+});
