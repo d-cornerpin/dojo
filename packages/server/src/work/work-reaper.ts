@@ -369,6 +369,15 @@ export function sweepBootStaleness(): { suppressed: number; swept: number; heldT
   let swept = 0;
   for (const r of staleRows) swept += sweepByRowid({ rowid: r.rowid, agentId: r.agent_id, requireUnclaimed: true });
 
+  // A pending row with nothing to send is a send an earlier version began and never finished; nothing will
+  // finish it, so past the boot window it is closed as failed, with its reach unknown.
+  const closed = db.prepare(
+    `UPDATE deliveries SET outcome = 'failed', updated_at = datetime('now'),
+            detail = 'left unresolved by an earlier version; whether it reached the person is not known: ' || COALESCE(detail, '')
+      WHERE outcome = 'pending' AND payload_json IS NULL AND created_at < datetime('now', '-30 minutes')`,
+  ).run().changes;
+  if (closed > 0) logger.info(`Boot staleness sweep: closed ${closed} unfinished send(s) an earlier version left pending`);
+
   if (swept > 0 || suppressed > 0 || heldTotal > 0) {
     logger.info(
       `Boot staleness sweep: drain-suppressed ${swept} stale (>30m) engine event(s) and abandoned ${suppressed} stale ask(s)` +
