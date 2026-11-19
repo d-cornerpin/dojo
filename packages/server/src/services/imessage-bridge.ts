@@ -27,7 +27,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { inboundIMessageText } from '../tools/inbound-fences.js';
 import { homeDir } from '../home.js';
 import {
-  type SafeSender, parseSafeSenders, findSafeSenderByAddress, ownerIMessageRecord,
+  type SafeSender, parseSafeSenders, findSafeSenderByAddress, ownerIMessageRecord, isOwnerIMessageRecipient,
 } from './safe-senders.js';
 
 // Attachments: each file joined to a chat.db message is copied into `~/.dojo/uploads/<agentId>/` (HEIC to JPEG)
@@ -1288,6 +1288,9 @@ function oneAtATime<T>(send: () => Promise<T>): Promise<T> {
  *  A platform send (an owner notice, the auto-route) names nobody and no Stop cuts it. */
 export interface SendOpts { agentId?: string }
 
+/** Who a send went to, for the log: the kind of person, never the address or number. */
+const recipientKind = (recipient: string): string => (isOwnerIMessageRecipient(recipient) ? 'the owner' : 'an approved sender');
+
 // Returns true only if the send succeeded, so imessage_send callers never report "sent" for a failure.
 export async function sendIMessage(recipient: string, rawText: string, opts: SendOpts = {}): Promise<boolean> {
   return (await oneAtATime(() => textDoor(recipient, rawText, opts))) === 'sent';
@@ -1304,7 +1307,7 @@ async function textDoor(recipient: string, rawText: string, opts: SendOpts): Pro
     tool: 'imessage-door',
     recipientId: recipient,
     detail: result === 'sent' ? null : stopOrFail(result, 'every iMessage path failed (imsg CLI and AppleScript)'),
-  }), 'imessage: door crossing', { recipient, ok: result === 'sent' });
+  }), 'imessage: door crossing', { to: recipientKind(recipient), ok: result === 'sent' });
   return result;
 }
 
@@ -1327,7 +1330,7 @@ async function sendIMessageInner(recipient: string, rawText: string, opts: SendO
         // imsg is present but FAILED (e.g. a raw binary crashes with SIGTRAP when its PhoneNumberKit bundle did not
         // ship alongside): text does not need imsg, so fall back to AppleScript instead of dropping the message.
         logger.warn('imsg send failed, falling back to AppleScript', {
-          recipient,
+          to: recipientKind(recipient),
           error: imsgErr instanceof Error ? imsgErr.message : String(imsgErr),
         });
         await sendViaAppleScript(recipient, `send ${appleScriptString(text, true)}`, 10000, opts);
@@ -1337,15 +1340,15 @@ async function sendIMessageInner(recipient: string, rawText: string, opts: SendO
       await sendViaAppleScript(recipient, `send ${appleScriptString(text, true)}`, 10000, opts);
     }
 
-    logger.info('iMessage sent', { recipient, textLength: text.length, via });
+    logger.info('iMessage sent', { to: recipientKind(recipient), textLength: text.length, via });
     // No `imessage:sent` broadcast: the dashboard sees delivery via the [SENT VIA IMESSAGE to <owner>] marker.
     return 'sent';
   } catch (err) {
     const stopped = byTheStop(err);
-    if (stopped) { logger.info('iMessage send ended by the owner\'s Stop', { recipient, stopped }); return stopped; }
+    if (stopped) { logger.info('iMessage send ended by the owner\'s Stop', { to: recipientKind(recipient), stopped }); return stopped; }
     logger.error('Failed to send iMessage', {
       error: err instanceof Error ? err.message : String(err),
-      recipient,
+      to: recipientKind(recipient),
     });
     return 'failed';
   }
@@ -1383,7 +1386,7 @@ function attachmentDoor(recipient: string, filePath: string, caption: string | u
           : result === 'failed' ? `${file} failed on every path`
           : result === 'caption-failed' ? `${file} delivered but its caption failed`
           : `${file} ${STOP_DETAIL[result]}`,
-      }), 'imessage: attachment door crossing', { recipient, ok: result === 'sent' });
+      }), 'imessage: attachment door crossing', { to: recipientKind(recipient), ok: result === 'sent' });
       return result;
     },
   );
@@ -1398,7 +1401,7 @@ async function sendIMessageWithAttachmentInner(
   // Safe-sender revalidation: a sender removed from the allowlist mid-conversation must not still receive FILES
   // while their text reply is refused, as the reply sender's approved-list check does.
   if (!findSafeSenderByAddress(getSafeSenders(), recipient)) {
-    logger.warn('Attachment send suppressed: recipient not on safe-sender list', { recipient });
+    logger.warn('Attachment send suppressed: recipient not on safe-sender list');
     return 'failed';
   }
   const imsg = getImsgPath();
@@ -1412,14 +1415,14 @@ async function sendIMessageWithAttachmentInner(
       if (cleanCaption) args.push('--text', cleanCaption);
       args.push('--file', filePath, '--service', 'imessage');
       await runMessagesProgram(imsg, args, { timeout: 30000, agentId: opts.agentId });
-      logger.info('iMessage attachment sent', { recipient, filePath, via: 'imsg', hasCaption: Boolean(cleanCaption) });
+      logger.info('iMessage attachment sent', { to: recipientKind(recipient), filePath, via: 'imsg', hasCaption: Boolean(cleanCaption) });
       return 'sent';
     } catch (err) {
       const stopped = byTheStop(err);
       if (stopped) return stopped;   // the owner stopped it: no AppleScript retry
       logger.warn('imsg attachment send failed, falling back to AppleScript file send. Repair imsg: ' + IMSG_INSTALL_HINT, {
         error: err instanceof Error ? err.message.slice(0, 300) : String(err),
-        recipient,
+        to: recipientKind(recipient),
         filePath,
       });
     }
@@ -1431,11 +1434,11 @@ async function sendIMessageWithAttachmentInner(
   // announces a file that failed; the caption then rides as its own bubble via sendIMessage.
   try {
     await sendViaAppleScript(recipient, `send POSIX file ${appleScriptString(filePath)}`, 15000, opts);
-    logger.info('iMessage attachment sent', { recipient, filePath, via: 'applescript', hasCaption: Boolean(caption) });
+    logger.info('iMessage attachment sent', { to: recipientKind(recipient), filePath, via: 'applescript', hasCaption: Boolean(caption) });
     if (caption && caption.trim()) {
       const captionOk = await sendIMessage(recipient, caption, opts);
       if (!captionOk) {
-        logger.warn('attachment caption send failed (the file itself was delivered)', { recipient, filePath });
+        logger.warn('attachment caption send failed (the file itself was delivered)', { to: recipientKind(recipient), filePath });
         return 'caption-failed';
       }
     }
@@ -1445,7 +1448,7 @@ async function sendIMessageWithAttachmentInner(
     if (stopped) return stopped;
     logger.error('iMessage attachment send failed on every path (imsg and AppleScript)', {
       error: err instanceof Error ? err.message.slice(0, 300) : String(err),
-      recipient,
+      to: recipientKind(recipient),
       filePath,
     });
     return 'failed';
