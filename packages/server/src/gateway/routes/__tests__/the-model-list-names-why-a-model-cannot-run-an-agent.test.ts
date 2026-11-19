@@ -1,33 +1,14 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// The two model lists the dashboard pickers read say in a few words WHY a model cannot run
-// an agent: `notForAgents`, the reason from notForAgentsReason, replaces the yes/no
-// tooSmallForAgents. A picture model is told apart from a small one.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// The two model lists the dashboard pickers read say why a model cannot run an agent in `notForAgents`;
+// a picture model is told apart from a small one.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
-vi.mock('../../../logger.js', () => {
-  const noop = (): void => {};
-  return {
-    createLogger: () => ({ debug: noop, info: noop, warn: noop, error: noop }),
-    setLogLevel: noop, setLogBroadcast: noop, readLogEntries: () => [],
-  };
-});
-
 const mockDb: { current: Database.Database | null } = { current: null };
-vi.mock('../../../db/connection.js', async () => {
-  const os = await import('node:os');
-  const p = await import('node:path');
-  return {
-    getDb: () => {
-      if (!mockDb.current) throw new Error('test DB not initialized');
-      return mockDb.current;
-    },
-    closeDb: vi.fn(),
-    getDbPath: () => p.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'dojo-r27-model-list', 'dojo.db'),
-  };
-});
+vi.mock('../../../db/connection.js', () => ({
+  getDb: () => { if (!mockDb.current) throw new Error('test DB not initialized'); return mockDb.current; },
+  closeDb: vi.fn(),
+}));
 vi.mock('../../ws.js', () => ({ broadcast: vi.fn(), stampPersistedRow: (e: unknown) => e }));
 vi.mock('../../../agent/runtime.js', () => ({
   enforceModelCapabilities: vi.fn(),
@@ -59,13 +40,6 @@ const setConfig = (k: string, v: string): void => {
   db().prepare(`INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
     ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(k, v);
 };
-const getConfig = (k: string): string | undefined =>
-  (db().prepare('SELECT value FROM config WHERE key = ?').get(k) as { value: string } | undefined)?.value;
-const modelOf = (id: string): string | null =>
-  (db().prepare('SELECT model_id FROM agents WHERE id = ?').get(id) as { model_id: string | null } | undefined)?.model_id ?? null;
-const json = (method: string, body: unknown): RequestInit => ({
-  method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
-});
 
 beforeEach(async () => {
   const d = new Database(':memory:');
