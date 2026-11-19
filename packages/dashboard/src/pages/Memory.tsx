@@ -471,7 +471,6 @@ export const Memory = () => {
               >
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-xs text-ui/55">{formatDate(report.createdAt)}</span>
-                  <span className="pill pill--norm">{report.dreamMode}</span>
                 </div>
                 <pre className="text-xs text-ui/70 whitespace-pre-wrap font-mono leading-relaxed">
                   {report.reportText}
