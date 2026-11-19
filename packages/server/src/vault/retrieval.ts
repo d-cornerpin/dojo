@@ -12,7 +12,7 @@ import {
 const logger = createLogger('vault-retrieval');
 
 // Ordinary pins shown in every turn, newest first; every permanent entry is shown besides them.
-export const MAX_PINNED_ENTRIES = 20;
+const MAX_PINNED_ENTRIES = 20;
 
 
 
@@ -210,7 +210,7 @@ export function pinnedContextSection(
     includedIds.push(entry.id);
   }
   if (lines.length === 0) return { section: '', entryIds: [] };
-  // No token budget: a standing rule is never cut, and the ordinary pins are bounded by MAX_PINNED_ENTRIES.
+  // No token budget here: every standing rule is in the section; the ordinary pins are bounded by MAX_PINNED_ENTRIES.
   return { section: `${VAULT_SECTION_HEAD}\n${lines.join('\n')}\n${VAULT_SECTION_TAIL}`, entryIds: includedIds };
 }
 
