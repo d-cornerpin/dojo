@@ -207,6 +207,7 @@ describe('the inherited-backlog notice (review R3-3): the list only on the turn 
        VALUES (?, 800, 'user', 'ask', ?, datetime('now', '-9 days'), datetime('now', '-9 days'), 'terminated', 0)`,
     ).run(AGENT, id);
     reconcileOrphanedClaims({ inheritedBacklog: true });
+    mockDb.current!.prepare("UPDATE messages SET next_attempt_at = ? WHERE origin_intent = 'owed_messages_inherited'").run(Date.now() - 1000);   // its three-minute wait is over
   }
 
   it('the stored notice row carries no personal content', async () => {

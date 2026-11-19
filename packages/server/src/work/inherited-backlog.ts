@@ -87,6 +87,7 @@ export function parkInheritedBacklog(deadTurn: string, bootAt = PROCESS_STARTED_
 function tellAgentOwed(agentId: string, owed: Inherited[]): void {
   insertEngineEventIfAbsent({
     id: uuidv4(), agentId, sourceAgentId: null, originIntent: 'owed_messages_inherited', work: null,   // = INHERITED_NOTICE_INTENT (the census reads literals)
+    notBefore: Date.now() + 180_000,   // the owner's first message after the update is served before this catch-up
     content: `[SOURCE: AGENT NOTICE from Dojo] After this update the Dojo found ${owed.length} message(s) an older version left `
       + `unanswered, now held owed and NOT answered automatically: ${owed.map((o) => `[${o.id}]`).join(', ')}. `
       + 'Who sent each and what it says is listed for you on this turn. '
