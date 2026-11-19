@@ -8,13 +8,13 @@ import { checkAndCompact } from '../../../../memory/compaction.js';
 import { isStopFenced } from '../../../shared-state.js';
 import { getDb } from '../../../../db/connection.js';
 import { advance, type AgentTurnState } from '../../state.js';
-import { jobProgressMark, jobTaskOf, turnWindow } from '../post-call-classify/job-turn-end.js';
+import { jobProgressMark, jobTaskOf, stretchMoved, turnWindow } from '../post-call-classify/job-turn-end.js';
 import { proceed, requestExit, type StepOutcome } from '../step-outcome.js';
 import { latchEngineCut } from '../../engine-exit.js';
 import { noteEngineCheckpoint } from '../../../../work/engine-checkpoint-note.js';
 import { parkJob } from '../../../../work/job-continuation.js';
 import { recordStalled } from '../../../../work/job-momentum.js';
-import { runCarriesJob } from '../../../../work/task-freshness.js';
+import { turnContext } from '../../../turn-context.js';
 import type { PreCallGatesContext, PreCallGatesExitReason } from './index.js';
 
 const logger = createLogger('v2-loop');
@@ -24,7 +24,7 @@ export async function runTurnTimeBudget(
   ctx: PreCallGatesContext,
 ): Promise<StepOutcome> {
   const {
-    agentId, turnNumber, configuredModelId, stashContinuationIfHuman,
+    agentId, turnNumber, configuredModelId,
   } = ctx;
 
   const window = turnWindow(state, agentId);
@@ -32,7 +32,7 @@ export async function runTurnTimeBudget(
     return proceed(advance(state, { checkpointWindow: { atLoop: state.loopCount - 1, atMs: Date.now(), mark: jobProgressMark(state, agentId, getDb()) } }));
   }
   if (window === 'checkpoint') {
-    if (runCarriesJob(agentId) && jobProgressMark(state, agentId, getDb()) <= (state.checkpointWindow?.mark ?? 0)) {
+    if (turnContext(agentId)?.servedJob && !stretchMoved(state, agentId)) {
       const task = jobTaskOf(agentId, getDb());
       if (task) recordStalled(task.id, { remaining: task.stored, turnNumber });
       logger.info('v2 checkpoint: a continuation that moved nothing ends without parking', { agentId, turnNumber, taskId: task?.id }, agentId);
@@ -72,7 +72,7 @@ export async function runTurnTimeBudget(
       return requestExit(latchEngineCut(state, 'stop'), 'stopped-by-user' satisfies PreCallGatesExitReason);
     }
 
-    // No park row and no broadcast here: the checkpoint carries the job to its continuation and notes its tasks.
+    // No park row and no broadcast here: the checkpoint notes the job's tasks and the park dates its task.
     try {
       noteEngineCheckpoint(agentId, 'turn-budget');
     } catch (checkpointErr) {
@@ -80,8 +80,7 @@ export async function runTurnTimeBudget(
         agentId, error: checkpointErr instanceof Error ? checkpointErr.message : String(checkpointErr),
       }, agentId);
     }
-    stashContinuationIfHuman(); // carry the human conversation into the continuation
-    parkJob(agentId, 'turn-budget-continuation');   // the job travels on this wake
+    parkJob(agentId, 'turn-budget-continuation', Date.now());
     // An engine cut, not `no_reply_intended`: a long job must not spend the re-serve ladder.
     return requestExit(latchEngineCut(state, 'iteration_cap'), 'turn-time-budget' satisfies PreCallGatesExitReason);
   }

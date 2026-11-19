@@ -34,7 +34,6 @@ export interface StepContextsInputs {
   readonly noteTerminalAnswer: (rowId: string, surface: string) => void;
   readonly persistRoutingMarker: (label: string) => void;
   readonly reArmIfStrandedNoAnswer: () => void;
-  readonly stashContinuationIfHuman: () => void;
 }
 
 export interface StepContextsOutputs {
@@ -55,7 +54,7 @@ export function runStepContexts(
     chosenConversationId, turnStartedAt, settledContextWakeTurn, isA2ATurn, isEngineTurn,
     triggerWorkId, inboundChannel, inboundContext, contextWindow, contextModelId,
     configuredModelId, isAutoRouted, noteTerminalAnswer, persistRoutingMarker,
-    reArmIfStrandedNoAnswer, stashContinuationIfHuman,
+    reArmIfStrandedNoAnswer,
   } = input;
   const finalizeContext = (): FinalizeContext => ({
     agentId, turnCtx, turnNumber, db,
@@ -78,7 +77,7 @@ export function runStepContexts(
   const preCallGatesContext = (): PreCallGatesContext => ({
     agentId, turnNumber, contextWindow, contextModelId, configuredModelId, isAutoRouted,
     counterparty,
-    broadcast, stashContinuationIfHuman,
+    broadcast,
   });
 
   return { finalizeContext, teardownContext, preCallGatesContext };

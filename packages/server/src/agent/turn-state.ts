@@ -5,14 +5,6 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 // Turn-start instant: assembly skips mid-turn user messages; cleared only after the next wakeup is queued.
 export const turnBoundary = new Map<string, string>();
 
-// Carries "a human is waiting" across an engine auto-continue; read once and deleted so a stale one never restores.
-export const continuationContext = new Map<string, {
-  convKey: string;
-  conversationId: string | null;
-  counterparty: import('./v2/counterparty.js').TurnCounterparty;
-  address?: import('./v2/turn-address.js').TurnAddress;
-}>();
-
 // A new session starts its untracked-work count from zero.
 export function clearServedConversations(agentId: string): void {
   untrackedWorkAcrossTurns.delete(agentId);

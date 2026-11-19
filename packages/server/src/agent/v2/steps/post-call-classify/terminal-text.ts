@@ -16,7 +16,6 @@ import { stripLeadingTimeStamp } from '../../../../memory/message-stamp.js';
 import { answersALiveAsk, deliverAsAnswerToLiveAsk } from './answer-to-a-live-ask.js';
 import { continuedJobStillGoing, readJobAtPassEnd } from './job-turn-end.js';
 import { DELIVERABLE_OWING_TASK_KINDS } from '../../../../work/deliverable-declaration.js';
-import { runCarriesJob } from '../../../../work/task-freshness.js';
 import { proceed, type StepOutcome } from '../step-outcome.js';
 import type { PostCallClassifyContext, PostCallScratch } from './index.js';
 
@@ -149,7 +148,7 @@ export async function runTerminalText(
         const noteId = uuidv4();
         // A routed-channel note was never delivered there, so it is internal (hidden by default).
         const routedHumanChannel = isRoutedHumanCounterparty(counterparty);
-        const agentOnly = routedHumanChannel || runCarriesJob(agentId) || !(hasUnansweredUser || userDeliverableRunTurn);
+        const agentOnly = routedHumanChannel || !!turnCtx.servedJob || !(hasUnansweredUser || userDeliverableRunTurn);
         const notePrefix = agentOnly ? INTERNAL_WORKING_NOTE_PREFIX : WORKING_NOTE_PREFIX;
         // No origin stamp: an engine-stamped row would be inter-agent-shaped and belongs in the store.
         insertMessageIfAbsent({

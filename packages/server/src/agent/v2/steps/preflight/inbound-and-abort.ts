@@ -9,6 +9,8 @@ import type { PreflightContext } from './index.js';
 
 export interface InboundAndAbortInputs {
   readonly triggerRow: WaitingConversation['latest'];
+  /** A job turn's request row: its channel is the turn's, though no fresh message triggered it. */
+  readonly jobRow?: WaitingConversation['latest'];
   readonly lastUserMessageContent: string;
 }
 
@@ -25,21 +27,22 @@ export function runInboundAndAbort(
   input: InboundAndAbortInputs,
 ): InboundAndAbortOutputs {
   const { agentId } = ctx;
-  const { triggerRow, lastUserMessageContent } = input;
+  const { triggerRow, jobRow, lastUserMessageContent } = input;
+  const row = triggerRow ?? jobRow;
   // A no-answer abort: finalize hands back the ask and the engine event by the turn's exit.
   const revertTriggerStampOnAbort = () => { turnCtx.abortHandBack = true; };
   const triggeredByIMessage = lastUserMessageContent?.includes('[SOURCE: IMESSAGE FROM') ?? false;
   // One resolver for the inbound channel and reply context; the reply-destination resolver reads them.
   const resolvedInbound = resolveInbound({
     agentId,
-    content: lastUserMessageContent,
-    channel: triggerRow?.channel ?? null,
-    inboundMeta: triggerRow?.inbound_meta ?? null,
+    content: lastUserMessageContent ?? row?.content ?? null,
+    channel: row?.channel ?? null,
+    inboundMeta: row?.inbound_meta ?? null,
   });
   const inboundChannel = resolvedInbound.inboundChannel;
   const inboundContext = resolvedInbound.inboundContext;
   // A live phone call streams sentence chunks to TTS while the model is still generating.
-  if (inboundChannel === 'phone' && inboundContext?.phoneCallSid) {
+  if (triggerRow && inboundChannel === 'phone' && inboundContext?.phoneCallSid) {
     turnCtx.phoneStreamCallSid = inboundContext.phoneCallSid;
   }
 

@@ -12,12 +12,23 @@ import { createLogger } from '../../../../logger.js';
 import { getDb } from '../../../../db/connection.js';
 import { recordedInstant } from '../../../../memory/message-stamp.js';
 import { linkedTaskOf } from '../../../../work/ask-settlement.js';
+import { openTrackerTask } from '../../../../work/tracker-store.js';
 
 const logger = createLogger('v2-loop');
 import type { ExecuteContext } from './index.js';
 
 /** The floor's title: engine facts only, never the turn's message (the row links to it instead). */
 export const SCAFFOLD_TITLE = 'Multi-step task';
+
+/** THE ONE OPENER of an engine task: one working task, linked to the request it serves (and its thread, for
+ *  another agent's request). The floor and a park call it; the title is theirs. */
+export function openEngineScaffoldTask(agentId: string, title: string, turn: number, request: { messageId: string; convKey: string | null; threadId?: string | null }): string {
+  return openTrackerTask({
+    title, assignedTo: agentId, createdBy: agentId, status: 'in_progress', rootKind: ENGINE_SCAFFOLD_ROOT_KIND,
+    a2aThreadId: request.threadId ?? null,
+    origin: { kind: 'engine_scaffold', sourceMessageId: request.messageId, turn, convKey: request.convKey },
+  });
+}
 
 /** The most-used tool this turn, from the turn's own persisted `tool_use` rows. */
 function mostUsedToolThisTurn(agentId: string, turnNumber: number): string | null {
@@ -102,19 +113,9 @@ export async function runTrackerFloors(state: AgentTurnState, ctx: ExecuteContex
       !isDreamerAgent(agentId)
     ) {
       try {
-        const { openTrackerTask } = await import('../../../../work/tracker-store.js');
         // No message text is captured here, so no handed credential can reach the work row from this floor.
         const scaffoldName = scaffoldTitle(effectiveUntracked, mostUsedToolThisTurn(agentId, turnNumber), state.turnStartMs);
-        // One task, not a project: the engine-scaffold marker is the `root_kind` column stamped at creation,
-        // never a prefix on prose that an edit could truncate.
-        const scaffoldTaskId = openTrackerTask({
-          title: scaffoldName,
-          assignedTo: agentId,
-          createdBy: agentId,
-          status: 'in_progress',
-          rootKind: ENGINE_SCAFFOLD_ROOT_KIND,
-          origin: { kind: 'engine_scaffold', sourceMessageId: state.lastUserMessageId, turn: turnNumber, convKey: chosenConvKey },
-        });
+        const scaffoldTaskId = openEngineScaffoldTask(agentId, scaffoldName, turnNumber, { messageId: state.lastUserMessageId, convKey: chosenConvKey });
         // The steer queue reaches the model (the assembler strips system rows); the row serves the dashboard.
         // The note prints both counts so the one that fired the floor (effectiveUntracked) is visible.
         const autoNoteText = (

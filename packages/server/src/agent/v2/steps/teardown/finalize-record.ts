@@ -2,8 +2,7 @@
 
 import { createLogger } from '../../../../logger.js';
 import { markServedByRowid, releaseEngineEventByRowid, setAnswerMessageId, sweepByRowid } from '../../../../memory/message-store.js';
-import { clearUntrackedWorkAcrossTurnsForConversation, continuationContext } from '../../../turn-state.js';
-import { isStopFenced } from '../../../shared-state.js';
+import { clearUntrackedWorkAcrossTurnsForConversation } from '../../../turn-state.js';
 import { taskScope } from '../../../../work/tracker-view.js';
 import { appendWorkEvent, claimingTurnOf, joinState } from '../../../../work/store.js';
 import { settleAsksAtTurnFinalize, type TurnEnd } from '../../../../work/ask-settlement.js';
@@ -83,9 +82,7 @@ export async function finalizeTurnRecord(
       retryAt: turnCtx.retryAt, paidBeforeLimit: turnCtx.retryAt !== null && state.loopCount > 1,
       parkedTheJob: turnParkedTheJob(agentId),
     };
-    // The engine queued this turn's own continuation, so settlement does not take its opening line as
-    // the answer. Same expression as queuedOwnContinuation below.
-    const continuing = turnEnd.parkedTheJob || (!isStopFenced(agentId) && continuationContext.has(agentId));
+    const continuing = turnEnd.parkedTheJob;
     // Settle every ask this turn claimed or assembled (work/ask-settlement.ts). Must precede the answer
     // stamp below, which keys on the served_by_turn the settlement writes.
     try {

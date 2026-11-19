@@ -144,11 +144,14 @@ export function personArrivedSince(agentId: string, sinceSeq: number, servedKey?
   return getWaitingHumanConversations(agentId).some((c) => c.latest.rowid > sinceSeq || (servedKey !== undefined && c.key !== servedKey));
 }
 
-/** Did the owner write the message an ask was opened for (an ask-rooted engine event ranks with its request)? */
-export function askRootIsOwners(agentId: string, messageId: string): boolean {
-  const r = getDb().prepare(`SELECT ${WAITING_COLS} FROM ${WAITING_HUMAN_CANDIDATE_FROM} WHERE w.id = ? AND w.agent_id = ?`)
-    .get(askIdForMessage(messageId), agentId) as WaitingConversation['latest'] | undefined;
-  return r !== undefined && originOfCandidate(r).relation === 'owner';
+/** The message an ask was opened for, with its conversation key, its ask's state and whether the owner wrote it:
+ *  an ask-rooted event and a parked job rank with their request, and a job turn is addressed from it. */
+export function askRoot(agentId: string, messageId: string): { row: WaitingConversation['latest']; key: string; owner: boolean; state: string } | null {
+  const r = getDb().prepare(`SELECT ${WAITING_COLS}, w.state AS state FROM ${WAITING_HUMAN_CANDIDATE_FROM} WHERE w.id = ? AND w.agent_id = ?`)
+    .get(askIdForMessage(messageId), agentId) as (WaitingConversation['latest'] & { state: string }) | undefined;
+  if (!r) return null;
+  const o = originOfCandidate(r);
+  return { row: r, key: conversationKey(o.channel, o.senderId, o.senderName, o.threadId), owner: o.relation === 'owner', state: r.state };
 }
 
 /** THE ASSEMBLED-CONTEXT SET: asks in front of the model when this turn replied; later siblings

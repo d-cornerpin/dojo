@@ -5,11 +5,14 @@ import { createLogger } from '../../../../logger.js';
 import { getDb } from '../../../../db/connection.js';
 import { AgentError } from '../../../errors.js';
 import { agentTurnWindow } from '../../../../router/router-window.js';
-import { continuationContext } from '../../../turn-state.js';
 import { stampConversationIdByRowid } from '../../../../memory/message-store.js';
 import { resolveOrCreateConversation } from '../../../../memory/conversations.js';
+import { withUnit } from '../../../../db/unit.js';
 import { claimAsk, isStateConflict } from '../../../../work/store.js';
-import { getWaitingHumanConversations, type WaitingConversation, type TurnCounterparty } from '../../counterparty.js';
+import { inFlightOccurrence } from '../../../../work/occurrences.js';
+import { serveLater } from '../../serve-later.js';
+import { resolveServedWork } from '../../stale-work-ids.js';
+import { getWaitingHumanConversations, type WaitingConversation } from '../../counterparty.js';
 import { nextOwed, type OwedItem } from '../../owed.js';
 import { preflightAbandon, preflightProceed, type PreflightOutcome } from '../step-outcome.js';
 import type { TurnContext } from '../../../turn-context.js';
@@ -28,7 +31,8 @@ export interface TurnTriggerOutputs {
   readonly openHumanWorkAtTurnStart: boolean;
   /** The first thing this agent owes now, read once before the pickup claim; the turn serves it. */
   readonly item: OwedItem | undefined;
-  readonly continuation: { convKey: string; conversationId: string | null; counterparty: TurnCounterparty; address?: import('../../turn-address.js').TurnAddress } | undefined;
+  /** A job turn's request row: the turn is addressed from it, though it is not a fresh waiting message. */
+  readonly jobRow: WaitingConversation['latest'] | undefined;
   readonly isHumanContinuation: boolean;
   readonly chosenConvKey: string;
   readonly chosenConversationId: string | null;
@@ -71,15 +75,13 @@ export function runTurnTrigger(
   // Read before the pickup claim: afterwards this turn's own ask is claimed, and every user turn would
   // look like a settled-context wake.
   const openHumanWorkAtTurnStart = item?.kind === 'person';
-  // A continuation stashed by an engine auto-continue is restored and consumed once; a waiting human wins.
-  const continuation = continuationContext.get(agentId);
-  continuationContext.delete(agentId);
-  const isHumanContinuation = waitingConvs.length === 0 && !!continuation;
-  const chosenConvKey = isHumanContinuation ? continuation!.convKey : (waitingConvs[0]?.key ?? null);
+  // A parked job is served from its task row; a job started by a person's request continues in that conversation.
+  const job = item?.kind === 'job' && waitingConvs.length === 0 ? pickUpJob(agentId, turnCtx, item) : null;
+  const jobRow = job?.ask?.row;
+  const isHumanContinuation = jobRow !== undefined;
+  const chosenConvKey = job?.ask ? job.ask.key : (waitingConvs[0]?.key ?? null);
   // `chosenConvKey` stays beside the conversation id because other tables are still keyed by the string.
-  let chosenConversationId: string | null = isHumanContinuation
-    ? (continuation!.conversationId ?? null)
-    : (waitingConvs[0]?.oldest?.conversation_id ?? null);
+  let chosenConversationId: string | null = jobRow ? jobRow.conversation_id : (waitingConvs[0]?.oldest?.conversation_id ?? null);
   // Scopes recall_recent_thread to this conversation; null on engine/A2A turns.
   turnCtx.convKey = chosenConvKey;
   // The working status is set once the conversation key is known, so the first frame carries the truth.
@@ -90,7 +92,7 @@ export function runTurnTrigger(
   const triggerRow = waitingConvs[0]?.oldest;
   const lastUserMessageContent = triggerRow?.content ?? null;
   const lastUserMessageId: string | null = triggerRow?.id != null ? String(triggerRow.id) : null;
-  turnCtx.root = lastUserMessageId ? { kind: 'ask', id: lastUserMessageId, sourceMessageId: lastUserMessageId, conversationId: (triggerRow as unknown as { conversation_id?: string | null })?.conversation_id ?? null } : null;
+  if (!job) turnCtx.root = lastUserMessageId ? { kind: 'ask', id: lastUserMessageId, sourceMessageId: lastUserMessageId, conversationId: (triggerRow as unknown as { conversation_id?: string | null })?.conversation_id ?? null } : null;
   // Claim the ask at pickup (`open` to `claimed`, a CAS) so it reads served however the turn ends: the
   // clock must never re-run a message whose turn did real work. A newer message has its own work item.
   const triggerWorkId: string | null = waitingConvs[0]?.workId ?? null;
@@ -136,8 +138,26 @@ export function runTurnTrigger(
 
   return preflightProceed({
     db, agent, configuredModelId, isAutoRouted, contextModelId, contextWindow,
-    waitingConvs, openHumanWorkAtTurnStart, item, continuation, isHumanContinuation,
+    waitingConvs, openHumanWorkAtTurnStart, item, jobRow, isHumanContinuation,
     chosenConvKey, chosenConversationId, triggerRow, lastUserMessageContent,
     lastUserMessageId, triggerWorkId, triggerConversationId,
   });
+}
+
+/** A job item's pickup: in one unit its task's due is cleared and its request, held on the job, is claimed. The turn
+ *  is rooted where the job started: a person's request, or its run (another agent's thread is rooted at classification). */
+function pickUpJob(agentId: string, turnCtx: TurnContext, item: OwedItem): NonNullable<OwedItem['job']> {
+  const task = item.ref;
+  const job = item.job ?? { origin: null, ask: null };
+  withUnit(() => {
+    serveLater({ kind: 'task', id: task }, null, 'claimed by its job turn');
+    if (job.ask?.state === 'blocked') claimAsk(job.ask.row.work_id, agentId, 'blocked');
+  });
+  const run = inFlightOccurrence(task)?.id ?? null;
+  turnCtx.servedWork = resolveServedWork(task, run);
+  turnCtx.servedJob = task;
+  const r = job.ask?.row;
+  turnCtx.root = r ? { kind: 'ask', id: r.id, sourceMessageId: r.id, conversationId: r.conversation_id }
+    : run ? { kind: 'occurrence', id: run, sourceMessageId: null } : null;
+  return job;
 }

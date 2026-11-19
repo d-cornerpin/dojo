@@ -87,7 +87,6 @@ export interface PreflightOutputs {
   readonly turnStartedAt: string;
   // The turn's closures.
   readonly reArmIfStrandedNoAnswer: () => void;
-  readonly stashContinuationIfHuman: () => void;
   readonly persistRoutingMarker: (label: string) => void;
   readonly persistAndBroadcastSystemRow: (content: string) => string;
   readonly noteTerminalAnswer: (rowId: string, surface: string) => void;
@@ -125,14 +124,14 @@ export async function runPreflight(
   if (trigger.directive === 'abandon') return trigger;
   const {
     db, agent, configuredModelId, isAutoRouted, contextModelId, contextWindow,
-    waitingConvs, openHumanWorkAtTurnStart, item, continuation, isHumanContinuation,
+    waitingConvs, openHumanWorkAtTurnStart, item, jobRow, isHumanContinuation,
     chosenConvKey, chosenConversationId, triggerRow, lastUserMessageContent,
     lastUserMessageId, triggerWorkId, triggerConversationId,
   } = trigger.outputs;
 
   const {
     revertTriggerStampOnAbort, triggeredByIMessage, inboundChannel, inboundContext,
-  } = runInboundAndAbort(turnCtx, ctx, { triggerRow, lastUserMessageContent });
+  } = runInboundAndAbort(turnCtx, ctx, { triggerRow, jobRow, lastUserMessageContent });
 
   const classified = await runTurnClassification(turnCtx, ctx, sc, {
     db, waitingConvs, openHumanWorkAtTurnStart, item, triggerRow, chosenConvKey, lastUserMessageContent,
@@ -151,7 +150,7 @@ export async function runPreflight(
 
   // The state is born here, and from this statement on it lives on the turn's bag.
   const { counterparty, turnNumber, turnStartedAt } = await runCounterpartyAndRecord(turnCtx, ctx, sc, {
-    isHumanContinuation, continuation, a2aCounterpartyIdentity, lastUserMessageContent,
+    isHumanContinuation, jobRow, a2aCounterpartyIdentity, lastUserMessageContent,
     lastUserMessageId, triggerRow, triggerWorkId, chosenConvKey, inboundChannel,
     inboundContext, latestUserSource, triggeredByIMessage, isA2ATurn, isEngineTurn,
     terminalWakeA2A, terminalWakeDrivesTurn, pendingEngineEvent, a2aReplyContext,
@@ -159,11 +158,11 @@ export async function runPreflight(
   });
 
   const {
-    reArmIfStrandedNoAnswer, stashContinuationIfHuman, persistRoutingMarker,
+    reArmIfStrandedNoAnswer, persistRoutingMarker,
     persistAndBroadcastSystemRow, noteTerminalAnswer,
     refusedOnceSigs, deliverEngineUserAck,
   } = runTurnClosures(turnCtx, ctx, sc, {
-    counterparty, chosenConvKey, chosenConversationId, turnNumber, revertTriggerStampOnAbort,
+    counterparty, turnNumber, revertTriggerStampOnAbort,
   });
 
   const {
@@ -181,7 +180,7 @@ export async function runPreflight(
     chosenConversationId, turnStartedAt, settledContextWakeTurn, isA2ATurn, isEngineTurn,
     triggerWorkId, inboundChannel, inboundContext, contextWindow, contextModelId,
     configuredModelId, isAutoRouted, noteTerminalAnswer, persistRoutingMarker,
-    reArmIfStrandedNoAnswer, stashContinuationIfHuman,
+    reArmIfStrandedNoAnswer,
   });
 
   return preflightProceed({
@@ -194,7 +193,7 @@ export async function runPreflight(
     isEngineTurn, settledContextWakeTurn, isNotificationTurn, a2aReplyContext,
     a2aReplyAssignMessageId,
     counterparty, turnNumber, turnStartedAt,
-    reArmIfStrandedNoAnswer, stashContinuationIfHuman, persistRoutingMarker,
+    reArmIfStrandedNoAnswer, persistRoutingMarker,
     persistAndBroadcastSystemRow, noteTerminalAnswer,
     refusedOnceSigs, deliverEngineUserAck,
     counterpartyIsAgentSender, startAckArmed, startAckArmedAtMs, startAckRepliedNow,

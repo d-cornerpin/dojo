@@ -1,13 +1,7 @@
-// A job's continuation continues the request the job started from: `parkOrigin` reads it at the park and it
-// rides the job record (`task-freshness.ts`). Only the run launched from the park's own wake carries the job
-// (`runCarriesJob`); any other trigger-less run is unchanged.
+// Where a job started: read from its task row, so a parked job's turn continues the request it came from.
 
 import { A2A_THREAD_SHORT_LENGTH } from '@dojo/shared';
 import { getDb } from '../db/connection.js';
-import { runCarriesJob, jobCarriedOrigin } from './task-freshness.js';
-import { turnContext } from '../agent/turn-context.js';
-import { taskScope } from './tracker-view.js';
-import { workingExpr } from './done/hold.js';
 
 export type JobOrigin =
   | { kind: 'a2a'; threadId: string; threadShort: string; messageId: string | null; intent: string; fromName: string }
@@ -38,7 +32,7 @@ function a2aOrigin(agentId: string, threadId: string, named: MessageRow | undefi
 }
 
 /** The origin of the first of `ids` (in the order given) whose task names one. Never throws. */
-function originOfTasks(agentId: string, ids: string[]): JobOrigin | null {
+export function originOfTasks(agentId: string, ids: string[]): JobOrigin | null {
   if (ids.length === 0) return null;
   try {
     const db = getDb();
@@ -65,43 +59,4 @@ function originOfTasks(agentId: string, ids: string[]): JobOrigin | null {
   } catch {
     return null;
   }
-}
-
-const sameOrigin = (a: JobOrigin, b: JobOrigin): boolean =>
-  a.kind === b.kind && (a.kind === 'a2a' ? a.threadId === (b as typeof a).threadId : a.messageId === (b as typeof a).messageId);
-
-/**
- * THE PARK'S READ (`parkJob`): where the job being parked started. A turn that serves a PERSON hands on that
- * person's ask (`served`); else the work the turn names (`named`); else, for a turn with no person subject, the
- * origin its claimed tasks agree on. That last read is for the ORIGIN only: carrying those tasks as the job's
- * work would hide an abandoned one from the PM and the close-out gate.
- */
-export function parkOrigin(agentId: string, named: string[], served: string[]): JobOrigin | null {
-  try {
-    const bag = turnContext(agentId);
-    if (bag?.root?.kind === 'ask' || bag?.conversationId || bag?.convKey) {
-      return served.length > 0 ? { kind: 'ask', messageId: served[0] } : null;
-    }
-    const fromNamed = originOfTasks(agentId, named);
-    if (fromNamed) return fromNamed;
-    const held = getDb().prepare(
-      `SELECT w.id AS id FROM work w WHERE ${taskScope('w')} AND w.agent_id = ? AND ${workingExpr('w')}`,
-    ).all(agentId) as Array<{ id: string }>;
-    const origins = held.map((h) => originOfTasks(agentId, [h.id])).filter((o): o is JobOrigin => o !== null);
-    return origins.length > 0 && origins.every((o) => sameOrigin(o, origins[0])) ? origins[0] : null;
-  } catch {
-    return null;
-  }
-}
-
-export function jobOrigin(agentId: string): JobOrigin | null {
-  return runCarriesJob(agentId) ? jobCarriedOrigin(agentId) : null;
-}
-
-/** The A2A origin of the job this run carries, for the turn classifier. Deliberately NOT a reply-needed turn
- *  (`a2aReplyContext` stays null: the job's reply is owed when the job ends) and not a dedicated A2A attempt.
- *  A job that began with a person's ask keeps its owner framing; only its request is served. */
-export function a2aJobOrigin(agentId: string): Extract<JobOrigin, { kind: 'a2a' }> | null {
-  const origin = jobOrigin(agentId);
-  return origin?.kind === 'a2a' ? origin : null;
 }

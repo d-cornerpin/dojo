@@ -62,7 +62,9 @@ export interface TurnContext {
   toolPhaseEndedBySpinBrake: boolean;
   spinBrakeGraceCalls: number;
   mediaWordsStepOwed: boolean;
-  jobParked: boolean;
+  // The task this turn parked its job on, and the task the turn was started from (a job item).
+  jobParked: string | null;
+  servedJob: string | null;
 
 
   ownerAffinityConversationId: string | null;
@@ -133,7 +135,8 @@ export function openTurnContext(agentId: string): TurnContext {
     phoneStreamCallSid: null,
     toolPhaseEndedBySpinBrake: false,
     mediaWordsStepOwed: false,
-    jobParked: false,
+    jobParked: null,
+    servedJob: null,
     spinBrakeGraceCalls: 2,
     ownerAffinityConversationId: null,
     ownerAffinityDestination: null,

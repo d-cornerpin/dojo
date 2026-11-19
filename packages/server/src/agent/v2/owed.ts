@@ -7,11 +7,12 @@ import { broadcast } from '../../gateway/ws.js';
 import { repliedOnThread } from '../../memory/message-store.js';
 import { workingExpr } from '../../work/terminal-states.js';
 import { askIdForMessage } from '../../work/store.js';
+import { originOfTasks, type JobOrigin } from '../../work/job-origin.js';
 import { parkedContinuationFor } from '../../work/task-freshness.js';
 import { activeRuns, isRunUnwinding } from '../shared-state.js';
 import { nextReplyDueAt, deliverDueReplies } from './channel-sender.js';
 import {
-  getWaitingHumanConversations, getPendingEngineEvent, getNextEngineEventRetryAt, findUnservedTerminalWake, askRootIsOwners,
+  getWaitingHumanConversations, getPendingEngineEvent, getNextEngineEventRetryAt, findUnservedTerminalWake, askRoot,
   TERMINAL_WAKE_WINDOW_MS,
 } from './counterparty.js';
 
@@ -81,21 +82,29 @@ export function agentRequests(agentId: string, now = Date.now()): AgentRequest[]
     .map((r) => ({ ...r, threadShort: r.threadId.slice(0, A2A_THREAD_SHORT_LENGTH) }));
 }
 
+/** The agent's parked jobs: working tasks with a due time, not held. */
+function parkedJobs(agentId: string): Array<{ id: string; dueAt: number }> {
+  return getDb().prepare(`SELECT w.id, w.next_attempt_at AS dueAt FROM work w WHERE w.agent_id = ? AND w.kind <> 'ask'
+    AND w.next_attempt_at IS NOT NULL AND w.hold_kind IS NULL AND ${workingExpr('w')}`).all(agentId) as Array<{ id: string; dueAt: number }>;
+}
+
 type PendingEngineEvent = NonNullable<ReturnType<typeof getPendingEngineEvent>>;
 export type OwedKind = 'person' | 'agentResult' | 'clock' | 'agentRequest' | 'job';
 export interface OwedItem {
   kind: OwedKind; rank: 1 | 2 | 3 | 4 | 5 | 6; dueAt: number; age: number; ref: string; served?: boolean;
   event?: PendingEngineEvent; request?: AgentRequest;
+  /** A parked job: where its task started, and that request's ask when it is a person's. */
+  job?: { origin: JobOrigin | null; ask: ReturnType<typeof askRoot> };
 }
 
 /** An event rooted in a person's request ranks with it: 3 for the owner's, 4 for a contact's; any other event is 6. */
 function rankOfEvent(agentId: string, ev: PendingEngineEvent): 3 | 4 | 6 {
   if (ev.rootKind !== 'ask' || !ev.rootId) return 6;
-  return askRootIsOwners(agentId, ev.rootId) ? 3 : 4;
+  return askRoot(agentId, ev.rootId)?.owner ? 3 : 4;
 }
 
-/** Everything this agent owes, due or not, ranked: the owner, approved people, events rooted in their requests,
- *  helper results and other agents' requests, then the clock; a never-served person before a handed-back one, then
+/** Everything this agent owes, due or not, ranked: the owner, approved people, events and parked jobs rooted in their
+ *  requests, helper results and other agents' requests and their jobs, then the clock; a never-served person before a handed-back one, then
  *  the oldest. */
 function owedItems(agentId: string, opts: { pure?: true } = {}): OwedItem[] {
   const items: OwedItem[] = getWaitingHumanConversations(agentId, { includeNotDue: true }).map((c) => (
@@ -105,6 +114,13 @@ function owedItems(agentId: string, opts: { pure?: true } = {}): OwedItem[] {
   for (const r of agentRequests(agentId)) items.push({ kind: 'agentRequest', rank: 5, dueAt: r.dueAt, age: r.rowid, ref: r.messageId, request: r });
   const ev = getPendingEngineEvent(agentId, opts);
   if (ev) items.push({ kind: 'clock', rank: rankOfEvent(agentId, ev), dueAt: 0, age: ev.rowid, ref: ev.id, event: ev });
+  for (const t of parkedJobs(agentId)) {
+    const origin = originOfTasks(agentId, [t.id]);
+    const ask = origin?.kind === 'ask' ? askRoot(agentId, origin.messageId) : null;
+    if (ask?.state === 'open') continue;   // the person item serves it, with the job in view
+    const rank = ask ? (ask.owner ? 3 : 4) : origin?.kind === 'a2a' ? 5 : 6;
+    items.push({ kind: 'job', rank, dueAt: t.dueAt, age: t.dueAt, ref: t.id, job: { origin, ask } });
+  }
   const evNext = getNextEngineEventRetryAt(agentId);
   if (!ev && evNext !== null) items.push({ kind: 'clock', rank: 6, dueAt: evNext, age: Number.MAX_SAFE_INTEGER, ref: 'next-event' });
   return items.sort((a, b) => a.rank - b.rank || Number(a.served ?? false) - Number(b.served ?? false) || a.age - b.age);

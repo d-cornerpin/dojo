@@ -20,13 +20,13 @@ const told = new Set<string>();
 export function parkAfterForcedPass(agentId: string, reason: string, brakedBefore: boolean, opts: { quiet?: boolean } = {}): void {
   if (spanWaitsForAWriter(agentId)) {
     logger.info('Context is full and no summary writer can run: the wake waits for one to be back', { reason }, agentId);
-    parkJob(agentId, reason, 'timer', undefined, whenAWriterCanRun(agentId));
+    parkJob(agentId, reason, 'event', whenAWriterCanRun(agentId));
     return;
   }
   const msLeft = compactionBrakeMsLeft(agentId);
   if (msLeft === null) {
     endFullContextWait(agentId);
-    parkJob(agentId, reason);
+    parkJob(agentId, reason, Date.now());
     return;
   }
   // A pass that RAN here and left the brake on, after a wait, is the expiry's pass failing. `quiet` is
@@ -34,13 +34,13 @@ export function parkAfterForcedPass(agentId: string, reason: string, brakedBefor
   if (!opts.quiet && !brakedBefore && waiting.has(agentId)) tellStuckOnce(agentId);
   waiting.add(agentId);
   logger.info('Context is full and compaction is braked: the wake waits for the brake to let go', { msLeft }, agentId);
-  parkJob(agentId, reason, 'timer', msLeft);
+  parkJob(agentId, reason, Date.now() + msLeft);
 }
 
 /** A TURN NEVER WAITS ON ANOTHER COMPACTION'S LOCK: a pass that found it held parks here until it lands. */
 export function parkUntilCompactionLands(agentId: string, reason: string): void {
   logger.info('Another compaction holds the lock: the turn does not wait on it; the wake is that pass landing', { reason }, agentId);
-  parkJob(agentId, reason, 'timer', undefined, whenLockFree(`compact:${agentId}`));
+  parkJob(agentId, reason, 'event', whenLockFree(`compact:${agentId}`));
 }
 
 export function endFullContextWait(agentId: string): void {

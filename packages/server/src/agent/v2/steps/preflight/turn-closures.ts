@@ -1,6 +1,5 @@
-// The turn's closures handed to later steps: the stranded-ask re-arm, the continuation stash, the two
-// row writers, the answer-key setter, the per-turn registers and the engine ack. Functions, not values,
-// because they read the turn's state live from the bag.
+// The turn's closures handed to later steps: the stranded-ask re-arm, the two row writers, the answer-key
+// setter, the per-turn registers and the engine ack. Functions, not values, because they read the bag live.
 
 import { v4 as uuidv4 } from 'uuid';
 import type { DisplayKind } from '@dojo/shared';
@@ -8,7 +7,6 @@ import { broadcast } from '../../../../gateway/ws.js';
 import { createLogger } from '../../../../logger.js';
 import { insertMessageIfAbsent, START_ACK_ORIGIN_INTENT } from '../../../../memory/message-store.js';
 import { resolveRecipientDisplay } from '../../../../contacts/resolve-recipient.js';
-import { continuationContext } from '../../../turn-state.js';
 import type { TurnContext } from '../../../turn-context.js';
 import { engineAckReachesTheirChannel, type TurnCounterparty } from '../../counterparty.js';
 import { withOutboundAsync } from '../../outbound.js';
@@ -21,15 +19,12 @@ const logger = createLogger('v2-loop');
 
 export interface TurnClosuresInputs {
   readonly counterparty: TurnCounterparty;
-  readonly chosenConvKey: string;
-  readonly chosenConversationId: string | null;
   readonly turnNumber: number;
   readonly revertTriggerStampOnAbort: () => void;
 }
 
 export interface TurnClosuresOutputs {
   readonly reArmIfStrandedNoAnswer: () => void;
-  readonly stashContinuationIfHuman: () => void;
   readonly persistRoutingMarker: (label: string) => void;
   readonly persistAndBroadcastSystemRow: (content: string) => string;
   readonly noteTerminalAnswer: (rowId: string, surface: string) => void;
@@ -46,7 +41,7 @@ export function runTurnClosures(
   input: TurnClosuresInputs,
 ): TurnClosuresOutputs {
   const { agentId } = ctx;
-  const { counterparty, chosenConvKey, chosenConversationId, turnNumber, revertTriggerStampOnAbort } = input;
+  const { counterparty, turnNumber, revertTriggerStampOnAbort } = input;
   // Re-arms a stranded human ask only on a clean retry: no user-facing text, no surfaced reply, no channel
   // send, and no non-idempotent call (re-serving after a side effect would duplicate it). On an engine
   // turn the same revert marks the engine event for its hand-back at finalize.
@@ -59,12 +54,6 @@ export function runTurnClosures(
     ) {
       revertTriggerStampOnAbort();
     }
-  };
-
-  // Before an engine auto-continue, stash the human conversation this turn serves: the continuation fires
-  // with an empty trigger and restores it, so the answer reaches the right person and channel.
-  const stashContinuationIfHuman = () => {
-    if (chosenConvKey) continuationContext.set(agentId, { convKey: chosenConvKey, conversationId: chosenConversationId, counterparty, address: turnCtx.address });
   };
 
   // The dashboard's routing pill for this turn; the deliveries row is written by the send's own door.
@@ -165,7 +154,7 @@ export function runTurnClosures(
   };
 
   return {
-    reArmIfStrandedNoAnswer, stashContinuationIfHuman, persistRoutingMarker,
+    reArmIfStrandedNoAnswer, persistRoutingMarker,
     persistAndBroadcastSystemRow, noteTerminalAnswer,
     refusedOnceSigs, deliverEngineUserAck,
   };

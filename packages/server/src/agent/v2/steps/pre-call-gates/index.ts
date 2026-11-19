@@ -34,7 +34,6 @@ export interface PreCallGatesContext {
   readonly counterparty: TurnCounterparty;
   readonly broadcast: (event: WsEvent) => void;
   /** A closure over driver state; passed as a value, it keeps its live bindings. */
-  readonly stashContinuationIfHuman: () => void;
 }
 
 /** The order is the contract: a stopped turn must not park or measure a context. */

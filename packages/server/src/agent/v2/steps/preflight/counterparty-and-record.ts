@@ -6,7 +6,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { createLogger } from '../../../../logger.js';
 import { getDb } from '../../../../db/connection.js';
 import { claimEngineEventByRowid, markServedByRowid } from '../../../../memory/message-store.js';
-import { firstServedAt, stampClaimingTurn } from '../../../../work/store.js';
+import { askIdForMessage, firstServedAt, stampClaimingTurn } from '../../../../work/store.js';
 import { liftStandDowns } from '../../../../work/ask-settlement.js';
 import { turnBoundary } from '../../../turn-state.js';
 import type { TurnContext } from '../../../turn-context.js';
@@ -14,7 +14,7 @@ import { initState } from '../../state.js';
 import type { ChannelInboundContext } from '../../state.js';
 import type { InboundChannel } from '../../inbound-channel.js';
 import { resolveTurnCounterparty, type TurnCounterparty, type WaitingConversation } from '../../counterparty.js';
-import { computeTurnAddressLive, type TurnAddress } from '../../turn-address.js';
+import { computeTurnAddressLive } from '../../turn-address.js';
 import { resolveOwnerAffinityChannel, affinityPromotionAllowed } from '../../owner-affinity.js';
 import { resetProactiveSendStreak } from '../../proactive-budget.js';
 import { isPrimaryAgent } from '../../../../config/platform.js';
@@ -26,7 +26,7 @@ const logger = createLogger('v2-loop');
 
 export interface CounterpartyAndRecordInputs {
   readonly isHumanContinuation: boolean;
-  readonly continuation: { convKey: string; conversationId: string | null; counterparty: TurnCounterparty; address?: TurnAddress } | undefined;
+  readonly jobRow: WaitingConversation['latest'] | undefined;
   readonly a2aCounterpartyIdentity: { intent: string; threadShort: string; fromName: string } | null;
   readonly lastUserMessageContent: string;
   readonly lastUserMessageId: string | null;
@@ -66,26 +66,25 @@ export async function runCounterpartyAndRecord(
 ): Promise<CounterpartyAndRecordOutputs> {
   const { agentId } = ctx;
   const {
-    isHumanContinuation, continuation, a2aCounterpartyIdentity, lastUserMessageContent,
+    isHumanContinuation, jobRow, a2aCounterpartyIdentity, lastUserMessageContent,
     lastUserMessageId, triggerRow, triggerWorkId, chosenConvKey, inboundChannel,
     inboundContext, latestUserSource, triggeredByIMessage, isA2ATurn, isEngineTurn,
     terminalWakeA2A, terminalWakeDrivesTurn, pendingEngineEvent, a2aReplyContext,
     contextWindow, isAutoRouted, configuredModelId,
   } = input;
-  // The one entity this turn addresses, from structured origin. A human-task continuation has no inbound,
-  // so it restores the original counterparty and the answer reaches the conversation's real channel.
-  const counterparty: TurnCounterparty = isHumanContinuation
-    ? continuation!.counterparty
-    : resolveTurnCounterparty({
-        isA2ATurn,
-        a2aFromName: a2aCounterpartyIdentity?.fromName ?? null,
-        a2aThreadShort: a2aCounterpartyIdentity?.threadShort ?? null,
-        triggerContent: lastUserMessageContent,
-        triggerLane: triggerRow?.lane ?? null,
-        triggerChannel: triggerRow?.channel ?? null,
-        triggerInboundMeta: triggerRow?.inbound_meta ?? null,
-        inboundChannel,
-      });
+  // The one entity this turn addresses, from structured origin. A job turn has no fresh inbound, so it is read
+  // from the job's request row and the answer reaches that conversation's real channel.
+  const row = triggerRow ?? jobRow;
+  const counterparty: TurnCounterparty = resolveTurnCounterparty({
+    isA2ATurn,
+    a2aFromName: a2aCounterpartyIdentity?.fromName ?? null,
+    a2aThreadShort: a2aCounterpartyIdentity?.threadShort ?? null,
+    triggerContent: lastUserMessageContent ?? row?.content ?? null,
+    triggerLane: row?.lane ?? null,
+    triggerChannel: row?.channel ?? null,
+    triggerInboundMeta: row?.inbound_meta ?? null,
+    inboundChannel,
+  });
 
   // An authorized owner inbound resets the proactive-send backoff; a settled-context wake has no
   // trigger row, so only a real owner message clears the streak.
@@ -123,7 +122,6 @@ export async function runCounterpartyAndRecord(
     counterparty, isEngineTurn, isNotificationTurn: input.isNotificationTurn ?? false,
     inboundChannel, inboundContext, ownerAffinityChannel: turnCtx.ownerAffinityDestination, autoRoutes: isPrimaryAgent(agentId),
     settledContextWakeTurn: input.settledContextWakeTurn,
-    restoredFrom: isHumanContinuation ? continuation?.address : undefined,
   });
 
   // The turn number is allocated by the `turns` table in-transaction, never derived from `messages`,
@@ -171,6 +169,8 @@ export async function runCounterpartyAndRecord(
       stampClaimingTurn(triggerWorkId, turnNumber);
       if (wroteAgain) liftStandDowns(agentId, triggerWorkId, turnNumber);   // a request of theirs that stood down is served with it
     }
+    // A job turn holds the request its job started from, claimed at its pickup.
+    if (turnCtx.servedJob && turnCtx.root?.kind === 'ask') stampClaimingTurn(askIdForMessage(turnCtx.root.id), turnNumber);
     if (triggerRow) {
       markServedByRowid(triggerRow.rowid, turnNumber);
     }

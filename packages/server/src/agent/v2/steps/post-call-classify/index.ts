@@ -69,7 +69,6 @@ export interface PostCallClassifyContext {
   ) => Promise<void>;
   readonly persistAndBroadcastSystemRow: (content: string) => void;
   readonly startAckRepliedNow: () => boolean;
-  readonly stashContinuationIfHuman: () => void;   // stashes the conversation when the turn parks its job
 }
 
 /** Values passed between this step's sections; mutable because sections both read and write them. */

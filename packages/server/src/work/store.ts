@@ -364,9 +364,9 @@ export function openAsk(p: OpenAskInput): string {
 }
 
 /** Pickup: `by: 'agent'`, since the engine actor would need evidence the turn has not yet produced. */
-export function claimAsk(workId: string, agentId: string): WorkOutcome {
+export function claimAsk(workId: string, agentId: string, expectedState: WorkState = 'open'): WorkOutcome {
   return transition(workId, {
-    to: 'claimed', by: 'agent', actorId: agentId, expectedState: 'open',
+    to: 'claimed', by: 'agent', actorId: agentId, expectedState,
     reason: 'turn pickup',
   });
 }

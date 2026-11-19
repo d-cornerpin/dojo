@@ -15,7 +15,6 @@ import { spendServe } from '../../serve-later.js';
 import { a2aRetryBudgetFor } from '../../../a2a-patience.js';
 import { resolveServedWork } from '../../stale-work-ids.js';
 import { engineEventRoot } from '../../work-lineage.js';
-import { a2aJobOrigin } from '../../../../work/job-origin.js';
 import { preflightAbandon, preflightProceed, type PreflightOutcome } from '../step-outcome.js';
 import type { PreflightContext, PreflightScratch } from './index.js';
 
@@ -94,7 +93,7 @@ export async function runTurnClassification(
     item = nextOwed(agentId)[0];
     if (givenUp(agentId, item)) item = undefined;
     // Nothing left to serve: the turn ends here, as a lost pickup claim does, with no model call.
-    if (!item && !chosenConvKey && !a2aJobOrigin(agentId)) { setAgentStatus(agentId, 'idle'); return preflightAbandon('request-given-up'); }
+    if (!item && !chosenConvKey) { setAgentStatus(agentId, 'idle'); return preflightAbandon('request-given-up'); }
   }
   // The most-recent inbound over every lane.
   const mostRecentInbound = db.prepare(`
@@ -137,7 +136,9 @@ export async function runTurnClassification(
   // the event. A pending event is used, not the most-recent inbound, so a human message cannot starve it.
   const pendingEngineEvent = (!a2aWakeTurn && !hasUnansweredUser && item?.kind === 'clock') ? (item.event ?? null) : null;
   const isEngineTurn = !a2aWakeTurn && !hasUnansweredUser && pendingEngineEvent != null;
-  const jobA2A = !a2aWakeTurn && !hasUnansweredUser && !isEngineTurn && !chosenConvKey ? a2aJobOrigin(agentId) : null;
+  // A parked job started by another agent's request continues on its thread, addressed to that agent.
+  const jobOrigin = item?.kind === 'job' ? item.job?.origin : null;
+  const jobA2A = !a2aWakeTurn && !hasUnansweredUser && !isEngineTurn && !chosenConvKey && jobOrigin?.kind === 'a2a' ? jobOrigin : null;
   if (jobA2A) turnCtx.root = { kind: 'a2a', id: jobA2A.threadId, sourceMessageId: null };
   const isA2ATurn = a2aWakeTurn || jobA2A !== null;
   // Settled-context wake: no human ask was open at turn start, so every visible conversation is answered;

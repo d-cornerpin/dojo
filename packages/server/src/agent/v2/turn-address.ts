@@ -38,7 +38,7 @@ export interface ComputeTurnAddressInput {
   counterparty: TurnCounterparty;
   isEngineTurn: boolean;
   isNotificationTurn: boolean;
-  /** Null on a continuation or a wake with no trigger. */
+  /** Null on a wake with no trigger and no request row. */
   inboundChannel: InboundChannel;
   inboundContext: ChannelInboundContext | null;
   presence: 'in_dojo' | 'away';
@@ -47,8 +47,6 @@ export interface ComputeTurnAddressInput {
   autoRoutes: boolean;
   /** Every visible conversation was answered at turn start: such a wake is held, not pushed. */
   settledContextWakeTurn?: boolean;
-  /** The address the stashed turn had, when this turn is the continuation of a human turn. */
-  restoredFrom?: TurnAddress;
 }
 
 export interface LiveDeliveryInputs {
@@ -90,10 +88,8 @@ export function computeTurnAddress(input: ComputeTurnAddressInput): TurnAddress 
     : cp.kind === 'agent' ? 'agent'
     : 'person';
 
-  // A continuation has no trigger row, so its own inbound is empty: take the original's.
-  const restored = input.inboundChannel === null ? input.restoredFrom : undefined;
-  const boundChannel: InboundChannel = input.inboundChannel ?? restored?.boundChannel ?? null;
-  const inboundContext = input.inboundContext ?? restored?.inboundContext ?? null;
+  const boundChannel: InboundChannel = input.inboundChannel ?? null;
+  const inboundContext = input.inboundContext ?? null;
 
   let deliveryChannel: ReplyDestination = 'dashboard';
   // An engine turn's text is delivered like the owner's, so it gets the real channel.
