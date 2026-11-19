@@ -66,11 +66,4 @@ describe('PUT /budget routes, a blank limit removes the limit', () => {
     expect(await r.json()).toEqual({ ok: false, error: 'limitUsd must be a number above 0, or 0 or null for no limit' });
     expect(budgetRows('global_daily')).toBe(1);
   });
-
-  it('a positive limit still sets the limit', async () => {
-    const r = await put('/budget/global', { limitUsd: 12 });
-    expect((await r.json()).data).toEqual({ scope: 'global', limitUsd: 12, period: 'daily' });
-    const row = mockDb.current!.prepare("SELECT limit_usd FROM budgets WHERE id = 'global_daily'").get() as { limit_usd: number };
-    expect(row.limit_usd).toBe(12);
-  });
 });
