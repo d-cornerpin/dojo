@@ -25,6 +25,7 @@ import { handBackOrphansOf } from '../work/orphaned-claims.js';
 import { transition } from '../work/store.js';
 import { withUnit } from '../db/unit.js';
 import { suppressQueuedReplies } from './v2/deliveries.js';
+import { setAgentModel } from './model-switch.js';
 
 // Dedup: the "model does not support tools" banner fires once per (agent, model) pair per process.
 const toolsUnavailableNotified = new Set<string>();
@@ -1199,9 +1200,10 @@ function repairOrphanedModelPointers(): void {
     `).all() as Array<{ id: string; name: string; model_id: string }>;
 
     for (const agent of orphans) {
-      db.prepare(`
-        UPDATE agents SET model_id = 'auto', updated_at = datetime('now') WHERE id = ?
-      `).run(agent.id);
+      // The one model writer: the row, the role's setting, the change note, and another look at a parked turn.
+      void setAgentModel(agent.id, 'auto').catch((err: unknown) => logger.warn('A repaired agent\'s model change did not finish', {
+        agentId: agent.id, error: err instanceof Error ? err.message : String(err),
+      }));
       logger.warn('Repaired orphaned model_id pointer, set to auto-router', {
         agentId: agent.id,
         agentName: agent.name,
