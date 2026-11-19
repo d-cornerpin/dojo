@@ -19,7 +19,7 @@ import { attachIdleBound } from '../../child-idle-bound.js';
 import { automationPermissionStatus } from './automation-probe.js';
 import { getOllamaModelInfo } from '../../services/ollama.js';
 // The 32K floor for an agent's MAIN model.
-import { refuseAgentModel, refuseSmallMainModel } from '../../agent/main-model-floor.js';
+import { refuseAgentModel, refuseNonChatModel, refuseSmallMainModel } from '../../agent/main-model-floor.js';
 import { localModelFit } from '../../agent/local-model-fit.js';
 // A create/rename name must not mint a second agent the case-insensitive lookup cannot tell apart.
 import { caseVariantClash, caseVariantClashMessage } from '../../agent/tool-helpers.js';
@@ -290,7 +290,7 @@ setupDepsRouter.post('/ollama/standard', (c) => {
 setupDepsRouter.get('/model-fit/:modelId', async (c) => {
   const modelId = c.req.param('modelId');
   const v = await localModelFit(modelId, 'agent');
-  return c.json({ ok: true, data: { refused: (v && !v.unchecked && !v.fits ? v.message : null) ?? refuseSmallMainModel(modelId) } });
+  return c.json({ ok: true, data: { refused: (v && !v.unchecked && !v.fits ? v.message : null) ?? refuseNonChatModel(modelId) ?? refuseSmallMainModel(modelId) } });
 });
 
 // POST /ollama/auto-configure: create Ollama provider + discover models
