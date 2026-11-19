@@ -1,9 +1,4 @@
-// THE ADVERTISED SURFACE honors the shell class. `exec` is stripped when `exec_allow` is empty,
-// but `shell` was never stripped, so an agent with no command grant was offered `shell` and then
-// refused. The strip now follows the same rule as every reader (`brokers/grants.ts`): absent
-// `shell_allow` the shell follows `exec_allow`; an explicit `[]` withholds the shell. And the
-// restricted `exec` description names the agent's real limits, so it no longer promises a
-// 30-second timeout that does not bind a helper (its real bound is its silent window).
+// The advertised surface follows the shell grant: `shell` is offered only with a shell grant, and a restricted `exec` text promises no 30-second timeout.
 
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import fs from 'node:fs';
@@ -19,8 +14,6 @@ const EXEC_NO_SHELL = 'exec-no-shell';
 const EXEC_AND_SHELL = 'exec-and-shell';
 const BASE = { file_read: '*', file_write: '*', exec_allow: [], exec_deny: [], network_domains: 'none', can_spawn_agents: false, can_assign_permissions: false, system_control: [] };
 
-// The home and the env are in place before the product modules are first loaded (they read
-// DOJO_HOME at import), so the modules come in through top-level awaits, as in the inspect suite.
 const home = fs.mkdtempSync(path.join(process.env.DOJO_TEST_HOME_ROOT || os.tmpdir(), 'shell-grant-surface-'));
 vi.stubEnv('DOJO_HOME', home);
 const imp_connection = await import('../../../db/connection.js');
