@@ -68,7 +68,7 @@ export function agentRequests(agentId: string, now = Date.now()): AgentRequest[]
      WHERE m.agent_id = @agentId AND m.role = 'user' AND m.lane <> 'events'
        AND m.a2a_intent IN ('QUESTION', 'ASSIGN', 'BLOCK') AND m.a2a_thread_id IS NOT NULL AND m.source_agent_id IS NOT NULL
        AND m.swept_at IS NULL
-       AND m.created_at >= (unixepoch(COALESCE(a.session_started_at, '1970-01-01')) * 1000)
+       AND m.created_at >= (unixepoch(COALESCE(a.session_started_at, '1970-01-01')) * 1000) AND m.created_at >= @now - 86400000
        AND (CASE WHEN m.served_by_turn IS NULL THEN m.created_at >= @now - 86400000
                  ELSE MAX(COALESCE((SELECT unixepoch(t.started_at) * 1000 FROM turns t
                                      WHERE t.agent_id = m.agent_id AND t.turn_number = m.served_by_turn), m.created_at),
