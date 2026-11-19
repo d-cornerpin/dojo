@@ -161,8 +161,8 @@ export const enableModels = async (modelIds: string[]): Promise<ApiResponse<void
   });
 };
 
-export const disableModels = async (modelIds: string[]): Promise<ApiResponse<{ disabled: number; agentsMoved: number; agentsWithoutModel: number }>> => {
-  return request<{ disabled: number; agentsMoved: number; agentsWithoutModel: number }>('/config/models/disable', {
+export const disableModels = async (modelIds: string[]): Promise<ApiResponse<{ disabled: number; agentsMoved: number }>> => {
+  return request<{ disabled: number; agentsMoved: number }>('/config/models/disable', {
     method: 'POST',
     body: JSON.stringify({ modelIds }),
   });
