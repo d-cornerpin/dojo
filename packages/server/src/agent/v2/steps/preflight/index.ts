@@ -7,7 +7,7 @@ import type { AgentStatus, DisplayKind } from '@dojo/shared';
 import type { TurnContext } from '../../../turn-context.js';
 import type { InboundChannel } from '../../inbound-channel.js';
 import type { TurnCounterparty, WaitingConversation } from '../../counterparty.js';
-import type { UnrepliedAssign } from '../../../a2a-replies.js';
+import type { AgentRequest } from '../../owed.js';
 import { preflightProceed, type PreflightOutcome } from '../step-outcome.js';
 import { runTurnTrigger } from './turn-trigger.js';
 import { turnAnswersSpokenRequest } from '../../../../memory/served-ask.js';
@@ -65,7 +65,7 @@ export interface PreflightOutputs {
   readonly latestUserSource: 'voice' | 'text' | null;
   readonly latestTtsEngine: 'local' | 'cloud' | null;
   readonly inboundChannel: InboundChannel;
-  readonly unrepliedAssign: UnrepliedAssign | null;
+  readonly unrepliedAssign: AgentRequest | null;
   // What kind of turn this is.
   readonly mostRecentInbound: {
     rowid: number; content: string; lane: string; origin_intent: string | null;
@@ -131,13 +131,11 @@ export async function runPreflight(
   } = trigger.outputs;
 
   const {
-    revertTriggerStampOnAbort, triggeredByIMessage,
-    inboundChannel, inboundContext, unrepliedAssign,
+    revertTriggerStampOnAbort, triggeredByIMessage, inboundChannel, inboundContext,
   } = runInboundAndAbort(turnCtx, ctx, { triggerRow, lastUserMessageContent });
 
   const classified = await runTurnClassification(turnCtx, ctx, sc, {
-    db, waitingConvs, openHumanWorkAtTurnStart, item, triggerRow, chosenConvKey,
-    lastUserMessageContent, unrepliedAssign,
+    db, waitingConvs, openHumanWorkAtTurnStart, item, triggerRow, chosenConvKey, lastUserMessageContent,
   });
   if (classified.directive === 'abandon') return classified;
   // Roots are final here: whether the request this turn answers was spoken picks the voice-conduct block, the
@@ -148,7 +146,7 @@ export async function runPreflight(
   const {
     mostRecentInbound, mostRecentIsA2A, terminalWakeA2A, hasUnansweredUser, isA2ATurn,
     terminalWakeDrivesTurn, pendingEngineEvent, isEngineTurn, settledContextWakeTurn,
-    isNotificationTurn, a2aReplyContext, a2aReplyAssignMessageId, a2aCounterpartyIdentity,
+    isNotificationTurn, a2aReplyContext, a2aReplyAssignMessageId, a2aCounterpartyIdentity, unrepliedAssign,
   } = classified.outputs;
 
   // The state is born here, and from this statement on it lives on the turn's bag.

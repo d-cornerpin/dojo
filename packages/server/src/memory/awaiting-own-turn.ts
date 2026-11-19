@@ -12,7 +12,7 @@ export function requestForAnotherTurn(agentId: string): AwaitingRequest | null {
   const owed = requestAwaitingItsOwnTurn(agentId);
   if (!owed) return null;
   if (liveTurnServes(agentId, owed) === true) return null;
-  const where = new LabelFacts(agentId).thread(owed.threadId ?? owed.threadShort);
+  const where = new LabelFacts(agentId).thread(owed.threadId);
   return {
     messageId: owed.messageId,
     label: `[this request belongs to ${where}; it is handled on its own turn, right after this one — do not work on it here]`,

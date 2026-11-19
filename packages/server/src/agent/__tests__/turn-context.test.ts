@@ -27,8 +27,7 @@ import {
 } from '../turn-context.js';
 
 import {
-  turnBoundary, continuationContext, forceA2ATurn, a2aTurnRetries,
-  untrackedWorkAcrossTurns, lastTurnWasA2A,
+  turnBoundary, continuationContext, untrackedWorkAcrossTurns,
 } from '../turn-state.js';
 import {
   activeRuns, pendingWakeups, stoppedAgents, activeAbortControllers, preemptedAgents,
@@ -136,6 +135,8 @@ const THE_DRIVER_CARRIES = [
   // both cross from the model call to the turn's end.
   'retryAt',
   'abortHandBack',
+  // Another agent's request the preflight picked: the send door and the served ids read it, finalize marks it served.
+  'servedRequest',
   // PHASE-6 T2 (CUT 9) — the LAST tranche's one written crossing, and the crossing the
   // ruling was written about. T2 handed this span back rather than guess: seven closures
   // declared in `preflight` read live crossing mutable state. Eight cuts drained six of
@@ -218,19 +219,16 @@ describe('PHASE-6 T1: TurnContext — what the turn owns', () => {
 });
 
 describe('PHASE-6 T1: the other direction — what must NOT be in the bag', () => {
-  it('the seventeen CROSS-TURN carriers survive endTurnContext', () => {
+  it('the fourteen CROSS-TURN carriers survive endTurnContext', () => {
     const A = FXID.n4;
     openTurnContext(A);
 
-    // Six that live in `turn-state.ts` on purpose.
+    // Three that live in `turn-state.ts` on purpose.
     turnBoundary.set(A, '2026-08-04 00:00:00');
     continuationContext.set(A, { convKey: 'ck', conversationId: 'conv-1', counterparty: {} as never });
-    forceA2ATurn.add(A);
-    a2aTurnRetries.set(A, 1);
     untrackedWorkAcrossTurns.set(A, { convKey: 'ck', count: 3 });
-    lastTurnWasA2A.add(A);
 
-    // Twelve that live in `shared-state.ts`, shared with the v1 runtime.
+    // Eleven that live in `shared-state.ts`, shared with the v1 runtime.
     activeRuns.add(A);
     pendingWakeups.add(A);
     stoppedAgents.add(A);
@@ -245,7 +243,7 @@ describe('PHASE-6 T1: the other direction — what must NOT be in the bag', () =
 
     endTurnContext(A);
 
-    // THE CLAUSE: the turn's bag is gone and every one of the seventeen is still there.
+    // THE CLAUSE: the turn's bag is gone and every one of the fourteen is still there.
     // A collapse that swept these in would delete a continuation the NEXT turn is meant
     // to consume, reset a counter whose whole purpose is to cross turns, and drop an
     // abort controller mid-flight.
@@ -253,10 +251,7 @@ describe('PHASE-6 T1: the other direction — what must NOT be in the bag', () =
     const survivors = {
       turnBoundary: turnBoundary.has(A),
       continuationContext: continuationContext.has(A),
-      forceA2ATurn: forceA2ATurn.has(A),
-      a2aTurnRetries: a2aTurnRetries.has(A),
       untrackedWorkAcrossTurns: untrackedWorkAcrossTurns.has(A),
-      lastTurnWasA2A: lastTurnWasA2A.has(A),
       activeRuns: activeRuns.has(A),
       pendingWakeups: pendingWakeups.has(A),
       stoppedAgents: stoppedAgents.has(A),
@@ -270,12 +265,12 @@ describe('PHASE-6 T1: the other direction — what must NOT be in the bag', () =
       recoveryRunStreak: recoveryRunStreak.has(A),
     };
     expect(Object.entries(survivors).filter(([, v]) => !v).map(([k]) => k)).toEqual([]);
-    expect(Object.keys(survivors)).toHaveLength(17);
+    expect(Object.keys(survivors)).toHaveLength(14);
 
-    for (const m of [turnBoundary, continuationContext, a2aTurnRetries, untrackedWorkAcrossTurns,
+    for (const m of [turnBoundary, continuationContext, untrackedWorkAcrossTurns,
       activeAbortControllers, lastCompactionDividerAt, lastA2APreemptAt, agentStartTimes,
       statusHeartbeats, recoveryRunStreak]) m.delete(A);
-    for (const s of [forceA2ATurn, lastTurnWasA2A, activeRuns, pendingWakeups, stoppedAgents,
+    for (const s of [activeRuns, pendingWakeups, stoppedAgents,
       preemptedAgents, backgroundDrains]) s.delete(A);
   });
 });

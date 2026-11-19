@@ -5,7 +5,7 @@ import { getDb } from '../db/connection.js';
 import { turnContext } from '../agent/turn-context.js';
 import { runCarriesJob, jobCarriedAsks } from '../work/task-freshness.js';
 import { jobOrigin } from '../work/job-origin.js';
-import { findUnrepliedAssignForAgent } from '../agent/a2a-replies.js';
+import { repliedOnThread } from '../agent/v2/owed.js';
 import { getMessagesByIds } from './store.js';
 import type { Message } from '@dojo/shared';
 import type { Database } from 'better-sqlite3';
@@ -59,8 +59,8 @@ export function turnAnswersSpokenRequest(agentId: string): boolean {
   return spoken;
 }
 
-/** The reply-needed message a running A2A turn answers, until answered, else `[]`. Same finder as preflight
- *  (`findUnrepliedAssignForAgent`) so both agree; kept apart from the owner's words, which a park carries. */
+/** The reply-needed message a running A2A turn answers, until answered, else `[]`: the request the preflight
+ *  picked for it; kept apart from the owner's words, which a park carries. */
 export function servedAssignMessageIds(agentId: string): string[] {
   try {
     const bag = turnContext(agentId);
@@ -71,8 +71,8 @@ export function servedAssignMessageIds(agentId: string): string[] {
       const origin = jobOrigin(agentId);
       if (origin?.kind === 'a2a' && origin.threadId === bag.root.id && origin.messageId) return [origin.messageId];
     }
-    const assign = findUnrepliedAssignForAgent(agentId);
-    return assign ? [assign.messageId] : [];
+    const r = bag.servedRequest;
+    return r && !repliedOnThread(agentId, r.fromId, r.threadId, r.createdAt) ? [r.messageId] : [];
   } catch {
     return [];
   }

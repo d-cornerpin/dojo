@@ -43,7 +43,7 @@ import { runMigrations } from '../../db/migrations.js';
 import { insertMessage } from '../message-store.js';
 import { openTurnContext, endTurnContext } from '../../agent/turn-context.js';
 import { servedOwnerMessageIds, servedAssignMessageIds } from '../served-ask.js';
-import { recordA2AReply } from '../../agent/a2a-replies.js';
+import { agentRequests } from '../../agent/v2/owed.js';
 import { assembleContext } from '../assembler.js';
 
 const AGENT = 'worker';
@@ -97,10 +97,11 @@ function assignedJob(pairs: number): void {
   }
 }
 
-/** The running turn: an A2A turn serving the unreplied ASSIGN (the bag's kind is what preflight records). */
+/** The running turn: an A2A turn serving the unreplied ASSIGN (the bag's kind and request are what preflight records). */
 function runningA2ATurn(): void {
   const bag = openTurnContext(AGENT);
   bag.kind = 'a2a';
+  bag.servedRequest = agentRequests(AGENT)[0] ?? null;
 }
 
 const occurrences = (hay: string, needle: string): number => hay.split(needle).length - 1;
@@ -138,9 +139,13 @@ describe('t159 I: the assigned ask is served like the owner\'s message', () => {
     const bag = openTurnContext(AGENT);
     expect(servedAssignMessageIds(AGENT), 'a turn of no a2a kind').toEqual([]);
     bag.kind = 'a2a';
+    bag.servedRequest = agentRequests(AGENT)[0] ?? null;
     expect(servedAssignMessageIds(AGENT)).toEqual(['assign-row']);
     expect(servedOwnerMessageIds(AGENT), 'the owner\'s served ids — what a park carries — are untouched').toEqual([]);
-    recordA2AReply({ assignMessageId: 'assign-row', agentId: AGENT, threadId: THREAD, replyIntent: 'ANSWER' });
+    insertMessage({   // the reply, as the transport lands it in the manager's store
+      agentId: PEER, role: 'user', lane: 'a2a', content: '[A2A:ANSWER thread:f00dcafe from:Worker] done',
+      sourceAgentId: AGENT, a2aThreadId: THREAD, a2aIntent: 'ANSWER',
+    });
     expect(servedAssignMessageIds(AGENT), 'answered: no longer owed, no longer re-shown').toEqual([]);
   });
 

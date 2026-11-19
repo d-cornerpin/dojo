@@ -7,7 +7,7 @@ import type { DisplayKind } from '@dojo/shared';
 import type { ModelCallResult } from '../../../model.js';
 import type { TurnContext } from '../../../turn-context.js';
 import type { TurnCounterparty } from '../../counterparty.js';
-import type { UnrepliedAssign } from '../../../a2a-replies.js';
+import type { AgentRequest } from '../../owed.js';
 import { type AgentTurnState } from '../../state.js';
 import { proceed } from '../step-outcome.js';
 import { runEmptyResponse } from './empty-response.js';
@@ -44,7 +44,7 @@ export interface PostCallClassifyContext {
   readonly mostRecentIsA2A: boolean;
   readonly mostRecentInbound: { origin_intent?: string | null; [key: string]: unknown } | undefined;
   readonly pendingEngineEvent: { originIntent?: string | null; [key: string]: unknown } | null;
-  readonly unrepliedAssign: UnrepliedAssign | null;
+  readonly unrepliedAssign: AgentRequest | null;
   readonly a2aReplyContext: { intent?: string; threadShort?: string; fromName?: string } | null;
   readonly a2aReplyAssignMessageId: string | null;
   readonly settledContextWakeTurn: boolean;

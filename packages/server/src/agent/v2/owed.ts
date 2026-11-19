@@ -1,8 +1,10 @@
 // Who is owed what by an agent, and when the engine next wakes it. One timer for every agent and every due reply.
 
+import { A2A_THREAD_SHORT_LENGTH } from '@dojo/shared';
 import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
 import { broadcast } from '../../gateway/ws.js';
+import { repliesSince } from '../../memory/message-store.js';
 import { workingExpr } from '../../work/terminal-states.js';
 import { askIdForMessage } from '../../work/store.js';
 import { parkedContinuationFor } from '../../work/task-freshness.js';
@@ -10,6 +12,7 @@ import { activeRuns, isRunUnwinding } from '../shared-state.js';
 import { nextReplyDueAt, deliverDueReplies } from './channel-sender.js';
 import {
   getWaitingHumanConversations, getPendingEngineEvent, getNextEngineEventRetryAt, findUnservedTerminalWake, askRootIsOwners,
+  TERMINAL_WAKE_WINDOW_MS,
 } from './counterparty.js';
 
 const logger = createLogger('owed');
@@ -47,10 +50,47 @@ function wakeBudgetClearsAt(agentId: string): number | null {
   return wakeBudgetTripped.has(agentId) ? ((wakeupTimes.get(agentId) ?? [])[0] ?? Date.now()) + WAKE_BUDGET_WINDOW_MS : null;
 }
 
+/** Did `fromAgentId` write on `threadId` to `askerId` at or after `sinceMs`? The one "replied" reader. */
+export function repliedOnThread(fromAgentId: string, askerId: string, threadId: string, sinceMs: number): boolean {
+  return repliesSince(askerId, threadId, sinceMs).some((r) => r.from === fromAgentId);
+}
+
+export interface AgentRequest {
+  messageId: string; rowid: number; threadId: string; threadShort: string; intent: string; fromId: string; fromName: string;
+  createdAt: number; attempts: number; dueAt: number;
+}
+
+/** Unreplied requests from other agents, oldest first, with when each may be served (a provider's reset). A request
+ *  never served is always owed (the transport opens an ASSIGN's task before it writes the message). Once served, an
+ *  open task on its thread owns it: parked, the job item serves it; held by the owner, nobody does; working, the
+ *  PM's ladder watches it. */
+export function agentRequests(agentId: string, now = Date.now()): AgentRequest[] {
+  const rows = getDb().prepare(`
+    SELECT m.seq AS rowid, m.id AS messageId, m.a2a_thread_id AS threadId, m.a2a_intent AS intent,
+           m.source_agent_id AS fromId, COALESCE(s.name, m.source_agent_id) AS fromName, m.created_at AS createdAt,
+           m.delivery_attempts AS attempts, COALESCE(m.next_attempt_at, 0) AS dueAt
+      FROM messages m JOIN agents a ON a.id = m.agent_id LEFT JOIN agents s ON s.id = m.source_agent_id
+     WHERE m.agent_id = @agentId AND m.role = 'user' AND m.lane <> 'events'
+       AND m.a2a_intent IN ('QUESTION', 'ASSIGN', 'BLOCK') AND m.a2a_thread_id IS NOT NULL AND m.source_agent_id IS NOT NULL
+       AND m.swept_at IS NULL
+       AND m.created_at >= (unixepoch(COALESCE(a.session_started_at, '1970-01-01')) * 1000)
+       AND (CASE WHEN m.served_by_turn IS NULL THEN m.created_at >= @now - 86400000
+                 ELSE MAX(COALESCE((SELECT unixepoch(t.started_at) * 1000 FROM turns t
+                                     WHERE t.agent_id = m.agent_id AND t.turn_number = m.served_by_turn), m.created_at),
+                          COALESCE(m.next_attempt_at, 0)) >= @now - @servedWindow END)
+       AND NOT EXISTS (SELECT 1 FROM work t WHERE t.agent_id = m.agent_id AND t.a2a_thread_id = m.a2a_thread_id
+                         AND ${workingExpr('t')}
+                         AND (t.next_attempt_at IS NOT NULL OR t.hold_kind IS NOT NULL OR m.served_by_turn IS NOT NULL))
+     ORDER BY m.seq ASC LIMIT 20`).all({ agentId, now, servedWindow: TERMINAL_WAKE_WINDOW_MS }) as Array<Omit<AgentRequest, 'threadShort'>>;
+  return rows.filter((r) => !repliedOnThread(agentId, r.fromId, r.threadId, r.createdAt))
+    .map((r) => ({ ...r, threadShort: r.threadId.slice(0, A2A_THREAD_SHORT_LENGTH) }));
+}
+
 type PendingEngineEvent = NonNullable<ReturnType<typeof getPendingEngineEvent>>;
 export type OwedKind = 'person' | 'agentResult' | 'clock' | 'agentRequest' | 'job';
 export interface OwedItem {
-  kind: OwedKind; rank: 1 | 2 | 3 | 4 | 5 | 6; dueAt: number; age: number; ref: string; served?: boolean; event?: PendingEngineEvent;
+  kind: OwedKind; rank: 1 | 2 | 3 | 4 | 5 | 6; dueAt: number; age: number; ref: string; served?: boolean;
+  event?: PendingEngineEvent; request?: AgentRequest;
 }
 
 /** An event rooted in a person's request ranks with it: 3 for the owner's, 4 for a contact's; any other event is 6. */
@@ -60,12 +100,14 @@ function rankOfEvent(agentId: string, ev: PendingEngineEvent): 3 | 4 | 6 {
 }
 
 /** Everything this agent owes, due or not, ranked: the owner, approved people, events rooted in their requests,
- *  helper results, then the clock; a never-served person before a handed-back one, then the oldest. */
+ *  helper results and other agents' requests, then the clock; a never-served person before a handed-back one, then
+ *  the oldest. */
 function owedItems(agentId: string, opts: { pure?: true } = {}): OwedItem[] {
   const items: OwedItem[] = getWaitingHumanConversations(agentId, { includeNotDue: true }).map((c) => (
     { kind: 'person', rank: c.owner ? 1 : 2, dueAt: c.dueAt, age: c.oldestWaitingRowid, ref: c.workId, served: c.served }));
   const wake = findUnservedTerminalWake(agentId);
   if (wake) items.push({ kind: 'agentResult', rank: 5, dueAt: 0, age: wake.rowid, ref: String(wake.rowid) });
+  for (const r of agentRequests(agentId)) items.push({ kind: 'agentRequest', rank: 5, dueAt: r.dueAt, age: r.rowid, ref: r.messageId, request: r });
   const ev = getPendingEngineEvent(agentId, opts);
   if (ev) items.push({ kind: 'clock', rank: rankOfEvent(agentId, ev), dueAt: 0, age: ev.rowid, ref: ev.id, event: ev });
   const evNext = getNextEngineEventRetryAt(agentId);

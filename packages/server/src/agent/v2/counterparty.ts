@@ -390,6 +390,9 @@ export function rehomeUnclaimedEngineEvents(agentId: string, newBoundary: string
   }
 }
 
+/** How long a helper's result, or another agent's request once served, stays owed. */
+export const TERMINAL_WAKE_WINDOW_MS = 45 * 60_000;
+
 /** Newest never-served terminal-wake A2A row, by unserved-ness, not recency alone; the owed items (`owed.ts`)
  *  read it. */
 export function findUnservedTerminalWake(agentId: string): { rowid: number } | null {
@@ -404,7 +407,7 @@ export function findUnservedTerminalWake(agentId: string): { rowid: number } | n
        AND a2a_intent IN ('DELIVERABLE', 'ANSWER', 'COMPLETE', 'FAIL')
        AND a2a_requires_response = 1
        AND served_by_turn IS NULL AND swept_at IS NULL
-       AND created_at >= (unixepoch('now', '-45 minutes') * 1000)
+       AND created_at >= (unixepoch('now') * 1000 - ${TERMINAL_WAKE_WINDOW_MS})
     ORDER BY created_at DESC, rowid DESC LIMIT 1
   `).get({ agentId }) as { rowid: number } | undefined;
   return row ? { rowid: row.rowid } : null;

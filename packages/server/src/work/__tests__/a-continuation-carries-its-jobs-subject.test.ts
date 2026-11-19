@@ -168,7 +168,6 @@ import { insertMessage, insertEngineEvent } from '../../memory/message-store.js'
 import { stoppedAgents, pendingWakeups } from '../../agent/shared-state.js';
 import { continuationContext } from '../../agent/turn-state.js';
 import { deliverA2AMessage } from '../../agent/a2a-transport.js';
-import { recordA2AReply } from '../../agent/a2a-replies.js';
 import { beginJobRun, endJobRun, endJobCarry, jobCarriedIds } from '../task-freshness.js';
 
 const WORKER = 'worker';
@@ -275,7 +274,10 @@ async function assignedJob(): Promise<{ taskId: string; assignId: string }> {
   const task = db.prepare('SELECT id FROM work WHERE agent_id = ? AND a2a_thread_id = ?').get(WORKER, THREAD) as { id: string } | undefined;
   expect(task, 'the real ASSIGN delivery opened the job\'s task, tied to the thread').toBeDefined();
   // The worker has answered the ASSIGN once (a first reply sent): it is not an unreplied request any more.
-  recordA2AReply({ assignMessageId: assignId, agentId: WORKER, threadId: THREAD, replyIntent: 'ANSWER' });
+  insertMessage({   // it lands in the manager's store, as the transport writes it
+    agentId: MANAGER, role: 'user', lane: 'a2a', sourceAgentId: WORKER, a2aThreadId: THREAD, a2aIntent: 'ANSWER',
+    content: `[A2A:ANSWER thread:${THREAD.slice(0, 8)} from:Worker] on it`,
+  });
   return { taskId: task!.id, assignId };
 }
 

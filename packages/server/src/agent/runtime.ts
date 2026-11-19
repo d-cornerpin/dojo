@@ -308,13 +308,11 @@ import {
 } from './shared-state.js';
 import { currentTurnNumber, markTurnsTerminated } from './v2/turn-record.js';
 
-import { turnBoundary, forceA2ATurn, a2aTurnRetries, lastTurnWasA2A } from './turn-state.js';
-import { a2aRetryBudgetFor } from './a2a-patience.js';
+import { turnBoundary } from './turn-state.js';
 import { replacePlaceholdersInBackground } from '../memory/out-of-view.js';
 import { getWaitingHumanConversations } from './v2/counterparty.js';
 import { armOwedClock } from './v2/owed.js';
 import { taskScope, STATE_TO_STATUS_SQL } from '../work/tracker-view.js';
-import { findUnrepliedAssignForAgent, recordA2AReply } from './a2a-replies.js';
 import { attachmentFenceOf, bracketed, droppedAttachmentNote } from '../tools/inbound-fences.js';
 import { userWords, currentAddress } from './v2/turn-address.js';
 import { workingExpr } from '../work/done/hold.js';
@@ -581,64 +579,6 @@ class AgentRuntime {
       // A delegated answer that arrived mid-turn goes out now: this finally is where every exit lands.
       try { await (await import('./a2a-transport.js')).releaseDeferredJoinRelays(agentId); } catch (err) {
         logger.warn('deferred join relay not released; the join reaper and boot re-drain still find it', { agentId, error: err instanceof Error ? err.message : String(err) }, agentId);
-      }
-
-      // An unreplied wake-intent A2A gets its OWN turn, never a fold into a user reply (that makes
-      // stripping safe); past a2aRetryBudgetFor a synthetic reply settles the enforcer, no infinite spin.
-      try {
-        const status = (getDb()
-          .prepare('SELECT status FROM agents WHERE id = ?')
-          .get(agentId) as { status?: string } | undefined)?.status;
-        if (status !== 'terminated') {
-          const owed = findUnrepliedAssignForAgent(agentId);
-          const wasA2ATurn = lastTurnWasA2A.has(agentId);
-          lastTurnWasA2A.delete(agentId);
-          if (owed) {
-            if (wasA2ATurn) {
-              // A dedicated A2A turn ran and cleared nothing: a genuine failure, counted against the cap.
-              const tries = (a2aTurnRetries.get(agentId) ?? 0) + 1;
-              // Cap is the RECIPIENT's, floored by one call on its provider (a2a-patience.ts); else plain max.
-              const budget = a2aRetryBudgetFor(agentId);
-              if (tries <= budget.turns) {
-                a2aTurnRetries.set(agentId, tries);
-                forceA2ATurn.add(agentId);
-                queueSelfWake(agentId, 'a2a-retrigger-retry');
-                logger.info('Retrying dedicated A2A turn for unreplied inbound', {
-                  agentId, intent: owed.intent, thread: owed.threadShort, attempt: tries,
-                }, agentId);
-              } else {
-                logger.warn('A2A reply gave up after max dedicated turns, recording synthetic reply', {
-                  agentId, intent: owed.intent, thread: owed.threadShort, from: owed.fromName,
-                  // The spent budget and its basis: a bare "max" could not tell a slow box from a dead one.
-                  turnsAllowed: budget.turns, patienceFloorSeconds: budget.floorSeconds,
-                  patienceBasis: budget.basis,
-                }, agentId);
-                recordA2AReply({ assignMessageId: owed.messageId, agentId, threadId: owed.threadShort, replyIntent: 'ABANDONED' });
-                // ABANDONED frees only this agent's enforcer; settle the asker's join piece now so an empty
-                // join tells the owner at once. Fire-and-forget, TTL backstops; dynamic: a2a-transport imports us.
-                import('./a2a-transport.js')
-                  .then((m) => m.failJoinPieceForAbandonedAsk(owed.messageId, owed.threadShort, agentId))
-                  .catch(() => { /* best effort, TTL sweep backstops */ });
-                a2aTurnRetries.delete(agentId);
-                forceA2ATurn.delete(agentId);
-              }
-            } else {
-              // A deferred A2A gets its own turn, no penalty: it has not yet had a turn it could fail.
-              forceA2ATurn.add(agentId);
-              queueSelfWake(agentId, 'a2a-retrigger-deferred');
-              logger.info('Queuing dedicated A2A turn for deferred inbound', {
-                agentId, intent: owed.intent, thread: owed.threadShort,
-              }, agentId);
-            }
-          } else {
-            a2aTurnRetries.delete(agentId);
-            forceA2ATurn.delete(agentId);
-          }
-        }
-      } catch (err) {
-        logger.warn('A2A re-trigger check failed', {
-          agentId, error: err instanceof Error ? err.message : String(err),
-        }, agentId);
       }
 
       // Clear a stale preempt flag: a mid-stream abort can skip the loop's own check, and a left-over

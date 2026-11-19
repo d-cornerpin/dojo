@@ -13,10 +13,6 @@ export const continuationContext = new Map<string, {
   address?: import('./v2/turn-address.js').TurnAddress;
 }>();
 
-// Set when a user turn supersedes an unreplied A2A (a wakeup gives it its own turn); retries bound the spin.
-export const forceA2ATurn = new Set<string>();
-export const a2aTurnRetries = new Map<string, number>();
-
 // A new session starts its untracked-work count from zero.
 export function clearServedConversations(agentId: string): void {
   untrackedWorkAcrossTurns.delete(agentId);
@@ -48,7 +44,6 @@ export function clearUntrackedWorkAcrossTurnsForConversation(agentId: string, co
   if (prev && prev.convKey === convKey) untrackedWorkAcrossTurns.delete(agentId);
 }
 
-export const lastTurnWasA2A = new Set<string>();
 export const MAX_A2A_TURN_RETRIES = 2;
 
 // Async-scoped so concurrent safe-batch calls keep their own id; a record for another agent gets null.

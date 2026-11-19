@@ -2,7 +2,6 @@
 // finalize (`steps/teardown/finalize-record.ts` hands back the ask and the engine event).
 
 import { resolveInbound, type InboundChannel } from '../../inbound-channel.js';
-import { findUnrepliedAssignForAgent, type UnrepliedAssign } from '../../../a2a-replies.js';
 import type { WaitingConversation } from '../../counterparty.js';
 import type { ChannelInboundContext } from '../../state.js';
 import type { TurnContext } from '../../../turn-context.js';
@@ -18,7 +17,6 @@ export interface InboundAndAbortOutputs {
   readonly triggeredByIMessage: boolean;
   readonly inboundChannel: InboundChannel;
   readonly inboundContext: ChannelInboundContext | null;
-  readonly unrepliedAssign: UnrepliedAssign | null;
 }
 
 export function runInboundAndAbort(
@@ -44,12 +42,6 @@ export function runInboundAndAbort(
   if (inboundChannel === 'phone' && inboundContext?.phoneCallSid) {
     turnCtx.phoneStreamCallSid = inboundContext.phoneCallSid;
   }
-  // Null once the latest ASSIGN/QUESTION/BLOCK was replied to (durable a2a_replies), so the enforcer
-  // never fires twice for an inbound already handled.
-  const unrepliedAssign = findUnrepliedAssignForAgent(agentId);
 
-  return {
-    revertTriggerStampOnAbort, triggeredByIMessage,
-    inboundChannel, inboundContext, unrepliedAssign,
-  };
+  return { revertTriggerStampOnAbort, triggeredByIMessage, inboundChannel, inboundContext };
 }

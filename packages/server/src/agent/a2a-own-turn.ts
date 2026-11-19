@@ -1,17 +1,18 @@
 // A peer's request is worked in its own conversation, never the owner's turn; this module adds no state.
 
-import { A2A_THREAD_SHORT_LENGTH, a2aThreadTokenMatches } from '@dojo/shared';
+import { a2aThreadTokenMatches } from '@dojo/shared';
 import { getDb } from '../db/connection.js';
-import { findUnrepliedAssignForAgent, findUnrepliedRequestsFrom, type UnrepliedAssign } from './a2a-replies.js';
+import { agentRequests, type AgentRequest } from './v2/owed.js';
 import { turnContext } from './turn-context.js';
 
-export function requestAwaitingItsOwnTurn(agentId: string): UnrepliedAssign | null {
-  try { return findUnrepliedAssignForAgent(agentId); } catch { return null; }
+/** The first request another agent is owed, the one the owed items serve first. */
+export function requestAwaitingItsOwnTurn(agentId: string): AgentRequest | null {
+  try { return agentRequests(agentId)[0] ?? null; } catch { return null; }
 }
 
 // `null` means "cannot be said": a caller that REFUSES must read it as "do not refuse". The test
 // is the request's sequence place against the turn's pickup mark, never a thread-name prefix match.
-export function liveTurnServes(agentId: string, owed: Pick<UnrepliedAssign, 'messageId'>): boolean | null {
+export function liveTurnServes(agentId: string, owed: Pick<AgentRequest, 'messageId'>): boolean | null {
   const bag = turnContext(agentId);
   if (!bag) return null;
   if (bag.kind !== 'a2a') return false;
@@ -28,9 +29,7 @@ export function requestOnThreadForAnotherTurn(agentId: string, threadId: string 
   if (!token) return null;
   const owed = requestAwaitingItsOwnTurn(agentId);
   if (!owed) return null;
-  const names = owed.threadId != null
-    ? token === owed.threadId || a2aThreadTokenMatches(token, owed.threadId)
-    : token === owed.threadShort || token.slice(0, A2A_THREAD_SHORT_LENGTH) === owed.threadShort;
+  const names = token === owed.threadId || a2aThreadTokenMatches(token, owed.threadId);
   if (!names || liveTurnServes(agentId, owed) !== false) return null;
   return {
     threadShort: owed.threadShort,
@@ -42,11 +41,10 @@ export function requestOnThreadForAnotherTurn(agentId: string, threadId: string 
 // The thread a threadless reply-intent send belongs on: an unreplied request this turn serves, else null.
 export function servedRequestThreadFrom(agentId: string, targetId: string): string | null {
   try {
-    const open = findUnrepliedRequestsFrom(agentId, targetId).filter((r) => liveTurnServes(agentId, r) !== false);
-    if (open.length <= 1) return open[0]?.threadId ?? null;
-    const picked = requestAwaitingItsOwnTurn(agentId);
-    const mine = open.find((r) => r.messageId === picked?.messageId);
-    return mine && liveTurnServes(agentId, mine) === true ? mine.threadId : null;
+    const open = agentRequests(agentId).filter((r) => r.fromId === targetId && liveTurnServes(agentId, r) !== false);
+    if (new Set(open.map((r) => r.threadId)).size <= 1) return open[0]?.threadId ?? null;
+    const served = turnContext(agentId)?.servedRequest;
+    return open.find((r) => r.messageId === served?.messageId)?.threadId ?? null;
   } catch { return null; }
 }
 

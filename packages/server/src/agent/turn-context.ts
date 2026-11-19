@@ -7,6 +7,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { AgentTurnState } from './v2/state.js';
 import type { PendingAttachment } from './pending-attachments.js';
+import type { AgentRequest } from './v2/owed.js';
 import { StreamingSpeechBuffer } from '../voice/text-sanitize.js';
 
 // Origin of the turn; the kind vocabulary must match migration 112.
@@ -104,6 +105,8 @@ export interface TurnContext {
   // The provider's reset the last model call met (cleared before each call), and a no-answer abort: finalize reads both.
   retryAt: number | null;
   abortHandBack: boolean;
+  // Another agent's request this turn serves; finalize marks it served.
+  servedRequest: AgentRequest | null;
 
   // Timer closures read it at fire time, so it lives on the bag; no driver let beside it.
   state: AgentTurnState | null;
@@ -154,6 +157,7 @@ export function openTurnContext(agentId: string): TurnContext {
     goingIdleDetectorRanThisTurn: false,
     retryAt: null,
     abortHandBack: false,
+    servedRequest: null,
     state: null,
   };
   openContexts.set(agentId, ctx);

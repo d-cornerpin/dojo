@@ -7,12 +7,10 @@ import { broadcast } from '../../../../gateway/ws.js';
 import { createLogger } from '../../../../logger.js';
 import { isRowUnserved } from '../../../../memory/message-store.js';
 import { messageIdAtSeq } from '../../../../memory/served-ask.js';
-import { forceA2ATurn, lastTurnWasA2A } from '../../../turn-state.js';
 import type { TurnContext } from '../../../turn-context.js';
-import type { UnrepliedAssign } from '../../../a2a-replies.js';
 import { parseA2ATrigger } from '../../classifiers/a2a.js';
 import type { WaitingConversation } from '../../counterparty.js';
-import type { OwedItem } from '../../owed.js';
+import type { AgentRequest, OwedItem } from '../../owed.js';
 import { resolveServedWork } from '../../stale-work-ids.js';
 import { engineEventRoot } from '../../work-lineage.js';
 import { a2aJobOrigin } from '../../../../work/job-origin.js';
@@ -29,7 +27,6 @@ export interface TurnClassificationInputs {
   readonly triggerRow: WaitingConversation['latest'];
   readonly chosenConvKey: string;
   readonly lastUserMessageContent: string;
-  readonly unrepliedAssign: UnrepliedAssign | null;
 }
 
 export interface TurnClassificationOutputs {
@@ -50,6 +47,8 @@ export interface TurnClassificationOutputs {
   readonly a2aReplyContext: { intent: string; threadShort: string; fromName: string } | null;
   readonly a2aReplyAssignMessageId: string | null;
   readonly a2aCounterpartyIdentity: { intent: string; threadShort: string; fromName: string } | null;
+  /** Another agent's request this turn serves, when it is the first thing owed. */
+  readonly unrepliedAssign: AgentRequest | null;
 }
 
 /** The helper's result at `rowid`, named for the turn's header. */
@@ -74,14 +73,9 @@ export async function runTurnClassification(
 ): Promise<PreflightOutcome<TurnClassificationOutputs>> {
   const { agentId, setAgentStatus } = ctx;
   const {
-    db, waitingConvs, openHumanWorkAtTurnStart, item, triggerRow, chosenConvKey,
-    lastUserMessageContent, unrepliedAssign,
+    db, waitingConvs, openHumanWorkAtTurnStart, item, triggerRow, chosenConvKey, lastUserMessageContent,
   } = input;
-  // An A2A turn is forced by the runtime or triggered by an unreplied most-recent A2A. On other turns A2A
-  // stays out of context, so inter-agent traffic cannot bleed into a user-facing reply.
-  const forcedA2ATurn = forceA2ATurn.has(agentId);
-  forceA2ATurn.delete(agentId);
-  // The most-recent inbound over every lane; a peer ASSIGN that arrived last is the trigger.
+  // The most-recent inbound over every lane.
   const mostRecentInbound = db.prepare(`
     SELECT seq AS rowid, content, lane, origin_intent, source_agent_id, a2a_thread_id, a2a_intent, a2a_requires_response, inbound_meta, served_by_turn
       FROM messages
@@ -100,16 +94,16 @@ export async function runTurnClassification(
   // A helper's result (an unserved peer DELIVERABLE/ANSWER/COMPLETE/FAIL) is the turn's subject when it is the first
   // thing owed. It needs no reply, but the turn must scope to it, or the deliverable is stripped from context.
   const terminalWakeA2A = item?.kind === 'agentResult' ? terminalWakeAt(db, Number(item.ref)) : null;
+  // Another agent's request is the turn's subject when it is the first thing owed. On other turns A2A stays out
+  // of context, so inter-agent traffic cannot bleed into a user-facing reply.
+  const unrepliedAssign = item?.kind === 'agentRequest' ? (item.request ?? null) : null;
   // The user always wins: a waiting human conversation makes this a user turn and any pending A2A
   // defers to its own turn. Engine events and A2A are never human conversations.
   const hasUnansweredUser = waitingConvs.length > 0;
   // Both A2A shapes scope the live tail to the A2A thread so the agent sees the message.
-  const a2aWakeTurn =
-    !hasUnansweredUser &&
-    ((unrepliedAssign !== null && (mostRecentIsA2A || forcedA2ATurn)) || terminalWakeA2A !== null);
-  if (a2aWakeTurn) lastTurnWasA2A.add(agentId); else lastTurnWasA2A.delete(agentId);
-  // A terminal wake drives the turn only when no reply-needed A2A competes for it.
-  const terminalWakeDrivesTurn = a2aWakeTurn && terminalWakeA2A !== null && unrepliedAssign === null;
+  const a2aWakeTurn = !hasUnansweredUser && (unrepliedAssign !== null || terminalWakeA2A !== null);
+  if (a2aWakeTurn) turnCtx.servedRequest = unrepliedAssign;
+  const terminalWakeDrivesTurn = a2aWakeTurn && terminalWakeA2A !== null;
   // The driving wake is claimed by its serve edge (`served_by_turn`, stamped in counterparty-and-record),
   // so it drives exactly one turn and is never re-relayed.
   if (terminalWakeDrivesTurn && terminalWakeA2A) {
@@ -205,6 +199,6 @@ export async function runTurnClassification(
   return preflightProceed({
     mostRecentInbound, mostRecentIsA2A, terminalWakeA2A, hasUnansweredUser, isA2ATurn,
     terminalWakeDrivesTurn, pendingEngineEvent, isEngineTurn, settledContextWakeTurn,
-    isNotificationTurn, a2aReplyContext, a2aReplyAssignMessageId, a2aCounterpartyIdentity,
+    isNotificationTurn, a2aReplyContext, a2aReplyAssignMessageId, a2aCounterpartyIdentity, unrepliedAssign,
   });
 }

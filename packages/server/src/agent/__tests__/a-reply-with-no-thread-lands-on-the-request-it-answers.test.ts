@@ -49,7 +49,7 @@ vi.mock('../runtime.js', () => ({ getAgentRuntime: () => ({ handleMessage: vi.fn
 import { runMigrations } from '../../db/migrations.js';
 import { openAsk, claimAsk, openDelegationJoin, joinPieces } from '../../work/store.js';
 import { openTurnContext, endTurnContext } from '../turn-context.js';
-import { recordA2AReply, findUnrepliedAssignForAgent } from '../a2a-replies.js';
+import { agentRequests } from '../v2/owed.js';
 import { runEmptyResponse } from '../v2/steps/post-call-classify/empty-response.js';
 import { advance, initState } from '../v2/state.js';
 import type { PostCallClassifyContext } from '../v2/steps/post-call-classify/index.js';
@@ -162,8 +162,7 @@ describe('t239 (a) — a reply-intent send with no thread_id goes on the request
 
   it('NEGATIVE: a request that was already replied to is not resolved to', async () => {
     await seedFanOut();
-    const owed = findUnrepliedAssignForAgent(SLOW)!;
-    recordA2AReply({ assignMessageId: owed.messageId, agentId: SLOW, threadId: T_SLOW, replyIntent: 'DELIVERABLE' });
+    await deliver({ from: SLOW, to: MAIN, intent: 'DELIVERABLE', payload: 'the story, on its thread', threadId: T_SLOW });
     const r = await deliver({ from: SLOW, to: MAIN, intent: 'DELIVERABLE', payload: 'a second, unrelated delivery' });
     expect(r.threadId).not.toBe(T_SLOW);
   });
@@ -179,10 +178,11 @@ describe('t239 (a) — a reply-intent send with no thread_id goes on the request
   it('AMBIGUOUS: with two unreplied requests, the one the sender\'s CURRENT turn serves wins', async () => {
     await seedFanOut();
     await deliver({ from: MAIN, to: SLOW, intent: 'QUESTION', payload: 'and what is the title?', threadId: 'thread-second-3333' });
-    // The runtime serves the newest unreplied request on a dedicated A2A turn that begins after it landed.
+    // The sender's A2A turn serves the newer request (the preflight records it on the bag).
     const bag = openTurnContext(SLOW);
     bag.kind = 'a2a';
     bag.pickupSeq = (db().prepare('SELECT MAX(seq) s FROM messages WHERE agent_id = ?').get(SLOW) as { s: number }).s;
+    bag.servedRequest = agentRequests(SLOW).find((r) => r.threadId === 'thread-second-3333') ?? null;
     const r = await deliver({ from: SLOW, to: MAIN, intent: 'ANSWER', payload: 'the title is The Bus' });
     endTurnContext(SLOW);
     expect(r.threadId).toBe('thread-second-3333');

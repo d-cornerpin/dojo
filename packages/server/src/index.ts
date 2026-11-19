@@ -415,19 +415,6 @@ async function main(): Promise<void> {
     }
   }
 
-  // 4b2. An unreplied A2A ASSIGN/QUESTION of the last 30 minutes lost its in-memory wakeup at restart: one kick per
-  // agent re-reads it, staggered. People and engine events are the owed clock's, armed below once the bridge is up.
-  try {
-    const { findUnrepliedAssignForAgent } = await import('./agent/a2a-replies.js');
-    const { getAgentRuntime } = await import('./agent/runtime.js');
-    const owing = (getDb().prepare("SELECT id FROM agents WHERE status != 'terminated'").all() as Array<{ id: string }>)
-      .map((r) => r.id).filter((id) => { try { return findUnrepliedAssignForAgent(id, 20, 30) !== null; } catch { return false; } });
-    owing.forEach((id, i) => setTimeout(() => { void getAgentRuntime().handleMessage(id, '').catch(() => { /* best effort */ }); }, (i + 1) * 300));
-    if (owing.length > 0) logger.info(`Boot re-drain: kicked ${owing.length} agent(s) owed an A2A reply after restart`);
-  } catch (err) {
-    logger.warn('Boot re-drain failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
-  }
-
   // 4b3. Boot re-drain of delegated owner questions (fail-closed backstop). resolveJoinsAtBoot lands a
   // reply that already arrived and fails closed (owner notice) when the asked agent is terminated or the
   // join is past its ttl_at; fresh joins are left to the reaper. It only relays or settles rows, never

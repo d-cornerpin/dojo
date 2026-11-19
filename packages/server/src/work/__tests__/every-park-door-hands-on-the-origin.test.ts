@@ -173,11 +173,10 @@ vi.mock('../../logger.js', () => ({
 
 import { runV2Turn } from '../../agent/v2/loop.js';
 import { runMigrations } from '../../db/migrations.js';
-import { insertMessage, insertEngineEvent } from '../../memory/message-store.js';
+import { insertMessage, insertEngineEvent, sweepById } from '../../memory/message-store.js';
 import { stoppedAgents, pendingWakeups, doomedPrefillCompactionSpent } from '../../agent/shared-state.js';
 import { continuationContext } from '../../agent/turn-state.js';
 import { deliverA2AMessage } from '../../agent/a2a-transport.js';
-import { recordA2AReply } from '../../agent/a2a-replies.js';
 import { beginJobRun, endJobRun, endJobCarry, jobCarriedIds } from '../task-freshness.js';
 import { jobOrigin } from '../job-origin.js';
 import { __resetBrakesForTests } from '../../memory/compaction-brakes.js';
@@ -300,8 +299,10 @@ async function pmJob(thread = THREAD, text = ASSIGN_TEXT, title = 'Supplier ledg
   const task = tasks[0];
   expect(task.a2a_thread_id, 'premise: a task the model opens is tied to no thread by its columns').toBeNull();
   expect(task.state).toBe('claimed');
-  const assignId = (db.prepare("SELECT id FROM messages WHERE agent_id = ? AND a2a_intent = 'ASSIGN' AND a2a_thread_id = ?").get(WORKER, thread) as { id: string }).id;
-  recordA2AReply({ assignMessageId: assignId, agentId: WORKER, threadId: thread, replyIntent: 'ANSWER' });   // the first reply went out
+  insertMessage({   // the first reply went out: it lands in the PM's store, as the transport writes it
+    agentId: PM, role: 'user', lane: 'a2a', sourceAgentId: WORKER, a2aThreadId: thread, a2aIntent: 'ANSWER',
+    content: `[A2A:ANSWER thread:${thread.slice(0, 8)} from:Worker] on it`,
+  });
   return { taskId: task.id };
 }
 
@@ -355,9 +356,9 @@ describe('t173b: the run 11 shape — the parking turn names no task, the task w
     try { await runV2Turn(WORKER); } finally { dateSpy.mockRestore(); world.clockMs = 0; }   // the next turn must not look fifteen minutes old
     const parked = lastTurnNumber();
     expect(turnRow(parked).subject_id, 'premise: the parking turn served the OTHER thread').not.toBe(THREAD);
-    // What the runtime did at that instant on the box: the retry budget spent, a synthetic reply recorded.
+    // What the engine did at that instant on the box: the retry budget spent, the request given up.
     const questionId = (mockDb.current!.prepare("SELECT id FROM messages WHERE agent_id = ? AND a2a_intent = 'QUESTION'").get(WORKER) as { id: string }).id;
-    recordA2AReply({ assignMessageId: questionId, agentId: WORKER, threadId: OTHER_THREAD, replyIntent: 'ABANDONED' });
+    sweepById(questionId);
     world.clockPerTool = 0;
     await expectTheContinuationHoldsTheOrigin(parked, { reason: 'turn-budget-continuation', how: 'drain' }, 'iteration_cap');
   });
