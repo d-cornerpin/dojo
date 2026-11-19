@@ -35,7 +35,6 @@ import { auditLog, agentCanSelfCompleteById, toolsLogger as logger } from '../ut
 import { activeRuns } from '../../shared-state.js';
 import { turnContext } from '../../turn-context.js';
 import { decideApproval } from '../../approval-decision.js';
-import { findInboundAssignByThread, recordA2AReply } from '../../a2a-replies.js';
 import { requestOnThreadForAnotherTurn } from '../../a2a-own-turn.js';
 // Every send door goes through this ONE delivery-ledger writer, see the call sites below.
 import { recordAtDoor } from '../../v2/outbound.js';
@@ -547,19 +546,6 @@ export const agentsHandlers: ToolHandlerMap = {
 
               if (result.delivered) {
                 const effectiveIntent = result.autoPromotedFromFyi ? 'DELIVERABLE' : intent;
-                // Mark any open inbound ASSIGN/QUESTION/BLOCK on this thread as replied; else
-                // the missed-reply enforcer re-derives the debt and re-fires on every turn.
-                try {
-                  const inbound = findInboundAssignByThread(agentId, result.threadId);
-                  if (inbound) {
-                    recordA2AReply({
-                      assignMessageId: inbound.messageId,
-                      agentId,
-                      threadId: result.threadId,
-                      replyIntent: effectiveIntent,
-                    });
-                  }
-                } catch { /* best effort, never block the send on bookkeeping */ }
                 auditLog(agentId, 'tool_call', 'send_to_agent', 'success',
                   `to:${agentRef} intent:${effectiveIntent}${result.autoPromotedFromFyi ? '(promoted from FYI)' : ''} thread:${result.threadId.slice(0, 8)} requires_response:${requiresResponse}${result.autoCreatedTaskId ? ` task:${result.autoCreatedTaskId.slice(0, 8)}` : ''}`,
                 );
@@ -571,7 +557,7 @@ export const agentsHandlers: ToolHandlerMap = {
                   providerId: result.threadId, threadId: result.threadId, recipient: agentRef, taskId,
                   sentText: payload, detail: { intent: effectiveIntent }, skipAudit: true,
                 });
-                // This door wrote only the reply mark, audit row and receipt, never a
+                // This door wrote only the audit row and receipt, never a
                 // `deliveries` row. It is written THROUGH `recordAtDoor`, the one ledger
                 // writer, so inside an outbound scope it folds into that scope's single row
                 // instead of double-counting the piece delivery it supersedes. Channel `a2a`

@@ -4,7 +4,7 @@
 
 import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
-import { a2aThreadTokenMatchesSql, channelOfSendTool, type ChannelKind } from '@dojo/shared';
+import { channelOfSendTool, type ChannelKind } from '@dojo/shared';
 import { recipientIdsMatch } from '../recipient-identity.js';
 import type { ToolReceiptRow } from '../../receipts/store.js';
 import { recordedInstant } from '../../memory/message-stamp.js';
@@ -72,52 +72,6 @@ export function getRecentOutbound(
       agentId, error: err instanceof Error ? err.message : String(err),
     }, agentId);
     return [];
-  }
-}
-
-/** Did this agent already reply on this A2A thread, per a verified `send_to_agent` receipt? `a2a_replies` alone
- *  misses a delivered reply that never bound to an inbound assign message. Matching mirrors
- *  `hasPriorReplyOnThread` (a2a-replies.ts): an exact full id wins, else a length-8 legacy row counts; the
- *  prefix match is only for callers without a full id, since `makeThreadId` ids share prefixes. */
-export function hasVerifiedA2ASendOnThread(
-  agentId: string,
-  threadShort: string,
-  fullThreadId: string | null = null,
-): boolean {
-  if (!threadShort || threadShort.length < 8) return false;
-  try {
-    const db = getDb();
-    // `verified = 1` and nothing else: an unverified receipt is the engine recording that it
-    // TRIED, and a note about an undelivered reply is exactly the note that should still fire.
-    if (fullThreadId) {
-      const exact = db.prepare(
-        `SELECT 1 FROM tool_receipts
-          WHERE agent_id = ? AND tool = 'send_to_agent' AND verified = 1 AND thread_id = ?
-          LIMIT 1`,
-      ).get(agentId, fullThreadId);
-      if (exact) return true;
-      const legacy = db.prepare(
-        `SELECT 1 FROM tool_receipts
-          WHERE agent_id = ? AND tool = 'send_to_agent' AND verified = 1
-            AND length(thread_id) = 8 AND thread_id = ?
-          LIMIT 1`,
-      ).get(agentId, threadShort);
-      return !!legacy;
-    }
-    // Both thread-id spellings, matched by the one shared SQL helper, as in `hasPriorReplyOnThread`.
-    const row = db.prepare(
-      `SELECT 1 FROM tool_receipts
-        WHERE agent_id = ? AND tool = 'send_to_agent' AND verified = 1
-          AND ${a2aThreadTokenMatchesSql('thread_id')}
-        LIMIT 1`,
-    ).get(agentId, threadShort, threadShort);
-    return !!row;
-  } catch (err) {
-    // The safe failure direction: with no evidence the enforcer still nudges.
-    logger.warn('hasVerifiedA2ASendOnThread failed (non-fatal)', {
-      agentId, error: err instanceof Error ? err.message : String(err),
-    }, agentId);
-    return false;
   }
 }
 
