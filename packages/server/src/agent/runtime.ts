@@ -390,7 +390,7 @@ export function stopAgent(agentId: string): void {
 export function stopByOwner(agentId: string): { ended: number; repliesNotSent: number; nothingRunning?: true } {
   let s: StoppedRequests = { liveRun: false, asks: [], runTasks: [], requests: [], jobs: [] };
   try { s = stoppedRequestsOf(agentId); } catch (err) { logger.error('stop: the request being served could not be read', { error: String(err) }, agentId); }
-  if (s.asks.length + s.runTasks.length + s.requests.length === 0 && !runIsLive(agentId)) return { ended: 0, repliesNotSent: 0, nothingRunning: true };
+  if (s.asks.length + s.runTasks.length + s.requests.length + s.jobs.length === 0 && !runIsLive(agentId)) return { ended: 0, repliesNotSent: 0, nothingRunning: true };
   try {
     return withUnit(() => {
       const dropped = suppressQueuedReplies(agentId, s.liveRun ? s.asks : undefined);

@@ -13,6 +13,7 @@ import { stoppedAgents } from '../shared-state.js';
 import { reconcileOrphanedClaims } from '../../work/orphaned-claims.js';
 import { healStuckClaims } from '../../work/ask-remediation.js';
 import { freshAgentsDb, testDb, HELPER } from './helpers/agent-requests.js';
+import { seedTrackerTask } from '../../work/__tests__/work-fixture.js';
 import { ownerAsks, stretch, rowOf, tasksOf } from './helpers/long-job.js';
 
 // A run's start clears the Stop flag; these turns start without the runtime, so each test starts clear.
@@ -71,6 +72,14 @@ describe('stop ends the request and nothing serves it again', () => {
     nothingComesBack();
     reconcileOrphanedClaims({ agentId: HELPER });
     healStuckClaims();
+    nothingComesBack();
+  });
+
+  it("Stop with the agent's own task parked and no request behind it ends that job", () => {
+    seedTrackerTask(testDb(), { id: 'own-task', agentId: HELPER, title: 'Tidy the archive', next_attempt_at: Date.now() - 1_000 });
+    expect(nextOwed(HELPER).map((i) => i.kind)).toEqual(['job']);
+    expect(stopByOwner(HELPER).nothingRunning).toBeUndefined();
+    expect(rowOf('own-task')).toMatchObject({ due: null, hold: 'paused' });
     nothingComesBack();
   });
 });
