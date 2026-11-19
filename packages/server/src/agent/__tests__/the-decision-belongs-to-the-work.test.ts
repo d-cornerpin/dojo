@@ -54,6 +54,7 @@ import { insertMessage } from '../../memory/message-store.js';
 import { transition } from '../../work/store.js';
 import { decideApproval } from '../approval-decision.js';
 import { runTurnClassification } from '../v2/steps/preflight/turn-classification.js';
+import { nextOwed } from '../v2/owed.js';
 import type { PreflightContext, PreflightScratch } from '../v2/steps/preflight/index.js';
 import type { TurnContext } from '../turn-context.js';
 
@@ -174,6 +175,7 @@ describe('t232 (c) a decision on work that is STILL OPEN wakes the requester INT
     // The woken turn: the persisted wake row is a pending engine event; classify it as the loop does.
     // The owner's own message is already served (the agent picked the ask up and is mid-work), exactly as live.
     db().prepare('UPDATE messages SET served_by_turn = 1 WHERE id = ?').run(ask.messageId);
+    transition(ask.workId, { to: 'claimed', by: 'agent', actorId: WORKER, claimedByTurn: 1, reason: 'pickup' });
     const turnCtx = await classify();
     expect(turnCtx.root?.kind).toBe('ask');
     expect(turnCtx.root?.id).toBe(ask.messageId);
@@ -252,7 +254,7 @@ async function classify(): Promise<TurnContext> {
     engineStartAckAfterMs: 0,
   } as unknown as PreflightContext;
   const out = await runTurnClassification(turnCtx, ctx, scratch, {
-    db: db(), waitingConvs: [], openHumanWorkAtTurnStart: false, triggerRow: null,
+    db: db(), waitingConvs: [], openHumanWorkAtTurnStart: false, item: nextOwed(WORKER)[0], triggerRow: null,
     chosenConvKey: '', lastUserMessageContent: '', unrepliedAssign: null,
   });
   if (out.directive !== 'proceed') throw new Error(`expected proceed, got ${out.reason}`);

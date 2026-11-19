@@ -125,7 +125,7 @@ export async function runPreflight(
   if (trigger.directive === 'abandon') return trigger;
   const {
     db, agent, configuredModelId, isAutoRouted, contextModelId, contextWindow,
-    waitingConvs, openHumanWorkAtTurnStart, continuation, isHumanContinuation,
+    waitingConvs, openHumanWorkAtTurnStart, item, continuation, isHumanContinuation,
     chosenConvKey, chosenConversationId, triggerRow, lastUserMessageContent,
     lastUserMessageId, triggerWorkId, triggerConversationId,
   } = trigger.outputs;
@@ -136,7 +136,7 @@ export async function runPreflight(
   } = runInboundAndAbort(turnCtx, ctx, { triggerRow, lastUserMessageContent });
 
   const classified = await runTurnClassification(turnCtx, ctx, sc, {
-    db, waitingConvs, openHumanWorkAtTurnStart, triggerRow, chosenConvKey,
+    db, waitingConvs, openHumanWorkAtTurnStart, item, triggerRow, chosenConvKey,
     lastUserMessageContent, unrepliedAssign,
   });
   if (classified.directive === 'abandon') return classified;

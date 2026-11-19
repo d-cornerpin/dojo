@@ -85,6 +85,7 @@ vi.mock('../../../prompt/registry/assembler.js', async (importOriginal) => ({
 import { advance, initState, type AgentTurnState } from '../state.js';
 import { runAssemble, ASSEMBLE_PHASE, type AssembleContext } from '../steps/assemble/index.js';
 import { runTurnClassification } from '../steps/preflight/turn-classification.js';
+import { nextOwed } from '../owed.js';
 import type { PreflightContext, PreflightScratch } from '../steps/preflight/index.js';
 import { getPendingEngineEvent, ENGINE_EVENT_EXPIRY_HOURS } from '../counterparty.js';
 import type { TurnContext } from '../../turn-context.js';
@@ -336,7 +337,7 @@ describe('T83 live chain — NOTIFICATION TURN: real classification → runAssem
     const classified = await runTurnClassification(turnCtxForClassification, preflightCtx, scratch, {
       db: mockDb.current!,
       waitingConvs: [],
-      openHumanWorkAtTurnStart: false,
+      openHumanWorkAtTurnStart: false, item: nextOwed(AGENT)[0],
       triggerRow: null,
       chosenConvKey: '',
       lastUserMessageContent: '',

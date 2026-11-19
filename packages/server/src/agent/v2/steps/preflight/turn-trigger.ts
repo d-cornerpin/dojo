@@ -10,7 +10,7 @@ import { stampConversationIdByRowid } from '../../../../memory/message-store.js'
 import { resolveOrCreateConversation } from '../../../../memory/conversations.js';
 import { claimAsk, isStateConflict } from '../../../../work/store.js';
 import { getWaitingHumanConversations, type WaitingConversation, type TurnCounterparty } from '../../counterparty.js';
-import { hasOpenHumanWork } from '../../answered-edge.js';
+import { nextOwed, type OwedItem } from '../../owed.js';
 import { preflightAbandon, preflightProceed, type PreflightOutcome } from '../step-outcome.js';
 import type { TurnContext } from '../../../turn-context.js';
 import type { PreflightContext } from './index.js';
@@ -26,6 +26,8 @@ export interface TurnTriggerOutputs {
   readonly contextWindow: number;
   readonly waitingConvs: WaitingConversation[];
   readonly openHumanWorkAtTurnStart: boolean;
+  /** The first thing this agent owes now, read once before the pickup claim; the turn serves it. */
+  readonly item: OwedItem | undefined;
   readonly continuation: { convKey: string; conversationId: string | null; counterparty: TurnCounterparty; address?: import('../../turn-address.js').TurnAddress } | undefined;
   readonly isHumanContinuation: boolean;
   readonly chosenConvKey: string;
@@ -61,12 +63,14 @@ export function runTurnTrigger(
   const contextWindow = agentTurnWindow(agentId, contextModelId);
 
 
-  // Serve the first waiting human conversation in the one order (the owner, then never served, then oldest),
-  // classified by structured origin; engine events and A2A are not human conversations.
+  // The turn serves the first thing owed. A person comes first, and is the waiting reader's first conversation,
+  // in the same order (the owner, then never served, then oldest).
+  const item = nextOwed(agentId)[0];
+  if (item) logger.info('owed: turn serves', { agentId, kind: item.kind, rank: item.rank }, agentId);
   const waitingConvs = getWaitingHumanConversations(agentId);
   // Read before the pickup claim: afterwards this turn's own ask is claimed, and every user turn would
   // look like a settled-context wake.
-  const openHumanWorkAtTurnStart = hasOpenHumanWork(agentId);
+  const openHumanWorkAtTurnStart = item?.kind === 'person';
   // A continuation stashed by an engine auto-continue is restored and consumed once; a waiting human wins.
   const continuation = continuationContext.get(agentId);
   continuationContext.delete(agentId);
@@ -132,7 +136,7 @@ export function runTurnTrigger(
 
   return preflightProceed({
     db, agent, configuredModelId, isAutoRouted, contextModelId, contextWindow,
-    waitingConvs, openHumanWorkAtTurnStart, continuation, isHumanContinuation,
+    waitingConvs, openHumanWorkAtTurnStart, item, continuation, isHumanContinuation,
     chosenConvKey, chosenConversationId, triggerRow, lastUserMessageContent,
     lastUserMessageId, triggerWorkId, triggerConversationId,
   });

@@ -293,20 +293,6 @@ export function stillClaimedWork(
 }
 
 
-/** Scope `kind='ask'` deliberately: an ask is a person waiting, a task is work owed to self,
- *  and widening to every open row would silence the settled-context hint on any box with a
- *  backlog. The `messages` JOIN is load-bearing: an ask whose root row is gone can never serve. */
-export function hasOpenHumanWork(agentId: string): boolean {
-  const hit = getDb().prepare(
-    `SELECT 1 AS ok
-       FROM work w JOIN messages m ON m.id = w.root_id AND m.agent_id = w.agent_id
-      WHERE w.agent_id = ? AND w.kind = 'ask' AND w.state = 'open' AND w.requester = 'owner'
-      LIMIT 1`,
-  ).get(agentId) as { ok: number } | undefined;
-  return hit !== undefined;
-}
-
-
 export interface TurnOutcome {
   exitReason: TurnExitReason | null;
   answered: boolean;

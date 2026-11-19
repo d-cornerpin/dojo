@@ -11,7 +11,8 @@ import { forceA2ATurn, lastTurnWasA2A } from '../../../turn-state.js';
 import type { TurnContext } from '../../../turn-context.js';
 import type { UnrepliedAssign } from '../../../a2a-replies.js';
 import { parseA2ATrigger } from '../../classifiers/a2a.js';
-import { getPendingEngineEvent, type WaitingConversation } from '../../counterparty.js';
+import type { WaitingConversation } from '../../counterparty.js';
+import type { OwedItem } from '../../owed.js';
 import { resolveServedWork } from '../../stale-work-ids.js';
 import { engineEventRoot } from '../../work-lineage.js';
 import { a2aJobOrigin } from '../../../../work/job-origin.js';
@@ -24,6 +25,7 @@ export interface TurnClassificationInputs {
   readonly db: Database;
   readonly waitingConvs: WaitingConversation[];
   readonly openHumanWorkAtTurnStart: boolean;
+  readonly item: OwedItem | undefined;
   readonly triggerRow: WaitingConversation['latest'];
   readonly chosenConvKey: string;
   readonly lastUserMessageContent: string;
@@ -50,6 +52,20 @@ export interface TurnClassificationOutputs {
   readonly a2aCounterpartyIdentity: { intent: string; threadShort: string; fromName: string } | null;
 }
 
+/** The helper's result at `rowid`, named for the turn's header. */
+function terminalWakeAt(db: Database, rowid: number): TurnClassificationOutputs['terminalWakeA2A'] {
+  const b = db.prepare('SELECT a2a_intent, a2a_thread_id, source_agent_id FROM messages WHERE rowid = ?')
+    .get(rowid) as { a2a_intent: string; a2a_thread_id: string; source_agent_id: string | null } | undefined;
+  if (!b) return null;
+  const sender = b.source_agent_id
+    ? (db.prepare('SELECT name FROM agents WHERE id = ?').get(b.source_agent_id) as { name?: string } | undefined)
+    : undefined;
+  return {
+    intent: b.a2a_intent, threadShort: b.a2a_thread_id.slice(0, 8), threadId: b.a2a_thread_id,
+    fromName: sender?.name ?? b.source_agent_id ?? 'another agent', rowid,
+  };
+}
+
 export async function runTurnClassification(
   turnCtx: TurnContext,
   ctx: PreflightContext,
@@ -58,7 +74,7 @@ export async function runTurnClassification(
 ): Promise<PreflightOutcome<TurnClassificationOutputs>> {
   const { agentId, setAgentStatus } = ctx;
   const {
-    db, waitingConvs, openHumanWorkAtTurnStart, triggerRow, chosenConvKey,
+    db, waitingConvs, openHumanWorkAtTurnStart, item, triggerRow, chosenConvKey,
     lastUserMessageContent, unrepliedAssign,
   } = input;
   // An A2A turn is forced by the runtime or triggered by an unreplied most-recent A2A. On other turns A2A
@@ -81,56 +97,9 @@ export async function runTurnClassification(
   const mostRecentIsA2A =
     mostRecentInbound?.lane !== 'events' &&
     parseA2ATrigger(mostRecentInbound?.content ?? null) !== null;
-  // Terminal wake: an unserved peer DELIVERABLE/ANSWER/COMPLETE/FAIL that woke this agent. It needs no
-  // reply, but the turn must scope to it, or the deliverable that woke the agent is stripped from context.
-  const TERMINAL_WAKE_INTENTS = new Set(['DELIVERABLE', 'ANSWER', 'COMPLETE', 'FAIL']);
-  let terminalWakeA2A: { intent: string; threadShort: string; threadId: string; fromName: string; rowid: number } | null = null;
-  if (
-    mostRecentInbound &&
-    mostRecentInbound.lane !== 'events' &&
-    mostRecentInbound.a2a_thread_id &&
-    mostRecentInbound.a2a_intent &&
-    TERMINAL_WAKE_INTENTS.has(mostRecentInbound.a2a_intent) &&
-    mostRecentInbound.a2a_requires_response === 1 &&
-    mostRecentInbound.served_by_turn === null
-  ) {
-    const senderRow = mostRecentInbound.source_agent_id
-      ? (db.prepare('SELECT name FROM agents WHERE id = ?').get(mostRecentInbound.source_agent_id) as { name?: string } | undefined)
-      : undefined;
-    terminalWakeA2A = {
-      intent: mostRecentInbound.a2a_intent,
-      threadShort: mostRecentInbound.a2a_thread_id.slice(0, 8),
-      threadId: mostRecentInbound.a2a_thread_id,
-      fromName: senderRow?.name ?? mostRecentInbound.source_agent_id ?? 'another agent',
-      rowid: mostRecentInbound.rowid,
-    };
-  }
-  // A newer inbound can bury the wake, so fall back to the newest unserved terminal wake.
-  if (!terminalWakeA2A) {
-    try {
-      const { findUnservedTerminalWake } = await import('../../counterparty.js');
-      const buried = findUnservedTerminalWake(agentId);
-      if (buried) {
-        const b = db.prepare('SELECT a2a_intent, a2a_thread_id, source_agent_id FROM messages WHERE rowid = ?')
-          .get(buried.rowid) as { a2a_intent: string; a2a_thread_id: string; source_agent_id: string | null } | undefined;
-        if (b) {
-          const senderRow2 = b.source_agent_id
-            ? (db.prepare('SELECT name FROM agents WHERE id = ?').get(b.source_agent_id) as { name?: string } | undefined)
-            : undefined;
-          terminalWakeA2A = {
-            intent: b.a2a_intent,
-            threadShort: b.a2a_thread_id.slice(0, 8),
-            threadId: b.a2a_thread_id,
-            fromName: senderRow2?.name ?? b.source_agent_id ?? 'another agent',
-            rowid: buried.rowid,
-          };
-          logger.info('v2: buried terminal wake selected (newer non-wake inbound had hidden it)', {
-            agentId, intent: b.a2a_intent, thread: b.a2a_thread_id.slice(0, 8),
-          }, agentId);
-        }
-      }
-    } catch { /* best effort; the turn falls back to normal classification */ }
-  }
+  // A helper's result (an unserved peer DELIVERABLE/ANSWER/COMPLETE/FAIL) is the turn's subject when it is the first
+  // thing owed. It needs no reply, but the turn must scope to it, or the deliverable is stripped from context.
+  const terminalWakeA2A = item?.kind === 'agentResult' ? terminalWakeAt(db, Number(item.ref)) : null;
   // The user always wins: a waiting human conversation makes this a user turn and any pending A2A
   // defers to its own turn. Engine events and A2A are never human conversations.
   const hasUnansweredUser = waitingConvs.length > 0;
@@ -151,7 +120,7 @@ export async function runTurnClassification(
 
   // Engine turn: only when no human waits and it is not an A2A turn; the assembler then scopes the tail to
   // the event. A pending event is used, not the most-recent inbound, so a human message cannot starve it.
-  const pendingEngineEvent = (!a2aWakeTurn && !hasUnansweredUser) ? getPendingEngineEvent(agentId) : null;
+  const pendingEngineEvent = (!a2aWakeTurn && !hasUnansweredUser && item?.kind === 'clock') ? (item.event ?? null) : null;
   const isEngineTurn = !a2aWakeTurn && !hasUnansweredUser && pendingEngineEvent != null;
   const jobA2A = !a2aWakeTurn && !hasUnansweredUser && !isEngineTurn && !chosenConvKey ? a2aJobOrigin(agentId) : null;
   if (jobA2A) turnCtx.root = { kind: 'a2a', id: jobA2A.threadId, sourceMessageId: null };
@@ -159,13 +128,6 @@ export async function runTurnClassification(
   // Settled-context wake: no human ask was open at turn start, so every visible conversation is answered;
   // the reply's channel push is held in the dashboard, logged, and counted toward the proactive-send backoff.
   const settledContextWakeTurn = !openHumanWorkAtTurnStart;
-  // The settled read and the waiting set apply the same origin verdict, so a disagreement is a defect
-  // (a missing root message, or a producer opening work for something that is not a person asking).
-  if (openHumanWorkAtTurnStart !== hasUnansweredUser) {
-    logger.warn('v2: the settled read and the waiting set DISAGREE about whether a person is waiting', {
-      agentId, openHumanWorkAtTurnStart, waitingConversations: waitingConvs.length,
-    }, agentId);
-  }
   // Notification turn: no trigger row, not A2A or engine, and the newest inbound is an unauthorized
   // notice. It gets its own header telling the model not to message the user unless it matters.
   const isNotificationTurn =
