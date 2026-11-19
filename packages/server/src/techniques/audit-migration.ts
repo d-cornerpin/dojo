@@ -4,6 +4,7 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
+import { setConfigValue } from '../config/config-value.js';
 import { insertMessage } from '../memory/message-store.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
@@ -40,10 +41,7 @@ export async function runTechniqueDependencyAuditOnce(): Promise<void> {
   const countRow = db.prepare("SELECT COUNT(*) AS n FROM techniques WHERE state NOT IN ('archived', 'disabled')").get() as { n: number };
   if (countRow.n === 0) {
     logger.info('No techniques present — marking audit as dispatched (no-op)');
-    db.prepare(`
-      INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
-      ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = datetime('now')
-    `).run(FLAG_KEY, new Date().toISOString(), new Date().toISOString());
+    setConfigValue(FLAG_KEY, new Date().toISOString());
     return;
   }
 
@@ -101,10 +99,7 @@ export async function runTechniqueDependencyAuditOnce(): Promise<void> {
 
     // Persist the flag so this never fires again on this install.
     const now = new Date().toISOString();
-    db.prepare(`
-      INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
-      ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = datetime('now')
-    `).run(FLAG_KEY, now, now);
+    setConfigValue(FLAG_KEY, now);
 
     logger.info('Technique dependency audit dispatched to trainer', {
       trainerId, trainerName, techniqueCount: countRow.n,
