@@ -60,11 +60,13 @@ export function refuseSmallMainModel(
   return smallMainModelMessage(w.name, w.window);
 }
 
-/** True for a model that makes pictures, video, music or speech, embeds text, or is the Dojo's own decision model. */
+/** True for a model that makes pictures, video, music or speech, turns speech into text only, embeds text, or is the Dojo's own decision model. */
 export function isNonChatModel(capabilitiesJson: string | null | undefined): boolean {
   let caps: unknown;
   try { caps = JSON.parse(capabilitiesJson ?? '[]'); } catch { return false; }
-  return Array.isArray(caps) && caps.some((c) => typeof c === 'string' && (c.endsWith('generation') || c === 'embedding' || c === 'decision'));
+  if (!Array.isArray(caps)) return false;
+  return caps.some((c) => typeof c === 'string' && (c.endsWith('generation') || c === 'embedding' || c === 'decision'))
+    || (caps.includes('transcription') && !caps.includes('tools'));
 }
 
 /** The refusal for setting a model that is not a chat model as an agent's model; null for a chat model, an unknown
@@ -76,7 +78,7 @@ function refuseNonChatModel(modelId: string | null | undefined, currentModelId?:
     row = getDb().prepare('SELECT name, capabilities FROM models WHERE id = ?').get(modelId) as typeof row;
   } catch { return null; }
   if (!row || !isNonChatModel(row.capabilities)) return null;
-  return `${row.name} is not a chat model: it makes pictures, video, music or speech, embeds text, or is the Dojo's own decision model. An agent needs a chat model; choose another one.`;
+  return `${row.name} is not a chat model: it makes pictures, video, music or speech, only turns speech into text, embeds text, or is the Dojo's own decision model. An agent needs a chat model; choose another one.`;
 }
 
 /** Why a picker cannot offer this model as an agent's model, in the few words the picker shows; null when it can. */
