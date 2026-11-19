@@ -1,7 +1,6 @@
 // Resolves the turn's inbound channel and builds the abort revert, which hands back both claims (the
 // human ask and the engine event) when a turn aborts with no answer.
 
-import type { Database } from 'better-sqlite3';
 import { resolveInbound, type InboundChannel } from '../../inbound-channel.js';
 import { findUnrepliedAssignForAgent, type UnrepliedAssign } from '../../../a2a-replies.js';
 import { releaseEngineEventByRowid } from '../../../../memory/message-store.js';
@@ -12,7 +11,6 @@ import type { TurnContext } from '../../../turn-context.js';
 import type { PreflightContext, PreflightScratch } from './index.js';
 
 export interface InboundAndAbortInputs {
-  readonly db: Database;
   readonly triggerRow: WaitingConversation['latest'];
   readonly triggerWorkId: string | null;
   readonly lastUserMessageContent: string;
@@ -20,8 +18,6 @@ export interface InboundAndAbortInputs {
 
 export interface InboundAndAbortOutputs {
   readonly revertTriggerStampOnAbort: () => void;
-  readonly latestUserSource: 'voice' | 'text' | null;
-  readonly latestTtsEngine: 'local' | 'cloud' | null;
   readonly triggeredByIMessage: boolean;
   readonly inboundChannel: InboundChannel;
   readonly inboundContext: ChannelInboundContext | null;
@@ -35,7 +31,7 @@ export function runInboundAndAbort(
   input: InboundAndAbortInputs,
 ): InboundAndAbortOutputs {
   const { agentId } = ctx;
-  const { db, triggerRow, triggerWorkId, lastUserMessageContent } = input;
+  const { triggerRow, triggerWorkId, lastUserMessageContent } = input;
   // Hands a stranded ask back to the waiting set so the runtime drain re-serves it after a transient
   // failure. Only on no-answer abort paths, and refused once the turn made a side effect (read live from
   // the bag at abort time), or the ask would be answered or acted on twice.
@@ -61,20 +57,6 @@ export function runInboundAndAbort(
       } catch { /* best effort, recovery, never block the abort */ }
     }
   };
-  // Picks the voice-conduct block, which rides the volatile turn-context tail, never the cached prefix.
-  const latestUserSource: 'voice' | 'text' | null =
-    triggerRow?.channel === 'voice' ? 'voice' : triggerRow ? 'text' : null;
-  // The active TTS engine picks the flat or the expressive voice addendum; resolved once per turn.
-  let latestTtsEngine: 'local' | 'cloud' | null = null;
-  if (latestUserSource === 'voice') {
-    try {
-      const ttsRow = db.prepare("SELECT value FROM config WHERE key = ?")
-        .get('voice.tts_engine') as { value: string } | undefined;
-      latestTtsEngine = ttsRow?.value === 'cloud' ? 'cloud' : 'local';
-    } catch {
-      latestTtsEngine = 'local';
-    }
-  }
   const triggeredByIMessage = lastUserMessageContent?.includes('[SOURCE: IMESSAGE FROM') ?? false;
   // One resolver for the inbound channel and reply context; the reply-destination resolver reads them.
   const resolvedInbound = resolveInbound({
@@ -94,7 +76,7 @@ export function runInboundAndAbort(
   const unrepliedAssign = findUnrepliedAssignForAgent(agentId);
 
   return {
-    revertTriggerStampOnAbort, latestUserSource, latestTtsEngine, triggeredByIMessage,
+    revertTriggerStampOnAbort, triggeredByIMessage,
     inboundChannel, inboundContext, unrepliedAssign,
   };
 }
