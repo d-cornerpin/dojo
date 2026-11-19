@@ -1,5 +1,5 @@
-// A request held on its job is released when no task linked to it still works: the task ending, or the owner
-// holding it (the owner's cancel, his close, his hold on the board). It closes on a real answer since the hold, else it goes back owed so the agent tells the person.
+// A request held on its job is released when no task linked to it still works: the owner's close or hold closes it
+// on a real answer since the hold, else it goes back owed; the owner's cancel calls the request off with its job.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 vi.mock('../../db/connection.js', async () => (await import('./helpers/agent-requests.js')).connectionMock());
@@ -23,10 +23,10 @@ async function aHeldJob(): Promise<{ ask: string; task: string }> {
 const conversationOf = (ask: string): string | null => (testDb().prepare('SELECT conversation_id AS c FROM work WHERE id = ?').get(ask) as { c: string | null }).c;
 
 describe('a held request is released when its job ends or the owner holds it', () => {
-  it('the task is cancelled with no answer since the hold: the request is owed again', async () => {
+  it('the owner cancels the task: the request he waited on is called off with it', async () => {
     const { ask, task } = await aHeldJob();
     expect(decide({ workId: task, deciderAgentId: null, verdict: 'cancel', reason: 'not needed' }).kind).toBe('decided');
-    expect(rowOf(ask).state).toBe('open');
+    expect(rowOf(ask).state).toBe('abandoned');
   });
 
   it('the owner holds the task: the request is owed again', async () => {

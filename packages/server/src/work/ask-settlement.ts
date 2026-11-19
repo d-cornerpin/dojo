@@ -843,11 +843,15 @@ function settleOnAsyncResult(
   const heldAt = ask.state === 'blocked' && jobs.out === 0 ? jobHeldAt(ask.id) : null;
   if (heldAt && !linkedTaskOf(ask.agent_id, ask.root_id, { ownerHeldEnds: true })) {
     const late = realAnswerInConversationSince(ask.agent_id, ask.conversation_id, heldAt);
+    // The owner called the job off: so is the request (the async arm's own rule).
+    const calledOff = !late && (getDb().prepare(`SELECT state FROM work WHERE kind = 'task' AND agent_id = ? AND source_message_id = ?
+      ORDER BY closed_at DESC LIMIT 1`).get(ask.agent_id, ask.root_id) as { state: string } | undefined)?.state === 'abandoned';
     const r = late
       ? transition(ask.id, { to: 'done', by: 'agent', actorId, resultDeliveryId: late.id, expectedState: 'blocked', reason: `its job ended; answered via ${late.tool}` })
+      : calledOff ? transition(ask.id, { to: 'abandoned', by: 'owner', actorId: 'owner', expectedState: 'blocked', reason: 'the owner called off the job this request waited on' })
       : transition(ask.id, { to: 'open', by: 'agent', actorId: 'engine', expectedState: 'blocked', reason: 'its job ended; the person is told where it stands' });
     if (r.kind !== 'applied') return out('unchanged', `release refused: ${r.kind}`);
-    return late ? out('closed', `its job ended; answered via ${late.tool}`, late.id) : out('reopened', 'its job ended');
+    return late ? out('closed', `its job ended; answered via ${late.tool}`, late.id) : calledOff ? out('closed', 'called off by the owner') : out('reopened', 'its job ended');
   }
   if (jobs.all === 0) return out('unchanged', 'no background job was started for this request');
   if (jobs.out > 0) return out('unchanged', `${jobs.out} background job(s) for this request are still out`);
