@@ -1,5 +1,5 @@
 import { getDb } from '../db/connection.js';
-import type { HandBackCause } from './ask-settlement.js';
+import type { HandBackCause, TurnEnd } from './ask-settlement.js';
 
 // Model choices (`answered`, `handoff`, `no_reply_intended`, and a death nobody could place) are silence.
 const PROVIDER_EXITS: ReadonlySet<string> = new Set(['provider_error', 'stream_idle', 'abort']);
@@ -21,9 +21,7 @@ export function turnExitReason(agentId: string, turnNumber: number | null): stri
 /** THE EXIT TABLE: how a turn that did not answer hands its request back. A provider limit on the turn's
  *  first call waits for the reset; after paid calls it is a counted cut. A turn that parked its job, whatever
  *  its exit (a full context, a turn budget), re-opens it uncounted with no due: the job's continuation serves it. */
-export function handBackCauseOf(
-  exit: string | null, t: { retryAt?: number | null; paidBeforeLimit?: boolean; parkedTheJob?: boolean },
-): HandBackCause {
+export function handBackCauseOf(exit: string | null, t: TurnEnd): HandBackCause {
   if (exit === null) return 'silence';
   if (t.parkedTheJob || FREE_EXITS.has(exit)) return 'free';
   if (PROVIDER_EXITS.has(exit) && t.retryAt && !t.paidBeforeLimit) return 'wait';

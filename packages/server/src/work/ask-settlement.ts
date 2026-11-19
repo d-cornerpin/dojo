@@ -74,7 +74,7 @@ export interface AskSettlementOutcome {
   detail: string;
 }
 
-export interface SettlementContext {
+export interface SettlementContext extends TurnEnd {
   agentId: string;
   turnNumber: number | null;
   at: SettlementMoment;
@@ -94,11 +94,10 @@ export interface SettlementContext {
   continuing?: boolean;
   /** FINALIZE ONLY: the ask's message only declined or acknowledged, so the model's silence settles it. */
   askedNothing?: boolean;
-  /** FINALIZE ONLY: the provider's reset the turn met, the paid calls before it, and a job the turn parked. */
-  retryAt?: number | null;
-  paidBeforeLimit?: boolean;
-  parkedTheJob?: boolean;
 }
+
+/** How the turn ended, beyond its exit word: the provider's reset it met, paid calls before it, a job it parked. */
+export interface TurnEnd { retryAt?: number | null; paidBeforeLimit?: boolean; parkedTheJob?: boolean }
 
 interface AskRow {
   id: string;
@@ -273,10 +272,8 @@ function receiptIsASupersededBubble(ask: AskRow, turnNumber: number | null): boo
   ).get(ask.result_delivery_id, ask.agent_id, turnNumber) !== undefined;
 }
 
-// THE ONE COUNTER: the row's own `audit` events with their cause. The silence group (the model ended without
-// an answer; old rows with no cause were all silences) stands down past `MAX_ASK_RE_SERVES`; the engine group
-// (cuts and crashes) past `MAX_ENGINE_HAND_BACKS`. A stood-down ask is held `blocked`: owed and visible, out
-// of the `state = 'open'` queue, and the owner is told once on its own record.
+// THE ONE COUNTER: the row's `audit` events with their cause (none = silence). Past its group's bound an ask is held
+// `blocked`: owed and visible, out of the open queue, and the owner is told once on its own record.
 
 export const MAX_ASK_RE_SERVES = 3;
 export const MAX_ENGINE_HAND_BACKS = 5;
@@ -522,8 +519,8 @@ export function settleAsk(workId: string, ctx: SettlementContext): AskSettlement
     });
     if (undo.kind === 'applied') {
       const handed = handBackAsk(workId, {
-        agentId: ask.agent_id, turnNumber: ctx.turnNumber, cause: causeOfTurn(ask.agent_id, ctx), retryAt: ctx.retryAt,
-        actorId, reason: 'the turn acked and then finished without answering',
+        agentId: ask.agent_id, turnNumber: ctx.turnNumber, cause: handBackCauseOf(turnExitReason(ask.agent_id, ctx.turnNumber), ctx),
+        retryAt: ctx.retryAt, actorId, reason: 'the turn acked and then finished without answering',
       });
       if (handed.verdict === 'held') return handed;
       logger.warn('ask handed back at the turn boundary: it was closed on a start-ack that nothing followed', {
@@ -611,7 +608,7 @@ export function settleAsk(workId: string, ctx: SettlementContext): AskSettlement
   }
   // Who ended the turn decides which count moves and when it is served again (the exit table).
   const exit = turnExitReason(ask.agent_id, ctx.turnNumber);
-  const cause = causeOfTurn(ask.agent_id, ctx);
+  const cause = handBackCauseOf(exit, ctx);
   const reason = cause === 'silence'
     ? `re-opened: turn ${ctx.turnNumber ?? '?'} finalized with no delivery that answers this ask, `
       + 'so the person is still waiting and the ask is visible again rather than parked'
@@ -622,10 +619,6 @@ export function settleAsk(workId: string, ctx: SettlementContext): AskSettlement
     agentId: ask.agent_id, workId, turnNumber: ctx.turnNumber, from: ask.state, cause, verdict: handed.verdict,
   }, ask.agent_id);
   return handed;
-}
-
-function causeOfTurn(agentId: string, ctx: SettlementContext): HandBackCause {
-  return handBackCauseOf(turnExitReason(agentId, ctx.turnNumber), ctx);
 }
 
 // Join arm: the delegated job's own settlement, on the same rule. All children must have settled, the
@@ -974,7 +967,7 @@ export function asksAnsweredBy(agentId: string, turnNumber: number, conversation
  *  `assembledContextAsks` (`agent/v2/counterparty.ts`), which only reads. */
 export interface AssembledAsk { workId: string; rowid: number }
 
-export interface FinalizeSettlementInput {
+export interface FinalizeSettlementInput extends TurnEnd {
   agentId: string;
   turnNumber: number;
   /** Every ask that entered this turn's context; rows arriving after the final assembly are absent. */
@@ -982,9 +975,6 @@ export interface FinalizeSettlementInput {
   continuing?: boolean;
   /** The trigger ask whose message asked for nothing (`inboundAsksNothing`). */
   askedNothing?: string | null;
-  retryAt?: number | null;
-  paidBeforeLimit?: boolean;
-  parkedTheJob?: boolean;
 }
 
 export interface FinalizeSettlementResult { closed: number; held: number; reopened: number }
@@ -1011,7 +1001,7 @@ export function settleAsksAtTurnFinalize(p: FinalizeSettlementInput): FinalizeSe
            WHERE d.agent_id = ? AND d.turn_number = ? AND d.outcome = 'delivered')`,
   ).all(p.agentId, p.agentId, p.turnNumber) as Array<{ id: string }>;
 
-  const turnEnd = { retryAt: p.retryAt, paidBeforeLimit: p.paidBeforeLimit, parkedTheJob: p.parkedTheJob };
+  const turnEnd: TurnEnd = { retryAt: p.retryAt, paidBeforeLimit: p.paidBeforeLimit, parkedTheJob: p.parkedTheJob };
   const seen = new Set<string>();
   const tally = (v: AskSettlementVerdict): void => {
     if (v === 'closed') result.closed++;
