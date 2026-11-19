@@ -4,6 +4,7 @@
 import { plaudExpiredText } from '../agent/engine-lines.js';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { getDb } from '../db/connection.js';
+import { setConfigValue } from '../config/config-value.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { runPlaudCommand, runPlaudJson } from './client.js';
@@ -37,12 +38,7 @@ function readConfigValue(key: string): string | null {
 }
 
 function writeConfigValue(key: string, value: string): void {
-  getDb()
-    .prepare(`
-      INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
-      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
-    `)
-    .run(key, value);
+  setConfigValue(key, value);
   // Connect state gates the Plaud tools in getFilteredTools; every path funnels through here.
   if (key === CONFIG_KEY_CONNECTED) bumpToolConfigGeneration();
 }

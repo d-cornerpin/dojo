@@ -4,6 +4,7 @@
 // background folder replaces them gradually, one note at a time, yielding to the agent's live turn.
 
 import { getDb } from '../db/connection.js';
+import { setConfigValue } from '../config/config-value.js';
 import { withLock } from '../db/with-lock.js';
 import { createLogger } from '../logger.js';
 import { backgroundDrains, registerAbortable, releaseAbortable } from '../agent/shared-state.js';
@@ -76,8 +77,7 @@ function readCatchUp(agentId: string): CatchUp | null {
 }
 function writeCatchUp(agentId: string, value: CatchUp | null): void {
   if (value === null) getDb().prepare('DELETE FROM config WHERE key = ?').run(CATCH_UP + agentId);
-  else getDb().prepare(`INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
-                        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`).run(CATCH_UP + agentId, JSON.stringify(value));
+  else setConfigValue(CATCH_UP + agentId, JSON.stringify(value));
 }
 const newestAsk = (agentId: string): number =>
   (getDb().prepare("SELECT MAX(seq) AS r FROM messages WHERE agent_id = ? AND role = 'user'").get(agentId) as { r: number | null }).r ?? 0;
