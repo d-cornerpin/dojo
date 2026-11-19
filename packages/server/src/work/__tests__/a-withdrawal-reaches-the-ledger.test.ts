@@ -106,6 +106,7 @@ beforeEach(() => {
 describe('§1 an ask the user called off settles `abandoned`, with their words', () => {
   it('RED-turned-GREEN: dropped on an open ask lands the spine\'s user-choice terminal', async () => {
     const askId = ownerAsk('m-earbuds', 'Compare budget noise-cancelling earbuds for flights');
+    ownerAsk('m-off', 'Never mind, forget the earbuds');
     const res = await call({ id: askId, disposition: 'dropped', note: 'Never mind, forget the earbuds' });
     expect(res.isError).toBeFalsy();
     expect(row(askId).state).toBe('abandoned');
@@ -114,6 +115,7 @@ describe('§1 an ask the user called off settles `abandoned`, with their words',
 
   it('the USER\'S WORDS reach the ledger — the count that was zero', async () => {
     const askId = ownerAsk('m-earbuds', 'Compare budget noise-cancelling earbuds for flights');
+    ownerAsk('m-off', 'Never mind, forget the earbuds');
     await call({ id: askId, disposition: 'dropped', note: 'Never mind, forget the earbuds' });
     const payloads = events(askId).map((e) => e.payload).join(' ');
     expect(payloads).toContain('Never mind, forget the earbuds');
@@ -122,6 +124,7 @@ describe('§1 an ask the user called off settles `abandoned`, with their words',
 
   it('it works on an ask a turn is still holding — the in-flight shape', async () => {
     const askId = ownerAsk('m-earbuds', 'Compare budget noise-cancelling earbuds', { claimed: true });
+    ownerAsk('m-off', 'forget the earbuds');
     expect(row(askId).state).toBe('claimed');
     const res = await call({ id: askId, disposition: 'dropped', note: 'forget the earbuds' });
     expect(res.isError).toBeFalsy();
@@ -130,6 +133,7 @@ describe('§1 an ask the user called off settles `abandoned`, with their words',
 
   it('NOT `done` and NOT `failed`: a user\'s choice is neither answered nor a failure', async () => {
     const askId = ownerAsk('m-earbuds', 'Compare earbuds');
+    ownerAsk('m-off', 'never mind');
     await call({ id: askId, disposition: 'dropped', note: 'never mind' });
     expect(row(askId).state).not.toBe('done');
     expect(row(askId).state).not.toBe('failed');
