@@ -3,8 +3,9 @@
 import { getDb } from '../db/connection.js';
 import { TECHNIQUE_FRESH_SENTINEL } from '@dojo/shared';
 import { createLogger } from '../logger.js';
-import { createEntry, recordVaultUse, semanticSearch, findNearDuplicateEntry, markObsolete, getEntry, updateEntry, isOverEntryLimit, AGENT_ENTRY_CUT_NOTE, listEntriesBounded, lastSemanticSearchWindow, formatCitationSuffix, resolveRecallScope, OWNER_VAULT_AGENT_ID } from './store.js';
+import { createEntry, semanticSearch, findNearDuplicateEntry, markObsolete, getEntry, updateEntry, isOverEntryLimit, AGENT_ENTRY_CUT_NOTE, listEntriesBounded, lastSemanticSearchWindow, formatCitationSuffix, resolveRecallScope, OWNER_VAULT_AGENT_ID } from './store.js';
 import { searchUnfiledArchives, UNFILED_ARCHIVE_LABEL, type UnfiledArchiveSnippet } from './retrieval.js';
+import { recordVaultUse } from './store.js';
 import { isObligationNote, obligationTags } from '../work/obligation-memory.js';
 import { detectCredentialContent } from './credential-gate.js';
 
