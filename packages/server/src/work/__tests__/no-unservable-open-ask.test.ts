@@ -174,6 +174,18 @@ describe('the stand-down law counts only the tickets that exist', () => {
     expect(v.standDown).toBe(false);
   });
 
+  it('strangers\' tickets alone never hold the agent\'s own wakes back, before or after the reaper', () => {
+    // Tickets a lived-in box carries on a stranger's text (opened before the ingest gate existed).
+    for (let i = 0; i < 5; i++) {
+      const id = seedAskOnMessage({ agentId: AGENT, messageId: `m-s${i}`, conversationId: CONV, authorized: 0, openedAt: NOW + i });
+      mockDb.current!.prepare('UPDATE messages SET inbound_meta = ? WHERE id = ?')
+        .run(JSON.stringify({ channel: 'imessage', authorized: false, relation: 'third_party' }), id.slice('ask:'.length));
+    }
+    expect(selfWakeStandDown(AGENT)).toEqual({ standDown: false, humanAsksOpen: 0 });
+    abandonUnservableAsks();
+    expect(selfWakeStandDown(AGENT).standDown).toBe(false);
+  });
+
   it('a real person\'s ticket still stands the self-wakes down', () => {
     insertMessage(imessageInbound({ id: 'm-real', authorized: true }) as never);
     const v = selfWakeStandDown(AGENT);
