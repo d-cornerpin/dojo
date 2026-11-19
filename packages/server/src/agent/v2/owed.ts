@@ -6,7 +6,7 @@ import { createLogger } from '../../logger.js';
 import { broadcast } from '../../gateway/ws.js';
 import { recordDeliveryAttempt } from '../../memory/message-store.js';
 import { workingExpr } from '../../work/terminal-states.js';
-import { activeRuns } from '../shared-state.js';
+import { activeRuns, isRunUnwinding } from '../shared-state.js';
 import { nextReplyDueAt, deliverDueReplies } from './channel-sender.js';
 import { getWaitingHumanConversations, getPendingEngineEvent, getNextEngineEventRetryAt } from './counterparty.js';
 
@@ -120,7 +120,7 @@ async function fire(): Promise<void> {
       try {
         if (!dueOf(id).now || !underWakeBudget(id)) continue;
         const t = setTimeout(() => {
-          if (activeRuns.has(id)) return;
+          if (isRunUnwinding(id)) return;   // a run live or in its exit tail: its drain's own wake comes next
           logger.info('owed clock: waking an agent that is owed something', { agentId: id });
           void getAgentRuntime().handleMessage(id, '').catch((err: unknown) =>
             logger.error('owed clock: the wake failed', { agentId: id, error: String(err) }, id));

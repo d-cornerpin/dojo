@@ -8,7 +8,7 @@ vi.mock('../../runtime.js', () => ({ getAgentRuntime: () => ({ handleMessage: wa
 
 import { runMigrations } from '../../../db/migrations.js';
 import { insertMessage } from '../../../memory/message-store.js';
-import { activeRuns, pendingWakeups } from '../../shared-state.js';
+import { activeRuns, lastRunEndedAt, pendingWakeups } from '../../shared-state.js';
 import { armOwedClock } from '../owed.js';
 import { freshReplyDb, AGENT } from './helpers/reply-sender.js';
 
@@ -18,7 +18,7 @@ beforeEach(() => {
   insertMessage({ agentId: AGENT, role: 'user', content: 'are you there?', channel: 'dashboard' });
   wake.mockClear();
 });
-afterEach(() => { pendingWakeups.delete(AGENT); activeRuns.delete(AGENT); });
+afterEach(() => { pendingWakeups.delete(AGENT); activeRuns.delete(AGENT); lastRunEndedAt.delete(AGENT); });
 
 describe('a queued wake with no run does not hide the agent', () => {
   it('an owed agent with only a queued wake is woken', async () => {
@@ -33,5 +33,14 @@ describe('a queued wake with no run does not hide the agent', () => {
     armOwedClock();
     await vi.advanceTimersByTimeAsync(5_000);
     expect(wake).not.toHaveBeenCalled();
+  });
+
+  it('an agent whose run is still unwinding is not woken, and is woken after the grace', async () => {
+    lastRunEndedAt.set(AGENT, Date.now());
+    armOwedClock();
+    for (let i = 0; i < 15; i++) await vi.advanceTimersByTimeAsync(100);
+    expect(wake).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(2_000);
+    await vi.waitFor(() => expect(wake).toHaveBeenCalledWith(AGENT, ''));
   });
 });
