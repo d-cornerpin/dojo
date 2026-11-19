@@ -612,8 +612,8 @@ export function settleAsk(workId: string, ctx: SettlementContext): AskSettlement
   const exit = turnExitReason(ask.agent_id, ctx.turnNumber);
   const cause = causeOfTurn(ask.agent_id, ctx);
   const reason = cause === 'silence'
-    ? `re-opened: turn ${ctx.turnNumber ?? '?'} finalized with no delivery that answers this ask — `
-      + 'the person is still waiting, so the ask is visible again rather than parked'
+    ? `re-opened: turn ${ctx.turnNumber ?? '?'} finalized with no delivery that answers this ask, `
+      + 'so the person is still waiting and the ask is visible again rather than parked'
     : `re-opened: the engine ended the turn (${ctx.turnNumber ?? '?'}, ${exit}) before it delivered an answer, `
       + 'so the person is still waiting';
   const handed = handBackAsk(workId, { agentId: ask.agent_id, turnNumber: ctx.turnNumber, cause, retryAt: ctx.retryAt, actorId, reason });
