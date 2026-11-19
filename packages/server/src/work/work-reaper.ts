@@ -191,11 +191,11 @@ export function sweepBootStaleness(): { suppressed: number; swept: number; heldT
   const heldTotal = heldAgents.reduce((s, a) => s + a.c, 0);
   const heldIds = new Set(heldAgents.map((a) => a.id));
   const staleAsks = db.prepare(
-    `SELECT w.id AS id, w.agent_id AS agent_id, COALESCE(c.counterparty_name, c.counterparty_id, m.channel) AS sender
+    `SELECT w.id AS id, w.agent_id AS agent_id, COALESCE(c.counterparty_name, c.counterparty_id, m.channel) AS sender, m.sender_id AS sender_id
        FROM work w LEFT JOIN conversations c ON c.id = w.conversation_id
        LEFT JOIN messages m ON m.id = w.root_id AND m.agent_id = w.agent_id
       WHERE ${STALE_ASK_WHERE}`,
-  ).all() as Array<{ id: string; agent_id: string; sender: string | null }>;
+  ).all() as Array<{ id: string; agent_id: string; sender: string | null; sender_id: string | null }>;
   let suppressed = 0;
   const droppedFrom = new Map<string, number>();
   for (const a of staleAsks) {
@@ -206,7 +206,7 @@ export function sweepBootStaleness(): { suppressed: number; swept: number; heldT
     });
     if (res.kind !== 'applied') continue;
     suppressed++;
-    const who = senderWords(a.sender);
+    const who = senderWords(a.sender, a.sender_id);
     droppedFrom.set(who, (droppedFrom.get(who) ?? 0) + 1);
   }
 

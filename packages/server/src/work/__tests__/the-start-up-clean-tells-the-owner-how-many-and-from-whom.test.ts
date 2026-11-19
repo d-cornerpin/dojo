@@ -24,13 +24,13 @@ const db = (): Database.Database => mockDb.current!;
 const bootCards = (): number =>
   (db().prepare("SELECT COUNT(*) AS n FROM healer_state WHERE scope = 'owner_told' AND key LIKE 'bootdropped:%'").get() as { n: number }).n;
 
-/** `count` messages from `phone`, each an hour old and unanswered. */
-function oldMessagesFrom(phone: string, count: number): void {
+/** `count` messages from `phone` (sent as `senderId`), each an hour old and unanswered. */
+function oldMessagesFrom(phone: string, count: number, senderId = phone): void {
   db().prepare("INSERT OR IGNORE INTO conversations (id, agent_id, channel, counterparty_id) VALUES (?, ?, 'imessage', ?)").run(`conv-${phone}`, AGENT, phone);
   for (let i = 0; i < count; i++) {
     const id = `m-${phone}-${i}`;
     insertMessage({
-      id, agentId: AGENT, role: 'user', content: `Question ${i}`, lane: 'owner', channel: 'imessage', senderId: phone,
+      id, agentId: AGENT, role: 'user', content: `Question ${i}`, lane: 'owner', channel: 'imessage', senderId,
       authorized: true, conversationId: `conv-${phone}`,
       inboundMeta: JSON.stringify({ channel: 'imessage', relation: 'known_contact', sender: phone, authorized: true }),
     } as never);
@@ -57,8 +57,8 @@ describe('the start-up clean tells the owner how many and from whom', () => {
     expect(servedOwnerNotices()).toEqual([]);
   });
 
-  it('the owner\'s own messages read "from the owner"', () => {
-    oldMessagesFrom('owner', 7);
+  it('the owner\'s own messages read "from the owner", on his iMessage conversation too', () => {
+    oldMessagesFrom('+15550199', 7, 'owner');
     sweepBootStaleness();
     expect(servedOwnerNotices()[0]?.words).toContain(': 7 from the owner.');
   });
