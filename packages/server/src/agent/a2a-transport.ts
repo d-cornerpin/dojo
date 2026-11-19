@@ -1719,7 +1719,7 @@ export async function resolveJoinsAtBoot(): Promise<{ relayedReplies: number; fa
   return out;
 }
 
-/** When the runtime gives up on the asked agent (synthetic ABANDONED, runtime.ts), the asker
+/** When the engine gives up a request the asked agent never answered (its pickup past the budget), the asker
  *  may hold a delegated piece on that thread: settle the PIECE abandoned now, so a completed
  *  join tells the owner at once instead of the enforcer being silenced in private. A piece
  *  abandoning does NOT fail the whole join; the others may land and the reaper owns the rest. */

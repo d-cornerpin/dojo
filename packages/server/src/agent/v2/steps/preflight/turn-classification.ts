@@ -5,12 +5,14 @@ import type { Database } from 'better-sqlite3';
 import { deriveOrigin, legacyOriginInputs } from '@dojo/shared';
 import { broadcast } from '../../../../gateway/ws.js';
 import { createLogger } from '../../../../logger.js';
-import { isRowUnserved } from '../../../../memory/message-store.js';
+import { isRowUnserved, sweepByRowid } from '../../../../memory/message-store.js';
 import { messageIdAtSeq } from '../../../../memory/served-ask.js';
 import type { TurnContext } from '../../../turn-context.js';
 import { parseA2ATrigger } from '../../classifiers/a2a.js';
 import type { WaitingConversation } from '../../counterparty.js';
-import type { AgentRequest, OwedItem } from '../../owed.js';
+import { nextOwed, type AgentRequest, type OwedItem } from '../../owed.js';
+import { spendServe } from '../../serve-later.js';
+import { a2aRetryBudgetFor } from '../../../a2a-patience.js';
 import { resolveServedWork } from '../../stale-work-ids.js';
 import { engineEventRoot } from '../../work-lineage.js';
 import { a2aJobOrigin } from '../../../../work/job-origin.js';
@@ -51,6 +53,18 @@ export interface TurnClassificationOutputs {
   readonly unrepliedAssign: AgentRequest | null;
 }
 
+/** Another agent's request spends a serve when a turn picks it up. Past its budget of turns it is given up and the
+ *  asker's join piece settled, so the asker is told; true then, and the turn serves the next item. */
+function givenUp(agentId: string, item: OwedItem | undefined): boolean {
+  const r = item?.kind === 'agentRequest' ? item.request : undefined;
+  if (!r || !spendServe(agentId, r.rowid, a2aRetryBudgetFor(agentId).turns + 1)) return false;
+  sweepByRowid({ rowid: r.rowid, agentId });
+  logger.warn('v2: another agent\'s request went unanswered for its budget of turns; given up', { agentId, from: r.fromName, thread: r.threadShort }, agentId);
+  void import('../../../a2a-transport.js').then((m) => m.failJoinPieceForAbandonedAsk(r.messageId, r.threadShort, agentId))
+    .catch(() => { /* the join's own expiry backstops */ });
+  return true;
+}
+
 /** The helper's result at `rowid`, named for the turn's header. */
 function terminalWakeAt(db: Database, rowid: number): TurnClassificationOutputs['terminalWakeA2A'] {
   const b = db.prepare('SELECT a2a_intent, a2a_thread_id, source_agent_id FROM messages WHERE rowid = ?')
@@ -73,8 +87,10 @@ export async function runTurnClassification(
 ): Promise<PreflightOutcome<TurnClassificationOutputs>> {
   const { agentId, setAgentStatus } = ctx;
   const {
-    db, waitingConvs, openHumanWorkAtTurnStart, item, triggerRow, chosenConvKey, lastUserMessageContent,
+    db, waitingConvs, openHumanWorkAtTurnStart, triggerRow, chosenConvKey, lastUserMessageContent,
   } = input;
+  let item = input.item;
+  if (givenUp(agentId, item)) { item = nextOwed(agentId)[0]; if (givenUp(agentId, item)) item = undefined; }
   // The most-recent inbound over every lane.
   const mostRecentInbound = db.prepare(`
     SELECT seq AS rowid, content, lane, origin_intent, source_agent_id, a2a_thread_id, a2a_intent, a2a_requires_response, inbound_meta, served_by_turn

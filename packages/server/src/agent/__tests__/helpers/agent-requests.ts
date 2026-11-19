@@ -7,14 +7,14 @@
 //   vi.mock('../runtime.js', () => ({ getAgentRuntime: () => ({ handleMessage: async () => 'ran' }) }));
 import Database from 'better-sqlite3';
 import { vi } from 'vitest';
-import { insertMessage } from '../../../memory/message-store.js';
-import { openAsk, claimAsk, openDelegationJoin, joinPieces } from '../../../work/store.js';
-import { deliverA2AMessage } from '../../a2a-transport.js';
-import { openTurnContext, endTurnContext } from '../../turn-context.js';
-import { runPreflight } from '../../v2/steps/preflight/index.js';
-import { finalizeTurnRecord } from '../../v2/steps/teardown/finalize-record.js';
-import { latchEngineCut } from '../../v2/engine-exit.js';
-import { advance } from '../../v2/state.js';
+
+// The product modules load on first use, after the calling file's mocks are in place.
+const product = async () => ({
+  ...await import('../../../memory/message-store.js'), ...await import('../../../work/store.js'),
+  ...await import('../../a2a-transport.js'), ...await import('../../turn-context.js'),
+  ...await import('../../v2/steps/preflight/index.js'), ...await import('../../v2/steps/teardown/finalize-record.js'),
+  ...await import('../../v2/engine-exit.js'), ...await import('../../v2/state.js'),
+});
 
 export const HELPER = 'helper';
 export const ASKER = 'asker-one';
@@ -49,6 +49,7 @@ export const preflightCtx = (agentId = HELPER) => ({
 
 /** A reply from `from` on `threadId`, as the transport lands it in the asker's store. */
 export async function replyLands(from: string, asker: string, threadId: string): Promise<void> {
+  const { insertMessage } = await product();
   insertMessage({
     agentId: asker, role: 'user', lane: 'a2a', sourceAgentId: from, a2aThreadId: threadId, a2aIntent: 'ANSWER',
     a2aRequiresResponse: true, content: `[A2A:ANSWER thread:${threadId.slice(0, 8)} from:${from}] here it is`,
@@ -57,8 +58,9 @@ export async function replyLands(from: string, asker: string, threadId: string):
 
 /** The asker delegates its owner's request to the helper on `threadId` (a real send, and the asker's join). */
 export async function askerDelegates(intent: 'QUESTION' | 'ASSIGN', threadId: string): Promise<string> {
+  const { insertMessage, askIdForMessage, claimAsk, deliverA2AMessage, openDelegationJoin } = await product();
   insertMessage({ id: 'owner-ask', agentId: ASKER, role: 'user', content: 'find out for me', lane: 'owner', channel: 'dashboard', senderId: 'owner' });
-  const ask = openAsk({ agentId: ASKER, messageId: 'owner-ask', conversationId: null, requesterId: 'owner', openedAt: Date.now(), title: 'find out' });
+  const ask = askIdForMessage('owner-ask');   // the owner's message opened its ask
   claimAsk(ask, ASKER);
   const sent = await deliverA2AMessage({ intent, threadId, requiresResponse: true, payload: 'the figure, please', toAgent: HELPER, fromAgent: ASKER });
   if (!sent.delivered) throw new Error('agent-requests: the request was not delivered');
@@ -69,11 +71,13 @@ export async function askerDelegates(intent: 'QUESTION' | 'ASSIGN', threadId: st
   return ask;
 }
 
-export const pieceState = (ask: string): string | undefined => joinPieces(ask)[0]?.state;
+export const pieceState = (ask: string): string | undefined => (testDb().prepare(
+  'SELECT state FROM work WHERE parent_id = ? ORDER BY opened_at LIMIT 1').get(ask) as { state: string } | undefined)?.state;
 
 /** One helper turn through the real preflight; then finalize as the turn ended: silent, a rate limit on its first
  *  call (waiting for `reset`), or a crash (no finalize). Returns the request the turn served, if any. */
 export async function helperTurn(end: 'silent' | 'limit' | 'crash' = 'silent', reset = 0): Promise<string | null> {
+  const { openTurnContext, endTurnContext, runPreflight, finalizeTurnRecord, latchEngineCut, advance } = await product();
   endTurnContext(HELPER);
   const bag = openTurnContext(HELPER);
   const out = await runPreflight(bag, preflightCtx());
@@ -82,7 +86,7 @@ export async function helperTurn(end: 'silent' | 'limit' | 'crash' = 'silent', r
   if (end !== 'crash') {
     let state = bag.state!;
     if (end === 'limit') { bag.retryAt = reset; state = advance(latchEngineCut(state, 'provider_error'), { loopCount: 1 }); }
-    await finalizeTurnRecord(state, out.outputs.teardownContext);
+    await finalizeTurnRecord(state, out.outputs.teardownContext());
   }
   endTurnContext(HELPER);
   return served;

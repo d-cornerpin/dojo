@@ -1,7 +1,7 @@
 // Teardown, the turn record: write how the turn ended, then everything that reads it in the same span.
 
 import { createLogger } from '../../../../logger.js';
-import { releaseEngineEventByRowid, setAnswerMessageId, sweepByRowid } from '../../../../memory/message-store.js';
+import { markServedByRowid, releaseEngineEventByRowid, setAnswerMessageId, sweepByRowid } from '../../../../memory/message-store.js';
 import { clearUntrackedWorkAcrossTurnsForConversation, continuationContext } from '../../../turn-state.js';
 import { isStopFenced } from '../../../shared-state.js';
 import { taskScope } from '../../../../work/tracker-view.js';
@@ -99,11 +99,16 @@ export async function finalizeTurnRecord(
         agentId, turnNumber, error: err instanceof Error ? err.message : String(err),
       }, agentId);
     }
+    const cause = handBackCauseOf(exitReason, turnEnd);
+    // Another agent's request this turn served is marked served here, and only here. When the provider's limit
+    // met the turn's first call, nothing was served: its serve is given back and it waits for the reset.
+    const request = turnCtx.servedRequest;
+    if (request && cause === 'wait') serveLater({ kind: 'row', agentId, rowid: request.rowid, attempts: request.attempts }, turnCtx.retryAt, 'the provider asked to wait; the request is served at its reset');
+    else if (request) markServedByRowid(request.rowid, turnNumber);
     // The engine event this turn claimed: swept on Stop; released after an abort or a counted cut that made no
     // side effect, to wait for the provider's reset when the limit met the first call; otherwise it stays served.
     if (claimedEngineEvent) {
       try {
-        const cause = handBackCauseOf(exitReason, turnEnd);
         const { rowid } = claimedEngineEvent;
         if (exitReason === 'stop') {
           sweepByRowid({ rowid, agentId });

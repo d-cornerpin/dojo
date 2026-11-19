@@ -8,7 +8,6 @@ import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
 import {
   createdAtText,
-  recordDeliveryAttempt,
   rehomeUndeliveredCreatedAt,
   sweepByReferent,
   sweepByRowid,
@@ -18,7 +17,7 @@ import { ENGINE_RIDER_INTENTS_SQL } from './engine-riders.js';
 import { askIdForMessage } from '../../work/store.js';
 import { spentRun, spentTask, spentWakeAsk } from './work-lineage.js';
 import { postAgentNotice } from '../agent-notice.js';
-import { dueAfterCut } from '../../work/exit-attribution.js';
+import { spendServe } from './serve-later.js';
 
 const logger = createLogger('counterparty');
 // "Unanswered human conversation" = an open `work(kind='ask')` row: real, so it survives a
@@ -331,20 +330,11 @@ export function expireExhaustedEngineEvents(agentId: string): number {
   return expired;
 }
 
-/** Record one failed/aborted delivery: bumps `delivery_attempts` and schedules the next serve at the later of the
- *  backoff and a provider's reset (`retryAt`); if the bump exhausts the lifecycle the event expires loudly here. */
+/** Record one failed/aborted delivery: a spent serve, next due at the later of the backoff and a provider's reset
+ *  (`retryAt`); if it exhausts the lifecycle the event expires loudly here. */
 export function recordEngineEventDeliveryFailure(agentId: string, rowid: number, retryAt: number | null = null): void {
   try {
-    const db = getDb();
-    const cur = db.prepare('SELECT delivery_attempts FROM messages WHERE agent_id = ? AND rowid = ?')
-      .get(agentId, rowid) as { delivery_attempts: number | null } | undefined;
-    if (!cur) return;
-    const attempts = (cur.delivery_attempts ?? 0) + 1;
-    const backoffMin = ENGINE_EVENT_BACKOFF_MINUTES[Math.min(attempts, ENGINE_EVENT_BACKOFF_MINUTES.length) - 1];
-    const notBefore = dueAfterCut(Date.now() + backoffMin * 60_000, retryAt);
-    recordDeliveryAttempt({ agentId, rowid, attempts, notBefore });
-    logger.warn('engine event delivery failed; scheduled its next serve', { agentId, rowid, attempts, notBefore }, agentId);
-    if (attempts >= ENGINE_EVENT_MAX_ATTEMPTS) expireExhaustedEngineEvents(agentId);
+    if (spendServe(agentId, rowid, ENGINE_EVENT_MAX_ATTEMPTS, { minutes: ENGINE_EVENT_BACKOFF_MINUTES, retryAt })) expireExhaustedEngineEvents(agentId);
   } catch { /* best effort, failure bookkeeping must never mask the original abort */ }
 }
 
