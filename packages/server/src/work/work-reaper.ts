@@ -8,6 +8,7 @@ import { sweepByRowid } from '../memory/message-store.js';
 // Single-sourced so the boot sweep's exclusion window cannot drift from the eligibility gate it mirrors.
 import { ENGINE_EVENT_MAX_ATTEMPTS } from '../agent/v2/counterparty.js';
 import { personsWaiting } from '../agent/v2/owed.js';
+import { tellOwner } from '../healer/owner-notices.js';
 
 const logger = createLogger('work-reaper');
 
@@ -156,6 +157,13 @@ export const REAPER_KINDS: readonly ReaperKind[] = [
 /** Genuine human asks one agent may hold before the boot sweep stops holding them for the re-drain. */
 const HUMAN_HOLD_LIMIT = 5;
 
+/** One card for the boot's dropped messages: how many, and from whom, the most first. */
+function tellOwnerBootDropped(n: number, droppedFrom: Map<string, number>): void {
+  const list = [...droppedFrom].sort((a, b) => b[1] - a[1]).map(([who, k]) => `${k} from ${who}`).join(', ');
+  tellOwner(`bootdropped:${Date.now()}`, `When the Dojo started it dropped ${n} old unanswered message${n === 1 ? '' : 's'} `
+    + `(more than 30 minutes old): ${list}. Nothing was sent to anyone about them.`);
+}
+
 /**
  * Boot staleness sweep: a box that was offline has a backlog the re-drains would treat as fresh and
  * force-wake every agent on. Anything older than thirty minutes at boot is stale history and is suppressed
@@ -178,17 +186,25 @@ export function sweepBootStaleness(): { suppressed: number; swept: number; heldT
   const heldTotal = heldAgents.reduce((s, a) => s + a.c, 0);
   const heldIds = new Set(heldAgents.map((a) => a.id));
   const staleAsks = db.prepare(
-    `SELECT w.id AS id, w.agent_id AS agent_id FROM work w WHERE ${STALE_ASK_WHERE}`,
-  ).all() as Array<{ id: string; agent_id: string }>;
+    `SELECT w.id AS id, w.agent_id AS agent_id, COALESCE(c.counterparty_name, c.counterparty_id, m.channel) AS sender
+       FROM work w LEFT JOIN conversations c ON c.id = w.conversation_id
+       LEFT JOIN messages m ON m.id = w.root_id AND m.agent_id = w.agent_id
+      WHERE ${STALE_ASK_WHERE}`,
+  ).all() as Array<{ id: string; agent_id: string; sender: string | null }>;
   let suppressed = 0;
+  const droppedFrom = new Map<string, number>();
   for (const a of staleAsks) {
     if (heldIds.has(a.agent_id)) continue;      // held for the re-drain
     const res = transition(a.id, {
       to: 'abandoned', by: 'agent', actorId: a.agent_id,
       reason: 'boot staleness sweep: older than 30 minutes at startup and beyond the hold limit',
     });
-    if (res.kind === 'applied') suppressed++;
+    if (res.kind !== 'applied') continue;
+    suppressed++;
+    const who = a.sender ?? 'an unrecorded sender';
+    droppedFrom.set(who, (droppedFrom.get(who) ?? 0) + 1);
   }
+  if (suppressed > 0) tellOwnerBootDropped(suppressed, droppedFrom);
 
   // Engine events still inside their delivery lifecycle (a future retry backoff, or recorded attempts under
   // the max) are excluded, and so is a reminder, which runs its own lifecycle; mass backlog is swept. Keeping them cannot storm: `getPendingEngineEvent`

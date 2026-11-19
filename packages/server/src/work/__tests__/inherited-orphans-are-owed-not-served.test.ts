@@ -141,6 +141,7 @@ describe('the first boot of this build', () => {
 
   it('the notice is a deliverable: it drives the agent\'s own turn, where it is shown whole', () => {
     boot(true);
+    db().prepare("UPDATE messages SET next_attempt_at = ? WHERE origin_intent = 'owed_messages_inherited'").run(Date.now() - 1000);   // its three-minute wait is over
     const pending = getPendingEngineEvent(AGENT);
     expect(pending?.content ?? '').toContain(askIdForMessage('m-old-owner'));
   });

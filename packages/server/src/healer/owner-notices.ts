@@ -83,10 +83,9 @@ function stallWords(workId: string): string {
 export const budgetStopKey = (budgetId: string): string => `budgetstop:${budgetId}`;
 export const budgetStopWords = (budgetId: string): string => budgetId.startsWith('agent_')
   ? `An agent's own spending limit is reached, so that agent is waiting. Raise its limit on the Ledger page to let it go on now, `
-    + `or it goes on by itself when the window turns over. Its messages are kept and answered then.`
+    + `or it goes on by itself when the window turns over.`
   : `Your daily spending limit is reached and no free model answered, so agents that need a paid model are waiting. `
-    + `Raise the limit on the Ledger page to let them go on now, or they go on by themselves when the window turns over. `
-    + `Their messages are kept and answered then.`;
+    + `Raise the limit on the Ledger page to let them go on now, or they go on by themselves when the window turns over.`;
 export const healerMissingWords = (name: string): string =>
   `${name} is stuck and the Healer agent is missing, so nothing is unsticking it. A message to ${name} may get it going again.`;
 

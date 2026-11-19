@@ -356,8 +356,12 @@ export function insertEngineEvent(e: EngineEventInput): Persisted {
   return insertMessage(engineRow(e));
 }
 
-export function insertEngineEventIfAbsent(e: EngineEventInput): Persisted | null {
-  return insertMessageIfAbsent(engineRow(e));
+/** `notBefore` (epoch ms): the event is not served before then; absent, it may be served at once. */
+export function insertEngineEventIfAbsent(e: EngineEventInput & { notBefore?: number }): Persisted | null {
+  const { notBefore, ...event } = e;
+  const row = insertMessageIfAbsent(engineRow(event));
+  if (row && notBefore !== undefined) recordDeliveryAttempt({ agentId: e.agentId, rowid: row.seq, notBefore });
+  return row;
 }
 
 // `chat_messages` stays the only human-facing accessor; anything rendered to a person reads the view.

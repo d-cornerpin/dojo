@@ -512,7 +512,7 @@ describe('t167 (iii): a budget stop that parks an agent is told once per budget 
     expect(stop).toMatch(/waiting/i);
     expect(stop, 'how to release them').toMatch(/raise the limit.*Ledger/i);
     expect(stop, 'the window turning over also releases them').toMatch(/turns over/i);
-    expect(stop, 'messages are kept').toMatch(/messages? (?:is|are) kept/i);
+    expect(stop, 'no promise that the messages are answered').not.toMatch(/kept and answered/i);
     expect(stop, 'no agent is named').not.toContain('Dock Desk');
     expect(stopCards().map((c) => c.words), 'the card carries the very words that were texted').toEqual([stop]);
     expect(stopCards()[0].severity).toBe('notice');
