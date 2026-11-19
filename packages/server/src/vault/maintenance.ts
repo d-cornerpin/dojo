@@ -1194,14 +1194,15 @@ export async function spawnNextDreamerBatch(primaryId: string): Promise<void> {
 }
 
 
-// Called when the Dreamer ends a batch on ANY terminal status. 'complete': every assigned archive is marked
+// Called when the Dreamer ends a batch on ANY terminal status, and by the continuation sweep with 'stalled' for a
+// batch it re-sends. 'complete': every assigned archive is marked
 // processed. 'blocked'/'fallen': the batch was NOT distilled, so never mark it processed; bump each
 // archive's attempt counter and poison any that reached MAX_DREAM_ATTEMPTS (surfaced via the DREAM_POISONED
 // diagnostic). Either way the cycle advances (spawnNextDreamerBatch). dreamerAgentId may be the permanent
 // 'dreamer' ID or a legacy temporary agent ID.
 export function markDreamerArchivesProcessed(
   dreamerAgentId: string,
-  status: 'complete' | 'fallen' | 'blocked' = 'complete',
+  status: 'complete' | 'fallen' | 'blocked' | 'stalled' = 'complete',
 ): void {
   const db = getDb();
 
@@ -1588,7 +1589,7 @@ export async function sweepDreamerHealth(): Promise<void> {
 // Re-arms the stateless DB-driven continuation when a batch advance was dropped (a Dreamer that died
 // mid-cycle, a lost in-memory map). Only when dreaming is enabled and setup complete, non-poisoned
 // non-trivial archives remain, the Dreamer is idle (not 'working', no live run) and no batch was woken
-// within the quiet window. Idempotent: it calls spawnNextDreamerBatch, which re-derives from the DB. No timer
+// within the quiet window. The re-send counts as a stalled pass (markDreamerArchivesProcessed), then advances. No timer
 // of its own: it runs on the nightly scheduler tick and on the runtime's stuck-agent sweep (sweepDreamerHealth).
 export async function runDreamerContinuationSweep(): Promise<void> {
   try {
@@ -1630,7 +1631,8 @@ export async function runDreamerContinuationSweep(): Promise<void> {
       dreamerId,
       remaining: remainingMeta.length,
     });
-    await spawnNextDreamerBatch(primaryId);
+    // A re-send counts as a pass that ended without filing its batch, so a batch is sent at most three times.
+    markDreamerArchivesProcessed(dreamerId, 'stalled');
   } catch (err) {
     logger.warn('Dreamer continuation sweep failed (non-fatal)', {
       error: err instanceof Error ? err.message : String(err),
