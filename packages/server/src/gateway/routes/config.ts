@@ -1958,6 +1958,13 @@ configRouter.post('/models/disable', async (c) => {
   const modelIds = parsed.data.modelIds.filter((id) => !isStandardModelRow(id));
   if (modelIds.length === 0) return c.json({ ok: false, error: STANDARD_ROW_STAYS }, 409);
 
+  // Live agents on these models move to the cheapest model that can run them; with none, nothing is switched off.
+  const moveTo = await cheapestAgentModel(modelIds);
+  const stranded = moveTo ? [] : modelIds.flatMap((mid) => agentsOnModel(mid).map((a) => a.name));
+  if (stranded.length > 0) {
+    return c.json({ ok: false, error: `Nothing was switched off: ${stranded.join(', ')} would be left with no model to run on. Switch on another model that can run an agent first, then try again.` }, 409);
+  }
+
   const updateStmt = db.prepare(`
     UPDATE models SET is_enabled = 0, updated_at = datetime('now') WHERE id = ?
   `);
@@ -1970,7 +1977,7 @@ configRouter.post('/models/disable', async (c) => {
 
   disableMany(modelIds);
 
-  const moved = await reassignAffectedAgents(modelIds, await cheapestAgentModel(modelIds));
+  const moved = await reassignAffectedAgents(modelIds, moveTo);
 
   logger.info('Models disabled', { count: modelIds.length, ...moved });
 

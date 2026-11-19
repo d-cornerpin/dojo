@@ -1,5 +1,6 @@
-// When the model an agent is on is disabled and every other enabled model is under the 32K floor, the agent is
-// left with no model (its turn stops on the no-model notice), never moved onto the too-small one.
+// When the model an agent is on would be switched off and every other enabled model is under the 32K floor,
+// the request is refused with the agent named: nothing is switched off and the agent keeps its model. It is
+// never moved onto the too-small one.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { Hono } from 'hono';
@@ -28,10 +29,12 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllGlobals(); mockDb.current?.close(); mockDb.current = null; });
 
 describe('disabling a model never lands an agent on a too-small one', () => {
-  it('with only a sub-32K model left, the agent has no model', async () => {
+  it('with only a sub-32K model left, the request is refused naming the agent, and nothing changes', async () => {
     const app = new Hono().route('/config', configRouter);
     const res = await app.request('/config/models/disable', { method: 'POST', body: JSON.stringify({ modelIds: ['m-in-use'] }), headers: { 'content-type': 'application/json' } });
-    expect(await res.json(), 'the reply never calls it moved').toEqual({ ok: true, data: { disabled: 1, agentsMoved: 0, agentsWithoutModel: 1 } });
-    expect(db().prepare("SELECT model_id FROM agents WHERE id = 'agent-a'").get()).toEqual({ model_id: null });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ ok: false, error: 'Nothing was switched off: A would be left with no model to run on. Switch on another model that can run an agent first, then try again.' });
+    expect(db().prepare("SELECT is_enabled FROM models WHERE id = 'm-in-use'").get()).toEqual({ is_enabled: 1 });
+    expect(db().prepare("SELECT model_id FROM agents WHERE id = 'agent-a'").get()).toEqual({ model_id: 'm-in-use' });
   });
 });
