@@ -236,6 +236,17 @@ describe('a send the process died inside leaves no row and is named so it is sen
     expect(notice).toContain('+15550000');
     expect(notice).toContain('The roof quote is fine.');
     expect(notice).toMatch(/may not have gone\. If you cannot tell, send it again; a duplicate is the lesser harm/);
+    expect(notice).not.toContain('Do not repeat any of it');
+  });
+
+  it('an unfinished phone call is to be checked, never placed again blindly', () => {
+    ownerAskClaimedBy(7, 1);
+    insertMessageIfAbsent({ id: 'u-c1', agentId: AGENT, role: 'assistant', turnNumber: 7,
+      content: JSON.stringify([{ type: 'tool_use', id: 'c1', name: 'voice_call', input: { to: '+15550000' } }]) } as never);
+    restart();
+    const notice = facts()!;
+    expect(notice).toContain('the call may not have been placed. Check before calling again.');
+    expect(notice).not.toContain('send it again');
   });
 });
 

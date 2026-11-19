@@ -58,9 +58,11 @@ function describeEffect(e: DeadTurnEffect): string {
   const shown = JSON.stringify(args ?? {}).slice(0, 200);
   if (e.finished) return `${e.name} ${shown}`;
   // A send leaves no row until it ends, so nothing says whether it went: answering twice is the lesser harm.
-  return `${e.name} ${shown}${outboundChannelForTool(e.name) !== null
-    ? ' (no result was recorded: it may not have gone. If you cannot tell, send it again; a duplicate is the lesser harm.)'
-    : ' (no result was recorded: the run stopped inside it, so it may or may not have happened: check)'}`;
+  // A second phone call is worse than a second text, so an unfinished call is checked, never redialed blindly.
+  const unknown = e.name === 'voice_call' ? 'the call may not have been placed. Check before calling again.'
+    : outboundChannelForTool(e.name) !== null ? 'it may not have gone. If you cannot tell, send it again; a duplicate is the lesser harm.'
+    : 'the run stopped inside it, so it may or may not have happened: check';
+  return `${e.name} ${shown} (no result was recorded: ${unknown})`;
 }
 
 /** What one hand-back records: read from the ledger at the moment the turn is judged dead. */
@@ -109,8 +111,8 @@ export function handBackFactsFor(workId: string): string | null {
   // What already happened comes first.
   const effects = recs.flatMap((r) => r.effects);
   if (effects.length > 0) {
-    parts.push(`Already done, on the record: ${effects.map((e, i) => `(${i + 1}) ${e}`).join('; ')}. `
-      + 'Do not repeat any of it: finish only what is left, and tell the person what was already done.');
+    parts.push(`What that turn did, on the record: ${effects.map((e, i) => `(${i + 1}) ${e}`).join('; ')}. `
+      + 'Do not repeat what finished: finish only what is left, and tell the person what was already done.');
   }
   const unnamed = recs.reduce((n, r) => n + r.unnamedEffectful, 0);
   if (unnamed > 0) {
