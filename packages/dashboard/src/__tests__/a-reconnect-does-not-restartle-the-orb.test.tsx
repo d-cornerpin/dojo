@@ -1,13 +1,8 @@
-// ════════════════════════════════════════════════════════════════════════════
-// A reconnect re-reads the server's standing owner cards. A card already on
-// screen with the same key and the same words is left as it is: it keeps its
-// id, so the orb is not startled again for a card the owner has already seen.
-// ════════════════════════════════════════════════════════════════════════════
+// A reconnect re-reads the standing owner cards; a card already on screen with the same key and words keeps its id and does not startle the orb.
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, act, waitFor } from '@testing-library/react';
 
 const { server, ws } = vi.hoisted(() => ({
-  /** What the server's owner-card route answers, and what the dismiss route was told. */
   server: { cards: [] as Array<{ words: string; severity: string; cardKey?: string }>, dismissed: [] as string[], gets: 0 },
   ws: {
     status: 'connected' as 'connected' | 'connecting' | 'disconnected',
@@ -50,8 +45,6 @@ vi.mock('../hooks/useWebSocket', () => ({
   }),
 }));
 
-// The orb is spied, not mounted: the startle this test counts is the one
-// Dojo3Notifications raises for a toast id it has never seen.
 const orb = vi.hoisted(() => ({
   setAlert: vi.fn(), setNoteGlyph: vi.fn(), setEmotion: vi.fn(), pulse: vi.fn(), startTask: vi.fn(), endTask: vi.fn(),
 }));
