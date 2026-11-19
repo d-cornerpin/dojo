@@ -6,7 +6,7 @@
 import {
   executeVaultRemember, executeVaultSearch, executeVaultForget, executeVaultExpand, executeVaultUpdate,
 } from '../../../vault/tools.js';
-import { getPinnedEntries, getSessionContextEntries, deleteConversation } from '../../../vault/store.js';
+import { getPinnedEntries, getSessionContextEntries, discardConversation } from '../../../vault/store.js';
 import { isDreamerAgent, isPrimaryAgent } from '../../../config/platform.js';
 import { recordLesson, LessonRefused } from '../../../vault/lessons-store.js';
 import { auditLog, toolsLogger as logger } from '../util.js';
@@ -89,7 +89,7 @@ export const vaultHandlers: ToolHandlerMap = {
     const skipped: string[] = [];
     for (const id of archiveIds) {
       try {
-        const ok = deleteConversation(id);
+        const ok = discardConversation(id);
         if (ok) deleted++;
         else skipped.push(id);
       } catch {

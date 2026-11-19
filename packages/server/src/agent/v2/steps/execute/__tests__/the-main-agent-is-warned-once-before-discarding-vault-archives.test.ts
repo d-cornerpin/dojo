@@ -38,7 +38,7 @@ const call = { id: 'c1', name: 'vault_discard_archives', arguments: { archive_id
 const gate = (seen: Set<string>) =>
   runRefusalGates(initState({ agentId: MAIN, turnNumber: 1, lastUserMessageContent: null } as never) as never,
     call as never, { agentId: MAIN, turnNumber: 1, turnCtx: {}, counterparty: null, refusedOnceSigs: seen } as never, false).refusal;
-const archives = () => (connection.getDb().prepare('SELECT COUNT(*) AS n FROM vault_conversations').get() as { n: number }).n;
+const archives = () => (connection.getDb().prepare('SELECT COUNT(*) AS n FROM vault_conversations WHERE is_processed = 0').get() as { n: number }).n;
 
 describe('the main agent is warned once before discarding vault archives', () => {
   it('the first try is a warning; the identical repeat in the same turn deletes the archive', async () => {
