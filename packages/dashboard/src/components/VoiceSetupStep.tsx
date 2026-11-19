@@ -103,21 +103,11 @@ export const VoiceSetupStep = () => {
     if (!models) return;
     setDownloadStarted(true);
     setError(null);
-    const jobs: Promise<unknown>[] = [];
-    if (!models.kokoro?.installed) {
-      jobs.push(api.installVoiceModel('kokoro', models.kokoro?.id ?? 'onnx-community/Kokoro-82M-v1.0-ONNX'));
-    }
-    const whisper = models.whisper.find((m) => m.id === models.defaultWhisper);
-    if (whisper && !whisper.installed) {
-      jobs.push(api.installVoiceModel('whisper', whisper.id));
-    }
     try {
-      const results = await Promise.all(jobs);
-      for (const r of results) {
-        if (typeof r === 'object' && r !== null && 'ok' in r && (r as { ok: boolean }).ok === false) {
-          setError((r as { error?: string }).error ?? 'install failed');
-          setDownloadStarted(false); // let the person try again
-        }
+      const res = await api.installMissingVoiceModels(models.missing);
+      if (!res.ok) {
+        setError(res.error);
+        setDownloadStarted(false); // let the person try again
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -159,8 +149,7 @@ export const VoiceSetupStep = () => {
   };
 
   const kokoroDone = models?.kokoro?.installed === true;
-  const whisperDone = models?.whisper.find((m) => m.id === models.defaultWhisper)?.installed === true;
-  const allModelsDone = kokoroDone && whisperDone;
+  const allModelsDone = models?.missing.length === 0;
 
   return (
     <div className="space-y-6">
@@ -205,29 +194,23 @@ export const VoiceSetupStep = () => {
           {allModelsDone && <span className="text-xs text-cp-teal">✓ Installed</span>}
         </div>
         <p className="text-xs text-ui/40">
-          Kokoro (TTS, ~96 MB) and Whisper {models?.defaultWhisper ?? ''} (STT, ~570 MB) run on your machine.
+          The voice and the speech recognition models run on your machine. They download once.
         </p>
 
         {models && (
           <div className="space-y-2">
-            {(['kokoro', 'whisper'] as const).map((kind) => {
-              const item =
-                kind === 'kokoro' ? models.kokoro :
-                models.whisper.find((m) => m.id === models.defaultWhisper);
-              if (!item) return null;
-              const dl = downloads[`${kind}/${item.id}`];
+            {models.missing.map((item) => {
+              const dl = downloads[`${item.kind}/${item.id}`];
               const pct = dl && dl.total > 0 ? Math.min(100, (dl.downloaded / dl.total) * 100) : 0;
               return (
-                <div key={kind} className="text-xs space-y-1">
+                <div key={`${item.kind}/${item.id}`} className="text-xs space-y-1">
                   <div className="flex justify-between">
-                    <span className="text-ui">{kind === 'kokoro' ? 'Kokoro 82M' : `Whisper ${item.id}`}</span>
+                    <span className="text-ui">{item.label}</span>
                     <span className="text-ui/40">
-                      {item.installed
-                        ? `${formatBytes(item.bytes)} on disk`
-                        : dl ? `${formatBytes(dl.downloaded)} / ${formatBytes(dl.total)}` : 'pending'}
+                      {dl ? `${formatBytes(dl.downloaded)} / ${formatBytes(dl.total)}` : `about ${formatBytes(item.approxBytes)}`}
                     </span>
                   </div>
-                  {dl && !item.installed && (
+                  {dl && (
                     <div className="h-1.5 bg-ui/[0.08] rounded-full overflow-hidden">
                       <div className="h-full bg-cp-teal transition-all" style={{ width: `${pct}%` }} />
                     </div>
