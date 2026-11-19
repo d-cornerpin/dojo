@@ -103,7 +103,6 @@ export interface DreamReport {
   pinnedCount: number;
   permanentCount: number;
   reportText: string | null;
-  dreamMode: string;
   modelId: string | null;
   durationMs: number | null;
   createdAt: string;
@@ -164,7 +163,6 @@ interface DreamReportRow {
   pinned_count: number;
   permanent_count: number;
   report_text: string | null;
-  dream_mode: string;
   model_id: string | null;
   duration_ms: number | null;
   created_at: string;
@@ -230,7 +228,6 @@ function rowToReport(row: DreamReportRow): DreamReport {
     pinnedCount: row.pinned_count,
     permanentCount: row.permanent_count,
     reportText: row.report_text,
-    dreamMode: row.dream_mode,
     modelId: row.model_id,
     durationMs: row.duration_ms,
     createdAt: row.created_at,
@@ -969,7 +966,6 @@ export function createDreamReport(params: {
   pinnedCount: number;
   permanentCount: number;
   reportText: string;
-  dreamMode: string;
   modelId?: string;
   durationMs?: number;
 }): DreamReport {
@@ -977,8 +973,8 @@ export function createDreamReport(params: {
   const id = uuidv4();
 
   db.prepare(`
-    INSERT INTO dream_reports (id, archives_processed, memories_extracted, techniques_found, duplicates_merged, contradictions_resolved, entries_pruned, entries_consolidated, total_entries, pinned_count, permanent_count, report_text, dream_mode, model_id, duration_ms, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    INSERT INTO dream_reports (id, archives_processed, memories_extracted, techniques_found, duplicates_merged, contradictions_resolved, entries_pruned, entries_consolidated, total_entries, pinned_count, permanent_count, report_text, model_id, duration_ms, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
   `).run(
     id,
     params.archivesProcessed,
@@ -992,7 +988,6 @@ export function createDreamReport(params: {
     params.pinnedCount,
     params.permanentCount,
     params.reportText,
-    params.dreamMode,
     params.modelId ?? null,
     params.durationMs ?? null,
   );

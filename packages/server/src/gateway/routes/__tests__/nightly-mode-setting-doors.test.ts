@@ -1,8 +1,6 @@
-// The two doors that store a nightly job's mode — the dreamer config door and the healer
-// config door — must refuse a mode that is not exactly one of its allowed words, and a model
-// id that is not text, before writing anything, so a stored mode can never be a word the
-// nightly job reads back as neither working nor disabled, and a refused body can never
-// leave half of its change saved.
+// The healer config door must refuse a mode that is not exactly one of its allowed words, and a model id that
+// is not text, before writing anything, so a refused body can never leave half of its change saved. The
+// dreamer config door stores no mode at all.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
@@ -37,7 +35,6 @@ vi.mock('../../../agent/runtime.js', () => ({
 import { runMigrations } from '../../../db/migrations.js';
 import { healerRouter } from '../healer.js';
 import { vaultRouter } from '../vault.js';
-import { getDreamingConfig } from '../../../vault/maintenance.js';
 import * as coldImport1 from '../../../config/platform.js';
 
 const db = (): Database.Database => mockDb.current!;
@@ -90,48 +87,11 @@ afterEach(() => {
   mockDb.current = null;
 });
 
-describe('the dreamer mode door', () => {
-  it('refuses a mode word that is not allowed and writes nothing', async () => {
-    setConfig('dreaming_mode', 'full');
-    setConfig('dreaming_model_id', 'big');
-    const res = await vaultRouter.request('/dream/config', json('PUT', { modelId: 'wide', dreamMode: 'banana' }));
-    expect(res.status).toBe(400);
-    expect(getConfig('dreaming_mode')).toBe('full');
-    expect(getConfig('dreaming_model_id')).toBe('big');
-  });
-
-  it('refuses a mode that is not text and does not store the model sent with it', async () => {
-    const res = await vaultRouter.request('/dream/config', json('PUT', { modelId: 'big', dreamMode: { a: 1 } }));
-    expect(res.status).toBe(400);
-    expect(getConfig('dreaming_model_id')).toBeUndefined();
-  });
-
-  it('stores each allowed mode word', async () => {
-    for (const mode of ['full', 'light']) {
-      const res = await vaultRouter.request('/dream/config', json('PUT', { dreamMode: mode }));
-      expect(res.status).toBe(200);
-      expect(getConfig('dreaming_mode')).toBe(mode);
-    }
-  });
-
-  it('refuses off: dreaming can never be switched off', async () => {
-    setConfig('dreaming_mode', 'light');
-    const res = await vaultRouter.request('/dream/config', json('PUT', { dreamMode: 'off' }));
-    expect(res.status).toBe(400);
-    expect(((await res.json()) as { error: string }).error).toMatch(/cannot be switched off/i);
-    expect(getConfig('dreaming_mode')).toBe('light');
-  });
-
-  it('reads a legacy stored off as full', async () => {
-    setConfig('dreaming_mode', 'off');
-    expect(getDreamingConfig().dreamMode).toBe('full');
-    setConfig('dreaming_mode', 'light');
-    expect(getDreamingConfig().dreamMode).toBe('light');
-  });
-
-  it('is not mode-checked when the mode is not being changed', async () => {
-    const res = await vaultRouter.request('/dream/config', json('PUT', { modelId: 'big' }));
+describe('the dreamer config door', () => {
+  it('stores no mode: a mode sent by an old page is ignored', async () => {
+    const res = await vaultRouter.request('/dream/config', json('PUT', { modelId: 'big', dreamMode: 'light' }));
     expect(res.status).toBe(200);
+    expect(getConfig('dreaming_mode')).toBeUndefined();
   });
 });
 

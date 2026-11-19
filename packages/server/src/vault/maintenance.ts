@@ -45,10 +45,6 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const logger = createLogger('vault-dreaming');
 
-// Dreaming can never be switched off, so there is no 'off' mode; a stored 'off' is read as 'full'.
-export const DREAM_MODES = ['full', 'light'] as const;
-export type DreamMode = typeof DREAM_MODES[number];
-
 // A Dreamer that dies mid-batch stays 'working' and would block every cycle (the cycle advances only via a
 // terminal complete_task). A genuinely running turn keeps the row's updated_at fresh (30s status heartbeat)
 // and holds an activeRuns entry in this process; absent both past this window, there is no live run.
@@ -59,21 +55,19 @@ const DREAMER_CONTINUATION_QUIET_MS = DREAMER_STALE_MINUTES * 60 * 1000;
 let lastDreamerWakeMs = 0;
 
 
-export function getDreamingConfig(): { modelId: string | null; dreamTime: string; dreamMode: DreamMode } {
+export function getDreamingConfig(): { modelId: string | null; dreamTime: string } {
   const db = getDb();
 
   const modelRow = db.prepare("SELECT value FROM config WHERE key = 'dreaming_model_id'").get() as { value: string } | undefined;
   const timeRow = db.prepare("SELECT value FROM config WHERE key = 'dreaming_time'").get() as { value: string } | undefined;
-  const modeRow = db.prepare("SELECT value FROM config WHERE key = 'dreaming_mode'").get() as { value: string } | undefined;
 
   return {
     modelId: modelRow?.value ?? null,
     dreamTime: timeRow?.value ?? '03:00',
-    dreamMode: modeRow?.value === 'light' ? 'light' : 'full',
   };
 }
 
-export function setDreamingConfig(config: { modelId?: string; dreamTime?: string; dreamMode?: DreamMode }): void {
+export function setDreamingConfig(config: { modelId?: string; dreamTime?: string }): void {
   const db = getDb();
   const upsert = db.prepare(`
     INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
@@ -85,9 +79,6 @@ export function setDreamingConfig(config: { modelId?: string; dreamTime?: string
   }
   if (config.dreamTime !== undefined) {
     upsert.run('dreaming_time', config.dreamTime, config.dreamTime);
-  }
-  if (config.dreamMode !== undefined) {
-    upsert.run('dreaming_mode', config.dreamMode, config.dreamMode);
   }
 }
 
@@ -532,7 +523,6 @@ function buildDreamerCycleMessage(
   stats: ReturnType<typeof getVaultStats>,
   profilePath: string,
   soulPath: string,
-  dreamMode: DreamMode,
   allUnprocessed: VaultConversation[],
 ): string {
   const batchNote = totalBatches > 1
@@ -831,7 +821,6 @@ export async function runDreamingCycle(): Promise<{ dreamerId: string | null }> 
   if (rough) batches.push(rough);
 
   logger.info(`Waking Dreamer to process ${unprocessed.length} archives in ${batches.length} batch(es)`, {
-    mode: config.dreamMode,
     modelId,
     contextWindow,
     batches: batches.length,
@@ -890,7 +879,7 @@ export async function runDreamingCycle(): Promise<{ dreamerId: string | null }> 
     WHERE id = ?
   `).run(JSON.stringify(firstBatch.ids), dreamerId);
 
-  const cycleMessage = buildDreamerCycleMessage(firstBatch.text, 0, batches.length, stats, profilePath, soulPath, config.dreamMode, unprocessed);
+  const cycleMessage = buildDreamerCycleMessage(firstBatch.text, 0, batches.length, stats, profilePath, soulPath, unprocessed);
 
   // A nightly cycle is committing to a drain: open the cycle-in-flight marker (cleared at finalize).
   // Setting it here, reached only via runDreamingCycle, also heals a marker leaked by a crashed finalize.
@@ -951,7 +940,7 @@ function writeDreamReportForCycle(state: PendingBatchState, outcome: 'complete' 
       `Vault entries: ${before.totalEntries} → ${after.totalEntries} (${memoriesExtracted >= 0 ? '+' : ''}${memoriesExtracted}).`,
       `Pinned: ${before.pinnedCount} → ${after.pinnedCount}. Permanent: ${before.permanentCount} → ${after.permanentCount}.`,
       `Engine maintenance: pruned ${state.maintenanceAtStart.pruned}, decayed ${state.maintenanceAtStart.decayed}, unpinned ${state.maintenanceAtStart.unpinned}, aged-out ${state.maintenanceAtStart.agedOut}.`,
-      `Batches: ${state.batches.length}. Duration: ${Math.round(durationMs / 1000)}s. Mode: ${state.config.dreamMode}.`,
+      `Batches: ${state.batches.length}. Duration: ${Math.round(durationMs / 1000)}s.`,
     ].join('\n');
 
     createDreamReport({
@@ -966,7 +955,6 @@ function writeDreamReportForCycle(state: PendingBatchState, outcome: 'complete' 
       pinnedCount: after.pinnedCount,
       permanentCount: after.permanentCount,
       reportText,
-      dreamMode: state.config.dreamMode,
       modelId: state.modelId,
       durationMs,
     });
@@ -1024,7 +1012,6 @@ function writeResumedDreamReport(): void {
       permanentCount: after.permanentCount,
       reportText:
         'Dream cycle finished after a mid-cycle restart. The in-memory cycle counters were lost, so per-archive totals are not available; the remaining archives were filed by the stateless DB-driven continuation.',
-      dreamMode: config.dreamMode,
       modelId: config.modelId ?? undefined,
     });
     logger.info('Resumed dream report written (post-restart continuation)');
@@ -1120,7 +1107,7 @@ async function wakeNextBatchFromDb(primaryId: string, state: PendingBatchState |
   const soulPath = path.join(homeDir(), '.dojo', 'prompts', 'SOUL.md');
   // batchIndex 0 / totalBatches 1 keeps the "batch X of N" note off (N is not known statelessly).
   const cycleMessage = buildDreamerCycleMessage(
-    batch.text, 0, 1, stats, profilePath, soulPath, (state?.config ?? getDreamingConfig()).dreamMode, [],
+    batch.text, 0, 1, stats, profilePath, soulPath, [],
   );
   wakeupDreamer(cycleMessage);
   logger.info('Dreamer woken for next batch (stateless DB continuation)', {
@@ -1166,7 +1153,6 @@ export async function spawnNextDreamerBatch(primaryId: string): Promise<void> {
         state.stats,
         profilePath,
         soulPath,
-        state.config.dreamMode,
         [],
       );
 
@@ -1414,7 +1400,6 @@ export async function recoverDreamerFromContextOverflow(
     state.stats,
     profilePath,
     soulPath,
-    state.config.dreamMode,
     [],
   );
 
@@ -1665,7 +1650,6 @@ export function scheduleDreamingCycle(): void {
   logger.info('Dreaming cycle scheduled', {
     nextDream: next.toISOString(),
     delayMs: delay,
-    mode: config.dreamMode,
   });
 
   dreamTimer = setTimeout(async () => {
