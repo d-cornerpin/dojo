@@ -521,10 +521,11 @@ export function settleAsk(workId: string, ctx: SettlementContext): AskSettlement
         + 'still waiting and the ask is owed again rather than left looking finished',
     });
     if (undo.kind === 'applied') {
-      handBackAsk(workId, {
+      const handed = handBackAsk(workId, {
         agentId: ask.agent_id, turnNumber: ctx.turnNumber, cause: causeOfTurn(ask.agent_id, ctx), retryAt: ctx.retryAt,
         actorId, reason: 'the turn acked and then finished without answering',
       });
+      if (handed.verdict === 'held') return handed;
       logger.warn('ask handed back at the turn boundary: it was closed on a start-ack that nothing followed', {
         agentId: ask.agent_id, workId, receipt: ask.result_delivery_id, turnNumber: ctx.turnNumber,
       }, ask.agent_id);
