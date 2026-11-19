@@ -90,7 +90,12 @@ export async function runTurnClassification(
     db, waitingConvs, openHumanWorkAtTurnStart, triggerRow, chosenConvKey, lastUserMessageContent,
   } = input;
   let item = input.item;
-  if (givenUp(agentId, item)) { item = nextOwed(agentId)[0]; if (givenUp(agentId, item)) item = undefined; }
+  if (givenUp(agentId, item)) {
+    item = nextOwed(agentId)[0];
+    if (givenUp(agentId, item)) item = undefined;
+    // Nothing left to serve: the turn ends here, as a lost pickup claim does, with no model call.
+    if (!item && !chosenConvKey && !a2aJobOrigin(agentId)) { setAgentStatus(agentId, 'idle'); return preflightAbandon('request-given-up'); }
+  }
   // The most-recent inbound over every lane.
   const mostRecentInbound = db.prepare(`
     SELECT seq AS rowid, content, lane, origin_intent, source_agent_id, a2a_thread_id, a2a_intent, a2a_requires_response, inbound_meta, served_by_turn

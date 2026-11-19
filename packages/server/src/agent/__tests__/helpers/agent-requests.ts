@@ -75,13 +75,14 @@ export const pieceState = (ask: string): string | undefined => (testDb().prepare
   'SELECT state FROM work WHERE parent_id = ? ORDER BY opened_at LIMIT 1').get(ask) as { state: string } | undefined)?.state;
 
 /** One helper turn through the real preflight; then finalize as the turn ended: silent, a rate limit on its first
- *  call (waiting for `reset`), or a crash (no finalize). Returns the request the turn served, if any. */
+ *  call (waiting for `reset`), or a crash (no finalize). Returns the request the turn served; null when it served
+ *  none or the preflight ended the turn. */
 export async function helperTurn(end: 'silent' | 'limit' | 'crash' = 'silent', reset = 0): Promise<string | null> {
   const { openTurnContext, endTurnContext, runPreflight, finalizeTurnRecord, latchEngineCut, advance } = await product();
   endTurnContext(HELPER);
   const bag = openTurnContext(HELPER);
   const out = await runPreflight(bag, preflightCtx());
-  if (out.directive !== 'proceed') throw new Error('agent-requests: preflight abandoned');
+  if (out.directive !== 'proceed') { endTurnContext(HELPER); return null; }
   const served = bag.kind === 'a2a' ? (bag.servedRequest?.messageId ?? null) : null;
   if (end !== 'crash') {
     let state = bag.state!;
