@@ -547,6 +547,8 @@ export interface InboundIMessageInput {
   externalMessageId?: string | null;
   /** Real send time (ISO) of a stale reconnect replay: ingested as a note, no command, wake or auto-reply. */
   staleSentAtIso?: string | null;
+  /** When the sender sent it (ms since 1970), if known: the command intercept does not run a command older than 15 minutes. */
+  sentAtMs?: number | null;
 }
 
 export type InboundIMessageOutcome =
@@ -570,7 +572,7 @@ export async function processInboundIMessage(
   // Command intercept on the text portion only: the reply goes to the SENDER and the agent stays asleep. Stale
   // replays skip it (a days-old "status" must not be answered on reconnect).
   if (cleanedText && !input.staleSentAtIso) {
-    const commandResponse = await handleIMCommand(cleanedText, sender);
+    const commandResponse = await handleIMCommand(cleanedText, sender, input.sentAtMs);
     if (commandResponse) {
       const sentOk = await sendIMessage(sender, commandResponse);
       tellAgentWhatDojoSent({ agentId: primaryId, recipient: sender, text: commandResponse, why: 'in reply to the text command they sent', sent: sentOk === true });
@@ -1038,6 +1040,7 @@ async function pollMessages(): Promise<void> {
             wakeAgent: !isStaleReplay,
             externalMessageId: (msg as { guid?: string | null }).guid ?? null,
             staleSentAtIso: isStaleReplay && sentAtMs !== null ? new Date(sentAtMs).toISOString() : null,
+            sentAtMs,
           });
         } catch (err) {
           // Persist failed: the message is NOT stored and the cursor was NOT advanced (rolled back). Retry this row next

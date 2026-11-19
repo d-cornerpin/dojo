@@ -2,20 +2,18 @@
 // is ambiguous with chat, so it only counts when it resolves a pending imessage-surface proposal.
 export type StrictCommand =
   | { kind: 'status' }
+  | { kind: 'stop' }
   | { kind: 'kill-all' }
-  | { kind: 'kill-named'; name: string }
-  | { kind: 'pause' }
-  | { kind: 'resume' };
+  | { kind: 'kill-named'; name: string };
 
 export type ApproveDenyCommand = { kind: 'approve' | 'deny'; shortId: string };
 
 export function parseStrictCommand(trimmed: string): StrictCommand | null {
   if (trimmed === 'status') return { kind: 'status' };
+  if (trimmed === 'stop') return { kind: 'stop' };
   if (trimmed === 'kill all') return { kind: 'kill-all' };
   const killMatch = trimmed.match(/^kill\s+(.+)$/);
   if (killMatch && killMatch[1] !== 'all') return { kind: 'kill-named', name: killMatch[1] };
-  if (trimmed === 'pause') return { kind: 'pause' };
-  if (trimmed === 'resume') return { kind: 'resume' };
   return null;
 }
 
