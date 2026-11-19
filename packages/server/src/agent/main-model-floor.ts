@@ -140,14 +140,15 @@ export async function reassignAffectedAgents(
     `UPDATE config SET value = ?, updated_at = datetime('now')
       WHERE value IN (${marks}) AND key IN (${MAIN_MODEL_SETTING_KEYS.map(() => '?').join(',')})`,
   ).run(fallbackId, ...modelIds, ...MAIN_MODEL_SETTING_KEYS);
+  let moved = 0;
   for (const id of live) {
-    try { await setAgentModel(id, fallbackId); } catch (err) {
-      logger.warn('A moved agent\'s no-fit park could not be looked at again', {
+    try { await setAgentModel(id, fallbackId); moved++; } catch (err) {
+      logger.warn('A moved agent could not be switched to its new model', {
         agentId: id, error: err instanceof Error ? err.message : String(err),
       });
     }
   }
-  return { agentsMoved: live.length, agentsWithoutModel: 0 };
+  return { agentsMoved: moved, agentsWithoutModel: 0 };
 }
 
 /** Live agents on a model known to be under the floor; an unknown window is not small. */
