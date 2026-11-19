@@ -110,7 +110,7 @@ export async function finalizeTurnRecord(
         } else if ((turnCtx.abortHandBack || cause === 'cut') && state.nonIdempotentCallsThisTurn === 0
             && releaseEngineEventByRowid({ rowid, agentId, turnNumber: claimedEngineEvent.turnNumber }) > 0) {
           if (cause === 'wait') serveLater({ kind: 'row', agentId, rowid }, turnCtx.retryAt, 'the provider asked to wait; the event is served at its reset');
-          else recordEngineEventDeliveryFailure(agentId, rowid);
+          else recordEngineEventDeliveryFailure(agentId, rowid, turnCtx.retryAt);
         }
       } catch (err) {
         logger.warn('v2: the engine event hand-back at finalize failed; the event stays served', {

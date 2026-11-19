@@ -583,11 +583,12 @@ export function retireById(id: string): number {
 
 /** A failed delivery's count and backoff, or with `notBefore` only the time it may be served again (count unchanged). */
 export function recordDeliveryAttempt(
-  p: { agentId: string; rowid: number } & ({ attempts: number; backoffMinutes: number } | { notBefore: number }),
+  p: { agentId: string; rowid: number } & ({ attempts: number; backoffMinutes: number } | { notBefore: number; attempts?: number }),
 ): number {
   const db = getDb();
   if ('notBefore' in p) {
-    return db.prepare('UPDATE messages SET next_attempt_at = ? WHERE agent_id = ? AND rowid = ?').run(p.notBefore, p.agentId, p.rowid).changes;
+    return db.prepare('UPDATE messages SET next_attempt_at = ?, delivery_attempts = COALESCE(?, delivery_attempts) WHERE agent_id = ? AND rowid = ?')
+      .run(p.notBefore, p.attempts ?? null, p.agentId, p.rowid).changes;
   }
   return db.prepare(
     `UPDATE messages SET delivery_attempts = @attempts,

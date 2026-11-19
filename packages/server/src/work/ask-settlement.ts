@@ -7,7 +7,7 @@
 // The wrappers below carry scope only; the join and async arms are the same rule.
 
 import { getDb } from '../db/connection.js';
-import { handBackCauseOf, turnExitReason } from './exit-attribution.js';
+import { dueAfterCut, handBackCauseOf, turnExitReason } from './exit-attribution.js';
 import { createLogger } from '../logger.js';
 import { TERMINAL_JOB_STATUS_SQL } from '../services/media-job-status.js';
 import { turnContext } from '../agent/turn-context.js';
@@ -373,7 +373,7 @@ export function handBackAsk(workId: string, p: { agentId: string; turnNumber: nu
   const at = p.cause === 'wait' ? (p.retryAt ?? Date.now() + WAIT_FIRST_MS)
     : p.cause === 'silence' || p.cause === 'free' ? null
     : p.cause === 'crash' && spent === 0 ? Date.now()
-    : Math.max(backoff, p.retryAt ?? 0);   // a cut that also met a provider limit waits for both
+    : dueAfterCut(backoff, p.retryAt);
   if (at !== null) serveLater({ kind: 'ask', id: workId }, at, p.reason);
   if (p.cause === 'wait' && p.retryAt && p.retryAt - (firstServedAt(workId) ?? Date.now()) >= 120_000) {
     const retryAt = p.retryAt;

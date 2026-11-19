@@ -18,6 +18,9 @@ export function turnExitReason(agentId: string, turnNumber: number | null): stri
   }
 }
 
+/** A cut that also met a provider limit waits for both: the later of its backoff and the provider's reset. */
+export const dueAfterCut = (backoffAt: number, retryAt?: number | null): number => Math.max(backoffAt, retryAt ?? 0);
+
 /** THE EXIT TABLE: how a turn that did not answer hands its request back. A provider limit on the turn's
  *  first call waits for the reset; after paid calls it is a counted cut. A turn that parked its job, whatever
  *  its exit (a full context, a turn budget), re-opens it uncounted with no due: the job's continuation serves it. */

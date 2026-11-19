@@ -53,9 +53,14 @@ describe('an engine event is handed back by how its turn ended', () => {
     expect(event()).toEqual({ served: null, swept: null, attempts: 0, due: RESET });
   });
 
-  it('a rate limit after paid calls releases it and counts the failed delivery', async () => {
+  it('a rate limit after paid calls releases it, counted, due at the later of the reset and the backoff', async () => {
     await turnEnds(advance(latchEngineCut(fresh(), 'provider_error'), { loopCount: 3 }), { retryAt: RESET, abortHandBack: true });
-    expect(event()).toMatchObject({ served: null, swept: null, attempts: 1 });
+    expect(event()).toEqual({ served: null, swept: null, attempts: 1, due: RESET });
+  });
+
+  it('a limit after paid calls whose reset comes before the backoff waits for the backoff', async () => {
+    await turnEnds(advance(latchEngineCut(fresh(), 'provider_error'), { loopCount: 3 }), { retryAt: T0 + 10_000, abortHandBack: true });
+    expect(event()).toEqual({ served: null, swept: null, attempts: 1, due: T0 + 60_000 });
   });
 
   it('an engine cut with no abort call releases it and counts the failed delivery', async () => {
