@@ -300,7 +300,7 @@ async function main(): Promise<void> {
   await (await import('./services/owner-star-upgrade.js')).starTheOwnersAtBoot();
 
   try {
-    (await import('./agent/main-model-floor.js')).moveAgentsOffSmallModels();   // an agent on a too-small model is moved, the owner told once
+    await (await import('./agent/main-model-floor.js')).moveAgentsOffSmallModels();   // an agent on a too-small model is moved, the owner told once
   } catch (err) {
     logger.warn('Moving agents off a too-small model failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
   }

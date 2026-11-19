@@ -134,14 +134,14 @@ describe('a model that is not a chat model cannot run an agent', () => {
     expect(res.status).toBe(200);
   });
 
-  it('the automatic pick skips the Dojo\'s own writer', () => {
+  it('the automatic pick skips the Dojo\'s own writer', async () => {
     db().prepare(`INSERT INTO providers (id, name, type, base_url, auth_type, is_validated, created_at, updated_at)
       VALUES ('ollama-local', 'Ollama', 'ollama', 'http://localhost:11434', 'none', 1, datetime('now'), datetime('now'))`).run();
     seedModel('writer', '["chat"]', 0, 'ollama-local', 'qwen3.5:4b');
-    expect(cheapestAgentModel()).toBe('big');
+    expect(await cheapestAgentModel()).toBe('big');
   });
 
-  it('the automatic pick never takes a free video model', () => {
-    expect(cheapestAgentModel()).toBe('big');
+  it('the automatic pick never takes a free video model', async () => {
+    expect(await cheapestAgentModel()).toBe('big');
   });
 });

@@ -1,12 +1,11 @@
 // ════════════════════════════════════════════════════════════════════════════════════
 // DELETING A PROVIDER MOVES ITS AGENTS TO A WORKING MODEL.
 //
-// `DELETE /providers/:id` leaves no agent on "no model" and no service-agent setting naming a
-// deleted model. The delete runs the one
-// mover `reassignAffectedAgents` (agents and the service-agent model settings move to the
-// cheapest working model with the usual "model changed" note; with none, they are left
-// without a model as before), forgets every key of `LOCAL_MODEL_SETTING_KEYS`, and refuses
-// to delete the provider that holds the Dojo's own two standard models.
+// `DELETE /providers/:id` leaves no live agent on "no model" and no service-agent setting naming a
+// deleted model. The delete runs the one mover `reassignAffectedAgents` (agents and the service-agent
+// model settings move to the cheapest model that can run an agent, with the usual "model changed" note;
+// with none to move live agents to, the delete is refused), forgets every key of `LOCAL_MODEL_SETTING_KEYS`,
+// and refuses to delete the provider that holds the Dojo's own two standard models.
 // ════════════════════════════════════════════════════════════════════════════════════
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
