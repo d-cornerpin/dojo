@@ -6,6 +6,7 @@ import { getDb } from '../db/connection.js';
 import { broadcast } from '../gateway/ws.js';
 import { TERMINAL_JOB_STATUS_SQL } from '../services/media-job-status.js';
 import { pendingReplies } from './v2/channel-sender.js';
+import { workingExpr } from '../work/terminal-states.js';
 
 /** The shape already on the wire (`AgentDetail.inFlight`) and in the dashboard rule (`StopSubject`). */
 export interface LiveWork {
@@ -35,12 +36,19 @@ function openJobRows(agentId: string): number {
   return n;
 }
 
+/** The agent's parked jobs: working tasks with a due time, not held. */
+export function parkedJobs(agentId: string): Array<{ id: string; dueAt: number }> {
+  return getDb().prepare(`SELECT w.id, w.next_attempt_at AS dueAt FROM work w WHERE w.agent_id = ? AND w.kind <> 'ask'
+    AND w.next_attempt_at IS NOT NULL AND w.hold_kind IS NULL AND ${workingExpr('w')}`).all(agentId) as Array<{ id: string; dueAt: number }>;
+}
+
 /** A pure read, never a writer. A job has a registration AND a row: count the max, never the sum. A reply
- *  waiting to go out is live work of its own. */
+ *  waiting to go out, and a job parked between stretches, are live work of their own. */
 export function liveWork(agentId: string): LiveWork {
   return {
     turn: countAbortable(agentId, 'turn'),
-    background: Math.max(countAbortable(agentId, 'background'), openJobRows(agentId)) + pendingReplies(agentId).length,
+    background: Math.max(countAbortable(agentId, 'background'), openJobRows(agentId)) + pendingReplies(agentId).length
+      + parkedJobs(agentId).length,
   };
 }
 

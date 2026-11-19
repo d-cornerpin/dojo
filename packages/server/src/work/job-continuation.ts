@@ -2,6 +2,7 @@ import { createLogger } from '../logger.js';
 import { isStopFenced } from '../agent/shared-state.js';
 import { turnContext } from '../agent/turn-context.js';
 import { serveLater } from '../agent/v2/serve-later.js';
+import { announceLiveWork } from '../agent/live-work.js';
 import { openEngineScaffoldTask } from '../agent/v2/steps/execute/tracker-floors.js';
 import { linkedTaskOf } from './ask-settlement.js';
 import { turnWorkIds } from './task-freshness.js';
@@ -24,6 +25,7 @@ export function parkJob(agentId: string, reason: string, due: number | 'event', 
       : null);
   if (!job) { logger.info('park: no task and no request, nothing continues', { agentId, reason }, agentId); return false; }
   serveLater({ kind: 'task', id: job }, due === 'event' ? Date.now() + 15 * 60_000 : due, reason);
+  announceLiveWork(agentId);   // a parked job is something Stop ends
   const arrived = (): void => serveLater({ kind: 'task', id: job }, Date.now(), `${reason}: the event arrived`, { onlyIfParked: true });
   if (after) void after.then(arrived, arrived);
   if (bag) bag.jobParked = job;

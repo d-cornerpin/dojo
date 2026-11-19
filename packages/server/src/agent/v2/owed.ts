@@ -9,6 +9,7 @@ import { workingExpr } from '../../work/terminal-states.js';
 import { originOfTasks, type JobOrigin } from '../../work/job-origin.js';
 import { activeRuns, isRunUnwinding } from '../shared-state.js';
 import { turnContext } from '../turn-context.js';
+import { parkedJobs } from '../live-work.js';
 import { askIdForMessage } from '../../work/store.js';
 import { linkedTaskOf, jobHeldAt } from '../../work/ask-settlement.js';
 import { nextReplyDueAt, deliverDueReplies } from './channel-sender.js';
@@ -81,12 +82,6 @@ export function agentRequests(agentId: string, now = Date.now()): AgentRequest[]
      ORDER BY m.seq ASC LIMIT 20`).all({ agentId, now, servedWindow: TERMINAL_WAKE_WINDOW_MS }) as Array<Omit<AgentRequest, 'threadShort'>>;
   return rows.filter((r) => !repliedOnThread(agentId, r.fromId, r.threadId, r.createdAt))
     .map((r) => ({ ...r, threadShort: r.threadId.slice(0, A2A_THREAD_SHORT_LENGTH) }));
-}
-
-/** The agent's parked jobs: working tasks with a due time, not held. */
-function parkedJobs(agentId: string): Array<{ id: string; dueAt: number }> {
-  return getDb().prepare(`SELECT w.id, w.next_attempt_at AS dueAt FROM work w WHERE w.agent_id = ? AND w.kind <> 'ask'
-    AND w.next_attempt_at IS NOT NULL AND w.hold_kind IS NULL AND ${workingExpr('w')}`).all(agentId) as Array<{ id: string; dueAt: number }>;
 }
 
 type PendingEngineEvent = NonNullable<ReturnType<typeof getPendingEngineEvent>>;
