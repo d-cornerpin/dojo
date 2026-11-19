@@ -146,12 +146,6 @@ export async function submitUserMessage(
   // before it marks its work served, so the retry redid that work. handleMessage's activeRuns guard queues
   // this message as a pending wakeup and the end-of-turn drain serves it next. Stop is the explicit stopAgent.
 
-  // A fresh user message clears any stale stop signal, or the loop would bail on it before processing.
-  try {
-    const { stoppedAgents } = await import('../../agent/shared-state.js');
-    stoppedAgents.delete(agentId);
-  } catch { /* best effort */ }
-
   const runtime = getAgentRuntime();
   runtime.handleMessage(agentId, modelContent).catch((err) => {
     logger.error('Agent runtime error', {
