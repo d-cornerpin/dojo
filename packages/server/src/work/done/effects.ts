@@ -182,6 +182,9 @@ export function checkDependencies(completedTaskId: string): void {
   }
 }
 
+/** Steps whose hand-in the door refused: not tried again until restart. */
+const refusedHandIns = new Set<string>();
+
 /** Open steps whose earlier step was cancelled, failed or is gone are handed in as can't be done, once each:
  *  a handed-in step is no longer open, so the next sweep passes it by. At most 20 a sweep. */
 export async function handInStepsAfterADeadStep(): Promise<number> {
@@ -189,10 +192,11 @@ export async function handInStepsAfterADeadStep(): Promise<number> {
   const rows = db.prepare(`
     SELECT w.id AS id, w.depends_on AS depends_on FROM work w
     WHERE ${taskScope('w')} AND w.state = 'open' AND NOT ${heldByOwnerSql('w')}
-      AND EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(w.depends_on) THEN w.depends_on ELSE '[]' END) d
+      AND EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(w.depends_on) AND json_type(w.depends_on) = 'array' THEN w.depends_on ELSE '[]' END) d
                   LEFT JOIN work x ON x.id = d.value WHERE x.id IS NULL OR x.state IN ('failed', 'abandoned'))
+      AND w.id NOT IN (SELECT value FROM json_each(?))
     LIMIT 20
-  `).all() as Array<{ id: string; depends_on: string }>;
+  `).all(JSON.stringify([...refusedHandIns])) as Array<{ id: string; depends_on: string }>;
   if (rows.length === 0) return 0;
   const { engineHandIn } = await import('./hand-in.js');
   let handed = 0;
@@ -205,6 +209,7 @@ export async function handInStepsAfterADeadStep(): Promise<number> {
     const step = r ? `"${r.title ?? 'untitled'}" [${deps[dead]!.slice(0, 8)}] is ${stateToStatus(r.state)}` : `[${deps[dead]!.slice(0, 8)}] no longer exists`;
     const res = engineHandIn(row.id, `the step it waits on, ${step}, so this one can never start`, { scope: 'schedule', outcome: 'cant_be_done' });
     if (res.kind === 'handed_in') handed += 1;
+    else refusedHandIns.add(row.id);
   }
   return handed;
 }

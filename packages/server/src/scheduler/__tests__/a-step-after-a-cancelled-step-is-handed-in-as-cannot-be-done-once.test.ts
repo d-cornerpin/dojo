@@ -69,4 +69,11 @@ describe('a step after a cancelled step is handed in as cannot be done, once', (
     await sweep();
     expect(handIns(step)).toEqual([]);
   });
+
+  it('a step whose dependency list is valid JSON but not a list: the sweep goes on and hands it nothing', async () => {
+    const odd = await open({ title: 'Tidy the hall', goal: 'the hall is tidy' });
+    connection.getDb().prepare("UPDATE work SET depends_on = '\"not-a-list\"' WHERE id = ?").run(odd);
+    await expect(sweep()).resolves.toBeUndefined();
+    expect(handIns(odd)).toEqual([]);
+  });
 });
