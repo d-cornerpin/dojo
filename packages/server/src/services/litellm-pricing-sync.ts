@@ -5,6 +5,7 @@
 // users can also trigger it on demand.
 
 import { getDb } from '../db/connection.js';
+import { setConfigValue } from '../config/config-value.js';
 import { createLogger } from '../logger.js';
 
 const logger = createLogger('litellm-pricing-sync');
@@ -51,20 +52,15 @@ function persistStatus(status: 'success' | 'failure', meta: {
 }): void {
   const db = getDb();
   const now = new Date().toISOString();
-  const upsert = db.prepare(`
-    INSERT INTO config (key, value, updated_at)
-    VALUES (?, ?, datetime('now'))
-    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
-  `);
-  upsert.run(KEY_STATUS, status);
-  upsert.run(KEY_AT, now);
-  upsert.run(KEY_UPDATED_COUNT, String(meta.updatedCount));
-  upsert.run(KEY_PROVIDERS_TOUCHED, String(meta.providersTouched));
+  setConfigValue(KEY_STATUS, status);
+  setConfigValue(KEY_AT, now);
+  setConfigValue(KEY_UPDATED_COUNT, String(meta.updatedCount));
+  setConfigValue(KEY_PROVIDERS_TOUCHED, String(meta.providersTouched));
   if (status === 'success') {
     // Clear any stale error on a clean run.
     db.prepare('DELETE FROM config WHERE key = ?').run(KEY_ERROR);
   } else if (meta.error) {
-    upsert.run(KEY_ERROR, meta.error);
+    setConfigValue(KEY_ERROR, meta.error);
   }
 }
 

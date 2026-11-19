@@ -3,6 +3,7 @@
 // Each new mail is stored by `mail-record.ts`; the ones that wake the main agent wake it once per poll.
 
 import { getDb } from '../db/connection.js';
+import { setConfigValue } from '../config/config-value.js';
 import { createLogger } from '../logger.js';
 import { getPrimaryAgentId } from '../config/platform.js';
 import { getAgentRuntime } from '../agent/runtime.js';
@@ -106,10 +107,7 @@ export class MailWatcher<Ref extends { id: string }> {
   private saveLastCheckedAt(accountId: string, timestamp: string): void {
     this.stateFor(accountId).lastCheckedAt = timestamp;
     try {
-      getDb().prepare(`
-        INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
-        ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = datetime('now')
-      `).run(this.configKey('last_checked_at', accountId), timestamp, timestamp);
+      setConfigValue(this.configKey('last_checked_at', accountId), timestamp);
     } catch (err) {
       this.logger.error('Failed to save the mail cursor', { accountId, error: err instanceof Error ? err.message : String(err) });
     }

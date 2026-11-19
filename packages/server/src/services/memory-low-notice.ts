@@ -1,4 +1,5 @@
 import { getDb } from '../db/connection.js';
+import { setConfigValue } from '../config/config-value.js';
 import { createLogger } from '../logger.js';
 import { sendAlert } from './imessage-bridge.js';
 import { ownerConditionCleared, tellOwner } from '../healer/owner-notices.js';
@@ -16,10 +17,8 @@ function readMemoryLow(): { at: number } | null {
 }
 
 function writeMemoryLow(value: { at: number } | null): void {
-  const db = getDb();
-  if (value === null) db.prepare("DELETE FROM config WHERE key = 'owner_notice_memory_low'").run();
-  else db.prepare(`INSERT INTO config (key, value, updated_at) VALUES ('owner_notice_memory_low', ?, datetime('now'))
-                   ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`).run(JSON.stringify(value));
+  if (value === null) getDb().prepare("DELETE FROM config WHERE key = 'owner_notice_memory_low'").run();
+  else setConfigValue('owner_notice_memory_low', JSON.stringify(value));
 }
 
 /** Memory measured: tell the owner when it falls below the line, re-arm when it is back above. */
