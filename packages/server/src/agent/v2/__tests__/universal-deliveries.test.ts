@@ -412,7 +412,7 @@ describe('deliveries.receipt_id is populated when a receipt exists', () => {
     expect(deliveries()[0].receipt_id).toBe('receipt-early');
   });
 
-  it('END TO END: writeToolReceipt itself links the row — the two sole writers, no helper', async () => {
+  it('END TO END: writeToolReceipt itself links the row, the two sole writers, no helper', async () => {
     // The measured defect this pins: the first live run recorded 119 deliveries and linked
     // ZERO of them, because the auto-route wrote its receipt one statement BELOW the scope.
     // Asserting through `writeToolReceipt` is what makes the ordering part of the contract.
