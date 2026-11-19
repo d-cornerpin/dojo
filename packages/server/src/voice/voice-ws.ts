@@ -719,7 +719,7 @@ async function handleUtteranceEnd(session: VoiceSession): Promise<void> {
         return;
       }
       session.passive = false;
-      logger.info('Wake phrase detected', { agentId: session.agentId, phrase: session.wakePhrase, remainder: remainder.slice(0, 80) });
+      logger.debug('Wake phrase detected', { agentId: session.agentId, phrase: session.wakePhrase, remainder: remainder.slice(0, 80) });
       sendJson(session.ws, {
         type: 'voice:wake_detected', agentId: session.agentId,
         phrase: session.wakePhrase, remainder: remainder || null,

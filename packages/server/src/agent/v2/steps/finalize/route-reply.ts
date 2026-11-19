@@ -205,7 +205,6 @@ async function speakOnCall(state: AgentTurnState & { lastAssistantTextForIM: str
       logger.info('v2.9.23: routed reply via phone TTS (streamed)', {
         agentId,
         callSid: inbound.phoneCallSid,
-        to: inbound.phoneFromNumber,
         tailLength: tail.length,
         totalTextLength: replyOut.length,
       }, agentId);
@@ -222,7 +221,6 @@ async function speakOnCall(state: AgentTurnState & { lastAssistantTextForIM: str
       logger.info('v2.9.18: routed reply via phone TTS', {
         agentId,
         callSid: inbound.phoneCallSid,
-        to: inbound.phoneFromNumber,
         textLength: replyOut.length,
       }, agentId);
     }
