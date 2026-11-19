@@ -517,7 +517,7 @@ const ProviderEditForm = ({ provider, onSaved, onCancel }: {
   );
 };
 
-const AddProviderForm = ({ onAdded, onCreated, onCancel }: { onAdded: () => void; onCreated?: () => void; onCancel: () => void }) => {
+export const AddProviderForm = ({ onAdded, onCreated, onValidated, onCancel }: { onAdded: () => void; onCreated?: () => void; onValidated?: (cloud: boolean) => void; onCancel?: () => void }) => {
   const [name, setName] = useState('');
   // The dropdown 'preset' is UI-only: deepseek, openrouter and manual all map to backend type
   // 'openai-compatible' with different default base URLs and seeded catalogs, at submit time.
@@ -621,6 +621,7 @@ const AddProviderForm = ({ onAdded, onCreated, onCancel }: { onAdded: () => void
     const valResult = await api.validateProvider(id);
     if (valResult.ok && valResult.data.valid) {
       setStatus('valid');
+      onValidated?.(presetConfig.backendType !== 'ollama' && !isManual);   // tells a host at once whether a cloud provider now works
       // Brief delay so the user sees the green badge before the form closes
       setTimeout(() => onAdded(), 800);
     } else {
@@ -876,14 +877,16 @@ const AddProviderForm = ({ onAdded, onCreated, onCancel }: { onAdded: () => void
         >
           {status === 'saving' ? 'Adding...' : status === 'validating' ? 'Validating...' : 'Add & Validate'}
         </button>
-        <button
-          type="button"
-          onClick={onCancel}
-          disabled={status === 'saving' || status === 'validating'}
-          className="px-4 py-2 text-sm text-ui/55 hover:text-ui/90 disabled:text-gray-700 transition-colors"
-        >
-          Cancel
-        </button>
+        {onCancel && (
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={status === 'saving' || status === 'validating'}
+            className="px-4 py-2 text-sm text-ui/55 hover:text-ui/90 disabled:text-gray-700 transition-colors"
+          >
+            Cancel
+          </button>
+        )}
       </div>
     </form>
   );
