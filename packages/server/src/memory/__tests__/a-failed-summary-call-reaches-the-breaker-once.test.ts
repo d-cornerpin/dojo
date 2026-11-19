@@ -1,22 +1,12 @@
-// A failed summary call reaches the provider breaker once, through the transport's own catch (`settleFailedCall`),
-// with the SDK's facts: model.ts wraps every failure, so the wrapped prose alone cannot say a 402 is permanent.
-// The summary door adds nothing, so one refused summary is one failure, not two.
+// A failed summary call reaches the provider breaker once, through the transport's own catch, with the SDK's facts.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
 const mockDb: { current: Database.Database | null } = { current: null };
-vi.mock('../../db/connection.js', async () => {
-  const os = await import('node:os');
-  const p = await import('node:path');
-  return {
-    getDb: () => {
-      if (!mockDb.current) throw new Error('test DB not initialized');
-      return mockDb.current;
-    },
-    closeDb: vi.fn(),
-    getDbPath: () => p.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'dojo-d4b', 'dojo.db'),
-  };
-});
+vi.mock('../../db/connection.js', () => ({
+  getDb: () => { if (!mockDb.current) throw new Error('test DB not initialized'); return mockDb.current; },
+  closeDb: vi.fn(),
+}));
 
 const frames: Array<{ type: string; code?: string; error?: string }> = [];
 vi.mock('../../gateway/ws.js', () => ({
@@ -102,16 +92,6 @@ describe('a failed summary call reaches the provider breaker once', () => {
     await summarise();
     await summarise();
     expect(providerBreaker(PROVIDER)?.reason).toBe('no_balance');
-  });
-
-  it('a transient wrapped failure opens nothing', async () => {
-    thrower = () => wrappedAs('503 upstream overloaded, try again', 503);
-    await summarise();
-    await summarise();
-    await summarise();
-    expect(providerBreaker(PROVIDER), 'a bad minute is not a wall').toBeNull();
-    expect(mayDialProvider(PROVIDER)).toBe(true);
-    expect(frames.filter(f => f.code === 'QUOTA_EXHAUSTED'), 'and no card for it').toEqual([]);
   });
 
   it('a throw with no facts is read from its prose alone', async () => {

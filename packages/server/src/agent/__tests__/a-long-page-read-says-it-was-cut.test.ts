@@ -1,12 +1,4 @@
-// A PROMPT READ OF A LONG PAGE SAYS IT WAS CUT.
-//
-// The prompt branch of `webFetch` hands the extractor model at most the first
-// 50,000 characters of the page and never said so, so an agent could tell its
-// owner "the page does not contain X" when X sat past the cut. The result now
-// names how much of the page the extractor actually saw.
-//
-// TEST HYGIENE: DNS is mocked, `fetch` is replaced, the extractor model is
-// stubbed. Nothing here touches the network.
+// A prompt read of a long page says how much of the page the extractor saw; a short page carries no cut note.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 

@@ -1,8 +1,4 @@
-// THE HIDDEN BROWSER CLOSES AFTER TEN IDLE MINUTES
-//
-// Every web_browse action restarts a 10-minute clock for that agent; when it runs
-// out with no action, the session is closed the way closeSession does. The next
-// action opens a new browser. These tests drive executeWebBrowse with fake timers.
+// Every web_browse action restarts a 10-minute clock; with no action the session closes, and the next action opens a new browser.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
