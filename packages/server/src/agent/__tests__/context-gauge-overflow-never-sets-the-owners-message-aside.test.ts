@@ -107,8 +107,10 @@ describe('t194 D4 — overflow is the window\'s failure, never the message\'s', 
   it('RED on v3.3.3: an unreadable drain ladder stands the drain down; it does not write the ask off on first sight', async () => {
     ladder.unreadable = true;
     script.run = async () => { runs += 1; };
-    await runUntilQuiet();
-    expect(runs).toBe(1);
+    // The drain stands down; the one clock still serves the open ask, bounded by the wake budget (30 in 10 minutes).
+    await runUntilQuiet(300);
+    expect(runs).toBeGreaterThanOrEqual(1);
+    expect(runs, 'the clock spins only within the wake budget').toBeLessThanOrEqual(30);
     expect(askState()).toBe('open');
     expect(setAside()).toEqual([]);
   });
