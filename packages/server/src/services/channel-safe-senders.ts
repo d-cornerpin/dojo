@@ -4,6 +4,7 @@
 // channel (the notification still arrives).
 
 import { getDb } from '../db/connection.js';
+import { setConfigValue } from '../config/config-value.js';
 import { addressesMatch, parseSafeSenders, type SafeSender } from './imessage-bridge.js';
 import { configKeyToChannel, syncSafeSenderToContacts, syncSafeSendersToContacts } from '../contacts/from-safe-senders.js';
 import { listGoogleAccounts } from '../google/accounts.js';
@@ -82,13 +83,6 @@ export interface AppendChannelSenderResult {
   totalSenders: number;
 }
 
-function writeKey(key: string, list: SafeSender[]): void {
-  getDb().prepare(`
-    INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
-    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
-  `).run(key, JSON.stringify(list));
-}
-
 function appendToKey(key: string, sender: SafeSender): AppendChannelSenderResult {
   const list = readByKey(key);
   const target = sender.address.toLowerCase();
@@ -96,7 +90,7 @@ function appendToKey(key: string, sender: SafeSender): AppendChannelSenderResult
     return { ok: true, added: false, totalSenders: list.length };
   }
   const next = [...list, sender];
-  writeKey(key, next);
+  setConfigValue(key, JSON.stringify(next));
   // Mirror the new sender into the contacts store (best-effort) so a trusted
   // name resolves when the user later asks the agent to reach them.
   const channel = configKeyToChannel(key);
@@ -109,7 +103,7 @@ function removeFromKey(key: string, address: string): { removed: boolean; totalS
   const list = readByKey(key);
   const next = list.filter((s) => s.address.toLowerCase() !== address.toLowerCase());
   if (next.length === list.length) return { removed: false, totalSenders: list.length };
-  writeKey(key, next);
+  setConfigValue(key, JSON.stringify(next));
   return { removed: true, totalSenders: next.length };
 }
 
