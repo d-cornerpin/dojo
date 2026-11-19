@@ -12,7 +12,7 @@ import { nextOwed, dueOf } from '../v2/owed.js';
 import { stoppedAgents } from '../shared-state.js';
 import { reconcileOrphanedClaims } from '../../work/orphaned-claims.js';
 import { healStuckClaims } from '../../work/ask-remediation.js';
-import { freshAgentsDb, HELPER } from './helpers/agent-requests.js';
+import { freshAgentsDb, testDb, HELPER } from './helpers/agent-requests.js';
 import { ownerAsks, stretch, rowOf, tasksOf } from './helpers/long-job.js';
 
 // A run's start clears the Stop flag; these turns start without the runtime, so each test starts clear.
@@ -52,6 +52,25 @@ describe('stop ends the request and nothing serves it again', () => {
     expect(stopByOwner(HELPER)).toMatchObject({ ended: 1 });
     expect(rowOf(ask).state).toBe('abandoned');
     expect(rowOf(task)).toMatchObject({ due: null, hold: 'paused' });
+    nothingComesBack();
+  });
+
+  it('Stop after the owner asked how the parked job is going ends that job, and after a restart nothing wakes it', async () => {
+    const ask = await ownerAsks('m-1');
+    await stretch('parks');
+    const [task] = tasksOf('m-1');
+    await ownerAsks('m-2', 'How is it going?');
+    expect(await stretch('answers')).toMatchObject({ root: 'm-2' });
+    const stopped = stopByOwner(HELPER);
+    expect(stopped.nothingRunning).toBeUndefined();
+    expect(stopped.ended).toBe(1);
+    expect(rowOf(ask).state).toBe('abandoned');
+    const by = testDb().prepare("SELECT json_extract(payload, '$.by') AS by FROM work_events WHERE work_id = ? AND kind = 'transition' ORDER BY id DESC LIMIT 1").get(ask);
+    expect(by).toEqual({ by: 'owner' });
+    expect(rowOf(task)).toMatchObject({ due: null, hold: 'paused' });
+    nothingComesBack();
+    reconcileOrphanedClaims({ agentId: HELPER });
+    healStuckClaims();
     nothingComesBack();
   });
 });

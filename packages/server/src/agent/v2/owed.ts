@@ -158,8 +158,8 @@ export interface StoppedRequests { liveRun: boolean; asks: string[]; runTasks: s
 const REQUEST_ROW = `SELECT seq AS rowid, id AS messageId, a2a_thread_id AS threadId, source_agent_id AS fromId, created_at AS createdAt
   FROM messages WHERE agent_id = ? AND role = 'user' AND a2a_intent IN ('QUESTION', 'ASSIGN', 'BLOCK') AND swept_at IS NULL`;
 
-/** Which request a Stop ends: the live turn's, else the latest turn's while still started (an ask claimed, held, or
- *  open with a due; another agent's request unanswered or its job parked); and the job tasks working for it. */
+/** Which request a Stop ends: the live turn's; else every parked job's and the latest turn's while still started (an
+ *  ask claimed, held, or open with a due; another agent's request unanswered or its job parked); and their job tasks. */
 export function stoppedRequestsOf(agentId: string): StoppedRequests {
   const db = getDb();
   const one = (sql: string, ...a: unknown[]): { id: string } | undefined => db.prepare(sql).get(...a) as { id: string } | undefined;
@@ -172,13 +172,19 @@ export function stoppedRequestsOf(agentId: string): StoppedRequests {
     : root?.kind === 'engine' ? one(`SELECT CASE WHEN root_kind = 'ask' THEN 'ask:' || root_id WHEN task_id LIKE 'ask:%' THEN task_id END AS id FROM messages WHERE id = ?`, root.id)
     : root?.kind === 'a2a' ? one(`SELECT parent_id AS id FROM work WHERE agent_id = ? AND root_kind = 'a2a_thread' AND root_id = ? AND parent_id IS NOT NULL ORDER BY opened_at DESC LIMIT 1`, agentId, root.id)
     : undefined;
-  if (root?.kind === 'a2a' && !ask) request ??= db.prepare(`${REQUEST_ROW} AND a2a_thread_id = ? ORDER BY seq DESC LIMIT 1`).get(agentId, root.id) as StoppedRequest | undefined;
+  const threadRequest = (thread: string) => db.prepare(`${REQUEST_ROW} AND a2a_thread_id = ? ORDER BY seq DESC LIMIT 1`).get(agentId, thread) as StoppedRequest | undefined;
+  if (root?.kind === 'a2a' && !ask) request ??= threadRequest(root.id);
+  // With no run, every parked job is what is running: its request ends too, whichever turn was latest.
+  const parked = live ? [] : parkedJobs(agentId).map((j) => ({ id: j.id, origin: originOfTasks(agentId, [j.id]) }));
   const run = root?.kind === 'occurrence' ? one("SELECT parent_id AS id FROM work WHERE id = ? AND parent_id IS NOT NULL AND state = 'open'", root.id) : undefined;
-  const asks = ask?.id && one(`SELECT id FROM work WHERE id = ? AND (state IN ('claimed', 'blocked') OR (state = 'open' AND next_attempt_at IS NOT NULL))`, ask.id) ? [ask.id] : [];
-  const requests = request && (!repliedOnThread(agentId, request.fromId, request.threadId, request.createdAt) || one(
-    `SELECT t.id FROM work t WHERE t.agent_id = ? AND t.a2a_thread_id = ? AND t.next_attempt_at IS NOT NULL AND ${workingExpr('t')}`, agentId, request.threadId)) ? [request] : [];
+  const asks = [...new Set([ask?.id, ...parked.map((j) => (j.origin?.kind === 'ask' ? askIdForMessage(j.origin.messageId) : null))])].filter((id): id is string =>
+    !!id && !!one(`SELECT id FROM work WHERE id = ? AND (state IN ('claimed', 'blocked') OR (state = 'open' AND next_attempt_at IS NOT NULL))`, id));
+  const requests = [...new Map([request, ...parked.map((j) => (j.origin?.kind === 'a2a' ? threadRequest(j.origin.threadId) : null))]
+    .filter((r): r is StoppedRequest => !!r && (!repliedOnThread(agentId, r.fromId, r.threadId, r.createdAt) || !!one(
+      `SELECT t.id FROM work t WHERE t.agent_id = ? AND t.a2a_thread_id = ? AND t.next_attempt_at IS NOT NULL AND ${workingExpr('t')}`, agentId, r.threadId)))
+    .map((r) => [r.rowid, r] as const)).values()];
   // The job tasks: the live turn's job, the task linked to the ask or named by its job hold, and the working task on the request's thread.
-  const jobs = new Set([live?.servedJob, live?.jobParked, run?.id, ...asks.flatMap((a) => [linkedTaskOf(agentId, a.slice('ask:'.length)), jobHeldAt(a)?.task]),
+  const jobs = new Set([live?.servedJob, live?.jobParked, run?.id, ...parked.map((j) => j.id), ...asks.flatMap((a) => [linkedTaskOf(agentId, a.slice('ask:'.length)), jobHeldAt(a)?.task]),
     ...requests.flatMap((r) => (db.prepare(`SELECT t.id FROM work t WHERE t.agent_id = ? AND t.a2a_thread_id = ? AND ${workingExpr('t')}`).all(agentId, r.threadId) as Array<{ id: string }>).map((t) => t.id))]
     .filter((t): t is string => !!t));
   return { liveRun: !!live, asks, runTasks: run ? [run.id] : [], requests, jobs: [...jobs] };
