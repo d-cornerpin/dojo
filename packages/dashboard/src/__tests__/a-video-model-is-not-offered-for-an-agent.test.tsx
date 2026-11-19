@@ -21,7 +21,7 @@ import { DreamingTab } from '../components/settings/DreamingTab';
 import { ModelsTab } from '../components/settings/ModelsTab';
 
 const model = (id: string, caps: string[], notForAgents: string | null) =>
-  ({ id, name: id, apiModelId: id, providerId: 'p', capabilities: caps, isEnabled: true, inputCostPerM: 1, outputCostPerM: 1, notForAgents }) as never;
+  ({ id, name: id, apiModelId: id, providerId: 'p', capabilities: caps, isEnabled: true, inputCostPerM: 1, outputCostPerM: 1, notForAgents, notAChatModel: notForAgents === 'not a chat model' }) as never;
 
 beforeEach(() => {
   vi.mocked(api.getModels).mockResolvedValue({ ok: true, data: [model('clip-maker', ['video_generation'], 'not a chat model'), model('roomy-200k', ['chat'], null)] } as never);

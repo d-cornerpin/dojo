@@ -20,7 +20,7 @@ import * as api from '../lib/api';
 import { ModelsTab } from '../components/settings/ModelsTab';
 
 const SENTENCE = 'local-9b needs about 11.3 GB of memory to run with its 32K-token window. Choose a smaller local model or a cloud model.';
-const model = (id: string, caps: string[], notForAgents: string | null = null) => ({ id, name: id, apiModelId: id, providerId: 'p', capabilities: caps, isEnabled: true, inputCostPerM: 0, outputCostPerM: 0, notForAgents }) as never;
+const model = (id: string, caps: string[], notForAgents: string | null = null) => ({ id, name: id, apiModelId: id, providerId: 'p', capabilities: caps, isEnabled: true, inputCostPerM: 0, outputCostPerM: 0, notForAgents, notAChatModel: notForAgents === 'not a chat model' }) as never;
 
 beforeEach(() => {
   vi.mocked(api.getSetting).mockResolvedValue({ ok: true, data: { value: '' } } as never);
