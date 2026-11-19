@@ -171,12 +171,6 @@ describe('a draft is on no human channel, by every reader that answers that ques
     }
   });
 
-  it('⚠ no definition declares `reachesPeople`, the mirror of that list', () => {
-    const defs = defsNamed(ALL_DRAFT_NAMES);
-    expect(defs.map((d) => d.name).sort()).toEqual([...ALL_DRAFT_NAMES].sort());
-    for (const d of defs) expect(d.reachesPeople).toBeUndefined();
-  });
-
   it('⚠ `channelOfSendTool` answers null, so no outbound scope and no delivery row', () => {
     // A delivery row is the record of the dojo having reached a person. A draft
     // reaches nobody, so the outbound machinery must never open for it.

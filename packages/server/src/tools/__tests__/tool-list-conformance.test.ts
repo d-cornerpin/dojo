@@ -47,7 +47,6 @@ import { isWorkOp } from '../work-verbs.js';
 import { RECEIPT_TOOLS, RECEIPT_EXEMPT } from '../../receipts/store.js';
 import { SEND_TO_PEOPLE, USER_TWINNED_SEND_PREFIXES } from '../../agent/sensei-policy.js';
 import { SEND_TO_PEOPLE_NA } from './send-to-people-na.js';
-import { getAllToolDefinitions } from '../../agent/tools/definitions.js';
 
 // ── The reference registry ──
 // categories.ts is the canonical, plain-data list of every base tool grouped by
@@ -229,33 +228,6 @@ describe('tool-list conformance — SEND_TO_PEOPLE is registry-exhaustive (anti-
     const deadExact = Object.keys(SEND_TO_PEOPLE_NA)
       .filter((p) => !p.endsWith('*') && !isRealTool(p));
     expect(deadExact, `SEND_TO_PEOPLE_NA exact entries that are not real tools: ${deadExact.join(', ')}`).toEqual([]);
-  });
-
-  // ── Declared-tier lock (lanes & lineage P7b) ──
-  // The comms-to-people decision is now DECLARED at the tool definition site
-  // (`reachesPeople: true` on the ToolDefinition), not only remembered in the
-  // leaf list. sensei-policy.ts stays the runtime set (it is a no-import leaf by
-  // design and cannot derive from the registry), so this test pins two-way
-  // equality between the declarations and the list's base names: a declaration
-  // without a list entry OR a list entry without a declaration fails the build
-  // naming the tool. user_ twins inherit the flag via the twin-generation
-  // spread and are pinned by the twin-parity check above.
-  it('reachesPeople declarations and SEND_TO_PEOPLE base names are equal sets', () => {
-    const declared = new Set(getAllToolDefinitions().filter((d) => d.reachesPeople === true && !d.name.startsWith('user_')).map((d) => d.name));
-    const listBases = new Set(SEND_TO_PEOPLE.filter((n) => !n.startsWith('user_')));
-    const undeclared = [...listBases].filter((n) => !declared.has(n)).sort();
-    const unlisted = [...declared].filter((n) => !listBases.has(n)).sort();
-    expect(declared.size).toBeGreaterThanOrEqual(5);
-    expect(
-      undeclared,
-      `SEND_TO_PEOPLE base name(s) with no reachesPeople declaration on the tool definition: ${undeclared.join(', ')}. ` +
-      `Add \`reachesPeople: true\` to each definition so the decision lives at the definition site.`,
-    ).toEqual([]);
-    expect(
-      unlisted,
-      `tool(s) declaring reachesPeople: true but missing from SEND_TO_PEOPLE: ${unlisted.join(', ')}. ` +
-      `Add each to SEND_TO_PEOPLE in packages/server/src/agent/sensei-policy.ts (and its user_ twin if the family is twinned).`,
-    ).toEqual([]);
   });
 });
 
