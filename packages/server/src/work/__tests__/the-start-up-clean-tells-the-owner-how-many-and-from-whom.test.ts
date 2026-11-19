@@ -17,6 +17,7 @@ import { askIdForMessage } from '../store.js';
 import { sweepBootStaleness } from '../work-reaper.js';
 import { insertMessage } from '../../memory/message-store.js';
 import { servedOwnerNotices } from '../../healer/owner-notice-kinds.js';
+import { agentRequests } from '../../agent/v2/owed.js';
 
 const AGENT = randomUUID();
 const db = (): Database.Database => mockDb.current!;
@@ -67,6 +68,18 @@ describe('the start-up clean tells the owner how many and from whom', () => {
     sweepBootStaleness();
     expect(servedOwnerNotices()[0]?.words).toContain(
       ': 7 from +15550107, 6 from +15550106, 5 from +15550105, 4 from +15550104, 3 from +15550103, and 2 more senders.');
+  });
+
+  it('another agent\'s request older than 30 minutes is dropped and counted under its sender; a fresh one is kept', () => {
+    db().prepare("INSERT INTO agents (id, name, status, session_started_at) VALUES ('asker', 'Planner', 'idle', '1970-01-01')").run();
+    for (const [id, minutes] of [['req-old', 40], ['req-new', 10]] as const) {
+      insertMessage({ id, agentId: AGENT, role: 'user', lane: 'a2a', sourceAgentId: 'asker', a2aThreadId: `thread-${id}`,
+        a2aIntent: 'QUESTION', a2aRequiresResponse: true, content: `[A2A:QUESTION thread:${id} from:Planner] the figure?` } as never);
+      db().prepare('UPDATE messages SET created_at = ? WHERE id = ?').run(Date.now() - minutes * 60_000, id);
+    }
+    sweepBootStaleness();
+    expect(servedOwnerNotices()[0]?.words).toContain('dropped 1 old unanswered message (more than 30 minutes old): 1 from Planner.');
+    expect(agentRequests(AGENT).map((r) => r.messageId)).toEqual(['req-new']);
   });
 
   it('a start that drops nothing makes no card', () => {
