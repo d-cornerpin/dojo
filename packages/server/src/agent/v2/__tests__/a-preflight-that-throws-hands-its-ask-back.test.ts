@@ -4,6 +4,11 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 vi.mock('../../../db/connection.js', async () => (await import('./helpers/reply-sender.js')).connectionMock());
 vi.mock('../../../gateway/ws.js', () => ({ broadcast: () => {} }));
+const backFails = vi.hoisted(() => ({ on: false }));
+vi.mock('../../../work/ask-settlement.js', async (orig) => {
+  const real = await orig<typeof import('../../../work/ask-settlement.js')>();
+  return { ...real, handBackAsk: (...a: Parameters<typeof real.handBackAsk>) => { if (backFails.on) throw new Error('the database is locked'); return real.handBackAsk(...a); } };
+});
 vi.mock('../steps/preflight/inbound-and-abort.js', () => ({
   runInboundAndAbort: () => { throw new Error('the inbound read failed'); },
 }));
@@ -22,6 +27,7 @@ const crashCount = (): number => (testDb().prepare(`SELECT COUNT(*) AS n FROM wo
   AND json_extract(payload, '$.marker') = ? AND json_extract(payload, '$.cause') = 'crash'`).get(ASK, RE_SERVE_MARKER) as { n: number }).n;
 
 beforeEach(() => {
+  backFails.on = false;
   freshReplyDb(runMigrations);
   testDb().prepare("INSERT INTO providers (id, name, type, auth_type) VALUES ('p', 'P', 'anthropic', 'api_key')").run();
   testDb().prepare(`INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, is_enabled)
@@ -40,6 +46,11 @@ describe('a preflight that throws hands its ask back', () => {
     expect(crashCount()).toBe(1);
     expect(row.due).not.toBeNull();
     expect(row.due!).toBeLessThanOrEqual(Date.now());
+  });
+
+  it('a hand-back that fails itself still lets the preflight\'s own error through', async () => {
+    backFails.on = true;
+    await expect(runV2Turn(AGENT)).rejects.toThrow('the inbound read failed');
   });
 
   it('a throw before any request was picked hands nothing back', async () => {

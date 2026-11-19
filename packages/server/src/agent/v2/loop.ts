@@ -79,7 +79,11 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
       engineStartAckAfterMs: ENGINE_START_ACK_AFTER_MS,
     });
   } catch (err) {
-    if (turnCtx.root?.kind === 'ask') handBackAsk(askIdForMessage(turnCtx.root.id), { agentId, turnNumber: null, cause: 'crash', actorId: agentId, reason: 'the turn failed before it started' });
+    // A hand-back that fails is logged; the preflight's own error is the one thrown.
+    if (turnCtx.root?.kind === 'ask') {
+      try { handBackAsk(askIdForMessage(turnCtx.root.id), { agentId, turnNumber: null, cause: 'crash', actorId: agentId, reason: 'the turn failed before it started' }); }
+      catch (backErr) { logger.error('the hand-back after a failed preflight did not apply', { agentId, error: String(backErr).slice(0, 300) }, agentId); }
+    }
     throw err;
   }
   if (preflight.directive === 'abandon') return;
