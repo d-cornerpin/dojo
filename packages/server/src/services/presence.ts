@@ -1,6 +1,7 @@
 // The in_dojo / away toggle, and whether the owner can be reached by iMessage: the switch is on and his address is known.
 
 import { getDb } from '../db/connection.js';
+import { setConfigValue } from '../config/config-value.js';
 import { broadcast } from '../gateway/ws.js';
 import { createLogger } from '../logger.js';
 import { isIMessageSwitchedOn, getDefaultSender } from './imessage-bridge.js';
@@ -23,12 +24,7 @@ export function getPresence(): PresenceStatus {
 }
 
 export function setPresence(status: PresenceStatus): void {
-  const db = getDb();
-  db.prepare(`
-    INSERT INTO config (key, value, updated_at) VALUES ('user_presence', ?, datetime('now'))
-    ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = datetime('now')
-  `).run(status, status);
-  logger.info('User presence changed', { status });
+  setConfigValue('user_presence', status);
   broadcast({ type: 'presence:changed', status });
 }
 
