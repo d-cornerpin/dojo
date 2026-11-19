@@ -44,6 +44,13 @@ describe('enabling screen sharing', () => {
     mockDb.current = null;
   });
 
+  const approveEnable = async (): Promise<ReturnType<typeof enable>> => {
+    const p = enable();
+    await new Promise((r) => setTimeout(r, 30));
+    mac.answer!(null);
+    return p;
+  };
+
   it("enabling does not block the server while the Mac's prompt waits", async () => {
     let ticked = false;
     setTimeout(() => { ticked = true; }, 0);
@@ -57,20 +64,14 @@ describe('enabling screen sharing', () => {
   });
 
   it('enable turns on plain Screen Sharing, not Remote Management', async () => {
-    const p = enable();
-    await new Promise((r) => setTimeout(r, 30));
-    mac.answer!(null);
-    await p;
+    await approveEnable();
     expect(mac.scripts[0]).toContain('launchctl load -w /System/Library/LaunchDaemons/com.apple.screensharing.plist');
     expect(mac.scripts[0]).not.toContain('kickstart');
     expect(mac.scripts[0]).not.toContain('RemoteManagement');
   });
 
   it('disable turns off only what the Dojo turned on', async () => {
-    const p = enable();
-    await new Promise((r) => setTimeout(r, 30));
-    mac.answer!(null);
-    await p;
+    await approveEnable();
     mac.answer = null;
     const d = disable();
     await new Promise((r) => setTimeout(r, 30));
