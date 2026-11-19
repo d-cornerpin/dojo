@@ -71,7 +71,7 @@ export function isNonChatModel(capabilitiesJson: string | null | undefined): boo
 
 /** The refusal for setting a model that is not a chat model as an agent's model; null for a chat model, an unknown
  *  id, 'auto', or the model the agent already runs (re-saving is never refused). */
-function refuseNonChatModel(modelId: string | null | undefined, currentModelId?: string | null): string | null {
+export function refuseNonChatModel(modelId: string | null | undefined, currentModelId?: string | null): string | null {
   if (!modelId || modelId === currentModelId || modelId === 'auto') return null;
   let row: { name: string; capabilities: string | null } | undefined;
   try {
