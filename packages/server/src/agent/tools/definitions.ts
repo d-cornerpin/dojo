@@ -1147,7 +1147,7 @@ export const toolDefinitions: ToolDefinition[] = [
           enum: ['kept', 'dropped'],
           description: '"kept" = you delivered it this turn. "dropped" = it is no longer owed.',
         },
-        note: { type: 'string', description: 'Short note on how it was resolved or why it was dropped (for the log; not shown to the user).' },
+        note: { type: 'string', description: 'Short note on how it was resolved. To drop a request someone made to you, the exact words that person wrote when they called it off.' },
       },
       required: [],
     },
@@ -2385,7 +2385,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'vault_discard_archives',
-    description: 'Permanently delete one or more conversation archives from vault_conversations WITHOUT extracting any vault entries from them. Use when the conversations are junk (test runs, error spam, repetitive nonsense, ephemeral chatter) that does not need to be remembered. Unlike complete_task on a Dreamer batch (which marks archives as processed because real work was done), this tool throws the archives away unread. Returns the number of archives actually deleted. For the Dreamer and the main agent only.',
+    description: 'Discard one or more conversation archives (their text is emptied) WITHOUT extracting any vault entries from them. Use when the conversations are junk (test runs, error spam, repetitive nonsense, ephemeral chatter) that does not need to be remembered. Unlike complete_task on a Dreamer batch (which marks archives as processed because real work was done), this tool throws the archives away unread. Returns the number of archives actually discarded. For the Dreamer and the main agent only.',
     effects: [],
     input_schema: {
       type: 'object',
