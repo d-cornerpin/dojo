@@ -311,6 +311,8 @@ import { turnBoundary } from './turn-state.js';
 import { replacePlaceholdersInBackground } from '../memory/out-of-view.js';
 import { armOwedClock, stoppedRequestsOf, type StoppedRequests } from './v2/owed.js';
 import { runIsLive } from './ended-mid-run.js';
+import { announceLiveWork } from './live-work.js';
+import { noteOwnerStop } from '../migration/import-agents.js';
 import { serveLater } from './v2/serve-later.js';
 import { A2A_THREAD_SHORT_LENGTH } from '@dojo/shared';
 import { taskScope, STATE_TO_STATUS_SQL } from '../work/tracker-view.js';
@@ -383,7 +385,8 @@ export function stopAgent(agentId: string): void {
 
 /** The owner's Stop ends the request being served (`stoppedRequestsOf`) in one transaction: its unsent replies, its
  *  pieces, the request, its job tasks (no due; held unless a schedule); then the agent stops, whatever that did, and
- *  the run is settled. Nothing running and nothing to end: nothing is done. Import and terminate call `stopAgent`. */
+ *  the run is settled. Nothing running and nothing to end: nothing is done. What the Stop button does, for every door;
+ *  import and terminate call `stopAgent`. */
 export function stopByOwner(agentId: string): { ended: number; repliesNotSent: number; nothingRunning?: true } {
   let s: StoppedRequests = { liveRun: false, asks: [], runTasks: [], requests: [], jobs: [] };
   try { s = stoppedRequestsOf(agentId); } catch (err) { logger.error('stop: the request being served could not be read', { error: String(err) }, agentId); }
@@ -413,6 +416,8 @@ export function stopByOwner(agentId: string): { ended: number; repliesNotSent: n
     return { ended: 0, repliesNotSent: 0 };
   } finally {
     stopAgent(agentId);
+    noteOwnerStop(agentId);   // a failed import in flight must not lift the owner's own stop
+    announceLiveWork(agentId);   // the frame that takes the stop control away, not waited for
   }
 }
 
