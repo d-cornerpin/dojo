@@ -1,17 +1,4 @@
-// ════════════════════════════════════════════════════════════════════════════
-// WHAT pdf_create REPORTS IS WHAT IT DREW.
-//
-// `pdf_create` counted every block it was given as "rendered", even ones it
-// skipped, a missing image file, a non-PNG/JPG image, an unknown block type,
-// so the agent told the owner the chart was in the report when the PDF never
-// contained it. The result now says how many blocks were drawn and names each
-// skipped block and why.
-//
-// The tool goes through the effects facade, so every clause drives the real
-// per-call context (`inCall`, the facade-contract shape): an `fs_read` on each
-// path the image blocks touch and an `fs_write` tree on the agent's uploads
-// folder. The missing PNG is never created. Names invented.
-// ════════════════════════════════════════════════════════════════════════════
+// pdf_create says how many blocks it drew and names each skipped block and why; the missing PNG is never created.
 import { describe, it, expect, beforeAll, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
