@@ -27,7 +27,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { inboundIMessageText } from '../tools/inbound-fences.js';
 import { homeDir } from '../home.js';
 import {
-  type SafeSender, parseSafeSenders, findSafeSenderByAddress, ownerIMessageRecord, isOwnerIMessageRecipient,
+  type SafeSender, parseSafeSenders, findSafeSenderByAddress, ownerIMessageRecord, recipientKind,
 } from './safe-senders.js';
 
 // Attachments: each file joined to a chat.db message is copied into `~/.dojo/uploads/<agentId>/` (HEIC to JPEG)
@@ -440,7 +440,7 @@ export function maybeSendBusyAck(agentId: string, sender: string): void {
   // No 'queued' broadcast: the busy-ack above tells the person and the 30 s heartbeat re-asserts 'working'.
   logger.info('Busy-ack sent: inbound iMessage queued behind a running turn', {
     agentId,
-    sender,
+    to: recipientKind(sender),
     turnAgeMs: Date.now() - turnStartedAt,
   });
 }
@@ -799,7 +799,7 @@ export async function processInboundIMessage(
         });
       }
       logger.info('RC-8: damped content-free courtesy from agent sender (no turn taken)', {
-        sender, name: senderRecord.name,
+        from: recipientKind(sender), name: senderRecord.name,
       });
     } else if (wakeAgent) {
       // Busy-ack: tell the sender once if this message queued behind a running turn older than 60 s. Never to another
@@ -989,7 +989,6 @@ async function pollMessages(): Promise<void> {
         // Tighten the SQL LIKE filter: the chat_identifier must match a saved safe-sender record (drops group chats).
         if (!findSafeSenderByAddress(sendersThisPoll, sender)) {
           logger.warn('iMessage dropped: chat_identifier matched SQL filter but no safe-sender record', {
-            chatIdentifier: sender,
             rowid: msg.ROWID,
           });
           advancePastRow(msg.ROWID); // deliberate skip, advance as before
@@ -1029,8 +1028,8 @@ async function pollMessages(): Promise<void> {
         }
 
         logger.info('iMessage received', {
-          from: sender,
-          text: cleanedText.slice(0, 100),
+          from: recipientKind(sender),
+          textLength: cleanedText.length,
           uploaded: attachmentResult.uploadedFiles.length,
           inlined: attachmentResult.inlinedTextBlocks.length,
           mentioned: attachmentResult.mentionedAttachments.length,
@@ -1186,7 +1185,7 @@ export function reloadApprovedSenders(): void {
     return;
   }
   approvedSenders = parsed;
-  logger.info('Reloaded approved senders from config', { count: approvedSenders.length, addresses: approvedSenders.map(s => s.address) });
+  logger.info('Reloaded approved senders from config', { count: approvedSenders.length });
 }
 
 // iMessage sending uses the `imsg` CLI (github.com/steipete/imsg), installed by the dojo installer, which handles
@@ -1287,9 +1286,6 @@ function oneAtATime<T>(send: () => Promise<T>): Promise<T> {
 /** An agent's own send (the `imessage_send` tool) names the agent, and is bound to that agent's Stop.
  *  A platform send (an owner notice, the auto-route) names nobody and no Stop cuts it. */
 export interface SendOpts { agentId?: string }
-
-/** Who a send went to, for the log: the kind of person, never the address or number. */
-const recipientKind = (recipient: string): string => (isOwnerIMessageRecipient(recipient) ? 'the owner' : 'an approved sender');
 
 // Returns true only if the send succeeded, so imessage_send callers never report "sent" for a failure.
 export async function sendIMessage(recipient: string, rawText: string, opts: SendOpts = {}): Promise<boolean> {
