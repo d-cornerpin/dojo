@@ -3,6 +3,7 @@
 // has lost the capability. Per-capability concerns (e.g. transcription's `local:whisper`) live in the wrapper module.
 
 import { getDb } from '../db/connection.js';
+import { setConfigValue } from '../config/config-value.js';
 import { createLogger } from '../logger.js';
 import { getModelCapabilities, type Capability } from './capabilities.js';
 
@@ -71,10 +72,7 @@ export function makeCapabilityModelResolver(opts: {
         db.prepare(`DELETE FROM config WHERE key = ?`).run(configKey);
         return;
       }
-      db.prepare(`
-        INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
-        ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = datetime('now')
-      `).run(configKey, modelId, modelId);
+      setConfigValue(configKey, modelId);
     },
     getEffectiveModel(): CapabilityModelChoice | null {
       const configuredId = this.getConfiguredModelId();
