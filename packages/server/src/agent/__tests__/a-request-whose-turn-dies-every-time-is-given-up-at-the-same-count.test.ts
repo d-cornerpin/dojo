@@ -17,8 +17,8 @@ beforeEach(() => { freshAgentsDb(runMigrations); });
 describe('a request whose turn dies every time is given up at the same count', () => {
   it('each dead turn leaves it unserved but spent; the pickup past the budget gives it up', async () => {
     await askerDelegates('QUESTION', THREAD);
-    const budget = a2aRetryBudgetFor(HELPER).turns;
-    for (let i = 0; i < budget; i++) {
+    const serves = a2aRetryBudgetFor(HELPER).turns + 1;
+    for (let i = 0; i < serves; i++) {
       expect(await helperTurn('crash')).not.toBeNull();
       expect(requestRow(THREAD)).toMatchObject({ served: null, attempts: i + 1, swept: null });
     }

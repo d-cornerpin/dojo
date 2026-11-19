@@ -53,11 +53,11 @@ export interface TurnClassificationOutputs {
   readonly unrepliedAssign: AgentRequest | null;
 }
 
-/** Another agent's request spends a serve when a turn picks it up. Past its budget of turns it is given up and the
- *  asker's join piece settled, so the asker is told; true then, and the turn serves the next item. */
+/** Another agent's request spends a serve when a turn picks it up. Served its first time and its budget of retries,
+ *  the next pickup gives it up and settles the asker's join piece, so the asker is told; true then. */
 function givenUp(agentId: string, item: OwedItem | undefined): boolean {
   const r = item?.kind === 'agentRequest' ? item.request : undefined;
-  if (!r || !spendServe(agentId, r.rowid, a2aRetryBudgetFor(agentId).turns + 1)) return false;
+  if (!r || !spendServe(agentId, r.rowid, a2aRetryBudgetFor(agentId).turns + 2)) return false;
   sweepByRowid({ rowid: r.rowid, agentId });
   logger.warn('v2: another agent\'s request went unanswered for its budget of turns; given up', { agentId, from: r.fromName, thread: r.threadShort }, agentId);
   void import('../../../a2a-transport.js').then((m) => m.failJoinPieceForAbandonedAsk(r.messageId, r.threadShort, agentId))

@@ -19,7 +19,7 @@ beforeEach(() => { freshAgentsDb(runMigrations); });
 describe('a request the agent never answers is given up and the asker told', () => {
   it('after its serves the request is swept, the join piece is abandoned, and the give-up turn makes no model call', async () => {
     const ask = await askerDelegates('QUESTION', THREAD);
-    const serves = a2aRetryBudgetFor(HELPER).turns;
+    const serves = a2aRetryBudgetFor(HELPER).turns + 1;
     for (let i = 0; i < serves; i++) expect(await helperTurn('silent'), `serve ${i + 1}`).not.toBeNull();
     expect(pieceState(ask)).toBe('open');
     const before = turns();
