@@ -127,15 +127,15 @@ describe('scrubTechnicalDetail (last-line defense)', () => {
 });
 
 describe('chat:error toast wording in recovery.ts (regression)', () => {
-  // recovery.ts has two non-Tier-D fallback strings (one for rate-limit,
+  // recovery.ts has two non-Tier-D fallback strings (one for out of credit,
   // one for generic injury). These should also be plain English.
   // The actual strings are inline in recovery.ts:recordInjury; we don't
   // import them here, but the test asserts that the helper outputs match
   // the same standard.
-  it('rate-limit fallback wording is plain English', () => {
-    const ratelimitFallback = 'Model is rate-limited. Retrying automatically, give it a moment.';
+  it('out-of-credit fallback wording is plain English', () => {
+    const outOfCreditFallback = 'The AI provider says this account is out of credit. Add credit with the provider, then send the message again.';
     for (const pattern of FORBIDDEN_PATTERNS) {
-      expect(ratelimitFallback).not.toMatch(pattern);
+      expect(outOfCreditFallback).not.toMatch(pattern);
     }
   });
 

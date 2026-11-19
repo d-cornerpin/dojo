@@ -22,7 +22,7 @@ import type { PromptTurnContext } from '../../../../prompt/assembler.js';
 const LEAD = 'This agent\'s turn was not run';
 const CAUSE: Record<RoutedSkip, string> = {
   budget: 'today\'s spending limit is reached for the models it could use. It runs again when the limit resets, or after you raise it in Settings',
-  rate_limit: 'the models it could use are rate-limited by their provider right now. Send the message again in a few minutes',
+  rate_limit: 'the models it could use are rate-limited by their provider right now. The message waits and is answered when the limit clears',
   provider_down: 'the provider of the models it could use is not answering (check it in Settings → Providers)',
   excluded: 'the models it could use failed earlier in this turn. Send the message again in a few minutes',
   capability: 'the only models it could use cannot use tools',

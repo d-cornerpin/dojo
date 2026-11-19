@@ -484,9 +484,8 @@ async function recordInjury(
 
   // ALWAYS persist a chat-history system note FIRST so the agent has context on its next turn;
   // plain language, never raw provider JSON. The provider's own verdict, not this message's digits.
-  const injuryClass = (facts ?? classifyProviderErrorText(message)).class;
-  const isRateLimit =
-    injuryClass === 'rate_limit' || injuryClass === 'quota' || injuryClass === 'overloaded';
+  // A rate limit or overload never reaches here (step 0); out of credit is the owner's to fix.
+  const outOfCredit = (facts ?? classifyProviderErrorText(message)).class === 'quota';
 
   // The patience honest fail has no later turn coming on its own, so on a human-facing turn
   // the generic apology note is REPLACED by one honest in-channel line naming the ask and cause.
@@ -530,8 +529,8 @@ async function recordInjury(
 
   // Broadcast the plain-English chat:error toast; the system note above is the durable
   // record and this toast the ephemeral signal.
-  const userMsg = isRateLimit
-    ? 'Model is rate-limited. Retrying automatically, give it a moment.'
+  const userMsg = outOfCredit
+    ? 'The AI provider says this account is out of credit. Add credit with the provider, then send the message again.'
     : paused
       ? pausedWords(agentId) // the owner card's words: on this chat the two fold into one
       : 'Agent hit an error and the Healer is looking into it. Send a new message to retry, or check the Vitals page if it keeps failing.';
@@ -539,11 +538,11 @@ async function recordInjury(
     type: 'chat:error',
     agentId,
     error: userMsg,
-    code: isRateLimit ? 'RATE_LIMITED' : paused ? 'ERROR_LOOP' : 'MODEL_FAILED',
+    code: outOfCredit ? 'QUOTA_EXHAUSTED' : paused ? 'ERROR_LOOP' : 'MODEL_FAILED',
     // "the Healer is looking into it" asks nothing of the user: only a paused agent is his.
     severity: paused ? 'error' : 'warning',
     cardClass: paused ? 'action' : 'informational',
-    retryable: isRateLimit,
+    retryable: false,
   });
 }
 
