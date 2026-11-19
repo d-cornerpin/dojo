@@ -1,20 +1,9 @@
-// ════════════════════════════════════════════════════════════════════════════
-// A BLANK BUDGET REMOVES THE LIMIT: "Blank or 0 means no limit."
-//
-// The server removes a budget when it is sent `null`, but the Costs page never
-// sent one: the global Save button was disabled on an empty field and both save
-// handlers refused 0 client-side, so an owner could not go back to unlimited.
-// This file drives the honest surface: an emptied field or a 0 sends `null`, a
-// negative is refused on the page, and a missing global limit reads "No limit".
-// ════════════════════════════════════════════════════════════════════════════
+// A blank or 0 budget is sent as no limit, a negative one is refused on the page, and a missing global limit shows no "Limit:" line.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { resetFrames } from './helpers/frames';
 
-// The permissive factory the smoke floor uses, every exported FUNCTION answers
-// `{ ok: true, data: [] }`, every exported constant stays real, so the page
-// mounts on its own terms and the doors this file is about are the only overrides.
 vi.mock('../lib/api', async () => {
   const actual = await vi.importActual<Record<string, unknown>>('../lib/api');
   const stub: Record<string, unknown> = {};
