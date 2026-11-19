@@ -1170,12 +1170,7 @@ export const VoiceTab = () => {
                   </button>
                 )}
                 {models.kokoro.installed && (
-                  <button
-                    onClick={() => void handleDelete('kokoro', models.kokoro!.id)}
-                    className="px-3 py-1.5 text-xs text-cp-coral hover:bg-cp-coral/10 rounded-lg"
-                  >
-                    Delete
-                  </button>
+                  <span className="text-xs text-ui/40">The backup voice: it speaks when a cloud voice fails, so it stays installed.</span>
                 )}
               </div>
             </div>
