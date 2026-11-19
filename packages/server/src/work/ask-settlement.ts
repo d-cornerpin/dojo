@@ -12,7 +12,7 @@ import { createLogger } from '../logger.js';
 import { TERMINAL_JOB_STATUS_SQL } from '../services/media-job-status.js';
 import { turnContext } from '../agent/turn-context.js';
 import { onTaskEnded } from './task-ended.js';
-import { handedInExpr, heldByOwnerSql } from './tracker-view.js';
+import { ENGINE_SCAFFOLD_ROOT_KIND, PARKED_JOB_TITLE, handedInExpr, heldByOwnerSql } from './tracker-view.js';
 import { delegatedRelayEvidence, turnEndedInModelSilence } from './delegated-relay-evidence.js';
 import { recordServingTurnByRowid } from '../memory/message-store.js';
 // Imported from the leaf: `NOT_A_START_ACK` reads it at module scope, and `message-store` reaches this
@@ -560,6 +560,7 @@ export function settleAsk(workId: string, ctx: SettlementContext): AskSettlement
     if (ctx.rowid != null && ctx.turnNumber != null) {
       recordServingTurnByRowid({ agentId: ask.agent_id, rowid: ctx.rowid, servedByTurn: ctx.turnNumber });
     }
+    handInWhatTheParkOpened(ask, evidence.id);
     return out('closed', `delivered via ${evidence.tool}`, evidence.id);
   }
 
@@ -800,16 +801,24 @@ function jobHold(ask: AskRow, ctx: SettlementContext, actorId: string, out: (v: 
   return r.kind === 'applied' ? out('held', 'held on its job') : out('unchanged', `job hold refused: ${r.kind}`);
 }
 
+/** A task the park opened for this request (the agent never heard of it) is handed in by the engine when it closes. */
+function handInWhatTheParkOpened(ask: AskRow, deliveryId: string): void {
+  const task = linkedTaskOf(ask.agent_id, ask.root_id, { parkOpened: true });
+  if (task) afterCommit(() => void import('./done/hand-in.js').then(({ engineHandIn }) => engineHandIn(task, 'the request this task was opened for was answered',
+    { outcome: 'finished', items: [{ kind: 'delivery', ref: deliveryId }] })).catch((err: unknown) => logger.warn('a park-opened task was not handed in', { task, error: String(err) })));
+}
+
 /** A tracker task `t` linked to the request of ask `a` by its message, not ended and not handed in. */
 export const LINKED_OPEN_TASK = (a: string): string =>
   `t.kind = 'task' AND t.agent_id = ${a}.agent_id AND t.source_message_id = ${a}.root_id`
   + ` AND t.state NOT IN ('done', 'failed', 'abandoned') AND ${handedInExpr('t')} = 0`;
 
 /** The open task linked to `agentId`'s request `messageId`, or null; with `ownerHeldEnds` a task the owner holds
- *  counts as ended. */
-export function linkedTaskOf(agentId: string, messageId: string | null, opts: { ownerHeldEnds?: true } = {}): string | null {
+ *  counts as ended; with `parkOpened` only a task a park opened. */
+export function linkedTaskOf(agentId: string, messageId: string | null, opts: { ownerHeldEnds?: true; parkOpened?: true } = {}): string | null {
   if (!messageId) return null;
-  const notHeld = opts.ownerHeldEnds ? ` AND NOT ${heldByOwnerSql('t')}` : '';
+  const notHeld = (opts.ownerHeldEnds ? ` AND NOT ${heldByOwnerSql('t')}` : '')
+    + (opts.parkOpened ? ` AND t.root_kind = '${ENGINE_SCAFFOLD_ROOT_KIND}' AND t.title = '${PARKED_JOB_TITLE}'` : '');
   return (getDb().prepare(`SELECT t.id AS id FROM (SELECT ? AS agent_id, ? AS root_id) a JOIN work t ON ${LINKED_OPEN_TASK('a')}${notHeld} LIMIT 1`)
     .get(agentId, messageId) as { id: string } | undefined)?.id ?? null;
 }

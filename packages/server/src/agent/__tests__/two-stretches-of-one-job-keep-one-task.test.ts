@@ -8,7 +8,7 @@ vi.mock('../runtime.js', () => ({ getAgentRuntime: () => ({ handleMessage: async
 
 import { runMigrations } from '../../db/migrations.js';
 import { nextOwed } from '../v2/owed.js';
-import { PARKED_JOB_TITLE } from '../../work/job-continuation.js';
+import { PARKED_JOB_TITLE } from '../../work/tracker-view.js';
 import { freshAgentsDb, testDb, HELPER } from './helpers/agent-requests.js';
 import { ownerAsks, stretch, rowOf, tasksOf } from './helpers/long-job.js';
 

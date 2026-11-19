@@ -35,7 +35,12 @@ export async function stretch(end: StretchEnd = 'parks', before?: () => unknown)
   let state = bag.state!;
   if (end === 'parks') { p.parkJob(HELPER, 'turn-budget-continuation', Date.now()); state = p.latchEngineCut(state, 'iteration_cap'); }
   if (end === 'stalls') state = p.latchEngineCut(state, 'iteration_cap');
-  if (end === 'answers') delivered(bag.turnNumber!, bag.conversationId ?? null);
+  if (end === 'answers') {
+    const id = `reply-${bag.turnNumber}`;
+    p.insertMessage({ id, agentId: HELPER, role: 'assistant', content: 'All the archive files are renamed by their date now.', conversationId: bag.conversationId ?? null, turnNumber: bag.turnNumber });
+    delivered(bag.turnNumber!, bag.conversationId ?? null, id);
+    out.outputs.noteTerminalAnswer(id, 'the stretch\'s answer');
+  }
   if (end === 'gate') state = (await p.runPreCallGates(p.advance(state, { loopCount: 1 }), out.outputs.preCallGatesContext())).state;
   if (typeof end === 'object') { bag.retryAt = end.limitUntil; state = p.advance(p.latchEngineCut(state, 'provider_error'), { loopCount: 1 }); }
   const seen = { root: bag.root?.id ?? null, kind: bag.root?.kind, servedJob: bag.servedJob, parkedOn: bag.jobParked };
@@ -45,9 +50,9 @@ export async function stretch(end: StretchEnd = 'parks', before?: () => unknown)
 }
 
 /** A reply of turn `turn` delivered in `conversationId` (the dashboard's delivery record). */
-export function delivered(turn: number, conversationId: string | null): void {
-  testDb().prepare(`INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, conversation_id, outcome, created_at)
-    VALUES (?, ?, ?, 'dashboard', 'dashboard', ?, 'delivered', datetime('now'))`).run(`d-${turn}-${Math.random()}`, HELPER, turn, conversationId);
+export function delivered(turn: number, conversationId: string | null, messageId: string | null = null): void {
+  testDb().prepare(`INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, conversation_id, outcome, message_id, created_at)
+    VALUES (?, ?, ?, 'dashboard', 'dashboard', ?, 'delivered', ?, datetime('now'))`).run(`d-${turn}-${Math.random()}`, HELPER, turn, conversationId, messageId);
 }
 
 export const rowOf = (id: string) => testDb().prepare('SELECT state, next_attempt_at AS due, hold_kind AS hold FROM work WHERE id = ?')

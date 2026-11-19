@@ -5,11 +5,10 @@ import { serveLater } from '../agent/v2/serve-later.js';
 import { openEngineScaffoldTask } from '../agent/v2/steps/execute/tracker-floors.js';
 import { linkedTaskOf } from './ask-settlement.js';
 import { turnWorkIds } from './task-freshness.js';
+import { PARKED_JOB_TITLE } from './tracker-view.js';
 
 const logger = createLogger('job-continuation');
 
-/** The title of a task a park opens: what the owner sees on his board. */
-export const PARKED_JOB_TITLE = 'Request in progress (continues by itself)';
 
 /** THE ONE DEFINITION OF "PARK": the job's task gets its due time; with no task, a turn serving a request opens the
  *  engine task first. A park with no task and no request continues nothing, and a stopped run parks nothing. */
