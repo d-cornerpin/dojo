@@ -6,6 +6,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { broadcast } from '../gateway/ws.js';
 import { createLogger } from '../logger.js';
 import { insertEngineEventIfAbsent } from '../memory/message-store.js';
+import { inFlightOccurrence } from '../work/occurrences.js';
 
 const logger = createLogger('agent-notice');
 
@@ -76,7 +77,7 @@ export async function redriveWithoutReply(opts: {
     insertEngineEventIfAbsent({
       id: uuidv4(), agentId: opts.toAgentId, content: opts.content, sourceAgentId: opts.fromAgentId,
       originIntent: 'tracker',
-      work: opts.taskId ? { taskId: opts.taskId, runId: null, rootKind: 'task', rootId: opts.taskId } : null,
+      work: opts.taskId ? { taskId: opts.taskId, runId: inFlightOccurrence(opts.taskId)?.id ?? null, rootKind: 'task', rootId: opts.taskId } : null,
     });
     const { getAgentRuntime } = await import('./runtime.js');
     getAgentRuntime().handleMessage(opts.toAgentId, opts.content).catch((err: unknown) => {

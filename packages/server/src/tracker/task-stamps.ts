@@ -122,7 +122,7 @@ export function stampTasksAtTurnFinalize(input: {
 }): void {
   try {
     const db = getDb();
-    // Only work THIS turn's trigger names (a continuation inherits its job from the park that queued it),
+    // Only work THIS turn's trigger names (a job's own turn names the task it was started from),
     // never by conversation: `input.convKey` kept a same-conversation abandoned task fresh.
     const deliverySummary = composeTurnDeliverySummary(input.agentId, input.turnNumber);
     const hasDelivery = deliverySummary.length > 0;

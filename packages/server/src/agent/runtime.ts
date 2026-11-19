@@ -1,7 +1,6 @@
 // The v2 dispatch shell, helpers re-exported via getAgentRuntime, and run lifecycle state shared with v2.
 import { orphanedModelRepairText } from './engine-lines.js';
 import { tellAgentWhatDojoSent } from './dojo-voice.js';
-import { beginContinuationRun, beginJobRun, deferTimerWake, endJobRun, dropDrainJobWake, endJobCarry } from '../work/task-freshness.js';
 import fs from 'node:fs';
 import { v4 as uuidv4 } from 'uuid';
 import type Anthropic from '@anthropic-ai/sdk';
@@ -310,7 +309,6 @@ import { currentTurnNumber, markTurnsTerminated } from './v2/turn-record.js';
 
 import { turnBoundary } from './turn-state.js';
 import { replacePlaceholdersInBackground } from '../memory/out-of-view.js';
-import { getWaitingHumanConversations } from './v2/counterparty.js';
 import { armOwedClock } from './v2/owed.js';
 import { taskScope, STATE_TO_STATUS_SQL } from '../work/tracker-view.js';
 import { attachmentFenceOf, bracketed, droppedAttachmentNote } from '../tools/inbound-fences.js';
@@ -334,7 +332,7 @@ export function stopAgent(agentId: string): void {
   const runInFlight = activeRuns.has(agentId);
   if (runInFlight) stopFencedRuns.set(agentId, Date.now());
   // Clear any queued wakeup so the agent doesn't immediately restart after stopping
-  pendingWakeups.delete(agentId); endJobCarry(agentId); // a stopped agent's job has no continuation coming
+  pendingWakeups.delete(agentId);
   // Abort EVERY in-flight call: model.ts's one dial door (openAgentCall) covers compaction, brief, media.
   // scope:'all' is said in ONLY TWO places; the engine narrows to 'turn' so a barge-in spares a render.
   const cut = abortInFlight(agentId, 'user-stop', { scope: 'all' });
@@ -494,7 +492,7 @@ class AgentRuntime {
     });
   }
 
-  async handleMessage(agentId: string, _content: string, opts?: { job?: boolean; drained?: boolean }): Promise<RunOutcome> {   // opts = the park's own timer wake (job) / the queued-wakeup drain (drained): only these can carry the job
+  async handleMessage(agentId: string, _content: string): Promise<RunOutcome> {
     // Never run a terminated agent: boot re-drain or an A2A kick could otherwise emit a zombie reply.
     const st = getDb().prepare('SELECT status FROM agents WHERE id = ?').get(agentId) as { status?: string } | undefined;
     if (st?.status === 'terminated') {
@@ -506,7 +504,7 @@ class AgentRuntime {
     // Busy: the ONE direct add. A user stop must not eat an inbound; self-wakes use queueSelfWake only.
     if (activeRuns.has(agentId)) {
       logger.info('Agent busy, queuing wakeup for after current run', { agentId }, agentId);
-      pendingWakeups.add(agentId); if (opts?.job) deferTimerWake(agentId); // the park's own wake, now queued on the shared set
+      pendingWakeups.add(agentId);
       noteArrivalWhileBusy(agentId);   // a command waiting on "your messages come first" is told
       return 'queued';
     }
@@ -516,8 +514,7 @@ class AgentRuntime {
     if (!stopFencedRuns.has(agentId)) stoppedAgents.delete(agentId);
     const servedWaiters = queuedRunWaiters.get(agentId) ?? [];
     queuedRunWaiters.delete(agentId);
-    agentStartTimes.set(agentId, Date.now()); if (opts?.job || opts?.drained) beginJobRun(agentId, opts.job ? 'timer' : 'drain');
-    if (opts?.drained && !opts.job) beginContinuationRun(agentId, () => getWaitingHumanConversations(agentId).slice(0, 1).map((w) => w.oldest.id));   // one waiting human conversation is drained as a continuation
+    agentStartTimes.set(agentId, Date.now());
 
     try {
       // v2 is the only runtime; it owns its recovery cascade, so escaping here is a cascade bug.
@@ -571,7 +568,7 @@ class AgentRuntime {
     } finally {
       activeRuns.delete(agentId);
       // STAMP it: this finally releases activeRuns, then awaits a long tail; isRunUnwinding reads it.
-      lastRunEndedAt.set(agentId, Date.now()); endJobRun(agentId, pendingWakeups.has(agentId)); // the carrying run ends; a wake of its own queued becomes the job's continuation
+      lastRunEndedAt.set(agentId, Date.now());
       replacePlaceholdersInBackground(agentId);   // the background folder yielded to this turn; it resumes now
       // Safety net: any throwing or early-return path still stops the heartbeat; the stop is idempotent.
       stopStatusHeartbeat(agentId);
@@ -630,11 +627,11 @@ class AgentRuntime {
           if (isSelfResumeBlockedStatus(status)) {
             logger.info('Skipping queued wakeup, agent is in a stop state', { agentId, status }, agentId);
             declineQueuedWaiters(agentId);
-            dropDrainJobWake(agentId); return; // the park's continuation will never run: its job is over
+            return;
           }
           logger.info('Processing queued wakeup', { agentId }, agentId);
           // Empty content: the wake picks up new messages via context assembly; the param is unused.
-          this.handleMessage(agentId, '', { drained: true }).catch(err => {
+          this.handleMessage(agentId, '').catch(err => {
             logger.error('Queued wakeup failed', {
               agentId,
               error: err instanceof Error ? err.message : String(err),
@@ -899,7 +896,7 @@ function recoverStuckAgents(): string[] {
       }
       writeAgentStatus(agent.id, 'idle');
       activeRuns.delete(agent.id);
-      pendingWakeups.delete(agent.id); endJobCarry(agent.id); // a reaped run's job is dead
+      pendingWakeups.delete(agent.id);
       broadcast({ type: 'agent:status', agentId: agent.id, status: 'idle' });
       // The turn this verdict abandons is CLOSED as `terminated`, by `turn-record.ts` (the module owning
       // `turns`). The stale-row case only; a crash restarted inside the hour is agent-status.ts's boot sweep.
@@ -927,7 +924,7 @@ function recoverStuckAgents(): string[] {
       stopFencedRuns.delete(agentId);
       stoppedAgents.delete(agentId);
       activeRuns.delete(agentId);
-      pendingWakeups.delete(agentId); endJobCarry(agentId);
+      pendingWakeups.delete(agentId);
       const status = (db.prepare('SELECT status FROM agents WHERE id = ?').get(agentId) as { status?: string } | undefined)?.status;
       if (status === 'working') {
         writeAgentStatus(agentId, 'idle');

@@ -18,11 +18,6 @@ vi.mock('../../../../../services/imessage-bridge.js', () => ({ stripSystemTags: 
 const emptyStmt = { all: () => [], get: () => undefined, run: () => ({ changes: 0 }) };
 const fakeDb = { prepare: () => emptyStmt, transaction: (fn: (...a: unknown[]) => unknown) => (...a: unknown[]) => fn(...a) } as unknown as PostCallClassifyContext['db'];
 vi.mock('../../../../../db/connection.js', () => ({ getDb: () => fakeDb }));
-let carriesJob = false;
-vi.mock('../../../../../work/task-freshness.js', async (importOriginal) => ({
-  ...(await importOriginal<Record<string, unknown>>()),
-  runCarriesJob: () => carriesJob,
-}));
 import { initState, type AgentTurnState } from '../../../state.js';
 import { runTerminalText } from '../terminal-text.js';
 import type { PostCallClassifyContext, PostCallScratch } from '../index.js';
@@ -60,7 +55,6 @@ describe('t183: a blank text is never delivered as the start line', () => {
   const armed = { ...turnCtx, startAckSteerArmedThisTurn: true, startAckSteerRequested: true, engineStartAckDeliveredThisTurn: false };
   const agentTextRows = () => insertMessageIfAbsentSpy.mock.calls.map((c) => c[0] as { role?: string; content: string }).filter((r) => r.role === 'assistant');
   it('the measured shape: a text that is ONLY a mood tag is not delivered as the start line (no empty assistant row)', async () => {
-    carriesJob = false;
     const c = ctx(); (c as unknown as { turnCtx: Record<string, unknown> }).turnCtx = { ...armed, deferredUserReplyWithTools: '((mood: calm))' };
     (c as unknown as { result: { content: string } }).result = { ...(c as unknown as { result: object }).result, content: '((mood: calm))' } as never;
     const sc = scratch();
@@ -69,7 +63,6 @@ describe('t183: a blank text is never delivered as the start line', () => {
     expect(agentTextRows().filter((r) => String(r.content).trim() === '')).toEqual([]);
   });
   it('CONTROL: a real line with tool calls is still delivered as the start line', async () => {
-    carriesJob = false;
     const c = ctx(); (c as unknown as { turnCtx: Record<string, unknown> }).turnCtx = { ...armed, deferredUserReplyWithTools: 'On it now.' };
     const sc = scratch();
     await runTerminalText(state, c, sc);

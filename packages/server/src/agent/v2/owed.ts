@@ -6,9 +6,7 @@ import { createLogger } from '../../logger.js';
 import { broadcast } from '../../gateway/ws.js';
 import { repliedOnThread } from '../../memory/message-store.js';
 import { workingExpr } from '../../work/terminal-states.js';
-import { askIdForMessage } from '../../work/store.js';
 import { originOfTasks, type JobOrigin } from '../../work/job-origin.js';
-import { parkedContinuationFor } from '../../work/task-freshness.js';
 import { activeRuns, isRunUnwinding } from '../shared-state.js';
 import { nextReplyDueAt, deliverDueReplies } from './channel-sender.js';
 import {
@@ -145,11 +143,9 @@ export function personsWaiting(agentId: string): number {
   }
 }
 
-/** Is anything owed now, and the earliest future due time: one build of the items, read without writing.
- *  While a parked job's continuation is queued, the conversation it started from is left to it. */
+/** Is anything owed now, and the earliest future due time: one build of the items, read without writing. */
 export function dueOf(agentId: string, now = Date.now()): { now: boolean; next: number | null } {
-  const parked = parkedContinuationFor(agentId);
-  const items = owedItems(agentId, { pure: true }).filter((i) => i.kind !== 'person' || parked === null || i.ref !== askIdForMessage(parked));
+  const items = owedItems(agentId, { pure: true });
   const future = items.map((i) => i.dueAt).filter((t) => t > now);
   return { now: items.some((i) => i.dueAt <= now), next: future.length > 0 ? Math.min(...future) : null };
 }

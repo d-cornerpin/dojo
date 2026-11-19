@@ -103,7 +103,6 @@ const db = (): Database.Database => mockDb.current!;
 const sqlTime = (ms: number): string => new Date(ms).toISOString().replace('T', ' ').slice(0, 19);
 
 beforeEach(() => {
-  endJobCarry('helper');   // the job carry is process memory: no test inherits another's
   fs.rmSync(HOME, { recursive: true, force: true });
   fs.mkdirSync(path.join(HOME, '.dojo', 'logs'), { recursive: true });
   const d = new Database(':memory:');
@@ -172,7 +171,6 @@ function wedgedToolCall(quietMs: number, now = Date.now()): void {
 
 import { runSchedulerTick, balanceCheckSettled } from '../../scheduler/clock.js';
 import { trackerRetask } from '../tools.js';
-import { endJobCarry } from '../../work/task-freshness.js';
 import { sweepSilentAgents } from '../liveness.js';
 
 describe('ROUND 2 (1): the platform notice never depends on the project manager existing', () => {

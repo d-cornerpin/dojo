@@ -92,7 +92,6 @@ import { runMigrations } from '../../db/migrations.js';
 import { registerAbortable, releaseAbortable } from '../../agent/shared-state.js';
 import { configRouter } from '../../gateway/routes/config.js';
 import { noteEngineCheckpoint } from '../../work/engine-checkpoint-note.js';
-import { endJobCarry, beginJobRun, endJobRun, registerTimerWake } from '../../work/task-freshness.js';
 import { stampTasksAtTurnFinalize } from '../task-stamps.js';
 import { openTurnContext, endTurnContext } from '../../agent/turn-context.js';
 import { runSchedulerTick, balanceCheckSettled } from '../../scheduler/clock.js';
@@ -105,7 +104,6 @@ const db = (): Database.Database => mockDb.current!;
 const sqlTime = (ms: number): string => new Date(ms).toISOString().replace('T', ' ').slice(0, 19);
 
 beforeEach(() => {
-  endJobCarry('helper');   // the job carry is process memory: no test inherits another's
   const d = new Database(':memory:');
   d.pragma('foreign_keys = ON');
   mockDb.current = d;
@@ -179,23 +177,21 @@ function jobTask(atMs: number): void {
 }
 
 /** One 15-minute park of the long job, as the engine leaves it: inside the turn's own context
- *  (the first turn's trigger is the owner's ask; a continuation's is the engine's self-wake),
+ *  (the first turn's trigger is the owner's ask; a later one is the job's own turn, started from its task),
  *  the checkpoint, then the turn-finalize stamp. */
 function park(turnNumber: number, at: number, first: boolean): void {
   vi.setSystemTime(at);
   const tc = openTurnContext('helper');
   tc.turnNumber = turnNumber;
   tc.root = first ? { kind: 'ask', id: 'msg-ask', sourceMessageId: 'msg-ask' } : null;
-  if (!first) beginJobRun('helper', 'timer');   // the previous park's own wake fires: this run carries the job
+  if (!first) { tc.servedJob = 'task-live'; tc.servedWork = { taskId: 'task-live', runId: null, taskKind: null, originConvKey: null }; }
   modelCallFinished(at);
   noteEngineCheckpoint('helper', 'turn-budget');
-  registerTimerWake('helper');
   stampTasksAtTurnFinalize({
     agentId: 'helper', turnNumber, outcome: 'budget', answerMessageId: null,
     rootSourceMessageId: first ? 'msg-ask' : null, convKey: 'c-job', servedTaskId: null,
   });
   endTurnContext('helper');
-  endJobRun('helper');
 }
 
 /** The sweep a quiet minute brings: the platform clock's liveness check. */

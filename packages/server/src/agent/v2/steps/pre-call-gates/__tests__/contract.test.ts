@@ -77,7 +77,7 @@ vi.mock('../../../../../memory/message-store.js', async (importOriginal) => ({
   insertEngineEventIfAbsent: (...a: unknown[]) => insertEngineEventIfAbsentSpy(...(a as [])),
 }));
 
-// `getDb` throws: a unit test must not open the dev database. (t137: the one test block that
+// `getDb` is a fake with no rows: a unit test must not open the dev database. (t137: the one test block that
 // handed this a fake provider row went with the per-provider continuation cap it measured.)
 const getDbSpy = vi.fn(() => { throw new Error('no database in a contract test'); });
 vi.mock('../../../../../db/connection.js', () => ({
@@ -171,11 +171,11 @@ beforeEach(() => {
   insertEngineEventIfAbsentSpy.mockClear();
   noteEngineCheckpointSpy.mockClear();
   getDbSpy.mockReset();
-  getDbSpy.mockImplementation(() => { throw new Error('no database in a contract test'); });
+  noJob();   // the window asks whether a person waits behind a turn serving none: nobody does
 });
 
-/** At a window's end the gate reads the job's record; this turn has no job. */
-const noJob = (): void => { getDbSpy.mockImplementation((() => ({ prepare: () => ({ get: () => undefined, all: () => [] }) })) as never); };
+/** The records the gate reads (the job's, the waiting people): empty. Never the dev database. */
+function noJob(): void { getDbSpy.mockImplementation((() => ({ prepare: () => ({ get: () => undefined, all: () => [] }) })) as never); }
 
 /** Drive the step with a view that WANTS `pct` of its room (over 1: the trim is cutting). */
 function atUtilisation(pct: number): void {

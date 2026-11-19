@@ -13,7 +13,6 @@ import { TERMINAL_JOB_STATUS_SQL } from '../services/media-job-status.js';
 import { turnContext } from '../agent/turn-context.js';
 import { onTaskEnded } from './task-ended.js';
 import { handedInExpr, heldByOwnerSql } from './tracker-view.js';
-import { jobCarriedAsks } from './task-freshness.js';
 import { delegatedRelayEvidence, turnEndedInModelSilence } from './delegated-relay-evidence.js';
 import { recordServingTurnByRowid } from '../memory/message-store.js';
 // Imported from the leaf: `NOT_A_START_ACK` reads it at module scope, and `message-store` reaches this
@@ -781,7 +780,7 @@ function settleOnJoin(
 
 // Async arm: a background job's result (image, music, speech, video) is posted by the worker after the turn
 // that started it, with no turn. The ask settles on a DELIVERED result once nothing is owed: no job out, no
-// delegated work, no open linked tracker task, no turn or parked job serving it; whichever ends last
+// delegated work, no open linked tracker task, no turn serving it; whichever ends last
 // re-asks. A request whose jobs were all cancelled and delivered nothing is the owner's call-off: abandoned.
 
 function mediaJobs(askRootId: string): { all: number; out: number; cancelled: number } {
@@ -816,7 +815,6 @@ function stillOwed(ask: AskRow, ignoreTurn: number | null): string | null {
   if (bag?.root?.kind === 'ask' && bag.root.sourceMessageId === ask.root_id && bag.turnNumber !== ignoreTurn) {
     return 'a turn serving this request is running';
   }
-  if (jobCarriedAsks(ask.agent_id).includes(ask.root_id)) return 'a parked job carries this request';
   return null;
 }
 

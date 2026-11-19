@@ -1,6 +1,5 @@
 // The owner's cards for an agent's own trouble: the record IS the incident, the text goes once.
 
-import { endJobCarry } from '../work/task-freshness.js';
 import { getDb } from '../db/connection.js';
 import { ownerConditionCleared, ownerConditionsOnAgentGone, tellOwner } from '../healer/owner-notices.js';
 import { formatErrorForHuman, type ErrorKind } from './v2/error-format.js';
@@ -79,7 +78,6 @@ export function brokenWords(agentId: string, injury: string): string | null {
 
 // The one status writer moved this agent: incidents whose status it left are over; terminated ends all.
 export function agentStatusMoved(agentId: string, status: string): void {
-  if (['error', 'paused', 'terminated'].includes(status)) endJobCarry(agentId); // its job's chain is over
   if (status !== 'paused') closePausedCards(agentId);
   if (status === 'terminated') {
     ownerConditionsOnAgentGone(agentId);

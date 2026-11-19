@@ -20,7 +20,7 @@ import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
 import { getPrimaryAgentId, getPMAgentId } from '../../config/platform.js';
 import { taskScope, msToUtcText, heldByOwnerSql, holdWordsSql } from '../tracker-view.js';
-import { taskMovedAtSql, stallSinceSql, LADDER_ANCHOR_SQL, jobCarriedIds } from '../task-freshness.js';
+import { taskMovedAtSql, stallSinceSql, LADDER_ANCHOR_SQL } from '../task-freshness.js';
 import { appendAuditEntry, AUDIT_KIND } from '../audit-trail.js';
 import { recordValidationEscalation } from '../tracker-store.js';
 import { WORKING_STATES } from './hold.js';
@@ -58,7 +58,7 @@ export const LADDER_HINT = {
 
 type LadderAction = 'hint' | 'pm' | 'decider' | 'owner';
 interface LadderStep { reached: 0 | 1 | 2 | 3 | 4; due: LadderAction | null }
-interface Due { id: string; due: LadderAction }
+interface Due { id: string; due: LadderAction; parked?: boolean }
 
 interface Ev { id: number; kind: string; entry: string | null; at: number }
 
@@ -123,15 +123,16 @@ function ladderStep(workId: string, now: number): LadderStep {
 }
 
 /** The rows the ladder looks at: board tasks Working or handed in, minus the ones it leaves alone. */
-function candidates(now: number): string[] {
-  return (getDb().prepare(
-    `SELECT w.id FROM work w LEFT JOIN agents a ON a.id = COALESCE(w.assignee_agent, w.agent_id)
+/** The rows the ladder judges; a parked job's own turn is coming, so it gets no hint. */
+function candidates(now: number): Array<{ id: string; parked: number }> {
+  return getDb().prepare(
+    `SELECT w.id, w.next_attempt_at IS NOT NULL AS parked FROM work w LEFT JOIN agents a ON a.id = COALESCE(w.assignee_agent, w.agent_id)
       WHERE ${taskScope('w')} AND w.state IN (${LIVE.map((st) => `'${st}'`).join(', ')}) AND (w.state = 'handed_in' OR a.status != 'terminated')
         AND NOT ${heldByOwnerSql('w')}
         AND COALESCE(w.hold_at >= ${LADDER_ANCHOR_SQL}, 1)
         AND w.is_paused = 0 AND (w.scheduled_start IS NULL OR w.scheduled_start <= ?)
         AND (w.state = 'handed_in' OR ${taskMovedAtSql('w')} >= ${LADDER_ANCHOR_SQL} - ?)`,
-  ).all(now, DORMANT_MS) as Array<{ id: string }>).map((r) => r.id);
+  ).all(now, DORMANT_MS) as Array<{ id: string; parked: number }>;
 }
 
 /** Ladder wakes since `from`, box-wide (or of these entry kinds): each wake marks exactly one of its entries. */
@@ -193,7 +194,7 @@ async function wake(agentId: string, steps: Due[], now: number, room: number): P
   pm.forEach((s, i) => appendAuditEntry(s.id, 'engine', { entryKind: LADDER_ENTRY.pm, reason: SAID[LADDER_ENTRY.pm], evidenceJson: i === 0 ? WAKE : null }));
   if (pm.length > 0) (await import('../../tracker/pm-agent.js')).armDebouncedReview(pm[0].id, 'ladder');
   const armed = pm.length > 0 ? 1 : 0;
-  const hints = steps.filter((s) => s.due !== 'pm' && !jobCarriedIds(agentId).includes(s.id));
+  const hints = steps.filter((s) => s.due !== 'pm' && !s.parked);
   if (hints.length === 0 || agentIsLive(agentId) || armed >= room) return armed;
   return armed + ((await hintOnce(agentId, hints.map((s) => ({ workId: s.id, text: hintText(s) })))) ? 1 : 0);
 }
@@ -201,13 +202,13 @@ async function wake(agentId: string, steps: Due[], now: number, room: number): P
 /** THE SWEEP: per row, at most one step; the wakes are grouped by the agent they wake and bounded (header). */
 export async function runLadder(now = Date.now()): Promise<void> {
   const byAgent = new Map<string, Due[]>();
-  for (const id of candidates(now)) {
+  for (const { id, parked } of candidates(now)) {
     try {
       const { due } = ladderStep(id, now);
       if (due === 'owner') tellOwner(id);
       else if (due) {
         const to = due === 'pm' ? getPMAgentId() : due === 'decider' ? getPrimaryAgentId() : workerOf(id);
-        byAgent.set(to, [...(byAgent.get(to) ?? []), { id, due }]);
+        byAgent.set(to, [...(byAgent.get(to) ?? []), { id, due, parked: parked === 1 }]);
       }
     } catch (err) {
       logger.warn('ladder: one row could not be judged', { workId: id, error: err instanceof Error ? err.message : String(err) });
