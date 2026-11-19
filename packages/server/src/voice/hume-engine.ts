@@ -20,6 +20,9 @@ const HUME_PROVIDER_KEY = 'hume';
 // A socket that took text and sent no audio this long after the first push counts as failed.
 const FIRST_AUDIO_LIMIT_MS = 3_000;
 
+// The owner's Hume plan, 30,000 characters for $3 a month: what each spoken burst is worth on the cost page.
+const HUME_USD_PER_CHARACTER = 0.0001;
+
 const logger = createLogger('voice-hume');
 
 let cachedClient: HumeClient | null = null;
@@ -323,7 +326,7 @@ export class HumeStreamSession {
         this.onError?.(new Error(`Hume sent no audio within ${FIRST_AUDIO_LIMIT_MS / 1000} s`));
       }, FIRST_AUDIO_LIMIT_MS);
     }
-    logger.info('Hume sendPublish', {
+    logger.debug('Hume sendPublish', {
       textPreview: text.length > 60 ? text.slice(0, 60) + '…' : text,
       textLen: text.length,
       voiceId: this.voice.id,
@@ -389,7 +392,7 @@ export class HumeStreamSession {
     if (this.chars > 0 && this.audioSeen) {
       recordCost({
         agentId: this.agentId, modelId: 'hume-octave', providerId: HUME_PROVIDER_KEY,
-        inputTokens: 0, outputTokens: 0, units: this.chars, requestType: 'speech',
+        inputTokens: 0, outputTokens: 0, units: this.chars, characterRate: HUME_USD_PER_CHARACTER, requestType: 'speech',
       });
     }
   }

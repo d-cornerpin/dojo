@@ -148,8 +148,7 @@ export class CallSession {
     this.persistInitialLog();
     this.armMaxDuration();
     logger.info('CallSession started', {
-      callSid: this.callSid, streamSid: this.streamSid, direction: this.direction,
-      from: this.fromNumber, to: this.toNumber, agentId: this.agentId,
+      callSid: this.callSid, streamSid: this.streamSid, direction: this.direction, agentId: this.agentId,
     });
   }
 
@@ -352,7 +351,6 @@ export class CallSession {
         callSid: this.callSid,
         sampleCount: pcm16k.length,
         durationMs: Date.now() - t0,
-        textPreview: text.slice(0, 100),
         textLength: text.length,
       });
     } catch (err) {
@@ -366,7 +364,7 @@ export class CallSession {
     // The call may have ended while this was being transcribed: those words wake nothing.
     if (this.ended) return;
     this.transcript.push({ at: new Date().toISOString(), speaker: 'caller', text });
-    logger.info('Caller utterance', { callSid: this.callSid, text: text.slice(0, 200) });
+    logger.debug('Caller utterance', { callSid: this.callSid, text: text.slice(0, 200) });
 
     // Submit to the agent runtime as a user-role message.
     const primaryId = this.agentId ?? getPrimaryAgentId();
@@ -480,7 +478,7 @@ export class CallSession {
       });
       return;
     }
-    logger.info('Agent says', { callSid: this.callSid, text: trimmed.slice(0, 200) });
+    logger.debug('Agent says', { callSid: this.callSid, text: trimmed.slice(0, 200) });
     // Enqueue with the current generation and kick the single-flight drain worker, which synthesizes
     // in FIFO order and skips sentences from before a barge-in.
     const queued = await new Promise<boolean>((heard) => {
@@ -511,8 +509,7 @@ export class CallSession {
         const item = this.pendingSpeechTexts.shift()!;
         if (item.generation < this.speechGeneration) {
           logger.info('TTS skipped (stale generation, post-barge-in)', {
-            callSid: this.callSid, textPreview: item.text.slice(0, 60),
-            itemGeneration: item.generation, current: this.speechGeneration,
+            callSid: this.callSid, itemGeneration: item.generation, current: this.speechGeneration,
           });
           item.heard(false);
           continue;
@@ -523,14 +520,10 @@ export class CallSession {
           const pcm = await synthesizeForTwilio(item.text, this.voiceState);
           if (!pcm) {
             // No engine could speak it: skip the sentence.
-            logger.warn('TTS produced no audio for sentence (skipped)', {
-              callSid: this.callSid, textPreview: item.text.slice(0, 60),
-            });
+            logger.warn('TTS produced no audio for sentence (skipped)', { callSid: this.callSid });
           } else if (item.generation < this.speechGeneration || this.ended) {
             // The caller spoke or hung up during synthesis, so the audio is dropped.
-            logger.info('TTS dropped post-synth (stale generation)', {
-              callSid: this.callSid, textPreview: item.text.slice(0, 60),
-            });
+            logger.info('TTS dropped post-synth (stale generation)', { callSid: this.callSid });
           } else {
             this.ttsQueue.push({ ...pcm, text: item.text });
             queued = true;
@@ -539,7 +532,6 @@ export class CallSession {
         } catch (err) {
           logger.warn('TTS for call utterance failed (skipped)', {
             callSid: this.callSid, error: err instanceof Error ? err.message : String(err),
-            textPreview: item.text.slice(0, 60),
           });
         }
         item.heard(queued);

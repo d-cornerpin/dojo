@@ -26,7 +26,6 @@ export async function synthesizeForTwilio(
       call.cloudDown = true;
       logger.warn('Hume TTS failed on live call, the rest of the call uses the local voice', {
         error: err instanceof Error ? err.message : String(err),
-        textPreview: text.slice(0, 60),
       });
     }
   }
@@ -41,7 +40,6 @@ async function synthesizeLocal(text: string, settings: VoiceSettings): Promise<{
   } catch (err) {
     logger.warn('Kokoro synthesis failed (sentence skipped)', {
       error: err instanceof Error ? err.message : String(err),
-      textPreview: text.slice(0, 60),
     });
     return null;
   }

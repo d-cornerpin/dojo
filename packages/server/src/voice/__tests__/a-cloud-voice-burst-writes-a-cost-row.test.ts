@@ -43,14 +43,15 @@ beforeEach(() => { mockDb.current = new Database(':memory:'); runMigrations(); }
 afterEach(() => { mockDb.current?.close(); mockDb.current = null; });
 
 describe('a cloud voice burst writes a cost row', () => {
-  it('two sentences in one burst are one row, under the agent that spoke', async () => {
+  it('two sentences in one burst are one row, under the agent that spoke, priced per character', async () => {
     const s = new HumeStreamSession({ voiceId: 'v', agentId: 'agent-1' });
     await s.open();
     s.push('Milk is on the list.');
     s.push('Anything else?');
     await s.close();
-    const rows = mockDb.current!.prepare('SELECT agent_id, model_id, request_type FROM cost_records').all();
-    expect(rows).toEqual([{ agent_id: 'agent-1', model_id: 'hume-octave', request_type: 'speech' }]);
+    const rows = mockDb.current!.prepare('SELECT agent_id, model_id, request_type, cost_usd FROM cost_records').all();
+    const chars = 'Milk is on the list.'.length + 'Anything else?'.length;
+    expect(rows).toEqual([{ agent_id: 'agent-1', model_id: 'hume-octave', request_type: 'speech', cost_usd: expect.closeTo(chars * 0.0001, 10) }]);
   });
 
   it('a burst that never pushed words writes no row', async () => {
