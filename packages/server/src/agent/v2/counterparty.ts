@@ -331,9 +331,8 @@ export function expireExhaustedEngineEvents(agentId: string): number {
   return expired;
 }
 
-/** Record one failed/aborted delivery: bumps `delivery_attempts`, schedules per backoff (or at a provider's later
- *  reset, `retryAt`); if the
- *  bump exhausts the lifecycle the event expires loudly RIGHT HERE, not on a later consult. */
+/** Record one failed/aborted delivery: bumps `delivery_attempts` and schedules the next serve at the later of the
+ *  backoff and a provider's reset (`retryAt`); if the bump exhausts the lifecycle the event expires loudly here. */
 export function recordEngineEventDeliveryFailure(agentId: string, rowid: number, retryAt: number | null = null): void {
   try {
     const db = getDb();
@@ -342,10 +341,9 @@ export function recordEngineEventDeliveryFailure(agentId: string, rowid: number,
     if (!cur) return;
     const attempts = (cur.delivery_attempts ?? 0) + 1;
     const backoffMin = ENGINE_EVENT_BACKOFF_MINUTES[Math.min(attempts, ENGINE_EVENT_BACKOFF_MINUTES.length) - 1];
-    recordDeliveryAttempt(retryAt
-      ? { agentId, rowid, attempts, notBefore: dueAfterCut(Date.now() + backoffMin * 60_000, retryAt) }
-      : { agentId, rowid, attempts, backoffMinutes: backoffMin });
-    logger.warn('engine event delivery failed; scheduled retry with backoff', { agentId, rowid, attempts, backoffMin }, agentId);
+    const notBefore = dueAfterCut(Date.now() + backoffMin * 60_000, retryAt);
+    recordDeliveryAttempt({ agentId, rowid, attempts, notBefore });
+    logger.warn('engine event delivery failed; scheduled its next serve', { agentId, rowid, attempts, notBefore }, agentId);
     if (attempts >= ENGINE_EVENT_MAX_ATTEMPTS) expireExhaustedEngineEvents(agentId);
   } catch { /* best effort, failure bookkeeping must never mask the original abort */ }
 }

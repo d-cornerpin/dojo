@@ -539,11 +539,6 @@ export function reclassifyDraftsAsWorkingNotes(
   })();
 }
 
-/** `param` is a SQLite modifier this module's callers supply ('+5 minutes'), never user input. */
-function nowPlusExpr(param: string): string {
-  return `(CAST(strftime('%s','now', ${param}) AS INTEGER) * 1000)`;
-}
-
 /** `requireUnclaimed`: a row already claimed by a turn is not ours to sweep. */
 export function sweepByRowid(
   p: { rowid: number; agentId?: string; requireUnclaimed?: boolean },
@@ -581,20 +576,10 @@ export function retireById(id: string): number {
     .run(id).changes;
 }
 
-/** A failed delivery's count and backoff, or with `notBefore` only the time it may be served again (count unchanged). */
-export function recordDeliveryAttempt(
-  p: { agentId: string; rowid: number } & ({ attempts: number; backoffMinutes: number } | { notBefore: number; attempts?: number }),
-): number {
-  const db = getDb();
-  if ('notBefore' in p) {
-    return db.prepare('UPDATE messages SET next_attempt_at = ?, delivery_attempts = COALESCE(?, delivery_attempts) WHERE agent_id = ? AND rowid = ?')
-      .run(p.notBefore, p.attempts ?? null, p.agentId, p.rowid).changes;
-  }
-  return db.prepare(
-    `UPDATE messages SET delivery_attempts = @attempts,
-        next_attempt_at = ${nowPlusExpr('@offset')}
-      WHERE agent_id = @agentId AND rowid = @rowid`,
-  ).run({ agentId: p.agentId, rowid: p.rowid, attempts: p.attempts, offset: `+${p.backoffMinutes} minutes` }).changes;
+/** When a row may be served again (`notBefore`, epoch ms) and, when given, its failed-delivery count (else unchanged). */
+export function recordDeliveryAttempt(p: { agentId: string; rowid: number; notBefore: number; attempts?: number }): number {
+  return getDb().prepare('UPDATE messages SET next_attempt_at = ?, delivery_attempts = COALESCE(?, delivery_attempts) WHERE agent_id = ? AND rowid = ?')
+    .run(p.notBefore, p.attempts ?? null, p.agentId, p.rowid).changes;
 }
 
 /** `eligibleWhere` is the constant `DELIVERABLE_ENGINE_EVENT_WHERE` (agent/v2/counterparty.ts), never user
