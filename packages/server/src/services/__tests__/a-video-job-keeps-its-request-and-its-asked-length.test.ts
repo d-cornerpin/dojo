@@ -1,28 +1,15 @@
-// A `video_jobs` row carries the same execution lineage a `generation_jobs` row does (source message,
-// turn number, task, conversation), taken from the live turn through one shared helper, plus the length
-// that was asked for; it prices the video when the provider reports none.
+// A video_jobs row records the same lineage as a generation_jobs row (source message, turn, task, conversation) plus the asked length.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
 const mockDb: { current: Database.Database | null } = { current: null };
-vi.mock('../../db/connection.js', async () => {
-  const os = await import('node:os');
-  const p = await import('node:path');
-  return {
-    getDb: () => {
-      if (!mockDb.current) throw new Error('test DB not initialized');
-      return mockDb.current;
-    },
-    closeDb: vi.fn(),
-    getDbPath: () => p.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'dojo-a5-media-stop', 'dojo.db'),
-  };
-});
-
-const frames: Array<Record<string, unknown>> = [];
-vi.mock('../../gateway/ws.js', () => ({
-  broadcast: (e: Record<string, unknown>) => { frames.push(e); },
+vi.mock('../../db/connection.js', () => ({
+  getDb: () => { if (!mockDb.current) throw new Error('test DB not initialized'); return mockDb.current; },
+  closeDb: vi.fn(),
 }));
+
+vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {} }));
 
 vi.mock('../../config/loader.js', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
