@@ -204,17 +204,20 @@ export function realAnswerInConversationSince(
   ).get(agentId, conversationId, ...excluded, notBefore) as { id: string; tool: string } | undefined) ?? null;
 }
 
-/** When the row's latest `kind` event whose payload `path` matches `like` was written, as a deliveries timestamp. */
-function eventAt(workId: string, kind: string, path: string, like: string): string | null {
+function inheritedParkedAt(workId: string): string | null {
   const r = getDb().prepare(
-    `SELECT created_at AS at FROM work_events WHERE work_id = ? AND kind = ?
-       AND json_extract(payload, ?) LIKE ? ORDER BY id DESC LIMIT 1`,
-  ).get(workId, kind, path, like) as { at: number } | undefined;
+    `SELECT created_at AS at FROM work_events WHERE work_id = ? AND kind = 'audit'
+       AND json_extract(payload, '$.marker') = ? ORDER BY id DESC LIMIT 1`,
+  ).get(workId, INHERITED_BACKLOG_MARKER) as { at: number } | undefined;
   return r ? new Date(r.at).toISOString().replace('T', ' ').slice(0, 19) : null;
 }
-const inheritedParkedAt = (workId: string): string | null => eventAt(workId, 'audit', '$.marker', INHERITED_BACKLOG_MARKER);
 const JOB_HOLD_REASON = 'held: its job is still running';
-const jobHeldAt = (workId: string): string | null => eventAt(workId, 'transition', '$.reason', `${JOB_HOLD_REASON}%`);
+/** When the request was held on its job, if that hold is its latest transition. */
+function jobHeldAt(workId: string): string | null {
+  const r = getDb().prepare(`SELECT created_at AS at, json_extract(payload, '$.reason') AS why FROM work_events
+    WHERE work_id = ? AND kind = 'transition' ORDER BY id DESC LIMIT 1`).get(workId) as { at: number; why: string | null } | undefined;
+  return r?.why?.startsWith(JOB_HOLD_REASON) ? new Date(r.at).toISOString().replace('T', ' ').slice(0, 19) : null;
+}
 
 /** Is task `id` still open, and is it parked (a due time set)? */
 function taskNow(id: string): { open: boolean; parked: boolean } {
