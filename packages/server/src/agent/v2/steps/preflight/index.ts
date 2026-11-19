@@ -35,7 +35,7 @@ export interface PreflightContext {
 
 /** Mutable scratch shared by this step's sections, living for one `runPreflight` call. */
 export interface PreflightScratch {
-  /** Set at the engine-event pickup when this turn wins the CAS; the abort revert releases exactly it. */
+  /** Set at the engine-event pickup when this turn wins the CAS; finalize hands back exactly it. */
   claimedEngineEvent: { rowid: number; turnNumber: number } | null;
   /** The event this turn intends to claim; it becomes `claimedEngineEvent` only if the CAS wins. */
   pendingEngineClaim: { rowid: number } | null;
@@ -133,7 +133,7 @@ export async function runPreflight(
   const {
     revertTriggerStampOnAbort, triggeredByIMessage,
     inboundChannel, inboundContext, unrepliedAssign,
-  } = runInboundAndAbort(turnCtx, ctx, sc, { triggerRow, lastUserMessageContent });
+  } = runInboundAndAbort(turnCtx, ctx, { triggerRow, lastUserMessageContent });
 
   const classified = await runTurnClassification(turnCtx, ctx, sc, {
     db, waitingConvs, openHumanWorkAtTurnStart, triggerRow, chosenConvKey,

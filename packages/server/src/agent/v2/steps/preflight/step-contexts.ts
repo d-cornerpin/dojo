@@ -67,7 +67,7 @@ export function runStepContexts(
   const teardownContext = (): TeardownContext => ({
     agentId, turnCtx, turnNumber, db,
     chosenConvKey, chosenConversationId, lastAssembledAtIso: turnCtx.lastAssembledAtIso,
-    terminalAnswerRowId: sc.terminalAnswerRowId, triggerWorkId,
+    terminalAnswerRowId: sc.terminalAnswerRowId, triggerWorkId, claimedEngineEvent: sc.claimedEngineEvent,
     toolPhaseEndedBySpinBrake: turnCtx.toolPhaseEndedBySpinBrake,
     counterparty, isA2ATurn, isEngineTurn, turnStartedAt,
     inboundChannel, inboundContext,

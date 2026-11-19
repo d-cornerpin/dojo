@@ -1,13 +1,12 @@
-// Resolves the turn's inbound channel and builds the abort revert: it marks the turn for the hand-back at
-// finalize, and releases an engine event the turn claimed.
+// Resolves the turn's inbound channel and builds the abort revert, which marks the turn for its hand-back at
+// finalize (`steps/teardown/finalize-record.ts` hands back the ask and the engine event).
 
 import { resolveInbound, type InboundChannel } from '../../inbound-channel.js';
 import { findUnrepliedAssignForAgent, type UnrepliedAssign } from '../../../a2a-replies.js';
-import { releaseEngineEventByRowid } from '../../../../memory/message-store.js';
-import { recordEngineEventDeliveryFailure, type WaitingConversation } from '../../counterparty.js';
+import type { WaitingConversation } from '../../counterparty.js';
 import type { ChannelInboundContext } from '../../state.js';
 import type { TurnContext } from '../../../turn-context.js';
-import type { PreflightContext, PreflightScratch } from './index.js';
+import type { PreflightContext } from './index.js';
 
 export interface InboundAndAbortInputs {
   readonly triggerRow: WaitingConversation['latest'];
@@ -25,26 +24,12 @@ export interface InboundAndAbortOutputs {
 export function runInboundAndAbort(
   turnCtx: TurnContext,
   ctx: PreflightContext,
-  sc: PreflightScratch,
   input: InboundAndAbortInputs,
 ): InboundAndAbortOutputs {
   const { agentId } = ctx;
   const { triggerRow, lastUserMessageContent } = input;
-  // A no-answer abort: the ask is handed back at finalize by the turn's exit (`handBackAsk`). An engine
-  // trigger releases its own claim here, and records the failed delivery, only when the turn made no side effect.
-  const revertTriggerStampOnAbort = () => {
-    turnCtx.abortHandBack = true;
-    if (sc.claimedEngineEvent != null) {
-      try {
-        if (turnCtx.state!.nonIdempotentCallsThisTurn === 0) {
-          const reverted = releaseEngineEventByRowid({
-            rowid: sc.claimedEngineEvent.rowid, agentId, turnNumber: sc.claimedEngineEvent.turnNumber,
-          });
-          if (reverted > 0) recordEngineEventDeliveryFailure(agentId, sc.claimedEngineEvent.rowid);
-        }
-      } catch { /* best effort, recovery, never block the abort */ }
-    }
-  };
+  // A no-answer abort: finalize hands back the ask and the engine event by the turn's exit.
+  const revertTriggerStampOnAbort = () => { turnCtx.abortHandBack = true; };
   const triggeredByIMessage = lastUserMessageContent?.includes('[SOURCE: IMESSAGE FROM') ?? false;
   // One resolver for the inbound channel and reply context; the reply-destination resolver reads them.
   const resolvedInbound = resolveInbound({
