@@ -248,6 +248,18 @@ describe('(ii) an owner turn cannot answer the peer; the request\'s own A2A turn
     expect(awaiting()).toBeNull();
   });
 
+  it('with two requests waiting, an owner turn sees both labelled and cannot answer the second either', async () => {
+    await openOwnerTurn();
+    peerAsks(OTHER_THREAD, OTHER, 'first thing CODEWORD-FIRST');
+    peerAsks(THREAD, PEER, REQUEST_FP);
+    const lines = (await recall({ scope: 'all' })).content.split('\n');
+    expect(lines.find((l) => l.includes('CODEWORD-FIRST'))).toMatch(LABEL);
+    expect(lines.find((l) => l.includes(REQUEST_FP))).toMatch(LABEL);
+    const r = await sendToAgent({ agent: PEER, intent: 'ANSWER', thread_id: THREAD, payload: 'from the wrong turn' });
+    expect(r.errorCode).toBe('PERMISSION_DENIED');
+    expect(deliverSpy).not.toHaveBeenCalled();
+  });
+
   it('an A2A turn for ANOTHER thread cannot answer this one either', async () => {
     // Thread A's request is the one served; thread B's is the newer request awaiting its own turn.
     peerAsks(OTHER_THREAD, OTHER, 'first thing');

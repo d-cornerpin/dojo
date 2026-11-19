@@ -5,17 +5,18 @@ import { getDb } from '../db/connection.js';
 import { agentRequests, type AgentRequest } from './v2/owed.js';
 import { turnContext } from './turn-context.js';
 
-/** The first request another agent is owed, the one the owed items serve first. */
-export function requestAwaitingItsOwnTurn(agentId: string): AgentRequest | null {
-  try { return agentRequests(agentId)[0] ?? null; } catch { return null; }
+/** The requests other agents are owed that the live turn does not serve (outside a turn, all of them). */
+export function requestsAwaitingTheirOwnTurn(agentId: string): AgentRequest[] {
+  try { return agentRequests(agentId).filter((r) => liveTurnServes(agentId, r) !== true); } catch { return []; }
 }
 
-// `null` means "cannot be said": a caller that REFUSES must read it as "do not refuse". The test
-// is the request's sequence place against the turn's pickup mark, never a thread-name prefix match.
+// `null` means "cannot be said": a caller that REFUSES must read it as "do not refuse". A request turn serves the
+// request the preflight picked; a job turn, the requests that arrived before its pickup mark.
 export function liveTurnServes(agentId: string, owed: Pick<AgentRequest, 'messageId'>): boolean | null {
   const bag = turnContext(agentId);
   if (!bag) return null;
   if (bag.kind !== 'a2a') return false;
+  if (bag.servedRequest) return bag.servedRequest.messageId === owed.messageId;
   if (bag.pickupSeq == null) return null;
   const row = getDb().prepare('SELECT seq FROM messages WHERE id = ?').get(owed.messageId) as { seq: number } | undefined;
   if (!row) return null;
@@ -27,10 +28,9 @@ export function liveTurnServes(agentId: string, owed: Pick<AgentRequest, 'messag
 export function requestOnThreadForAnotherTurn(agentId: string, threadId: string | undefined): { threadShort: string; refusal: string } | null {
   const token = threadId?.trim();
   if (!token) return null;
-  const owed = requestAwaitingItsOwnTurn(agentId);
+  const owed = requestsAwaitingTheirOwnTurn(agentId).find((r) => (token === r.threadId || a2aThreadTokenMatches(token, r.threadId))
+    && liveTurnServes(agentId, r) === false);
   if (!owed) return null;
-  const names = token === owed.threadId || a2aThreadTokenMatches(token, owed.threadId);
-  if (!names || liveTurnServes(agentId, owed) !== false) return null;
   return {
     threadShort: owed.threadShort,
     refusal: `Not sent: the ${owed.intent} from "${owed.fromName}" on thread ${owed.threadShort} is handled on its own turn, right after this one, and answered there. `
