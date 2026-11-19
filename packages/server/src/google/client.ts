@@ -30,11 +30,10 @@ export interface GoogleApiResult {
 async function googleFetch(
   method: string,
   url: string,
-  body?: unknown,
-  contentType?: string,
-  // The account whose token to use: 'agent'/'user' are the position-1 row ids, and multi-account tool
-  // executors pass a specific resolved account id.
-  accountId: string = 'agent',
+  body: unknown,
+  contentType: string | undefined,
+  // The account whose token to use: the resolved account's own id.
+  accountId: string,
   // Whose stop this call answers to. Optional and last so every call site compiles; the public wrappers
   // (the only doors an agent's tool reaches this through) pass it. No agentId means platform plumbing
   // (token refresh, boot probe) with no agent to be stopped by.
@@ -134,10 +133,11 @@ export function googleRead(
   agentName: string,
   action: string,
   details: Record<string, unknown>,
-  accountId: string = 'agent',
+  accountId: string,
 ): Promise<GoogleApiResult> {
   return googleFetch('GET', url, undefined, undefined, accountId, agentId).then(result => {
-    logGoogleActivity({
+    // A watcher's own poll ('system') is not logged: only reads made for an agent are activity.
+    if (agentId !== 'system') logGoogleActivity({
       agentId, agentName, action, actionType: 'read',
       details: JSON.stringify({ ...details, account: accountId }),
       gwsCommand: result.apiEndpoint,
@@ -156,8 +156,8 @@ export function googleWrite(
   agentName: string,
   action: string,
   details: Record<string, unknown>,
-  contentType?: string,
-  accountId: string = 'agent',
+  contentType: string | undefined,
+  accountId: string,
 ): Promise<GoogleApiResult> {
   return googleFetch(method, url, body, contentType, accountId, agentId).then(result => {
     logGoogleActivity({
@@ -192,9 +192,9 @@ export function googleWrite(
 export function googleSilentFetch(
   method: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE',
   url: string,
-  body?: unknown,
-  contentType?: string,
-  accountId: string = 'agent',
+  body: unknown,
+  contentType: string | undefined,
+  accountId: string,
   // A silent call is still an agent's call: hidden from the activity feed (a noise decision), but
   // its stop must still reach it. Optional because some plumbing callers have no agent.
   agentId?: string,

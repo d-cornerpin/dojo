@@ -61,7 +61,7 @@ describe('a refused workspace switch', () => {
     answers['/google/send-email'] = { ok: false, error: 'send refused' };
     render(<GoogleWorkspaceSettings />);
     fireEvent.click(await screen.findByLabelText(/Expand User's Google Accounts/));
-    fireEvent.click(await screen.findByRole('checkbox', { name: /Allow sending email/ }));
+    fireEvent.click(await screen.findByRole('checkbox', { name: /The agent may send as me/ }));
     expect(await screen.findByText('send refused')).toBeTruthy();
   });
 

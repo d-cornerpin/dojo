@@ -25,6 +25,7 @@ vi.mock('../../../../memory/message-store.js', () => ({
   insertMessageIfAbsent: vi.fn(),
 }));
 vi.mock('../../../../work/ask-settlement.js', () => ({ settleAskOnAsyncResult: vi.fn(), settleAskOnJobEnded: vi.fn() }));
+vi.mock('../../../../costs/spend.js', async (orig) => ({ ...(await orig<Record<string, unknown>>()), exceededBudget: () => null }));
 vi.mock('../../../../services/generation-jobs.js', () => ({
   createGenerationJob: () => 'job-1',
   setRunning: () => true,

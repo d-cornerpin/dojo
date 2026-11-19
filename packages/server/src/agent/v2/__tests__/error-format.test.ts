@@ -92,10 +92,10 @@ describe('formatTierBNoteForAgent (agent-facing system note bodies)', () => {
     expect(note).toContain('73');
   });
 
-  it('tool_name_unknown surfaces the bad tool name and points to list_tool_docs', () => {
+  it('tool_name_unknown surfaces the bad tool name and points to load_tool_docs', () => {
     const note = formatTierBNoteForAgent('tool_name_unknown', { toolName: 'memry_save' });
     expect(note).toContain('memry_save');
-    expect(note).toContain('list_tool_docs');
+    expect(note).toContain('load_tool_docs');
   });
 
   it('tool_args_schema_mismatch with field+type surfaces the schema detail', () => {

@@ -9,6 +9,7 @@ import { configKeyToChannel, syncSafeSenderToContacts, syncSafeSendersToContacts
 import { listGoogleAccounts } from '../google/accounts.js';
 import { listMicrosoftAccounts } from '../microsoft/accounts.js';
 import { isOwnerAddress } from './owner-mailboxes.js';
+import { isOwnerIMessageRecipient } from './safe-senders.js';
 
 export type MailService = 'gmail' | 'outlook';
 
@@ -46,10 +47,20 @@ export function onMailList(service: MailService, accountId: string, address: str
   return !!address && getMailSafeSenders(service, accountId).some((s) => addressesMatch(s.address, address));
 }
 
-/** Whether a new message wakes the main agent: mail to its own mailbox, from the owner, or from a sender on that
- *  mailbox's approved list. Anything else waits for the agent's next turn. */
-export function senderWakes(channel: MailService, account: { id: string; kind: 'agent' | 'user' }, address: string): boolean {
-  return account.kind === 'agent' || isOwnerAddress(address) || onMailList(channel, account.id, address.trim().toLowerCase());
+/** The channels whose new messages may wake the main agent through `senderWakes`. */
+export type WakeChannel = MailService | 'sms' | 'phone' | 'teams';
+
+/** Whether a new message wakes the main agent. Mail: to its own mailbox, from the owner, or from a sender on that
+ *  mailbox's approved list. SMS, calls and Teams: the owner (his own number or mailbox) or a sender on that
+ *  channel's approved list. Anything else waits for the agent's next turn. */
+export function senderWakes(channel: WakeChannel, account: { id: string; kind: 'agent' | 'user' } | null, address: string): boolean {
+  if (channel === 'gmail' || channel === 'outlook') {
+    return account?.kind === 'agent' || isOwnerAddress(address) || (!!account && onMailList(channel, account.id, address.trim().toLowerCase()));
+  }
+  const a = address.trim();
+  if (!a) return false;
+  const list = channel === 'sms' ? getTwilioSmsSafeSenders() : channel === 'phone' ? getTwilioVoiceSafeCallers() : getTeamsSafeSenders();
+  return isOwnerIMessageRecipient(a) || isOwnerAddress(a) || list.some((s) => addressesMatch(s.address, a));
 }
 
 export function getTeamsSafeSenders(): SafeSender[] {
@@ -71,6 +82,13 @@ export interface AppendChannelSenderResult {
   totalSenders: number;
 }
 
+function writeKey(key: string, list: SafeSender[]): void {
+  getDb().prepare(`
+    INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
+  `).run(key, JSON.stringify(list));
+}
+
 function appendToKey(key: string, sender: SafeSender): AppendChannelSenderResult {
   const list = readByKey(key);
   const target = sender.address.toLowerCase();
@@ -78,16 +96,21 @@ function appendToKey(key: string, sender: SafeSender): AppendChannelSenderResult
     return { ok: true, added: false, totalSenders: list.length };
   }
   const next = [...list, sender];
-  const db = getDb();
-  db.prepare(`
-    INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
-    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
-  `).run(key, JSON.stringify(next));
+  writeKey(key, next);
   // Mirror the new sender into the contacts store (best-effort) so a trusted
   // name resolves when the user later asks the agent to reach them.
   const channel = configKeyToChannel(key);
   if (channel) syncSafeSenderToContacts(channel, sender, null);
   return { ok: true, added: true, totalSenders: next.length };
+}
+
+// Remove a sender from a channel's list by address, case-insensitive; its mirrored contact stays.
+function removeFromKey(key: string, address: string): { removed: boolean; totalSenders: number } {
+  const list = readByKey(key);
+  const next = list.filter((s) => s.address.toLowerCase() !== address.toLowerCase());
+  if (next.length === list.length) return { removed: false, totalSenders: list.length };
+  writeKey(key, next);
+  return { removed: true, totalSenders: next.length };
 }
 
 /** A list saved under a slot name ('agent', 'user') belongs to that kind's first mailbox when no account has that
@@ -115,6 +138,12 @@ export function appendTwilioSmsSafeSender(sender: SafeSender): AppendChannelSend
 }
 export function appendTwilioVoiceSafeCaller(sender: SafeSender): AppendChannelSenderResult {
   return appendToKey(TWILIO_VOICE_CONFIG_KEY, sender);
+}
+export function removeTwilioSmsSafeSender(address: string): { removed: boolean; totalSenders: number } {
+  return removeFromKey(TWILIO_SMS_CONFIG_KEY, address);
+}
+export function removeTwilioVoiceSafeCaller(address: string): { removed: boolean; totalSenders: number } {
+  return removeFromKey(TWILIO_VOICE_CONFIG_KEY, address);
 }
 
 // Boot-time reconcile: mirror every safe-sender list into the contacts store on EVERY startup, so a trusted sender

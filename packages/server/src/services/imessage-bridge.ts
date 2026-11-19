@@ -802,9 +802,10 @@ export async function processInboundIMessage(
         sender, name: senderRecord.name,
       });
     } else if (wakeAgent) {
-      // Busy-ack: tell the sender once if this message queued behind a running turn older than 60 s.
+      // Busy-ack: tell the sender once if this message queued behind a running turn older than 60 s. Never to another
+      // Dojo's agent: the line would start a turn on that box.
       try {
-        maybeSendBusyAck(primaryId, sender);
+        if (!senderRecord?.is_agent) maybeSendBusyAck(primaryId, sender);
       } catch (ackErr) {
         logger.warn('Busy-ack attempt failed (non-fatal)', {
           error: ackErr instanceof Error ? ackErr.message : String(ackErr),
@@ -1581,6 +1582,15 @@ export async function sendAlert(message: string, urgency: 'info' | 'warning' | '
       error: err instanceof Error ? err.message : String(err),
       urgency,
     });
+  }
+}
+
+/** iMessage is switched on unless the owner switched it off in Settings (`imessage_enabled` is 'false'). The Dojo's own alerts do not ask it. */
+export function isIMessageSwitchedOn(): boolean {
+  try {
+    return (getDb().prepare("SELECT value FROM config WHERE key = 'imessage_enabled'").get() as { value: string } | undefined)?.value !== 'false';
+  } catch {
+    return true;
   }
 }
 

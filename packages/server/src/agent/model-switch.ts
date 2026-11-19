@@ -7,6 +7,9 @@ import { broadcast } from '../gateway/ws.js';
 import { createLogger } from '../logger.js';
 import { insertMessageIfAbsent } from '../memory/message-store.js';
 import { clearOn } from '../memory/writer.js';
+import { getDb } from '../db/connection.js';
+import { getHealerAgentId, getDreamerAgentId, getPMAgentId, getTrainerAgentId } from '../config/platform.js';
+import { MAIN_MODEL_SETTING_KEYS } from './main-model-floor.js';
 
 const logger = createLogger('model-switch');
 
@@ -46,4 +49,31 @@ export function sanitizeMessagesOnModelChange(agentId: string): { collapsed: num
   insertModelSwitchNudge(agentId);
   clearOn({ kind: 'own-model-changed', agentId });   // every model-change door calls this
   return { collapsed: 0 };
+}
+
+/** The service agent whose main model a setting key picks; null for any other key. */
+export function modelKeyAgentId(key: string): string | null {
+  switch (key) {
+    case 'healer_model_id': return getHealerAgentId();
+    case 'dreaming_model_id': return getDreamerAgentId();
+    case 'pm_agent_model': return getPMAgentId();
+    case 'trainer_agent_model': return getTrainerAgentId();
+    default: return null;
+  }
+}
+
+/** Every door writes an agent's model here, after `refuseAgentModel` passed it: the row, the role's setting key,
+ *  the change note, and another look at a turn parked for lack of a fitting model. The same model is no change. */
+export async function setAgentModel(agentId: string, modelId: string): Promise<void> {
+  const db = getDb();
+  const row = db.prepare('SELECT model_id FROM agents WHERE id = ?').get(agentId) as { model_id: string | null } | undefined;
+  if (!row || row.model_id === modelId) return;
+  db.prepare("UPDATE agents SET model_id = ?, updated_at = datetime('now') WHERE id = ?").run(modelId, agentId);
+  const roleKey = MAIN_MODEL_SETTING_KEYS.find((k) => modelKeyAgentId(k) === agentId);
+  if (roleKey) {
+    db.prepare(`INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`).run(roleKey, modelId);
+  }
+  sanitizeMessagesOnModelChange(agentId);
+  await (await import('./v2/honest-stop-lock.js')).noteModelsChanged(agentId);
 }

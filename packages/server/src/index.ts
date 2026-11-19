@@ -18,12 +18,11 @@ import { keepMacAwake } from './services/keep-awake.js';
 import { broadcast } from './gateway/ws.js';
 import { checkTimeouts, reArmSpawnTimeouts } from './agent/spawner.js';
 import { killTunnelSync } from './services/tunnel.js';
-import { getPrimaryAgentId, getPrimaryAgentName, setPlatformConfig, HOUSEHOLD_AGENT_IDS_KEY } from './config/platform.js';
+import { getPrimaryAgentId, getPrimaryAgentName } from './config/platform.js';
 import { recordBootAttempt, confirmHealthy, readMarker, synthesizeMigrationBootEpisode } from './update-state.js';
 import { probeFsCaseInsensitive, setFsCaseInsensitive } from './agent/path-guards.js';
 import { homeDir } from './home.js';
 import { refuseSmallMainModel } from './agent/main-model-floor.js';
-import { startStallSentinel } from './observability/stall-sentinel.js';
 import { terminateReaderPool, warmReaderPool } from './memory/reader-pool.js';
 import { scheduleFtsHealthCheck, stopFtsRepair } from './memory/fts-health.js';
 import { stopBackgroundClocks } from './shutdown-clocks.js';
@@ -160,26 +159,6 @@ function ensurePrimaryAgent(): void {
   );
 
   logger.info('Created primary agent', { id: primaryId, name: primaryName, modelId: fallbackModelId ?? 'none' });
-}
-
-// Seed the `household_agent_ids` allow-list with the primary agent id when the key is absent. Only a
-// missing row is seeded (a second primary's list is never overwritten); no-op until setup completes.
-function ensureHouseholdConfig(): void {
-  const db = getDb();
-
-  const setupDone = db.prepare("SELECT value FROM config WHERE key = 'setup_completed'").get() as { value: string } | undefined;
-  if (!setupDone || setupDone.value !== 'true') {
-    return;
-  }
-
-  const existing = db.prepare('SELECT value FROM config WHERE key = ?').get(HOUSEHOLD_AGENT_IDS_KEY) as { value: string } | undefined;
-  if (existing) {
-    return;
-  }
-
-  const primaryId = getPrimaryAgentId();
-  setPlatformConfig(HOUSEHOLD_AGENT_IDS_KEY, JSON.stringify([primaryId]));
-  logger.info('Seeded household_agent_ids allow-list', { members: [primaryId] });
 }
 
 // The port is the mutual exclusion, so it is taken FIRST: everything after it mutates the real database.
@@ -361,8 +340,6 @@ async function main(): Promise<void> {
   }
 
   ensurePrimaryAgent();
-
-  ensureHouseholdConfig();
 
   try {
     const { ensureSystemGroup } = await import('./agent/groups.js');
@@ -559,16 +536,14 @@ async function main(): Promise<void> {
     }
   }
 
-  // 4c6. Router background tasks (embedder keep-warm, self-training); no-ops unless an agent uses auto.
+  // 4c6. Router background task (embedder keep-warm); a no-op unless an agent uses auto.
   {
     const { isSetupCompleted: isSetupDone } = await import('./config/platform.js');
     if (isSetupDone()) {
       try {
         const { startEmbedderWarmer } = await import('./router/semantic.js');
         startEmbedderWarmer();
-        const { startRouterMaintenance } = await import('./router/maintenance.js');
-        startRouterMaintenance();
-        logger.info('Router background tasks started');
+        logger.info('Router background task started');
       } catch (err) {
         logger.warn('Failed to start router background tasks', {
           error: err instanceof Error ? err.message : String(err),
@@ -625,14 +600,14 @@ async function main(): Promise<void> {
     const imRecipient = db.prepare("SELECT value FROM config WHERE key = 'imessage_recipient'").get() as { value: string } | undefined;
     logger.info('iMessage bridge startup gate', {
       imEnabled: imEnabled?.value ?? '<missing>',
-      imRecipient: imRecipient?.value ?? '<missing>',
+      hasRecipient: !!imRecipient?.value,
       willStart: imEnabled?.value === 'true' && !!imRecipient?.value,
     });
     if (imEnabled?.value === 'true' && imRecipient?.value) {
       try {
         const { startIMBridge } = await import('./services/imessage-bridge.js');
         startIMBridge(imRecipient.value);
-        logger.info('iMessage bridge started', { recipient: imRecipient.value });
+        logger.info('iMessage bridge started');
       } catch (err) {
         logger.error('Failed to start iMessage bridge', {
           error: err instanceof Error ? err.message : String(err),
@@ -642,28 +617,6 @@ async function main(): Promise<void> {
     // Replies left waiting by the last run go out once the bridge is up.
     const { armSenderTimer } = await import('./agent/v2/channel-sender.js');
     armSenderTimer();
-  }
-
-  {
-    try {
-      const { checkGoogleOnStartup } = await import('./google/auth.js');
-      await checkGoogleOnStartup();
-    } catch (err) {
-      logger.warn('Google Workspace startup check failed', {
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
-
-  {
-    try {
-      const { checkMicrosoftOnStartup } = await import('./microsoft/auth.js');
-      await checkMicrosoftOnStartup();
-    } catch (err) {
-      logger.warn('Microsoft startup check failed', {
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
   }
 
   {
@@ -870,10 +823,10 @@ async function main(): Promise<void> {
   // The server is listening: for a self-update boot, arm the ~90s timer that flips the marker to healthy.
   scheduleUpdateHealthConfirm();
 
-  const { cleanupOldUploads } = await import('./gateway/routes/upload.js');
-  setInterval(cleanupOldUploads, 24 * 60 * 60 * 1000);
-
-  startStallSentinel();
+  const { removeAbandonedPartFiles } = await import('./gateway/routes/upload.js');
+  setInterval(removeAbandonedPartFiles, 24 * 60 * 60 * 1000);
+  const { runDailyDatabaseUpkeep } = await import('./db/daily-upkeep.js');
+  setInterval(() => { void runDailyDatabaseUpkeep(); }, 24 * 60 * 60 * 1000);
 
   // Warm the reader pool now so no user's first search pays the spawn; best-effort, since a box without
   // worker threads runs searches on the serving thread.
@@ -882,7 +835,8 @@ async function main(): Promise<void> {
   // FTS health check: never boot-blocking, because scheduleFtsHealthCheck returns immediately and touches
   // no database; the repair runs on its own thread and search uses the bounded fallback until it finishes.
   scheduleFtsHealthCheck();
-  cleanupOldUploads(); // Run once on startup
+  removeAbandonedPartFiles(); // Run once on startup
+  void runDailyDatabaseUpkeep();
 
   setTimeout(async () => {
     try {

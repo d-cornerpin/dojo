@@ -35,7 +35,7 @@ vi.mock('../../work/tracker-store.js', async (importOriginal) => {
         : actual.setTrackerStatus(id, status, input),
   };
 });
-import { runMigrations, migrationFileNames } from '../../db/migrations.js';
+import { runMigrations } from '../../db/migrations.js';
 import { checkScheduledTasks } from '../runner.js';
 import { decide } from '../../work/done/decide.js';
 import { REAPER_KINDS } from '../../work/work-reaper.js';
@@ -91,7 +91,7 @@ describe('the hourly sweeps keep work records', () => {
 
 describe('a missed-runs pause is never left to a clock or to the agent', () => {
   it('a task an older build paused for missed runs is decided at the first scheduler pass after the upgrade', async () => {
-    const LAST = migrationFileNames().at(-1)!;
+    const LAST = '904_missed_runs_decided_by_the_engine.sql';   // the migration that decides these pauses
     db().prepare('DELETE FROM _migrations WHERE name = ?').run(LAST);
     db().exec('ALTER TABLE work ADD COLUMN missed_runs_paused_at INTEGER');
     const id = seedTask('water the plants');

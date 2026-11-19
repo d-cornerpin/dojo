@@ -127,7 +127,7 @@ describe('M41 — the DeepSeek doors', () => {
     outside.deepseekIds = ['deepseek-v4-flash', 'deepseek-next-1'];
     const res = await post('/providers', { id: 'ds', name: 'DeepSeek', type: 'openai-compatible', baseUrl: 'https://api.deepseek.com', authType: 'api_key', credential: 'sk-x' });
     expect(res.status).toBe(201);
-    expect(row('ds', 'deepseek-v4-flash')).toMatchObject({ cw: 1_000_000, mo: 384_000, ci: 0.14, co: 0.28 });
+    expect(row('ds', 'deepseek-v4-flash')).toMatchObject({ cw: 1_000_000, mo: 32_000, ci: 0.14, co: 0.28 });
     expect(row('ds', 'deepseek-next-1')).toEqual(NOTHING);
   });
 });

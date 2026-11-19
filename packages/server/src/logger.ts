@@ -18,13 +18,9 @@ const LOG_LEVEL_PRIORITY: Record<LogLevel, number> = {
   error: 3,
 };
 
-let currentLogLevel: LogLevel = 'info';
+const currentLogLevel: LogLevel = 'info';
 // Only broadcast warn/error to dashboard (not every info line)
 let logBroadcastCallback: ((entry: LogEntry) => void) | null = null;
-
-export function setLogLevel(level: LogLevel): void {
-  currentLogLevel = level;
-}
 
 export function setLogBroadcast(callback: (entry: LogEntry) => void): void {
   logBroadcastCallback = callback;

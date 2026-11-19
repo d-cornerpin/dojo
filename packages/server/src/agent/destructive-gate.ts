@@ -16,7 +16,7 @@ import { getAgentPermissions } from './manifest.js';
 import { grantForManifest } from './brokers/grants.js';
 import { authorizeFs } from './brokers/fs.js';
 import { EXEC_DOOR_ARG, authorizeExecShapedArgs, execCallText, execDoorFor } from './brokers/exec-seam.js';
-import { destroysDojoData, destroysDojoFiles, overwritesFile } from './brokers/dojo-redirect.js';
+import { destroysDojoData, destroysDojoFiles, overwritesFile, writesCoreDojoRows } from './brokers/dojo-redirect.js';
 import { floorReadings } from './brokers/proc.js';
 import { authorizeAppleScript, shellPayloads } from './brokers/applescript.js';
 import { wrappedProgramIndex } from './brokers/sudo-policy.js';
@@ -83,6 +83,7 @@ export function isDestructiveCall(
   const argv = Array.isArray(raw) && raw.every((e) => typeof e === 'string') ? (raw as string[]) : null;
   if (door && text === null) return 'destructive shell command';
   if (shellLinesOf(toolName, args).some(runsDestroyer) || (text !== null && destroysDojoData(argv ?? text))) return 'destructive shell command';
+  if (callerAgentId && isHealerAgent(callerAgentId) && text !== null && writesCoreDojoRows(argv ?? text)) return 'change to the Dojo\'s own records';
   // A login key lets whoever holds it sign in to the Mac: a write onto one is held, whatever door writes it.
   const written = callerWrites(toolName, args);
   if (written.some((p) => isLoginKeyFile(p.lexical) || isLoginKeyFile(p.real))
@@ -155,7 +156,6 @@ export function grantApprovalForSignature(input: {
   agentId: string;
   signature: string;
   requestText: string;
-  decidedBy: string;
   // A NULL args_json keeps the legacy signature-only consumption for that row.
   argsJson?: string | null;
 }): void {
@@ -163,9 +163,9 @@ export function grantApprovalForSignature(input: {
   const toolName = input.signature.slice(0, input.signature.indexOf(':')) || 'unknown';
   getDb().prepare(`
     INSERT INTO destructive_approvals
-      (token, agent_id, tool_name, signature, request_text, args_json, status, decided_by, decided_at, wake_delivered)
-    VALUES (?, ?, ?, ?, ?, ?, 'approved', ?, datetime('now'), 1)
-  `).run(token, input.agentId, toolName, input.signature, input.requestText, input.argsJson ?? null, input.decidedBy);
+      (token, agent_id, tool_name, signature, request_text, args_json, status, decided_at)
+    VALUES (?, ?, ?, ?, ?, ?, 'approved', datetime('now'))
+  `).run(token, input.agentId, toolName, input.signature, input.requestText, input.argsJson ?? null);
   logger.info('destructive-gate: minted consumable approval from owner-approved proposal', {
     agentId: input.agentId, token,
   });
@@ -262,12 +262,6 @@ export async function requestApproval(input: {
     }),
   });
 
-  if (delivered) {
-    try {
-      getDb().prepare(`UPDATE destructive_approvals SET wake_delivered = 1, updated_at = datetime('now') WHERE token = ?`).run(token);
-    } catch { /* best effort, the row is already filed pending */ }
-  }
-
   logger.warn('destructive-gate: call held for primary approval', {
     agentId: input.agentId,
     toolName: input.toolName,
@@ -343,9 +337,6 @@ export async function sweepStaleApprovals(): Promise<void> {
         agentName: name, agentId: row.agent_id, callDescription: row.request_text, token: row.token,
       }),
     });
-    if (delivered) {
-      db.prepare(`UPDATE destructive_approvals SET wake_delivered = 1, updated_at = datetime('now') WHERE token = ?`).run(row.token);
-    }
     logger.info('destructive-gate: re-woke primary for stale pending approval', {
       token: row.token, agentId: row.agent_id, delivered,
     });

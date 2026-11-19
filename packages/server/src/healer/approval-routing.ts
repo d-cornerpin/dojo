@@ -20,6 +20,8 @@ import { execSimpleCommands, commandWords } from '../agent/exec-grammar.js';
 import { healerApprovalText, healerApprovalBody } from '../agent/engine-lines.js';
 import { tellAgentWhatDojoSent } from '../agent/dojo-voice.js';
 import { getPrimaryAgentId } from '../config/platform.js';
+import { refersToDojoDatabase } from '../agent/brokers/dojo-redirect.js';
+import { resolveProcessCwd } from '../agent/tools/process-run.js';
 
 const logger = createLogger('healer-approval-routing');
 
@@ -49,6 +51,21 @@ export function selectHealerApprovalRouting(input: {
   const surface: HealerApprovalSurface = criticalTexted ? 'imessage' : 'vitals';
   const urgency: HealerApprovalUrgency = criticalTexted ? 'urgent' : 'routine';
   return { urgency, surface };
+}
+
+/** Every string inside a call's arguments, however deep. */
+const stringLeaves = (v: unknown): string[] =>
+  typeof v === 'string' ? [v] : Array.isArray(v) ? v.flatMap(stringLeaves)
+    : v !== null && typeof v === 'object' ? Object.values(v).flatMap(stringLeaves) : [];
+
+/** A held call is critical when it touches the Dojo's data or names an agent in error or paused. */
+export function heldActionSeverity(argsJson: string | null | undefined): EngineSeverity {
+  let leaves: string[] = [];
+  try { leaves = stringLeaves(JSON.parse(argsJson ?? '{}')); } catch { /* an unreadable call names nothing */ }
+  if (leaves.some(refersToDojoDatabase)) return 'critical';
+  const broken = getDb().prepare("SELECT id, name FROM agents WHERE status IN ('error', 'paused')").all() as Array<{ id: string; name: string }>;
+  const named = (word: string): RegExp => new RegExp(`(^|[^\\w])${word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}($|[^\\w])`, 'i');
+  return broken.some((a) => leaves.some((s) => named(a.id).test(s) || named(a.name).test(s))) ? 'critical' : 'warning';
 }
 
 // Scratch-zone auto-approve: a Healer destructive call whose EVERY target resolves strictly inside
@@ -91,7 +108,9 @@ export function evaluateScratchZoneAutoApprove(
   args: Record<string, unknown>,
 ): ScratchZoneDecision | null {
   if (toolName !== 'exec') return null;
-  const command = typeof args.command === 'string' ? args.command.trim() : '';
+  // An argv element holding a space would be split into two words below, so it holds instead.
+  if (Array.isArray(args.argv) && args.argv.some((w) => typeof w !== 'string' || /\s/.test(w))) return null;
+  const command = execCallText(toolName, args)?.trim() ?? '';
   if (!command || SHELL_META_RE.test(command)) return null;
 
   const tokens = command.split(/\s+/);
@@ -240,7 +259,8 @@ export function describeHeldAction(toolName: string, argsJson: string | null | u
   }
   const targets = rest.filter((w) => !w?.startsWith('-'));
   if ((head === 'rm' || head === 'rmdir') && targets.length > 0 && targets.every((t) => t !== null && !t.startsWith('..'))) {
-    const named = (targets as string[]).map((t) => (/^[/~]/.test(t) ? t : `"${clip(t, 80)}" in the folder this command runs from`));
+    const folder = resolveProcessCwd(args.cwd).cwd ?? process.cwd();
+    const named = (targets as string[]).map((t) => (/^[/~]/.test(t) ? t : `"${clip(t, 80)}" in ${folder}`));
     const recursive = rest.some((w) => /^-[a-zA-Z]*[rR]|^--recursive$/.test(w ?? ''));
     return `Delete ${nameList(named)}${recursive ? ', including everything inside' : ''}. `
       + 'Deleted files do not go to the Trash and cannot be brought back.';
@@ -261,7 +281,7 @@ export async function fileHealerApprovalProposal(
   try {
     const presenceMod = await import('../services/presence.js');
     presence = presenceMod.getPresence();
-    imessageEnabled = presenceMod.isImessageEnabled();
+    imessageEnabled = presenceMod.isImessageConfigured();
   } catch (err) {
     // Presence unavailable: default to in_dojo (quiet Vitals lane); never block the hold on it.
     logger.warn('healer approval-routing: presence lookup failed, defaulting to in_dojo', {
@@ -293,8 +313,8 @@ export async function fileHealerApprovalProposal(
     getDb().prepare(`
       INSERT INTO healer_proposals
         (id, category, severity, title, description, proposed_fix, status, agent_id,
-         evidence_json, urgency, surface, notified_at, approval_token, approval_signature, approval_args_json, created_at)
-      VALUES (?, 'destructive_action', ?, ?, ?, ?, 'pending', ?, ?, ?, ?, datetime('now'), ?, ?, ?, datetime('now'))
+         evidence_json, urgency, surface, approval_token, approval_signature, approval_args_json, created_at)
+      VALUES (?, 'destructive_action', ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, datetime('now'))
     `).run(
       proposalId,
       severity,
@@ -394,7 +414,7 @@ export function markHealerProposalAppliedBySignature(agentId: string, signature:
 
 /**
  * Text the owner an approval request for an 'imessage'-surface proposal. The reply must name the short
- * id (first 8 chars of the proposal id); a bare yes/no is ordinary chat. Refreshes notified_at on send.
+ * id (first 8 chars of the proposal id); a bare yes/no is ordinary chat.
  * The bridge is imported dynamically so loop.ts -> approval-routing.ts never statically links it.
  */
 async function sendHealerApprovalRequestOverIMessage(proposalId: string, what: string): Promise<void> {
@@ -426,9 +446,6 @@ async function sendHealerApprovalRequestOverIMessage(proposalId: string, what: s
       });
       return;
     }
-    try {
-      getDb().prepare(`UPDATE healer_proposals SET notified_at = datetime('now') WHERE id = ?`).run(proposalId);
-    } catch { /* notified_at refresh is best-effort; the row is already filed */ }
     logger.info('healer approval-routing: approval request texted to owner', { proposalId });
   } catch (err) {
     logger.error('healer approval-routing: iMessage approval send threw; approval stays in Vitals', {

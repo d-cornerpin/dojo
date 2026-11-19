@@ -16,7 +16,7 @@ import { broadcast } from '../ws.js';
 import { isPrimaryAgent, getPrimaryAgentId, getHealerAgentId, getDreamerAgentId } from '../../config/platform.js';
 import { sanitizeMessagesOnModelChange } from '../../agent/model-switch.js';
 import type { AccessGrants, AgentDetail, Model } from '@dojo/shared';
-import { cloneGrants, NEW_SESSION_DIVIDER } from '@dojo/shared';
+import { cloneGrants } from '@dojo/shared';
 import { noteRouteFailure } from './route-failure.js';
 import { resolveChildScope, validateManifest } from '../../agent/scope.js';
 import { caseVariantClash, caseVariantClashMessage } from '../../agent/tool-helpers.js';
@@ -45,12 +45,14 @@ export function dreamerIgnoreRefusal(agentId: string, ignore: boolean): string |
 
 const agentsRouter = new Hono();
 
-// GET / - list all agents with detail
+// GET / - live agents with detail; ?all=1 adds the ended ones (the Agents page's history)
 agentsRouter.get('/', (c) => {
   const db = getDb();
-  const rows = db.prepare('SELECT * FROM agents ORDER BY created_at ASC').all() as Array<Record<string, unknown>>;
+  const live = c.req.query('all') === '1' ? '' : "WHERE status != 'terminated' ";
+  const rows = db.prepare(`SELECT * FROM agents ${live}ORDER BY created_at ASC`).all() as Array<Record<string, unknown>>;
 
-  const agents: AgentDetail[] = rows.map(row => rowToAgentDetail(row));
+  const facts = rosterFacts(rows);
+  const agents: AgentDetail[] = rows.map(row => rowToAgentDetail(row, facts));
   return c.json({ ok: true, data: agents });
 });
 
@@ -547,100 +549,6 @@ agentsRouter.post('/:id/stop', (c) => {
   } });
 });
 
-// POST /:id/reset-session: mirrors the agent's reset_session tool (divider, broadcast, vault archive,
-// reorientation prompt).
-agentsRouter.post('/:id/reset-session', async (c) => {
-  const id = c.req.param('id');
-  const db = getDb();
-  const agent = db.prepare('SELECT id, name, status FROM agents WHERE id = ?')
-    .get(id) as { id: string; name: string; status: string } | undefined;
-  if (!agent) return c.json({ ok: false, error: 'Agent not found' }, 404);
-  if (agent.status === 'terminated') {
-    return c.json({ ok: false, error: 'Agent is terminated, no live session to reset' }, 400);
-  }
-
-  try {
-    // 1. Archive current conversation to vault (best-effort).
-    const { archiveAgentConversation } = await import('../../vault/archive.js');
-    try { archiveAgentConversation(id, true); } catch { /* */ }
-
-    // 1b. Clear stale runtime signals so the post-reset agent starts clean (a stale stop flag would make
-    //     the next user message bail). `stopFencedRuns` is deliberately NOT cleared: that fence belongs to
-    //     the stopped run and is retired by its own exit path in `runtime.ts`, so a reset cannot un-stop it.
-    try {
-      const { stoppedAgents, preemptedAgents, pendingWakeups } = await import('../../agent/shared-state.js');
-      stoppedAgents.delete(id);
-      preemptedAgents.delete(id);
-      pendingWakeups.delete(id); (await import('../../work/task-freshness.js')).endJobCarry(id); // a reset session has no job to continue
-    } catch { /* best-effort */ }
-
-    // 2. Set session boundary + clear scratchpad (session-scoped, not relevant after a reset).
-    const boundary = new Date().toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
-    db.prepare(
-      "UPDATE agents SET session_started_at = ?, updated_at = ?, " +
-      "config = json_remove(COALESCE(config, '{}'), '$.scratchpad') WHERE id = ?",
-    ).run(boundary, boundary, id);
-    // Carry a fired-but-undelivered reminder/scheduler event across the reset
-    // boundary so it survives (engine-event queries gate created_at >=
-    // session_started_at). Unclaimed deliverable engine rows only.
-    try {
-      const { rehomeUnclaimedEngineEvents } = await import('../../agent/v2/counterparty.js');
-      rehomeUnclaimedEngineEvents(id, boundary);
-    } catch { /* best-effort carry-over, never block the reset */ }
-    // Forget the per-session scratch, including session-loaded tool docs (see `agent/session-forget.ts`).
-    await (await import('../../agent/session-forget.js')).forgetSessionScratch(id);
-
-    // 3. Insert UI divider + broadcast.
-    const dividerId = uuidv4();
-    // The divider's created_at is stamped by the writer at insert time rather than
-    // pinned to `boundary` (computed a few lines up). Every session query is
-    // `created_at >= session_started_at`, so at-or-after the boundary keeps the row
-    // inside the new session; the broadcast still quotes `boundary` for the UI.
-    insertMessageIfAbsent({ id: dividerId, agentId: id, role: 'system', content: NEW_SESSION_DIVIDER });
-    broadcast({
-      type: 'chat:message',
-      agentId: id,
-      message: {
-        id: dividerId, agentId: id, role: 'system', content: NEW_SESSION_DIVIDER,
-        tokenCount: null, modelId: null, cost: null, latencyMs: null,
-        createdAt: boundary,
-      },
-    });
-
-    // 4. Insert reorientation prompt + broadcast.
-    const { buildSessionResetMessage } = await import('../../agent/session-reset.js');
-    const reorientId = uuidv4();
-    const reorientContent = buildSessionResetMessage(id);
-    insertMessageIfAbsent({ id: reorientId, agentId: id, role: 'system', content: reorientContent });
-    broadcast({
-      type: 'chat:message',
-      agentId: id,
-      message: {
-        id: reorientId, agentId: id, role: 'system', content: reorientContent,
-        tokenCount: null, modelId: null, cost: null, latencyMs: null,
-        createdAt: boundary,
-      },
-    });
-
-    // 5. Heal error/paused status. A reset clears the corrupted context
-    // that's often the root cause.
-    if (agent.status === 'error' || agent.status === 'paused') {
-      db.prepare(
-        "UPDATE agents SET status = 'idle', last_error = NULL, last_error_at = NULL, updated_at = datetime('now') WHERE id = ?",
-      ).run(id);
-      broadcast({ type: 'agent:status', agentId: id, status: 'idle' });
-    }
-
-    logger.info('Agent session reset via API', { agentId: id, agentName: agent.name });
-    return c.json({ ok: true, data: { agentId: id, name: agent.name, boundary } });
-  } catch (err) {
-    logger.error('Failed to reset agent session', {
-      agentId: id, error: err instanceof Error ? err.message : String(err),
-    });
-    return c.json({ ok: false, error: err instanceof Error ? err.message : 'Reset failed' }, 500);
-  }
-});
-
 // POST /:id/purge: permanently delete a terminated agent and all its data
 agentsRouter.post('/:id/purge', (c) => {
   const id = c.req.param('id');
@@ -669,18 +577,30 @@ agentsRouter.post('/:id/purge', (c) => {
   return c.json({ ok: true, data: { agentId: id, deleted: true } });
 });
 
-function rowToAgentDetail(row: Record<string, unknown>): AgentDetail {
+/** Message counts and model rows for a set of agent rows: two queries, whatever the number of rows. */
+interface RosterFacts { counts: Map<string, number>; models: Map<string, Record<string, unknown>> }
+function rosterFacts(rows: Array<Record<string, unknown>>): RosterFacts {
   const db = getDb();
+  const ids = JSON.stringify(rows.map((r) => r.id));
+  const counts = new Map((db.prepare(
+    'SELECT agent_id AS id, COUNT(*) AS n FROM messages WHERE agent_id IN (SELECT value FROM json_each(?)) GROUP BY agent_id',
+  ).all(ids) as Array<{ id: string; n: number }>).map((r) => [r.id, r.n] as const));
+  const modelIds = JSON.stringify([...new Set(rows.map((r) => r.model_id).filter((m): m is string => typeof m === 'string'))]);
+  const models = new Map((db.prepare('SELECT * FROM models WHERE id IN (SELECT value FROM json_each(?))')
+    .all(modelIds) as Array<Record<string, unknown>>).map((m) => [m.id as string, m] as const));
+  return { counts, models };
+}
+
+function rowToAgentDetail(row: Record<string, unknown>, facts: RosterFacts = rosterFacts([row])): AgentDetail {
   const agentId = row.id as string;
   const modelId = row.model_id as string | null;
 
-  // Get message count
-  const msgCount = (db.prepare('SELECT COUNT(*) as count FROM messages WHERE agent_id = ?').get(agentId) as { count: number }).count;
+  const msgCount = facts.counts.get(agentId) ?? 0;
 
   // Get model if set
   let model: Model | null = null;
   if (modelId) {
-    const modelRow = db.prepare('SELECT * FROM models WHERE id = ?').get(modelId) as Record<string, unknown> | undefined;
+    const modelRow = facts.models.get(modelId);
     if (modelRow) {
       model = {
         id: modelRow.id as string,
@@ -780,7 +700,7 @@ function rowToAgentDetail(row: Record<string, unknown>): AgentDetail {
 agentsRouter.post('/archive', (c) => {
   const db = getDb();
   const days = 7;
-  const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+  const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().slice(0, 19).replace('T', ' ');   // the text datetime('now') writes
 
   // Mark old terminated agents as archived by setting agent_type to 'archived'
   const result = db.prepare(`

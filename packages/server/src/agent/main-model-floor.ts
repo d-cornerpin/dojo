@@ -7,6 +7,7 @@ import { refuseUnfitLocalModel } from './local-model-fit.js';
 import { createLogger } from '../logger.js';
 import { sanitizeMessagesOnModelChange } from './model-switch.js';
 import { tellOwner, ownerConditionCleared } from '../healer/owner-notices.js';
+import { isStandardModelRow } from '../services/local-standard.js';
 const logger = createLogger('main-model-floor');
 
 /** The floor, in tokens. "32K" models are advertised as 32,000 or 32,768; both pass. */
@@ -59,22 +60,49 @@ export function refuseSmallMainModel(
   return smallMainModelMessage(w.name, w.window);
 }
 
-/** THE door check for choosing a model for an agent: memory fit first (so a refusal names the true reason), then the
- *  floor. Null means the model may be set. Every route and tool that picks an agent's model asks this; a spawn asks its
- *  two parts itself, since its model may be 'auto'. */
-export async function refuseAgentModel(modelId: string | null | undefined, currentModelId?: string | null): Promise<string | null> {
-  return refuseUnfitLocalModel(modelId, currentModelId, 'agent', () => refuseSmallMainModel(modelId, currentModelId));
+/** True for a model that makes pictures, video, music or speech, embeds text, or is the Dojo's own decision model. */
+export function isNonChatModel(capabilitiesJson: string | null | undefined): boolean {
+  let caps: unknown;
+  try { caps = JSON.parse(capabilitiesJson ?? '[]'); } catch { return false; }
+  return Array.isArray(caps) && caps.some((c) => typeof c === 'string' && (c.endsWith('generation') || c === 'embedding' || c === 'decision'));
 }
 
-/** The one pick for "this agent needs another model": cheapest enabled text model outside `exclude` that clears the floor. */
-export function cheapestAgentModel(exclude: readonly string[] = []): string | null {   // never the router sentinel, which is no model
+/** The refusal for setting a model that is not a chat model as an agent's model; null for a chat model, an unknown
+ *  id, 'auto', or the model the agent already runs (re-saving is never refused). */
+function refuseNonChatModel(modelId: string | null | undefined, currentModelId?: string | null): string | null {
+  if (!modelId || modelId === currentModelId || modelId === 'auto') return null;
+  let row: { name: string; capabilities: string | null } | undefined;
+  try {
+    row = getDb().prepare('SELECT name, capabilities FROM models WHERE id = ?').get(modelId) as typeof row;
+  } catch { return null; }
+  if (!row || !isNonChatModel(row.capabilities)) return null;
+  return `${row.name} is not a chat model: it makes pictures, video, music or speech, embeds text, or is the Dojo's own decision model. An agent needs a chat model; choose another one.`;
+}
+
+/** Why a picker cannot offer this model as an agent's model, in the few words the picker shows; null when it can. */
+export function notForAgentsReason(modelId: string): string | null {
+  if (refuseNonChatModel(modelId) !== null) return 'not a chat model';
+  if (!passesMainModelFloor(modelId)) return 'too small for an agent';
+  return null;
+}
+
+/** THE door check for choosing a model for an agent: not a chat model first, then memory fit (so a refusal names the
+ *  true reason), then the floor. Null means the model may be set. Every route and tool that picks an agent's model
+ *  asks this; a spawn asks its two parts itself, since its model may be 'auto'. */
+export async function refuseAgentModel(modelId: string | null | undefined, currentModelId?: string | null): Promise<string | null> {
+  return refuseNonChatModel(modelId, currentModelId)
+    ?? refuseUnfitLocalModel(modelId, currentModelId, 'agent', () => refuseSmallMainModel(modelId, currentModelId));
+}
+
+/** The one pick for "this agent needs another model": cheapest enabled chat model outside `exclude` that clears the
+ *  floor. Never the router sentinel (no model) and never the Dojo's own small writer model. */
+export function cheapestAgentModel(exclude: readonly string[] = []): string | null {
   const rows = getDb().prepare(
-    `SELECT id FROM models
+    `SELECT id, capabilities FROM models
       WHERE is_enabled = 1 AND id != 'auto' AND id NOT IN (${exclude.map(() => '?').join(',')})
-        AND capabilities NOT LIKE '%generation%' AND capabilities NOT LIKE '%embedding%' AND capabilities NOT LIKE '%"decision"%'
       ORDER BY COALESCE(input_cost_per_m, 1e18) ASC, id ASC`,
-  ).all(...exclude) as Array<{ id: string }>;
-  return rows.find((m) => refuseSmallMainModel(m.id) === null)?.id ?? null;
+  ).all(...exclude) as Array<{ id: string; capabilities: string | null }>;
+  return rows.find((m) => !isNonChatModel(m.capabilities) && !isStandardModelRow(m.id) && refuseSmallMainModel(m.id) === null)?.id ?? null;
 }
 
 /** Moves every live agent on one of `modelIds` (and the service agents' model settings) to the cheapest big-enough

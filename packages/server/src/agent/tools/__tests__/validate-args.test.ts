@@ -42,7 +42,7 @@ import { validateToolArgs, PER_TOOL_VALIDATED_AT_BOUNDARY } from '../validate-ar
 import { checkRequired, type FieldSpec } from '../../tool-helpers.js';
 import { getAllToolDefinitions, isBoundaryValidated } from '../definitions.js';
 import type { ToolDefinition } from '../types.js';
-import { checkEffectDeclarations } from '../effect-conformance.js';
+import { checkEffectDeclarations } from './effect-conformance.js';
 import { classifyToolResult, toolResultOf, toolWasBlocked } from '../../tool-outcome.js';
 
 const defsByName = new Map<string, ToolDefinition>(

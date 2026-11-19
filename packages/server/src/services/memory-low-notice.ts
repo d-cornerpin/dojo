@@ -8,7 +8,7 @@ const logger = createLogger('memory-low-notice');
 // Told once per low stretch: texts when memory falls below the line, again only after it was seen back above.
 // The latch is a config row, so a restart mid-stretch does not text again; card `memory-low` stands with it.
 const CRITICAL_FREE_MB = 512;
-const MEMORY_LOW_WORDS = 'Critical: System memory below 512MB. Terminate idle sub-agents.';
+const MEMORY_LOW_WORDS = 'Your Mac has less than 512 MB of memory free, so the Dojo may slow down or stop. Quitting apps you are not using frees memory.';
 
 function readMemoryLow(): { at: number } | null {
   const row = getDb().prepare("SELECT value FROM config WHERE key = 'owner_notice_memory_low'").get() as { value: string } | undefined;

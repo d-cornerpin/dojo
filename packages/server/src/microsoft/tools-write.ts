@@ -651,7 +651,7 @@ for (const canonical of USER_SLOT_SEND_TOOLS) {
   microsoftWriteToolDefinitions.push({
     ...baseDef,
     name: `user_${canonical}`,
-    description: `[USER'S Microsoft account variant of \`${canonical}\`] ${baseDef.description}\n\nSends from the user's connected Microsoft account (Settings → Channels → User's Microsoft Accounts). Disabled by default, the user must turn on "Allow sending email" on the User slot card. If the toggle is off or the slot isn't connected, the tool returns a friendly error.`,
+    description: `[USER'S Microsoft account variant of \`${canonical}\`] ${baseDef.description}\n\nSends from the user's connected Microsoft account (Settings → Channels → User's Microsoft Accounts). Off by default: the user must turn on "The agent may send as me" on that account's card. If the toggle is off or the slot isn't connected, the tool returns a friendly error.`,
   });
 }
 
@@ -953,6 +953,16 @@ async function refetchOutlookSentId(params: {
   return null;
 }
 
+/** What a call sends to people from its account, or null when it sends nothing. */
+function sendsAs(canonicalName: string, args: Record<string, unknown>): string | null {
+  if (canonicalName === 'outlook_send' || canonicalName === 'outlook_reply' || canonicalName === 'outlook_forward') return 'email';
+  if (canonicalName === 'calendar_respond_invite_ms') return 'meeting reply';
+  if (canonicalName === 'calendar_create_ms' && Array.isArray(args.attendees) && args.attendees.length > 0) return 'invitation to the guests';
+  if (canonicalName === 'onedrive_share' && args.type === 'invite' && typeof args.email === 'string' && args.email) return 'file invitation';
+  if (canonicalName === 'teams_send_message' || canonicalName === 'teams_send_channel_message') return 'Teams post';
+  return null;
+}
+
 export async function executeMicrosoftWriteTool(
   name: string,
   args: Record<string, unknown>,
@@ -975,12 +985,11 @@ export async function executeMicrosoftWriteTool(
   if ('error' in resolved) return `Error: ${resolved.error}`;
   const slot = resolved.account.id;
 
-  // Send-permission gate, checked on the RESOLVED account's own send toggle.
-  if (canonicalName === 'outlook_send' || canonicalName === 'outlook_reply' || canonicalName === 'outlook_forward') {
-    if (!resolved.account.sendEmail) {
-      const who = resolved.account.email ?? (kind === 'user' ? "the user's Microsoft account" : "the agent's Microsoft account");
-      return `Error: sending email from ${who} is disabled. Open Settings → Channels (the Microsoft cards) and turn on "Allow sending email" for that account, then try again.`;
-    }
+  // The account's one send switch ("The agent may send as me") covers everything a call sends from it.
+  const sends = sendsAs(canonicalName, args);
+  if (sends && !resolved.account.sendEmail) {
+    const who = resolved.account.email ?? (kind === 'user' ? "the user's Microsoft account" : "the agent's Microsoft account");
+    return `Error: "The agent may send as me" is off for ${who}, and this ${sends} would be sent from it. Turn it on in Settings → Channels (the Microsoft cards), then try again.`;
   }
 
   switch (canonicalName) {

@@ -4,7 +4,7 @@ import type { Model, Provider } from '@dojo/shared';
 import * as api from '../lib/api';
 import { ownerChanged, confirmRemoveOwner } from '../lib/owner-star';
 import { isEnterNotComposing } from '../lib/enter-key';
-import { isPickableAgentModel, defaultRoleModel, saveRoleAgent } from '../lib/role-models';
+import { isListedAgentModel, isPickableAgentModel, defaultRoleModel, saveRoleAgent } from '../lib/role-models';
 import { AUTOMATION_SEND_HINT } from '../lib/automation-permission';
 import { SetupDeps, SetupPermissions } from '../components/SetupDeps';
 import { VoiceSetupStep } from '../components/VoiceSetupStep';
@@ -836,7 +836,7 @@ export const PrimaryAgentStep = ({ onReady }: { onReady?: (ready: boolean) => vo
       // A failed read of the saved settings is not "nothing saved": nothing here may be saved from it.
       if (!(nameRes.ok && idRes.ok)) { setLoadFailed(true); return; }
       setLoadFailed(false);
-      const enabled = modelsRes.ok ? modelsRes.data.filter(isPickableAgentModel) : [];
+      const enabled = modelsRes.ok ? modelsRes.data.filter(isListedAgentModel) : [];
       setModels(enabled);
       const existingName = nameRes.ok ? (nameRes.data.value ?? '') : '';
       const existingId = idRes.ok ? (idRes.data.value ?? '') : '';
@@ -847,7 +847,7 @@ export const PrimaryAgentStep = ({ onReady }: { onReady?: (ready: boolean) => vo
       }
       if (cancelled) return;
       if (existingName) setAgentName(existingName);
-      setSelectedModel(existingModel || (enabled.find((m) => !m.tooSmallForAgents)?.id ?? ''));
+      setSelectedModel(existingModel || (enabled.find(isPickableAgentModel)?.id ?? ''));
       if (existingName) setSaved(true);
     })();
     return () => { cancelled = true; };
@@ -940,7 +940,7 @@ export const PrimaryAgentStep = ({ onReady }: { onReady?: (ready: boolean) => vo
         </label>
         <p className="text-xs text-ui/40 mb-2">
           Describe how this agent should behave, its tone, areas of expertise, things to avoid, or any special instructions.
-          You can edit this later from the agent's Config tab.
+          You can change this later from the gear on the agent's card on the Agents page.
         </p>
         <textarea value={personality} onChange={(e) => { setPersonality(e.target.value); setRestyled(true); setSaved(false); }} rows={4}
           placeholder="e.g., Always explain your reasoning. Be proactive about suggesting improvements. Avoid making changes without asking first."
@@ -990,7 +990,7 @@ export const PMAgentStep = ({ onReady }: { onReady?: (ready: boolean) => void })
       // A failed read of the saved settings is not "nothing saved": nothing here may be saved from it.
       if (!(nameRes.ok && modelRes.ok)) { setLoadFailed(true); return; }
       setLoadFailed(false);
-      const enabled = modelsRes.ok ? modelsRes.data.filter(isPickableAgentModel) : [];
+      const enabled = modelsRes.ok ? modelsRes.data.filter(isListedAgentModel) : [];
       setModels(enabled);
       const existingName = nameRes.ok ? (nameRes.data.value ?? '') : '';
       const existingModel = modelRes.ok ? (modelRes.data.value ?? '') : '';
@@ -1020,8 +1020,8 @@ export const PMAgentStep = ({ onReady }: { onReady?: (ready: boolean) => void })
   return (
     <div className="space-y-4">
       <p className="text-sm text-ui/55">
-        The <strong className="text-ui/90">project manager</strong> tracks tasks,
-        pokes stalled work, and escalates issues. It runs on a lighter model to save costs and keeps your primary agent accountable.
+        The <strong className="text-ui/90">project manager</strong> keeps track of tasks,
+        reminds agents about work that has stopped moving, and tells you about problems. It runs on a lighter model to save costs and keeps your primary agent accountable.
       </p>
 
       <div>
@@ -1035,7 +1035,7 @@ export const PMAgentStep = ({ onReady }: { onReady?: (ready: boolean) => void })
         <div>
           <label className="block text-sm font-medium text-ui/70 mb-1">Model</label>
           <p className="text-xs text-ui/40 mb-2">
-            The PM uses a lighter model to save costs. A free local model works well here.
+            The PM uses a lighter model to save costs.
           </p>
           <select value={selectedModel} onChange={(e) => { setSelectedModel(e.target.value); setSaved(false); }}
             className="glass-select w-full">
@@ -1087,7 +1087,7 @@ const TrainerAgentStep = ({ onReady }: { onReady?: (ready: boolean) => void }) =
       // A failed read of the saved settings is not "nothing saved": nothing here may be saved from it.
       if (!(nameRes.ok && modelRes.ok)) { setLoadFailed(true); return; }
       setLoadFailed(false);
-      const enabledModels = modelsRes.ok ? modelsRes.data.filter(isPickableAgentModel) : [];
+      const enabledModels = modelsRes.ok ? modelsRes.data.filter(isListedAgentModel) : [];
       setModels(enabledModels);
       const existingName = nameRes.ok ? (nameRes.data.value ?? '') : '';
       const existingModel = modelRes.ok ? (modelRes.data.value ?? '') : '';
@@ -1185,7 +1185,7 @@ export const DreamerStep = ({ onReady }: { onReady?: (ready: boolean) => void })
       // A failed read of the saved settings is not "nothing saved": nothing here may be saved from it.
       if (!(cfgRes.ok)) { setLoadFailed(true); return; }
       setLoadFailed(false);
-      const enabledModels = modelsRes.ok ? modelsRes.data.filter(isPickableAgentModel) : [];
+      const enabledModels = modelsRes.ok ? modelsRes.data.filter(isListedAgentModel) : [];
       setModels(enabledModels);
       const cfg = cfgRes.ok ? cfgRes.data : null;
       // Default to a Sonnet-class model, else the cheapest the server accepts for an agent
@@ -1218,7 +1218,7 @@ export const DreamerStep = ({ onReady }: { onReady?: (ready: boolean) => void })
     <div className="space-y-4">
       <p className="text-sm text-ui/55">
         Every night, the dojo <strong className="text-ui/90">dreams</strong>. Just like humans consolidate memories during sleep,
-        a temporary <strong className="text-ui/90">Dreamer</strong> agent wakes up, processes the day's conversations, and
+        the <strong className="text-ui/90">Dreamer</strong> agent wakes up, processes the day's conversations, and
         extracts the important stuff into the dojo's long-term memory vault: facts, preferences, decisions,
         procedures, relationships, and events.
       </p>

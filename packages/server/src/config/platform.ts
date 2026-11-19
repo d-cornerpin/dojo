@@ -6,13 +6,10 @@ import { getDb } from '../db/connection.js';
 let cache: Record<string, string> = {};
 let cacheLoaded = false;
 
-// Memoized household ids; cleared with the main cache in clearPlatformConfigCache.
-let householdCache: string[] | null = null;
-
 function loadCache(): void {
   try {
     const db = getDb();
-    const rows = db.prepare("SELECT key, value FROM config WHERE key IN ('owner_name', 'primary_agent_id', 'primary_agent_name', 'pm_agent_id', 'pm_agent_name', 'trainer_agent_id', 'trainer_agent_name', 'healer_agent_id', 'healer_agent_name', 'dreamer_agent_id', 'dreamer_agent_name', 'household_agent_ids', 'setup_completed')").all() as Array<{ key: string; value: string }>;
+    const rows = db.prepare("SELECT key, value FROM config WHERE key IN ('owner_name', 'primary_agent_id', 'primary_agent_name', 'pm_agent_id', 'pm_agent_name', 'trainer_agent_id', 'trainer_agent_name', 'healer_agent_id', 'healer_agent_name', 'dreamer_agent_id', 'dreamer_agent_name', 'setup_completed')").all() as Array<{ key: string; value: string }>;
     cache = {};
     for (const row of rows) {
       cache[row.key] = row.value;
@@ -31,7 +28,6 @@ function get(key: string, fallback: string): string {
 export function clearPlatformConfigCache(): void {
   cache = {};
   cacheLoaded = false;
-  householdCache = null;
 }
 
 
@@ -134,32 +130,10 @@ export function isDreamerAgent(agentId: string): boolean {
 }
 
 
-export const HOUSEHOLD_AGENT_IDS_KEY = 'household_agent_ids';
-
-// Agent ids whose distilled vault memory is shared across the household: the stored list (or the primary
-// alone when it is absent or invalid), plus the Dreamer, which files memory on the primaries' behalf.
-// Every other agent is excluded. OWNER_VAULT_AGENT_ID is not here: the recall scope adds owner entries
-// separately, and folding them in would make a non-member's own scope household.
+// Agent ids whose distilled vault memory is shared: the main agent and the Dreamer, which files memory on
+// its behalf (one person per Dojo). OWNER_VAULT_AGENT_ID is not here: the recall scope adds owner entries.
 export function getHouseholdAgentIds(): string[] {
-  if (householdCache) return householdCache;
-  const ids = new Set<string>();
-  const raw = get(HOUSEHOLD_AGENT_IDS_KEY, '');
-  if (raw) {
-    try {
-      const parsed: unknown = JSON.parse(raw);
-      if (Array.isArray(parsed)) {
-        for (const v of parsed) {
-          if (typeof v === 'string' && v.trim().length > 0) ids.add(v);
-        }
-      }
-    } catch {
-      /* malformed row -> fall back to the primary below */
-    }
-  }
-  if (ids.size === 0) ids.add(getPrimaryAgentId());
-  ids.add(getDreamerAgentId());
-  householdCache = [...ids];
-  return householdCache;
+  return [getPrimaryAgentId(), getDreamerAgentId()];
 }
 
 // Service agents whose conversations are pure platform mechanics. Their archives must never reach the

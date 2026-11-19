@@ -8,6 +8,7 @@ import {
   loadToolDocsOverflowRefusal, markToolsLoaded,
 } from './tool-session-set.js';
 import type { ToolDefinition } from '../agent/tools/types.js';
+import { sessionBoundaryText } from '../memory/session-boundary.js';
 
 const logger = createLogger('tool-docs');
 
@@ -180,8 +181,7 @@ export function rehydrateSessionToolsFromHistory(agentId: string, recentLimit = 
   try {
     const db = getDb();
     // Respect the session boundary: a restart after a reset must not hand back a forgotten session.
-    const boundary = (db.prepare('SELECT session_started_at FROM agents WHERE id = ?')
-      .get(agentId) as { session_started_at: string | null } | undefined)?.session_started_at ?? null;
+    const boundary = sessionBoundaryText(agentId);
 
     const ordered: string[] = [];
     const placed = new Set<string>();

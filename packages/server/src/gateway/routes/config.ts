@@ -23,7 +23,8 @@ import { servedOwnerNotices } from '../../healer/owner-notice-kinds.js';
 import { writeOobeSoul } from '../../prompt/soul-rerun.js';
 import { isPastFirstRun } from '../../config/setup-state.js';
 import { refuseUnfitLocalModel } from '../../agent/local-model-fit.js';
-import { refuseAgentModel, refuseSmallMainModel, passesMainModelFloor, reassignAffectedAgents, windowOf, MAIN_MODEL_SETTING_KEYS, LOCAL_MODEL_SETTING_KEYS } from '../../agent/main-model-floor.js';
+import { refuseAgentModel, refuseSmallMainModel, notForAgentsReason, reassignAffectedAgents, windowOf, MAIN_MODEL_SETTING_KEYS, LOCAL_MODEL_SETTING_KEYS } from '../../agent/main-model-floor.js';
+import { setAgentModel, modelKeyAgentId } from '../../agent/model-switch.js';
 import { parsePrice } from '../../services/price-per-million.js';
 import { refuseBadClockTime, CLOCK_TIME_SETTING_KEYS } from '../../config/clock-time.js';
 import { refuseStaleWholeDocument } from './whole-document-guard.js';
@@ -153,7 +154,7 @@ const DEEPSEEK_MODELS = [
     apiModelId: 'deepseek-v4-flash',
     capabilities: ['chat', 'code', 'tools', 'thinking'],
     contextWindow: 1_000_000,
-    maxOutputTokens: 384_000,
+    maxOutputTokens: 32_000,   // the everyday cap; a cut-off call may be given up to the contract's 384K once
     inputCostPerM: 0.14,
     outputCostPerM: 0.28,
   },
@@ -162,7 +163,7 @@ const DEEPSEEK_MODELS = [
     apiModelId: 'deepseek-v4-pro',
     capabilities: ['chat', 'code', 'tools', 'thinking'],
     contextWindow: 1_000_000,
-    maxOutputTokens: 384_000,
+    maxOutputTokens: 32_000,
     inputCostPerM: 0.435,
     outputCostPerM: 0.87,
   },
@@ -557,7 +558,7 @@ configRouter.post('/providers', async (c) => {
 function forgetModelReferences(modelId: string): void {
   const db = getDb();
   db.prepare('DELETE FROM router_tier_models WHERE model_id = ?').run(modelId);
-  for (const key of ['pm_agent_model', 'dreaming_model_id']) {
+  for (const key of LOCAL_MODEL_SETTING_KEYS) {
     db.prepare('DELETE FROM config WHERE key = ? AND value = ?').run(key, modelId);
   }
 }
@@ -575,6 +576,15 @@ configRouter.delete('/providers/:id', (c) => {
 
     const providerModels = db.prepare('SELECT id FROM models WHERE provider_id = ?').all(id) as Array<{ id: string }>;
     const modelIds = providerModels.map(m => m.id);
+
+    // The Dojo's own two models live on the local provider; deleting it would take the Dojo's memory work down.
+    if (modelIds.some(isStandardModelRow)) {
+      return c.json({ ok: false, error: 'The Dojo itself runs on a model from this provider for memory summaries and quick checks, so this provider stays.' }, 409);
+    }
+
+    // Agents and service-agent settings on these models move to the cheapest working model, with the usual
+    // change note; with none, the loop below leaves them without a model, as before.
+    reassignAffectedAgents(modelIds);
 
     for (const mid of modelIds) {
       db.prepare("UPDATE agents SET model_id = NULL WHERE model_id = ?").run(mid);
@@ -2014,10 +2024,8 @@ configRouter.put('/settings/:key', async (c) => {
   // key. Refused before any write; re-saving the stored value never is.
   if (LOCAL_MODEL_SETTING_KEYS.includes(key)) {
     const agentKey = MAIN_MODEL_SETTING_KEYS.includes(key);   // judged against what its agent runs on, not the stored setting
-    const platform = await import('../../config/platform.js');
-    const agentIds: Record<string, () => string> = { healer_model_id: platform.getHealerAgentId, dreaming_model_id: platform.getDreamerAgentId, pm_agent_model: platform.getPMAgentId, trainer_agent_model: platform.getTrainerAgentId };
     const current = agentKey
-      ? (db.prepare('SELECT model_id FROM agents WHERE id = ?').get(agentIds[key]?.()) as { model_id: string | null } | undefined)?.model_id
+      ? (db.prepare('SELECT model_id FROM agents WHERE id = ?').get(modelKeyAgentId(key)) as { model_id: string | null } | undefined)?.model_id
       : (db.prepare('SELECT value FROM config WHERE key = ?').get(key) as { value: string } | undefined)?.value;
     const refused = await (agentKey ? refuseAgentModel(body.value, current) : refuseUnfitLocalModel(body.value, current, 'job'));
     if (refused) return c.json({ ok: false, error: refused }, 400);
@@ -2120,16 +2128,10 @@ configRouter.put('/settings/:key', async (c) => {
     }
   }
 
-  // Keep agents.model_id in sync when sensei model config keys change from Settings
-  if (key === 'healer_model_id') {
-    const { getHealerAgentId } = await import('../../config/platform.js');
-    db.prepare("UPDATE agents SET model_id = ?, updated_at = datetime('now') WHERE id = ?")
-      .run(body.value, getHealerAgentId());
-  } else if (key === 'dreaming_model_id') {
-    const { getDreamerAgentId } = await import('../../config/platform.js');
-    db.prepare("UPDATE agents SET model_id = ?, updated_at = datetime('now') WHERE id = ?")
-      .run(body.value, getDreamerAgentId());
-  }
+  // A service agent's model setting moves that agent too, through the one model setter. An empty value
+  // means "Auto" in Settings and moves no agent row, as the Healer and Dreamer doors already do.
+  const roleAgent = body.value ? modelKeyAgentId(key) : null;
+  if (roleAgent) await setAgentModel(roleAgent, body.value);
 
   return c.json({ ok: true, data: { key, value: body.value } });
 });
@@ -2426,7 +2428,7 @@ function rowToModel(row: Record<string, unknown>): Model {
     costPerMegapixel,
     priceUnknown,
     isEnabled: Boolean(row.is_enabled),
-    tooSmallForAgents: !passesMainModelFloor(row.id as string),
+    notForAgents: notForAgentsReason(row.id as string),
     thinkingEnabled,
     thinkingLevel: row.thinking_level === 'low' || row.thinking_level === 'max' ? row.thinking_level : 'high',
     thinkingLevels: thinkingLevelsForRow(row),

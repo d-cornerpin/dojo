@@ -10,15 +10,6 @@
 @font-face { font-family: 'Instrument Sans'; font-style: normal; font-weight: 400 600; font-display: swap; src: url('/fonts/instrument-sans-latin-wght-normal.woff2') format('woff2'); }
 @font-face { font-family: 'Instrument Sans'; font-style: italic; font-weight: 400 600; font-display: swap; src: url('/fonts/instrument-sans-latin-wght-italic.woff2') format('woff2'); }
 
-/* Hide scrollbar but keep scroll functionality */
-.scrollbar-hide {
-  -ms-overflow-style: none;
-  scrollbar-width: none;
-}
-.scrollbar-hide::-webkit-scrollbar {
-  display: none;
-}
-
 /* ════════════════════════════════════════
    DOJO — Glassmorphism Design System
    Inspired by vivid frosted glass aesthetics
@@ -172,50 +163,6 @@
 @layer components {
 
   /* ════════════════════════════════════════
-     GRADIENT BLOBS — Vivid, bright, NO blur
-     The backdrop-filter on glass cards blurs them.
-     These must be CLEARLY VISIBLE colored shapes.
-     ════════════════════════════════════════ */
-
-  .gradient-blob-layer {
-    position: fixed;
-    inset: 0;
-    z-index: 0;
-    pointer-events: none;
-    overflow: visible;
-  }
-  .gradient-blob-layer .blob {
-    position: absolute;
-    border-radius: 50%;
-    pointer-events: none;
-    /* NO filter: blur() — the glass cards blur them via backdrop-filter */
-  }
-  .gradient-blob-layer .blob-purple {
-    top: -10%;
-    left: -5%;
-    width: 600px;
-    height: 600px;
-    background: radial-gradient(circle, var(--blob-1-color) 0%, transparent 70%);
-    opacity: 0.6;
-  }
-  .gradient-blob-layer .blob-teal {
-    bottom: -10%;
-    right: -5%;
-    width: 500px;
-    height: 500px;
-    background: radial-gradient(circle, var(--blob-2-color) 0%, transparent 70%);
-    opacity: 0.5;
-  }
-  .gradient-blob-layer .blob-warm {
-    top: 40%;
-    left: 30%;
-    width: 400px;
-    height: 400px;
-    background: radial-gradient(circle, var(--blob-3-color) 0%, transparent 70%);
-    opacity: 0.4;
-  }
-
-  /* ════════════════════════════════════════
      GLASS CARD — transparent + blur + glossy edge
      The inset box-shadow creates the glossy top highlight.
      ════════════════════════════════════════ */
@@ -231,14 +178,6 @@
       inset 0 1px 0 rgb(var(--ui-on-base-ch) / 0.1);
     transition: all 0.25s ease;
   }
-  .glass-card-hover:hover {
-    background: var(--glass-bg-hover);
-    border-color: var(--glass-border-hover);
-    box-shadow:
-      0 12px 40px rgba(0, 0, 0, 0.5),
-      inset 0 1px 0 rgb(var(--ui-on-base-ch) / 0.15);
-    transform: translateY(-1px);
-  }
 
   /* Nested glass inside cards */
   .glass-nested {
@@ -248,51 +187,6 @@
     box-shadow: inset 0 1px 0 rgb(var(--ui-on-base-ch) / 0.05);
   }
 
-  /* ════════════════════════════════════════
-     GLASS SIDEBAR — translucent, blobs visible through it
-     ════════════════════════════════════════ */
-
-  /* Sidebar: translucent, page blobs visible through it. Uses the canonical
-     --glass-input-bg / --glass-input-border vars. */
-  .glass-sidebar {
-    background: var(--glass-input-bg);
-    backdrop-filter: blur(30px);
-    -webkit-backdrop-filter: blur(30px);
-    border-right: 1px solid var(--glass-border);
-    box-shadow: inset 0 1px 0 var(--glass-input-border);
-  }
-
-  /* Mobile top bar — translucent header on phones. Background tints with
-     the page bg, via the channel pattern. */
-  .glass-topbar {
-    background: rgb(var(--cp-bg-ch) / 0.85);
-    backdrop-filter: blur(16px);
-    -webkit-backdrop-filter: blur(16px);
-    border-bottom: 1px solid var(--glass-input-border);
-  }
-
-  /* Mobile slide-out menu — tints with the sidebar bg. */
-  .glass-menu {
-    background: rgb(var(--cp-sidebar-ch) / 0.95);
-    backdrop-filter: blur(30px);
-    -webkit-backdrop-filter: blur(30px);
-  }
-
-  /* Chat input bar — glass tray at bottom of chat. */
-  .glass-input-bar {
-    background: var(--glass-bg);
-    backdrop-filter: blur(24px);
-    -webkit-backdrop-filter: blur(24px);
-    border-top: 1px solid var(--glass-border);
-    box-shadow: inset 0 1px 0 var(--glass-input-border);
-  }
-
-  /* Secondary input bar variant (agent detail chat) */
-  .glass-input-bar-subtle {
-    border-top: 1px solid var(--glass-input-border);
-    background: var(--glass-subtle);
-  }
-
   /* Glass panel — used for side panels, detail drawers, etc. */
   .glass-panel {
     background: var(--glass-bg);
@@ -300,12 +194,6 @@
     -webkit-backdrop-filter: blur(30px);
     border-left: 1px solid var(--glass-border);
     box-shadow: -8px 0 32px rgba(0, 0, 0, 0.4), inset 1px 0 0 var(--glass-input-border);
-  }
-
-  /* Vertical divider between panels */
-  .glass-divider-v {
-    width: 1px;
-    background: var(--glass-input-border);
   }
 
   /* Modal / dropdown background: opaque enough to read text against, built
@@ -447,12 +335,6 @@
     background: rgb(var(--ui-on-base-ch) / 0.04);
   }
 
-  .glass-btn-success {
-    background: linear-gradient(135deg, var(--btn-success-from), var(--btn-success-to));
-    color: var(--btn-success-text);
-    font-weight: 600;
-  }
-
   /* ════════════════════════════════════════
      BADGES & STATUS
      ════════════════════════════════════════ */
@@ -470,19 +352,7 @@
   .glass-badge-teal   { background: rgb(var(--cp-teal-ch) / 0.2); color: var(--cp-teal-light); border: 1px solid rgb(var(--cp-teal-ch) / 0.3); }
   .glass-badge-coral  { background: rgb(var(--cp-coral-ch) / 0.2); color: var(--cp-coral); border: 1px solid rgb(var(--cp-coral-ch) / 0.3); }
   .glass-badge-blue   { background: rgb(var(--cp-blue-ch) / 0.2); color: var(--cp-blue-light); border: 1px solid rgb(var(--cp-blue-ch) / 0.3); }
-  .glass-badge-purple { background: rgb(var(--cp-purple-deep-ch) / 0.2); color: var(--cp-purple); border: 1px solid rgb(var(--cp-purple-deep-ch) / 0.3); }
   .glass-badge-gray   { background: var(--glass-bg); color: var(--text-secondary); border: 1px solid rgb(var(--ui-on-base-ch) / 0.1); }
-
-  .status-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
-  .status-dot-healthy { background: var(--status-healthy); box-shadow: 0 0 8px rgb(var(--cp-teal-light-ch) / 0.5); }
-  .status-dot-warning { background: var(--status-warning); box-shadow: 0 0 8px rgb(var(--cp-amber-ch) / 0.5); }
-  .status-dot-error   { background: var(--status-error); box-shadow: 0 0 8px rgb(var(--cp-coral-ch) / 0.5); }
-  .status-dot-idle    { background: var(--status-idle); }
-  .status-dot-pulse   { animation: pulse-dot 2s ease-in-out infinite; }
-  @keyframes pulse-dot {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.6; }
-  }
 
   /* ════════════════════════════════════════
      MODALS & TOASTS
@@ -539,25 +409,11 @@
     margin-bottom: 4px;
   }
 
-  /* Form hint text below inputs */
-  .form-hint {
-    font-size: 10px;
-    color: rgb(var(--ui-on-base-ch) / 0.3);
-    margin-top: 4px;
-  }
-
   /* Section headers inside cards */
   .card-header {
     font-size: 14px;
     font-weight: 500;
     color: rgb(var(--ui-on-base-ch) / 0.7);
-  }
-
-  /* Card description text below headers */
-  .card-description {
-    font-size: 12px;
-    color: rgb(var(--ui-on-base-ch) / 0.4);
-    margin-top: 4px;
   }
 
   /* Loading state */
@@ -568,24 +424,6 @@
     padding: 32px 16px;
     color: rgb(var(--ui-on-base-ch) / 0.4);
     font-size: 14px;
-  }
-
-  /* Empty state messaging */
-  .empty-state {
-    text-align: center;
-    padding: 24px 16px;
-    color: rgb(var(--ui-on-base-ch) / 0.4);
-    font-size: 14px;
-  }
-  .empty-state-icon {
-    font-size: 24px;
-    margin-bottom: 8px;
-    opacity: 0.6;
-  }
-  .empty-state-text {
-    font-size: 12px;
-    color: rgb(var(--ui-on-base-ch) / 0.3);
-    margin-top: 4px;
   }
 
   /* Chat message bubbles */
@@ -649,98 +487,6 @@
     transform: translateX(19px);
   }
 
-  /* Circular send/stop buttons (Chat input) */
-  .btn-circle {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: 50%;
-    border: none;
-    cursor: pointer;
-    transition: all 0.15s ease;
-    width: 36px;
-    height: 36px;
-    flex-shrink: 0;
-  }
-  @media (min-width: 640px) {
-    .btn-circle { width: 44px; height: 44px; }
-  }
-  .btn-circle:disabled { opacity: 0.3; cursor: not-allowed; }
-
-  .btn-circle-send {
-    background: var(--cp-amber);
-    color: var(--cp-bg);
-    font-size: 20px;
-    font-weight: 700;
-  }
-  .btn-circle-send:not(:disabled):hover {
-    background: var(--cp-amber-light);
-    box-shadow: 0 0 16px rgba(245, 166, 35, 0.3);
-  }
-
-  .btn-circle-stop {
-    background: var(--btn-stop);
-    color: #ffffff;
-  }
-  .btn-circle-stop:hover {
-    background: var(--btn-stop-hover);
-    box-shadow: 0 0 16px rgba(239, 68, 68, 0.3);
-  }
-
-  /* Sidebar nav links */
-  .nav-link {
-    border-left: 3px solid transparent;
-    color: rgb(var(--ui-on-base-ch) / 0.45);
-    transition: all 0.2s ease;
-  }
-  .nav-link:hover {
-    color: rgb(var(--ui-on-base-ch) / 0.8);
-    background: rgb(var(--ui-on-base-ch) / 0.04);
-  }
-  .nav-link-active {
-    background: rgb(var(--cp-amber-ch) / 0.1);
-    border-left-color: var(--cp-amber);
-    color: var(--cp-amber);
-  }
-  .nav-link-active:hover {
-    color: var(--cp-amber);
-    background: rgb(var(--cp-amber-ch) / 0.1);
-  }
-
-  /* Inline action buttons (small, compact) */
-  .btn-sm {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    padding: 4px 12px;
-    border-radius: 8px;
-    font-size: 12px;
-    font-weight: 500;
-    cursor: pointer;
-    border: none;
-    outline: none;
-    transition: all 0.15s ease;
-  }
-  .btn-sm:disabled { opacity: 0.4; cursor: not-allowed; }
-
-  .btn-sm-primary {
-    background: rgb(var(--cp-blue-ch) / 0.15);
-    color: var(--cp-blue-light);
-    border: 1px solid rgb(var(--cp-blue-ch) / 0.25);
-  }
-  .btn-sm-primary:not(:disabled):hover {
-    background: rgb(var(--cp-blue-ch) / 0.25);
-  }
-
-  .btn-sm-ghost {
-    background: transparent;
-    color: rgb(var(--ui-on-base-ch) / 0.5);
-  }
-  .btn-sm-ghost:not(:disabled):hover {
-    color: rgb(var(--ui-on-base-ch) / 0.8);
-    background: rgb(var(--ui-on-base-ch) / 0.04);
-  }
-
   /* Inline alert banners */
   .alert-banner {
     padding: 8px 12px;
@@ -768,39 +514,6 @@
     border-color: rgb(var(--cp-blue-ch) / 0.2);
     color: var(--cp-blue-light);
   }
-
-  .accent-bar-amber  { border-top: 3px solid var(--cp-amber); }
-  .accent-bar-teal   { border-top: 3px solid var(--cp-teal); }
-  .accent-bar-coral  { border-top: 3px solid var(--cp-coral); }
-  .accent-bar-blue   { border-top: 3px solid var(--cp-blue); }
-  .accent-bar-purple { border-top: 3px solid var(--cp-purple); }
-
-  .stagger-1 { animation-delay: 0ms; }
-  .stagger-2 { animation-delay: 50ms; }
-  .stagger-3 { animation-delay: 100ms; }
-  .stagger-4 { animation-delay: 150ms; }
-  .stagger-5 { animation-delay: 200ms; }
-  .stagger-6 { animation-delay: 250ms; }
-
-  /* Stat cards */
-  .stat-card { position: relative; overflow: hidden; }
-  .stat-card::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px; background: var(--stat-accent, #F5A623); }
-  .stat-number { font-size: 36px; font-weight: 300; font-variant-numeric: tabular-nums; line-height: 1.1; }
-  .stat-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: rgb(var(--ui-on-base-ch) / 0.55); }
-
-  /* Glass table */
-  .glass-table { width: 100%; border-collapse: separate; border-spacing: 0; }
-  .glass-table thead th { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: rgb(var(--ui-on-base-ch) / 0.45); padding: 12px 16px; border-bottom: 1px solid rgb(var(--ui-on-base-ch) / 0.08); text-align: left; font-weight: 600; }
-  .glass-table tbody tr { transition: background 0.15s ease; }
-  .glass-table tbody tr:hover { background: rgb(var(--ui-on-base-ch) / 0.04); }
-  .glass-table tbody td { padding: 12px 16px; color: rgb(var(--ui-on-base-ch) / 0.85); border-bottom: 1px solid rgb(var(--ui-on-base-ch) / 0.04); }
-  .glass-table tbody tr:nth-child(even) { background: rgb(var(--ui-on-base-ch) / 0.02); }
-
-  /* Tier badges */
-  .badge-heavy    { background: rgb(var(--cp-purple-deep-ch) / 0.2); color: var(--cp-purple); border: 1px solid rgb(var(--cp-purple-deep-ch) / 0.3); }
-  .badge-light    { background: var(--glass-bg); color: var(--text-secondary); border: 1px solid rgb(var(--ui-on-base-ch) / 0.12); }
-  .badge-system   { background: rgb(var(--cp-teal-ch) / 0.2); color: var(--cp-teal-light); border: 1px solid rgb(var(--cp-teal-ch) / 0.3); }
-  .badge-permanent { background: rgb(var(--cp-amber-ch) / 0.2); color: var(--cp-amber-light); border: 1px solid rgb(var(--cp-amber-ch) / 0.3); }
 }
 
 /* ════════════════════════════════════════
@@ -897,15 +610,8 @@
 
 /* Color variants */
 .card-glow-amber  { --glow-color: var(--cp-amber); }
-.card-glow-teal   { --glow-color: var(--cp-teal); }
-.card-glow-purple { --glow-color: var(--blob-1-color); }
-.card-glow-blue   { --glow-color: var(--cp-blue); }
-.card-glow-coral  { --glow-color: var(--cp-coral); }
 
 /* Error state — coral pulse */
-.card-error-wrap {
-  position: relative;
-}
 .card-error-glow {
   position: absolute;
   inset: -3px;
@@ -948,16 +654,8 @@
     max-height: 90vh;
   }
 
-  /* Stat cards: compact on mobile */
-  .stat-number { font-size: 24px; }
-  .stat-label { font-size: 10px; }
-  .stat-card { padding: 12px !important; }
-
   /* Section labels: slightly larger for readability */
   .section-label { font-size: 11px; }
-
-  /* Glass tables: horizontal scroll wrapper */
-  .glass-table { display: block; overflow-x: auto; -webkit-overflow-scrolling: touch; }
 
   /* Glass cards: tighter padding */
   .glass-card { padding: 12px; }
@@ -1232,7 +930,7 @@
   padding: 26px 30px 60px;
   box-sizing: border-box;
   background: rgba(255, 253, 248, 0.62);
-  color: var(--dojo3-ink-1);
+  color: var(--dojo3-ink);
 }
 .dojo3-canvas__code {
   margin: 0;
@@ -1243,7 +941,7 @@
 }
 /* Syntax highlighting tokens (code files, pretty JSON, the HTML Code tab).
    A warm-leaning palette tuned for the canvas's light document background. */
-.dojo3-canvas__code--hl { color: var(--dojo3-ink-1); }
+.dojo3-canvas__code--hl { color: var(--dojo3-ink); }
 .dojo3-canvas__code--hl .tok-com  { color: #a0937e; font-style: italic; }
 .dojo3-canvas__code--hl .tok-str  { color: #6f8a45; }
 .dojo3-canvas__code--hl .tok-num,
@@ -1289,11 +987,10 @@
   letter-spacing: 0;
 }
 /* Markdown prose inside the canvas */
-.dojo3-canvas__doc--md { font: 400 14px/1.7 var(--dojo3-font-sans, inherit); }
 .dojo3-canvas__doc--md h1,
 .dojo3-canvas__doc--md h2,
 .dojo3-canvas__doc--md h3,
-.dojo3-canvas__doc--md h4 { color: var(--dojo3-ink-1); font-weight: 650; line-height: 1.25; margin: 1.4em 0 0.5em; }
+.dojo3-canvas__doc--md h4 { color: var(--dojo3-ink); font-weight: 650; line-height: 1.25; margin: 1.4em 0 0.5em; }
 .dojo3-canvas__doc--md h1 { font-size: 1.7em; margin-top: 0.2em; }
 .dojo3-canvas__doc--md h2 { font-size: 1.35em; }
 .dojo3-canvas__doc--md h3 { font-size: 1.15em; }
@@ -2354,14 +2051,6 @@
   pointer-events: none;
   transition: opacity 0.4s ease, filter 0.4s ease, transform 0.4s ease;
 }
-.dojo3-panel-dismiss {
-  position: absolute;
-  inset: 0;
-  z-index: 2;
-  border: 0;
-  background: transparent;
-  cursor: default;
-}
 .dojo3-stage .bubble-user {
   background:
     linear-gradient(170deg, rgba(255, 253, 249, 0.74), rgba(251, 243, 229, 0.46)) padding-box,
@@ -2703,7 +2392,7 @@
   white-space: nowrap;
   transition: background .2s ease, color .2s ease;
 }
-.dojo3-stage .composer__presence:hover { background: rgba(250, 240, 222, 0.5); color: var(--dojo3-ink-1); }
+.dojo3-stage .composer__presence:hover { background: rgba(250, 240, 222, 0.5); color: var(--dojo3-ink); }
 .dojo3-stage .composer__presence:focus-visible { outline: 2px solid var(--dojo3-focus); outline-offset: 2px; }
 .dojo3-stage .composer__presence-dot {
   width: 8px; height: 8px; border-radius: 50%; flex: none;
@@ -2727,7 +2416,7 @@
   cursor: pointer;
   transition: background .2s ease, color .2s ease, box-shadow .2s ease, transform .15s ease;
 }
-.dojo3-stage .composer__btn:hover { background: rgba(250, 240, 222, 0.6); color: var(--dojo3-ink-1); }
+.dojo3-stage .composer__btn:hover { background: rgba(250, 240, 222, 0.6); color: var(--dojo3-ink); }
 .dojo3-stage .composer__btn:active { transform: scale(0.94); }
 .dojo3-stage .composer__btn:focus-visible { outline: 2px solid var(--dojo3-focus); outline-offset: 2px; }
 .dojo3-stage .composer__btn svg { width: 19px; height: 19px; display: none; }
@@ -3284,15 +2973,8 @@
   }
 }
 
-/* Safe area padding for notched devices (iPhone X+, Dynamic Island) */
-@supports (padding-top: env(safe-area-inset-top)) {
-  .safe-area-top { padding-top: env(safe-area-inset-top); }
-  .safe-area-bottom { padding-bottom: env(safe-area-inset-bottom); }
-}
-
 @supports not (backdrop-filter: blur(1px)) {
   .glass-card { background: rgb(var(--cp-sidebar-ch) / 0.92); }
-  .glass-sidebar { background: rgb(var(--cp-sidebar-ch) / 0.95); }
 }
 
 /* ── Typing / Thinking Indicator ── */
@@ -3378,7 +3060,7 @@
   box-shadow: inset 0 1px 0 rgba(255,255,255,.6), inset 0 -12px 20px -14px rgba(226,178,106,.45), 0 16px 34px -18px rgba(108,80,42,.38);
   padding: 14px 16px 13px; transition: transform .25s ease, box-shadow .25s ease;
 }
-.dojo3-stage .dojo3-panel .agent-card { animation: msgIn .45s cubic-bezier(.22,.9,.26,1) backwards; animation-delay: var(--ci); }
+.dojo3-stage .dojo3-panel .agent-card { animation: dojo3-msgIn .45s cubic-bezier(.22,.9,.26,1) backwards; animation-delay: var(--ci); }
 .dojo3-stage .agent-card:hover {
   transform: translateY(-2px);
   box-shadow: inset 0 1px 0 rgba(255,255,255,.7), inset 0 -12px 20px -14px rgba(226,178,106,.50), 0 22px 40px -18px rgba(108,80,42,.45), 0 0 24px -8px rgba(243,221,180,.50);
@@ -3440,14 +3122,6 @@
 .dojo3-stage .agent-card:hover .agent-card__cog { display: grid; }
 .dojo3-stage .agent-card__cog:hover { color: var(--dojo3-ink); background: rgba(255, 253, 248, 0.55); }
 .dojo3-stage .agent-card__cog:focus-visible { display: grid; outline: 2px solid var(--dojo3-focus); outline-offset: 2px; }
-.dojo3-stage .agent-card--ghost {
-  appearance: none; display: grid; place-items: center; min-height: 150px;
-  background: rgba(255,253,248,.22); box-shadow: inset 0 0 0 1px rgba(152,126,92,.22);
-  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
-  font: 500 10.5px/1 var(--dojo3-font-mono); letter-spacing: .16em; text-transform: uppercase; color: var(--dojo3-ink-4);
-  cursor: pointer; transition: color .2s ease, box-shadow .2s ease, background .2s ease;
-}
-.dojo3-stage .agent-card--ghost:hover { color: var(--dojo3-ink-3); background: rgba(250,233,202,.28); box-shadow: inset 0 0 0 1px rgba(216,170,100,.45); transform: none; }
 
 /* stub */
 .dojo3-stage .stub {
@@ -3590,7 +3264,7 @@
   background: linear-gradient(170deg, rgba(252,240,236,.72), rgba(248,228,222,.46)) padding-box, linear-gradient(135deg, rgba(224,140,118,.5), rgba(255,250,246,.85) 50%, rgba(218,130,108,.42)) border-box;
   box-shadow: inset 0 1px 0 rgba(255,255,255,.6), 0 16px 34px -18px rgba(130,70,50,.3);
 }
-.dojo3-stage .dojo3-panel .anim { animation: msgIn .45s cubic-bezier(.22,.9,.26,1) backwards; animation-delay: var(--ci, 0ms); }
+.dojo3-stage .dojo3-panel .anim { animation: dojo3-msgIn .45s cubic-bezier(.22,.9,.26,1) backwards; animation-delay: var(--ci, 0ms); }
 
 /* stats */
 .dojo3-stage .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 16px; }
@@ -3788,20 +3462,15 @@
   border: solid #fffdf8; border-width: 0 2px 2px 0; transform: rotate(42deg);
 }
 .dojo3-stage .acx-check input[type="checkbox"]:focus-visible { outline: 2px solid var(--dojo3-focus); outline-offset: 2px; }
-.dojo3-stage .acx-check.is-disabled { opacity: .48; cursor: not-allowed; }
-.dojo3-stage .acx-check.is-disabled input[type="checkbox"] { cursor: not-allowed; }
 .dojo3-stage .acx-check__body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .dojo3-stage .acx-check__name { font: 500 12px/1.35 var(--dojo3-font-ui); color: var(--dojo3-ink); }
 .dojo3-stage .acx-check__hint { font: 400 10px/1.4 var(--dojo3-font-body); color: var(--dojo3-ink-4); }
-.dojo3-stage .acx-acct { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-.dojo3-stage .acx-acct .acx-check { flex: 1 1 190px; }
 .dojo3-stage .acx-level { width: auto; min-width: 128px; height: 30px; font-size: 11.5px; line-height: 28px; }
 .dojo3-stage .acx-tier { display: inline-flex; gap: 2px; padding: 2px; border-radius: 999px; background: rgba(255,252,246,.6); box-shadow: inset 0 0 0 1px rgba(152,126,92,.22); }
 .dojo3-stage .acx-tier__opt { border: 0; cursor: pointer; padding: 5px 11px; border-radius: 999px; background: transparent; color: var(--dojo3-ink-3); font: 500 10.5px/1 var(--dojo3-font-mono); letter-spacing: .03em; transition: background .18s ease, color .18s ease; }
 .dojo3-stage .acx-tier__opt:hover:not(:disabled) { color: var(--dojo3-ink); }
 .dojo3-stage .acx-tier__opt.is-on { background: linear-gradient(180deg, #f0c577, #d99c4b); color: #fffdf8; box-shadow: 0 0 10px -3px rgba(238,188,110,.8); }
 .dojo3-stage .acx-tier__opt:disabled { cursor: not-allowed; opacity: .5; }
-.dojo3-stage .acx-master { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 11px 13px; border-radius: 14px; background: rgba(250,233,202,.3); box-shadow: inset 0 0 0 1px rgba(217,165,92,.32); }
 .dojo3-stage .acx-children { margin-top: 10px; padding-left: 12px; border-left: 2px solid rgba(217,165,92,.35); }
 /* ⚰ .acx-children.is-off DELETED (UX-ACCESS A5). A section's children are HIDDEN
    under a `false` switch now rather than drawn at 45% and disabled, so there is
@@ -3815,7 +3484,7 @@
    grant checkboxes it depends on. Same left-rule idiom as .acx-children, which
    is the panel's existing way of saying "these sit beneath the thing above". */
 .dojo3-stage .acx-sub { margin-top: 14px; padding-left: 12px; border-left: 2px solid rgba(217,165,92,.35); }
-.dojo3-stage .acx-sub__title { font: 600 11px/1.35 var(--dojo3-font-ui); letter-spacing: .02em; text-transform: uppercase; color: var(--dojo3-ink-soft, rgba(60,45,25,.6)); margin-bottom: 8px; }
+.dojo3-stage .acx-sub__title { font: 600 11px/1.35 var(--dojo3-font-ui); letter-spacing: .02em; text-transform: uppercase; color: rgba(60,45,25,.6); margin-bottom: 8px; }
 
 /* panel body gets the prototype's content padding when a rebuilt page
    opts in with .dojo3-pbody (so not-yet-rebuilt pages keep their own) */
@@ -4041,37 +3710,6 @@
   position: absolute; inset: 0;
   width: 100%; height: 100%;
   object-fit: cover;
-}
-.dojo3-stage .media__play {
-  position: absolute; width: 46px; height: 46px; border-radius: 50%;
-  background: rgba(255, 253, 248, 0.55);
-  backdrop-filter: blur(10px) saturate(1.2);
-  -webkit-backdrop-filter: blur(10px) saturate(1.2);
-  border: 1px solid rgba(255, 255, 255, 0.75);
-  display: grid; place-items: center;
-  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.20), inset 0 1px 0 rgba(255, 255, 255, 0.9);
-  transition: transform .2s ease, box-shadow .2s ease;
-  z-index: 1;
-}
-.dojo3-stage .media__poster:hover .media__play {
-  transform: scale(1.06);
-  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.9),
-              0 0 20px -4px rgba(255, 255, 255, 0.8);
-}
-.dojo3-stage .media__play::after {
-  content: ""; border-style: solid;
-  border-width: 8px 0 8px 13px;
-  border-color: transparent transparent transparent #3f352a;
-  margin-left: 3px;
-}
-.dojo3-stage .media__dur {
-  position: absolute; right: 9px; bottom: 8px; z-index: 1;
-  font: 500 10px/1 var(--dojo3-font-mono);
-  letter-spacing: .04em;
-  color: #fff; background: rgba(28, 24, 19, 0.55);
-  backdrop-filter: blur(6px);
-  -webkit-backdrop-filter: blur(6px);
-  padding: 4px 7px; border-radius: 7px;
 }
 .dojo3-stage .media__meta {
   display: flex; justify-content: space-between; align-items: center; gap: 12px;

@@ -118,6 +118,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'load_tool_docs',
+    concurrency: 'safe',
     description: 'Load the full documentation for one or more tools before using them. Call this when you need to review a tool\'s parameters or usage details. After loading, the tools become callable on subsequent turns. Your always-loaded tools are already available without needing this.',
     // The docs are markdown files written to disk at boot. The directory is the
     // whole reach: the handler intersects names with the agent's accessible tools.
@@ -138,7 +139,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'exec',
-    description: 'Run ONE program directly and return its output, with NO shell. `argv` is an array: the first element is the program, every other element is one literal argument. Because there is no shell, characters like | > < * $ ` && ; are ordinary text — they do NOT pipe, redirect, glob or substitute. Use the `shell` tool when you need any of those. Has a 30-second default IDLE timeout: it bounds how long the command may produce NO OUTPUT, not how long it may run. A long job that keeps printing (a build, a test suite, an install) keeps going; one that prints nothing for 30s is stopped. **Before reaching for exec, scan the tool index for a purpose-built tool**, there are dedicated tools for reading files (file_read), writing files (file_write), patching files (file_patch), web fetch (web_fetch), calendar, drive, forms, office docs, tracker, vault, scheduling, sending messages, and more. Use exec only when no purpose-built tool fits. If the task is "look at the chat / recall what was said," call recall_recent_thread instead of digging through files. Example: exec({ argv: ["ls", "-la", "~/projects"] }). Returns stdout and stderr.',
+    description: 'Run ONE program directly and return its output, with NO shell. `argv` is an array: the first element is the program, every other element is one literal argument. Because there is no shell, characters like | > < * $ ` && ; are ordinary text, they do NOT pipe, redirect, glob or substitute. Use the `shell` tool when you need any of those. **Before reaching for exec, scan the tool index for a purpose-built tool**, there are dedicated tools for reading files (file_read), writing files (file_write), patching files (file_patch), web fetch (web_fetch), calendar, drive, forms, office docs, tracker, vault, scheduling, sending messages, and more. Use exec only when no purpose-built tool fits. If the task is "look at the chat / recall what was said," call recall_recent_thread instead of digging through files. Example: exec({ argv: ["ls", "-la", "~/projects"] }). Returns stdout and stderr.',
     effects: [{ kind: 'proc', from: 'args.argv' }],
     input_schema: {
       type: 'object',
@@ -163,7 +164,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'shell',
-    description: 'Run a shell SCRIPT under /bin/zsh and return its output — this is the tool for pipes, redirection, globbing, variables, command substitution, `&&`/`;` chains and for/while/if loops. Requires shell access; if you only need to run one program with plain arguments, use exec({argv:[...]}) instead, which is safer and always available to you if exec is. The whole script text is recorded. Has a 30-second default IDLE timeout: it bounds how long the command may produce NO OUTPUT, not how long it may run. A long job that keeps printing (a build, a test suite, an install) keeps going; one that prints nothing for 30s is stopped. Example: shell({ script: "ls -la ~/projects | grep report | wc -l" }). Returns stdout and stderr.',
+    description: 'Run a shell SCRIPT under /bin/zsh and return its output, this is the tool for pipes, redirection, globbing, variables, command substitution, `&&`/`;` chains and for/while/if loops. Requires shell access; if you only need to run one program with plain arguments, use exec({argv:[...]}) instead, which is safer and always available to you if exec is. The whole script text is recorded. Example: shell({ script: "ls -la ~/projects | grep report | wc -l" }). Returns stdout and stderr.',
     effects: [{ kind: 'shell', from: 'args.script' }],
     input_schema: {
       type: 'object',
@@ -355,6 +356,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'file_list',
+    concurrency: 'safe',
     description: 'List the contents of a directory at the given absolute path. Returns file names, sizes, and types. Example: file_list({ path: "~/projects" }).',
     // Stats every entry IN the directory, so the tree is the effect; without it per-entry refusals
     // show as `-`. `file_read`'s identical `from` deliberately carries no tree.
@@ -373,7 +375,8 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'share_file',
-    description: 'Get a download URL for an existing file so the user can access it from any device. Use this when the user asks for a link to a file, wants to download something, or you need to share a file that already exists on disk. Returns a full clickable URL. IMPORTANT: Give the user the URL exactly ONCE as plain text. Do NOT repeat it, do NOT wrap it in markdown, do NOT add extra formatting.',
+    concurrency: 'safe',
+    description: 'Get a download URL for an existing file. The link opens from any device while the Cloudflare tunnel runs; without it, only on this Mac, and the result says which. Use this when the user asks for a link to a file, wants to download something, or you need to share a file that already exists on disk. Returns a full clickable URL. IMPORTANT: Give the user the URL exactly ONCE as plain text. Do NOT repeat it, do NOT wrap it in markdown, do NOT add extra formatting.',
     effects: [{ kind: 'fs_read', from: 'args.path' }],
     input_schema: {
       type: 'object',
@@ -480,6 +483,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'history_get',
+    concurrency: 'safe',
     description: 'Look up the full content of a stored item by its ID. Accepts THREE id types:\n  - Summary IDs (sum_*), returns full summary text + metadata\n  - Large file IDs (file_*), returns the exploration summary + metadata\n  - Raw message UUIDs, returns the full message body\n\nUse this AFTER history_search when a snippet is truncated and you need the full message. history_search emits a ready-to-copy hint at the end of each truncated result line: `[snippet only, call history_get(id="…") for full N-char message]`. Copy the full UUID from inside those quotes, the short `id=<8chars>` shown at the start of the result line is for visual scanning only and is NOT enough.',
     // `file_*` ids are served by reading the stored body off disk, so the read
     // is declared; the per-agent ownership check still runs after the read.
@@ -499,6 +503,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'history_expand',
+    concurrency: 'safe',
     description: 'Deep recall: walks the summary DAG to retrieve original source messages, optionally uses an LLM to synthesize an answer from expanded material. Use when summaries lack detail.',
     effects: [],
     input_schema: {
@@ -674,7 +679,7 @@ export const toolDefinitions: ToolDefinition[] = [
   // ── Multi-Agent Tools ──
   {
     name: 'spawn_agent',
-    description: 'Create a new sub-agent to work on a task. This is THE tool for spawning sub-agents, do NOT try to create agents by writing files or inserting into the database. BEFORE spawning, call list_agents to check whether an agent with that name already exists and is still running; if so, use send_to_agent instead of spawning a duplicate. Returns the new agent ID for tracking.\n\nTIMEOUT (you own it): non-ronin sub-agents REQUIRE `timeout_minutes`, the number of minutes the sub-agent may run before YOU (its creator) are asked to decide. There is no default. When the timeout is reached the engine does NOT kill it, it notifies you and the sub-agent keeps running until you call spawn_timeout_decision(action="extend"|"terminate"). Size timeout_minutes to the task (a quick lookup ~5, a longer build ~30-60). For open-ended/scheduled work that should have no timeout, use classification="ronin" (ronin has no timeout and is dismissed only by the user).\n\nSQUADS (mandatory): every agent you spawn lands in a squad, so the owner can see which spawned agents belong to which work. If you pass a `task_id` linked to a project, the sub-agent joins (or the engine auto-creates) a squad NAMED AFTER THAT PROJECT and stamps the squad on the project; later spawns for the same project auto-join it. With no project link, pass `group_id` for a squad you created or a project\'s squad (the main agent may pass any squad), or the engine auto-creates one named after you. The tool result names the squad it landed in. delete_group dismisses a squad you created; the main agent may dismiss any squad.\n\nTASK LINKAGE, IMPORTANT: if the apprentice is meant to do work tracked in the tracker, you MUST link the task to the agent OR the agent\'s work won\'t update the task on completion. Two valid patterns:\n  1. Pass `task_id` here at spawn time with `task_handling`: "transfer" hands the task to the spawned agent (you must hold it), "keep" leaves it with its holder and links the agent as a helper; complete_task then auto-marks the task complete.\n  2. After spawning, call work_open(kind="task") with `assigned_to=<this agent_id>` → completeAgent\'s fallback finds the task by assignment.\nIf you create tasks before spawning the apprentices, those tasks default to assigned_to=YOU (the parent); passing task_id at spawn now hands the task off to the apprentice for you. Always one of: assign the task to the apprentice, or pass task_id at spawn.',
+    description: 'Create a new sub-agent to work on a task. This is THE tool for spawning sub-agents, do NOT try to create agents by writing files or inserting into the database. BEFORE spawning, call list_agents to check whether an agent with that name already exists and is still running; if so, use send_to_agent instead of spawning a duplicate. Returns the new agent ID for tracking.\n\nTIMEOUT (you own it): non-ronin sub-agents REQUIRE `timeout_minutes`, the number of minutes the sub-agent may run before YOU (its creator) are asked to decide. There is no default. When the timeout is reached the engine does NOT kill it, it notifies you and the sub-agent keeps running until you call spawn_timeout_decision(action="extend"|"terminate"). Size timeout_minutes to the task (a quick lookup ~5, a longer build ~30-60). For open-ended/scheduled work that should have no timeout, use classification="ronin" (ronin has no timeout and is dismissed only by the user).\n\nSQUADS (mandatory): every agent you spawn lands in a squad, so the owner can see which spawned agents belong to which work. If you pass a `task_id` linked to a project, the sub-agent joins (or the engine auto-creates) a squad NAMED AFTER THAT PROJECT and stamps the squad on the project; later spawns for the same project auto-join it. With no project link, pass `group_id` for a squad you created or a project\'s squad (the main agent may pass any squad), or the engine auto-creates one named after you. The tool result names the squad it landed in. Only the main agent can dismiss a squad, with delete_group.\n\nTASK LINKAGE, IMPORTANT: if the apprentice is meant to do work tracked in the tracker, you MUST link the task to the agent OR the agent\'s work won\'t update the task on completion. Two valid patterns:\n  1. Pass `task_id` here at spawn time with `task_handling`: "transfer" hands the task to the spawned agent (you must hold it), "keep" leaves it with its holder and links the agent as a helper; complete_task then auto-marks the task complete.\n  2. After spawning, call work_open(kind="task") with `assigned_to=<this agent_id>` → completeAgent\'s fallback finds the task by assignment.\nIf you create tasks before spawning the apprentices, those tasks default to assigned_to=YOU (the parent); passing task_id at spawn now hands the task off to the apprentice for you. Always one of: assign the task to the apprentice, or pass task_id at spawn.',
     effects: [{ kind: 'spawn', from: 'derived:sub-agent manifest (args.permissions, args.tools)' }],
     input_schema: {
       type: 'object',
@@ -1223,7 +1228,7 @@ export const toolDefinitions: ToolDefinition[] = [
         severity: { type: 'string', enum: ['critical', 'warning', 'info'], description: 'How urgent is this?' },
         category: { type: 'string', description: 'Category (model_switch, config_change, permission_grant, etc.)' },
         agent_id: { type: 'string', description: 'Which agent this concerns (if applicable). Required if the proposal targets a specific agent. This is how the stale-proposal sweep knows the proposal is still relevant, so always include it when the fix is about one agent.' },
-        diagnostic_code: { type: 'string', description: 'The diagnostic CODE of the anomaly this proposal addresses, exactly as it appears in the diagnostic (e.g. AGENT_PAUSED, TRACKER_STALE, HIGH_ERROR_RATE, BUDGET_HIGH). Supply it when the fix responds to a specific diagnostic finding. It is how a future cycle knows the underlying issue has (or has not) cleared, without it, and without an agent_id, the proposal can only be closed by an age cap. If you leave it blank but set agent_id, the engine will fill it from the current diagnostic when it can.' },
+        diagnostic_code: { type: 'string', description: 'The diagnostic CODE of the anomaly this proposal addresses, exactly as it appears in the diagnostic (e.g. AGENT_PAUSED, TRACKER_STALE, STUCK_AGENT, BUDGET_HIGH). Supply it when the fix responds to a specific diagnostic finding. It is how a future cycle knows the underlying issue has (or has not) cleared, without it, and without an agent_id, the proposal can only be closed by an age cap. If you leave it blank but set agent_id, the engine will fill it from the current diagnostic when it can.' },
       },
       required: ['title', 'description', 'proposed_fix', 'evidence', 'confidence', 'severity', 'category'],
     },
@@ -1275,6 +1280,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'get_current_time',
+    concurrency: 'safe',
     description: 'Get the current date and time in UTC and local. Returns utc (ISO 8601), local (human-readable), and timezone. ALWAYS use the utc value when setting scheduled_start on tasks.',
     effects: [],
     input_schema: {
@@ -1477,7 +1483,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'delete_group',
-    description: 'Delete an agent group (squad) entirely. This is THE tool for removing a group, do NOT try to update the database directly. By default, member agents are moved to ungrouped (not terminated). Pass terminate_members=true to also kill every member in the group as part of the cleanup.\n\nOWNERSHIP: the main agent may delete any group. Any other agent cannot delete the System group and can only delete squads it created; squads created by the user (from the dashboard) are dismissed only by the user.',
+    description: 'Delete an agent group (squad) entirely. This is THE tool for removing a group, do NOT try to update the database directly. By default, member agents are moved to ungrouped (not terminated). Pass terminate_members=true to also kill every member in the group as part of the cleanup.\n\nOWNERSHIP: the System group cannot be deleted, and asking for it changes nothing. The main agent may delete any other group. Any other agent can only delete squads it created; squads created by the user (from the dashboard) are dismissed only by the user.',
     effects: [],
     input_schema: {
       type: 'object',
@@ -1545,7 +1551,7 @@ export const toolDefinitions: ToolDefinition[] = [
   // ── Show files to user ──
   {
     name: 'show_to_user',
-    description: 'Display one or more IMAGES (and short audio/video clips) to the user IN THE CHAT as inline thumbnails, as part of your reply. Use this for a picture you want the user to actually look at right in the conversation, a slide PNG a sub-agent sent you, a Drive image you downloaded, a photo from your uploads folder. WITHOUT this tool, "take a look at this image" is a lie, the file is on disk but the user sees no thumbnail.\n\nDOCUMENTS GO IN THE CANVAS, NOT HERE. A PDF, Word/Excel/PowerPoint, Markdown, text, or code file passed to show_to_user is REJECTED, those render as a real formatted preview in the canvas. Canvas-renderable files auto-open the moment you write them (file_write, or creating a Word/Excel/PDF); use canvas_render({ path }) to (re)open one. Reserve show_to_user for images/media.\n\nThis tool inserts an assistant-role message into your chat with the files attached and your `caption` as the bubble text. The user sees: your caption + thumbnails. After calling, end your turn (or continue with more tool calls if needed).\n\nExample (forwarding a slide preview a sub-agent sent):\n  show_to_user({ file_paths: ["/Users/.../uploads/<your-agent-id>/draft_slide_preview.png"], caption: "Sub-agent finished a draft of the title slide. Looks good to me, anything you want changed?" })\n\nFile paths must already exist (typically under ~/.dojo/uploads/<your-agent-id>/ or wherever a sub-agent delivered them). Files outside the uploads dir are copied in.',
+    description: 'Display one or more IMAGES (and short audio/video clips) to the user IN THE CHAT as inline thumbnails, as part of your reply. Use this for a picture you want the user to actually look at right in the conversation, a slide PNG a sub-agent sent you, a Drive image you downloaded, a photo from your uploads folder. WITHOUT this tool, "take a look at this image" is a lie, the file is on disk but the user sees no thumbnail.\n\nDOCUMENTS GO IN THE CANVAS, NOT HERE. A PDF, Word/Excel/PowerPoint, Markdown, text, or code file passed to show_to_user is REJECTED, those render as a real formatted preview in the canvas. Canvas-renderable files auto-open the moment you write them (file_write, or creating a Word/Excel/PDF); use canvas_render({ path }) to (re)open one. Reserve show_to_user for images/media.\n\nThis tool attaches the files to your next reply as thumbnails. After calling it, write your reply text as usual; the `caption` is used as the reply only if you end the turn without writing one.\n\nExample (forwarding a slide preview a sub-agent sent):\n  show_to_user({ file_paths: ["/Users/.../uploads/<your-agent-id>/draft_slide_preview.png"], caption: "Sub-agent finished a draft of the title slide. Looks good to me, anything you want changed?" })\n\nFile paths must already exist (typically under ~/.dojo/uploads/<your-agent-id>/ or wherever a sub-agent delivered them). Files outside the uploads dir are copied in.',
     // Files outside the uploads dir are copied in so the dashboard's serve
     // route finds them: the write is declared, and the scope is the CALLING
     // agent's own uploads dir, so no agent writes into another's.
@@ -1559,11 +1565,11 @@ export const toolDefinitions: ToolDefinition[] = [
         file_paths: {
           type: 'array',
           items: { type: 'string' },
-          description: 'Absolute paths to the files to display. Images render as thumbnails; PDFs render as document chips. Up to 10 files per call.',
+          description: 'Absolute paths to the images (or short audio/video clips) to display. Images render as thumbnails; a PDF or other document is refused. Up to 10 files per call.',
         },
         caption: {
           type: 'string',
-          description: 'Your message text accompanying the files. This becomes the bubble content (e.g., "Here\'s the slide, looks good?"). Keep it natural; this is your reply to the user.',
+          description: 'Used as your reply only if you end the turn without writing reply text (e.g., "Here\'s the slide, looks good?"). When you write a reply, the files attach to it.',
         },
       },
       required: ['file_paths'],
@@ -1572,7 +1578,7 @@ export const toolDefinitions: ToolDefinition[] = [
   // ── Channel Safe-Sender Management ──
   {
     name: 'add_safe_sender',
-    description: 'Add a person to one of the channel safe-sender allowlists so the agent can auto-reply when they message back. **Call this ONLY when the user explicitly asks you to start a conversation with someone (e.g., "email <a contact> about Q4", "text <a contact> a heads-up", "start a Teams chat with <a contact>"). Do NOT call this preemptively, and do NOT call it because someone happened to email or text you without the user asking.**\n\nThe `user_request_quote` parameter is required and must contain the user\'s actual words asking for this. If you cannot quote a real user request, because no one asked, do NOT call this tool. The quote is audit-logged and reviewed by the user.\n\nThe allowlist controls AUTO-REPLY: once a person is on the channel\'s list, when they reply back (e.g., a Re: email or a Teams DM back), the engine routes the agent\'s response automatically. People NOT on the list can still send the agent messages; the agent just decides whether to surface them to the user instead of auto-replying.\n\nChannels:\n- `imessage`, iMessage contacts (no slot)\n- `gmail`, email senders, PER-SLOT (`agent` or `user`); the slot you add to must have "Allow sending email" enabled on that account, or the call is refused\n- `outlook`, same as gmail, per-slot\n- `teams`, Teams DM senders (Entra accounts only, no slot)\n\nThe `slot` parameter is REQUIRED for `gmail` and `outlook` (decides which mailbox\'s list to add to) and IGNORED for `imessage` and `teams`. If the user doesn\'t specify the slot, infer from context: the agent\'s own account is the `agent` slot; the user\'s personal account is the `user` slot. If unsure, ask the user before calling.\n\nSharing levels:\n- `open_book`, no restrictions, treat like the owner (use for the owner\'s alternate addresses, household members the user trusts fully)\n- `dont_overshare`, default for new contacts; share what is asked, do not volunteer extra details\n- `cautious`, answer only what is asked, briefly, high-level only\n- `project_only`, discuss only the specific project named in description (description is required for this level)\n\nIf the user asks you to start a conversation with someone but does not specify a sharing level, default to `dont_overshare`.\n\nIdempotent: if the address is already on the target list, the call succeeds without modifying anything.',
+    description: 'Add a person to one of the channel safe-sender allowlists so the agent can auto-reply when they message back. **Call this ONLY when the user explicitly asks you to start a conversation with someone (e.g., "email <a contact> about Q4", "text <a contact> a heads-up", "start a Teams chat with <a contact>"). Do NOT call this preemptively, and do NOT call it because someone happened to email or text you without the user asking.**\n\nThe `user_request_quote` parameter is required and must contain the user\'s actual words asking for this. If you cannot quote a real user request, because no one asked, do NOT call this tool. The quote is audit-logged and reviewed by the user.\n\nThe allowlist controls AUTO-REPLY: once a person is on the channel\'s list, when they reply back (e.g., a Re: email or a Teams DM back), the engine routes the agent\'s response automatically. People NOT on the list can still send the agent messages; the agent just decides whether to surface them to the user instead of auto-replying.\n\nChannels:\n- `imessage`, iMessage contacts (no slot)\n- `gmail`, email senders, PER-SLOT (`agent` or `user`); the slot you add to must have "The agent may send as me" enabled on that account, or the call is refused\n- `outlook`, same as gmail, per-slot\n- `teams`, Teams DM senders (Entra accounts only, no slot)\n\nThe `slot` parameter is REQUIRED for `gmail` and `outlook` (decides which mailbox\'s list to add to) and IGNORED for `imessage` and `teams`. If the user doesn\'t specify the slot, infer from context: the agent\'s own account is the `agent` slot; the user\'s personal account is the `user` slot. If unsure, ask the user before calling.\n\nSharing levels:\n- `open_book`, no restrictions, treat like the owner (use for the owner\'s alternate addresses, household members the user trusts fully)\n- `dont_overshare`, default for new contacts; share what is asked, do not volunteer extra details\n- `cautious`, answer only what is asked, briefly, high-level only\n- `project_only`, discuss only the specific project named in description (description is required for this level)\n\nIf the user asks you to start a conversation with someone but does not specify a sharing level, default to `dont_overshare`.\n\nIdempotent: if the address is already on the target list, the call succeeds without modifying anything.',
     effects: [],
     input_schema: {
       type: 'object',
@@ -1589,7 +1595,7 @@ export const toolDefinitions: ToolDefinition[] = [
         slot: {
           type: 'string',
           enum: ['agent', 'user'],
-          description: 'REQUIRED for gmail/outlook: which mailbox slot\'s safe-sender list to add to. `agent` = the agent\'s own account (the bot\'s mailbox). `user` = the user\'s personal account. The slot must have "Allow sending email" enabled in Settings → Channels (the card for that account), or this call is refused. Ignored for imessage and teams.',
+          description: 'REQUIRED for gmail/outlook: which mailbox slot\'s safe-sender list to add to. `agent` = the agent\'s own account (the bot\'s mailbox). `user` = the user\'s personal account. The slot must have "The agent may send as me" enabled in Settings → Channels (the card for that account), or this call is refused. Ignored for imessage and teams.',
         },
         user_request_quote: {
           type: 'string',
@@ -2744,8 +2750,8 @@ export const toolDefinitions: ToolDefinition[] = [
   },
 ];
 
-// Module-load registration of per-tool concurrency and maxResultTokens for the
-// concurrency classifiers; tools omitting `concurrency` fall through to the TOOL_CATEGORY map.
+// Module-load registration of per-tool concurrency and maxResultTokens for the concurrency classifier;
+// a tool omitting `concurrency` runs one call at a time.
 import { registerConcurrency, registerMaxResultTokens } from '../v2/classifiers/concurrency.js';
 for (const def of toolDefinitions) {
   if (def.concurrency) registerConcurrency(def.name, def.concurrency);

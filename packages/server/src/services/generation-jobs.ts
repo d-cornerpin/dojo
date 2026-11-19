@@ -37,7 +37,6 @@ interface GenerationJobRow {
   voice: string | null;
   status: GenerationStatus;
   asset_path: string | null;
-  asset_mime: string | null;
   duration_seconds: number | null;
   cost_usd: number | null;
   error: string | null;
@@ -80,6 +79,12 @@ function slugify(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 50);
 }
 
+/** The live turn's lineage a media job row carries: source message, turn number, task, conversation (NULL outside a turn). */
+export function jobLineage(agentId: string): [string | null, number | null, string | null, string | null] {
+  const t = turnContext(agentId);
+  return [t?.root?.sourceMessageId ?? null, t?.turnNumber ?? null, t?.servedWork?.taskId ?? null, t?.root?.conversationId ?? null];
+}
+
 // ── Lifecycle helpers (also used directly by image_create) ──
 
 export interface CreateGenerationJobParams {
@@ -102,11 +107,7 @@ export function createGenerationJob(params: CreateGenerationJobParams): string {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, datetime('now'), datetime('now'))
   `).run(id, params.kind, params.agentId, params.modelId, params.providerId, params.prompt,
     params.title ?? null, params.voice ?? null,
-    // Execution lineage from the live turn (best-effort; NULL outside a turn).
-    turnContext(params.agentId)?.root?.sourceMessageId ?? null,
-    turnContext(params.agentId)?.turnNumber ?? null,
-    turnContext(params.agentId)?.servedWork?.taskId ?? null,
-    turnContext(params.agentId)?.root?.conversationId ?? null);
+    ...jobLineage(params.agentId));
   const row = getJob(id);
   if (row) emitUpdate(row);
   return id;
@@ -128,7 +129,6 @@ export function setRunning(jobId: string): boolean {
 
 export interface SucceededFields {
   assetPath: string;
-  assetMime: string;
   durationSeconds?: number | null;
   costUsd?: number | null;
 }
@@ -141,10 +141,10 @@ export interface SucceededFields {
 export function setSucceeded(jobId: string, f: SucceededFields): boolean {
   const res = getDb().prepare(`
     UPDATE generation_jobs
-    SET status='succeeded', asset_path=?, asset_mime=?, duration_seconds=?, cost_usd=?,
+    SET status='succeeded', asset_path=?, duration_seconds=?, cost_usd=?,
         finished_at=datetime('now'), updated_at=datetime('now')
     WHERE id = ? AND status='running'
-  `).run(f.assetPath, f.assetMime, f.durationSeconds ?? null, f.costUsd ?? null, jobId);
+  `).run(f.assetPath, f.durationSeconds ?? null, f.costUsd ?? null, jobId);
   if (res.changes === 0) return false;
   const row = getJob(jobId);
   if (row) emitUpdate(row);
@@ -194,16 +194,18 @@ export function cancelAgentGenerationJobs(agentId: string): number {
   return moved;
 }
 
-export function setFailed(jobId: string, error: string): void {
+/** Moves an open job to failed; true when it did, false when the job had already finished. */
+export function setFailed(jobId: string, error: string): boolean {
   // Fenced on 'not already finished' so any open row can record a failure; a terminal row keeps its verdict.
   const res = getDb().prepare(`
     UPDATE generation_jobs SET status='failed', error=?, finished_at=datetime('now'), updated_at=datetime('now')
     WHERE id = ? AND status NOT IN (${TERMINAL_JOB_STATUS_SQL})
   `).run(error.slice(0, 1000), jobId);
-  if (res.changes === 0) return;
+  if (res.changes === 0) return false;
   const row = getJob(jobId);
   if (row) emitUpdate(row);
   logger.warn('generation job failed', { jobId, error: error.slice(0, 200) });
+  return true;
 }
 
 // ── Synthetic chat delivery ──
@@ -261,12 +263,14 @@ function deliverAsset(row: GenerationJobRow, assetPath: string, sizeBytes: numbe
   });
 }
 
+const KIND_WORD: Record<GenerationKind, string> = { image: 'picture', audio: 'audio', music: 'music' };
+
 function deliverError(row: GenerationJobRow, error: string): void {
   // The engine writes no failure bubble in the agent's voice: the agent is handed the failure and WOKEN
   // (agent/wake-with-notice.ts) to tell the person now.
   void tellAgentAndWake({
     agentId: row.agent_id, from: 'Media generation', inFailureTurn: takeJobStartedInFailureTurn(row.id),
-    brief: `the ${row.kind === 'music' ? 'music' : 'audio'} you asked for could not be finished. The provider said: ${error}. Nothing was sent to the person. ` +
+    brief: `the ${KIND_WORD[row.kind]} you asked for could not be finished. The provider said: ${error}. Nothing was sent to the person. ` +
       'Tell them in your own words that it failed and offer a next step; do not start the same one again unless they ask.',
   });
   settleAskOnJobEnded(row.agent_id, row.id);
@@ -353,7 +357,6 @@ async function runAudioOrMusicJob(jobId: string): Promise<void> {
 
     const delivered = setSucceeded(jobId, {
       assetPath: result.filePath,
-      assetMime: result.mimeType,
       durationSeconds: result.durationSeconds,
       costUsd,
     });
@@ -370,9 +373,11 @@ async function runAudioOrMusicJob(jobId: string): Promise<void> {
     });
   } catch (err) {
     logger.error('generation run loop threw', { jobId, error: err instanceof Error ? err.message : String(err) });
-    setFailed(jobId, `Internal generator error: ${err instanceof Error ? err.message : String(err)}`);
-    const fresh = getJob(jobId);
-    if (fresh) deliverError(fresh, err instanceof Error ? err.message : String(err));
+    // A job that already finished (it succeeded, then posting it threw) keeps its verdict and sends no failure.
+    if (setFailed(jobId, `Internal generator error: ${err instanceof Error ? err.message : String(err)}`)) {
+      const fresh = getJob(jobId);
+      if (fresh) deliverError(fresh, err instanceof Error ? err.message : String(err));
+    }
   } finally {
     inFlight.delete(jobId);
   }

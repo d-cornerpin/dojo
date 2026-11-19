@@ -56,7 +56,8 @@ export interface Model {
   // wall, and this flag keeps a paid model with a failed price lookup visible. Derived at read time.
   priceUnknown: boolean;
   isEnabled: boolean;
-  tooSmallForAgents?: boolean;   // under the 32K floor for an agent's main model
+  // Why a picker cannot offer this model as an agent's model ('not a chat model' or 'too small for an agent'); null when it can.
+  notForAgents?: string | null;
   thinkingEnabled: boolean;
   // Only SENT to a model whose `thinkingLevels` lists it.
   thinkingLevel?: ThinkingLevel;

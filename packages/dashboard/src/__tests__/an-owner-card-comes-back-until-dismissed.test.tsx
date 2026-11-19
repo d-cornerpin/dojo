@@ -6,8 +6,8 @@
 // for the owner cards (re-derived from the alert conditions it already keeps) and
 // shows them through the SAME cards; the card's X tells the server, so the
 // dismissal holds across reloads. An all-clear frame removes the trouble card it
-// answers and raises none, and it is not an agent recovering, so it does not
-// sweep agents' own error cards. An agent's own chat card carrying the owner
+// answers and raises none. Nothing sweeps an agent's own plain error card: it
+// leaves on its own timer. An agent's own chat card carrying the owner
 // card's words while the owner card is up does not make a second card.
 //
 // Mounted: the REAL toast queue, the REAL GlobalAlerts and the REAL card stack.
@@ -73,7 +73,7 @@ const emit = (type: string, payload: Record<string, unknown>) => act(() => {
   for (const h of ws.handlers.get(type) ?? []) h({ type, ...payload });
 });
 
-/** A chat page posting an agent's own error, and an agent error card to sweep. */
+/** A chat page posting an agent's own error, and a plain agent error card. */
 const ChatLike = () => {
   const toast = useToast();
   return (
@@ -162,13 +162,13 @@ describe('an all-clear removes the trouble card and raises none', () => {
     expect(dismissButtons()).toHaveLength(0);
   });
 
-  it("it is not an agent recovering: an agent's own error card stays (control: a recovery sweeps it)", async () => {
+  it("it is not an agent recovering: an agent's own error card stays (control: a recovery leaves it too)", async () => {
     render(tree());
     fireEvent.click(screen.getByText('post plain error'));
     emit('chat:error', { agentId: 'platform', error: EXPIRED, severity: 'info', retryable: false });
     expect(screen.getByText('An agent error card.')).toBeTruthy();
     emit('chat:error', { agentId: 'a-0001', error: 'Recovered.', code: 'AGENT_RECOVERED', severity: 'info' });
-    expect(screen.queryByText('An agent error card.')).toBeNull();
+    expect(screen.getByText('An agent error card.'), 'a plain error leaves only on its own timer, never by a sweep').toBeTruthy();
   });
 });
 

@@ -16,6 +16,7 @@ import { steerFired } from '../../steer-queue.js';
 import { replyChannelWords } from '../../turn-address.js';
 import { liveAddress } from '../../turn-address-live.js';
 import { createLogger } from '../../../../logger.js';
+import { redactDeclaredSecretArgs } from '../../../../credentials/secret-fields.js';
 import type { ToolCall } from '@dojo/shared';
 import type { ExecuteContext, PendingToolResult } from './index.js';
 
@@ -132,7 +133,7 @@ export function runRefusalGates(
       `"${tc.name}" works normally again as soon as the reply lands.`
     );
     try {
-      broadcast({ type: 'chat:tool_call', agentId, tool: tc.name, args: tc.arguments });
+      broadcast({ type: 'chat:tool_call', agentId, tool: tc.name, args: redactDeclaredSecretArgs(tc.name, tc.arguments) ?? {} });
       broadcast({ type: 'chat:tool_result', agentId, tool: tc.name, result: refusalText.slice(0, 500) });
     } catch { /* best effort */ }
     logger.info('v2: compile gate refused call', {

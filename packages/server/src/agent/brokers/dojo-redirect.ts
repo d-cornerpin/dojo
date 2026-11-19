@@ -254,6 +254,30 @@ export function destroysDojoData(command: string | readonly string[]): boolean {
   });
 }
 
+/** The Dojo's core tables: the Healer's raw INSERT or UPDATE of one waits for the owner. */
+const CORE_TABLES = new Set(['messages', 'agents', 'work', 'config']);
+const CONFLICT_WORDS = ['or', 'rollback', 'abort', 'replace', 'fail', 'ignore'];
+/** A statement with literals emptied, comments blanked and name quotes dropped, so `"agents"` and `main.agents` read as words. */
+const namesOf = (s: string): string => s.replace(/'(?:[^']|'')*'/g, "''").replace(/--[^\n]*|\/\*[\s\S]*?(?:\*\/|$)/g, ' ').replace(/["`[\]]/g, '');
+
+/** Whether a sqlite3 command on the Dojo database inserts into or updates one of its core tables. */
+export function writesCoreDojoRows(command: string | readonly string[]): boolean {
+  return commandsOf(command).some((words) => {
+    const sql = shapeSql(words);
+    return sql !== null && splitStatements(sql).some((stmt) => {
+      const top = topLevelWords(namesOf(stmt)).filter((t) => t !== 'main' && t !== 'temp');
+      return top.some((t, k) => {
+        if (t === 'update') {
+          let j = k + 1;
+          while (CONFLICT_WORDS.includes(top[j])) j++;
+          return CORE_TABLES.has(top[j]);
+        }
+        return t === 'into' && (top[k - 1] === 'insert' || CONFLICT_WORDS.includes(top[k - 1])) && CORE_TABLES.has(top[k + 1]);
+      });
+    });
+  });
+}
+
 /** Programs that destroy every path they name, and copy-style programs that overwrite their last one. */
 const DESTROYS_OPERANDS = new Set(['rm', 'rmdir', 'unlink', 'shred', 'srm', 'truncate', 'mv', 'tee', 'dd']);
 const OVERWRITES_LAST = new Set(['cp', 'rsync', 'ditto', 'install', 'ln']);

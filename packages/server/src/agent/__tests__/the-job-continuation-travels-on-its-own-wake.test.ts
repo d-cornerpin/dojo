@@ -26,7 +26,7 @@ import * as coldImport8 from '../agent-status.js';
 import * as coldImport9 from '../v2/honest-stop.js';
 import * as coldImport10 from '../shared-state.js';
 import * as coldImport11 from '../rate-limit-retry.js';
-import * as coldImport12 from '../../gateway/routes/agents.js';
+import * as coldImport12 from '../../gateway/routes/chat.js';
 
 const mockDb: { current: Database.Database | null } = { current: null };
 vi.mock('../../db/connection.js', () => ({
@@ -49,7 +49,7 @@ let m: {
   note: typeof import('../../work/engine-checkpoint-note.js'); cont: typeof import('../../work/job-continuation.js'); ctx: typeof import('../turn-context.js');
   state: typeof import('../v2/state.js');
   status: typeof import('../agent-status.js'); park: typeof import('../v2/honest-stop.js'); shared: typeof import('../shared-state.js');
-  rl: typeof import('../rate-limit-retry.js'); routes: typeof import('../../gateway/routes/agents.js');
+  rl: typeof import('../rate-limit-retry.js'); routes: typeof import('../../gateway/routes/chat.js');
 };
 
 beforeEach(async () => {
@@ -333,9 +333,9 @@ describe('ROUND 7 (R6-I1): every other place that clears the shared wake set end
     expect(m.fresh.jobCarriedIds(AGENT)).toEqual([]);
   });
 
-  it('the reset-session route ends the carry', async () => {
+  it('a New Session ends the carry', async () => {
     await parkedWithWakeQueued();
-    const res = await m.routes.agentsRouter.request(`/${AGENT}/reset-session`, { method: 'POST' });
+    const res = await m.routes.chatRouter.request(`/${AGENT}/new-session`, { method: 'POST' });
     expect(res.status).toBeLessThan(500);
     expect(m.shared.pendingWakeups.has(AGENT)).toBe(false);
     expect(m.fresh.jobCarriedIds(AGENT)).toEqual([]);
