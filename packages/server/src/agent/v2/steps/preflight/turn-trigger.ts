@@ -66,7 +66,7 @@ export function runTurnTrigger(
   // The turn serves the first thing owed. A person comes first, and is the waiting reader's first conversation,
   // in the same order (the owner, then never served, then oldest).
   const item = nextOwed(agentId)[0];
-  if (item) logger.info('owed: turn serves', { agentId, kind: item.kind, rank: item.rank }, agentId);
+  if (item) logger.info('owed: first owed at turn start', { agentId, kind: item.kind, rank: item.rank }, agentId);
   const waitingConvs = getWaitingHumanConversations(agentId);
   // Read before the pickup claim: afterwards this turn's own ask is claimed, and every user turn would
   // look like a settled-context wake.
