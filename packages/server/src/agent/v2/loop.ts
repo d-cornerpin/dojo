@@ -21,6 +21,8 @@ import { runCallLLM, type CallLLMContext } from './steps/call-llm/index.js';
 import { runPostCallClassify } from './steps/post-call-classify/index.js';
 import { runPreflight } from './steps/preflight/index.js';
 import { ensureArtifactDir } from '../artifact-dir.js';
+import { handBackAsk } from '../../work/ask-settlement.js';
+import { askIdForMessage } from '../../work/store.js';
 
 const logger = createLogger('v2-loop');
 
@@ -67,12 +69,19 @@ export async function runV2Turn(agentId: string): Promise<void> {
 
 async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<void> {
   // Preflight builds the turn's state from `(turnCtx, ctx)`; its only exit is `abandon`, honoured by returning
-  // before the main `try`, so neither finalize nor teardown runs.
-  const preflight = await runPreflight(turnCtx, {
-    agentId,
-    setAgentStatus, startStatusHeartbeat, stopStatusHeartbeat,
-    engineStartAckAfterMs: ENGINE_START_ACK_AFTER_MS,
-  });
+  // before the main `try`, so neither finalize nor teardown runs. A preflight that throws hands the request it
+  // picked back as a crash (counted, so one that always throws stands down) and the throw goes on to the runtime.
+  let preflight: Awaited<ReturnType<typeof runPreflight>>;
+  try {
+    preflight = await runPreflight(turnCtx, {
+      agentId,
+      setAgentStatus, startStatusHeartbeat, stopStatusHeartbeat,
+      engineStartAckAfterMs: ENGINE_START_ACK_AFTER_MS,
+    });
+  } catch (err) {
+    if (turnCtx.root?.kind === 'ask') handBackAsk(askIdForMessage(turnCtx.root.id), { agentId, turnNumber: null, cause: 'crash', actorId: agentId, reason: 'the turn failed before it started' });
+    throw err;
+  }
   if (preflight.directive === 'abandon') return;
   const {
     db, agent, configuredModelId, isAutoRouted, contextModelId, contextWindow,
