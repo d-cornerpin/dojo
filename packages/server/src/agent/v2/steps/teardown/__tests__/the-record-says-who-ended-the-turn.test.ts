@@ -204,7 +204,7 @@ describe('§2 an ordinary turn lands exactly the word it always did', () => {
   });
 
   it('brake — and it outranks a latched cut too, which is the precedence this task chose', async () => {
-    // Both words are in ENGINE_IMPOSED_EXITS, so the settlement cannot tell them apart; the
+    // Both words are engine cuts in the exit table, so the settlement treats them alike; the
     // order is kept because an existing guard pins it for a measured defect class.
     expect((await record(cut('stop'), { toolPhaseEndedBySpinBrake: true })).exit_reason).toBe('brake');
   });

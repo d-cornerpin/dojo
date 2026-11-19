@@ -136,7 +136,7 @@ const DECLARED_UNWIRED: ReadonlyArray<{ reason: string; why: string }> = [];
  *
  * t93 found TEN unwired exit reasons rather than the eight its brief named, wrote eight, and
  * declined to invent writers for these two. The argument was never "we did not get to it":
- * both are MODEL dispositions and neither is in `ENGINE_IMPOSED_EXITS`, so wiring either
+ * both are MODEL dispositions and neither is an engine cut in the exit table, so wiring either
  * changes what the ask ladder CHARGES and not merely what the record says. Held for a ruling.
  *
  * The ruling was RETIRE, on the ground that a vocabulary naming events which cannot happen is
@@ -154,7 +154,7 @@ const RETIRED_BY_RULING: ReadonlyArray<{ reason: string; why: string }> = [
     reason: 'delegation_exit',
     why: 'A MODEL disposition, and wiring it changes what the ask ladder CHARGES rather than '
       + 'only what the record says. The obvious site is the delegation-send async exit, and a '
-      + 'turn that takes it records `park` today — which IS in ENGINE_IMPOSED_EXITS, while '
+      + 'turn that takes it records `park` today, which IS an engine cut in the exit table, while '
       + '`delegation_exit` deliberately is not. So the move would start spending rungs on '
       + 'delegating turns, which is a decision about the ladder and not a wiring gap. Retired '
       + 'rather than wired: the event it names has never happened and nobody has defined it.',

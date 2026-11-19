@@ -4,10 +4,9 @@
 // The t143 live walk (item 4) pointed a scratch agent at a provider answering 402 and saw no
 // card, no text, and the chat line "[System: The model provider returned a rate limit error ...
 // retrying automatically]" on every wake. The classifier (`provider-error.ts`) was RIGHT: it says
-// `quota`. The model layer then folded `quota` into "rate limited" (`isRateLimited = rate_limit ||
-// quota`) and armed the 10-second silent retry (`scheduleRateLimitRetry`), whose existence makes the
-// recovery cascade's step 0 hand the error to the retry manager instead of the platform's honest
-// Tier-D path (one text, the card). Waiting never fixes an empty balance.
+// `quota`. Out of credit is not a rate limit: recovery's step 0 makes a rate limit wait for the
+// reset, while out of credit takes the platform's honest Tier-D path (one text, the card). Waiting
+// never fixes an empty balance.
 //
 // Driven through the real model door against a real HTTP server (the idiom of
 // `an-edited-provider-is-the-one-that-gets-called.test.ts`), then through the real recovery door

@@ -3629,15 +3629,11 @@ describe('PHASE-6 CUT 4: the deferred answer is recovered at finalize (G-SUP-2)'
 //     email twice. The loop's own words: "a turn that performed a side effect
 //     must never re-fire" (07 §2c, ledger P6b-1).
 //
-// ⚠ SWEEP-A TB1 (2026-08-05) — THE SECOND ARM'S DIRECTION WAS REVERSED BY THE OWNER, and
-// these clauses are updated rather than deleted because the ABORT-PATH refusal itself is
-// untouched. His governing ruling: "the user asks the agent to do something and it does it.
-// Period." — an ambiguous or absent answer errs toward SERVING THE ASK AGAIN, never toward
-// silence or a parked ticket. `revertAskClaimOnAbort` still refuses to re-arm mid-abort and
-// still writes `rearm_refused`, so the fact that the turn acted is recorded exactly as
-// before; but at the TURN BOUNDARY the settlement authority (`work/ask-settlement.ts`) now
-// adjudicates every ask the turn held, and an ask with no delivery behind it goes back to
-// `open` whatever the turn did. The residual the owner accepted, stated out loud: a
+// The owner's governing ruling: "the user asks the agent to do something and it does it.
+// Period." An ambiguous or absent answer errs toward SERVING THE ASK AGAIN, never toward
+// silence or a parked ticket. The abort only marks the turn; at the TURN BOUNDARY the one
+// hand-back (`handBackAsk`, `work/ask-settlement.ts`) adjudicates every ask the turn held, and
+// an ask with no delivery behind it goes back to `open` whatever the turn did. The residual the owner accepted, stated out loud: a
 // non-idempotent call on a turn that then delivered NOTHING can be repeated by the re-serve.
 // The structural invariant that makes it necessary: no ask may remain `claimed` by a
 // finalized turn — that is the fossil class, 36 stuck rows on this box.
