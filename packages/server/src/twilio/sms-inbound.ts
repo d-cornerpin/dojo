@@ -248,12 +248,12 @@ export function buildContent(payload: InboundSmsPayload, knownSender: boolean, o
  */
 export async function ingestInboundSms(payload: InboundSmsPayload): Promise<boolean> {
   if (!isSmsEnabled()) {
-    logger.warn('Inbound SMS dropped: SMS disabled in Settings', { from: payload.fromNumber, to: payload.toNumber });
+    logger.warn('Inbound SMS dropped: SMS disabled in Settings', { to: payload.toNumber });
     return false;
   }
   const primaryId = getPrimaryAgentId();
   if (!primaryId) {
-    logger.warn('Inbound SMS dropped: no primary agent configured', { from: payload.fromNumber });
+    logger.warn('Inbound SMS dropped: no primary agent configured');
     return false;
   }
   const db = getDb();
@@ -358,7 +358,6 @@ export async function ingestInboundSms(payload: InboundSmsPayload): Promise<bool
 
   logger.info('Inbound SMS ingested', {
     messageSid: payload.messageSid,
-    from: payload.fromNumber,
     to: payload.toNumber,
     knownSender,
     bodyLength: payload.body.length,
