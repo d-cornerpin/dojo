@@ -14,18 +14,18 @@ describe('saved voice settings', () => {
   it('a round where a read failed is not cached: the next call reads again', async () => {
     getSetting.mockImplementation((async () => ({ ok: false, error: 'server restarting' })) as never);
     const first = await loadSavedVoiceSettings();
-    expect(first.voice, 'voice can still start on defaults').toBe('am_michael');
+    expect(first.wakePhrase, 'voice can still start on defaults').toBe('hey agent');
 
     getSetting.mockImplementation((async (key: string) => (
-      { ok: true, data: { key, value: key === 'voice.preferred_voice' ? 'bf_emma' : null } }
+      { ok: true, data: { key, value: key === 'voice.wake_phrase' ? 'hello there' : null } }
     )) as never);
     const second = await loadSavedVoiceSettings();
-    expect(second.voice, 'the failed round was remembered').toBe('bf_emma');
+    expect(second.wakePhrase, 'the failed round was remembered').toBe('hello there');
   });
 
   it('a round where every read answered is cached', async () => {
     getSetting.mockImplementation((async (key: string) => (
-      { ok: true, data: { key, value: key === 'voice.preferred_voice' ? 'bf_emma' : null } }
+      { ok: true, data: { key, value: key === 'voice.wake_phrase' ? 'hello there' : null } }
     )) as never);
     await loadSavedVoiceSettings();
     const calls = getSetting.mock.calls.length;
