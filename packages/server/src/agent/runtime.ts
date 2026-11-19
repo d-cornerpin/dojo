@@ -389,30 +389,48 @@ export function stopAgent(agentId: string): void {
  *  import and terminate call `stopAgent`. */
 export function stopByOwner(agentId: string): { ended: number; repliesNotSent: number; nothingRunning?: true } {
   let s: StoppedRequests = { liveRun: false, asks: [], runTasks: [], requests: [], jobs: [] };
-  try { s = stoppedRequestsOf(agentId); } catch (err) { logger.error('stop: the request being served could not be read', { error: String(err) }, agentId); }
-  if (s.asks.length + s.runTasks.length + s.requests.length + s.jobs.length === 0 && !runIsLive(agentId)) return { ended: 0, repliesNotSent: 0, nothingRunning: true };
+  try {
+    s = stoppedRequestsOf(agentId);
+  } catch (err) {
+    logger.error('stop: the request being served could not be read', { error: String(err) }, agentId);
+  }
+  const toEnd = s.asks.length + s.runTasks.length + s.requests.length + s.jobs.length;
+  if (toEnd === 0 && !runIsLive(agentId)) return { ended: 0, repliesNotSent: 0, nothingRunning: true };
   try {
     return withUnit(() => {
+      // With a run live or unwinding only the stopped request's replies go; with none, every queued reply is what runs.
       const dropped = suppressQueuedReplies(agentId, s.liveRun || isRunUnwinding(agentId) ? s.asks : undefined);
       let ended = s.requests.length + s.runTasks.length;
       for (const id of new Set([...s.asks, ...dropped.askIds])) {
-        for (const p of joinPieces(id)) if (!isTerminal(p.state)) transition(p.childId, { to: 'abandoned', by: 'owner', reason: 'the owner stopped the request this piece was for' });
+        for (const p of joinPieces(id)) {
+          if (isTerminal(p.state)) continue;
+          transition(p.childId, { to: 'abandoned', by: 'owner', reason: 'the owner stopped the request this piece was for' });
+        }
         const r = transition(id, { to: 'abandoned', by: 'owner', reason: 'called off by the owner: he pressed Stop' });
-        if (r.kind === 'applied') ended++; else logger.debug('stop: a request was not called off', { workId: id, outcome: r.kind }, agentId);
+        if (r.kind === 'applied') ended++;
+        else logger.debug('stop: a request was not called off', { workId: id, outcome: r.kind }, agentId);
       }
       for (const r of s.requests) sweepByRowid({ rowid: r.rowid, agentId });
       for (const t of s.jobs) {
         serveLater({ kind: 'task', id: t }, null, 'owner stop');
-        if (getDb().prepare('SELECT 1 FROM work WHERE id = ? AND schedule_status IS NULL').get(t)) setHold(t, 'paused', 'stopped by you', 'owner');
+        const schedule = getDb().prepare('SELECT 1 FROM work WHERE id = ? AND schedule_status IS NOT NULL').get(t);
+        if (!schedule) setHold(t, 'paused', 'stopped by you', 'owner');
       }
-      afterCommit(() => void Promise.all([import('../scheduler/runner.js'), import('./a2a-transport.js')]).then(async ([runner, transport]) => {
-        for (const t of s.runTasks) await runner.onTaskRunComplete(t, 'skipped', 'stopped by the owner');
-        for (const r of s.requests) await transport.failJoinPieceForAbandonedAsk(r.messageId, r.threadId.slice(0, A2A_THREAD_SHORT_LENGTH), agentId, 'the owner stopped this work');
-      }).catch((err: unknown) => logger.warn('stop: its run or the asker was not settled', { error: String(err) }, agentId)));
+      afterCommit(() => void Promise.all([import('../scheduler/runner.js'), import('./a2a-transport.js')])
+        .then(async ([runner, transport]) => {
+          for (const t of s.runTasks) await runner.onTaskRunComplete(t, 'skipped', 'stopped by the owner');
+          for (const r of s.requests) {
+            const thread = r.threadId.slice(0, A2A_THREAD_SHORT_LENGTH);
+            await transport.failJoinPieceForAbandonedAsk(r.messageId, thread, agentId, 'the owner stopped this work');
+          }
+        })
+        .catch((err: unknown) => logger.warn('stop: its run or the asker was not settled', { error: String(err) }, agentId)));
       return { ended, repliesNotSent: dropped.repliesNotSent };
     });
   } catch (err) {
-    logger.error('stop: the request could not be ended; the agent is stopped anyway', { error: err instanceof Error ? err.message : String(err) }, agentId);
+    logger.error('stop: the request could not be ended; the agent is stopped anyway', {
+      error: err instanceof Error ? err.message : String(err),
+    }, agentId);
     return { ended: 0, repliesNotSent: 0 };
   } finally {
     stopAgent(agentId);

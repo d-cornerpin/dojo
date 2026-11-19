@@ -386,8 +386,8 @@ export function rehomeUnclaimedEngineEvents(agentId: string, newBoundary: string
 /** How long a helper's result, or another agent's request once served, stays owed. */
 export const TERMINAL_WAKE_WINDOW_MS = 45 * 60_000;
 
-/** A result on thread `m.a2a_thread_id` belongs to a request the owner ended: this agent's NEWEST piece on that thread
- *  is abandoned and so is its parent ask. A later request on the same thread has a newer, live piece, so it is not. */
+/** A message on thread `m.a2a_thread_id` belongs to a request that was ended (the owner's Stop, or any abandon):
+ *  this agent's NEWEST piece on that thread is abandoned and so is its parent ask. A later request on the same thread has a newer, live piece, so it is not. */
 export const RESULT_FOR_ENDED_REQUEST = (m: string): string => `EXISTS (SELECT 1 FROM work p JOIN work a ON a.id = p.parent_id
   WHERE p.id = (SELECT n.id FROM work n WHERE n.agent_id = ${m}.agent_id AND n.root_kind = 'a2a_thread'
                   AND n.root_id = ${m}.a2a_thread_id AND n.parent_id IS NOT NULL ORDER BY n.opened_at DESC LIMIT 1)
