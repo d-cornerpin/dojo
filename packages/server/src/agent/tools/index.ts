@@ -172,7 +172,7 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
 
   // Invalid-JSON args are flagged by model.ts as `__malformed_args`; answer so the model can retry.
   if (args.__malformed_args) {
-    const rawSnippet = String(args.__malformed_args).slice(0, 300);
+    const rawSnippet = String(redactDeclaredSecretArgs(name, args)?.__malformed_args).slice(0, 300);
     content = `Error: Your tool call arguments for "${name}" were malformed JSON and could not be parsed.\n\nThe raw text was:\n${rawSnippet}\n\nPlease retry this tool call with valid JSON arguments. Call load_tool_docs(tools=["${name}"]) to see the expected parameter schema.`;
     logger.warn('Rejecting tool call with malformed arguments', { tool: name, rawSnippet }, agentId);
     return { toolCallId: id, name, content, isError: true, errorCode: 'PARSE_ERROR' as const };
