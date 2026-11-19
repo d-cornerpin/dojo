@@ -108,8 +108,7 @@ const DISPLAY_NAME: Record<IntegrationFamily, string> = {
 
 /**
  * Tool name to family, read from `TOOL_CATEGORIES` (the definition arrays would import the provider SDKs
- * on every turn). Every label is classified here or in `NOT_AN_INTEGRATION`, so a new one fails
- * `the-status-line-beats-the-note.test.ts` instead of silently dropping a family.
+ * on every turn). A label absent from this table has no family, so its tools are not indexed.
  */
 const LABEL_FAMILY: Record<string, IntegrationFamily> = {
   'Gmail': 'google',
@@ -129,25 +128,6 @@ const LABEL_FAMILY: Record<string, IntegrationFamily> = {
   'Plaud (voice recorder integration)': 'plaud',
 };
 
-/** Labels that are no family ('Office Documents' runs locally; 'Unified Search' spans every mailbox). */
-const NOT_AN_INTEGRATION: ReadonlySet<string> = new Set([
-  'Office Documents', 'Unified Search (all connected accounts at once)',
-  'Twilio (SMS + Voice phone calls)', 'Meta', 'File & System', 'Web',
-  'Shared Workspace (right dock)', 'Media Generation (image / video / music / speech)', 'PDF',
-  'DOJO Contacts (people the owner interacts with - persistent, agent-authored)',
-  'Agent Credentials (encrypted API keys / tokens the agent uses to call services)',
-  'Vault (Long-Term Memory)', 'Conversation Recall', 'Open Work (what you still owe)',
-  'Squad Coordination', 'Work Tracker (projects, tasks, reminders, promises)',
-  'Managing Other Agents', 'Techniques', 'Communication',
-  "DOJO Controls (change settings / navigate the dashboard on the owner's behalf)",
-  'Oversight & Admin', 'Healer (self-repair)', 'Tunnel (Remote Access)',
-]);
-
-/** `undefined` means unclassified (neither a family nor declared irrelevant), which is a defect. */
-export function integrationFamilyForLabel(label: string): IntegrationFamily | null | undefined {
-  return LABEL_FAMILY[label] ?? (NOT_AN_INTEGRATION.has(label) ? null : undefined);
-}
-
 let familyIndex: Map<string, IntegrationFamily> | null = null;
 
 function toolFamilyIndex(): Map<string, IntegrationFamily> {
@@ -163,11 +143,6 @@ function toolFamilyIndex(): Map<string, IntegrationFamily> {
   }
   familyIndex = index;
   return familyIndex;
-}
-
-export function forgetToolFamilyIndex(): void {
-  familyIndex = null;
-  toolNamePattern = null;
 }
 
 // A technique's families: those of the tool names its text names, plus a tag naming a family.

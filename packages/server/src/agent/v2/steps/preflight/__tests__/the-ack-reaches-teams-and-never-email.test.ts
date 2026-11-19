@@ -34,7 +34,6 @@ const tool = vi.hoisted(() => ({ calls: [] as Array<{ name: string; arguments: R
 vi.mock('../../../../../db/connection.js', async () => (await import('../../../__tests__/helpers/reply-sender.js')).connectionMock());
 vi.mock('../../../../../gateway/ws.js', () => ({ broadcast: () => {} }));
 vi.mock('../../../../access/engine-route.js', () => ({ engineMayRouteTo: () => tool.grant, engineRouteRefusalReason: () => 'no grant' }));
-vi.mock('../../../../../services/channel-safe-senders.js', async (orig) => ({ ...(await orig<Record<string, unknown>>()), getTeamsSafeSenders: () => [{ address: 'colleague@example.com', name: 'a colleague' }] }));
 vi.mock('../../../../tools/index.js', () => ({
   executeTool: async (_agentId: string, call: { name: string; arguments: Record<string, unknown> }) => {
     tool.calls.push(call);
@@ -73,6 +72,7 @@ const ackRow = () => testDb().prepare("SELECT COUNT(*) AS n FROM messages WHERE 
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
   freshReplyDb(runMigrations);
+  testDb().prepare('INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)').run('teams_approved_senders', JSON.stringify([{ address: 'colleague@example.com', name: 'a colleague' }]));
   tool.calls = [];
   tool.grant = true;
 });

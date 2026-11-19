@@ -8,7 +8,8 @@ import { getDb } from '../db/connection.js';
 import { broadcast } from '../gateway/ws.js';
 import { scrubTechnicalDetail } from '../agent/v2/error-format.js';
 import { taskMovedAtSql } from '../work/task-freshness.js';
-import { msToUtcText, holdWordsSql } from '../work/tracker-view.js';
+import { holdWordsSql } from '../work/tracker-view.js';
+import { renderInstant } from '../memory/message-stamp.js';
 import { workingExpr } from '../work/terminal-states.js';
 import { STANDARD_MODELS_MISSING_WORDS, uncheckedFitWords, OLLAMA_LIMIT_FAILED_WORDS, OLLAMA_TOO_OLD_WORDS, OLLAMA_DOWN_WORDS } from './local-model-notice-words.js';
 import { kindOf } from './owner-notice-kinds.js';
@@ -40,7 +41,7 @@ export function ownerProgressFrame(phase: 'start' | 'end', progressKey: string, 
 /** The words of the Healer's cases; their texts and cards carry the same ones. */
 export const HEALER_BROKEN_WORDS = `The Healer agent is broken and can't auto-fix itself. Open the Healer's detail page to investigate, or restart it from Settings.`;
 export const stuckWords = (name: string): string =>
-  `${name} has been stuck for a few tries and auto-recovery isn't unsticking it. The Dojo will keep trying in the background. You can also send a message or reset its session from the detail page.`;
+  `${name} has been stuck for a few tries and auto-recovery isn't unsticking it. The Dojo will keep trying in the background. You can also send it a message, or open its chat and press Reset in the orb menu.`;
 /** An agent parked because none of its models can hold it; ends when the agent is released. */
 export const noFitWords = (name: string): string =>
   `${name} can't run: none of its models can hold its instructions and tools. Pick a bigger model for it on its detail page, or give it fewer tools, and it will answer your message.`;
@@ -76,7 +77,7 @@ function stallWords(workId: string): string {
     AND json_extract(payload, '$.entry_kind') IN (${Object.keys(STALL_TRIED).map((k) => `'${k}'`).join(', ')}) GROUP BY k`).all(workId, w.since) as Array<{ k: string; n: number }>;
   const what = w.state === 'handed_in' ? 'has been handed in and waiting for a decision' : w.hold ? 'has been held' : 'has not moved';
   const triedWords = tried.length > 0 ? tried.map((t) => `${STALL_TRIED[t.k]}${t.n > 1 ? ` (${t.n} times)` : ''}`).join(', ') : 'nothing yet';
-  return `"${w.title ?? workId}" ${what} since ${msToUtcText(w.since)}${w.hold ? `: ${w.hold}` : ''}. Tried: ${triedWords}. Open it on the board to decide it, or to close or cancel it.`;
+  return `"${w.title ?? workId}" ${what} since ${renderInstant(w.since) ?? 'an unknown time'}${w.hold ? `: ${w.hold}` : ''}. Tried: ${triedWords}. Open it on the Tracker page to decide it, or to close or cancel it.`;
 }
 /** "The limit is reached" for one budget window (`global_daily` or `agent_<id>`); the words never name an agent. */
 export const budgetStopKey = (budgetId: string): string => `budgetstop:${budgetId}`;

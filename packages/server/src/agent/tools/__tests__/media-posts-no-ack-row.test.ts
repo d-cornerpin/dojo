@@ -74,6 +74,7 @@ vi.mock('../../../services/imessage-bridge.js', () => ({
   getDefaultSender: () => null,
 }));
 vi.mock('../../../costs/tracker.js', () => ({ recordCost: () => { /* no-op */ } }));
+vi.mock('../../../costs/spend.js', async (orig) => ({ ...(await orig<Record<string, unknown>>()), exceededBudget: () => null }));
 vi.mock('../../agent-notice.js', () => ({ postAgentNotice: () => { /* no-op */ } }));
 
 const MODEL = { modelId: 'm1', apiModelId: 'api/m1', providerId: 'p1' };

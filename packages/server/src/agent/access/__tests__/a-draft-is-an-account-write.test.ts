@@ -34,7 +34,8 @@ import { MOST_RESTRICTIVE_GRANTS, cloneGrants, channelOfSendTool, type AccessGra
 import { forgetAccessGrants, toolCategoryGranted, mayUseChannel } from '../read.js';
 import { accountRefusal, accountKindForTool, type WorkspaceProvider } from '../workspace.js';
 import { channelForTool } from '../channels.js';
-import { SEND_TO_PEOPLE, SEND_TO_PEOPLE_NA } from '../../sensei-policy.js';
+import { SEND_TO_PEOPLE } from '../../sensei-policy.js';
+import { SEND_TO_PEOPLE_NA } from '../../../tools/__tests__/send-to-people-na.js';
 import { registryToolDefinitions } from '../../tools/registry.js';
 import { TOOL_CATEGORIES } from '../../../tools/categories.js';
 import { FXID } from '../../../../../../deploy/checks/fixture-vocabulary.mjs';

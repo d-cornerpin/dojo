@@ -44,7 +44,8 @@ export type Signal =
   | { kind: 'own-model-changed'; agentId?: string }
   | { kind: 'span-written'; agentId: string; spanKeys: readonly string[] }
   | { kind: 'boot' }
-  | { kind: 'memory-readable' };
+  | { kind: 'memory-readable' }
+  | { kind: 'memory-free'; freeTokens: number };
 
 /** The agent's own model as stored (read afresh: the owner may change it). */
 export const ownModel = (agentId: string): string | undefined => {
@@ -67,10 +68,11 @@ export function spanKeyOf(items: ReadonlyArray<{ id: string; content: string }>)
   return h.digest('hex').slice(0, 32);
 }
 
-export function markWaiting(agentId: string, writer: string, spanKey: string, reason: WaitReason): void {
+/** `needs` is the window a "no room" wait waits for, kept with the mark so the sweep measures the same figure. */
+export function markWaiting(agentId: string, writer: string, spanKey: string, reason: WaitReason, needs?: number): void {
   try {
-    getDb().prepare('INSERT INTO healer_state (scope, key, at_ms) VALUES (?, ?, ?) ON CONFLICT(scope, key) DO UPDATE SET at_ms = excluded.at_ms')
-      .run(SCOPE + reason, `${agentId}|${writer}|${spanKey}`, Date.now());
+    getDb().prepare('INSERT INTO healer_state (scope, key, at_ms, value) VALUES (?, ?, ?, ?) ON CONFLICT(scope, key) DO UPDATE SET at_ms = excluded.at_ms, value = excluded.value')
+      .run(SCOPE + reason, `${agentId}|${writer}|${spanKey}`, Date.now(), needs === undefined ? null : String(needs));
   } catch { /* a missing mark costs one more try */ }
 }
 
@@ -86,9 +88,9 @@ export function waiting(agentId: string, writer: string, spanKey = ''): WaitReas
 export function clearOn(signal: Signal): void {
   try {
     const db = getDb();
-    const rows = (reasons: readonly WaitReason[]): Array<{ scope: string; agent: string; writer: string; span: string; key: string }> =>
-      (db.prepare(`SELECT scope, key FROM healer_state WHERE scope IN (${reasons.map(() => '?').join(',')})`).all(...reasons.map((r) => SCOPE + r)) as Array<{ scope: string; key: string }>)
-        .map(({ scope, key }) => { const [agent, writer, ...span] = key.split('|'); return { scope, key, agent, writer, span: span.join('|') }; });
+    const rows = (reasons: readonly WaitReason[]): Array<{ scope: string; agent: string; writer: string; span: string; key: string; needs: number }> =>
+      (db.prepare(`SELECT scope, key, value FROM healer_state WHERE scope IN (${reasons.map(() => '?').join(',')})`).all(...reasons.map((r) => SCOPE + r)) as Array<{ scope: string; key: string; value: string | null }>)
+        .map(({ scope, key, value }) => { const [agent, writer, ...span] = key.split('|'); return { scope, key, agent, writer, span: span.join('|'), needs: Number(value ?? 0) }; });
     const del = db.prepare('DELETE FROM healer_state WHERE scope = ? AND key = ?');
     const drop = (r: { scope: string; key: string }): void => { del.run(r.scope, r.key); };
     switch (signal.kind) {
@@ -97,6 +99,7 @@ export function clearOn(signal: Signal): void {
       case 'span-written': rows(['check-failed']).filter((r) => r.agent === signal.agentId && signal.spanKeys.includes(r.span)).forEach(drop); break;
       case 'boot': rows(TRANSIENT).forEach(drop); break;
       case 'memory-readable': rows(['memory-unreadable']).forEach(drop); break;
+      case 'memory-free': rows(['no-room']).filter((r) => fitsNow(r.needs, signal.freeTokens)).forEach(drop); break;
       case 'writer-answered': {
         // A summary answer frees the writer, and lets the small writer be sized again for the agent it wrote for; any
         // other answer frees it only while an agent of its order waits with no writer that can run.
@@ -133,6 +136,18 @@ export function refuseWhatTheWriterCannotHold(modelId: string, systemPrompt: str
   return { ok: false, reason: 'the summary writer cannot hold this input', tooBig: true };
 }
 
+/** Does a summary window of `needs` tokens fit in the memory free now? The refusal and the sweep both ask here. */
+const fitsNow = (needs: number, free: number | null): boolean => free !== null && needs <= free;
+
+/** The Healer's sweep: while some agent waits for room, the free memory is read once and each wait that fits ends. */
+export async function endRoomWaitsThatFit(): Promise<void> {
+  try {
+    if (!getDb().prepare('SELECT 1 FROM healer_state WHERE scope = ? LIMIT 1').get(SCOPE + 'no-room')) return;
+    const free = await (await import('../agent/local-model-fit.js')).freeWriterWindowTokens();
+    if (free !== null) clearOn({ kind: 'memory-free', freeTokens: free });
+  } catch { /* the next sweep measures again */ }
+}
+
 const NO_ROOM: SummaryResult = { ok: false, reason: 'the memory free now cannot hold a summary on the Dojo\'s writer', tooBig: true, noRoom: true };
 
 /** The small writer as a fallback uses only the memory free now: a span too big for it is halved, and when not
@@ -145,9 +160,9 @@ export async function refuseFallbackOverFreeMemory(
   const free = await (await import('../agent/local-model-fit.js')).freeWriterWindowTokens();
   const windowFor = (inputChars: number): number => utilityNumCtx({ inputChars, charsPerToken: MEASURED_CHARS_PER_TOKEN,
     outputTokens: utilityOutputCap(utilityDial('memory_summarize')!, targetTokens), configuredNumCtx: null });
-  if (free !== null && windowFor(systemPrompt.length + content.length) <= free) return null;
-  if (free === null || windowFor(systemPrompt.length) > free) {
-    markWaiting(agentId, modelId, '', free === null ? 'memory-unreadable' : 'no-room');
+  if (fitsNow(windowFor(systemPrompt.length + content.length), free)) return null;
+  if (!fitsNow(windowFor(systemPrompt.length), free)) {
+    markWaiting(agentId, modelId, '', free === null ? 'memory-unreadable' : 'no-room', windowFor(systemPrompt.length));
     logger.warn('SUMMARY_REFUSED the memory free now cannot hold a summary on the Dojo\'s writer; the span waits, rows whole', { free }, agentId);
     return NO_ROOM;
   }

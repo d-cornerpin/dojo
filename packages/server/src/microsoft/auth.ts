@@ -57,7 +57,6 @@ const SCOPES = [
 // ── Slot abstraction ──
 
 export type AccountSlot = 'agent' | 'user';
-export const ACCOUNT_SLOTS: readonly AccountSlot[] = ['agent', 'user'];
 
 export interface MicrosoftWorkspaceConfig {
   enabled: boolean;
@@ -182,14 +181,6 @@ export function setMsEmailSendingEnabled(enabled: boolean, slot: AccountSlot = '
 
 // ── Config Setters ──
 
-export function setMicrosoftConnected(connected: boolean, email?: string, accountType?: 'msa' | 'entra', slot: AccountSlot = 'agent'): void {
-  const patch: Partial<Omit<MicrosoftAccount, 'id' | 'kind' | 'position'>> = { connected };
-  if (email) patch.email = email;
-  if (accountType) patch.accountType = accountType;
-  if (connected) patch.lastVerifiedAt = new Date().toISOString();
-  updateMicrosoftAccount(ensureSlotAccount(slot).id, patch);
-}
-
 export function setEnabledMsServices(services: Partial<MicrosoftWorkspaceConfig['enabledServices']>, slot: AccountSlot = 'agent'): void {
   const current = getEnabledMsServices(slot);
   updateMicrosoftAccount(ensureSlotAccount(slot).id, { enabledServices: JSON.stringify({ ...current, ...services }) });
@@ -258,12 +249,6 @@ export async function getValidAccessTokenForAccount(accountId: string): Promise<
   const promise = refreshAccessTokenForAccount(accountId).finally(() => { refreshPromises.set(accountId, null); });
   refreshPromises.set(accountId, promise);
   return promise;
-}
-
-export async function getValidAccessToken(slot: AccountSlot = 'agent'): Promise<string | null> {
-  const acc = getPrimaryMicrosoftAccount(slot);
-  if (!acc) return null;
-  return getValidAccessTokenForAccount(acc.id);
 }
 
 /**
@@ -522,29 +507,6 @@ export async function exchangeCodeForTokens(code: string, redirectUri: string, c
     return { success: true, email, accountType };
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : String(err) };
-  }
-}
-
-// ── Auth Verification ──
-
-export async function testMicrosoftAuth(slot: AccountSlot = 'agent'): Promise<{ authenticated: boolean; email: string | null }> {
-  const token = await getValidAccessToken(slot);
-  if (!token) return { authenticated: false, email: null };
-  try {
-    const resp = await fetch(`${GRAPH_BASE}/me`, { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(10000) });
-    if (!resp.ok) return { authenticated: false, email: null };
-    const me = await resp.json() as { mail?: string; userPrincipalName?: string };
-    updateMicrosoftAccount(ensureSlotAccount(slot).id, { lastVerifiedAt: new Date().toISOString() });
-    return { authenticated: true, email: me.mail ?? me.userPrincipalName ?? null };
-  } catch { return { authenticated: false, email: null }; }
-}
-
-export async function checkMicrosoftOnStartup(): Promise<void> {
-  for (const slot of ACCOUNT_SLOTS) {
-    if (!isMicrosoftConnected(slot)) continue;
-    const auth = await testMicrosoftAuth(slot);
-    if (auth.authenticated) { logger.info('Microsoft 365 auth verified', { slot, email: auth.email }); }
-    else { logger.warn('Microsoft 365 auth failed, marking disconnected', { slot }); setMicrosoftConnected(false, undefined, undefined, slot); }
   }
 }
 

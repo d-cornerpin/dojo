@@ -185,7 +185,7 @@ describe('t269 fix round 1 — the rewrite (review I2)', () => {
   it('a rewrite whose missing-facts note would not fit the writer\'s window is never sent; the first answer is kept', async () => {
     const content = merged(300);
     const target = Math.max(1, Math.floor(0.8 * (estimateTokens(content) / 2) / 1.5));
-    const base = getDepthPrompt(2, target, undefined, AGENT);
+    const base = getDepthPrompt(2, target, AGENT);
     mockDb.current!.prepare("INSERT INTO providers (id, name, type, auth_type) VALUES ('p-small', 'S', 'openai-compatible', 'api_key')").run();
     mockDb.current!.prepare("INSERT INTO models (id, provider_id, name, api_model_id, capabilities, is_enabled, context_window) VALUES ('m-small', 'p-small', 's', 's', '[\"chat\"]', 1, 4096)").run();
     // The smallest window that holds the input with the base prompt (stepped up by 64 tokens): no room is left for a long note.

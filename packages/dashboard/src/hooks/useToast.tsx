@@ -1,7 +1,7 @@
 import { createContext, useContext, useState, useCallback, type ReactNode } from 'react';
 
-// Toast notifications, auto-dismissed by level: info/success 10s, warning 15s, error stays until
-// dismissed. `success` is an alias of `info`; they differ only in the name read at the call site.
+// Toast notifications, auto-dismissed by level: info/success 10s, warning and error 15s. Only an action toast
+// (`addActionToast`, needsAction) stays until acted on. `success` is an alias of `info`.
 
 export type ToastLevel = 'info' | 'success' | 'warning' | 'error';
 
@@ -52,12 +52,12 @@ export interface Toast {
   onDismiss?: () => void;
 }
 
-// Auto-dismiss timing per level (ms). Errors are blocking: they stay until dismissed.
+// Auto-dismiss timing per level (ms). A plain error needs nothing from the person, so it leaves too.
 const AUTO_DISMISS_MS: Record<ToastLevel, number | null> = {
   info: 10000,
   success: 10000,
   warning: 15000,
-  error: null, // blocking: stays until dismissed manually
+  error: 15000,
 };
 
 interface ToastContextValue {

@@ -11,6 +11,7 @@ import { turnContext as liveTurnContext } from '../agent/turn-context.js';
 import { clauseFor, requestForAnotherTurn } from './awaiting-own-turn.js';
 import { charBoundary } from './tool-result-view.js';
 import { renderInstant } from './message-stamp.js';
+import { sessionBoundaryText } from './session-boundary.js';
 
 const logger = createLogger('memory-recall');
 
@@ -179,8 +180,7 @@ function parseToolContent(content: string): string {
 function historyScope(agentId: string, opts: Pick<RecallOptions, 'scope' | 'turnConversationId'>): { clauses: string[]; params: (string | number)[]; sessionBoundary: string | null } {
   const db = getDb();
   // Respect session boundary so a recent reset doesn't bleed pre-reset content into the recall.
-  const sessionRow = db.prepare('SELECT session_started_at FROM agents WHERE id = ?').get(agentId) as { session_started_at: string | null } | undefined;
-  const sessionBoundary = sessionRow?.session_started_at ?? null;
+  const sessionBoundary = sessionBoundaryText(agentId);
 
   const clauses: string[] = ['agent_id = ?'];
   const params: (string | number)[] = [agentId];

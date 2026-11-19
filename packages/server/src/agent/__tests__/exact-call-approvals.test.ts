@@ -39,7 +39,7 @@ const SIG = 'exec:{"command":"rm -rf /tmp/build-XXXX"}';
 
 describe('exact-call approval consumption (P7)', () => {
   it('the exact approved call consumes once; a second identical attempt does not', () => {
-    grantApprovalForSignature({ agentId: 'a1', signature: SIG, requestText: 'r', decidedBy: 'owner', argsJson: '{"command":"rm -rf /tmp/build-1234"}' });
+    grantApprovalForSignature({ agentId: 'a1', signature: SIG, requestText: 'r', argsJson: '{"command":"rm -rf /tmp/build-1234"}' });
     expect(consumeApproval('a1', SIG, '{"command":"rm -rf /tmp/build-1234"}')).toBe(true);
     expect(consumeApproval('a1', SIG, '{"command":"rm -rf /tmp/build-1234"}')).toBe(false);
   });
@@ -47,14 +47,14 @@ describe('exact-call approval consumption (P7)', () => {
   it('a COLLIDING call (same lossy signature, different full args) cannot consume the approval', () => {
     // The canonical signature masks digit runs, so build-1234 and build-9999
     // collide; the full-args check is what keeps the grant exact.
-    grantApprovalForSignature({ agentId: 'a1', signature: SIG, requestText: 'r', decidedBy: 'owner', argsJson: '{"command":"rm -rf /tmp/build-1234"}' });
+    grantApprovalForSignature({ agentId: 'a1', signature: SIG, requestText: 'r', argsJson: '{"command":"rm -rf /tmp/build-1234"}' });
     expect(consumeApproval('a1', SIG, '{"command":"rm -rf /tmp/build-9999"}')).toBe(false);
     // The real approved command still works after the failed collision.
     expect(consumeApproval('a1', SIG, '{"command":"rm -rf /tmp/build-1234"}')).toBe(true);
   });
 
   it('legacy rows (NULL args_json, pre-117) consume by signature alone, one release', () => {
-    grantApprovalForSignature({ agentId: 'a1', signature: SIG, requestText: 'r', decidedBy: 'owner' });
+    grantApprovalForSignature({ agentId: 'a1', signature: SIG, requestText: 'r' });
     expect(consumeApproval('a1', SIG, '{"command":"rm -rf /tmp/build-9999"}')).toBe(true);
   });
 });

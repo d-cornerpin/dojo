@@ -9,7 +9,7 @@ import { useWebSocket } from '../hooks/useWebSocket';
 import { useToast } from '../hooks/useToast';
 import { cardMover } from './tracker-card-move';
 import { KanbanBoard } from '../components/KanbanBoard';
-import { HOLD_WORDS, STATUS_WORDS } from '../lib/task-status';
+import { HOLD_WORDS, STATUS_WORDS, entryWords, statusWords, whoWords } from '../lib/task-status';
 import { TaskRunHistory } from '../components/TaskRunHistory';
 import { TaskScheduleForm, DEFAULT_SCHEDULE, type ScheduleConfig } from '../components/TaskScheduleForm';
 import { ModalShell } from '../components/ModalShell';
@@ -254,6 +254,7 @@ export const TaskDetailPanel = ({
               className="glass-select w-full"
             >
               <option value="">Unassigned</option>
+              {task.assignedTo && !agents.some((a) => a.id === task.assignedTo) && <option value={task.assignedTo}>Ended agent</option>}
               {agents.map((a) => (
                 <option key={a.id} value={a.id}>{a.name}</option>
               ))}
@@ -302,7 +303,6 @@ export const TaskDetailPanel = ({
             {task.stepNumber && (
               <div>Step {task.stepNumber}{task.totalSteps ? ` of ${task.totalSteps}` : ''}</div>
             )}
-            <div>Phase: {task.phase}</div>
             <div>Created: {formatDate(task.createdAt)}</div>
             <div>Updated: {formatDate(task.updatedAt)}</div>
             {task.completedAt && <div>Completed: {formatDate(task.completedAt)}</div>}
@@ -332,10 +332,10 @@ export const TaskDetailPanel = ({
                     <div key={e.id} className="text-xs text-ui/70 border-l-2 border-ui/20 pl-2">
                       <div className="flex items-baseline gap-2">
                         <span className="text-ui/50">{formatDate(e.createdAt)}</span>
-                        <span className="text-ui/55">[{e.fromEntity}]</span>
-                        <span className={`font-semibold uppercase tracking-wide ${k}`}>{e.entryKind}</span>
+                        <span className="text-ui/55">{whoWords(e.fromEntity, (id) => agents.find((a) => a.id === id)?.name)}</span>
+                        <span className={`font-semibold ${k}`}>{entryWords(e.entryKind)}</span>
                         {e.fromStatus && e.toStatus && (
-                          <span className="text-ui/55">{e.fromStatus} → {e.toStatus}</span>
+                          <span className="text-ui/55">{statusWords(e.fromStatus)} → {statusWords(e.toStatus)}</span>
                         )}
                       </div>
                       {e.actionTaken && <div className="text-ui/70 mt-0.5">{e.actionTaken}</div>}
@@ -362,7 +362,7 @@ export const TaskDetailPanel = ({
             </button>
             {task.notes && (
               <details className="mt-3">
-                <summary className="text-xs text-ui/55 cursor-pointer">Legacy notes (pre-Phase B.0)</summary>
+                <summary className="text-xs text-ui/55 cursor-pointer">Earlier notes</summary>
                 <pre className="text-xs text-ui/55 whitespace-pre-wrap font-sans mt-2 p-2 glass-nested rounded">{task.notes}</pre>
               </details>
             )}

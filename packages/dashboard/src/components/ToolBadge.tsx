@@ -42,7 +42,7 @@ const ToolChip = ({ chip }: { chip: ToolChipData }) => {
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
       >
-        {chipLabel(chip)}
+        {chipLabel(chip)}{chip.isError ? ' (failed)' : ''}
       </button>
       {open && (
         <div className="chip-tool__detail w-full max-w-[420px]">
@@ -63,16 +63,17 @@ const GroupedToolChip = ({ name, members }: { name: string; members: ToolChipDat
   if (expanded) {
     return <>{members.map((c) => <ToolChip key={c.key} chip={c} />)}</>;
   }
+  const failed = members.filter((c) => c.isError).length;
   return (
     <div className="flex flex-col items-start gap-1">
       <button
         type="button"
         className="chip-tool chip-tool--group"
         aria-expanded={false}
-        aria-label={`${name}, ${members.length} calls (expand)`}
+        aria-label={`${name}, ${members.length} calls${failed > 0 ? `, ${failed} failed` : ''} (expand)`}
         onClick={() => setExpanded(true)}
       >
-        {name}
+        {name}{failed > 0 ? ` (${failed} failed)` : ''}
         <span className="chip-tool__count" aria-hidden="true">{members.length}</span>
       </button>
     </div>

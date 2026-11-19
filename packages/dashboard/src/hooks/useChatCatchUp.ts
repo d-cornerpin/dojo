@@ -16,6 +16,7 @@ export const toMessage = (m: Message) => ({
   inboundMeta: m.inboundMeta ?? null,
   conversationId: m.conversationId,
   displayKind: m.displayKind ?? null,
+  reasoningContent: m.reasoningContent ?? null,
 });
 
 interface CatchUp<T extends { id: string; createdAt: string; isStreaming?: boolean }> {
@@ -24,7 +25,6 @@ interface CatchUp<T extends { id: string; createdAt: string; isStreaming?: boole
   agentId: string;
   /** Always the current agent (a ref), so an answer for an agent that was left is ignored. */
   agentIdRef: { current: string };
-  wordyMode: boolean;
   /** False while a technique session has not decided what to show. */
   ready: boolean;
   /** Frames heard for this agent: a status frame newer than the question stands. */
@@ -58,7 +58,7 @@ export function useChatCatchUp<T extends { id: string; createdAt: string; isStre
         const f = agentResult.data.inFlight;
         o.setBackgroundStoppable(!!f && f.background > 0);
       }
-      const result = await api.getChatHistory(forAgent, 200, undefined, o.wordyMode);
+      const result = await api.getChatHistory(forAgent, 200);
       if (stale() || !result.ok) return;
       const fetched = result.data.map(o.toChat);
       o.setMessages((prev) => {

@@ -56,9 +56,9 @@ export interface MsGraphResult {
 async function graphFetch(
   method: string,
   endpoint: string,
-  body?: unknown,
-  // Account whose token to use: 'agent'/'user' name the position-1 rows; tools pass a resolved account id.
-  accountId: string = 'agent',
+  body: unknown,
+  // Account whose token to use: the resolved account's own id.
+  accountId: string,
   // Whose stop this call answers to. Optional and last; a call without one is platform plumbing with
   // no agent to stop it.
   agentId?: string,
@@ -145,10 +145,11 @@ export function msGraphRead(
   agentName: string,
   action: string,
   details: Record<string, unknown>,
-  accountId: string = 'agent',
+  accountId: string,
 ): Promise<MsGraphResult> {
   return graphFetch('GET', endpoint, undefined, accountId, agentId).then(result => {
-    logMicrosoftActivity({
+    // A watcher's own poll ('system') is not logged: only reads made for an agent are activity.
+    if (agentId !== 'system') logMicrosoftActivity({
       agentId, agentName, action, actionType: 'read',
       details: JSON.stringify({ ...details, account: accountId }),
       apiEndpoint: result.apiEndpoint,
@@ -167,7 +168,7 @@ export function msGraphWrite(
   agentName: string,
   action: string,
   details: Record<string, unknown>,
-  accountId: string = 'agent',
+  accountId: string,
 ): Promise<MsGraphResult> {
   return graphFetch(method, endpoint, body, accountId, agentId).then(result => {
     logMicrosoftActivity({

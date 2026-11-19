@@ -200,7 +200,12 @@ export function getModelGenerationParams(modelId: string): GenerationParamSpec |
     | undefined;
   if (!row || !row.generation_params) return null;
   try {
-    return JSON.parse(row.generation_params) as GenerationParamSpec;
+    const spec = JSON.parse(row.generation_params) as unknown;
+    // Only the right shape is a list: an object whose every field has a `values` array and a `wireField` name.
+    const fields = spec && typeof spec === 'object' && !Array.isArray(spec) ? Object.values(spec as Record<string, unknown>) : null;
+    const wellFormed = fields !== null && fields.every((f) => !!f && typeof f === 'object'
+      && Array.isArray((f as { values?: unknown }).values) && typeof (f as { wireField?: unknown }).wireField === 'string');
+    return wellFormed ? (spec as GenerationParamSpec) : null;
   } catch {
     return null;
   }

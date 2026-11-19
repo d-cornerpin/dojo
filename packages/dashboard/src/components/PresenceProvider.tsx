@@ -1,5 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import * as api from '../lib/api';
+import type { WsEvent, PresenceChangedEvent } from '@dojo/shared';
+import { useWebSocket } from '../hooks/useWebSocket';
 
 /* Presence (in the dojo vs out / iMessage) is shown + toggled in the composer's
    bottom-left, but the orb (sleepy when away) and the stage `is-out` styling
@@ -36,6 +38,13 @@ export function PresenceProvider({ children }: { children: ReactNode }) {
       cancelled = true;
     };
   }, []);
+
+  // A change made anywhere (his text to the agent, another tab) shows here at once.
+  const { subscribe } = useWebSocket();
+  useEffect(() => subscribe('presence:changed', (event: WsEvent) => {
+    const { status } = event as PresenceChangedEvent;
+    setPresence((cur) => (cur ? { ...cur, status } : cur));
+  }), [subscribe]);
 
   const toggle = useCallback(async () => {
     const cur = presenceRef.current;

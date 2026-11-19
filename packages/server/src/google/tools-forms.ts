@@ -19,6 +19,7 @@
 
 import type { ToolDefinition } from '../agent/tools/types.js';
 import { googleRead, googleWrite, googleSilentFetch } from './client.js';
+import { resolveGoogleAccountForTool } from './accounts.js';
 import { outsideSpan } from '../tools/external-content.js';
 
 const FORMS_BASE = 'https://forms.googleapis.com/v1/forms';
@@ -51,12 +52,13 @@ async function batchUpdate(
   agentName: string,
   action: string,
   details: Record<string, unknown>,
+  accountId: string,
 ): Promise<{ ok: true; data: BatchUpdateResponse } | { ok: false; error: string }> {
   const result = await googleWrite(
     'POST',
     `${FORMS_BASE}/${formId}:batchUpdate`,
     { requests, includeFormInResponse: false },
-    agentId, agentName, action, details,
+    agentId, agentName, action, details, undefined, accountId,
   );
   if (!result.ok) return { ok: false, error: result.error ?? 'batchUpdate failed' };
   return { ok: true, data: result.data as BatchUpdateResponse };
@@ -448,6 +450,17 @@ export const formsToolDefinitions: ToolDefinition[] = [
   },
 ];
 
+// Every Forms tool can target a connected Google account by its email, like the other Google tools.
+for (const def of formsToolDefinitions) {
+  const schema = def.input_schema as { properties?: Record<string, unknown> };
+  if (schema.properties && !schema.properties.account) {
+    schema.properties.account = {
+      type: 'string',
+      description: "Which connected account to act on, by its email address. Omit to use the only connected account of this type; required when more than one is connected.",
+    };
+  }
+}
+
 export const formsToolNames: string[] = formsToolDefinitions.map((t) => t.name);
 
 
@@ -461,6 +474,9 @@ export async function executeGoogleFormsTool(
   agentId: string,
   agentName: string,
 ): Promise<string> {
+  const resolved = resolveGoogleAccountForTool('agent', args.account as string | undefined);
+  if ('error' in resolved) return `Error: ${resolved.error}`;
+  const slot = resolved.account.id;
   try {
 
     switch (name) {
@@ -475,6 +491,7 @@ export async function executeGoogleFormsTool(
           { info: { title, documentTitle } },
           agentId, agentName, 'forms_create_form',
           { title },
+          undefined, slot,
         );
         if (!result.ok) return err(`creating form: ${result.error}`);
         const data = result.data as { formId?: string; responderUri?: string };
@@ -497,7 +514,7 @@ export async function executeGoogleFormsTool(
           paragraph: args.paragraph as boolean | undefined,
           required: args.required as boolean | undefined,
         });
-        return await createItem(formId, item, args.position as number | undefined, agentId, agentName, 'forms_add_text_question');
+        return await createItem(formId, item, args.position as number | undefined, agentId, agentName, 'forms_add_text_question', slot);
       }
 
       case 'forms_add_choice_question': {
@@ -517,7 +534,7 @@ export async function executeGoogleFormsTool(
         } catch (e) {
           return err(e instanceof Error ? e.message : String(e));
         }
-        return await createItem(formId, item, args.position as number | undefined, agentId, agentName, 'forms_add_choice_question');
+        return await createItem(formId, item, args.position as number | undefined, agentId, agentName, 'forms_add_choice_question', slot);
       }
 
       case 'forms_add_scale_question': {
@@ -534,7 +551,7 @@ export async function executeGoogleFormsTool(
           high_label: args.high_label as string | undefined,
           required: args.required as boolean | undefined,
         });
-        return await createItem(formId, item, args.position as number | undefined, agentId, agentName, 'forms_add_scale_question');
+        return await createItem(formId, item, args.position as number | undefined, agentId, agentName, 'forms_add_scale_question', slot);
       }
 
       case 'forms_add_date_question': {
@@ -546,7 +563,7 @@ export async function executeGoogleFormsTool(
           include_year: args.include_year as boolean | undefined,
           required: args.required as boolean | undefined,
         });
-        return await createItem(formId, item, args.position as number | undefined, agentId, agentName, 'forms_add_date_question');
+        return await createItem(formId, item, args.position as number | undefined, agentId, agentName, 'forms_add_date_question', slot);
       }
 
       // ── Edit / delete ──
@@ -605,7 +622,7 @@ export async function executeGoogleFormsTool(
         // Forms API updateItem identifies the target via location.index, NOT
         // by itemId in the body. We must look up the item's current index
         // first (a fixed index would overwrite whichever item sits at that position).
-        const targetIdx = await findItemIndex(formId, itemId);
+        const targetIdx = await findItemIndex(formId, itemId, slot);
         if (targetIdx === null) return err(`item ${itemId} not found in form ${formId}`);
         const res = await batchUpdate(formId, [{
           updateItem: {
@@ -613,7 +630,7 @@ export async function executeGoogleFormsTool(
             location: { index: targetIdx },
             updateMask: 'title,description,questionItem',
           },
-        }], agentId, agentName, 'forms_update_question', { formId, itemId, kind, index: targetIdx });
+        }], agentId, agentName, 'forms_update_question', { formId, itemId, kind, index: targetIdx }, slot);
         if (!res.ok) return err(`updating item: ${res.error}`);
         return ok({ form_id: formId, item_id: itemId, kind, updated: true });
       }
@@ -641,7 +658,7 @@ export async function executeGoogleFormsTool(
           maskFields.push('questionItem.question.required');
         }
         if (maskFields.length === 0) return err('Pass at least one of: title, description, required');
-        const targetIdx = await findItemIndex(formId, itemId);
+        const targetIdx = await findItemIndex(formId, itemId, slot);
         if (targetIdx === null) return err(`item ${itemId} not found in form ${formId}`);
         const res = await batchUpdate(formId, [{
           updateItem: {
@@ -649,7 +666,7 @@ export async function executeGoogleFormsTool(
             location: { index: targetIdx },
             updateMask: maskFields.join(','),
           },
-        }], agentId, agentName, 'forms_rename_question', { formId, itemId, fields: maskFields });
+        }], agentId, agentName, 'forms_rename_question', { formId, itemId, fields: maskFields }, slot);
         if (!res.ok) return err(`renaming question: ${res.error}`);
         return ok({ form_id: formId, item_id: itemId, fields_changed: maskFields });
       }
@@ -681,7 +698,7 @@ export async function executeGoogleFormsTool(
             settings,
             updateMask: maskFields.join(','),
           },
-        }], agentId, agentName, 'forms_set_settings', { formId, fields: maskFields });
+        }], agentId, agentName, 'forms_set_settings', { formId, fields: maskFields }, slot);
         if (!res.ok) return err(`updating settings: ${res.error}`);
         return ok({ form_id: formId, settings_changed: maskFields });
       }
@@ -691,11 +708,11 @@ export async function executeGoogleFormsTool(
         const itemId = args.item_id as string;
         // Forms API deleteItem takes a location (index). We have to look up
         // the item's current index first via a forms.get.
-        const idx = await findItemIndex(formId, itemId);
+        const idx = await findItemIndex(formId, itemId, slot);
         if (idx === null) return err(`item ${itemId} not found in form ${formId}`);
         const res = await batchUpdate(formId, [{
           deleteItem: { location: { index: idx } },
-        }], agentId, agentName, 'forms_delete_item', { formId, itemId, index: idx });
+        }], agentId, agentName, 'forms_delete_item', { formId, itemId, index: idx }, slot);
         if (!res.ok) return err(`deleting item: ${res.error}`);
         return ok({ form_id: formId, item_id: itemId, deleted: true });
       }
@@ -713,6 +730,7 @@ export async function executeGoogleFormsTool(
             undefined,
             agentId, agentName, 'forms_delete_form',
             { formId, permanent: true },
+            undefined, slot,
           );
           if (!result.ok) return err(`permanently deleting form: ${result.error}`);
           return ok({ form_id: formId, deleted: 'permanent' });
@@ -723,6 +741,7 @@ export async function executeGoogleFormsTool(
             { trashed: true },
             agentId, agentName, 'forms_delete_form',
             { formId, permanent: false },
+            undefined, slot,
           );
           if (!result.ok) return err(`trashing form: ${result.error}`);
           return ok({ form_id: formId, deleted: 'trashed', recoverable_for_days: 30 });
@@ -741,6 +760,7 @@ export async function executeGoogleFormsTool(
           url,
           agentId, agentName, 'forms_get',
           { formId, fields },
+          slot,
         );
         if (!result.ok) return err(`reading form: ${result.error}`);
         return outsideSpan(ok(result.data));   // the form as its author wrote it
@@ -757,6 +777,7 @@ export async function executeGoogleFormsTool(
           url,
           agentId, agentName, 'forms_list_responses',
           { formId, pageSize: args.page_size, pageToken: args.page_token, filter: args.filter },
+          slot,
         );
         if (!result.ok) return err(`listing responses: ${result.error}`);
         // Pass through nextPageToken from Google's response. Annotate
@@ -787,8 +808,8 @@ export async function executeGoogleFormsTool(
  * doesn't pollute the activity log with a separate "forms_*:lookup" entry;
  * the user-visible parent action is the one that gets logged.
  */
-async function fetchItemsSilent(formId: string): Promise<Array<{ itemId: string }> | null> {
-  const result = await googleSilentFetch('GET', `${FORMS_BASE}/${formId}?fields=items(itemId)`);
+async function fetchItemsSilent(formId: string, accountId: string): Promise<Array<{ itemId: string }> | null> {
+  const result = await googleSilentFetch('GET', `${FORMS_BASE}/${formId}?fields=items(itemId)`, undefined, undefined, accountId);
   if (!result.ok) return null;
   return (result.data as { items?: Array<{ itemId: string }> }).items ?? [];
 }
@@ -800,18 +821,19 @@ async function createItem(
   agentId: string,
   agentName: string,
   action: string,
+  accountId: string,
 ): Promise<string> {
   // If no position given, query the form to find the current item count and
   // append. Silent fetch: only the createItem batchUpdate logs as an activity.
   let index = position;
   if (typeof index !== 'number') {
-    const items = await fetchItemsSilent(formId);
+    const items = await fetchItemsSilent(formId, accountId);
     if (items === null) return err(`looking up form ${formId} for append position`);
     index = items.length;
   }
   const res = await batchUpdate(formId, [{
     createItem: { item, location: { index } },
-  }], agentId, agentName, action, { formId, index });
+  }], agentId, agentName, action, { formId, index }, accountId);
   if (!res.ok) return err(res.error);
   const reply = res.data.replies?.[0] as { createItem?: { itemId?: string } } | undefined;
   const itemId = reply?.createItem?.itemId;
@@ -823,8 +845,8 @@ async function createItem(
  * because this is plumbing for the user-visible parent action (delete,
  * update, move).
  */
-async function findItemIndex(formId: string, itemId: string): Promise<number | null> {
-  const items = await fetchItemsSilent(formId);
+async function findItemIndex(formId: string, itemId: string, accountId: string): Promise<number | null> {
+  const items = await fetchItemsSilent(formId, accountId);
   if (items === null) return null;
   const idx = items.findIndex((it) => it.itemId === itemId);
   return idx >= 0 ? idx : null;

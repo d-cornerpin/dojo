@@ -107,17 +107,12 @@ export const Settings = () => {
       {activeTab === 'sensei' && <DreamingTab />}
       {activeTab === 'channels' && (
         <>
-          {/* OAuth callbacks land on http://localhost:3001, connecting from
-              a Cloudflare-tunneled URL (or any remote host) breaks the
-              redirect roundtrip. Surface this once at the top of the page
-              so users don't get cryptic "session expired" errors after the
-              Google/Microsoft sign-in popup closes. */}
-          <div className="note--warn max-w-4xl" style={{ textTransform: 'none', letterSpacing: 'normal', marginBottom: 18 }}>
-            <p style={{ fontWeight: 600 }}>Connect accounts from your local Mac, not via a tunnel.</p>
-            <p style={{ marginTop: 4, fontWeight: 400 }}>
-              Google and Microsoft sign-in redirects land on <code>http://localhost:3001</code> , that only resolves when this dashboard is open on the same machine running the Dojo. If you're hitting the dashboard through a Cloudflare tunnel or named host from another device, the OAuth callback won't reach the server and the connection will silently fail. Sit at the host machine and use <code>http://localhost:3000</code> for the connect flow; once connected, the credentials work regardless of how you access the dashboard.
-            </p>
-          </div>
+          {/* Google and Microsoft send their sign-in back to the address the dashboard was opened on, which they accept only for this Mac. */}
+          {!['localhost', '127.0.0.1'].includes(window.location.hostname) && (
+            <div className="note--warn max-w-4xl" style={{ textTransform: 'none', letterSpacing: 'normal', marginBottom: 18 }}>
+              To connect a Google or Microsoft account, open the dashboard on the Mac that runs the Dojo. A sign-in started from another device does not come back. Once connected, the account works from anywhere.
+            </div>
+          )}
           <div className="scards">
             <IMBridgeSettings />
             <TwilioSettings />

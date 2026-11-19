@@ -46,7 +46,7 @@ import { isNoWakeIntent, deliverA2AMessage, deliverA2AMessage as deliverBc } fro
 import { onAgentRecovered } from '../../../healer/injury-recovery.js';
 import { resolveTaskId, getTask, formatResolveError } from '../../../tracker/schema.js';
 import { moveAssignee, planSpawnTask, type SpawnTaskPlan } from '../../../work/row-authority.js';
-import { sanitizeMessagesOnModelChange } from '../../model-switch.js';
+import { setAgentModel } from '../../model-switch.js';
 import { updateGroup as doUpdateGroup, SYSTEM_GROUP_ID as SYS_GROUP_U, getGroupDetail, getGroups as listAllGroups, deleteGroup as doDeleteGroup, SYSTEM_GROUP_ID as SYS_GROUP } from '../../groups.js';
 import { writeTaskLog } from '../../../tracker/task-log.js';
 // The capability clause derives from these two EXISTING authorities: the advertised
@@ -231,8 +231,6 @@ export function accessLine(agentId: string): string {
  *  unknown or future reasons) files `failed`, mirroring `DROPS_THE_SENDER_IS_TOLD_ABOUT`
  *  in `a2a-transport.ts`. `SEMANTIC_DUPLICATE` and `AWAITING_REPLY` are explanations the
  *  sender already holds; `HOP_LIMIT_EXCEEDED` is the protocol's own bound.
- *  `TERMINAL_THREAD_CLOSED` is deliberately NOT here: it has no emit site, so if it ever
- *  surfaces it marks an uncleared closure flag, i.e. a bug and a loss, never policy.
  *  Keep this set and the handler's switch case in step, see `a2aDropOutcome` below. */
 const A2A_DROPS_THAT_ARE_POLICY: ReadonlySet<string> = new Set([
   'SEMANTIC_DUPLICATE', 'AWAITING_REPLY', 'HOP_LIMIT_EXCEEDED',
@@ -487,7 +485,7 @@ export const agentsHandlers: ToolHandlerMap = {
               requiresResponse = false;
             }
 
-            // Check if target is injured, healer bypass
+            // An injured or paused target is refused, except to the main agent and the Healer.
             const sendDb = getDb();
             let targetCheck = sendDb.prepare('SELECT id, name, status, created_at FROM agents WHERE id = ?').get(agentRef) as { id: string; name: string; status: string; created_at: string } | undefined;
             let named: LiveAgentByName[] = [];   // names ignore case; the newest of several wins
@@ -520,17 +518,12 @@ export const agentsHandlers: ToolHandlerMap = {
                 }
               }
             }
-            if (targetCheck && (targetCheck.status === 'error' || targetCheck.status === 'paused')) {
-              let isHealerSender = false;
-              try {
-                isHealerSender = isHealerAgent(agentId);
-              } catch { /* */ }
-              if (!isHealerSender) {
-                const stateLabel = targetCheck.status === 'error' ? 'INJURED' : 'PAUSED';
-                content = `Agent "${targetCheck.name}" is ${stateLabel}. Message NOT delivered. Use reset_session(agent_id="${targetCheck.id}") to heal them, or reassign the work.`;
-                isError = true;
-                return { content, isError };
-              }
+            if (targetCheck && (targetCheck.status === 'error' || targetCheck.status === 'paused')
+              && !isHealerAgent(agentId) && !isPrimaryAgent(agentId)) {
+              const stateLabel = targetCheck.status === 'error' ? 'INJURED' : 'PAUSED';
+              content = `Agent "${targetCheck.name}" is ${stateLabel}. Message NOT delivered. Only the main agent or the Healer can reach it now: tell the main agent, which can heal it with reset_session(agent_id="${targetCheck.id}"), or do the work another way.`;
+              isError = true;
+              return { content, isError };
             }
 
             // send_to_agent reaches OTHER agents; naming yourself stores and wakes your own inbox.
@@ -654,12 +647,6 @@ export const agentsHandlers: ToolHandlerMap = {
                   from: agentId, to: agentRef, thread: result.threadId, reason: result.reason,
                 });
                 switch (result.reason) {
-                  case 'TERMINAL_THREAD_CLOSED':
-                    // No emit site: the rejection and the flag behind it were both removed, so
-                    // if this surfaces it is a stale uncleared marker, i.e. a transport bug.
-                    // The ledger agrees: `a2aDropOutcome` files a bug as `failed`, never policy.
-                    content = `Thread ${result.threadId.slice(0, 8)} reported a stale closure marker (engine bug, the transport should have auto-cleared it). Try again, or omit thread_id to start a fresh thread.`;
-                    break;
                   case 'HOP_LIMIT_EXCEEDED':
                     content = `Thread ${result.threadId.slice(0, 8)} has reached the maximum of 8 messages. Start a new thread (omit thread_id) if you need to continue.`;
                     break;
@@ -968,16 +955,8 @@ export const agentsHandlers: ToolHandlerMap = {
       }
 
       if (typeof newModelId === 'string') {
-        if (newModelId === 'auto') {
-          db.prepare("UPDATE agents SET model_id = 'auto', updated_at = datetime('now') WHERE id = ?").run(target.id);
-          sanitizeMessagesOnModelChange(target.id);
-          changes.push('model → auto-routing');
-        } else {
-          const model = resolvedModel!;
-          db.prepare("UPDATE agents SET model_id = ?, updated_at = datetime('now') WHERE id = ?").run(model.id, target.id);
-          const { collapsed } = sanitizeMessagesOnModelChange(target.id);
-          changes.push(`model: ${target.model_id ?? 'auto'} → ${model.name}${collapsed > 0 ? ` (${collapsed} tool msg(s) sanitized)` : ''}`);
-        }
+        await setAgentModel(target.id, newModelId === 'auto' ? 'auto' : resolvedModel!.id);
+        changes.push(newModelId === 'auto' ? 'model → auto-routing' : `model: ${target.model_id ?? 'auto'} → ${resolvedModel!.name}`);
       }
       const accessRefused = applyAccess(changes); if (accessRefused) return accessRefused;
       if (changes.length === 0) {
@@ -1388,8 +1367,8 @@ export const agentsHandlers: ToolHandlerMap = {
     if (!dgResolved.ok) { content = dgResolved.error; isError = true; return { content, isError }; }
     const groupId = dgResolved.id;
 
-    if (groupId === SYS_GROUP && !isPrimaryAgent(agentId)) {
-      content = 'Cannot delete the System group.';
+    if (groupId === SYS_GROUP) {
+      content = 'Cannot delete the System group. Nothing was changed.';
       isError = true;
       return { content, isError };
     }

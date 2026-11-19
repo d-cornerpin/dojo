@@ -23,6 +23,7 @@ import { workOperation } from '../../tools/work-verbs.js';
 import { withOutboundAsyncIfAbsent, outboundIntentForTool } from '../v2/outbound.js';
 import { resolveAgentRef, resolveGroupRef } from '../tool-helpers.js';
 import { gatesForCall } from './gates.js';
+import { redactDeclaredSecretArgs } from '../../credentials/secret-fields.js';
 import { validateToolArgs } from './validate-args.js';
 import { toolDefinitions, toolDefinitionsByName, isBoundaryValidated, getAllToolDefinitions } from './definitions.js';
 import { getFilteredTools, getAgentDenySet } from './surface.js';
@@ -108,7 +109,7 @@ async function dispatchResolved(
 async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<ToolResult> {
   const { id, name, arguments: args } = toolCall;
 
-  logger.info('Executing tool', { tool: name, args }, agentId);
+  logger.info('Executing tool', { tool: name, args: redactDeclaredSecretArgs(name, args) }, agentId);
 
   // tools_policy.deny: the surface strip is only advice, so a floor model can still emit a
   // denied name. Re-check the SAME deny set ahead of any outbound capture (name is canonical).
@@ -171,7 +172,7 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
 
   // Invalid-JSON args are flagged by model.ts as `__malformed_args`; answer so the model can retry.
   if (args.__malformed_args) {
-    const rawSnippet = String(args.__malformed_args).slice(0, 300);
+    const rawSnippet = String(redactDeclaredSecretArgs(name, args)?.__malformed_args).slice(0, 300);
     content = `Error: Your tool call arguments for "${name}" were malformed JSON and could not be parsed.\n\nThe raw text was:\n${rawSnippet}\n\nPlease retry this tool call with valid JSON arguments. Call load_tool_docs(tools=["${name}"]) to see the expected parameter schema.`;
     logger.warn('Rejecting tool call with malformed arguments', { tool: name, rawSnippet }, agentId);
     return { toolCallId: id, name, content, isError: true, errorCode: 'PARSE_ERROR' as const };

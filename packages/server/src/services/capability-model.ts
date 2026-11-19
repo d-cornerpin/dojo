@@ -135,3 +135,17 @@ export function makeCapabilityModelResolver(opts: {
     },
   };
 }
+
+/** One sentence for a tool result when a stand-in model ran instead of the one chosen in Settings: its name and
+ *  its price. Empty when the chosen model ran. */
+export function standInSentence(choice: CapabilityModelChoice): string {
+  if (choice.source !== 'failover') return '';
+  const row = getDb()
+    .prepare('SELECT name, input_cost_per_m, output_cost_per_m, cost_per_unit, pricing_unit FROM models WHERE id = ?')
+    .get(choice.modelId) as { name: string; input_cost_per_m: number | null; output_cost_per_m: number | null; cost_per_unit: number | null; pricing_unit: string | null } | undefined;
+  const price = !row ? 'not set'
+    : row.pricing_unit && row.pricing_unit !== 'token' && row.cost_per_unit !== null ? `$${row.cost_per_unit} per ${row.pricing_unit}`
+    : row.input_cost_per_m !== null && row.output_cost_per_m !== null ? `$${row.input_cost_per_m} per million input tokens and $${row.output_cost_per_m} per million output tokens`
+    : 'not set';
+  return ` The model chosen in Settings could not be used, so this ran on the stand-in model "${row?.name ?? choice.modelId}" (price: ${price}). Tell the person which model was used and its price.`;
+}

@@ -2,7 +2,6 @@ import { callModel } from '../agent/model.js';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { estimateTokens } from './budget.js';
-import type { ProviderErrorFacts } from '../agent/provider-error.js';
 import { isContextOverflowError } from '../agent/context-overflow.js';
 import { writeThenCheck, rewriteInstruction } from './summary-check.js';
 import { settleSummaryCall, refuseWhatTheWriterCannotHold, refuseFallbackOverFreeMemory, summaryCallStarts } from './writer.js';
@@ -38,11 +37,7 @@ export function condensedSummaryInput(batch: readonly Summary[]): string {
   }).join('\n\n');
 }
 
-export function getDepthPrompt(depth: number, targetTokens: number, previousContext?: string, agentId?: string): string {
-  const contextBlock = previousContext
-    ? `\n\nPrevious context for continuity:\n${previousContext}\n`
-    : '';
-
+export function getDepthPrompt(depth: number, targetTokens: number, agentId?: string): string {
   const identity = agentId ? getIdentityContext(agentId) : '';
 
   if (depth === 0) {
@@ -94,7 +89,7 @@ GOOD: "[2026-04-19 09:00–11:30] The user runs two businesses: Acme Corp (adver
 
 BAD: "The user mentioned their drink and hobby preferences"
 GOOD: "The user's favorite tea is jasmine green. Favorite board game is chess."
-${contextBlock}`;
+`;
   }
 
   if (depth === 1) {
@@ -129,7 +124,7 @@ ABSOLUTE RULES:
 - Maintain correct attribution — never confuse who said or did what. CARRY the party and conversation labels forward; never merge different parties' requests into an unattributed statement.
 - Target approximately ${targetTokens} tokens, sized to these summaries — use the space for facts, not narrative
 - Do NOT include preamble — write the condensed summary directly
-${contextBlock}`;
+`;
   }
 
   // depth >= 2: high-level strategic summary
@@ -157,7 +152,7 @@ ABSOLUTE RULES:
 - Maintain correct attribution
 - Target approximately ${targetTokens} tokens, sized to these summaries
 - Do NOT include preamble — write the reference summary directly
-${contextBlock}`;
+`;
 }
 
 /**
@@ -191,14 +186,13 @@ async function writeSummary(params: {
   targetTokens: number;
   agentId: string;
   modelId?: string;
-  previousContext?: string;
   // Cancels the routine gap-trigger drain's call so a hanging summarizer cannot continue in the background.
   abortSignal?: AbortSignal;
   checkFeedback?: string;   // the rewrite after a failed accuracy check names what failed
   spanIds?: readonly string[];   // the rows summarised: a span whose check failed is known by them
   spanOpen?: boolean;   // the last chunk of a fold, still growing (see summary-check.ts writeThenCheck)
 }): Promise<SummaryResult> {
-  const { content, depth, targetTokens, agentId, modelId, previousContext, abortSignal, checkFeedback } = params;
+  const { content, depth, targetTokens, agentId, modelId, abortSignal, checkFeedback } = params;
 
   // No model means no summary: saying so costs only a retry, where persisting the raw chunk would pass as one.
   if (!modelId) {
@@ -206,7 +200,7 @@ async function writeSummary(params: {
     return { ok: false, reason: 'no summarizer model configured for this agent' };
   }
 
-  const systemPrompt = getDepthPrompt(depth, targetTokens, previousContext, agentId) + rewriteInstruction(checkFeedback);
+  const systemPrompt = getDepthPrompt(depth, targetTokens, agentId) + rewriteInstruction(checkFeedback);
   const tooBig = refuseWhatTheWriterCannotHold(modelId, systemPrompt, content, agentId) ?? await refuseFallbackOverFreeMemory(modelId, systemPrompt, content, targetTokens, agentId);
   if (tooBig) return tooBig;
 
@@ -236,11 +230,9 @@ async function writeSummary(params: {
     const message = err instanceof Error ? err.message : String(err);
     // The writer's own "too long" answer is `tooBig` (halve, or the next writer that holds it), not a failure.
     if (isContextOverflowError(message)) { logger.warn('SUMMARY_REFUSED the writer said the input is too long', { modelId, depth }, agentId); return { ok: false, reason: 'the summary writer cannot hold this input', tooBig: true }; }
-    // A permanent failure (no balance, dead credential, refused access) opens the provider's breaker, which the
-    // chunk loop reads and stops on; transient ones return `ok:false` and retry next drain. Classify from the
-    // throw's structured `provider` facts, not the wrapped message prose, and without importing `AgentError`.
-    const facts = (err as { provider?: ProviderErrorFacts | null } | null)?.provider ?? undefined;
-    noteSummaryCallFailed({ modelId, message, agentId, facts, depth, targetTokens, abortSignal });   // not for a call its caller stopped
+    // A permanent failure (no balance, dead credential, refused access) opens the provider's breaker in the
+    // transport's own catch, which the chunk loop reads and stops on; transient ones return `ok:false` and retry next drain.
+    noteSummaryCallFailed({ modelId, message, agentId, depth, targetTokens, abortSignal });   // not for a call its caller stopped
     return { ok: false, reason: `summarizer model call failed: ${message}` };
   }
 }

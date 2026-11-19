@@ -778,7 +778,7 @@ function auditSessionResetGuardFailOpen(targetAgentId: string, err: unknown): vo
       VALUES (?, NULL, 'session_reset_guard', ?, ?, 'reset_permitted_fail_open', 'error', datetime('now'))
     `).run(
       uuidv4(),
-      `T82 fix wave M5: session-reset guard failed open on its own error (not a policy bypass): ${err instanceof Error ? err.message : String(err)}`,
+      `The check before a session reset failed open on its own error, so the reset went ahead: ${err instanceof Error ? err.message : String(err)}`,
       targetAgentId,
     );
   } catch (auditErr) {
@@ -802,7 +802,7 @@ function auditSessionResetBypass(
       VALUES (?, NULL, 'session_reset_guard', ?, ?, 'reset_permitted_bypass', ?, datetime('now'))
     `).run(
       uuidv4(),
-      `T82c size-class session-reset guard bypassed (${kind})${detail ? `: ${detail}` : ''}`,
+      `A session reset went ahead before compaction because ${kind === 'corruption' ? 'the conversation was damaged' : 'the owner asked for it'}${detail ? `: ${detail}` : ''}`,
       targetAgentId,
       kind,
     );

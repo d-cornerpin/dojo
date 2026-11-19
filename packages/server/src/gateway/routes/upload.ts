@@ -8,6 +8,7 @@ import { renderOfficeToHtml, isOfficeRenderable } from '../../services/office-re
 import { routeFailure } from './route-failure.js';
 import { homeDir } from '../../home.js';
 import { insideFolder } from '../../techniques/technique-folder.js';
+import { isSensitivePath } from '../../agent/path-guards.js';
 
 const logger = createLogger('upload');
 
@@ -128,8 +129,7 @@ uploadRouter.post('/:agentId', async (c) => {
 // file (chunks must arrive in order, one at a time); POST /upload/finish/:agentId/:uploadId checks the
 // assembled size against the declared one, renames `.part` to the final stored name, registers the
 // attachment and returns the same UploadedFile shape as the one-shot endpoint. Idle sessions drop after 1h,
-// and a `.part` file left by a disconnect is removed by the older-than-7-days sweep that cleans regular
-// uploads (no dedicated GC pass).
+// and a `.part` file left by a disconnect is removed a week later by `removeAbandonedPartFiles`.
 interface ChunkSession {
   agentId: string;
   filename: string;
@@ -288,37 +288,24 @@ uploadRouter.post('/finish/:agentId/:uploadId', async (c) => {
   return c.json({ ok: true, data: uploaded });
 });
 
-// Cleanup job: delete uploads older than 7 days
-export function cleanupOldUploads(): void {
+/** Removes the `.part` file of a chunked upload left unfinished for over a week; every finished upload is kept. */
+export function removeAbandonedPartFiles(): void {
   try {
     if (!fs.existsSync(UPLOAD_DIR)) return;
     const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
-    const agentDirs = fs.readdirSync(UPLOAD_DIR, { withFileTypes: true });
-
-    for (const agentDir of agentDirs) {
+    for (const agentDir of fs.readdirSync(UPLOAD_DIR, { withFileTypes: true })) {
       if (!agentDir.isDirectory()) continue;
       const dirPath = path.join(UPLOAD_DIR, agentDir.name);
-      const files = fs.readdirSync(dirPath);
-
-      for (const file of files) {
+      for (const file of fs.readdirSync(dirPath)) {
+        if (!file.endsWith('.part')) continue;
         const filePath = path.join(dirPath, file);
         try {
-          const stat = fs.statSync(filePath);
-          if (stat.mtimeMs < cutoff) {
-            fs.unlinkSync(filePath);
-          }
+          if (fs.statSync(filePath).mtimeMs < cutoff) fs.unlinkSync(filePath);
         } catch { /* skip */ }
       }
-
-      try {
-        const remaining = fs.readdirSync(dirPath);
-        if (remaining.length === 0) {
-          fs.rmdirSync(dirPath);
-        }
-      } catch { /* skip */ }
     }
   } catch (err) {
-    logger.error('Upload cleanup failed', { error: err instanceof Error ? err.message : String(err) });
+    logger.error('Removing unfinished uploads failed', { error: err instanceof Error ? err.message : String(err) });
   }
 }
 
@@ -415,11 +402,6 @@ uploadRouter.get('/download/:fileId', async (c) => {
     return routeFailure(c, logger, err, { status: 500, message: 'Database not available' });
   }
 
-  const tableExists = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='shared_files'").get();
-  if (!tableExists) {
-    return c.json({ ok: false, error: 'File sharing not available, server needs to be restarted to run migrations' }, 500);
-  }
-
   const row = db.prepare('SELECT file_path, filename, mime_type FROM shared_files WHERE id = ?').get(fileId) as {
     file_path: string; filename: string; mime_type: string;
   } | undefined;
@@ -433,9 +415,13 @@ uploadRouter.get('/download/:fileId', async (c) => {
     return c.json({ ok: false, error: `File was registered but no longer exists on disk.` /* never leak the absolute file_path to the client */ }, 404);
   }
 
+  if (isSensitivePath(row.file_path)) {
+    return c.json({ ok: false, error: 'This file holds keys or passwords, so it is never served by a download link.' }, 403);
+  }
+
   // `?inline=1` asks for in-page rendering (Content-Disposition: inline); the right-dock canvas and the
   // attachment chips use it. The disposition rules below decide which types still get it.
-  const inline = c.req.query('inline') === '1' || c.req.query('disposition') === 'inline';
+  const inline = c.req.query('inline') === '1';
   const ext = path.extname(row.filename).toLowerCase();
   const isHtml = ext === '.html' || ext === '.htm' || row.mime_type === 'text/html';
 
@@ -475,8 +461,6 @@ uploadRouter.get('/render/:fileId', async (c) => {
   } catch (err) {
     return routeFailure(c, logger, err, { status: 500, message: 'Database not available' });
   }
-  const tableExists = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='shared_files'").get();
-  if (!tableExists) return c.json({ ok: false, error: 'File sharing not available' }, 500);
 
   const row = db.prepare('SELECT file_path, filename FROM shared_files WHERE id = ?').get(fileId) as {
     file_path: string; filename: string;
@@ -516,11 +500,6 @@ uploadRouter.get('/describe/:fileId', async (c) => {
     db = (await import('../../db/connection.js')).getDb();
   } catch (err) {
     return routeFailure(c, logger, err, { status: 500, message: 'Database not available' });
-  }
-
-  const tableExists = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='shared_files'").get();
-  if (!tableExists) {
-    return c.json({ ok: false, error: 'File sharing not available' }, 500);
   }
 
   const row = db.prepare('SELECT file_path, filename, mime_type FROM shared_files WHERE id = ?').get(fileId) as {

@@ -142,14 +142,14 @@ const INSERT_SQL = `
       source_agent_id, a2a_thread_id, a2a_intent, a2a_requires_response, token_count,
       model_id, cost, latency_ms, reasoning_content, inbound_meta, attachments,
       external_message_id, speaker, voice_session_id, task_id, run_id, root_kind, root_id,
-      subject_kind, provenance, sent_at, created_at
+      subject_kind, sent_at, created_at
     ) VALUES (
       @id, @agentId, @conversationId, @lane, @originIntent, @role, @content, @mood,
       @displayKind, @displayTier, @turnNumber, @groupId, @channel, @senderId, @authorized,
       @sourceAgentId, @a2aThreadId, @a2aIntent, @a2aRequiresResponse, @tokenCount,
       @modelId, @cost, @latencyMs, @reasoningContent, @inboundMeta, @attachments,
       @externalMessageId, @speaker, @voiceSessionId, @taskId, @runId, @rootKind, @rootId,
-      @subjectKind, 'live', @sentAt, ${NOW_MS}
+      @subjectKind, @sentAt, ${NOW_MS}
     )`;
 
 // Every own row is labelled at birth from the turn record, the turn's bag or an earlier row of the turn; an

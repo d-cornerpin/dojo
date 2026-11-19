@@ -80,13 +80,13 @@ describe('pdf_delete_pages reports the pages it actually removed', () => {
   });
 
   it('a repeated index counts once', async () => {
-    const reply = await drive('pdf_delete_pages', { path: SRC, pages: [0, 0], output_filename: 'out2' });
-    expect(reply).toContain('Deleted 1 page(s); 2 remain');
+    const reply = await drive('pdf_delete_pages', { path: SRC, pages: [1, 1], output_filename: 'out2' });
+    expect(reply).toContain('Deleted page(s) 1; 2 remain');
   });
 
   it('one in-range page deletes exactly as before', async () => {
-    const reply = await drive('pdf_delete_pages', { path: SRC, pages: [1], output_filename: 'out3' });
-    expect(reply).toContain('Deleted 1 page(s); 2 remain');
+    const reply = await drive('pdf_delete_pages', { path: SRC, pages: [2], output_filename: 'out3' });
+    expect(reply).toContain('Deleted page(s) 2; 2 remain');
   });
 });
 
@@ -101,8 +101,8 @@ describe('pdf_rotate_pages reports the rotations it actually applied', () => {
 
   it('an out-of-range rotation inside a mixed request is not counted', async () => {
     const reply = await drive('pdf_rotate_pages', {
-      path: SRC, rotations: [{ page: 0, degrees: 90 }, { page: 9, degrees: 90 }], output_filename: 'out5',
+      path: SRC, rotations: [{ page: 1, degrees: 90 }, { page: 9, degrees: 90 }], output_filename: 'out5',
     });
-    expect(reply).toContain('Rotated 1 page(s)');
+    expect(reply).toContain('Rotated page(s) 1 →');
   });
 });

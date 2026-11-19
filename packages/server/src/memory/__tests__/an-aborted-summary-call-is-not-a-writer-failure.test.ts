@@ -5,7 +5,7 @@
 // out. The cut surfaces in `summarize.ts` as a thrown error, and the catch there used to log
 // it at ERROR ("SUMMARY_REFUSED summarization model call failed") and hand it to the billing
 // breaker as if the writer had failed. A call whose own abort signal is aborted was ended by
-// its caller: no error-level line, no breaker note, and no "not answering" mark on the writer,
+// its caller: no error-level line and no "not answering" mark on the writer,
 // whatever the abort's reason was.
 //
 // Real here: the migrated in-memory DB, `generateSummary`, the health marks. Scripted: only
@@ -40,18 +40,6 @@ let script: (abortSignal?: AbortSignal) => never = () => { throw new Error('unsc
 vi.mock('../../agent/model.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../agent/model.js')>();
   return { ...actual, callModel: async (c: { abortSignal?: AbortSignal }) => script(c.abortSignal) };
-});
-
-const breakerNotes = vi.hoisted(() => ({ calls: 0 }));
-vi.mock('../../providers/billing-breaker.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../providers/billing-breaker.js')>();
-  return {
-    ...actual,
-    noteSummaryWriterFailure: (...a: Parameters<typeof actual.noteSummaryWriterFailure>) => {
-      breakerNotes.calls += 1;
-      return actual.noteSummaryWriterFailure(...a);
-    },
-  };
 });
 
 import { runMigrations } from '../../db/migrations.js';
@@ -96,7 +84,6 @@ beforeEach(() => {
   mockDb.current = db;
   runMigrations();
   logLines.length = 0;
-  breakerNotes.calls = 0;
   __resetSummaryWriterHealthForTests();
   seedBox();
 });
@@ -114,7 +101,7 @@ describe('t220 a summary call its caller aborted', () => {
     ['the owner pressed Stop', FOLD_STOPPED_BY_OWNER, 0],
     ['the caller aborted without saying why', undefined, 1],
   ] as const) {
-    it(`${label}: no error-level line, no breaker note; the writer marked ${marksWriter ? '"not answering"' : 'nothing'}`, async () => {
+    it(`${label}: no error-level line; the writer marked ${marksWriter ? '"not answering"' : 'nothing'}`, async () => {
       const ctl = new AbortController();
       script = (s) => { expect(s).toBe(ctl.signal); return cutBy(ctl, reason)(); };
 
@@ -122,7 +109,6 @@ describe('t220 a summary call its caller aborted', () => {
 
       expect(result.ok, 'non-vacuity: the call really was cut and returned a refusal').toBe(false);
       expect(errorLines(), 'a stop the caller chose is not an error').toEqual([]);
-      expect(breakerNotes.calls, 'the billing breaker is told nothing').toBe(0);
       expect(marks(), 'the writer is marked "not answering" only for an abort that names no fold reason').toBe(marksWriter);
     });
   }
@@ -136,14 +122,13 @@ describe('t220 a summary call its caller aborted', () => {
 });
 
 describe('t220 CONTROL: a real failure on a call nobody aborted is unchanged', () => {
-  it('logs at error level, tells the breaker, and marks the writer not answering', async () => {
+  it('logs at error level and marks the writer not answering', async () => {
     script = () => { throw new Error('the writer fell over'); };
 
     const result = await summarise(new AbortController().signal);
 
     expect(result.ok).toBe(false);
     expect(errorLines().some((l) => l.message.startsWith('SUMMARY_REFUSED summarization model call failed'))).toBe(true);
-    expect(breakerNotes.calls).toBe(1);
     expect(marks()).toBe(1);
   });
 });

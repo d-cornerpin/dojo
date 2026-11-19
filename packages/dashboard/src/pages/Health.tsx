@@ -330,10 +330,10 @@ export const Health = () => {
 
   if (loading) return <div className="stub"><p className="stub__line">Loading...</p></div>;
 
-  const memUsedMb = resources ? resources.memory.used : health ? health.memory.used : null;
-  const memTotalMb = resources ? resources.memory.total : health ? health.memory.total : null;
-  const memPct = resources?.memory?.percentage
-    ?? (health ? (health.memory.used / Math.max(health.memory.total, 1)) * 100 : 0);
+  // The Mac's memory comes only from the resources read; the health read's figure is the Dojo's own heap.
+  const memUsedMb = resources ? resources.memory.used : null;
+  const memTotalMb = resources ? resources.memory.total : null;
+  const memPct = resources?.memory?.percentage ?? null;
   const cpuPct = resources?.cpu?.usage ?? null;
 
   // Overall posture for the header pill: down if DB is errored or any
@@ -420,12 +420,12 @@ export const Health = () => {
                 Memory{memUsedMb != null ? ` · ${formatBytes(memUsedMb * 1024 * 1024)} used` : ''}
               </span>
               <span className="v">
-                {memTotalMb != null ? `${formatBytes(memTotalMb * 1024 * 1024)} total · ` : ''}{memPct.toFixed(0)}%
+                {memTotalMb != null ? `${formatBytes(memTotalMb * 1024 * 1024)} total · ` : ''}{memPct != null ? `${memPct.toFixed(0)}%` : '--'}
               </span>
             </div>
           </div>
           <div className="bar" style={{ margin: '9px 0 14px' }}>
-            <i className="is-green" style={{ width: `${Math.min(100, Math.max(0, memPct))}%` }} />
+            <i className="is-green" style={{ width: `${Math.min(100, Math.max(0, memPct ?? 0))}%` }} />
           </div>
 
           {cpuPct != null && (

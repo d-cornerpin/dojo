@@ -1,8 +1,11 @@
 import type { Model } from '@dojo/shared';
 import { request } from './door';
 
-/** May a person pick this model for an agent? (Enabled, and not the Dojo's decision model.) */
-export const isPickableAgentModel = (m: Model): boolean => m.isEnabled && !m.capabilities.includes('decision');
+/** May this model appear in an agent's model picker? Enabled and a chat model; a too-small one appears, disabled. */
+export const isListedAgentModel = (m: Model): boolean => m.isEnabled && !m.notAChatModel;
+
+/** May a person choose this model for an agent? Enabled, and the server names no reason against it. */
+export const isPickableAgentModel = (m: Model): boolean => m.isEnabled && !m.notForAgents;
 
 /** The cheapest pickable model the server accepts for an agent, free ones first, or '' when none. */
 export async function defaultRoleModel(models: readonly Model[]): Promise<string> {

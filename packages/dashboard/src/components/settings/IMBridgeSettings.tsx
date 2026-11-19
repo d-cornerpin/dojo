@@ -85,7 +85,16 @@ const parseSenders = (raw: string | undefined): SafeSender[] => {
   }
 };
 
-export const IMBridgeSettings = () => {
+export const IMBridgeSettings = ({ onLoaded, onSaved, onDirtyChange, saveLabel = () => 'Save', saveDisabled = false }: {
+  onLoaded?: (setUpBefore: boolean) => void;
+  onSaved?: (enabled: boolean, primaryAddress: string) => void;
+  onDirtyChange?: (dirty: boolean) => void;
+  saveLabel?: (enabled: boolean) => string;
+  saveDisabled?: boolean;
+} = {}) => {
+  const hooks = useRef({ onLoaded, onSaved, onDirtyChange });
+  hooks.current = { onLoaded, onSaved, onDirtyChange };
+  const cleanSnapshot = useRef('');   // the switch and list as loaded or last saved: any difference is an unsaved edit
   const [enabled, setEnabled] = useState(false);
   const [serverExecPath, setServerExecPath] = useState<string | null>(null);
   const [senders, setSenders] = useState<SafeSender[]>([]);
@@ -144,10 +153,17 @@ export const IMBridgeSettings = () => {
       }
       baseList.current = loaded.map(s => ({ ...s }));
       setSenders(loaded);
+      cleanSnapshot.current = JSON.stringify({ enabled: enabledResult.data.value === 'true', senders: loaded });
+      hooks.current.onLoaded?.(enabledResult.data.value !== null);
+      hooks.current.onDirtyChange?.(false);
       setLoading(false);
   }, []);
 
   useEffect(() => { void load(); }, [load]);
+
+  useEffect(() => {
+    if (!loading && !loadFailed) hooks.current.onDirtyChange?.(JSON.stringify({ enabled, senders }) !== cleanSnapshot.current);
+  }, [enabled, senders, loading, loadFailed]);
 
   const handleSave = async () => {
     setSaving(true);
@@ -199,6 +215,9 @@ export const IMBridgeSettings = () => {
     if (results.every(r => r.ok)) {
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
+      cleanSnapshot.current = JSON.stringify({ enabled, senders });
+      hooks.current.onDirtyChange?.(false);
+      hooks.current.onSaved?.(enabled, primary?.address ?? '');
     } else {
       setError('Failed to save settings');
     }
@@ -518,10 +537,10 @@ export const IMBridgeSettings = () => {
       <div className="flex items-center gap-2">
         <button
           onClick={handleSave}
-          disabled={saving}
+          disabled={saving || saveDisabled}
           className="px-4 py-2 glass-btn-primary text-sm font-medium rounded-lg transition-colors"
         >
-          {saving ? 'Saving...' : 'Save'}
+          {saving ? 'Saving...' : saveLabel(enabled)}
         </button>
         {saved && <span className="text-xs text-cp-teal">Saved. Changes are live - no restart needed.</span>}
       </div>

@@ -4,7 +4,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { homeDir } from '../home.js';
+import { resolveHomePath } from '../agent/path-resolve.js';
 import { shareDeny } from '../agent/brokers/fs.js';
 import { resolvePathArg } from '../agent/brokers/resolve.js';
 import { insideFolder } from '../techniques/technique-folder.js';
@@ -25,12 +25,6 @@ const ASSET_MIME: Record<string, string> = {
 };
 // Cap per-asset size so one giant file can't blow up the served HTML.
 const MAX_ASSET_BYTES = 24 * 1024 * 1024;
-
-function resolveHome(p: string): string {
-  if (p === '~') return homeDir();
-  if (p.startsWith('~/')) return path.join(homeDir(), p.slice(2));
-  return p;
-}
 
 // True for refs we must not touch: remote URLs, data URIs, anchors, protocol-relative URLs, special schemes.
 function isRemote(ref: string): boolean {
@@ -72,7 +66,7 @@ export function inlineHtmlAssets(htmlAbsPath: string): string {
     let ref = rawRef.trim();
     if (!ref || isRemote(ref)) return null;
     ref = ref.replace(/^file:\/\//i, '');          // file:///Users/x.png -> /Users/x.png
-    const clean = resolveHome(ref.split(/[?#]/)[0]); // drop ?query / #hash, expand ~
+    const clean = resolveHomePath(ref.split(/[?#]/)[0]); // drop ?query / #hash, expand ~
     if (!clean) return null;
     // Refs are URLs ("my%20pic.png"): try the percent-decoded path first, then the text as written; a malformed
     // "%zz" ref is left alone rather than throwing.

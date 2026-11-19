@@ -1,1 +1,1 @@
-export const AgentModelOption = ({ model: m, label }: { model: { id: string; tooSmallForAgents?: boolean }; label: string }) => <option value={m.id} disabled={m.tooSmallForAgents}>{label}{m.tooSmallForAgents ? ' (too small for an agent)' : ''}</option>;
+export const AgentModelOption = ({ model: m, label }: { model: { id: string; notForAgents?: string | null }; label: string }) => <option value={m.id} disabled={!!m.notForAgents}>{label}{m.notForAgents ? ` (${m.notForAgents})` : ''}</option>;

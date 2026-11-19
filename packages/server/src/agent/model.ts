@@ -1021,7 +1021,7 @@ async function callOllamaModel(
                 } else {
                   logger.warn('Ollama: malformed tool call JSON arguments (repair failed)', {
                     toolName: tc.function?.name,
-                    rawArgs: typeof rawArgs === 'string' ? rawArgs.slice(0, 200) : String(rawArgs),
+                    rawLength: typeof rawArgs === 'string' ? rawArgs.length : String(rawArgs).length,
                   }, agentId);
                   parsedArgs = { __malformed_args: typeof rawArgs === 'string' ? rawArgs.slice(0, 500) : String(rawArgs) };
                 }
@@ -1133,7 +1133,7 @@ async function callOllamaModel(
 
     // Best-effort calls log handled failures at WARN, and a caller-stopped call is no failure at all.
     settleFailedCall('Ollama call', message, { model: ollamaModelName, baseUrl, latencyMs },
-      { providerId: modelInfo.providerId, agentId, signal: params.abortSignal, bestEffort: params.bestEffort });
+      { providerId: modelInfo.providerId, agentId, signal: params.abortSignal, bestEffort: params.bestEffort, facts: classifyProviderError(err) });
     throw err instanceof AgentError ? err : new AgentError(`Ollama call failed: ${message}`, agentId, {
       code: 'MODEL_CALL_FAILED',
       retryable: true,
@@ -1798,7 +1798,7 @@ async function callOpenAIModel(
             malformedArgs = true;
             logger.warn('OpenAI: malformed tool call JSON arguments (repair failed)', {
               toolName: acc.name,
-              rawArgs: acc.args.slice(0, 200),
+              rawLength: acc.args.length,
             }, agentId);
           }
         }
@@ -1964,7 +1964,7 @@ async function callOpenAIModel(
 
     // settleFailedCall: best-effort calls log WARN, genuine ones ERROR, a caller-stopped call is no failure.
     settleFailedCall('OpenAI call', message, { model: modelInfo.apiModelId, providerId: modelInfo.providerId, latencyMs },
-      { providerId: modelInfo.providerId, agentId, signal: params.abortSignal, bestEffort: params.bestEffort });
+      { providerId: modelInfo.providerId, agentId, signal: params.abortSignal, bestEffort: params.bestEffort, facts: classifyProviderError(err) });
 
     // Classify by the provider's STATUS, never by this message's digits.
     const facts = classifyProviderError(err);
@@ -2175,7 +2175,7 @@ async function callAnthropicSdkModel(
     }
 
     settleFailedCall('Agent SDK call', message, { model: modelInfo.apiModelId, providerId: modelInfo.providerId, latencyMs },
-      { providerId: modelInfo.providerId, agentId, signal: params.abortSignal, bestEffort: params.bestEffort });
+      { providerId: modelInfo.providerId, agentId, signal: params.abortSignal, bestEffort: params.bestEffort, facts: classifyProviderError(err) });
 
     // The shared recovery classifier decides rate limits for every path, 'usage limit' wording included.
     // Known drift: the direct/OpenAI catches and rate-limit-retry.ts keep their own substring sets.
@@ -2626,7 +2626,7 @@ async function dialModel(params: ModelCallParams): Promise<ModelCallResult> {
     const statusStr = err instanceof Anthropic.APIError ? `[${err.status}] ` : '';
     // Provider health is tracked in the same place, and NOT for a call the caller stopped.
     settleFailedCall('Model call', `${statusStr}${message}`, errorDetail,
-      { providerId: modelInfo.providerId, agentId, signal: params.abortSignal, bestEffort: params.bestEffort });
+      { providerId: modelInfo.providerId, agentId, signal: params.abortSignal, bestEffort: params.bestEffort, facts: classifyProviderError(err) });
 
     // Determine if retryable: from `err.status` and the structured body, never the message's digits.
     const facts = classifyProviderError(err);

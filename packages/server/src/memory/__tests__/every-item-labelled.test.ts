@@ -225,6 +225,8 @@ async function turn(...steps: typeof script): Promise<Wire[][]> {
 }
 
 function setMailbox(kind: 'user' | 'agent', email: string): void {
+  // The account row too: the approved-list recheck reads the mailboxes from the account table.
+  mockDb.current!.prepare(`INSERT INTO google_accounts (id, kind, position, email, enabled, connected) VALUES (?, ?, 1, ?, 1, 1)`).run(kind, kind, email);
   googleViews.current = [{
     id: kind, kind, position: 1, email, enabled: true, connected: true,
     services: { gmail: true, calendar: false, drive: false, docs: false, sheets: false, contacts: false, tasks: false },

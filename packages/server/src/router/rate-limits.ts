@@ -38,8 +38,8 @@ function parseDurationSeconds(value: string): number | null {
 }
 
 export function updateRateLimits(modelId: string, headers: Record<string, string>): void {
-  const remaining = parseInt(headers['x-ratelimit-remaining'] ?? headers['x-ratelimit-remaining-requests'] ?? '', 10);
-  const resetStr = headers['x-ratelimit-reset'] ?? '';
+  const remaining = parseInt(headers['x-ratelimit-remaining'] ?? headers['x-ratelimit-remaining-requests'] ?? headers['anthropic-ratelimit-requests-remaining'] ?? '', 10);
+  const resetStr = headers['x-ratelimit-reset'] ?? headers['anthropic-ratelimit-requests-reset'] ?? '';
   const retryAfterStr = headers['retry-after'] ?? headers['x-ratelimit-reset-requests'] ?? '';
 
   if (isNaN(remaining) && !resetStr && !retryAfterStr) {
@@ -76,7 +76,7 @@ export function updateRateLimits(modelId: string, headers: Record<string, string
 
   rateLimits.set(modelId, state);
 
-  if (state.remaining === 0 || state.remaining <= 2) {
+  if (state.remaining >= 0 && state.remaining <= 2) {   // -1 means the count is unknown: nothing to warn about
     logger.warn('Rate limit approaching', {
       modelId,
       remaining: state.remaining,

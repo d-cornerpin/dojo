@@ -40,16 +40,20 @@ export function ownerWords(m: Row, askedAtMs: number): string | null {
   return o.kind === 'user' && o.relation === 'owner' ? stripInboundChannelMarker(m.content) : null;
 }
 
-/** The whole message (when a statement) and each whole sentence not ending in "?", normalised: a
- *  question asks, it does not say, so it is never a quotable approval. */
-const quotableUnits = (words: string): string[] => {
+/** A question that asks the agent to act. */
+const ASKS_TO_ACT = /\b(?:can|could|would) you\b|\bplease\b/i;
+
+/** The whole message and each whole sentence, normalised. A statement always counts. A question counts only
+ *  when `asks` is true and it asks the agent to act: the one rule is that a question that asks the agent to act
+ *  counts as words for a control or a hold; an approval needs the whole message to approve. */
+const quotableUnits = (words: string, asks: boolean): string[] => {
+  const counts = (text: string, isQuestion: boolean): boolean => !isQuestion || (asks && ASKS_TO_ACT.test(text));
   const units: string[] = [];
-  if (!/\?[.!?\s]*$/.test(words)) units.push(words);
+  if (counts(words, /\?[.!?\s]*$/.test(words))) units.push(words);
   const parts = words.split(/([.!?]+|\n+)/);
   for (let i = 0; i < parts.length; i += 2) {
     const end = parts[i + 1];
-    if (end !== undefined && end.includes('?')) continue;
-    if (parts[i].length > 0) units.push(parts[i]);
+    if (parts[i].length > 0 && counts(parts[i], end !== undefined && end.includes('?'))) units.push(parts[i]);
   }
   return units.map(normalizeQuote).filter((u) => u.length > 0);
 };
@@ -58,10 +62,10 @@ const ROW_COLS = `content, lane, channel, source_agent_id, a2a_thread_id, a2a_in
             inbound_meta, origin_intent`;
 const PERSON_INBOUND = "role = 'user' AND channel IS NOT NULL AND source_agent_id IS NULL";
 
-const saidIn = (rows: Row[], q: string, floorMs: number): boolean =>
+const saidIn = (rows: Row[], q: string, floorMs: number, asks: boolean): boolean =>
   rows.some((m) => {
     const words = ownerWords(m, floorMs);
-    return words !== null && quotableUnits(words).includes(q);
+    return words !== null && quotableUnits(words, asks).includes(q);
   });
 
 function askedAt(taskId: string, kind: string): number | null {
@@ -71,13 +75,14 @@ function askedAt(taskId: string, kind: string): number | null {
   return r.at;
 }
 
-/** Did the owner write `q` (normalised) as a whole message or sentence to this agent at or after `atMs`? */
-export function ownerSaidSince(atMs: number, q: string, agentId: string): boolean {
+/** Did the owner write `q` (normalised) as a whole message or sentence to this agent at or after `atMs`?
+ *  `asks` admits a question that asks the agent to act (words for a control or a hold, never an approval). */
+export function ownerSaidSince(atMs: number, q: string, agentId: string, asks = false): boolean {
   const floor = Math.floor(atMs / 1000) * 1000;   // `sent_at`'s default is second-resolution
   const rows = getDb().prepare(
     `SELECT ${ROW_COLS} FROM messages WHERE ${PERSON_INBOUND} AND agent_id = ? AND sent_at >= ?`,
   ).all(agentId, floor) as Row[];
-  return saidIn(rows, q, floor);
+  return saidIn(rows, q, floor, asks);
 }
 
 // A relayed owner decision is verified here: agents must not close jobs themselves.

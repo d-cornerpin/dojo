@@ -95,7 +95,7 @@ async function stageUnit(unit: Unit, writer: string, stats: LegacyRebuildStats):
     let text = NO_CONVERSATION_PLACEHOLDER;
     if (content.trim().length > 0) {
       const target = summaryTargetTokens(content, modelCharsPerToken(writer));   // the one target rule, at the writer's density
-      const inputTokens = estimateTokens(content) + estimateTokens(getDepthPrompt(0, target, undefined, unit.agentId));
+      const inputTokens = estimateTokens(content) + estimateTokens(getDepthPrompt(0, target, unit.agentId));
       const wait = waitReason(unit.agentId, writer, inputTokens, target);
       if (wait) return wait;
       stats.modelCalls++;

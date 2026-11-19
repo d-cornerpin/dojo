@@ -283,7 +283,11 @@ export const GlobalAlerts = () => {
       for (const t of onScreen.current) {
         if (t.dedupeKey?.startsWith('owner-alert:') && !standing.has(t.dedupeKey)) removeToastByKey(t.dedupeKey);
       }
-      for (const c of r.data) showOwnerCard(c.words, c.severity === 'critical', c.cardKey, c.cardClass);
+      for (const c of r.data) {
+        const key = `owner-alert:${c.cardKey ?? c.words}`;
+        if (onScreen.current.some((t) => t.dedupeKey === key && t.message === c.words)) continue;   // already shown: no second startle
+        showOwnerCard(c.words, c.severity === 'critical', c.cardKey, c.cardClass);
+      }
     });
     return () => { current = false; };
   }, [connectionStatus, showOwnerCard, removeToastByKey]);

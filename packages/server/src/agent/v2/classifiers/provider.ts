@@ -95,7 +95,7 @@ export function classifyRecoverableProviderError(
     return {
       kind: 'tool_name_unknown',
       userFacingReason: 'a tool call referenced a name that does not exist',
-      guidance: 'Use list_tool_docs to see what is available, then re-issue with a valid tool name.',
+      guidance: 'Pick a name from your tool index (load_tool_docs shows a tool\'s full instructions), then re-issue with a valid tool name.',
     };
   }
 

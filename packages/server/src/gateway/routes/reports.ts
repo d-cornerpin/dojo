@@ -1,7 +1,5 @@
 // The preview card is the only door: the user sees the exact text before anything posts.
-// 1. `POST /:id/approve` is the one place `approveOnce` is called in the whole tree (guarded by
-//    `__tests__/only-the-card-can-post-a-report.test.ts` and, for the import graph, by
-//    `agent/tools/__tests__/the-report-tool-reaches-no-new-door.test.ts`).
+// 1. `POST /:id/approve` is the one place `approveOnce` is called in the whole tree.
 // 2. The edit door is `editBrief`, never the agent's `attachDraft` (legal only from `drafting`): a
 //    route reaching it could swap the brief the owner is reading. Only the five brief fields are accepted.
 // 3. Saving is never approving: a successful PATCH answers the row and the owner presses Post.
@@ -71,12 +69,6 @@ function editRefusal(status: ReportStatus): string {
 // poster and export also call, so the card cannot name a destination delivery would not use.
 reportsRouter.get('/', (c) => {
   return c.json({ ok: true, data: listOpenReports(), destinationRepo: reportRepo() });
-});
-
-reportsRouter.get('/:id', (c) => {
-  const row = getReport(c.req.param('id'));
-  if (!row) return c.json({ ok: false, error: NOT_FOUND }, 404);
-  return c.json({ ok: true, data: row });
 });
 
 

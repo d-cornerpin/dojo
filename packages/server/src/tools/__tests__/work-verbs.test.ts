@@ -67,7 +67,6 @@ const RETIRED: Array<{ name: string; args: Record<string, unknown>; op: string }
   { name: 'tracker_retask', args: { task_id: 'abc12345', directive: 'd'.repeat(40) }, op: 'work_validate:retask' },
   { name: 'tracker_pause_schedule', args: { task_id: 'abc12345' }, op: 'work_schedule:pause' },
   { name: 'tracker_resume_schedule', args: { task_id: 'abc12345' }, op: 'work_schedule:resume' },
-  { name: 'tracker_resolve_missed_runs', args: { task_id: 'abc12345', action: 'run_now' }, op: 'work_schedule:resolve_missed' },
 ];
 
 /** Canonicalise a retired call exactly as loop-ingestion hook 1 does, then read its op. */
@@ -91,7 +90,6 @@ describe('T8V — the collapse is total and reversible at the boundary', () => {
       expect(entry, `${name} has no alias row — a model still holding this name gets "unknown tool"`).toBeDefined();
       expect(isTombstone(entry!), `${name} must route, not tombstone`).toBe(false);
       expect(WORK_VERBS as readonly string[]).toContain((entry as { to: string }).to);
-      expect((entry as { added?: string }).added, `${name}'s alias row needs an added: stamp for SWEEP-F T7`).toBeTruthy();
     }
   });
 
@@ -124,19 +122,7 @@ describe('T8V — the collapse is total and reversible at the boundary', () => {
     expect([...WORK_OPS].filter((op) => !covered.has(op)), 'an operation no retired verb maps to and no task named').toEqual([]);
     expect([...covered].filter((op) => !isWorkOp(op)), 'a phantom operation id in the retired table').toEqual([]);
     expect([...POST_COLLAPSE_OPS].filter((op) => RETIRED.some((r) => r.op === op)), 'a post-collapse op that DOES have a retired verb — move it out of the exemption').toEqual([]);
-    expect(WORK_OPS).toHaveLength(19); // the hand-in absorbs the close verbs; decide and open_proof replace the verdict verbs
-  });
-
-  it('the missed-runs discriminator collision is broken, not papered over', () => {
-    // `tracker_resolve_missed_runs` had its OWN parameter called `action`, and one
-    // of its values was "pause" — the same word as a work_schedule action. Without
-    // the transform, resolving a missed-runs alert with "pause" would silently
-    // become "pause the schedule", a different operation.
-    const r = resolveToolAlias('tracker_resolve_missed_runs', { task_id: 'abc12345', action: 'pause' });
-    expect(toolOpKey(r.name, r.args)).toBe('work_schedule:resolve_missed');
-    expect(r.args.resolution).toBe('pause');
-    // and a genuine schedule pause is still a schedule pause
-    expect(opAfterAlias('tracker_pause_schedule', { task_id: 'abc12345' })).toBe('work_schedule:pause');
+    expect(WORK_OPS).toHaveLength(18); // the hand-in absorbs the close verbs; decide and open_proof replace the verdict verbs
   });
 });
 
@@ -162,7 +148,6 @@ describe('T8V — absorb-don\'t-refuse (#77): a weak model that omits the discri
     ['work_validate', { task_id: 'a', item: 0 }, 'work_validate:open_proof'],
     ['work_validate', { task_id: 'a', verdict: 'approve' }, 'work_validate:decide'],
     ['work_schedule', { task_id: 'a' }, 'work_schedule:pause'],
-    ['work_schedule', { task_id: 'a', resolution: 'skip' }, 'work_schedule:resolve_missed'],
   ];
   for (const [verb, args, op] of CASES) {
     it(`${verb}(${Object.keys(args).join(',') || '—'}) resolves to ${op}`, () => {
@@ -226,7 +211,7 @@ const CANARIES: Canary[] = [
     // reads never disarm (FN-9); closes/handoffs never disarm (FA-T2); governance never disarms
     silent: [
       'tracker_get_status', 'tracker_list_active', 'tracker_reassign_task',
-      'tracker_resolve_missed_runs', 'tracker_retask', 'tracker_pause_schedule', 'tracker_resume_schedule'
+      'tracker_retask', 'tracker_pause_schedule', 'tracker_resume_schedule'
     ],
   },
   {
@@ -286,7 +271,7 @@ const CANARIES: Canary[] = [
     // it. `tracker/__tests__/the-pm-waits-for-the-model-it-assigned.test.ts` §2 censuses the
     // absence at the ladder, which is where the authority was actually being spent.
     // The PM hands in a task it works itself (the main agent decides it), so the hand-in fires.
-    silent: ['tracker_update_status', 'tracker_create_task', 'tracker_create_project', 'reminder_create', 'tracker_resolve_missed_runs', 'tracker_reassign_task'],
+    silent: ['tracker_update_status', 'tracker_create_task', 'tracker_create_project', 'reminder_create', 'tracker_reassign_task'],
   },
   {
     behaviour: 'B11 PM-ONLY operations (a worker calling one is refused at the executor)',

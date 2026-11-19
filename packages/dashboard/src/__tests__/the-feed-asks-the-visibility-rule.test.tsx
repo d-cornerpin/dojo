@@ -115,7 +115,7 @@ const shell = (page: ReactElement) => (
 const feed = async (rows: Row[], wordyMode: boolean) => {
   localStorage.setItem('dojo_wordy_mode', String(wordyMode));
   // CURSOR-AWARE, and it has to be: `Chat.tsx` pages BACKWARDS through history
-  // (`getChatHistory(agent, 200, oldestId, wordy)`) until a page comes back short. A
+  // (`getChatHistory(agent, 200, oldestId)`) until a page comes back short. A
   // mock that answers the same rows for every call feeds that loop forever — measured:
   // one note bubble became fifteen inside a one-second `waitFor`. The real door answers
   // nothing past the oldest row, so this one does too.
