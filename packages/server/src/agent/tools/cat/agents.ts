@@ -46,7 +46,7 @@ import { isNoWakeIntent, deliverA2AMessage, deliverA2AMessage as deliverBc } fro
 import { onAgentRecovered } from '../../../healer/injury-recovery.js';
 import { resolveTaskId, getTask, formatResolveError } from '../../../tracker/schema.js';
 import { moveAssignee, planSpawnTask, type SpawnTaskPlan } from '../../../work/row-authority.js';
-import { sanitizeMessagesOnModelChange } from '../../model-switch.js';
+import { setAgentModel } from '../../model-switch.js';
 import { updateGroup as doUpdateGroup, SYSTEM_GROUP_ID as SYS_GROUP_U, getGroupDetail, getGroups as listAllGroups, deleteGroup as doDeleteGroup, SYSTEM_GROUP_ID as SYS_GROUP } from '../../groups.js';
 import { writeTaskLog } from '../../../tracker/task-log.js';
 // The capability clause derives from these two EXISTING authorities: the advertised
@@ -955,16 +955,8 @@ export const agentsHandlers: ToolHandlerMap = {
       }
 
       if (typeof newModelId === 'string') {
-        if (newModelId === 'auto') {
-          db.prepare("UPDATE agents SET model_id = 'auto', updated_at = datetime('now') WHERE id = ?").run(target.id);
-          sanitizeMessagesOnModelChange(target.id);
-          changes.push('model → auto-routing');
-        } else {
-          const model = resolvedModel!;
-          db.prepare("UPDATE agents SET model_id = ?, updated_at = datetime('now') WHERE id = ?").run(model.id, target.id);
-          const { collapsed } = sanitizeMessagesOnModelChange(target.id);
-          changes.push(`model: ${target.model_id ?? 'auto'} → ${model.name}${collapsed > 0 ? ` (${collapsed} tool msg(s) sanitized)` : ''}`);
-        }
+        await setAgentModel(target.id, newModelId === 'auto' ? 'auto' : resolvedModel!.id);
+        changes.push(newModelId === 'auto' ? 'model → auto-routing' : `model: ${target.model_id ?? 'auto'} → ${resolvedModel!.name}`);
       }
       const accessRefused = applyAccess(changes); if (accessRefused) return accessRefused;
       if (changes.length === 0) {
