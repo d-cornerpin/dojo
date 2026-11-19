@@ -6,7 +6,7 @@ import { stripMoodMarker } from '@dojo/shared';
 import { createLogger } from '../../../../logger.js';
 import { insertMessageIfAbsent, retireById } from '../../../../memory/message-store.js';
 import { decideClaimedDelivery } from '../../claimed-delivery.js';
-import { findRecentDeliveries, findRecentDeliveriesKeyed } from '../../outbound-ledger.js';
+import { findRecentDeliveriesKeyed } from '../../outbound-ledger.js';
 import { advance, type AgentTurnState } from '../../state.js';
 import { turnParkedTheJob } from '../../engine-exit.js';
 import type { FinalizeContext } from './index.js';
@@ -36,9 +36,7 @@ export function recoverDeferredReply(state: AgentTurnState, ctx: FinalizeContext
           agentId, turnNumber, responseText: turnCtx.deferredUserReplyWithTools,
           toolCallsThisTurn: state.toolResults.filter((r) => !r.isError).map((r) => ({ name: r.name })),
           counterpartyName: counterparty.name,
-          hasDeliveryReceipt: (recipient) =>
-            findRecentDeliveriesKeyed(agentId, recipient, 24).length > 0 ||
-            findRecentDeliveries(agentId, recipient, 24).length > 0,
+          hasDeliveryReceipt: (recipient) => findRecentDeliveriesKeyed(agentId, recipient, 24).length > 0,
         });
         if (g.fires) {
           logger.warn('v2 G-SUP-2 recovery: delivered text claims a delivery the LEDGER contradicts; no re-entry available at finalize', {

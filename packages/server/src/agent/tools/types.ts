@@ -72,8 +72,6 @@ export interface ToolDefinition {
   fields?: Readonly<Record<string, ToolFieldDeclaration>>;
   /** The run class: safe runs in parallel, serial ordered, agent/special one at a time. Absent = special. */
   concurrency?: 'safe' | 'serial' | 'agent' | 'special';
-  /** Must equal SEND_TO_PEOPLE (sensei-policy.ts keeps a leaf twin, test-enforced); not the 'send' effect. */
-  reachesPeople?: true;
   /** Changes an account's data, so an agent needs the full level on that account (`access/workspace.ts`). */
   writes?: true;
   maxResultTokens?: number;

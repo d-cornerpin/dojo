@@ -9,14 +9,12 @@
 //       counterparty's — STRIPPED at PHASE-3 T7 Step 2 with the writer; see the note below;
 //   (b) scopeToHumanConversation still excludes OTHER conversations' user rows
 //       (existing no-bleed behavior, pinned) — STAYS, it is the assembler's own law;
-//   (c) the pending-question header only ever contains sends TO the current
-//       counterparty (the ledger recipient filter, recipientMatchesAliases) — STAYS.
+//   (c) moved: the one "was it sent to this person" reader is pinned by its own behaviour test.
 
 import { describe, it, expect } from 'vitest';
 import type { Message, MessageOrigin } from '@dojo/shared';
 import { scopeToHumanConversation } from '../assembler.js';
 import { conversationKey, type TurnCounterparty } from '../../agent/v2/counterparty.js';
-import { recipientMatchesAliases } from '../../agent/v2/outbound-ledger.js';
 import { FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 // ── builders ──
@@ -79,8 +77,7 @@ const davidUserRow = msg({
 // conversation being served, so it cannot bleed, where the echo row's no-bleed depended on
 // the assembler filtering out a row the engine had deliberately persisted elsewhere.
 //
-// Gates (b) and (c) below are NOT about the echo and stay: (b) is the assembler's own
-// no-bleed law and (c) is the ledger's recipient filter.
+// Gate (b) below is not about the echo and stays: it is the assembler's own no-bleed law.
 
 describe('RC-1 gate (b): scopeToHumanConversation still excludes other conversations user rows', () => {
   it('a different human conversation never crosses into a turn scoped elsewhere', () => {
@@ -96,26 +93,5 @@ describe('RC-1 gate (b): scopeToHumanConversation still excludes other conversat
     const otherSelf = msg({ id: 'other-self', role: 'assistant', content: 'done', conversationId: mayaConv, origin: selfOrigin });
     const scoped = scopeToHumanConversation([otherSelf, davidUserRow], userCp('imessage', 'sam', 'Sam'), samConv);
     expect(scoped.map((m) => m.id)).not.toContain('other-self');
-  });
-});
-
-describe('RC-1 gate (c): the pending-question header quotes only sends TO the counterparty', () => {
-  // findRecentDeliveries filters receipts by recipientMatchesAliases; the header uses
-  // that result, so a send to Maya can never surface on Sam's turn and vice versa.
-  it('a receipt to another party does not match the counterparty aliases', () => {
-    const davidAliases = ['sam', '+15550001234'];
-    expect(recipientMatchesAliases('Maya', davidAliases)).toBe(false);
-    expect(recipientMatchesAliases('maya@example.com', davidAliases)).toBe(false);
-  });
-
-  it('a receipt to the counterparty (by name or handle) matches', () => {
-    expect(recipientMatchesAliases('Sam', ['sam'])).toBe(true);
-    expect(recipientMatchesAliases('+15550001234', ['+15550001234'])).toBe(true);
-    // recipient carries "Name <handle>"; a handle alias still matches by substring
-    expect(recipientMatchesAliases('Sam <+15550001234>', ['+15550001234'])).toBe(true);
-  });
-
-  it('short aliases (< 3 chars) never match (avoids spurious substring hits)', () => {
-    expect(recipientMatchesAliases('Sam', ['s'])).toBe(false);
   });
 });

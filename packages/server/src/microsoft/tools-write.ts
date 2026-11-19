@@ -30,7 +30,6 @@ import { CALENDAR_NOTHING_TO_CHANGE } from '../agent/tools/nothing-to-change.js'
 export const microsoftWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'outlook_send',
-    reachesPeople: true,
     description: 'Send an email from the connected Microsoft account (Outlook). Supports attachments, pass an array of absolute local file paths. Files go inline while their total stays within 3MB; any file over 3MB, or past that total, is uploaded to OneDrive (folder "DOJO Email Attachments/<YYYY-MM>") and the recipient gets a shareable link appended to the body.',
     effects: [{ kind: 'send', from: 'args.to' }, { kind: 'fs_read', from: 'args.attachments[]', leaves: true }],
     input_schema: {
@@ -47,7 +46,6 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'outlook_reply',
-    reachesPeople: true,
     description: 'Reply to an existing Outlook email thread. **As of v2.7.24, in-thread replies to "Re:" messages from known correspondents auto-route via the engine, you do NOT need to call this tool for those.** Just write your reply text; the engine sends it on the same thread. Call this tool when: replying to a DIFFERENT thread than the inbound, replying to a notification that the engine did NOT auto-route (e.g., a new email rather than a "Re:"), or when you need attachments / reply_all behavior. Supports attachments, same rules as outlook_send (files go inline while their total stays within 3MB; any file over 3MB, or past that total, is sent as a OneDrive link).',
     effects: [
       { kind: 'send', from: 'derived:the sender of args.message_id' },
@@ -66,7 +64,6 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'outlook_forward',
-    reachesPeople: true,
     description: 'Forward an Outlook email to new recipients. The original message\'s attachments are preserved automatically by Graph. You can also add NEW attachments via the `attachments` parameter; same rule applies: files go inline while their total stays within 3MB; any file over 3MB, or past that total, is sent as a OneDrive link.',
     effects: [{ kind: 'send', from: 'args.to' }, { kind: 'fs_read', from: 'args.attachments[]', leaves: true }],
     input_schema: {
@@ -81,7 +78,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
     },
   },
   {
-    // See the twin note on `gmail_draft`. No `reachesPeople`: this reaches
+    // See the twin note on `gmail_draft`: this reaches
     // nobody. It creates a draft in the mailbox and stops, so it passes the
     // integration WRITE grant and consults no channel grant.
     name: 'outlook_draft',
@@ -206,7 +203,6 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'teams_send_message',
-    reachesPeople: true,
     description: 'Send a message to a Teams chat. **As of v2.7.24, replies to inbound Teams DMs auto-route via the engine, you do NOT need to call this tool to reply.** Just write your reply text; the engine sends it back to the inbound chat.\n\n**DEFAULT-CHANNEL RULE, When the person you are talking to is on the dashboard, their reply belongs in the dashboard.** Do not call this tool to "also share this on Teams" unless they asked for Teams or you judge it is warranted. The [Turn context] block says who you are talking to and where your written reply goes.\n\nCall this tool only when:\n\n- **Starting a new chat** with someone (use teams_create_chat first if you don\'t have a chat_id)\n- **Replying to a DIFFERENT chat** than the inbound that triggered this turn\n- **Sending in a group chat** where you\'ve decided to participate proactively\n- **PROACTIVE outreach** where the turn was NOT triggered by a user message at all (scheduled task, watchdog event, etc.), "proactive" does NOT mean "I am choosing to additionally send via another channel"\n\nRequires a Microsoft work/school account (Entra ID). Not available on personal Microsoft accounts.',
     effects: [{ kind: 'send', from: 'derived:the members of args.chat_id' }],
     input_schema: {
@@ -403,7 +399,6 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'teams_send_channel_message',
-    reachesPeople: true,
     description: 'Post a message to a Microsoft Teams channel. Requires Entra ID. Use teams_list_teams then teams_list_channels to get the IDs.',
     effects: [{ kind: 'send', from: 'derived:the members of args.channel_id' }],
     input_schema: {
