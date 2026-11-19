@@ -49,7 +49,7 @@ export function runTurnClosures(
   const { counterparty, chosenConvKey, chosenConversationId, turnNumber, revertTriggerStampOnAbort } = input;
   // Re-arms a stranded human ask only on a clean retry: no user-facing text, no surfaced reply, no channel
   // send, and no non-idempotent call (re-serving after a side effect would duplicate it). On an engine
-  // turn the same revert releases the engine-event claim.
+  // turn the same revert marks the engine event for its hand-back at finalize.
   const reArmIfStrandedNoAnswer = () => {
     if (
       !turnCtx.state!.lastAssistantTextForIM &&

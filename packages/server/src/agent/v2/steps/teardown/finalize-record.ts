@@ -1,13 +1,15 @@
 // Teardown, the turn record: write how the turn ended, then everything that reads it in the same span.
 
 import { createLogger } from '../../../../logger.js';
-import { setAnswerMessageId } from '../../../../memory/message-store.js';
+import { releaseEngineEventByRowid, setAnswerMessageId, sweepByRowid } from '../../../../memory/message-store.js';
 import { clearUntrackedWorkAcrossTurnsForConversation, continuationContext } from '../../../turn-state.js';
 import { isStopFenced } from '../../../shared-state.js';
 import { taskScope } from '../../../../work/tracker-view.js';
 import { appendWorkEvent, claimingTurnOf, joinState } from '../../../../work/store.js';
-import { settleAsksAtTurnFinalize } from '../../../../work/ask-settlement.js';
-import { assembledContextAsks } from '../../counterparty.js';
+import { settleAsksAtTurnFinalize, type TurnEnd } from '../../../../work/ask-settlement.js';
+import { assembledContextAsks, recordEngineEventDeliveryFailure } from '../../counterparty.js';
+import { serveLater } from '../../serve-later.js';
+import { handBackCauseOf, turnExitReason } from '../../../../work/exit-attribution.js';
 import { inboundAsksNothing } from '../../classifiers/inbound-routing.js';
 import {
   pauseDriveWorkWaitingOnOwner, stillClaimedWork, terminalDeliveryForTurn,
@@ -25,7 +27,7 @@ export async function finalizeTurnRecord(
 ): Promise<void> {
   const {
     agentId, turnCtx, turnNumber, chosenConvKey, chosenConversationId, lastAssembledAtIso,
-    terminalAnswerRowId, triggerWorkId,
+    terminalAnswerRowId, triggerWorkId, claimedEngineEvent,
     toolPhaseEndedBySpinBrake, counterparty, isA2ATurn, isEngineTurn, turnStartedAt,
     db,
   } = ctx;
@@ -79,6 +81,11 @@ export async function finalizeTurnRecord(
         { kind: string; requester: string } | undefined
       : undefined;
     const triggerAskClaimingTurn = triggerWorkId ? claimingTurnOf(triggerWorkId) : null;
+    // How the turn ended, as the exit table reads it (`work/exit-attribution.ts`); the asks and the event share it.
+    const turnEnd: TurnEnd = {
+      retryAt: turnCtx.retryAt, paidBeforeLimit: turnCtx.retryAt !== null && state.loopCount > 1,
+      parkedTheJob: turnParkedTheJob(agentId),
+    };
     // Settle every ask this turn claimed or assembled (work/ask-settlement.ts). Must precede the answer
     // stamp below, which keys on the served_by_turn the settlement writes.
     try {
@@ -86,14 +93,31 @@ export async function finalizeTurnRecord(
         ? assembledContextAsks(agentId, chosenConvKey, lastAssembledAtIso)
         : [];
       const askedNothing = triggerWorkId && await inboundAsksNothing(turnCtx) ? triggerWorkId : null;
-      settleAsksAtTurnFinalize({
-        agentId, turnNumber, assembled, continuing, askedNothing, retryAt: turnCtx.retryAt,
-        paidBeforeLimit: turnCtx.retryAt !== null && state.loopCount > 1, parkedTheJob: turnParkedTheJob(agentId),
-      });
+      settleAsksAtTurnFinalize({ agentId, turnNumber, assembled, continuing, askedNothing, ...turnEnd });
     } catch (err) {
       logger.warn('v2: the turn-finalize ask adjudication FAILED — an owner ask may be left mid-flight', {
         agentId, turnNumber, error: err instanceof Error ? err.message : String(err),
       }, agentId);
+    }
+    // The engine event this turn claimed: swept on Stop; released after an abort or a counted cut that made no
+    // side effect, to wait for the provider's reset when the limit met the first call; otherwise it stays served.
+    if (claimedEngineEvent) {
+      try {
+        const exit = turnExitReason(agentId, turnNumber);
+        const cause = handBackCauseOf(exit, turnEnd);
+        const { rowid } = claimedEngineEvent;
+        if (exit === 'stop') {
+          sweepByRowid({ rowid, agentId });
+        } else if ((turnCtx.abortHandBack || cause === 'cut') && state.nonIdempotentCallsThisTurn === 0
+            && releaseEngineEventByRowid({ rowid, agentId, turnNumber: claimedEngineEvent.turnNumber }) > 0) {
+          if (cause === 'wait') serveLater({ kind: 'row', agentId, rowid }, turnCtx.retryAt, 'the provider asked to wait; the event is served at its reset');
+          else recordEngineEventDeliveryFailure(agentId, rowid);
+        }
+      } catch (err) {
+        logger.warn('v2: the engine event hand-back at finalize failed; the event stays served', {
+          agentId, turnNumber, error: err instanceof Error ? err.message : String(err),
+        }, agentId);
+      }
     }
     // Closeout: warn when an unanswered turn leaves work claimed, and hand work back to the owner when a
     // user turn talked but did not act. Records only, no prose; the rules live in answered-edge.ts.
