@@ -311,7 +311,7 @@ async function dialImage(req: GenerateImageRequest, slot: AgentCallSlot): Promis
   if (!decoded) {
     return {
       ok: false,
-      error: 'Failed to decode base64 image data from provider response',
+      error: 'The image provider sent back something that is not a picture the Dojo can save (it has to be a PNG, JPEG, GIF or WEBP picture), so nothing was saved. Try again, or pick a different image model.',
       code: 'DECODE_ERROR',
     };
   }
