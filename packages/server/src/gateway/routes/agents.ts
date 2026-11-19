@@ -336,17 +336,9 @@ agentsRouter.put('/:id', async (c) => {
   const updates: string[] = [];
   const params: unknown[] = [];
 
-  if (typeof body.modelId === 'string') {
-    if (body.modelId === 'auto') {
-      updates.push("model_id = 'auto'");
-    } else {
-      const model = db.prepare('SELECT id FROM models WHERE id = ? AND is_enabled = 1').get(body.modelId);
-      if (!model) {
-        return c.json({ ok: false, error: 'Model not found or not enabled' }, 400);
-      }
-      updates.push('model_id = ?');
-      params.push(body.modelId);
-    }
+  if (typeof body.modelId === 'string' && body.modelId !== 'auto'
+    && !db.prepare('SELECT 1 FROM models WHERE id = ? AND is_enabled = 1').get(body.modelId)) {
+    return c.json({ ok: false, error: 'Model not found or not enabled' }, 400);
   }
 
   if (body.permissions !== undefined) {
@@ -447,6 +439,8 @@ agentsRouter.put('/:id', async (c) => {
     db.prepare(`UPDATE agents SET ${updates.join(', ')} WHERE id = ?`).run(...params);
   }
 
+  if (typeof body.modelId === 'string') await setAgentModel(id, body.modelId);
+
   // The access write comes last, after the column batch, so nothing above re-writes `permissions` from a
   // stale read. The delta is computed against the object as it stands now: no delta, no write, no audit row.
   if (pendingGrants) {
@@ -461,7 +455,7 @@ agentsRouter.put('/:id', async (c) => {
   }
 
   logger.info('Agent config updated', { agentId: id, fields: Object.keys(body) });
-  if (body.modelId !== undefined || body.toolsPolicy !== undefined || pendingGrants) await (await import('../../agent/v2/honest-stop-lock.js')).noteModelsChanged(id);   // a no-fit lock gets another look
+  if (body.toolsPolicy !== undefined || pendingGrants) await (await import('../../agent/v2/honest-stop-lock.js')).noteModelsChanged(id);   // a no-fit lock gets another look
 
   const row = db.prepare('SELECT * FROM agents WHERE id = ?').get(id) as Record<string, unknown>;
   return c.json({ ok: true, data: rowToAgentDetail(row) });
