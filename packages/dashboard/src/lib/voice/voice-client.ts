@@ -348,6 +348,13 @@ export class VoiceClient {
   }
 
   async stop(): Promise<void> {
+    await this.teardown();
+    this.setState('idle');
+  }
+
+  // Ends everything a session holds: the microphone, playback, the server socket, the audio context and the
+  // page listener. Every way out of a session (stop, a failed start, a dropped connection) ends here.
+  private async teardown(): Promise<void> {
     try { this.vad?.destroy(); } catch { /* ignore */ }
     this.vad = null;
     this.cancelPlayback();
@@ -363,12 +370,12 @@ export class VoiceClient {
       document.removeEventListener('visibilitychange', this.visibilityHandler);
       this.visibilityHandler = null;
     }
-    this.setState('idle');
   }
 
 
   private fail(detail: string, err?: unknown): void {
     const message = err instanceof Error ? err.message : String(err ?? detail);
+    void this.teardown();
     this.setState('error');
     this.emit('error', `${detail}: ${message}`);
     console.error('[voice]', detail, err);
@@ -412,10 +419,7 @@ export class VoiceClient {
         reject(new Error('voice WS error'));
       };
       ws.onclose = () => {
-        if (this.ws === ws) {
-          this.ws = null;
-          if (this.isActive()) this.setState('idle');
-        }
+        if (this.ws === ws) void this.stop();
       };
       ws.onmessage = (ev) => this.handleWsMessage(ev);
     });
