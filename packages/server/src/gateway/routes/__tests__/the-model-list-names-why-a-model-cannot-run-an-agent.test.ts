@@ -93,7 +93,7 @@ afterEach(() => {
   mockDb.current = null;
 });
 
-type Row = { id: string; notForAgents?: string | null };
+type Row = { id: string; notForAgents?: string | null; notAChatModel?: boolean };
 const rowById = (rows: Row[], id: string): Row | undefined => rows.find((r) => r.id === id);
 
 describe('the model lists say why a model cannot run an agent', () => {
@@ -103,6 +103,9 @@ describe('the model lists say why a model cannot run an agent', () => {
     expect(rowById(rows, 'big')?.notForAgents).toBeNull();
     expect(rowById(rows, 'tiny')?.notForAgents).toBe('too small for an agent');
     expect(rowById(rows, 'video')?.notForAgents).toBe('not a chat model');
+    expect(rowById(rows, 'video')?.notAChatModel).toBe(true);
+    expect(rowById(rows, 'tiny')?.notAChatModel).toBe(false);
+    expect(rowById(rows, 'big')?.notAChatModel).toBe(false);
   });
 
   it("the router's model list names the small one", async () => {
