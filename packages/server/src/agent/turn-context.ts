@@ -70,8 +70,6 @@ export interface TurnContext {
 
   deferredNoteId: string | null;
 
-  turnInjectedTechniqueId: string | null;
-
   // Stamped by assemble, read by teardown to claim in-window rows; null is legal, so a lost write is silent.
   lastAssembledAtIso: string | null;
   pickupSeq: number | null;
@@ -133,7 +131,6 @@ export function openTurnContext(agentId: string): TurnContext {
     ownerAffinityDestination: null,
     deferredUserReplyWithTools: null,
     deferredNoteId: null,
-    turnInjectedTechniqueId: null,
     lastAssembledAtIso: null,
     pickupSeq: null,
     freshTailDropWarned: false,

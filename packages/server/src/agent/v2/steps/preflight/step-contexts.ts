@@ -69,7 +69,6 @@ export function runStepContexts(
     chosenConvKey, chosenConversationId, lastAssembledAtIso: turnCtx.lastAssembledAtIso,
     terminalAnswerRowId: sc.terminalAnswerRowId, triggerWorkId,
     toolPhaseEndedBySpinBrake: turnCtx.toolPhaseEndedBySpinBrake,
-    turnInjectedTechniqueId: turnCtx.turnInjectedTechniqueId,
     counterparty, isA2ATurn, isEngineTurn, turnStartedAt,
     inboundChannel, inboundContext,
     reArmIfStrandedNoAnswer, stopStatusHeartbeat,

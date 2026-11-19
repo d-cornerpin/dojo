@@ -139,7 +139,6 @@ function ctx(over: Partial<TeardownContext> = {}): TeardownContext {
     terminalAnswerRowId: null,
     triggerWorkId: null,
     toolPhaseEndedBySpinBrake: false,
-    turnInjectedTechniqueId: null,
     counterparty: { kind: 'user' } as TeardownContext['counterparty'],
     isA2ATurn: false,
     isEngineTurn: false,

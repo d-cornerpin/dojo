@@ -90,7 +90,7 @@ const turnCtxFor = (over: Record<string, unknown> = {}): Bag => ({
   engineStartAckDeliveredThisTurn: false, startAckSteersInjected: 0,
   // The S1 shape: the turn ran ONE model call and no tools at all.
   anyToolStartedThisTurn: false,
-  toolPhaseEndedBySpinBrake: false, turnInjectedTechniqueId: null,
+  toolPhaseEndedBySpinBrake: false,
   lastAssembledAtIso: null, 
   ...over,
 });
@@ -100,7 +100,7 @@ function ctxFor(turnCtx: Bag, over: Partial<TeardownContext> = {}): TeardownCont
     agentId: AGENT, turnCtx: turnCtx as never, turnNumber: TURN, db: mockDb.current!,
     chosenConvKey: 'dashboard:owner', chosenConversationId: CONV, lastAssembledAtIso: null,
     terminalAnswerRowId: 'answer-1', triggerWorkId: ASK,
-    toolPhaseEndedBySpinBrake: false, turnInjectedTechniqueId: null,
+    toolPhaseEndedBySpinBrake: false,
     counterparty: { kind: 'user', name: FX.n11, relation: 'owner', channel: 'dashboard', senderId: 'owner', senderIsAgent: false } as never,
     isA2ATurn: false, isEngineTurn: false,
     turnStartedAt: new Date(Date.now() - 6_000).toISOString().slice(0, 19).replace('T', ' '),
