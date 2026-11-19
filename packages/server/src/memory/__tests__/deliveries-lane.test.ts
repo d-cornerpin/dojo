@@ -144,6 +144,15 @@ describe('the lane reads the deliveries rows natively', () => {
     expect(text({ conversationId: 'conv-sam', counterpartyName: 'Sam' })).toContain('SkyMiles');
   });
 
+  it('with no delivery to this conversation, the newest delivery to the counterparty is shown and no one else\'s', () => {
+    seedSend('whats your Delta SkyMiles number?', 2, { conversation_id: 'conv-sam', recipient_id: '+15551111', recipient_display: 'Sam' });
+    seedSend('did the invoice go out?', 1, { conversation_id: 'conv-maya', recipient_id: '+15552222', recipient_display: 'Maya' });
+    const out = text({ conversationId: null, counterpartyName: 'Sam', recipientHints: ['+15551111', 'Sam'] })!;
+    expect(out).toContain('SkyMiles');
+    expect(out).not.toContain('invoice');
+    expect(text({ conversationId: null, counterpartyName: 'Joe', recipientHints: ['+15553333', 'Joe'] })).toBeNull();
+  });
+
   it('carries MORE THAN ONE question, newest first — the echo rows\' own job', () => {
     seedSend('question ONE about the invoice', 6);
     seedSend('question TWO about the flight', 4);
