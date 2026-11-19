@@ -38,13 +38,13 @@ export interface PostExecutionContext {
 export function runPostExecution(state: AgentTurnState, ctx: PostExecutionContext): StepOutcome {
   const { agentId, turnNumber, turnToolResults, broadcast } = ctx;
 
-  // Every call came back empty ("No results found", "not in memory") or refused ([BLOCKED]): two such passes
-  // in a row steer once, then two more end the turn.
+  // Every call came back empty ("No results found", "not in memory") or refused ([BLOCKED] from a broker, [BLOCKED by engine]
+  // from a policy, the overseer's wall or a gate): two such passes in a row steer once, then two more end the turn.
   const deadEnd =
     turnToolResults.length > 0 &&
     turnToolResults.every(
       (tr) => tr.isError
-        ? tr.content.includes('[BLOCKED]')
+        ? tr.content.includes('[BLOCKED')
         : tr.content.includes('No results found') || tr.content.includes('not in memory'),
     );
   if (deadEnd) {
