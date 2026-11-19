@@ -10,11 +10,10 @@ import { isListedAgentModel } from '../../lib/role-models';
 import { useGuardedLoad } from '../../lib/load-guard';
 import { AgentModelOption } from '../AgentModelOption';
 
-
 type DreamingConfig = Awaited<ReturnType<typeof api.getDreamingConfig>> extends infer R ? (R extends { ok: true; data: infer D } ? D : never) : never;
 
 export const DreamingTab = () => {
-  // The schedule is read before it is shown: a failed read must not appear as 03:00 / full, because Save
+  // The schedule is read before it is shown: a failed read must not appear as 03:00, because Save
   // writes whatever is on screen over the real schedule.
   const load = useGuardedLoad<DreamingConfig>('dreaming', () => api.getDreamingConfig());
   if (load.status === 'loading') return <div className="tile loading-state">Loading...</div>;
@@ -116,7 +115,6 @@ const DreamingEditor = ({ initial }: { initial: DreamingConfig }) => {
             When the Dreamer agent wakes up to process the day's conversations. Default: 3:00 AM.
           </div>
         </div>
-
 
         <div className="srow pt-2 flex-wrap">
           <button
