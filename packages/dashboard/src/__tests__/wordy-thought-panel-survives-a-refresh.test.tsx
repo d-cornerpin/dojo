@@ -62,11 +62,6 @@ beforeEach(() => {
 afterEach(() => { vi.clearAllMocks(); });
 
 describe('wordy thought panel survives a refresh', () => {
-  it('a loaded answer shows its Thought panel', async () => {
-    const view = await open();
-    expect(view.getByText('Thought')).toBeTruthy();
-  });
-
   it('opening the panel shows the thinking the server sent', async () => {
     const view = await open();
     fireEvent.click(view.getByText('Thought'));
