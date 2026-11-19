@@ -1,33 +1,14 @@
-// PHASE-4 T1 Step 1 — the five-way `Outcome<T>` and its quarantine.
-//
-// These clauses pin the three things the phase buys, and nothing else:
-//   1. the five arms exist and are distinguishable (a boolean cannot do this);
-//   2. the tool seam's reason vocabulary is `blocked | crashed | cancelled`;
-//   3. `unknown` is QUARANTINED to non-live data, at every wall that claims to
-//      hold it — and the quarantine is proven by watching it REFUSE, never by
-//      watching a legal call succeed.
-//
-// Wall 2 (the `LiveOutcome` type excluding the arm) is a COMPILE-time guarantee,
-// so it cannot be asserted from a runtime test — `packages/server/tsconfig.json`
-// excludes `__tests__` from `npm run typecheck`, so a `@ts-expect-error` here
-// would be a comment. It is proven instead by the burn-down: `WorkOutcome` and
-// `ToolOutcome` are built on `LiveOutcome`, and a hand-planted `unknown` arm in
-// either fails `npm run typecheck`. That proof is in the T1 report, with its
-// command and its output.
+// The shared Outcome arms and the tool seam's reason vocabulary (`blocked | crashed | cancelled | invalid_args`),
+// read through the real tool-door classifier.
 
 import { describe, it, expect } from 'vitest';
 import {
-  OUTCOME_KINDS,
   applied, refused, failed,
-  type Outcome, type ToolSeamReason, type ToolResult,
+  type LiveOutcome, type ToolSeamReason, type ToolResult,
 } from '@dojo/shared';
 import { classifyToolResult, toolResultOf, toolWasBlocked } from '../agent/tool-outcome.js';
 
-describe('Outcome<T>: the five arms', () => {
-  it('declares exactly five kinds, in the argued order', () => {
-    expect([...OUTCOME_KINDS]).toEqual(['applied', 'no_change', 'refused', 'failed', 'unknown']);
-  });
-
+describe('Outcome: the four arms', () => {
   it('carries the applied PROOF, not merely the fact that something applied', () => {
     const o = applied({ id: 'w1', eventId: 7 });
     if (o.kind !== 'applied') throw new Error('unreachable');
@@ -44,7 +25,7 @@ describe('Outcome<T>: the five arms', () => {
 
 describe('the tool seam reason (research 22)', () => {
   it('types a tool-seam outcome with that vocabulary', () => {
-    const o: Outcome<string, ToolSeamReason> = refused('blocked', 'denied by tools_policy');
+    const o: LiveOutcome<string, ToolSeamReason> = refused('blocked', 'denied by tools_policy');
     expect(o.kind === 'refused' && o.reason).toBe('blocked');
   });
 });

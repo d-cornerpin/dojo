@@ -38,12 +38,9 @@ const DREAM_STALE_HOURS = 48;              // warning: an archive unfiled this l
 const COLLECTOR_CAPS = {
   agent_anomalies: 4000,
   error_digest: 2000,
-  model_performance: 1000,
   tracker_health: 2000,
   bulletproof_health: 1500,
-  nudge_stats: 500,
   budget: 500,
-  context_health: 1500,
   dream_health: 1500,
   update_check: 800,
   auto_rollback: 900,
@@ -199,87 +196,6 @@ function getErrorDigest(): DiagnosticItem[] {
   return items;
 }
 
-function getModelPerformance(): DiagnosticItem[] {
-  const db = getDb();
-  const items: DiagnosticItem[] = [];
-
-  // Per-model error rates from audit_log
-  const models = db.prepare(`
-    SELECT target as model_id,
-           COUNT(*) as total,
-           SUM(CASE WHEN result = 'error' THEN 1 ELSE 0 END) as errors
-    FROM audit_log
-    WHERE action_type = 'model_call' AND created_at > datetime('now', '-24 hours')
-    GROUP BY target
-    HAVING total >= 5
-  `).all() as Array<{ model_id: string; total: number; errors: number }>;
-
-  for (const model of models) {
-    const errorRate = model.errors / model.total;
-    if (errorRate > 0.1) {
-      const modelName = getModelName(model.model_id);
-      const pct = Math.round(errorRate * 100);
-      items.push({
-        severity: errorRate > 0.3 ? 'warning' : 'info',
-        code: 'HIGH_ERROR_RATE',
-        title: `The ${modelName} model is failing ${pct}% of the time`,
-        detail: `${model.errors} out of ${model.total} requests to this model failed in the last 24 hours. Agents using this model may be slow or unresponsive.`,
-      });
-    }
-  }
-
-  return items;
-}
-
-function getContextHealth(): DiagnosticItem[] {
-  const db = getDb();
-  const items: DiagnosticItem[] = [];
-
-  // Check for agents with orphaned tool messages
-  const agents = db.prepare(`
-    SELECT DISTINCT agent_id FROM messages
-    WHERE role = 'tool' AND created_at > (unixepoch('now', '-24 hours') * 1000)
-  `).all() as Array<{ agent_id: string }>;
-
-  for (const { agent_id } of agents) {
-    // Count tool_result messages that reference IDs not in preceding assistant messages
-    const toolMsgs = db.prepare(`
-      SELECT content FROM messages
-      WHERE agent_id = ? AND role IN ('tool', 'assistant')
-        AND (content LIKE '%tool_use%' OR content LIKE '%tool_result%')
-      ORDER BY created_at DESC LIMIT 20
-    `).all(agent_id) as Array<{ content: string }>;
-
-    let orphanedCount = 0;
-    for (const msg of toolMsgs) {
-      try {
-        const blocks = JSON.parse(msg.content);
-        if (Array.isArray(blocks)) {
-          for (const b of blocks) {
-            if (b.type === 'tool_result' && b.tool_use_id?.startsWith('text_tool_')) {
-              orphanedCount++;
-            }
-          }
-        }
-      } catch { /* not JSON */ }
-    }
-
-    if (orphanedCount > 0) {
-      const agentName = getAgentName(agent_id);
-      items.push({
-        severity: 'warning',
-        code: 'ORPHANED_TOOL_MESSAGES',
-        title: `${agentName} has corrupted messages that could cause crashes`,
-        detail: `${agentName} has ${orphanedCount} leftover message(s) from a previous model that may cause errors. Cleaning these up should fix it.`,
-        agentId: agent_id,
-        agentName,
-      });
-    }
-  }
-
-  return items;
-}
-
 function getTrackerHealth(): DiagnosticItem[] {
   const db = getDb();
   const items: DiagnosticItem[] = [];
@@ -365,34 +281,7 @@ function getBulletproofToolHealth(): DiagnosticItem[] {
     });
   }
 
-  // 2. Cryptic tool errors leaking to the model: raw SQLite/JS exceptions in the last 24h of the audit log
-  //    mean a tool is missing input validation or DB error wrapping; the model cannot act on them.
-  const crypticErrors = db.prepare(`
-    SELECT COUNT(*) as cnt, MAX(target) as sample
-    FROM audit_log
-    WHERE action_type = 'tool_call'
-      AND result = 'error'
-      AND created_at > datetime('now', '-24 hours')
-      AND (
-        target LIKE '%FOREIGN KEY constraint%'
-        OR target LIKE '%NOT NULL constraint%'
-        OR target LIKE '%Cannot read properties%'
-        OR target LIKE '%toLowerCase%'
-        OR target LIKE '%is not a function%'
-        OR target LIKE '%undefined%'
-      )
-  `).get() as { cnt: number; sample: string | null };
-
-  if (crypticErrors.cnt > 0) {
-    items.push({
-      severity: crypticErrors.cnt >= 5 ? 'critical' : 'warning',
-      code: 'TOOL_ERROR_LEAK',
-      title: `${crypticErrors.cnt} cryptic tool error(s) leaked to agents in the last 24h`,
-      detail: `Tools should never surface raw SQLite/JS errors to the model — wrap them via friendlyDbError / checkRequired in tool-helpers.ts. Sample: ${(crypticErrors.sample ?? '').slice(0, 200)}.`,
-    });
-  }
-
-  // 3. Idle apprentices with assigned tasks that were never poked (a caller may have spawned with
+  // 2. Idle apprentices with assigned tasks that were never poked (a caller may have spawned with
   //    auto_start: false and forgotten to wake the agent); flagged at 30+ min so quick test runs stay quiet.
   const neverPoked = db.prepare(`
     SELECT a.id, a.name, t.title as task_title, t.id as task_id, a.created_at
@@ -413,7 +302,7 @@ function getBulletproofToolHealth(): DiagnosticItem[] {
       severity: 'info',
       code: 'APPRENTICE_NEVER_POKED',
       title: `"${row.name}" was spawned 30+ min ago and never started their task`,
-      detail: `${row.name} (${row.id}) has been idle since spawn — their assigned task "${row.task_title}" hasn't been worked on. If you spawned them with auto_start: false, send_to_agent or assign a task to wake them. Otherwise, terminate them.`,
+      detail: `${row.name} (${row.id}) has been idle since it was made: its assigned task "${row.task_title}" hasn't been worked on. If you spawned them with auto_start: false, send_to_agent or assign a task to wake them. Otherwise, terminate them.`,
       agentId: row.id,
       agentName: row.name,
     });
@@ -497,7 +386,7 @@ function getDreamHealth(): DiagnosticItem[] {
       severity: 'info',
       code: 'DREAM_BACKLOG',
       title: `${backlog} conversations are waiting to be dreamed`,
-      detail: `The Dreamer hasn't processed these archives yet. Memories from these conversations aren't searchable until it runs. Trigger a cycle now with dreamer_run_now, or wait for the next scheduled run.`,
+      detail: `The Dreamer hasn't processed these archives yet. Memories from these conversations aren't searchable until it runs. The main agent can start a cycle now with dreamer_run_now (you cannot), or it runs at the next scheduled time.`,
     });
   }
 
@@ -517,36 +406,6 @@ function getDreamHealth(): DiagnosticItem[] {
         `conversations could not be saved to long-term memory and were parked. ` +
         `${poison.latestReason ? `Most recent reason: ${poison.latestReason} ` : ''}` +
         `Do NOT change the Dreamer's model on your own; flag it for the main agent to look at.`,
-    });
-  }
-
-  return items;
-}
-
-function getNudgeStats(): DiagnosticItem[] {
-  const db = getDb();
-  const items: DiagnosticItem[] = [];
-
-  // Count empty response / model failure events per agent in last 24h from audit_log
-  // (nudges are in-memory only now, so we check for model failures as a proxy)
-  const nudges = db.prepare(`
-    SELECT agent_id, COUNT(*) as cnt
-    FROM audit_log
-    WHERE action_type = 'model_call' AND result = 'error'
-      AND created_at > datetime('now', '-24 hours')
-    GROUP BY agent_id
-    HAVING cnt >= 3
-  `).all() as Array<{ agent_id: string; cnt: number }>;
-
-  for (const row of nudges) {
-    const agentName = getAgentName(row.agent_id);
-    items.push({
-      severity: row.cnt >= 8 ? 'warning' : 'info',
-      code: 'NUDGE_HEAVY',
-      title: `${agentName} needed help ${row.cnt} times to finish responses`,
-      detail: `${agentName} kept giving blank or incomplete answers and had to be prompted to try again. This usually means the model it's running on isn't powerful enough for its job.`,
-      agentId: row.agent_id,
-      agentName,
     });
   }
 
@@ -742,14 +601,6 @@ function getAgentName(agentId: string): string {
   } catch { return agentId; }
 }
 
-function getModelName(modelId: string): string {
-  try {
-    const db = getDb();
-    const row = db.prepare('SELECT name, api_model_id FROM models WHERE id = ?').get(modelId) as { name: string; api_model_id: string } | undefined;
-    return row ? `${row.name} (${row.api_model_id})` : modelId;
-  } catch { return modelId; }
-}
-
 /** The summary check's running numbers, when anything was checked. */
 function summaryCheckItems(): DiagnosticItem[] {
   const line = summaryCheckLine();
@@ -764,13 +615,10 @@ export function compileDiagnosticReport(): DiagnosticReport {
   const items: DiagnosticItem[] = [
     ...collect('agent status', () => capItemsShowingOmissions(getAgentStatusAnomalies(), COLLECTOR_CAPS.agent_anomalies, 'agent_anomalies')),
     ...collect('error digest', () => capItemsShowingOmissions(getErrorDigest(), COLLECTOR_CAPS.error_digest, 'error_digest')),
-    ...collect('model performance', () => capItemsShowingOmissions(getModelPerformance(), COLLECTOR_CAPS.model_performance, 'model_performance')),
-    ...collect('context health', () => capItemsShowingOmissions(getContextHealth(), COLLECTOR_CAPS.context_health, 'context_health')),
     ...collect('tracker health', () => capItemsShowingOmissions(getTrackerHealth(), COLLECTOR_CAPS.tracker_health, 'tracker_health')),
     ...collect('tool health', () => capItemsShowingOmissions(getBulletproofToolHealth(), COLLECTOR_CAPS.bulletproof_health, 'bulletproof_health')),
     ...collect('recurring tool errors', getRecurringToolErrors),   // uncapped: a cap drops a whole section
     ...collect('dream health', () => capItemsShowingOmissions(getDreamHealth(), COLLECTOR_CAPS.dream_health, 'dream_health')),
-    ...collect('nudge statistics', () => capItemsShowingOmissions(getNudgeStats(), COLLECTOR_CAPS.nudge_stats, 'nudge_stats')),
     ...collect('provider outage', () => capItemsShowingOmissions(getProviderOutagePatterns(), 1500, 'provider_outage')),
     ...collect('budget', () => capItemsShowingOmissions(getBudgetStatus(), COLLECTOR_CAPS.budget, 'budget')),
     ...collect('update check', () => capItemsShowingOmissions(getUpdateCheckHealthItems(), COLLECTOR_CAPS.update_check, 'update_check')),
@@ -789,7 +637,7 @@ export function compileDiagnosticReport(): DiagnosticReport {
   // Build report text
   const lines: string[] = [];
   const now = new Date().toISOString().replace('T', ' ').slice(0, 16);
-  lines.push(`═══ DOJO DAILY DIAGNOSTIC — ${now} ═══`);
+  lines.push(`═══ DOJO DAILY DIAGNOSTIC, ${now} ═══`);
   lines.push('');
 
   if (criticalCount > 0) {
@@ -826,7 +674,7 @@ export function compileDiagnosticReport(): DiagnosticReport {
   }
 
   if (items.length === 0) {
-    lines.push('Everything looks good — no issues found in the last 24 hours.');
+    lines.push('Everything looks good: no issues found in the last 24 hours.');
     lines.push('');
   }
 

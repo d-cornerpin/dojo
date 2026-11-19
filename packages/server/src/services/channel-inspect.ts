@@ -4,11 +4,9 @@ import { isIMBridgeRunning } from '../services/imessage-bridge.js';
 import { getTwilioConfig } from '../twilio/auth.js';
 import { getChannelCapabilities } from './capability-registry.js';
 import { getTwilioSmsSafeSenders, getTwilioVoiceSafeCallers } from '../services/channel-safe-senders.js';
-import {
-  getGmailSafeSenders,
-  getOutlookSafeSenders,
-  getTeamsSafeSenders,
-} from '../services/channel-safe-senders.js';
+import { getMailSafeSenders, getTeamsSafeSenders } from '../services/channel-safe-senders.js';
+import { getPrimaryGoogleAccount } from '../google/accounts.js';
+import { getPrimaryMicrosoftAccount } from '../microsoft/accounts.js';
 
 /**
  * Build the deep channel-landscape report for the `channel_inspect`
@@ -41,7 +39,7 @@ export function buildChannelInspectReport(): string {
     if (mb.sendOutbound) mbCaps.push('send outbound');
     let safeSenderCount = 0;
     try {
-      safeSenderCount = getGmailSafeSenders(mb.slot).length;
+      safeSenderCount = getMailSafeSenders('gmail', getPrimaryGoogleAccount(mb.slot)?.id ?? mb.slot).length;
     } catch { /* config may not include this slot */ }
     gmailLines.push(
       `  - ${email} (${label}) - ${mbCaps.join(' + ') || 'no email capabilities active'} - ${safeSenderCount} safe sender(s) configured`,
@@ -65,7 +63,7 @@ export function buildChannelInspectReport(): string {
     if (mb.sendOutbound) mbCaps.push('send outbound');
     let safeSenderCount = 0;
     try {
-      safeSenderCount = getOutlookSafeSenders(mb.slot).length;
+      safeSenderCount = getMailSafeSenders('outlook', getPrimaryMicrosoftAccount(mb.slot)?.id ?? mb.slot).length;
     } catch { /* config may not include this slot */ }
     outlookLines.push(
       `  - ${email} (${label}) - ${mbCaps.join(' + ') || 'no email capabilities active'} - ${safeSenderCount} safe sender(s) configured`,

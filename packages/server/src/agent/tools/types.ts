@@ -70,7 +70,7 @@ export interface ToolDefinition {
   /** Named token that is not a parameter -> reason; stale once the token is gone or declared (census). */
   advertisedNotDeclared?: Readonly<Record<string, string>>;
   fields?: Readonly<Record<string, ToolFieldDeclaration>>;
-  /** Canonical partition (TOOL_CATEGORY is a fallback): safe parallel, serial ordered, agent/special one. */
+  /** The run class: safe runs in parallel, serial ordered, agent/special one at a time. Absent = special. */
   concurrency?: 'safe' | 'serial' | 'agent' | 'special';
   /** Must equal SEND_TO_PEOPLE (sensei-policy.ts keeps a leaf twin, test-enforced); not the 'send' effect. */
   reachesPeople?: true;

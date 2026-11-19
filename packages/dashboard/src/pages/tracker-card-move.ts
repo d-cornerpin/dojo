@@ -15,8 +15,10 @@ export const cardMover = (
   if (newStatus === 'sent_back' && before?.status !== 'handed_in') return showError('Only a task that was handed in can be sent back.');
   const reason = newStatus === 'sent_back' ? window.prompt('Why are you sending it back? Its worker reads this.')?.trim() ?? '' : '';
   if (newStatus === 'sent_back' && !reason) return;
+  // The owner's drop on Closed is his cancel (the server records it so); show that at once.
+  const shown: Task['status'] = newStatus === 'fallen' ? 'cancelled' : newStatus;
   setTasks((prev) =>
-    prev.map((t) => (t.id === taskId ? { ...t, status: newStatus, updatedAt: new Date().toISOString() } : t)),
+    prev.map((t) => (t.id === taskId ? { ...t, status: shown, updatedAt: new Date().toISOString() } : t)),
   );
 
   const result = newStatus === 'sent_back' ? await api.decideTask(taskId, 'send_back', reason) : await api.updateTask(taskId, { status: newStatus });

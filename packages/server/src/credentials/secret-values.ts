@@ -1,8 +1,10 @@
 // In-memory set of credential values each agent handled (declared secret fields, credential_get results).
 // Redact at persist (value to tagged placeholder); hydrate at the provider boundary (placeholder to value).
-// Tags are a global counter, never derived from a value; a value this process no longer holds reads as stale.
+// Tags are random, never derived from a value or reused after a restart; a value this process no longer holds reads as stale.
 // No chat reveal seam exists: the agent never shows a credential; a person sees it in the vault tab only.
-// This leaf imports nothing, so credentials/tools.ts can reach it without a cycle; secret-fields.ts re-exports it.
+// This leaf imports only node:crypto, so credentials/tools.ts can reach it without a cycle; secret-fields.ts re-exports it.
+
+import crypto from 'node:crypto';
 
 /** Untagged placeholder for declared-field values; never hydrated, the value lives in the encrypted store. */
 export const REDACTED_CREDENTIAL = '<redacted-credential>';
@@ -24,8 +26,6 @@ type AgentSecrets = {
 };
 const handedCredentialValues = new Map<string, AgentSecrets>();
 
-let tagCounter = 0;
-
 export function noteHandedCredentialValues(agentId: string, values: string[]): void {
   if (values.length === 0) return;
   let state = handedCredentialValues.get(agentId);
@@ -33,7 +33,8 @@ export function noteHandedCredentialValues(agentId: string, values: string[]): v
   for (const v of values) {
     if (typeof v !== 'string' || v.length < MIN_REDACTABLE_CREDENTIAL_LEN) continue;
     if (state.byValue.has(v)) continue;
-    const tag = `c${++tagCounter}`;
+    let tag: string;
+    do { tag = crypto.randomBytes(4).toString('hex'); } while (state.byTag.has(tag));
     state.byValue.set(v, tag);
     state.byTag.set(tag, v);
   }

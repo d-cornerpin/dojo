@@ -14,10 +14,10 @@ export function newTextOf(body: string): string {
     }
   }
 
-  // Keep only the text before the cut, drop inline `>` quotes, and strip trailing spaces.
+  // Keep only the text before the cut, drop inline `>` quotes and the line that introduces one, strip trailing spaces.
   const kept: string[] = [];
   for (let i = 0; i < cut; i++) {
-    if (lines[i].trimStart().startsWith('>')) continue;
+    if (lines[i].trimStart().startsWith('>') || isAttribution(lines, i)) continue;
     kept.push(lines[i].replace(/[ \t]+$/, ''));
   }
 
@@ -48,4 +48,11 @@ function isBlockStart(lines: string[], i: number): boolean {
   if (t === 'begin forwarded message:') return true;
 
   return false;
+}
+
+// A "who wrote this" line in any language: it ends in ':', names an address or a date ('@' or a digit), and a `>`
+// quote follows it directly. Only it goes (with its quote); the owner's lines after the quote stay.
+function isAttribution(lines: string[], i: number): boolean {
+  const t = lines[i].trim();
+  return t.endsWith(':') && /[@\d]/.test(t) && (lines[i + 1] ?? '').trimStart().startsWith('>');
 }

@@ -20,12 +20,14 @@ import { writeToolReceipt } from '../../../receipts/store.js';
 import { turnContext } from '../../turn-context.js';
 import { refuseSendWithNoRecipient, routedReplyWords } from '../../v2/send-recipient.js';
 import { sharePathGuard } from '../../path-guards.js';
-import { auditLog, permissionDeniedMessage, registerSharedFile } from '../util.js';
-import { appendTeamsSafeSender, appendGmailSafeSender, appendOutlookSafeSender } from '../../../services/channel-safe-senders.js';
+import { auditLog, linkReach, permissionDeniedMessage, registerSharedFile } from '../util.js';
+import { appendTeamsSafeSender, appendMailSafeSender } from '../../../services/channel-safe-senders.js';
 import { createPublicShare } from '../../../services/public-share.js';
 import { executeSmsSend } from '../../../twilio/sms-outbound.js';
-import { isEmailSendingEnabled, getGoogleWorkspaceConfig } from '../../../google/auth.js';
-import { isMsEmailSendingEnabled, getMicrosoftWorkspaceConfig } from '../../../microsoft/auth.js';
+import { isEmailSendingEnabled } from '../../../google/auth.js';
+import { getPrimaryGoogleAccount } from '../../../google/accounts.js';
+import { isMsEmailSendingEnabled } from '../../../microsoft/auth.js';
+import { getPrimaryMicrosoftAccount } from '../../../microsoft/accounts.js';
 import { parseSafeSenders, reloadApprovedSenders, getSafeSenders, getIMBridgeStatus, findSafeSenderByAddress, sendIMessageWithAttachments, MAX_IMESSAGE_FILE_BYTES } from '../../../services/imessage-bridge.js';
 import { iMessageListHasHumanOwner } from '../../../services/imessage-owner-gate.js';
 import { getSmsReachability, describeSmsRecipients } from '../../../services/capability-registry.js';
@@ -34,6 +36,9 @@ import { syncSafeSenderToContacts } from '../../../contacts/from-safe-senders.js
 import type { ToolHandlerMap } from '../handler.js';
 import { homeDir } from '../../../home.js';
 import { userWords, currentAddress } from '../../v2/turn-address.js';
+import { ownerAskedInThisTurn } from '../../../work/row-authority.js';
+
+const ADD_SENDER_NEEDS_OWNER = 'Adding someone to the approved list needs the owner to ask for it in his own message. Ask him, and do it when he says so.';
 
 export const commsHandlers: ToolHandlerMap = {
   async "share_file"({ agentId, args }) {
@@ -73,7 +78,7 @@ export const commsHandlers: ToolHandlerMap = {
       return { content, isError, ...(errorCode !== undefined ? { errorCode } : {}) };
     }
     const filename = path.basename(sharePath);
-    content = `Download link for ${filename}: ${downloadUrl}`;
+    content = `Download link for ${filename}: ${downloadUrl}\n\n${linkReach(downloadUrl)}`;
     auditLog(agentId, 'share_file', sharePath, 'success', downloadUrl);
     return { content, isError, ...(errorCode !== undefined ? { errorCode } : {}) };
   },
@@ -198,23 +203,14 @@ export const commsHandlers: ToolHandlerMap = {
     let isError = false;
     const channelArg = args.channel as string | undefined;
     const addressArg = args.address as string | undefined;
-    const userRequestQuote = (args.user_request_quote as string | undefined)?.trim() ?? '';
     if (!channelArg || !addressArg) {
       content = 'Error: both `channel` and `address` are required.';
       isError = true;
       return { content, isError };
     }
-    if (!userRequestQuote) {
-      content = 'Error: `user_request_quote` is required. Quote the user\'s actual words asking you to start this conversation. If you cannot quote a real user request, do NOT call this tool.';
-      isError = true;
-      return { content, isError };
-    }
-    // Minimum length guard: a one-word "ok" is not a request to add a sender.
-    if (userRequestQuote.length < 8) {
-      content = 'Error: `user_request_quote` is too short to be a real user request. Quote the full sentence where the user asked you to start this conversation.';
-      isError = true;
-      return { content, isError };
-    }
+    // Who the Dojo may reach changes only on the owner's own words in the message this turn answers.
+    if (!ownerAskedInThisTurn(agentId, args.user_quote).ok) return { content: ADD_SENDER_NEEDS_OWNER, isError: true };
+    const userQuote = String(args.user_quote).trim();
     const validChannels = ['imessage', 'gmail', 'outlook', 'teams'];
     if (!validChannels.includes(channelArg)) {
       content = `Error: channel must be one of: ${validChannels.join(', ')}`;
@@ -243,9 +239,9 @@ export const commsHandlers: ToolHandlerMap = {
       return { content, isError };
     }
     // Audit gets a truncated quote; the full quote stays in the tool-call args.
-    const auditQuote = userRequestQuote.length > 200
-      ? userRequestQuote.slice(0, 200) + '…'
-      : userRequestQuote;
+    const auditQuote = userQuote.length > 200
+      ? userQuote.slice(0, 200) + '…'
+      : userQuote;
 
     const sender = {
       address,
@@ -320,32 +316,23 @@ export const commsHandlers: ToolHandlerMap = {
           auditLog(agentId, 'add_safe_sender', `${channelArg}:${address}`, 'error', `missing slot arg; quote: "${auditQuote}"`);
           return { content, isError };
         }
-        // Read sending capability AND the account email, so the messages below can
-        // name the real mailbox; both providers read table-backed config getters.
-        let sendingEnabled = false;
-        let accountEmail: string | null = null;
-        if (channelArg === 'gmail') {
-          sendingEnabled = isEmailSendingEnabled(slot);
-          accountEmail = getGoogleWorkspaceConfig(slot).accountEmail;
-        } else { // outlook
-          sendingEnabled = isMsEmailSendingEnabled(slot);
-          accountEmail = getMicrosoftWorkspaceConfig(slot).accountEmail;
-        }
+        // The slot's first mailbox: its sending switch, its address for the messages below, and its id for the list.
+        const sendingEnabled = channelArg === 'gmail' ? isEmailSendingEnabled(slot) : isMsEmailSendingEnabled(slot);
+        const account = channelArg === 'gmail' ? getPrimaryGoogleAccount(slot) : getPrimaryMicrosoftAccount(slot);
+        const accountEmail = account?.email ?? null;
         if (!sendingEnabled) {
           const acctLabel = accountEmail ? `${accountEmail} (the ${slot} slot)` : `the ${slot} slot`;
           const channelLabel = channelArg === 'gmail' ? 'Gmail' : 'Outlook';
           content =
-            `Refused: ${acctLabel} has "Allow sending email" turned OFF on the ${channelLabel} integration. ` +
+            `Refused: ${acctLabel} has "The agent may send as me" turned OFF on the ${channelLabel} integration. ` +
             `Safe senders are only useful on a slot that can actually auto-reply, so adding them here would be misleading. ` +
-            `Tell ${userWords(currentAddress(agentId))} that the owner needs to open Settings → Channels and toggle "Allow sending email" ON for ${acctLabel}, then retry. ` +
+            `Tell ${userWords(currentAddress(agentId))} that the owner needs to open Settings → Channels and toggle "The agent may send as me" ON for ${acctLabel}, then retry. ` +
             `Don't try this call again until they confirm they've turned it on.`;
           isError = true;
           auditLog(agentId, 'add_safe_sender', `${channelArg}:${address}`, 'denied', `slot=${slot} sendEmail=off; quote: "${auditQuote}"`);
           return { content, isError };
         }
-        const result = channelArg === 'gmail'
-          ? appendGmailSafeSender(slot, sender)
-          : appendOutlookSafeSender(slot, sender);
+        const result = appendMailSafeSender(channelArg as 'gmail' | 'outlook', account?.id ?? slot, sender);
         const channelHumanLabel = channelArg === 'gmail' ? 'Gmail' : 'Outlook';
         const slotLabel = accountEmail ? `${accountEmail} (${slot} slot)` : `${slot} slot`;
         if (!result.added) {
@@ -603,9 +590,7 @@ export const commsHandlers: ToolHandlerMap = {
       // only accepts absolutes), never the raw source_path.
       const result = createPublicShare({ sourcePath: publishGuard.absPath, entryFilename });
       auditLog(agentId, 'share_publicly', publishGuard.absPath, 'success', `Slug ${result.slug}, base ${result.baseSource}`);
-      const tunnelLine = result.baseSource === 'tunnel'
-        ? 'Cloudflare tunnel is active, this URL is reachable from anywhere on the internet.'
-        : 'No tunnel is running, so this URL only works from the same machine. To share off-device, start the Cloudflare tunnel from the dashboard and run share_publicly again.';
+      const tunnelLine = linkReach(result.url);
       let assetLine = '';
       if (result.inlinedAssets) {
         const { copied, skipped, notFound, warnings } = result.inlinedAssets;

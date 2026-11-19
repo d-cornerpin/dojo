@@ -403,13 +403,6 @@ describe('§6 the composer is TOLD, by a frame of its own', () => {
     setCancelled(id);
     expect(lastJobsFrame().stoppable).toBe(false);
   });
-
-  it('the frame is delivered immediately, never coalesced', async () => {
-    // The frame that matters most is the LAST one — the zero that takes the control away.
-    // Held behind an unrelated flush it reads as a button that did nothing.
-    const { EVENT_BATCHABLE } = await import('@dojo/shared');
-    expect(EVENT_BATCHABLE['agent:jobs']).toBe(false);
-  });
 });
 
 // ── §7 — the whole lifecycle, backwards, on a fictional job ───────────────────────────────

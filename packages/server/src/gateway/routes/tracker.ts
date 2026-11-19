@@ -17,6 +17,7 @@ import { calculateNextRun, scheduledTaskFromRow } from '../../scheduler/engine.j
 import { scheduleError } from '../../tracker/tools.js';
 import { deleteOccurrencesOf } from '../../work/occurrences.js';
 import { recordReassignment } from '../../tracker/assignee-patience.js';
+import { isLiveAgent } from '../../work/row-authority.js';
 import { createLogger } from '../../logger.js';
 import type { TaskLogEntryKind } from '../../tracker/task-log.js';
 import { getPrimaryAgentId, getDashboardHiddenAgentIds } from '../../config/platform.js';
@@ -24,6 +25,10 @@ import { routeFailure } from './route-failure.js';
 
 const logger = createLogger('tracker-routes');
 const trackerRouter = new Hono();
+
+// A task is never given to an agent that has ended: it would sit with nobody.
+const ENDED_ASSIGNEE = 'That agent has ended, so it cannot take a task. Pick a live agent.';
+const endedAssignee = (id: unknown): boolean => typeof id === 'string' && id !== '' && !isLiveAgent(id);
 
 // Projects and tasks owned by internal system agents (Dreamer, PM, Healer) are engine artifacts: the
 // dashboard list endpoints hide them by default (?includeSystem=true shows them); agent-side tools still see
@@ -67,6 +72,9 @@ trackerRouter.post('/projects', async (c) => {
           phase: t.phase as number | undefined,
         }))
       : undefined;
+    if (tasksInput?.some((t: { assignedTo?: string }) => endedAssignee(t.assignedTo))) {
+      return c.json({ ok: false, error: ENDED_ASSIGNEE }, 400);
+    }
 
     // createdBy must be a real agent id (tasks.assigned_to has a FK to agents(id) and createProject defaults
     // the task assignee to it), so the primary agent stands in for the dashboard user.
@@ -210,6 +218,7 @@ trackerRouter.post('/tasks', async (c) => {
   // is never told 201 for a "waiting" schedule that will never fire.
   const scheduleErr = scheduleError(body);
   if (scheduleErr) return c.json({ ok: false, error: scheduleErr }, 400);
+  if (endedAssignee(body.assignedTo)) return c.json({ ok: false, error: ENDED_ASSIGNEE }, 400);
 
   try {
     const taskId = createTask({
@@ -292,7 +301,7 @@ function ownerMoveRefusal(id: string, status: string): string | null {
     return held.ok ? null : held.why;
   }
   if (getTask(id)?.status === status) clearHold(id, 'owner');   // already there: only the hold lifts
-  const { result } = setTaskStatusResult(id, status as TrackerStatus, { by: 'owner', actorId: 'user', reason: 'dashboard PUT /tracker/tasks/:id' });
+  const { result } = setTaskStatusResult(id, status as TrackerStatus, { by: 'owner', actorId: 'user', reason: 'moved on the task board' });
   if (workSettled(result)) return null;
   return isStateConflict(result) ? `the task moved to "${result.actual}" while this request was in flight` : `${result.reason}: ${result.detail}`;
 }
@@ -326,6 +335,7 @@ trackerRouter.put('/tasks/:id', async (c) => {
 
   // The hand-in states are never a board write: the worker hands in, and a send-back is the owner's decision.
   if (Object.hasOwn(BOARD_REFUSES, body.status)) return c.json({ ok: false, error: BOARD_REFUSES[body.status] }, 409);
+  if (endedAssignee(body.assignedTo)) return c.json({ ok: false, error: ENDED_ASSIGNEE }, 400);
 
   try {
     const updates: Record<string, string> = {};
@@ -333,22 +343,8 @@ trackerRouter.put('/tasks/:id', async (c) => {
     if (body.assignedTo !== undefined) updates.assignedTo = body.assignedTo;
     if (body.priority) updates.priority = body.priority;
 
-    // Dashboard observations go through task_log; a caller-supplied `notes` is routed as a user-observation
-    // entry for older dashboard builds.
-    if (body.notes) {
-      const { writeTaskLog } = await import('../../tracker/task-log.js');
-      writeTaskLog({
-        taskId: id,
-        fromEntity: 'user',
-        entryKind: 'observation',
-        note: body.notes,
-      });
-    }
-
     if (Object.keys(updates).length > 0) {
-      // Snapshot the prior status before the write so the transition entry is accurate.
       const prior = getTask(id);
-      const fromStatus = prior?.status ?? null;
       const { status: statusUpdate, ...columnUpdates } = updates;
       if (Object.keys(columnUpdates).length > 0) updateTask(id, columnUpdates);
       // A PERSON moving a task is the only reassignment this platform still has (the PM has no such verb),
@@ -369,17 +365,6 @@ trackerRouter.put('/tasks/:id', async (c) => {
             data: { taskId: id, refusedStatus: statusUpdate, otherUpdatesApplied: Object.keys(columnUpdates) },
           }, 409);
         }
-      }
-      if (body.status && body.status !== fromStatus && body.status !== 'paused' && body.status !== 'blocked') {   // a hold writes its own entry
-        const { writeTaskLog } = await import('../../tracker/task-log.js');
-        writeTaskLog({
-          taskId: id,
-          fromEntity: 'user',
-          entryKind: 'transition',
-          fromStatus,
-          toStatus: body.status,
-          actionTaken: 'dashboard PUT /tracker/tasks/:id',
-        });
       }
     }
 

@@ -335,6 +335,14 @@ const PricingSyncBadge = () => {
   );
 };
 
+/** What the owner typed as a limit: a number above 0, null for "no limit" (blank or 0), or undefined when unreadable. */
+function typedLimit(text: string): number | null | undefined {
+  if (text.trim() === '') return null;
+  const val = parseFloat(text);
+  if (isNaN(val) || val < 0) return undefined;
+  return val === 0 ? null : val;
+}
+
 // ── Budget Configuration (.tile + .rows + .bar + .srow) ──
 
 const BudgetConfigTile = ({
@@ -345,8 +353,8 @@ const BudgetConfigTile = ({
 }: {
   budgets: BudgetData;
   agents: AgentOption[];
-  onUpdateGlobal: (limitUsd: number) => Promise<string | null>;
-  onUpdateAgent: (agentId: string, limitUsd: number, period: string) => Promise<string | null>;
+  onUpdateGlobal: (limitUsd: number | null) => Promise<string | null>;
+  onUpdateAgent: (agentId: string, limitUsd: number | null, period: string) => Promise<string | null>;
 }) => {
   const [globalLimit, setGlobalLimit] = useState(budgets.global?.limitUsd?.toString() ?? '');
   const [savingGlobal, setSavingGlobal] = useState(false);
@@ -355,9 +363,9 @@ const BudgetConfigTile = ({
   const [agentsOpen, setAgentsOpen] = useState(false);
 
   const handleSaveGlobal = async () => {
-    const val = parseFloat(globalLimit);
-    if (isNaN(val) || val <= 0) {
-      setGlobalError('Enter an amount above 0.');
+    const val = typedLimit(globalLimit);
+    if (val === undefined) {
+      setGlobalError('Enter an amount, or leave it blank for no limit.');
       return;
     }
     setGlobalError(null);
@@ -386,7 +394,7 @@ const BudgetConfigTile = ({
       <div className="rows" style={{ marginTop: 6 }}>
         <div>
           <span className="k">Global daily budget &middot; spent today {formatUsd(spent)}</span>
-          <span className="v">Limit: {formatUsd(limit)} &middot; {pct.toFixed(0)}%</span>
+          <span className="v">{budgets.global ? <>Limit: {formatUsd(limit)} &middot; {pct.toFixed(0)}%</> : 'No limit'}</span>
         </div>
       </div>
       <div className="bar" style={{ margin: '10px 0 14px' }}>
@@ -407,7 +415,7 @@ const BudgetConfigTile = ({
           type="button"
           className="btn btn--primary btn--sm"
           onClick={handleSaveGlobal}
-          disabled={savingGlobal || !globalLimit}
+          disabled={savingGlobal}
         >
           {savingGlobal ? '...' : 'Save'}
         </button>
@@ -474,7 +482,7 @@ const AgentBudgetRow = ({
   limitUsd: number;
   period: string;
   spentUsd: number;
-  onSave: (agentId: string, limitUsd: number, period: string) => Promise<string | null>;
+  onSave: (agentId: string, limitUsd: number | null, period: string) => Promise<string | null>;
 }) => {
   const [limit, setLimit] = useState(limitUsd > 0 ? limitUsd.toString() : '');
   const [selectedPeriod, setSelectedPeriod] = useState(period);
@@ -483,9 +491,9 @@ const AgentBudgetRow = ({
   const [error, setError] = useState<string | null>(null);
 
   const handleSave = async () => {
-    const val = parseFloat(limit);
-    if (isNaN(val) || val <= 0) {
-      setError('Enter an amount above 0.');
+    const val = typedLimit(limit);
+    if (val === undefined) {
+      setError('Enter an amount, or leave it blank for no limit.');
       return;
     }
     setError(null);

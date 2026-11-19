@@ -17,7 +17,7 @@ vi.mock('../../db/connection.js', () => ({
 import { runMigrations } from '../../db/migrations.js';
 import { insertMessage } from '../message-store.js';
 import { assembleContext } from '../assembler.js';
-import { unpairedToolIds, type PairedMessage } from '../../agent/tool-pairing.js';
+import { repairToolPairing, type PairedMessage } from '../../agent/tool-pairing.js';
 import { buildOpenAIMessages } from '../../agent/model.js';
 import { contractForModel } from '../../agent/model-contract.js';
 
@@ -56,7 +56,7 @@ const said = (ms: Assembled): string => JSON.stringify(ms.map((m) => m.content))
 const toolIds = (ms: Assembled): string[] => ms.flatMap((m) => (Array.isArray(m.content) ? m.content as unknown as Block[] : []))
   .filter((b) => b.type === 'tool_use' || b.type === 'tool_result').map((b) => `${b.type}:${String(b.id ?? b.tool_use_id)}`);
 const paired = (ms: Assembled): void =>
-  expect(unpairedToolIds(ms as unknown as PairedMessage[])).toEqual({ toolUseWithoutResult: [], toolResultWithoutUse: [] });
+  expect(repairToolPairing(structuredClone(ms) as unknown as PairedMessage[])).toEqual({ strippedToolUse: 0, strippedToolResult: 0, droppedMessages: 0 });
 
 const histories: Record<string, () => void> = {
   unansweredWithText: () => {

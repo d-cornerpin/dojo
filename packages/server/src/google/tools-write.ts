@@ -193,6 +193,7 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
         timezone: { type: 'string', description: "Optional IANA timezone (e.g. 'America/Los_Angeles') applied to offset-less `start`/`end` values. Defaults to the host timezone. Ignored for all-day (date-only) events." },
         description: { type: 'string', description: 'Event description' },
         attendees: { type: 'array', items: { type: 'string' }, description: 'Attendee email addresses' },
+        notify_guests: { type: 'boolean', description: 'Email each guest an invitation from this account (default true). Pass false to add the guests without telling them.' },
         location: { type: 'string', description: 'Event location' },
         calendar_id: { type: 'string', description: 'Calendar ID. Defaults to "primary" (your own).' },
       },
@@ -535,7 +536,7 @@ for (const canonical of USER_SLOT_SEND_TOOLS) {
   googleWriteToolDefinitions.push({
     ...baseDef,
     name: `user_${canonical}`,
-    description: `[USER'S Google account variant of \`${canonical}\`] ${baseDef.description}\n\nSends from the user's connected Google account (Settings → Channels → User's Google Accounts). Disabled by default, the user must turn on "Allow sending email" on the User slot card. If the toggle is off or the slot isn't connected, the tool returns a friendly error.`,
+    description: `[USER'S Google account variant of \`${canonical}\`] ${baseDef.description}\n\nSends from the user's connected Google account (Settings → Channels → User's Google Accounts). Off by default: the user must turn on "The agent may send as me" on that account's card. If the toggle is off or the slot isn't connected, the tool returns a friendly error.`,
   });
 }
 
@@ -1145,6 +1146,18 @@ async function shareCreatedFileWithOwner(
   return ` (Could not auto-share with the owner's account: ${share.error ?? 'unknown error'}. Send them the link above.)`;
 }
 
+/** A create with guests emails them an invitation unless the agent passed notify_guests: false. */
+const invitesGuests = (args: Record<string, unknown>): boolean =>
+  Array.isArray(args.attendees) && args.attendees.length > 0 && args.notify_guests !== false;
+
+/** What a call sends to people from its account, or null when it sends nothing. */
+function sendsAs(canonicalName: string, args: Record<string, unknown>): string | null {
+  if (canonicalName === 'gmail_send' || canonicalName === 'gmail_reply' || canonicalName === 'gmail_forward') return 'email';
+  if (canonicalName === 'calendar_respond_invite') return 'meeting reply';
+  if (canonicalName === 'calendar_create' && invitesGuests(args)) return 'invitation to the guests';
+  return null;
+}
+
 export async function executeGoogleWriteTool(
   name: string,
   args: Record<string, unknown>,
@@ -1168,14 +1181,11 @@ export async function executeGoogleWriteTool(
   if ('error' in resolved) return `Error: ${resolved.error}`;
   const slot = resolved.account.id;
 
-  // Send-permission gate, checked on the RESOLVED account (each account has
-  // its own send toggle). Refuse with a structured message that names the
-  // account and the switch to flip. Applies to send, reply, and forward.
-  if (canonicalName === 'gmail_send' || canonicalName === 'gmail_reply' || canonicalName === 'gmail_forward') {
-    if (!resolved.account.sendEmail) {
-      const who = resolved.account.email ?? (kind === 'user' ? "the user's Google account" : "the agent's Google account");
-      return `Error: sending email from ${who} is disabled. Open Settings → Channels (the Google cards) and turn on "Allow sending email" for that account, then try again.`;
-    }
+  // The account's one send switch ("The agent may send as me") covers everything a call sends from it.
+  const sends = sendsAs(canonicalName, args);
+  if (sends && !resolved.account.sendEmail) {
+    const who = resolved.account.email ?? (kind === 'user' ? "the user's Google account" : "the agent's Google account");
+    return `Error: "The agent may send as me" is off for ${who}, and this ${sends} would be sent from it. Turn it on in Settings → Channels (the Google cards), then try again.`;
   }
 
   switch (canonicalName) {
@@ -1462,7 +1472,7 @@ export async function executeGoogleWriteTool(
         event.attendees = (args.attendees as string[]).map(email => ({ email }));
       }
 
-      const url = `${CALENDAR_BASE}/calendars/${encodeURIComponent(calendarId)}/events`;
+      const url = `${CALENDAR_BASE}/calendars/${encodeURIComponent(calendarId)}/events${invitesGuests(args) ? '?sendUpdates=all' : ''}`;
       const result = await googleWrite('POST', url, event, agentId, agentName, 'calendar_create', { title: resolvedTitle, start: args.start, end: args.end, calendarId }, undefined, slot);
       if (!result.ok) return `Error creating event: ${result.error}`;
 

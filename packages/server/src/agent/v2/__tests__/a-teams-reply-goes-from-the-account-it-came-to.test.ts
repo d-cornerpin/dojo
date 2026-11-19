@@ -9,7 +9,6 @@ vi.mock('../../../config/platform.js', async (orig) => ({ ...(await orig<Record<
 vi.mock('../../access/engine-route.js', () => ({ engineMayRouteTo: () => true, engineRouteRefusalReason: () => 'no grant' }));
 vi.mock('../steps/finalize/link-backstop.js', () => ({ appendUndeliveredLinks: async (s: unknown) => s }));
 vi.mock('../../../gateway/ws.js', () => ({ broadcast: () => {} }));
-vi.mock('../../../services/channel-safe-senders.js', async (orig) => ({ ...(await orig<Record<string, unknown>>()), getTeamsSafeSenders: () => [{ address: 'colleague@example.com', name: 'a colleague' }] }));
 vi.mock('../../tools/index.js', () => ({
   executeTool: async (_agentId: string, call: { name: string; arguments: Record<string, unknown> }) => {
     tool.calls.push(call);
@@ -26,6 +25,7 @@ import { freshReplyDb, personTurn, replyRows, testDb, T0 } from './helpers/reply
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
   freshReplyDb(runMigrations);
+  testDb().prepare('INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)').run('teams_approved_senders', JSON.stringify([{ address: 'colleague@example.com', name: 'a colleague' }]));
   tool.calls = [];
 });
 

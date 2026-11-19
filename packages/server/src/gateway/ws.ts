@@ -3,7 +3,7 @@ import jwt from 'jsonwebtoken';
 import { getJwtSecret } from '../config/loader.js';
 import { createLogger } from '../logger.js';
 import type { WsEvent } from '@dojo/shared';
-import { deriveOrigin, BATCHABLE_EVENTS } from '@dojo/shared';
+import { deriveOrigin } from '@dojo/shared';
 import { readPersistedRow } from '../memory/message-store.js';
 import { recordDashboardDelivery } from '../agent/v2/outbound.js';
 import { turnContext } from '../agent/turn-context.js';
@@ -64,31 +64,7 @@ function handlePong(clientId: number): void {
   }
 }
 
-// ── Broadcast with batching ──
-
-const BATCH_INTERVAL_MS = 50; // Flush batched events every 50ms
-let batchBuffer: WsEvent[] = [];
-let batchTimer: ReturnType<typeof setTimeout> | null = null;
-
-// Which event types to coalesce lives beside the event union in @dojo/shared
-// (EVENT_BATCHABLE / BATCHABLE_EVENTS), so a new event type forces an explicit choice.
-
-function flushBatch(): void {
-  if (batchTimer) {
-    clearTimeout(batchTimer);
-    batchTimer = null;
-  }
-
-  if (batchBuffer.length === 0) return;
-
-  const events = batchBuffer;
-  batchBuffer = [];
-
-  // Send all events as individual messages (but batched in time)
-  for (const event of events) {
-    sendToAll(event);
-  }
-}
+// ── Broadcast: every frame is sent at once, in the order it was made ──
 
 function sendToAll(event: WsEvent): void {
   const data = JSON.stringify(event);
@@ -151,7 +127,6 @@ export function stampPersistedRow(event: WsEvent): 'stamped' | 'orphan' | 'not-c
   } else {
     logger.warn(`${event.type} broadcast with NO persisted row (BROADCAST_EQUALS_ROW)`, {
       agentId: event.agentId, messageId: msg.id, role: msg.role,
-      preview: (msg.content ?? '').slice(0, 80),
     }, event.agentId);
   }
 
@@ -203,21 +178,7 @@ export function broadcast(event: WsEvent): void {
 
     if (clients.size === 0) return; // No browser clients, skip serialization
 
-    // Non-batchable events (errors, completions) send immediately
-    if (!BATCHABLE_EVENTS.has(event.type)) {
-      sendToAll(event);
-      return;
-    }
-
-    batchBuffer.push(event);
-
-    if (!batchTimer) {
-      batchTimer = setTimeout(flushBatch, BATCH_INTERVAL_MS);
-    }
-
-    if (batchBuffer.length >= 20) {
-      flushBatch();
-    }
+    sendToAll(event);
   });
 }
 

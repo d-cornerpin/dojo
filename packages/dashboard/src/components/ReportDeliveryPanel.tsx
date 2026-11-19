@@ -14,7 +14,7 @@ export const DeliveredPanel = ({ delivery, onDone }: {
   onDone: () => void;
 }) => (
   <div className="fixed bottom-4 right-4 z-[200] w-[min(30rem,calc(100vw-2rem))] glass-card p-4 space-y-3">
-    <h3 className="card-header">Your report is ready to post</h3>
+    <h3 className="card-header">{delivery.issueUrl ? 'Your report is posted' : 'Your report is ready to post'}</h3>
     {delivery.issueUrl ? (
       <div className="space-y-2">
         <p className="text-xs text-ui/80">

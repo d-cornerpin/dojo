@@ -42,7 +42,7 @@ export function armScheduleOnOwnerSave(taskId: string, arm: () => WorkPatchOutco
       if (finished) {
         const hop = setTrackerStatus(taskId, 'on_deck', {
           by: 'owner', actorId: 'user',
-          reason: 'the owner set a new schedule on a finished task (dashboard PUT /tracker/tasks/:id)',
+          reason: 'the owner set a new schedule on a finished task',
         });
         if (!workSettled(hop)) throw new ReopenRefused(refusedWhy(hop));
       }

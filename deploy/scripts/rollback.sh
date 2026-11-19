@@ -154,8 +154,8 @@ if [ "$PRINT" != 1 ]; then
   # THE one answer to "what state is the data in now": before (the copy is in place), newer, or unreadable.
   data_state() {
       local last
-      [ "$(sqlite3 -readonly "$DOJO_DIR/data/dojo.db" 'PRAGMA quick_check;' 2>/dev/null | head -1)" = ok ] \
-          && last="$(sqlite3 -readonly "$DOJO_DIR/data/dojo.db" 'SELECT name FROM _migrations ORDER BY rowid DESC LIMIT 1;' 2>/dev/null)" \
+      [ "$(db_read 'PRAGMA quick_check;' | head -1)" = ok ] \
+          && last="$(db_read 'SELECT name FROM _migrations ORDER BY rowid DESC LIMIT 1;')" \
           || { echo unreadable; return; }
       if [ -f "$build_steps/$last" ]; then echo before; else echo newer; fi
   }
@@ -172,6 +172,9 @@ if [ "$PRINT" != 1 ]; then
   trap 'exit 130' INT
   trap 'exit 129' HUP
 fi
+
+# The live database, read through restore-db.sh's one reader (it works whether or not Dojo stopped cleanly).
+db_read() { bash "$(dirname "$0")/restore-db.sh" --read "$DOJO_DIR/data/dojo.db" "$1" 2>/dev/null; }
 
 # A field of the update-state marker, read with sed (node may be what is broken).
 marker_field() {
@@ -296,11 +299,14 @@ if [ -z "$newest_backup" ]; then
 fi
 
 # The data was changed by a newer program when the last step applied to it (rowid order is apply
-# order) is a migration file the build being restored does not have.
+# order) is a migration file the build being restored does not have. A level that cannot be read
+# counts as ahead: putting the pre-update copy back keeps the newer data aside, the reverse can lose it.
 data_ahead=0
 data_copy=""
 last_step=""
-[ -f "$DOJO_DIR/data/dojo.db" ] && last_step="$(sqlite3 -readonly "$DOJO_DIR/data/dojo.db" 'SELECT name FROM _migrations ORDER BY rowid DESC LIMIT 1;' 2>/dev/null)"
+if [ -f "$DOJO_DIR/data/dojo.db" ]; then
+    last_step="$(db_read 'SELECT name FROM _migrations ORDER BY rowid DESC LIMIT 1;')" || last_step="(unreadable)"
+fi
 build_steps="$newest_backup/packages/server/dist/db/migrations"
 if [ -n "$newest_backup" ] && [ -n "$last_step" ] && [ -d "$build_steps" ] && [ ! -f "$build_steps/$last_step" ]; then
     data_ahead=1
@@ -344,14 +350,16 @@ fi
 
 echo "🥋 Rolling back DOJO: $cur_ver -> $target_ver"
 echo "   Restoring $(basename "$newest_backup") — $selection_reason."
+data_why="your data was changed by a version newer than $target_ver"
+[ "$last_step" = "(unreadable)" ] && data_why="the step your data is at could not be read"
 if [ "$data_ahead" = 1 ] && [ "$HEAL" = 1 ]; then
-    echo "   NOTE: your data was changed by a version newer than $target_ver; the program is put back anyway, because a missing program folder is worse."
+    echo "   NOTE: $data_why; the program is put back anyway, because a missing program folder is worse."
     data_copy=""
 elif [ "$data_ahead" = 1 ]; then
     if [ -z "$data_copy" ]; then
-        echo "ERROR: your data was changed by a version newer than $target_ver, and there is no copy of your data from before the update to put back."
+        echo "ERROR: $data_why, and there is no copy of your data from before the update to put back."
         echo "   Nothing was changed. See ~/.dojo/scripts/IF-AN-UPDATE-FAILS.md."
-        unchanged "the update changed your data and there is no copy of it from before the update" 'See "What if there is no backup?" in ~/.dojo/scripts/IF-AN-UPDATE-FAILS.md.'
+        unchanged "$([ "$last_step" = "(unreadable)" ] && echo 'your data could not be read' || echo 'the update changed your data') and there is no copy of it from before the update" 'See "What if there is no backup?" in ~/.dojo/scripts/IF-AN-UPDATE-FAILS.md.'
         exit 1
     fi
     echo "   Your data goes back to the copy taken $(copy_time "$data_copy"); everything since then is kept in a dated copy, not deleted."

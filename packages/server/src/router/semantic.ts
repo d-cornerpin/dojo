@@ -1,6 +1,6 @@
 // Semantic tier classifier: embeds the query with the memory engine's local embedder (nomic-embed-text via
-// Ollama) and matches it to per-tier exemplar centroids by cosine, preferring an active trained head. Returns
-// null on any embedder failure so the caller falls back to the keyword heuristic.
+// Ollama) and matches it to per-tier exemplar centroids by cosine. Returns null on any embedder failure so the
+// caller falls back to the keyword heuristic.
 
 import { generateEmbedding } from '../memory/embeddings.js';
 import { createLogger } from '../logger.js';
@@ -127,12 +127,11 @@ async function getCentroids(deadlineMs?: number): Promise<Centroids | null> {
 
 export interface SemanticResult {
   tier: Tier;
-  // Normalized top-2 separation on one scale (0..1): 0 = top and second tied, 1 = top dominates, whether the
-  // scores are cosine sims or head probs.
+  // Normalized top-2 separation (0..1): 0 = top and second tied, 1 = top dominates.
   confidence: number;
-  topScore: number;         // top similarity (centroid) or top probability (head)
+  topScore: number;         // top cosine similarity
   scores: Record<Tier, number>;
-  headVersion: string;      // which model decided: 'centroid-1' or a trained-head tag
+  headVersion: string;      // which centroid set decided, e.g. 'centroid-1'
 }
 
 function rank(scores: Record<Tier, number>, headVersion: string): SemanticResult {
@@ -140,8 +139,7 @@ function rank(scores: Record<Tier, number>, headVersion: string): SemanticResult
   const top = scores[ordered[0]];
   const second = scores[ordered[1]];
   const third = scores[ordered[2]];
-  // Normalize the top-2 margin to one scale: centroid cosine sims share a high baseline (raw margins tiny), head
-  // probs spread wider. Subtracting the least-likely tier removes that baseline, parameter-free:
+  // Cosine sims share a high baseline (raw margins tiny); subtracting the least-likely tier removes it, parameter-free:
   // confidence = (top - second) / ((top - third) + (second - third)); all-equal gives 0 (maximally uncertain).
   const spread = (top - third) + (second - third);
   const confidence = spread > 0 ? (top - second) / spread : 0;
@@ -169,17 +167,6 @@ export async function classifyTierSemantic(query: string): Promise<SemanticResul
     return null;
   }
 
-  try {
-    const { getActiveHead } = await import('./head.js');
-    const head = getActiveHead();
-    if (head && head.dimensions === queryEmb.length) {
-      const probs = head.predict(queryEmb);
-      return rank(probs, head.version);
-    }
-  } catch {
-    // head module or data not available: fall through to centroids
-  }
-
   // Bound the wait on the (usually pre-warmed) centroids so a first-turn race with the warmer cannot stall the
   // route; degrade to the scorer.
   const centroids = await getCentroids(ROUTER_EMBED_DEADLINE_MS);
@@ -190,17 +177,6 @@ export async function classifyTierSemantic(query: string): Promise<SemanticResul
     heavy: cosine(queryEmb, centroids.heavy),
   };
   return rank(sims, CENTROID_VERSION);
-}
-
-// Embed a query as the classifier does (the label collector stores this); null on failure.
-export async function embedQuery(query: string): Promise<Float32Array | null> {
-  const trimmed = query.trim();
-  if (!trimmed) return null;
-  try {
-    return await generateEmbedding(TASK_PREFIX + trimmed);
-  } catch {
-    return null;
-  }
 }
 
 // ── Embedder keep-warm (gated, see gating.ts) ──

@@ -45,6 +45,12 @@ export function ownerMailboxesFrom(
   return out;
 }
 
+/** Is this one of the owner's connected mailbox addresses. */
+export function isOwnerAddress(address: string): boolean {
+  const a = address.trim().toLowerCase();
+  return ownerMailboxes().some((mb) => mb.address === a);
+}
+
 /** A disconnected account is not the owner's mailbox any more: P44 trusts these addresses to recognise the owner's email. */
 export function ownerMailboxes(): OwnerMailbox[] {
   return ownerMailboxesFrom(listGoogleAccounts('user').filter((a) => a.connected), listMicrosoftAccounts('user').filter((a) => a.connected));

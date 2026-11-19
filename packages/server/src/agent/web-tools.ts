@@ -307,6 +307,7 @@ export async function webFetch(
       if (fetchModelId) {
         // Cap input at ~50K chars (~12K tokens) to bound cost on huge pages.
         const pageSnippet = text.length > 50_000 ? text.slice(0, 50_000) : text;
+        const readNote = pageSnippet.length < text.length ? ` from the first 50000 of ${text.length} characters; the rest was not read` : '';
         const result = await callModel({
           agentId,
           modelId: fetchModelId,
@@ -330,7 +331,7 @@ export async function webFetch(
         });
         const extract = result.content?.trim();
         if (extract && extract.length > 0) {
-          return `Fetched from ${url} (extracted via prompt):\n\n${outsideSpan(extract)}`;
+          return `Fetched from ${url} (extracted via prompt${readNote}):\n\n${outsideSpan(extract)}`;
         }
         extractionSkipped = 'the extractor returned nothing, so the raw page is shown instead';
         logger.warn('web_fetch extractor returned empty content — falling back to raw', { url }, agentId);

@@ -43,7 +43,6 @@ vi.mock('../../../../tracker/tools.js', () => {
     activityWindowStart: () => undefined,
     trackerPauseSchedule: fail('work_schedule:pause'),
     trackerResumeSchedule: fail('work_schedule:resume'),
-    trackerResolveMissedRuns: fail('work_schedule:resolve_missed'),
     trackerRetask: fail('work_validate:retask'),
   };
 });

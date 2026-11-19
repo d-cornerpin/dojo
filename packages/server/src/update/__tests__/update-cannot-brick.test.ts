@@ -79,7 +79,8 @@ function marker(over: Partial<UpdateMarker> = {}): UpdateMarker {
 //     merely down is a generic outage and is somebody else's problem.
 //  2. A build that confirmed itself healthy is not failing, whatever else the
 //     marker says.
-//  3. "Failing" means the crash-exit counter tripped OR the wall clock ran out.
+//  3. "Failing" means the crash-exit counter tripped OR the wall clock ran out, measured from the
+//     first boot, or from when the update was marked when the build never ran its own code.
 //  4. One automatic rollback per episode. A spent one → ESCALATE.
 //  5. Otherwise, roll back (rollback.sh puts the data back too when it is ahead).
 function expectedAction(m: UpdateMarker | null, nowMs: number): RollbackDecision {
@@ -89,7 +90,7 @@ function expectedAction(m: UpdateMarker | null, nowMs: number): RollbackDecision
   if (m.confirmedHealthyAt) return { action: 'none' };
 
   const crashLoop = m.bootAttempts >= FAIL_BOOT_ATTEMPTS;
-  const anchor = m.firstBootAt ? Date.parse(m.firstBootAt) : NaN;
+  const anchor = Date.parse(m.firstBootAt ?? m.updatedAt);
   const clockOut = Number.isFinite(anchor) && nowMs - anchor >= FAIL_WALL_CLOCK_MS;
   if (!crashLoop && !clockOut) return { action: 'none' };
 

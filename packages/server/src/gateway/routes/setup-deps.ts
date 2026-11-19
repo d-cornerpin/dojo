@@ -19,8 +19,9 @@ import { attachIdleBound } from '../../child-idle-bound.js';
 import { automationPermissionStatus } from './automation-probe.js';
 import { getOllamaModelInfo } from '../../services/ollama.js';
 // The 32K floor for an agent's MAIN model.
-import { refuseAgentModel, refuseSmallMainModel } from '../../agent/main-model-floor.js';
+import { refuseAgentModel, refuseNonChatModel, refuseSmallMainModel } from '../../agent/main-model-floor.js';
 import { localModelFit } from '../../agent/local-model-fit.js';
+import { setAgentModel } from '../../agent/model-switch.js';
 // A create/rename name must not mint a second agent the case-insensitive lookup cannot tell apart.
 import { caseVariantClash, caseVariantClashMessage } from '../../agent/tool-helpers.js';
 
@@ -290,7 +291,7 @@ setupDepsRouter.post('/ollama/standard', (c) => {
 setupDepsRouter.get('/model-fit/:modelId', async (c) => {
   const modelId = c.req.param('modelId');
   const v = await localModelFit(modelId, 'agent');
-  return c.json({ ok: true, data: { refused: (v && !v.unchecked && !v.fits ? v.message : null) ?? refuseSmallMainModel(modelId) } });
+  return c.json({ ok: true, data: { refused: (v && !v.unchecked && !v.fits ? v.message : null) ?? refuseNonChatModel(modelId) ?? refuseSmallMainModel(modelId) } });
 });
 
 // POST /ollama/auto-configure: create Ollama provider + discover models
@@ -457,12 +458,8 @@ setupDepsRouter.post('/provision-agent', async (c) => {
   if (refused) return c.json({ ok: false, error: refused }, 400);
 
   if (existing) {
-    // Update name and model
-    const updates: string[] = ['name = ?', "updated_at = datetime('now')"];
-    const params: unknown[] = [name];
-    if (modelId) { updates.push('model_id = ?'); params.push(modelId); }
-    params.push(id);
-    db.prepare(`UPDATE agents SET ${updates.join(', ')} WHERE id = ?`).run(...params);
+    db.prepare("UPDATE agents SET name = ?, updated_at = datetime('now') WHERE id = ?").run(name, id);
+    if (modelId) await setAgentModel(id, modelId);
     logger.info('Agent updated during OOBE', { id, name });
     return c.json({ ok: true, data: { id, name, action: 'updated' } });
   }

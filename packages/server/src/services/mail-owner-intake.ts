@@ -13,11 +13,12 @@ import { stripHtmlTags } from '../agent/html-text.js';
 import { extractOwnGmailText, type GmailBodyPart } from '../google/gmail-body.js';
 import { googleRead } from '../google/client.js';
 import { msGraphRead } from '../microsoft/client.js';
-import { isPlatformSent } from './platform-sends.js';
+import { forgetOldMailRecords, isPlatformSent } from './platform-sends.js';
 import type { OwnerEmailNotice } from '../tools/inbound-fences.js';
 
-/** `none`: the From is not an owner address (or the mail is in the owner's own inbox). */
-export type OwnerEmailOutcome = { state: 'none' } | OwnerEmailNotice;
+/** `none`: the From is not an owner address (or the mail is in the owner's own inbox). `reread`: this delivery was
+ *  judged before, so its command already ran. */
+export type OwnerEmailOutcome = { state: 'none' } | OwnerEmailNotice | { state: 'confirmed'; words: string; reread: true };
 
 export interface OwnerEmailInput {
   provider: 'gmail' | 'outlook';
@@ -34,13 +35,15 @@ export interface OwnerEmailInput {
   isMeeting: () => Promise<boolean>;
 }
 
-// `first` if this delivery first used the Message-ID (a re-read included), else `seen_before`; fail closed.
-function firstSighting(messageId: string, deliveryRef: string): 'first' | 'seen_before' | 'failed' {
+// `first` if this delivery first used the Message-ID, `reread` if this same delivery used it before, else
+// `seen_before`; fail closed.
+function firstSighting(messageId: string, deliveryRef: string): 'first' | 'reread' | 'seen_before' | 'failed' {
   try {
     const key = `owner_mail_seen:${messageId.replace(/^<|>$/g, '')}`;
     const db = getDb();
+    forgetOldMailRecords('owner_mail_seen:');
     if (db.prepare(`INSERT OR IGNORE INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))`).run(key, deliveryRef).changes === 1) return 'first';
-    return (db.prepare('SELECT value FROM config WHERE key = ?').get(key) as { value: string } | undefined)?.value === deliveryRef ? 'first' : 'seen_before';
+    return (db.prepare('SELECT value FROM config WHERE key = ?').get(key) as { value: string } | undefined)?.value === deliveryRef ? 'reread' : 'seen_before';
   } catch { return 'failed'; }
 }
 
@@ -62,9 +65,10 @@ export async function judgeOwnerEmail(i: OwnerEmailInput): Promise<OwnerEmailOut
   const messageId = headers.find((h) => h.name.toLowerCase() === 'message-id')?.value.trim().toLowerCase();
   if (!messageId) return { state: 'unconfirmed', reason: 'no_message_id' };
   const sighting = firstSighting(messageId, i.deliveryRef);
-  if (sighting !== 'first') return { state: 'unconfirmed', reason: sighting === 'seen_before' ? 'seen_before' : 'check_failed' };
+  if (sighting === 'seen_before' || sighting === 'failed') return { state: 'unconfirmed', reason: sighting === 'seen_before' ? 'seen_before' : 'check_failed' };
   const body = await i.newBody().catch(() => null);
-  return { state: 'confirmed', words: body === null ? '' : newTextOf(body) };
+  const words = body === null ? '' : newTextOf(body);
+  return sighting === 'reread' ? { state: 'confirmed', words, reread: true } : { state: 'confirmed', words };
 }
 
 function hasCalendarPart(part: GmailBodyPart | undefined): boolean {
@@ -103,7 +107,7 @@ export function judgeOutlookOwnerEmail(a: { kind: 'agent' | 'user'; placement: O
 
 /** Runs a confirmed owner email's command or approval through the text handler; returns the agent's note. */
 export async function ownerEmailCommandNote(ownerMail: OwnerEmailOutcome): Promise<string> {
-  if (ownerMail.state !== 'confirmed' || !isOwnerCommandText(ownerMail.words)) return '';
+  if (ownerMail.state !== 'confirmed' || 'reread' in ownerMail || !isOwnerCommandText(ownerMail.words)) return '';
   try {
     const { handleConfirmedOwnerEmailWords } = await import('./imessage-commands.js');
     const result = await handleConfirmedOwnerEmailWords(ownerMail.words);

@@ -3,10 +3,17 @@
 
 import { getAllToolDefinitions } from './definitions.js';
 import { TOOL_CATEGORIES } from '../../tools/categories.js';
-import { declaredSecretFields } from './effect-conformance.js';
 import type { ToolDefinition, ToolEffect } from './types.js';
 import type { ToolHandler } from './handler.js';
 import { handlerFor } from './handlers.js';
+
+/** Every field this definition declares as carrying credential material. */
+export function declaredSecretFields(def: Pick<ToolDefinition, 'fields'>): string[] {
+  if (!def.fields) return [];
+  return Object.entries(def.fields)
+    .filter(([, decl]) => decl?.secret === true)
+    .map(([path]) => path);
+}
 
 export interface ToolRegistryEntry {
   /** The definition itself, by reference; never a copy, so this entry cannot drift. */
@@ -69,22 +76,4 @@ export function declaredSecretFieldsByTool(): ReadonlyMap<string, readonly strin
     if (entry.secretFields.length > 0) out.set(name, entry.secretFields);
   }
   return out;
-}
-
-/** Coverage numbers, reported here so the gate and the conformance walk read one source. */
-export function effectCoverage(): {
-  total: number;
-  declared: number;
-  effectful: number;
-  byKind: Record<string, number>;
-} {
-  const entries = [...getToolRegistry().values()];
-  const byKind: Record<string, number> = {};
-  for (const e of entries) for (const eff of e.effects) byKind[eff.kind] = (byKind[eff.kind] ?? 0) + 1;
-  return {
-    total: entries.length,
-    declared: entries.filter((e) => Array.isArray(e.effects)).length,
-    effectful: entries.filter((e) => e.effects.length > 0).length,
-    byKind,
-  };
 }

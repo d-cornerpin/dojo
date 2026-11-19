@@ -146,6 +146,7 @@ export const AgentCard = ({ agent, models, providerNameById, onModelChanged, ind
     setSaving(true);
     const result = await api.setAgentModel(agent.id, modelId);
     if (result.ok) onModelChanged();
+    else toast.error(result.error ?? 'The model could not be changed.');
     setSaving(false);
     setChangingModel(false);
   };
@@ -297,7 +298,7 @@ export const AgentCard = ({ agent, models, providerNameById, onModelChanged, ind
               type="button"
               className="group__action"
               title={stop.why}
-              onClick={async (e) => { e.stopPropagation(); await api.stopAgent(agent.id); onModelChanged(); }}
+              onClick={async (e) => { e.stopPropagation(); const r = await api.stopAgent(agent.id); if (!r.ok) toast.error(r.error ?? 'The stop did not go through.'); onModelChanged(); }}
             >
               {stop.label}
             </button>
@@ -336,7 +337,7 @@ export const AgentCard = ({ agent, models, providerNameById, onModelChanged, ind
           <button
             type="button"
             className="btn btn--primary btn--sm"
-            onClick={async (e) => { e.stopPropagation(); await api.terminateAgent(agent.id); onModelChanged(); setConfirmTerminate(false); }}
+            onClick={async (e) => { e.stopPropagation(); const r = await api.terminateAgent(agent.id); if (!r.ok) toast.error(r.error ?? 'The agent could not be dismissed.'); onModelChanged(); setConfirmTerminate(false); }}
           >
             Yes
           </button>

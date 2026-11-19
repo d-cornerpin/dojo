@@ -75,8 +75,8 @@ export async function decideApproval(input: {
   if (row.status !== 'pending') return `Request ${input.token} is already ${row.status}.`;
 
   const status = input.decision === 'approve' ? 'approved' : 'denied';
-  db.prepare(`UPDATE destructive_approvals SET status = ?, decided_by = ?, decided_at = datetime('now'), updated_at = datetime('now') WHERE token = ?`)
-    .run(status, input.deciderAgentId, input.token);
+  db.prepare(`UPDATE destructive_approvals SET status = ?, decided_at = datetime('now'), updated_at = datetime('now') WHERE token = ?`)
+    .run(status, input.token);
 
   const reqName = (db.prepare('SELECT name FROM agents WHERE id = ?').get(row.agent_id) as { name: string } | undefined)?.name ?? row.agent_id;
 

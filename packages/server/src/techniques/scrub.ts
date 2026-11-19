@@ -187,8 +187,10 @@ export function scrubFiles(files: Array<{ path: string; content: string }>): Scr
   const seenLabels = new Set<string>();
   const placeholders: Array<{ label: string; hint: string }> = [];
 
-  // Two GitHub tokens become GITHUB_TOKEN and GITHUB_TOKEN_2, not one placeholder for two values.
+  // Two GitHub tokens become GITHUB_TOKEN and GITHUB_TOKEN_2, not one placeholder for two values;
+  // one value keeps its first label wherever it appears again.
   const labelCounts = new Map<string, number>();
+  const labelByValue = new Map<string, string>();
 
   for (const file of files) {
     if (isBinaryFile(file.path)) continue;
@@ -207,9 +209,14 @@ export function scrubFiles(files: Array<{ path: string; content: string }>): Scr
         });
         const baseLabel = pattern.label?.(execLike) ?? 'CREDENTIAL';
         const hint = pattern.hint ?? GENERIC_HINT;
-        const count = (labelCounts.get(baseLabel) ?? 0) + 1;
-        labelCounts.set(baseLabel, count);
-        const label = count === 1 ? baseLabel : `${baseLabel}_${count}`;
+        const value = secret || match;
+        let label = labelByValue.get(value);
+        if (!label) {
+          const count = (labelCounts.get(baseLabel) ?? 0) + 1;
+          labelCounts.set(baseLabel, count);
+          label = count === 1 ? baseLabel : `${baseLabel}_${count}`;
+          labelByValue.set(value, label);
+        }
 
         redactions.push({
           file: file.path,

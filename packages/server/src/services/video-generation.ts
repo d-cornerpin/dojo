@@ -12,6 +12,7 @@ import { createLogger } from '../logger.js';
 import { getDb } from '../db/connection.js';
 import { getProviderCredential } from '../config/loader.js';
 import { buildWireBody } from './generation-params.js';
+import { jobLineage } from './generation-jobs.js';
 import { openAgentCall, STOPPED_BY_USER, type AgentCallSlot } from '../agent/abortable-call.js';
 import { phasedTransferDeadline } from './transfer-deadline.js';
 import type { GenerationParamSpec } from '@dojo/shared';
@@ -201,11 +202,15 @@ async function dialVideoSubmit(req: SubmitVideoRequest, slot: AgentCallSlot): Pr
   }
 
   const jobId = `vid_${uuidv4().replace(/-/g, '').slice(0, 16)}`;
+  // The length asked for is kept: it prices the video when the provider reports none.
+  const asked = Number(req.canonicalParams.duration);
   getDb().prepare(`
     INSERT INTO video_jobs
-      (id, agent_id, model_id, provider_id, provider_job_id, prompt, title, status, attempt_count)
-    VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', 0)
-  `).run(jobId, req.agentId, model.id, provider.id, providerJobId, req.prompt, req.title ?? null);
+      (id, agent_id, model_id, provider_id, provider_job_id, prompt, title, status, attempt_count,
+       source_message_id, turn_number, task_id, conversation_id, duration_seconds)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', 0, ?, ?, ?, ?, ?)
+  `).run(jobId, req.agentId, model.id, provider.id, providerJobId, req.prompt, req.title ?? null,
+    ...jobLineage(req.agentId), Number.isFinite(asked) && asked > 0 ? asked : null);
 
   logger.info('Video gen: job queued', { jobId, providerJobId, agentId: req.agentId });
   return { ok: true, jobId, providerJobId, status: 'queued' };

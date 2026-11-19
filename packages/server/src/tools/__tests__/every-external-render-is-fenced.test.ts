@@ -5,7 +5,7 @@
 //   1. TOOL READS. The candidate tools are DERIVED from the definitions: every tool that reads
 //      (its display class is `retrieval`, or its name carries a reading word). Each must be
 //      registered in `tools/inbound-fences.ts`: door-fenced, or fenced by the mailbox
-//      banner — or named in its NOT_OUTSIDE_CONTENT with a reason. A new read tool fails here
+//      banner, or named in NOT_OUTSIDE_CONTENT (tools/__tests__/fence-census.ts) with a reason. A new read tool fails here
 //      until someone decides which it is. Registering IS fencing: the one tool door calls
 //      `fenceToolResult` (checked below, comments stripped).
 //   2. INBOUND PRODUCERS. Each producer of channel text calls its own fenced builder (output-tested
@@ -20,7 +20,8 @@
 import { describe, it, expect } from 'vitest';
 import { classifyTool } from '@dojo/shared';
 import { getAllToolDefinitions } from '../../agent/tools/definitions.js';
-import { OUTSIDE_READ_NAMES, BANNER_FENCED_READS, NOT_OUTSIDE_CONTENT } from '../inbound-fences.js';
+import { OUTSIDE_READ_NAMES } from '../inbound-fences.js';
+import { BANNER_FENCED_READS, NOT_OUTSIDE_CONTENT } from './fence-census.js';
 
 const base = (name: string): string => (name.startsWith('user_') ? name.slice('user_'.length) : name);
 const READING_WORD = /(^|_)(read|reads|download|transcribe|fetch|browse|get|search|list|inbox|agenda|responses|outline|recall|expand|history)(_|$)/;

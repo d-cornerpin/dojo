@@ -10,6 +10,7 @@ import { insertEngineEventIfAbsent } from '../../memory/message-store.js';
 import { grantApprovalForSignature } from '../../agent/destructive-gate.js';
 import { routeFailure } from './route-failure.js';
 import { refuseAgentModel } from '../../agent/main-model-floor.js';
+import { setAgentModel } from '../../agent/model-switch.js';
 import { refuseBadClockTime } from '../../config/clock-time.js';
 
 const logger = createLogger('healer-routes');
@@ -52,12 +53,7 @@ healerRouter.post('/config', async (c) => {
     healerMode: body.healerMode,
   });
 
-  // Keep agents.model_id in sync so the agent card reflects the same value
-  if (body.modelId) {
-    const db = (await import('../../db/connection.js')).getDb();
-    db.prepare("UPDATE agents SET model_id = ?, updated_at = datetime('now') WHERE id = ?")
-      .run(body.modelId, getHealerAgentId());
-  }
+  if (body.modelId) await setAgentModel(getHealerAgentId(), body.modelId);
 
   // Reschedule with new config
   scheduleHealingCycle();
@@ -172,7 +168,6 @@ export function resolveHealerProposal(input: {
           agentId: proposal.agent_id as string,
           signature: proposal.approval_signature as string,
           requestText: (proposal.proposed_fix as string | null) ?? (proposal.title as string),
-          decidedBy: 'owner',
           // The proposal carries the held call's full args, so the grant is exact-call.
           argsJson: (proposal.approval_args_json as string | null) ?? null,
         });

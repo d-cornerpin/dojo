@@ -14,6 +14,7 @@ import { createAgentAccess, readLegacyAccess } from '../lib/manifest-edits';
 import { TechniqueSelector } from '../components/TechniqueSelector';
 import { ModalShell } from '../components/ModalShell';
 import { AgentModelOption } from '../components/AgentModelOption';
+import { isListedAgentModel } from '../lib/role-models';
 
 // ── Create Agent Modal ──
 
@@ -168,9 +169,9 @@ const CreateAgentModal = ({
           {/* Group */}
           {availableGroups.length > 0 && (
             <div>
-              <label className="text-xs font-semibold text-ui/55 uppercase tracking-wide block mb-1">Group</label>
+              <label className="text-xs font-semibold text-ui/55 uppercase tracking-wide block mb-1">Squad</label>
               <select value={selectedGroupId} onChange={(e) => setSelectedGroupId(e.target.value)} className="glass-select w-full">
-                <option value="">No group (ungrouped)</option>
+                <option value="">No squad</option>
                 {availableGroups.filter(g => g.id !== 'system-group').map((g) => (
                   <option key={g.id} value={g.id}>{g.name}</option>
                 ))}
@@ -341,7 +342,7 @@ export const Agents = () => {
 
   const loadAgents = async () => {
     const [agentResult, groupResult] = await Promise.all([
-      api.getAgents(),
+      api.getAgents({ all: true }),
       api.getGroups(),
     ]);
     if (agentResult.ok) { setAgents(agentResult.data); setError(null); }
@@ -365,7 +366,7 @@ export const Agents = () => {
         api.getProviders(),
       ]);
       if (modelsResult.ok) {
-        setModels(modelsResult.data.filter((m) => m.isEnabled && !m.capabilities.includes('decision')));   // never the Dojo's decision model
+        setModels(modelsResult.data.filter(isListedAgentModel));
       }
       if (providersResult.ok) {
         const map: Record<string, string> = {};
@@ -547,7 +548,7 @@ export const Agents = () => {
               {terminatedAgents.length > 20 && !showAllHistory && (
                 <div style={{ padding: '10px 16px', borderTop: '1px solid rgba(140,116,84,.14)' }}>
                   <button type="button" className="link" onClick={() => setShowAllHistory(true)}>
-                    Show all {terminatedAgents.length} terminated agents
+                    Show all {terminatedAgents.length} ended agents
                   </button>
                 </div>
               )}
@@ -600,18 +601,18 @@ const CreateGroupModal = ({ onClose, onCreated }: { onClose: () => void; onCreat
       closeOnBackdrop={false}
     >
         <h3 className="text-lg font-semibold text-ui mb-4">Form Squad</h3>
-        <p className="text-sm text-ui/40 mb-4">Groups organize agents around a shared purpose. The description is injected into all member agents' context.</p>
+        <p className="text-sm text-ui/40 mb-4">A squad gathers agents around a shared purpose. Every agent in the squad is told its description.</p>
 
         {error && <div className="note--warn" style={{ color: 'var(--dojo3-rust)' }}>{error}</div>}
 
         <div className="space-y-4">
           <div>
-            <label className="text-xs font-semibold text-ui/55 uppercase tracking-wide block mb-1">Group Name</label>
+            <label className="text-xs font-semibold text-ui/55 uppercase tracking-wide block mb-1">Squad name</label>
             <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g., Research Team" className="glass-input" autoFocus />
           </div>
           <div>
             <label className="text-xs font-semibold text-ui/55 uppercase tracking-wide block mb-1">Description</label>
-            <textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="What this group does..." className="glass-textarea" rows={3} />
+            <textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="What this squad does..." className="glass-textarea" rows={3} />
           </div>
         </div>
 
@@ -663,7 +664,7 @@ const UngroupedSection = ({
       <div className="group__head">
         <div>
           <div className="group__title">Unassigned</div>
-          <div className="group__desc">Agents that don't belong to a squad. Drop an agent here to remove it from its group.</div>
+          <div className="group__desc">Agents that don't belong to a squad. Drop an agent here to remove it from its squad.</div>
         </div>
         <div className="group__side">
           <span>{agents.length} agent{agents.length !== 1 ? 's' : ''}</span>

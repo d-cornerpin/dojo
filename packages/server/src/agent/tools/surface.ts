@@ -169,6 +169,7 @@ function computeFilteredTools(agentId: string): ToolDefinition[] {
   const hasFileRead = manifest.file_read === '*' || (Array.isArray(manifest.file_read) && manifest.file_read.length > 0);
   const hasFileWrite = manifest.file_write === '*' || (Array.isArray(manifest.file_write) && manifest.file_write.length > 0);
   const hasExec = manifest.exec_allow.length > 0;
+  const hasShell = (manifest.shell_allow ?? manifest.exec_allow).length > 0; // absent, the shell follows exec_allow, as in brokers/grants.ts
   const hasNetwork = manifest.network_domains !== 'none';
   const sysControl = manifest.system_control ?? [];
   const hasSysControl = sysControl.includes('*') || sysControl.length > 0;
@@ -179,6 +180,7 @@ function computeFilteredTools(agentId: string): ToolDefinition[] {
   if (!hasFileRead) removeTools.push('file_read', 'file_list');
   if (!hasFileWrite) removeTools.push('file_write', 'file_append', 'file_patch');
   if (!hasExec) removeTools.push('exec');
+  if (!hasShell) removeTools.push('shell');
   if (!hasNetwork) removeTools.push('web_search', 'web_fetch');
   if (!hasSysControl) removeTools.push('mouse_click', 'mouse_move', 'keyboard_type', 'screen_screenshot', 'applescript_run');
   if (!hasWebBrowse) removeTools.push('web_browse');
@@ -223,7 +225,7 @@ function computeFilteredTools(agentId: string): ToolDefinition[] {
       if (t.name !== 'exec') return t;
       return {
         ...t,
-        description: `Execute a shell command. You can ONLY run these commands: ${allowedCmds}. Any other command will be blocked. If you need a command that's not in this list, ${blockedHint}. Has a 30-second timeout.`,
+        description: `Execute a shell command. You can ONLY run these commands: ${allowedCmds}. Any other command will be blocked. If you need a command that's not in this list, ${blockedHint}.`,
       };
     });
   }

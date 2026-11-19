@@ -54,7 +54,7 @@ vi.mock('../../plaud/auth.js', () => ({
 
 import { runMigrations } from '../../db/migrations.js';
 import { recordToolOutcome } from '../../agent/v2/attempt-record.js';
-import { buildIntegrationStatusLane, forgetToolFamilyIndex } from '../integration-status-lane.js';
+import { buildIntegrationStatusLane } from '../integration-status-lane.js';
 
 const AGENT = 'agent-t190';
 
@@ -64,7 +64,6 @@ beforeEach(() => {
   mockDb.current.prepare(
     "INSERT INTO agents (id, name, status, model_id, config) VALUES (?, 'T190', 'idle', NULL, '{}')",
   ).run(AGENT);
-  forgetToolFamilyIndex();
 });
 afterEach(() => {
   mockDb.current?.close();

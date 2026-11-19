@@ -5,7 +5,8 @@ import * as effectFs from '../agent/effects/fs.js';
 import { officeLocalPath } from './office-local-path.js';
 import path from 'node:path';
 import type { ToolDefinition } from '../agent/tools/types.js';
-import { getValidAccessToken } from './auth.js';
+import { getValidAccessTokenForAccount } from './auth.js';
+import { listMicrosoftAccounts } from './accounts.js';
 import { logMicrosoftActivity } from './activity-log.js';
 import { createLogger } from '../logger.js';
 import JSZip from 'jszip';
@@ -16,9 +17,10 @@ const logger = createLogger('office-tools');
 import { graphFetch, GRAPH_BASE } from './graph-fetch.js';
 import { outsideSpan } from '../tools/external-content.js';
 import { odataQuoted } from './tools-read.js';
+import { registerConcurrency } from '../agent/v2/classifiers/concurrency.js';
 
 // Shared edit helpers. .docx and .pptx are ZIP archives of XML: download the bytes, unzip with JSZip, modify
-// the XML, re-zip and PUT back to the same OneDrive path (keeps the file_id, so share links stay alive).
+// the XML, re-zip and PUT back to the same OneDrive path (keeps the file_id).
 // .xlsx uses the Graph Workbook API for true in-place cell editing instead.
 
 // Both Office wire legs size their own deadlines (the same resolver shape as google/client.ts
@@ -35,8 +37,25 @@ function officeTimeoutForBytes(baseMs: number, bytes: number | undefined): numbe
   return Math.min(scaled, OFFICE_MAX_TIMEOUT_MS);
 }
 
-async function downloadFileBytes(fileId: string, agentId?: string): Promise<Buffer> {
-  const token = await getValidAccessToken();
+/** The Microsoft account an Office call works on: the one `account` names (either kind), else the agent's first connected one. */
+function officeAccount(args: Record<string, unknown>): { id: string | null } | { error: string } {
+  const connected = listMicrosoftAccounts().filter((a) => a.connected);
+  const named = typeof args.account === 'string' ? args.account.trim() : '';
+  if (named) {
+    const hit = connected.find((a) => (a.email ?? '').toLowerCase() === named.toLowerCase());
+    if (hit) return { id: hit.id };
+    return { error: `No connected Microsoft account matches "${named}". Connected: ${connected.map((a) => a.email ?? a.id).join(', ') || 'none'}.` };
+  }
+  return { id: connected.find((a) => a.kind === 'agent')?.id ?? null };
+}
+
+/** The account's token, or null when no account is in use or it cannot sign in. */
+async function officeToken(accountId: string | null): Promise<string | null> {
+  return accountId ? getValidAccessTokenForAccount(accountId) : null;
+}
+
+async function downloadFileBytes(fileId: string, accountId: string | null, agentId: string): Promise<Buffer> {
+  const token = await officeToken(accountId);
   if (!token) throw new Error('Not authenticated with Microsoft');
   const resp = await graphFetch(agentId, `${GRAPH_BASE}/me/drive/items/${encodeURIComponent(fileId)}/content`, {
     headers: { Authorization: `Bearer ${token}` },
@@ -48,8 +67,8 @@ async function downloadFileBytes(fileId: string, agentId?: string): Promise<Buff
   return Buffer.from(ab);
 }
 
-async function getFileMeta(fileId: string, agentId?: string): Promise<{ name: string; parentId?: string }> {
-  const token = await getValidAccessToken();
+async function getFileMeta(fileId: string, accountId: string | null, agentId: string): Promise<{ name: string; parentId?: string }> {
+  const token = await officeToken(accountId);
   if (!token) throw new Error('Not authenticated with Microsoft');
   const resp = await graphFetch(agentId, `${GRAPH_BASE}/me/drive/items/${encodeURIComponent(fileId)}?$select=name,parentReference`, {
     headers: { Authorization: `Bearer ${token}` },
@@ -74,7 +93,7 @@ interface OfficeEditTarget {
 
 async function resolveOfficeEditTarget(
   args: Record<string, unknown>,
-  ext: '.docx' | '.xlsx', agentId?: string,
+  ext: '.docx' | '.xlsx', accountId: string | null, agentId: string,
 ): Promise<OfficeEditTarget | string> {
   const fileId = typeof args.file_id === 'string' && args.file_id.trim() ? args.file_id.trim() : undefined;
   // A file_id that is really a filesystem path (starts with / or ~) is local. The one predicate lives in
@@ -98,14 +117,14 @@ async function resolveOfficeEditTarget(
   }
 
   if (fileId) {
-    const meta = await getFileMeta(fileId, agentId);
+    const meta = await getFileMeta(fileId, accountId, agentId);
     return {
       isLocal: false,
       name: meta.name,
       handle: fileId,
-      read: async () => downloadFileBytes(fileId, agentId),
+      read: async () => downloadFileBytes(fileId, accountId, agentId),
       writeBack: async (buf, mimeType) => {
-        const r = await uploadToOneDrive(buf, meta.name, mimeType, meta.parentId, agentId);
+        const r = await uploadToOneDrive(buf, meta.name, mimeType, meta.parentId, accountId, agentId);
         return { name: r.name, ref: `File ID: ${r.id}\nOpen: ${r.webUrl}` };
       },
     };
@@ -425,7 +444,7 @@ function slideTitleFromXml(slideXml: string): string {
 export const officeToolDefinitions: ToolDefinition[] = [
   {
     name: 'office_create_word_document',
-    description: 'Create a Word document (.docx) with formatted content. When Microsoft is connected, the file uploads to OneDrive and you get back a file ID + share link (and the file_id-driven edit tools — append, insert, replace, etc. — become usable). When Microsoft is NOT connected, the file is saved locally under your agent uploads dir and the result tells you the absolute path — and the Word edit tools (replace / insert / delete / append) work on that LOCAL path directly (pass path="..."), so you NEVER need to regenerate a document just to make a small change.\n\nThe document is composed of `content` blocks (paragraphs, headings, tables, lists, images, page breaks, table of contents). Optional top-level fields control page setup, default font, headers, footers, footnotes, and multi-column layouts.\n\nDefaults: US Letter, 1" margins, Arial 12pt, full-width tables with light-blue header row and grey borders. You only need to specify these if you want to override the default.\n\n**For long documents — use chunked create + append.** Everything you write into the `content` array counts against your model\'s output token budget (typically 8K-32K tokens depending on which model is in play). A single multi-page document with rich blocks (paragraphs, tables, lists, formatting) can blow that budget mid-tool-call and the call will truncate / fail. The correct pattern for anything longer than ~3-5 dense pages: open the doc with this tool carrying the first section (title page, intro, opening section), then use **office_append_to_word_document** for each subsequent chunk. The file_id and share link stay alive across appends; the doc grows in place. Plan for this upfront — don\'t try to cram a whole report into one call.\n\nKey rules the renderer follows for you (no manual handling needed):\n- Tables get proper widths and cell margins automatically — no more 1-character-wide columns.\n- Bullet/numbered lists use real Word list semantics, not unicode bullet characters.\n- Headings include outlineLevel so Word\'s navigation pane and Table of Contents work.\n- Page breaks are wrapped in valid paragraphs.\n- Cell text can be a plain string; only wrap it in a cell object when you actually need per-cell formatting. Plain strings save a lot of output budget.',
+    description: 'Create a Word document (.docx) with formatted content. When Microsoft is connected, the file uploads to OneDrive and you get back a file ID (and the file_id-driven edit tools, append, insert, replace, etc., become usable). When Microsoft is NOT connected, the file is saved locally under your agent uploads dir and the result tells you the absolute path, and the Word edit tools (replace / insert / delete / append) work on that LOCAL path directly (pass path="..."), so you NEVER need to regenerate a document just to make a small change.\n\nThe document is composed of `content` blocks (paragraphs, headings, tables, lists, images, page breaks, table of contents). Optional top-level fields control page setup, default font, headers, footers, footnotes, and multi-column layouts.\n\nDefaults: US Letter, 1" margins, Arial 12pt, full-width tables with light-blue header row and grey borders. You only need to specify these if you want to override the default.\n\n**For long documents, use chunked create + append.** Everything you write into the `content` array counts against your model\'s output token budget (typically 8K-32K tokens depending on which model is in play). A single multi-page document with rich blocks (paragraphs, tables, lists, formatting) can blow that budget mid-tool-call and the call will truncate / fail. The correct pattern for anything longer than ~3-5 dense pages: open the doc with this tool carrying the first section (title page, intro, opening section), then use **office_append_to_word_document** for each subsequent chunk. The file_id stays alive across appends; the doc grows in place. Plan for this upfront, don\'t try to cram a whole report into one call.\n\nKey rules the renderer follows for you (no manual handling needed):\n- Tables get proper widths and cell margins automatically, no more 1-character-wide columns.\n- Bullet/numbered lists use real Word list semantics, not unicode bullet characters.\n- Headings include outlineLevel so Word\'s navigation pane and Table of Contents work.\n- Page breaks are wrapped in valid paragraphs.\n- Cell text can be a plain string; only wrap it in a cell object when you actually need per-cell formatting. Plain strings save a lot of output budget.',
     effects: [
       { kind: 'fs_write', from: 'derived:the calling agent uploads directory', scope: { at: 'tree', template: '~/.dojo/uploads/<agentId>' } },
       { kind: 'fs_read', from: 'args.content[].path' },
@@ -611,6 +630,7 @@ export const officeToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'office_get_word_document_outline',
+    concurrency: 'safe',
     description: 'Read the structure of an existing Word document: a list of blocks (paragraphs, headings, tables) with zero-based index numbers and a short text preview of each. Use this BEFORE office_insert_in_word_document or office_delete_block_in_word_document to know which index to target. For the actual content of the document, use office_read_word_document instead.',
     effects: [{ kind: 'fs_read', from: 'args.path' }, { kind: 'fs_read', from: 'args.file_id', via: 'office_local_path' }],
     input_schema: {
@@ -700,6 +720,7 @@ export const officeToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'office_get_spreadsheet_range',
+    concurrency: 'safe',
     description: 'Read a range of cells from an existing Excel spreadsheet. Works on a LOCAL .xlsx (pass path="...") or one on OneDrive (pass file_id). Returns the cell values as a 2D array. Use this to inspect data before editing.',
     effects: [{ kind: 'fs_read', from: 'args.path' }, { kind: 'fs_read', from: 'args.file_id', via: 'office_local_path' }],
     input_schema: {
@@ -786,7 +807,7 @@ export const officeToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'office_create_spreadsheet',
-    description: 'Create an Excel spreadsheet (.xlsx). When Microsoft is connected, the file uploads to OneDrive (file_id + share link returned, file_id-driven workbook edit tools usable). When Microsoft is NOT connected, the file is saved locally under your agent uploads dir and the result tells you the absolute path; the Graph workbook tools aren\'t available against that path.\n\n**Cells, not columns.** Everything — values, formulas, styling, widths — goes through the `sheets[].rows` 2D array. There is NO sheet-level `formulas`, `columns`, `header_row`, or `currency_format` field — if you pass any of those, the call will be REJECTED with a corrective error. Column widths live on `sheets[].column_widths`; per-row / per-cell style lives inside the row cells.\n\nEach cell is either a plain primitive (string / number / boolean) OR an object with rich properties. Example: a formula cell looks like `{ formula: "=SUM(B2:B9)", number_format: "$#,##0" }`. A currency input looks like `{ value: 150000, number_format: "$#,##0", font: { color: "0070C0" } }` (blue inputs by financial-model convention). A percent looks like `{ formula: "=B4/B2", number_format: "0.0%" }`.\n\nCell object full surface: `{ value, formula, number_format, font: { name, size, bold, italic, underline, color }, fill_hex, align: "left"|"center"|"right"|"justified", v_align, border: "all"|"top"|"bottom"|"left"|"right"|"none", wrap_text, comment, hyperlink }`. Leading "=" on `formula` is optional.\n\nPer-sheet you can also set `column_widths` (array of numbers in Excel character units, e.g. [22, 14, 14, 14]), `freeze_rows`, `freeze_cols`, `default_header_row` (auto-styles row 1 with bold + light-blue fill — true by default), `zoom_pct`, `hidden`.\n\nKey defaults the renderer applies:\n- The first row gets bold + light-blue fill automatically unless `default_header_row: false` is passed.\n- Numbers stay numeric (SUM etc. work); strings stay text.\n- Common financial-model color convention: blue inputs (color "0070C0"), black formulas (default), green cross-sheet refs (color "00B050"), red external refs (color "C00000"), yellow assumption fill ("FFF2CC").\n- Number formats: "$#,##0;($#,##0);-" for currency, "0.0%" for percentages, "0.00x" for multiples, "yyyy-mm-dd" for dates.',
+    description: 'Create an Excel spreadsheet (.xlsx). When Microsoft is connected, the file uploads to OneDrive (file_id returned, file_id-driven workbook edit tools usable). When Microsoft is NOT connected, the file is saved locally under your agent uploads dir and the result tells you the absolute path; the Graph workbook tools aren\'t available against that path.\n\n**Cells, not columns.** Everything, values, formulas, styling, widths, goes through the `sheets[].rows` 2D array. There is NO sheet-level `formulas`, `columns`, `header_row`, or `currency_format` field, if you pass any of those, the call will be REJECTED with a corrective error. Column widths live on `sheets[].column_widths`; per-row / per-cell style lives inside the row cells.\n\nEach cell is either a plain primitive (string / number / boolean) OR an object with rich properties. Example: a formula cell looks like `{ formula: "=SUM(B2:B9)", number_format: "$#,##0" }`. A currency input looks like `{ value: 150000, number_format: "$#,##0", font: { color: "0070C0" } }` (blue inputs by financial-model convention). A percent looks like `{ formula: "=B4/B2", number_format: "0.0%" }`.\n\nCell object full surface: `{ value, formula, number_format, font: { name, size, bold, italic, underline, color }, fill_hex, align: "left"|"center"|"right"|"justified", v_align, border: "all"|"top"|"bottom"|"left"|"right"|"none", wrap_text, comment, hyperlink }`. Leading "=" on `formula` is optional.\n\nPer-sheet you can also set `column_widths` (array of numbers in Excel character units, e.g. [22, 14, 14, 14]), `freeze_rows`, `freeze_cols`, `default_header_row` (auto-styles row 1 with bold + light-blue fill, true by default), `zoom_pct`, `hidden`.\n\nKey defaults the renderer applies:\n- The first row gets bold + light-blue fill automatically unless `default_header_row: false` is passed.\n- Numbers stay numeric (SUM etc. work); strings stay text.\n- Common financial-model color convention: blue inputs (color "0070C0"), black formulas (default), green cross-sheet refs (color "00B050"), red external refs (color "C00000"), yellow assumption fill ("FFF2CC").\n- Number formats: "$#,##0;($#,##0);-" for currency, "0.0%" for percentages, "0.00x" for multiples, "yyyy-mm-dd" for dates.',
     effects: [{ kind: 'fs_write', from: 'derived:the calling agent uploads directory', scope: { at: 'tree', template: '~/.dojo/uploads/<agentId>' } }],
     // Four of these five are an explicit NEGATIVE advertisement ("There is NO sheet-level `formulas`,
     // `columns`, `header_row`, or `currency_format` field"), which is not a false promise and must not be
@@ -838,6 +859,7 @@ export const officeToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'office_get_presentation_outline',
+    concurrency: 'safe',
     description: 'Read the structure of an existing PowerPoint: a list of slides with index numbers and the title text of each. Use this BEFORE office_insert_slide or office_delete_slide. For the actual slide content, use office_read_presentation instead.',
     effects: [],
     input_schema: {
@@ -867,7 +889,7 @@ export const officeToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'office_replace_in_presentation',
-    description: 'Find and replace text across all slides in an existing PowerPoint. Same limitation as the Word equivalent: matches text contained within a single formatted run. File ID and share links preserved.',
+    description: 'Find and replace text across all slides in an existing PowerPoint. Same limitation as the Word equivalent: matches text contained within a single formatted run. File ID preserved.',
     effects: [],
     input_schema: {
       type: 'object',
@@ -909,7 +931,7 @@ export const officeToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'office_create_presentation',
-    description: 'Create a PowerPoint presentation (.pptx). When Microsoft is connected, the file uploads to OneDrive (file_id + share link returned, file_id-driven slide edit tools usable). When Microsoft is NOT connected, the file is saved locally under your agent uploads dir and the result tells you the absolute path; the file_id-driven edit tools aren\'t available against that path.\n\nThe deck has an optional `theme` (colors, fonts, slide size) and an array of `slides`. Each slide picks a `layout` preset (title / content / two_column / comparison / big_stat / image / blank) that auto-places common content (title, body, bullets), OR provides explicit `elements[]` (text boxes, shapes, images, tables) at exact x/y/w/h positions. Both can be mixed on the same slide — layout-driven content renders first, free-form elements go on top.\n\nLayouts:\n- `title`: centered hero title + subtitle. Use for the opening slide.\n- `content`: title at top + body underneath. If `body` is a string[], renders as bullets.\n- `two_column`: title + two side-by-side bodies (`body_left`, `body_right`). Both can be string[] for bullets.\n- `comparison`: like two_column but adds a vertical accent divider between columns. Use for pros/cons, before/after, option A vs B.\n- `big_stat`: huge centered statistic (`stat_value`, e.g. "$2.4M") with optional small `title` above and `stat_label` below.\n- `image`: title + centered image (path or URL) + optional caption (body).\n- `blank`: no auto-placed content; use `elements[]` exclusively for fully custom slides.\n\nText content fields (`title`, `body`, `body_left`, etc., and the `text` field of a text-element) accept three shapes: a plain string, an array of strings (renders as bullets / multiple lines depending on context), or an array of run objects `{text, bold, italic, underline, color, size, font, break, url}` for mixed formatting.\n\nSpeaker notes go on `notes` per slide. Slide background can be overridden via `background_hex`.',
+    description: 'Create a PowerPoint presentation (.pptx). When Microsoft is connected, the file uploads to OneDrive (file_id returned, file_id-driven slide edit tools usable). When Microsoft is NOT connected, the file is saved locally under your agent uploads dir and the result tells you the absolute path; the file_id-driven edit tools aren\'t available against that path.\n\nThe deck has an optional `theme` (colors, fonts, slide size) and an array of `slides`. Each slide picks a `layout` preset (title / content / two_column / comparison / big_stat / image / blank) that auto-places common content (title, body, bullets), OR provides explicit `elements[]` (text boxes, shapes, images, tables) at exact x/y/w/h positions. Both can be mixed on the same slide, layout-driven content renders first, free-form elements go on top.\n\nLayouts:\n- `title`: centered hero title + subtitle. Use for the opening slide.\n- `content`: title at top + body underneath. If `body` is a string[], renders as bullets.\n- `two_column`: title + two side-by-side bodies (`body_left`, `body_right`). Both can be string[] for bullets.\n- `comparison`: like two_column but adds a vertical accent divider between columns. Use for pros/cons, before/after, option A vs B.\n- `big_stat`: huge centered statistic (`stat_value`, e.g. "$2.4M") with optional small `title` above and `stat_label` below.\n- `image`: title + centered image (path or URL) + optional caption (body).\n- `blank`: no auto-placed content; use `elements[]` exclusively for fully custom slides.\n\nText content fields (`title`, `body`, `body_left`, etc., and the `text` field of a text-element) accept three shapes: a plain string, an array of strings (renders as bullets / multiple lines depending on context), or an array of run objects `{text, bold, italic, underline, color, size, font, break, url}` for mixed formatting.\n\nSpeaker notes go on `notes` per slide. Slide background can be overridden via `background_hex`.',
     effects: [
       { kind: 'fs_write', from: 'derived:the calling agent uploads directory', scope: { at: 'tree', template: '~/.dojo/uploads/<agentId>' } },
       { kind: 'fs_read', from: 'args.slides[].image_path' },
@@ -1006,6 +1028,18 @@ export const officeToolDefinitions: ToolDefinition[] = [
     },
   },
 ];
+
+// Register each Office tool's run class with the partitioner, and let every one work on a named Microsoft account (omitted, it is the agent's own).
+for (const def of officeToolDefinitions) {
+  if (def.concurrency) registerConcurrency(def.name, def.concurrency);
+  const schema = def.input_schema as { properties?: Record<string, unknown> };
+  if (schema.properties && !schema.properties.account) {
+    schema.properties.account = {
+      type: 'string',
+      description: "Which connected Microsoft account's OneDrive to work on, by its email address (the agent's own or the user's). Omit to use the agent's own account.",
+    };
+  }
+}
 
 // ── Helpers ──
 
@@ -1195,7 +1229,7 @@ export function smartenQuotes(text: string): string {
 }
 
 /**
- * Save an office document buffer: upload to OneDrive when Microsoft is connected (file_id and share link
+ * Save an office document buffer: upload to OneDrive when Microsoft is connected (file_id
  * returned), else save locally under ~/.dojo/uploads/<agentId>/<filename> like the PDF tools. The result
  * names what is available next (file_id edits or a local path).
  */
@@ -1206,17 +1240,17 @@ async function saveOfficeBuffer(
   agentId: string,
   folderId: string | undefined,
   kind: 'word' | 'excel' | 'powerpoint',
+  accountId: string | null,
 ): Promise<string> {
-  const { isMicrosoftConnected } = await import('./auth.js');
   // OneDrive is the destination only for the primary agent: mutating the connected Microsoft account is
   // primary-only, while a local office doc is a file on disk allowed for any agent under its file_write
   // manifest. Keying on connection alone would classify a sub-agent's create as an account write and deny
   // it upstream.
   const { getPrimaryAgentId } = await import('../config/platform.js');
-  if (isMicrosoftConnected('agent') && agentId === getPrimaryAgentId()) {
-    const result = await uploadToOneDrive(buffer, filename, mimeType, folderId, agentId);
+  if (accountId !== null && agentId === getPrimaryAgentId()) {
+    const result = await uploadToOneDrive(buffer, filename, mimeType, folderId, accountId, agentId);
     const kindLabel = kind === 'word' ? 'Word document' : kind === 'excel' ? 'Excel spreadsheet' : 'PowerPoint presentation';
-    return `${kindLabel} "${result.name}" created on OneDrive.\nFile ID: ${result.id}\nOpen: ${result.webUrl}${result.shareLink ? `\nShare link: ${result.shareLink}` : ''}`;
+    return `${kindLabel} "${result.name}" created on OneDrive.\nFile ID: ${result.id}\nOpen: ${result.webUrl}`;
   }
   // Local fallback: the PDF tools' uploads-dir pattern, so generated files live in one predictable place.
   const dir = path.join(homeDir(), '.dojo', 'uploads', agentId);
@@ -1257,9 +1291,9 @@ async function uploadToOneDrive(
   buffer: Buffer,
   filename: string,
   mimeType: string,
-  folderId?: string, agentId?: string,
-): Promise<{ id: string; name: string; webUrl: string; shareLink: string | null }> {
-  const token = await getValidAccessToken();
+  folderId: string | undefined, accountId: string | null, agentId: string,
+): Promise<{ id: string; name: string; webUrl: string }> {
+  const token = await officeToken(accountId);
   if (!token) throw new Error('Not authenticated with Microsoft');
 
   const encodedName = encodeURIComponent(filename);
@@ -1281,22 +1315,7 @@ async function uploadToOneDrive(
   }
 
   const data = await resp.json() as { id: string; name: string; webUrl: string };
-
-  // Auto-generate shareable link
-  let shareLink: string | null = null;
-  try {
-    const linkResp = await graphFetch(agentId, `${GRAPH_BASE}/me/drive/items/${data.id}/createLink`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ type: 'view', scope: 'anonymous' }),
-    });
-    if (linkResp.ok) {
-      const linkData = await linkResp.json() as { link?: { webUrl?: string } };
-      shareLink = linkData.link?.webUrl ?? null;
-    }
-  } catch { /* best effort */ }
-
-  return { id: data.id, name: data.name, webUrl: data.webUrl, shareLink };
+  return { id: data.id, name: data.name, webUrl: data.webUrl };
 }
 
 // ── Word Document Generation ──
@@ -2491,6 +2510,9 @@ export async function executeOfficeTool(
   agentId: string,
   agentName: string,
 ): Promise<string> {
+  const account = officeAccount(args);
+  if ('error' in account) return `Error: ${account.error}`;
+  const accountId = account.id;
 
   switch (name) {
     case 'office_create_word_document': {
@@ -2517,7 +2539,7 @@ export async function executeOfficeTool(
           revision_author: args.revision_author as string | undefined,
         };
         const buffer = await generateWordBuffer(blocks, docOptions);
-        const summary = await saveOfficeBuffer(buffer, filename, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', agentId, folderId, 'word');
+        const summary = await saveOfficeBuffer(buffer, filename, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', agentId, folderId, 'word', accountId);
         logMicrosoftActivity({ agentId, agentName, action: 'office_create_word_document', actionType: 'write', details: JSON.stringify({ filename }), apiEndpoint: 'drive/upload', success: true });
         return summary;
       } catch (err) {
@@ -2527,7 +2549,7 @@ export async function executeOfficeTool(
 
     case 'office_append_to_word_document': {
       try {
-        const target = await resolveOfficeEditTarget(args, '.docx', agentId);
+        const target = await resolveOfficeEditTarget(args, '.docx', accountId, agentId);
         if (typeof target === 'string') return target;
         const blocks = args.content as ContentBlock[];
 
@@ -2552,7 +2574,7 @@ export async function executeOfficeTool(
 
     case 'office_get_word_document_outline': {
       try {
-        const target = await resolveOfficeEditTarget(args, '.docx', agentId);
+        const target = await resolveOfficeEditTarget(args, '.docx', accountId, agentId);
         if (typeof target === 'string') return target;
         const buf = await target.read();
         const zip = await JSZip.loadAsync(buf);
@@ -2582,7 +2604,7 @@ export async function executeOfficeTool(
 
     case 'office_read_word_document': {
       try {
-        const target = await resolveOfficeEditTarget(args, '.docx', agentId);
+        const target = await resolveOfficeEditTarget(args, '.docx', accountId, agentId);
         if (typeof target === 'string') return target;
         const offset = Math.max(0, Math.floor((args.offset as number | undefined) ?? 0));
         const limit = Math.min(500, Math.max(1, Math.floor((args.limit as number | undefined) ?? 200)));
@@ -2671,7 +2693,7 @@ export async function executeOfficeTool(
 
     case 'office_replace_in_word_document': {
       try {
-        const target = await resolveOfficeEditTarget(args, '.docx', agentId);
+        const target = await resolveOfficeEditTarget(args, '.docx', accountId, agentId);
         if (typeof target === 'string') return target;
         const find = args.find as string;
         const replace = args.replace as string;
@@ -2697,7 +2719,7 @@ export async function executeOfficeTool(
 
     case 'office_insert_in_word_document': {
       try {
-        const target = await resolveOfficeEditTarget(args, '.docx', agentId);
+        const target = await resolveOfficeEditTarget(args, '.docx', accountId, agentId);
         if (typeof target === 'string') return target;
         const position = args.position as number;
         const blocks = args.content as ContentBlock[];
@@ -2729,7 +2751,7 @@ export async function executeOfficeTool(
 
     case 'office_delete_block_in_word_document': {
       try {
-        const target = await resolveOfficeEditTarget(args, '.docx', agentId);
+        const target = await resolveOfficeEditTarget(args, '.docx', accountId, agentId);
         if (typeof target === 'string') return target;
         const start = args.start as number;
         const count = (args.count as number | undefined) ?? 1;
@@ -2782,7 +2804,7 @@ export async function executeOfficeTool(
         }
 
         const fileId = args.file_id as string;
-        const token = await getValidAccessToken();
+        const token = await officeToken(accountId);
         if (!token) return 'Error: Not authenticated with Microsoft';
 
         // Resolve sheet name if not specified: use the first one
@@ -2847,7 +2869,7 @@ export async function executeOfficeTool(
         }
 
         const fileId = args.file_id as string;
-        const token = await getValidAccessToken();
+        const token = await officeToken(accountId);
         if (!token) return 'Error: Not authenticated with Microsoft';
 
         let resolvedSheet = sheetName;
@@ -2866,7 +2888,7 @@ export async function executeOfficeTool(
         });
         if (!resp.ok) return `Error writing range: HTTP ${resp.status} ${(await resp.text()).slice(0, 300)}`;
         logMicrosoftActivity({ agentId, agentName, action: 'office_write_spreadsheet_range', actionType: 'write', details: JSON.stringify({ fileId, sheetName: resolvedSheet, range, rowCount: values.length }), apiEndpoint: 'workbook/range', success: true });
-        const meta = await getFileMeta(fileId, agentId);
+        const meta = await getFileMeta(fileId, accountId, agentId);
         return `Wrote ${values.length} row(s) to ${resolvedSheet}!${range} in "${meta.name}".\nFile ID: ${fileId}`;
       } catch (err) {
         return `Error writing range: ${err instanceof Error ? err.message : String(err)}`;
@@ -2892,7 +2914,7 @@ export async function executeOfficeTool(
         }
 
         const fileId = args.file_id as string;
-        const token = await getValidAccessToken();
+        const token = await officeToken(accountId);
         if (!token) return 'Error: Not authenticated with Microsoft';
 
         let resolvedSheet = sheetName;
@@ -2905,12 +2927,10 @@ export async function executeOfficeTool(
         }
 
         // Find the next empty row: read usedRange.address to get the bottom-right cell.
-        const usedResp = await graphFetch(agentId, `${GRAPH_BASE}/me/drive/items/${encodeURIComponent(fileId)}/workbook/worksheets('${odataQuoted(resolvedSheet)}')/usedRange?$select=address,rowCount,columnCount`, { headers: { Authorization: `Bearer ${token}` } });
-        let firstAppendRow = 1;
-        if (usedResp.ok) {
-          const usedData = await usedResp.json() as { rowIndex?: number; rowCount?: number };
-          firstAppendRow = (usedData.rowIndex ?? 0) + (usedData.rowCount ?? 0) + 1;
-        }
+        const usedResp = await graphFetch(agentId, `${GRAPH_BASE}/me/drive/items/${encodeURIComponent(fileId)}/workbook/worksheets('${odataQuoted(resolvedSheet)}')/usedRange?$select=address,rowIndex,rowCount,columnCount`, { headers: { Authorization: `Bearer ${token}` } });
+        if (!usedResp.ok) return `Error appending rows: the sheet's used range could not be read (HTTP ${usedResp.status}), so no rows were written.`;
+        const usedData = await usedResp.json() as { rowIndex?: number; rowCount?: number };
+        const firstAppendRow = (usedData.rowIndex ?? 0) + (usedData.rowCount ?? 0) + 1;
         const colCount = (rows[0] as unknown[]).length;
         const endCol = columnIndexToLetter(colCount - 1);
         const range = `A${firstAppendRow}:${endCol}${firstAppendRow + rows.length - 1}`;
@@ -2922,7 +2942,7 @@ export async function executeOfficeTool(
         });
         if (!resp.ok) return `Error appending rows: HTTP ${resp.status} ${(await resp.text()).slice(0, 300)}`;
         logMicrosoftActivity({ agentId, agentName, action: 'office_append_spreadsheet_rows', actionType: 'write', details: JSON.stringify({ fileId, sheetName: resolvedSheet, rowCount: rows.length, range }), apiEndpoint: 'workbook/range', success: true });
-        const meta = await getFileMeta(fileId, agentId);
+        const meta = await getFileMeta(fileId, accountId, agentId);
         return `Appended ${rows.length} row(s) to ${resolvedSheet} at ${range} in "${meta.name}".\nFile ID: ${fileId}`;
       } catch (err) {
         return `Error appending rows: ${err instanceof Error ? err.message : String(err)}`;
@@ -2945,7 +2965,7 @@ export async function executeOfficeTool(
         }
 
         const fileId = args.file_id as string;
-        const token = await getValidAccessToken();
+        const token = await officeToken(accountId);
         if (!token) return 'Error: Not authenticated with Microsoft';
         const resp = await graphFetch(agentId, `${GRAPH_BASE}/me/drive/items/${encodeURIComponent(fileId)}/workbook/worksheets/add`, {
           method: 'POST',
@@ -2978,7 +2998,7 @@ export async function executeOfficeTool(
         }
 
         const fileId = args.file_id as string;
-        const token = await getValidAccessToken();
+        const token = await officeToken(accountId);
         if (!token) return 'Error: Not authenticated with Microsoft';
         const resp = await graphFetch(agentId, `${GRAPH_BASE}/me/drive/items/${encodeURIComponent(fileId)}/workbook/worksheets('${odataQuoted(sheetName)}')`, {
           method: 'DELETE',
@@ -3028,7 +3048,7 @@ export async function executeOfficeTool(
         }
 
         const buffer = await generateExcelBuffer(sheets);
-        const summary = await saveOfficeBuffer(buffer, filename, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', agentId, folderId, 'excel');
+        const summary = await saveOfficeBuffer(buffer, filename, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', agentId, folderId, 'excel', accountId);
         logMicrosoftActivity({ agentId, agentName, action: 'office_create_spreadsheet', actionType: 'write', details: JSON.stringify({ filename, sheetCount: sheets.length }), apiEndpoint: 'drive/upload', success: true });
         return summary;
       } catch (err) {
@@ -3039,7 +3059,7 @@ export async function executeOfficeTool(
     case 'office_get_presentation_outline': {
       try {
         const fileId = args.file_id as string;
-        const buf = await downloadFileBytes(fileId, agentId);
+        const buf = await downloadFileBytes(fileId, accountId, agentId);
         const zip = await JSZip.loadAsync(buf);
         const order = await getSlideOrder(zip);
         const outline: Array<{ index: number; title: string }> = [];
@@ -3048,7 +3068,7 @@ export async function executeOfficeTool(
           const title = file ? slideTitleFromXml(await file.async('string')) : '[unreadable]';
           outline.push({ index: i, title: title || '[untitled]' });
         }
-        const meta = await getFileMeta(fileId, agentId);
+        const meta = await getFileMeta(fileId, accountId, agentId);
         logMicrosoftActivity({ agentId, agentName, action: 'office_get_presentation_outline', actionType: 'read', details: JSON.stringify({ fileId, slideCount: outline.length }), apiEndpoint: 'drive/download', success: true });
         return outsideSpan(JSON.stringify({ file: meta.name, file_id: fileId, slides: outline }));
       } catch (err) {
@@ -3062,10 +3082,10 @@ export async function executeOfficeTool(
         const offset = Math.max(0, Math.floor((args.offset as number | undefined) ?? 0));
         const limit = Math.min(200, Math.max(1, Math.floor((args.limit as number | undefined) ?? 50)));
         const format = (args.format as string | undefined) === 'json' ? 'json' : 'text';
-        const buf = await downloadFileBytes(fileId, agentId);
+        const buf = await downloadFileBytes(fileId, accountId, agentId);
         const zip = await JSZip.loadAsync(buf);
         const order = await getSlideOrder(zip);
-        const meta = await getFileMeta(fileId, agentId);
+        const meta = await getFileMeta(fileId, accountId, agentId);
         const totalSlides = order.length;
         const slice = order.slice(offset, offset + limit);
 
@@ -3124,7 +3144,7 @@ export async function executeOfficeTool(
         const find = args.find as string;
         const replace = args.replace as string;
         if (!find) return 'Error: find cannot be empty';
-        const buf = await downloadFileBytes(fileId, agentId);
+        const buf = await downloadFileBytes(fileId, accountId, agentId);
         const zip = await JSZip.loadAsync(buf);
         const order = await getSlideOrder(zip);
         let totalReplacements = 0;
@@ -3142,8 +3162,8 @@ export async function executeOfficeTool(
           return `No matches for "${find}" found in any slide. Note: find/replace only matches text within a single formatted run.`;
         }
         const updatedBuffer = Buffer.from(await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' }));
-        const meta = await getFileMeta(fileId, agentId);
-        const result = await uploadToOneDrive(updatedBuffer, meta.name, 'application/vnd.openxmlformats-officedocument.presentationml.presentation', meta.parentId, agentId);
+        const meta = await getFileMeta(fileId, accountId, agentId);
+        const result = await uploadToOneDrive(updatedBuffer, meta.name, 'application/vnd.openxmlformats-officedocument.presentationml.presentation', meta.parentId, accountId, agentId);
         logMicrosoftActivity({ agentId, agentName, action: 'office_replace_in_presentation', actionType: 'write', details: JSON.stringify({ fileId, replacements: totalReplacements }), apiEndpoint: 'drive/upload', success: true });
         return `Replaced ${totalReplacements} occurrence(s) of "${find}" across ${order.length} slide(s) in "${result.name}".\nFile ID: ${result.id}\nOpen: ${result.webUrl}`;
       } catch (err) {
@@ -3155,7 +3175,7 @@ export async function executeOfficeTool(
       try {
         const fileId = args.file_id as string;
         const position = args.position as number;
-        const buf = await downloadFileBytes(fileId, agentId);
+        const buf = await downloadFileBytes(fileId, accountId, agentId);
         const zip = await JSZip.loadAsync(buf);
         const order = await getSlideOrder(zip);
         if (position < 0 || position >= order.length) {
@@ -3198,8 +3218,8 @@ export async function executeOfficeTool(
         }
 
         const updatedBuffer = Buffer.from(await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' }));
-        const meta = await getFileMeta(fileId, agentId);
-        const result = await uploadToOneDrive(updatedBuffer, meta.name, 'application/vnd.openxmlformats-officedocument.presentationml.presentation', meta.parentId, agentId);
+        const meta = await getFileMeta(fileId, accountId, agentId);
+        const result = await uploadToOneDrive(updatedBuffer, meta.name, 'application/vnd.openxmlformats-officedocument.presentationml.presentation', meta.parentId, accountId, agentId);
         logMicrosoftActivity({ agentId, agentName, action: 'office_delete_slide', actionType: 'write', details: JSON.stringify({ fileId, position }), apiEndpoint: 'drive/upload', success: true });
         return `Deleted slide at position ${position} from "${result.name}". ${order.length - 1} slide(s) remain.\nFile ID: ${result.id}\nOpen: ${result.webUrl}`;
       } catch (err) {
@@ -3214,7 +3234,7 @@ export async function executeOfficeTool(
         const title = args.title as string;
         const body = (args.body as string | undefined) ?? '';
 
-        const buf = await downloadFileBytes(fileId, agentId);
+        const buf = await downloadFileBytes(fileId, accountId, agentId);
         const zip = await JSZip.loadAsync(buf);
         const order = await getSlideOrder(zip);
         if (position < 0 || position > order.length) {
@@ -3323,8 +3343,8 @@ export async function executeOfficeTool(
         }
 
         const updatedBuffer = Buffer.from(await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' }));
-        const meta = await getFileMeta(fileId, agentId);
-        const result = await uploadToOneDrive(updatedBuffer, meta.name, 'application/vnd.openxmlformats-officedocument.presentationml.presentation', meta.parentId, agentId);
+        const meta = await getFileMeta(fileId, accountId, agentId);
+        const result = await uploadToOneDrive(updatedBuffer, meta.name, 'application/vnd.openxmlformats-officedocument.presentationml.presentation', meta.parentId, accountId, agentId);
         logMicrosoftActivity({ agentId, agentName, action: 'office_insert_slide', actionType: 'write', details: JSON.stringify({ fileId, position }), apiEndpoint: 'drive/upload', success: true });
         return `Inserted slide at position ${position} in "${result.name}". ${order.length + 1} slide(s) total.\nFile ID: ${result.id}\nOpen: ${result.webUrl}`;
       } catch (err) {
@@ -3341,7 +3361,7 @@ export async function executeOfficeTool(
         const pptxOptions: PptxOptions = { theme: args.theme as PptxTheme | undefined };
 
         const buffer = await generatePptxBuffer(slides, pptxOptions);
-        const summary = await saveOfficeBuffer(buffer, filename, 'application/vnd.openxmlformats-officedocument.presentationml.presentation', agentId, folderId, 'powerpoint');
+        const summary = await saveOfficeBuffer(buffer, filename, 'application/vnd.openxmlformats-officedocument.presentationml.presentation', agentId, folderId, 'powerpoint', accountId);
         logMicrosoftActivity({ agentId, agentName, action: 'office_create_presentation', actionType: 'write', details: JSON.stringify({ filename, slideCount: slides.length }), apiEndpoint: 'drive/upload', success: true });
         return summary;
       } catch (err) {

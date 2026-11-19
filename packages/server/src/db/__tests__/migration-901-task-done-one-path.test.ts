@@ -123,7 +123,9 @@ describe('migration 901 on a lived-in box', () => {
     const wake = ['wakes', 'ttl_at', 'next_attempt_at', 'next_run_at', 'is_paused', 'schedule_status'];
     for (const r of before.work) {
       if (r.id === 't-recurring-stop') continue;
-      for (const c of wake) expect([r.id, c, work(String(r.id))[c]]).toEqual([r.id, c, r[c]]);
+      // A later step hands an old missed-runs pause back to the scheduler, which decides it on its next pass.
+      const handedBack = r.id === 't-missed-runs' ? { is_paused: 0, schedule_status: 'waiting' } : {};
+      for (const c of wake) expect([r.id, c, work(String(r.id))[c]]).toEqual([r.id, c, c in handedBack ? handedBack[c as keyof typeof handedBack] : r[c]]);
     }
     expect((one('SELECT COUNT(*) AS n FROM deliveries') as { n: number }).n).toBe(before.deliveries);
     expect((one('SELECT COUNT(*) AS n FROM messages') as { n: number }).n).toBe(before.messages);

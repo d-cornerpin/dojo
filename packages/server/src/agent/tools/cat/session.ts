@@ -7,21 +7,10 @@
 // surface-stripped; that distinction belongs to a gate, not to this file.
 // ════════════════════════════════════════════════════════════════════════════
 
-import { v4 as uuidv4 } from 'uuid';
-import { NEW_SESSION_DIVIDER } from '@dojo/shared';
-import { getDb } from '../../../db/connection.js';
-import { broadcast } from '../../../gateway/ws.js';
-import { writeAgentStatus } from '../../agent-status.js';
 import { isPrimaryAgent } from '../../../config/platform.js';
-import { insertMessageIfAbsent } from '../../../memory/message-store.js';
 import { resolveAgentRef } from '../../tool-helpers.js';
-import { toolsLogger as logger } from '../util.js';
-import { activeRuns } from '../../shared-state.js';
-import { archiveAgentConversation } from '../../../vault/archive.js';
-import { buildSessionResetMessage } from '../../session-reset.js';
+import { resetSession } from '../../reset-session.js';
 import { getTunnelStatus, startTunnel, stopTunnel } from '../../../services/tunnel.js';
-import { onAgentRecovered, evaluateSessionResetGuard } from '../../../healer/injury-recovery.js';
-import { rehomeUnclaimedEngineEvents } from '../../v2/counterparty.js';
 import { setPresence, getPresence } from '../../../services/presence.js';
 import type { ToolHandlerMap } from '../handler.js';
 
@@ -114,97 +103,27 @@ export const sessionHandlers: ToolHandlerMap = {
   },
 
   async "reset_session"({ agentId, args }) {
-    let content = '';
-    let isError = false;
     try {
-      const db = getDb();
       // Accept both 'agent_id' and 'agent' (models use inconsistent param names)
       const rawTarget = (args.agent_id as string) ?? (args.agent as string) ?? null;
-
       if (!rawTarget) {
-        content = 'Error: agent_id is required. To reset your OWN session, pass your own agent ID explicitly. To reset a sub-agent, pass their agent ID or name.';
-        isError = true;
-        return { content, isError };
+        return { content: 'Error: agent_id is required. To reset your OWN session, pass your own agent ID explicitly. To reset a sub-agent, pass their agent ID or name.', isError: true };
       }
-
-      const resolveResult = resolveAgentRef(rawTarget, 'reset_session');
-      if (!resolveResult.ok) { content = resolveResult.error; isError = true; return { content, isError }; }
-      const resolvedId = resolveResult.id;
-      const agent = db.prepare('SELECT id, name, status FROM agents WHERE id = ?').get(resolvedId) as { id: string; name: string; status: string };
-
-      if (agent.status === 'terminated') {
-        content = `Agent "${agent.name}" is already terminated, there is no live session to reset. Spawn a new agent if you need a fresh start.`;
-        isError = true;
-        return { content, isError };
-      }
-
-      // Never reset ANOTHER agent mid live turn; gate on activeRuns, never on the
-      // DB status: a stale 'working' row whose run is gone is exactly the wedged
-      // case this tool heals. Self-reset is exempt: mid-turn self-reset is intentional.
-      if (resolvedId !== agentId && activeRuns.has(resolvedId)) {
-        content = `Agent "${agent.name}" is in the middle of a live turn right now. Resetting it would cut its work off mid-thought and leak that work past the new-session divider. Wait for it to go idle, then reset.`;
-        isError = true;
-        return { content, isError };
-      }
-
-      // The Healer KEEPS session reset, but a size-class injury takes compaction
-      // first: refuse unless compact-and-redial failed on 2 distinct turns, corruption
-      // is diagnosed (reason="corruption") or owner_requested=true; see `evaluateSessionResetGuard`.
-      const resetGuard = evaluateSessionResetGuard(resolvedId, {
+      const resolved = resolveAgentRef(rawTarget, 'reset_session');
+      if (!resolved.ok) return { content: resolved.error, isError: true };
+      const result = await resetSession(resolved.id, {
+        callerAgentId: agentId,
         reason: typeof args.reason === 'string' ? args.reason : null,
         ownerRequested: args.owner_requested === true,
       });
-      if (!resetGuard.allowed) {
-        content = resetGuard.refusalText
-          ?? 'Session reset refused: compaction comes first for this injury class.';
-        isError = true;
-        return { content, isError };
-      }
-
-      // force=true: else an unprocessed archive blocks the re-archive and the fresh conversation is lost.
-      const archiveId = archiveAgentConversation(resolvedId, true);
-
-      // Summaries are intentionally NOT cleared: they are the agent's only context
-      // across a reset, and `session_started_at` already keeps old raw rows out.
-
-      // Also forget session-loaded tool docs and served conversations; both clears
-      // live in `agent/session-forget.js`, loaded lazily to keep it off this graph.
-      await (await import('../../session-forget.js')).forgetSessionScratch(resolvedId);
-
-      // The scratchpad must clear too: its docs promise it, and it would bleed the old outline forward.
-      const now = new Date();
-      const boundary = now.toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
-      db.prepare("UPDATE agents SET session_started_at = ?, updated_at = ?, config = json_remove(COALESCE(config, '{}'), '$.scratchpad') WHERE id = ?").run(boundary, boundary, resolvedId);
-
-      // Unclaimed deliverable engine rows are rehomed across the boundary, never ordinary chat.
-      rehomeUnclaimedEngineEvents(resolvedId, boundary);
-
-      // The divider's created_at is stamped at insert time, at or after `boundary`, so it stays inside.
-      const markerId = uuidv4();
-      insertMessageIfAbsent({ id: markerId, agentId: resolvedId, role: 'system', content: NEW_SESSION_DIVIDER });
-      broadcast({ type: 'chat:message', agentId: resolvedId, message: { id: markerId, agentId: resolvedId, role: 'system', content: NEW_SESSION_DIVIDER, tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: boundary } });
-
-      const reorientId = uuidv4();
-      const reorientContent = buildSessionResetMessage(resolvedId);
-      insertMessageIfAbsent({ id: reorientId, agentId: resolvedId, role: 'system', content: reorientContent });
-      broadcast({ type: 'chat:message', agentId: resolvedId, message: { id: reorientId, agentId: resolvedId, role: 'system', content: reorientContent, tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: boundary } });
-
-      // An error/paused agent heals to idle: the reset cleared the context that caused it.
-      if (agent.status === 'error' || agent.status === 'paused') {
-        writeAgentStatus(resolvedId, 'idle', { clearError: true });
-        broadcast({ type: 'agent:status', agentId: resolvedId, status: 'idle' });
-        try {
-          onAgentRecovered(resolvedId);
-        } catch { /* module may not be available */ }
-      }
-
-      const targetLabel = resolvedId === agentId ? 'your' : `${agent?.name ?? resolvedId}'s`;
-      content = `Session reset complete for ${targetLabel} session. Previous conversation archived to vault.${agent.status === 'error' || agent.status === 'paused' ? ' Agent status restored to idle.' : ''}`;
-      logger.info('Session reset via tool', { callerAgentId: agentId, targetAgentId: resolvedId, archiveId }, agentId);
+      if (!result.ok) return { content: result.error, isError: true };
+      const targetLabel = resolved.id === agentId ? 'your' : `${result.name}'s`;
+      return {
+        content: `Session reset complete for ${targetLabel} session. Previous conversation archived to vault.${result.healed ? ' Agent status restored to idle.' : ''}`,
+        isError: false,
+      };
     } catch (err) {
-      content = `Error resetting session: ${err instanceof Error ? err.message : String(err)}`;
-      isError = true;
+      return { content: `Error resetting session: ${err instanceof Error ? err.message : String(err)}`, isError: true };
     }
-    return { content, isError };
   },
 };

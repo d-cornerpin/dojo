@@ -228,8 +228,7 @@ export const REAPER_KINDS: readonly ReaperKind[] = [
       }
     },
   },
-  // Non-scheduling sweeps. `autoResolveStaleMissedRunPauses` stays in the scheduler because it walks the
-  // recurrence past missed slots, which is scheduling.
+  // Non-scheduling sweeps.
   {
     id: 'orphaned-and-stale-runs',
     everyMs: 30_000,

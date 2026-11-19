@@ -22,7 +22,6 @@ import {
   resetToolRegistry,
   effectsFor,
   declaredSecretFieldsByTool,
-  effectCoverage,
 } from '../registry.js';
 
 describe('tool registry (PHASE-5 T1 Step 2)', () => {
@@ -58,69 +57,6 @@ describe('tool registry (PHASE-5 T1 Step 2)', () => {
       expect(entry!.def).toBe(def);
       expect(entry!.effects).toBe(def.effects);
     }
-  });
-
-  it('reports effect coverage from the REGISTRY, which is what T7 s exit gate consumes', () => {
-    const cov = effectCoverage();
-    // UX-REPAIR T77b: 438 → 442. Two new draft definitions and their two `user_` twins.
-    // DOJO-REPORT T3: 442 → 443. `dojo_report`, one core tool, no `user_` twin — it reaches
-    // no person on an owner channel, so the parity loop does not mint one for it.
-    // t200: 443 → 444. `tool_result_read`, one core tool (`effects: []`, it reads the agent's own rows).
-    // K34: 444 → 445. `lesson_record`, one core tool (`effects: []`), no twin.
-    // v3.5 inspect C1: 445 → 446. `dojo_inspect`, one core tool, no twin.
-    // `technique_acknowledge` is not a tool: one fewer core tool, no twin.
-    expect(cov.total).toBe(446);
-    expect(cov.declared).toBe(446);
-    // T8 Step 3: 125 → 126. `history_get` gained the fs_read it always
-    // performed, when the recall door converted to the facade and the missing
-    // declaration refused it (RULING P5-R14, corrected at the site).
-    // T8 Step 3 again, 126 → 127, same shape and same reason: `load_tool_docs`
-    // has always read `~/.dojo/tools/<name>.md` off disk and declared NOTHING,
-    // so the surface split (RULING P5-R15 part 2) that moved the reader out of
-    // `tools/index-generator.ts` refused it until the declaration was corrected
-    // at the site. The census is doing its job — a tool that gains a TRUE
-    // effect shows up here by exactly its own count.
-    // T8 Step 3 a third time, 127 → 128: `canvas_read` declared `effects: []`
-    // and has always probed, stat-ed and read the file on the agent's own
-    // canvas; the 3-way split of `agent/canvas-view.ts` (RULING P5-R15 ADDENDUM
-    // 3(3)) refused it until the declaration named what it reads. It is the
-    // first tool whose resource is resolved from the CALL'S OWN AGENT IDENTITY
-    // rather than from any argument (ADDENDUM 3(1)(b)).
-    // T8 Step 3, the slides door: 128 → 145, the largest single correction the
-    // task has made. Every `slides_*` verb declared `effects: []` while ~16 read
-    // the persisted deck style off disk and two write it; export_pngs writes a
-    // PNG per slide into the agent's uploads dir; build_slide reads a local image
-    // one level inside an element. The census is doing its job.
-    // UX-REPAIR T77b, 145 → 149: `gmail_draft` and `outlook_draft` plus their two `user_`
-    // twins, each declaring the `fs_read` its `attachments` field earns. Deliberately NOT
-    // a `send` effect — a draft delivers to nobody.
-    // DOJO-REPORT T3: 149 → 150. `dojo_report` declares the one `fs_write` it performs —
-    // the local evidence bundle under `~/.dojo/reports`. It declares no `net` and no `send`,
-    // which is the census confirming the tool cannot publish rather than us asserting it.
-    // v3.5 inspect C1: 150 → 151. `dojo_inspect` declares the node process its sql view runs.
-    expect(cov.effectful).toBe(151);
-    // PHASE-5 T3, and this number corrects an assumption rather than confirming
-    // one: `proc` is 18, not 1. T1 already declared `proc` on 17 tools that run
-    // a subprocess with no shell and no resource argument (all eight Plaud verbs
-    // shelling out to `npx`, `tunnel`, `apply_update`, the media generators…);
-    // `exec` joining them makes 18. **Exactly ONE of the eighteen is GATED** —
-    // `gates.ts` gives row 3 to the name `exec` and to nothing else — which is
-    // RULING P5-R5 holding: a declared effect that no ladder row gated gets no
-    // new refusal, it gets recorded. `shell` is 1 (the new door) and
-    // `applescript` is 1 (`applescript_run`).
-    // T8 Step 3 (T8H), 18 → 19: `transcribe_audio` decodes or demuxes EVERY
-    // source it accepts through ffmpeg before an engine sees it, and declared no
-    // `proc` effect at all. The transcode moved into the carrying layer whole
-    // (RULING P5-R15 ADDENDUM 4(1)) and the program it spawns is now declared,
-    // out of the named `CARRIED_PROGRAMS` list. It is the FIRST branch-(B)
-    // declaration in the tree, and it adds no refusal — `gates.ts` still gives
-    // row 3 to the name `exec` and to nothing else (P5-R5).
-    // v3.5 inspect C1, 19 → 20: `dojo_inspect` declares node (`process.execPath`), the second
-    // CARRIED_PROGRAMS member: its sql view's child process, argv fixed, the query on stdin.
-    expect(cov.byKind.proc).toBe(20);
-    expect(cov.byKind.shell).toBe(1);
-    expect(cov.byKind.applescript).toBe(1);
-    expect(cov.byKind.spawn).toBe(1);
   });
 
   it('answers effects and declared secret fields by name, including through the user_ twins', () => {

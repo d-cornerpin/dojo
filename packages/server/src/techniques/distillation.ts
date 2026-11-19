@@ -141,6 +141,15 @@ const readConfig = (key: string): string | undefined =>
   (getDb().prepare('SELECT value FROM config WHERE key = ?').get(key) as { value: string } | undefined)?.value;
 const lastBatch = (): NightlyBatch | null => JSON.parse(readConfig(BATCH_KEY) ?? 'null') as NightlyBatch | null;
 
+// A pattern already sent to the Trainer stays quiet for the whole lookback window, so a draft the owner threw
+// away is not proposed again the next night. Entries older than the window drop out when read.
+const PATTERNS_SENT_KEY = 'trainer.patterns_sent';
+const patternsSent = (): Record<string, number> => {
+  const cutoff = Date.now() - PATTERN_LOOKBACK_DAYS * 86400000;
+  const all = JSON.parse(readConfig(PATTERNS_SENT_KEY) ?? '{}') as Record<string, number>;
+  return Object.fromEntries(Object.entries(all).filter(([, at]) => at >= cutoff));
+};
+
 function unfedTechniqueLessons(): LessonRow[] {
   const last = lastBatch();
   if (last?.lessonsUpTo != null && getDb().prepare('SELECT 1 FROM messages WHERE id = ? AND served_by_turn IS NOT NULL').get(last.messageId)) {
@@ -164,6 +173,7 @@ export async function runDistillationCycle(): Promise<void> {
   // Repeated success: draft candidates.
   const groups = findRepeatedSuccessGroups();
   const candidates: CompletionGroup[] = [];
+  const sent = patternsSent();
   for (const group of groups) {
     if (candidates.length >= MAX_CANDIDATES_PER_CYCLE) {
       logger.info('distillation: candidate cap reached, deferring remainder', {
@@ -171,6 +181,7 @@ export async function runDistillationCycle(): Promise<void> {
       });
       break;
     }
+    if (Object.hasOwn(sent, group.normTitle)) continue;   // sent to the Trainer within the window
     if (await isCoveredByExistingTechnique(group)) continue;
     candidates.push(group);
   }
@@ -226,6 +237,8 @@ export async function runDistillationCycle(): Promise<void> {
       if (batchDelivered) {
         const lessonsUpTo = lessons.length > 0 ? Math.max(...lessons.map(touchedAt)) : null;
         setPlatformConfig(BATCH_KEY, JSON.stringify({ messageId: res.messageId ?? '', lessonsUpTo } satisfies NightlyBatch));
+        const at = Date.now();
+        setPlatformConfig(PATTERNS_SENT_KEY, JSON.stringify({ ...sent, ...Object.fromEntries(candidates.map((c) => [c.normTitle, at])) }));
         logger.info('distillation: sent draft batch to Trainer', { count: candidates.length, lessons: lessons.length });
       } else {
         logger.warn('distillation: Trainer batch was not delivered', {

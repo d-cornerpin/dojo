@@ -124,7 +124,7 @@ describe('switching agents carries nothing of the last one', () => {
 
     // B is idle and will never send an idle frame: the fetched status is the whole answer.
     await waitFor(() => expect(api.getAgent).toHaveBeenCalledWith(B));
-    await waitFor(() => expect(api.getChatHistory).toHaveBeenCalledWith(B, 200, undefined, false));
+    await waitFor(() => expect(api.getChatHistory).toHaveBeenCalledWith(B, 200));
     await waitFor(() => {
       expect(stop(), 'Stop on an idle agent (agent A\'s latch followed the switch)').toBeNull();
       expect(dots(), 'thinking dots on an idle agent').toBeNull();
@@ -139,7 +139,7 @@ describe('switching agents carries nothing of the last one', () => {
       historyGate: { [A]: slowA.promise },
     });
     render(shell(<Chat />));
-    await waitFor(() => expect(api.getChatHistory).toHaveBeenCalledWith(A, 200, undefined, false));
+    await waitFor(() => expect(api.getChatHistory).toHaveBeenCalledWith(A, 200));
 
     switchToB();
     await waitFor(() => expect(screen.queryByText('text-from-agent-b')).not.toBeNull());

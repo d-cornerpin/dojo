@@ -18,12 +18,9 @@ import { describe, it, expect } from 'vitest';
 import '../entries.js';
 import { registeredIds, getSystemEntries, getMessageEntries } from '../registry.js';
 
-// The complete live inventory, in canonical slot order: 24 system entries, 8
+// The complete live inventory, in canonical slot order: 18 system entries, 16
 // message entries. Keep in sync with entries.ts (and check-prompt-inventory.mjs).
 const EXPECTED_SYSTEM = [
-  'sys.reply-destination',
-  'sys.channel-landscape',
-  'sys.phone-conduct',
   'sys.time',
   'sys.vision-cap',
   'sys.identity',
@@ -37,13 +34,11 @@ const EXPECTED_SYSTEM = [
   'sys.message-sources',
   'sys.google-access',
   'sys.ms-access',
-  'sys.integration-reconnect',
   'sys.group',
   'sys.techniques-index',
   'sys.techniques-draft',
   'sys.techniques-equipped',
   'sys.runtime',
-  'sys.voice-conduct',
 ];
 
 const EXPECTED_MESSAGE = [

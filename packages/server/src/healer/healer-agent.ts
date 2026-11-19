@@ -604,7 +604,7 @@ export async function runHealingCycle(): Promise<{ diagnosticId: string; autoFix
               postAgentNotice({
                 toAgentId: getPrimaryAgentId(),
                 fromName: 'Healer',
-                brief: `A fix you approved ("${p.title}") still hasn't gone through after ${MAX_APPROVAL_REWAKES} tries, so I've stopped retrying it on my own. Take a look on the Healer page when you get a chance, or let me know and we can sort it out together.`,
+                brief: `A fix the owner approved ("${p.title}") still hasn't gone through after ${MAX_APPROVAL_REWAKES} tries, so I have stopped retrying it on my own. It is listed under Previous Suggestions in the Healer section of the dashboard; ask the owner whether to try it another way.`,
                 intent: 'agent_health',
               });
             } catch (noticeErr) {
@@ -721,7 +721,7 @@ function agentRoleLabel(agentId?: string, agentName?: string): string {
   if (isPrimaryAgent(agentId)) return 'Main Agent';
   if (isPMAgent(agentId)) return 'PM Agent';
   if (isTrainerAgent(agentId)) return 'Trainer Agent';
-  if (agentId === 'healer') return 'Healer Agent';
+  if (agentId === getHealerAgentId()) return 'Healer Agent';
   // Sub-agents: just say "sub-agent", no user-specific names
   return 'Sub-Agent';
 }
@@ -921,8 +921,8 @@ export async function sendHealerReport(): Promise<{ ok: boolean; error?: string 
   try {
     const mail = { to: recipient, subject, body, account: sender.email };
     const result = google
-      ? await (await import('../google/tools-write.js')).executeGoogleWriteTool('gmail_send', mail, 'healer', 'Healer')
-      : await (await import('../microsoft/tools-write.js')).executeMicrosoftWriteTool('outlook_send', mail, 'healer', 'Healer');
+      ? await (await import('../google/tools-write.js')).executeGoogleWriteTool('gmail_send', mail, getHealerAgentId(), getHealerAgentName())
+      : await (await import('../microsoft/tools-write.js')).executeMicrosoftWriteTool('outlook_send', mail, getHealerAgentId(), getHealerAgentName());
     if (result.startsWith('Error')) {
       const refused = /authenticat|credential|invalid_grant|unauthori[sz]ed|expired|\b401\b/i.test(result);
       return { ok: false, error: refused
@@ -932,7 +932,7 @@ export async function sendHealerReport(): Promise<{ ok: boolean; error?: string 
 
     // Email sent successfully, archive the log
     const archiveName = archiveHealerLog();
-    logger.info('Healer report sent and archived', { recipient, archiveName });
+    logger.info('Healer report sent and archived', { to: 'the owner', archiveName });
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };

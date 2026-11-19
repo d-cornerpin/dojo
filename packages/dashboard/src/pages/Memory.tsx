@@ -71,12 +71,10 @@ export const Memory = () => {
       ]);
       if (agentResult.ok) {
         setAgents(agentResult.data.map((a) => ({ id: a.id, name: a.name })));
+        const ids = agentResult.data.map((a) => a.id);
         const primaryId = primaryResult.ok ? primaryResult.data.value : null;
-        if (!agentId && primaryId && agentResult.data.find(a => a.id === primaryId)) {
-          setAgentId(primaryId);
-        } else if (!agentId && agentResult.data.length > 0) {
-          setAgentId(agentResult.data[0].id);
-        }
+        // The box and the tree must name the same agent: an id the list does not hold is replaced.
+        setAgentId((cur) => ids.includes(cur) ? cur : primaryId && ids.includes(primaryId) ? primaryId : (ids[0] ?? cur));
       }
     };
     load();

@@ -25,12 +25,12 @@ beforeEach(() => {
 afterEach(() => { mockDb.current?.close(); mockDb.current = null; });
 
 describe('the cheapest agent model', () => {
-  it('a free local model beats one with no known price, and a priced one beats the unpriced too', () => {
+  it('a free local model beats one with no known price, and a priced one beats the unpriced too', async () => {
     model('a-unpriced', null);
     model('b-paid', 3);
     model('c-free', 0);
-    expect(cheapestAgentModel()).toBe('c-free');
-    expect(cheapestAgentModel(['c-free'])).toBe('b-paid');
-    expect(cheapestAgentModel(['c-free', 'b-paid'])).toBe('a-unpriced');
+    expect(await cheapestAgentModel()).toBe('c-free');
+    expect(await cheapestAgentModel(['c-free'])).toBe('b-paid');
+    expect(await cheapestAgentModel(['c-free', 'b-paid'])).toBe('a-unpriced');
   });
 });

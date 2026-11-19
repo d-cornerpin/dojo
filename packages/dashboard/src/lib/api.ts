@@ -492,15 +492,10 @@ export const getChatHistory = async (
   agentId: string,
   limit?: number,
   before?: string,
-  // wordy mode is a DIFFERENT server query (it also serves the agent's own
-  // inter-agent coordination output from the store), so it must be sent through
-  // to every page fetch, not filtered client-side out of one feed.
-  wordy?: boolean,
 ): Promise<ApiResponse<ChatHistoryResponse>> => {
   const params = new URLSearchParams();
   if (limit) params.set('limit', String(limit));
   if (before) params.set('before', before);
-  if (wordy) params.set('wordy', '1');
   const query = params.toString();
   return request<ChatHistoryResponse>(`/chat/${agentId}/messages${query ? `?${query}` : ''}`);
 };
@@ -524,8 +519,9 @@ export const getInterAgentMessages = async (
 
 // ── Agents ──
 
-export const getAgents = async (): Promise<ApiResponse<AgentsListResponse>> => {
-  return request<AgentsListResponse>('/agents');
+/** Live agents only; `all` adds the ended ones (the Agents page's history). */
+export const getAgents = async (opts?: { all?: boolean }): Promise<ApiResponse<AgentsListResponse>> => {
+  return request<AgentsListResponse>(opts?.all ? '/agents?all=1' : '/agents');
 };
 
 export const getAgent = async (id: string): Promise<ApiResponse<AgentDetailResponse>> => {
@@ -1363,6 +1359,7 @@ export const testRouter = async (
   rawScore: number;
   confidence: number;
   tier: string;
+  method?: string;
   selectedModel: string;
 }>> => {
   return request('/router/test', {
@@ -1478,7 +1475,7 @@ export const getBudgets = async (): Promise<ApiResponse<{
   return request('/costs/budget');
 };
 
-export const setGlobalBudget = async (limitUsd: number): Promise<ApiResponse<void>> => {
+export const setGlobalBudget = async (limitUsd: number | null): Promise<ApiResponse<void>> => {
   return request<void>('/costs/budget/global', {
     method: 'PUT',
     body: JSON.stringify({ limitUsd }),
@@ -1487,7 +1484,7 @@ export const setGlobalBudget = async (limitUsd: number): Promise<ApiResponse<voi
 
 export const setAgentBudget = async (
   agentId: string,
-  limitUsd: number,
+  limitUsd: number | null,
   period: string,
 ): Promise<ApiResponse<void>> => {
   return request<void>(`/costs/budget/agent/${agentId}`, {
@@ -1580,7 +1577,7 @@ export const getAvailableRouterModels = async (): Promise<ApiResponse<Array<{
   api_model_id: string;
   provider_name: string;
   provider_type: string;
-  tooSmallForAgents?: boolean;
+  notForAgents?: string | null;
 }>>> => {
   return request('/router/available-models');
 };

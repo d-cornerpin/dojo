@@ -2,8 +2,13 @@
 // a poll that throws part-way must not make the next poll re-read the same messages.
 import { getDb } from '../db/connection.js';
 
+/** The most mails one poll of a mail watcher handles. */
+export const MAX_MAILS_PER_POLL = 500;
+/** Twice one poll's bound: a mail handled in the last two polls is still known when a look back lists it again. */
+const KEPT_IDS = 2 * MAX_MAILS_PER_POLL;
+
 export function persistNotifiedIds(key: string, ids: ReadonlySet<string>): void {
-  const value = JSON.stringify([...ids].slice(-200));   // capped at the last 200
+  const value = JSON.stringify([...ids].slice(-KEPT_IDS));
   getDb().prepare(`
     INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
     ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = datetime('now')

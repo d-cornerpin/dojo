@@ -72,11 +72,10 @@ vi.mock('../../plaud/auth.js', () => ({
 import { runMigrations } from '../../db/migrations.js';
 import {
   buildIntegrationStatusLane, renderIntegrationStatusBlock, integrationStatusWorstCaseTokens,
-  forgetToolFamilyIndex, integrationFamilyForLabel, INTEGRATION_STATUS_LANE_ID,
+  INTEGRATION_STATUS_LANE_ID,
   INTEGRATION_STATUS_HEAD, INTEGRATION_STATUS_SUPERSEDES, INTEGRATION_STATUS_NO_LEDGER_NOTE,
   type IntegrationStatusRow,
 } from '../integration-status-lane.js';
-import { TOOL_CATEGORIES } from '../../tools/categories.js';
 import { MessageSlot } from '../../prompt/registry/types.js';
 import { POST_BUDGET_LANES, LANE_LIMITS, laneLimit } from '../lanes.js';
 import { estimateTokens } from '../budget.js';
@@ -129,7 +128,6 @@ beforeEach(() => {
   world.plaudGranted = true;
   world.levels = { google: 'full', microsoft: 'full' };
   world.plaudConnectedAt = '2026-09-14T06:22:14.954Z';
-  forgetToolFamilyIndex();
 });
 
 afterEach(() => {
@@ -196,18 +194,6 @@ describe('T76b §1 — the line carries only what a ledger records', () => {
     expect(block).toMatch(/• Plaud[^\n]*No unresolved tool failure on record\./);
   });
 
-  it('EVERY category label is classified — a new one fails HERE, it does not vanish', () => {
-    // The census that makes the label map safe. A tool added to an existing category is
-    // picked up with no edit at all; a NEW category added to `tools/categories.ts` with no
-    // row in `LABEL_FAMILY` is the one way this block could silently stop seeing a family's
-    // failures, and this clause is what refuses that day.
-    const unclassified = TOOL_CATEGORIES
-      .map((c) => c.label)
-      .filter((label) => integrationFamilyForLabel(label) === undefined);
-    expect(unclassified, `unclassified in memory/integration-status-lane.ts LABEL_FAMILY: ${unclassified.join(' | ')}`)
-      .toEqual([]);
-  });
-
   it('the failure is attributed to the family the CATEGORY TABLE names, not a typed prefix', async () => {
     seedFailure('plaud_recent_recordings', DAY_ONE - HOUR, 2);
     const block = await buildIntegrationStatusLane(AGENT);
@@ -216,7 +202,6 @@ describe('T76b §1 — the line carries only what a ledger records', () => {
     // this machine with no Microsoft account (the carve-out `renderIntegrationReconnect`
     // already declares), so a failure in one says nothing about Microsoft 365.
     seedFailure('office_create_word_document', DAY_ONE, 9);
-    forgetToolFamilyIndex();
     const after = await buildIntegrationStatusLane(AGENT);
     expect(after).not.toContain('office_create_word_document');
   });

@@ -49,7 +49,7 @@ beforeEach(() => {
       wake_delivered INTEGER DEFAULT 0, created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
-    CREATE TABLE agents (id TEXT PRIMARY KEY, name TEXT, permissions TEXT, spawn_depth INTEGER, created_by TEXT);
+    CREATE TABLE agents (id TEXT PRIMARY KEY, name TEXT, permissions TEXT, spawn_depth INTEGER, created_by TEXT, status TEXT);
     CREATE TABLE healer_diagnostics (id TEXT PRIMARY KEY, critical_count INTEGER, created_at TEXT);
   `);
   db.prepare("INSERT INTO agents (id, name, permissions, spawn_depth, created_by) VALUES (?, 'Healer', ?, 1, 'system')").run(HEALER, JSON.stringify({ exec_allow: ['*'], shell_allow: ['*'] }));

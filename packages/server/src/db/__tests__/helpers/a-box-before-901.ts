@@ -2,9 +2,9 @@
 //
 //   vi.mock('<path>/db/connection.js', async () => (await import('<path>/work/done/__tests__/helpers/done-db.js')).connectionMock());
 //
-// `boxBefore901()` applies every file but 901; `seedRow` plants one old-shape row with its records;
-// `upgrade()` runs the runner again, so 901 is the one pending file.
-import { runMigrations } from '../../migrations.js';
+// `boxBefore901()` applies every file before 901; `seedRow` plants one old-shape row with its records;
+// `upgrade()` runs the runner again, so 901 and the files after it are the pending ones.
+import { runMigrations, migrationFileNames } from '../../migrations.js';
 import { clearPlatformConfigCache } from '../../../config/platform.js';
 import { freshDoneDb, doneDb } from '../../../work/done/__tests__/helpers/done-db.js';
 import { FXID } from '../../../../../../deploy/checks/fixture-vocabulary.mjs';
@@ -19,13 +19,14 @@ export const GONE = FXID.n4;
 export const DELETED = FXID.n5;
 export const SENSEI = FXID.n6;
 
-/** A database at the state every file but 901 leaves, with the box's agents. */
+/** A database at the state every file before 901 leaves, with the box's agents. */
 export function boxBefore901(): void {
   freshDoneDb();
   doneDb().exec("CREATE TABLE _migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (datetime('now')))");
-  doneDb().prepare('INSERT INTO _migrations (name) VALUES (?)').run(FILE);
+  const owed = migrationFileNames().filter((f) => f >= FILE);
+  for (const f of owed) doneDb().prepare('INSERT INTO _migrations (name) VALUES (?)').run(f);
   runMigrations();
-  doneDb().prepare('DELETE FROM _migrations WHERE name = ?').run(FILE);
+  for (const f of owed) doneDb().prepare('DELETE FROM _migrations WHERE name = ?').run(f);
   for (const [k, v] of [['pm_agent_id', PM], ['primary_agent_id', MAIN]]) {
     doneDb().prepare('INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)').run(k, v);
   }
@@ -38,7 +39,7 @@ export function boxBefore901(): void {
   agent.run(SENSEI, SENSEI, 'idle', 'sensei');
 }
 
-/** Apply 901 the way a boot does. */
+/** Apply 901 and the files after it the way a boot does. */
 export function upgrade(): void { runMigrations(); }
 
 let n = 0;

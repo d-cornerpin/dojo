@@ -95,7 +95,6 @@ export interface AgentTurnState {
   routerTier: string | null;
   lockedModelId: string | null;
   lockedTier: string | null;
-  excludedModels: string[];
 
   lastResponse: ModelCallResult | null;
   toolCalls: ToolCall[];
@@ -212,7 +211,6 @@ export function initState(params: InitStateParams): AgentTurnState {
     routerTier: null,
     lockedModelId: null,
     lockedTier: null,
-    excludedModels: [],
 
     lastResponse: null,
     toolCalls: [],

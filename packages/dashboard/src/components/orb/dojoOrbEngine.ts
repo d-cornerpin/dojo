@@ -20,7 +20,6 @@ export type OrbEmotionName =
   | 'excited'
   | 'waiting'
   | 'alert';
-export type OrbSystemName = 'muted' | 'offline' | 'asleep';
 export type OrbTaskName =
   | 'image'
   | 'audio'
@@ -37,10 +36,8 @@ export interface OrbTaskOpts {
 export type OrbEngine = {
   setState: (name: OrbStateName) => void;
   setEmotion: (name: OrbEmotionName | null | 'none') => void;
-  setSystem: (name: OrbSystemName | null | 'none' | 'wake') => void;
   pulse: () => void;
   startTask: (name: OrbTaskName, opts?: OrbTaskOpts) => void;
-  updateTask: (progress: number) => void;
   endTask: (name?: OrbTaskName) => void;
   resize: () => void;
   /** Tint the orb toward an agent's hue (degrees, 0..360). null/0 = the
@@ -171,7 +168,6 @@ uniform float u_disp;        /* chromatic dispersion strength */
 uniform float u_lens;        /* rim lensing mix */
 uniform vec3  u_ripple;      /* x: age s, y: angle, z: amp */
 uniform float u_haze;        /* atmosphere strength multiplier */
-uniform float u_quality;     /* 1 = full effects, 0 = lite (skip outer flare/caustic/reflect) */
 uniform float u_atmos;       /* outside cast-light (halo/flare/bloom) scale — dimmed on small screens so the orb doesn't wash out the chat */
 uniform float u_vsquash;     /* vertical stretch(+)/squash(-), volume kept */
 uniform float u_flash;       /* momentary light pulse 0..~1 */
@@ -237,27 +233,6 @@ vec4 flareF(vec2 u, float t, float env, float amp){
   return vec4(c, I);
 }
 
-/* ---------- caustic bands ----------
-   Broad, slow ribbons of light the orb casts across the page,
-   one sweeping up to the right, a fainter one down to the left,
-   with a whisper of prism across their width. */
-vec4 bandsF(vec2 u, float t, float env, float amp){
-  float ax = abs(u.x);
-  float y1 = 0.10 - 0.16*u.x + 0.08*sin(u.x*0.7 + t*0.11);
-  float w1 = 0.26 + 0.13*ax;
-  float s1 = (u.y - y1)/w1;
-  float g1 = exp(-s1*s1) * exp(-max(ax-0.9, 0.0)/2.2);
-  float y2 = -0.28 + 0.10*u.x + 0.10*sin(u.x*0.5 - t*0.09 + 2.0);
-  float w2 = 0.34 + 0.15*ax;
-  float s2 = (u.y - y2)/w2;
-  float g2 = exp(-s2*s2) * exp(-max(ax-1.0, 0.0)/2.6) * 0.6;
-  float gate = smoothstep(0.7, 1.2, ax);   /* page only, not the glass */
-  float I = (g1 + g2) * gate * amp * (0.5 + 0.5*env);
-  vec3 prism = vec3(0.05*s1, 0.0, -0.06*s1);          /* rainbow drift */
-  vec3 c = (vec3(1.0,0.95,0.86) + prism) * I;
-  return vec4(c, I);
-}
-
 /* ---------- focused caustics ----------
    The sphere concentrates light into bright patches that land on
    the page a couple of radii away. By then dispersion has spread
@@ -302,27 +277,6 @@ vec4 causticsF(vec2 u, float t, float env, out float fog){
   c += causticArc(us, t,  2.70 + 0.06*sin(t*0.045 + 2.0), 2.15 + 0.05*sin(t*0.06), 0.40, 0.50, 0.30*e, 0.25, fog);
   c += causticArc(us, t,  0.28 + 0.05*sin(t*0.060 + 4.0), 2.85,                    0.50, 0.50, 0.24*e, 0.55, fog);
   return c;
-}
-
-/* ---------- floor reflection ----------
-   A soft mirrored ghost of the orb on the page below it: bright
-   floor arc, rim ring, and the flare, all flipped and fading. */
-vec4 reflectF(vec2 u, float t, float env, float flAmp){
-  float yF = 1.16;                      /* mirror plane, in radii */
-  if (u.y < yF) return vec4(0.0);
-  vec2 um = vec2(u.x, 2.0*yF - u.y);
-  float qm = length(um);
-  float fade = exp(-(u.y - yF)*1.5) * 0.26;
-  float ring = smoothstep(0.09, 0.0, abs(qm - 0.96)) * 0.45;
-  float fill = exp(-qm*qm*1.6) * 0.28;
-  vec2 fg = um - vec2(0.0, 0.85);
-  float floorG = exp(-dot(fg,fg)*3.0) * 0.55;
-  vec4 fl = flareF(um, t, env, flAmp*0.5);
-  float I = (ring + fill + floorG) * fade;
-  vec3 c = vec3(1.0, 0.96, 0.90) * I + fl.rgb * fade * 1.2;
-  float a = I + fl.a * fade;
-  float lim = smoothstep(1.5, 1.0, qm);  /* keep it orb-sized */
-  return vec4(c, a) * lim;
 }
 
 /* ---------- background sampling (object-fit: cover, top center) ---------- */
@@ -603,13 +557,6 @@ void main(){
     /* outer ring continuation of the lens flare */
     float oRing = exp(-d*d*900.0) * (0.35 + 0.65*u_ring);
 
-    /* Retired: the flare wings, broad caustic ribbons, and mirrored ghost that
-       used to be cast onto the page were the most expensive terms here (one
-       flareF + bandsF + reflectF per pixel across the whole outer canvas) and
-       were visually imperceptible for that cost. The cheap halo glow below
-       carries the orb's cast light for every quality tier now. */
-    vec4 flOut = vec4(0.0), bd = vec4(0.0), rf = vec4(0.0);
-
     /* contact shadow under the bubble */
     float shadow = exp(-d*9.0) * smoothstep(0.0, 0.9, rel.y/r) * 0.22;
 
@@ -658,7 +605,6 @@ void main(){
     /* the bright cast light (halo, lens-flare wings, bloom) — scaled by
        u_atmos so it doesn't blow out the chat on a narrow screen */
     vec3 add = (warmHi*(halo + oRing)
-             + (flOut.rgb + bd.rgb + rf.rgb) * edgeFade
              + vec3(1.0,0.93,0.80)*wispGlint) * u_atmos;
     float dark = shadow;
 
@@ -672,7 +618,7 @@ void main(){
     /* composite: haze first (it replaces the page), light on top. The bright
        cast-light terms are scaled by u_atmos to match add, so on small
        screens the glow becomes more transparent and the chat reads through. */
-    float lightA = (halo + oRing + wispGlint + (flOut.a + bd.a + rf.a) * edgeFade) * u_atmos;
+    float lightA = (halo + oRing + wispGlint) * u_atmos;
     float aOut = clamp(hazeA + hazeF + lightA + dark + ccM, 0.0, 1.0);
     vec3 cOut = (hazeCol*hazeA + hazePage*hazeF + ccPage*ccM + add + smokeCol*dark)
               / max(aOut, 0.0001);
@@ -1020,7 +966,6 @@ void main(){
       'u_streak',
       'u_env',
       'u_atmos',
-      'u_quality',
       'u_refr',
       'u_disp',
       'u_lens',
@@ -1164,7 +1109,7 @@ void main(){
   };
 
   /* EMOTION LAYER: the engine owns the base state (what the orb is doing); the
-     LLM paints emotion on top as sustained parameter targets, plus motion. */
+     dashboard paints emotion on top as sustained parameter targets, plus motion. */
   const sm01 = (p: number) => {
     p = Math.max(0, Math.min(1, p));
     return p * p * (3 - 2 * p);
@@ -1442,42 +1387,9 @@ void main(){
     },
   };
 
-  /* SYSTEM LAYER overrides every other layer: trust must win over mood.
-     Leaving a system state plays the wake stinger. */
-  type SystemDef = { params: ParamTable; pose: { droop: number; dy: number; vs: number } };
-  const SYSTEM: Record<string, SystemDef> = {
-    muted: {
-      params: { desat: 0.20, seal: 1.0, tempo: 0.50, ring: 0.15, streak: 0.10, envFloor: 0.05, envScale: 0.40, wobble: 0.015, warmth: 0.40, swirl: 0.10, drift: 0.5, scale: 0.97 },
-      pose: { droop: 0.10, dy: 2, vs: -0.03 },
-    },
-    offline: {
-      params: { desat: 0.92, seal: 0, tempo: 0.12, ring: 0.05, streak: 0, envFloor: 0, envScale: 0.10, wobble: 0.005, warmth: 0.30, swirl: 0.05, drift: 0, scale: 0.95 },
-      pose: { droop: 0.20, dy: 3, vs: -0.05 },
-    },
-    asleep: {
-      params: { desat: 0.30, seal: 0, tempo: 0.30, ring: 0.10, streak: 0.10, envFloor: 0.05, envScale: 0.25, wobble: 0.008, warmth: 0.45, swirl: 0.08, drift: 0.5, scale: 0.82, breath: 3.2 },
-      pose: { droop: 0.55, dy: 8, vs: -0.10 },
-    },
-  };
-
-  let system: { name: string; weight: number; releasing: boolean } | null = null; /* { name, weight, releasing } */
-  let wakeFx: { t0: number } | null = null; /* { t0 } wake stinger */
   let pulseFx: { t0: number } | null = null; /* { t0 } small receive pulse */
   function pulse(): void {
     pulseFx = { t0: performance.now() / 1000 };
-  }
-
-  function setSystem(name: OrbSystemName | null | 'none' | 'wake'): void {
-    if (!name || name === 'none' || name === 'wake' || !SYSTEM[name]) {
-      if (system) system.releasing = true;
-      wakeFx = { t0: performance.now() / 1000 }; /* inflate back to life */
-      return;
-    }
-    system = {
-      name,
-      weight: system && !system.releasing ? system.weight : 0,
-      releasing: false,
-    };
   }
 
   let emotion: { name: string; t0: number; weight: number; releasing: boolean } | null = null; /* { name, t0, weight, releasing } */
@@ -1491,13 +1403,11 @@ void main(){
   }
 
   let cur: ParamTable = Object.assign({}, STATES.idle);
-  let target: ParamTable = STATES.idle;
   let stateName = 'idle';
 
   function setState(name: OrbStateName): void {
     if (!STATES[name]) return;
     stateName = name;
-    target = STATES[name];
   }
 
   /* The orb tints toward the active agent's hue: the target shift (radians from
@@ -1556,13 +1466,8 @@ void main(){
     }
   };
 
-  /* Reduced motion is re-queried live via matchMedia so an OS change takes
-     effect at runtime; the listener is removed on destroy. */
+  /* Reduced motion is read from matchMedia every frame, so an OS change takes effect at once. */
   const reduceMotionMq = matchMedia('(prefers-reduced-motion: reduce)');
-  const onReduceMotionChange = () => {
-    /* Nothing to cache: the listener exists to be removable on destroy. */
-  };
-  if (reduceMotionMq.addEventListener) reduceMotionMq.addEventListener('change', onReduceMotionChange);
 
   let last = performance.now() / 1000,
     simT = 0;
@@ -1601,12 +1506,6 @@ void main(){
       if (name === 'dreamer') setEmotion('sleepy');
       if (name === 'healer') setEmotion('calm');
       ProgressLine.show(!this._isAgent, this._progress);
-    },
-    update(progress: number) {
-      if (this._active && !this._isAgent) {
-        this._progress = progress;
-        ProgressLine.set(progress);
-      }
     },
     end(name?: string) {
       if (name && name !== this._active) return; /* ignore stale end */
@@ -1704,11 +1603,6 @@ void main(){
       this.el!.classList.add('is-on');
       this.el!.classList.toggle('is-indeterminate', !this._det);
     },
-    set(p: number) {
-      this._det = p >= 0;
-      this._p = Math.max(0, Math.min(1, p));
-      if (this.el) this.el.classList.toggle('is-indeterminate', !this._det);
-    },
     hide() {
       this._vis = false;
       if (this.el) this.el.classList.remove('is-on');
@@ -1739,7 +1633,6 @@ void main(){
   /* Power management: the fragment shader runs per-pixel every frame, so the
      cheapest win is not drawing: pause when hidden, idle low, 'lite' harder. */
   let pageVisible = typeof document === 'undefined' ? true : !document.hidden;
-  let onScreen = true;
   let quality: OrbQuality = 'full';
   let curDpr = 1.5; // the device-pixel-ratio cap actually in use (lowered in 'lite')
   let lastPoke = performance.now() / 1000; // bumped on any interaction / state change
@@ -1766,7 +1659,7 @@ void main(){
       ? // BODY frozen, but keep rendering while a change settles or a
         // task/notification indicator is up (its glyph spins, its bar moves).
         now - lastPoke < ACTIVE_SETTLE || Task.amt > 0.01 || Note.amt > 0.01
-      : emotion !== null || system !== null || pulseFx !== null || wakeFx !== null ||
+      : emotion !== null || pulseFx !== null ||
         extEnv >= 0 || Task.amt > 0.01 || Note.amt > 0.01 ||
         now - lastPoke < ACTIVE_SETTLE;
     if (!active) {
@@ -1814,27 +1707,11 @@ void main(){
       }
     }
 
-    if (system) {
-      const rate = system.releasing ? -2.8 : 3.0;
-      system.weight = Math.max(0, Math.min(1, system.weight + rate * dt));
-      if (system.releasing && system.weight <= 0.01) system = null;
-    }
-
-    let wakeScale = 1,
-      wakeFlash = 0;
+    let wakeFlash = 0;
     if (pulseFx) {
       const tp = now - pulseFx.t0;
       if (tp > 0.9) pulseFx = null;
       else if (!reduceMotion && !staticMode) wakeFlash += 0.5 * Math.exp(-tp * 4.0);
-    }
-    if (wakeFx) {
-      const tw = now - wakeFx.t0;
-      if (tw > 1.3) wakeFx = null;
-      else if (!reduceMotion && !staticMode) {
-        if (tw < 0.55) wakeScale = 0.55 + 0.50 * easeOutBack(tw / 0.55);
-        else wakeScale = 1.0 + 0.05 * Math.exp(-(tw - 0.55) * 6.0) * Math.cos((tw - 0.55) * 18.0);
-        wakeFlash = 0.9 * Math.exp(-tw * 3.0);
-      }
     }
 
     const baseT = STATES[stateName];
@@ -1845,19 +1722,7 @@ void main(){
         const ep = EMOTIONS[emotion.name].params;
         if (key in ep) v = v + (ep[key] - v) * emotion.weight;
       }
-      if (system) {
-        const sp = SYSTEM[system.name].params;
-        if (key in sp) v = v + (sp[key] - v) * system.weight;
-      }
       effT[key] = v;
-    }
-
-    if (system) {
-      const po = SYSTEM[system.name].pose,
-        ws = system.weight;
-      mo.droop += po.droop * ws;
-      mo.dy += po.dy * ws;
-      mo.vs += po.vs * ws;
     }
 
     /* Tempo: emotions change the orb's sense of time. 'static' freezes the
@@ -1929,9 +1794,8 @@ void main(){
     glc.uniform2f(U.u_canvasSize, cssSize, cssSize);
     glc.uniform1f(U.u_dpr, curDpr);
     glc.uniform1f(U.u_time, simT);
-    glc.uniform1f(U.u_quality, quality === 'lite' ? 0.0 : 1.0);
     glc.uniform2f(U.u_center, cx, cy);
-    glc.uniform1f(U.u_radius, radius * (cur.scale === undefined ? 1 : cur.scale) * wakeScale);
+    glc.uniform1f(U.u_radius, radius * (cur.scale === undefined ? 1 : cur.scale));
     glc.uniform2f(U.u_mouse, mouse.x, mouse.y);
     glc.uniform1f(U.u_mouseIn, (reduceMotion || staticMode) ? 0 : mouse.in);
     glc.uniform2f(U.u_vel, velS.x, velS.y);
@@ -2006,7 +1870,7 @@ void main(){
   };
 
   function start(): void {
-    if (running || destroyed || !pageVisible || !onScreen) return;
+    if (running || destroyed || !pageVisible) return;
     running = true;
     last = performance.now() / 1000;
     rafId = requestAnimationFrame(frame);
@@ -2058,7 +1922,6 @@ void main(){
     document.removeEventListener('visibilitychange', onVisibility);
     canvas.removeEventListener('webglcontextlost', onContextLost);
     canvas.removeEventListener('webglcontextrestored', onContextRestored);
-    if (reduceMotionMq.removeEventListener) reduceMotionMq.removeEventListener('change', onReduceMotionChange);
     if (uploadHandler) img.removeEventListener('load', uploadHandler);
 
     ProgressLine.remove();
@@ -2076,17 +1939,12 @@ void main(){
     tex = iconTex = buf = prog = null;
   }
 
-  /* `target` is assigned (by setState) but never read: void it so tsc keeps it. */
-  void target;
-
   /* Every external command pokes the activity clock to leave idle refresh. */
   return {
     setState: (n) => { poke(); setState(n); },
     setEmotion: (n) => { poke(); setEmotion(n); },
-    setSystem: (n) => { poke(); setSystem(n); },
     pulse: () => { poke(); pulse(); },
     startTask: (name, o) => { poke(); Task.start(name, o); },
-    updateTask: (p) => { poke(); Task.update(p); },
     endTask: (name) => { poke(); Task.end(name); },
     resize,
     setHue: (deg) => { poke(); setHue(deg); },

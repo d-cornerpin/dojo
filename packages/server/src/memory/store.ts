@@ -6,13 +6,7 @@ import { getDb } from '../db/connection.js';
 import { estimateTokensFromChars } from './budget.js';
 import type { Message } from '@dojo/shared';
 import { deriveOrigin, legacyOriginInputs } from '@dojo/shared';
-
-
-function getSessionBoundary(agentId: string): string | null {
-  const db = getDb();
-  const row = db.prepare('SELECT session_started_at FROM agents WHERE id = ?').get(agentId) as { session_started_at: string | null } | undefined;
-  return row?.session_started_at ?? null;
-}
+import { sessionBoundaryText } from './session-boundary.js';
 
 
 // Time columns are epoch-ms INTEGER and SQLite orders INTEGER before TEXT, so a comparison in the old
@@ -105,7 +99,7 @@ export function rowToMessage(row: MessageRow): Message {
  *  comparison: unwrapped, `<integer> >= '<datetime>'` is false for every row and the tail comes back empty. */
 export function getRecentMessages(agentId: string, count: number, turnCutoff?: string): Message[] {
   const db = getDb();
-  const sessionBoundary = getSessionBoundary(agentId);
+  const sessionBoundary = sessionBoundaryText(agentId);
   const params: Record<string, unknown> = { agentId, count };
   const clauses = ['agent_id = @agentId'];
   if (sessionBoundary) { clauses.push('created_at >= (unixepoch(@boundary) * 1000)'); params.boundary = sessionBoundary; }
@@ -130,7 +124,7 @@ export function boardAgentRows(
   agentId: string, block: number, turnNumber: number | null, triggerId: string | null,
 ): { tail: Message[]; present: Message[] } {
   const db = getDb();
-  const params = { agentId, turn: turnNumber, trigger: triggerId, boundary: getSessionBoundary(agentId) };
+  const params = { agentId, turn: turnNumber, trigger: triggerId, boundary: sessionBoundaryText(agentId) };
   const where = `agent_id = @agentId AND ${CONVERSATION_ROW}
     AND (@boundary IS NULL OR created_at >= (unixepoch(@boundary) * 1000))
     AND (@turn IS NULL OR turn_number IS NOT @turn)`;
@@ -168,7 +162,7 @@ function unsummarised(agentId: string, floorRows: number, range: SeqRange, cols:
        AND NOT EXISTS (SELECT 1 FROM summary_messages sm JOIN summaries s ON s.id = sm.summary_id
                         WHERE sm.message_id = m.id AND s.agent_id = @agentId)
      ORDER BY seq ASC
-  `).all({ agentId, floorRows, boundary: getSessionBoundary(agentId), from: range.fromSeq ?? null, through: range.throughSeq ?? null });
+  `).all({ agentId, floorRows, boundary: sessionBoundaryText(agentId), from: range.fromSeq ?? null, through: range.throughSeq ?? null });
 }
 
 export function getUnsummarisedRows(agentId: string, floorRows: number, range: SeqRange = {}): Message[] {

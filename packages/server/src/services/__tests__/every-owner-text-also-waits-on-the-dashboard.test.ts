@@ -277,8 +277,8 @@ describe('the RED witness: a text reaches the phone and nothing waits on the das
     noteCriticalMemory(100);
     await sendsSettle();
     expectPaired(1);
-    expect(texts()[0]).toContain('Dojo: [CRITICAL] Critical: System memory below 512MB.');   // the label stays first
-    expect(cards()[0]).toMatchObject({ error: 'Critical: System memory below 512MB. Terminate idle sub-agents.', severity: 'error' });
+    expect(texts()[0]).toContain('Dojo: [CRITICAL] Your Mac has less than 512 MB of memory free');   // the label stays first
+    expect(cards()[0]).toMatchObject({ error: 'Your Mac has less than 512 MB of memory free, so the Dojo may slow down or stop. Quitting apps you are not using frees memory.', severity: 'error' });
   });
 });
 

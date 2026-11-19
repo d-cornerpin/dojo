@@ -223,7 +223,7 @@
       "table": "messages",
       "column": "provenance",
       "definedIn": "packages/server/src/db/migrations/127_unified_messages.sql",
-      "why": "live | migrated | rescued. Says where a row came from, so a lived-in Stable Bridge merge is distinguishable from live traffic forever after, instead of being guessed from timestamps. WRITTEN as the literal 'live' by the single writer (message-store.ts:209). Measured 2026-07-28 at 41fcabb: no reader \u2014 and there cannot be a meaningful one on this box, because every row here is 'live'.",
+      "why": "live | migrated | rescued. Says where a row came from, so a lived-in Stable Bridge merge is distinguishable from live traffic forever after, instead of being guessed from timestamps. WRITTEN by the column default 'live' (migration 127). Measured 2026-07-28 at 41fcabb: no reader \u2014 and there cannot be a meaningful one on this box, because every row here is 'live'.",
       "zeroReader": {
         "kind": "owed",
         "owner": "the task that makes the Stable Bridge EXECUTABLE (PHASE-2 T12 or the release fixture)",
@@ -587,15 +587,6 @@
       "definedIn": "packages/server/src/db/migrations/137_work_attributes.sql",
       "why": "THE SCHEDULE AXIS \u2014 a BRIDGE with a named successor: these re-express as `schedule_json`/`tz`/`anchor_local`/`sequence` + occurrence rows at T8c. `is_paused` is a SEPARATE axis from `state='paused'` and T6's reopen edge negative-controls the two against each other. Readers at PHASE-2 T8b: tracker/schema.ts, tracker/tools.ts, scheduler/engine.ts.",
       "verifiedBy": "git grep -l 'last_run_at' -- packages/server/src packages/dashboard/src | grep -v '__tests__|.test.|/migrations/'"
-    },
-    {
-      "id": "work.missed_runs_paused_at",
-      "kind": "column",
-      "table": "work",
-      "column": "missed_runs_paused_at",
-      "definedIn": "packages/server/src/db/migrations/137_work_attributes.sql",
-      "why": "THE SCHEDULE AXIS \u2014 a BRIDGE with a named successor: these re-express as `schedule_json`/`tz`/`anchor_local`/`sequence` + occurrence rows at T8c. `is_paused` is a SEPARATE axis from `state='paused'` and T6's reopen edge negative-controls the two against each other. Readers at PHASE-2 T8b: tracker/tools.ts, scheduler/runner.ts, work/tracker-store.ts.",
-      "verifiedBy": "git grep -l 'missed_runs_paused_at' -- packages/server/src packages/dashboard/src | grep -v '__tests__|.test.|/migrations/'"
     }
   ],
   "tables": [

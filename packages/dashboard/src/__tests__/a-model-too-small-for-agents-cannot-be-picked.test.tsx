@@ -21,8 +21,8 @@ import { PrimaryAgentStep } from '../pages/Setup';
 import { DreamingTab } from '../components/settings/DreamingTab';
 import { ModelsTab } from '../components/settings/ModelsTab';
 
-const model = (id: string, tooSmallForAgents: boolean) =>
-  ({ id, name: id, apiModelId: id, providerId: 'p', capabilities: ['chat'], isEnabled: true, inputCostPerM: 1, outputCostPerM: 1, tooSmallForAgents }) as never;
+const model = (id: string, tooSmall: boolean) =>
+  ({ id, name: id, apiModelId: id, providerId: 'p', capabilities: ['chat'], isEnabled: true, inputCostPerM: 1, outputCostPerM: 1, notForAgents: tooSmall ? 'too small for an agent' : null }) as never;
 
 beforeEach(() => {
   vi.mocked(api.getModels).mockResolvedValue({ ok: true, data: [model('tiny-8k', true), model('roomy-200k', false)] } as never);

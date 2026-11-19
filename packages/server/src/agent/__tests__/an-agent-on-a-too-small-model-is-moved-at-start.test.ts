@@ -27,7 +27,7 @@ import * as honestStopLock from '../v2/honest-stop-lock.js';
 const db = (): Database.Database => mockDb.current!;
 const seedModel = (id: string, window: number | null, enabled = 1, cost = 1): void => {
   db().prepare(`INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, max_output_tokens, input_cost_per_m, is_enabled, created_at, updated_at)
-    VALUES (?, 'p', ?, ?, '["text"]', ?, 1024, ?, ?, datetime('now'), datetime('now'))`).run(id, `Model ${id}`, id, window, cost, enabled);
+    VALUES (?, 'p', ?, ?, '["text","tools"]', ?, 1024, ?, ?, datetime('now'), datetime('now'))`).run(id, `Model ${id}`, id, window, cost, enabled);
 };
 const seedAgent = (id: string, modelId: string, status = 'idle'): void => {
   db().prepare(`INSERT INTO agents (id, name, model_id, status, config, spawn_depth, created_by, created_at, updated_at)
@@ -46,7 +46,7 @@ beforeEach(() => {
 afterEach(() => { mockDb.current?.close(); mockDb.current = null; });
 
 describe('an agent on a too-small model, at start', () => {
-  it('a helper and the main agent are moved to the cheapest big-enough model, and one card names both', () => {
+  it('a helper and the main agent are moved to the cheapest big-enough model, and one card names both', async () => {
     seedModel('pricey', 128_000, 1, 9);
     seedModel('cheap', 64_000, 1, 2);
     seedModel('off', 64_000, 0, 0.1);
@@ -54,48 +54,48 @@ describe('an agent on a too-small model, at start', () => {
     seedAgent('helper', 'tiny');
     seedAgent('fine', 'pricey');
     seedAgent('gone', 'tiny', 'terminated');
-    moveAgentsOffSmallModels();
+    await moveAgentsOffSmallModels();
     expect([modelOf('main'), modelOf('helper'), modelOf('fine'), modelOf('gone')]).toEqual(['cheap', 'cheap', 'pricey', 'tiny']);
     expect(frames).toHaveLength(1);
     expect(frames[0].error).toMatch(/helper \(from Model tiny\), main \(from Model tiny\) to Model cheap/);
     expect(frames[0].cardClass).toBe('informational');
   });
 
-  it('with no bigger model switched on nothing moves, and the card says who needs a pick', () => {
+  it('with no bigger model switched on nothing moves, and the card says who needs a pick', async () => {
     seedAgent('main', 'tiny');
-    moveAgentsOffSmallModels();
+    await moveAgentsOffSmallModels();
     expect(modelOf('main')).toBe('tiny');
     expect(frames).toHaveLength(1);
     expect(frames[0].error).toMatch(/main \(Model tiny\) is on a model whose memory window is too small/);
     expect(frames[0].cardClass).toBe('action');
   });
 
-  it('a second start changes nothing and files no second card', () => {
+  it('a second start changes nothing and files no second card', async () => {
     seedModel('cheap', 64_000);
     seedAgent('main', 'tiny');
-    moveAgentsOffSmallModels();
-    moveAgentsOffSmallModels();
+    await moveAgentsOffSmallModels();
+    await moveAgentsOffSmallModels();
     expect(frames).toHaveLength(1);
     expect(modelOf('main')).toBe('cheap');
   });
 
-  it('a stuck agent is told once across starts, and the card ends when a bigger model is switched on', () => {
+  it('a stuck agent is told once across starts, and the card ends when a bigger model is switched on', async () => {
     seedAgent('main', 'tiny');
-    moveAgentsOffSmallModels();
-    moveAgentsOffSmallModels();
+    await moveAgentsOffSmallModels();
+    await moveAgentsOffSmallModels();
     expect(frames).toHaveLength(1);
     seedModel('cheap', 64_000);
     expect(db().prepare("SELECT 1 FROM healer_state WHERE key = 'smallmodel:stuck'").all()).toHaveLength(1);   // told
-    moveAgentsOffSmallModels();
+    await moveAgentsOffSmallModels();
     expect(modelOf('main')).toBe('cheap');
     expect(frames.filter((f) => f.cardKey === 'smallmodel:moved')).toHaveLength(1);
     expect(db().prepare("SELECT 1 FROM healer_state WHERE key = 'smallmodel:stuck'").all()).toEqual([]);
   });
 
-  it('an agent on a model of unknown size is left alone and no card is filed', () => {
+  it('an agent on a model of unknown size is left alone and no card is filed', async () => {
     seedModel('cheap', 64_000);
     seedAgent('main', 'unknown');
-    moveAgentsOffSmallModels();
+    await moveAgentsOffSmallModels();
     expect(modelOf('main')).toBe('unknown');
     expect(frames).toHaveLength(0);
   });
@@ -105,24 +105,24 @@ describe('an agent on a too-small model, at start', () => {
     seedAgent('main', 'tiny', 'paused');
     db().prepare("UPDATE agents SET last_error = '[no_model_fits] none of its models can hold it' WHERE id = 'main'").run();
     tellOwner('nofit:main', 'main cannot run');
-    moveAgentsOffSmallModels();
+    await moveAgentsOffSmallModels();
     await vi.waitFor(() => expect((db().prepare("SELECT status FROM agents WHERE id = 'main'").get() as { status: string }).status).not.toBe('paused'));
     expect(standingOwnerNotices().map((n) => n.cardKey)).not.toContain('nofit:main');
   });
 
-  it('the moved card says when the new model is a paid one', () => {
+  it('the moved card says when the new model is a paid one', async () => {
     seedModel('paid', 64_000, 1, 3);
     seedAgent('main', 'tiny');
-    moveAgentsOffSmallModels();
+    await moveAgentsOffSmallModels();
     expect(frames[0].error).toContain('to Model paid, which is a paid model, because');
   });
 
-  it('the router sentinel is never the pick, and a service setting follows its agent', () => {
+  it('the router sentinel is never the pick, and a service setting follows its agent', async () => {
     seedModel('cheap', 64_000);
     expect(db().prepare("SELECT is_enabled, input_cost_per_m FROM models WHERE id = 'auto'").get(), 'non-vacuity: the free, enabled, large sentinel row is there to be skipped').toEqual({ is_enabled: 1, input_cost_per_m: 0 });
     db().prepare("INSERT INTO config (key, value) VALUES ('healer_model_id', 'tiny')").run();
     seedAgent('main', 'tiny');
-    moveAgentsOffSmallModels();
+    await moveAgentsOffSmallModels();
     expect(modelOf('main')).toBe('cheap');
     expect((db().prepare("SELECT value FROM config WHERE key = 'healer_model_id'").get() as { value: string }).value).toBe('cheap');
   });
@@ -131,7 +131,7 @@ describe('an agent on a too-small model, at start', () => {
     const looked = vi.spyOn(honestStopLock, 'noteModelsChanged').mockRejectedValue(new Error('look failed'));
     seedModel('cheap', 64_000);
     seedAgent('main', 'tiny');
-    moveAgentsOffSmallModels();
+    await moveAgentsOffSmallModels();
     await vi.waitFor(() => expect(looked).toHaveBeenCalledWith('main'));
     await new Promise<void>((resolve) => { setImmediate(resolve); });
     expect(modelOf('main')).toBe('cheap');
