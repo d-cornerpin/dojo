@@ -202,8 +202,8 @@ describe('tool-list conformance — SEND_TO_PEOPLE is registry-exhaustive (anti-
     expect(
       unclassified,
       `\nUNCLASSIFIED TOOL(S) — no comms decision: ${unclassified.join(', ')}\n` +
-      `Each must be added to SEND_TO_PEOPLE (if it reaches a person on an owner channel: ` +
-      `email / Teams / SMS / iMessage / voice) in packages/server/src/agent/sensei-policy.ts, OR to the ` +
+      `Each must be added to PEOPLE_TOOLS (if it reaches a person on an owner channel: ` +
+      `email / Teams / SMS / iMessage / voice) in packages/shared/src/visibility.ts, OR to the ` +
       `SEND_TO_PEOPLE_NA ledger with a one-line reason in packages/server/src/tools/__tests__/send-to-people-na.ts. ` +
       `Leaving it unlisted silently under-blocks the Trainer/Healer.`,
     ).toEqual([]);
@@ -220,8 +220,8 @@ describe('tool-list conformance — SEND_TO_PEOPLE is registry-exhaustive (anti-
       missingTwins,
       `\nuser_ SEND TWIN(S) MISSING from SEND_TO_PEOPLE: ${missingTwins.map((n) => `user_${n}`).join(', ')}\n` +
       `The base send is denied but its owner-account (user_) twin is not, so the ` +
-      `Trainer/Healer can send from the OWNER's personal account. Add each user_ twin ` +
-      `to SEND_TO_PEOPLE in packages/server/src/agent/sensei-policy.ts.`,
+      `Trainer/Healer can send from the OWNER's personal account. Add the family's prefix ` +
+      `to USER_TWINNED_SEND_PREFIXES in packages/server/src/agent/sensei-policy.ts.`,
     ).toEqual([]);
   });
 
