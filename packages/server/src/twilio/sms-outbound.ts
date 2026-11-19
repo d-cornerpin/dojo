@@ -9,6 +9,7 @@ import {
 } from './auth.js';
 import { getTwilioSmsSafeSenders } from '../services/channel-safe-senders.js';
 import { resolveRecipient } from './approved-number.js';
+import { recipientKind } from '../services/safe-senders.js';
 import { openAgentCall } from '../agent/abortable-call.js';
 
 const logger = createLogger('twilio-sms-outbound');
@@ -79,7 +80,7 @@ export async function executeSmsSend(input: SmsSendInput, agentId: string): Prom
   const result = await sendSms(to, body, from, slot.signal).finally(() => slot.release());
   const stopped = slot.signal.aborted;
   if (!result.ok) {
-    logger.warn('SMS send failed', { agentId, to, from, error: result.error });
+    logger.warn('SMS send failed', { agentId, to: recipientKind(to), from, error: result.error });
     if (stopped) {
       return { ok: false, message: 'SMS NOT sent - the owner pressed Stop before it reached Twilio.' };
     }

@@ -30,6 +30,7 @@ vi.mock('../../services/channel-safe-senders.js', () => ({
 
 vi.mock('../../services/safe-senders.js', () => ({
   ownerIMessageRecords: () => [{ name: 'Me', address: '+15550123456' }],
+  recipientKind: () => 'an approved sender',
 }));
 
 const { executeVoiceCall } = await import('../voice-outbound.js');
