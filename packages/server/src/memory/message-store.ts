@@ -141,14 +141,14 @@ const INSERT_SQL = `
       display_kind, display_tier, turn_number, group_id, channel, sender_id, authorized,
       source_agent_id, a2a_thread_id, a2a_intent, a2a_requires_response, token_count,
       model_id, cost, latency_ms, reasoning_content, inbound_meta, attachments,
-      external_message_id, task_id, run_id, root_kind, root_id,
+      external_message_id, speaker, voice_session_id, task_id, run_id, root_kind, root_id,
       subject_kind, provenance, sent_at, created_at
     ) VALUES (
       @id, @agentId, @conversationId, @lane, @originIntent, @role, @content, @mood,
       @displayKind, @displayTier, @turnNumber, @groupId, @channel, @senderId, @authorized,
       @sourceAgentId, @a2aThreadId, @a2aIntent, @a2aRequiresResponse, @tokenCount,
       @modelId, @cost, @latencyMs, @reasoningContent, @inboundMeta, @attachments,
-      @externalMessageId, @taskId, @runId, @rootKind, @rootId,
+      @externalMessageId, @speaker, @voiceSessionId, @taskId, @runId, @rootKind, @rootId,
       @subjectKind, 'live', @sentAt, ${NOW_MS}
     )`;
 
