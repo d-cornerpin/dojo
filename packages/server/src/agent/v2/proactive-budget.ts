@@ -2,6 +2,7 @@
 // threshold the closeout floor demotes the outbound to a quiet notices-lane row instead of pinging the owner.
 // Kept in the config table so the streak survives a restart; these keys are outside the cached config reader.
 import { getDb } from '../../db/connection.js';
+import { setConfigValue } from '../../config/config-value.js';
 import { createLogger } from '../../logger.js';
 
 const logger = createLogger('proactive-budget');
@@ -30,11 +31,7 @@ export function getProactiveSendStreak(agentId: string): number {
 export function bumpProactiveSendStreak(agentId: string): number {
   const next = getProactiveSendStreak(agentId) + 1;
   try {
-    const db = getDb();
-    db.prepare(
-      `INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
-         ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = datetime('now')`,
-    ).run(streakKey(agentId), String(next), String(next));
+    setConfigValue(streakKey(agentId), String(next));
   } catch (err) {
     logger.warn('bumpProactiveSendStreak failed (non-fatal)', {
       agentId, error: err instanceof Error ? err.message : String(err),
