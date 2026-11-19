@@ -1,12 +1,13 @@
 // THE HAND-BACK FACTS: what a dead turn left behind, recorded on the ask as one `audit` event per hand-back.
 // They render at serve time into a steer on the turn serving it (`agent/v2/steps/assemble/hand-back-steer.ts`),
-// ordered: what already happened, what may have reached the person, the message and its age, then the
+// ordered: what already happened (a send the run died inside included), the message and its age, then the
 // instruction. Never an events-lane notice: that lane gists rows to 400 chars (`memory/lanes.ts`) and is in
 // view on every human turn.
 import { getDb } from '../db/connection.js';
 import { appendWorkEvent } from './store.js';
 import { formatTimeForAgent } from '../services/format-time.js';
 import { isEffectfulTool } from '../agent/v2/steps/execute/effectful-call.js';
+import { outboundChannelForTool } from '../agent/v2/outbound.js';
 import { redactDeclaredSecretArgs } from '../credentials/secret-fields.js';
 
 /** The `audit` marker one hand-back writes on the ask it hands back. */
@@ -55,42 +56,32 @@ function describeEffect(e: DeadTurnEffect): string {
   const args = e.input && typeof e.input === 'object'
     ? redactDeclaredSecretArgs(e.name, e.input as Record<string, unknown>) : e.input;
   const shown = JSON.stringify(args ?? {}).slice(0, 200);
-  return `${e.name} ${shown}${e.finished ? '' : ' (no result was recorded: the run stopped inside it, so it may or may not have happened — check)'}`;
-}
-
-/** A send the dead turn had begun on an outside channel and no door ever answered for: the intent row
- *  (`outcome='pending'`, `agent/v2/deliveries.ts`). It may have reached the person. */
-interface MaybeSent { channel: string; recipient: string | null; text: string | null }
-
-function maybeSentBy(agentId: string, turnNumber: number | null): MaybeSent[] {
-  if (turnNumber == null) return [];
-  return getDb().prepare(
-    `SELECT channel, COALESCE(recipient_display, recipient_id) AS recipient, detail AS text FROM deliveries
-      WHERE agent_id = ? AND turn_number = ? AND outcome IN ('pending') ORDER BY rowid`,
-  ).all(agentId, turnNumber) as MaybeSent[];
+  if (e.finished) return `${e.name} ${shown}`;
+  // A send leaves no row until it ends, so nothing says whether it went: answering twice is the lesser harm.
+  // A second phone call is worse than a second text, so an unfinished call is checked, never redialed blindly.
+  const unknown = e.name === 'voice_call' ? 'the call may not have been placed. Check before calling again.'
+    : outboundChannelForTool(e.name) !== null ? 'it may not have gone. If you cannot tell, send it again; a duplicate is the lesser harm.'
+    : 'the run stopped inside it, so it may or may not have happened: check';
+  return `${e.name} ${shown} (no result was recorded: ${unknown})`;
 }
 
 /** What one hand-back records: read from the ledger at the moment the turn is judged dead. */
 interface HandBackRecord {
   marker: typeof HAND_BACK_MARKER; turn: number | null; by: string;
-  effects: string[]; unnamedEffectful: number; maybeSent: MaybeSent[];
+  effects: string[]; unnamedEffectful: number;
 }
 
-/** Record, on the ask itself, what its dead turn left behind. Returns the counts for the transition reason. */
-export function recordHandBack(o: { id: string; agent_id: string; turn_number: number | null; effectful_calls: number }, by: string):
-{ effects: number; maybeSent: number } {
+/** Record, on the ask itself, what its dead turn left behind. */
+export function recordHandBack(o: { id: string; agent_id: string; turn_number: number | null; effectful_calls: number }, by: string): void {
   const effects = effectsOf(o.agent_id, o.turn_number);
-  const maybeSent = maybeSentBy(o.agent_id, o.turn_number);
   const rec: HandBackRecord = {
     marker: HAND_BACK_MARKER, turn: o.turn_number, by,
     effects: effects.map(describeEffect),
     // The count is the durable fact: a model whose calls left no structured rows (text-only tool fallback,
     // an aliased name) still made them, and the agent must hear that much.
     unnamedEffectful: Math.max(0, o.effectful_calls - effects.filter((e) => e.finished).length),
-    maybeSent,
   };
   appendWorkEvent(o.id, 'audit', 'orphaned-claims', rec);
-  return { effects: Math.max(effects.length, o.effectful_calls), maybeSent: maybeSent.length };
 }
 
 /** The facts for the turn serving `workId`, or null if it was never handed back; rendered now so the age is current.
@@ -117,21 +108,15 @@ export function handBackFactsFor(workId: string): string | null {
       + `${before.join(', ')} stopped the same way, and the run stopped again. `
       + 'If something in the message itself stops the run, do the part you can and say plainly what you could not do.');
   }
-  // What already happened, and what may already have reached the person, comes first.
+  // What already happened comes first.
   const effects = recs.flatMap((r) => r.effects);
   if (effects.length > 0) {
-    parts.push(`Already done, on the record: ${effects.map((e, i) => `(${i + 1}) ${e}`).join('; ')}. `
-      + 'Do not repeat any of it: finish only what is left, and tell the person what was already done.');
+    parts.push(`What that turn did, on the record: ${effects.map((e, i) => `(${i + 1}) ${e}`).join('; ')}. `
+      + 'Do not repeat what finished: finish only what is left, and tell the person what was already done.');
   }
   const unnamed = recs.reduce((n, r) => n + r.unnamedEffectful, 0);
   if (unnamed > 0) {
     parts.push(`${unnamed} action${unnamed === 1 ? ' was' : 's were'} taken that could not be identified, so check what was done before acting.`);
-  }
-  const maybe = recs.flatMap((r) => r.maybeSent);
-  if (maybe.length > 0) {
-    parts.push(`A reply may already have reached the person: the run stopped in the middle of sending ${maybe.map((m) =>
-      `by ${m.channel}${m.recipient ? ` to ${m.recipient}` : ''}${m.text ? `: "${m.text}"` : ''}`).join('; and ')}. `
-      + 'Check whether it arrived before you answer again, and do not send the same thing twice.');
   }
   const snippet = (msg?.content ?? '').replace(/\s+/g, ' ').trim().slice(0, 300);
   const when = msg?.received_at != null

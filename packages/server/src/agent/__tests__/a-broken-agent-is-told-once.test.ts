@@ -120,9 +120,13 @@ afterEach(() => {
   mockDb.current = null;
 });
 
-const ownerTexts = (): number => (db().prepare(
-  "SELECT COUNT(*) AS n FROM deliveries WHERE agent_id = 'platform' AND tool = 'alert' AND recipient_id = ?",
-).get(OWNER) as { n: number }).n;
+/** The owner's texts on the ledger, once every send in flight has ended (a send is recorded when it ends). */
+const ownerTexts = async (): Promise<number> => {
+  for (let i = 0; i < 50; i++) await new Promise((r) => setImmediate(r));
+  return (db().prepare(
+    "SELECT COUNT(*) AS n FROM deliveries WHERE agent_id = 'platform' AND tool = 'alert' AND recipient_id = ?",
+  ).get(OWNER) as { n: number }).n;
+};
 /** The phone sends (the bridge's own `--help` probe and path lookups are not sends). */
 const sent = (): string[] => transport.filter((t) => t.includes('"send"'));
 const cards = (): string[] => broadcasts
@@ -149,7 +153,7 @@ describe('BROKEN: a provider refuses the agent in a way only the owner can fix',
     // Precondition: this IS the platform's Tier D lock, not some other path.
     expect((db().prepare("SELECT status, last_error FROM agents WHERE id = 'helper'").get() as { status: string; last_error: string }).last_error)
       .toMatch(/^\[quota_exhausted\]/);
-    expect(ownerTexts()).toBe(1);
+    expect(await ownerTexts()).toBe(1);
     expect(sent()).toHaveLength(1);
     expect(sent()[0]).toContain('Helper');
     expect(cards()).toHaveLength(1);
@@ -159,7 +163,7 @@ describe('BROKEN: a provider refuses the agent in a way only the owner can fix',
     await failedCall('API error 401: {"error":{"message":"invalid x-api-key"}}');
     expect((db().prepare("SELECT last_error FROM agents WHERE id = 'helper'").get() as { last_error: string }).last_error)
       .toMatch(/^\[auth_invalid\]/);
-    expect(ownerTexts()).toBe(1);
+    expect(await ownerTexts()).toBe(1);
     expect(sent()[0]).toContain('Helper');
   });
 });
@@ -174,11 +178,11 @@ const OUT_OF_CREDIT = 'API error 402: {"error":{"message":"Insufficient Balance"
 describe('BROKEN: once per incident, and the incident ends on healthy work', () => {
   it('the agent re-woken and refused again (the t136 shape: five Tier D locks) is still ONE text; the Healer\'s "stuck" text does not stack on it', async () => {
     for (let i = 1; i <= 5; i++) await failedCall(OUT_OF_CREDIT, i);
-    expect(ownerTexts()).toBe(1);
+    expect(await ownerTexts()).toBe(1);
     // Recovery attempts at their maximum: the Healer's own "stuck" text would fire here.
     db().prepare("UPDATE agents SET recovery_attempts = 3 WHERE id = 'helper'").run();
     onAgentInjured('helper', '[quota_exhausted] Cloud Provider has hit its quota for the day.');
-    expect(ownerTexts()).toBe(1);
+    expect(await ownerTexts()).toBe(1);
   });
 
   it('a restart replays the injury from the row (rehydrate) and does not text again; the card is there on load', async () => {
@@ -186,7 +190,7 @@ describe('BROKEN: once per incident, and the incident ends on healthy work', () 
     const words = JSON.parse((db().prepare("SELECT broken_notice AS n FROM agents WHERE id = 'helper'").get() as { n: string }).n).words as string;
     const lastError = (db().prepare("SELECT last_error FROM agents WHERE id = 'helper'").get() as { last_error: string }).last_error;
     onAgentInjured('helper', lastError); // what `rehydrateInjuredAgents` does on boot
-    expect(ownerTexts()).toBe(1);
+    expect(await ownerTexts()).toBe(1);
     expect(await cardsOnLoad()).toContain(words);
   });
 
@@ -199,18 +203,18 @@ describe('BROKEN: once per incident, and the incident ends on healthy work', () 
     expect(((await res.json()) as { data: { dismissed: number } }).data.dismissed).toBe(1);
     expect(await cardsOnLoad()).not.toContain(words);
     await failedCall(OUT_OF_CREDIT, 2);
-    expect(ownerTexts()).toBe(1);
+    expect(await ownerTexts()).toBe(1);
     // The owner tops up; the agent's next turn works (the clean-turn signal).
     clearErrors('helper');
     expect(ends()).toContain(words);
     expect((db().prepare("SELECT broken_notice AS n FROM agents WHERE id = 'helper'").get() as { n: string | null }).n).toBeNull();
     // Out of credit again, later: a new incident.
     await failedCall(OUT_OF_CREDIT, 3);
-    expect(ownerTexts()).toBe(2);
+    expect(await ownerTexts()).toBe(2);
   });
 
   it('an ordinary, unclassified failure is NOT broken: no text (the Healer owns it, as before)', async () => {
     await failedCall('fetch failed: ECONNRESET');
-    expect(ownerTexts()).toBe(0);
+    expect(await ownerTexts()).toBe(0);
   });
 });

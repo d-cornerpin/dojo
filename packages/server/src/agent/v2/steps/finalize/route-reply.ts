@@ -165,7 +165,7 @@ async function sendOrHold(stateIn: AgentTurnState, ctx: FinalizeContext, r: Rout
     const address = destination === 'imessage' && !r.imessageConfigured
       ? null
       : replyAddressFor({ ...state.inboundContext, channel: destination, sender, relation: counterparty.kind === 'user' ? counterparty.relation : undefined });
-    const queued = address !== null && await queueReply({ agentId, turnNumber, root: turnCtx.root ?? null, text, address, files: r.files, downloadLinks: !!turnCtx.earlyAnswerRowId }) !== null;
+    const queued = address !== null && await queueReply({ agentId, turnNumber, root: turnCtx.root ?? null, text, address, files: r.files, kind: turnCtx.earlyAnswerRowId ? 'download-links' : 'reply' }) !== null;
     if (!queued) {
       recordedId(recordHeld({ agentId, tool: 'auto-route', channel: destination, conversationId }, `no ${destination} address to reply to; the reply is in the dashboard chat`),
         'v2: auto-route held (no address)', { agentId, turnNumber, destination });
@@ -205,7 +205,7 @@ async function speakOnCall(state: AgentTurnState & { lastAssistantTextForIM: str
         // One reply is one outbound row, however many sentences it is spoken in.
         await withOutboundAsync(
           {
-            agentId, tool: 'auto-route', channel: 'phone', text: tail,
+            agentId, tool: 'auto-route', channel: 'phone',
             recipientId: inbound.phoneFromNumber ?? null,
             conversationId: turnCtx.root?.conversationId ?? null,
           },
@@ -224,7 +224,7 @@ async function speakOnCall(state: AgentTurnState & { lastAssistantTextForIM: str
     } else {
       await withOutboundAsync(
         {
-          agentId, tool: 'auto-route', channel: 'phone', text: replyOut,
+          agentId, tool: 'auto-route', channel: 'phone',
           recipientId: inbound.phoneFromNumber ?? null,
           conversationId: turnCtx.root?.conversationId ?? null,
         },
