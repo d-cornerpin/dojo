@@ -44,7 +44,7 @@ export function servedOwnerMessageIds(agentId: string): string[] {
 const spokenByTurn = new WeakMap<object, boolean>();
 
 /** The running turn answers a request spoken in voice mode, so its reply is read aloud. Decided once per turn
- *  from the first owner message it serves: an ask, its continuation, or a late answer rooted in the ask. */
+ *  from the first owner message it serves: an ask, its continuation, or an engine wake rooted in the ask. */
 export function turnAnswersSpokenRequest(agentId: string): boolean {
   const bag = turnContext(agentId);
   if (!bag) return false;

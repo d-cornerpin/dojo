@@ -1,6 +1,7 @@
 // With voice mode on, a turn is read aloud when the request it answers was spoken: a spoken ask to any
-// agent, and a helper's late answer to a spoken request. A typed question or a text from another channel
-// stays silent. The turn's root is set the way preflight sets it; the decision reads the stored request.
+// agent, and an agent woken after an approval inside a spoken request. A typed question or a text from
+// another channel stays silent. The turn's root is set the way preflight sets it; the decision reads the
+// stored request.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import Database from 'better-sqlite3';
 import type { WsEvent } from '@dojo/shared';
@@ -90,7 +91,7 @@ describe('a reply to a text is not spoken while voice is on', () => {
     expect(await turnReplies('helper-agent', askRoot(ask), 'Milk is on the list.')).toEqual(['Milk is on the list.']);
   });
 
-  it('a helper\'s late answer to a spoken request is read aloud', async () => {
+  it('an agent woken after an approval, in a request that was spoken, is read aloud', async () => {
     const ask = asked('agent-1', 'voice');
     const root = engineEventRoot({ id: 'ev1', runId: null, originIntent: 'a2a_request', rootKind: 'ask', rootId: ask });
     expect(await turnReplies('agent-1', root, 'The flights are booked.')).toEqual(['The flights are booked.']);
