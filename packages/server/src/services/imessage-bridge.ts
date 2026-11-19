@@ -3,6 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { getDb } from '../db/connection.js';
+import { setConfigValue } from '../config/config-value.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getPrimaryAgentId } from '../config/platform.js';
@@ -485,11 +486,7 @@ function loadLastSeenRowId(): number {
 
 function saveLastSeenRowId(rowId: number): void {
   try {
-    const db = getDb();
-    db.prepare(`
-      INSERT INTO config (key, value, updated_at) VALUES ('imessage_last_rowid', ?, datetime('now'))
-      ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = datetime('now')
-    `).run(String(rowId), String(rowId));
+    setConfigValue('imessage_last_rowid', String(rowId));
   } catch (err) {
     logger.error('Failed to save last seen rowid', {
       error: err instanceof Error ? err.message : String(err),
@@ -526,12 +523,7 @@ function rememberProcessedGuid(guid: string | null): void {
     if (evicted !== undefined) recentGuidSet.delete(evicted);
   }
   try {
-    const db = getDb();
-    const json = JSON.stringify(recentGuids);
-    db.prepare(`
-      INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
-      ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = datetime('now')
-    `).run(RECENT_GUIDS_CONFIG_KEY, json, json);
+    setConfigValue(RECENT_GUIDS_CONFIG_KEY, JSON.stringify(recentGuids));
   } catch (err) {
     logger.warn('Failed to persist recent iMessage guids', {
       error: err instanceof Error ? err.message : String(err),
@@ -720,10 +712,7 @@ export async function processInboundIMessage(
     if (advanceRowId !== null) {
       // The cursor moves even when the insert was the designed no-op: an old text re-inserted under a fresh ROWID
       // (the guid ring forgot it, the unique index did not) must still be passed, or the poll re-reads it forever.
-      db.prepare(`
-        INSERT INTO config (key, value, updated_at) VALUES ('imessage_last_rowid', ?, datetime('now'))
-        ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = datetime('now')
-      `).run(String(advanceRowId), String(advanceRowId));
+      setConfigValue('imessage_last_rowid', String(advanceRowId));
     }
   })();
 
