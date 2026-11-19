@@ -5,7 +5,7 @@ import { getDb } from '../../db/connection.js';
 import { isPrimaryAgent, isPMAgent, getOwnerName } from '../../config/platform.js';
 import { getModelCapabilities } from '../../services/capabilities.js';
 import { agentTurnWindow } from '../../router/router-window.js';
-import { resolveInboundContext, resolveTtsEngine, type InboundContext, type PromptTurnContext } from '../assembler.js';
+import { resolveInboundContext, type InboundContext, type PromptTurnContext } from '../assembler.js';
 import { getSystemEntries, getMessageEntries } from './registry.js';
 import { pushEngineMessage } from '../../agent/v2/engine-message.js';
 import {
@@ -63,7 +63,6 @@ export function buildAssemblyContext(
     ownerName: getOwnerName(),
     // The reply goes to THIS turn's counterparty, falling back to the owner for proactive/dashboard turns.
     replyRecipientName: turnContext?.counterparty?.name ?? getOwnerName(),
-    ttsEngine: resolveTtsEngine(turnContext),
     lastUserContent: inbound.lastContent,
     inboundChannel: inbound.inboundChannel,
     smsFromNumber: inbound.smsFromNumber,
