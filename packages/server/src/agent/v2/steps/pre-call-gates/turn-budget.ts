@@ -8,7 +8,7 @@ import { checkAndCompact } from '../../../../memory/compaction.js';
 import { isStopFenced } from '../../../shared-state.js';
 import { getDb } from '../../../../db/connection.js';
 import { advance, type AgentTurnState } from '../../state.js';
-import { jobProgressMark, jobTaskOf, stretchMoved, turnWindow } from '../post-call-classify/job-turn-end.js';
+import { jobProgressMark, jobTaskOf, personWaitsBehind, stretchMoved, turnWindow } from '../post-call-classify/job-turn-end.js';
 import { proceed, requestExit, type StepOutcome } from '../step-outcome.js';
 import { latchEngineCut } from '../../engine-exit.js';
 import { noteEngineCheckpoint } from '../../../../work/engine-checkpoint-note.js';
@@ -32,7 +32,8 @@ export async function runTurnTimeBudget(
     return proceed(advance(state, { checkpointWindow: { atLoop: state.loopCount - 1, atMs: Date.now(), mark: jobProgressMark(state, agentId, getDb()) } }));
   }
   if (window === 'checkpoint') {
-    if (turnContext(agentId)?.servedJob && !stretchMoved(state, agentId)) {
+    // A person waiting ends the stretch by parking it, moved or not: the job goes on after him.
+    if (turnContext(agentId)?.servedJob && !stretchMoved(state, agentId) && !personWaitsBehind(agentId)) {
       const task = jobTaskOf(agentId, getDb());
       if (task) recordStalled(task.id, { remaining: task.stored, turnNumber });
       logger.info('v2 checkpoint: a continuation that moved nothing ends without parking', { agentId, turnNumber, taskId: task?.id }, agentId);

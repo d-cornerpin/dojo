@@ -12,7 +12,8 @@ import { turnWindow } from '../v2/steps/post-call-classify/job-turn-end.js';
 import { openTurnContext, endTurnContext } from '../turn-context.js';
 import { getWaitingHumanConversations } from '../v2/counterparty.js';
 import { freshAgentsDb, testDb, HELPER } from './helpers/agent-requests.js';
-import { ownerAsks } from './helpers/long-job.js';
+import { ownerAsks, stretch, rowOf, tasksOf } from './helpers/long-job.js';
+import { nextOwed } from '../v2/owed.js';
 
 beforeEach(() => { freshAgentsDb(runMigrations); endTurnContext(HELPER); });
 
@@ -41,5 +42,17 @@ describe('a person ends a job stretch at the next step', () => {
     bag.pickupSeq = lastSeq();
     await ownerAsks('m-2', 'also the photos');
     expect(turnWindow(tenStepsIn(), HELPER)).toBe('open');
+  });
+
+  it('at a job turn\'s first step, through the real gate: the stretch parks (never a stall), his question is answered, the job goes on', async () => {
+    const job = await ownerAsks('m-1');
+    await stretch('parks');
+    const [task] = tasksOf('m-1');
+    await stretch('gate', () => ownerAsks('m-2', 'how is it going?'));
+    expect(rowOf(task).due, 'parked, not stalled').not.toBeNull();
+    expect(testDb().prepare("SELECT 1 FROM work_events WHERE work_id = ? AND kind = 'stalled'").get(task)).toBeUndefined();
+    expect((await stretch('answers'))?.root).toBe('m-2');
+    expect(rowOf(job).state).toBe('blocked');
+    expect(nextOwed(HELPER).map((i) => [i.kind, i.ref])).toEqual([['job', task]]);
   });
 });

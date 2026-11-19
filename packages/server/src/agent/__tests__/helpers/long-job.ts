@@ -7,6 +7,7 @@ const product = async () => ({
   ...await import('../../turn-context.js'), ...await import('../../v2/steps/preflight/index.js'),
   ...await import('../../v2/steps/teardown/finalize-record.js'), ...await import('../../v2/engine-exit.js'),
   ...await import('../../v2/state.js'), ...await import('../../../work/job-continuation.js'),
+  ...await import('../../v2/steps/pre-call-gates/index.js'),
 });
 
 /** The owner writes on the dashboard; his request opens with the message. */
@@ -19,22 +20,23 @@ export async function ownerAsks(id: string, content = 'Rename every file in the 
 }
 
 /** How a stretch ends: it parks its job, it ends with nothing moved, it answers in its conversation, its first call
- *  meets a rate limit, or the Dojo dies. */
-export type StretchEnd = 'parks' | 'stalls' | 'answers' | { limitUntil: number } | 'crash';
+ *  meets a rate limit, the Dojo dies, or the real checkpoint gate decides at the stretch's first step. */
+export type StretchEnd = 'parks' | 'stalls' | 'answers' | { limitUntil: number } | 'crash' | 'gate';
 export interface StretchSeen { root: string | null; kind: string | undefined; servedJob: string | null; parkedOn: string | null }
 
 /** One turn: null when the preflight found nothing to serve. `before` runs inside the turn, before it ends. */
-export async function stretch(end: StretchEnd = 'parks', before?: () => void): Promise<StretchSeen | null> {
+export async function stretch(end: StretchEnd = 'parks', before?: () => unknown): Promise<StretchSeen | null> {
   const p = await product();
   p.endTurnContext(HELPER);
   const bag = p.openTurnContext(HELPER);
   const out = await p.runPreflight(bag, preflightCtx());
   if (out.directive !== 'proceed') { p.endTurnContext(HELPER); return null; }
-  before?.();
+  await before?.();
   let state = bag.state!;
   if (end === 'parks') { p.parkJob(HELPER, 'turn-budget-continuation', Date.now()); state = p.latchEngineCut(state, 'iteration_cap'); }
   if (end === 'stalls') state = p.latchEngineCut(state, 'iteration_cap');
   if (end === 'answers') delivered(bag.turnNumber!, bag.conversationId ?? null);
+  if (end === 'gate') state = (await p.runPreCallGates(p.advance(state, { loopCount: 1 }), out.outputs.preCallGatesContext())).state;
   if (typeof end === 'object') { bag.retryAt = end.limitUntil; state = p.advance(p.latchEngineCut(state, 'provider_error'), { loopCount: 1 }); }
   const seen = { root: bag.root?.id ?? null, kind: bag.root?.kind, servedJob: bag.servedJob, parkedOn: bag.jobParked };
   if (end !== 'crash') await p.finalizeTurnRecord(state, out.outputs.teardownContext());
