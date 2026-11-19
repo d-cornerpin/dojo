@@ -12,6 +12,7 @@ import { activeRuns, pendingWakeups } from './shared-state.js';
 import { buildSessionResetMessage } from './session-reset.js';
 import { forgetSessionScratch } from './session-forget.js';
 import { rehomeUnclaimedEngineEvents } from './v2/counterparty.js';
+import { serveLater } from './v2/serve-later.js';
 
 const logger = createLogger('session-reset');
 
@@ -60,6 +61,8 @@ export async function resetSession(targetId: string, opts: ResetSessionOptions):
     .run(boundary, boundary, targetId);
   rehomeUnclaimedEngineEvents(targetId, boundary);
   if (!live) pendingWakeups.delete(targetId);
+  // A reset session has no job to continue: its parked jobs lose their due.
+  for (const { id } of db.prepare("SELECT id FROM work WHERE agent_id = ? AND kind <> 'ask' AND next_attempt_at IS NOT NULL").all(targetId) as Array<{ id: string }>) serveLater({ kind: 'task', id }, null, 'a reset session has no job to continue');
 
   // created_at is stamped at insert, at or after `boundary`, so both rows land inside the new session.
   for (const content of [NEW_SESSION_DIVIDER, buildSessionResetMessage(targetId)]) {
