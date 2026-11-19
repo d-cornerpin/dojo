@@ -1,15 +1,4 @@
-// ════════════════════════════════════════════════════════════════════════════
-// EVERY PDF PAGE RESULT NAMES THE PAGES IT ACTED ON, COUNTING FROM 1.
-//
-// A result that says "Deleted 1 page(s)" or "Extracted 2 page(s)" leaves the
-// agent unable to tell the owner WHICH pages changed, and an asked number
-// that is not a page of this file vanished without a word. Each result now
-// names the pages it acted on and the asked numbers it skipped.
-//
-// Same fixture shape as pdf-delete-rotate-report.test.ts: the file helpers go
-// through the effects facade, so every clause drives the real per-call
-// context. A 3-page source is built in beforeAll. Names invented.
-// ════════════════════════════════════════════════════════════════════════════
+// Every PDF page result names the pages it acted on, counting from 1, and the asked numbers it skipped.
 import { describe, it, expect, beforeAll, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -53,8 +42,7 @@ function drive(tool: 'pdf_extract_pages' | 'pdf_delete_pages' | 'pdf_rotate_page
 }
 
 beforeAll(async () => {
-  // A fixture-shaped uploads folder: a stale out*.pdf from an earlier run
-  // would fake the "no output file" assertions.
+  // A stale output file from an earlier run would fake the "no output file" case.
   fs.rmSync(UPLOADS, { recursive: true, force: true });
   fs.mkdirSync(UPLOADS, { recursive: true });
   const doc = await PDFDocument.create();

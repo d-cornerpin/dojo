@@ -1,8 +1,7 @@
-import { useState, useEffect, useCallback, useRef, type FormEvent } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { Model, Provider } from '@dojo/shared';
 import * as api from '../lib/api';
-import { ownerChanged, confirmRemoveOwner } from '../lib/owner-star';
 import { isEnterNotComposing } from '../lib/enter-key';
 import { isListedAgentModel, isPickableAgentModel, defaultRoleModel, saveRoleAgent } from '../lib/role-models';
 import { AUTOMATION_SEND_HINT } from '../lib/automation-permission';
@@ -23,6 +22,8 @@ import { formatCost } from '../lib/model-cost';
 import { ImportWizard } from '../components/ImportWizard';
 import { LaunchButton } from '../components/SetupLaunchButton';
 import { AgentModelOption } from '../components/AgentModelOption';
+import { AddProviderForm } from '../components/settings/ProvidersTab';
+import { IMBridgeSettings } from '../components/settings/IMBridgeSettings';
 
 type Step = 'welcome' | 'dependencies' | 'permissions' | 'provider' | 'models' | 'your-profile' | 'primary-agent' | 'pm-agent' | 'trainer-agent' | 'dreamer' | 'imessage' | 'workspace' | 'web-search' | 'voice' | 'complete';
 
@@ -354,92 +355,29 @@ const WelcomeStep = () => {
 
 // ── Provider ──
 
-const ProviderStep = ({ onReady, onCloudProviderChange }: { onReady?: (ready: boolean) => void; onCloudProviderChange?: (has: boolean) => void }) => {
-  const [name, setName] = useState('');
-  // Same preset → backend mapping as Settings.tsx's AddProviderForm.
-  // 'openrouter' and 'deepseek' both map to backend type 'openai-compatible'
-  // with their respective default base URLs.
-  const [preset, setPreset] = useState('anthropic');
-  const [authType, setAuthType] = useState('api_key');
-  const [credential, setCredential] = useState('');
-  const [baseUrl, setBaseUrl] = useState('');
-  const [status, setStatus] = useState<'idle' | 'validating' | 'valid' | 'invalid'>('idle');
-  const [error, setError] = useState<string | null>(null);
+export const ProviderStep = ({ onReady, onCloudProviderChange }: { onReady?: (ready: boolean) => void; onCloudProviderChange?: (has: boolean) => void }) => {
   const [hasCloudProvider, setHasCloudProvider] = useState(false);
   const [providers, setProviders] = useState<Provider[]>([]);
+  const [formKey, setFormKey] = useState(0);   // a fresh, empty form after each provider is added
 
-  const presetConfig = (() => {
-    switch (preset) {
-      case 'anthropic':   return { backendType: 'anthropic',          defaultBaseUrl: undefined,                     suggestedName: 'Anthropic' };
-      case 'openai':      return { backendType: 'openai',             defaultBaseUrl: 'https://api.openai.com',      suggestedName: 'OpenAI' };
-      case 'openrouter':  return { backendType: 'openai-compatible',  defaultBaseUrl: 'https://openrouter.ai/api',   suggestedName: 'OpenRouter' };
-      case 'deepseek':    return { backendType: 'openai-compatible',  defaultBaseUrl: 'https://api.deepseek.com',    suggestedName: 'DeepSeek' };
-      case 'ollama':      return { backendType: 'ollama',             defaultBaseUrl: 'http://localhost:11434',      suggestedName: 'Ollama' };
-      default:            return { backendType: 'anthropic',          defaultBaseUrl: undefined,                     suggestedName: 'Anthropic' };
-    }
-  })();
-
-  // Autofill name when preset changes (only if user hasn't typed something custom).
-  useEffect(() => {
-    setName((current) => {
-      const isAutoFilled = current === '' ||
-        ['Anthropic', 'OpenAI', 'OpenRouter', 'DeepSeek', 'Ollama'].includes(current);
-      return isAutoFilled ? presetConfig.suggestedName : current;
-    });
-  }, [preset, presetConfig.suggestedName]);
-
-  // Always allow Next (we handle the "are you sure" in the parent via onReady)
+  // Always allow Next (we handle the "are you sure" in the parent via the cloud signal)
   useEffect(() => { onReady?.(true); }, [onReady]);
 
-  // Load existing providers (on mount + after adding one) so the step shows
-  // everything already set up, not just a generic badge.
+  // The one cloud signal: told the moment a validated cloud provider exists, and never taken back.
+  const cloudFound = useCallback(() => { setHasCloudProvider(true); onCloudProviderChange?.(true); }, [onCloudProviderChange]);
+
+  // Load existing providers (on mount + after adding one) so the step shows everything already set up. A stored
+  // provider counts as cloud when it is validated, is not Ollama, and was not made through the manual choice
+  // (only the manual choice stores a `behavesLike`).
   const loadProviders = useCallback(async () => {
     const r = await api.getProviders();
     if (!r.ok) return;
     const list = r.data as Provider[];
     setProviders(list);
-    const hasCloud = list.some(p => p.type !== 'ollama' && p.isValidated);
-    setHasCloudProvider(hasCloud);
-    onCloudProviderChange?.(hasCloud);
-  }, [onCloudProviderChange]);
+    if (list.some((p) => p.type !== 'ollama' && p.isValidated && !p.behavesLike)) cloudFound();
+  }, [cloudFound]);
 
   useEffect(() => { void loadProviders(); }, [loadProviders]);
-
-  const handleAdd = async (e: FormEvent) => {
-    e.preventDefault();
-    if (!name.trim() || (preset !== 'ollama' && !credential.trim())) return;
-
-    setStatus('validating');
-    setError(null);
-
-    const id = name.toLowerCase().replace(/[^a-z0-9]/g, '-');
-    const result = await api.createProvider({
-      id, name,
-      type: presetConfig.backendType,
-      baseUrl: baseUrl.trim() || presetConfig.defaultBaseUrl,
-      authType: preset === 'ollama' ? 'none' : authType,
-      credential: preset === 'ollama' ? undefined : credential,
-    });
-
-    if (!result.ok) {
-      setError(result.error);
-      setStatus('invalid');
-      return;
-    }
-
-    const valResult = await api.validateProvider(id);
-    if (valResult.ok && valResult.data.valid) {
-      setStatus('valid');
-      if (preset !== 'ollama') {
-        setHasCloudProvider(true);
-        onCloudProviderChange?.(true);
-      }
-      void loadProviders();
-    } else {
-      setStatus('invalid');
-      setError(`Provider added but validation failed: ${!valResult.ok ? valResult.error : 'Unexpected result'}`);
-    }
-  };
 
   return (
     <div className="space-y-4">
@@ -469,112 +407,15 @@ const ProviderStep = ({ onReady, onCloudProviderChange }: { onReady?: (ready: bo
         </div>
       )}
 
-      {/* Add provider form */}
-      <form onSubmit={handleAdd} className="space-y-4">
+      <div className="space-y-4">
         <h3 className="text-sm font-medium text-ui/70">{hasCloudProvider ? 'Add Another Provider' : 'Add a Cloud Provider'}</h3>
-
-        <div>
-          <label className="block text-sm font-medium text-ui/70 mb-1">Provider Name</label>
-          <input type="text" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g., My Anthropic"
-            className="glass-input" />
-        </div>
-
-        <div>
-          <label className="block text-sm font-medium text-ui/70 mb-1">Type</label>
-          <select value={preset} onChange={(e) => setPreset(e.target.value)}
-            className="glass-select w-full">
-            <option value="anthropic">Anthropic</option>
-            <option value="openai">OpenAI</option>
-            <option value="openrouter">OpenRouter</option>
-            <option value="deepseek">DeepSeek</option>
-            <option value="ollama">Ollama</option>
-          </select>
-        </div>
-
-        {preset === 'ollama' && (
-          <div>
-            <label className="block text-sm font-medium text-ui/70 mb-1">Base URL</label>
-            <input type="text" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="http://localhost:11434"
-              className="glass-input" />
-          </div>
-        )}
-
-        {preset !== 'ollama' && (
-          <>
-            {preset === 'anthropic' && (
-              <div>
-                <label className="block text-sm font-medium text-ui/70 mb-1">Auth Type</label>
-                <select value={authType} onChange={(e) => setAuthType(e.target.value)}
-                  className="glass-select w-full">
-                  <option value="api_key">API Key</option>
-                  <option value="oauth">OAuth Token</option>
-                  <option value="agent-sdk">Agent SDK (Subscription)</option>
-                </select>
-              </div>
-            )}
-
-            {authType === 'agent-sdk' && preset === 'anthropic' ? (
-              <div className="space-y-3">
-                <p className="text-xs text-ui/40">
-                  Use your Claude Pro or Max subscription. Two steps needed before adding this provider:
-                </p>
-                <div className="text-xs text-ui/55 space-y-2">
-                  <div>
-                    <p className="font-medium text-ui/70">Step 1: Install Claude Code CLI</p>
-                    <p className="text-ui/40 mt-0.5">Run this in your terminal:</p>
-                    <code className="block bg-ui/[0.05] px-2 py-1 rounded text-[11px] mt-1">curl -fsSL https://claude.ai/install.sh | bash</code>
-                  </div>
-                  <div>
-                    <p className="font-medium text-ui/70">Step 2: Sign in to Claude</p>
-                    <p className="text-ui/40 mt-0.5">Run this in your terminal and sign in with your Claude Pro/Max account:</p>
-                    <code className="block bg-ui/[0.05] px-2 py-1 rounded text-[11px] mt-1">claude</code>
-                  </div>
-                </div>
-                <p className="text-[11px] text-ui/25">
-                  Once both steps are done, click "Add & Validate Provider" below. The dojo will verify your connection.
-                </p>
-                <div className="alert-banner alert-warning">
-                  <p className="text-[10px] text-amber-400/70">
-                    Agent SDK billing is subject to Anthropic's usage policies. If you experience issues, switch to API Key.
-                  </p>
-                </div>
-              </div>
-            ) : (
-              <>
-                <div>
-                  <label className="block text-sm font-medium text-ui/70 mb-1">{authType === 'oauth' && preset === 'anthropic' ? 'OAuth Token' : 'API Key'}</label>
-                  <input type="password" value={credential} onChange={(e) => setCredential(e.target.value)}
-                    placeholder={
-                      preset === 'deepseek' ? 'sk-... (DeepSeek API key from platform.deepseek.com)' :
-                      preset === 'openai' ? 'sk-...' :
-                      authType === 'oauth' ? 'sk-ant-oat...' : 'sk-...'
-                    }
-                    className="glass-input" />
-                </div>
-
-                {/* OAuth hint for Anthropic */}
-                {preset === 'anthropic' && authType === 'oauth' && (
-                  <div className="px-3 py-2.5 rounded-lg bg-blue-500/5 border border-blue-500/10 text-[11px] text-blue-300/70 leading-relaxed space-y-1.5">
-                    <p className="font-medium text-blue-300/90">How to get your OAuth token:</p>
-                    <p>1. Install Claude Code (if you haven't already):</p>
-                    <code className="block px-2 py-1 rounded bg-ui/[0.05] font-mono text-[10px] text-ui/55">curl -fsSL https://claude.ai/install.sh | bash</code>
-                    <p>2. Generate your token:</p>
-                    <code className="block px-2 py-1 rounded bg-ui/[0.05] font-mono text-[10px] text-ui/55">claude setup-token</code>
-                    <p>3. Copy the token (starts with <span className="font-mono">sk-ant-oat</span>) and paste it above.</p>
-                  </div>
-                )}
-              </>
-            )}
-          </>
-        )}
-
-        {error && <div className="px-3 py-2 rounded-lg bg-cp-coral/10 border border-cp-coral/20 text-cp-coral text-sm">{error}</div>}
-
-        <button type="submit" disabled={status === 'validating' || !name.trim() || (preset !== 'ollama' && authType !== 'agent-sdk' && !credential.trim())}
-          className="px-4 py-2 text-ui text-sm font-medium rounded-lg transition-colors glass-btn glass-btn-primary">
-          {status === 'validating' ? 'Validating...' : 'Add & Validate Provider'}
-        </button>
-      </form>
+        <AddProviderForm
+          key={formKey}
+          onValidated={(cloud) => { if (cloud) cloudFound(); }}
+          onCreated={() => { void loadProviders(); }}
+          onAdded={() => { void loadProviders(); setFormKey((k) => k + 1); }}
+        />
+      </div>
     </div>
   );
 };
@@ -1311,199 +1152,28 @@ export const DreamerStep = ({ onReady }: { onReady?: (ready: boolean) => void })
 
 // ── iMessage ──
 
-// Shape matches packages/server/src/services/imessage-bridge.ts SafeSender.
-type SetupSharingLevel = 'open_book' | 'dont_overshare' | 'cautious' | 'project_only';
-
-interface SetupSafeSender {
-  address: string;
-  name: string;
-  description?: string;
-  is_primary: boolean;
-  sharing_level: SetupSharingLevel;
-}
-
-const SETUP_SHARING_LEVEL_LABELS: Record<SetupSharingLevel, string> = {
-  open_book: 'Open Book',
-  dont_overshare: "Don't Over-Share",
-  cautious: 'Be Cautious',
-  project_only: 'Project Only',
-};
-
-const SETUP_SHARING_LEVEL_HINTS: Record<SetupSharingLevel, string> = {
-  open_book: 'No restrictions; treat as owner.',
-  dont_overshare: 'Share what is asked; do not volunteer extra details.',
-  cautious: 'Answer only what is asked, briefly. High-level only.',
-  project_only: 'Discuss only the specific project this contact is on.',
-};
-
 export const IMessageStep = ({ onReady }: { onReady?: (ready: boolean) => void }) => {
-  const [enabled, setEnabled] = useState(false);
-  const [senders, setSenders] = useState<SetupSafeSender[]>([]);
-  const [newAddress, setNewAddress] = useState('');
-  const [newName, setNewName] = useState('');
-  const [newDescription, setNewDescription] = useState('');
-  const [newSharingLevel, setNewSharingLevel] = useState<SetupSharingLevel>('dont_overshare');
-  const [saved, setSaved] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [loadFailed, setLoadFailed] = useState(false);
-  const [loadTry, setLoadTry] = useState(0);
-  // The exact stored list text this step was built on; the save names it so a stale list is refused.
-  const baseRaw = useRef<string | null>(null);
-  const baseList = useRef<SetupSafeSender[]>([]);   // who the owner was when loaded / last saved
-
-  useEffect(() => { onReady?.(saved); }, [saved, onReady]);
-
-  // Hydrate from existing iMessage config so re-running the wizard shows the
-  // current approved senders. If it's been configured before (the key exists),
-  // start "saved" so you can step through without re-saving / re-sending the
-  // welcome message.
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      const [enRes, sendersRes] = await Promise.all([
-        api.getSetting('imessage_enabled'),
-        api.getSetting('imessage_approved_senders'),
-      ]);
-      if (cancelled) return;
-      // A failed or unreadable read is not an empty list: nothing may be saved from it.
-      let readable = sendersRes.ok && enRes.ok;
-      let parsed: unknown = [];
-      if (sendersRes.ok && sendersRes.data.value) {
-        try { parsed = JSON.parse(sendersRes.data.value); readable = Array.isArray(parsed); } catch { readable = false; }
-      }
-      if (!readable) { setLoadFailed(true); return; }
-      setLoadFailed(false);
-      baseRaw.current = sendersRes.ok ? (sendersRes.data.value ?? null) : null;
-      const configured = enRes.ok && enRes.data.value !== null;
-      if (enRes.ok && enRes.data.value === 'true') setEnabled(true);
-      if (Array.isArray(parsed) && parsed.length > 0) { setSenders(parsed as SetupSafeSender[]); baseList.current = (parsed as SetupSafeSender[]).map(x => ({ ...x })); }
-      if (configured) setSaved(true);
-    })();
-    return () => { cancelled = true; };
-  }, [loadTry]);
-
-  const addSender = () => {
-    const address = newAddress.trim();
-    if (!address) return;
-    if (senders.some(s => s.address === address)) {
-      setError(`"${address}" is already in the list`);
-      return;
-    }
-    const name = newName.trim() || address;
-    const description = newDescription.trim() || undefined;
-    const isPrimary = senders.length === 0;
-    // Primary auto-promotes to open_book (no reason to throttle sharing
-    // with yourself). Subsequent senders honor the form's selected level.
-    setSenders([...senders, {
-      address,
-      name,
-      description,
-      is_primary: isPrimary,
-      sharing_level: isPrimary ? 'open_book' : newSharingLevel,
-    }]);
-    setNewAddress('');
-    setNewName('');
-    setNewDescription('');
-    setNewSharingLevel('dont_overshare');
-    setError(null);
-    setSaved(false);
-  };
-
-  const removeSender = (index: number) => {
-    // The owner entry is removed only on purpose, and the star does not pass to anyone else.
-    if (senders[index].is_primary && !confirmRemoveOwner(senders[index].name || senders[index].address)) return;
-    setSenders(senders.filter((_, i) => i !== index));
-    setSaved(false);
-  };
-
-  const setPrimary = (index: number) => {
-    setSenders(senders.map((s, i) => {
-      if (i === index) return { ...s, is_primary: true, sharing_level: 'open_book' as SetupSharingLevel };
-      if (s.is_primary) return { ...s, is_primary: false, sharing_level: s.sharing_level === 'open_book' ? 'dont_overshare' as SetupSharingLevel : s.sharing_level };
-      return { ...s, is_primary: false };
-    }));
-    setSaved(false);
-  };
-
-  const updateField = (index: number, field: 'name' | 'description', value: string) => {
-    setSenders(senders.map((s, i) => i === index ? { ...s, [field]: field === 'description' && !value.trim() ? undefined : value } : s));
-    setSaved(false);
-  };
-
-  const setSharingLevel = (index: number, level: SetupSharingLevel) => {
-    setSenders(senders.map((s, i) => i === index ? { ...s, sharing_level: level } : s));
-    setSaved(false);
-  };
-
+  const [setUp, setSetUp] = useState(false);   // set up before, or saved in this visit
+  const [dirty, setDirty] = useState(false);   // an edit the card has not saved yet
   const [sending, setSending] = useState(false);
+  const [welcome, setWelcome] = useState<{ ok: boolean; text: string } | null>(null);
 
-  const handleSave = async () => {
-    setError(null);
-    if (enabled && senders.length === 0) {
-      setError('Add at least one approved sender to enable iMessage.');
-      return;
-    }
-    const normalized = senders.map(s => ({ ...s }));
-    for (const s of normalized) {
-      if (s.is_primary) s.sharing_level = 'open_book';
-    }
-    const badProjectOnly = normalized.find(s => !s.is_primary && s.sharing_level === 'project_only' && !s.description);
-    if (badProjectOnly) {
-      setError(`"${badProjectOnly.name || badProjectOnly.address}" is set to Project Only but has no description. Add a brief description that names the specific project the agent should stay inside of, or change the sharing level.`);
-      return;
-    }
-    const primary = normalized.find(s => s.is_primary);
-    const effectiveDefault = primary?.address ?? '';
-    const listText = JSON.stringify(normalized);
-    const listResult = await api.setSetting('imessage_approved_senders', listText, baseRaw.current, { ownerChange: ownerChanged(baseList.current, normalized) });
-    if (!listResult.ok) {
-      setError(listResult.error || 'Failed to save the approved senders.');
-      setLoadTry((n) => n + 1);
-      return;
-    }
-    baseRaw.current = listText;
-    baseList.current = normalized.map(x => ({ ...x }));
-    const writes = await Promise.all([
-      api.setSetting('imessage_enabled', enabled ? 'true' : 'false'),
-      api.setSetting('imessage_recipient', primary?.address ?? ''),
-      api.setSetting('imessage_default_sender', effectiveDefault),
-    ]);
-    const refused = writes.find((w) => !w.ok);
-    if (refused && !refused.ok) {
-      setError(`iMessage settings were not saved: ${refused.error}`);
-      return;
-    }
+  // Next is open once the step is set up, and shut again while there is an unsaved edit.
+  useEffect(() => { onReady?.(setUp && !dirty); }, [setUp, dirty, onReady]);
 
-    // Send welcome message to start the bridge and verify it works
-    if (enabled && effectiveDefault) {
-      setSending(true);
-      // Through the one request door: the dead-network case arrives as
-      // `{ ok: false }` rather than a throw, so the two branches below are one.
-      const result = await api.request('/system/imessage/welcome', {
-        method: 'POST',
-        body: JSON.stringify({ recipient: effectiveDefault }),
-      });
-      if (!result.ok) {
-        setError(`iMessage saved, but the welcome message did not send: ${result.error}. ${AUTOMATION_SEND_HINT}`);
-      }
-      setSending(false);
-    }
-
-    setSaved(true);
+  // After a save that landed: an enabled bridge sends its welcome text to prove it works; a text that did not go says so.
+  const afterSave = async (enabled: boolean, primary: string) => {
+    setSetUp(true);
+    if (!enabled) { setWelcome({ ok: true, text: 'iMessage bridge disabled.' }); return; }
+    if (!primary) { setWelcome({ ok: true, text: 'iMessage bridge saved. No sender is starred as the owner, so no welcome message was sent.' }); return; }
+    setWelcome(null);
+    setSending(true);
+    const result = await api.request('/system/imessage/welcome', { method: 'POST', body: JSON.stringify({ recipient: primary }) });
+    setSending(false);
+    setWelcome(result.ok
+      ? { ok: true, text: 'iMessage bridge configured! Check your phone for a welcome message.' }
+      : { ok: false, text: `iMessage saved, but the welcome message did not send: ${result.error}. ${AUTOMATION_SEND_HINT}` });
   };
-
-  if (loadFailed) {
-    return (
-      <div className="space-y-4">
-        <p className="text-sm text-cp-coral">
-          Could not load your approved senders, so they can&apos;t be edited right now. Your saved list has not been changed.
-        </p>
-        <button type="button" onClick={() => setLoadTry((n) => n + 1)} className="text-sm text-cp-amber hover:text-cp-amber/80">
-          Retry
-        </button>
-      </div>
-    );
-  }
 
   return (
     <div className="space-y-4">
@@ -1511,148 +1181,16 @@ export const IMessageStep = ({ onReady }: { onReady?: (ready: boolean) => void }
         The iMessage bridge lets you communicate with your agent via text message. It can send you alerts,
         respond to your questions, and receive commands, all through iMessage. Requires Full Disk Access (granted in a previous step).
       </p>
-
-      <div className="flex items-center justify-between py-3 px-4 glass-nested rounded-xl">
-        <div>
-          <span className="text-sm font-medium text-ui/90">Enable iMessage Bridge</span>
-          <p className="text-xs text-ui/40 mt-0.5">Send and receive messages with your agent via iMessage</p>
-        </div>
-        <button onClick={() => { setEnabled(!enabled); setSaved(false); }}
-          className={`toggle-switch ${enabled ? 'toggle-on' : ''}`}>
-          <span className="toggle-knob" />
-        </button>
-      </div>
-
-      {enabled && (
-        <div className="space-y-3">
-          <div>
-            <label className="block text-xs font-medium text-ui/55 mb-1">Approved Senders</label>
-            <p className="text-xs text-ui/25 mb-2">
-              Each safe sender is a person (or another agent) your DOJO will accept iMessages from. Star the primary user (typically you); everyone else is a household member, friend, or another agent on another DOJO. Add a name and short description so the agent knows who it's talking to and can reply to the right person.
-            </p>
-          </div>
-
-          {senders.map((sender, i) => (
-            <div key={i} className="glass-nested rounded-xl px-3 py-2 space-y-2">
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2 min-w-0 flex-1">
-                  <button onClick={() => setPrimary(i)}
-                    title={sender.is_primary ? 'Primary user' : 'Set as primary user'}
-                    className={`text-lg leading-none transition-colors shrink-0 ${sender.is_primary ? 'text-yellow-400' : 'text-ui/25 hover:text-yellow-400'}`}>
-                    {sender.is_primary ? '\u2605' : '\u2606'}
-                  </button>
-                  <span className="text-sm text-ui/90 font-mono truncate">{sender.address}</span>
-                </div>
-                <button onClick={() => removeSender(i)} className="text-ui/40 hover:text-red-400 shrink-0">&times;</button>
-              </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                <div className="space-y-1">
-                  <label className="text-xs text-ui/40 block">Display name</label>
-                  <input type="text" value={sender.name === sender.address ? '' : sender.name}
-                    onChange={(e) => updateField(i, 'name', e.target.value)}
-                    placeholder="e.g., Alex"
-                    className="glass-input text-sm w-full" />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-xs text-ui/40 block">Brief description</label>
-                  <input type="text" value={sender.description ?? ''}
-                    onChange={(e) => updateField(i, 'description', e.target.value)}
-                    placeholder="e.g., spouse, teammate, project collaborator"
-                    className="glass-input text-sm w-full" />
-                </div>
-              </div>
-              <div className="space-y-1">
-                <label className="text-xs text-ui/40 block">Sharing level</label>
-                <select
-                  value={sender.is_primary ? 'open_book' : sender.sharing_level}
-                  onChange={(e) => setSharingLevel(i, e.target.value as SetupSharingLevel)}
-                  disabled={sender.is_primary}
-                  className="glass-input text-sm w-full disabled:opacity-60"
-                >
-                  {(Object.keys(SETUP_SHARING_LEVEL_LABELS) as SetupSharingLevel[]).map(level => (
-                    <option key={level} value={level}>
-                      {SETUP_SHARING_LEVEL_LABELS[level]}
-                    </option>
-                  ))}
-                </select>
-                <p className="text-xs text-ui/25">
-                  {sender.is_primary
-                    ? 'Primary user is always Open Book. Star another sender first if you want to change this.'
-                    : SETUP_SHARING_LEVEL_HINTS[sender.sharing_level]}
-                </p>
-                {sender.sharing_level === 'project_only' && !sender.description && !sender.is_primary && (
-                  <p className="text-xs text-cp-amber">⚠ Project Only needs a description that names the specific project; without it the agent has no scope to enforce.</p>
-                )}
-              </div>
-            </div>
-          ))}
-
-          {enabled && senders.length === 0 && (
-            <div className="px-3 py-2 rounded-lg bg-cp-amber/10 border border-cp-amber/20 text-cp-amber text-xs">
-              iMessage bridge is ON but no senders are configured. Add at least one below.
-            </div>
-          )}
-
-          <div className="glass-nested rounded-xl px-3 py-3 space-y-2">
-            <div className="space-y-1">
-              <label className="text-xs text-ui/40 block">Phone number or Apple ID</label>
-              <input type="text" value={newAddress}
-                onChange={(e) => setNewAddress(e.target.value)}
-                placeholder="+15551234567 or user@example.com"
-                className="glass-input w-full font-mono text-sm" />
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-              <div className="space-y-1">
-                <label className="text-xs text-ui/40 block">Display name</label>
-                <input type="text" value={newName}
-                  onChange={(e) => setNewName(e.target.value)}
-                  placeholder="e.g., Alex"
-                  className="glass-input text-sm w-full" />
-              </div>
-              <div className="space-y-1">
-                <label className="text-xs text-ui/40 block">Brief description</label>
-                <input type="text" value={newDescription}
-                  onChange={(e) => setNewDescription(e.target.value)}
-                  onKeyDown={(e) => isEnterNotComposing(e) && addSender()}
-                  placeholder="e.g., spouse, teammate, project collaborator"
-                  className="glass-input text-sm w-full" />
-              </div>
-            </div>
-            {senders.length > 0 && (
-              <div className="space-y-1">
-                <label className="text-xs text-ui/40 block">Sharing level</label>
-                <select value={newSharingLevel}
-                  onChange={(e) => setNewSharingLevel(e.target.value as SetupSharingLevel)}
-                  className="glass-input text-sm w-full">
-                  {(Object.keys(SETUP_SHARING_LEVEL_LABELS) as SetupSharingLevel[]).map(level => (
-                    <option key={level} value={level}>{SETUP_SHARING_LEVEL_LABELS[level]}</option>
-                  ))}
-                </select>
-                <p className="text-xs text-ui/25">{SETUP_SHARING_LEVEL_HINTS[newSharingLevel]}</p>
-              </div>
-            )}
-            {senders.length === 0 && (
-              <p className="text-xs text-ui/25">First sender becomes the primary user automatically (Open Book).</p>
-            )}
-            <button onClick={addSender} disabled={!newAddress.trim()}
-              className="px-3 py-2 glass-btn glass-btn-primary text-ui text-sm rounded-lg transition-colors">
-              Add sender
-            </button>
-          </div>
-        </div>
-      )}
-
-      {error && <div className="px-3 py-2 rounded-lg bg-cp-coral/10 border border-cp-coral/20 text-cp-coral text-sm">{error}</div>}
-      {saved && <div className="px-3 py-2 rounded-lg glass-badge-teal border border-cp-teal/20 text-sm">
-        {enabled ? 'iMessage bridge configured! Check your phone for a welcome message.' : 'iMessage bridge disabled.'}
-      </div>}
-
-      <button onClick={handleSave} disabled={saved || sending}
-        className={`px-4 py-2 text-ui text-sm font-medium rounded-lg transition-colors ${
-          saved ? 'bg-cp-teal text-[var(--btn-success-text)] font-semibold' : 'glass-btn glass-btn-primary'
-        }`}>
-        {sending ? 'Sending welcome message...' : saved ? '\u2713 Saved' : enabled ? 'Save & Test iMessage' : 'Skip (Leave Disabled)'}
-      </button>
+      <IMBridgeSettings
+        onLoaded={setSetUp}
+        onSaved={(enabled, primary) => { void afterSave(enabled, primary); }}
+        onDirtyChange={setDirty}
+        saveDisabled={sending}
+        saveLabel={(on) => (sending ? 'Sending welcome message...' : on ? 'Save & Test iMessage' : 'Skip (Leave Disabled)')}
+      />
+      {welcome && (welcome.ok
+        ? <div role="status" className="px-3 py-2 rounded-lg glass-badge-teal border border-cp-teal/20 text-sm">{welcome.text}</div>
+        : <div role="alert" className="px-3 py-2 rounded-lg bg-cp-coral/10 border border-cp-coral/20 text-cp-coral text-sm">{welcome.text}</div>)}
     </div>
   );
 };

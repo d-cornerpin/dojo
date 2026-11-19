@@ -3,27 +3,11 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
-vi.mock('../../../logger.js', () => {
-  const noop = (): void => {};
-  return {
-    createLogger: () => ({ debug: noop, info: noop, warn: noop, error: noop }),
-    setLogLevel: noop, setLogBroadcast: noop, readLogEntries: () => [],
-  };
-});
-
 const mockDb: { current: Database.Database | null } = { current: null };
-vi.mock('../../../db/connection.js', async () => {
-  const os = await import('node:os');
-  const p = await import('node:path');
-  return {
-    getDb: () => {
-      if (!mockDb.current) throw new Error('test DB not initialized');
-      return mockDb.current;
-    },
-    closeDb: vi.fn(),
-    getDbPath: () => p.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'dojo-clock-time-doors', 'dojo.db'),
-  };
-});
+vi.mock('../../../db/connection.js', () => ({
+  getDb: () => { if (!mockDb.current) throw new Error('test DB not initialized'); return mockDb.current; },
+  closeDb: vi.fn(),
+}));
 vi.mock('../../ws.js', () => ({ broadcast: vi.fn(), stampPersistedRow: (e: unknown) => e }));
 vi.mock('../../../agent/runtime.js', () => ({
   enforceModelCapabilities: vi.fn(),

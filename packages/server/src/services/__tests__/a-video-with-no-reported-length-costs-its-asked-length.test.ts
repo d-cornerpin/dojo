@@ -1,56 +1,32 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
 import Database from 'better-sqlite3';
 
 const mockDb: { current: Database.Database | null } = { current: null };
-vi.mock('../../db/connection.js', async () => {
-  const os = await import('node:os');
-  const p = await import('node:path');
-  return {
-    getDb: () => {
-      if (!mockDb.current) throw new Error('test DB not initialized');
-      return mockDb.current;
-    },
-    closeDb: vi.fn(),
-    getDbPath: () => p.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'dojo-a5-media-stop', 'dojo.db'),
-  };
-});
-
-const frames: Array<Record<string, unknown>> = [];
-vi.mock('../../gateway/ws.js', () => ({
-  broadcast: (e: Record<string, unknown>) => { frames.push(e); },
+vi.mock('../../db/connection.js', () => ({
+  getDb: () => { if (!mockDb.current) throw new Error('test DB not initialized'); return mockDb.current; },
+  closeDb: vi.fn(),
 }));
+
+vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {} }));
 
 vi.mock('../../config/loader.js', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
   getProviderCredential: () => 'test-key',
 }));
 
-// The turn machinery is irrelevant here; mocked so the success path's lazy import of `costs/tracker.js`,
-// reached through the budget chain, never pulls the model-call chain (same line as the sibling poller suites).
 vi.mock('../../agent/v2/loop.js', () => ({ runV2Turn: vi.fn(async () => undefined) }));
 
 import { runMigrations } from '../../db/migrations.js';
-// The cost tracker reaches the runtime graph, which compiled inside a clause, by its first import,
-// costs past every wait below; it is compiled once here, at load.
 import '../../costs/tracker.js';
 
 const AGENT = 'a5-media-agent';
 const MODEL = 'model-media';
 const PROVIDER = 'prov-media';
 
-interface Dial { url: string; signal: AbortSignal | undefined }
-let dials: Dial[] = [];
 const realFetch = globalThis.fetch;
 
-/** Answers with whatever the handler returns; records the signal it was handed. */
 function answerWith(handler: (url: string) => Response | Promise<Response>): void {
-  globalThis.fetch = vi.fn(async (input: unknown, init?: RequestInit) => {
-    dials.push({ url: String(input), signal: init?.signal ?? undefined });
-    return handler(String(input));
-  }) as unknown as typeof globalThis.fetch;
+  globalThis.fetch = vi.fn(async (input: unknown) => handler(String(input))) as unknown as typeof globalThis.fetch;
 }
 
 const tick = (ms = 10) => new Promise<void>((r) => setTimeout(r, ms));
@@ -99,8 +75,6 @@ async function driveToSuccess(): Promise<void> {
 
 beforeEach(() => {
   vi.resetModules();
-  dials = [];
-  frames.length = 0;
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
   mockDb.current = db;

@@ -23,7 +23,7 @@ import { servedOwnerNotices } from '../../healer/owner-notice-kinds.js';
 import { writeOobeSoul } from '../../prompt/soul-rerun.js';
 import { isPastFirstRun } from '../../config/setup-state.js';
 import { refuseUnfitLocalModel } from '../../agent/local-model-fit.js';
-import { refuseAgentModel, refuseSmallMainModel, notForAgentsReason, reassignAffectedAgents, windowOf, MAIN_MODEL_SETTING_KEYS, LOCAL_MODEL_SETTING_KEYS } from '../../agent/main-model-floor.js';
+import { refuseAgentModel, refuseSmallMainModel, notForAgentsReason, refuseNonChatModel, reassignAffectedAgents, cheapestAgentModel, windowOf, MAIN_MODEL_SETTING_KEYS, LOCAL_MODEL_SETTING_KEYS } from '../../agent/main-model-floor.js';
 import { setAgentModel, modelKeyAgentId } from '../../agent/model-switch.js';
 import { parsePrice } from '../../services/price-per-million.js';
 import { refuseBadClockTime, CLOCK_TIME_SETTING_KEYS } from '../../config/clock-time.js';
@@ -564,7 +564,7 @@ function forgetModelReferences(modelId: string): void {
 }
 
 // DELETE /providers/:id
-configRouter.delete('/providers/:id', (c) => {
+configRouter.delete('/providers/:id', async (c) => {
   try {
     const db = getDb();
     const id = c.req.param('id');
@@ -582,10 +582,15 @@ configRouter.delete('/providers/:id', (c) => {
       return c.json({ ok: false, error: 'The Dojo itself runs on a model from this provider for memory summaries and quick checks, so this provider stays.' }, 409);
     }
 
-    // Agents and service-agent settings on these models move to the cheapest working model, with the usual
-    // change note; with none, the loop below leaves them without a model, as before.
-    reassignAffectedAgents(modelIds);
+    // Agents and service-agent settings on these models move to the cheapest model that can run an agent, with the
+    // usual change note. With none to move live agents to, the delete is refused: nothing is moved, nothing is deleted.
+    const moveTo = await cheapestAgentModel(modelIds);
+    if (!moveTo && modelIds.some((mid) => agentsOnModel(mid).length > 0)) {
+      return c.json({ ok: false, error: 'This provider\'s models are the only ones your agents can run on. Add another model first, then delete this one.' }, 409);
+    }
+    await reassignAffectedAgents(modelIds, moveTo);
 
+    // A terminated agent that still names one of these models is cleared so it points at nothing that is gone.
     for (const mid of modelIds) {
       db.prepare("UPDATE agents SET model_id = NULL WHERE model_id = ?").run(mid);
     }
@@ -1965,7 +1970,7 @@ configRouter.post('/models/disable', async (c) => {
 
   disableMany(modelIds);
 
-  const moved = reassignAffectedAgents(modelIds);
+  const moved = await reassignAffectedAgents(modelIds, await cheapestAgentModel(modelIds));
 
   logger.info('Models disabled', { count: modelIds.length, ...moved });
 
@@ -2429,6 +2434,7 @@ function rowToModel(row: Record<string, unknown>): Model {
     priceUnknown,
     isEnabled: Boolean(row.is_enabled),
     notForAgents: notForAgentsReason(row.id as string),
+    notAChatModel: refuseNonChatModel(row.id as string) !== null,
     thinkingEnabled,
     thinkingLevel: row.thinking_level === 'low' || row.thinking_level === 'max' ? row.thinking_level : 'high',
     thinkingLevels: thinkingLevelsForRow(row),

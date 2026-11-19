@@ -932,7 +932,7 @@ export async function sendHealerReport(): Promise<{ ok: boolean; error?: string 
 
     // Email sent successfully, archive the log
     const archiveName = archiveHealerLog();
-    logger.info('Healer report sent and archived', { recipient, archiveName });
+    logger.info('Healer report sent and archived', { to: 'the owner', archiveName });
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };

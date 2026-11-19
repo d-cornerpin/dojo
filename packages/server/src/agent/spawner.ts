@@ -197,9 +197,9 @@ export async function spawnAgent(params: SpawnParams): Promise<{ agentId: string
   }
 
   const resolvedModelId = modelId === 'auto' ? 'auto' : (modelId ?? parent.model_id);
-  // The size floor refuses any parent's child; a named model too big for memory warns the main agent. Loaded on demand.
-  const tooSmall = resolvedModelId ? await import('./main-model-floor.js').then((f) => f.refuseSmallMainModel(resolvedModelId)) : null;
-  if (tooSmall) throw new Error(`Spawn denied: ${tooSmall}`);
+  // A model that is not a chat model, or is under the size floor, refuses any parent's child; a named model too big for memory warns the main agent. Loaded on demand.
+  const refusedModel = resolvedModelId ? await import('./main-model-floor.js').then((f) => f.refuseNonChatModel(resolvedModelId) ?? f.refuseSmallMainModel(resolvedModelId)) : null;
+  if (refusedModel) throw new Error(`Spawn denied: ${refusedModel}`);
   const unfit = modelId && modelId !== 'auto' ? await import('./local-model-fit.js').then((f) => f.refuseUnfitLocalModel(modelId, parent.model_id, 'agent')) : null;
   if (unfit && !parentIsPrimary) throw new Error(`Spawn denied: ${unfit}`);
   if (unfit) warnings.push(unfit);

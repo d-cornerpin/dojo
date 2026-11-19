@@ -1,33 +1,13 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// The Settings "Test Router" box asks `decideTier`, the one function real turns use, so it
-// shows the tier a turn with this prompt would really get and the method that decided it:
-// the meaning classifier when the embedder is up, the keyword backup when it is down.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// The Settings "Test Router" box shows the tier and method (meaning classifier or keyword backup) a real turn would get.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
-vi.mock('../../../logger.js', () => {
-  const noop = (): void => {};
-  return {
-    createLogger: () => ({ debug: noop, info: noop, warn: noop, error: noop }),
-    setLogLevel: noop, setLogBroadcast: noop, readLogEntries: () => [],
-  };
-});
-
 const mockDb: { current: Database.Database | null } = { current: null };
-vi.mock('../../../db/connection.js', async () => {
-  const os = await import('node:os');
-  const p = await import('node:path');
-  return {
-    getDb: () => {
-      if (!mockDb.current) throw new Error('test DB not initialized');
-      return mockDb.current;
-    },
-    closeDb: vi.fn(),
-    getDbPath: () => p.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'dojo-r29-router-test', 'dojo.db'),
-  };
-});
+vi.mock('../../../db/connection.js', () => ({
+  getDb: () => { if (!mockDb.current) throw new Error('test DB not initialized'); return mockDb.current; },
+  closeDb: vi.fn(),
+}));
 vi.mock('../../ws.js', () => ({ broadcast: vi.fn(), stampPersistedRow: (e: unknown) => e }));
 
 const sem = vi.hoisted(() => ({ next: null as null | { tier: 'light' | 'standard' | 'heavy'; confidence: number; topScore: number; scores: Record<string, number>; headVersion: string } }));

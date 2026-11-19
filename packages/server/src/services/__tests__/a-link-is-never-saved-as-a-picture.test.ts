@@ -1,38 +1,21 @@
-// A provider that answers with a web link instead of a base64 picture never has the link's letters saved
-// as a .png and reported as a made picture. A real picture starts with its format's signature; anything
-// else lands on the decode failure.
-// No real provider is contacted: `globalThis.fetch` is stubbed in every case.
+// A provider answer carrying a web link is never saved as a .png: only data with a real picture signature is a picture.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
 const mockDb: { current: Database.Database | null } = { current: null };
-vi.mock('../../db/connection.js', async () => {
-  const os = await import('node:os');
-  const p = await import('node:path');
-  return {
-    getDb: () => {
-      if (!mockDb.current) throw new Error('test DB not initialized');
-      return mockDb.current;
-    },
-    closeDb: vi.fn(),
-    getDbPath: () => p.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'dojo-a-link-not-a-picture', 'dojo.db'),
-  };
-});
-
-const frames: Array<Record<string, unknown>> = [];
-vi.mock('../../gateway/ws.js', () => ({
-  broadcast: (e: Record<string, unknown>) => { frames.push(e); },
+vi.mock('../../db/connection.js', () => ({
+  getDb: () => { if (!mockDb.current) throw new Error('test DB not initialized'); return mockDb.current; },
+  closeDb: vi.fn(),
 }));
+
+vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {} }));
 
 vi.mock('../../config/loader.js', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
   getProviderCredential: () => 'test-key',
 }));
 
-// The effects facade refuses filesystem work outside an authorized tool call, and the generator
-// ensures its output directory on the way in. Nothing here is about the filesystem, so the facade
-// is answered rather than driven.
 vi.mock('../../agent/effects/fs.js', () => ({
   existsSync: () => true,
   mkdirSync: () => undefined,
@@ -49,18 +32,10 @@ const AGENT = 'a-link-picture-agent';
 const MODEL = 'model-media';
 const PROVIDER = 'prov-media';
 
-// ── the fetch stub ──────────────────────────────────────────────────────────────────────
-
-interface Dial { url: string; signal: AbortSignal | undefined }
-let dials: Dial[] = [];
 const realFetch = globalThis.fetch;
 
-/** Answers with whatever the handler returns; records the signal it was handed. */
 function answerWith(handler: (url: string) => Response | Promise<Response>): void {
-  globalThis.fetch = vi.fn(async (input: unknown, init?: RequestInit) => {
-    dials.push({ url: String(input), signal: init?.signal ?? undefined });
-    return handler(String(input));
-  }) as unknown as typeof globalThis.fetch;
+  globalThis.fetch = vi.fn(async (input: unknown) => handler(String(input))) as unknown as typeof globalThis.fetch;
 }
 
 const json = (body: unknown) => new Response(JSON.stringify(body), {
@@ -85,8 +60,6 @@ function seed(): void {
 }
 
 beforeEach(() => {
-  dials = [];
-  frames.length = 0;
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
   mockDb.current = db;
@@ -114,10 +87,12 @@ describe('a link is never saved as a picture', () => {
     expect(r.ok).toBe(true);
   });
 
-  it('plain base64 text that is not a picture is refused', async () => {
-    answerWith(() => imageAnswer('aGVsbG8gd29ybGQ='));
+  it('a picture in a format the Dojo does not keep is refused in plain words', async () => {
+    const bmp = Buffer.from('BM' + 'x'.repeat(40)).toString('base64');
+    answerWith(() => imageAnswer(`data:image/bmp;base64,${bmp}`));
     const r = await generateImage({ agentId: AGENT, modelId: MODEL, prompt: 'a cat' });
     expect(r.ok).toBe(false);
     expect(r.ok === false && r.code).toBe('DECODE_ERROR');
+    expect(r.ok === false && r.error).toBe('The image provider sent back something that is not a picture the Dojo can save (it has to be a PNG, JPEG, GIF or WEBP picture), so nothing was saved. Try again, or pick a different image model.');
   });
 });

@@ -47,6 +47,8 @@ vi.mock('../../../config/platform.js', () => ({
   getPrimaryAgentId: () => 'primary-not-under-test',
   getHealerAgentId: () => null,
   getDreamerAgentId: () => null,
+  getPMAgentId: () => null,
+  getTrainerAgentId: () => null,
 }));
 
 import { runMigrations } from '../../../db/migrations.js';

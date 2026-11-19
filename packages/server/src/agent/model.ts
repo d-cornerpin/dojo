@@ -1021,7 +1021,7 @@ async function callOllamaModel(
                 } else {
                   logger.warn('Ollama: malformed tool call JSON arguments (repair failed)', {
                     toolName: tc.function?.name,
-                    rawArgs: typeof rawArgs === 'string' ? rawArgs.slice(0, 200) : String(rawArgs),
+                    rawLength: typeof rawArgs === 'string' ? rawArgs.length : String(rawArgs).length,
                   }, agentId);
                   parsedArgs = { __malformed_args: typeof rawArgs === 'string' ? rawArgs.slice(0, 500) : String(rawArgs) };
                 }
@@ -1798,7 +1798,7 @@ async function callOpenAIModel(
             malformedArgs = true;
             logger.warn('OpenAI: malformed tool call JSON arguments (repair failed)', {
               toolName: acc.name,
-              rawArgs: acc.args.slice(0, 200),
+              rawLength: acc.args.length,
             }, agentId);
           }
         }

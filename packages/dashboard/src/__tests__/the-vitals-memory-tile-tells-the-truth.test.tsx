@@ -1,13 +1,4 @@
-// ════════════════════════════════════════════════════════════════════════════
-// THE VITALS MEMORY TILE TELLS THE TRUTH.
-//
-// When the resources read failed, the memory tile fell back to the health
-// read's `memory.used` - the Dojo's own heap, about 100 MB - and drew it
-// against the Mac's whole memory as if it were the Mac's use. The Mac's figure
-// comes from the resources read alone; when that read has no answer, the tile
-// and the Resources row show the page's own `--`, not a figure for the wrong
-// machine.
-// ════════════════════════════════════════════════════════════════════════════
+// When the resources read has no answer, the Vitals memory tile shows `--`, never the Dojo's own heap against the Mac's memory.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
@@ -48,7 +39,6 @@ import { RightDockProvider } from '../components/RightDockProvider';
 import { TechniqueSessionProvider } from '../components/TechniqueSessionProvider';
 import { OrbProvider } from '../components/orb/OrbProvider';
 
-/** Same nesting App.tsx puts every page in; see `every-major-page-mounts.test.tsx`. */
 const shell = (page: ReactElement) => (
   <MemoryRouter>
     <AuthProvider>
@@ -65,14 +55,9 @@ const shell = (page: ReactElement) => (
   </MemoryRouter>
 );
 
-// Shapes the render reads once loading clears; the default `data: []` would
-// throw there. HEALTH also lets the test wait for the health read to land.
 const HEALTH = { uptime: 3600, db: 'ok', agents: 3, memory: { used: 100, total: 1000 } };
 const WATCHDOG = { running: true, lastHeartbeat: '2026-01-01T00:00:00.000Z', lastAlert: null };
 const IM_BRIDGE = { enabled: false, connected: false };
-// WatcherCards reads data.gmail.enabled etc. (WatcherCards.tsx:141); the default
-// `data: []` has no .gmail and throws there once the fetch resolves. All three
-// disabled → anyEnabled is false → the panel returns null.
 const noWatcher = { enabled: false };
 const WATCHERS = { gmail: noWatcher, outlook: noWatcher, teams: noWatcher };
 

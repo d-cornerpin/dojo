@@ -13,10 +13,6 @@ vi.mock('../../db/connection.js', () => ({
   getDbPath: () => ':memory:',
 }));
 vi.mock('../../gateway/ws.js', () => ({ broadcast: vi.fn(), stampPersistedRow: (e: unknown) => e }));
-vi.mock('../../logger.js', () => {
-  const noop = (): void => {};
-  return { createLogger: () => ({ debug: noop, info: noop, warn: noop, error: noop }), setLogLevel: noop, setLogBroadcast: noop, readLogEntries: () => [] };
-});
 // A different vector per call, so the duplicate check never merges two test facts.
 vi.mock('../../memory/embeddings.js', () => {
   let n = 0;

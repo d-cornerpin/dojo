@@ -6,7 +6,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
 const mockDb: { current: Database.Database | null } = { current: null };
-const hoisted = vi.hoisted(() => ({ recipient: null as string | null, presence: 'present', woken: false }));
+const hoisted = vi.hoisted(() => ({ recipient: null as string | null, presence: 'present' }));
 const submitVideo = vi.hoisted(() => vi.fn());
 
 vi.mock('../../../../db/connection.js', () => ({
@@ -16,17 +16,9 @@ vi.mock('../../../../db/connection.js', () => ({
   },
   closeDb: vi.fn(),
 }));
-vi.mock('../../../../logger.js', () => ({
-  createLogger: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
-}));
 vi.mock('../../util.js', async (orig) => ({ ...(await orig()), auditLog: vi.fn() }));
 vi.mock('../../../../gateway/ws.js', () => ({ broadcast: vi.fn() }));
 vi.mock('../../../agent-status.js', () => ({ writeAgentStatus: vi.fn() }));
-vi.mock('../../../../memory/message-store.js', () => ({
-  deliveredResult: () => ({}),
-  insertMessageIfAbsent: vi.fn(),
-}));
-vi.mock('../../../../work/ask-settlement.js', () => ({ settleAskOnAsyncResult: vi.fn(), settleAskOnJobEnded: vi.fn() }));
 vi.mock('../../../../costs/spend.js', async (orig) => ({ ...(await orig<Record<string, unknown>>()), exceededBudget: () => null }));
 vi.mock('../../../../services/generation-jobs.js', () => ({
   createGenerationJob: () => 'job-1',
@@ -50,19 +42,6 @@ vi.mock('../../../../services/imessage-bridge.js', () => ({
   getDefaultSender: () => null,
 }));
 vi.mock('../../../access/read.js', () => ({ mayUseChannel: () => true }));
-vi.mock('../../../agent-notice.js', () => ({ postAgentNotice: vi.fn() }));
-vi.mock('../../../wake-with-notice.js', () => ({
-  tellAgentAndWake: vi.fn(async () => undefined),
-  isFailureWokenTurn: () => hoisted.woken,
-  requesterReachSentence: async (a: string) => `Your written reply on this turn does NOT reach them; to tell them, call imessage_send with recipient="${a}".`,
-}));
-vi.mock('../../../../home.js', async () => {
-  const p = await import('node:path'); const o = await import('node:os');
-  const dir = p.join(process.env.DOJO_TEST_HOME_ROOT || o.tmpdir(), 'dojo-stand-in');
-  return { homeDir: (): string => dir, dojoDir: (...a: string[]): string => p.join(dir, '.dojo', ...a) };
-});
-vi.mock('../../../effects/fs.js', () => ({ existsSync: () => true, mkdirSync: () => undefined, copyFileSync: () => undefined, statSync: () => ({ size: 3 }) }));
-vi.mock('../../../turn-context.js', () => ({ turnContext: () => undefined }));
 
 vi.mock('../../../../services/audio-gen-model.js', () => ({ getEffectiveAudioGenModel: () => ({ modelId: 'm-stand', providerId: 'fake-provider', apiModelId: 'x', source: 'failover' }) }));
 vi.mock('../../../../services/music-gen-model.js', () => ({ getEffectiveMusicGenModel: () => ({ modelId: 'm-stand', providerId: 'fake-provider', apiModelId: 'x', source: 'failover' }) }));

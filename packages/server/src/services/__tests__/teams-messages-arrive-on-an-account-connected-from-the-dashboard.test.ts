@@ -4,16 +4,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
-// `me?$select=id` is the one Graph call that answers "who am I". Its id is
-// swapped between runs to simulate a sign-in under a different login.
-const nextMeId = vi.hoisted(() => ({ value: 'old-account' as string }));
-const msGraphRead = vi.hoisted(() =>
-  vi.fn(async (endpoint: string) =>
-    endpoint.startsWith('me?')
-      ? { ok: true, data: { id: nextMeId.value } }
-      : { ok: true, data: { value: [] } },
-  ),
-);
+const msGraphRead = vi.hoisted(() => vi.fn(async (_endpoint: string) => ({ ok: true, data: { value: [] } })));
 
 vi.mock('../../memory/conversations.js', () => ({
   resolveOrCreateConversation: () => 'c1',

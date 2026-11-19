@@ -1,6 +1,4 @@
-// Deleting the System group changes nothing: the tool refuses the request up
-// front, even from the main agent with terminate_members=true, so no member is
-// ended and the group and its rows stay exactly as they were.
+// Deleting the System group is refused even from the main agent with terminate_members=true: no member is ended and no row changes.
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
@@ -34,9 +32,6 @@ vi.mock('../runtime.js', () => ({
   getAgentRuntime: () => ({ handleMessage: vi.fn() }),
 }));
 
-// Stub the spawner so refusal/error paths never reach the real spawn/terminate
-// machinery. applySpawnTimeoutDecision / spawnAgent are not called on the paths
-// under test; terminateAgent is a no-op for the positive kill_agent control.
 vi.mock('../spawner.js', () => ({
   spawnAgent: vi.fn(async () => ({ agentId: 'x', name: 'x', status: 'idle', persist: false })),
   terminateAgent: vi.fn(),
@@ -46,7 +41,6 @@ vi.mock('../spawner.js', () => ({
 
 beforeEach(() => {
   const db = new Database(':memory:');
-  // Full agents column set the executor prelude reads (fingerprint + resolvers).
   db.exec(`
     CREATE TABLE agents (
       id TEXT PRIMARY KEY,
@@ -74,26 +68,8 @@ beforeEach(() => {
       created_at TEXT DEFAULT (datetime('now')),
       updated_at TEXT DEFAULT (datetime('now'))
     );
-    CREATE TABLE audit_log (
-      id TEXT PRIMARY KEY,
-      agent_id TEXT,
-      action_type TEXT,
-      target TEXT,
-      result TEXT,
-      detail TEXT,
-      created_at TEXT DEFAULT (datetime('now'))
-    );
   `);
-  // Callers.
   db.prepare("INSERT INTO agents (id, name, created_by, classification) VALUES ('primary', 'Primary', 'system', 'sensei')").run();
-  db.prepare("INSERT INTO agents (id, name, created_by, classification) VALUES ('worker', 'Worker', 'primary', 'apprentice')").run();
-  db.prepare("INSERT INTO agents (id, name, created_by, classification) VALUES ('creator', 'Creator', 'primary', 'apprentice')").run();
-  // Targets.
-  db.prepare("INSERT INTO agents (id, name, created_by, classification, status) VALUES ('a-user', 'UserAgent', 'dashboard', 'apprentice', 'idle')").run();
-  db.prepare("INSERT INTO agents (id, name, created_by, classification, status) VALUES ('a-own', 'OwnedAgent', 'creator', 'apprentice', 'idle')").run();
-  // Groups: one user-created, one primary-created.
-  db.prepare("INSERT INTO agent_groups (id, name, created_by) VALUES ('g-user', 'UserSquad', 'dashboard')").run();
-  db.prepare("INSERT INTO agent_groups (id, name, created_by) VALUES ('g-mine', 'MySquad', 'primary')").run();
   mockDb.current = db;
   db.prepare("INSERT INTO agent_groups (id, name, created_by) VALUES ('system-group', 'System', 'system')").run();
   db.prepare("INSERT INTO agents (id, name, created_by, classification, status, group_id) VALUES ('sys-member', 'SysMember', 'primary', 'apprentice', 'idle', 'system-group')").run();

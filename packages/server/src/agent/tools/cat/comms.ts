@@ -36,6 +36,9 @@ import { syncSafeSenderToContacts } from '../../../contacts/from-safe-senders.js
 import type { ToolHandlerMap } from '../handler.js';
 import { homeDir } from '../../../home.js';
 import { userWords, currentAddress } from '../../v2/turn-address.js';
+import { ownerAskedInThisTurn } from '../../../work/row-authority.js';
+
+const ADD_SENDER_NEEDS_OWNER = 'Adding someone to the approved list needs the owner to ask for it in his own message. Ask him, and do it when he says so.';
 
 export const commsHandlers: ToolHandlerMap = {
   async "share_file"({ agentId, args }) {
@@ -200,23 +203,14 @@ export const commsHandlers: ToolHandlerMap = {
     let isError = false;
     const channelArg = args.channel as string | undefined;
     const addressArg = args.address as string | undefined;
-    const userRequestQuote = (args.user_request_quote as string | undefined)?.trim() ?? '';
     if (!channelArg || !addressArg) {
       content = 'Error: both `channel` and `address` are required.';
       isError = true;
       return { content, isError };
     }
-    if (!userRequestQuote) {
-      content = 'Error: `user_request_quote` is required. Quote the user\'s actual words asking you to start this conversation. If you cannot quote a real user request, do NOT call this tool.';
-      isError = true;
-      return { content, isError };
-    }
-    // Minimum length guard: a one-word "ok" is not a request to add a sender.
-    if (userRequestQuote.length < 8) {
-      content = 'Error: `user_request_quote` is too short to be a real user request. Quote the full sentence where the user asked you to start this conversation.';
-      isError = true;
-      return { content, isError };
-    }
+    // Who the Dojo may reach changes only on the owner's own words in the message this turn answers.
+    if (!ownerAskedInThisTurn(agentId, args.user_quote).ok) return { content: ADD_SENDER_NEEDS_OWNER, isError: true };
+    const userQuote = String(args.user_quote).trim();
     const validChannels = ['imessage', 'gmail', 'outlook', 'teams'];
     if (!validChannels.includes(channelArg)) {
       content = `Error: channel must be one of: ${validChannels.join(', ')}`;
@@ -245,9 +239,9 @@ export const commsHandlers: ToolHandlerMap = {
       return { content, isError };
     }
     // Audit gets a truncated quote; the full quote stays in the tool-call args.
-    const auditQuote = userRequestQuote.length > 200
-      ? userRequestQuote.slice(0, 200) + '…'
-      : userRequestQuote;
+    const auditQuote = userQuote.length > 200
+      ? userQuote.slice(0, 200) + '…'
+      : userQuote;
 
     const sender = {
       address,

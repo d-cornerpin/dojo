@@ -3,11 +3,13 @@
 
 import { getDb } from '../db/connection.js';
 import { effectiveContextWindow, resolveNumCtx } from './model.js';
-import { refuseUnfitLocalModel } from './local-model-fit.js';
+import { refuseUnfitLocalModel, localModelFit } from './local-model-fit.js';
 import { createLogger } from '../logger.js';
-import { sanitizeMessagesOnModelChange } from './model-switch.js';
+import { setAgentModel } from './model-switch.js';
 import { tellOwner, ownerConditionCleared } from '../healer/owner-notices.js';
 import { isStandardModelRow } from '../services/local-standard.js';
+import { standingSkip } from '../router/standing-filters.js';
+import type { TierModelRow } from '../router/tier-chain.js';
 const logger = createLogger('main-model-floor');
 
 /** The floor, in tokens. "32K" models are advertised as 32,000 or 32,768; both pass. */
@@ -60,23 +62,25 @@ export function refuseSmallMainModel(
   return smallMainModelMessage(w.name, w.window);
 }
 
-/** True for a model that makes pictures, video, music or speech, embeds text, or is the Dojo's own decision model. */
+/** True for a model that makes pictures, video, music or speech, turns speech into text only, embeds text, or is the Dojo's own decision model. */
 export function isNonChatModel(capabilitiesJson: string | null | undefined): boolean {
   let caps: unknown;
   try { caps = JSON.parse(capabilitiesJson ?? '[]'); } catch { return false; }
-  return Array.isArray(caps) && caps.some((c) => typeof c === 'string' && (c.endsWith('generation') || c === 'embedding' || c === 'decision'));
+  if (!Array.isArray(caps)) return false;
+  return caps.some((c) => typeof c === 'string' && (c.endsWith('generation') || c === 'embedding' || c === 'decision'))
+    || (caps.includes('transcription') && !caps.includes('tools'));
 }
 
 /** The refusal for setting a model that is not a chat model as an agent's model; null for a chat model, an unknown
  *  id, 'auto', or the model the agent already runs (re-saving is never refused). */
-function refuseNonChatModel(modelId: string | null | undefined, currentModelId?: string | null): string | null {
+export function refuseNonChatModel(modelId: string | null | undefined, currentModelId?: string | null): string | null {
   if (!modelId || modelId === currentModelId || modelId === 'auto') return null;
   let row: { name: string; capabilities: string | null } | undefined;
   try {
     row = getDb().prepare('SELECT name, capabilities FROM models WHERE id = ?').get(modelId) as typeof row;
   } catch { return null; }
   if (!row || !isNonChatModel(row.capabilities)) return null;
-  return `${row.name} is not a chat model: it makes pictures, video, music or speech, embeds text, or is the Dojo's own decision model. An agent needs a chat model; choose another one.`;
+  return `${row.name} is not a chat model: it makes pictures, video, music or speech, only turns speech into text, embeds text, or is the Dojo's own decision model. An agent needs a chat model; choose another one.`;
 }
 
 /** Why a picker cannot offer this model as an agent's model, in the few words the picker shows; null when it can. */
@@ -94,49 +98,57 @@ export async function refuseAgentModel(modelId: string | null | undefined, curre
     ?? refuseUnfitLocalModel(modelId, currentModelId, 'agent', () => refuseSmallMainModel(modelId, currentModelId));
 }
 
-/** The one pick for "this agent needs another model": cheapest enabled chat model outside `exclude` that clears the
- *  floor. Never the router sentinel (no model) and never the Dojo's own small writer model. */
-export function cheapestAgentModel(exclude: readonly string[] = []): string | null {
+/** Enabled models that can run an agent now, cheapest first, outside `exclude`: a chat model that passes the filters
+ *  a real turn applies to every candidate (the 32K floor, an open provider breaker, the tools capability, a rate
+ *  limit). Never the router sentinel and never the Dojo's own small writer model. */
+export function agentModelCandidates(exclude: readonly string[] = []): string[] {
   const rows = getDb().prepare(
-    `SELECT id, capabilities FROM models
+    `SELECT id AS model_id, provider_id, api_model_id, 0 AS priority, input_cost_per_m, output_cost_per_m, capabilities
+       FROM models
       WHERE is_enabled = 1 AND id != 'auto' AND id NOT IN (${exclude.map(() => '?').join(',')})
       ORDER BY COALESCE(input_cost_per_m, 1e18) ASC, id ASC`,
-  ).all(...exclude) as Array<{ id: string; capabilities: string | null }>;
-  return rows.find((m) => !isNonChatModel(m.capabilities) && !isStandardModelRow(m.id) && refuseSmallMainModel(m.id) === null)?.id ?? null;
+  ).all(...exclude) as Array<TierModelRow & { capabilities: string | null }>;
+  return rows
+    .filter((m) => !isNonChatModel(m.capabilities) && !isStandardModelRow(m.model_id) && standingSkip(m, ['tools']) === null)
+    .map((m) => m.model_id);
+}
+
+/** The one pick for "this agent needs another model": the cheapest candidate whose memory fit the probe does not refuse
+ *  (a local model too big for this Mac is skipped; one it cannot size is kept). Null when none is left. */
+export async function cheapestAgentModel(exclude: readonly string[] = []): Promise<string | null> {
+  for (const id of agentModelCandidates(exclude)) {
+    const fit = await localModelFit(id, 'agent');
+    if (!fit || fit.unchecked || fit.fits) return id;
+  }
+  return null;
 }
 
 /** Moves every live agent on one of `modelIds` (and the service agents' model settings) to the cheapest big-enough
- *  model, with the effects of any model change; with none, the agents are left without a model and counted. */
-export function reassignAffectedAgents(
-  modelIds: string[], fallbackId = cheapestAgentModel(modelIds),
-): { agentsMoved: number; agentsWithoutModel: number } {
+ *  model through the one setter; with none, the agents are left without a model and counted. */
+export async function reassignAffectedAgents(
+  modelIds: string[], fallbackId: string | null,
+): Promise<{ agentsMoved: number; agentsWithoutModel: number }> {
   const db = getDb();
-  let reassigned = 0;
-  const movedIds = fallbackId
-    ? (db.prepare(`SELECT id FROM agents WHERE model_id IN (${modelIds.map(() => '?').join(',')}) AND status != 'terminated'`)
-      .all(...modelIds) as Array<{ id: string }>).map((a) => a.id)
-    : [];
-  for (const mid of modelIds) {
-    const result = db.prepare(
-      "UPDATE agents SET model_id = ?, updated_at = datetime('now') WHERE model_id = ? AND status != 'terminated'"
-    ).run(fallbackId, mid);
-    reassigned += result.changes;
-    if (fallbackId) {
-      db.prepare(
-        `UPDATE config SET value = ?, updated_at = datetime('now')
-          WHERE value = ? AND key IN (${MAIN_MODEL_SETTING_KEYS.map(() => '?').join(',')})`,
-      ).run(fallbackId, mid, ...MAIN_MODEL_SETTING_KEYS);
+  const marks = modelIds.map(() => '?').join(',');
+  const live = (db.prepare(`SELECT id FROM agents WHERE model_id IN (${marks}) AND status != 'terminated'`)
+    .all(...modelIds) as Array<{ id: string }>).map((a) => a.id);
+  if (!fallbackId) {
+    db.prepare(`UPDATE agents SET model_id = NULL, updated_at = datetime('now') WHERE model_id IN (${marks}) AND status != 'terminated'`).run(...modelIds);
+    return { agentsMoved: 0, agentsWithoutModel: live.length };
+  }
+  db.prepare(
+    `UPDATE config SET value = ?, updated_at = datetime('now')
+      WHERE value IN (${marks}) AND key IN (${MAIN_MODEL_SETTING_KEYS.map(() => '?').join(',')})`,
+  ).run(fallbackId, ...modelIds, ...MAIN_MODEL_SETTING_KEYS);
+  let moved = 0;
+  for (const id of live) {
+    try { await setAgentModel(id, fallbackId); moved++; } catch (err) {
+      logger.warn('A moved agent could not be switched to its new model', {
+        agentId: id, error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
-  for (const id of movedIds) {   // the effects every model change has: a new model's tool ids, a no-fit park looked at again
-    sanitizeMessagesOnModelChange(id);
-    void import('./v2/honest-stop-lock.js').then((m) => m.noteModelsChanged(id))
-      .catch((err: unknown) => logger.warn('A moved agent\'s no-fit park could not be looked at again', {
-        agentId: id, error: err instanceof Error ? err.message : String(err),
-      }));
-  }
-
-  return fallbackId ? { agentsMoved: reassigned, agentsWithoutModel: 0 } : { agentsMoved: 0, agentsWithoutModel: reassigned };
+  return { agentsMoved: moved, agentsWithoutModel: 0 };
 }
 
 /** Live agents on a model known to be under the floor; an unknown window is not small. */
@@ -153,9 +165,9 @@ export function agentsUnderFloor(): Array<{ name: string; modelId: string; model
 /** At start: each live agent on a too-small model moves to the cheapest big-enough model that is switched on, and the
  *  owner gets one card naming them; with no such model they stay and the card says who needs a pick. Nothing to do
  *  once nobody is under the floor, so every start may run it. */
-export function moveAgentsOffSmallModels(): void {
+export async function moveAgentsOffSmallModels(): Promise<void> {
   const small = agentsUnderFloor();
-  const to = cheapestAgentModel();
+  const to = await cheapestAgentModel();
   if (small.length === 0 || to) ownerConditionCleared('smallmodel:stuck');
   if (small.length === 0) return;
   if (!to) {
@@ -166,7 +178,7 @@ export function moveAgentsOffSmallModels(): void {
       + 'Switch on a model with a bigger memory window in Settings, or pick one on the agent\'s detail page.');
     return;
   }
-  reassignAffectedAgents([...new Set(small.map((a) => a.modelId))], to);
+  await reassignAffectedAgents([...new Set(small.map((a) => a.modelId))], to);
   const target = getDb().prepare('SELECT name, input_cost_per_m AS cost FROM models WHERE id = ?').get(to) as { name: string; cost: number | null };
   ownerConditionCleared('smallmodel:moved');   // a new move is a new telling
   const moved = small.map((a) => `${a.name} (from ${a.modelName})`).join(', ');
@@ -176,15 +188,15 @@ export function moveAgentsOffSmallModels(): void {
     + 'You can pick a different model for any agent on its detail page.');
 }
 
-/** The model a service agent is created or reactivated on: its setting, else the main agent's. One under the floor
- *  is replaced by the cheapest model that clears it ('auto' when none does), so it never starts on a small model. */
+/** The model a service agent is created or reactivated on: its setting, else the main agent's. One that cannot run an
+ *  agent (under the floor, or not a chat model) is replaced by the cheapest model that can ('auto' when none can). */
 export function serviceAgentModelId(settingKey: string, primaryId: string): string | null {
   const db = getDb();
   const picked = (db.prepare('SELECT value FROM config WHERE key = ?').get(settingKey) as { value: string } | undefined)?.value
     || (db.prepare('SELECT model_id FROM agents WHERE id = ?').get(primaryId) as { model_id: string | null } | undefined)?.model_id || null;
-  if (!picked || !refuseSmallMainModel(picked)) return picked;
-  const replacement = cheapestAgentModel([picked]) ?? 'auto';
-  logger.warn('A service agent\'s model is under the 32K floor; replaced', { settingKey, from: picked, to: replacement });
+  if (!picked || (refuseSmallMainModel(picked) === null && refuseNonChatModel(picked) === null)) return picked;
+  const replacement = agentModelCandidates([picked])[0] ?? 'auto';
+  logger.warn('A service agent\'s model cannot run an agent; replaced', { settingKey, from: picked, to: replacement });
   return replacement;
 }
 

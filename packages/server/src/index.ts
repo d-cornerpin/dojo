@@ -22,7 +22,7 @@ import { getPrimaryAgentId, getPrimaryAgentName } from './config/platform.js';
 import { recordBootAttempt, confirmHealthy, readMarker, synthesizeMigrationBootEpisode } from './update-state.js';
 import { probeFsCaseInsensitive, setFsCaseInsensitive } from './agent/path-guards.js';
 import { homeDir } from './home.js';
-import { refuseSmallMainModel } from './agent/main-model-floor.js';
+import { notForAgentsReason } from './agent/main-model-floor.js';
 import { terminateReaderPool, warmReaderPool } from './memory/reader-pool.js';
 import { scheduleFtsHealthCheck, stopFtsRepair } from './memory/fts-health.js';
 import { stopBackgroundClocks } from './shutdown-clocks.js';
@@ -130,8 +130,7 @@ function ensurePrimaryAgent(): void {
   }
 
   // Prefer 'auto' so the router picks a working chat-capable model at call time; else pin the first enabled
-  // chat-capable one (not generation/embedding, not '__system__') by display name; mirrors the text-capable
-  // filters in healer/healer-agent.ts and memory/writer.ts.
+  // model the one agent-model check accepts (not '__system__'), by display name.
   const autoModel = db.prepare(
     "SELECT id FROM models WHERE id = 'auto' AND is_enabled = 1"
   ).get() as { id: string } | undefined;
@@ -143,10 +142,8 @@ function ensurePrimaryAgent(): void {
           JOIN providers p ON p.id = m.provider_id
          WHERE m.is_enabled = 1
            AND p.id != '__system__'
-           AND m.capabilities NOT LIKE '%generation%'
-           AND m.capabilities NOT LIKE '%embedding%'
          ORDER BY m.name ASC
-      `).all() as Array<{ id: string }>).find((m) => !refuseSmallMainModel(m.id))?.id ?? null;   // the floor, like every agent door
+      `).all() as Array<{ id: string }>).find((m) => notForAgentsReason(m.id) === null)?.id ?? null;
 
   db.prepare(`
     INSERT INTO agents (id, name, model_id, system_prompt_path, status, config, created_by, created_by_kind,
@@ -303,7 +300,7 @@ async function main(): Promise<void> {
   await (await import('./services/owner-star-upgrade.js')).starTheOwnersAtBoot();
 
   try {
-    (await import('./agent/main-model-floor.js')).moveAgentsOffSmallModels();   // an agent on a too-small model is moved, the owner told once
+    await (await import('./agent/main-model-floor.js')).moveAgentsOffSmallModels();   // an agent on a too-small model is moved, the owner told once
   } catch (err) {
     logger.warn('Moving agents off a too-small model failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
   }

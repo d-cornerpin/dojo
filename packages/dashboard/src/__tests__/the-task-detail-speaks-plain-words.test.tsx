@@ -1,17 +1,9 @@
-// ════════════════════════════════════════════════════════════════════════════
-// THE TASK DETAIL SPEAKS PLAIN WORDS: each Activity log row names who and what in words
-// (never "[user]", "user_verdict_request" or "on_deck → in_progress"), the states carry the
-// board's own words, there is no "Phase:" line, and the old notes are "Earlier notes".
-// ════════════════════════════════════════════════════════════════════════════
+// The task detail names who and what in plain words, shows the board's own state words, has no "Phase:" line, and calls old notes "Earlier notes".
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import type { Task, AgentDetail } from '@dojo/shared';
 
-// The permissive factory the smoke floor uses, every exported FUNCTION answers
-// `{ ok: true, data: [] }`, every exported constant stays real, so the panel
-// mounts on its own terms (its task_log feed included) and the door this file is
-// about is the only override.
 vi.mock('../lib/api', async () => {
   const actual = await vi.importActual<Record<string, unknown>>('../lib/api');
   const stub: Record<string, unknown> = {};
@@ -79,7 +71,6 @@ describe('the task detail speaks plain words', () => {
     renderPanel();
     expect(await screen.findByText('Asked you to decide')).toBeTruthy();
     expect(screen.getByText('You')).toBeTruthy();
-    // The agent's name also sits in the Assignee select as an <option>; this reads the log row's span.
     expect(screen.getByText('Kite', { selector: 'span' })).toBeTruthy();
     expect(screen.getByText('Open → Working')).toBeTruthy();
     expect(screen.getByText('Working → Paused')).toBeTruthy();

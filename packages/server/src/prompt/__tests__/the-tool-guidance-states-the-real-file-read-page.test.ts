@@ -45,23 +45,15 @@ vi.mock('../../microsoft/auth.js', () => ({
   isMsEmailSendingEnabled: () => false,
 }));
 
-// The one input that moves between cases: the agent's tool surface.
 const surface = { tools: [] as ToolDefinition[] };
 vi.mock('../../agent/tools/surface.js', () => ({
   getFilteredTools: () => surface.tools,
 }));
 
-// The manifest, the SOUL conditional's only authority.
 const manifest = { canSpawn: true };
 vi.mock('../../agent/manifest.js', () => ({
   getAgentPermissions: () => ({ can_spawn_agents: manifest.canSpawn }),
 }));
-
-const tool = (name: string): ToolDefinition => ({
-  name,
-  description: name,
-  input_schema: { type: 'object', properties: {}, required: [] },
-});
 
 beforeEach(() => {
   const db = new Database(':memory:');
