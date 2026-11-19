@@ -92,7 +92,7 @@ export function runTurnTrigger(
   const lastUserMessageId: string | null = triggerRow?.id != null ? String(triggerRow.id) : null;
   turnCtx.root = lastUserMessageId ? { kind: 'ask', id: lastUserMessageId, sourceMessageId: lastUserMessageId, conversationId: (triggerRow as unknown as { conversation_id?: string | null })?.conversation_id ?? null } : null;
   // Claim the ask at pickup (`open` to `claimed`, a CAS) so it reads served however the turn ends: the
-  // drain must never re-run a message whose turn did real work. A newer message has its own work item.
+  // clock must never re-run a message whose turn did real work. A newer message has its own work item.
   const triggerWorkId: string | null = waitingConvs[0]?.workId ?? null;
   const triggerConversationId: string | null = waitingConvs[0]?.oldest?.conversation_id ?? null;
   if (chosenConvKey && triggerRow) {

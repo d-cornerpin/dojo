@@ -106,7 +106,7 @@ export function getWaitingHumanConversations(agentId: string, opts: { includeNot
   for (const r of rows) {                              // now OLDEST → newest by rowid (ASC)
     const o = originOfCandidate(r);
     // The one "owes a reply" definition: AUTHORIZED human inbound; the rest is Lane-3 awareness.
-    // Trigger pick, drain, hasUnansweredUser and isA2ATurn all derive from this skip.
+    // Trigger pick, the owed items, hasUnansweredUser and isA2ATurn all derive from this skip.
     if (o.kind !== 'user' || !o.authorized) continue;
     const key = conversationKey(o.channel, o.senderId, o.senderName, o.threadId);
     let e = agg.get(key);
@@ -390,8 +390,8 @@ export function rehomeUnclaimedEngineEvents(agentId: string, newBoundary: string
   }
 }
 
-/** Newest never-served terminal-wake A2A row, by unserved-ness, not recency alone; turn-start wake
- *  detection and the runtime turn-end drain both use it. */
+/** Newest never-served terminal-wake A2A row, by unserved-ness, not recency alone; the owed items (`owed.ts`)
+ *  read it. */
 export function findUnservedTerminalWake(agentId: string): { rowid: number } | null {
   const db = getDb();
   // AGE-BOUNDED on purpose: an unbounded finder frames turns on stale rows, and those turns create

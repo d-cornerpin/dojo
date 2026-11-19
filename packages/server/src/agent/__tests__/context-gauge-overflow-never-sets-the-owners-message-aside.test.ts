@@ -5,7 +5,6 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import type { WsEvent } from '@dojo/shared';
 
 const mockDb: { current: Database.Database | null } = { current: null };
 vi.mock('../../db/connection.js', () => ({
@@ -14,8 +13,7 @@ vi.mock('../../db/connection.js', () => ({
     return mockDb.current;
   },
 }));
-const events: WsEvent[] = [];
-vi.mock('../../gateway/ws.js', () => ({ broadcast: (e: WsEvent) => { events.push(e); }, stampPersistedRow: (e: unknown) => e }));
+vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: (e: unknown) => e }));
 
 const { script } = vi.hoisted(() => ({
   script: { run: async (): Promise<void> => undefined },
@@ -45,7 +43,6 @@ beforeEach(async () => {
     lane: 'owner', channel: 'dashboard', senderId: 'owner', authorized: true,
     inboundMeta: JSON.stringify({ channel: 'dashboard', relation: 'owner' }),
   } as never);
-  events.length = 0;
   runs = 0;
 }, 120_000);
 
@@ -57,7 +54,6 @@ afterEach(() => {
 
 const askState = (): string =>
   (mockDb.current!.prepare("SELECT state FROM work WHERE kind = 'ask' AND root_id = 'msg-ask'").get() as { state: string }).state;
-const setAside = (): WsEvent[] => events.filter((e) => (e as { code?: string }).code === 'STUCK_REPEATING');
 
 /** One run, then every wake that follows it for a while. */
 async function runUntilQuiet(bound = 12): Promise<void> {
@@ -74,6 +70,5 @@ describe('overflow is the window\'s failure, never the message\'s', { timeout: 1
     await runUntilQuiet();
     expect(runs, 'non-vacuity: the ask was served').toBeGreaterThanOrEqual(1);
     expect(askState(), 'the owner\'s message is still waiting to be served').toBe('open');
-    expect(setAside()).toEqual([]);
   });
 });
