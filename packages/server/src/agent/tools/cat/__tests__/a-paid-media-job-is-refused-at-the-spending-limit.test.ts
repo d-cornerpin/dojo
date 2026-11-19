@@ -117,4 +117,12 @@ describe('a paid media job is refused at the spending limit', () => {
     expect(paid.isError).toBe(true);
     expect(paid.content).toContain('so no picture was started.');
   });
+
+  it('under the limit the picture starts', async () => {
+    mockDb.current!.exec('DELETE FROM cost_records');
+    invalidateDailySpendCache();
+    const r = await call('image_create', { description: 'a cat' });
+    expect(r.content).toContain('Image generation kicked off');
+    expect(createJob).toHaveBeenCalledTimes(1);
+  });
 });
