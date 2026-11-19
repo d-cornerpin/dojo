@@ -54,6 +54,11 @@ const doorHeaders = (
   return headers;
 };
 
+const UNREACHABLE = 'The Dojo could not be reached. Check that it is running, then try again.';
+const CUT_OFF = 'The Dojo\'s answer was cut off. Try again.';
+const EMPTY = 'The Dojo sent back an empty answer. Try again.';
+const UNREADABLE = 'The Dojo sent back an answer the dashboard could not read. Try again, or restart the Dojo if it keeps happening.';
+
 /** THE ONLY `fetch` CALL IN THE DASHBOARD. A dead network becomes a VALUE here, never a rejection. */
 const throughTheDoor = async (url: string, init: RequestInit): Promise<RawResult> => {
   try {
@@ -61,8 +66,8 @@ const throughTheDoor = async (url: string, init: RequestInit): Promise<RawResult
     const renewed = response.headers.get('X-Dojo-Token');   // the server replaced a day-old token
     if (renewed) setToken(renewed);
     return { ok: true, response };
-  } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : 'Network error' };
+  } catch {
+    return { ok: false, error: UNREACHABLE };
   }
 };
 
@@ -84,17 +89,17 @@ const readEnvelope = async <T>(response: Response): Promise<ApiResponse<T>> => {
   let text: string;
   try {
     text = await response.text();
-  } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : 'Network error', status };
+  } catch {
+    return { ok: false, error: CUT_OFF, status };
   }
   if (!text) {
-    return { ok: false, error: `Empty response (status ${status})`, status };
+    return { ok: false, error: EMPTY, status };
   }
   try {
     const parsed = JSON.parse(text) as ApiResponse<T>;
     return parsed && parsed.ok === false ? { ...parsed, status } : parsed;
   } catch {
-    return { ok: false, error: `Server error (status ${status})`, status };
+    return { ok: false, error: UNREADABLE, status };
   }
 };
 

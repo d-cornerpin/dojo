@@ -9,6 +9,7 @@ vi.mock('../../../../db/connection.js', () => ({
   getDbPath: () => ':memory:',
 }));
 vi.mock('../../../effects/fs.js', () => ({ existsSync: () => false, statSync: () => ({}) }));
+vi.mock('../../../../work/row-authority.js', async (orig) => ({ ...(await orig<typeof import('../../../../work/row-authority.js')>()), ownerAskedInThisTurn: () => ({ ok: true }) }));
 
 import { runMigrations } from '../../../../db/migrations.js';
 import { commsHandlers } from '../comms.js';
@@ -18,7 +19,7 @@ const setList = (key: string, list: unknown[]) => mockDb.current!.prepare("INSER
 const getList = (key: string) => JSON.parse((mockDb.current!.prepare('SELECT value FROM config WHERE key = ?').get(key) as { value: string }).value) as Array<{ address: string; is_primary: boolean }>;
 const rec = (address: string, is_primary: boolean) => ({ address, name: address, is_primary, sharing_level: 'dont_overshare' });
 const add = (channel: string, address: string) => commsHandlers['add_safe_sender']!(
-  { agentId: AGENT, args: { channel, address, user_request_quote: 'please start texting this person for me' } } as never);
+  { agentId: AGENT, args: { channel, address, user_quote: 'please start texting this person for me' } } as never);
 
 beforeEach(() => {
   mockDb.current = new Database(':memory:');

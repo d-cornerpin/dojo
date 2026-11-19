@@ -22,8 +22,9 @@ describe('the iMessage setup step', () => {
   it('shows the refusal, sends no welcome message and does not report ready', async () => {
     const onReady = vi.fn();
     render(<IMessageStep onReady={onReady} />);
-    fireEvent.click(screen.getAllByRole('button')[0]); // enable the bridge
-    fireEvent.change(await screen.findByPlaceholderText('+15551234567 or user@example.com'), { target: { value: '+15550001111' } });
+    fireEvent.click(await screen.findByRole('button', { pressed: false }));   // enable the bridge
+    fireEvent.click(screen.getByRole('button', { name: /Add sender/ }));      // opens the add form
+    fireEvent.change(screen.getByPlaceholderText('+15551234567 or user@example.com'), { target: { value: '+15550001111' } });
     fireEvent.click(screen.getByRole('button', { name: 'Add sender' }));
     fireEvent.click(screen.getByRole('button', { name: /Save & Test iMessage/ }));
     await screen.findByText(/locked/);

@@ -17,6 +17,9 @@ vi.mock('../client.js', () => ({
   googleRead: (...a: unknown[]) => googleRead(...a),
   googleWrite: (...a: unknown[]) => googleWrite(...a),
 }));
+vi.mock('../accounts.js', () => ({
+  resolveGoogleAccountForTool: () => ({ account: { id: 'acct-1', email: 'agent@example.com', connected: true, enabledServices: null } }),
+}));
 
 const { executeGoogleSlidesTool } = await import('../tools-slides.js');
 

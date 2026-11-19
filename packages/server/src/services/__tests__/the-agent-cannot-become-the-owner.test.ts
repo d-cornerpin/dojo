@@ -26,6 +26,7 @@ vi.mock('../imessage-bridge.js', async () => {
   const real = await vi.importActual<typeof import('../safe-senders.js')>('../safe-senders.js');
   return { parseSafeSenders: real.parseSafeSenders, reloadApprovedSenders: () => {} };
 });
+vi.mock('../../work/row-authority.js', () => ({ ownerAskedInThisTurn: () => ({ ok: true }) }));
 
 const { ownerIMessageRecords, isOwnerIMessageRecipient, parseSafeSenders } = await import('../safe-senders.js');
 const { iMessageListHasHumanOwner } = await import('../imessage-owner-gate.js');
@@ -76,7 +77,7 @@ describe('add_safe_sender (iMessage)', () => {
   const call = async (): Promise<{ content: string; isError: boolean }> => {
     return commsHandlers['add_safe_sender']({
       agentId: 'agent-1',
-      args: { channel: 'imessage', address: AGENT, name: 'Stranger', user_request_quote: 'please text my friend at that number' },
+      args: { channel: 'imessage', address: AGENT, name: 'Stranger', user_quote: 'please text my friend at that number' },
     } as never) as never;
   };
 

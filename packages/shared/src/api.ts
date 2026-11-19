@@ -144,7 +144,6 @@ export interface UpdateTaskRequest {
   /** `null` clears the assignee, absent leaves it alone (`JSON.stringify` drops `undefined`). */
   assignedTo?: string | null;
   priority?: string;
-  notes?: string;
   scheduled_start?: string | null;
   repeat_interval?: number | null;
   repeat_unit?: string | null;

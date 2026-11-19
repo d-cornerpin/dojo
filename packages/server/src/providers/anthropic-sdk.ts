@@ -70,7 +70,7 @@ export function parseToolCallsFromText(text: string, offeredNames?: string[]): {
     try {
       args = JSON.parse(match[2].trim());
     } catch {
-      logger.warn('Failed to parse tool call arguments', { name, raw: match[2].trim() });
+      logger.warn('Failed to parse tool call arguments', { name, rawLength: match[2].trim().length });
       args = { __malformed_args: match[2].trim().slice(0, 500) }; // the tool door answers this with a tool error; the tool never runs
     }
     toolCalls.push({

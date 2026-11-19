@@ -2005,9 +2005,8 @@ export function trackerPauseSchedule(agentId: string, args: Record<string, unkno
 
   const until = modelTimeMs(args.resume_at);
   if (isSet(args.resume_at) && until === null) return `Error: resume_at="${String(args.resume_at)}" is not a parseable datetime. Nothing was paused; re-call with an ISO 8601 time.`;
-  // This pause also answers a missed-runs notice, so the engine's fallback stands down.
   if (isSet(args.reason)) writeTaskLog({ taskId, fromEntity: isPMAgent(agentId) ? 'pm' : `agent:${agentId}`, entryKind: 'observation', actionTaken: 'schedule paused', note: String(args.reason) });
-  noteUnsettled(patchWork(taskId, { is_paused: 1, schedule_status: 'paused', paused_until: until, missed_runs_paused_at: null }), 'trackerPauseSchedule: schedule paused', { taskId });
+  noteUnsettled(patchWork(taskId, { is_paused: 1, schedule_status: 'paused', paused_until: until }), 'trackerPauseSchedule: schedule paused', { taskId });
   const freshSchedPaused = getTask(taskId);
   if (freshSchedPaused) broadcast({ type: 'tracker:task_updated', data: freshSchedPaused });
   logger.info('Schedule paused', { taskId, until }, agentId);
@@ -2022,10 +2021,10 @@ export function resumeSchedule(taskId: string, reason: string): string | null {
     is_paused: 0, next_run_at: null, schedule_status: 'waiting',
     last_run_at: task.repeat_interval ? new Date().toISOString() : task.last_run_at as string | null,
   }));
-  // An explicit resume also disarms the missed-runs fallback and any resume time.
+  // An explicit resume also clears any resume time.
   noteUnsettled(setNextRun(taskId, {
     at: tsToMs(nextRun), reason,
-    alongside: { is_paused: nextRun ? 0 : 1, schedule_status: nextRun ? 'waiting' : 'completed', paused_until: null, missed_runs_paused_at: null },
+    alongside: { is_paused: nextRun ? 0 : 1, schedule_status: nextRun ? 'waiting' : 'completed', paused_until: null },
   }), 'schedule resumed', { taskId });
   const fresh = getTask(taskId);
   if (fresh) broadcast({ type: 'tracker:task_updated', data: fresh });
@@ -2049,69 +2048,5 @@ export function trackerResumeSchedule(agentId: string, args: Record<string, unkn
   const nextRun = resumeSchedule(taskId, 'the schedule was resumed by the agent; walked to the next anchor');
   logger.info('Schedule resumed', { taskId, nextRun }, agentId);
   return `Schedule resumed for "${task.title as string}". Next run: ${nextRun ?? 'none'}`;
-}
-
-// Called by the assigned agent after the scheduler fires a "missed runs" alert. Three actions: run_now,
-// skip, pause (see alertMissedRuns in scheduler/runner.ts for the semantics).
-
-export function trackerResolveMissedRuns(agentId: string, args: Record<string, unknown>): string {
-  const rawTaskId = (args.task_id ?? args.taskId) as string | undefined;
-  if (!rawTaskId) return 'Error: task_id is required.';
-  const action = args.action as string | undefined;
-  if (!action || !['run_now', 'skip', 'pause'].includes(action)) {
-    return 'Error: action must be one of: "run_now", "skip", "pause".';
-  }
-
-  const resolved = resolveTaskId(rawTaskId, agentId);
-  if (!resolved.ok) return formatResolveError('task', rawTaskId, resolved);
-  const taskId = resolved.id;
-
-  { const no = taskWriteRefusal(agentId, taskId, 'change the schedule of'); if (no) return no; }   // a schedule is part of the task; the task's editors change it.
-  const db = getDb();
-  const task = db.prepare(`SELECT ${scheduleRowColumns('w')} FROM work w WHERE ${taskScope('w')} AND w.id = ?`).get(taskId) as Record<string, unknown> | undefined;
-  if (!task) return `Error: Task ${taskId} no longer exists.`;
-  const title = (task.title as string) ?? '(untitled)';
-  if (action !== 'pause') { const no = finishedScheduleRefusal(taskId, title, action === 'skip' ? 'skipped ahead' : 'started now'); if (no) return no; }
-  if (task.missed_runs_paused_at == null) return `Refused: "${title}" is not paused for missed runs, so there is nothing to resolve. Nothing was changed.`;
-  if (action === 'pause') {
-    // Already paused by the alert handler: confirm and exit. Clear missed_runs_paused_at so the engine's
-    // auto-skip fallback stands down; the agent's explicit choice takes precedence when called first.
-    noteUnsettled(patchWork(taskId, { missed_runs_paused_at: null }), 'trackerResolveMissedRuns: missed-run pause cleared', { taskId });
-    logger.info('Missed-runs resolved: pause', { taskId }, agentId);
-    return `OK: task "${title}" stays paused. The user can resume it from the dashboard, or you can later call work_schedule(action="resume").`;
-  }
-
-  if (action === 'skip') {
-    // The next future anchor (strictly > now): calculateNextRun walks the anchor forward when fed an
-    // unpaused snapshot.
-    const scheduledTask = scheduledTaskFromRow(task, {
-      is_paused: 0, last_run_at: new Date().toISOString(), next_run_at: null, schedule_status: 'waiting',
-    });
-    const nextRun = calculateNextRun(scheduledTask);
-    if (!nextRun) {
-      return `Could not compute a next-run for "${title}" (likely past repeat_end_value or anchor missing). Task stays paused; investigate manually.`;
-    }
-    noteUnsettled(setNextRun(taskId, {
-      at: tsToMs(nextRun),
-      alongside: { is_paused: 0, schedule_status: 'waiting', missed_runs_paused_at: null },
-      reason: 'the agent resolved missed runs as SKIP; walked to the next future anchor',
-    }), 'trackerResolveMissedRuns: missed runs skipped', { taskId });
-    logger.info('Missed-runs resolved: skip', { taskId, nextRun }, agentId);
-    return `OK: task "${title}" unpaused. All missed slots skipped. Next run: ${nextRun}.`;
-  }
-
-  // action === 'run_now': fire one catch-up run now by setting next_run_at to now; onTaskRunComplete then
-  // computes the natural next anchor and the task resumes its cadence.
-  const nowIso = new Date().toISOString();
-  // One of the two instants not computed by calculateNextRun (declared in work/next-run.ts): one catch-up
-  // run is requested now, so the fire time is NOW; onTaskRunComplete recomputes the natural anchor when it
-  // closes.
-  noteUnsettled(setNextRun(taskId, {
-    at: tsToMs(nowIso),
-    alongside: { is_paused: 0, schedule_status: 'waiting', missed_runs_paused_at: null },
-    reason: 'the agent resolved missed runs as RUN_NOW; one catch-up run fires on the next tick',
-  }), 'trackerResolveMissedRuns: catch-up run scheduled now', { taskId });
-  logger.info('Missed-runs resolved: run_now', { taskId }, agentId);
-  return `OK: task "${title}" unpaused and scheduled to fire on the next scheduler tick (within ~1 minute). Schedule resumes on its normal anchor after this run completes.`;
 }
 

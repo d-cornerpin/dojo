@@ -13,7 +13,6 @@ const sms = vi.hoisted(() => ({ send: vi.fn() }));
 vi.mock('../../../../../db/connection.js', async () => (await import('../../../__tests__/helpers/reply-sender.js')).connectionMock());
 vi.mock('../../../../../gateway/ws.js', () => ({ broadcast: () => {} }));
 vi.mock('../../../../access/engine-route.js', () => ({ engineMayRouteTo: () => true, engineRouteRefusalReason: () => 'no grant' }));
-vi.mock('../../../../../services/channel-safe-senders.js', async (orig) => ({ ...(await orig<Record<string, unknown>>()), getTwilioSmsSafeSenders: () => [{ address: '+15551112222', name: 'a person' }] }));
 vi.mock('../../../../../twilio/client.js', () => ({ sendSms: (...a: unknown[]) => sms.send(...a) }));
 vi.mock('../../../../../twilio/auth.js', () => ({ getDefaultFromNumber: () => '+15550009999' }));
 
@@ -41,6 +40,7 @@ const SENT = '[Reply routed via SMS to a person]';
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
   freshReplyDb(runMigrations);
+  testDb().prepare('INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)').run('twilio_sms_approved_senders', JSON.stringify([{ address: '+15551112222', name: 'a person' }]));
   sms.send.mockReset();
 });
 

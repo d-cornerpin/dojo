@@ -13,6 +13,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import type { ToolDefinition } from '../agent/tools/types.js';
 import { googleRead, googleWrite } from './client.js';
+import { resolveGoogleAccountForTool } from './accounts.js';
 import { homeDir } from '../home.js';
 
 const SLIDES_BASE = 'https://slides.googleapis.com/v1/presentations';
@@ -304,13 +305,14 @@ async function prepareDriveImageUrl(
   agentId: string,
   agentName: string,
   action: string,
+  accountId: string,
 ): Promise<DriveImagePrep> {
   const noop = async () => { /* nothing to clean up */ };
 
   // Inspect existing permissions to see if the file is already
   // accessible via link (in which case we don't need to touch anything).
   const permsUrl = `${DRIVE_BASE}/files/${encodeURIComponent(driveFileId)}/permissions?fields=permissions(id,type,role)&supportsAllDrives=true`;
-  const permsResult = await googleRead(permsUrl, agentId, agentName, `${action}_check_perms`, { driveFileId });
+  const permsResult = await googleRead(permsUrl, agentId, agentName, `${action}_check_perms`, { driveFileId }, accountId);
 
   if (!permsResult.ok) {
     return {
@@ -338,7 +340,7 @@ async function prepareDriveImageUrl(
     'POST',
     grantUrl,
     { role: 'reader', type: 'anyone', allowFileDiscovery: false },
-    agentId, agentName, `${action}_grant_temp_link`, { driveFileId },
+    agentId, agentName, `${action}_grant_temp_link`, { driveFileId }, undefined, accountId,
   );
 
   if (!grant.ok) {
@@ -368,7 +370,7 @@ async function prepareDriveImageUrl(
         'DELETE',
         `${DRIVE_BASE}/files/${encodeURIComponent(driveFileId)}/permissions/${encodeURIComponent(permissionId)}?supportsAllDrives=true`,
         undefined,
-        agentId, agentName, `${action}_revoke_temp_link`, { driveFileId, permissionId },
+        agentId, agentName, `${action}_revoke_temp_link`, { driveFileId, permissionId }, undefined, accountId,
       );
     } catch {
       // Best effort: if revocation fails the file is still only
@@ -1060,6 +1062,17 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   },
 ];
 
+// Every Slides tool can target a connected Google account by its email, like the other Google tools.
+for (const def of slidesToolDefinitions) {
+  const schema = def.input_schema as { properties?: Record<string, unknown> };
+  if (schema.properties && !schema.properties.account) {
+    schema.properties.account = {
+      type: 'string',
+      description: "Which connected account to act on, by its email address. Omit to use the only connected account of this type; required when more than one is connected.",
+    };
+  }
+}
+
 // Exported list of tool names, used by the tool registrar
 export const slidesToolNames: string[] = slidesToolDefinitions.map(t => t.name);
 
@@ -1082,6 +1095,7 @@ async function batchUpdate(
   agentName: string,
   toolName: string,
   details: Record<string, unknown>,
+  accountId: string,
 ): Promise<BatchResult> {
   if (requests.length === 0) return { ok: true, data: { replies: [] } };
   const result = await googleWrite(
@@ -1092,6 +1106,8 @@ async function batchUpdate(
     agentName,
     toolName,
     details,
+    undefined,
+    accountId,
   );
   return { ok: result.ok, data: result.data, error: result.error };
 }
@@ -1101,6 +1117,7 @@ async function getPresentation(
   agentId: string,
   agentName: string,
   toolName: string,
+  accountId: string,
 ): Promise<BatchResult> {
   const result = await googleRead(
     `${SLIDES_BASE}/${encodeURIComponent(presentationId)}`,
@@ -1108,6 +1125,7 @@ async function getPresentation(
     agentName,
     toolName,
     { presentationId },
+    accountId,
   );
   return { ok: result.ok, data: result.data, error: result.error };
 }
@@ -1221,6 +1239,7 @@ async function addSlideInternal(
   agentId: string,
   agentName: string,
   toolName: string,
+  accountId: string,
 ): Promise<{ ok: boolean; slideId?: string; index?: number; error?: string }> {
   const slideId = genId('slide');
   const req: Req = {
@@ -1233,18 +1252,18 @@ async function addSlideInternal(
     (req.createSlide as Record<string, unknown>).insertionIndex = insertionIndex;
   }
 
-  const r = await batchUpdate(presentationId, [req], agentId, agentName, toolName, { layout, insertionIndex });
+  const r = await batchUpdate(presentationId, [req], agentId, agentName, toolName, { layout, insertionIndex }, accountId);
   if (!r.ok) return { ok: false, error: r.error };
 
   // Apply deck background to new slide
   const style = getStoredStyle(presentationId);
   const bg = backgroundRequest(slideId, style.slide_background_color);
   if (bg) {
-    await batchUpdate(presentationId, [bg], agentId, agentName, toolName, { slideId, applyBg: true });
+    await batchUpdate(presentationId, [bg], agentId, agentName, toolName, { slideId, applyBg: true }, accountId);
   }
 
   // Look up the slide's final index
-  const pres = await getPresentation(presentationId, agentId, agentName, toolName);
+  const pres = await getPresentation(presentationId, agentId, agentName, toolName, accountId);
   let index = insertionIndex;
   if (pres.ok && pres.data && typeof pres.data === 'object') {
     const slides = (pres.data as { slides?: Array<{ objectId?: string }> }).slides ?? [];
@@ -1262,6 +1281,9 @@ export async function executeGoogleSlidesTool(
   agentId: string,
   agentName: string,
 ): Promise<string> {
+  const resolved = resolveGoogleAccountForTool('agent', args.account as string | undefined);
+  if ('error' in resolved) return `Error: ${resolved.error}`;
+  const slot = resolved.account.id;
   try {
 
     switch (name) {
@@ -1296,6 +1318,7 @@ export async function executeGoogleSlidesTool(
           createBody,
           agentId, agentName, 'slides_create_presentation',
           { title, width_pt: style.slide_width_pt, height_pt: style.slide_height_pt },
+          undefined, slot,
         );
         if (!result.ok) return `Error creating presentation: ${result.error}`;
         const data = result.data as { presentationId?: string; slides?: Array<{ objectId?: string }> };
@@ -1308,7 +1331,7 @@ export async function executeGoogleSlidesTool(
         if (firstSlideId) {
           const bg = backgroundRequest(firstSlideId, style.slide_background_color);
           if (bg) {
-            await batchUpdate(presentationId, [bg], agentId, agentName, 'slides_create_presentation', { firstSlideId });
+            await batchUpdate(presentationId, [bg], agentId, agentName, 'slides_create_presentation', { firstSlideId }, slot);
           }
         }
 
@@ -1352,7 +1375,7 @@ export async function executeGoogleSlidesTool(
         const presentationId = args.presentation_id as string;
         const layout = ((args.layout as string) ?? 'BLANK').toUpperCase();
         const insertionIndex = typeof args.insertion_index === 'number' ? args.insertion_index : -1;
-        const r = await addSlideInternal(presentationId, layout, insertionIndex, agentId, agentName, 'slides_add_slide');
+        const r = await addSlideInternal(presentationId, layout, insertionIndex, agentId, agentName, 'slides_add_slide', slot);
         if (!r.ok) return `Error adding slide: ${r.error}`;
         return ok({ slide_id: r.slideId, index: r.index });
       }
@@ -1363,7 +1386,7 @@ export async function executeGoogleSlidesTool(
         const newId = genId('slide');
         const r = await batchUpdate(presentationId, [{
           duplicateObject: { objectId: slideId, objectIds: { [slideId]: newId } },
-        }], agentId, agentName, 'slides_duplicate_slide', { slideId });
+        }], agentId, agentName, 'slides_duplicate_slide', { slideId }, slot);
         if (!r.ok) return `Error duplicating slide: ${r.error}`;
         return ok({ new_slide_id: newId });
       }
@@ -1372,7 +1395,7 @@ export async function executeGoogleSlidesTool(
         const presentationId = args.presentation_id as string;
         const slideId = args.slide_id as string;
         const r = await batchUpdate(presentationId, [{ deleteObject: { objectId: slideId } }],
-          agentId, agentName, 'slides_delete_slide', { slideId });
+          agentId, agentName, 'slides_delete_slide', { slideId }, slot);
         if (!r.ok) return `Error deleting slide: ${r.error}`;
         return ok({ ok: true });
       }
@@ -1383,7 +1406,7 @@ export async function executeGoogleSlidesTool(
         const insertionIndex = args.insertion_index as number;
         const r = await batchUpdate(presentationId, [{
           updateSlidesPosition: { slideObjectIds: slideIds, insertionIndex },
-        }], agentId, agentName, 'slides_reorder_slides', { slideIds, insertionIndex });
+        }], agentId, agentName, 'slides_reorder_slides', { slideIds, insertionIndex }, slot);
         if (!r.ok) return `Error reordering slides: ${r.error}`;
         return ok({ ok: true });
       }
@@ -1398,7 +1421,7 @@ export async function executeGoogleSlidesTool(
         }
         const req = backgroundRequest(slideId, color, imageUrl);
         if (!req) return err('No background request built');
-        const r = await batchUpdate(presentationId, [req], agentId, agentName, 'slides_set_background', { slideId });
+        const r = await batchUpdate(presentationId, [req], agentId, agentName, 'slides_set_background', { slideId }, slot);
         if (!r.ok) return `Error setting background: ${r.error}`;
         return ok({ ok: true });
       }
@@ -1421,7 +1444,7 @@ export async function executeGoogleSlidesTool(
         const { textBoxId, requests } = buildTextBoxRequests(
           slideId, text, xPt, yPt, widthPt, heightPt, textStyle, style.line_spacing,
         );
-        const r = await batchUpdate(presentationId, requests, agentId, agentName, 'slides_add_text_box', { slideId, role });
+        const r = await batchUpdate(presentationId, requests, agentId, agentName, 'slides_add_text_box', { slideId, role }, slot);
         if (!r.ok) return `Error adding text box: ${r.error}`;
         return ok({ text_box_id: textBoxId });
       }
@@ -1451,7 +1474,7 @@ export async function executeGoogleSlidesTool(
             bulletPreset: 'BULLET_DISC_CIRCLE_SQUARE',
           },
         });
-        const r = await batchUpdate(presentationId, requests, agentId, agentName, 'slides_add_bullet_list', { slideId, count: items.length });
+        const r = await batchUpdate(presentationId, requests, agentId, agentName, 'slides_add_bullet_list', { slideId, count: items.length }, slot);
         if (!r.ok) return `Error adding bullet list: ${r.error}`;
         return ok({ text_box_id: textBoxId });
       }
@@ -1487,7 +1510,7 @@ export async function executeGoogleSlidesTool(
             style,
             fields: fields.join(','),
           },
-        }], agentId, agentName, 'slides_style_text_range', { textBoxId, fields });
+        }], agentId, agentName, 'slides_style_text_range', { textBoxId, fields }, slot);
         if (!r.ok) return `Error styling text: ${r.error}`;
         return ok({ ok: true });
       }
@@ -1513,7 +1536,7 @@ export async function executeGoogleSlidesTool(
               transform: pageTransform(xPt, yPt),
             },
           },
-        }], agentId, agentName, 'slides_add_image', { slideId });
+        }], agentId, agentName, 'slides_add_image', { slideId }, slot);
         if (!r.ok) return `Error adding image: ${r.error} (URL must be publicly accessible)`;
         return ok({ image_id: imageId });
       }
@@ -1527,7 +1550,7 @@ export async function executeGoogleSlidesTool(
         const widthPt = args.width_pt as number;
         const heightPt = args.height_pt as number;
 
-        const prep = await prepareDriveImageUrl(driveFileId, agentId, agentName, 'slides_add_image_from_drive');
+        const prep = await prepareDriveImageUrl(driveFileId, agentId, agentName, 'slides_add_image_from_drive', slot);
         if (!prep.ok || !prep.url) return err(prep.error ?? 'Failed to prepare Drive image URL');
 
         try {
@@ -1542,7 +1565,7 @@ export async function executeGoogleSlidesTool(
                 transform: pageTransform(xPt, yPt),
               },
             },
-          }], agentId, agentName, 'slides_add_image_from_drive', { slideId, driveFileId });
+          }], agentId, agentName, 'slides_add_image_from_drive', { slideId, driveFileId }, slot);
           if (!r.ok) return `Error adding Drive image: ${r.error}`;
           return ok({ image_id: imageId });
         } finally {
@@ -1600,6 +1623,7 @@ export async function executeGoogleSlidesTool(
           agentId, agentName, 'slides_add_image_from_local_path',
           { filePath, driveName, slideId },
           `multipart/related; boundary=${boundary}`,
+          slot,
         );
         if (!uploadResult.ok) {
           return `Error uploading file to Drive: ${uploadResult.error}`;
@@ -1612,7 +1636,7 @@ export async function executeGoogleSlidesTool(
 
         // 3. Reuse the same prepare-then-create-image path as
         // slides_add_image_from_drive so behavior matches exactly.
-        const prep = await prepareDriveImageUrl(driveFileId, agentId, agentName, 'slides_add_image_from_local_path');
+        const prep = await prepareDriveImageUrl(driveFileId, agentId, agentName, 'slides_add_image_from_local_path', slot);
         if (!prep.ok || !prep.url) {
           return err(prep.error ?? 'Failed to prepare Drive image URL');
         }
@@ -1629,7 +1653,7 @@ export async function executeGoogleSlidesTool(
                 transform: pageTransform(xPt, yPt),
               },
             },
-          }], agentId, agentName, 'slides_add_image_from_local_path', { slideId, driveFileId });
+          }], agentId, agentName, 'slides_add_image_from_local_path', { slideId, driveFileId }, slot);
           if (!r.ok) return `Error adding image to slide: ${r.error}`;
           return ok({
             image_id: imageId,
@@ -1656,7 +1680,7 @@ export async function executeGoogleSlidesTool(
             imageReplaceMethod: replaceMethod,
             containsText: { text: placeholderText, matchCase: false },
           },
-        }], agentId, agentName, 'slides_replace_shape_with_image', { placeholderText });
+        }], agentId, agentName, 'slides_replace_shape_with_image', { placeholderText }, slot);
         if (!r.ok) return `Error replacing shapes: ${r.error}`;
         const replies = (r.data as { replies?: Array<{ replaceAllShapesWithImage?: { occurrencesChanged?: number } }> }).replies ?? [];
         const count = replies[0]?.replaceAllShapesWithImage?.occurrencesChanged ?? 0;
@@ -1687,7 +1711,7 @@ export async function executeGoogleSlidesTool(
               transform: pageTransform(xPt, yPt),
             },
           },
-        }], agentId, agentName, 'slides_add_video', { slideId, source, videoId });
+        }], agentId, agentName, 'slides_add_video', { slideId, source, videoId }, slot);
         if (!r.ok) return `Error adding video: ${r.error}`;
         return ok({ video_id: elementId });
       }
@@ -1763,7 +1787,7 @@ export async function executeGoogleSlidesTool(
           });
         }
 
-        const r = await batchUpdate(presentationId, requests, agentId, agentName, 'slides_add_shape', { slideId, shapeType });
+        const r = await batchUpdate(presentationId, requests, agentId, agentName, 'slides_add_shape', { slideId, shapeType }, slot);
         if (!r.ok) return `Error adding shape: ${r.error}`;
         return ok({ shape_id: shapeId });
       }
@@ -1812,7 +1836,7 @@ export async function executeGoogleSlidesTool(
             },
           },
         ];
-        const r = await batchUpdate(presentationId, requests, agentId, agentName, 'slides_add_line', { slideId });
+        const r = await batchUpdate(presentationId, requests, agentId, agentName, 'slides_add_line', { slideId }, slot);
         if (!r.ok) return `Error adding line: ${r.error}`;
         return ok({ line_id: lineId });
       }
@@ -1841,7 +1865,7 @@ export async function executeGoogleSlidesTool(
               transform: pageTransform(xPt, yPt),
             },
           },
-        }], agentId, agentName, 'slides_add_table', { slideId, rows, cols });
+        }], agentId, agentName, 'slides_add_table', { slideId, rows, cols }, slot);
         if (!r.ok) return `Error adding table: ${r.error}`;
         return ok({ table_id: tableId });
       }
@@ -1894,7 +1918,7 @@ export async function executeGoogleSlidesTool(
           }
         }
 
-        const r = await batchUpdate(presentationId, requests, agentId, agentName, 'slides_populate_table', { tableId, rowCount: data.length });
+        const r = await batchUpdate(presentationId, requests, agentId, agentName, 'slides_populate_table', { tableId, rowCount: data.length }, slot);
         if (!r.ok) return `Error populating table: ${r.error}`;
         return ok({ ok: true });
       }
@@ -1908,14 +1932,14 @@ export async function executeGoogleSlidesTool(
         const backgroundImageUrl = args.background_image_url as string | undefined;
 
         const style = getStoredStyle(presentationId);
-        const slideR = await addSlideInternal(presentationId, 'BLANK', -1, agentId, agentName, 'slides_layout_title');
+        const slideR = await addSlideInternal(presentationId, 'BLANK', -1, agentId, agentName, 'slides_layout_title', slot);
         if (!slideR.ok || !slideR.slideId) return `Error creating title slide: ${slideR.error}`;
         const slideId = slideR.slideId;
 
         if (backgroundImageUrl) {
           const bg = backgroundRequest(slideId, undefined, backgroundImageUrl);
           if (bg) {
-            await batchUpdate(presentationId, [bg], agentId, agentName, 'slides_layout_title', { bg: true });
+            await batchUpdate(presentationId, [bg], agentId, agentName, 'slides_layout_title', { bg: true }, slot);
           }
         }
 
@@ -1942,7 +1966,7 @@ export async function executeGoogleSlidesTool(
           allReqs.push(...sReqs);
         }
 
-        const r = await batchUpdate(presentationId, allReqs, agentId, agentName, 'slides_layout_title', { slideId });
+        const r = await batchUpdate(presentationId, allReqs, agentId, agentName, 'slides_layout_title', { slideId }, slot);
         if (!r.ok) return `Error adding title content: ${r.error}`;
         return ok({ slide_id: slideId, title_id: titleId, subtitle_id: subtitleId ?? null });
       }
@@ -1953,7 +1977,7 @@ export async function executeGoogleSlidesTool(
         const subheading = (args.subheading as string | undefined) ?? '';
 
         const style = getStoredStyle(presentationId);
-        const slideR = await addSlideInternal(presentationId, 'BLANK', -1, agentId, agentName, 'slides_layout_section');
+        const slideR = await addSlideInternal(presentationId, 'BLANK', -1, agentId, agentName, 'slides_layout_section', slot);
         if (!slideR.ok || !slideR.slideId) return `Error creating section slide: ${slideR.error}`;
         const slideId = slideR.slideId;
 
@@ -1987,7 +2011,7 @@ export async function executeGoogleSlidesTool(
           allReqs.push(...sReqs);
         }
 
-        const r = await batchUpdate(presentationId, allReqs, agentId, agentName, 'slides_layout_section', { slideId });
+        const r = await batchUpdate(presentationId, allReqs, agentId, agentName, 'slides_layout_section', { slideId }, slot);
         if (!r.ok) return `Error adding section content: ${r.error}`;
         return ok({ slide_id: slideId, heading_id: headingId, subheading_id: subheadingId ?? null });
       }
@@ -2007,7 +2031,7 @@ export async function executeGoogleSlidesTool(
         const style = getStoredStyle(presentationId);
         const { ml, mt, cw, ch } = contentArea(style);
 
-        const slideR = await addSlideInternal(presentationId, 'BLANK', -1, agentId, agentName, 'slides_layout_content');
+        const slideR = await addSlideInternal(presentationId, 'BLANK', -1, agentId, agentName, 'slides_layout_content', slot);
         if (!slideR.ok || !slideR.slideId) return `Error creating content slide: ${slideR.error}`;
         const slideId = slideR.slideId;
 
@@ -2083,7 +2107,7 @@ export async function executeGoogleSlidesTool(
           bodyId = addBodyBox(ml, bodyTop, cw, bodyAreaH);
         }
 
-        const r = await batchUpdate(presentationId, allReqs, agentId, agentName, 'slides_layout_content', { slideId });
+        const r = await batchUpdate(presentationId, allReqs, agentId, agentName, 'slides_layout_content', { slideId }, slot);
         if (!r.ok) return `Error building content slide: ${r.error}`;
         return ok({
           slide_id: slideId,
@@ -2103,7 +2127,7 @@ export async function executeGoogleSlidesTool(
         const style = getStoredStyle(presentationId);
         const { ml, mt, cw, ch } = contentArea(style);
 
-        const slideR = await addSlideInternal(presentationId, 'BLANK', -1, agentId, agentName, 'slides_layout_two_column');
+        const slideR = await addSlideInternal(presentationId, 'BLANK', -1, agentId, agentName, 'slides_layout_two_column', slot);
         if (!slideR.ok || !slideR.slideId) return `Error creating two-column slide: ${slideR.error}`;
         const slideId = slideR.slideId;
 
@@ -2125,13 +2149,13 @@ export async function executeGoogleSlidesTool(
         let rightDriveUrl: string | undefined;
 
         if (left.image_drive_id) {
-          const prep = await prepareDriveImageUrl(left.image_drive_id, agentId, agentName, 'slides_layout_two_column');
+          const prep = await prepareDriveImageUrl(left.image_drive_id, agentId, agentName, 'slides_layout_two_column', slot);
           if (!prep.ok || !prep.url) return err(prep.error ?? 'Failed to prepare left Drive image');
           leftDriveUrl = prep.url;
           cleanups.push(prep.cleanup);
         }
         if (right.image_drive_id) {
-          const prep = await prepareDriveImageUrl(right.image_drive_id, agentId, agentName, 'slides_layout_two_column');
+          const prep = await prepareDriveImageUrl(right.image_drive_id, agentId, agentName, 'slides_layout_two_column', slot);
           if (!prep.ok || !prep.url) {
             await runWithCleanups(cleanups, async () => { /* release left */ });
             return err(prep.error ?? 'Failed to prepare right Drive image');
@@ -2187,7 +2211,7 @@ export async function executeGoogleSlidesTool(
           const leftIds = placeColumn(left, leftDriveUrl, ml);
           const rightIds = placeColumn(right, rightDriveUrl, ml + colW + gap);
 
-          const r = await batchUpdate(presentationId, allReqs, agentId, agentName, 'slides_layout_two_column', { slideId });
+          const r = await batchUpdate(presentationId, allReqs, agentId, agentName, 'slides_layout_two_column', { slideId }, slot);
           if (!r.ok) return `Error building two-column slide: ${r.error}`;
           return ok({ slide_id: slideId, title_id: titleId, left_ids: leftIds, right_ids: rightIds });
         });
@@ -2204,7 +2228,7 @@ export async function executeGoogleSlidesTool(
         const style = getStoredStyle(presentationId);
         const { ml, mt, cw, ch } = contentArea(style);
 
-        const slideR = await addSlideInternal(presentationId, 'BLANK', -1, agentId, agentName, 'slides_layout_image');
+        const slideR = await addSlideInternal(presentationId, 'BLANK', -1, agentId, agentName, 'slides_layout_image', slot);
         if (!slideR.ok || !slideR.slideId) return `Error creating image slide: ${slideR.error}`;
         const slideId = slideR.slideId;
 
@@ -2224,7 +2248,7 @@ export async function executeGoogleSlidesTool(
         if (imageUrl) {
           finalUrl = imageUrl;
         } else {
-          drivePrep = await prepareDriveImageUrl(imageDriveId!, agentId, agentName, 'slides_layout_image');
+          drivePrep = await prepareDriveImageUrl(imageDriveId!, agentId, agentName, 'slides_layout_image', slot);
           if (!drivePrep.ok || !drivePrep.url) return err(drivePrep.error ?? 'Failed to prepare Drive image URL');
           finalUrl = drivePrep.url;
         }
@@ -2253,7 +2277,7 @@ export async function executeGoogleSlidesTool(
             allReqs.push(...cReqs);
           }
 
-          const r = await batchUpdate(presentationId, allReqs, agentId, agentName, 'slides_layout_image', { slideId });
+          const r = await batchUpdate(presentationId, allReqs, agentId, agentName, 'slides_layout_image', { slideId }, slot);
           if (!r.ok) return `Error building image slide: ${r.error}`;
           return ok({ slide_id: slideId, title_id: titleId, image_id: imageId, caption_id: captionId ?? null });
         } finally {
@@ -2272,7 +2296,7 @@ export async function executeGoogleSlidesTool(
         const style = getStoredStyle(presentationId);
         const { ml, mt, cw, ch } = contentArea(style);
 
-        const slideR = await addSlideInternal(presentationId, 'BLANK', -1, agentId, agentName, 'slides_layout_comparison');
+        const slideR = await addSlideInternal(presentationId, 'BLANK', -1, agentId, agentName, 'slides_layout_comparison', slot);
         if (!slideR.ok || !slideR.slideId) return `Error creating comparison slide: ${slideR.error}`;
         const slideId = slideR.slideId;
 
@@ -2346,7 +2370,7 @@ export async function executeGoogleSlidesTool(
           itemIds.push(entry);
         }
 
-        const r = await batchUpdate(presentationId, allReqs, agentId, agentName, 'slides_layout_comparison', { slideId, n });
+        const r = await batchUpdate(presentationId, allReqs, agentId, agentName, 'slides_layout_comparison', { slideId, n }, slot);
         if (!r.ok) return `Error building comparison slide: ${r.error}`;
         return ok({ slide_id: slideId, title_id: titleId, item_ids: itemIds });
       }
@@ -2440,6 +2464,7 @@ export async function executeGoogleSlidesTool(
                 agentId, agentName, 'slides_build_slide_upload',
                 { filePath, driveName, slideId, elementIndex: i },
                 `multipart/related; boundary=${boundary}`,
+                slot,
               );
               if (!up.ok) return { index: i, ok: false, error: up.error };
               const driveFileId = (up.data as { id?: string } | undefined)?.id;
@@ -2471,7 +2496,7 @@ export async function executeGoogleSlidesTool(
             return err(`elements[${i}] (image_drive) is missing drive_file_id`);
           }
           drivePrepPromises.push(
-            prepareDriveImageUrl(driveFileId, agentId, agentName, 'slides_build_slide')
+            prepareDriveImageUrl(driveFileId, agentId, agentName, 'slides_build_slide', slot)
               .then(prep => ({ index: i, prep })),
           );
         }
@@ -2689,7 +2714,7 @@ export async function executeGoogleSlidesTool(
           // ── ONE batchUpdate ──
           const r = await batchUpdate(
             presentationId, allReqs, agentId, agentName, 'slides_build_slide',
-            { slideId, createdNewSlide, elementCount: elements.length, requestCount: allReqs.length },
+            { slideId, createdNewSlide, elementCount: elements.length, requestCount: allReqs.length }, slot,
           );
           if (!r.ok) return `Error building slide: ${r.error}`;
 
@@ -2706,7 +2731,7 @@ export async function executeGoogleSlidesTool(
 
       case 'slides_get_slides': {
         const presentationId = args.presentation_id as string;
-        const pres = await getPresentation(presentationId, agentId, agentName, 'slides_get_slides');
+        const pres = await getPresentation(presentationId, agentId, agentName, 'slides_get_slides', slot);
         if (!pres.ok) return `Error reading presentation: ${pres.error}`;
         const slides = (pres.data as { slides?: Array<{ objectId?: string }> }).slides ?? [];
         return ok({
@@ -2717,7 +2742,7 @@ export async function executeGoogleSlidesTool(
       case 'slides_get_elements': {
         const presentationId = args.presentation_id as string;
         const slideId = args.slide_id as string;
-        const pres = await getPresentation(presentationId, agentId, agentName, 'slides_get_elements');
+        const pres = await getPresentation(presentationId, agentId, agentName, 'slides_get_elements', slot);
         if (!pres.ok) return `Error reading presentation: ${pres.error}`;
         const slides = (pres.data as { slides?: Array<{ objectId?: string; pageElements?: Array<Record<string, unknown>> }> }).slides ?? [];
         const slide = slides.find(s => s.objectId === slideId);
@@ -2790,7 +2815,7 @@ export async function executeGoogleSlidesTool(
         } catch { /* preflight is best-effort: don't fail the tool on lookup hiccups */ }
 
         // 1. Enumerate slides in the deck
-        const pres = await getPresentation(presentationId, agentId, agentName, 'slides_export_pngs');
+        const pres = await getPresentation(presentationId, agentId, agentName, 'slides_export_pngs', slot);
         if (!pres.ok) return `Error reading presentation: ${pres.error}`;
         const allSlides = (pres.data as { slides?: Array<{ objectId?: string }> }).slides ?? [];
         if (allSlides.length === 0) return err('Presentation has no slides');
@@ -2840,6 +2865,7 @@ export async function executeGoogleSlidesTool(
           const thumbResp = await googleRead(
             thumbUrl, agentId, agentName, 'slides_export_pngs',
             { presentationId, pageId, slideIndex: index, thumbnailSize },
+            slot,
           );
           if (!thumbResp.ok) {
             errors.push(`slide ${index}: ${thumbResp.error ?? 'thumbnail request failed'}`);
@@ -2894,7 +2920,7 @@ export async function executeGoogleSlidesTool(
         const presentationId = args.presentation_id as string;
         const elementId = args.element_id as string;
         const r = await batchUpdate(presentationId, [{ deleteObject: { objectId: elementId } }],
-          agentId, agentName, 'slides_delete_element', { elementId });
+          agentId, agentName, 'slides_delete_element', { elementId }, slot);
         if (!r.ok) return `Error deleting element: ${r.error}`;
         return ok({ ok: true });
       }
@@ -2908,7 +2934,7 @@ export async function executeGoogleSlidesTool(
         // Fetch current transform: ABSOLUTE replaces the whole matrix, so the
         // move must re-send the element's own scale (and shear, when present)
         // or every move snaps a resized/scaled element back to 1:1.
-        const pres = await getPresentation(presentationId, agentId, agentName, 'slides_move_element');
+        const pres = await getPresentation(presentationId, agentId, agentName, 'slides_move_element', slot);
         if (!pres.ok) return `Error reading presentation: ${pres.error}`;
         const slides = (pres.data as { slides?: Array<{ pageElements?: Array<Record<string, unknown>> }> }).slides ?? [];
         let target: Record<string, unknown> | null = null;
@@ -2933,7 +2959,7 @@ export async function executeGoogleSlidesTool(
               unit: 'EMU',
             },
           },
-        }], agentId, agentName, 'slides_move_element', { elementId });
+        }], agentId, agentName, 'slides_move_element', { elementId }, slot);
         if (!r.ok) return `Error moving element: ${r.error}`;
         return ok({ ok: true });
       }
@@ -2945,7 +2971,7 @@ export async function executeGoogleSlidesTool(
         const heightPt = args.height_pt as number;
 
         // Fetch current size/transform so we can compute scale factor
-        const pres = await getPresentation(presentationId, agentId, agentName, 'slides_resize_element');
+        const pres = await getPresentation(presentationId, agentId, agentName, 'slides_resize_element', slot);
         if (!pres.ok) return `Error reading presentation: ${pres.error}`;
         const slides = (pres.data as { slides?: Array<{ pageElements?: Array<Record<string, unknown>> }> }).slides ?? [];
         let target: Record<string, unknown> | null = null;
@@ -2973,7 +2999,7 @@ export async function executeGoogleSlidesTool(
               unit: 'EMU',
             },
           },
-        }], agentId, agentName, 'slides_resize_element', { elementId });
+        }], agentId, agentName, 'slides_resize_element', { elementId }, slot);
         if (!r.ok) return `Error resizing element: ${r.error}`;
         return ok({ ok: true });
       }
@@ -2987,7 +3013,7 @@ export async function executeGoogleSlidesTool(
             containsText: { text: findText, matchCase: false },
             replaceText,
           },
-        }], agentId, agentName, 'slides_find_replace', { findText });
+        }], agentId, agentName, 'slides_find_replace', { findText }, slot);
         if (!r.ok) return `Error in find/replace: ${r.error}`;
         const replies = (r.data as { replies?: Array<{ replaceAllText?: { occurrencesChanged?: number } }> }).replies ?? [];
         const count = replies[0]?.replaceAllText?.occurrencesChanged ?? 0;
@@ -3004,7 +3030,7 @@ export async function executeGoogleSlidesTool(
         const r = await batchUpdate(presentationId, [
           { deleteText: { objectId: elementId, textRange: { type: 'ALL' } } },
           { insertText: { objectId: elementId, insertionIndex: 0, text } },
-        ], agentId, agentName, 'slides_update_text', { elementId, length: text.length });
+        ], agentId, agentName, 'slides_update_text', { elementId, length: text.length }, slot);
         if (!r.ok) return `Error updating text: ${r.error}`;
         return ok({ ok: true, characters: text.length });
       }
@@ -3054,7 +3080,7 @@ export async function executeGoogleSlidesTool(
             style,
             fields: fieldsList.join(','),
           },
-        }], agentId, agentName, 'slides_format_text', { elementId, fields: fieldsList });
+        }], agentId, agentName, 'slides_format_text', { elementId, fields: fieldsList }, slot);
         if (!r.ok) return `Error formatting text: ${r.error}`;
         return ok({ ok: true, applied: fieldsList });
       }

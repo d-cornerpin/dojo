@@ -39,7 +39,7 @@ import {
   trackerCreateProject, trackerCreateTask, reminderCreate, groupMember, trackerUpdateStatus,
   trackerAddNotes, trackerEditTask, trackerEditProject, trackerGetStatus,
   trackerListActive, trackerActivity, activityWindowStart,
-  trackerPauseSchedule, trackerResumeSchedule, trackerRetask, trackerResolveMissedRuns,
+  trackerPauseSchedule, trackerResumeSchedule, trackerRetask,
 } from '../../../tracker/tools.js';
 import { coerceNumberArg } from '../pagination.js';
 import { readMeasureArg, remeasureTask, editWithMeasure } from './measure-door.js';   // DONE IS MEASURED
@@ -576,24 +576,6 @@ const tableOfHandlers: ToolHandlerMap = {
     const trsErr = checkRequired([{ name: 'task_id', value: args.task_id, type: 'string' }]);
     if (trsErr) { content = trsErr; isError = true; return { content, isError }; }
     content = trackerResumeSchedule(agentId, { taskId: args.task_id as string });
-    return { content, isError };
-  },
-
-  async "work_schedule:resolve_missed"({ agentId, args }) {
-    let content = '';
-    let isError = false;
-    // The retired verb's own `action` collided with the schedule action (one value
-    // was "pause"), so the missed-run choice arrives as `resolution` and is mapped
-    // back onto the handler's `action`; calls still sending the old shape are absorbed.
-    const rawResolution = args.resolution ?? (
-      args.action === 'run_now' || args.action === 'skip' ? args.action : undefined
-    );
-    const trmrErr = checkRequired([
-      { name: 'task_id', value: args.task_id, type: 'string' },
-      { name: 'resolution', value: rawResolution, type: 'string' },
-    ]);
-    if (trmrErr) { content = trmrErr; isError = true; return { content, isError }; }
-    content = trackerResolveMissedRuns(agentId, { ...args, action: rawResolution });
     return { content, isError };
   },
 

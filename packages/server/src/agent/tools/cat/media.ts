@@ -16,7 +16,6 @@ import path from 'node:path';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../../../db/connection.js';
 import { broadcast } from '../../../gateway/ws.js';
-import { writeAgentStatus } from '../../agent-status.js';
 import { deliveredResult, insertMessageIfAbsent } from '../../../memory/message-store.js';
 import { getModelCapabilities } from '../../../services/capabilities.js';
 import { settleAskOnAsyncResult, settleAskOnJobEnded } from '../../../work/ask-settlement.js';
@@ -31,6 +30,7 @@ import { getEffectiveImageGenModel } from '../../../services/image-gen-model.js'
 import { getEffectiveMusicGenModel } from '../../../services/music-gen-model.js';
 import { getEffectiveTranscriptionModel } from '../../../services/transcription-model.js';
 import { getEffectiveVideoGenModel } from '../../../services/video-gen-model.js';
+import { standInSentence } from '../../../services/capability-model.js';
 import { getModelGenerationParams, defaultVideoSpecFor, validateCanonicalParams, VIDEO_CANONICAL_PARAMS } from '../../../services/generation-params.js';
 import { getModelVoiceCatalog, defaultVoiceCatalogFor, isKnownVoice, formatVoiceCatalog } from '../../../services/voice-catalog.js';
 import { getPresence } from '../../../services/presence.js';
@@ -41,6 +41,8 @@ import { tellAgentAndWake, requesterReachSentence, isFailureWokenTurn, noteJobSt
 import { resolvePath, isSensitivePath } from '../../path-guards.js';
 import { isPrimaryAgent } from '../../../config/platform.js';
 import { recordCost } from '../../../costs/tracker.js';
+import { exceededBudget } from '../../../costs/spend.js';
+import { WALL_ESTIMATE_USD } from '../../../costs/budget.js';
 import { resolveAttachmentPath, fetchAudioUrl, transcribeAudio } from '../../../services/transcription.js';
 import { submitVideoJob } from '../../../services/video-generation.js';
 import type { ToolHandler, ToolHandlerMap } from '../handler.js';
@@ -48,6 +50,15 @@ import { homeDir } from '../../../home.js';
 import { turnContext } from '../../turn-context.js';
 import { userWords, currentAddress } from '../../v2/turn-address.js';
 import { outsideSpan } from '../../../tools/external-content.js';
+
+/** The one spending-limit check for a media job (a free model is never over a limit): the refusal the tool returns, or null to go ahead. */
+function limitRefusal(agentId: string, what: string, modelId: string): string | null {
+  const over = exceededBudget(agentId, WALL_ESTIMATE_USD, modelId);
+  if (!over) return null;
+  const which = over.scope === 'global' ? 'The daily spending limit' : `This agent's ${over.period} spending limit`;
+  return `${which} is reached ($${over.spend.toFixed(2)} spent of $${over.limitUsd.toFixed(2)}), so no ${what} was started. ` +
+    `Tell ${userWords(currentAddress(agentId))} the limit is reached; they can raise or remove it on the Costs page. Do not retry.`;
+}
 
 const handlers = {
   async "image_create"({ agentId, args }) {
@@ -83,6 +94,9 @@ const handlers = {
       isError = true;
       return { content, isError };
     }
+
+    const overLimit = limitRefusal(agentId, 'picture', modelChoice.modelId);
+    if (overLimit) return { content: overLimit, isError: true };
 
     // Tracked as a generation_job so the orb shows it;
     // image_create keeps its own delivery path, driven around the job lifecycle.
@@ -133,11 +147,6 @@ const handlers = {
           if (agentRow?.status === 'idle' || agentRow?.status === 'error') break;
           await new Promise<void>(r => setTimeout(r, 500));
         }
-
-        // 'working' keeps the thinking dots visible: without it the agent goes idle
-        // between the ack and the delivery and the user sees a gap of silence.
-        writeAgentStatus(agentId, 'working');
-        broadcast({ type: 'agent:status', agentId, status: 'working' });
 
         // The CAS is READ: a stop pressed during the wait has already lowered its
         // fence, so the abort registry cannot refuse the dial. The row can: a cancelled
@@ -280,7 +289,7 @@ const handlers = {
             messageId: deliveryMsgId, content: '', done: true, modelId: null,
           });
 
-          setImgSucceeded(imgJobId, { assetPath: deliveredPath, assetMime: mimeType });
+          setImgSucceeded(imgJobId, { assetPath: deliveredPath });
           settleAskOnAsyncResult({ agentId, askMessageId: resultSubject.rootId, resultMessageId: deliveryMsgId });   // the job is finished and its result reached the owner
 
           try {
@@ -366,10 +375,6 @@ const handlers = {
         });
         // No-op if the job already reached a terminal state.
         setImgFailed(imgJobId, err instanceof Error ? err.message : String(err));
-      } finally {
-        // The caller goes back to idle once the background job has run its course.
-        writeAgentStatus(agentId, 'idle');
-        broadcast({ type: 'agent:status', agentId, status: 'idle' });
       }
     })();
 
@@ -397,6 +402,7 @@ const handlers = {
     content =
       `Image generation kicked off (request_id: ${requestId}). ${deliveryClause} ` +
       `The engine adds no caption: the line you write in this turn is the only text that arrives with the image.` +
+      standInSentence(modelChoice) +
       visionTail;
     return { content, isError };
   },
@@ -428,6 +434,9 @@ const handlers = {
       return { content, isError };
     }
 
+    const overLimit = limitRefusal(agentId, isMusic ? 'music' : 'audio', modelChoice.modelId);
+    if (overLimit) return { content: overLimit, isError: true };
+
     // A voice outside the model's catalog is kicked back: the provider's voice enum
     // is closed, so character or age go into the spoken text, not the id.
     if (!isMusic && voice) {
@@ -457,7 +466,8 @@ const handlers = {
     enqueueAudioOrMusicJob(jobId);
 
     content =
-      `${isMusic ? 'Music' : 'Audio'} generation started (job_id: ${jobId}). The engine is generating the asset in the background. When it's ready the engine will post it directly to the chat. You do NOT get a second turn and must NOT call ${name} again. The engine adds no caption: the words you write in this turn are the only text that arrives with the ${kind}, so write them now, in your next reply (it is text only, no more tools run).`;
+      `${isMusic ? 'Music' : 'Audio'} generation started (job_id: ${jobId}). The engine is generating the asset in the background. When it's ready the engine will post it directly to the chat. You do NOT get a second turn and must NOT call ${name} again. The engine adds no caption: the words you write in this turn are the only text that arrives with the ${kind}, so write them now, in your next reply (it is text only, no more tools run).` +
+      standInSentence(modelChoice);
     return { content, isError };
   },
 
@@ -483,6 +493,17 @@ const handlers = {
       isError = true;
       return { content, isError };
     }
+
+    if (modelChoice.source === 'failover') {
+      content =
+        `The video model chosen in Settings is not usable right now, so no video was started: the Dojo never starts a video on a stand-in model by itself. ` +
+        `Ask ${userWords(currentAddress(agentId))} which video model to use (Settings, Models, Video Generation Model), then call video_create again.`;
+      isError = true;
+      return { content, isError };
+    }
+
+    const overLimit = limitRefusal(agentId, 'video', modelChoice.modelId);
+    if (overLimit) return { content: overLimit, isError: true };
 
     // Canonical params are engine-enforced at the boundary: a missing or
     // out-of-range value kicks the call back so the agent re-picks.

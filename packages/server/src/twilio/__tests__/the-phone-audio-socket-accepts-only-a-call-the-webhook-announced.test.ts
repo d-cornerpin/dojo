@@ -47,10 +47,10 @@ vi.mock('../client.js', async (importOriginal) => ({
 vi.mock('../../services/tunnel.js', () => ({ getTunnelStatus: () => ({ status: 'active', url: 'https://box.example.test' }) }));
 vi.mock('../../services/channel-safe-senders.js', () => ({
   getTwilioVoiceSafeCallers: () => state.safeCallers,
-  getTwilioSmsSafeSenders: () => [], appendTwilioSmsSafeSender: vi.fn(), appendTwilioVoiceSafeCaller: vi.fn(),
+  getTwilioSmsSafeSenders: () => [], appendTwilioSmsSafeSender: vi.fn(), appendTwilioVoiceSafeCaller: vi.fn(), removeTwilioSmsSafeSender: vi.fn(), removeTwilioVoiceSafeCaller: vi.fn(), senderWakes: () => false,
 }));
 vi.mock('../../services/imessage-bridge.js', () => ({ addressesMatch: (a: string, b: string) => a === b }));
-vi.mock('../../services/safe-senders.js', () => ({ ownerIMessageRecords: () => [], addressesMatch: vi.fn(), isOwnerIMessageRecipient: vi.fn() }));
+vi.mock('../../services/safe-senders.js', async (orig) => ({ ...(await orig<typeof import('../../services/safe-senders.js')>()), ownerIMessageRecords: () => [], addressesMatch: vi.fn(), isOwnerIMessageRecipient: vi.fn() }));
 vi.mock('../sms-inbound.js', () => ({ ingestInboundSms: vi.fn() }));
 vi.mock('../../voice/session-record.js', () => ({
   startVoiceSessionRecord: vi.fn(() => 'vsr-1'), endVoiceSessionRecord: vi.fn(),

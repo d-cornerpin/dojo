@@ -38,7 +38,6 @@ export const WORK_OPS = [
   'work_validate:retask',
   'work_schedule:pause',
   'work_schedule:resume',
-  'work_schedule:resolve_missed',
 ] as const;
 
 export type WorkOp = (typeof WORK_OPS)[number];
@@ -131,12 +130,6 @@ export function workOperation(name: string | undefined | null, args?: Args): Wor
     case 'work_schedule': {
       const action = str(args, 'action');
       if (action === 'resume') return 'work_schedule:resume';
-      if (action === 'resolve_missed' || action === 'resolve_missed_runs') {
-        return 'work_schedule:resolve_missed';
-      }
-      if (action === 'pause') return 'work_schedule:pause';
-      // `resolution` names the missed-run operation even when `action` is missing.
-      if (has(args, 'resolution')) return 'work_schedule:resolve_missed';
       return 'work_schedule:pause';
     }
   }
@@ -241,7 +234,6 @@ export const WORK_OP_READS: Readonly<Record<WorkOp, readonly string[]>> = {
   'work_validate:retask': ['action', 'task_id', 'directive', 'target_status', 'user_quote'],
   'work_schedule:pause': ['action', 'task_id', 'resume_at'],
   'work_schedule:resume': ['action', 'task_id'],
-  'work_schedule:resolve_missed': ['action', 'task_id', 'resolution'],
 };
 
 /** Navigation arguments accepted without being read (never refused): sibling-call ids, `verbose`. */

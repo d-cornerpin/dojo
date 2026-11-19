@@ -12,7 +12,6 @@ import { writeAgentStatus } from '../agent/agent-status.js';
 // logger), so importing it here cannot form a cycle with agent/runtime.ts.
 import { activeRuns } from '../agent/shared-state.js';
 import { v4 as uuidv4 } from 'uuid';
-import { sanitizeMessagesOnModelChange } from '../agent/model-switch.js';
 import type { DiagnosticItem } from './diagnostic.js';
 import { setTrackerStatus } from '../work/tracker-store.js';
 import { workSettled } from '../work/store.js';
@@ -51,7 +50,7 @@ function cooldownSweepMayRecover(agentId: string): { ok: true } | { ok: false; w
     if (lastError.includes(DECLARED_PATIENCE_EXCEEDED_CODE)) {
       return {
         ok: false,
-        why: 'its last failure was a declared-patience refusal, which a restart cannot fix — '
+        why: 'its last failure was a declared-patience refusal, which a restart cannot fix: '
           + 'the request cannot finish inside the patience this provider declares, so the honest '
           + 'error stays visible instead of being cleared every 30 minutes',
       };
@@ -122,7 +121,7 @@ export function runFrequentAutoFixes(): void {
       logger.info('Frequent auto-fix: reset long-errored agent', {
         agentId: a.id, agentName: a.name, erroredSince: a.updated_at,
       });
-      void persistAction(`Reset ${a.name} — it had been in error state for over 30 minutes`, 'success', a.id);
+      void persistAction(`Reset ${a.name}: it had been in an error state for over 30 minutes`, 'success', a.id);
       clearRecoveryBookkeeping(a.id);
     }
   } catch (err) {
@@ -173,7 +172,7 @@ function fixStuckAgent(item: DiagnosticItem): AutoFixResult {
 
   return {
     applied: true,
-    description: `Unfroze ${item.agentName ?? item.agentId} — it was stuck and not responding`,
+    description: `Unfroze ${item.agentName ?? item.agentId}: it was stuck and not responding`,
     agentId: item.agentId,
   };
 }
@@ -188,14 +187,14 @@ function fixPausedAgent(item: DiagnosticItem): AutoFixResult {
 
   const pausedMs = Date.now() - new Date(agent.updated_at.includes('Z') ? agent.updated_at : agent.updated_at + 'Z').getTime();
   if (pausedMs < 30 * 60 * 1000) {
-    return { applied: false, description: `${item.agentName} was paused recently — giving it time to cool down before restarting` };
+    return { applied: false, description: `${item.agentName} was paused recently, so it gets time to cool down before a restart` };
   }
 
   // Read the cause BEFORE writing status, so a fault a restart cannot fix keeps its diagnostic.
   const mayPaused = cooldownSweepMayRecover(item.agentId);
   if (!mayPaused.ok) {
     logger.info('frequent auto-fix: declining to restart a paused agent', { agentId: item.agentId, why: mayPaused.why });
-    return { applied: false, description: `${item.agentName ?? item.agentId} was left paused — ${mayPaused.why}` };
+    return { applied: false, description: `${item.agentName ?? item.agentId} was left paused: ${mayPaused.why}` };
   }
 
   writeAgentStatus(item.agentId, 'idle');
@@ -204,7 +203,7 @@ function fixPausedAgent(item: DiagnosticItem): AutoFixResult {
 
   return {
     applied: true,
-    description: `Restarted ${item.agentName ?? item.agentId} — it was paused after repeated errors but has had time to recover`,
+    description: `Restarted ${item.agentName ?? item.agentId}: it was paused after repeated errors and has had time to recover`,
     agentId: item.agentId,
   };
 }
@@ -226,7 +225,7 @@ function fixErrorAgent(item: DiagnosticItem): AutoFixResult {
   const mayError = cooldownSweepMayRecover(item.agentId);
   if (!mayError.ok) {
     logger.info('frequent auto-fix: declining to reset an errored agent', { agentId: item.agentId, why: mayError.why });
-    return { applied: false, description: `${item.agentName ?? item.agentId} was left in error — ${mayError.why}` };
+    return { applied: false, description: `${item.agentName ?? item.agentId} was left in error: ${mayError.why}` };
   }
 
   writeAgentStatus(item.agentId, 'idle');
@@ -235,25 +234,9 @@ function fixErrorAgent(item: DiagnosticItem): AutoFixResult {
 
   return {
     applied: true,
-    description: `Restarted ${item.agentName ?? item.agentId} — it had been in an error state and needed a fresh start`,
+    description: `Restarted ${item.agentName ?? item.agentId}: it had been in an error state and needed a fresh start`,
     agentId: item.agentId,
   };
-}
-
-function fixOrphanedToolMessages(item: DiagnosticItem): AutoFixResult {
-  if (item.code !== 'ORPHANED_TOOL_MESSAGES' || !item.agentId) return { applied: false, description: '' };
-
-  const result = sanitizeMessagesOnModelChange(item.agentId);
-
-  if (result.collapsed > 0) {
-    return {
-      applied: true,
-      description: `Cleaned up ${result.collapsed} corrupted message(s) in ${item.agentName ?? item.agentId}'s conversation`,
-      agentId: item.agentId,
-    };
-  }
-
-  return { applied: false, description: '' };
 }
 
 function fixOrphanedTask(item: DiagnosticItem): AutoFixResult {
@@ -333,7 +316,6 @@ const FIX_MAP: Record<string, (item: DiagnosticItem) => AutoFixResult> = {
   STUCK_AGENT: fixStuckAgent,
   AGENT_PAUSED: fixPausedAgent,
   AGENT_ERROR: fixErrorAgent,
-  ORPHANED_TOOL_MESSAGES: fixOrphanedToolMessages,
   ORPHANED_TASK: fixOrphanedTask,
   AGENT_RATE_LIMITED: fixStaleRateLimit,
 };

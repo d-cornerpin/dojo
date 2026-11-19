@@ -189,7 +189,8 @@ function advanceWallByUnit(w: WallClock, interval: number, unit: string, daysCSV
   }
 }
 
-export function calculateNextRun(task: ScheduledTask, timeZone?: string): string | null {
+/** The task's next run strictly after `nowMs` (default now) and its last run. */
+export function calculateNextRun(task: ScheduledTask, timeZone?: string, nowMs = Date.now()): string | null {
   if (!task.scheduled_start) return null;
   if (task.is_paused) return null;
 
@@ -219,7 +220,7 @@ export function calculateNextRun(task: ScheduledTask, timeZone?: string): string
         }, tz).getTime()
       : new Date(normalizeDbTimestamp(rawEnd)).getTime();
     if (!isNaN(parsedEnd)) endMs = parsedEnd;
-    if (!isNaN(parsedEnd) && Date.now() >= parsedEnd) return null;
+    if (!isNaN(parsedEnd) && nowMs >= parsedEnd) return null;
   }
   const pastEnd = (iso: string): boolean => endMs !== null && new Date(iso).getTime() > endMs;
 
@@ -270,10 +271,9 @@ export function calculateNextRun(task: ScheduledTask, timeZone?: string): string
   }
 
   // Walk strictly past both now and the last run's slot, so a just-finished slot never re-fires.
-  const now = new Date();
   const lastSlot = task.last_run_at ? new Date(normalizeDbTimestamp(task.last_run_at)) : null;
   const notAfterMs = Math.max(
-    now.getTime(),
+    nowMs,
     lastSlot && !isNaN(lastSlot.getTime()) ? lastSlot.getTime() : Number.NEGATIVE_INFINITY,
   );
 

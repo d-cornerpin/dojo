@@ -28,7 +28,7 @@ vi.mock('../../agent/access/read.js', () => ({ mayUsePlaud: () => false, widestI
 vi.mock('../../plaud/auth.js', () => ({ getPlaudStatus: () => ({ connected: false, connectedAt: null }) }));
 
 import { runMigrations } from '../../db/migrations.js';
-import { buildIntegrationStatusLane, forgetToolFamilyIndex } from '../integration-status-lane.js';
+import { buildIntegrationStatusLane } from '../integration-status-lane.js';
 
 const AGENT = 'agent-rank6';
 const stamp = (ms: number): string => new Date(ms).toISOString().replace('T', ' ').slice(0, 23);
@@ -50,7 +50,6 @@ beforeEach(() => {
   mockDb.current = new Database(':memory:');
   runMigrations(mockDb.current);
   mockDb.current.prepare("INSERT INTO agents (id, name, status, model_id, config) VALUES (?, 'R6', 'idle', NULL, '{}')").run(AGENT);
-  forgetToolFamilyIndex();
 });
 afterEach(() => { mockDb.current?.close(); mockDb.current = null; });
 

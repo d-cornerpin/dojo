@@ -2,7 +2,7 @@
 
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
-import { getDailySpend, agentPeriodSpend } from './spend.js';   // spend readers live in a leaf module
+import { getDailySpend, agentPeriodSpend, exceededBudget } from './spend.js';   // spend readers live in a leaf module
 export { exceededBudget } from './spend.js';
 import { sendAlert } from '../services/imessage-bridge.js';
 import { windowOf, budgetKey, endBudgetCard, endBudgetCardOnChange, latestToldAt } from './budget-cards.js';
@@ -142,6 +142,7 @@ function findFreeModels(): FreeModel[] {
       AND p.id != '__system__'
       AND m.capabilities NOT LIKE '%generation%'
       AND m.capabilities NOT LIKE '%embedding%'
+      AND m.capabilities NOT LIKE '%"decision"%'
       AND m.input_cost_per_m = 0
       AND m.output_cost_per_m = 0
       AND (m.cost_per_unit IS NULL OR m.cost_per_unit = 0)
@@ -154,52 +155,40 @@ function findFreeModels(): FreeModel[] {
 
 export function checkBudget(agentId: string, estimatedCost: number): BudgetCheckResult {
   const db = getDb();
+  const over = exceededBudget(agentId, estimatedCost);
 
-  const globalBudget = db.prepare(`
-    SELECT limit_usd FROM budgets WHERE id = 'global_daily'
-  `).get() as { limit_usd: number } | undefined;
-
+  const globalBudget = db.prepare(`SELECT limit_usd FROM budgets WHERE id = 'global_daily'`).get() as { limit_usd: number } | undefined;
   if (globalBudget) {
-    const dailySpend = getDailySpend();
-    checkAndSendAlerts({ scope: 'global', budgetId: 'global_daily', period: 'daily' }, dailySpend, globalBudget.limit_usd);
-
-    if (dailySpend + estimatedCost > globalBudget.limit_usd) {
-      const freeModels = findFreeModels();
-      return {
-        allowed: false,
-        budgetExceeded: true,
-        dailySpend,
-        dailyLimit: globalBudget.limit_usd,
-        reason: `Daily budget limit reached ($${dailySpend.toFixed(2)} spent of $${globalBudget.limit_usd.toFixed(2)} limit).`,
-        freeModelFallback: freeModels[0] ?? null,
-        freeModelFallbacks: freeModels,
-      };
-    }
+    checkAndSendAlerts({ scope: 'global', budgetId: 'global_daily', period: 'daily' }, getDailySpend(), globalBudget.limit_usd);
+  }
+  if (over?.scope === 'global') {
+    const freeModels = findFreeModels();
+    return {
+      allowed: false,
+      budgetExceeded: true,
+      dailySpend: over.spend,
+      dailyLimit: over.limitUsd,
+      reason: `Daily budget limit reached ($${over.spend.toFixed(2)} spent of $${over.limitUsd.toFixed(2)} limit).`,
+      freeModelFallback: freeModels[0] ?? null,
+      freeModelFallbacks: freeModels,
+    };
   }
 
-  const agentBudget = db.prepare(`
-    SELECT limit_usd, period FROM budgets WHERE id = ?
-  `).get(`agent_${agentId}`) as { limit_usd: number; period: string } | undefined;
-
+  const agentBudget = db.prepare('SELECT limit_usd, period FROM budgets WHERE id = ?').get(`agent_${agentId}`) as { limit_usd: number; period: string } | undefined;
   if (agentBudget) {
-    const agentSpend = agentPeriodSpend(agentId, agentBudget.period);
-
-    checkAndSendAlerts({ scope: agentId, budgetId: `agent_${agentId}`, period: agentBudget.period }, agentSpend, agentBudget.limit_usd);
-
-    if (agentSpend + estimatedCost > agentBudget.limit_usd) {
-      return {
-        allowed: false,
-        reason: `Agent budget exceeded: $${agentSpend.toFixed(4)} spent of $${agentBudget.limit_usd} limit (${agentBudget.period})`,
-      };
-    }
+    checkAndSendAlerts({ scope: agentId, budgetId: `agent_${agentId}`, period: agentBudget.period }, agentPeriodSpend(agentId, agentBudget.period), agentBudget.limit_usd);
   }
-
+  if (over) {
+    return {
+      allowed: false,
+      reason: `Agent budget exceeded: $${over.spend.toFixed(4)} spent of $${over.limitUsd} limit (${over.period})`,
+    };
+  }
   return { allowed: true };
 }
 
-// The pure half of `checkBudget` (same two comparisons, no alerts) is `exceededBudget` in ./spend.ts. An honest
-// stop (agent/v2/honest-stop.ts) asks it when a turn is stopped and again when a limit is raised or a window
-// turns over, so the lock lifts on the real event and never on a timer.
+// `exceededBudget` (./spend.ts) is the one comparison; `checkBudget` adds the alerts and the free stand-ins. An honest
+// stop (agent/v2/honest-stop.ts) asks it when a turn is stopped and again when a limit is raised or a window turns over.
 
 export type { ExceededBudget } from './spend.js';
 
@@ -302,4 +291,12 @@ export function setAgentBudget(agentId: string, limitUsd: number, period: string
       limit_usd = excluded.limit_usd, period = excluded.period, updated_at = datetime('now')
   `).run(id, limitUsd, period);
   logger.info('Agent budget set', { agentId, limitUsd, period });
+}
+
+/** No limit: the budget row goes, and with it its card and its "limit reached" notice. */
+export function removeBudget(budgetId: string): void {
+  endBudgetCard(budgetId);
+  ownerConditionCleared(budgetStopKey(budgetId));
+  getDb().prepare('DELETE FROM budgets WHERE id = ?').run(budgetId);
+  logger.info('Budget removed', { budgetId });
 }

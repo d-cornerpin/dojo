@@ -768,13 +768,13 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
 
   // ── 13. Route based on requires_response ──
   if (requiresResponse) {
-    // Wake-block is paused-only: re-waking an error agent is safe; paused is the error-loop signal.
+    // Wake-block is paused-only: re-waking an error agent is safe; paused is the error-loop signal, which the main agent and the Healer may lift.
     const targetIsLockedOut = target.status === 'paused';
     let senderCanWakeLockedOut = envelope.fromAgent === 'system';
     if (!senderCanWakeLockedOut && targetIsLockedOut) {
       try {
-        const { isHealerAgent } = await import('../config/platform.js');
-        senderCanWakeLockedOut = isHealerAgent(envelope.fromAgent);
+        const { isHealerAgent, isPrimaryAgent } = await import('../config/platform.js');
+        senderCanWakeLockedOut = isHealerAgent(envelope.fromAgent) || isPrimaryAgent(envelope.fromAgent);
       } catch { /* */ }
     }
 

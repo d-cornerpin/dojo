@@ -10,6 +10,7 @@ import { messageTokens } from './lanes.js';
 import { toolResultView, POINTER_VIEW_CHARS, POINTER_LABEL_ROOM_CHARS } from './tool-result-view.js';
 import { getDb } from '../db/connection.js';
 import { attachmentBrackets, defangExternalMarkers } from '../tools/external-content.js';
+import { sessionBoundaryText } from './session-boundary.js';
 
 /** The handle `tool_result_read` takes for a stored row (`msg:<id>`) or a block (`msg:<id>#<block>`). */
 export const KEPT_ROW_PREFIX = 'msg:';
@@ -127,12 +128,10 @@ export function keptRowText(blocks: StoredBlock[]): string | null {
 // A `msg:` read is allowed exactly when a view of this agent pointered the row, in the session that view
 // belonged to (a reset starts a view that cannot show it): never stricter than the view, never wider.
 const pointeredRows = new Map<string, Map<string, string | null>>();
-const sessionOf = (agentId: string): string | null =>
-  (getDb().prepare('SELECT session_started_at FROM agents WHERE id = ?').get(agentId) as { session_started_at: string | null } | undefined)?.session_started_at ?? null;
 
 function pointered(msg: Message, content: string): Message {
   const rows = pointeredRows.get(msg.agentId) ?? new Map<string, string | null>();
-  rows.set(msg.id, sessionOf(msg.agentId));
+  rows.set(msg.id, sessionBoundaryText(msg.agentId));
   pointeredRows.set(msg.agentId, rows);
   return { ...msg, content, tokenCount: null };
 }
@@ -142,7 +141,7 @@ export function viewPointeredRow(agentId: string, messageId: string): boolean {
   if (keptWholeNoteShows(agentId, messageId)) return true;
   const rows = pointeredRows.get(agentId);
   if (!rows?.has(messageId)) return false;
-  if (rows.get(messageId) === sessionOf(agentId)) return true;
+  if (rows.get(messageId) === sessionBoundaryText(agentId)) return true;
   rows.delete(messageId);   // shown before a reset: the new session's view cannot show it
   return false;
 }

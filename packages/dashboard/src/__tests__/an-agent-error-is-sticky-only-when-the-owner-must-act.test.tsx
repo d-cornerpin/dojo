@@ -88,6 +88,6 @@ describe('an agent chat error is sticky and red only when the owner must act', (
   it('CONTROL: an action card (the owner must reconnect) stays sticky and red', async () => {
     await arrive();
     agentError('Your Plaud login has expired.', { severity: 'error', cardClass: 'action', code: 'AUTH_INVALID' });
-    expect(levelsFor('Your Plaud login has expired.')).toEqual(new Set(['error']));
+    expect(levelsFor('Your Plaud login has expired.')).toEqual(new Set(['sticky-error']));
   });
 });

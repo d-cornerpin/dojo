@@ -21,6 +21,7 @@ import { runDreamingCycle, getDreamingConfig, setDreamingConfig, DREAM_MODES } f
 import { routeFailure } from './route-failure.js';
 import { getDb } from '../../db/connection.js';
 import { refuseAgentModel } from '../../agent/main-model-floor.js';
+import { setAgentModel } from '../../agent/model-switch.js';
 import { refuseBadClockTime } from '../../config/clock-time.js';
 
 const logger = createLogger('vault-routes');
@@ -176,11 +177,7 @@ vaultRouter.put('/dream/config', async (c) => {
     dreamMode: body.dreamMode,
   });
 
-  // Keep agents.model_id in sync so the agent card reflects the same value
-  if (body.modelId) {
-    getDb().prepare("UPDATE agents SET model_id = ?, updated_at = datetime('now') WHERE id = ?")
-      .run(body.modelId, getDreamerAgentId());
-  }
+  if (body.modelId) await setAgentModel(getDreamerAgentId(), body.modelId);
 
   // Reschedule if config changed
   const { scheduleDreamingCycle } = await import('../../vault/maintenance.js');

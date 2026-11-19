@@ -133,7 +133,6 @@ function getStatusReport(): string {
       'SELECT status FROM agents WHERE id = ?'
     ).get(getPrimaryAgentId()) as { status: string } | undefined)?.status ?? 'unknown';
 
-    const memInfo = process.memoryUsage();
     const totalMem = os.totalmem();
     const freeMem = os.freemem();
 
@@ -151,7 +150,6 @@ function getStatusReport(): string {
       `${getPrimaryAgentName()}: ${primaryStatus}`,
       `Agents: ${agentCount} active (${workingCount} working)`,
       `Memory: ${Math.round(freeMem / 1024 / 1024)}MB free / ${Math.round(totalMem / 1024 / 1024)}MB total`,
-      `Heap: ${Math.round(memInfo.heapUsed / 1024 / 1024)}MB`,
       `Today's cost: $${todayCost.toFixed(4)}`,
       `Uptime: ${hours}h ${mins}m`,
     ].join('\n');

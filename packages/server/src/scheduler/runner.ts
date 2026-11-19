@@ -28,23 +28,32 @@ import { getTask } from '../tracker/schema.js';
 import { resumeSchedule } from '../tracker/tools.js';
 import { formatTimeForAgent } from '../services/format-time.js';
 import { writeTaskLog } from '../tracker/task-log.js';
-import { calculateNextRun, normalizeDbTimestamp, scheduledTaskFromRow } from './engine.js';
+import { calculateNextRun, normalizeDbTimestamp, scheduledTaskFromRow, parseDaysOfWeek } from './engine.js';
 import { getAgentRuntime } from '../agent/runtime.js';
 import { postAgentNotice } from '../agent/agent-notice.js';
 import { insertEngineEventIfAbsent } from '../memory/message-store.js';
 import { getPrimaryAgentId } from '../config/platform.js';
 import { recordMove } from '../work/move-record.js';
 import { OWNER_ALERT_HEADS_UP_PREFIX } from '@dojo/shared';
+import { tellOwner, ownerToldOf, ownerConditionCleared, TOLD } from '../healer/owner-notices.js';
+import { renderInstant } from '../memory/message-stamp.js';
+import { PROCESS_STARTED_AT } from '../work/inherited-backlog.js';
 // The liveness fact every reaper guards on: a run that is still executing must never be force-failed.
 import { activeRuns } from '../agent/shared-state.js';
 
 const logger = createLogger('scheduler');
 
-/** Approximate ms per interval (months and years approximate by design), for the missed-runs detector. */
-function intervalApproxMs(unit: string | null, interval: number | null): number | null {
-  if (!interval || !unit) return null;
+/** Approximate ms per interval (months and years approximate by design): how long one missed run stays recent.
+ *  A specific-days schedule uses its longest gap between allowed days (a Mondays-only task: a week). */
+function intervalApproxMs(row: Record<string, unknown>): number | null {
+  const interval = row.repeat_interval as number | null;
   const DAY = 86_400_000;
-  switch (unit) {
+  if (row.repeat_unit === 'specific_days') {
+    const d = [...(parseDaysOfWeek(row.repeat_days_of_week as string | null) ?? [])].sort();
+    return d.length ? DAY * Math.max(...d.map((x, i) => (d[(i + 1) % d.length]! - x + 7) % 7 || 7)) : DAY;
+  }
+  if (!interval) return null;
+  switch (row.repeat_unit) {
     case 'minutes': return interval * 60_000;
     case 'hours': return interval * 3_600_000;
     case 'days': return interval * DAY;
@@ -52,150 +61,45 @@ function intervalApproxMs(unit: string | null, interval: number | null): number 
     case 'months': return interval * 30 * DAY;
     case 'years': return interval * 365 * DAY;
     case 'weekdays': return DAY;
-    case 'specific_days': return DAY;
     default: return null;
   }
 }
 
-/**
- * Pause the task and notify its holder (else the primary) of the missed runs.
- * The agent decides via work_schedule(action="resolve_missed"), since backfill or skip depends on the task.
- */
-function alertMissedRuns(taskRow: Record<string, unknown>, missedSlots: number): void {
-  const db = getDb();
-  const taskId = taskRow.id as string;
-  const taskTitle = taskRow.title as string;
-  const repeatInterval = taskRow.repeat_interval as number | null;
-  const repeatUnit = taskRow.repeat_unit as string | null;
+/** A run firing this long after its time was missed (the Dojo was off, the Mac asleep, the task on hold). */
+const LATE_MS = 5 * 60_000;
+const MISSED_COUNT_CAP = 100;
+interface Missed { count: number; recentMs: number | null; cause: string }
 
-  const assignedAgent = (taskRow.assigned_to as string | null) ?? getPrimaryAgentId();
-
-  // Pause while the agent decides so the task does not re-fire every tick; its resolve call unpauses, and
-  // `missed_runs_paused_at` lets autoResolveStaleMissedRunPauses skip it after a whole agent turn.
-  const alreadyPaused = db.prepare('SELECT is_paused FROM work WHERE id = ?')
-    .get(taskId) as { is_paused: number } | undefined;
-  if (!alreadyPaused || alreadyPaused.is_paused !== 0) {
-    logger.info('Scheduler: missed-runs pause already set elsewhere, skipping duplicate alert', { taskId });
-    return;
-  }
-  noteUnsettled(patchWork(taskId, { is_paused: 1, schedule_status: 'paused', missed_runs_paused_at: Date.now() }), 'scheduler: paused after too many missed runs', { taskId });
-
-  const cadence = repeatInterval && repeatUnit
-    ? (repeatInterval === 1 ? `every ${repeatUnit.replace(/s$/, '')}` : `every ${repeatInterval} ${repeatUnit}`)
-    : 'recurring';
-
-  // A brief model-visible notice (role='user' origin_kind='engine'), since role='system' rows never reach the
-  // model. The run_now/skip/pause semantics live in the work_schedule tool description.
-  postAgentNotice({
-    toAgentId: assignedAgent,
-    fromName: 'Scheduler',
-    selfIntro: false,
-    intent: 'scheduler_missed_runs',
-    brief: `Your recurring task "${taskTitle}" (${cadence}) missed ${missedSlots} run${missedSlots === 1 ? '' : 's'} while the box was offline or paused, so I auto-paused it. Call work_schedule(action="resolve_missed", task_id="${taskId}", action="run_now"|"skip"|"pause"): action="run_now" fires one catch-up run now, action="skip" jumps to the next scheduled slot, action="pause" leaves it paused. The action argument is required.`,
-  });
-
-  try {
-    const runtime = getAgentRuntime();
-    runtime.handleMessage(assignedAgent, '[scheduler: missed-runs alert pending]').catch((err) => {
-      logger.warn('alertMissedRuns: agent wake failed', {
-        taskId, assignedAgent, error: err instanceof Error ? err.message : String(err),
-      });
-    });
-  } catch { /* runtime not ready: the notice is stored and read next time */ }
-
-  logger.warn('Scheduler: missed-runs alert sent, task paused', {
-    taskId, taskTitle, missedSlots, assignedAgent,
-  });
+/** A late repeating task's missed runs: how many (counted up to the cap), the one younger than one interval, and why. */
+function missedRuns(row: Record<string, unknown>, nowMs: number, intervalMs: number): Missed {
+  const after = (fromMs: number): number | null => tsToMs(calculateNextRun(scheduledTaskFromRow(row, {
+    is_paused: 0, next_run_at: null, last_run_at: new Date(fromMs).toISOString(),
+  }), undefined, fromMs));
+  const firstMs = occurrenceOf(row)!;
+  let count = 0;
+  for (let s: number | null = firstMs; s !== null && s <= nowMs && count < MISSED_COUNT_CAP; s = after(s)) count++;
+  const recent = after(nowMs - intervalMs);
+  const held = getDb().prepare(`SELECT 1 FROM work_events WHERE work_id = ? AND kind = 'audit'
+    AND json_extract(payload, '$.entry_kind') = 'hold_cleared' AND created_at >= ?`).get(row.id, firstMs);
+  const cause = held ? 'the task was on hold'
+    : firstMs < (tsToMs(PROCESS_STARTED_AT) ?? 0) ? 'the Dojo was not running' : 'the Mac was asleep or the Dojo was busy';
+  return { count, recentMs: recent !== null && recent <= nowMs ? recent : null, cause };
 }
 
-
-// Deterministic fallback: once the agent has run a whole turn that STARTED after a missed-runs pause without
-// resolving it, the engine resolves the pause as SKIP (next_run_at moves to the next future anchor, the pause
-// clears back to waiting, and a task-log entry is written). The model tool wins when called first: every
-// resolve action clears `missed_runs_paused_at`, which disarms this fallback. It never completes, deletes or
-// reassigns a task.
-const MISSED_RUNS_PASSED_OVER = 'the agent ran a whole turn after the missed-runs notice and did not resolve it';
-
-export async function autoResolveStaleMissedRunPauses(): Promise<void> {
-  const db = getDb();
-  try {
-    const stale = db.prepare(`
-      SELECT ${scheduleRowColumns('w')} FROM work w
-      WHERE ${taskScope('w')} AND w.is_paused = 1
-        AND w.missed_runs_paused_at IS NOT NULL
-        AND w.missed_runs_paused_at < (SELECT MAX(CAST(strftime('%s', t.started_at) AS INTEGER) * 1000) FROM turns t
-              WHERE t.agent_id = COALESCE(w.agent_id, ?) AND t.ended_at IS NOT NULL)
-      LIMIT 25
-    `).all(getPrimaryAgentId()) as Array<Record<string, unknown>>;
-    if (stale.length === 0) return;
-
-    const { writeTaskLog } = await import('../tracker/task-log.js');
-    for (const task of stale) {
-      const taskId = task.id as string;
-      const nowIso = new Date().toISOString();
-      const nextRun = calculateNextRun(scheduledTaskFromRow(task, {
-        is_paused: 0,
-        last_run_at: nowIso,
-        next_run_at: null,
-        schedule_status: 'waiting',
-      }));
-
-      const intervalMs = intervalApproxMs(task.repeat_unit as string | null, task.repeat_interval as number | null);
-      const missedIso = task.next_run_at as string | null;
-      const missedSlots = intervalMs && missedIso
-        ? Math.max(1, Math.floor((Date.now() - new Date(normalizeDbTimestamp(missedIso)).getTime()) / intervalMs))
-        : 1;
-
-      if (nextRun) {
-        // Guarded release: the model tool clears missed_runs_paused_at when it resolves first, so a failed guard
-        // means it (or another process) won the race and this fallback must not touch the task.
-        const guard = db.prepare('SELECT is_paused, missed_runs_paused_at FROM work WHERE id = ?')
-          .get(taskId) as { is_paused: number; missed_runs_paused_at: number | null } | undefined;
-        if (!guard || guard.is_paused !== 1 || guard.missed_runs_paused_at == null) continue;
-        noteUnsettled(setNextRun(taskId, {
-          at: tsToMs(nextRun),
-          alongside: { is_paused: 0, schedule_status: 'waiting', missed_runs_paused_at: null },
-          reason: 'D12 auto-resolved a stale missed-runs pause; skipped to the next future anchor',
-        }), 'scheduler: stale missed-run pause auto-resolved', { taskId });
-        writeTaskLog({
-          taskId,
-          fromEntity: 'engine',
-          entryKind: 'auto_sweep',
-          actionTaken: `engine auto-skipped ${missedSlots} missed run${missedSlots === 1 ? '' : 's'} to the next scheduled time`,
-          reason: `${MISSED_RUNS_PASSED_OVER} (work_schedule(action="resolve_missed") never ran); schedule resumed, next run at ${nextRun}`,
-        });
-        logger.warn('Scheduler: AUTO-RESOLVED stale missed-runs pause, skipped to next future anchor', {
-          taskId, title: task.title, missedSlots, nextRun, pausedAt: task.missed_runs_paused_at,
-        });
-        try {
-          const { getTask } = await import('../tracker/schema.js');
-          const fresh = getTask(taskId);
-          if (fresh) broadcast({ type: 'tracker:task_updated', data: fresh });
-        } catch { /* dashboard refresh is best-effort */ }
-      } else {
-        // No future anchor (past repeat end or uncomputable): never complete or delete a task from this path;
-        // disarm the fallback and leave the task paused for a human or agent decision.
-        const dGuard = db.prepare('SELECT is_paused, missed_runs_paused_at FROM work WHERE id = ?')
-          .get(taskId) as { is_paused: number; missed_runs_paused_at: number | null } | undefined;
-        if (!dGuard || dGuard.is_paused !== 1 || dGuard.missed_runs_paused_at == null) continue;
-        noteUnsettled(patchWork(taskId, { missed_runs_paused_at: null }), 'scheduler: missed-run pause stamp cleared', { taskId });
-        writeTaskLog({
-          taskId,
-          fromEntity: 'engine',
-          entryKind: 'auto_sweep',
-          actionTaken: 'missed-runs auto-resolve found no future run; task left paused',
-          reason: 'calculateNextRun returned null (past repeat end or missing anchor); the engine does not complete or delete tasks from this path',
-        });
-        logger.warn('Scheduler: stale missed-runs pause has no future anchor, left paused (fallback disarmed)', {
-          taskId, title: task.title,
-        });
-      }
-    }
-  } catch (err) {
-    logger.warn('autoResolveStaleMissedRunPauses failed (non-fatal)', {
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
+/** Records the decision on the task's history and the log, then tells the owner on one card per task. Its count is
+ *  the runs recorded since the card was told; once he has seen or dismissed it, the next miss starts a new count. */
+function tellMissedRuns(row: Record<string, unknown>, nowMs: number, m: Missed, done: string): void {
+  const taskId = row.id as string;
+  const title = (row.title as string | null) ?? 'A scheduled task';
+  writeTaskLog({ taskId, fromEntity: 'scheduler', entryKind: 'auto_sweep', reason: m.cause, evidenceJson: JSON.stringify({ missed: m.count }),
+    actionTaken: m.recentMs === null ? `skipped ${m.count} missed runs` : `caught up the run due ${renderInstant(m.recentMs)}, skipped any older ones` });
+  logger.warn('Scheduler: missed runs', { taskId, title, missed: m.count, cause: m.cause, decision: m.recentMs === null ? 'skipped' : 'caught_up', catchUpDue: m.recentMs });
+  const key = `missedruns:${taskId}`;
+  if (!ownerToldOf(key)) ownerConditionCleared(key);
+  const since = (getDb().prepare('SELECT at_ms FROM healer_state WHERE scope = ? AND key = ?').get(TOLD, key) as { at_ms: number } | undefined)?.at_ms ?? nowMs;
+  const { n } = getDb().prepare(`SELECT COALESCE(SUM(json_extract(json_extract(payload, '$.evidence_json'), '$.missed')), 0) AS n FROM work_events
+    WHERE work_id = ? AND kind = 'audit' AND json_extract(payload, '$.entry_kind') = 'auto_sweep' AND created_at >= ?`).get(taskId, since) as { n: number };
+  tellOwner(key, `"${title}" missed ${n}${m.count >= MISSED_COUNT_CAP ? ' or more' : ''} scheduled run${n === 1 ? '' : 's'} because ${m.cause}. ${done}`);
 }
 
 
@@ -228,10 +132,8 @@ export async function checkScheduledTasks(): Promise<void> {
   // The tick keeps only scheduling. The other periodic sweeps are kinds on work/work-reaper.ts's own 30 s
   // timer, so a row it repairs reaches this scan a tick later: `orphaned-and-stale-runs` (cleanupOrphanedRuns +
   // cleanupStaleRuns), `expired-pauses` (resumeExpiredPauses), `ladder` (runLadder) and
-  // `steered-run-delivery-close` (closeRunsThatDelivered). autoResolveStaleMissedRunPauses stays here because it
-  // walks the recurrence and writes the next fire time. Nothing the reaper runs is a precondition of the scan:
+  // `steered-run-delivery-close` (closeRunsThatDelivered). Nothing the reaper runs is a precondition of the scan:
   // the occurrence claim is a UNIQUE constraint.
-  await autoResolveStaleMissedRunPauses();
 
   // The due set is `dueScope()`, shared with work_update(filter:"overdue"); the 1.5x escalation is local.
   const dueTasks = db.prepare(`
@@ -249,23 +151,15 @@ export async function checkScheduledTasks(): Promise<void> {
     const runCount = (taskRow.run_count as number) ?? 0;
     const runNumber = runCount + 1;
 
-    // A recurring task overdue by more than 1.5 intervals has missed slots (platform offline or paused): wake the
-    // agent via work_schedule(action="resolve_missed") rather than silently backfill or skip. A never-run task
-    // (run_count = 0) is a first fire, not a missed run.
-    const repeatInterval = taskRow.repeat_interval as number | null;
-    const repeatUnit = taskRow.repeat_unit as string | null;
-    if (repeatInterval && repeatUnit && runCount > 0) {
-      // Compare the RAW instant, never the display copy: `msToText` truncates.
-      const nextRunMs = occurrenceOf(taskRow);
-      const intervalMs = intervalApproxMs(repeatUnit, repeatInterval);
-      if (nextRunMs !== null && intervalMs) {
-        const overdueMs = Date.now() - nextRunMs;
-        if (overdueMs > intervalMs * 1.5) {
-          const missedSlots = Math.max(1, Math.floor(overdueMs / intervalMs));
-          alertMissedRuns(taskRow, missedSlots);
-          continue;
-        }
-      }
+    // A repeating task that already ran and is late missed runs (a never-run task is a first fire, not a miss).
+    // With none younger than one interval they are all skipped; else the claim below runs the recent one.
+    const intervalMs = intervalApproxMs(taskRow);
+    const dueMs = occurrenceOf(taskRow);
+    const missed = intervalMs && runCount > 0 && dueMs !== null && nowMs - dueMs > LATE_MS ? missedRuns(taskRow, nowMs, intervalMs) : null;
+    if (missed && missed.recentMs === null) {
+      const next = resumeSchedule(taskId, 'missed runs older than one interval; skipped to the next scheduled time');
+      tellMissedRuns(taskRow, nowMs, missed, `None was recent enough to run, so they were skipped. The next run is ${renderInstant(tsToMs(next)) ?? 'not set'}.`);
+      continue;
     }
 
     const dependsOnRaw = taskRow.depends_on as string | null;
@@ -312,13 +206,14 @@ export async function checkScheduledTasks(): Promise<void> {
 
     const occurrenceId = claimOccurrence({
       workId: taskId, sequence: runNumber, occurrenceMs: claimedOccurrenceMs,
-      nowMs, nextRunMs: tsToMs(nextAtFire),
+      nowMs, nextRunMs: tsToMs(nextAtFire), scheduledForMs: missed?.recentMs,
       agentId: (taskRow.assigned_to as string | null) ?? 'scheduler',
     });
     if (!occurrenceId) {
       logger.info('Scheduler: occurrence already claimed elsewhere, skipping', { taskId, occurrence: claimedOccurrence, sequence: runNumber });
       continue;
     }
+    if (missed) tellMissedRuns(taskRow, nowMs, missed, `The Dojo ran the one due ${renderInstant(missed.recentMs)} now to catch up and skipped any older ones.`);
     noteUnsettled(setTrackerStatus(taskId, 'in_progress', {
       by: 'scheduler', actorId: 'scheduler',
       reason: `scheduled occurrence ${claimedOccurrence} fired`,
@@ -363,7 +258,8 @@ export async function checkScheduledTasks(): Promise<void> {
     const taskKind = taskRow.kind as string | null;
     const totalRuns = taskRow.repeat_end_value ? ` of ${taskRow.repeat_end_value}` : '';
     // A run firing well after its time (the Mac was asleep or off) says so, so it is not passed off as on time.
-    const late = claimedOccurrenceMs !== null && nowMs - claimedOccurrenceMs > 5 * 60_000 ? `, late: it was due ${formatTimeForAgent(claimedOccurrenceMs)}` : '';
+    const late = missed ? `, late: a catch-up of the run due ${formatTimeForAgent(missed.recentMs!)}`
+      : claimedOccurrenceMs !== null && nowMs - claimedOccurrenceMs > LATE_MS ? `, late: it was due ${formatTimeForAgent(claimedOccurrenceMs)}` : '';
 
     // Reminders get a lighter prompt: one conversational delivery in the agent's normal voice, then a silent close.
     // The wake asks for the reply ALONE and the bookkeeping in the NEXT response, because text emitted in the same

@@ -200,8 +200,8 @@ export function recordCost(params: RecordCostParams): void {
       callPurpose ?? null,
     );
 
-    // Invalidate the daily spend cache so the next budget check gets fresh data.
-    invalidateDailySpendCache();
+    // A free call changes no total: the spend cache and the budget alerts are left alone.
+    if (costUsd > 0) invalidateDailySpendCache();
 
     // Self-calibration: this row holds both instrument readings (uncached input over latency bounds the
     // prefill rate from below; the estimate beside the billed count is the divisor the estimator should
@@ -243,9 +243,11 @@ export function recordCost(params: RecordCostParams): void {
     }, agentId);
 
     // Check budget alerts AFTER recording (fires alerts when thresholds are crossed)
-    try {
-      checkAlertsAfterCost(agentId);
-    } catch {
+    if (costUsd > 0) {
+      try {
+        checkAlertsAfterCost(agentId);
+      } catch {
+      }
     }
   } catch (err) {
     logger.error('Failed to record cost', {

@@ -250,8 +250,7 @@ googleRouter.put('/watch-email', async (c) => {
     }
     logger.info('Gmail email-monitoring toggled', { accountId: accountId ?? slot, enabled: body.enabled });
 
-    // Bounce the watcher so the change takes effect: a disabled to enabled flip on a freshly
-    // connected slot needs the per-slot lastCheckedAt seeded, which only startGmailWatcher() does.
+    // Bounce the watcher so its next poll comes in ten seconds instead of at the next five-minute round.
     try {
       const { stopGmailWatcher, startGmailWatcher, markGmailWatchBaselineNow } =
         await import('../../services/gmail-watcher.js');

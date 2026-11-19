@@ -35,6 +35,14 @@ LAUNCH_DIR="$HOME/Library/LaunchAgents"
 PORT="${DOJO_PORT:-3001}"
 STAMP="$(date +%Y-%m-%dT%H-%M-%S)"
 
+# THE one way these scripts read a database: read-only, and whether or not its WAL side files exist.
+# immutable=1 is safe only with no -wal file and nothing else holding the database open.
+db_read() {
+    if [ -e "$1-wal" ]; then sqlite3 -readonly "$1" "$2"; return; fi
+    local p="${1//%/%25}"; p="${p//\?/%3F}"; p="${p//#/%23}"
+    sqlite3 "file:$p?mode=ro&immutable=1" "$2"
+}
+
 FROM=""
 ASSUME_YES=0
 MODE="list"
@@ -45,6 +53,7 @@ while [ $# -gt 0 ]; do
         --latest) MODE="restore"; FROM="__latest__"; shift ;;
         --from)   MODE="restore"; FROM="${2:-}"; shift 2 ;;
         --yes|-y) ASSUME_YES=1; shift ;;
+        --read)   db_read "${2:-}" "${3:-}"; exit ;;   # rollback.sh reads through this one function
         -h|--help) MODE="list"; shift ;;
         -*)       echo "ERROR: unknown option '$1'"; exit 2 ;;
         *)        MODE="restore"; FROM="$1"; shift ;;
@@ -89,12 +98,12 @@ describe() {
         DESC="$mtime   $(human "$size")   UNREADABLE — the file is empty"
         return
     fi
-    chain="$(sqlite3 "$f" 'SELECT COUNT(*) FROM _migrations;' 2>/dev/null)"
+    chain="$(db_read "$f" 'SELECT COUNT(*) FROM _migrations;' 2>/dev/null)"
     if [ -z "$chain" ]; then
         DESC="$mtime   $(human "$size")   UNREADABLE — not a usable Dojo database (corrupt, or not a database)"
         return
     fi
-    head="$(sqlite3 "$f" "SELECT name FROM _migrations WHERE name NOT LIKE '9%' ORDER BY name DESC LIMIT 1;" 2>/dev/null)"
+    head="$(db_read "$f" "SELECT name FROM _migrations WHERE name NOT LIKE '9%' ORDER BY name DESC LIMIT 1;" 2>/dev/null)"
     OKFILE=1; CHAIN="$chain"; HEAD="$head"
     DESC="$mtime   $(human "$size")   chain $chain (up to ${head:-unknown})"
 }
@@ -268,8 +277,8 @@ if [ "$OKFILE" -ne 1 ]; then
     echo "Nothing has been changed. Run this script with no arguments to see the others."
     exit 1
 fi
-CAND_INTEGRITY="$(sqlite3 "$FROM" 'PRAGMA integrity_check;' 2>&1 | head -1)"
-CAND_FK="$(sqlite3 "$FROM" 'PRAGMA foreign_key_check;' 2>/dev/null | wc -l | tr -d ' ')"
+CAND_INTEGRITY="$(db_read "$FROM" 'PRAGMA integrity_check;' 2>&1 | head -1)"
+CAND_FK="$(db_read "$FROM" 'PRAGMA foreign_key_check;' 2>/dev/null | wc -l | tr -d ' ')"
 echo "  integrity_check    : $CAND_INTEGRITY"
 echo "  foreign_key_check  : $CAND_FK row(s)"
 if [ "$CAND_INTEGRITY" != "ok" ]; then
@@ -313,8 +322,8 @@ if [ -f "$DB" ]; then
     # size; a full disk cuts a copy short, and an ignored exit status once let the restore replace
     # the only good copy of the owner's data with a cut-off file.
     KEPT=0
-    if sqlite3 "$DB" "VACUUM INTO '$SAFETY'" 2>/dev/null \
-       && [ "$(sqlite3 "$SAFETY" 'PRAGMA quick_check;' 2>/dev/null | head -1)" = "ok" ]; then
+    if db_read "$DB" "VACUUM INTO '$SAFETY'" 2>/dev/null \
+       && [ "$(db_read "$SAFETY" 'PRAGMA quick_check;' 2>/dev/null | head -1)" = "ok" ]; then
         KEPT=1
     else
         rm -f "$SAFETY" "$SAFETY-wal" "$SAFETY-shm"
@@ -371,10 +380,10 @@ trap - TERM INT HUP
 # ── 7. Verify the RESULT, and undo if it does not hold ──
 echo ""
 echo "Checking the restored database..."
-NEW_INTEGRITY="$(sqlite3 "$DB" 'PRAGMA integrity_check;' 2>&1 | head -1)"
-NEW_CHAIN="$(sqlite3 "$DB" 'SELECT COUNT(*) FROM _migrations;' 2>/dev/null)"
-NEW_HEAD="$(sqlite3 "$DB" "SELECT name FROM _migrations WHERE name NOT LIKE '9%' ORDER BY name DESC LIMIT 1;" 2>/dev/null)"
-NEW_FK="$(sqlite3 "$DB" 'PRAGMA foreign_key_check;' 2>/dev/null | wc -l | tr -d ' ')"
+NEW_INTEGRITY="$(db_read "$DB" 'PRAGMA integrity_check;' 2>&1 | head -1)"
+NEW_CHAIN="$(db_read "$DB" 'SELECT COUNT(*) FROM _migrations;' 2>/dev/null)"
+NEW_HEAD="$(db_read "$DB" "SELECT name FROM _migrations WHERE name NOT LIKE '9%' ORDER BY name DESC LIMIT 1;" 2>/dev/null)"
+NEW_FK="$(db_read "$DB" 'PRAGMA foreign_key_check;' 2>/dev/null | wc -l | tr -d ' ')"
 echo "  integrity_check    : $NEW_INTEGRITY"
 echo "  migrations applied : ${NEW_CHAIN:-unreadable} (up to ${NEW_HEAD:-unknown})"
 echo "  foreign_key_check  : $NEW_FK row(s)"

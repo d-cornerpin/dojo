@@ -58,40 +58,28 @@ describe('alignX', () => {
 });
 
 describe('normalizePageList', () => {
-  it('keeps 0-based indexes that are all in range', () => {
-    expect(normalizePageList([0, 1], 3)).toEqual([0, 1]);
+  it('counts from 1', () => {
+    expect(normalizePageList([1, 2], 3)).toEqual([0, 1]);
   });
 
-  it('reads a page equal to the total as 1-based', () => {
-    expect(normalizePageList([1, 2, 3], 3)).toEqual([0, 1, 2]);
-  });
-
-  it('drops indexes out of range after the 1-based shift', () => {
+  it('the last page is the total', () => {
     expect(normalizePageList([3], 3)).toEqual([2]);
   });
 
-  it('an index past the end leaves nothing', () => {
+  it('0 is not a page', () => {
+    expect(normalizePageList([0], 3)).toEqual([]);
+  });
+
+  it('a page past the end is dropped', () => {
     expect(normalizePageList([4], 3)).toEqual([]);
   });
 
-  it('drops negative indexes', () => {
-    expect(normalizePageList([-1, 2], 3)).toEqual([2]);
-  });
-
-  it('a 1-based list keeps only the in-range pages', () => {
-    expect(normalizePageList([3, 5], 3)).toEqual([2]);
+  it('negatives and fractions are dropped', () => {
+    expect(normalizePageList([-1, 1.5, 2], 3)).toEqual([1]);
   });
 
   it('an empty list is empty', () => {
     expect(normalizePageList([], 3)).toEqual([]);
-  });
-
-  it('no input is empty', () => {
     expect(normalizePageList(undefined, 3)).toEqual([]);
-  });
-
-  it('a single-page file: 1-based [1] and 0-based [0] both land on page 0', () => {
-    expect(normalizePageList([1], 1)).toEqual([0]);
-    expect(normalizePageList([0], 1)).toEqual([0]);
   });
 });

@@ -75,7 +75,7 @@ export async function runPlaudCommand(
       needsReauth,
       error: needsReauth
         ? 'Plaud is no longer connected (token expired or revoked). Reconnect from Settings → Integrations → Plaud.'
-        : errMsg,
+        : `Error: the Plaud command failed: ${errMsg}`,
     };
   } finally {
     slot?.release();

@@ -27,16 +27,16 @@ const judge = (deliveryRef: string, headers = HEADERS) => judgeOwnerEmail({
 const CONFIRMED = { state: 'confirmed', words: 'close it' };
 
 describe('P44 replay guard — the same delivery is not a replay', () => {
-  it('a. the same provider delivery judged twice (or ten times) is confirmed every time', async () => {
+  it('a. the same provider delivery judged twice (or ten times) is confirmed every time, a re-read marked as one', async () => {
     expect(await judge('gmail:g1:abc')).toEqual(CONFIRMED);
-    expect(await judge('gmail:g1:abc')).toEqual(CONFIRMED);
-    expect(await judge('gmail:g1:abc')).toEqual(CONFIRMED);
+    expect(await judge('gmail:g1:abc')).toEqual({ ...CONFIRMED, reread: true });
+    expect(await judge('gmail:g1:abc')).toEqual({ ...CONFIRMED, reread: true });
   });
 
   it('b. a different delivery carrying the same Message-ID is a replay: not the owner', async () => {
     expect(await judge('gmail:g1:abc')).toEqual(CONFIRMED);
     expect(await judge('gmail:g1:def')).toEqual({ state: 'unconfirmed', reason: 'seen_before' });
-    expect(await judge('gmail:g1:abc'), 'the original delivery still holds its verdict').toEqual(CONFIRMED);
+    expect(await judge('gmail:g1:abc'), 'the original delivery still holds its verdict').toEqual({ ...CONFIRMED, reread: true });
   });
 
   it('the same provider item id on another account is another delivery', async () => {

@@ -1,6 +1,5 @@
 import { useFollowGrowth } from '../hooks/useFollowGrowth';
 import { useState, useEffect, useRef, useCallback, useMemo, type ReactNode } from 'react';
-import type { Message } from '@dojo/shared';
 import type { ChatChunkEvent, ChatReasoningChunkEvent, ChatMessageEvent, ChatToolCallEvent, ChatToolResultEvent, ChatErrorEvent, ChatWorkingNoteEvent, WsEvent } from '@dojo/shared';
 import { classifyMessageForDisplay, classifyTool, parseInboundChannel, stripInboundChannelMarker, parseOutboundRouting, channelOfSendTool, parseWorkingNote, isOwnerAlertSystemNote, stripSourceEnvelope, OWNER_ALERT_PROJECT_ATTENTION_PREFIX, WORKING_NOTE_PREFIX, INTERNAL_WORKING_NOTE_PREFIX, NO_REPLY_CLOSED_MARKER } from '@dojo/shared';
 import type { MessageOrigin } from '@dojo/shared';
@@ -393,6 +392,21 @@ const toolBadgeItems = (
 // dojo3: tool-only turns become one chip pill per visible tool (input + result); bookkeeping tools drop.
 interface ToolResultInfo { content: string; isError: boolean }
 
+// The text of a tool result: a string as is, or the text parts of an array of content blocks.
+const toolResultText = (raw: unknown): string => {
+  if (typeof raw === 'string') return raw;
+  if (!Array.isArray(raw)) return JSON.stringify(raw);
+  return (raw as Array<Record<string, unknown>>)
+    .map((b) => {
+      if (b.type === 'text') return b.text as string;
+      if (b.type === 'image') return '[Image content, visible to model via vision]';
+      if (b.type === 'document') return `[PDF: ${(b.title as string) ?? 'document'}]`;
+      return '';
+    })
+    .filter(Boolean)
+    .join('\n');
+};
+
 // A tool call whose result errored: the engine self-recovers, so a failed chip is noise outside Wordy mode.
 const isErroredToolResult = (info?: ToolResultInfo): boolean => !!info?.isError;
 
@@ -504,33 +518,14 @@ const ToolResultBubble = ({ msg }: { msg: ChatMessage }) => {
       <div className="max-w-[75%]">
         {blocks
           .filter((b) => b.type === 'tool_result')
-          .map((b, i) => {
-            let displayContent: string;
-            const rawContent = b.content as unknown;
-            if (typeof rawContent === 'string') {
-              displayContent = rawContent;
-            } else if (Array.isArray(rawContent)) {
-              displayContent = (rawContent as Array<Record<string, unknown>>)
-                .map((block: Record<string, unknown>) => {
-                  if (block.type === 'text') return block.text as string;
-                  if (block.type === 'image') return '[Image content, visible to model via vision]';
-                  if (block.type === 'document') return `[PDF: ${(block.title as string) ?? 'document'}]`;
-                  return '';
-                })
-                .filter(Boolean)
-                .join('\n');
-            } else {
-              displayContent = JSON.stringify(rawContent);
-            }
-            return (
-              <ToolResultBlock
-                key={`${msg.id}-result-${i}`}
-                toolUseId={b.tool_use_id ?? ''}
-                content={displayContent}
-                isError={!!b.is_error}
-              />
-            );
-          })}
+          .map((b, i) => (
+            <ToolResultBlock
+              key={`${msg.id}-result-${i}`}
+              toolUseId={b.tool_use_id ?? ''}
+              content={toolResultText(b.content)}
+              isError={!!b.is_error}
+            />
+          ))}
       </div>
     </div>
   );
@@ -678,7 +673,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
   useFollowGrowth(messagesContentRef, !loading, () => pinnedToBottomRef.current, scrollToBottom, AGENT_ID);
 
   useChatCatchUp<ChatMessage>({
-    reconnectCount, agentId: AGENT_ID, agentIdRef, wordyMode, ready: !(techSession.active && !techSession.ready),
+    reconnectCount, agentId: AGENT_ID, agentIdRef, ready: !(techSession.active && !techSession.ready),
     statusFrameSeqRef, setMessages, setIsWorking, setBackgroundStoppable, toChat: toMessage,
   });
 
@@ -716,12 +711,12 @@ export const Chat = ({ panel = null }: ChatProps) => {
         setModelNames(lookup);
       }
 
-      const result = await api.getChatHistory(AGENT_ID, 200, undefined, wordyMode);
+      const result = await api.getChatHistory(AGENT_ID, 200);
       if (!active) return;
       if (result.ok) {
         // Dig up older pages until real conversation renders (the blank-chat guarantee).
         const loaded = await backfillUntilRenderable(result.data, wordyMode,
-          (oldest) => api.getChatHistory(AGENT_ID, 200, oldest, wordyMode), () => active);
+          (oldest) => api.getChatHistory(AGENT_ID, 200, oldest), () => active);
         if (!loaded) return;
         setMessages(
           loaded.map(toMessage),
@@ -740,7 +735,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
     };
     loadHistory();
     return () => { active = false; };
-    // wordyMode is a dep: wordy adds own-output SERVER rows, so toggling must refetch history.
+    // wordyMode is a dep: Wordy changes which rows can be drawn, so the dig for a drawable page runs again.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [AGENT_ID, techSession.active, techSession.ready, wordyMode]);
 
@@ -754,7 +749,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
     const prevScrollHeight = container?.scrollHeight ?? 0;
 
     const startedFor = `${AGENT_ID}:${wordyMode}`;
-    const result = await api.getChatHistory(AGENT_ID, 50, oldestId, wordyMode);
+    const result = await api.getChatHistory(AGENT_ID, 50, oldestId);
     if (viewKeyRef.current !== startedFor) { setLoadingMore(false); return; }
     if (!result.ok) {
       // A failed request says nothing about history: leave hasMore so the next scroll retries.
@@ -972,7 +967,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
         toast.warning(e.error);
         if (declared === 'error') { setIsWorking(false); reconcileStreamingBubbles(); }   // the turn ended either way
       } else {
-        toast.error(e.error); // stays until dismissed
+        toast.addActionToast({ title: '', message: e.error, actions: [], dedupeKey: `agent-error:${e.agentId}:${e.error}`, level: 'error' });   // the owner must act: it stays, red
         setIsWorking(false);
         reconcileStreamingBubbles();
       }
@@ -1108,7 +1103,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
     const unsubTerminated = subscribe('agent:terminated', (event: WsEvent) => {
       const e = event as { agentId: string; reason: string };
       if (e.agentId !== agentIdRef.current) return;
-      toast.error(`Agent terminated: ${e.reason}`);
+      toast.info('This agent has ended, so it will not answer here any more.');
       setIsWorking(false);
       setAwaitingUserReply(false);
       reconcileStreamingBubbles();
@@ -1184,29 +1179,9 @@ export const Chat = ({ panel = null }: ChatProps) => {
     }
   };
 
-  // tool_use_id → is_error lookup so the ChannelSendBubble hides when its tool
-  // was refused. MUST sit above any early return: hook order must be identical
-  // across renders, and a hook below the exit throws React error #310 on flip.
-  const toolResultErrorById = useMemo(() => {
-    const m = new Map<string, boolean>();
-    for (const msg of messages) {
-      if (msg.role !== 'tool') continue;
-      try {
-        const parsed = JSON.parse(msg.content);
-        if (!Array.isArray(parsed)) continue;
-        for (const block of parsed) {
-          if (block?.type === 'tool_result' && typeof block.tool_use_id === 'string') {
-            m.set(block.tool_use_id, block.is_error === true);
-          }
-        }
-      } catch { /* not JSON */ }
-    }
-    return m;
-  }, [messages]);
-
-  // tool_use_id → { content, isError } for the dojo3 chip-tool expansion. Mirrors
-  // ToolResultBubble's content extraction (string OR array of content blocks) so a
-  // collapsed chip can reveal the same result text wordy mode shows in its cards.
+  // tool_use_id → { content, isError }: the chip expansion shows the text, and a refused
+  // channel send hides its bubble. MUST sit above any early return: hook order must be
+  // identical across renders, and a hook below the exit throws React error #310 on flip.
   const toolResultById = useMemo(() => {
     const m = new Map<string, ToolResultInfo>();
     for (const msg of messages) {
@@ -1216,24 +1191,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
         if (!Array.isArray(parsed)) continue;
         for (const block of parsed) {
           if (block?.type !== 'tool_result' || typeof block.tool_use_id !== 'string') continue;
-          const raw = block.content as unknown;
-          let content: string;
-          if (typeof raw === 'string') {
-            content = raw;
-          } else if (Array.isArray(raw)) {
-            content = (raw as Array<Record<string, unknown>>)
-              .map((b) => {
-                if (b.type === 'text') return b.text as string;
-                if (b.type === 'image') return '[Image content, visible to model via vision]';
-                if (b.type === 'document') return `[PDF: ${(b.title as string) ?? 'document'}]`;
-                return '';
-              })
-              .filter(Boolean)
-              .join('\n');
-          } else {
-            content = JSON.stringify(raw);
-          }
-          m.set(block.tool_use_id, { content, isError: block.is_error === true });
+          m.set(block.tool_use_id, { content: toolResultText(block.content), isError: block.is_error === true });
         }
       } catch { /* not JSON */ }
     }
@@ -1262,7 +1220,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
       if (toolUses.length === 0) return null;
       const channelSend = toolUses.find(b => b.name && isChannelSendBubbleTool(b.name));
       const channelSendErrored = channelSend?.id
-        ? toolResultErrorById.get(channelSend.id) === true
+        ? toolResultById.get(channelSend.id)?.isError === true
         : false;
       if (channelSend && !channelSendErrored) return null;
       return summarizeToolTurn(toolUses.map(b => ({ name: b.name ?? '', input: b.input }))) ? 'visible' : 'hidden';
@@ -1286,7 +1244,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
     }
     closeGroup();
     return { groupByFirstId, skipIds };
-  }, [messages, wordyMode, toolResultErrorById]);
+  }, [messages, wordyMode, toolResultById]);
 
   // Channel routing markers arrive as standalone system messages AFTER the assistant
   // reply they describe. Walk once: attach each marker to its preceding assistant
@@ -1401,11 +1359,9 @@ export const Chat = ({ panel = null }: ChatProps) => {
   const startNewSession = async () => {
     const res = await api.request<{ archiveId: string; sessionStartedAt: string }>(`/chat/${AGENT_ID}/new-session`, { method: 'POST' });
     if (res.ok) {
-      // wordyMode rides along: the modes are different server queries and this
-      // refetch replaces the whole pane, so a wordy-blind fetch drops own-output rows.
-      const result = await api.getChatHistory(AGENT_ID, 200, undefined, wordyMode);
+      const result = await api.getChatHistory(AGENT_ID, 200);
       if (result.ok) {
-        setMessages(result.data.map((m: Message) => ({ ...m, isStreaming: false })));
+        setMessages(result.data.map(toMessage));
       } else {
         toast.error('The new conversation started but the page could not reload it. Refresh the page.');
       }
@@ -1560,9 +1516,9 @@ export const Chat = ({ panel = null }: ChatProps) => {
               (b) => b.type === 'tool_use' && b.name && isChannelSendBubbleTool(b.name),
             );
             // Hide the outbound bubble when the underlying tool call was refused;
-            // `toolResultErrorById` above carries that verdict.
+            // `toolResultById` above carries that verdict.
             const channelSendErrored = channelSend?.id
-              ? toolResultErrorById.get(channelSend.id) === true
+              ? toolResultById.get(channelSend.id)?.isError === true
               : false;
             if (channelSend && !channelSendErrored) {
               // The badge describes the SEND, so it rides on the ChannelSendBubble only:

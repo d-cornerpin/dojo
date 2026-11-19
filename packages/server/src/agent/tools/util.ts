@@ -67,6 +67,13 @@ function getDownloadUrl(fileId: string): string {
   return `http://localhost:${port}/api/upload/download/${fileId}`;
 }
 
+/** Where a link opens: from anywhere while the Cloudflare tunnel runs, else only on this Mac. */
+export function linkReach(url: string): string {
+  return /^https?:\/\/localhost[:/]/i.test(url)
+    ? 'No tunnel is running, so this link only works on this Mac. To open it from another device, start the Cloudflare tunnel from the dashboard and ask for the link again.'
+    : 'The Cloudflare tunnel is active, so this link opens from anywhere on the internet.';
+}
+
 /** For anything rendered INSIDE the dashboard: the absolute URL's host is only right on the
  * server's own machine, so a bare path is used; the route is auth-exempt by unguessable UUID. */
 export function toDashboardPath(downloadUrl: string): string {

@@ -69,7 +69,7 @@ export const notWaitingForItsTimeSql = (a = 'w'): string =>
 
 /**
  * What "overdue" means, declared once; emits exactly one `?` (the now-instant in epoch ms). No threshold
- * on purpose: a caller adds its own on top (`scheduler/runner.ts` escalates past 1.5 intervals). Both paused
+ * on purpose: a caller adds its own on top (`scheduler/runner.ts` decides a late repeating task's missed runs). Both paused
  * clauses are load-bearing: a row can carry `is_paused = 1` while `schedule_status` reads 'waiting'. A row
  * the owner holds, or handed in as a whole, does not fire; a run's hand-in never holds the next run.
  */
@@ -198,7 +198,6 @@ export const scheduleRowColumns = (a = 'w'): string => `
   ${a}.next_run_at AS next_run_at_ms,
   ${a}.last_run_at AS last_run_at_ms,
   COALESCE(${a}.schedule_status, 'unscheduled') AS schedule_status,
-  ${msToText(a + '.missed_runs_paused_at')} AS missed_runs_paused_at,
   ${a}.agent_id AS assigned_to,
   ${a}.parent_id AS project_id,
   ${a}.assigned_to_group AS assigned_to_group,

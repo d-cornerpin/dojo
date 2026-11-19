@@ -79,6 +79,8 @@ export function redactDeclaredSecretArgs(
     if (!out) out = { ...args };
     out[field] = redactLeaves(args[field]);
   }
+  // Unparsed arguments keep their raw text under this key; for a tool that declares a secret it may hold one.
+  if (typeof args.__malformed_args === 'string') out = { ...(out ?? args), __malformed_args: REDACTED_CREDENTIAL };
   return out ?? args;
 }
 

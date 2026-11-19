@@ -5,12 +5,20 @@ interface RouterTestResult {
   rawScore: number;
   confidence: number;
   tier: string;
+  method?: string;
   selectedModel: string;
 }
 
 interface RouterTestProps {
   onTest: (prompt: string) => Promise<RouterTestResult | { error: string }>;
 }
+
+const METHOD_WORDS: Record<string, string> = {
+  semantic: 'Meaning match',
+  fallback: 'Keyword backup',
+  heuristic: 'Keyword backup',
+  structural: 'Fixed rule',
+};
 
 export const RouterTest = ({ onTest }: RouterTestProps) => {
   const [prompt, setPrompt] = useState('');
@@ -39,7 +47,7 @@ export const RouterTest = ({ onTest }: RouterTestProps) => {
     <div className="glass-card p-4">
       <h3 className="card-header mb-3">Test Router</h3>
       <p className="text-xs text-ui/40 mb-3">
-        Enter a prompt to see how the router would score and route it.
+        Enter a prompt to see the tier and model a turn with this prompt would get.
       </p>
 
       <textarea
@@ -63,17 +71,18 @@ export const RouterTest = ({ onTest }: RouterTestProps) => {
       {result && (
         <div className="mt-4 space-y-4">
           {/* Result summary */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
             <ResultCard label="Raw Score" value={result.rawScore.toFixed(3)} />
             <ResultCard label="Confidence" value={`${(result.confidence * 100).toFixed(0)}%`} />
             <ResultCard label="Selected Tier" value={result.tier} highlight />
             <ResultCard label="Selected Model" value={result.selectedModel} highlight />
+            {result.method && <ResultCard label="Decided by" value={METHOD_WORDS[result.method] ?? result.method} />}
           </div>
 
-          {/* Dimension scores */}
-          <div>
+          {/* Keyword backup scores: present only when the backup decided */}
+          {result.scores.length > 0 && (<div>
             <h4 className="text-xs font-medium text-ui/55 uppercase tracking-wider mb-2">
-              Dimension Scores
+              Keyword backup scores
             </h4>
             <div className="text-ui/25 rounded-lg overflow-hidden">
               <table className="w-full text-xs">
@@ -112,7 +121,7 @@ export const RouterTest = ({ onTest }: RouterTestProps) => {
                 </tbody>
               </table>
             </div>
-          </div>
+          </div>)}
         </div>
       )}
     </div>

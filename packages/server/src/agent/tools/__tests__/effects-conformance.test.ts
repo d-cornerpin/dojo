@@ -25,7 +25,8 @@ import { describe, it, expect } from 'vitest';
 import { join } from 'node:path';
 import { getAllToolDefinitions, toolDefinitions } from '../definitions.js';
 import { unknownArgsAgainstSchema } from '../index.js';
-import { checkAdvertisedParameters, checkEffectDeclarations, declaredSecretFields, walkSchemaFields, type AdvertisementContext, type ConformanceProblem } from '../effect-conformance.js';
+import { checkAdvertisedParameters, checkEffectDeclarations, walkSchemaFields, type AdvertisementContext, type ConformanceProblem } from './effect-conformance.js';
+import { declaredSecretFields } from '../registry.js';
 
 const ALL = getAllToolDefinitions();
 const BASE = ALL.filter((d) => !d.name.startsWith('user_'));

@@ -4,9 +4,12 @@ import { describe, it, expect } from 'vitest';
 import {
   repairToolPairing,
   isToolResultCarrier,
-  unpairedToolIds,
   type PairedMessage,
 } from '../tool-pairing.js';
+
+// Nothing is left to repair: a second repair of a copy strips nothing in either direction.
+const settled = (msgs: PairedMessage[]): void =>
+  expect(repairToolPairing(structuredClone(msgs))).toEqual({ strippedToolUse: 0, strippedToolResult: 0, droppedMessages: 0 });
 
 const use = (id: string) => ({ type: 'tool_use', id, name: 'work_update', input: {} });
 const res = (id: string) => ({ type: 'tool_result', tool_use_id: id, content: '[FILED] ok' });
@@ -42,7 +45,7 @@ describe('a carrier holding results beside folded user text', () => {
     const report = repairToolPairing(msgs);
     expect(report).toEqual({ strippedToolUse: 0, strippedToolResult: 0, droppedMessages: 0 });
     expect(msgs).toHaveLength(5);
-    expect(unpairedToolIds(msgs)).toEqual({ toolUseWithoutResult: [], toolResultWithoutUse: [] });
+    settled(msgs);
   });
 });
 
@@ -56,7 +59,7 @@ describe('both directions: the postcondition', () => {
     const report = repairToolPairing(msgs);
     expect(report.strippedToolUse).toBe(1);
     expect(msgs[1].content).toEqual([text('working')]);
-    expect(unpairedToolIds(msgs)).toEqual({ toolUseWithoutResult: [], toolResultWithoutUse: [] });
+    settled(msgs);
   });
 
   it('an assistant message left with nothing is dropped, not emptied', () => {
@@ -80,7 +83,7 @@ describe('both directions: the postcondition', () => {
     const report = repairToolPairing(msgs);
     expect(report.strippedToolUse).toBe(1);
     expect(report.strippedToolResult).toBe(1);
-    expect(unpairedToolIds(msgs)).toEqual({ toolUseWithoutResult: [], toolResultWithoutUse: [] });
+    settled(msgs);
   });
 
   it('a user message left with nothing but a stranded result is dropped', () => {
@@ -90,7 +93,7 @@ describe('both directions: the postcondition', () => {
     ];
     repairToolPairing(msgs);
     expect(msgs).toHaveLength(1);
-    expect(unpairedToolIds(msgs).toolResultWithoutUse).toEqual([]);
+    settled(msgs);
   });
 
   it('text blocks beside a stranded result survive, only the result block goes', () => {
@@ -134,7 +137,7 @@ describe('parallel calls answered across several carriers', () => {
     const report = repairToolPairing(msgs);
     expect(report.strippedToolUse).toBe(1);
     expect(report.strippedToolResult).toBe(1);
-    expect(unpairedToolIds(msgs)).toEqual({ toolUseWithoutResult: [], toolResultWithoutUse: [] });
+    settled(msgs);
   });
 });
 

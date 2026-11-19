@@ -3,12 +3,13 @@
 
 import { isHealerAgent, isPrimaryAgent } from '../../../../config/platform.js';
 import { broadcast } from '../../../../gateway/ws.js';
-import { fileHealerApprovalProposal, markHealerProposalAppliedBySignature, maybeAutoApproveHealerScratch, type EngineSeverity } from '../../../../healer/approval-routing.js';
+import { fileHealerApprovalProposal, heldActionSeverity, markHealerProposalAppliedBySignature, maybeAutoApproveHealerScratch } from '../../../../healer/approval-routing.js';
 import { consumeApproval, isDestructiveCall, manifestPermitsDestructiveCall, requestApproval } from '../../../destructive-gate.js';
 import { isStructuringTool } from '../../classifiers/hoarding.js';
 import { canonicalToolSignature } from '../../classifiers/loop.js';
 import { advance, type AgentTurnState } from '../../state.js';
 import { createLogger } from '../../../../logger.js';
+import { redactDeclaredSecretArgs } from '../../../../credentials/secret-fields.js';
 import type { ToolCall } from '@dojo/shared';
 import type { ExecuteContext, PendingToolResult } from './index.js';
 
@@ -23,7 +24,7 @@ export async function recordDispatchAndHold(
   const { agentId, db } = ctx;
 
   try {
-    broadcast({ type: 'chat:tool_call', agentId, tool: tc.name, args: tc.arguments });
+    broadcast({ type: 'chat:tool_call', agentId, tool: tc.name, args: redactDeclaredSecretArgs(tc.name, tc.arguments) ?? {} });
   } catch { /* best effort */ }
   if (tc.name === 'send_to_agent' || tc.name === 'broadcast_to_group') {
     state = advance(state, { sentToAgentThisTurn: true });
@@ -77,7 +78,7 @@ export async function recordDispatchAndHold(
             kind: destructiveKind,
             argsJson: JSON.stringify(tc.arguments ?? {}),
             heldDirectDestructiveCall: true,
-            engineSeverity: diagnosticSeverity(db),
+            engineSeverity: heldActionSeverity(JSON.stringify(tc.arguments ?? {})),
           });
           refusal = held.refusal;
           heldIsError = !held.queued;
@@ -110,6 +111,3 @@ export async function recordDispatchAndHold(
   }
   return { state, refusal: null };
 }
-
-/** The worst finding in the newest diagnostic, the one the Healer is working from: critical makes an approval urgent. */
-const diagnosticSeverity = (db: ExecuteContext['db']): EngineSeverity => (db.prepare('SELECT critical_count FROM healer_diagnostics ORDER BY created_at DESC LIMIT 1').get() as { critical_count: number } | undefined)?.critical_count ? 'critical' : 'warning';
