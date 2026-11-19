@@ -378,7 +378,7 @@ import {
   stoppedAgents, recoveryRunStreak, pendingWakeups,
   doomedPrefillCompactionSpent, declaredPatienceHonestFailTurn,
 } from '../../shared-state.js';
-import { continuationContext, MAX_DRAIN_STUCK } from '../../turn-state.js';
+import { continuationContext } from '../../turn-state.js';
 import { runMigrations } from '../../../db/migrations.js';
 import { insertMessage } from '../../../memory/message-store.js';
 import { checkBudget } from '../../../costs/budget.js';

@@ -26,7 +26,7 @@ const logger = createLogger('v2-loop');
 
 const STATUS_HEARTBEAT_INTERVAL_MS = 30_000;
 // An assigned open task disarms untracked-multistep enforcement only if touched within this window, so new work
-// cannot ride in under an abandoned task. Same value as `DEADLINES.stale_task_window` (work/work-reaper.ts).
+// cannot ride in under an abandoned task. The same 30 minutes as `sweepBootStaleness` in work/work-reaper.ts.
 const STALE_TASK_WINDOW_MINUTES = 30;
 // Start-ack floor on the person's wait: a turn still working after 30s owes an ack; quick lookups stay quiet.
 const ENGINE_START_ACK_AFTER_MS = 30000;

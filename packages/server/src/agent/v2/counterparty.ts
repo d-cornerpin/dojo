@@ -15,7 +15,7 @@ import {
 } from '../../memory/message-store.js';
 import { conversationIdentityOf, type ConversationIdentity } from '../../memory/conversations.js';
 import { ENGINE_RIDER_INTENTS_SQL } from './engine-riders.js';
-import { transition } from '../../work/store.js';
+import { askIdForMessage } from '../../work/store.js';
 import { spentRun, spentTask, spentWakeAsk } from './work-lineage.js';
 import { postAgentNotice } from '../agent-notice.js';
 import { dueAfterCut } from '../../work/exit-attribution.js';
@@ -145,33 +145,11 @@ export function personArrivedSince(agentId: string, sinceSeq: number, servedKey?
   return getWaitingHumanConversations(agentId).some((c) => c.latest.rowid > sinceSeq || (servedKey !== undefined && c.key !== servedKey));
 }
 
-/** Quarantine every OPEN ask of ONE waiting conversation served again and again without a reply
- *  (poisoned message, or turns that end silent) so a poisoned head cannot starve the queue behind
- *  it; only key-matching rows are touched. */
-export function quarantineWaitingConversation(agentId: string, convKey: string): number {
-  const db = getDb();
-  const sessionStart = sessionStartOf(agentId);
-  const rows = db.prepare(
-    `SELECT ${WAITING_COLS}
-       FROM ${WAITING_HUMAN_CANDIDATE_FROM}
-      WHERE ${WAITING_HUMAN_CANDIDATE_WHERE}`,
-  ).all({ agentId, sessionStart }) as Array<WaitingConversation['latest']>;
-  let n = 0;
-  for (const r of rows) {
-    const o = originOfCandidate(r);
-    if (o.kind !== 'user' || !o.authorized) continue;
-    if (conversationKey(o.channel, o.senderId, o.senderName, o.threadId) !== convKey) continue;
-    // `by: 'agent'`, not `'engine'`: an engine transition must point at a real occurrence; this has none.
-    const res = transition(r.work_id, {
-      to: 'abandoned', by: 'agent', actorId: agentId,
-      // The reason line may state only what is true on every path: served again and again, never answered.
-      reason: 'quarantined: this conversation was served again and again and never produced a reply '
-        + '(a poisoned message, or turns that finish without answering), and it was starving the '
-        + 'queue behind it',
-    });
-    if (res.kind === 'applied') n++;
-  }
-  return n;
+/** Did the owner write the message an ask was opened for (an ask-rooted engine event ranks with its request)? */
+export function askRootIsOwners(agentId: string, messageId: string): boolean {
+  const r = getDb().prepare(`SELECT ${WAITING_COLS} FROM ${WAITING_HUMAN_CANDIDATE_FROM} WHERE w.id = ? AND w.agent_id = ?`)
+    .get(askIdForMessage(messageId), agentId) as WaitingConversation['latest'] | undefined;
+  return r !== undefined && originOfCandidate(r).relation === 'owner';
 }
 
 /** THE ASSEMBLED-CONTEXT SET: asks in front of the model when this turn replied; later siblings

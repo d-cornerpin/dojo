@@ -20,7 +20,6 @@ import { rectifyAttachment } from './input-rectification.js';
 import { runV2Turn } from './v2/loop.js';
 import { writeAgentStatus } from './agent-status.js';
 import { STUCK_AGENT_THRESHOLD_MINUTES } from './stuck-thresholds.js';
-import { selfWakeStandDown } from '../work/work-reaper.js';
 import { handBackOrphansOf } from '../work/orphaned-claims.js';
 import { transition } from '../work/store.js';
 import { withUnit } from '../db/unit.js';
@@ -309,13 +308,11 @@ import {
 } from './shared-state.js';
 import { currentTurnNumber, markTurnsTerminated } from './v2/turn-record.js';
 
-import { turnBoundary, forceA2ATurn, a2aTurnRetries, lastTurnWasA2A, MAX_DRAIN_STUCK } from './turn-state.js';
+import { turnBoundary, forceA2ATurn, a2aTurnRetries, lastTurnWasA2A } from './turn-state.js';
 import { a2aRetryBudgetFor } from './a2a-patience.js';
-import { bumpDrainLadder, clearDrainLadder, DRAIN_LADDER_UNREADABLE } from './drain-state.js';
-import { contextOverflowSince } from '../memory/compaction.js';
 import { replacePlaceholdersInBackground } from '../memory/out-of-view.js';
-import { getWaitingHumanConversations, getPendingEngineEvent, quarantineWaitingConversation } from './v2/counterparty.js';
-import { underWakeBudget, armOwedClock } from './v2/owed.js';
+import { getWaitingHumanConversations } from './v2/counterparty.js';
+import { armOwedClock } from './v2/owed.js';
 import { taskScope, STATE_TO_STATUS_SQL } from '../work/tracker-view.js';
 import { findUnrepliedAssignForAgent, recordA2AReply } from './a2a-replies.js';
 import { attachmentFenceOf, bracketed, droppedAttachmentNote } from '../tools/inbound-fences.js';
@@ -653,7 +650,7 @@ class AgentRuntime {
         const { resolveCompilePendingJoins } = await import('./a2a-transport.js');
         const drive = await resolveCompilePendingJoins(agentId);
         // The compile order is only a rider, never a turn's own reason, so without a wakeup it is never seen:
-        // queue one like the drains below (same guards; the storm law and a ladder of three bound it).
+        // queue one (the storm law and a ladder of three bound it).
         if (drive.wakeWanted) {
           queueSelfWake(agentId, 'compile-drive');
           logger.info('compile drive: queued a wakeup so the re-driven agent actually sees the owed step', {
@@ -661,101 +658,6 @@ class AgentRuntime {
           }, agentId);
         }
       } catch { /* best effort; the TTL sweep backstops */ }
-
-      // Unserved-wake drain: N causes collapse into ONE wakeup serving ONE trigger; a still-unserved
-      // terminal wake or engine event would wait on a slow periodic: re-queue now, bounded like the drains.
-      try {
-        const wdStatus = (getDb().prepare('SELECT status FROM agents WHERE id = ?').get(agentId) as { status?: string } | undefined)?.status;
-        if (!isSelfResumeBlockedStatus(wdStatus)) {
-          // OWNER FIRST: while ANY human conversation waits this drain queues NOTHING; the human's
-          // own trigger runs the next turn, where leftover wakes are re-checked. Never compete.
-          // The count is taken ONCE and carried on every log line: the storm invariant needs a
-          // number on the record, and it must match selfWakeStandDown's own read (work rows,
-          // kind='ask', state='open'). An unreadable spine (-1) stands down: not knowing is never
-          // nobody waiting. tiers says WHO waits (user, safe senders, agents), a count cannot.
-          const { standDown, humanAsksOpen: openAsks, tiers } = selfWakeStandDown(agentId);
-          if (standDown) {
-            clearDrainLadder(agentId, 'unserved_wake');
-            logger.info('unserved-wake drain: standing down, a human is waiting', {
-              agentId, humanAsksOpen: openAsks, waitingTiers: tiers,
-            }, agentId);
-            throw { __skipWakeDrain: true };
-          }
-          const { findUnservedTerminalWake, getPendingEngineEvent } = await import('./v2/counterparty.js');
-          const leftoverWake = findUnservedTerminalWake(agentId);
-          const leftoverEngine = leftoverWake ? null : getPendingEngineEvent(agentId);
-          const head = leftoverWake ? `w:${leftoverWake.rowid}` : (leftoverEngine ? `e:${leftoverEngine.rowid}` : null);
-          if (head) {
-            // Counts CONSECUTIVE passes seeing the same head; endedTurnsSince would start past
-            // the bound (human turns run before the drain's first look). The ladder is durable
-            // drain_state, not a Map: a Map resets on boot, so a crash loop self-spins a stuck head.
-            const stuck = bumpDrainLadder(agentId, 'unserved_wake', head);
-            if (stuck < 2) {
-              queueSelfWake(agentId, 'unserved-wake-drain');
-              logger.info('unserved-wake drain: leftover wake/engine event after turn end; queuing immediate re-run', {
-                agentId, head, stuck, humanAsksOpen: openAsks,
-              }, agentId);
-            } else {
-              logger.warn('unserved-wake drain: head not advancing after re-runs; standing down to the periodics', {
-                agentId, head, stuck, humanAsksOpen: openAsks,
-              }, agentId);
-            }
-          } else {
-            clearDrainLadder(agentId, 'unserved_wake');
-          }
-        }
-      } catch (err) {
-        if (!(err && typeof err === 'object' && '__skipWakeDrain' in (err as object))) {
-          logger.warn('unserved-wake drain check failed (non-fatal)', {
-            agentId, error: err instanceof Error ? err.message : String(err),
-          }, agentId);
-        }
-      }
-
-      // Human drain: a turn serves ONE counterparty, so other conversations get a wakeup, not stranding.
-      // Bounded by MAX_DRAIN_STUCK: a head that cannot advance stops the self-spin and idles till inbound.
-      try {
-        const drainStatus = (getDb().prepare('SELECT status FROM agents WHERE id = ?').get(agentId) as { status?: string } | undefined)?.status;
-        // Stop states hold: waiting messages are persisted and served on the next inbound or resume.
-        if (!isSelfResumeBlockedStatus(drainStatus)) {
-          const waiting = getWaitingHumanConversations(agentId);
-          if (waiting.length > 0) {
-            const head = waiting[0].oldestWaitingRowid;
-            // A FORCED-pass run failed on its window, not this message, so it is not counted; an unreadable
-            // ladder stands down too: no count, no self-wake (the overflow park re-drives), no quarantine.
-            const overflowed = contextOverflowSince(agentId, agentStartTimes.get(agentId) ?? Date.now());
-            const stuck = overflowed ? DRAIN_LADDER_UNREADABLE : bumpDrainLadder(agentId, 'human_conversation', String(head));
-            if (stuck === DRAIN_LADDER_UNREADABLE) {
-              logger.warn('drain: standing down; this pass does not count against the waiting message', { agentId, headRowid: head, cause: overflowed ? 'context-overflow' : 'ladder-unreadable' }, agentId);
-            } else if (stuck < MAX_DRAIN_STUCK) {
-              // Cap self-re-triggers; a real new inbound still wakes it.
-              if (underWakeBudget(agentId)) queueSelfWake(agentId, 'human-conversation-drain');
-            } else {
-              // The head failed every serve with room left: the message is bad; quarantine, never drop.
-              const poisoned = waiting[0];
-              const quarantined = quarantineWaitingConversation(agentId, poisoned.key);
-              const exitReasons = (getDb().prepare('SELECT exit_reason AS r FROM turns WHERE agent_id = ? AND conv_key = ? ORDER BY turn_number DESC LIMIT ?')
-                .all(agentId, poisoned.key, MAX_DRAIN_STUCK + 1) as Array<{ r: string | null }>).map((t) => t.r);
-              logger.error('drain: quarantined a poisoned conversation after repeated failed serves; serving the next instead', { agentId, convKey: poisoned.key, rowsQuarantined: quarantined, headRowid: head, exitReasons }, agentId);
-              try {
-                broadcast({ type: 'chat:error', cardClass: 'informational', agentId, error: `Couldn't process a message from ${poisoned.key} after several tries, set it aside so your other messages get through.`, code: 'STUCK_REPEATING', severity: 'warning', retryable: false });
-              } catch { /* best effort */ }
-              clearDrainLadder(agentId, 'human_conversation');
-              const remaining = getWaitingHumanConversations(agentId);
-              if (remaining.length > 0 && underWakeBudget(agentId)) queueSelfWake(agentId, 'human-conversation-drain-after-quarantine');
-            }
-          } else if (getPendingEngineEvent(agentId)) {
-            // No human waits but an engine event (scheduler/reminder/tracker/healer) is unprocessed:
-            // out-raced by a human it would starve. Served-stamped at pickup: once per event, no spin.
-            clearDrainLadder(agentId, 'human_conversation');
-            if (underWakeBudget(agentId)) queueSelfWake(agentId, 'pending-engine-event');
-          } else {
-            clearDrainLadder(agentId, 'human_conversation');
-          }
-        }
-      } catch (err) {
-        logger.warn('drain re-trigger check failed', { agentId, error: err instanceof Error ? err.message : String(err) }, agentId);
-      }
 
       if (pendingWakeups.has(agentId)) {
         pendingWakeups.delete(agentId);
@@ -773,8 +675,8 @@ class AgentRuntime {
             return;
           }
           // A stop landing while this timer is armed is still a stop: it fires 500 ms later, finds
-          // pendingWakeups already consumed, nothing left for stopAgent to clear. Same gate the
-          // drains use; a NEW message arrives via handleMessage's own door, ungated.
+          // pendingWakeups already consumed, nothing left for stopAgent to clear. Same gate as
+          // queueSelfWake; a NEW message arrives via handleMessage's own door, ungated.
           if (isStopFenced(agentId)) {
             logger.info('Queued wakeup declined: the user stopped this agent', { agentId }, agentId);
             declineQueuedWaiters(agentId);
@@ -805,9 +707,8 @@ class AgentRuntime {
 
       // THE ONE OWNER OF THE STOP FLAG'S CLEAR: a checkpoint that sees the stop honours it (pre-call
       // gate, model-call catch, executor); only this finally retires it, at the end of the run it stopped.
-      // The drains below stand down only while the flag stands; cleared early they would restart the
-      // very request the user stopped. A new run's start lifts a FLAG that has no fence (a stop pressed
-      // while nothing ran); nothing lifts the FENCE elsewhere.
+      // A new run's start lifts a FLAG that has no fence (a stop pressed while nothing ran); nothing lifts
+      // the FENCE elsewhere.
       stoppedAgents.delete(agentId);
       stopFencedRuns.delete(agentId);
       // The one clock decides when this agent runs next for anything still owed, and sends due replies.

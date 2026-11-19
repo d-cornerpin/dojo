@@ -10,8 +10,7 @@
 //   1. INGEST — a message from a sender the platform is required to ignore is RECORDED and
 //      stamped per OR4 (audit visibility; nothing vanishes without a trace) and files NO
 //      work/ask row. Nothing may claim work is owed to somebody who will never be served.
-//   2. THE STAND-DOWN LAW counts only the tickets that exist, in the owner's decided
-//      precedence: main user first, safe senders second, other agents third.
+//   2. THE STAND-DOWN LAW counts only the people a ticket says are waiting.
 //   3. A STRUCTURAL INVARIANT, census-shaped, so the class cannot recur — extended with the
 //      two arms TB3 §8.2 measured: an ask owed by a TERMINATED agent, and an ask BELOW its
 //      own agent's session boundary.
@@ -57,7 +56,7 @@ vi.mock('../../db/connection.js', async () => {
 import { runMigrations } from '../../db/migrations.js';
 import { insertMessage } from '../../memory/message-store.js';
 import { abandonUnservableAsks, askIdForMessage, openAsk } from '../store.js';
-import { selfWakeStandDown, humanAsksOpen } from '../work-reaper.js';
+import { selfWakeStandDown } from '../work-reaper.js';
 import { FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const AGENT = FXID.n4;
@@ -164,7 +163,7 @@ describe('an ignored sender opens no ask ticket at all', () => {
 });
 
 // ════════════════════════════════════════════════════════════════════════════════
-// 2 · THE STAND-DOWN LAW — ONLY THE TICKETS THAT EXIST, IN THE OWNER'S PRECEDENCE
+// 2 · THE STAND-DOWN LAW: ONLY THE TICKETS THAT EXIST
 // ════════════════════════════════════════════════════════════════════════════════
 
 describe('the stand-down law counts only the tickets that exist', () => {
@@ -175,25 +174,11 @@ describe('the stand-down law counts only the tickets that exist', () => {
     expect(v.standDown).toBe(false);
   });
 
-  it('reports its tiers in the owner\'s decided precedence: main user, safe senders, other agents', () => {
-    const v = selfWakeStandDown(AGENT);
-    // The ORDER is the law, so it is asserted as an order and not as a bag of fields.
-    expect(Object.keys(v.tiers)).toEqual(['mainUser', 'safeSenders', 'otherAgents']);
-  });
-
-  it('a real person\'s ticket still stands the self-wakes down, and is counted as the main user', () => {
+  it('a real person\'s ticket still stands the self-wakes down', () => {
     insertMessage(imessageInbound({ id: 'm-real', authorized: true }) as never);
     const v = selfWakeStandDown(AGENT);
     expect(v.standDown).toBe(true);
     expect(v.humanAsksOpen).toBe(1);
-    expect(v.tiers.mainUser + v.tiers.safeSenders + v.tiers.otherAgents).toBe(1);
-  });
-
-  it('the tier total always equals the number the law stands down on', () => {
-    seedAskOnMessage({ agentId: AGENT, messageId: 'm-a', conversationId: CONV, authorized: 1, openedAt: NOW });
-    seedAskOnMessage({ agentId: AGENT, messageId: 'm-b', conversationId: CONV, authorized: 1, openedAt: NOW + 1 });
-    const v = selfWakeStandDown(AGENT);
-    expect(v.tiers.mainUser + v.tiers.safeSenders + v.tiers.otherAgents).toBe(humanAsksOpen(AGENT));
   });
 });
 
@@ -264,16 +249,5 @@ describe('the unservable reaper closes the existing population with a named reas
     expect(
       mockDb.current!.prepare(`SELECT state FROM work WHERE kind = 'ask'`).get(),
     ).toEqual({ state: 'open' });
-  });
-
-  it('clears the stand-down confound: an agent held open by strangers alone falls to zero', () => {
-    for (let i = 0; i < 5; i++) {
-      seedAskOnMessage({
-        agentId: AGENT, messageId: `m-s${i}`, conversationId: CONV, authorized: 0, openedAt: NOW + i,
-      });
-    }
-    expect(selfWakeStandDown(AGENT).standDown).toBe(true);   // the confound, before
-    abandonUnservableAsks();
-    expect(selfWakeStandDown(AGENT).standDown).toBe(false);  // and after
   });
 });

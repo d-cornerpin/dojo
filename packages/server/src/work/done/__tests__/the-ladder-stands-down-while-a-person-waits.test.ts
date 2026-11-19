@@ -10,17 +10,18 @@ import { runLadder } from '../ladder.js';
 import { freshBoard, WORKER } from './helpers/decision-world.js';
 import { hintsTo, resetLadderWorld, MIN } from './helpers/ladder-world.js';
 import { doneDb } from './helpers/done-db.js';
+import { insertMessage } from '../../../memory/message-store.js';
 
 describe('the ladder stands down while a person waits', () => {
   it('no hint while the worker owes a person an answer; the hint once it is answered', async () => {
     freshBoard(); resetLadderWorld();
-    doneDb().prepare(
-      `INSERT INTO work (id, kind, agent_id, requester, root_kind, root_id, state, intent, wakes, closes_thread, opened_at, updated_at)
-       VALUES ('ask-waiting', 'ask', ?, 'owner', 'message', 'ask-waiting', 'open', 'question', 1, 1, ?, ?)`,
-    ).run(WORKER, Date.now(), Date.now());
+    insertMessage({
+      id: 'm-waiting', agentId: WORKER, role: 'user', content: 'is the report ready?', lane: 'owner', channel: 'dashboard',
+      senderId: 'owner', authorized: true, inboundMeta: JSON.stringify({ channel: 'dashboard', relation: 'owner' }),
+    } as never);
     await runLadder(Date.now() + 6 * MIN);
     expect(hintsTo(WORKER)).toEqual([]);
-    doneDb().prepare("UPDATE work SET state = 'claimed' WHERE id = 'ask-waiting'").run();
+    doneDb().prepare("UPDATE work SET state = 'claimed' WHERE id = 'ask:m-waiting'").run();
     await runLadder(Date.now() + 6 * MIN);
     expect(hintsTo(WORKER)).toHaveLength(1);
   });

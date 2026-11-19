@@ -34,7 +34,6 @@ import {
   getWaitingHumanConversations,
   getPendingEngineEvent,
   findUnservedTerminalWake,
-  quarantineWaitingConversation,
 } from '../counterparty.js';
 import { runMigrations } from '../../../db/migrations.js';
 import { claimAsk } from '../../../work/store.js';
@@ -163,16 +162,6 @@ describe('the waiting set is the OWNER lane, and nothing else', () => {
     const waiting = getWaitingHumanConversations(AGENT);
     expect(waiting).toHaveLength(1);
     expect(waiting[0].oldest.content).toBe('the ask that must not be forgotten');
-  });
-
-  it('quarantine hides exactly one conversation and leaves the other waiting', () => {
-    humanAsk('poisoned conversation', '+15550001111');
-    humanAsk('healthy conversation', '+15550002222');
-    const key = getWaitingHumanConversations(AGENT)[0].key;
-    expect(quarantineWaitingConversation(AGENT, key)).toBe(1);
-    const waiting = getWaitingHumanConversations(AGENT);
-    expect(waiting).toHaveLength(1);
-    expect(waiting[0].oldest.content).toBe('healthy conversation');
   });
 });
 

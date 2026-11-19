@@ -40,7 +40,6 @@ beforeAll(() => {
   cfg.run('some_provider_api_key', CONFIG_KEY);
   for (let i = 0; i < 5; i++) cfg.run(`proactive_send_streak:agent-${i}`, String(i));
   db.prepare("INSERT OR REPLACE INTO budgets (id, scope, limit_usd, period) VALUES ('global_daily', 'global', 25, 'daily')").run();
-  db.prepare("INSERT INTO drain_state (agent_id, drain, head, stuck, updated_at) VALUES ('agent-worker', 'unserved_wake', 'e:12', 2, ?)").run(at(9));
   db.prepare('INSERT INTO healer_diagnostics (id, report, warning_count, created_at) VALUES (?, ?, 1, ?)')
     .run('diag-1', 'DIAGNOSTIC\n\nNEEDS ATTENTION:\n  1. One agent hit errors today\n     more detail here\n  2. A task is stuck\n', sqlTime(at(30)));
   db.prepare("INSERT INTO grant_rule (agent_id, effect_kind, mode, pattern, manifest_fingerprint) VALUES ('agent-primary', 'fs_read', 'allow', '*', 'f'), ('agent-primary', 'net', 'deny', 'example.invalid', 'f')").run();
@@ -59,7 +58,6 @@ describe('state', () => {
     expect(out).toMatch(/a second piece \(task task9999\) · next 2026-10-19 11:00:00 UTC · waiting/);
     expect(out).toMatch(/global_daily · global · \$25 daily/);
     expect(out).toMatch(/imessage_enabled: true/);
-    expect(out).toMatch(/worker \(agent-wo\) · unserved_wake · head e:12 · stuck 2/);
     expect(out).toMatch(/1\. One agent hit errors today/);
     expect(out).toMatch(/2\. A task is stuck/);
   });

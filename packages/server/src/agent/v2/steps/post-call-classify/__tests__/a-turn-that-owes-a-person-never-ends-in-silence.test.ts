@@ -217,7 +217,7 @@ describe('t125 — the silent turns (Q2): a turn that owes a person never ends i
           expect(String(ghost.ownerLine)).toMatch(/empty reply/i);
           expect(String(ghost.ownerLine)).toMatch(/send it again/i);
           expect(String(ghost.ownerLine)).not.toMatch(/\bI\b/);
-          // And the ask is handed back so the drain re-serves it.
+          // And the ask is handed back so it is served again.
           expect(reArmSpy).toHaveBeenCalled();
         });
 
@@ -288,20 +288,17 @@ describe('t125 — the silent turns (Q2): a turn that owes a person never ends i
   // ⚠ THE FIRST VERSION OF THIS PIN GAVE A FALSE REASON, and it is corrected here rather
   // than quietly dropped, because a correct refusal pinned to a checkable falsehood is
   // exactly how the next lane overturns it. It said latching would re-serve the ask "for
-  // ever", "an infinite loop". IT WOULD NOT. The drain is bounded: `MAX_DRAIN_STUCK = 4`
-  // (`agent/turn-state.ts:189`, read at `agent/runtime.ts:1032`) QUARANTINES the head
-  // conversation after four failed serves, and every self-wake is additionally gated by
-  // `underWakeBudget`. The real cost is 3 model calls per turn x up to 4 serves per ask —
-  // about a dozen calls — and then the conversation is set aside with the owner told.
+  // ever", "an infinite loop". IT WOULD NOT. Re-serving is bounded: the hand-back count stands
+  // the request down at its bound, and every engine wake is gated by `underWakeBudget`.
   //
   // THE SOUND REASON IS THAT THE ASK NEVER SETTLES. `work/ask-settlement.ts:777` reads
   // `!engineCut && spent >= MAX_ASK_RE_SERVES` and `:786` reads `if (!engineCut)
   // recordReServe(...)`, so a cut BOTH bypasses the stand-down AND suppresses the counter:
   // the ask is handed back open, spends nothing, and can never reach `blocked`. That matters
   // because `blocked` is not a dead end — it is the OWED state the open-work surface renders
-  // while the drain's `state = 'open'` queue stops picking it up, i.e. the one place a
+  // while the `state = 'open'` queue stops picking it up, i.e. the one place a
   // question that was neither answered nor declined stays VISIBLE to the owner. Latching
-  // here would leave his question sitting `open` behind a quarantined conversation instead:
+  // here would leave his question sitting `open` instead:
   // not answered, not declined, and no longer in the held state built for that case.
   //
   // And by THIS rung `no_reply_intended` is honest in a way it never was at the exit this

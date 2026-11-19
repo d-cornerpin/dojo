@@ -383,7 +383,8 @@ import {
   stoppedAgents, recoveryRunStreak, pendingWakeups,
   doomedPrefillCompactionSpent, declaredPatienceHonestFailTurn,
 } from '../../shared-state.js';
-import { continuationContext, MAX_DRAIN_STUCK } from '../../turn-state.js';
+import { continuationContext } from '../../turn-state.js';
+import { dueOf } from '../owed.js';
 import { runMigrations } from '../../../db/migrations.js';
 import { insertMessage } from '../../../memory/message-store.js';
 import { checkBudget } from '../../../costs/budget.js';
@@ -544,17 +545,14 @@ describe('t148 — a turn stopped by the money guardrail, or by no model that ca
     expectAnHonestStop(/cannot hold a conversation/i);
   });
 
-  it('the stop is told ONCE: the runtime drain does not serve the stopped message back into the same stop', async () => {
+  it('the stop is told ONCE: the clock does not serve the stopped message back into the same stop', async () => {
     noFreeModel();
     budget(1.00, 2.00);
     await runV2Turn(AGENT);
-    // What the runtime's human drain does next (runtime.ts, "Human conversation drain"): while the
-    // agent is not in a stop state and a person's ask is waiting, serve it again — up to
-    // MAX_DRAIN_STUCK passes, after which the ask is set aside as poisoned.
-    const drainWouldServe = (): boolean => !['error', 'paused', 'terminated'].includes(status())
-      && getWaitingHumanConversations(AGENT).length > 0;
+    // What the one clock does next (owed.ts): it wakes an agent not in a stop state that is owed something now.
+    const clockWouldServe = (): boolean => !['error', 'paused', 'terminated'].includes(status()) && dueOf(AGENT).now;
     let reServed = 0;
-    for (let pass = 1; pass < MAX_DRAIN_STUCK && drainWouldServe(); pass++) { reServed++; await runV2Turn(AGENT); }
+    for (let pass = 1; pass < 4 && clockWouldServe(); pass++) { reServed++; await runV2Turn(AGENT); }
     expect(notices(), 'one notice, naming the true cause').toEqual([expect.stringMatching(/spending limit/i)]);
     expect(reServed, 'nothing re-served into a stop that still stands').toBe(0);
     expect(['done', 'abandoned']).not.toContain(ask());
@@ -593,7 +591,7 @@ describe('t148 — a turn stopped by the money guardrail, or by no model that ca
     expect(callModelSpy, 'the stop came from the router: no model was dialed').not.toHaveBeenCalled();
     expect(status()).toBe('paused');
     expect(ask(), 'the message is still the owner\'s open ask, not handed back through a settlement rung').toBe('open');
-    // The drain stands down for the lock, so nothing re-serves it and nothing is said again.
+    // The clock skips a stopped agent, so nothing re-serves it and nothing is said again.
     expect(['error', 'paused', 'terminated']).toContain(status());
     expect(getWaitingHumanConversations(AGENT).length).toBeGreaterThan(0);
     expect(notices().length, 'told once').toBe(1);

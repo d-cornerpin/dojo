@@ -4,10 +4,13 @@ import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
 import { broadcast } from '../../gateway/ws.js';
 import { workingExpr } from '../../work/terminal-states.js';
+import { askIdForMessage } from '../../work/store.js';
 import { parkedContinuationFor } from '../../work/task-freshness.js';
 import { activeRuns, isRunUnwinding } from '../shared-state.js';
 import { nextReplyDueAt, deliverDueReplies } from './channel-sender.js';
-import { getWaitingHumanConversations, getPendingEngineEvent, getNextEngineEventRetryAt } from './counterparty.js';
+import {
+  getWaitingHumanConversations, getPendingEngineEvent, getNextEngineEventRetryAt, findUnservedTerminalWake, askRootIsOwners,
+} from './counterparty.js';
 
 const logger = createLogger('owed');
 const FLOOR_MS = 1_000;
@@ -43,14 +46,53 @@ function wakeBudgetClearsAt(agentId: string): number | null {
   return wakeBudgetTripped.has(agentId) ? ((wakeupTimes.get(agentId) ?? [])[0] ?? Date.now()) + WAKE_BUDGET_WINDOW_MS : null;
 }
 
-/** Is anything owed now, and the earliest future due time: one read of the waiting person and engine-event readers.
+type PendingEngineEvent = NonNullable<ReturnType<typeof getPendingEngineEvent>>;
+export type OwedKind = 'person' | 'agentResult' | 'clock' | 'agentRequest' | 'job';
+export interface OwedItem {
+  kind: OwedKind; rank: 1 | 2 | 3 | 4 | 5 | 6; dueAt: number; age: number; ref: string; served?: boolean; event?: PendingEngineEvent;
+}
+
+/** An event rooted in a person's request ranks with it: 3 for the owner's, 4 for a contact's; any other event is 6. */
+function rankOfEvent(agentId: string, ev: PendingEngineEvent): 3 | 4 | 6 {
+  if (ev.rootKind !== 'ask' || !ev.rootId) return 6;
+  return askRootIsOwners(agentId, ev.rootId) ? 3 : 4;
+}
+
+/** Everything this agent owes, due or not, ranked: the owner, approved people, events rooted in their requests,
+ *  helper results, then the clock; a never-served person before a handed-back one, then the oldest. */
+function owedItems(agentId: string, opts: { pure?: true } = {}): OwedItem[] {
+  const items: OwedItem[] = getWaitingHumanConversations(agentId, { includeNotDue: true }).map((c) => (
+    { kind: 'person', rank: c.owner ? 1 : 2, dueAt: c.dueAt, age: c.oldestWaitingRowid, ref: c.workId, served: c.served }));
+  const wake = findUnservedTerminalWake(agentId);
+  if (wake) items.push({ kind: 'agentResult', rank: 5, dueAt: 0, age: wake.rowid, ref: String(wake.rowid) });
+  const ev = getPendingEngineEvent(agentId, opts);
+  if (ev) items.push({ kind: 'clock', rank: rankOfEvent(agentId, ev), dueAt: 0, age: ev.rowid, ref: ev.id, event: ev });
+  const evNext = getNextEngineEventRetryAt(agentId);
+  if (!ev && evNext !== null) items.push({ kind: 'clock', rank: 6, dueAt: evNext, age: Number.MAX_SAFE_INTEGER, ref: 'next-event' });
+  return items.sort((a, b) => a.rank - b.rank || Number(a.served ?? false) - Number(b.served ?? false) || a.age - b.age);
+}
+
+/** What this agent serves next, first item first: everything owed that is due now. */
+export const nextOwed = (agentId: string, now = Date.now(), opts: { pure?: true } = {}): OwedItem[] =>
+  owedItems(agentId, opts).filter((i) => i.dueAt <= now);
+
+/** How many people are due an answer now, for the storm law; -1 when it cannot be read (stand down). */
+export function personsWaiting(agentId: string): number {
+  try {
+    return nextOwed(agentId, Date.now(), { pure: true }).filter((i) => i.kind === 'person').length;
+  } catch (err) {
+    logger.warn('storm law: the waiting people could not be read; standing self-wakes down', { agentId, error: String(err) }, agentId);
+    return -1;
+  }
+}
+
+/** Is anything owed now, and the earliest future due time: one build of the items, read without writing.
  *  While a parked job's continuation is queued, the conversation it started from is left to it. */
 export function dueOf(agentId: string, now = Date.now()): { now: boolean; next: number | null } {
   const parked = parkedContinuationFor(agentId);
-  const convs = getWaitingHumanConversations(agentId, { includeNotDue: true }).filter((c) => c.oldest.id !== parked);
-  const event = getPendingEngineEvent(agentId, { pure: true });
-  const future = [...convs.map((c) => c.dueAt).filter((t) => t > now), ...[getNextEngineEventRetryAt(agentId)].filter((t): t is number => t !== null)];
-  return { now: event !== null || convs.some((c) => c.dueAt <= now), next: future.length > 0 ? Math.min(...future) : null };
+  const items = owedItems(agentId, { pure: true }).filter((i) => i.kind !== 'person' || parked === null || i.ref !== askIdForMessage(parked));
+  const future = items.map((i) => i.dueAt).filter((t) => t > now);
+  return { now: items.some((i) => i.dueAt <= now), next: future.length > 0 ? Math.min(...future) : null };
 }
 
 /** Agents the clock may wake: live, not running, and holding something that could be owed. */
@@ -104,7 +146,7 @@ async function fire(): Promise<void> {
       try {
         if (!dueOf(id).now || !underWakeBudget(id)) continue;
         const t = setTimeout(() => {
-          if (isRunUnwinding(id)) return;   // a run live or in its exit tail: its drain's own wake comes next
+          if (isRunUnwinding(id)) return;   // a run live or in its exit tail: its own end arms the clock again
           logger.info('owed clock: waking an agent that is owed something', { agentId: id });
           void getAgentRuntime().handleMessage(id, '').catch((err: unknown) =>
             logger.error('owed clock: the wake failed', { agentId: id, error: String(err) }, id));
