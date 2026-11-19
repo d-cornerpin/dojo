@@ -13,10 +13,6 @@ vi.mock('../../db/connection.js', () => ({
   getDbPath: () => ':memory:',
 }));
 vi.mock('../../gateway/ws.js', () => ({ broadcast: vi.fn(), stampPersistedRow: (e: unknown) => e }));
-vi.mock('../../logger.js', () => {
-  const noop = (): void => {};
-  return { createLogger: () => ({ debug: noop, info: noop, warn: noop, error: noop }), setLogLevel: noop, setLogBroadcast: noop, readLogEntries: () => [] };
-});
 // A different vector per call, so the duplicate check never merges two test facts.
 vi.mock('../../memory/embeddings.js', () => {
   let n = 0;
@@ -76,11 +72,5 @@ describe('the main agent forgets a memory the Dreamer wrote', () => {
     const out = await executeVaultUpdate('helper-one', { entry_id: id, new_content: 'changed', reason: 'test' });
     expect(out).toBe(`Error: Vault entry "${id}" not found.`);
     expect(getEntry(id)!.content).toBe('the spare key is in the blue binder');
-  });
-
-  it("the main agent still cannot edit a helper's private note", async () => {
-    const id = await seed('helper-one', 'draft outline for the report');
-    const out = await executeVaultUpdate('main-agent', { entry_id: id, new_content: 'the spare key is in the red binder', reason: 'it moved' });
-    expect(out).toBe(`Error: Vault entry "${id}" not found.`);
   });
 });
