@@ -19,6 +19,7 @@ import type { ReplyDestination } from '../../reply-destination.js';
 import { advance, type AgentTurnState } from '../../state.js';
 import { appendUndeliveredLinks } from './link-backstop.js';
 import type { FinalizeContext } from './index.js';
+import { postAgentNotice } from '../../../agent-notice.js';
 
 const logger = createLogger('v2-loop');
 
@@ -153,6 +154,7 @@ async function sendOrHold(stateIn: AgentTurnState, ctx: FinalizeContext, r: Rout
     logger.warn('auto-route withheld: the sending agent holds no grant on this channel', {
       agentId, turnNumber, destination,
     }, agentId);
+    tellAgentReplyHeld(agentId, destination, 'you have no permission to send on that channel');
   } else if (destination === 'phone' && !state.repliedToCounterpartyThisTurn.phone && state.inboundContext?.phoneCallSid) {
     await speakOnCall(state, ctx);
   } else if (isTextChannel(destination) && !state.repliedToCounterpartyThisTurn[destination]) {
@@ -167,8 +169,17 @@ async function sendOrHold(stateIn: AgentTurnState, ctx: FinalizeContext, r: Rout
     if (!queued) {
       recordedId(recordHeld({ agentId, tool: 'auto-route', channel: destination, conversationId }, `no ${destination} address to reply to; the reply is in the dashboard chat`),
         'v2: auto-route held (no address)', { agentId, turnNumber, destination });
+      if (address === null) tellAgentReplyHeld(agentId, destination, `there was no ${destination} address to send it to`);
     }
   }
+}
+
+/** The agent is told once that its reply stayed in the dashboard: nothing sends a held reply later. */
+function tellAgentReplyHeld(agentId: string, destination: ReplyDestination, why: string): void {
+  postAgentNotice({
+    toAgentId: agentId, fromName: 'Reply delivery', selfIntro: false,
+    brief: `Your reply did not go out on the ${destination} channel: ${why}, so it stayed in the dashboard chat and will not be sent later. Do not say it arrived. If they need to hear it, reach them another way in your own words.`,
+  });
 }
 
 /** Speaks the reply on the active call. If streaming TTS already spoke the body, only the remaining tail is
