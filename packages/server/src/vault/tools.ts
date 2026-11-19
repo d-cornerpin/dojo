@@ -4,7 +4,7 @@ import { getDb } from '../db/connection.js';
 import { TECHNIQUE_FRESH_SENTINEL } from '@dojo/shared';
 import { createLogger } from '../logger.js';
 import { isPrimaryAgent } from '../config/platform.js';
-import { createEntry, semanticSearch, findNearDuplicateEntry, markObsolete, getEntry, updateEntry, isOverEntryLimit, AGENT_ENTRY_CUT_NOTE, listEntriesBounded, lastSemanticSearchWindow, formatCitationSuffix, resolveRecallScope, OWNER_VAULT_AGENT_ID } from './store.js';
+import { createEntry, recordVaultUse, semanticSearch, findNearDuplicateEntry, markObsolete, getEntry, updateEntry, isOverEntryLimit, AGENT_ENTRY_CUT_NOTE, listEntriesBounded, lastSemanticSearchWindow, formatCitationSuffix, resolveRecallScope, OWNER_VAULT_AGENT_ID } from './store.js';
 import { searchUnfiledArchives, UNFILED_ARCHIVE_LABEL, type UnfiledArchiveSnippet } from './retrieval.js';
 import { isObligationNote, obligationTags } from '../work/obligation-memory.js';
 import { detectCredentialContent } from './credential-gate.js';
@@ -333,6 +333,7 @@ export async function executeVaultSearch(
         return `${i + 1}. [${r.type}]${flagStr} ${snippet}${formatCitationSuffix(r.citation)}\n   ID: ${r.id} | Created: ${r.createdAt}`;
       });
       const bridgeSection = bridge.length > 0 ? `\n\n${formatUnfiledBridgeForSearch(bridge)}` : '';
+      recordVaultUse(rows.map((r) => r.id));
       return `Found ${rows.length} vault entr${rows.length === 1 ? 'y' : 'ies'} containing "${query}" (exact match):\n\n${lines.join('\n\n')}${bridgeSection}\n\nUse vault_get(entry_id="…") for full content, vault_update to correct, vault_forget to mark obsolete.`;
     }
 
@@ -378,6 +379,7 @@ export async function executeVaultSearch(
         : '';
 
     const bridgeSection = bridge.length > 0 ? `\n\n${formatUnfiledBridgeForSearch(bridge)}` : '';
+    recordVaultUse(results.map((r) => r.id));
 
     return `Found ${results.length} vault memor${results.length === 1 ? 'y' : 'ies'}:\n\n${lines.join('\n\n')}${expandHint}${bridgeSection}${windowNotice}`;
   } catch (err) {

@@ -267,6 +267,8 @@ export interface AssembledContext {
   /** The recall lane: read here but retrieved against the live ask, so the loop appends it past the cache
    *  boundary as `msg.relevant-memory`. Carried here so one owner decides it, as with `reserveTokens`. */
   recallLane?: string | null;
+  /** The vault entries the recall lane rendered; the turn records them as used. */
+  recalledVaultIds?: string[];
   /** The open-commitments snapshot, a pure function of the work board; the loop injects it ahead of the
    *  per-ask recall half. */
   openCommitmentsLane?: string | null;
@@ -1230,6 +1232,7 @@ async function assembleMessageContext(
   // costs recall, never the assembly. Computed before the post-budget report so the grant says if it fired.
   let recallLane: string | null = null;
   let openCommitmentsLane: string | null = null;
+  let recalledVaultIds: string[] = [];
   try {
     // `includeVault` is unconditionally true: this lane is the one owner of the vault pull, from the tail.
     const blocks = await buildRecallLaneMessage(
@@ -1240,6 +1243,7 @@ async function assembleMessageContext(
     );
     recallLane = blocks.recall;
     openCommitmentsLane = blocks.commitments;
+    recalledVaultIds = blocks.vaultIds;
   } catch (err) {
     logger.debug('recall lane failed', {
       error: err instanceof Error ? err.message : String(err),
@@ -1337,6 +1341,7 @@ async function assembleMessageContext(
     allocation: report,
     consumedOneShotFlags,
     recallLane,
+    recalledVaultIds,
     openCommitmentsLane,
     attemptLedgerLane,
     activeTasksLane,

@@ -3,7 +3,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { dominantMessageLineage } from '../memory/conversations.js';
-import { createLogger } from '../logger.js';
+import { createLogger, readLogFiles } from '../logger.js';
 import { embeddingModelKey } from '../memory/embedding-model.js';
 import { generateEmbedding, isEmbeddingBackendUnavailable, warnEmbeddingBackendAbsentOnce } from '../memory/embeddings.js';
 import { capEntryContent } from './entry-limit.js';
@@ -301,7 +301,9 @@ export async function createEntry(params: {
     else logger.warn('Failed to generate embedding for vault entry', { error: m });
   }
 
-  // Near-duplicates (>= 0.92 similarity) are either a re-save or a correction.
+  // Near-duplicates (>= 0.92 similarity) are either a re-save or a correction; a correction keeps the pin and
+  // the permanent mark of the entry it replaces.
+  let corrected: VaultEntry | null = null;
   if (embeddingBuf) {
     const duplicate = await findSemanticDuplicate(content, embeddingBuf, 0.92, params.agentId, params.namespace ?? null);
     if (duplicate) {
@@ -318,6 +320,7 @@ export async function createEntry(params: {
       // superseded entry stays recoverable via superseded_by.
       db.prepare('UPDATE vault_entries SET is_obsolete = 1, superseded_by = ?, updated_at = datetime(\'now\') WHERE id = ?')
         .run(id, duplicate.id);
+      corrected = duplicate;
       logger.info('Superseding older vault entry', { oldId: duplicate.id, newId: id });
       }
     }
@@ -334,9 +337,9 @@ export async function createEntry(params: {
     content,
     params.context ?? null,
     params.confidence ?? 1.0,
-    params.isPermanent ? 1 : 0,
+    params.isPermanent || corrected?.isPermanent ? 1 : 0,
     JSON.stringify(params.tags ?? []),
-    params.isPinned ? 1 : 0,
+    params.isPinned || corrected?.isPinned ? 1 : 0,
     params.sourceConversationId ?? null,
     params.source ?? 'agent',
     params.citation ?? null,
@@ -401,10 +404,44 @@ export function updateEntry(id: string, updates: {
   return getEntry(id);
 }
 
+const MARKED_OBSOLETE_LOG = 'Vault entry marked obsolete';
+
 export function markObsolete(id: string, reason?: string): void {
   const db = getDb();
   db.prepare('UPDATE vault_entries SET is_obsolete = 1, updated_at = datetime(\'now\') WHERE id = ?').run(id);
-  logger.info('Vault entry marked obsolete', { id, reason });
+  logger.info(MARKED_OBSOLETE_LOG, { id, reason });
+}
+
+/** A memory came up (recall rendered it or a search returned it): the fade rules read these two columns. */
+export function recordVaultUse(ids: readonly string[]): void {
+  if (ids.length === 0) return;
+  getDb().prepare(
+    `UPDATE vault_entries SET retrieval_count = retrieval_count + 1, last_retrieved_at = ? WHERE id IN (${ids.map(() => '?').join(', ')})`,
+  ).run(sqlUtcStamp(new Date()), ...ids);
+}
+
+// The clean-up's hides since 2026-08-31 were blind to use: they come back once, counted as used once today.
+// A correction, a stored vault_forget call, a logged Obsolete mark or a closed commitment stays hidden.
+const CLEANUP_RESTORE_KEY = 'vault_cleanup_restore';
+
+export function restoreCleanupHidesOnce(isClosedCommitment: (content: string) => boolean): void {
+  const db = getDb();
+  if (db.prepare('SELECT 1 FROM config WHERE key = ?').get(CLEANUP_RESTORE_KEY)) return;
+  const forgets = db.prepare(`SELECT content FROM messages WHERE content LIKE '%"vault_forget"%'`).all() as Array<{ content: string }>;
+  const marks = readLogFiles().flatMap((f) => f.split('\n')).filter((line) => line.includes(MARKED_OBSOLETE_LOG));
+  const purposeful = [...forgets.map((r) => r.content), ...marks].join('\n');
+  const hidden = db.prepare(
+    `SELECT id, content FROM vault_entries WHERE is_obsolete = 1 AND superseded_by IS NULL AND updated_at >= '2026-08-31 00:00:00'`,
+  ).all() as Array<{ id: string; content: string }>;
+  const ids = hidden.filter((r) => !purposeful.includes(r.id) && !isClosedCommitment(r.content)).map((r) => r.id);
+  const back = db.prepare(`UPDATE vault_entries SET is_obsolete = 0, confidence = MAX(confidence, 0.5), updated_at = datetime('now') WHERE id = ?`);
+  db.transaction(() => {
+    for (const id of ids) back.run(id);
+    recordVaultUse(ids);
+    db.prepare(`INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))`)
+      .run(CLEANUP_RESTORE_KEY, JSON.stringify({ at: sqlUtcStamp(new Date()), restored: ids.length }));
+  })();
+  if (ids.length > 0) logger.info(`Brought back ${ids.length} memories the clean-up hid`);
 }
 
 export function deleteEntry(id: string): void {
