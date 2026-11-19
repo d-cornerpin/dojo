@@ -24,7 +24,7 @@ vi.mock('../lib/api', () => ({
     await new Promise<void>((r) => { const prev = release; release = () => { prev(); r(); }; });
     return { ok: true, data: { value: '' } };
   }),
-  getVoiceModels: vi.fn(async () => ({ ok: true, data: { kokoro: { installed: true }, whisper: [{ id: 'moonshine-base', installed: true }] } })),
+  getVoiceModels: vi.fn(async () => ({ ok: true, data: { missing: [] } })),
 }));
 
 import { useVoiceMode, invalidateSavedVoiceSettings } from '../hooks/useVoiceMode';

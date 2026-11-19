@@ -28,7 +28,7 @@ const voices = [
 const models = {
   whisper: [{ id: 'w1', installed: false, bytes: 0 }],
   kokoro: { id: 'k1', installed: false, bytes: 0 },
-  defaultWhisper: 'w1',
+  missing: [{ kind: 'kokoro', id: 'k1', label: 'Kokoro voice synthesis', approxBytes: 1 }],
 };
 
 beforeEach(() => {
@@ -41,7 +41,7 @@ afterEach(() => { vi.clearAllMocks(); });
 
 describe('voice setup step failures', () => {
   it('brings the download button back when the install is refused', async () => {
-    mocked().installVoiceModel.mockResolvedValue({ ok: false, error: 'disk full' } as never);
+    mocked().installMissingVoiceModels.mockResolvedValue({ ok: false, error: 'disk full' } as never);
     render(<VoiceSetupStep />);
     fireEvent.click(await screen.findByRole('button', { name: 'Download voice models' }));
     expect(await screen.findByText('disk full')).toBeTruthy();
@@ -49,7 +49,7 @@ describe('voice setup step failures', () => {
   });
 
   it('brings the download button back when the request throws', async () => {
-    mocked().installVoiceModel.mockRejectedValue(new Error('network gone'));
+    mocked().installMissingVoiceModels.mockRejectedValue(new Error('network gone'));
     render(<VoiceSetupStep />);
     fireEvent.click(await screen.findByRole('button', { name: 'Download voice models' }));
     expect(await screen.findByText('network gone')).toBeTruthy();

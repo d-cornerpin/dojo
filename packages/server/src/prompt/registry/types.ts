@@ -79,7 +79,6 @@ export interface AssemblyContext {
   contextWindow: number; // context window for this agent and model
   ownerName: string; // getOwnerName()
   replyRecipientName: string;
-  ttsEngine: 'local' | 'cloud'; // resolveTtsEngine(turnContext)
 
   // inbound-channel resolution, computed once from the last real user row
   lastUserContent: string; // content used for channel detection
@@ -115,7 +114,6 @@ export interface AssemblyContext {
 
 export const VOLATILE_TURN_FIELDS = [
   'turnContext',
-  'ttsEngine',
   'replyRecipientName',
   'lastUserContent',
   'inboundChannel',

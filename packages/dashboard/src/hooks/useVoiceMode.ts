@@ -4,16 +4,6 @@ import { VoiceClient, type VoiceState } from '../lib/voice/voice-client';
 
 interface UseVoiceModeOptions {
   agentId: string | null;
-  /** Optional overrides; defaults come from the saved Settings → Voice config. */
-  voice?: string;
-  speed?: number;
-  sttModel?: string;
-  vadSensitivity?: 'quick' | 'normal' | 'patient';
-  wakeWordEnabled?: boolean;
-  wakePhrase?: string;
-  sleepPhrase?: string;
-  bargeInEnabled?: boolean;
-  soundEffectsEnabled?: boolean;
 }
 
 export interface UseVoiceModeResult {
@@ -45,20 +35,17 @@ export interface UseVoiceModeResult {
   toggleMute: () => Promise<void>;
   toggle: () => Promise<void>;
   stop: () => Promise<void>;
-  /** When non-null, the toggle was clicked but the required STT/TTS models aren't installed yet:
-   *  return immediately and render <VoiceFirstRunModal /> with these props. */
-  setupNeeded: { whisperModelId: string } | null;
+  /** True when the toggle was clicked but the saved engines' models aren't installed yet:
+   *  render <VoiceFirstRunModal />. */
+  setupNeeded: boolean;
   /** Called by the modal once required models are installed: start voice. */
   completeSetup: () => Promise<void>;
   /** Called by the modal if the user cancels setup. */
   cancelSetup: () => void;
 }
 
+// What the page itself acts on; the voice, speed and engines are read by the server from the saved settings.
 interface SavedVoiceSettings {
-  voice: string;
-  speed: number;
-  sttModel: string;
-  vadSensitivity: 'quick' | 'normal' | 'patient';
   wakeWordEnabled: boolean;
   wakePhrase: string;
   sleepPhrase: string;
@@ -72,11 +59,7 @@ export function invalidateSavedVoiceSettings(): void { savedPromise = null; }
 export async function loadSavedVoiceSettings(): Promise<SavedVoiceSettings> {
   if (savedPromise) return savedPromise;
   savedPromise = (async () => {
-    const [v, s, vad, stt, wake, wp, sp, primaryName, bargeIn, sfx] = await Promise.all([
-      api.getSetting('voice.preferred_voice'),
-      api.getSetting('voice.playback_speed'),
-      api.getSetting('voice.vad_sensitivity'),
-      api.getSetting('voice.stt_model'),
+    const [wake, wp, sp, primaryName, bargeIn, sfx] = await Promise.all([
       api.getSetting('voice.wake_word_enabled'),
       api.getSetting('voice.wake_phrase'),
       api.getSetting('voice.sleep_phrase'),
@@ -86,19 +69,10 @@ export async function loadSavedVoiceSettings(): Promise<SavedVoiceSettings> {
     ]);
     // A read that failed says nothing about what the owner saved: use defaults for this call
     // only, and read again next time rather than remembering them for the page's life.
-    if (![v, s, vad, stt, wake, wp, sp, primaryName, bargeIn, sfx].every((r) => r.ok)) savedPromise = null;
-    const speedNum = s.ok && s.data.value ? Number(s.data.value) : NaN;
-    const vadVal = vad.ok && vad.data.value;
+    if (![wake, wp, sp, primaryName, bargeIn, sfx].every((r) => r.ok)) savedPromise = null;
     const primary = (primaryName.ok && primaryName.data.value && primaryName.data.value.trim()) || 'agent';
     const defaultWakePhrase = `hey ${primary.toLowerCase()}`;
     return {
-      voice: (v.ok && v.data.value) || 'am_michael',
-      speed: Number.isFinite(speedNum) && speedNum >= 0.5 && speedNum <= 2 ? speedNum : 1.0,
-      // Default 'moonshine-base' (no native deps). Any other saved model keeps working:
-      // the server's parseSttModelKey normalises it.
-      sttModel: (stt.ok && stt.data.value) || 'moonshine-base',
-      // Default 'quick' (200 ms): lower latency, at the cost of occasional early cutoffs.
-      vadSensitivity: vadVal === 'normal' ? 'normal' : vadVal === 'patient' ? 'patient' : 'quick',
       wakeWordEnabled: wake.ok && wake.data.value === 'true',
       wakePhrase: (wp.ok && wp.data.value && wp.data.value.trim()) || defaultWakePhrase,
       sleepPhrase: (sp.ok && sp.data.value && sp.data.value.trim()) || 'stop listening',
@@ -112,12 +86,12 @@ export async function loadSavedVoiceSettings(): Promise<SavedVoiceSettings> {
   return savedPromise;
 }
 
-export function useVoiceMode({ agentId, voice, speed, sttModel, vadSensitivity, wakeWordEnabled, wakePhrase, sleepPhrase, bargeInEnabled, soundEffectsEnabled }: UseVoiceModeOptions): UseVoiceModeResult {
+export function useVoiceMode({ agentId }: UseVoiceModeOptions): UseVoiceModeResult {
   const [state, setState] = useState<VoiceState>('idle');
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [lastTranscript, setLastTranscript] = useState<string | null>(null);
-  const [setupNeeded, setSetupNeeded] = useState<{ whisperModelId: string } | null>(null);
+  const [setupNeeded, setSetupNeeded] = useState(false);
   const [audioLevel, setAudioLevel] = useState(0);
   const [partialTranscript, setPartialTranscript] = useState<string | null>(null);
   const [muted, setMutedState] = useState(false);
@@ -157,29 +131,19 @@ export function useVoiceMode({ agentId, voice, speed, sttModel, vadSensitivity, 
       clientRef.current = null;
     }
     if (!clientRef.current) {
-      // Merge explicit overrides with the saved Settings → Voice config so the user's
-      // picker selections take effect when they toggle voice mode on.
+      // The saved Settings, Voice values (read again after any save there).
       const saved = await loadSavedVoiceSettings();
       if (!mountedRef.current) return null;   // left the page while settings loaded: build nothing
-      const effectiveWakeWordEnabled = wakeWordEnabled ?? saved.wakeWordEnabled;
-      const effectiveWakePhrase = wakePhrase ?? saved.wakePhrase;
-      const effectiveBargeInEnabled = bargeInEnabled ?? saved.bargeInEnabled;
-      const effectiveSoundEffectsEnabled = soundEffectsEnabled ?? saved.soundEffectsEnabled;
-      setResolvedWakeWordEnabled(effectiveWakeWordEnabled);
-      setResolvedWakePhrase(effectiveWakePhrase);
-      setResolvedBargeInEnabled(effectiveBargeInEnabled);
-      setResolvedSoundEffectsEnabled(effectiveSoundEffectsEnabled);
+      setResolvedWakeWordEnabled(saved.wakeWordEnabled);
+      setResolvedWakePhrase(saved.wakePhrase);
+      setResolvedBargeInEnabled(saved.bargeInEnabled);
+      setResolvedSoundEffectsEnabled(saved.soundEffectsEnabled);
       const client = new VoiceClient({
         agentId,
-        voice: voice ?? saved.voice,
-        speed: speed ?? saved.speed,
-        sttModel: sttModel ?? saved.sttModel,
-        vadSensitivity: vadSensitivity ?? saved.vadSensitivity,
-        wakeWordEnabled: effectiveWakeWordEnabled,
-        wakePhrase: effectiveWakePhrase,
-        sleepPhrase: sleepPhrase ?? saved.sleepPhrase,
-        bargeInEnabled: effectiveBargeInEnabled,
-        soundEffectsEnabled: effectiveSoundEffectsEnabled,
+        wakePhrase: saved.wakePhrase,
+        sleepPhrase: saved.sleepPhrase,
+        bargeInEnabled: saved.bargeInEnabled,
+        soundEffectsEnabled: saved.soundEffectsEnabled,
       });
       client.on('state-change', (s) => {
         setState(s);
@@ -209,7 +173,7 @@ export function useVoiceMode({ agentId, voice, speed, sttModel, vadSensitivity, 
       clientRef.current = client;
     }
     return clientRef.current;
-  }, [agentId, voice, speed, sttModel, vadSensitivity, wakeWordEnabled, wakePhrase, sleepPhrase, bargeInEnabled, soundEffectsEnabled]);
+  }, [agentId]);
 
   // One build at a time: a second caller joins the first instead of building a duplicate client.
   const ensureClient = useCallback((): Promise<VoiceClient | null> => {
@@ -235,32 +199,25 @@ export function useVoiceMode({ agentId, voice, speed, sttModel, vadSensitivity, 
     if (startingRef.current) return;   // a start is already under way: ignore the extra click
     startingRef.current = true;
     try {
-    // Turning on: check the required models are installed first, else a fresh user
-    // gets ~20s of silence while whisper-server downloads and Kokoro loads.
+    // Turning on: the saved engines' models must be on disk first, else a fresh user
+    // gets ~20s of silence while the speech model downloads and Kokoro loads.
     try {
-      const saved = await loadSavedVoiceSettings();
-      const wantedStt = sttModel ?? saved.sttModel;
       const modelsRes = await api.getVoiceModels();
-      if (modelsRes.ok) {
-        const kokoroOk = modelsRes.data.kokoro?.installed === true;
-        const whisperRow = modelsRes.data.whisper.find((m) => m.id === wantedStt);
-        const whisperOk = whisperRow?.installed === true;
-        if (!kokoroOk || !whisperOk) {
-          setSetupNeeded({ whisperModelId: wantedStt });
-          return;
-        }
+      if (modelsRes.ok && modelsRes.data.missing.length > 0) {
+        setSetupNeeded(true);
+        return;
       }
     } catch { /* If the check itself fails, fall through and try to start anyway. */ }
     await startVoice();
     } finally { startingRef.current = false; }
-  }, [state, sttModel, startVoice]);
+  }, [state, startVoice]);
 
   const completeSetup = useCallback(async () => {
-    setSetupNeeded(null);
+    setSetupNeeded(false);
     await startVoice();
   }, [startVoice]);
 
-  const cancelSetup = useCallback(() => setSetupNeeded(null), []);
+  const cancelSetup = useCallback(() => setSetupNeeded(false), []);
 
   const stop = useCallback(async () => {
     if (clientRef.current) await clientRef.current.stop();

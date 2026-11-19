@@ -21,16 +21,8 @@ export type VoiceState =
 
 export interface VoiceClientOptions {
   agentId: string;
-  voice?: string;
-  speed?: number;
-  /** Whisper model size to use server-side (e.g. "large-v3-turbo"). */
-  sttModel?: string;
-  /** Turn-taking patience setting: quick, normal, patient. The client VAD redemption itself is fixed. */
-  vadSensitivity?: 'quick' | 'normal' | 'patient';
   /** Override for the WS endpoint; defaults to `/api/ws/voice`. */
   wsUrl?: string;
-  /** Start passive: the session only wakes when the wake phrase is heard. */
-  wakeWordEnabled?: boolean;
   wakePhrase?: string;
   sleepPhrase?: string;
   /** Detected speech while the agent speaks interrupts it. Off by
@@ -101,11 +93,6 @@ function configureOrt() {
 
 export class VoiceClient {
   readonly agentId: string;
-  voice: string;
-  speed: number;
-  sttModel: string;
-  vadSensitivity: 'quick' | 'normal' | 'patient';
-  wakeWordEnabled: boolean;
   wakePhrase: string;
   sleepPhrase: string;
   bargeInEnabled: boolean;
@@ -139,13 +126,6 @@ export class VoiceClient {
 
   constructor(opts: VoiceClientOptions) {
     this.agentId = opts.agentId;
-    this.voice = opts.voice ?? 'am_michael';
-    this.speed = opts.speed ?? 1;
-    // Moonshine default (no native deps); the server maps stored values via parseSttModelKey.
-    this.sttModel = opts.sttModel ?? 'moonshine-base';
-    // Default 'quick'; the client VAD redemption is the fixed VAD_REDEMPTION_MS, so this does not change it.
-    this.vadSensitivity = opts.vadSensitivity ?? 'quick';
-    this.wakeWordEnabled = opts.wakeWordEnabled ?? false;
     this.wakePhrase = opts.wakePhrase ?? 'hey agent';
     this.sleepPhrase = opts.sleepPhrase ?? 'stop listening';
     this.bargeInEnabled = opts.bargeInEnabled ?? false;
@@ -280,9 +260,10 @@ export class VoiceClient {
       this.fail('ws_open_failed', err);
       return;
     }
+    const session = this.ws;
 
     try {
-      this.vad = await MicVAD.new({
+      const vad = await MicVAD.new({
         model: 'v5',
         baseAssetPath: VAD_ASSET_BASE,
         onnxWASMBasePath: ORT_ASSET_BASE,
@@ -321,8 +302,14 @@ export class VoiceClient {
           }
         },
       });
-      await this.vad.start();
-      this.setState('listening');
+      // The session ended (a dropped connection, or Stop) while the microphone was opening: release it.
+      if (this.ws !== session) {
+        try { vad.destroy(); } catch { /* ignore */ }
+        return;
+      }
+      this.vad = vad;
+      await vad.start();
+      if (this.ws === session) this.setState('listening');
     } catch (err) {
       // Reword permission errors; the iOS toast alone says "an error occurred".
       const name = err instanceof Error ? err.name : '';
@@ -399,18 +386,9 @@ export class VoiceClient {
       ws.onopen = () => {
         clearTimeout(timer);
         this.ws = ws;
-        // Hand the server our voice, speed, STT and wake-word settings.
+        // The server reads voice, speed, engines and wake words from the saved settings; it needs only the sample rate.
         try {
-          ws.send(JSON.stringify({
-            type: 'config',
-            voice: this.voice,
-            speed: this.speed,
-            sttModel: this.sttModel,
-            pcmSampleRate: 16_000,
-            wakeWordEnabled: this.wakeWordEnabled,
-            wakePhrase: this.wakePhrase,
-            sleepPhrase: this.sleepPhrase,
-          }));
+          ws.send(JSON.stringify({ type: 'config', pcmSampleRate: 16_000 }));
         } catch { /* ignore */ }
         resolve();
       };
