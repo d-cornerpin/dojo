@@ -105,8 +105,12 @@ export async function finalizeTurnRecord(
     // or now. A Stop and a turn that parked its job keep the mark.
     const request = turnCtx.servedRequest;
     const nothingServed = cause === 'wait' || (cause === 'free' && exitReason !== 'stop' && !turnEnd.parkedTheJob);
-    if (request && nothingServed) serveLater({ kind: 'row', agentId, rowid: request.rowid, attempts: request.attempts }, turnCtx.retryAt ?? Date.now(), 'nothing was served; the request is owed again');
-    else if (request) markServedByRowid(request.rowid, turnNumber);
+    try {
+      if (request && nothingServed) serveLater({ kind: 'row', agentId, rowid: request.rowid, attempts: request.attempts }, turnCtx.retryAt ?? Date.now(), 'nothing was served; the request is owed again');
+      else if (request) markServedByRowid(request.rowid, turnNumber);
+    } catch (err) {
+      logger.warn('v2: another agent\'s request was not marked at finalize; it stays unserved', { agentId, turnNumber, error: String(err) }, agentId);
+    }
     // The engine event this turn claimed: swept on Stop; released after an abort or a counted cut that made no
     // side effect, to wait for the provider's reset when the limit met the first call; otherwise it stays served.
     if (claimedEngineEvent) {
