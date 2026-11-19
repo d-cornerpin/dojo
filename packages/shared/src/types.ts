@@ -58,6 +58,8 @@ export interface Model {
   isEnabled: boolean;
   // Why a picker cannot offer this model as an agent's model ('not a chat model' or 'too small for an agent'); null when it can.
   notForAgents?: string | null;
+  // Plain yes/no sent with the reason above: true means the model is not a chat model at all.
+  notAChatModel?: boolean;
   thinkingEnabled: boolean;
   // Only SENT to a model whose `thinkingLevels` lists it.
   thinkingLevel?: ThinkingLevel;
