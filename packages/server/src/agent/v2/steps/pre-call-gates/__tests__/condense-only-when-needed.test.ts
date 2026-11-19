@@ -140,7 +140,6 @@ function makeCtx(): PreCallGatesContext & { events: WsEvent[] } {
     configuredModelId: MODEL, isAutoRouted: false, counterparty: OWNER,
     engineBlockEscapeHatch: '[escape hatch]',
     broadcast: (event: WsEvent) => { events.push(event); },
-    stashContinuationIfHuman: vi.fn(),
   } as unknown as PreCallGatesContext;
   return Object.assign(ctx, { events });
 }

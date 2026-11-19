@@ -208,7 +208,7 @@ describe('a continued job\'s words reach the owner', () => {
   it.each([
     ['paused', 'waiting for the owner: which folder?', 'Which folder should the receipts go in?'],
     ['blocked', 'the receipts share is not mounted', 'I cannot reach the receipts share: it is not mounted.'],
-  ])('NP1: a pass that takes the "%s" door on ANOTHER carried task, then a line in the next pass: it reaches him once, and the job continues', async (status, notes, text) => {
+  ])('a pass that takes the "%s" door on ANOTHER carried task, then a line in the next pass: it reaches him once, and the job continues', async (status, notes, text) => {
     const id = await aContinuedMeasuredJob();
     const opened = await call('work_open:task', { title: 'File the receipts', goal: 'receipts filed' });
     const other = /task_id=([0-9a-f-]{36})/.exec(opened.content)![1];
@@ -231,7 +231,7 @@ describe('a continued job\'s words reach the owner', () => {
     expect(workingNotes()).toBe(0);
   });
 
-  it('NP3: a question that rides WITH the job task\'s own pause call is judged after it, and reaches him (over iMessage)', async () => {
+  it('a question that rides WITH the job task\'s own pause call is judged after it, and reaches him (over iMessage)', async () => {
     const id = await aContinuedMeasuredJob();
     countMeasure.mockResolvedValue({ ok: true, count: 10051 });
     recordMeasured(id, { ok: true, count: 10051 }, Date.now());

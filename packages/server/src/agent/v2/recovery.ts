@@ -9,6 +9,7 @@ import { markTurnDied } from './turn-record.js';
 import { broadcast } from '../../gateway/ws.js';
 import { getDb } from '../../db/connection.js';
 import { insertMessageIfAbsent } from '../../memory/message-store.js';
+import { getMessagesByIds } from '../../memory/store.js';
 import { recordError, AgentError, pausedWords } from '../errors.js';
 import { turnContext } from '../turn-context.js';
 import { classifyRecoverableProviderError, classifyPlatformError, isEngineAssemblyFault } from './classifiers/provider.js';
@@ -492,8 +493,8 @@ async function recordInjury(
   const isDeclaredPatienceHonestFail = code === DECLARED_PATIENCE_EXCEEDED_CODE;
   if (isDeclaredPatienceHonestFail && turnFacing.isUserFacingTurn) {
     // A job turn has no fresh trigger: the line names the request its job started from.
-    const asked = state.lastUserMessageContent ?? (getDb().prepare('SELECT content FROM messages WHERE id = ?')
-      .get(turnContext(agentId)?.root?.sourceMessageId ?? '') as { content: string } | undefined)?.content ?? null;
+    const root = turnContext(agentId)?.root?.sourceMessageId;
+    const asked = state.lastUserMessageContent ?? (root ? getMessagesByIds([root])[0]?.content : null) ?? null;
     const honestFail = declaredPatienceHonestFailNote(asked, declaredPatienceDidCompact);
     persistAndBroadcastSystemNote(agentId, honestFail);
     tellAgentWhatDojoSent({ agentId, recipient: 'the person who asked (on the dashboard)', text: honestFail, why: 'because your model could not finish this answer' });

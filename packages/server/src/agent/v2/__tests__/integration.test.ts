@@ -1587,7 +1587,7 @@ describe('runV2Turn integration', () => {
         expect.any(Number),
         expect.objectContaining({ force: true }),
       );
-      expect(jobParked()).toBe(true); // not declined — the retry wake fires
+      expect(jobParked()).toBe(true); // not declined: the retry comes due
       expect(onAgentInjuredSpy).not.toHaveBeenCalled();
       expect(recordErrorMock).not.toHaveBeenCalled();
 

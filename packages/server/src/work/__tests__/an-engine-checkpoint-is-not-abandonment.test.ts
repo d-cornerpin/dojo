@@ -90,7 +90,7 @@ describe('an engine checkpoint carries the job and notes it, without moving it',
     expect([notes('w-job'), notes('w-other-agent'), notes('w-abandoned-same-conv')]).toEqual([1, 0, 0]);
   });
 
-  it('t143 r3 (C1): the job\'s own turn names the job however many other turns ran first; a turn with its own trigger never does', () => {
+  it('the job\'s own turn names the job however many other turns ran first; a turn with its own trigger never does', () => {
     const now = Date.now();
     const stale = now - 15 * 60_000;
     seedWork('w-job', { updated_at: stale, source_message_id: 'msg-job' });
@@ -102,7 +102,7 @@ describe('an engine checkpoint carries the job and notes it, without moving it',
     expect(park('turn-budget', 12, null)).toBe(1); // and again, turns later
   });
 
-  it('t143 r4 (M1): a trigger-less turn that is not the job\'s (a scheduler wake) takes nothing from the job', async () => {
+  it('a trigger-less turn that is not the job\'s (a scheduler wake) takes nothing from the job', async () => {
     const now = Date.now();
     const stale = now - 15 * 60_000;
     seedWork('w-job', { updated_at: stale, source_message_id: 'msg-job' });

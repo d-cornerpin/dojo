@@ -95,7 +95,7 @@ async function gate(turnNumber: number, loopCount: number): Promise<void> {
   const ctx = {
     agentId: AGENT, turnNumber, contextWindow: 200_000, contextModelId: OWN, configuredModelId: OWN, isAutoRouted: false,
     counterparty: PERSON, engineBlockEscapeHatch: '[escape hatch]',
-    broadcast: () => {}, stashContinuationIfHuman: vi.fn(),
+    broadcast: () => {},
   } as unknown as PreCallGatesContext;
   await runPreCallGates(s, ctx);
   for (let i = 0; i < 400 && backgroundDrains.has(AGENT); i++) await new Promise((r) => setTimeout(r, 5));

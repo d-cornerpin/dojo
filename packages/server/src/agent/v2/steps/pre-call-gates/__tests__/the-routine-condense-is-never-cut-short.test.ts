@@ -116,7 +116,6 @@ function gate(window: number): Promise<unknown> {
     configuredModelId: MODEL, isAutoRouted: false, counterparty: OWNER,
     engineBlockEscapeHatch: '[escape hatch]',
     broadcast: () => { /* not the subject */ },
-    stashContinuationIfHuman: vi.fn(),
   } as unknown as PreCallGatesContext;
   return runPreCallGates(s, ctx);
 }

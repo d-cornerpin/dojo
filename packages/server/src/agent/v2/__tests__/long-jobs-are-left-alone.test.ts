@@ -682,12 +682,9 @@ describe('t137 (b): a parked turn never moves its task to "paused, waiting on th
     expect(workState('w-long-job')).toBe('claimed');
   });
 
-  // ROUND 3 (review I1): the refusal reads "this turn queued its own continuation" off the C3
-  // stash, which is only TRUE because the next preflight consumes the stash on read
-  // (`turn-trigger.ts`'s `continuationContext.delete`). This is the shape that delete protects: a
-  // job parks, then a later turn genuinely asks the owner something and stops. If the stash were
-  // left behind, the old park would still read as "continuing" and the task would never pause —
-  // the PM would keep pushing an agent that is waiting on the owner (the inverse of OR-PM-1).
+  // The waiting-on-owner pause reads "this turn parked its job" off the job's own task row: the job's next turn
+  // picks the due up, so a job that parked and then genuinely asks the owner something and stops pauses its task,
+  // and the PM does not push an agent that is waiting on the owner.
   it('CONTROL AFTER A PARK: a later turn that genuinely asks the owner and stops still pauses the task', async () => {
     seedInFlightTask();
     await readOnlyTurnAcrossTheCheckpoint({ narrate: 'Starting on the research folder now.' });

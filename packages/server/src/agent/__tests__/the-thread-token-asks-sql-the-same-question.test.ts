@@ -3,17 +3,11 @@
 // ── THE DEFECT, AND WHY IT RAN IN BOTH DIRECTIONS AT ONCE ──
 //
 // A marker carries eight characters of a thread id, and a reader must decide "does this token
-// identify that stored FULL id?". The live readers today: `agent/a2a-own-turn.ts` asks it in
-// JavaScript (`a2aThreadTokenMatches`), and `work/done/who-decides.ts` asks it in SQL
-// (`a2aThreadTokenMatchesSql`). Earlier readers compared the LEGACY front slice by hand. For an id `makeThreadId` mints — `thread-<hash>-<seed>`
-// — the front eight characters are `thread-` plus ONE hash character: about 36 buckets across
-// every named thread on the box. So the slice was a false-POSITIVE magnet (collision class
-// FA-C2, already fixed in the authoritative queries sitting directly above these three). Then
-// t109 moved the PRODUCER to the varying region, and the same three comparisons became false
-// NEGATIVES for every marker written since — a current token never equals the front slice of a
-// named id. The cost of the negative is a dropped nudge: the enforcer asks "did this agent
-// already reply on this thread?", gets `false` where the truth is `true`, and says the wrong
-// thing to the agent.
+// identify that stored FULL id?". The live readers: `agent/a2a-own-turn.ts` asks it in JavaScript
+// (`a2aThreadTokenMatches`), and `work/done/who-decides.ts` asks it in SQL (`a2aThreadTokenMatchesSql`).
+// The front eight characters of an id `makeThreadId` mints (`thread-<hash>-<seed>`) are `thread-` plus
+// one hash character, so a front-slice compare is wrong both ways: many named ids share a slice, and a
+// current token never equals one. A wrong answer drops a nudge or says the wrong thing to the agent.
 //
 // t109 handed up the one-line fix and named `a2aThreadTokenMatches` as the one answer. Two of
 // the three sites are SQL and cannot call a JS function, so `@dojo/shared` now carries the SQL
