@@ -9,6 +9,7 @@
 //   3. written in window: `updated_at` in [COMPENSATION_WINDOW_OPENED_AT, first boot with the door fix)
 //   4. the box is not on UTC: at offset 0 the compensating transform is the identity
 import { getDb } from '../db/connection.js';
+import { setConfigValue } from '../config/config-value.js';
 import { createLogger } from '../logger.js';
 import { postAgentNotice } from '../agent/agent-notice.js';
 import { getPrimaryAgentId } from '../config/platform.js';
@@ -72,12 +73,6 @@ function cfg(key: string): string | null {
   } catch {
     return null;
   }
-}
-
-function setCfg(key: string, value: string): void {
-  getDb().prepare(
-    'INSERT INTO config (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
-  ).run(key, value);
 }
 
 /** The two readings of one stored anchor: as stored, and as its UTC digits read in the box zone. */
@@ -204,7 +199,7 @@ export function runAnchorCompensationPass(
 
     // The window closes at the first boot of a build carrying the fix: the marker is absent then (the bound
     // is now) and recorded afterwards, which keeps the set stable.
-    if (!firstBoot) setCfg(FIX_FIRST_BOOT_KEY, nowIso);
+    if (!firstBoot) setConfigValue(FIX_FIRST_BOOT_KEY, nowIso);
     if (already) return null;
 
     const result = scanForCompensatedAnchors({
@@ -226,7 +221,7 @@ export function runAnchorCompensationPass(
       // throws to the catch below, leaves the scan open, and the next boot retries.
       notify(describeSuspects(result));
     }
-    setCfg(SCAN_RECORD_KEY, JSON.stringify(result));
+    setConfigValue(SCAN_RECORD_KEY, JSON.stringify(result));
     return result;
   } catch (err) {
     // A maintenance scan never fails a boot.

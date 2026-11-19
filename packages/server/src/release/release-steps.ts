@@ -4,6 +4,7 @@
 // not make a step do its work twice. The marker is its own key because `config.platform_version` is never written.
 
 import { getDb } from '../db/connection.js';
+import { setConfigValue } from '../config/config-value.js';
 import { createLogger } from '../logger.js';
 // The tree's one version ordering (handles `X.Y.Z` and `X.Y.Z-preflight.N`).
 import { compareVersions, getCurrentVersion, versionIsOrderable } from '../gateway/routes/update.js';
@@ -95,10 +96,7 @@ function readLastVersion(): string | null {
 
 function recordVersion(version: string): void {
   try {
-    getDb().prepare(
-      `INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
-       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
-    ).run(RELEASE_STEPS_VERSION_KEY, version);
+    setConfigValue(RELEASE_STEPS_VERSION_KEY, version);
   } catch (err) {
     // Recording is an optimisation: every step is idempotent, so a failed record just reruns them.
     logger.warn('Could not record the release-steps version marker', {
