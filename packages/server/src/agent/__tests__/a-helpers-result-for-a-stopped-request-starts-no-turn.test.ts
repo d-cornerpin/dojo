@@ -12,6 +12,7 @@ vi.mock('../../memory/embeddings.js', () => ({ generateEmbedding: async () => ne
 import { stopByOwner, getAgentRuntime } from '../runtime.js';
 import { deliverA2AMessage } from '../a2a-transport.js';
 import { findUnservedTerminalWake } from '../v2/counterparty.js';
+import { nextOwed } from '../v2/owed.js';
 import { insertMessage } from '../../memory/message-store.js';
 import { claimAsk, openDelegationJoin } from '../../work/store.js';
 import { testDb, AGENT, PERSON } from '../v2/__tests__/helpers/reply-sender.js';
@@ -36,6 +37,16 @@ describe("a helper's result for a stopped request starts no turn", () => {
     expect(resultRows()).toBe(1);
     expect(handleMessage).not.toHaveBeenCalled();
     expect(findUnservedTerminalWake(AGENT)).toBeNull();
+  });
+
+  it("the helper's question on the stopped thread wakes nobody and is owed to nobody", async () => {
+    stopByOwner(AGENT);
+    const asked = await deliverA2AMessage({
+      intent: 'QUESTION', threadId: THREAD, requiresResponse: true, payload: 'Which venue do you want?', toAgent: AGENT, fromAgent: HELPER,
+    } as never);
+    expect(asked.delivered).toBe(true);
+    expect(handleMessage).not.toHaveBeenCalled();
+    expect(nextOwed(AGENT).map((i) => i.kind)).not.toContain('agentRequest');
   });
 
   it('a later request sent on the same thread is live: its result drives its turn', async () => {
