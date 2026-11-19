@@ -7,6 +7,7 @@
 import net from 'node:net';
 import { execFile } from 'node:child_process';
 import { getDb } from '../db/connection.js';
+import { setConfigValue } from '../config/config-value.js';
 import { createLogger } from '../logger.js';
 import {
   addCredential,
@@ -46,10 +47,7 @@ function getFlag(key: string): boolean {
 }
 
 function setFlag(key: string, value: boolean): void {
-  getDb().prepare(`
-    INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
-    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
-  `).run(key, value ? 'true' : 'false');
+  setConfigValue(key, value ? 'true' : 'false');
 }
 
 // ── Detection ──
