@@ -107,7 +107,7 @@ twilioRouter.post('/webhook/sms', async (c) => {
     await ingestInboundSms({ messageSid, fromNumber: from, toNumber: to, body, numMedia, mediaUrls, mediaContentTypes });
   } catch (err) {
     logger.error('Inbound SMS ingestion failed', {
-      messageSid, from, to, error: err instanceof Error ? err.message : String(err),
+      messageSid, to, error: err instanceof Error ? err.message : String(err),
     });
   }
   // Empty TwiML: Twilio expects 200 with valid TwiML; any agent reply goes out via the outbound sendSms
@@ -163,7 +163,7 @@ twilioRouter.post('/webhook/voice', async (c) => {
     );
   }
   // reject (default for unknown when set)
-  logger.info('Inbound voice call rejected (unknown caller)', { from, to });
+  logger.info('Inbound voice call rejected (unknown caller)', { to });
   return c.text(twimlReject('busy'), 200, { 'Content-Type': 'application/xml' });
 });
 
