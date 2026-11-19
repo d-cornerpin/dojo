@@ -45,4 +45,14 @@ describe('first-run voice setup', () => {
     await waitFor(() => expect(api.installMissingVoiceModels).toHaveBeenCalledWith(missing));
     expect(api.installVoiceModel).not.toHaveBeenCalled();
   });
+
+  it('renders against a server answer that has no missing list', async () => {
+    const actual = await vi.importActual<typeof api>('../lib/api');
+    const older = { whisper: [], kokoro: null, defaultWhisper: 'large-v3-turbo', kokoroLoaded: false, totalDiskBytes: 0, freeDiskMb: 1 };
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ ok: true, data: older }), { status: 200 })));
+    vi.mocked(api.getVoiceModels).mockImplementation(actual.getVoiceModels);
+    render(<VoiceSetupStep />);
+    expect(await screen.findByText('✓ Installed')).toBeTruthy();
+    vi.unstubAllGlobals();
+  });
 });

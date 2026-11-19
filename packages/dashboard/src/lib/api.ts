@@ -920,7 +920,9 @@ export const getVoicePresets = async (): Promise<ApiResponse<{ voices: VoicePres
 };
 
 export const getVoiceModels = async (): Promise<ApiResponse<VoiceModelsResponse>> => {
-  return request('/voice/models');
+  const res = await request<VoiceModelsResponse>('/voice/models');
+  // A server mid-update may not send `missing` yet: read it as nothing missing.
+  return res.ok ? { ok: true, data: { ...res.data, missing: res.data.missing ?? [] } } : res;
 };
 
 export const installVoiceModel = async (kind: 'whisper' | 'kokoro' | 'moonshine', id: string): Promise<ApiResponse<{ kind: string; id: string }>> => {
