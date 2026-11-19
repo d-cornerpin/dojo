@@ -8,11 +8,12 @@ vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {} }));
 
 import { runMigrations } from '../../db/migrations.js';
 import { parkJob } from '../job-continuation.js';
-import { beginJobRun, endJobRun, endJobCarry, jobContinuationOwed } from '../task-freshness.js';
+import { beginJobRun, endJobRun, endJobCarry, parkedContinuationFor } from '../task-freshness.js';
 import { openTurnContext, endTurnContext } from '../../agent/turn-context.js';
 import { pendingWakeups } from '../../agent/shared-state.js';
 import { dueOf } from '../../agent/v2/owed.js';
-import { freshReplyDb, AGENT, T0 } from '../../agent/v2/__tests__/helpers/reply-sender.js';
+import { freshReplyDb, AGENT, PERSON, T0 } from '../../agent/v2/__tests__/helpers/reply-sender.js';
+import { textFrom } from '../../agent/v2/__tests__/helpers/parked-agent.js';
 import { samAsks, servedBy, turnEnds, askOf, countsOf, CONV } from './helpers/a-request-handed-back.js';
 
 beforeEach(() => {
@@ -34,8 +35,14 @@ describe('a parked job is not re-served by the clock', () => {
   it('the request is open with no due and nothing counted, and the clock leaves it to the continuation', () => {
     expect(askOf('m-1')).toEqual({ state: 'open', due: null });
     expect(countsOf('m-1')).toEqual({ silence: 0, engine: 0 });
-    expect(jobContinuationOwed(AGENT)).toBe(true);
+    expect(parkedContinuationFor(AGENT)).toBe('m-1');
     expect(dueOf(AGENT).now).toBe(false);
+  });
+
+  it('another person waiting on the same agent is not hidden by the parked job', () => {
+    expect(dueOf(AGENT).now).toBe(false);
+    textFrom('m-2', PERSON, { relation: 'known_contact' });
+    expect(dueOf(AGENT).now).toBe(true);
   });
 
   it('once the continuation has run and ended, the clock serves the request again', () => {

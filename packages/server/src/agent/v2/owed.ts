@@ -4,7 +4,7 @@ import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
 import { broadcast } from '../../gateway/ws.js';
 import { workingExpr } from '../../work/terminal-states.js';
-import { jobContinuationOwed } from '../../work/task-freshness.js';
+import { parkedContinuationFor } from '../../work/task-freshness.js';
 import { activeRuns, isRunUnwinding } from '../shared-state.js';
 import { nextReplyDueAt, deliverDueReplies } from './channel-sender.js';
 import { getWaitingHumanConversations, getPendingEngineEvent, getNextEngineEventRetryAt } from './counterparty.js';
@@ -44,9 +44,10 @@ function wakeBudgetClearsAt(agentId: string): number | null {
 }
 
 /** Is anything owed now, and the earliest future due time: one read of the waiting person and engine-event readers.
- *  While a parked job's continuation is queued, the persons it serves are left to it. */
+ *  While a parked job's continuation is queued, the conversation it started from is left to it. */
 export function dueOf(agentId: string, now = Date.now()): { now: boolean; next: number | null } {
-  const convs = jobContinuationOwed(agentId) ? [] : getWaitingHumanConversations(agentId, { includeNotDue: true });
+  const parked = parkedContinuationFor(agentId);
+  const convs = getWaitingHumanConversations(agentId, { includeNotDue: true }).filter((c) => c.oldest.id !== parked);
   const event = getPendingEngineEvent(agentId, { pure: true });
   const future = [...convs.map((c) => c.dueAt).filter((t) => t > now), ...[getNextEngineEventRetryAt(agentId)].filter((t): t is number => t !== null)];
   return { now: event !== null || convs.some((c) => c.dueAt <= now), next: future.length > 0 ? Math.min(...future) : null };
