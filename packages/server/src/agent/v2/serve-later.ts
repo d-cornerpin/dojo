@@ -38,7 +38,6 @@ export function spendServe(agentId: string, rowid: number, bound: number, backof
   const notBefore = backoff
     ? dueAfterCut(Date.now() + backoff.minutes[Math.min(attempts, backoff.minutes.length) - 1] * 60_000, backoff.retryAt)
     : Date.now();
-  recordDeliveryAttempt({ agentId, rowid, attempts, notBefore });
-  logger.info('owed: a serve spent', { agentId, rowid, attempts, bound, notBefore }, agentId);
+  serveLater({ kind: 'row', agentId, rowid, attempts }, notBefore, `a serve spent (${attempts} of ${bound})`);
   return attempts >= bound;
 }

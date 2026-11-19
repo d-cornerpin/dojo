@@ -67,7 +67,7 @@ export function postAgentNotice(opts: AgentNoticeOpts): string | null {
 }
 
 /** A re-drive that WAKES an agent and owes nobody a reply: as an A2A QUESTION the one reply bit
- *  also re-triggers dedicated turns until a reply lands, then records a synthetic ABANDONED one.
+ *  would make it a request owed its own turns until a reply lands, then given up.
  *  It rides as an events-lane engine event plus the runtime wake. Best-effort, never throws. */
 export async function redriveWithoutReply(opts: {
   toAgentId: string; fromAgentId: string | null; content: string; taskId: string | null;

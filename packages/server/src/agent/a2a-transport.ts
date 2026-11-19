@@ -1721,7 +1721,7 @@ export async function resolveJoinsAtBoot(): Promise<{ relayedReplies: number; fa
 
 /** When the engine gives up a request the asked agent never answered (its pickup past the budget), the asker
  *  may hold a delegated piece on that thread: settle the PIECE abandoned now, so a completed
- *  join tells the owner at once instead of the enforcer being silenced in private. A piece
+ *  join tells the owner at once instead of waiting for its expiry. A piece
  *  abandoning does NOT fail the whole join; the others may land and the reaper owns the rest. */
 export async function failJoinPieceForAbandonedAsk(
   inboundAskMessageId: string, threadShort: string, askedAgentId?: string,
@@ -1736,7 +1736,7 @@ export async function failJoinPieceForAbandonedAsk(
       if (isTerminal(child.state)) continue;
       const settled = settlePieceWithoutResult(child.id, {
         to: 'abandoned',
-        reason: `the asked agent gave up on thread ${threadShort} (synthetic ABANDONED)`,
+        reason: `the request on thread ${threadShort} went unanswered for its budget of turns and was given up`,
         actorId: askedAgentId ?? null,
       });
       if (settled.result.kind !== 'applied') continue;

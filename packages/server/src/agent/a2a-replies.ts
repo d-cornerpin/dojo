@@ -1,5 +1,5 @@
-// Durable per-ASSIGN A2A reply persistence: the dispatcher records replies (`recordA2AReply`);
-// the v2 loop preflight reads `findUnrepliedAssignForAgent` to see if an inbound trigger is owed.
+// The old per-ASSIGN reply record: the send door still writes it and the missed-reply floor reads it; nothing in
+// the product reads its two finders (the owed items in `v2/owed.ts` answer what is owed).
 import {
   A2A_ENVELOPE_RE, A2A_THREAD_SHORT_LENGTH,
   a2aThreadShortLegacy, a2aThreadTokenMatches, a2aThreadTokenMatchesSql,
