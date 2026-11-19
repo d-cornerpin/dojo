@@ -33,7 +33,6 @@ export interface TeardownContext {
   readonly terminalAnswerRowId: string | null;
   readonly triggerWorkId: string | null;
   readonly toolPhaseEndedBySpinBrake: boolean;
-  readonly turnInjectedTechniqueId: string | null;
   readonly counterparty: TurnCounterparty;
   readonly isA2ATurn: boolean;
   readonly isEngineTurn: boolean;

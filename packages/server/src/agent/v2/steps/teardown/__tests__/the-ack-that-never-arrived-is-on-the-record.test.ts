@@ -58,7 +58,7 @@ const turnCtxFor = (over: Record<string, unknown> = {}): Bag => ({
   engineStartAckDeliveredThisTurn: false, startAckSteersInjected: 0,
   // The incident's own shape: the turn was WORK. The F10 gate's condition, carried here.
   anyToolStartedThisTurn: true,
-  toolPhaseEndedBySpinBrake: false, turnInjectedTechniqueId: null,
+  toolPhaseEndedBySpinBrake: false,
   lastAssembledAtIso: null, 
   ...over,
 });
@@ -68,7 +68,7 @@ function ctxFor(turnCtx: Bag, over: Partial<TeardownContext> = {}): TeardownCont
     agentId: AGENT, turnCtx: turnCtx as never, turnNumber: TURN, db: mockDb.current!,
     chosenConvKey: 'imessage:+1555', chosenConversationId: CONV, lastAssembledAtIso: null,
     terminalAnswerRowId: null, triggerWorkId: ASK,
-    toolPhaseEndedBySpinBrake: false, turnInjectedTechniqueId: null,
+    toolPhaseEndedBySpinBrake: false,
     counterparty: { kind: 'user', name: FX.n11, relation: 'owner', channel: 'imessage', senderId: '+1555', senderIsAgent: false } as never,
     isA2ATurn: false, isEngineTurn: false,
     turnStartedAt: new Date(Date.now() - 180_000).toISOString().slice(0, 19).replace('T', ' '),

@@ -79,7 +79,6 @@ export async function injectTechniqueAndGapHints(state: AgentTurnState, input: T
                   `--- TECHNIQUE: ${strongMatch.technique.name} ---\n${md}\n--- END TECHNIQUE ---`;
               }
               injectedTechniqueId = strongMatch.technique.id;
-              turnCtx.turnInjectedTechniqueId = strongMatch.technique.id;
               logger.info('v2 techniqueMatcher: injecting strong-match technique as engine message', {
                 agentId,
                 techniqueId: strongMatch.technique.id,

@@ -63,7 +63,7 @@ const bagFor = (over: Record<string, unknown> = {}): Bag => ({
   startAckSteerRequested: false, startAckSteerArmedThisTurn: false,
   engineStartAckDeliveredThisTurn: false, startAckSteersInjected: 0,
   anyToolStartedThisTurn: false, toolPhaseEndedBySpinBrake: false,
-  turnInjectedTechniqueId: null, lastAssembledAtIso: null, 
+  lastAssembledAtIso: null,
   ...over,
 });
 
@@ -72,7 +72,7 @@ function ctxFor(over: Partial<TeardownContext> = {}, bag: Record<string, unknown
     agentId: AGENT, turnCtx: bagFor(bag) as never, turnNumber: TURN, db: db(),
     chosenConvKey: 'dashboard:owner', chosenConversationId: CONV, lastAssembledAtIso: null,
     terminalAnswerRowId: null, triggerWorkId: null,
-    toolPhaseEndedBySpinBrake: false, turnInjectedTechniqueId: null,
+    toolPhaseEndedBySpinBrake: false,
     counterparty: {
       kind: 'user', name: 'the owner', relation: 'owner', channel: 'dashboard',
       senderId: 'owner', senderIsAgent: false,
