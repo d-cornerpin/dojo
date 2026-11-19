@@ -25,6 +25,7 @@ export function getPresence(): PresenceStatus {
 
 export function setPresence(status: PresenceStatus): void {
   setConfigValue('user_presence', status);
+  logger.info('User presence changed', { status });
   broadcast({ type: 'presence:changed', status });
 }
 
