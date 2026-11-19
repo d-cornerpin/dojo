@@ -13,7 +13,7 @@ vi.mock('../../db/connection.js', () => ({
 vi.mock('../../gateway/ws.js', () => ({ broadcast: vi.fn(), stampPersistedRow: (e: unknown) => e }));
 
 import { runMigrations } from '../../db/migrations.js';
-import { reassignAffectedAgents } from '../main-model-floor.js';
+import { reassignAffectedAgents, cheapestAgentModel } from '../main-model-floor.js';
 
 const db = (): Database.Database => mockDb.current!;
 const seedModel = (id: string, cost: number): void => {
@@ -38,13 +38,13 @@ describe('moving agents off a model', () => {
   it('the PM moves to the cheapest other model and its model setting follows', async () => {
     seedModel('cheap', 2);
     seedAgent('pm', 'gone');
-    expect(await reassignAffectedAgents(['gone'])).toEqual({ agentsMoved: 1, agentsWithoutModel: 0 });
+    expect(await reassignAffectedAgents(['gone'], await cheapestAgentModel(['gone']))).toEqual({ agentsMoved: 1, agentsWithoutModel: 0 });
     expect(modelOf('pm')).toBe('cheap');
     expect((db().prepare("SELECT value FROM config WHERE key = 'pm_agent_model'").get() as { value: string }).value).toBe('cheap');
   });
   it('with no other model the agent is left without one and counted', async () => {
     seedAgent('helper', 'gone');
-    expect(await reassignAffectedAgents(['gone'])).toEqual({ agentsMoved: 0, agentsWithoutModel: 1 });
+    expect(await reassignAffectedAgents(['gone'], await cheapestAgentModel(['gone']))).toEqual({ agentsMoved: 0, agentsWithoutModel: 1 });
     expect(modelOf('helper')).toBeNull();
   });
 });

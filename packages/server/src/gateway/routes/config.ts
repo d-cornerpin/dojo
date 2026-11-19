@@ -23,7 +23,7 @@ import { servedOwnerNotices } from '../../healer/owner-notice-kinds.js';
 import { writeOobeSoul } from '../../prompt/soul-rerun.js';
 import { isPastFirstRun } from '../../config/setup-state.js';
 import { refuseUnfitLocalModel } from '../../agent/local-model-fit.js';
-import { refuseAgentModel, refuseSmallMainModel, notForAgentsReason, reassignAffectedAgents, windowOf, MAIN_MODEL_SETTING_KEYS, LOCAL_MODEL_SETTING_KEYS } from '../../agent/main-model-floor.js';
+import { refuseAgentModel, refuseSmallMainModel, notForAgentsReason, reassignAffectedAgents, cheapestAgentModel, windowOf, MAIN_MODEL_SETTING_KEYS, LOCAL_MODEL_SETTING_KEYS } from '../../agent/main-model-floor.js';
 import { setAgentModel, modelKeyAgentId } from '../../agent/model-switch.js';
 import { parsePrice } from '../../services/price-per-million.js';
 import { refuseBadClockTime, CLOCK_TIME_SETTING_KEYS } from '../../config/clock-time.js';
@@ -584,7 +584,7 @@ configRouter.delete('/providers/:id', async (c) => {
 
     // Agents and service-agent settings on these models move to the cheapest working model, with the usual
     // change note; with none, the loop below leaves them without a model, as before.
-    await reassignAffectedAgents(modelIds);
+    await reassignAffectedAgents(modelIds, await cheapestAgentModel(modelIds));
 
     for (const mid of modelIds) {
       db.prepare("UPDATE agents SET model_id = NULL WHERE model_id = ?").run(mid);
@@ -1965,7 +1965,7 @@ configRouter.post('/models/disable', async (c) => {
 
   disableMany(modelIds);
 
-  const moved = await reassignAffectedAgents(modelIds);
+  const moved = await reassignAffectedAgents(modelIds, await cheapestAgentModel(modelIds));
 
   logger.info('Models disabled', { count: modelIds.length, ...moved });
 

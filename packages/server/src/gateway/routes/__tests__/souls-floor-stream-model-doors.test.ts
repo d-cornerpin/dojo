@@ -51,7 +51,7 @@ const seedModel = (id: string, window: number | null): void => {
   db().prepare(`
     INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window,
                         max_output_tokens, is_enabled, created_at, updated_at)
-    VALUES (?, 'local', ?, ?, '["text"]', ?, 1024, 1, datetime('now'), datetime('now'))
+    VALUES (?, 'local', ?, ?, '["text","tools"]', ?, 1024, 1, datetime('now'), datetime('now'))
   `).run(id, `Model ${id}`, id, window);
 };
 const seedAgent = (id: string, modelId: string, parent: string | null = null): void => {

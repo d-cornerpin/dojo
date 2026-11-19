@@ -3,11 +3,13 @@
 
 import { getDb } from '../db/connection.js';
 import { effectiveContextWindow, resolveNumCtx } from './model.js';
-import { refuseUnfitLocalModel } from './local-model-fit.js';
+import { refuseUnfitLocalModel, localModelFit } from './local-model-fit.js';
 import { createLogger } from '../logger.js';
 import { setAgentModel } from './model-switch.js';
 import { tellOwner, ownerConditionCleared } from '../healer/owner-notices.js';
 import { isStandardModelRow } from '../services/local-standard.js';
+import { standingSkip } from '../router/standing-filters.js';
+import type { TierModelRow } from '../router/tier-chain.js';
 const logger = createLogger('main-model-floor');
 
 /** The floor, in tokens. "32K" models are advertised as 32,000 or 32,768; both pass. */
@@ -94,21 +96,35 @@ export async function refuseAgentModel(modelId: string | null | undefined, curre
     ?? refuseUnfitLocalModel(modelId, currentModelId, 'agent', () => refuseSmallMainModel(modelId, currentModelId));
 }
 
-/** The one pick for "this agent needs another model": cheapest enabled chat model outside `exclude` that clears the
- *  floor. Never the router sentinel (no model) and never the Dojo's own small writer model. */
-export function cheapestAgentModel(exclude: readonly string[] = []): string | null {
+/** Enabled models that can run an agent now, cheapest first, outside `exclude`: a chat model that passes the filters
+ *  a real turn applies to every candidate (the 32K floor, an open provider breaker, the tools capability, a rate
+ *  limit). Never the router sentinel and never the Dojo's own small writer model. */
+export function agentModelCandidates(exclude: readonly string[] = []): string[] {
   const rows = getDb().prepare(
-    `SELECT id, capabilities FROM models
+    `SELECT id AS model_id, provider_id, api_model_id, 0 AS priority, input_cost_per_m, output_cost_per_m, capabilities
+       FROM models
       WHERE is_enabled = 1 AND id != 'auto' AND id NOT IN (${exclude.map(() => '?').join(',')})
       ORDER BY COALESCE(input_cost_per_m, 1e18) ASC, id ASC`,
-  ).all(...exclude) as Array<{ id: string; capabilities: string | null }>;
-  return rows.find((m) => !isNonChatModel(m.capabilities) && !isStandardModelRow(m.id) && refuseSmallMainModel(m.id) === null)?.id ?? null;
+  ).all(...exclude) as Array<TierModelRow & { capabilities: string | null }>;
+  return rows
+    .filter((m) => !isNonChatModel(m.capabilities) && !isStandardModelRow(m.model_id) && standingSkip(m, ['tools']) === null)
+    .map((m) => m.model_id);
+}
+
+/** The one pick for "this agent needs another model": the cheapest candidate whose memory fit the probe does not refuse
+ *  (a local model too big for this Mac is skipped; one it cannot size is kept). Null when none is left. */
+export async function cheapestAgentModel(exclude: readonly string[] = []): Promise<string | null> {
+  for (const id of agentModelCandidates(exclude)) {
+    const fit = await localModelFit(id, 'agent');
+    if (!fit || fit.unchecked || fit.fits) return id;
+  }
+  return null;
 }
 
 /** Moves every live agent on one of `modelIds` (and the service agents' model settings) to the cheapest big-enough
  *  model through the one setter; with none, the agents are left without a model and counted. */
 export async function reassignAffectedAgents(
-  modelIds: string[], fallbackId = cheapestAgentModel(modelIds),
+  modelIds: string[], fallbackId: string | null,
 ): Promise<{ agentsMoved: number; agentsWithoutModel: number }> {
   const db = getDb();
   const marks = modelIds.map(() => '?').join(',');
@@ -148,7 +164,7 @@ export function agentsUnderFloor(): Array<{ name: string; modelId: string; model
  *  once nobody is under the floor, so every start may run it. */
 export async function moveAgentsOffSmallModels(): Promise<void> {
   const small = agentsUnderFloor();
-  const to = cheapestAgentModel();
+  const to = await cheapestAgentModel();
   if (small.length === 0 || to) ownerConditionCleared('smallmodel:stuck');
   if (small.length === 0) return;
   if (!to) {
@@ -176,7 +192,7 @@ export function serviceAgentModelId(settingKey: string, primaryId: string): stri
   const picked = (db.prepare('SELECT value FROM config WHERE key = ?').get(settingKey) as { value: string } | undefined)?.value
     || (db.prepare('SELECT model_id FROM agents WHERE id = ?').get(primaryId) as { model_id: string | null } | undefined)?.model_id || null;
   if (!picked || (refuseSmallMainModel(picked) === null && refuseNonChatModel(picked) === null)) return picked;
-  const replacement = cheapestAgentModel([picked]) ?? 'auto';
+  const replacement = agentModelCandidates([picked])[0] ?? 'auto';
   logger.warn('A service agent\'s model cannot run an agent; replaced', { settingKey, from: picked, to: replacement });
   return replacement;
 }

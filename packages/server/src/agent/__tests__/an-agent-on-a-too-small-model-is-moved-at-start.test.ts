@@ -27,7 +27,7 @@ import * as honestStopLock from '../v2/honest-stop-lock.js';
 const db = (): Database.Database => mockDb.current!;
 const seedModel = (id: string, window: number | null, enabled = 1, cost = 1): void => {
   db().prepare(`INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, max_output_tokens, input_cost_per_m, is_enabled, created_at, updated_at)
-    VALUES (?, 'p', ?, ?, '["text"]', ?, 1024, ?, ?, datetime('now'), datetime('now'))`).run(id, `Model ${id}`, id, window, cost, enabled);
+    VALUES (?, 'p', ?, ?, '["text","tools"]', ?, 1024, ?, ?, datetime('now'), datetime('now'))`).run(id, `Model ${id}`, id, window, cost, enabled);
 };
 const seedAgent = (id: string, modelId: string, status = 'idle'): void => {
   db().prepare(`INSERT INTO agents (id, name, model_id, status, config, spawn_depth, created_by, created_at, updated_at)
