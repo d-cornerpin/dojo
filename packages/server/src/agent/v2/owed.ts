@@ -20,6 +20,7 @@ const WAKE_BUDGET_WINDOW_MS = 10 * 60 * 1000;
 const WAKE_BUDGET_MAX = 30;
 const wakeupTimes = new Map<string, number[]>();
 const wakeBudgetTripped = new Set<string>();
+const wakeScheduled = new Set<string>();   // a staggered wake set and not yet started
 let timer: ReturnType<typeof setTimeout> | null = null;
 
 /** The storm guard on the engine's own wakes (never a real inbound): at most 30 in 10 minutes per agent. */
@@ -144,8 +145,11 @@ async function fire(): Promise<void> {
     let n = 0;
     for (const id of clockAgents()) {
       try {
-        if (!dueOf(id).now || !underWakeBudget(id)) continue;
+        // A run still unwinding is retried by the next fire, uncharged.
+        if (isRunUnwinding(id) || wakeScheduled.has(id) || !dueOf(id).now || !underWakeBudget(id)) continue;
+        wakeScheduled.add(id);
         const t = setTimeout(() => {
+          wakeScheduled.delete(id);
           if (isRunUnwinding(id)) return;   // a run live or in its exit tail: its own end arms the clock again
           logger.info('owed clock: waking an agent that is owed something', { agentId: id });
           void getAgentRuntime().handleMessage(id, '').catch((err: unknown) =>
