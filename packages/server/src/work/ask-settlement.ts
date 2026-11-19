@@ -209,14 +209,15 @@ function inheritedParkedAt(workId: string): string | null {
     `SELECT created_at AS at FROM work_events WHERE work_id = ? AND kind = 'audit'
        AND json_extract(payload, '$.marker') = ? ORDER BY id DESC LIMIT 1`,
   ).get(workId, INHERITED_BACKLOG_MARKER) as { at: number } | undefined;
-  return r ? new Date(r.at).toISOString().replace('T', ' ').slice(0, 19) : null;
+  return r ? sqlTime(r.at) : null;
 }
+const sqlTime = (ms: number): string => new Date(ms).toISOString().replace('T', ' ').slice(0, 19);
 const JOB_HOLD_REASON = 'held: its job is still running';
 /** When the request was held on its job, if that hold is its latest transition. */
 function jobHeldAt(workId: string): string | null {
   const r = getDb().prepare(`SELECT created_at AS at, json_extract(payload, '$.reason') AS why FROM work_events
     WHERE work_id = ? AND kind = 'transition' ORDER BY id DESC LIMIT 1`).get(workId) as { at: number; why: string | null } | undefined;
-  return r?.why?.startsWith(JOB_HOLD_REASON) ? new Date(r.at).toISOString().replace('T', ' ').slice(0, 19) : null;
+  return r?.why?.startsWith(JOB_HOLD_REASON) ? sqlTime(r.at) : null;
 }
 
 /** Is task `id` still open, and is it parked (a due time set)? */
@@ -563,7 +564,8 @@ export function settleAsk(workId: string, ctx: SettlementContext): AskSettlement
     if (ctx.rowid != null && ctx.turnNumber != null) {
       recordServingTurnByRowid({ agentId: ask.agent_id, rowid: ctx.rowid, servedByTurn: ctx.turnNumber });
     }
-    handInWhatTheParkOpened(ask, evidence.id);
+    const opened = linkedTaskOf(ask.agent_id, ask.root_id, { parkOpened: true });   // the agent never heard of it
+    if (opened) handInOnDelivery(ask.agent_id, async () => [opened], 'the request this task was opened for was answered', evidence.id);
     return out('closed', `delivered via ${evidence.tool}`, evidence.id);
   }
 
@@ -804,11 +806,14 @@ function jobHold(ask: AskRow, ctx: SettlementContext, actorId: string, out: (v: 
   return r.kind === 'applied' ? out('held', 'held on its job') : out('unchanged', `job hold refused: ${r.kind}`);
 }
 
-/** A task the park opened for this request (the agent never heard of it) is handed in by the engine when it closes. */
-function handInWhatTheParkOpened(ask: AskRow, deliveryId: string): void {
-  const task = linkedTaskOf(ask.agent_id, ask.root_id, { parkOpened: true });
-  if (task) afterCommit(() => void import('./done/hand-in.js').then(({ engineHandIn }) => engineHandIn(task, 'the request this task was opened for was answered',
-    { outcome: 'finished', items: [{ kind: 'delivery', ref: deliveryId }] })).catch((err: unknown) => logger.warn('a park-opened task was not handed in', { task, error: String(err) })));
+/** After commit the engine hands in the tasks `tasks` names, finished on delivery `deliveryId`; a refusal is logged. */
+function handInOnDelivery(agentId: string, tasks: () => Promise<string[]>, because: string, deliveryId: string): void {
+  afterCommit(() => void Promise.all([tasks(), import('./done/hand-in.js')]).then(([ids, { engineHandIn }]) => {
+    for (const id of ids) {
+      const r = engineHandIn(id, because, { outcome: 'finished', items: [{ kind: 'delivery', ref: deliveryId }] });
+      if (r.kind === 'refused') logger.warn('the engine could not hand in a task', { task: id, why: r.text.slice(0, 200) }, agentId);
+    }
+  }).catch((err: unknown) => logger.warn('a delivered job\'s tasks were not handed in', { deliveryId, error: String(err) }, agentId)));
 }
 
 /** A tracker task `t` linked to the request of ask `a` by its message, not ended and not handed in. */
@@ -847,8 +852,9 @@ function settleOnAsyncResult(
   if (heldAt && !linkedTaskOf(ask.agent_id, ask.root_id, { ownerHeldEnds: true })) {
     const late = realAnswerInConversationSince(ask.agent_id, ask.conversation_id, heldAt);
     // The owner called the job off: so is the request (the async arm's own rule).
-    const calledOff = !late && (getDb().prepare(`SELECT state FROM work WHERE kind = 'task' AND agent_id = ? AND source_message_id = ?
-      ORDER BY closed_at DESC LIMIT 1`).get(ask.agent_id, ask.root_id) as { state: string } | undefined)?.state === 'abandoned';
+    const calledOff = !late && !!getDb().prepare(`SELECT 1 FROM work t JOIN work_events e ON e.work_id = t.id AND e.kind = 'transition'
+      WHERE t.kind = 'task' AND t.agent_id = ? AND t.source_message_id = ? AND t.state = 'abandoned'
+        AND json_extract(e.payload, '$.to') = 'abandoned' AND json_extract(e.payload, '$.by') = 'owner' LIMIT 1`).get(ask.agent_id, ask.root_id);
     const r = late
       ? transition(ask.id, { to: 'done', by: 'agent', actorId, resultDeliveryId: late.id, expectedState: 'blocked', reason: `its job ended; answered via ${late.tool}` })
       : calledOff ? transition(ask.id, { to: 'abandoned', by: 'owner', actorId: 'owner', expectedState: 'blocked', reason: 'the owner called off the job this request waited on' })
@@ -977,15 +983,8 @@ function onRelayDelivered(joinId: string, p: DeliveryCloseInput): void {
     basis: p.tool === 'a2a-join-late' ? 'late-answer' : 'engine-relay',
   });
   if (settled.verdict !== 'closed') return;
-  // Loaded on use: the hand-in sits above settlement in the import graph.
-  afterCommit(() => void Promise.all([import('./join-drive.js'), import('./done/hand-in.js')]).then(([{ scaffoldCardsOfRelay }, { engineHandIn }]) => {
-    for (const card of scaffoldCardsOfRelay(joinId, p.agentId)) {
-      engineHandIn(card.id, `the engine relayed the compiled result of the job this card was opened for to the owner (delivery ${p.deliveryId.slice(0, 8)})`,
-        { outcome: 'finished', items: [{ kind: 'delivery', ref: p.deliveryId }] });
-    }
-  }).catch((err) => logger.warn('a relayed job\'s cards were not handed in', {
-    joinId, deliveryId: p.deliveryId, error: err instanceof Error ? err.message : String(err),
-  }, p.agentId)));
+  handInOnDelivery(p.agentId, async () => (await import('./join-drive.js')).scaffoldCardsOfRelay(joinId, p.agentId).map((c) => c.id),
+    `the engine relayed the compiled result of the job this card was opened for to the owner (delivery ${p.deliveryId.slice(0, 8)})`, p.deliveryId);
 }
 
 /** A relay that never went ends its request failed, with the row's reason; a failure notice ends nothing. */

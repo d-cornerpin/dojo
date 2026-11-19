@@ -9,7 +9,6 @@ import { PARKED_JOB_TITLE } from './tracker-view.js';
 
 const logger = createLogger('job-continuation');
 
-
 /** THE ONE DEFINITION OF "PARK": the job's task gets its due time; with no task, a turn serving a request opens the
  *  engine task first. A park with no task and no request continues nothing, and a stopped run parks nothing. */
 export function parkJob(agentId: string, reason: string, due: number | 'event', after?: Promise<unknown>): boolean {

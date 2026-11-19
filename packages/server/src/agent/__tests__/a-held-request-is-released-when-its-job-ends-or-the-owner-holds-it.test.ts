@@ -9,6 +9,7 @@ vi.mock('../runtime.js', () => ({ getAgentRuntime: () => ({ handleMessage: async
 import { runMigrations } from '../../db/migrations.js';
 import { decide } from '../../work/done/decide.js';
 import { setHold } from '../../work/done/hold.js';
+import { transition } from '../../work/store.js';
 import { freshAgentsDb, testDb, HELPER } from './helpers/agent-requests.js';
 import { ownerAsks, stretch, rowOf, tasksOf, delivered } from './helpers/long-job.js';
 
@@ -27,6 +28,12 @@ describe('a held request is released when its job ends or the owner holds it', (
     const { ask, task } = await aHeldJob();
     expect(decide({ workId: task, deciderAgentId: null, verdict: 'cancel', reason: 'not needed' }).kind).toBe('decided');
     expect(rowOf(ask).state).toBe('abandoned');
+  });
+
+  it('the task closes abandoned by anyone but the owner (here with its project): the request is owed again', async () => {
+    const { ask, task } = await aHeldJob();
+    expect(transition(task, { to: 'abandoned', by: 'pm', actorId: 'pm', claim: 'decided', reason: 'closed with its project' }).kind).toBe('applied');
+    expect(rowOf(ask).state).toBe('open');
   });
 
   it('the owner holds the task: the request is owed again', async () => {

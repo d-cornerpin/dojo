@@ -32,7 +32,6 @@ export async function runTurnTimeBudget(
     return proceed(advance(state, { checkpointWindow: { atLoop: state.loopCount - 1, atMs: Date.now(), mark: jobProgressMark(state, agentId, getDb()) } }));
   }
   if (window === 'checkpoint') {
-    // A person waiting ends the stretch by parking it, moved or not: the job goes on after him.
     if (turnContext(agentId)?.servedJob && !stretchMoved(state, agentId) && !personWaitsBehind(agentId)) {
       const task = jobTaskOf(agentId, getDb());
       if (task) recordStalled(task.id, { remaining: task.stored, turnNumber });

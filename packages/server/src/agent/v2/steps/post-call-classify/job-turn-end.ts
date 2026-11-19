@@ -76,17 +76,16 @@ export function stretchMoved(state: AgentTurnState, agentId: string): boolean {
 export function turnWindow(state: AgentTurnState, agentId: string, ahead = 0): 'open' | 'renew' | 'checkpoint' {
   const w = state.checkpointWindow ?? { atLoop: 0, atMs: state.turnStartMs, mark: 0 };
   if (state.toolCallsExecutedThisTurn >= 200 || state.loopCount + ahead > 500) return 'checkpoint';
-  const turn = turnContext(agentId);
-  const personWaits = (): boolean => personArrivedSince(agentId, turn?.pickupSeq ?? 0, turn?.convKey ?? null);
   if (personWaitsBehind(agentId)) return 'checkpoint';
   if (state.loopCount + ahead - w.atLoop <= 75 && Date.now() - w.atMs <= 15 * 60_000) return 'open';
-  return jobProgressMark(state, agentId, getDb()) > w.mark && !personWaits() ? 'renew' : 'checkpoint';
+  return jobProgressMark(state, agentId, getDb()) > w.mark && !personWaitsBehind(agentId, true) ? 'renew' : 'checkpoint';
 }
 
-/** A person waits behind a job's own turn, or behind a turn serving no person: its stretch ends at the next step. */
-export function personWaitsBehind(agentId: string): boolean {
+/** A person wrote since this turn's pickup, behind a job's own turn or a turn serving no person (`anyTurn`: behind
+ *  any turn); its stretch ends at the next step. */
+export function personWaitsBehind(agentId: string, anyTurn = false): boolean {
   const turn = turnContext(agentId);
-  return (!turn?.convKey || !!turn.servedJob) && personArrivedSince(agentId, turn?.pickupSeq ?? 0, turn?.convKey ?? null);
+  return (anyTurn || !turn?.convKey || !!turn.servedJob) && personArrivedSince(agentId, turn?.pickupSeq ?? 0, turn?.convKey ?? null);
 }
 
 const memo = new Map<string, { key: string; facts: JobAtPassEnd | null }>();
