@@ -120,4 +120,13 @@ describe('a link is never saved as a picture', () => {
     expect(r.ok).toBe(false);
     expect(r.ok === false && r.code).toBe('DECODE_ERROR');
   });
+
+  it('a picture in a format the Dojo does not keep is refused in plain words', async () => {
+    const bmp = Buffer.from('BM' + 'x'.repeat(40)).toString('base64');
+    answerWith(() => imageAnswer(`data:image/bmp;base64,${bmp}`));
+    const r = await generateImage({ agentId: AGENT, modelId: MODEL, prompt: 'a cat' });
+    expect(r.ok).toBe(false);
+    expect(r.ok === false && r.code).toBe('DECODE_ERROR');
+    expect(r.ok === false && r.error).toBe('The image provider sent back something that is not a picture the Dojo can save (it has to be a PNG, JPEG, GIF or WEBP picture), so nothing was saved. Try again, or pick a different image model.');
+  });
 });
