@@ -1,4 +1,4 @@
-// A worker redoing a sent-back task is working it: six untracked work calls open no engine task beside it.
+// A worker redoing a sent-back task linked to the request its turn serves: six untracked work calls open no engine task beside it.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
@@ -64,9 +64,9 @@ describe('a sent-back task gets no second floor task', () => {
     expect(scaffolds()).toBe(1);
   });
 
-  it('with a sent-back task it opens none', async () => {
-    db().prepare(`INSERT INTO work (id, kind, agent_id, requester, root_kind, root_id, state, intent, wakes, closes_thread, title, opened_at, updated_at)
-      VALUES ('task-sent-back', 'task', ?, 'owner', 'tracker', 'task-sent-back', 'sent_back', 'task', 1, 0, 'Fix the totals page', ?, ?)`).run(AGENT, Date.now(), Date.now());
+  it('with a sent-back task linked to the request it opens none', async () => {
+    db().prepare(`INSERT INTO work (id, kind, agent_id, requester, root_kind, root_id, state, intent, wakes, closes_thread, title, source_message_id, opened_at, updated_at)
+      VALUES ('task-sent-back', 'task', ?, 'owner', 'tracker', 'task-sent-back', 'sent_back', 'task', 1, 0, 'Fix the totals page', 'msg-2', ?, ?)`).run(AGENT, Date.now(), Date.now());
     await sixUntrackedCalls(2);
     expect(scaffolds()).toBe(0);
   });

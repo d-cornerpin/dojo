@@ -11,6 +11,7 @@ import { broadcast } from '../../../../gateway/ws.js';
 import { createLogger } from '../../../../logger.js';
 import { getDb } from '../../../../db/connection.js';
 import { recordedInstant } from '../../../../memory/message-stamp.js';
+import { linkedTaskOf } from '../../../../work/ask-settlement.js';
 
 const logger = createLogger('v2-loop');
 import type { ExecuteContext } from './index.js';
@@ -69,7 +70,6 @@ export async function runTrackerFloors(state: AgentTurnState, ctx: ExecuteContex
   ) {
     // A recently moved in_progress task suppresses the nudge; the first stale one is named by it.
     let hasRecentlyTendedTask = false;
-    let hasAnyInProgressTask = false;
     let staleOpenTask: { id: string; title: string } | null = null;
     try {
       const { listTasks } = await import('../../../../tracker/schema.js');
@@ -79,7 +79,6 @@ export async function runTrackerFloors(state: AgentTurnState, ctx: ExecuteContex
       // in_progress only: queued or scheduled on_deck tasks are not neglected work and are never named.
       const candidates = listTasks({ status: 'in_progress', assignedTo: agentId });   // Working: claimed or sent back
       for (const t of candidates) {
-        hasAnyInProgressTask = true;
         const tendedMs = taskLastMovedAt(t.id, new Date(normalizeDbTimestamp(t.updatedAt)).getTime());   // real movement (ledger included); a park touches nothing
         if (tendedMs >= cutoffMs) {
           hasRecentlyTendedTask = true;
@@ -93,8 +92,8 @@ export async function runTrackerFloors(state: AgentTurnState, ctx: ExecuteContex
       }, agentId);
     }
     if (
-      // Never open a new task while an in_progress one exists; a stale one is named by the nudge instead.
-      !hasAnyInProgressTask &&
+      // Open a task only when none is linked to the request this turn serves, whatever other tasks the agent holds.
+      !linkedTaskOf(agentId, state.lastUserMessageId) &&
       effectiveUntracked >= TRACKER_AUTO_SCAFFOLD_AT &&
       // The floor opens a row only for a turn serving a request it can link to; it never invents one.
       state.lastUserMessageId &&
