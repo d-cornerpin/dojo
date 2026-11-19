@@ -575,11 +575,13 @@ function toolTurnTier(rawBlocks: string): VisibilityTier {
 }
 
 export function channelOfSendTool(name: string): ChannelKind | null {
-  if (name === 'imessage_send') return 'imessage';
-  if (name === 'teams_send_message') return 'teams';
-  if (name === 'sms_send') return 'sms';
-  if (name === 'gmail_send' || name === 'gmail_reply' || name === 'gmail_forward') return 'email';
-  if (name === 'outlook_send' || name === 'outlook_reply' || name === 'outlook_forward') return 'email';
-  if (name === 'voice_call') return 'phone';
+  // A `user_` twin runs its base tool's executor, so it sends on the base tool's channel.
+  const base = name.startsWith('user_') ? name.slice('user_'.length) : name;
+  if (base === 'imessage_send') return 'imessage';
+  if (base === 'teams_send_message' || base === 'teams_send_channel_message') return 'teams';
+  if (base === 'sms_send') return 'sms';
+  if (base === 'gmail_send' || base === 'gmail_reply' || base === 'gmail_forward') return 'email';
+  if (base === 'outlook_send' || base === 'outlook_reply' || base === 'outlook_forward') return 'email';
+  if (base === 'voice_call') return 'phone';
   return null;
 }

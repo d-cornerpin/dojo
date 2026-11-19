@@ -30,16 +30,10 @@ export interface OutboundDelivery {
   waiting?: true;
 }
 
-/** Map a receipt's tool to its channel (a2a for the inter-agent sends). */
-function channelOfTool(tool: string): ChannelKind | 'a2a' {
-  if (tool === 'send_to_agent' || tool === 'broadcast_to_group') return 'a2a';
-  return channelOfSendTool(tool) ?? 'a2a';
-}
-
 function rowToDelivery(r: ToolReceiptRow): OutboundDelivery {
   return {
     tool: r.tool,
-    channel: channelOfTool(r.tool),
+    channel: channelOfSendTool(r.tool) ?? 'a2a',
     recipient: r.recipient,
     sentText: r.sent_text,
     convKey: r.conv_key,

@@ -71,16 +71,12 @@ interface OutboundScope {
   stamp: TurnStamp;
 }
 
-/** The channel a send tool delivers on (from the shared `channelOfSendTool` map), or null when it reaches nobody.
- *  `user_` twins run the base tool's executor, so they take its channel. `send_to_agent` and `broadcast_to_group`
- *  return null: the A2A transport writes one row per peer, and a scope would fold a fan-out into one row. */
+/** The channel a send tool delivers on (the shared `channelOfSendTool`, `user_` twins included), or null when it
+ *  reaches nobody. `send_to_agent` and `broadcast_to_group` return null: the A2A transport writes one row per
+ *  peer, and a scope would fold a fan-out into one row. */
 export function outboundChannelForTool(name: string): DeliveryChannel | null {
-  const base = name.startsWith('user_') ? name.slice('user_'.length) : name;
-  if (base === 'teams_send_channel_message') return 'teams';
-  const ch = channelOfSendTool(base);
-  if (ch === null) return null;
   // The delivery union's extra members (dashboard, voice, a2a) have no send tool, so the cast is exact.
-  return ch as DeliveryChannel;
+  return channelOfSendTool(name) as DeliveryChannel | null;
 }
 
 /** The recipient a send tool named, for `recipient_id`; a missing or reply-shaped argument leaves it null. */
