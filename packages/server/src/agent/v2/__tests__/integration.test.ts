@@ -4335,3 +4335,35 @@ describe('a provider limit after a paid call is counted, through the real turn',
     expect(engine).toBe(1);
   });
 });
+
+// ════════════════════════════════════════════════════════════════════════════════
+// A STOOD-DOWN REQUEST COMES BACK WHEN THE PERSON WRITES AGAIN, through the real pickup and finalize: the new message's
+// turn claims it and settles it; a failed turn stands it down again at once, the owner is not told twice, and a serve of
+// another request of the same person lifts nothing.
+// ════════════════════════════════════════════════════════════════════════════════
+describe('a stood-down request comes back when the person writes again, through the real turn', () => {
+  const state = (id: string): string => (mockDb.current!.prepare('SELECT state FROM work WHERE id = ?').get(`ask:${id}`) as { state: string }).state;
+  const told = (): number => (mockDb.current!.prepare(`SELECT COUNT(*) AS n FROM work_events WHERE work_id = 'ask:msg-user-1'
+    AND kind = 'floor_ghosted' AND json_extract(payload, '$.floor') = 'request-stood-down'`).get() as { n: number }).n;
+  const writesAgain = (id: string): void => { insertMessage({ id, agentId: 'primary', role: 'user', content: 'any news?', channel: 'dashboard',
+    senderId: 'owner', conversationId: 'conv-primary', inboundMeta: JSON.stringify({ channel: 'dashboard', relation: 'owner' }) }); };
+
+  it('the new message serves it with one model call; a failure holds it again; another serve lifts nothing', async () => {
+    callModelSpy.mockRejectedValue(new Error('500 internal server error'));
+    for (let turn = 1; turn <= 6; turn++) { backoffPasses(); await runV2Turn('primary'); }
+    expect(state('msg-user-1')).toBe('blocked');
+    expect(told()).toBe(1);
+
+    writesAgain('msg-user-2');
+    callModelSpy.mockClear();
+    await runV2Turn('primary');
+    expect(callModelSpy, 'one turn serves both').toHaveBeenCalledTimes(1);
+    expect(state('msg-user-1'), 'the failed turn stands it down again at once').toBe('blocked');
+    expect(told(), 'told once per request').toBe(1);
+
+    backoffPasses();
+    await runV2Turn('primary');
+    expect(state('msg-user-2'), 'the backoff serve of the newer request ran').not.toBe('claimed');
+    expect(state('msg-user-1'), 'a serve of another request lifts nothing').toBe('blocked');
+  });
+});

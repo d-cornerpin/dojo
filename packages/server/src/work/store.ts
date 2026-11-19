@@ -396,10 +396,10 @@ export function claimingTurnOf(workId: string): number | null {
   return r?.t ?? null;
 }
 
-/** When the request was first served: its first pickup turn's stamp. */
-export function firstServedAt(workId: string): number {
+/** When the request was first served (its first pickup turn's stamp), or null if it never was. */
+export function firstServedAt(workId: string): number | null {
   return (getDb().prepare(`SELECT MIN(created_at) AS at FROM work_events WHERE work_id = ? AND kind = 'claim_turn'`)
-    .get(workId) as { at: number | null }).at ?? Date.now();
+    .get(workId) as { at: number | null }).at;
 }
 
 /** Asks nobody can ever serve or close get an honest terminal state (`abandoned`), in five structural

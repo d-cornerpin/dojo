@@ -6,7 +6,8 @@ import { v4 as uuidv4 } from 'uuid';
 import { createLogger } from '../../../../logger.js';
 import { getDb } from '../../../../db/connection.js';
 import { claimEngineEventByRowid, markServedByRowid } from '../../../../memory/message-store.js';
-import { stampClaimingTurn } from '../../../../work/store.js';
+import { firstServedAt, stampClaimingTurn } from '../../../../work/store.js';
+import { liftStandDowns } from '../../../../work/ask-settlement.js';
 import { turnBoundary } from '../../../turn-state.js';
 import type { TurnContext } from '../../../turn-context.js';
 import { initState } from '../../state.js';
@@ -166,7 +167,9 @@ export async function runCounterpartyAndRecord(
   // and the message's `served_by_turn`. Stamped here, not at the claim, since the number exists only now.
   try {
     if (triggerWorkId) {
+      const wroteAgain = firstServedAt(triggerWorkId) === null;
       stampClaimingTurn(triggerWorkId, turnNumber);
+      if (wroteAgain) liftStandDowns(agentId, triggerWorkId, turnNumber);   // a request of theirs that stood down is served with it
     }
     if (triggerRow) {
       markServedByRowid(triggerRow.rowid, turnNumber);

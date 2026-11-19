@@ -24,7 +24,7 @@ import { broadcast } from '../gateway/ws.js';
 import { serveLater } from '../agent/v2/serve-later.js';
 import { recordFloorGhost } from '../agent/v2/floor-ghost.js';
 import {
-  appendWorkEvent, askIdForMessage, claimingTurnOf, failJoinClosed, firstServedAt, isTerminal,
+  appendWorkEvent, askIdForMessage, claimAsk, claimingTurnOf, failJoinClosed, firstServedAt, isTerminal, stampClaimingTurn,
   transition,
   type WorkState,
 } from './store.js';
@@ -340,6 +340,8 @@ function standDownReServe(
 
 /** The owner is told once, on the request's own record, that the agent stopped trying it. */
 function tellOwnerStoodDown(ask: AskRow, turnNumber: number | null, tries: number): void {
+  if (getDb().prepare(`SELECT 1 FROM work_events WHERE work_id = ? AND kind = 'floor_ghosted'
+    AND json_extract(payload, '$.floor') = 'request-stood-down'`).get(ask.id)) return;
   const r = getDb().prepare(
     `SELECT a.name AS agent, m.content AS content, c.counterparty_name AS who FROM agents a
        LEFT JOIN messages m ON m.id = ? AND m.agent_id = a.id LEFT JOIN conversations c ON c.id = ? WHERE a.id = ?`,
@@ -376,7 +378,7 @@ export function handBackAsk(workId: string, p: { agentId: string; turnNumber: nu
     : p.cause === 'crash' && spent === 0 ? Date.now()
     : Math.max(backoff, p.retryAt ?? 0);   // a cut that also met a provider limit waits for both
   if (at !== null) serveLater({ kind: 'ask', id: workId }, at, p.reason);
-  if (p.cause === 'wait' && p.retryAt && p.retryAt - firstServedAt(workId) >= 120_000) {
+  if (p.cause === 'wait' && p.retryAt && p.retryAt - (firstServedAt(workId) ?? Date.now()) >= 120_000) {
     const retryAt = p.retryAt;
     afterCommit(() => void import('../agent/v2/honest-stop-notes.js')
       .then(({ tellCannotRun, providerWaitWords }) => tellCannotRun(ask.agent_id, ask.root_id, providerWaitWords(ask.agent_id, retryAt))));
@@ -384,15 +386,17 @@ export function handBackAsk(workId: string, p: { agentId: string; turnNumber: nu
   return out('reopened', p.reason);
 }
 
-/** The person wrote again in `conversationId`: each of its asks stood down with nothing outstanding is open
- *  once more, so this turn serves it. An inherited ask stays parked; it closes only through its own door. */
-export function liftStandDowns(agentId: string, conversationId: string): void {
-  const held = getDb().prepare(`SELECT id FROM work WHERE agent_id = ? AND kind = 'ask' AND state = 'blocked' AND conversation_id = ?`)
-    .all(agentId, conversationId) as Array<{ id: string }>;
+/** The person wrote again (`triggerWorkId`, never served before): each request of that conversation stood down
+ *  with nothing outstanding is claimed by this turn, so the turn's end settles it with the new message. An
+ *  inherited ask stays parked; it closes only through its own door. */
+export function liftStandDowns(agentId: string, triggerWorkId: string, turnNumber: number): void {
+  const held = getDb().prepare(`SELECT h.id AS id FROM work h JOIN work t ON t.id = ? AND t.conversation_id = h.conversation_id
+    WHERE h.agent_id = ? AND h.kind = 'ask' AND h.state = 'blocked'`).all(triggerWorkId, agentId) as Array<{ id: string }>;
   for (const { id } of held) {
     const ask = readAsk(id);
     if (!ask || joinOutstanding(ask) || mediaJobs(ask.root_id).out > 0 || stillOwed(ask, null) || inheritedParkedAt(id)) continue;
-    transition(id, { to: 'open', by: 'agent', actorId: 'engine', expectedState: 'blocked', reason: 'the person wrote again' });
+    if (transition(id, { to: 'open', by: 'agent', actorId: 'engine', expectedState: 'blocked', reason: 'the person wrote again' }).kind !== 'applied') continue;
+    if (claimAsk(id, agentId).kind === 'applied') stampClaimingTurn(id, turnNumber);
   }
 }
 

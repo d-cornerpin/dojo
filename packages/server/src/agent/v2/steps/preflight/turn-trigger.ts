@@ -9,7 +9,6 @@ import { continuationContext } from '../../../turn-state.js';
 import { stampConversationIdByRowid } from '../../../../memory/message-store.js';
 import { resolveOrCreateConversation } from '../../../../memory/conversations.js';
 import { claimAsk, isStateConflict } from '../../../../work/store.js';
-import { liftStandDowns } from '../../../../work/ask-settlement.js';
 import { getWaitingHumanConversations, type WaitingConversation, type TurnCounterparty } from '../../counterparty.js';
 import { hasOpenHumanWork } from '../../answered-edge.js';
 import { preflightAbandon, preflightProceed, type PreflightOutcome } from '../step-outcome.js';
@@ -125,8 +124,6 @@ export function runTurnTrigger(
       setAgentStatus(agentId, 'idle');
       return preflightAbandon('pickup-claim-lost');
     }
-    // The person wrote again: a request of theirs that stood down is served with this one.
-    if (chosenConversationId) liftStandDowns(agentId, chosenConversationId);
   }
 
   // Published only here, where `chosenConversationId` is final: an early null made the assembler drop
