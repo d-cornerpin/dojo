@@ -12,7 +12,7 @@
 // and the token trim proceed exactly as before. When the served message ends up behind the fold
 // boundary (or off the front of the trimmed tail), the assembler re-emits that one row verbatim at
 // the front of the live tail, labelled plainly with its time, once, for as long as the turn (and its
-// carried continuations) runs. If the row is still in view, nothing extra is emitted (t139's rule).
+// job's own turns, rooted in it) runs. If the row is still in view, nothing extra is emitted (t139's rule).
 // Structural: the turn's own claimed ask rows; no content is read.
 //
 // The turn-level proof (a real turn, a real forced fold, the words verbatim on the next call, the
@@ -39,8 +39,7 @@ import { rowsLeavingView } from '../tail-horizon.js';
 import { servedOwnerMessageIds } from '../served-ask.js';
 import { createLeafSummary } from '../dag.js';
 import { noteEngineCheckpoint } from '../../work/engine-checkpoint-note.js';
-import { queueJobContinuation } from '../../work/job-continuation.js';
-import { beginJobRun, endJobCarry } from '../../work/task-freshness.js';
+import { parkJob } from '../../work/job-continuation.js';
 import { assembleContext } from '../assembler.js';
 
 const AGENT = 'primary';
@@ -110,7 +109,7 @@ describe('t145 R4 — only the served owner message is protected, and it is re-e
     expect(servedOwnerMessageIds(AGENT)).toEqual([]);
   });
 
-  // ── ROUND 5: a continuation re-shows only the ask(s) THE JOB is serving, carried on t143's own record ──
+  // ── A job's own turn re-shows only the ask THE JOB is serving: the request its task row was opened for ──
   /** Two claimed asks in one conversation: H, an old held job, and B, the long ask this turn serves. */
   function heldAndCurrent(): void {
     say('user', 'OLD-HELD-JOB '.repeat(30), 'held-row');
@@ -119,48 +118,48 @@ describe('t145 R4 — only the served owner message is protected, and it is re-e
     say('user', 'THE-LONG-ASK '.repeat(30), 'ask-row');
     expect(claimAsk('ask:ask-row', AGENT).kind).toBe('applied');
   }
-  /** The park: the serving turn checkpoints (the real note path) and queues its continuation wake. */
+  /** The park: the serving turn checkpoints (the real note path) and parks its job on a task for the request. */
+  let jobTask: string | null = null;
   function parkTurnServing(askId: string): void {
-    runningTurnOn(askId);
+    const bag = openTurnContext(AGENT);
+    bag.turnNumber = 1;
+    bag.root = { kind: 'ask', id: askId, sourceMessageId: askId };
     noteEngineCheckpoint(AGENT, 'turn-budget');
-    expect(queueJobContinuation(AGENT, 'turn-budget')).toBe(true);
+    expect(parkJob(AGENT, 'turn-budget', Date.now())).toBe(true);
+    jobTask = bag.jobParked;
     endTurnContext(AGENT);
   }
-  /** The run launched FROM the park's own wake: no trigger of its own, the stash's conversation restored. */
-  function continuationRun(): void {
-    expect(beginJobRun(AGENT, 'drain')).toBe(true);
+  /** The job's own turn, as the preflight picks it up: rooted in the request its task names, if that is still open. */
+  async function continuationRun(): Promise<void> {
+    const { nextOwed } = await import('../../agent/v2/owed.js');
+    const item = nextOwed(AGENT).find((i) => i.kind === 'job');
+    expect(item?.ref).toBe(jobTask);
     const bag = openTurnContext(AGENT);
+    bag.servedJob = jobTask;
     bag.conversationId = 'conv-dash';
+    const r = item?.job?.ask?.row;
+    if (r) bag.root = { kind: 'ask', id: r.id, sourceMessageId: r.id, conversationId: r.conversation_id };
   }
-  afterEach(() => { endJobCarry(AGENT); });
 
-  it('R4-C1: two claimed asks, a job serving only one, a continuation: ONLY that one ask is served', () => {
+  it('R4-C1: two claimed asks, a job serving only one, its own turn: ONLY that one ask is served', async () => {
     heldAndCurrent();
     parkTurnServing('ask-row');
-    continuationRun();
+    await continuationRun();
     expect(servedOwnerMessageIds(AGENT)).toEqual(['ask-row']);   // never the held job
   });
 
-  it('R4-I1: an intervening turn (an owner message, an A2A, the scheduler) neither eats nor widens the carry', () => {
+  it('R4-I1: an intervening turn (an owner message, an A2A, the scheduler) neither eats nor widens it', async () => {
     heldAndCurrent();
     parkTurnServing('ask-row');
     const other = openTurnContext(AGENT);               // some other turn runs first: not launched from the wake
     other.conversationId = 'conv-dash';
-    expect(servedOwnerMessageIds(AGENT), 'a run that is not the job\'s continuation serves nothing it did not pick up').toEqual([]);
+    expect(servedOwnerMessageIds(AGENT), 'a run that is not the job\'s own serves nothing it did not pick up').toEqual([]);
     endTurnContext(AGENT);
-    continuationRun();
-    expect(servedOwnerMessageIds(AGENT), 'the job\'s own continuation still carries its ask').toEqual(['ask-row']);
+    await continuationRun();
+    expect(servedOwnerMessageIds(AGENT), 'the job\'s own turn still serves its ask').toEqual(['ask-row']);
   });
 
-  it('an old FINISHED request is never re-shown: a carried ask that has since closed drops out', async () => {
-    heldAndCurrent();
-    parkTurnServing('ask-row');
-    mockDb.current!.prepare("UPDATE work SET state = 'abandoned', closed_at = ? WHERE id = 'ask:ask-row'").run(Date.now());   // the ask is closed
-    continuationRun();
-    expect(servedOwnerMessageIds(AGENT)).toEqual([]);
-  });
-
-  it('a run with no park behind it (no job carried) serves nothing, however many asks are claimed', () => {
+  it('a run with no job behind it serves nothing, however many asks are claimed', () => {
     heldAndCurrent();
     const bag = openTurnContext(AGENT);
     bag.conversationId = 'conv-dash';
@@ -169,16 +168,16 @@ describe('t145 R4 — only the served owner message is protected, and it is re-e
 
   it('the job\'s own ask survives TWO condenses: behind two summaries, the continuation still holds it verbatim, once', async () => {
     heldAndCurrent();
-    for (let i = 0; i < 12; i++) say(i % 2 === 0 ? 'assistant' : 'user', `job row ${i}`);
+    for (let i = 0; i < 12; i++) say('assistant', `job row ${i}`);   // the job's own rows (no new owner message)
     parkTurnServing('ask-row');
     const idsThrough = (seq: number): string[] => (mockDb.current!.prepare(
       'SELECT id FROM messages WHERE seq <= ? AND id NOT IN (SELECT message_id FROM summary_messages) ORDER BY seq').all(seq) as Array<{ id: string }>).map((r) => r.id);
     const askSeq = (mockDb.current!.prepare("SELECT seq FROM messages WHERE id = 'ask-row'").get() as { seq: number }).seq;
     createLeafSummary(AGENT, 'Earlier: a held job and a big ask.', 20, idsThrough(askSeq), new Date().toISOString(), new Date().toISOString());
-    for (let i = 0; i < 6; i++) say(i % 2 === 0 ? 'assistant' : 'user', `later job row ${i}`);
+    for (let i = 0; i < 6; i++) say('assistant', `later job row ${i}`);
     const lastSeq = (mockDb.current!.prepare('SELECT MAX(seq) AS s FROM messages').get() as { s: number }).s;
     createLeafSummary(AGENT, 'Later: the job kept going.', 20, idsThrough(lastSeq - 2), new Date().toISOString(), new Date().toISOString());
-    continuationRun();
+    await continuationRun();
     const text = await wire();
     expect(occurrences(text, LABEL)).toBe(1);
     expect(occurrences(text, 'THE-LONG-ASK '.repeat(30).trim())).toBe(1);

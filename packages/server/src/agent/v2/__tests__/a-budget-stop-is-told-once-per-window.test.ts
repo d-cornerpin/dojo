@@ -378,7 +378,6 @@ import {
   stoppedAgents, recoveryRunStreak, pendingWakeups,
   doomedPrefillCompactionSpent, declaredPatienceHonestFailTurn,
 } from '../../shared-state.js';
-import { continuationContext } from '../../turn-state.js';
 import { runMigrations } from '../../../db/migrations.js';
 import { insertMessage } from '../../../memory/message-store.js';
 import { checkBudget } from '../../../costs/budget.js';
@@ -461,7 +460,7 @@ beforeEach(async () => {
   recordErrorMock.mockImplementation(() => false);
   toolPayload.tokens = 2_000;
   stoppedAgents.clear(); recoveryRunStreak.clear(); doomedPrefillCompactionSpent.clear();
-  declaredPatienceHonestFailTurn.clear(); pendingWakeups.clear(); continuationContext.clear();
+  declaredPatienceHonestFailTurn.clear(); pendingWakeups.clear();
   // The scripted provider. The REAL wall in `callModel` decides first: while the limit stands it
   // throws exactly what it throws on a user's box; past it, the provider answers.
   callModelSpy.mockImplementation(async (p: { agentId: string; modelId: string }) => {

@@ -13,14 +13,12 @@ const logger = createLogger('v2-loop');
 export interface LiveAskPromotionInputs {
   readonly interAgentTurn: boolean;
   readonly isHumanContinuation: boolean;
-  /** A continued measured job with items left speaks only its result, a stall or a question. */
-  readonly jobStillGoing?: boolean;
   readonly surfacedReplyThisTurn: boolean;
   readonly startAckRepliedNow: () => boolean;
 }
 
 export function answersALiveAsk(p: LiveAskPromotionInputs): boolean {
-  if (p.interAgentTurn || p.jobStillGoing) return false;
+  if (p.interAgentTurn) return false;
   if (p.surfacedReplyThisTurn || p.startAckRepliedNow()) return false;
   return p.isHumanContinuation;
 }

@@ -1,5 +1,5 @@
-// The turn's address is computed ONCE in preflight, stored on the turn's bag, carried by a
-// continuation, and seeded into the state, so delivery and every note read one value.
+// The turn's address is computed ONCE in preflight, stored on the turn's bag, read from the request row on a
+// job's own turn, and seeded into the state, so delivery and every note read one value.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 vi.setConfig({ testTimeout: 60_000 }); // the first clause pays the one-time module-graph load
 import Database from 'better-sqlite3';
@@ -15,7 +15,6 @@ import { runMigrations } from '../../../../../db/migrations.js';
 import { openTurnContext, endTurnContext, type TurnContext } from '../../../../turn-context.js';
 import { runCounterpartyAndRecord, type CounterpartyAndRecordInputs } from '../counterparty-and-record.js';
 import type { PreflightContext, PreflightScratch } from '../index.js';
-import { continuationContext } from '../../../../turn-state.js';
 
 const AGENT = 'primary';
 let turnCtx: TurnContext;
@@ -30,7 +29,6 @@ beforeEach(() => {
   db.prepare(`INSERT INTO agents (id, name, model_id, status, config, classification) VALUES (?, 'Primary', 'm', 'idle', '{}', 'sensei')`).run(AGENT);
   endTurnContext(AGENT);
   turnCtx = openTurnContext(AGENT);
-  continuationContext.clear();
 });
 
 const sc = {} as PreflightScratch;
@@ -38,7 +36,7 @@ const pctx = { agentId: AGENT } as unknown as PreflightContext;
 
 function inputs(over: Partial<CounterpartyAndRecordInputs>): CounterpartyAndRecordInputs {
   return {
-    isHumanContinuation: false, continuation: undefined, a2aCounterpartyIdentity: null,
+    isHumanContinuation: false, jobRow: undefined, a2aCounterpartyIdentity: null,
     lastUserMessageContent: 'hello', lastUserMessageId: null, triggerRow: null, triggerWorkId: null,
     chosenConvKey: 'conv-x', inboundChannel: null, inboundContext: null, latestUserSource: null,
     triggeredByIMessage: false, isA2ATurn: false, isEngineTurn: false, terminalWakeA2A: null,
@@ -61,16 +59,14 @@ describe('preflight stores one address for the turn', () => {
     expect(turnCtx.state?.inboundChannel).toBe('imessage');
   });
 
-  it('a continuation keeps the original address, including the reply context, and the state is seeded from it', async () => {
-    await runCounterpartyAndRecord(turnCtx, pctx, sc, inputs({ triggerRow: contactRow, inboundChannel: 'teams', inboundContext: { chatId: 'chat-1' } }));
-    const original = turnCtx.address!;
-    const cp = { kind: 'user' as const, name: 'Pat Example', relation: 'known_contact' as const, channel: 'teams' as const, senderId: 'pat@example.test', threadId: null, senderIsAgent: false };
-    endTurnContext(AGENT);
+  it('a job\'s own turn is addressed from its request row, including the reply context, and the state is seeded from it', async () => {
+    // The inbound channel and context are the ones `inbound-and-abort.ts` resolves from that same row.
     const next = openTurnContext(AGENT);
     await runCounterpartyAndRecord(next, pctx, sc, inputs({
-      isHumanContinuation: true, continuation: { convKey: 'conv-x', conversationId: null, counterparty: cp, address: original },
-      triggerRow: null, inboundChannel: null, inboundContext: null,
+      isHumanContinuation: true, jobRow: contactRow, lastUserMessageContent: null as never,
+      triggerRow: null, inboundChannel: 'teams', inboundContext: { chatId: 'chat-1' },
     }));
+    expect(next.address?.name).toBe('+15550100');
     expect(next.address?.deliveryChannel).toBe('teams');
     expect(next.address?.inboundContext).toEqual({ chatId: 'chat-1' });
     expect(next.state?.inboundChannel).toBe('teams');

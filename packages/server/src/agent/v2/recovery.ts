@@ -491,7 +491,10 @@ async function recordInjury(
   // the generic apology note is REPLACED by one honest in-channel line naming the ask and cause.
   const isDeclaredPatienceHonestFail = code === DECLARED_PATIENCE_EXCEEDED_CODE;
   if (isDeclaredPatienceHonestFail && turnFacing.isUserFacingTurn) {
-    const honestFail = declaredPatienceHonestFailNote(state.lastUserMessageContent, declaredPatienceDidCompact);
+    // A job turn has no fresh trigger: the line names the request its job started from.
+    const asked = state.lastUserMessageContent ?? (getDb().prepare('SELECT content FROM messages WHERE id = ?')
+      .get(turnContext(agentId)?.root?.sourceMessageId ?? '') as { content: string } | undefined)?.content ?? null;
+    const honestFail = declaredPatienceHonestFailNote(asked, declaredPatienceDidCompact);
     persistAndBroadcastSystemNote(agentId, honestFail);
     tellAgentWhatDojoSent({ agentId, recipient: 'the person who asked (on the dashboard)', text: honestFail, why: 'because your model could not finish this answer' });
   } else {

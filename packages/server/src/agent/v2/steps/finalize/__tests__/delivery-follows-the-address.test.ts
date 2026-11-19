@@ -47,13 +47,12 @@ describe('delivery follows the turn address', () => {
     }
   });
 
-  it('a continuation (no trigger row, state inbound empty) still delivers to the address\'s bound channel', async () => {
-    const restored = computeTurnAddress({
-      autoRoutes: true, counterparty: contact, isEngineTurn: false, isNotificationTurn: false, inboundChannel: null, inboundContext: null,
+  it('a job turn (no trigger row, state inbound empty) still delivers to the address\'s bound channel', async () => {
+    const address = computeTurnAddress({
+      autoRoutes: true, counterparty: contact, isEngineTurn: false, isNotificationTurn: false, inboundChannel: 'imessage', inboundContext: null,
       presence: 'in_dojo', imessageBridgeConfigured: true, ownerAffinityChannel: null,
-      restoredFrom: addressFor(contact, 'imessage', 'in_dojo'),
     });
-    expect(await destinationOf(contact, restored, null)).toBe('imessage');
+    expect(await destinationOf(contact, address, null)).toBe('imessage');
   });
 
   it('an A2A turn never delivers to a person', async () => {

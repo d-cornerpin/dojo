@@ -12,7 +12,7 @@ import { createLogger } from '../logger.js';
 import { TERMINAL_JOB_STATUS_SQL } from '../services/media-job-status.js';
 import { turnContext } from '../agent/turn-context.js';
 import { onTaskEnded } from './task-ended.js';
-import { handedInExpr } from './tracker-view.js';
+import { handedInExpr, heldByOwnerSql } from './tracker-view.js';
 import { jobCarriedAsks } from './task-freshness.js';
 import { delegatedRelayEvidence, turnEndedInModelSilence } from './delegated-relay-evidence.js';
 import { recordServingTurnByRowid } from '../memory/message-store.js';
@@ -90,14 +90,13 @@ export interface SettlementContext extends TurnEnd {
    *  `compile_resolved` record): children settled, delivery postdates `join_complete`. `late-answer`: the
    *  join failed closed, so the boundary is the ask's arrival; `failed -> open` guards exactly-once. */
   basis?: 'compiled' | 'engine-relay' | 'late-answer';
-  /** FINALIZE ONLY: the engine continued the same work, so the held-back opening line is not the answer. */
-  continuing?: boolean;
   /** FINALIZE ONLY: the ask's message only declined or acknowledged, so the model's silence settles it. */
   askedNothing?: boolean;
 }
 
-/** How the turn ended, beyond its exit word: the provider's reset it met, paid calls before it, a job it parked. */
-export interface TurnEnd { retryAt?: number | null; paidBeforeLimit?: boolean; parkedTheJob?: boolean }
+/** How the turn ended, beyond its exit word: the provider's reset it met, paid calls before it, the task it parked
+ *  its job on, and whether it was started from a parked job. */
+export interface TurnEnd { retryAt?: number | null; paidBeforeLimit?: boolean; parkedTask?: string | null; jobTurn?: boolean }
 
 interface AskRow {
   id: string;
@@ -206,12 +205,22 @@ export function realAnswerInConversationSince(
   ).get(agentId, conversationId, ...excluded, notBefore) as { id: string; tool: string } | undefined) ?? null;
 }
 
-function inheritedParkedAt(workId: string): string | null {
+/** When the row's latest `kind` event whose payload `path` matches `like` was written, as a deliveries timestamp. */
+function eventAt(workId: string, kind: string, path: string, like: string): string | null {
   const r = getDb().prepare(
-    `SELECT created_at AS at FROM work_events WHERE work_id = ? AND kind = 'audit'
-       AND json_extract(payload, '$.marker') = ? ORDER BY id DESC LIMIT 1`,
-  ).get(workId, INHERITED_BACKLOG_MARKER) as { at: number } | undefined;
+    `SELECT created_at AS at FROM work_events WHERE work_id = ? AND kind = ?
+       AND json_extract(payload, ?) LIKE ? ORDER BY id DESC LIMIT 1`,
+  ).get(workId, kind, path, like) as { at: number } | undefined;
   return r ? new Date(r.at).toISOString().replace('T', ' ').slice(0, 19) : null;
+}
+const inheritedParkedAt = (workId: string): string | null => eventAt(workId, 'audit', '$.marker', INHERITED_BACKLOG_MARKER);
+const JOB_HOLD_REASON = 'held: its job is still running';
+const jobHeldAt = (workId: string): string | null => eventAt(workId, 'transition', '$.reason', `${JOB_HOLD_REASON}%`);
+
+/** Is task `id` still open, and is it parked (a due time set)? */
+function taskNow(id: string): { open: boolean; parked: boolean } {
+  const r = getDb().prepare('SELECT state, next_attempt_at AS due FROM work WHERE id = ?').get(id) as { state: WorkState; due: number | null } | undefined;
+  return { open: !!r && !isTerminal(r.state), parked: r?.due != null };
 }
 
 /** A delivery at or below the rowid high-water `recordOwedInterruptSubjects` stored for this ask predates
@@ -243,23 +252,6 @@ export function recordOwedInterruptSubjects(
       agentId, workId, turnNumber, deliveryHighWater: water,
     }, agentId);
   }
-}
-
-/** The ask's receipt is the held-back opening line of this turn: the bubble the turn records as its answer
- *  (`turns.answer_message_id`) with no tool result after it (a live-ask answer has tool results after). */
-function receiptIsHeldOpeningLine(ask: AskRow, turnNumber: number | null): boolean {
-  if (turnNumber == null || ask.result_delivery_id == null) return false;
-  return getDb().prepare(
-    `SELECT 1 AS hit FROM deliveries d
-       JOIN messages m ON m.id = d.message_id
-       JOIN turns t ON t.agent_id = d.agent_id AND t.turn_number = d.turn_number
-      WHERE d.id = ? AND d.agent_id = ? AND d.turn_number = ?
-        AND m.role = 'assistant' AND m.display_kind = 'agent-text' AND t.answer_message_id = m.id
-        AND NOT EXISTS (SELECT 1 FROM messages x
-                         WHERE x.agent_id = d.agent_id AND x.turn_number = d.turn_number
-                           AND x.role = 'tool' AND x.seq > m.seq)
-      LIMIT 1`,
-  ).get(ask.result_delivery_id, ask.agent_id, turnNumber) !== undefined;
 }
 
 /** Is the receipt a bubble the finished turn does not call its answer? Same fragment as the evidence. */
@@ -417,7 +409,7 @@ function joinOutstanding(ask: AskRow): boolean {
 }
 
 /** The authority: every ask transition into `done`, and every decision not to, goes through here.
- *  Arm order: terminal; async; join; join hold; evidence; reply in flight; reply undelivered or held; then the
+ *  Arm order: terminal; async; join; join hold; job hold; evidence; reply in flight; reply undelivered or held; then the
  *  no-evidence arms. In flight sits below evidence: an answer delivered on the request's own channel closes it
  *  even while a second reply waits. */
 export function settleAsk(workId: string, ctx: SettlementContext): AskSettlementOutcome {
@@ -468,22 +460,18 @@ export function settleAsk(workId: string, ctx: SettlementContext): AskSettlement
     }
   }
 
-  // A continuing turn's held-back opening line is not an answer: the ask goes back owed and closes when the
-  // continuation delivers. No rung is spent, because the engine, not the model, ended the turn.
-  if (ask.state === 'done' && ctx.at === 'finalize' && ctx.continuing === true
-      && receiptIsHeldOpeningLine(ask, ctx.turnNumber)) {
-    const reason = `handed back: turn ${ctx.turnNumber ?? '?'} ended with the engine continuing the same work, `
-      + 'so the opening line it held back and delivered at the boundary is not the answer — the ask '
-      + 'stays owed and closes when the continuation delivers';
+  // A turn that parked its job did not answer the request it closed on the way: the ask goes back owed and is held
+  // on its job. No rung is spent, because the engine, not the model, ended the turn.
+  if (ask.state === 'done' && ctx.at === 'finalize' && ctx.parkedTask && linkedTaskOf(ask.agent_id, ask.root_id)) {
+    const reason = `handed back: turn ${ctx.turnNumber ?? '?'} parked the job this request waits on, `
+      + 'so what it delivered on the way is not the answer; the ask stays owed and closes when the job delivers';
     const undo = transition(workId, {
       to: 'open', by: 'engine', actorId: 'ask-settlement', expectedState: 'done',
       evidenceRef: ask.result_delivery_id ?? undefined, clearResultDelivery: true, reason,
     });
     if (undo.kind === 'applied') {
-      logger.info('ask handed back: closed on a continuing turn\'s held-back opening line', {
-        agentId: ask.agent_id, workId, turnNumber: ctx.turnNumber,
-      }, ask.agent_id);
-      return out('reopened', reason);
+      logger.info('ask handed back: closed by a turn that parked its job', { agentId: ask.agent_id, workId, turnNumber: ctx.turnNumber }, ask.agent_id);
+      return settleAsk(workId, ctx);
     }
   }
 
@@ -559,6 +547,18 @@ export function settleAsk(workId: string, ctx: SettlementContext): AskSettlement
     return out('held', reason);
   }
 
+  // Job hold: the request's task is still running, so a progress text reaches the person and the request stays owed.
+  // Its task is the one linked by its message, or the one this turn parked while serving it.
+  const parked = ctx.parkedTask && ask.claimed_by_turn === ctx.turnNumber && taskNow(ctx.parkedTask).open ? ctx.parkedTask : null;
+  const jobTask = ctx.at === 'boot' ? null : linkedTaskOf(ask.agent_id, ask.root_id) ?? parked;
+  const holdOnJob = (task: string): AskSettlementOutcome => {
+    if (ask.state === 'blocked') return out('held', 'already held on its job');
+    const r = transition(workId, { to: 'blocked', by: 'agent', actorId, expectedState: ask.state, reason: `${JOB_HOLD_REASON} (task ${task})` });
+    return r.kind === 'applied' ? out('held', 'held on its job') : out('unchanged', `job hold refused: ${r.kind}`);
+  };
+  if (jobTask && ctx.at === 'delivery') return out('held', 'its job is still running');
+  if (jobTask && ctx.at === 'finalize' && taskNow(jobTask).parked) return holdOnJob(jobTask);
+
   const evidence = qualifyingDelivery(ask, ctx.turnNumber)
     ?? (ctx.at === 'finalize' ? delegatedRelayEvidence(ask, ctx.turnNumber, [...ENGINE_JOIN_RELAY_TOOLS]) : null);
   if (evidence) {
@@ -606,6 +606,8 @@ export function settleAsk(workId: string, ctx: SettlementContext): AskSettlement
     const r = transition(workId, { to: 'abandoned', by: 'agent', actorId, expectedState: ask.state, reason: why });
     return r.kind === 'applied' ? out('closed', why) : out('unchanged', `settle refused: ${r.kind}`);
   }
+  // A job turn that answered nothing and did not park waits on its task: a stalled job is not re-served.
+  if (jobTask && ctx.jobTurn === true) return holdOnJob(jobTask);
   // Who ended the turn decides which count moves and when it is served again (the exit table).
   const exit = turnExitReason(ask.agent_id, ctx.turnNumber);
   const cause = handBackCauseOf(exit, ctx);
@@ -799,10 +801,12 @@ export const LINKED_OPEN_TASK = (a: string): string =>
   `t.kind = 'task' AND t.agent_id = ${a}.agent_id AND t.source_message_id = ${a}.root_id`
   + ` AND t.state NOT IN ('done', 'failed', 'abandoned') AND ${handedInExpr('t')} = 0`;
 
-/** The open task linked to `agentId`'s request `messageId`, or null. */
-export function linkedTaskOf(agentId: string, messageId: string | null): string | null {
+/** The open task linked to `agentId`'s request `messageId`, or null; with `ownerHeldEnds` a task the owner holds
+ *  counts as ended. */
+export function linkedTaskOf(agentId: string, messageId: string | null, opts: { ownerHeldEnds?: true } = {}): string | null {
   if (!messageId) return null;
-  return (getDb().prepare(`SELECT t.id AS id FROM (SELECT ? AS agent_id, ? AS root_id) a JOIN work t ON ${LINKED_OPEN_TASK('a')} LIMIT 1`)
+  const notHeld = opts.ownerHeldEnds ? ` AND NOT ${heldByOwnerSql('t')}` : '';
+  return (getDb().prepare(`SELECT t.id AS id FROM (SELECT ? AS agent_id, ? AS root_id) a JOIN work t ON ${LINKED_OPEN_TASK('a')}${notHeld} LIMIT 1`)
     .get(agentId, messageId) as { id: string } | undefined)?.id ?? null;
 }
 
@@ -822,6 +826,17 @@ function settleOnAsyncResult(
 ): AskSettlementOutcome {
   if (joinOutstanding(ask)) return out('unchanged', 'delegated work is still outstanding');
   const jobs = mediaJobs(ask.root_id);
+  // Release: a request held on its job, once no task linked to it still works (ended, or held by the owner), closes
+  // on a real answer since the hold, else goes back owed so the agent tells the person where it stands.
+  const heldAt = ask.state === 'blocked' && jobs.out === 0 ? jobHeldAt(ask.id) : null;
+  if (heldAt && !linkedTaskOf(ask.agent_id, ask.root_id, { ownerHeldEnds: true })) {
+    const late = realAnswerInConversationSince(ask.agent_id, ask.conversation_id, heldAt);
+    const r = late
+      ? transition(ask.id, { to: 'done', by: 'agent', actorId, resultDeliveryId: late.id, expectedState: 'blocked', reason: `its job ended; answered via ${late.tool}` })
+      : transition(ask.id, { to: 'open', by: 'agent', actorId: 'engine', expectedState: 'blocked', reason: 'its job ended; the person is told where it stands' });
+    if (r.kind !== 'applied') return out('unchanged', `release refused: ${r.kind}`);
+    return late ? out('closed', `its job ended; answered via ${late.tool}`, late.id) : out('reopened', 'its job ended');
+  }
   if (jobs.all === 0) return out('unchanged', 'no background job was started for this request');
   if (jobs.out > 0) return out('unchanged', `${jobs.out} background job(s) for this request are still out`);
   // The result the owner was given: the one named, else the latest bubble labelled with this request.
@@ -981,7 +996,6 @@ export interface FinalizeSettlementInput extends TurnEnd {
   turnNumber: number;
   /** Every ask that entered this turn's context; rows arriving after the final assembly are absent. */
   assembled?: AssembledAsk[];
-  continuing?: boolean;
   /** The trigger ask whose message asked for nothing (`inboundAsksNothing`). */
   askedNothing?: string | null;
 }
@@ -1010,7 +1024,7 @@ export function settleAsksAtTurnFinalize(p: FinalizeSettlementInput): FinalizeSe
            WHERE d.agent_id = ? AND d.turn_number = ? AND d.outcome = 'delivered')`,
   ).all(p.agentId, p.agentId, p.turnNumber) as Array<{ id: string }>;
 
-  const turnEnd: TurnEnd = { retryAt: p.retryAt, paidBeforeLimit: p.paidBeforeLimit, parkedTheJob: p.parkedTheJob };
+  const turnEnd: TurnEnd = { retryAt: p.retryAt, paidBeforeLimit: p.paidBeforeLimit, parkedTask: p.parkedTask, jobTurn: p.jobTurn };
   const seen = new Set<string>();
   const tally = (v: AskSettlementVerdict): void => {
     if (v === 'closed') result.closed++;
@@ -1021,7 +1035,7 @@ export function settleAsksAtTurnFinalize(p: FinalizeSettlementInput): FinalizeSe
     if (seen.has(r.id)) continue;
     seen.add(r.id);
     tally(settleAsk(r.id, {
-      agentId: p.agentId, turnNumber: p.turnNumber, at: 'finalize', continuing: p.continuing,
+      agentId: p.agentId, turnNumber: p.turnNumber, at: 'finalize',
       askedNothing: r.id === p.askedNothing, ...turnEnd,
     }).verdict);
   }

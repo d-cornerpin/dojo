@@ -14,7 +14,6 @@ import { stillCompileOwed } from '../../compile-owed-gate.js';
 import { outputPersistenceClassifier } from '../../classifiers/output.js';
 import { stripLeadingTimeStamp } from '../../../../memory/message-stamp.js';
 import { answersALiveAsk, deliverAsAnswerToLiveAsk } from './answer-to-a-live-ask.js';
-import { continuedJobStillGoing, readJobAtPassEnd } from './job-turn-end.js';
 import { DELIVERABLE_OWING_TASK_KINDS } from '../../../../work/deliverable-declaration.js';
 import { proceed, type StepOutcome } from '../step-outcome.js';
 import type { PostCallClassifyContext, PostCallScratch } from './index.js';
@@ -33,7 +32,6 @@ export async function runTerminalText(
     messageId, noteTerminalAnswer, result, startAckRepliedNow, turnCtx, turnNumber,
   } = ctx;
   const { interAgentTurn } = sc;
-  const jobStillGoing = (await readJobAtPassEnd(state, ctx), continuedJobStillGoing(state, ctx));   // read once per pass
   const persistenceDecision = outputPersistenceClassifier({
     responseText: result.content ?? null,
     toolCallsThisTurn: result.toolCalls,
@@ -82,7 +80,7 @@ export async function runTerminalText(
         ? stillCompileOwed(state.compileOwedAskIds)
         : [];
     const answersLiveAsk = answersALiveAsk({
-      interAgentTurn, isHumanContinuation, jobStillGoing,
+      interAgentTurn, isHumanContinuation,
       surfacedReplyThisTurn: state.surfacedReplyThisTurn, startAckRepliedNow,
     });
     if ((hasUnansweredUser || userDeliverableRunTurn || compileOwedNow.length > 0 || answersLiveAsk) && !interAgentTurn) {
@@ -135,7 +133,7 @@ export async function runTerminalText(
         turnCtx.deferredUserReplyWithTools = null;
         deliveredAsAnswerToLiveAsk = true;
         state = (await deliverAsAnswerToLiveAsk(state, {
-          interAgentTurn, isHumanContinuation, jobStillGoing,
+          interAgentTurn, isHumanContinuation,
           surfacedReplyThisTurn: state.surfacedReplyThisTurn, startAckRepliedNow,
           agentId, turnNumber, answer, deliverEngineUserAck, noteTerminalAnswer,
         })).state;

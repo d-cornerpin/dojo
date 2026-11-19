@@ -26,7 +26,7 @@ export const dueAfterCut = (backoffAt: number, retryAt?: number | null): number 
  *  its exit (a full context, a turn budget), re-opens it uncounted with no due: the job's continuation serves it. */
 export function handBackCauseOf(exit: string | null, t: TurnEnd): HandBackCause {
   if (exit === null) return 'silence';
-  if (t.parkedTheJob || FREE_EXITS.has(exit)) return 'free';
+  if (t.parkedTask || FREE_EXITS.has(exit)) return 'free';
   if (PROVIDER_EXITS.has(exit) && t.retryAt && !t.paidBeforeLimit) return 'wait';
   return CUT_EXITS.has(exit) ? 'cut' : 'silence';
 }

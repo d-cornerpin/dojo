@@ -2,7 +2,7 @@
 // t211 (D7b, ctx 11) — THE ERROR-RECOVERY FORCED COMPACTIONS WAIT FOR THE EVENT THAT CAN CHANGE THE ANSWER.
 //
 // t168 gave a surrendered full context one park: `parkAfterForcedPass` queues the wake now when the forced
-// pass reclaimed, and sets the park's own timer wake for the compaction brake's expiry when the brake binds
+// pass reclaimed, and dates the job's task for the compaction brake's expiry when the brake binds
 // (a skipped pass changes nothing, so a wake into the same rows and the same brake re-ran the same wall 1,216
 // times in twelve minutes). The two forced compactions in `recovery.ts` (context overflow, and the one-shot
 // after a declared-patience exhaustion) were two copies of the old park: pass, then an unconditional immediate
@@ -16,7 +16,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import Database from 'better-sqlite3';
 import { AgentError } from '../../errors.js';
 import { initState } from '../state.js';
-import { pendingWakeups } from '../../shared-state.js';
+import { openTurnContext, endTurnContext } from '../../turn-context.js';
 import { compactionIsBraked, notePassOutcome, LOW_YIELD_BACKOFF_MS, __resetBrakesForTests } from '../../../memory/compaction-brakes.js';
 import { __resetFullContextWaitForTests } from '../full-context-wait.js';
 import { runMigrations } from '../../../db/migrations.js';
@@ -44,10 +44,8 @@ vi.mock('../../../memory/compaction.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../memory/compaction.js')>()),
   checkAndCompact: (...a: unknown[]) => checkAndCompactSpy(...(a as [string, string, number])),
 }));
-const timerWakes: Array<{ agentId: string }> = [];
-vi.mock('../../runtime.js', () => ({
-  getAgentRuntime: () => ({ handleMessage: async (agentId: string) => { timerWakes.push({ agentId }); } }),
-}));
+// The one clock is not driven here: the park's due time on the job's task row is what each case reads.
+vi.mock('../owed.js', async (importOriginal) => ({ ...(await importOriginal<Record<string, unknown>>()), armOwedClock: () => undefined }));
 vi.mock('../../../services/imessage-bridge.js', () => ({ sendAlert: vi.fn() }));
 
 import { recoverFromError } from '../recovery.js';
@@ -74,6 +72,16 @@ const stateFor = (configuredModelId: string, contextWindow: number, locked: stri
   return locked ? { ...s, lockedModelId: locked } : s;
 };
 const overflow = (): AgentError => new AgentError('prompt is too long: 250000 tokens > 200000 maximum', AGENT, { code: 'context_overflow' });
+/** When the job's task is due (null: nothing parked). */
+const jobDue = (): number | null => (mockDb.current!.prepare("SELECT MIN(next_attempt_at) AS due FROM work WHERE agent_id = ? AND kind = 'task'").get(AGENT) as { due: number | null }).due;
+const dueNow = (): boolean => { const d = jobDue(); return d !== null && d <= Date.now(); };
+/** The failed turn serves the owner's request, so its park has a task to date. */
+async function recover(...a: Parameters<typeof recoverFromError>): Promise<void> {
+  const bag = openTurnContext(AGENT);
+  bag.turnNumber = 5;
+  bag.root = { kind: 'ask', id: 'm-1', sourceMessageId: 'm-1' };
+  try { await recoverFromError(...a); } finally { endTurnContext(AGENT); }
+}
 function armTheBrake(): void {
   notePassOutcome(AGENT, true, NONE, { stage: 'summariser_refused', detail: 'scripted refusal', modelId: 'small-model' });
   expect(compactionIsBraked(AGENT, true), 'non-vacuity: the brake binds a forced pass').toBe(true);
@@ -83,11 +91,9 @@ beforeEach(() => {
   const db = new Database(':memory:');
   mockDb.current = db;
   runMigrations();
-  pendingWakeups.clear();
   __resetBrakesForTests();
   __resetFullContextWaitForTests();
   checkAndCompactSpy.mockClear();
-  timerWakes.length = 0;
   passes.length = 0;
   nextPass = 'nothing';
   vi.useFakeTimers();
@@ -98,30 +104,29 @@ describe('t211 D7b — a recovery pass the brake skipped does not wake the agent
   it('context overflow with the brake on: no immediate wake; one timer wake at the brake\'s expiry', async () => {
     seed('small-model');
     armTheBrake();
-    await recoverFromError(stateFor('small-model', DIALED_WINDOW), overflow(), { isUserFacingTurn: true });
-    expect(pendingWakeups.has(AGENT), 'nothing can change in the next half second, so no immediate wake').toBe(false);
+    await recover(stateFor('small-model', DIALED_WINDOW), overflow(), { isUserFacingTurn: true });
+    expect(dueNow(), 'nothing can change in the next half second, so no immediate wake').toBe(false);
     await vi.advanceTimersByTimeAsync(LOW_YIELD_BACKOFF_MS - MIN);
-    expect(timerWakes.length, 'a minute before the expiry: still waiting').toBe(0);
+    expect(dueNow(), 'a minute before the expiry: still waiting').toBe(false);
     await vi.advanceTimersByTimeAsync(MIN + 5);
-    expect(timerWakes.length, 'at the expiry: woken once').toBe(1);
+    expect(dueNow(), 'at the expiry: due').toBe(true);
   });
 
   it('declared-patience exhaustion with the brake on: the same wait', async () => {
     seed('small-model');
     armTheBrake();
     const exhausted = new AgentError('declared patience exceeded', AGENT, { code: 'declared_patience_exceeded' });
-    await recoverFromError(stateFor('small-model', DIALED_WINDOW), exhausted, { isUserFacingTurn: false });
-    expect(pendingWakeups.has(AGENT)).toBe(false);
+    await recover(stateFor('small-model', DIALED_WINDOW), exhausted, { isUserFacingTurn: false });
+    expect(dueNow()).toBe(false);
     await vi.advanceTimersByTimeAsync(LOW_YIELD_BACKOFF_MS + 5);
-    expect(timerWakes.length).toBe(1);
+    expect(dueNow()).toBe(true);
   });
 
   it('control: a pass that reclaims queues the wake at once, as before', async () => {
     seed('small-model');
     nextPass = 'reclaims';
-    await recoverFromError(stateFor('small-model', DIALED_WINDOW), overflow(), { isUserFacingTurn: true });
-    expect(pendingWakeups.has(AGENT)).toBe(true);
-    expect(timerWakes).toEqual([]);
+    await recover(stateFor('small-model', DIALED_WINDOW), overflow(), { isUserFacingTurn: true });
+    expect(dueNow()).toBe(true);
   });
 });
 
@@ -129,10 +134,10 @@ describe('t211 D7b — the pass is for the model the failed call dialed', () => 
   it('an auto-routed agent: the pass runs (it no longer bails on the auto-router) against the locked model\'s window', async () => {
     seed('auto');
     nextPass = 'reclaims';
-    await recoverFromError(stateFor('auto', 200_000, 'small-model'), overflow(), { isUserFacingTurn: true });
+    await recover(stateFor('auto', 200_000, 'small-model'), overflow(), { isUserFacingTurn: true });
     expect(passes.length, 'the pass ran').toBe(1);
     expect(passes[0].contextWindow).toBe(DIALED_WINDOW);
     expect(passes[0].options?.dialedModelId).toBe('small-model');
-    expect(pendingWakeups.has(AGENT)).toBe(true);
+    expect(dueNow()).toBe(true);
   });
 });

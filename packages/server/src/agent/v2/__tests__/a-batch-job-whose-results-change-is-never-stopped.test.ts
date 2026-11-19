@@ -53,8 +53,6 @@ import { runV2Turn } from '../loop.js';
 import { runMigrations } from '../../../db/migrations.js';
 import { submitUserMessage } from '../../../gateway/routes/chat.js';
 import { openTrackerTask } from '../../../work/tracker-store.js';
-import { pendingWakeups } from '../../shared-state.js';
-import { beginJobRun, endJobCarry, endJobRun } from '../../../work/task-freshness.js';
 
 const AGENT = 'agent-mail';
 type Call = { name: string; arguments: Record<string, unknown> };
@@ -73,11 +71,12 @@ async function turn(calls: Call[]): Promise<string[]> {
   return results();
 }
 
-/** The park's continuation, started the way the runtime starts it: from the park's own wake. */
+/** The job's next turn, as the one clock starts it: served from the job's own task row. */
 async function continuation(): Promise<void> {
-  expect(beginJobRun(AGENT, 'drain'), 'the park queued its continuation').toBe(true);
-  try { await runV2Turn(AGENT); } finally { endJobRun(AGENT); }
+  await runV2Turn(AGENT);
 }
+/** A park dates the job's task row. */
+const jobParked = (): boolean => !!mockDb.current!.prepare("SELECT 1 FROM work WHERE agent_id = ? AND kind = 'task' AND next_attempt_at IS NOT NULL").get(AGENT);
 
 function results(): string[] {
   const rows = mockDb.current!.prepare("SELECT content FROM messages WHERE agent_id = ? AND role = 'tool' ORDER BY rowid").all(AGENT) as Array<{ content: string }>;
@@ -100,9 +99,8 @@ beforeEach(() => {
   });
   callModelSpy.mockReset();
   toolSpy.mockReset();
-  pendingWakeups.clear();
 });
-afterEach(() => { mockDb.current?.close(); mockDb.current = null; pendingWakeups.clear(); endJobCarry(AGENT); });
+afterEach(() => { mockDb.current?.close(); mockDb.current = null; });
 
 describe('a batch job whose results change is never stopped', () => {
   it('300 identical searches, each bringing back the next batch, all run: the turn parks at 200 and its continuation finishes', async () => {
@@ -115,7 +113,7 @@ describe('a batch job whose results change is never stopped', () => {
     const search: Call = { name: 'gmail_search', arguments: { query: 'in:inbox older_than:1y', max_results: 50 } };
     await turn(Array.from({ length: 300 }, () => search));
     expect(toolSpy).toHaveBeenCalledTimes(200);
-    expect(pendingWakeups.has(AGENT), 'every window moved, so the turn parked for its continuation').toBe(true);
+    expect(jobParked(), 'every window moved, so the turn parked its job').toBe(true);
     await continuation();
     expect(toolSpy).toHaveBeenCalledTimes(300);
     expect(results().filter((r) => r.includes('[Engine')), 'no stop, no refusal').toEqual([]);

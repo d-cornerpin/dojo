@@ -13,7 +13,7 @@ import { PROACTIVE_SEND_DEMOTE_THRESHOLD, bumpProactiveSendStreak, getProactiveS
 import { continueLoop, proceed, type StepOutcome } from '../step-outcome.js';
 import { steerFired, type SteerFloorId } from '../../steer-queue.js';
 import { persistEngineSteer } from '../../engine-steer.js';
-import { continuedJobStillGoing, jobTaskOf } from './job-turn-end.js';
+import { jobTaskOf } from './job-turn-end.js';
 import { noteDeliveryHeld, tasksOwingADelivery } from '../../../../tracker/owed-delivery.js';
 import type { PostCallClassifyContext, PostCallScratch } from './index.js';
 
@@ -121,10 +121,6 @@ export function runCloseoutFloors(
     persistedContent = null;
   }
 
-  // A continued job's text while it is still going is progress: kept as a note, not sent.
-  if (persistedContent?.trim() && continuedJobStillGoing(state, ctx)) {
-    demoteToWorkingNote({ agentId, messageId, turnNumber, text: persistedContent }); persistedContent = null;
-  }
   // Proactive-send backoff: past the threshold of consecutive unprompted settled-wake replies, the next is
   // demoted to a note. Deliberate surfaces are exempt, and so is a turn working a task that owes its owner
   // a delivery (`tracker/owed-delivery.ts`): the owner asked for that line.

@@ -34,6 +34,8 @@ import type { ToolCall } from '@dojo/shared';
 // for the duration of these tests.
 
 const mockDb = { current: null as Database.Database | null };
+/** A park dates the job's task row: that due is the continuation. */
+const jobParked = (): boolean => !!mockDb.current!.prepare("SELECT 1 FROM work WHERE agent_id = 'primary' AND kind = 'task' AND next_attempt_at IS NOT NULL").get();
 const broadcastSpy = vi.fn();
 const callModelSpy = vi.fn();
 const executeToolSpy = vi.fn();
@@ -386,7 +388,6 @@ import {
   stoppedAgents, recoveryRunStreak, pendingWakeups,
   doomedPrefillCompactionSpent, declaredPatienceHonestFailTurn,
 } from '../../shared-state.js';
-import { continuationContext } from '../../turn-state.js';
 import { runMigrations } from '../../../db/migrations.js';
 import { insertMessage } from '../../../memory/message-store.js';
 import { transition } from '../../../work/store.js';
@@ -451,7 +452,6 @@ beforeEach(() => {
   doomedPrefillCompactionSpent.clear();
   declaredPatienceHonestFailTurn.clear();
   pendingWakeups.clear();
-  continuationContext.clear();
 });
 
 afterEach(() => {
@@ -521,10 +521,13 @@ async function readOnlyTurnAcrossTheCheckpoint(
  */
 function ownerWithdrawsTheAsk(): void {
   const ask = mockDb.current!.prepare(`SELECT id, state FROM work WHERE kind = 'ask'`).get() as { id: string; state: string };
-  expect(ask.state).toBe('open');   // R-V333-8: still owed after the park
-  const r = transition(ask.id, { to: 'abandoned', by: 'owner', actorId: 'owner', expectedState: 'open', reason: 'the owner withdrew it' });
+  expect(ask.state).toBe('blocked');   // still owed after the park, held on its job
+  const r = transition(ask.id, { to: 'abandoned', by: 'owner', actorId: 'owner', expectedState: 'blocked', reason: 'the owner withdrew it' });
   expect(r.kind).toBe('applied');
 }
+
+/** The park dated the job's task on the test's jumped clock; on real time it is due now. */
+const dueNow = (): void => { mockDb.current!.prepare('UPDATE work SET next_attempt_at = ? WHERE next_attempt_at IS NOT NULL').run(Date.now()); };
 
 /** The task the agent claimed for this job, in the drive state, touched just now. */
 function seedInFlightTask(id = 'w-long-job'): void {
@@ -603,7 +606,7 @@ describe('t137 (c): a 15-minute park writes nothing to the owner\'s chat', () =>
 
     // Positive control: the turn genuinely parked. A fix that stopped parking is not a fix.
     expect(turnRows()).toEqual([expect.objectContaining({ turn_number: 1, exit_reason: 'iteration_cap' })]);
-    expect(pendingWakeups.has('primary')).toBe(true);
+    expect(jobParked()).toBe(true);
     expect(checkAndCompactSpy).toHaveBeenCalledTimes(1);
 
     // The record, counted: the turn's rows are the job's own rows and nothing else.
@@ -675,7 +678,7 @@ describe('t137 (b): a parked turn never moves its task to "paused, waiting on th
     expect(t.answered).toBe(0);
     expect(t.effectful_calls).toBe(0);
     expect(t.exit_reason).toBe('iteration_cap');
-    expect(continuationContext.has('primary')).toBe(true);   // the engine queued its continuation
+    expect(jobParked()).toBe(true);   // the engine queued its continuation
     expect(workState('w-long-job')).toBe('claimed');
   });
 
@@ -689,8 +692,8 @@ describe('t137 (b): a parked turn never moves its task to "paused, waiting on th
     seedInFlightTask();
     await readOnlyTurnAcrossTheCheckpoint({ narrate: 'Starting on the research folder now.' });
     expect(workState('w-long-job')).toBe('claimed');
-    expect(continuationContext.has('primary')).toBe(true);   // the park stashed its continuation
-    pendingWakeups.clear();
+    expect(jobParked()).toBe(true);   // the park dated the job's task
+    dueNow();
 
     // The continuation: it reads nothing more, asks the owner a real question, touches the task
     // (fixture: the task's clock moved inside this turn), and stops. No park this time.
@@ -704,7 +707,7 @@ describe('t137 (b): a parked turn never moves its task to "paused, waiting on th
     const second = turnRows()[1];
     expect(second).toEqual(expect.objectContaining({ turn_number: 2, answered: 1, effectful_calls: 0 }));
     expect(second.exit_reason).not.toBe('iteration_cap');
-    expect(continuationContext.has('primary'), 'the continuation consumed the stash and queued none').toBe(false);
+    expect(jobParked(), 'the job turn cleared the due and parked nothing').toBe(false);
     expect(workState('w-long-job')).toBe('paused');
   });
 
@@ -754,9 +757,10 @@ describe('t137 (a): a continuation that ends quietly after its tools ends quietl
     // longer closes the ask; the owner withdraws it so nobody is left waiting — this clause's shape.)
     await readOnlyTurnAcrossTheCheckpoint({ narrate: 'Starting on the research folder now.' });
     ownerWithdrawsTheAsk();
-    // The real preflight shape of the next turn: a C3 continuation with NO waiting conversation,
-    // so `triggerRow` is `waitingConvs[0]?.oldest` = undefined.
-    expect(continuationContext.has('primary')).toBe(true);
+    // The next turn is the job's own, served from its task row with NO waiting conversation, so `triggerRow`
+    // is undefined.
+    expect(jobParked()).toBe(true);
+    dueNow();
     expect(mockDb.current!.prepare(`SELECT state FROM work WHERE kind = 'ask'`).all()).toEqual([{ state: 'abandoned' }]);
     pendingWakeups.clear();
     enqueueSteerSpy.mockClear();
@@ -777,25 +781,24 @@ describe('t137 (a): a continuation that ends quietly after its tools ends quietl
 });
 
 // ════════════════════════════════════════════════════════════════════════════════
-// NO TOTAL-TIME CAP. The old ladder stopped a job after its third continuation (60
-// minutes by default), wrote "running for about 60 minutes … Pausing here" to the owner,
-// and handed the job to the PM. A long job now parks and continues for as long as it needs.
+// NO TOTAL-TIME CAP. Elapsed time never stops a job and nothing is said to the owner about it; a job stretch that
+// moved nothing ends without parking and its task records the stall for the PM's own ladder.
 // ════════════════════════════════════════════════════════════════════════════════
 describe('t137: a long job is never cut off by elapsed time', () => {
-  it('five consecutive parks (75+ minutes) each queue the next continuation; nothing is said to anyone', async () => {
+  it('a park, then a job stretch that moved nothing: it stops without parking, and nothing is said to anyone', async () => {
     mockDb.current!.prepare(
       `INSERT INTO agents (id, name, model_id, status, config, classification)
        VALUES ('pm', 'PM', 'test-model', 'idle', '{}', 'sensei')`,
     ).run();
     seedInFlightTask();
-    for (let i = 1; i <= 5; i++) {
-      pendingWakeups.clear();
-      // The first turn speaks to the owner and serves the ask; the four after it are continuations.
-      await readOnlyTurnAcrossTheCheckpoint(i === 1 ? { narrate: 'Starting on the research folder now.' } : {});
-      expect(pendingWakeups.has('primary'), `park ${i} queued its continuation`).toBe(true);
-    }
-    expect(turnRows().map((t) => t.exit_reason)).toEqual(Array(5).fill('iteration_cap'));
-    expect(checkAndCompactSpy).toHaveBeenCalledTimes(5);
+    // The first turn speaks to the owner and serves the ask, then parks; the second is the job's own stretch.
+    await readOnlyTurnAcrossTheCheckpoint({ narrate: 'Starting on the research folder now.' });
+    expect(jobParked(), 'the first stretch parked').toBe(true);
+    dueNow();
+    await readOnlyTurnAcrossTheCheckpoint();
+    expect(jobParked(), 'the stalled stretch parks nothing').toBe(false);
+    expect(turnRows().map((t) => t.exit_reason)).toEqual(['iteration_cap', 'iteration_cap']);
+    expect(checkAndCompactSpy).toHaveBeenCalledTimes(1);
     // The only system row is the agent's own working note from the first turn — its own words.
     expect(messageRows().filter((m) => m.role === 'system').map((m) => m.content))
       .toEqual(['[working-note] Starting on the research folder now.']);
@@ -810,14 +813,13 @@ describe('t137: a long job is never cut off by elapsed time', () => {
 // BACKWARDS LIFECYCLE — what must still hold around a silent park.
 // ════════════════════════════════════════════════════════════════════════════════
 describe('t137 lifecycle: the park stays honest around stops and stale work', () => {
-  it('the PM is offline (no PM agent exists): the job parks and continues exactly the same', async () => {
+  it('the PM is offline (no PM agent exists): the job parks and its next stretch runs exactly the same', async () => {
     seedInFlightTask();
-    for (let i = 1; i <= 4; i++) {
-      pendingWakeups.clear();
-      await readOnlyTurnAcrossTheCheckpoint(i === 1 ? { narrate: 'Starting on the research folder now.' } : {});
-      expect(pendingWakeups.has('primary'), `park ${i} queued its continuation`).toBe(true);
-    }
-    expect(turnRows().map((t) => t.exit_reason)).toEqual(Array(4).fill('iteration_cap'));
+    await readOnlyTurnAcrossTheCheckpoint({ narrate: 'Starting on the research folder now.' });
+    expect(jobParked()).toBe(true);
+    dueNow();
+    await readOnlyTurnAcrossTheCheckpoint();
+    expect(turnRows().map((t) => t.exit_reason)).toEqual(['iteration_cap', 'iteration_cap']);
     expect(workState('w-long-job')).toBe('claimed');
   });
 
@@ -830,7 +832,7 @@ describe('t137 lifecycle: the park stays honest around stops and stale work', ()
     await readOnlyTurnAcrossTheCheckpoint();
     expect(turnRows()[0].exit_reason).toBe('stop');
     expect(pendingWakeups.has('primary')).toBe(false);
-    expect(continuationContext.has('primary')).toBe(false);
+    expect(jobParked()).toBe(false);
     expect(systemRowsOfTurn(1)).toEqual([]);
   });
 
@@ -861,7 +863,7 @@ describe('t137 round 2: the 75-call checkpoint writes nothing to the owner', () 
   it('no system row, no chat broadcast of one — and the continuation is still scheduled', async () => {
     seedInFlightTask();
     await seventyFiveReadsThenTheCap();
-    expect(continuationContext.has('primary')).toBe(true);   // positive control: the cap was reached
+    expect(jobParked()).toBe(true);   // positive control: the cap was reached
     expect(messageRows().filter((m) => m.role === 'system' && !m.content.startsWith('[working-note]')).map((m) => m.content))
       .toEqual([]);
     expect(chatBroadcasts().filter((m) => m.role === 'system' && !(m.content ?? '').startsWith('[working-note]'))).toEqual([]);

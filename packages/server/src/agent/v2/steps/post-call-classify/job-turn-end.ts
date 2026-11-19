@@ -1,15 +1,12 @@
-// Where a measured job stands at the end of a pass: one reading, shared by terminal-text.ts,
-// closeout-floors.ts and job-continues.ts, which must agree within a pass.
+// Where a measured job stands at the end of a pass: one reading, shared by the close-out floors, the job's
+// continuation and the checkpoint window, which must agree within a pass.
 
 import type { Database } from 'better-sqlite3';
 import { getDb } from '../../../../db/connection.js';
 import { taskScope, workingTaskOrder } from '../../../../work/tracker-view.js';
 import { parseMeasure, type Measure } from '../../../../work/measure.js';
 import { ledgerNewItemsSince, recordMeasured } from '../../../../work/ledger-store.js';
-import { lastTurnEnd } from '../../../../work/job-momentum.js';
 import { freshResults } from '../../identical-call-brake.js';
-import { toolOpKey } from '../../../../tools/work-verbs.js';
-import { normalizeTaskStatus } from '../../../../tracker/task-status-words.js';
 import type { AgentTurnState } from '../../state.js';
 import type { PostCallClassifyContext } from './index.js';
 import { heldExpr, workingExpr } from '../../../../work/done/hold.js';
@@ -101,33 +98,4 @@ export async function readJobAtPassEnd(state: AgentTurnState, ctx: Pick<PostCall
   }
   memo.set(ctx.agentId, { key: passKey(state), facts });
   return facts;
-}
-
-/** This pass's reading if it was taken, else the records (never a count). */
-export function jobAtPassEndNow(state: AgentTurnState, ctx: Pick<PostCallClassifyContext, 'agentId' | 'db'>): JobAtPassEnd | null {
-  const hit = memo.get(ctx.agentId);
-  return hit?.key === passKey(state) ? hit.facts : storedFacts(state, ctx.agentId, ctx.db);
-}
-
-/** A status call that is a door to the owner: "paused" (waiting on him) or "blocked", on ANY task. */
-const isDoorCall = (tc: { name: string; arguments?: Record<string, unknown> }): boolean =>
-  toolOpKey(tc.name, tc.arguments) === 'work_update:status'
-  && ['paused', 'blocked'].includes(normalizeTaskStatus((tc.arguments as { status?: unknown } | undefined)?.status) ?? '');
-
-/** Does this turn speak to the owner whatever the job does: a waiting person, a door call on this pass
- *  (judged before it runs), or a door call an earlier pass of this turn made that succeeded? */
-function speaksThisTurn(state: AgentTurnState, ctx: Pick<PostCallClassifyContext, 'agentId' | 'db' | 'turnNumber' | 'hasUnansweredUser' | 'triggerRow' | 'result'>): boolean {
-  if (ctx.hasUnansweredUser || ctx.triggerRow) return true;
-  if ((ctx.result?.toolCalls ?? []).some(isDoorCall)) return true;
-  return state.toolResults.some((tr) => !tr.isError && isDoorCall(tr));
-}
-
-/** Is this pass the engine's continuation of a measured job with items left and nothing the owner must
- *  hear? While it is, the pass's text is plain progress and stays on the record. */
-export function continuedJobStillGoing(state: AgentTurnState, ctx: Pick<PostCallClassifyContext, 'agentId' | 'db' | 'turnNumber' | 'hasUnansweredUser' | 'triggerRow' | 'result'>): boolean {
-  if (!turnContext(ctx.agentId)?.servedJob) return false;   // only a turn started from the job
-  if (speaksThisTurn(state, ctx)) return false;
-  const job = jobAtPassEndNow(state, ctx);
-  if (!job?.measure || job.remaining === null || job.remaining <= 0) return false;
-  return lastTurnEnd(job.taskId)?.kind === 'continued';
 }

@@ -1,13 +1,7 @@
-// v3.5 D1, PRE-REVIEW RULING 2 — A CONTINUED JOB TELLS THE OWNER ONLY WHAT HE NEEDS.
-//
-// While a measured job is still going, the closing text of a turn the engine continued is
-// progress, and progress stays on the record: it is kept as a working note (the platform's
-// demote-don't-discard row, no ping), never an owner-facing message. The owner hears from a
-// continued job when (a) it is finished (the measure reads 0), (b) it stalls (the `stalled` path
-// to the PM), or (c) the agent asks him something or reports a blocker through the tracker's own
-// doors (status "paused" waiting on him, or "blocked"); those turns speak under the platform's
-// existing rules for an engine turn. The owner's own turn's reply is untouched (its run is not the
-// park's continuation).
+// A CONTINUED JOB'S WORDS REACH THE OWNER (owner decision DEC-ENG-5: the engine does not suppress an agent's
+// replies). The closing text of a job's own turn reaches him whether the measure still counts items or not: its
+// progress, a question or a blocker through the tracker's own doors, and its final report. His request is held on
+// the job meanwhile (settlement's job hold), so a progress line does not close it.
 //
 // Driven through the whole post-call step (`runPostCallClassify`) on the real migration chain, so
 // "reached the owner" is read off the owner lane of `messages`, where the dashboard reads it.
@@ -31,7 +25,7 @@ vi.mock('../../../../../db/connection.js', async () => {
 vi.mock('../../../../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: (e: unknown) => e }));
 vi.mock('../../../../../services/imessage-bridge.js', () => ({ stripSystemTags: (s: string) => s }));
 vi.mock('../../../../../services/presence.js', () => ({ getPresence: () => 'active' }));
-const { countMeasure, parkJob, stash } = vi.hoisted(() => ({ countMeasure: vi.fn(), parkJob: vi.fn(() => true), stash: vi.fn() }));
+const { countMeasure, parkJob } = vi.hoisted(() => ({ countMeasure: vi.fn(), parkJob: vi.fn(() => true) }));
 vi.mock('../../../../../work/measure.js', async (orig) => ({ ...(await orig<typeof import('../../../../../work/measure.js')>()), countMeasure }));
 vi.mock('../../../../../work/job-continuation.js', async (orig) => ({ ...(await orig<typeof import('../../../../../work/job-continuation.js')>()), parkJob }));
 
@@ -39,7 +33,6 @@ import { runMigrations } from '../../../../../db/migrations.js';
 import { trackerHandlers } from '../../../../tools/cat/tracker.js';
 import { recordTouched, recordMeasured } from '../../../../../work/ledger-store.js';
 import { recordContinued } from '../../../../../work/job-momentum.js';
-import { armTimerWake, beginJobRun, carryJobWork, endJobCarry, endJobRun } from '../../../../../work/task-freshness.js';
 import { advance, initState, type AgentTurnState } from '../../../state.js';
 import { runPostCallClassify, type PostCallClassifyContext } from '../index.js';
 import { noteRepeatResult } from '../../../identical-call-brake.js';
@@ -69,7 +62,7 @@ let turnNumber = 40;
 let lastStart = 0;
 let msg = 0;
 
-/** The C3 restoration of an owner who asked over iMessage (`preflight/turn-trigger.ts`). */
+/** A job turn for an owner who asked over iMessage, addressed from his request row (`preflight/turn-trigger.ts`). */
 const OVER_IMESSAGE = {
   isHumanContinuation: true, chosenConvKey: 'imessage:owner',
   counterparty: { kind: 'user', relation: 'owner', channel: 'imessage', senderId: 'owner-handle', senderIsAgent: false },
@@ -77,7 +70,7 @@ const OVER_IMESSAGE = {
 
 type ModelResult = PostCallClassifyContext['result'];
 
-/** One continued turn: the park's own wake starts the run, the agent works over one or more passes, then
+/** One job turn: served from the job's task row, the agent works over one or more passes, then
  *  ends with `text`. The state is shaped EXACTLY as the engine builds it (fix round 4): each pass's model
  *  call REPLACES `toolCalls` with that pass's own calls (`call-llm/index.ts`), and execute APPENDS the
  *  pass's results, each carrying its call's arguments, to `toolResults` (`execute/index.ts`). So the closing pass sees only its own calls in
@@ -86,16 +79,16 @@ async function continuedTurn(taskId: string, text: string, work: { from: number;
   over: Partial<Record<string, unknown>> = {},
   more: { earlier?: ToolCall[]; earlierFailed?: ToolCall[]; withThisLine?: ToolCall[] } = {}): Promise<AgentTurnState> {
   turnNumber += 1;
-  openTurnContext(AGENT).turnNumber = turnNumber;
+  const bag = openTurnContext(AGENT);
+  bag.turnNumber = turnNumber;
+  bag.servedJob = taskId;
   lastStart = Math.max(Date.now(), lastStart + 1000);
-  armTimerWake(AGENT);
-  beginJobRun(AGENT, 'timer');
   let state: AgentTurnState = advance(initState({ agentId: AGENT, turnNumber, lastUserMessageContent: null } as unknown as Parameters<typeof initState>[0]),
     { loopCount: 1, modelId: 'test-model', turnStartMs: lastStart });
   const ctxFor = (result: ModelResult): PostCallClassifyContext => {
     msg += 1;
     return {
-      agentId: AGENT, turnCtx: { agentId: AGENT, kind: 'user', convKey: null, conversationId: null, root: undefined, turnNumber, goingIdleDetectorRanThisTurn: false } as never,
+      agentId: AGENT, turnCtx: { agentId: AGENT, kind: 'user', convKey: null, conversationId: null, root: undefined, turnNumber, goingIdleDetectorRanThisTurn: false, servedJob: taskId } as never,
       turnNumber, db: db(), agent: { id: AGENT, name: 'Worker' } as never,
       counterparty: { kind: 'user', relation: 'owner', channel: 'dashboard', senderId: null, senderIsAgent: false } as never,
       counterpartyIsAgentSender: false, chosenConvKey: null, hasUnansweredUser: false, triggerRow: null,
@@ -106,7 +99,7 @@ async function continuedTurn(taskId: string, text: string, work: { from: number;
       turnStartedAt: new Date(lastStart).toISOString(), messageId: `msg-${msg}`, result,
       reArmIfStrandedNoAnswer: vi.fn(), noteTerminalAnswer: vi.fn(),
       deliverEngineUserAck: vi.fn(async () => undefined), persistAndBroadcastSystemRow: vi.fn(), startAckRepliedNow: () => false,
-      stashContinuationIfHuman: stash, ...over,
+      ...over,
     } as unknown as PostCallClassifyContext;
   };
   /** One tool pass, as the engine runs it: the model call replaces `toolCalls`, the post-call step
@@ -132,7 +125,6 @@ async function continuedTurn(taskId: string, text: string, work: { from: number;
   const closing = { content: text, toolCalls: more.withThisLine ?? [], inputTokens: 10, outputTokens: 5, stopReason: more.withThisLine ? 'tool_use' : 'end_turn' } as ModelResult;
   state = advance(state, { toolCalls: closing.toolCalls });
   const out = await runPostCallClassify(state, ctxFor(closing));
-  endJobRun(AGENT);
   return out.state;
 }
 
@@ -143,7 +135,6 @@ async function aContinuedMeasuredJob(): Promise<string> {
   await call('work_update:status', { task_id: id, status: 'in_progress' });
   recordMeasured(id, { ok: true, count: 10551 }, Date.now());
   recordContinued(id, { remaining: 10551, touchedThisTurn: 1, novelCallsThisTurn: 1, turnNumber: 40 });
-  carryJobWork(AGENT, [id]);
   return id;
 }
 
@@ -158,20 +149,18 @@ beforeEach(() => {
     VALUES (?, 'Worker', 'm1', 'idle', '{}', 1, 'owner', datetime('now'), datetime('now'))`).run(AGENT);
   countMeasure.mockReset();
   parkJob.mockClear();
-  endJobRun(AGENT);
-  endJobCarry(AGENT);
 });
 
-describe('pre-review ruling 2: a continued job tells the owner only what he needs', () => {
-  it('a 3-continuation job sends the owner nothing until it finishes, then one result', async () => {
+describe('a continued job\'s words reach the owner', () => {
+  it('a 3-continuation job: each stretch\'s progress reaches him, then the result', async () => {
     const id = await aContinuedMeasuredJob();
     for (const [i, left] of [[0, 10051], [500, 9551], [1000, 9051]] as const) {
       countMeasure.mockResolvedValue({ ok: true, count: left });   // the turn-end re-count reads it
       // eslint-disable-next-line no-await-in-loop
       await continuedTurn(id, `Labelled 500 more; ${left} to go.`, { from: i, n: 500 });
     }
-    expect(ownerLaneReplies(), 'progress while the job is still going reaches the owner as nothing').toEqual([]);
-    expect(workingNotes(), 'and it is kept on the record, not discarded').toBe(3);
+    expect(ownerLaneReplies(), 'progress while the job is still going reaches the owner').toHaveLength(3);
+    expect(workingNotes(), 'nothing is demoted to a note').toBe(0);
     expect(parkJob).toHaveBeenCalledTimes(3);
 
     // The last continuation empties the measure. The STORED reading still says 9,051 (the last turn's);
@@ -179,8 +168,8 @@ describe('pre-review ruling 2: a continued job tells the owner only what he need
     expect((db().prepare('SELECT measure_remaining AS r FROM work WHERE id = ?').get(id) as { r: number }).r).toBe(9051);
     countMeasure.mockResolvedValue({ ok: true, count: 0 });
     await continuedTurn(id, 'Done: every inbox message is labelled.', { from: 1500, n: 9051 });
-    expect(ownerLaneReplies()).toHaveLength(1);
-    expect(ownerLaneReplies()[0]).toContain('every inbox message is labelled');
+    expect(ownerLaneReplies()).toHaveLength(4);
+    expect(ownerLaneReplies()[3]).toContain('every inbox message is labelled');
   });
 
   it.each([
@@ -196,7 +185,7 @@ describe('pre-review ruling 2: a continued job tells the owner only what he need
     expect(workingNotes()).toBe(0);
   });
 
-  it('an owner who asked over iMessage: progress reaches him as nothing; the result goes out on his own channel, once', async () => {
+  it('an owner who asked over iMessage: progress and the result go out on his own channel', async () => {
     const id = await aContinuedMeasuredJob();
     const routed: Array<string | null | undefined> = [];
     for (const [i, left] of [[0, 10051], [500, 9551]] as const) {
@@ -207,19 +196,15 @@ describe('pre-review ruling 2: a continued job tells the owner only what he need
     countMeasure.mockResolvedValue({ ok: true, count: 0 });
     routed.push((await continuedTurn(id, 'Done: every inbox message is labelled.', { from: 1000, n: 9551 }, OVER_IMESSAGE)).lastAssistantTextForIM);
     // `lastAssistantTextForIM` is what the end-of-turn router pushes to the restored counterparty's
-    // channel (`finalize/channel-push.ts`), here iMessage: nothing for progress, the result once.
-    expect(routed.slice(0, 2).every((r) => !r)).toBe(true);
+    // channel (`finalize/channel-push.ts`), here iMessage: each stretch's line, then the result.
+    expect(routed[0]).toContain('Labelled 500 more');
     expect(routed[2]).toContain('every inbox message is labelled');
-    expect(ownerLaneReplies()).toHaveLength(1);
-    expect(workingNotes()).toBe(2);
+    expect(ownerLaneReplies()).toHaveLength(3);
+    expect(workingNotes()).toBe(0);
   });
 
-  // ── FIX ROUND 2 (ruling 1): a question or a blocker always reaches the owner once, whatever task it
-  // concerns; an answer to a question he is waiting on is never a note. Only plain progress is quiet. ──
-
-  // FIX ROUND 4 (re-review 2, NP1): the door call is made in an EARLIER pass than the line, which is how
-  // the engine really runs it, so the closing pass's own `toolCalls` holds nothing. The turn's own record
-  // still says a door was taken.
+  // A question or a blocker reaches the owner once, whatever task it concerns; the door call is made in an
+  // EARLIER pass than the line, which is how the engine really runs it.
   it.each([
     ['paused', 'waiting for the owner: which folder?', 'Which folder should the receipts go in?'],
     ['blocked', 'the receipts share is not mounted', 'I cannot reach the receipts share: it is not mounted.'],
@@ -228,7 +213,6 @@ describe('pre-review ruling 2: a continued job tells the owner only what he need
     const opened = await call('work_open:task', { title: 'File the receipts', goal: 'receipts filed' });
     const other = /task_id=([0-9a-f-]{36})/.exec(opened.content)![1];
     await call('work_update:status', { task_id: other, status: 'in_progress' });
-    carryJobWork(AGENT, [id, other]);
     await call('work_update:status', { task_id: other, status, notes });
     const door = { id: `tc-${status}-b`, name: 'work_update', arguments: { action: 'status', task_id: other, status, notes } } as ToolCall;
     countMeasure.mockResolvedValue({ ok: true, count: 10051 });
@@ -238,13 +222,13 @@ describe('pre-review ruling 2: a continued job tells the owner only what he need
     expect(parkJob).toHaveBeenCalledTimes(1);   // the measured job keeps going
   });
 
-  it('CONTROL (NP1): a door call an earlier pass made that FAILED does not speak; the line stays a note', async () => {
+  it('a door call an earlier pass made that FAILED: the line still reaches him', async () => {
     const id = await aContinuedMeasuredJob();
     countMeasure.mockResolvedValue({ ok: true, count: 10051 });
     const failed = { id: 'tc-paused-fail', name: 'work_update', arguments: { action: 'status', task_id: 'no-such-task', status: 'paused' } } as ToolCall;
     await continuedTurn(id, 'Labelled 500 more.', { from: 0, n: 500 }, {}, { earlierFailed: [failed] });
-    expect(ownerLaneReplies()).toEqual([]);
-    expect(workingNotes()).toBe(1);
+    expect(ownerLaneReplies()).toEqual([expect.stringContaining('Labelled 500 more.')]);
+    expect(workingNotes()).toBe(0);
   });
 
   it('NP3: a question that rides WITH the job task\'s own pause call is judged after it, and reaches him (over iMessage)', async () => {
@@ -267,11 +251,11 @@ describe('pre-review ruling 2: a continued job tells the owner only what he need
     expect(workingNotes()).toBe(0);
   });
 
-  it('CONTROL: a plain progress line on the same run is still kept quiet', async () => {
+  it('a plain progress line on the same run reaches him', async () => {
     const id = await aContinuedMeasuredJob();
     countMeasure.mockResolvedValue({ ok: true, count: 10051 });
     await continuedTurn(id, 'Labelled 500 more.', { from: 0, n: 500 });
-    expect(ownerLaneReplies()).toEqual([]);
-    expect(workingNotes()).toBe(1);
+    expect(ownerLaneReplies()).toEqual([expect.stringContaining('Labelled 500 more.')]);
+    expect(workingNotes()).toBe(0);
   });
 });

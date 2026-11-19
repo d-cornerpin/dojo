@@ -26,6 +26,8 @@ import type { ToolCall } from '@dojo/shared';
 // for the duration of these tests.
 
 const mockDb = { current: null as Database.Database | null };
+/** A park dates the job's task row: that due is the continuation. */
+const jobParked = (): boolean => !!mockDb.current!.prepare("SELECT 1 FROM work WHERE agent_id = 'primary' AND kind = 'task' AND next_attempt_at IS NOT NULL").get();
 const broadcastSpy = vi.fn();
 const callModelSpy = vi.fn();
 const executeToolSpy = vi.fn();
@@ -866,7 +868,7 @@ describe('runV2Turn integration', () => {
       .prepare("SELECT content FROM messages WHERE agent_id = 'primary' AND role = 'system'")
       .all() as Array<{ content: string }>;
     expect(sysMsgs.filter((r) => /tool calls.*Starting a fresh turn/.test(r.content))).toEqual([]);
-    expect(pendingWakeups.has('primary'), 'the continuation is queued').toBe(true);
+    expect(jobParked(), 'the job is parked on its task').toBe(true);
   });
 
   it('PRESERVATION #7: drainPendingAttachments IS called when persisting assistant message', async () => {
@@ -1428,7 +1430,7 @@ describe('runV2Turn integration', () => {
     );
 
     // Wakeup queued.
-    expect(pendingWakeups.has('primary')).toBe(true);
+    expect(jobParked()).toBe(true);
 
     // No injury.
     expect(recordErrorMock).not.toHaveBeenCalled();
@@ -1456,7 +1458,7 @@ describe('runV2Turn integration', () => {
         expect.any(Number),
         expect.objectContaining({ force: true }),
       );
-      expect(pendingWakeups.has('primary')).toBe(true);
+      expect(jobParked()).toBe(true);
       expect(onAgentInjuredSpy).not.toHaveBeenCalled();
       expect(recordErrorMock).not.toHaveBeenCalled();
     });
@@ -1585,7 +1587,7 @@ describe('runV2Turn integration', () => {
         expect.any(Number),
         expect.objectContaining({ force: true }),
       );
-      expect(pendingWakeups.has('primary')).toBe(true); // not declined — the retry wake fires
+      expect(jobParked()).toBe(true); // not declined — the retry wake fires
       expect(onAgentInjuredSpy).not.toHaveBeenCalled();
       expect(recordErrorMock).not.toHaveBeenCalled();
 
@@ -1632,7 +1634,7 @@ describe('runV2Turn integration', () => {
         expect.any(Number),
         expect.objectContaining({ force: true }),
       );
-      expect(pendingWakeups.has('primary')).toBe(true);
+      expect(jobParked()).toBe(true);
       expect(onAgentInjuredSpy).not.toHaveBeenCalled();
     });
 
@@ -1793,7 +1795,7 @@ describe('runV2Turn integration', () => {
       await runV2Turn('primary');
 
       expect(onAgentInjuredSpy).not.toHaveBeenCalled();
-      expect(pendingWakeups.has('primary')).toBe(true); // a real retry IS queued
+      expect(jobParked()).toBe(true); // a real retry IS queued
       expect(declaredPatienceHonestFailTurn.has('primary'), 'a legitimate compaction retry must not be mistaken for a no-retry honest fail').toBe(false);
     });
 
@@ -1804,7 +1806,7 @@ describe('runV2Turn integration', () => {
       await runV2Turn('primary');
 
       expect(checkAndCompactSpy).toHaveBeenCalled();
-      expect(pendingWakeups.has('primary')).toBe(true);
+      expect(jobParked()).toBe(true);
       expect(onAgentInjuredSpy).not.toHaveBeenCalled();
       expect(declaredPatienceHonestFailTurn.has('primary'), 'this arm never touches last_error either — the OLD check could have wrongly declined a LATER turn').toBe(false);
     });
@@ -1849,7 +1851,7 @@ describe('runV2Turn integration', () => {
       await runV2Turn('primary');
 
       expect(checkAndCompactSpy).toHaveBeenCalled();
-      expect(pendingWakeups.has('primary')).toBe(true);
+      expect(jobParked()).toBe(true);
       expect(onAgentInjuredSpy).not.toHaveBeenCalled();
     });
   });
@@ -3221,7 +3223,7 @@ describe('PHASE-6 CUT 3: the turn-time budget auto-continues (compacting only wh
       .prepare("SELECT content FROM messages WHERE agent_id = 'primary' AND role = 'system'")
       .all() as Array<{ content: string }>;
     expect(sys).toEqual([]);
-    expect(pendingWakeups.has('primary')).toBe(true);
+    expect(jobParked()).toBe(true);
   });
 
   // ══════════════════════════════════════════════════════════════════════════════
@@ -3276,7 +3278,7 @@ describe('PHASE-6 CUT 3: the turn-time budget auto-continues (compacting only wh
     expect(recaps()).toEqual([]);
     // The turn still parks — the branch is best-effort about the rebuild, never about
     // the continuation.
-    expect(pendingWakeups.has('primary')).toBe(true);
+    expect(jobParked()).toBe(true);
   });
 
   // ══════════════════════════════════════════════════════════════════════════════
@@ -3373,13 +3375,13 @@ describe('PHASE-6 CUT 3: the turn-time budget auto-continues (compacting only wh
     const sysOf = (): unknown[] => mockDb.current!
       .prepare("SELECT content FROM messages WHERE agent_id = 'primary' AND role = 'system'").all();
     expect(sysOf()).toEqual([]);
-    expect(pendingWakeups.has('primary')).toBe(true);
+    expect(jobParked()).toBe(true);
 
     pendingWakeups.clear();
     mockDb.current = setupTestDb();
     await runAcrossTheBudget();
     expect(sysOf()).toEqual([]);
-    expect(pendingWakeups.has('primary')).toBe(true);
+    expect(jobParked()).toBe(true);
   });
 });
 
@@ -4282,24 +4284,23 @@ describe('BUG-2, inherited: the compile gate never arms on a turn a human is wai
 
 // ════════════════════════════════════════════════════════════════════════════════
 // A CONTEXT OVERFLOW NEVER SETS THE OWNER'S MESSAGE ASIDE (owner decision 12), through the real turn: the
-// provider refuses a prompt that is too long, recovery forces a pass and parks the job, and the hand-back counts
-// nothing and writes no due; the clock leaves the person to the parked continuation.
+// provider refuses a prompt that is too long, recovery forces a pass and parks the job on its task, and the request
+// is held on that job: nothing counted, no due of its own; the job's turns serve it.
 // ════════════════════════════════════════════════════════════════════════════════
 describe('a context overflow never sets the owner\'s message aside, through the real turn', () => {
   const ask = (): { state: string; due: number | null } => mockDb.current!
     .prepare("SELECT state, next_attempt_at AS due FROM work WHERE id = 'ask:msg-user-1'").get() as { state: string; due: number | null };
   const marks = (): number => (mockDb.current!.prepare(`SELECT COUNT(*) AS n FROM work_events WHERE work_id = 'ask:msg-user-1'
     AND ((kind = 'audit' AND json_extract(payload, '$.marker') = 'ct0_ask_re_served') OR kind = 'floor_ghosted')`).get() as { n: number }).n;
-  afterEach(async () => { (await import('../../../work/task-freshness.js')).endJobCarry('primary'); });
 
-  it('six full-context turns leave it owed, uncounted and undated; the clock leaves it to the parked job; it is served when room returns', async () => {
-    const { dueOf } = await import('../owed.js');
+  it('six full-context turns leave it owed on its job, uncounted and undated; it is served when room returns', async () => {
+    const { nextOwed } = await import('../owed.js');
     isContextOverflowErrorMock.mockImplementation(() => true);
     callModelSpy.mockRejectedValue(new Error('400 prompt is too long: 250000 tokens > 200000 maximum'));
     for (let turn = 1; turn <= 6; turn++) {
       await runV2Turn('primary');
-      expect(ask(), `overflow ${turn}`).toEqual({ state: 'open', due: null });
-      expect(dueOf('primary').now, `overflow ${turn}: the parked job's continuation serves it`).toBe(false);
+      expect(ask(), `overflow ${turn}`).toEqual({ state: 'blocked', due: null });
+      expect(nextOwed('primary').map((i) => i.kind), `overflow ${turn}: its parked job serves it`).toEqual(['job']);
     }
     expect(marks(), 'no count and no stand-down record').toBe(0);
     isContextOverflowErrorMock.mockImplementation(() => false);
@@ -4307,7 +4308,9 @@ describe('a context overflow never sets the owner\'s message aside, through the 
     callModelSpy.mockResolvedValue({ content: 'Here is the summary.', toolCalls: [] as ToolCall[], inputTokens: 100, outputTokens: 5, stopReason: 'end_turn' });
     await runV2Turn('primary');
     expect(callModelSpy).toHaveBeenCalled();
-    expect(ask().state, 'served again once there is room').not.toBe('blocked');
+    const last = mockDb.current!.prepare("SELECT root_id AS root, exit_reason AS exit FROM turns ORDER BY turn_number DESC LIMIT 1").get();
+    expect(last, 'its job turn serves it once there is room').toEqual({ root: 'msg-user-1', exit: 'answered' });
+    expect(marks()).toBe(0);
   });
 });
 

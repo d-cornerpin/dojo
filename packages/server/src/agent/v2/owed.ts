@@ -111,11 +111,16 @@ function owedItems(agentId: string, opts: { pure?: true } = {}): OwedItem[] {
     { kind: 'person', rank: c.owner ? 1 : 2, dueAt: c.dueAt, age: c.oldestWaitingRowid, ref: c.workId, served: c.served }));
   const wake = findUnservedTerminalWake(agentId);
   if (wake) items.push({ kind: 'agentResult', rank: 5, dueAt: 0, age: wake.rowid, ref: String(wake.rowid) });
-  for (const r of agentRequests(agentId)) items.push({ kind: 'agentRequest', rank: 5, dueAt: r.dueAt, age: r.rowid, ref: r.messageId, request: r });
+  const jobs = parkedJobs(agentId).map((t) => ({ ...t, origin: originOfTasks(agentId, [t.id]) }));
+  // Another agent's request whose job is parked is served by the job's own turn.
+  const jobThreads = new Set(jobs.map((j) => (j.origin?.kind === 'a2a' ? j.origin.threadId : null)));
+  for (const r of agentRequests(agentId)) {
+    if (!jobThreads.has(r.threadId)) items.push({ kind: 'agentRequest', rank: 5, dueAt: r.dueAt, age: r.rowid, ref: r.messageId, request: r });
+  }
   const ev = getPendingEngineEvent(agentId, opts);
   if (ev) items.push({ kind: 'clock', rank: rankOfEvent(agentId, ev), dueAt: 0, age: ev.rowid, ref: ev.id, event: ev });
-  for (const t of parkedJobs(agentId)) {
-    const origin = originOfTasks(agentId, [t.id]);
+  for (const t of jobs) {
+    const { origin } = t;
     const ask = origin?.kind === 'ask' ? askRoot(agentId, origin.messageId) : null;
     if (ask?.state === 'open') continue;   // the person item serves it, with the job in view
     const rank = ask ? (ask.owner ? 3 : 4) : origin?.kind === 'a2a' ? 5 : 6;

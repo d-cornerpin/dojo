@@ -11,8 +11,7 @@
 //   * WHAT IS NOT, and survives the clear — the plan's explicit warning that a
 //     careless collapse sweeps the CROSS-TURN state into an object emptied in
 //     `finally` and thereby deletes the state that is supposed to outlive the turn
-//     (`continuationContext` is stashed by one turn expressly FOR the next one;
-//     `untrackedWorkAcrossTurns` exists because a per-turn counter resetting every
+//     (`untrackedWorkAcrossTurns` exists because a per-turn counter resetting every
 //     turn WAS the defect). `drainHead`'s retirement into `drain_state` (migration
 //     140, "A Map dies with the process") is the shape those follow — not this one.
 //   * THAT THE TEN MAPS ARE GONE rather than standing beside their replacement,
@@ -27,7 +26,7 @@ import {
 } from '../turn-context.js';
 
 import {
-  turnBoundary, continuationContext, untrackedWorkAcrossTurns,
+  turnBoundary, untrackedWorkAcrossTurns,
 } from '../turn-state.js';
 import {
   activeRuns, pendingWakeups, stoppedAgents, activeAbortControllers, preemptedAgents,
@@ -44,7 +43,8 @@ const THE_TURN_OWNS = [
   'address',   // 3.5: who this turn talks to and where the reply lands; computed once in preflight, read by delivery, the assembler and the send tools
   'turnNumber', 'root', 'servedWork', 'triggerMessageId',
   'pickupSeq',   // t145: the message-sequence high-water at pickup, read by the delegate-reply link (tracker-store)
-  'jobParked',   // t159 G2: written by `parkJob` (work/), read by `turnParkedTheJob` (v2/engine-exit): a published fact
+  'jobParked',   // the task `parkJob` (work/) parked the job on, read by `turnParkedTheJob` and finalize: a published fact
+  'servedJob',   // the task a job's own turn was started from (the preflight's pickup); the job's readers and finalize read it
 ];
 
 /** POPULATION 2 — mutable DRIVER locals that cross a step boundary, carried here
@@ -219,13 +219,12 @@ describe('PHASE-6 T1: TurnContext — what the turn owns', () => {
 });
 
 describe('PHASE-6 T1: the other direction — what must NOT be in the bag', () => {
-  it('the fourteen CROSS-TURN carriers survive endTurnContext', () => {
+  it('the thirteen CROSS-TURN carriers survive endTurnContext', () => {
     const A = FXID.n4;
     openTurnContext(A);
 
-    // Three that live in `turn-state.ts` on purpose.
+    // Two that live in `turn-state.ts` on purpose.
     turnBoundary.set(A, '2026-08-04 00:00:00');
-    continuationContext.set(A, { convKey: 'ck', conversationId: 'conv-1', counterparty: {} as never });
     untrackedWorkAcrossTurns.set(A, { convKey: 'ck', count: 3 });
 
     // Eleven that live in `shared-state.ts`, shared with the v1 runtime.
@@ -243,14 +242,12 @@ describe('PHASE-6 T1: the other direction — what must NOT be in the bag', () =
 
     endTurnContext(A);
 
-    // THE CLAUSE: the turn's bag is gone and every one of the fourteen is still there.
-    // A collapse that swept these in would delete a continuation the NEXT turn is meant
-    // to consume, reset a counter whose whole purpose is to cross turns, and drop an
+    // THE CLAUSE: the turn's bag is gone and every one of the thirteen is still there.
+    // A collapse that swept these in would reset a counter whose whole purpose is to cross turns, and drop an
     // abort controller mid-flight.
     expect(turnContext(A)).toBeUndefined();
     const survivors = {
       turnBoundary: turnBoundary.has(A),
-      continuationContext: continuationContext.has(A),
       untrackedWorkAcrossTurns: untrackedWorkAcrossTurns.has(A),
       activeRuns: activeRuns.has(A),
       pendingWakeups: pendingWakeups.has(A),
@@ -265,9 +262,9 @@ describe('PHASE-6 T1: the other direction — what must NOT be in the bag', () =
       recoveryRunStreak: recoveryRunStreak.has(A),
     };
     expect(Object.entries(survivors).filter(([, v]) => !v).map(([k]) => k)).toEqual([]);
-    expect(Object.keys(survivors)).toHaveLength(14);
+    expect(Object.keys(survivors)).toHaveLength(13);
 
-    for (const m of [turnBoundary, continuationContext, untrackedWorkAcrossTurns,
+    for (const m of [turnBoundary, untrackedWorkAcrossTurns,
       activeAbortControllers, lastCompactionDividerAt, lastA2APreemptAt, agentStartTimes,
       statusHeartbeats, recoveryRunStreak]) m.delete(A);
     for (const s of [activeRuns, pendingWakeups, stoppedAgents,

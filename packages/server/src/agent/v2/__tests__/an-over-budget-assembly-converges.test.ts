@@ -15,7 +15,8 @@
 // Driven MULTI-ROUND through the real doors: the assembler, the provider boundary
 // (`validateAtProviderBoundary`, with the lane map `callModel` reads), the real forced condense with a
 // scripted summary writer (the in-tree transport), `recoverFromError` and its park. Each round is the
-// next turn the park's wake would run.
+// next turn the park's wake would run. A park dates the job's task row: due now is an immediate wake, a due at
+// the brake's expiry is the timer park, and a lock-free event moves it to now.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -35,6 +36,8 @@ vi.mock('../../../gateway/ws.js', () => ({
 vi.mock('../../runtime.js', () => ({
   getAgentRuntime: () => ({ notifyPrimaryOfInjury: vi.fn(async () => undefined), handleMessage: vi.fn(async () => { seen.wakes++; }) }),
 }));
+// The one clock is not driven here: a park's due time on the task row is what each round reads.
+vi.mock('../owed.js', async (importOriginal) => ({ ...(await importOriginal<Record<string, unknown>>()), armOwedClock: () => undefined }));
 vi.mock('../../../services/imessage-bridge.js', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   sendAlert: (words: string) => { seen.texts.push(words); },
@@ -69,7 +72,7 @@ import { collectMessageLaneIds } from '../../../memory/message-lane-tag.js';
 import { __resetBrakesForTests, compactionBrakeMsLeft } from '../../../memory/compaction-brakes.js';
 import { recoverFromError } from '../recovery.js';
 import { initState, advance } from '../state.js';
-import { pendingWakeups, lastCompactionDividerAt } from '../../shared-state.js';
+import { lastCompactionDividerAt } from '../../shared-state.js';
 import { withLock } from '../../../db/with-lock.js';
 import { contextWindowPolicy, estimateTokens } from '../../../memory/budget.js';
 import { resultReadHandlers } from '../../tools/cat/result-read.js';
@@ -94,7 +97,6 @@ async function seed(): Promise<void> {
   mockDb.current = new Database(':memory:');
   runMigrations();
   seen.cards.length = 0; seen.texts.length = 0; seen.summaries = 0; seen.wakes = 0; seen.throwIn = null;
-  pendingWakeups.clear();
   lastCompactionDividerAt.clear();
   __resetBrakesForTests();
   coldImport1.__resetStarvedWindowsForTests();
@@ -145,7 +147,21 @@ async function dial(resultTokens: number): Promise<{ refusal: AssemblyValidation
   }
 }
 
+/** When the job's task is due again (null: not parked); the job turn's pickup clears it. */
+const jobDue = (): number | null => (db().prepare("SELECT MIN(next_attempt_at) AS due FROM work WHERE agent_id = ? AND kind = 'task'").get(AGENT) as { due: number | null }).due;
+const jobDueNow = (): boolean => { const d = jobDue(); return d !== null && d <= Date.now(); };
+const jobPickedUp = (): void => { db().prepare("UPDATE work SET next_attempt_at = NULL WHERE agent_id = ? AND kind = 'task'").run(AGENT); };
+
+/** One turn's recovery: the turn serves the owner's latest request, so its park has a task to date. */
 async function recover(err: unknown, turnNumber: number): Promise<void> {
+  const ask = (db().prepare("SELECT id FROM messages WHERE agent_id = ? AND role = 'user' ORDER BY seq DESC LIMIT 1").get(AGENT) as { id: string }).id;
+  const bag = openTurnContext(AGENT);
+  bag.turnNumber = turnNumber;
+  bag.root = { kind: 'ask', id: ask, sourceMessageId: ask };
+  try { await recoverWith(err, turnNumber); } finally { endTurnContext(AGENT); }
+}
+
+async function recoverWith(err: unknown, turnNumber: number): Promise<void> {
   const state = advance(initState({
     agentId: AGENT, contextWindow: WINDOW, isAutoRouted: false, configuredModelId: MODEL, turnNumber,
     triggeredByIMessage: false, triggeredByA2AReplyIntent: null, lastUserMessageContent: 'keep counting',
@@ -177,8 +193,8 @@ describe('D18 fix round 2: the witness shape converges through the real park and
       refusals.push(refusal.message);
       await recover(refusal, 200 + round);
       expect(compactionBrakeMsLeft(AGENT), `round ${round}: the pass made progress (no brake)`).toBeNull();
-      expect(pendingWakeups.has(AGENT), `round ${round}: one wake, the re-assembly`).toBe(true);
-      pendingWakeups.clear();   // the drain serves it: the next round is that turn
+      expect(jobDueNow(), `round ${round}: one wake, the re-assembly`).toBe(true);
+      jobPickedUp();   // the drain serves it: the next round is that turn
     }
     expect(fitted, `the assembly converged: ${attempted.join(' → ')}`).toBe(true);
     expect(attempted.length, 'it needed more than one round, so the convergence is what was measured').toBeGreaterThan(2);
@@ -196,7 +212,7 @@ describe('D18 fix round 2: a forced pass that cannot run records its outcome, so
     const first = await dial(size);
     await recover(first.refusal, 301);
     expect(compactionBrakeMsLeft(AGENT), 'the throw armed the brake').not.toBeNull();
-    expect(pendingWakeups.has(AGENT), 'so the wake waits for it, not at once').toBe(false);
+    expect(jobDueNow(), 'so the wake waits for it, not at once').toBe(false);
     expect(seen.cards.filter((c) => c.code === 'COMPACTION_FAILING'), 'not told on the first throw').toEqual([]);
     // The brake's own bound passes; the wake's turn refuses again and the pass throws again.
     vi.useFakeTimers({ toFake: ['Date'], now: Date.now() + 16 * 60_000 });
@@ -221,14 +237,13 @@ describe('D18 fix round 2: a forced pass that cannot run records its outcome, so
     for (let i = 0; i < 200 && !done; i++) await new Promise((r) => setTimeout(r, 5));
     expect(done, 'the turn did not wait on the other pass\'s lock').toBe(true);
     await recovering;
-    expect(pendingWakeups.has(AGENT), 'no immediate wake').toBe(false);
-    const wakes = seen.wakes;
+    expect(jobDueNow(), 'no immediate wake').toBe(false);
     await new Promise((r) => setTimeout(r, 1_500));
-    expect(seen.wakes, 'no wake while the other pass runs').toBe(wakes);
+    expect(jobDueNow(), 'no wake while the other pass runs').toBe(false);
     release();
     await held;
-    for (let i = 0; i < 100 && seen.wakes === wakes; i++) await new Promise((r) => setTimeout(r, 30));
-    expect(seen.wakes, 'one wake when it lands: the one re-assembly').toBe(wakes + 1);
+    for (let i = 0; i < 100 && !jobDueNow(); i++) await new Promise((r) => setTimeout(r, 30));
+    expect(jobDueNow(), 'due when it lands: the one re-assembly').toBe(true);
   });
 });
 
@@ -258,11 +273,10 @@ describe('D18 fix round 3: a single stored row that alone exceeds the room', () 
         const { refusal } = await dial(0);
         if (!refusal) { fitted = true; break; }
         await recover(refusal, 500 + round);
-        if (pendingWakeups.has(AGENT)) { pendingWakeups.clear(); continue; }
-        const woke = seen.wakes;
-        await vi.advanceTimersByTimeAsync(16 * 60_000);   // the brake's clock: the timer park's wake
-        for (let i = 0; i < 50 && seen.wakes === woke; i++) await new Promise((r) => setImmediate(r));
-        expect(seen.wakes, `round ${round}: the timer park woke it`).toBeGreaterThan(woke);
+        if (jobDueNow()) { jobPickedUp(); continue; }
+        await vi.advanceTimersByTimeAsync(16 * 60_000);   // the brake's clock: the timer park comes due
+        expect(jobDueNow(), `round ${round}: the timer park is due`).toBe(true);
+        jobPickedUp();
       }
     } finally { vi.useRealTimers(); }
     expect(fitted, 'the agent answers').toBe(true);
@@ -298,13 +312,12 @@ describe('D18 fix round 3: a large stored row and the TIMER park, multi-round', 
         const { refusal } = await dial(size);
         if (!refusal) { fitted = true; break; }
         await recover(refusal, 700 + round);
-        if (pendingWakeups.has(AGENT)) { pendingWakeups.clear(); continue; }
+        if (jobDueNow()) { jobPickedUp(); continue; }
         expect(compactionBrakeMsLeft(AGENT), `round ${round}: parked on the brake's timer`).not.toBeNull();
         timerParks++;
-        const before = seen.wakes;
         await vi.advanceTimersByTimeAsync(16 * 60_000);
-        for (let i = 0; i < 50 && seen.wakes === before; i++) await new Promise((r) => setImmediate(r));   // the wake's dynamic import settles
-        expect(seen.wakes, `round ${round}: the timer park's wake ran`).toBeGreaterThan(before);
+        expect(jobDueNow(), `round ${round}: the timer park is due`).toBe(true);
+        jobPickedUp();
       }
     } finally { vi.useRealTimers(); }
     expect(timerParks, 'the timer park was exercised').toBeGreaterThan(0);
@@ -324,10 +337,10 @@ describe('D18 fix round 3: a genuine stall is reported once, never silently park
         const { refusal } = await dial(size);
         expect(refusal, `round ${round}: still over`).not.toBeNull();
         await recover(refusal, 800 + round);
-        if (pendingWakeups.has(AGENT)) { pendingWakeups.clear(); continue; }
+        if (jobDueNow()) { jobPickedUp(); continue; }
         braked++;
         await vi.advanceTimersByTimeAsync(16 * 60_000);
-        for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+        jobPickedUp();
       }
       expect(braked, 'it reached the stall').toBe(3);
     } finally { vi.useRealTimers(); }
@@ -342,10 +355,10 @@ describe('D18 fix round 3: a forced pass with nothing to condense records its ou
     db().prepare('DELETE FROM messages WHERE agent_id = ?').run(AGENT);
     insertMessage({ agentId: AGENT, role: 'user', lane: 'owner', senderId: 'owner', content: 'Is the north dock open?', turnNumber: 1 });
     for (const turn of [601, 602]) {
-      pendingWakeups.clear();
+      jobPickedUp();
       await recover(new Error('prompt is too long: 40000 tokens > 32768 maximum'), turn);
       expect(compactionBrakeMsLeft(AGENT), `round ${turn}: the no-progress pass armed the brake`).not.toBeNull();
-      expect(pendingWakeups.has(AGENT), `round ${turn}: no wake at once`).toBe(false);
+      expect(jobDueNow(), `round ${turn}: no wake at once`).toBe(false);
     }
   });
 });
@@ -361,10 +374,9 @@ async function answersThroughThePark(maxRounds: number, size = 0): Promise<{ fit
       const { refusal } = await dial(size);
       if (!refusal) return { fitted: true, rounds };
       await recover(refusal, 900 + round);
-      if (pendingWakeups.has(AGENT)) { pendingWakeups.clear(); continue; }
-      const woke = seen.wakes;
+      if (jobDueNow()) { jobPickedUp(); continue; }
       await vi.advanceTimersByTimeAsync(16 * 60_000);
-      for (let i = 0; i < 50 && seen.wakes === woke; i++) await new Promise((r) => setImmediate(r));
+      jobPickedUp();
     }
   } finally { vi.useRealTimers(); }
   return { fitted: false, rounds };
@@ -422,8 +434,7 @@ describe('D18 fix round 5, ruling 3: the recovery door never waits on another pa
     db().prepare('DELETE FROM messages WHERE agent_id = ?').run(AGENT);
     insertMessage({ agentId: AGENT, role: 'user', lane: 'owner', senderId: 'owner', content: 'Is the north dock open?', turnNumber: 1 });
     for (const turn of [611, 612, 613]) {
-      pendingWakeups.clear();
-      const wakes = seen.wakes;
+      jobPickedUp();
       let release!: () => void;
       const held = withLock(`compact:${AGENT}`, () => new Promise<void>((r) => { release = r; }), { ifBusy: 'wait' });
       let done = false;
@@ -431,13 +442,11 @@ describe('D18 fix round 5, ruling 3: the recovery door never waits on another pa
       for (let i = 0; i < 200 && !done; i++) await new Promise((r) => setTimeout(r, 5));
       expect(done, `round ${turn}: the turn does not wait on the other pass's lock`).toBe(true);
       await recovering;
-      expect(pendingWakeups.has(AGENT), `round ${turn}: no immediate wake`).toBe(false);
-      expect(seen.wakes, `round ${turn}: no dial while the other pass runs`).toBe(wakes);
+      expect(jobDueNow(), `round ${turn}: no immediate wake`).toBe(false);
       release();
       await held;
-      for (let i = 0; i < 100 && seen.wakes === wakes; i++) await new Promise((r) => setTimeout(r, 30));
-      await new Promise((r) => setTimeout(r, 300));
-      expect(seen.wakes, `round ${turn}: one wake when it landed, no extra dial`).toBe(wakes + 1);
+      for (let i = 0; i < 100 && !jobDueNow(); i++) await new Promise((r) => setTimeout(r, 30));
+      expect(jobDueNow(), `round ${turn}: due when it landed`).toBe(true);
     }
   });
 });
@@ -455,11 +464,11 @@ describe('D18 fix round 4, finding 3: a stall whose first no-progress pass threw
         const { refusal } = await dial(size);
         expect(refusal, `round ${round}: still over`).not.toBeNull();
         await recover(refusal, 1_000 + round);
-        if (pendingWakeups.has(AGENT)) { pendingWakeups.clear(); continue; }
+        if (jobDueNow()) { jobPickedUp(); continue; }
         if (firstPark === 0) firstPark = round;
         braked++;
         await vi.advanceTimersByTimeAsync(16 * 60_000);
-        for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+        jobPickedUp();
       }
     } finally { vi.useRealTimers(); }
     return { firstPark, braked };
