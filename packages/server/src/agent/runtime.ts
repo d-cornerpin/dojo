@@ -282,7 +282,7 @@ const logger = createLogger('runtime');
 
 // Shared with v2; canonical defs live in agent/shared-state.ts; runtime still owns the run lifecycle.
 import {
-  activeRuns,
+  activeRuns, isRunUnwinding,
   pendingWakeups,
   stoppedAgents,
   preemptedAgents,
@@ -393,7 +393,7 @@ export function stopByOwner(agentId: string): { ended: number; repliesNotSent: n
   if (s.asks.length + s.runTasks.length + s.requests.length + s.jobs.length === 0 && !runIsLive(agentId)) return { ended: 0, repliesNotSent: 0, nothingRunning: true };
   try {
     return withUnit(() => {
-      const dropped = suppressQueuedReplies(agentId, s.liveRun ? s.asks : undefined);
+      const dropped = suppressQueuedReplies(agentId, s.liveRun || isRunUnwinding(agentId) ? s.asks : undefined);
       let ended = s.requests.length + s.runTasks.length;
       for (const id of new Set([...s.asks, ...dropped.askIds])) {
         for (const p of joinPieces(id)) if (!isTerminal(p.state)) transition(p.childId, { to: 'abandoned', by: 'owner', reason: 'the owner stopped the request this piece was for' });
