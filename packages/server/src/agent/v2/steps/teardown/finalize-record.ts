@@ -9,7 +9,7 @@ import { appendWorkEvent, claimingTurnOf, joinState } from '../../../../work/sto
 import { settleAsksAtTurnFinalize, type TurnEnd } from '../../../../work/ask-settlement.js';
 import { assembledContextAsks, recordEngineEventDeliveryFailure } from '../../counterparty.js';
 import { serveLater } from '../../serve-later.js';
-import { handBackCauseOf, turnExitReason } from '../../../../work/exit-attribution.js';
+import { handBackCauseOf } from '../../../../work/exit-attribution.js';
 import { inboundAsksNothing } from '../../classifiers/inbound-routing.js';
 import {
   pauseDriveWorkWaitingOnOwner, stillClaimedWork, terminalDeliveryForTurn,
@@ -72,9 +72,6 @@ export async function finalizeTurnRecord(
     // Work-classified but nothing effectful: the pause side does not park its work on the owner
     // (a misclassification only leaves a task unpaused).
     const startLineOnly = turnCtx.inboundClassifiedAsWork && state.nonIdempotentCallsThisTurn === 0;
-    // The engine queued this turn's own continuation, so settlement does not take its opening line as
-    // the answer. Same expression as queuedOwnContinuation below.
-    const continuing = turnParkedTheJob(agentId) || (!isStopFenced(agentId) && continuationContext.has(agentId));
     // `claimed_by_turn` is NULLed when an answered ask leaves `claimed` mid-turn; claim_turn is the record.
     const triggerAsk = triggerWorkId
       ? db.prepare('SELECT kind, requester FROM work WHERE id = ?').get(triggerWorkId) as
@@ -86,6 +83,9 @@ export async function finalizeTurnRecord(
       retryAt: turnCtx.retryAt, paidBeforeLimit: turnCtx.retryAt !== null && state.loopCount > 1,
       parkedTheJob: turnParkedTheJob(agentId),
     };
+    // The engine queued this turn's own continuation, so settlement does not take its opening line as
+    // the answer. Same expression as queuedOwnContinuation below.
+    const continuing = turnEnd.parkedTheJob || (!isStopFenced(agentId) && continuationContext.has(agentId));
     // Settle every ask this turn claimed or assembled (work/ask-settlement.ts). Must precede the answer
     // stamp below, which keys on the served_by_turn the settlement writes.
     try {
@@ -103,10 +103,9 @@ export async function finalizeTurnRecord(
     // side effect, to wait for the provider's reset when the limit met the first call; otherwise it stays served.
     if (claimedEngineEvent) {
       try {
-        const exit = turnExitReason(agentId, turnNumber);
-        const cause = handBackCauseOf(exit, turnEnd);
+        const cause = handBackCauseOf(exitReason, turnEnd);
         const { rowid } = claimedEngineEvent;
-        if (exit === 'stop') {
+        if (exitReason === 'stop') {
           sweepByRowid({ rowid, agentId });
         } else if ((turnCtx.abortHandBack || cause === 'cut') && state.nonIdempotentCallsThisTurn === 0
             && releaseEngineEventByRowid({ rowid, agentId, turnNumber: claimedEngineEvent.turnNumber }) > 0) {
