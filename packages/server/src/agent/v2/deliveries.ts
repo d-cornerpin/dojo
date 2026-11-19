@@ -172,7 +172,7 @@ export interface QueuedReply {
 export async function queueReply(r: QueuedReply): Promise<{ id: string; held: boolean } | null> {
   // Loaded on use: the credential registry and the sender sit above the ledger in the import graph.
   const { redactHandedCredentials } = await import('../../credentials/secret-fields.js');
-  const { armSenderTimer } = await import('./channel-sender.js');
+  const { armOwedClock } = await import('./owed.js');
   const { announceLiveWork } = await import('../live-work.js');
   const bare = (r.relay !== undefined || r.kind === 'cannot-run') && r.address.toAgent === true;
   const text = redactHandedCredentials(r.agentId, bare ? r.relay?.answer ?? '' : r.text).trim();
@@ -191,7 +191,7 @@ export async function queueReply(r: QueuedReply): Promise<{ id: string; held: bo
   await writeRoutingPill(r.agentId, r.turnNumber, held ? withRoutingState(label, 'not sent', 'another Dojo\'s agent') : withRoutingState(label, 'sending'));
   if (!held) {
     announceLiveWork(r.agentId);
-    armSenderTimer();
+    armOwedClock();
   }
   return { id, held };
 }

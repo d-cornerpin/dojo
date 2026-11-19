@@ -314,7 +314,8 @@ import { a2aRetryBudgetFor } from './a2a-patience.js';
 import { bumpDrainLadder, clearDrainLadder, DRAIN_LADDER_UNREADABLE } from './drain-state.js';
 import { contextOverflowSince } from '../memory/compaction.js';
 import { replacePlaceholdersInBackground } from '../memory/out-of-view.js';
-import { getWaitingHumanConversations, getPendingEngineEvent, getNextEngineEventRetryAt, quarantineWaitingConversation } from './v2/counterparty.js';
+import { getWaitingHumanConversations, getPendingEngineEvent, quarantineWaitingConversation } from './v2/counterparty.js';
+import { underWakeBudget, armOwedClock } from './v2/owed.js';
 import { taskScope, STATE_TO_STATUS_SQL } from '../work/tracker-view.js';
 import { findUnrepliedAssignForAgent, recordA2AReply } from './a2a-replies.js';
 import { attachmentFenceOf, bracketed, droppedAttachmentNote } from '../tools/inbound-fences.js';
@@ -750,13 +751,6 @@ class AgentRuntime {
             if (underWakeBudget(agentId)) queueSelfWake(agentId, 'pending-engine-event');
           } else {
             clearDrainLadder(agentId, 'human_conversation');
-            // An engine event on backoff is null at pickup; nothing re-fires when it clears: arm a
-            // one-shot for the earliest retry; the crash-durable boot re-drain backstops a crash before it.
-            scheduleEngineEventRetryWake(agentId, (id) => {
-              this.handleMessage(id, '').catch((err) => {
-                logger.error('Engine-event retry wake failed', { agentId: id, error: err instanceof Error ? err.message : String(err) }, id);
-              });
-            });
           }
         }
       } catch (err) {
@@ -816,6 +810,8 @@ class AgentRuntime {
       // while nothing ran); nothing lifts the FENCE elsewhere.
       stoppedAgents.delete(agentId);
       stopFencedRuns.delete(agentId);
+      // The one clock decides when this agent runs next for anything still owed, and sends due replies.
+      armOwedClock();
     }
     for (const w of servedWaiters) w('ran');
     return 'ran';
@@ -1038,77 +1034,6 @@ export function injectAttachmentBlocks(
   }
 
   return freshResizes;
-}
-
-// Circuit breaker on the engine's SELF re-trigger only (never a real inbound): a turn answers the
-// whole backlog but the pickup stamp claims one row served, so N waiting rows each take a full turn.
-const WAKE_BUDGET_WINDOW_MS = 10 * 60 * 1000;
-const WAKE_BUDGET_MAX = 30;
-const wakeupTimes = new Map<string, number[]>();
-const wakeBudgetTripped = new Set<string>();
-
-function underWakeBudget(agentId: string): boolean {
-  const now = Date.now();
-  const cutoff = now - WAKE_BUDGET_WINDOW_MS;
-  const arr = (wakeupTimes.get(agentId) ?? []).filter((t) => t > cutoff);
-  if (arr.length >= WAKE_BUDGET_MAX) {
-    wakeupTimes.set(agentId, arr);
-    if (!wakeBudgetTripped.has(agentId)) {
-      wakeBudgetTripped.add(agentId);
-      logger.error('Wake budget tripped: too many self-wakeups in the window; pausing the self-drain for this agent until it clears (a new inbound still wakes it)', {
-        agentId, wakeupsInWindow: arr.length, windowMinutes: WAKE_BUDGET_WINDOW_MS / 60000,
-      }, agentId);
-      try { broadcast({ type: 'agent:status', agentId, status: 'idle' }); } catch { /* best effort */ }
-      // Idle: nothing re-fires; one-shot resume at the oldest wakeup's age-out; queue only if work is owed.
-      const resumeInMs = Math.max((arr[0] ?? now) + WAKE_BUDGET_WINDOW_MS - now, 5_000);
-      const t = setTimeout(() => {
-        try {
-          if (getWaitingHumanConversations(agentId).length > 0 || getPendingEngineEvent(agentId) !== null) {
-            queueSelfWake(agentId, 'wake-budget-window-cleared');
-            logger.info('Wake budget window cleared; resuming the self-drain for owed work', { agentId }, agentId);
-          }
-        } catch { /* best effort */ }
-      }, resumeInMs);
-      t.unref?.();
-    }
-    return false;
-  }
-  arr.push(now);
-  wakeupTimes.set(agentId, arr);
-  wakeBudgetTripped.delete(agentId);
-  return true;
-}
-
-// Failed engine-event delivery parks on backoff; nothing re-fires it on an idle agent, so arm ONE
-// unref'd timer per agent, re-armed each drain pass (newest schedule wins), each fire re-checking
-// DB truth (terminated skip, wake budget, eligibility). In-memory by design: boot re-drain rescues a crash.
-const engineRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
-
-function scheduleEngineEventRetryWake(agentId: string, wake: (agentId: string) => void): void {
-  try {
-    const existing = engineRetryTimers.get(agentId);
-    if (existing) {
-      clearTimeout(existing);
-      engineRetryTimers.delete(agentId);
-    }
-    const at = getNextEngineEventRetryAt(agentId);
-    if (at == null) return;
-    // +1s grace so next_attempt_at has strictly passed; floor 5s for clock skew, ceiling above max backoff.
-    const delay = Math.min(Math.max(at - Date.now() + 1_000, 5_000), 61 * 60_000);
-    const t = setTimeout(() => {
-      engineRetryTimers.delete(agentId);
-      try {
-        const status = (getDb().prepare('SELECT status FROM agents WHERE id = ?').get(agentId) as { status?: string } | undefined)?.status;
-        if (status === 'terminated') return;
-        if (getPendingEngineEvent(agentId) === null) return; // delivered/expired meanwhile
-        if (!underWakeBudget(agentId)) return; // budget breaker's resume re-checks engine events
-        logger.info('Engine-event retry backoff cleared; waking agent to deliver it', { agentId }, agentId);
-        wake(agentId);
-      } catch { /* best effort */ }
-    }, delay);
-    t.unref?.();
-    engineRetryTimers.set(agentId, t);
-  } catch { /* best effort */ }
 }
 
 // Stuck-agent recovery: resets 'working' rows past the threshold (agent/stuck-thresholds.ts owns it).

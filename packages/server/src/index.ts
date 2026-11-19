@@ -381,7 +381,7 @@ async function main(): Promise<void> {
       const { releaseStepOwed } = await import('./release/release-steps.js');   // the version boundary
       const { reArmed, closed } = reconcileOrphanedClaims({ inheritedBacklog: releaseStepOwed('orphaned-ask-backlog') });
       if (reArmed > 0 || closed > 0) {
-        logger.warn(`Boot crash-reconciliation: closed ${closed} ask(s) whose claiming turn had already DELIVERED (the answered-by edge, never string inference); handed ${reArmed} orphaned ask(s) back for the re-drain, each carrying its age and any effects the dead turn already made for the turn that serves it (tracker untouched)`);
+        logger.warn(`Boot crash-reconciliation: closed ${closed} ask(s) whose claiming turn had already DELIVERED (the answered-by edge, never string inference); handed ${reArmed} orphaned ask(s) back for the owed clock, each carrying its age and any effects the dead turn already made for the turn that serves it (tracker untouched)`);
       }
     } catch (err) {
       logger.warn('Boot crash-reconciliation failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
@@ -396,7 +396,7 @@ async function main(): Promise<void> {
     }
     // 4b1c. One-shot ask-ledger remediation (a `config` row disarms it). Position is load-bearing: AFTER
     // the staleness sweep (its handed-back rows are never met by the reboot-swarm guard) and BEFORE the
-    // re-drain below (the same boot that hands an ask back serves it).
+    // owed clock armed below (the same boot that hands an ask back serves it).
     try {
       const { runArmedAskRemediation } = await import('./work/ask-remediation.js');
       const remediation = runArmedAskRemediation();
@@ -407,7 +407,7 @@ async function main(): Promise<void> {
           + `answered-then-abandoned corrected ${remediation.answeredThenAbandoned.corrected}; `
           + `compile-pending flags cleared ${remediation.compilePendingOrphans.cleared}/${remediation.compilePendingOrphans.candidates}; `
           + `chip receipts ${remediation.chipReceipts.candidates} (re-pointed ${remediation.chipReceipts.repointed}, handed back ${remediation.chipReceipts.reopened}, ambiguous ${remediation.chipReceipts.handedUp}). `
-          + `${remediation.reopenedIds.length} ask(s) are owed again and the re-drain below is what serves them.`,
+          + `${remediation.reopenedIds.length} ask(s) are owed again and the owed clock serves them.`,
         );
       }
     } catch (err) {
@@ -415,41 +415,15 @@ async function main(): Promise<void> {
     }
   }
 
-  // 4b2. Re-drain unanswered conversations after restart: an inbound persisted with conv_key NULL lost its
-  // in-memory wakeup and nothing else re-reads it. handleMessage('') re-reads the DB and normal serving
-  // takes over; it is idempotent, and sends are staggered so a fleet of agents does not fire at once.
+  // 4b2. An unreplied A2A ASSIGN/QUESTION of the last 30 minutes lost its in-memory wakeup at restart: one kick per
+  // agent re-reads it, staggered. People and engine events are the owed clock's, armed below once the bridge is up.
   try {
-    const db = getDb();
-    const { getWaitingHumanConversations, getPendingEngineEvent } = await import('./agent/v2/counterparty.js');
     const { findUnrepliedAssignForAgent } = await import('./agent/a2a-replies.js');
     const { getAgentRuntime } = await import('./agent/runtime.js');
-    // Exclude terminated agents: findUnrepliedAssignForAgent has no status filter.
-    const agentRows = db.prepare("SELECT id FROM agents WHERE status != 'terminated'").all() as Array<{ id: string }>;
-    let redrained = 0;
-    for (const { id } of agentRows) {
-      try {
-        // One kick covers an unanswered human conversation AND an unreplied A2A ASSIGN/QUESTION.
-        const owesHuman = getWaitingHumanConversations(id).length > 0;
-        // Only an A2A assign from the last 30 minutes is re-drained: older ones are stale backlog (matches
-        // the sweep in 4b1), and stale human rows were already stamped out of the waiting set there.
-        const owesA2A = !owesHuman && findUnrepliedAssignForAgent(id, 20, 30) !== null;
-        // Also a pending-eligible engine event (a reminder mid-delivery at restart): getPendingEngineEvent
-        // gates on its lifecycle (unclaimed, unswept, attempts < 5, backoff passed, within the 6-hour
-        // expiry) and expires exhausted ones.
-        const owesEngine = !owesHuman && !owesA2A && getPendingEngineEvent(id) !== null;
-        if (owesHuman || owesA2A || owesEngine) {
-          redrained++;
-          const delay = redrained * 300;
-          setTimeout(() => {
-            try { void getAgentRuntime().handleMessage(id, '').catch(() => { /* best effort */ }); }
-            catch { /* best effort */ }
-          }, delay);
-        }
-      } catch { /* per-agent best effort */ }
-    }
-    if (redrained > 0) {
-      logger.info(`Boot re-drain: kicked ${redrained} agent(s) with unanswered conversations after restart`);
-    }
+    const owing = (getDb().prepare("SELECT id FROM agents WHERE status != 'terminated'").all() as Array<{ id: string }>)
+      .map((r) => r.id).filter((id) => { try { return findUnrepliedAssignForAgent(id, 20, 30) !== null; } catch { return false; } });
+    owing.forEach((id, i) => setTimeout(() => { void getAgentRuntime().handleMessage(id, '').catch(() => { /* best effort */ }); }, (i + 1) * 300));
+    if (owing.length > 0) logger.info(`Boot re-drain: kicked ${owing.length} agent(s) owed an A2A reply after restart`);
   } catch (err) {
     logger.warn('Boot re-drain failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
   }
@@ -611,9 +585,8 @@ async function main(): Promise<void> {
         });
       }
     }
-    // Replies left waiting by the last run go out once the bridge is up.
-    const { armSenderTimer } = await import('./agent/v2/channel-sender.js');
-    armSenderTimer();
+    // Once the bridge is up: replies left waiting by the last run go out, and agents owed something are woken.
+    (await import('./agent/v2/owed.js')).armOwedClock();
   }
 
   {

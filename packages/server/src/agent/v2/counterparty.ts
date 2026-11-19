@@ -43,6 +43,8 @@ export interface WaitingConversation {
   /** OLDEST unanswered row = the turn TRIGGER: turns answer oldest-first, a later ping cannot go first. */
   oldest: WaitingConversation['latest'];
   oldestWaitingRowid: number;
+  /** The smallest due time of the conversation's asks (0: due now); a conversation waits while it is in the future. */
+  dueAt: number;
 }
 
 /** ONE projection for every read; `seq AS rowid` must stay: `seq` is the INTEGER PRIMARY KEY. */
@@ -80,19 +82,21 @@ function sessionStartOf(agentId: string): string {
   return (db.prepare('SELECT session_started_at FROM agents WHERE id = ?').get(agentId) as { session_started_at: string | null } | undefined)?.session_started_at ?? '1970-01-01';
 }
 
-export function getWaitingHumanConversations(agentId: string): WaitingConversation[] {
+/** Conversations whose asks are due now, or with `includeNotDue` also those waiting for a later due time. */
+export function getWaitingHumanConversations(agentId: string, opts: { includeNotDue?: boolean } = {}): WaitingConversation[] {
   const db = getDb();
   const sessionStart = sessionStartOf(agentId);
   // Narrow INTO the WHERE before the LIMIT: steers/notices/A2A are all role='user', so post-LIMIT
   // filtering lets them eat the window and an older human ask is forgotten.
   const rows = db.prepare(
-    `SELECT ${WAITING_COLS}
+    `SELECT ${WAITING_COLS}, COALESCE(w.next_attempt_at, 0) AS due_at
        FROM ${WAITING_HUMAN_CANDIDATE_FROM}
       WHERE ${WAITING_HUMAN_CANDIDATE_WHERE}
       ORDER BY w.opened_at ASC, m.seq ASC LIMIT 50`,
-  ).all({ agentId, sessionStart }) as WaitingConversation['latest'][];
+  ).all({ agentId, sessionStart }) as Array<WaitingConversation['latest'] & { due_at: number }>;
+  const now = Date.now();
   // UNANSWERED iff the row's OWN ask is open: a mid-turn arrival must not ride an unrelated reply.
-  const agg = new Map<string, { latest: WaitingConversation['latest']; oldest: WaitingConversation['latest']; oldestWaitingRowid: number; workId: string; identity: ConversationIdentity }>();
+  const agg = new Map<string, { latest: WaitingConversation['latest']; oldest: WaitingConversation['latest']; oldestWaitingRowid: number; workId: string; identity: ConversationIdentity; dueAt: number }>();
   for (const r of rows) {                              // now OLDEST → newest by rowid (ASC)
     const o = originOfCandidate(r);
     // The one "owes a reply" definition: AUTHORIZED human inbound; the rest is Lane-3 awareness.
@@ -104,13 +108,15 @@ export function getWaitingHumanConversations(agentId: string): WaitingConversati
     if (!e) {
       e = {
         latest: r, oldest: r, oldestWaitingRowid: r.rowid, workId: r.work_id,
-        identity: conversationIdentityOf(o.channel, o.senderId, o.senderName, o.threadId),
+        identity: conversationIdentityOf(o.channel, o.senderId, o.senderName, o.threadId), dueAt: r.due_at,
       };
       agg.set(key, e);
     }
     e.latest = r;                                      // iterating oldest→newest, last write = newest unanswered
+    e.dueAt = Math.min(e.dueAt, r.due_at);
   }
   return [...agg.entries()]
+    .filter(([, e]) => opts.includeNotDue === true || e.dueAt <= now)
     .map(([key, e]) => ({
       key,
       conversationId: e.oldest.conversation_id ?? null,
@@ -119,6 +125,7 @@ export function getWaitingHumanConversations(agentId: string): WaitingConversati
       latest: e.latest,
       oldest: e.oldest,
       oldestWaitingRowid: e.oldestWaitingRowid,
+      dueAt: e.dueAt,
     }))
     .sort((a, b) => a.oldestWaitingRowid - b.oldestWaitingRowid);              // FIFO by rowid
 }
@@ -261,6 +268,10 @@ function retireOneEngineEvent(
   }
 }
 
+type EventReferent = { run_id: string | null; task_id: string | null; origin_intent: string | null; root_kind: string | null; root_id: string | null };
+const spentReferent = (ev: EventReferent): ReturnType<typeof spentRun> =>
+  (ev.run_id ? spentRun(ev.run_id) : null) ?? (ev.task_id ? spentTask(ev.task_id) : null) ?? spentWakeAsk(ev);
+
 export function retireSpentEngineEvents(agentId: string): number {
   let retired = 0;
   try {
@@ -271,7 +282,7 @@ export function retireSpentEngineEvents(agentId: string): number {
        LIMIT 50`,
     ).all({ agentId }) as Array<{ rowid: number; task_id: string | null; run_id: string | null; origin_intent: string | null; root_kind: string | null; root_id: string | null; created_at: string }>;
     for (const ev of candidates) {
-      const spent = (ev.run_id ? spentRun(ev.run_id) : null) ?? (ev.task_id ? spentTask(ev.task_id) : null) ?? spentWakeAsk(ev);
+      const spent = spentReferent(ev);
       if (spent && retireOneEngineEvent(ev.rowid, spent.reason, {
         taskId: ev.task_id, runId: ev.run_id, createdAt: ev.created_at, referentState: spent.state,
       })) retired++;
@@ -349,7 +360,7 @@ export function recordEngineEventDeliveryFailure(agentId: string, rowid: number)
   } catch { /* best effort, failure bookkeeping must never mask the original abort */ }
 }
 
-/** Earliest FUTURE retry ms among in-lifecycle events, or null; boot re-drain covers crashes. */
+/** Earliest FUTURE retry ms among in-lifecycle events, or null; the owed clock (`owed.ts`) wakes the agent then. */
 export function getNextEngineEventRetryAt(agentId: string): number | null {
   try {
     const db = getDb();
@@ -411,12 +422,16 @@ export function findUnservedTerminalWake(agentId: string): { rowid: number } | n
   return row ? { rowid: row.rowid } : null;
 }
 
-export function getPendingEngineEvent(agentId: string): { rowid: number; id: string; taskId: string | null; runId: string | null; content: string; originIntent: string | null; rootKind: string | null; rootId: string | null } | null {
+/** The next deliverable engine event. `pure` writes nothing: instead of expiring and retiring first, it skips an
+ *  event whose referent is spent (the clock's read). */
+export function getPendingEngineEvent(agentId: string, opts: { pure?: true } = {}): { rowid: number; id: string; taskId: string | null; runId: string | null; content: string; originIntent: string | null; rootKind: string | null; rootId: string | null } | null {
   const db = getDb();
-  // Dispose exhausted/overdue events LOUDLY first, so every eligibility consumer drives the notice.
-  expireExhaustedEngineEvents(agentId);
-  // Premise re-check BEFORE eligibility, at the single choke point every consumer funnels through.
-  retireSpentEngineEvents(agentId);
+  if (!opts.pure) {
+    // Dispose exhausted/overdue events LOUDLY first, so every eligibility consumer drives the notice.
+    expireExhaustedEngineEvents(agentId);
+    // Premise re-check BEFORE eligibility, at the single choke point every consumer funnels through.
+    retireSpentEngineEvents(agentId);
+  }
   const sessionStart = sessionStartOf(agentId);
   // Clock order with the INSERTION key as tiebreak: `created_at` is second-granular, rowid breaks ties.
   const engineGates =
@@ -424,11 +439,12 @@ export function getPendingEngineEvent(agentId: string): { rowid: number; id: str
      AND created_at >= (unixepoch('now', '-${ENGINE_EVENT_EXPIRY_HOURS} hours') * 1000)
      AND delivery_attempts < ${ENGINE_EVENT_MAX_ATTEMPTS}
      AND (next_attempt_at IS NULL OR next_attempt_at <= (unixepoch('now') * 1000))`;
-  const row = db.prepare(
+  const rows = db.prepare(
     `SELECT seq AS rowid, id, task_id, run_id, content, origin_intent, root_kind, root_id FROM messages
        WHERE agent_id = @agentId AND ${DELIVERABLE_ENGINE_EVENT_WHERE} ${engineGates}
-     ORDER BY created_at ASC, rowid ASC LIMIT 1`,
-  ).get({ agentId, sessionStart }) as { rowid: number; id: string; task_id: string | null; run_id: string | null; content: string; origin_intent: string | null; root_kind: string | null; root_id: string | null } | undefined;
+     ORDER BY created_at ASC, rowid ASC LIMIT ${opts.pure ? 50 : 1}`,
+  ).all({ agentId, sessionStart }) as Array<EventReferent & { rowid: number; id: string; content: string }>;
+  const row = opts.pure ? rows.find((r) => spentReferent(r) === null) : rows[0];
   // The 6-hour horizon bounds the lifecycle: historical unstamped rows must not return as pending.
   return row ? { rowid: row.rowid, id: row.id, taskId: row.task_id, runId: row.run_id, content: row.content, originIntent: row.origin_intent, rootKind: row.root_kind, rootId: row.root_id } : null;
 }
