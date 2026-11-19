@@ -13,6 +13,7 @@ import path from 'node:path';
 import { v4 as uuidv4 } from 'uuid';
 import type { ToolErrorCode } from '@dojo/shared';
 import { getDb } from '../../../db/connection.js';
+import { setConfigValue } from '../../../config/config-value.js';
 // The four outbound-send walls below keep position, message, and audit row; only
 // the predicate moved to this agent's own channel grant, an owner-editable row.
 import { mayUseChannel, mayReachOthersOn } from '../../access/read.js';
@@ -276,10 +277,7 @@ export const commsHandlers: ToolHandlerMap = {
         }
         // Always a non-owner entry (is_primary false); the owner record is never touched.
         const next = [...existing, sender];
-        db.prepare(`
-          INSERT INTO config (key, value, updated_at) VALUES ('imessage_approved_senders', ?, datetime('now'))
-          ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
-        `).run(JSON.stringify(next));
+        setConfigValue('imessage_approved_senders', JSON.stringify(next));
         try { reloadApprovedSenders(); } catch { /* bridge may not be running */ }
         // Mirror into contacts so the trusted name resolves later (best-effort).
         try {

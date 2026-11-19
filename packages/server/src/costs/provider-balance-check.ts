@@ -7,6 +7,7 @@
 // later on a low account is told once.
 
 import { getDb } from '../db/connection.js';
+import { setConfigValue } from '../config/config-value.js';
 import { createLogger } from '../logger.js';
 import { getProviderCredential } from '../config/loader.js';
 import { sendAlert } from '../services/imessage-bridge.js';
@@ -143,8 +144,7 @@ function setLatch(latchKey: string, words: string | null): void {
     ownerConditionCleared(`balance:${latchKey}`);
     return;
   }
-  db.prepare(`INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
-              ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`).run(latchKey, JSON.stringify({ at: Date.now() }));
+  setConfigValue(latchKey, JSON.stringify({ at: Date.now() }));
   tellOwner(`balance:${latchKey}`, words);
 }
 

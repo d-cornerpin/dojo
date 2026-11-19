@@ -13,7 +13,7 @@ vi.mock('../../db/connection.js', () => ({
         const m = /key = '([a-z_]+)'/.exec(sql);
         return m && store.has(m[1]) ? { value: store.get(m[1]) } : undefined;
       },
-      run: (...a: unknown[]) => { if (/INSERT INTO config/.test(sql)) { const k = /VALUES \('([a-z_]+)'/.exec(sql)?.[1]; if (k) store.set(k, String(a[0])); } },
+      run: (...a: unknown[]) => { if (/INSERT INTO config/.test(sql)) store.set(String(a[0]), String(a[1])); },
       all: () => [],
     }),
   }),
