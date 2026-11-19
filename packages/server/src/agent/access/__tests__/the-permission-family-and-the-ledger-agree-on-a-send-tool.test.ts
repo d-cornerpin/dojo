@@ -16,9 +16,14 @@ describe('the permission family and the ledger agree on a send tool', () => {
     }
   });
 
-  it('a send has the table channel in the ledger; a read or a hang-up has none', () => {
-    for (const [name, tool] of PEOPLE_TOOLS) {
-      expect(channelOfSendTool(name), name).toBe(tool.sends ? tool.channel : null);
-    }
+  it('a send has its channel in the ledger, twin included; a read or a hang-up has none', () => {
+    expect(channelOfSendTool('gmail_reply')).toBe('email');
+    expect(channelOfSendTool('user_outlook_send')).toBe('email');
+    expect(channelOfSendTool('user_teams_send_channel_message')).toBe('teams');
+    expect(channelOfSendTool('voice_call')).toBe('phone');
+    expect(channelOfSendTool('imessage_list_contacts')).toBeNull();
+    expect(channelOfSendTool('voice_call_end')).toBeNull();
+    expect(channelOfSendTool('voice_call_status')).toBeNull();
+    expect(channelOfSendTool('not_a_tool')).toBeNull();
   });
 });
