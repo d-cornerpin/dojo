@@ -15,7 +15,6 @@ import {
   DECLARED_PATIENCE_EXCEEDED_CODE, STREAM_IDLE_TIMEOUT_CODE,
   type StreamPatience,
 } from './stream-patience.js';
-import { scheduleRateLimitRetry } from './rate-limit-retry.js';
 import { getFilteredTools } from './tools/surface.js';
 import type { ToolDefinition } from './tools/types.js';
 import { estimateRequestTokens, reasoningRidesThisTurn, effectiveDivisor } from '../memory/budget.js';
@@ -1992,30 +1991,6 @@ async function callOpenAIModel(
       } catch { /* best effort */ }
     }
 
-    // Schedule background retry on rate limit, skip auto-routed agents; their fallback chain owns switching.
-    if ((isRateLimited || isOverloaded) && !params.routerTier) {
-      let retryAfterSeconds: number | null = null;
-      if (err instanceof OpenAI.APIError && err.headers) {
-        const retryAfter = err.headers['retry-after'];
-        if (retryAfter) {
-          const parsed = parseInt(retryAfter, 10);
-          if (!isNaN(parsed)) retryAfterSeconds = parsed;
-        }
-      }
-
-      const lastMsg = (() => {
-        try {
-          const db = getDb();
-          const row = db.prepare(
-            "SELECT content FROM messages WHERE agent_id = ? AND role = 'user' ORDER BY created_at DESC LIMIT 1"
-          ).get(agentId) as { content: string } | undefined;
-          return row?.content ?? null;
-        } catch { return null; }
-      })();
-
-      scheduleRateLimitRetry(agentId, retryAfterSeconds, lastMsg);
-    }
-
     throw new AgentError(`OpenAI call failed: ${message}`, agentId, {
       code: 'MODEL_CALL_FAILED',
       retryable: isRetryableProviderClass(facts.class),
@@ -2178,7 +2153,7 @@ async function callAnthropicSdkModel(
       { providerId: modelInfo.providerId, agentId, signal: params.abortSignal, bestEffort: params.bestEffort, facts: classifyProviderError(err) });
 
     // The shared recovery classifier decides rate limits for every path, 'usage limit' wording included.
-    // Known drift: the direct/OpenAI catches and rate-limit-retry.ts keep their own substring sets.
+    // Known drift: the direct/OpenAI catches keep their own substring sets.
     const { classifyError } = await import('./v2/recovery.js');
     const kind = classifyError(err instanceof Error ? err : new Error(message)).kind;
     const isRateLimited = kind === 'rate_limit';
@@ -2203,21 +2178,6 @@ async function callAnthropicSdkModel(
         ).toISOString();
         updateRateLimits(modelId, rlHeaders);
       } catch { /* best effort */ }
-    }
-
-    // A pinned-model 429/overload arms the background retry; auto-routed agents are the router's business.
-    if ((isRateLimited || isOverloaded) && !params.routerTier) {
-      const lastMsg = (() => {
-        try {
-          const db = getDb();
-          const row = db.prepare(
-            "SELECT content FROM messages WHERE agent_id = ? AND role = 'user' ORDER BY created_at DESC LIMIT 1"
-          ).get(agentId) as { content: string } | undefined;
-          return row?.content ?? null;
-        } catch { return null; }
-      })();
-
-      scheduleRateLimitRetry(agentId, retryAfterSeconds, lastMsg);
     }
 
     // Re-throw so control flow stays identical to the other transports.
@@ -2653,30 +2613,6 @@ async function dialModel(params: ModelCallParams): Promise<ModelCallResult> {
           updateRateLimits(modelId, rlHeaders);
         }
       } catch { /* best effort */ }
-    }
-
-    // Background retry only for non-auto-routed agents: auto-routed ones use the runtime's fallback chain.
-    if ((isRateLimited || isOverloaded) && !params.routerTier) {
-      let retryAfterSeconds: number | null = null;
-      if (err instanceof Anthropic.APIError && err.headers) {
-        const retryAfter = err.headers['retry-after'];
-        if (retryAfter) {
-          const parsed = parseInt(retryAfter, 10);
-          if (!isNaN(parsed)) retryAfterSeconds = parsed;
-        }
-      }
-
-      const lastMsg = (() => {
-        try {
-          const db = getDb();
-          const row = db.prepare(
-            "SELECT content FROM messages WHERE agent_id = ? AND role = 'user' ORDER BY created_at DESC LIMIT 1"
-          ).get(agentId) as { content: string } | undefined;
-          return row?.content ?? null;
-        } catch { return null; }
-      })();
-
-      scheduleRateLimitRetry(agentId, retryAfterSeconds, lastMsg);
     }
 
     throw new AgentError(`Model call failed: ${message}`, agentId, {

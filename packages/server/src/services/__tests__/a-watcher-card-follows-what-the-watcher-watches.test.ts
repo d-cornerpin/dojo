@@ -166,7 +166,6 @@ async function boot() {
     watcher: await import('../watcher-status.js'),
     google: await import('../../google/auth.js'),
     status: await import('../../agent/agent-status.js'),
-    rateLimit: await import('../../agent/rate-limit-retry.js'),
     resources: await import('../resource-monitor.js'),
     healerAgent: await import('../../healer/healer-agent.js'),
     purge: await import('../../agent/purge.js'),

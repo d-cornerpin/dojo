@@ -8,6 +8,8 @@ import { v4 as uuidv4 } from 'uuid';
 import { broadcast } from '../../../../gateway/ws.js';
 import { insertMessageIfAbsent } from '../../../../memory/message-store.js';
 import { routedSkipReasons, type RoutedSkip } from '../../../../router/selector.js';
+import { getRateLimitInfo } from '../../../../router/rate-limits.js';
+import { turnContext as turnCtxOf } from '../../../turn-context.js';
 import { measureAgentToolPayloadTokens } from '../../../../tools/tool-docs.js';
 import { anOwnModelHolds, modelHoldsAgent } from './reassemble-for-fit.js';
 import { reportStarvedWindow } from '../../../../memory/window-starvation-card.js';
@@ -39,7 +41,9 @@ export async function tellOwnerNoPickHolds(args: {
   const toolPayloadTokens = await measureAgentToolPayloadTokens(agentId);
   if (refusal && !(await anOwnModelHolds(agentId, toolPayloadTokens, turnContext))) reportStarvedWindow(agentId, refusal.systemPromptTokens, refusal.policy);
   const causes = new Set<RoutedSkip>();
+  const resets: number[] = [];
   for (const { modelId, skip } of routedSkipReasons(tier, agentId, excluded, ['tools'])) {
+    if (skip === 'rate_limit') resets.push(getRateLimitInfo(modelId)?.resetAt ?? 0);
     if (skip && !causes.has(skip) && (!refusal || await modelHoldsAgent(agentId, modelId, toolPayloadTokens, turnContext))) causes.add(skip);
   }
   // The limit is the real stop even beside a transient cause (a rate limit clears by itself; the limit does not).
@@ -48,6 +52,9 @@ export async function tellOwnerNoPickHolds(args: {
     revertTrigger();
     throw new AgentError(honestStopWords(stop), agentId, { code: stop === 'budget_stop' ? BUDGET_STOP_CODE : NO_MODEL_FITS_CODE });
   }
+  // A limit clears by itself: the request waits on its row for the earliest reset (the turn ends as a provider error).
+  const bag = causes.has('rate_limit') ? turnCtxOf(agentId) : undefined;
+  if (bag) bag.retryAt = Math.max(Date.now() + 60_000, Math.min(...resets));
   const said = `${LEAD}: ${[...causes].map((c) => CAUSE[c]).join('; and ')}.`;
   try {
     const id = uuidv4();

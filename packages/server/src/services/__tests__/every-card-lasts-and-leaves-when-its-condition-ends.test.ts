@@ -185,7 +185,6 @@ async function boot() {
     watcher: await import('../watcher-status.js'),
     google: await import('../../google/auth.js'),
     status: await import('../../agent/agent-status.js'),
-    rateLimit: await import('../../agent/rate-limit-retry.js'),
     resources: await import('../resource-monitor.js'),
     healerAgent: await import('../../healer/healer-agent.js'),
     googleAccounts: await import('../../google/accounts.js'),
@@ -266,21 +265,6 @@ describe('ruling 1: the remaining cards last too', () => {
     m.watcher.maybeAlertOnRecovery({ name: 'gmail', accountId: 'acct-a', alreadyAlerted: false, totalNotificationsSinceFailure: 0 });
     expect(texts()).toEqual([]);
     expect(await m.cards()).toEqual([]);
-  });
-
-  it('rate-limit retries exhausted: a card on load; the agent getting through ends it, live', async () => {
-    const m = await boot();
-    vi.useFakeTimers();
-    m.rateLimit.scheduleRateLimitRetry('ag', null, 'hello');
-    await vi.runAllTimersAsync();
-    const exhausted = texts().filter((t) => t.includes('rate-limited for'));
-    expect(exhausted).toHaveLength(1);
-    const shown = (await m.cards()).filter((c) => c.words.includes('rate-limited for'));
-    expect(shown).toHaveLength(1);
-    expect(exhausted[0]).toContain(shown[0].words);
-    m.status.writeAgentStatus('ag', 'working'); // its next turn goes through
-    expect(ended()).toContain(shown[0].words);
-    expect((await m.cards()).filter((c) => c.words.includes('rate-limited for'))).toEqual([]);
   });
 });
 

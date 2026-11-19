@@ -2109,26 +2109,22 @@ describe('runV2Turn integration', () => {
     expect(errors.find((e) => e.code === 'MODEL_FAILED')).toBeDefined();
   });
 
-  it('PHASE 6: rate-limit 429 → injury + RATE_LIMITED code + rate-limit system msg', async () => {
+  it('PHASE 6: a rate-limit 429 waits for the reset: no injury, no rate-limit note, the ask waits on its own record', async () => {
     callModelSpy.mockRejectedValue(new Error('429 Rate limit exceeded'));
 
     await runV2Turn('primary');
 
-    expect(onAgentInjuredSpy).toHaveBeenCalled();
-
-    const errors = (getBroadcastEventsByType('chat:error') as Array<{ code?: string; severity?: string; retryable?: boolean }>);
-    const rateLimited = errors.find((e) => e.code === 'RATE_LIMITED');
-    expect(rateLimited).toBeDefined();
-    expect(rateLimited?.severity).toBe('warning');
-    expect(rateLimited?.retryable).toBe(true);
-
-    // v2.3.19, system message text updated to the spec's plain-English
-    // template. Tests assert the agent-facing language, not the old
-    // "[Rate limited]" bracket.
+    expect(onAgentInjuredSpy).not.toHaveBeenCalled();
+    expect(recordErrorMock).not.toHaveBeenCalled();
+    const errors = (getBroadcastEventsByType('chat:error') as Array<{ code?: string }>);
+    expect(errors.find((e) => e.code === 'RATE_LIMITED')).toBeUndefined();
     const sysMsgs = mockDb.current!
       .prepare("SELECT content FROM messages WHERE agent_id = 'primary' AND role = 'system'")
       .all() as Array<{ content: string }>;
-    expect(sysMsgs.find((m) => /rate limit error/i.test(m.content) && /retrying automatically/i.test(m.content))).toBeDefined();
+    expect(sysMsgs.find((m) => /rate limit/i.test(m.content))).toBeUndefined();
+    const ask = mockDb.current!.prepare("SELECT state, next_attempt_at AS due FROM work WHERE kind = 'ask' AND agent_id = 'primary'").get() as { state: string; due: number };
+    expect(ask.state).toBe('open');
+    expect(ask.due).toBeGreaterThanOrEqual(Date.now() + 59_000);
   });
 
   it('PHASE 6: error-loop trip → status paused, ERROR_LOOP code', async () => {

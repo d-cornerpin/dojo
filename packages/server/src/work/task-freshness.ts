@@ -114,13 +114,6 @@ export function endJobRun(agentId: string, wakeQueued = false): void {
   if (wakeQueued && !c.drainWake && c.timerWakes === 0) c.drainWake = true;
 }
 
-export function registerRetryWake(agentId: string): boolean {
-  const c = jobWork.get(agentId);
-  if (!c?.running) return false;
-  c.timerWakes += 1;
-  return true;
-}
-
 export function dropDrainJobWake(agentId: string): void {
   const c = jobWork.get(agentId);
   if (c) c.drainWake = false;

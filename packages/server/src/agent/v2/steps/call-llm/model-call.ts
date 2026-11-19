@@ -89,6 +89,7 @@ export async function callWithRetryAndFallback(
     const beforeCall = isStopFenced(agentId) ? abandonForStop('stopped-before-call') : null;
     if (beforeCall) return beforeCall;
 
+    turnCtx.retryAt = null;   // a reset an earlier attempt met never labels this one
     const abortController = new AbortController();
     // The one credential read point, as a function of the array, so a re-fitted array is hydrated here too.
     const forTheWire = (arr: ModelMessage[]): ModelMessage[] => hydrateCredentialsInMessages(agentId, arr);

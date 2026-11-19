@@ -5,6 +5,8 @@
 
 import { advance, type AgentTurnState } from '../../state.js';
 import { createLogger } from '../../../../logger.js';
+import { turnContext as turnCtxOf } from '../../../turn-context.js';
+import { latchEngineCut } from '../../engine-exit.js';
 import type { PromptTurnContext } from '../../../../prompt/assembler.js';
 
 const logger = createLogger('v2-loop');
@@ -33,6 +35,11 @@ export type ModelSelectionOutcome =
   | { readonly state: AgentTurnState; readonly selection: ModelSelection; readonly said?: undefined }
   | { readonly state: AgentTurnState; readonly said: string };
 
+/** A no-pick that set a provider reset ends the turn as a provider error, so its request waits for the reset. */
+function heldForReset(agentId: string, state: AgentTurnState): AgentTurnState {
+  return turnCtxOf(agentId)?.retryAt ? latchEngineCut(state, 'provider_error') : state;
+}
+
 export async function selectModel(stateIn: AgentTurnState, input: SelectModelInput): Promise<ModelSelectionOutcome> {
   const { agentId, isAutoRouted, configuredModelId, turnContext } = input;
   let state = stateIn;
@@ -55,7 +62,8 @@ export async function selectModel(stateIn: AgentTurnState, input: SelectModelInp
     const selected = selector.selectModel(decision.tier, agentId, undefined, ['tools']);
     if (!selected) {
       const { tellOwnerNoPickHolds } = await import('./no-pick-holds.js');
-      return { state, said: await tellOwnerNoPickHolds({ agentId, turnNumber: input.turnNumber, tier: routerTier, excluded: [], turnContext, revertTrigger: input.revertTriggerStampOnAbort }) };
+      const said = await tellOwnerNoPickHolds({ agentId, turnNumber: input.turnNumber, tier: routerTier, excluded: [], turnContext, revertTrigger: input.revertTriggerStampOnAbort });
+      return { state: heldForReset(agentId, state), said };
     }
     modelId = selected.modelId;
     logger.info(`v2 auto-router: tier=${decision.tier} (${decision.method}) → ${modelId}`, {
@@ -78,7 +86,7 @@ export async function selectModel(stateIn: AgentTurnState, input: SelectModelInp
       if (!next) {
         const { tellOwnerNoPickHolds } = await import('./no-pick-holds.js');
         const said = await tellOwnerNoPickHolds({ agentId, turnNumber: input.turnNumber, tier: routerTier, excluded: [], turnContext, refusal, revertTrigger: input.revertTriggerStampOnAbort });
-        return { state, said };
+        return { state: heldForReset(agentId, state), said };
       }
       logger.warn('v2 auto-router: the pick cannot hold this agent\'s instructions and tools; passed over', { passedOver: modelId, next: next.modelId, tier: routerTier }, agentId);
       modelId = next.modelId;

@@ -32,7 +32,6 @@ import * as coldImport6 from '../v2/state.js';
 import * as coldImport8 from '../agent-status.js';
 import * as coldImport9 from '../v2/honest-stop.js';
 import * as coldImport10 from '../shared-state.js';
-import * as coldImport11 from '../rate-limit-retry.js';
 import * as coldImport12 from '../../gateway/routes/agents.js';
 
 const mockDb: { current: Database.Database | null } = { current: null };
@@ -56,7 +55,7 @@ let m: {
   note: typeof import('../../work/engine-checkpoint-note.js'); cont: typeof import('../../work/job-continuation.js'); ctx: typeof import('../turn-context.js');
   state: typeof import('../v2/state.js');
   status: typeof import('../agent-status.js'); park: typeof import('../v2/honest-stop.js'); shared: typeof import('../shared-state.js');
-  rl: typeof import('../rate-limit-retry.js'); routes: typeof import('../../gateway/routes/agents.js');
+  routes: typeof import('../../gateway/routes/agents.js');
 };
 
 beforeEach(async () => {
@@ -69,7 +68,7 @@ beforeEach(async () => {
     note: coldImport3, cont: coldImport4, ctx: coldImport5,
     state: coldImport6,
     status: coldImport8, park: coldImport9, shared: coldImport10,
-    rl: coldImport11, routes: coldImport12,
+    routes: coldImport12,
   };
   vi.useFakeTimers();
   vi.setSystemTime(new Date('2026-10-13T12:00:00Z'));

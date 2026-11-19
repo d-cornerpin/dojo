@@ -211,5 +211,5 @@ export function ownerConditionsOnHealerSeen(healerStatus: string | null): void {
 
 /** The agent is gone (terminated or purged): the conditions it is the subject of end. */
 export function ownerConditionsOnAgentGone(agentId: string): void {
-  for (const kind of ['stuck', 'healer-missing', 'nofit', 'paused', 'ratelimit', 'broken', 'silent']) ownerConditionCleared(`${kind}:${agentId}`);
+  for (const kind of ['stuck', 'healer-missing', 'nofit', 'paused', 'broken', 'silent']) ownerConditionCleared(`${kind}:${agentId}`);
 }

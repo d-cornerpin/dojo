@@ -10,7 +10,7 @@ import { broadcast } from '../../gateway/ws.js';
 import { getDb } from '../../db/connection.js';
 import { insertMessageIfAbsent } from '../../memory/message-store.js';
 import { recordError, AgentError, pausedWords } from '../errors.js';
-import { hasActiveRateLimitRetry } from '../rate-limit-retry.js';
+import { turnContext } from '../turn-context.js';
 import { classifyRecoverableProviderError, classifyPlatformError, isEngineAssemblyFault } from './classifiers/provider.js';
 import { classifyProviderError, classifyProviderErrorText, type ProviderErrorFacts } from '../provider-error.js';
 import { DECLARED_PATIENCE_EXCEEDED_CODE } from '../stream-patience.js';
@@ -34,11 +34,6 @@ import {
 } from './error-format.js';
 
 const logger = createLogger('v2-recovery');
-
-// Shared by the two rate-limit paths so the wording lives in one place.
-const RATE_LIMIT_RETRY_NOTE =
-  `[System: The model provider returned a rate limit error. The platform is retrying ` +
-  `automatically. Give it a moment, and tell the person you are talking to there is a short delay if they are waiting.]`;
 
 // A bare system row is hidden in default chat; OWNER_ALERT_DOJO_PREFIX makes it visible with no later
 // turn to relay it. Callers post it only on turns a person is waiting on.
@@ -103,17 +98,12 @@ export async function recoverFromError(
   // What the provider said, read ONCE for every step: the model layer attaches it at raise time.
   const facts = error instanceof AgentError && error.provider ? error.provider : classifyProviderError(error);
 
-  // 0. A rate limit the retry manager owns: the cascade would double-handle it (error-loop count, status
-  //    thrash). Gate on an ACTIVE retry, never the text, so an auto-router exhaustion still degrades loudly.
+  // 0. A rate limit or overload waits on its request's row until the provider's reset; nothing else handles it.
   const rlKind = classifyError(new Error(fullErrText), facts).kind;
-  if ((rlKind === 'rate_limit' || rlKind === 'overloaded') && hasActiveRateLimitRetry(agentId)) {
-    logger.info(
-      'v2: rate limit owned by background retry manager, skipping injury cascade',
-      { agentId, kind: rlKind },
-      agentId,
-    );
-    // Persist the note only: no recordError, no status write, no injury; the manager drives those.
-    persistAndBroadcastSystemNote(agentId, RATE_LIMIT_RETRY_NOTE);
+  if (rlKind === 'rate_limit' || rlKind === 'overloaded') {
+    const turnCtx = turnContext(agentId);
+    if (turnCtx) turnCtx.retryAt = Date.now() + Math.max(60, facts.retryAfterSeconds ?? 60) * 1000;
+    logger.info('v2: rate limit or overload: the request waits for the reset', { agentId, kind: rlKind, retryAt: turnCtx?.retryAt }, agentId);
     return;
   }
 
@@ -505,8 +495,6 @@ async function recordInjury(
     const honestFail = declaredPatienceHonestFailNote(state.lastUserMessageContent, declaredPatienceDidCompact);
     persistAndBroadcastSystemNote(agentId, honestFail);
     tellAgentWhatDojoSent({ agentId, recipient: 'the person who asked (on the dashboard)', text: honestFail, why: 'because your model could not finish this answer' });
-  } else if (isRateLimit) {
-    persistAndBroadcastSystemNote(agentId, RATE_LIMIT_RETRY_NOTE);
   } else {
     persistAndBroadcastSystemNote(
       agentId,

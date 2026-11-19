@@ -25,7 +25,6 @@ import * as coldImport6 from '../v2/state.js';
 import * as coldImport8 from '../agent-status.js';
 import * as coldImport9 from '../v2/honest-stop.js';
 import * as coldImport10 from '../shared-state.js';
-import * as coldImport11 from '../rate-limit-retry.js';
 import * as coldImport12 from '../../gateway/routes/chat.js';
 
 const mockDb: { current: Database.Database | null } = { current: null };
@@ -49,7 +48,7 @@ let m: {
   note: typeof import('../../work/engine-checkpoint-note.js'); cont: typeof import('../../work/job-continuation.js'); ctx: typeof import('../turn-context.js');
   state: typeof import('../v2/state.js');
   status: typeof import('../agent-status.js'); park: typeof import('../v2/honest-stop.js'); shared: typeof import('../shared-state.js');
-  rl: typeof import('../rate-limit-retry.js'); routes: typeof import('../../gateway/routes/chat.js');
+  routes: typeof import('../../gateway/routes/chat.js');
 };
 
 beforeEach(async () => {
@@ -62,7 +61,7 @@ beforeEach(async () => {
     note: coldImport3, cont: coldImport4, ctx: coldImport5,
     state: coldImport6,
     status: coldImport8, park: coldImport9, shared: coldImport10,
-    rl: coldImport11, routes: coldImport12,
+    routes: coldImport12,
   };
   vi.useFakeTimers();
   vi.setSystemTime(new Date('2026-10-13T12:00:00Z'));
@@ -180,11 +179,11 @@ describe('ROUND 6 (R5-I1): a carry whose chain truly ends does not outlive it', 
     aWholeTurnPassedItOver();
   });
 
-  it('an agent that leaves the running states through the one status writer (terminated, error, paused, rate-limited) ends the carry', async () => {
+  it('an agent that leaves the running states through the one status writer (terminated, error, paused) ends the carry', async () => {
     const { jobCarriedIds } = m.fresh;
     const { setAgentStatus } = m.status;
     const { noteEngineCheckpoint } = m.note; const { queueJobContinuation } = m.cont;
-    for (const status of ['terminated', 'error', 'paused', 'rate_limited'] as const) {
+    for (const status of ['terminated', 'error', 'paused'] as const) {
       script.run = () => engineTurn(1, { kind: 'ask', id: 'msg-ask', sourceMessageId: 'msg-ask' }, () => {
         noteEngineCheckpoint(AGENT, 'turn-budget');
         queueJobContinuation(AGENT, 'turn-budget-continuation');
@@ -243,24 +242,6 @@ async function runToCarryingContinuation(carryingBody: () => Promise<void> | voi
 }
 
 describe('ROUND 7 (R6-I1): a carrying run that ends with a wake of its own hands the job to it', () => {
-  it('a 429 silent retry of the carrying continuation restarts it AS the job: carry intact in the gap, no refusal on the retry', async () => {
-    const seen: Array<{ turn: string; carried: string[] }> = [];
-    await runToCarryingContinuation(
-      () => {
-        seen.push({ turn: 'continuation', carried: m.fresh.jobCarriedIds(AGENT) });
-        vi.setSystemTime(Date.now() + 15 * MIN);                            // 15 quiet minutes inside the call
-        m.rl.scheduleRateLimitRetry(AGENT, null, 'hello');                  // the provider said 429; ends without parking
-      },
-      [async () => { seen.push({ turn: 'retry', carried: m.fresh.jobCarriedIds(AGENT) }); }],
-    );
-    expect(seen.map((x) => x.turn)).toEqual(['continuation']);
-    expect(m.fresh.jobCarriedIds(AGENT), 'in the 10 s gap the retry carries the job').toEqual(['task-job']);
-    await vi.advanceTimersByTimeAsync(11_000);                              // the silent retry fires
-    expect(seen.map((x) => x.turn)).toEqual(['continuation', 'retry']);
-    expect(seen[1].carried).toEqual(['task-job']);
-    expect(m.fresh.jobCarriedIds(AGENT), 'the retry ended without a further wake: the chain is over').toEqual([]);
-  });
-
   it('a recovery re-queue (queueSelfWake) of the carrying continuation is served by a run that carries the job', async () => {
     const seen: Array<{ turn: string; carried: string[] }> = [];
     await runToCarryingContinuation(
