@@ -22,11 +22,7 @@ const ROOT = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: '
 const DIR = 'packages/server/src/db/migrations';
 
 // Written before the order rule. A name the last release tag holds must be deleted from this list.
-const WRITTEN_BEFORE_ORDER_RULE = [
-  '210_finished_rows_answer_their_verdict_request.sql', '211_work_ledger_detail.sql', '212_no_summary_writer_setting.sql',
-  '213_background_commands.sql', '214_background_command_call.sql', '215_imaginer_stays_retired.sql',
-  '216_router_probe_settings_removed.sql', '217_one_owner_name_key.sql', '218_conversation_tail_index.sql',
-];
+const WRITTEN_BEFORE_ORDER_RULE = [];
 
 const git = (args) => execFileSync('git', args, { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
 
