@@ -7,7 +7,7 @@ import { createLogger } from '../../../../logger.js';
 import { advance, type AgentTurnState } from '../../state.js';
 import { steerFired, steerPriority, type SteerFloorId } from '../../steer-queue.js';
 import { persistEngineSteer } from '../../engine-steer.js';
-import { channelLabel, findRecentDeliveries, findRecentDeliveriesKeyed, relativeTimeAgo } from '../../outbound-ledger.js';
+import { channelLabel, findRecentDeliveriesKeyed, relativeTimeAgo } from '../../outbound-ledger.js';
 import { isNearDuplicateText } from '../../classifiers/loop.js';
 import { detectDeliveryDenial } from '../../classifiers/grounding.js';
 import { claimedDeliverySteer, decideClaimedDelivery } from '../../claimed-delivery.js';
@@ -61,9 +61,7 @@ const TRUTH_GUARD_SET: TruthGuard[] = [
           .map((r) => ({ name: r.name })),
         counterpartyName: counterparty.name,
         // A real send within 24h grounds the claim, so the floor never forces a duplicate send.
-        hasDeliveryReceipt: (recipient) =>
-          findRecentDeliveriesKeyed(agentId, recipient, 24).length > 0 ||
-          findRecentDeliveries(agentId, recipient, 24).length > 0,
+        hasDeliveryReceipt: (recipient) => findRecentDeliveriesKeyed(agentId, recipient, 24).length > 0,
         claimInText: (said) => replyClaim(ctx, 'claims_sent_to_third_party') ?? said,
       });
       if (!claim.fires && claim.recipient) {
@@ -92,14 +90,9 @@ const TRUTH_GUARD_SET: TruthGuard[] = [
       const denial = detectDeliveryDenial({ responseText: reply });
       if (!denial.denied) return null;
       // Named recipient: 24h window; bare "not yet": 1h, so an unrelated older send cannot ground it.
-      const keyedMatches = denial.recipient
+      const matches = denial.recipient
         ? findRecentDeliveriesKeyed(agentId, denial.recipient, 24)
         : findRecentDeliveriesKeyed(agentId, null, 1);
-      const matches = keyedMatches.length > 0
-        ? keyedMatches
-        : denial.recipient
-          ? findRecentDeliveries(agentId, denial.recipient, 24)
-          : findRecentDeliveries(agentId, null, 1);
       const receipt = matches[0];
       if (!receipt) return null;
       const who = receipt.recipient ?? denial.recipient ?? 'them';
