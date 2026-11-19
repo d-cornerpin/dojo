@@ -6,6 +6,7 @@
 // accounts connected later never re-trigger it.
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
+import { setConfigValue } from '../config/config-value.js';
 import { insertMessage } from '../memory/message-store.js';
 import { broadcast } from '../gateway/ws.js';
 import { getPrimaryAgentId } from '../config/platform.js';
@@ -94,20 +95,14 @@ export function notifyGoogleReauthOnce(): void {
       });
 
       // 3. Queue the toast for the next dashboard connect (see flushPendingGoogleReauthToast).
-      db.prepare(
-        `INSERT INTO config (key, value, updated_at) VALUES (?, '1', datetime('now'))
-         ON CONFLICT(key) DO UPDATE SET value = '1', updated_at = datetime('now')`,
-      ).run(TOAST_PENDING_KEY);
+      setConfigValue(TOAST_PENDING_KEY, '1');
 
       logger.info('Queued one-time Google re-auth notice (chat divider + agent hint persisted, toast pending)');
     }
 
     // Set the flag whether or not a notice was shown, so later connects never re-trigger this.
     const stamp = new Date().toISOString();
-    db.prepare(
-      `INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
-       ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = datetime('now')`,
-    ).run(FLAG_KEY, stamp, stamp);
+    setConfigValue(FLAG_KEY, stamp);
   } catch (err) {
     logger.error('Google re-auth notice failed', {
       error: err instanceof Error ? err.message : String(err),
@@ -137,10 +132,7 @@ export function flushPendingGoogleReauthToast(): void {
       cardClass: 'action',
     });
 
-    db.prepare(
-      `INSERT INTO config (key, value, updated_at) VALUES (?, '', datetime('now'))
-       ON CONFLICT(key) DO UPDATE SET value = '', updated_at = datetime('now')`,
-    ).run(TOAST_PENDING_KEY);
+    setConfigValue(TOAST_PENDING_KEY, '');
 
     logger.info('Flushed pending Google re-auth toast on dashboard connect');
   } catch (err) {

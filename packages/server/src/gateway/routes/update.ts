@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import type { AppEnv } from '../server.js';
 import { createLogger } from '../../logger.js';
 import { getDb } from '../../db/connection.js';
+import { setConfigValue } from '../../config/config-value.js';
 import { readLastMigrationBackup } from '../../db/migration-backup.js';
 import { migrationAheadOfBuild } from '../../db/migrations.js';
 import { markBootingNew, readMarker } from '../../update-state.js';
@@ -368,10 +369,7 @@ export function getUpdateChannel(): UpdateChannel {
 }
 
 export function setUpdateChannel(channel: UpdateChannel): void {
-  getDb().prepare(`
-    INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
-    ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = datetime('now')
-  `).run(UPDATE_CHANNEL_KEY, channel, channel);
+  setConfigValue(UPDATE_CHANNEL_KEY, channel);
 }
 
 interface GhRelease {
@@ -502,12 +500,6 @@ function readConfigStr(key: string): string | null {
     return row?.value ?? null;
   } catch { return null; }
 }
-function writeConfigStr(key: string, value: string): void {
-  getDb().prepare(`
-    INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
-    ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = datetime('now')
-  `).run(key, value, value);
-}
 function clearConfig(key: string): void {
   try { getDb().prepare('DELETE FROM config WHERE key = ?').run(key); } catch { /* best effort */ }
 }
@@ -538,15 +530,15 @@ function recordUpdateCheckOutcome(result: UpdateCheckResult): UpdateCheckHealth 
   try {
     if (!result.error) {
       const prev = Number(readConfigStr(FAIL_COUNT_KEY) ?? '0') || 0;
-      if (prev !== 0) writeConfigStr(FAIL_COUNT_KEY, '0');
+      if (prev !== 0) setConfigValue(FAIL_COUNT_KEY, '0');
       clearConfig(FAILING_SINCE_KEY);
       clearConfig(LAST_ERROR_KEY);
     } else {
       const next = (Number(readConfigStr(FAIL_COUNT_KEY) ?? '0') || 0) + 1;
-      writeConfigStr(FAIL_COUNT_KEY, String(next));
-      writeConfigStr(LAST_ERROR_KEY, result.error);
+      setConfigValue(FAIL_COUNT_KEY, String(next));
+      setConfigValue(LAST_ERROR_KEY, result.error);
       if (next >= UPDATE_CHECK_FAILURE_THRESHOLD && !readConfigStr(FAILING_SINCE_KEY)) {
-        writeConfigStr(FAILING_SINCE_KEY, new Date().toISOString());
+        setConfigValue(FAILING_SINCE_KEY, new Date().toISOString());
         logger.warn('Update check has failed repeatedly; raising a health signal', {
           consecutiveFailures: next, threshold: UPDATE_CHECK_FAILURE_THRESHOLD, lastError: result.error,
         });
@@ -570,10 +562,7 @@ export async function refreshUpdateCache(): Promise<UpdateCacheEntry> {
   };
   try {
     const json = JSON.stringify(entry);
-    getDb().prepare(`
-      INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
-      ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = datetime('now')
-    `).run(UPDATE_CACHE_KEY, json, json);
+    setConfigValue(UPDATE_CACHE_KEY, json);
   } catch (err) {
     logger.warn('Failed to write update cache', { error: err instanceof Error ? err.message : String(err) });
   }

@@ -17,6 +17,7 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
+import { setConfigValue } from '../config/config-value.js';
 import { insertMessageIfAbsent } from '../memory/message-store.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
@@ -191,21 +192,9 @@ export function getHealerConfig(): {
 }
 
 export function setHealerConfig(config: { modelId?: string; healerTime?: string; healerMode?: HealerMode }): void {
-  const db = getDb();
-  const upsert = db.prepare(`
-    INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
-    ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = datetime('now')
-  `);
-
-  if (config.modelId !== undefined) {
-    upsert.run('healer_model_id', config.modelId, config.modelId);
-  }
-  if (config.healerTime !== undefined) {
-    upsert.run('healer_time', config.healerTime, config.healerTime);
-  }
-  if (config.healerMode !== undefined) {
-    upsert.run('healer_mode', config.healerMode, config.healerMode);
-  }
+  if (config.modelId !== undefined) setConfigValue('healer_model_id', config.modelId);
+  if (config.healerTime !== undefined) setConfigValue('healer_time', config.healerTime);
+  if (config.healerMode !== undefined) setConfigValue('healer_mode', config.healerMode);
 }
 
 // ── Default Model ──
