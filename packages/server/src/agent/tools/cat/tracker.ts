@@ -35,6 +35,7 @@ import { decide, type Verdict } from '../../../work/done/decide.js';
 import { openProof } from '../../../work/done/open-proof.js';
 import { proofFor, type HandInOutcome, type ProofItemInput, type ProofKind } from '../../../work/done/proof.js';
 import { normalizeTaskStatus } from '../../../tracker/task-status-words.js';
+import { normalizeQuote, ownerSaidSince } from '../../../tracker/owner-words.js';
 import {
   trackerCreateProject, trackerCreateTask, reminderCreate, groupMember, trackerUpdateStatus,
   trackerAddNotes, trackerEditTask, trackerEditProject, trackerGetStatus,
@@ -483,6 +484,14 @@ const tableOfHandlers: ToolHandlerMap = {
         // user's own words is the engine guessing.
         content = `Not dropped: pass \`note\` with what the person you are talking to actually said when they called `
           + `"${crRow.title ?? crRow.id}" off. The reason goes on the record.`;
+        isError = true;
+        return { content, isError };
+      }
+      // Only the person's own words call a request off: the owner's, or those of whoever sent it.
+      const asked = getDb().prepare('SELECT sent_at, sender_id FROM messages WHERE id = (SELECT root_id FROM work WHERE id = ?)')
+        .get(crRow.id) as { sent_at: number; sender_id: string | null } | undefined;
+      if (!asked || !ownerSaidSince(asked.sent_at, normalizeQuote(crNote), agentId, true, asked.sender_id)) {
+        content = 'Not dropped: quote what they said when they called it off, word for word, as the note.';
         isError = true;
         return { content, isError };
       }
