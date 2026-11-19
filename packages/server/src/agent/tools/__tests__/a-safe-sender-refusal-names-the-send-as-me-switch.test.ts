@@ -7,6 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 vi.mock('../../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: (e: unknown) => e }));
+vi.mock('../../../work/row-authority.js', async (orig) => ({ ...(await orig<typeof import('../../../work/row-authority.js')>()), ownerAskedInThisTurn: () => ({ ok: true }) }));
 
 const MAIN = 'agent-main';
 const home = fs.mkdtempSync(path.join(process.env.DOJO_TEST_HOME_ROOT || os.tmpdir(), 'safe-sender-switch-'));
@@ -35,7 +36,7 @@ describe('a safe sender on an account that may not send', () => {
   it('is refused, naming the switch "The agent may send as me"', async () => {
     const r = toolResultOf(await executeTool(MAIN, { id: 'call-safe', name: 'add_safe_sender', arguments: {
       channel: 'gmail', slot: 'user', address: 'friend@example.com', name: 'A Friend',
-      user_request_quote: 'add my friend to the list',
+      user_quote: 'add my friend to the list',
     } }));
     expect(r.isError).toBe(true);
     expect(r.content).toContain('"The agent may send as me"');
