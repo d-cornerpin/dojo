@@ -45,9 +45,9 @@ export interface UseVoiceModeResult {
   toggleMute: () => Promise<void>;
   toggle: () => Promise<void>;
   stop: () => Promise<void>;
-  /** When non-null, the toggle was clicked but the required STT/TTS models aren't installed yet:
-   *  return immediately and render <VoiceFirstRunModal /> with these props. */
-  setupNeeded: { whisperModelId: string } | null;
+  /** True when the toggle was clicked but the saved engines' models aren't installed yet:
+   *  render <VoiceFirstRunModal />. */
+  setupNeeded: boolean;
   /** Called by the modal once required models are installed: start voice. */
   completeSetup: () => Promise<void>;
   /** Called by the modal if the user cancels setup. */
@@ -117,7 +117,7 @@ export function useVoiceMode({ agentId, voice, speed, sttModel, vadSensitivity, 
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [lastTranscript, setLastTranscript] = useState<string | null>(null);
-  const [setupNeeded, setSetupNeeded] = useState<{ whisperModelId: string } | null>(null);
+  const [setupNeeded, setSetupNeeded] = useState(false);
   const [audioLevel, setAudioLevel] = useState(0);
   const [partialTranscript, setPartialTranscript] = useState<string | null>(null);
   const [muted, setMutedState] = useState(false);
@@ -235,32 +235,25 @@ export function useVoiceMode({ agentId, voice, speed, sttModel, vadSensitivity, 
     if (startingRef.current) return;   // a start is already under way: ignore the extra click
     startingRef.current = true;
     try {
-    // Turning on: check the required models are installed first, else a fresh user
-    // gets ~20s of silence while whisper-server downloads and Kokoro loads.
+    // Turning on: the saved engines' models must be on disk first, else a fresh user
+    // gets ~20s of silence while the speech model downloads and Kokoro loads.
     try {
-      const saved = await loadSavedVoiceSettings();
-      const wantedStt = sttModel ?? saved.sttModel;
       const modelsRes = await api.getVoiceModels();
-      if (modelsRes.ok) {
-        const kokoroOk = modelsRes.data.kokoro?.installed === true;
-        const whisperRow = modelsRes.data.whisper.find((m) => m.id === wantedStt);
-        const whisperOk = whisperRow?.installed === true;
-        if (!kokoroOk || !whisperOk) {
-          setSetupNeeded({ whisperModelId: wantedStt });
-          return;
-        }
+      if (modelsRes.ok && modelsRes.data.missing.length > 0) {
+        setSetupNeeded(true);
+        return;
       }
     } catch { /* If the check itself fails, fall through and try to start anyway. */ }
     await startVoice();
     } finally { startingRef.current = false; }
-  }, [state, sttModel, startVoice]);
+  }, [state, startVoice]);
 
   const completeSetup = useCallback(async () => {
-    setSetupNeeded(null);
+    setSetupNeeded(false);
     await startVoice();
   }, [startVoice]);
 
-  const cancelSetup = useCallback(() => setSetupNeeded(null), []);
+  const cancelSetup = useCallback(() => setSetupNeeded(false), []);
 
   const stop = useCallback(async () => {
     if (clientRef.current) await clientRef.current.stop();

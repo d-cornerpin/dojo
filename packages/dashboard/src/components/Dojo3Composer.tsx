@@ -769,7 +769,6 @@ export function Dojo3Composer({
       {/* First-run voice setup modal */}
       {voice.setupNeeded && (
         <VoiceFirstRunModal
-          whisperModelId={voice.setupNeeded.whisperModelId}
           onComplete={() => { void voice.completeSetup(); }}
           onCancel={voice.cancelSetup}
         />
