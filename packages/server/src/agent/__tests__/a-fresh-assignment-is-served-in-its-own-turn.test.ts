@@ -1,5 +1,5 @@
 // A fresh assignment opens its task on the thread before its message is written; a request never served is still
-// owed, so the helper's next turn is the assignment's own A2A turn.
+// owed, so the helper's next turn is the assignment's own A2A turn; a barge-in on that turn served nothing and leaves it so.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 vi.mock('../../db/connection.js', async () => (await import('./helpers/agent-requests.js')).connectionMock());
@@ -11,7 +11,7 @@ import { deliverA2AMessage } from '../a2a-transport.js';
 import { openTurnContext, endTurnContext } from '../turn-context.js';
 import { runPreflight } from '../v2/steps/preflight/index.js';
 import { nextOwed } from '../v2/owed.js';
-import { freshAgentsDb, preflightCtx, testDb, HELPER, ASKER } from './helpers/agent-requests.js';
+import { freshAgentsDb, preflightCtx, testDb, helperTurn, requestRow, HELPER, ASKER } from './helpers/agent-requests.js';
 
 beforeEach(() => { endTurnContext(HELPER); freshAgentsDb(runMigrations); });
 
@@ -30,5 +30,14 @@ describe('a fresh assignment is served in its own turn', () => {
     expect((await runPreflight(bag, preflightCtx())).directive).toBe('proceed');
     expect(bag.kind).toBe('a2a');
     expect(bag.servedRequest).toMatchObject({ threadId: sent.threadId, intent: 'ASSIGN', fromId: ASKER });
+  });
+
+  it('a barge-in on its first turn leaves it owed, uncounted, and the next turn serves it', async () => {
+    const THREAD = 'thread-barged-in-0001';
+    await deliverA2AMessage({ intent: 'ASSIGN', threadId: THREAD, requiresResponse: true, payload: 'tally the invoices', toAgent: HELPER, fromAgent: ASKER });
+    const first = await helperTurn('preempt');
+    expect(first).not.toBeNull();
+    expect(requestRow(THREAD)).toMatchObject({ served: null, attempts: 0 });
+    expect(await helperTurn('silent')).toBe(first);
   });
 });

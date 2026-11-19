@@ -75,9 +75,9 @@ export const pieceState = (ask: string): string | undefined => (testDb().prepare
   'SELECT state FROM work WHERE parent_id = ? ORDER BY opened_at LIMIT 1').get(ask) as { state: string } | undefined)?.state;
 
 /** One helper turn through the real preflight; then finalize as the turn ended: silent, a rate limit on its first
- *  call (waiting for `reset`), or a crash (no finalize). Returns the request the turn served; null when it served
+ *  call (waiting for `reset`), a barge-in, or a crash (no finalize). Returns the request the turn served; null when it served
  *  none or the preflight ended the turn. */
-export async function helperTurn(end: 'silent' | 'limit' | 'crash' = 'silent', reset = 0): Promise<string | null> {
+export async function helperTurn(end: 'silent' | 'limit' | 'preempt' | 'crash' = 'silent', reset = 0): Promise<string | null> {
   const { openTurnContext, endTurnContext, runPreflight, finalizeTurnRecord, latchEngineCut, advance } = await product();
   endTurnContext(HELPER);
   const bag = openTurnContext(HELPER);
@@ -87,6 +87,7 @@ export async function helperTurn(end: 'silent' | 'limit' | 'crash' = 'silent', r
   if (end !== 'crash') {
     let state = bag.state!;
     if (end === 'limit') { bag.retryAt = reset; state = advance(latchEngineCut(state, 'provider_error'), { loopCount: 1 }); }
+    if (end === 'preempt') state = latchEngineCut(state, 'preempt');
     await finalizeTurnRecord(state, out.outputs.teardownContext());
   }
   endTurnContext(HELPER);
