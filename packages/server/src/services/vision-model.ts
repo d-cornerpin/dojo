@@ -4,6 +4,7 @@
 // user always knows which model is doing the seeing.
 
 import { getDb } from '../db/connection.js';
+import { setConfigValue } from '../config/config-value.js';
 import { createLogger } from '../logger.js';
 import { getModelCapabilities } from './capabilities.js';
 
@@ -65,10 +66,7 @@ export function setConfiguredFallbackVisionModelId(modelId: string | null): void
     db.prepare(`DELETE FROM config WHERE key = ?`).run(FALLBACK_VISION_MODEL_CONFIG_KEY);
     return;
   }
-  db.prepare(`
-    INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
-    ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = datetime('now')
-  `).run(FALLBACK_VISION_MODEL_CONFIG_KEY, modelId, modelId);
+  setConfigValue(FALLBACK_VISION_MODEL_CONFIG_KEY, modelId);
 }
 
 /** The vision model for a calling agent, or null when neither its own model nor a valid fallback can see. */
