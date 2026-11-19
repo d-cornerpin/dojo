@@ -7,7 +7,7 @@ const frames = vi.hoisted(() => [] as unknown[]);
 vi.mock('../../gateway/ws.js', () => ({ broadcast: (f: unknown) => { frames.push(f); }, stampPersistedRow: (e: unknown) => e }));
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 
-import { boxBefore901, upgrade, HELPER, MAIN, SENSEI } from './helpers/a-box-before-901.js';
+import { boxBefore901, upgrade, MAIN, SENSEI } from './helpers/a-box-before-901.js';
 import { doneDb } from '../../work/done/__tests__/helpers/done-db.js';
 import { standingOwnerNotices } from '../../healer/owner-notice-kinds.js';
 
@@ -21,7 +21,6 @@ beforeEach(() => {
   db.prepare("INSERT INTO google_accounts (id, kind, position, email, connected, owner_notice) VALUES ('g-1', 'user', 0, 'owner@example.com', 0, ?)").run(notice('The Google sign-in expired.'));
   db.prepare("INSERT INTO google_accounts (id, kind, position, email, connected, enabled, watch_email) VALUES ('g-2', 'agent', 1, 'agent@example.com', 1, 1, 1)").run();
   db.prepare("INSERT INTO microsoft_accounts (id, kind, position, email, connected, owner_notice) VALUES ('m-1', 'user', 0, 'owner@example.com', 0, ?)").run(notice('The Microsoft sign-in expired.', Date.now()));
-  db.prepare("UPDATE agents SET status = 'rate_limited', rate_limit_notice = ? WHERE id = ?").run(notice('Rate-limited for six hours.'), HELPER);
   db.prepare('UPDATE agents SET broken_notice = ?, silent_notice = ? WHERE id = ?').run(notice('It stopped: the key was refused.'), notice('It has been quiet past its window.'), MAIN);
   db.prepare("UPDATE agents SET status = 'paused' WHERE id = ?").run(SENSEI);
   db.prepare("INSERT INTO error_loop_state (agent_id, kind, at_ms) VALUES (?, 'paused', ?)").run(SENSEI, Date.now());
@@ -36,7 +35,6 @@ describe('an upgraded box keeps every standing owner card', () => {
     const cards = Object.fromEntries(standingOwnerNotices().map((c) => [c.cardKey, c.words]));
     expect(cards).toEqual({
       'signin:google:g-1': 'The Google sign-in expired.',
-      [`ratelimit:${HELPER}`]: 'Rate-limited for six hours.',
       [`broken:${MAIN}`]: 'It stopped: the key was refused.',
       [`silent:${MAIN}`]: 'It has been quiet past its window.',
       [`paused:${SENSEI}`]: `${SENSEI} has been paused after repeated errors. Open the Vitals page to investigate, or resume it from its detail page.`,
