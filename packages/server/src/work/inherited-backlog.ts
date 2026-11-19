@@ -100,6 +100,10 @@ export const INHERITED_NOTICE_INTENT = 'owed_messages_inherited';
 
 const SETTLE_BOTH_WAYS = 'answer it in its own conversation, then call work_close_request(<id>, kept); or dropped with your reason';
 
+/** Who a message is from, in the owner's words: "the owner" for his own, else the conversation's name. */
+export const senderWords = (counterparty: string | null, sender: string | null = null): string =>
+  sender === 'owner' || counterparty === 'owner' ? 'the owner' : (counterparty ?? sender ?? 'an unrecorded sender');
+
 export function inheritedOwedListFor(noticeContent: string): string | null {
   const ids = [...noticeContent.matchAll(/\[(ask:[^\]\s]+)\]/g)].map((m) => m[1]);
   const lines: string[] = [];
@@ -112,7 +116,7 @@ export function inheritedOwedListFor(noticeContent: string): string | null {
         LEFT JOIN conversations c ON c.id = w.conversation_id
        WHERE w.id = ? AND w.state = 'blocked'`).get(id) as Inherited | undefined;
     if (!o) continue;
-    const from = o.sender === 'owner' || o.counterparty === 'owner' ? 'the owner' : (o.counterparty ?? o.sender ?? 'an unrecorded sender');
+    const from = senderWords(o.counterparty, o.sender);
     const age = o.received_at != null ? `${ageInWords(Date.now() - o.received_at)} ago` : 'at an unrecorded time';
     const snippet = (o.content ?? '').replace(/\s+/g, ' ').trim().slice(0, 300);
     lines.push(`(${lines.length + 1}) [${o.id}] from ${from}, in the ${o.channel ?? 'unknown'} conversation, received ${age}: "${snippet}"`);

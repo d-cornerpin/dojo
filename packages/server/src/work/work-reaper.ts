@@ -9,6 +9,7 @@ import { sweepByRowid } from '../memory/message-store.js';
 import { ENGINE_EVENT_MAX_ATTEMPTS } from '../agent/v2/counterparty.js';
 import { personsWaiting } from '../agent/v2/owed.js';
 import { tellOwner } from '../healer/owner-notices.js';
+import { senderWords } from './inherited-backlog.js';
 
 const logger = createLogger('work-reaper');
 
@@ -159,7 +160,11 @@ const HUMAN_HOLD_LIMIT = 5;
 
 /** One card for the boot's dropped messages: how many, and from whom, the most first. */
 function tellOwnerBootDropped(n: number, droppedFrom: Map<string, number>): void {
-  const list = [...droppedFrom].sort((a, b) => b[1] - a[1]).map(([who, k]) => `${k} from ${who}`).join(', ');
+  // The five largest senders by name, then how many more.
+  const sorted = [...droppedFrom].sort((a, b) => b[1] - a[1]);
+  const rest = sorted.length - 5;
+  const list = sorted.slice(0, 5).map(([who, k]) => `${k} from ${who}`).join(', ')
+    + (rest > 0 ? `, and ${rest} more sender${rest === 1 ? '' : 's'}` : '');
   tellOwner(`bootdropped:${Date.now()}`, `When the Dojo started it dropped ${n} old unanswered message${n === 1 ? '' : 's'} `
     + `(more than 30 minutes old): ${list}. Nothing was sent to anyone about them.`);
 }
@@ -201,7 +206,7 @@ export function sweepBootStaleness(): { suppressed: number; swept: number; heldT
     });
     if (res.kind !== 'applied') continue;
     suppressed++;
-    const who = a.sender ?? 'an unrecorded sender';
+    const who = senderWords(a.sender);
     droppedFrom.set(who, (droppedFrom.get(who) ?? 0) + 1);
   }
   if (suppressed > 0) tellOwnerBootDropped(suppressed, droppedFrom);

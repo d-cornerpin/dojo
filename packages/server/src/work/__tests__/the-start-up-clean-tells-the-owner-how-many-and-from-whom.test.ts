@@ -56,6 +56,19 @@ describe('the start-up clean tells the owner how many and from whom', () => {
     expect(servedOwnerNotices()).toEqual([]);
   });
 
+  it('the owner\'s own messages read "from the owner"', () => {
+    oldMessagesFrom('owner', 7);
+    sweepBootStaleness();
+    expect(servedOwnerNotices()[0]?.words).toContain(': 7 from the owner.');
+  });
+
+  it('past five senders the card names the five largest and counts the rest', () => {
+    for (let k = 1; k <= 7; k++) oldMessagesFrom(`+1555010${k}`, k);
+    sweepBootStaleness();
+    expect(servedOwnerNotices()[0]?.words).toContain(
+      ': 7 from +15550107, 6 from +15550106, 5 from +15550105, 4 from +15550104, 3 from +15550103, and 2 more senders.');
+  });
+
   it('a start that drops nothing makes no card', () => {
     oldMessagesFrom('+15550100', 7);
     sweepBootStaleness();
