@@ -49,7 +49,7 @@ import { buildWorkBoardLane } from './work-board-lane.js';
 import { otherThreadsReserveExtra } from './other-threads-lane.js';
 import { otherThreadsRoomTokens } from './other-threads-room.js';
 import { buildIntegrationStatusLane } from './integration-status-lane.js';
-import { getLatestBriefing } from './briefing.js';
+import { todaysBriefing } from './briefing.js';
 import { COMPILE_ORDER_PIECES_MARKER } from '../work/join-drive.js';
 import { pinnedContextSection } from '../vault/retrieval.js';
 import { keepsNoSummaries, pmViewParts } from './pm-view.js';
@@ -590,14 +590,11 @@ function buildContentLanes(
       minTokens: 0,
       maxTokens: Infinity,
       truncate: truncateTextLane,
-      // The briefing has one generation date recorded on its row and renders every turn: a block that appears and
-      // disappears moves message 0 and re-bills the prefix. It ranks last (priority 110), so it drops first.
+      // Only a briefing made today renders: yesterday's tells the agent stale news. It drops out once at local
+      // midnight; within the day its stamp is its own date, so it holds still. It ranks last (priority 110), so it drops first.
       render: (ctx) => {
-        const briefing = getLatestBriefing(ctx.agentId);
-        if (!briefing) return null;
-        const day = (briefing.generatedAt ?? '').slice(0, 10);
-        const stamp = /^\d{4}-\d{2}-\d{2}$/.test(day) ? day : 'unrecorded';
-        return textRender(`<briefing generated="${stamp}">\n${briefing.content}\n</briefing>`);
+        const briefing = todaysBriefing(ctx.agentId);
+        return briefing ? textRender(`<briefing generated="${briefing.day}">\n${briefing.content}\n</briefing>`) : null;
       },
     },
     {
