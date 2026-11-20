@@ -1186,6 +1186,21 @@ describe('runV2Turn integration', () => {
     expect(nudged).toBe(true);
   });
 
+  it('a turn that throws after its required reply returned is handed back, never held as empty', async () => {
+    const empty = { content: '', toolCalls: [], inputTokens: 100, outputTokens: 0, stopReason: 'end_turn' };
+    callModelSpy.mockResolvedValueOnce(empty).mockResolvedValueOnce(empty)
+      .mockResolvedValueOnce({ content: 'The second quote.', toolCalls: [], inputTokens: 100, outputTokens: 5, stopReason: 'tool_use' });
+    mockDb.current!.exec(`CREATE TRIGGER no_answer_row BEFORE INSERT ON messages WHEN NEW.role = 'assistant'
+      BEGIN SELECT RAISE(ABORT, 'the disk is full'); END`);
+
+    await runV2Turn('primary');
+
+    expect(callModelSpy).toHaveBeenCalledTimes(3);
+    const ask = mockDb.current!.prepare("SELECT state FROM work WHERE agent_id = 'primary' AND kind = 'ask'").get() as { state: string };
+    expect(ask.state).not.toBe('blocked');
+    expect(mockDb.current!.prepare("SELECT 1 FROM messages WHERE content LIKE '%stopped trying%'").all()).toHaveLength(0);
+  });
+
   it('a required-reply pass that leaves before its call (a preempt) arms no second one', async () => {
     const empty = { content: '', toolCalls: [], inputTokens: 100, outputTokens: 0, stopReason: 'end_turn' };
     callModelSpy.mockImplementationOnce(async () => empty).mockImplementationOnce(async () => {

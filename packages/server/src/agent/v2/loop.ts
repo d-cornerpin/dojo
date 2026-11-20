@@ -220,6 +220,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
     turnCtx.state = advance(turnCtx.state!, { phase: 'finalize' });
     turnCtx.state = (await runFinalize(turnCtx.state!, finalizeContext())).state;
   } catch (err) {
+    turnCtx.forceReplyPending ||= turnCtx.forcedReplySpent;   // a turn that threw is handed back, never held as empty
     // A module cannot express catch/finally for its caller, so the driver keeps the construct and the step the body.
     turnCtx.state = (await runTurnRecovery(turnCtx.state!, teardownContext(), err)).state;
   } finally {
