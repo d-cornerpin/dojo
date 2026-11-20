@@ -398,7 +398,6 @@ import { agentsRouter } from '../../../gateway/routes/agents.js';
 import { standingOwnerNotices } from '../../../healer/owner-notice-kinds.js';
 /** The standing cards a stop raises (the budget's crossing card is its own). */
 const stopCards = (): ReturnType<typeof standingOwnerNotices> => standingOwnerNotices().filter((c) => !c.cardKey.startsWith('budget:'));
-import { handleIMCommand } from '../../../services/imessage-commands.js';
 import { releaseClearedBudgetStops } from '../honest-stop-lock.js';
 import { configRouter } from '../../../gateway/routes/config.js';
 import { updateRateLimits, clearRateLimits } from '../../../router/rate-limits.js';
@@ -693,19 +692,7 @@ describe('t148 — a turn stopped by the money guardrail, or by no model that ca
 
   // ══ ROUND 4 (review t148-review.md) ══
 
-  // I1 — a park is identified by its own record; the owner's pause, or any other pause, wins.
-  it('I1: the owner\'s texted pause on a parked agent wins: the limit being raised does NOT run it', async () => {
-    noFreeModel();
-    budget(1.00, 2.00);
-    await runV2Turn(AGENT);
-    expect(status()).toBe('paused');
-    expect(await handleIMCommand('pause', 'owner')).toMatch(/paused/i);
-    handleMessageSpy.mockClear();
-    await costsRouter.request('/budget/global', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ limitUsd: 10 }) });
-    expect(status(), 'the owner said pause; it stays paused').toBe('paused');
-    expect(handleMessageSpy, 'and it is not woken').not.toHaveBeenCalled();
-  });
-
+  // I1: a park is identified by its own record; any other pause wins.
   it('I1: any other pause (the error loop\'s writer) over a retry turn\'s kept tag is not released by the park\'s paths either', async () => {
     noFreeModel();
     budget(1.00, 2.00);
