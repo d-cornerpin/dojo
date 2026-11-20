@@ -1,8 +1,7 @@
 // THE DELIVERIES LANE: the recipient's next turn sees the question it was asked, read from the `deliveries` rows.
 //
-// A send to someone who is NOT this turn's counterparty lives only in the SENDING conversation's tool rows, which
-// `scopeToHumanConversation` filters out of the recipient's conversation. A send into ANOTHER conversation must
-// never surface on this turn (no bleed).
+// A send to someone who is NOT this turn's counterparty sits in the SENDING conversation's rows; this lane quotes
+// it beside the recipient's own conversation, read from the delivery ledger.
 //
 // It sits at `MessageSlot.Deliveries` (1860): scoped to the served conversation it is volatile by content, so it is
 // a POST-BUDGET lane (fitting it inside `assembleContext`'s cacheable region would churn the prefix every turn).

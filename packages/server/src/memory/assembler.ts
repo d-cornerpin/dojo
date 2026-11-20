@@ -951,26 +951,21 @@ async function assembleMessageContext(
       const freshTailRaw = withSubjectKinds(agentId, horizon.keepFromSeq > 0
         ? freshTailRows.filter((m) => (m.rowid ?? 0) >= horizon.keepFromSeq)
         : freshTailRows);
-      const inFlightTurn = liveTurnContext(agentId)?.turnNumber ?? null;
-      const scopedTail = turnContext?.counterparty?.kind === 'agent'
-        ? scopeToA2AThread(freshTailRaw, turnContext.counterparty.threadId)
-        : turnContext?.isEngineTurn
-        ? scopeToEngineTurn(freshTailRaw, inFlightTurn)
-        : scopeToHumanConversation(freshTailRaw, turnContext?.counterparty, servedConversationId(agentId, turnContext), inFlightTurn);
+      // One tail for every turn kind: every conversation's rows are in view, each labelled with the one it belongs to.
       // EVENTS lane: engine notices and unauthorized human inbound, gisted at 400. A fan-out compile order
       // (`isFanoutJoinImperative`) is not one: every order, older ones too, stays whole in the fresh tail as
       // a pure append (a gist cuts off the pieces it promises; gisting an older one when a redrive lands
       // would move an emitted row ahead of the tail, a mid-session prefix rewrite), as
       // `__tests__/a-compile-order-the-model-can-see` checks. This turn's own trigger row stays whole too.
       const keepFullId = turnContext?.engineEventKeepFullId ?? null;
-      const awarenessEvents = scopedTail.filter((m) =>
+      const awarenessEvents = freshTailRaw.filter((m) =>
         m.role === 'user' &&
         (keepFullId ? m.id !== keepFullId : true) &&
         !isFanoutJoinImperative(m) &&
         (m.origin?.kind === 'engine' || (m.origin?.kind === 'user' && m.origin?.authorized === false)),
       );
       const awarenessIds = new Set(awarenessEvents.map((m) => m.id));
-      tailCache = { freshTail: chargeTurnAttachments(agentId, modelId, scopedTail.filter((m) => !awarenessIds.has(m.id)), contentBudget), awarenessEvents };
+      tailCache = { freshTail: chargeTurnAttachments(agentId, modelId, freshTailRaw.filter((m) => !awarenessIds.has(m.id)), contentBudget), awarenessEvents };
       return tailCache;
     },
   };

@@ -230,7 +230,7 @@ describe('t140 — when the view is FULL for the dialed window, only the rows th
   const SMALL_MODEL = 'm-t140-32k';
   const SMALL_WINDOW = 32_000;   // row floor 40, trim block 20
 
-  function seedSmallAgent(rows: number): void {
+  function seedSmallAgent(rows: number, repeat = 9): void {
     db().prepare(
       `INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, max_output_tokens, is_enabled)
        VALUES (?, 'p-t140', 'Snug', 'snug', '["text","tools"]', ?, 4096, 1)`,
@@ -238,7 +238,7 @@ describe('t140 — when the view is FULL for the dialed window, only the rows th
     db().prepare(
       `INSERT INTO agents (id, name, model_id, status, config, created_at) VALUES (?, 'Snug Desk', ?, 'idle', '{}', datetime('now'))`,
     ).run(SMALL_AGENT, SMALL_MODEL);
-    const body = 'The north dock tally, row by row, with the damaged lids noted beside each stack. '.repeat(9);
+    const body = 'The north dock tally, row by row, with the damaged lids noted beside each stack. '.repeat(repeat);
     for (let i = 0; i < rows; i++) {
       insertMessage({
         agentId: SMALL_AGENT, role: i % 2 === 0 ? 'user' : 'assistant', lane: 'owner',
@@ -294,11 +294,9 @@ describe('t140 — when the view is FULL for the dialed window, only the rows th
   });
 
   it('THE FLOOR (fix round 1, I4): a full view with less than one trim block above the floor folds NOTHING', async () => {
-    // 50 heavy rows: full, but only 10 rows sit above the 40-row floor — the pressure is INSIDE
-    // the floor. Before fix round 1 the trigger folded those 10 (and then 1–5 rows every turn
-    // after, one summariser call and one prefix break each). Now it answers null and the token
-    // trim handles the floor's overflow, as it always has.
-    seedSmallAgent(50);
+    // 36 heavier rows: the view is full, but the trim may take at most half (18 rows), less than one
+    // 20-row block, so the trigger answers null and the token trim handles the overflow.
+    seedSmallAgent(36, 15);
     const state = advance(initState({
       agentId: SMALL_AGENT, contextWindow: SMALL_WINDOW, isAutoRouted: false, configuredModelId: SMALL_MODEL,
       turnNumber: 30, triggeredByIMessage: false, triggeredByA2AReplyIntent: null,
@@ -309,7 +307,8 @@ describe('t140 — when the view is FULL for the dialed window, only the rows th
       agentId: SMALL_AGENT, contextWindow: SMALL_WINDOW, contextModelId: SMALL_MODEL, configuredModelId: SMALL_MODEL,
     });
     expect(rowsLeavingView({})).toBeNull();
-    await runPreCallGates(state, ctx);
+    const out = await runPreCallGates(state, ctx);
+    expect(out.state.lastContextRatio, 'the view is full').toBeGreaterThan(1);
     for (let i = 0; i < 200 && backgroundDrains.has(SMALL_AGENT); i++) await new Promise((r) => setTimeout(r, 5));
     expect(summarisedSeqs(SMALL_AGENT)).toEqual([]);
     expect(generateSummarySpy).not.toHaveBeenCalled();

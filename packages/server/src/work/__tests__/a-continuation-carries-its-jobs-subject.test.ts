@@ -351,8 +351,8 @@ describe('t173 (i-b): the request OUT OF VIEW — served, labelled, once, on a c
   });
 });
 
-describe('t173 (i-c): the thread scope keeps the job\'s own tool rows and still drops another thread\'s', () => {
-  it('rows stamped for the job\'s thread stay in the continuation\'s view; rows stamped for another thread do not', async () => {
+describe('t173 (i-c): the continuation\'s view holds the job\'s own tool rows, and another thread\'s labelled', () => {
+  it('rows stamped for the job\'s thread stay in the continuation\'s view; rows stamped for another thread are there, labelled with it', async () => {
     const { taskId } = await assignedJob();
     const OTHER_THREAD = 'beefbeef-aaaa-bbbb-cccc-ddddeeeeffff';
     const pair = (tag: string, thread: string): void => {
@@ -375,7 +375,8 @@ describe('t173 (i-c): the thread scope keeps the job\'s own tool rows and still 
     expect(turnRow(turn).subject_id).toBe(THREAD);
     expect(zeroMessagesLogged()).toBe(false);
     expect(text, 'the job\'s own earlier work on its thread is in view').toContain('JOB-PAGE-RESULT');
-    expect(text, 'another thread\'s work is not').not.toContain('OTHER-PAGE-RESULT');
+    expect(text, 'another thread\'s work is in view too').toContain('OTHER-PAGE-RESULT');
+    expect(text, 'labelled with its own thread').toContain('agent thread beefbeef');
   });
 });
 

@@ -658,9 +658,9 @@ export interface PromptTurnContext {
   latestUserSource: 'voice' | 'text' | null;
   /** Active TTS engine for voice; read from the saved voice settings when omitted. */
   ttsEngine?: 'local' | 'cloud' | null;
-  /** A dedicated A2A turn; other turns strip inter-agent traffic from context (see turn-state.ts). */
+  /** A dedicated A2A turn. */
   isA2ATurn?: boolean;
-  /** Triggered by an engine event (scheduler, reminder); the live tail is scoped to it by scopeToEngineTurn. */
+  /** Triggered by an engine event (scheduler, reminder). */
   isEngineTurn?: boolean;
   /** A notification wake: not A2A, not an engine event, newest inbound is an unauthorized notice. */
   isNotificationTurn?: boolean;
