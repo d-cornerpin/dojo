@@ -1185,7 +1185,7 @@ describe('runV2Turn integration', () => {
     expect(nudged).toBe(true);
   });
 
-  it('a peer Dojo box\'s message that goes empty gets no nudge and no empty-reply toast', async () => {
+  it('a peer Dojo box\'s message that goes empty gets no nudge, no toast, no must-answer call, and is settled', async () => {
     mockDb.current!.prepare("UPDATE messages SET channel = 'imessage', inbound_meta = ? WHERE id = 'msg-user-1'")
       .run(JSON.stringify({ channel: 'imessage', relation: 'third_party', senderIsAgent: true }));
     callModelSpy.mockResolvedValue({ content: '', toolCalls: [], inputTokens: 100, outputTokens: 0, stopReason: 'end_turn' });
@@ -1195,6 +1195,11 @@ describe('runV2Turn integration', () => {
     // The empty call and its silent retry, then the turn ends.
     expect(callModelSpy).toHaveBeenCalledTimes(2);
     expect(getBroadcastEventsByType('chat:error')).toHaveLength(0);
+    // The peer flag reached the required-reply check and finalize: no forced call, the request closed, no card.
+    expect(callModelSpy.mock.calls.some((c) => c[0].forceReply === true)).toBe(false);
+    const ask = mockDb.current!.prepare("SELECT state FROM work WHERE agent_id = 'primary' AND kind = 'ask'").get() as { state: string };
+    expect(ask.state).toBe('abandoned');
+    expect(mockDb.current!.prepare("SELECT 1 FROM messages WHERE content LIKE '%stopped trying%'").all()).toHaveLength(0);
   });
 
   it('a turn that throws after its required reply returned is handed back, never held as empty', async () => {
