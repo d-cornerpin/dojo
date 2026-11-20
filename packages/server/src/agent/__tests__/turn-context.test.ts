@@ -110,8 +110,6 @@ const THE_DRIVER_CARRIES = [
   // redundant-closeout floor, so a lost write double-SENDS the answer.
   'engineStartAckDeliveredThisTurn',
   'deferredDeliveredByAck',
-  // ANSWER-ANYWAY — the SEVENTH local of the same F10 mechanism, and it is classified here
-  // rather than drifting in. The pair above records THAT the ack lane spoke; this records
   // The queued row of an answer delivered mid-turn: written by the start-ack closure, read by finalize,
   // so it crosses the whole span; finalize does not queue the same words again while it is set.
   'earlyAnswerRowId',
