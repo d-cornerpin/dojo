@@ -370,12 +370,11 @@ export async function sendToAgent(agentId: string, input: {
       content +=
         `\nNote: the engine auto-promoted your FYI to DELIVERABLE because the payload looked deliverable-shaped (URL or completion+artefact reference). Your receiver was woken. Use intent="DELIVERABLE" explicitly next time so the routing is unambiguous.`;
     }
-    // ASSIGN auto-creates a tracker task; surface the ID so the sender can track
-    // progress without calling work_open(kind="task") themselves.
+    // An ASSIGN carries a board task; the sender is told which, and that the reply comes back.
     if (result.autoCreatedTaskId) {
       const taskShort = result.autoCreatedTaskId.slice(0, 8);
       content += result.autoTaskIsNew
-        ? `\nTask ${taskShort} auto-created and assigned to "${agentRef}", track progress with work_update(action="get", task_id="${result.autoCreatedTaskId}"). You will be notified automatically when they mark it complete.`
+        ? `\nTask ${taskShort} is the board task for this work, held by "${agentRef}". Their reply on this thread is the answer, and it wakes you.`
         : `\nContinuing on existing task ${taskShort} (created by an earlier ASSIGN on this thread).`;
     }
     // The hand-off outcome is composed by the transport; only relayed here.

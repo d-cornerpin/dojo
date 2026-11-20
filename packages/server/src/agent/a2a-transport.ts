@@ -532,11 +532,11 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
   if (effectiveIntent === 'QUESTION' || effectiveIntent === 'ASSIGN' || effectiveIntent === 'BLOCK') {
     threadInfo = `\n\n[Thread ${threadShort} | Reply on this thread, use send_to_agent with thread_id="${threadId}" and an appropriate intent]`;
     if (effectiveIntent === 'ASSIGN' && autoTask) {
-      // The tracker line tells the receiver the DOJO created the task; they update only on change.
+      // The tracker line names the task and how the receiver's reply hands it in.
       const taskShort = autoTask.taskId.slice(0, 8);
       threadInfo += autoTask.isNew
-        ? `\n[Tracker: task ${taskShort} was auto-created when ${senderName} assigned this work to you. Hand it in with work_update(action="hand_in", task_id="${autoTask.taskId}", outcome="finished", proof=[...], note) when you finish so ${senderName} gets the completion notice.]`
-        : `\n[Tracker: continuing work on task ${taskShort} (assigned earlier on this thread by ${senderName}). Update status with work_update(action="status") when state changes.]`;
+        ? `\n[Tracker: task ${taskShort} is this work's task. When you finish, reply on this thread with the result (COMPLETE, or FAIL if it cannot be done); that reply hands the task in.]`
+        : `\n[Tracker: this is more about task ${taskShort}, which you already hold.]`;
     }
     if (effectiveIntent === 'ASSIGN') {
       // The decision-moment text: states the hand-off affordance and the honest alternative.

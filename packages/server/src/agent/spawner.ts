@@ -356,7 +356,7 @@ export function jobBrief({ systemPrompt, initialMessage }: { systemPrompt: strin
     // Custom initial message provided, use it, but always remind about complete_task
     taskMessage = initialMessage;
     if (!initialMessage.toLowerCase().includes('complete_task')) {
-      taskMessage += '\n\nIMPORTANT: When you are finished, you MUST call complete_task with status="complete" and a summary. Do NOT just stop responding.';
+      taskMessage += '\n\nIMPORTANT: When you are finished, reply on this thread with send_to_agent(intent="COMPLETE") carrying your full result (that hands your task in), then call complete_task with status="complete" and a summary. Do NOT just stop responding.';
     }
   } else if (systemPrompt.toLowerCase().includes('complete_task')) {
     // System prompt already mentions complete_task, don't inject default instructions
@@ -368,8 +368,8 @@ export function jobBrief({ systemPrompt, initialMessage }: { systemPrompt: strin
 IMPORTANT INSTRUCTIONS:
 1. Begin working immediately.
 2. Use absolute file paths (e.g., /Users/<your-user>/Desktop/...), do NOT use ~ or relative paths, as they may resolve differently in your context.
-3. If you have been assigned a tracker task, hand it in with work_update(action="hand_in", task_id=YOUR_TASK_ID, outcome="finished", proof=[...], note="what you did") BEFORE calling complete_task.
-4. When you have completed the task, you MUST call the complete_task tool with status="complete", a summary of what you did, and any results. Do NOT just stop responding, call complete_task so your parent agent knows you are done.
+3. When the work is done, reply on this thread with send_to_agent(intent="COMPLETE", thread_id=<the thread_id named at the end of this message>, payload=<your full result>). That reply hands your task in. If it cannot be done, send intent="FAIL" with the reason instead.
+4. After that reply, you MUST call the complete_task tool with status="complete", a summary of what you did, and any results. Do NOT just stop responding, call complete_task so your parent agent knows you are done.
 5. If you get stuck or cannot complete the task, call complete_task with status="blocked" or status="fallen" and explain why.
 6. Do not wait for further instructions unless you need clarification, just do the work and report back via complete_task.`;
   }
@@ -802,7 +802,7 @@ export async function applySpawnTimeoutDecision(opts: {
   // Its creator or the main agent decides; the owner's path is the dashboard.
   const creatorId = agent.created_by ?? agent.parent_agent;
   if (creatorId !== callerAgentId && !isPrimaryAgent(callerAgentId)) {
-    return { ok: false, message: `Only the agent that created "${agent.name}" can decide its timeout, and you did not create it. If you are the owner, extend or dismiss it from the dashboard instead.` };
+    return { ok: false, message: `Only the agent that created "${agent.name}" or the main agent can decide its timeout, and you are neither. If you are the owner, extend or dismiss it from the dashboard instead.` };
   }
 
   if (agent.status === 'terminated') {

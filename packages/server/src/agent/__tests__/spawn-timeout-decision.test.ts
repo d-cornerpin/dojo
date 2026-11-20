@@ -61,6 +61,7 @@ describe('applySpawnTimeoutDecision - P3 decision verb', () => {
     const r = await applySpawnTimeoutDecision({ callerAgentId: 'someone-else', agentId: 'sub', action: 'extend', extendMinutes: 10 });
     expect(r.ok).toBe(false);
     expect(r.message).toMatch(/only the agent that created/i);
+    expect(r.message).toContain('or the main agent can decide its timeout, and you are neither.');
     // The decision must NOT have been applied.
     const row = mockDb.current!.prepare('SELECT timeout_decision_pending FROM agents WHERE id = ?').get('sub') as { timeout_decision_pending: number };
     expect(row.timeout_decision_pending).toBe(1);

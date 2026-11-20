@@ -17,7 +17,6 @@ import { ownerWordsLines, projectOf, workFile } from '../work/project-file.js';
 import { listTaskLog } from './task-log.js';
 import { workingExpr } from '../work/terminal-states.js';
 import { createLogger } from '../logger.js';
-import { broadcast } from '../gateway/ws.js';
 import { getAgentRuntime } from '../agent/runtime.js';
 import { insertEngineEventIfAbsent } from '../memory/message-store.js';
 import { contextWindowPolicy } from '../memory/budget.js';
@@ -268,7 +267,6 @@ export async function runPMReview(): Promise<void> {
       + 'directive="<the next concrete step>"), or nothing: never poke, never reassign, never send_to_agent(intent="ASSIGN").]';
     const msgId = uuidv4();
     insertEngineEventIfAbsent({ id: msgId, agentId: pmId, content: report, sourceAgentId: null, originIntent: 'pm_review', work: null });
-    broadcast({ type: 'chat:message', agentId: pmId, message: { id: msgId, agentId: pmId, role: 'user' as const, content: report, tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: new Date().toISOString() } });
     const runtime = getAgentRuntime();
     const asked = await runtime.handleMessage(pmId, report);
     let bound: ReturnType<typeof setTimeout> | undefined;
