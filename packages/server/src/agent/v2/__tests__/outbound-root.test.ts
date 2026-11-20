@@ -77,7 +77,7 @@ describe('the dissolution is EXACT: 32 combinations, not a reading of the diff',
   });
 
   it('PLANTED FAULT: a rule that lost one of its roots disagrees with the oracle, loudly', () => {
-    // Drop `forced_reply` from the affirmative set and the two rules part company —
+    // Drop `forced_reply` from the affirmative set and the two rules part company,
     // which is what the clause above would catch if a future edit deleted a carve-out.
     const lossy = (i: OutboundRootInput): boolean =>
       outboundRoot({ ...i, forcedReply: false }).held;

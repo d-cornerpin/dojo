@@ -176,8 +176,6 @@ describe('the declared precedence table', () => {
     // The repeat rule replaced `thrash-gate`, `thrash-drift` and `repetition`; `dead-end` replaced
     // `spinning` and `no-results`.
     // `forced-reply` is the required reply's steer.
-    // A6-3 REMOVES `ghosted-ask` and `ghosted-ask-answer` with their ladder: the required reply replaces them.
-    // A6-3 REMOVES `silent-closeout`, `reminder-silence` and `a2a-handoff-floor` with their floors, for the same reason.
     expect(STEER_PRECEDENCE.length).toBe(23);
     expect(STEER_PRECEDENCE.filter((f) => f.id === 'forced-reply').length).toBe(1);
     for (const id of ['redundant-closeout', 'near-duplicate-reply']) {
