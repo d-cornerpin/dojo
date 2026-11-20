@@ -205,14 +205,14 @@ describe('§2 a hand-off that did NOT happen is recorded honestly', () => {
   });
 
   it('every GENUINE policy drop records `suppressed`, not one of them', async () => {
-    // The three refusals the transport still makes on purpose.
-    for (const reason of ['SEMANTIC_DUPLICATE', 'HOP_LIMIT_EXCEEDED', 'AWAITING_REPLY']) {
+    // The two refusals the transport still makes on purpose.
+    for (const reason of ['SEMANTIC_DUPLICATE', 'HOP_LIMIT_EXCEEDED']) {
       deliverSpy.mockResolvedValue(refused(reason));
       await sendToAgent();
     }
     const rows = deliveries('send_to_agent');
-    expect(rows.length).toBe(3);
-    expect(rows.map((r) => r.outcome)).toEqual(['suppressed', 'suppressed', 'suppressed']);
+    expect(rows.length).toBe(2);
+    expect(rows.map((r) => r.outcome)).toEqual(['suppressed', 'suppressed']);
   });
 
   it('an unknown target is `failed` — a real send that could not be made', async () => {
@@ -254,10 +254,9 @@ describe('§2 a hand-off that did NOT happen is recorded honestly', () => {
   // list I write here, which is the only shape that closes that gap — and the clause after it
   // fails if the union grows a member this table has not ruled on.
   const HONEST_WORD: Record<string, 'suppressed' | 'failed'> = {
-    // Policy: a live refusal the transport makes ON PURPOSE. Two the sender already holds the
-    // explanation for, one that is the protocol's own bound. These three are the whole of it.
+    // Policy: a live refusal the transport makes ON PURPOSE. One the sender already holds the
+    // explanation for, one that is the protocol's own bound. These two are the whole of it.
     SEMANTIC_DUPLICATE: 'suppressed',
-    AWAITING_REPLY: 'suppressed',
     HOP_LIMIT_EXCEEDED: 'suppressed',
     // Losses: a message that did not arrive and was not refused on purpose.
     AGENT_NOT_FOUND: 'failed',

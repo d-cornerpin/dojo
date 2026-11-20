@@ -16,7 +16,7 @@ import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getAgentRuntime } from './runtime.js';
 import {
-  deliveredResult, repliesSince, insertMessageIfAbsent, insertEngineEventIfAbsent, type EngineEventWork,
+  deliveredResult, insertMessageIfAbsent, insertEngineEventIfAbsent, type EngineEventWork,
 } from '../memory/message-store.js';
 import { resolveOrCreateConversation } from '../memory/conversations.js';
 import { a2aPayloadForModel } from '../tools/inbound-fences.js';
@@ -53,7 +53,7 @@ import { selfWakeStandDown } from '../work/work-reaper.js';
 import { recordFloorGhost } from './v2/floor-ghost.js';
 import { handInHeard } from '../work/done/effects.js';
 import { latestHandIn } from '../work/done/record.js';
-import { REPLY_NEEDED_INTENTS, type A2AIntent, type A2AEnvelope, type A2ADropReason, type ChannelKind, type InboundMeta } from '@dojo/shared';
+import { type A2AIntent, type A2AEnvelope, type A2ADropReason, type ChannelKind, type InboundMeta } from '@dojo/shared';
 import { resolveRecipientDisplay } from '../contacts/resolve-recipient.js';
 import { compileAskerFromMeta } from '../work/compile-asker.js';
 import { deliveryLabel } from './v2/turn-address.js';
@@ -71,7 +71,6 @@ import { SEMANTIC_DEDUP_THRESHOLD as DEDUP_SIMILARITY_THRESHOLD } from '../memor
 const DEDUP_LOOKBACK = 3;
 
 function isNoWakeIntent(intent: A2AIntent): boolean { return NO_WAKE_INTENTS.has(intent); }
-function isReopeningIntent(intent: A2AIntent): boolean { return REPLY_NEEDED_INTENTS.has(intent); }
 
 export { isNoWakeIntent, type A2AIntent };
 
@@ -262,14 +261,12 @@ export function payloadLooksDeliverable(payload: string): boolean {
 }
 
 
-// AWAITING_REPLY is transport-local: intentionally NOT in the shared union, the tool renders it.
-type A2ADropReasonLocal = A2ADropReason | 'AWAITING_REPLY' | 'SENDER_TERMINATED';
+// SENDER_TERMINATED is transport-local: intentionally NOT in the shared union.
+type A2ADropReasonLocal = A2ADropReason | 'SENDER_TERMINATED';
 
-/** A drop is a RETURN most callers discard, so logDrops are loud; these two are exempt because
+/** A drop is a RETURN most callers discard, so logDrops are loud; a semantic duplicate is exempt because
  * the sender is told synchronously in the tool result. Unknown future reasons land at warn. */
-const DROPS_THE_SENDER_IS_TOLD_ABOUT: ReadonlySet<A2ADropReasonLocal> = new Set([
-  'AWAITING_REPLY', 'SEMANTIC_DUPLICATE',
-]);
+const DROPS_THE_SENDER_IS_TOLD_ABOUT: ReadonlySet<A2ADropReasonLocal> = new Set(['SEMANTIC_DUPLICATE']);
 
 function logDrop(envelope: A2AEnvelope, reason: A2ADropReasonLocal, extra: Record<string, unknown> = {}): void {
   const say = DROPS_THE_SENDER_IS_TOLD_ABOUT.has(reason)
@@ -459,30 +456,7 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
     return { delivered: false, reason: 'HOP_LIMIT_EXCEEDED', threadId };
   }
 
-  // A wake-intent re-ask whose last delivery was THIS sender's own unanswered wake-intent inside
-  // the cooldown is an impatient re-ping: it drops with AWAITING_REPLY until the receiver replies.
-  const AWAITING_REPLY_COOLDOWN_MS = 15 * 60_000;
   const isEngineEnvelope = envelope.fromAgent === 'system' || envelope.origin === 'engine';
-  if (isReopeningIntent(effectiveIntent) && !isEngineEnvelope) {
-    // The gate: last delivery was this sender's own wake-intent in the cooldown; the read confirms.
-    const latchRow = db.prepare(`
-      SELECT last_intent FROM a2a_threads
-       WHERE thread_id = @threadId
-         AND last_sender = @senderId
-         AND updated_at >= datetime('now', @window)
-    `).get({ threadId, senderId: envelope.fromAgent, window: `-${AWAITING_REPLY_COOLDOWN_MS / 1000} seconds` }) as
-      | { last_intent: string | null }
-      | undefined;
-    const senderOwesReply =
-      !!latchRow && !!latchRow.last_intent && isReopeningIntent(latchRow.last_intent as A2AIntent);
-    if (senderOwesReply) {
-      // Did the RECEIVER reply inside the cooldown? One table, so a reply cannot be missed.
-      if (repliesSince(envelope.fromAgent, threadId, Date.now() - AWAITING_REPLY_COOLDOWN_MS).length === 0) {
-        logDrop(envelope, 'AWAITING_REPLY');
-        return { delivered: false, reason: 'AWAITING_REPLY', threadId };
-      }
-    }
-  }
 
   // Completion intents skip dedup (checkpoints must land whatever the phrasing; dedup exists to
   // silence ack loops). System-origin skips too: every engine alert is a fresh condition.
@@ -563,7 +537,7 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
   // are excluded: ops traffic is not user-facing, and the join already delivers "Heard back".
   let primaryDeliverableHint = '';
   // Read BEFORE the piece lands: landing settles the child, and this one lookup serves the hint and the join.
-  const joinChild = findJoinChildByThread(target.id, threadId), joinHandlesDelivery = !!joinChild;
+  const joinChild = findJoinChildByThread(target.id, threadId);
   // A result for a request the owner stopped is stored and starts nothing: no hint, no wake.
   const forEndedRequest = resultForEndedRequest(target.id, threadId);
   try {
@@ -573,17 +547,17 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
     const isDeliverableShape =
       autoPromotedFromFyi ||
       (effectiveIntent === 'DELIVERABLE' || effectiveIntent === 'ANSWER');
-    if (targetIsPrimary && !senderIsOps && isDeliverableShape && !joinHandlesDelivery && !forEndedRequest) {
+    if (targetIsPrimary && !senderIsOps && isDeliverableShape && !joinChild && !forEndedRequest) {
       primaryDeliverableHint = deliverableArrivedNote(senderName);
     }
   } catch { /* best effort */ }
 
-  // A reply on a DELEGATED thread is landed on its join, which relays it or steers a compile; the
-  // engine owns delivery there, so the hint above is suppressed. Any inbound counts, label or not.
+  // Only an answer on a DELEGATED thread lands on its join, which relays it or steers a compile, so the hint
+  // above is suppressed there; a question or a progress note reaches the agent as itself and the piece stays open.
   const isReplyIntent = REPLY_INTENTS.has(effectiveIntent);
   // The sender's declared hand-off outcome, surfaced to their tool result; undefined unless passed.
   let handOffReport: { applied: boolean; message: string } | undefined;
-  if (isReplyIntent || joinHandlesDelivery) {
+  if (isReplyIntent) {
     try {
       const landed = await landReplyOnJoin({
         agentId: target.id, threadId, threadShort, payload: envelope.payload ?? '',
