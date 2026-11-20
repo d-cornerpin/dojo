@@ -135,8 +135,8 @@ describe('a task answered in turn N closes on that answer in a later turn', () =
       origin: { kind: 'agent', sourceMessageId: null, turn: null, convKey: null },
     });
     db().prepare('UPDATE work SET source_message_id = NULL WHERE id = ?').run(t);
-    line('d-ack-st', 'On it.', ASK_TURN);
-    endTurnAndSettle(askId, 'msg-ask-st', line('d-ans-st', 'Tidied: two files moved.', ASK_TURN));
+    line('d-ack-st', 'On it.', ASK_TURN, 'msg-ask-st');
+    endTurnAndSettle(askId, 'msg-ask-st', line('d-ans-st', 'Tidied: two files moved.', ASK_TURN, 'msg-ask-st'));
     db().prepare('UPDATE messages SET served_by_turn = ? WHERE id = ?').run(ASK_TURN, 'msg-ask-st');
     stampAnswered(t);
     expect(proofDelivery(t)).toBeNull();
@@ -154,8 +154,8 @@ describe('every close door reads the one proof check', () => {
     const askId = seedOwnerAsk('msg-ask-h2');
     stampClaimingTurn(askId, ASK_TURN);
     const steps = seedSteps('msg-ask-h2');
-    line('d-ack-h2', 'On it.', ASK_TURN);
-    endTurnAndSettle(askId, 'msg-ask-h2', line('d-ans-h2', 'Done.', ASK_TURN));
+    line('d-ack-h2', 'On it.', ASK_TURN, 'msg-ask-h2');
+    endTurnAndSettle(askId, 'msg-ask-h2', line('d-ans-h2', 'Done.', ASK_TURN, 'msg-ask-h2'));
     laterA2ATurn();
     expect(proofDelivery(steps[0])).toBeNull();
   });

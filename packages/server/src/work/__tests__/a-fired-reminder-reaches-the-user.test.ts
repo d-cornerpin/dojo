@@ -272,16 +272,16 @@ describe('D6 — a run closes on the delivery whether or not anybody steered it'
   });
 
   it('CONTROL: an unsteered run whose only receipts are chips is left alone', () => {
-    claim();
+    const run = claim();
     seedTurn(4621);
-    deliverInRun('d-chip', 'tool-turn', 4621);
+    deliverInRun('d-chip', 'tool-turn', 4621, run);
     expect(runsReadyToCloseOnDelivery()).toEqual([]);
   });
 
   it('a run whose own turn is still RUNNING is not closed out from under it', () => {
     const run = claim();
     seedTurn(4621, { ended_at: null, exit_reason: null, root_id: run });
-    deliverInRun('d-real', 'agent-text', 4621);
+    deliverInRun('d-real', 'agent-text', 4621, run);
     expect(runsReadyToCloseOnDelivery().map((r) => r.occurrenceId)).not.toContain(run);
   });
 
@@ -302,7 +302,7 @@ describe('D6 — a run closes on the delivery whether or not anybody steered it'
     seedSchedule('sched-backup', null);
     const run = claim('sched-backup');
     seedTurn(4621);
-    deliverInRun('d-real', 'agent-text', 4621);
+    deliverInRun('d-real', 'agent-text', 4621, run);
     expect(runsReadyToCloseOnDelivery().map((r) => r.occurrenceId)).not.toContain(run);
   });
 });
