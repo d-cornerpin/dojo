@@ -137,6 +137,9 @@ const THE_DRIVER_CARRIES = [
   'abortHandBack',
   // Another agent's request the preflight picked: the send door and the served ids read it, finalize marks it served.
   'servedRequest',
+  // The required reply: armed in the loop's exit, read by the gates, the model call, the empty ladder and finalize.
+  'forcedReplySpent',
+  'forceReplyPending',
   // PHASE-6 T2 (CUT 9) — the LAST tranche's one written crossing, and the crossing the
   // ruling was written about. T2 handed this span back rather than guess: seven closures
   // declared in `preflight` read live crossing mutable state. Eight cuts drained six of
