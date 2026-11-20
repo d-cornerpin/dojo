@@ -70,8 +70,7 @@ vi.mock('../../../db/connection.js', async () => {
 
 import { runMigrations } from '../../../db/migrations.js';
 import {
-  RECENTLY_ANSWERED_LIMIT, recentlyAnsweredAsks, recordedAnswerInConversation,
-  renderRecentlyAnsweredBlock,
+  RECENTLY_ANSWERED_LIMIT, recentlyAnsweredAsks, renderRecentlyAnsweredBlock,
 } from '../answered-edge.js';
 import {
   sessionBoundaryClause, sessionBoundaryMs, sessionBoundaryText, withSessionBoundary,
@@ -158,15 +157,6 @@ describe('§1 after a reset, the engine stops naming pre-reset asks as settled',
     expect(recentlyAnsweredAsks(AGENT, CONV, RECENTLY_ANSWERED_LIMIT)).toHaveLength(0);
   });
 
-  it('carrier 5 — the recorded-answer rung quotes nothing from before the boundary', () => {
-    answeredAskAt(0, 'Is the internet down?', 'No outage — six probes clean.', 'a');
-    expect(recordedAnswerInConversation(AGENT, CONV)).toContain('six probes clean');
-
-    resetSessionAt(at(10));
-
-    expect(recordedAnswerInConversation(AGENT, CONV)).toBeNull();
-  });
-
   it('the ask-titling read does not title a new ticket from a forgotten session', () => {
     seedMessage({ id: 'old-1', role: 'user', content: 'Set up the quarterly deck', atMs: at(0) });
     seedMessage({ id: 'old-2', role: 'user', content: 'Use last quarter as the template', atMs: at(1) });
@@ -195,7 +185,6 @@ describe('§1 after a reset, the engine stops naming pre-reset asks as settled',
     const listed = recentlyAnsweredAsks(AGENT, CONV, RECENTLY_ANSWERED_LIMIT);
     expect(listed).toHaveLength(1);
     expect(listed[0].askContent).toBe('after the reset');
-    expect(recordedAnswerInConversation(AGENT, CONV)).toBe('new answer');
   });
 });
 
@@ -298,7 +287,6 @@ describe('§4 a NULL boundary adds no clause', () => {
     answeredAskAt(5, 'ask two', 'answer two', 'b');
     expect(sessionBoundaryText(AGENT)).toBeNull();
     expect(recentlyAnsweredAsks(AGENT, CONV, RECENTLY_ANSWERED_LIMIT)).toHaveLength(2);
-    expect(recordedAnswerInConversation(AGENT, CONV)).toBe('answer two');
   });
 });
 
@@ -338,14 +326,12 @@ describe('§5 intra-session suppression is not weakened by one byte', () => {
     expect(renderRecentlyAnsweredBlock(bounded)).toBe(renderRecentlyAnsweredBlock(unbounded));
   });
 
-  it('carrier 5 and the titling read are unchanged in-session too', () => {
+  it('the titling read is unchanged in-session too', () => {
     seedALiveSession();
-    const answerBounded = recordedAnswerInConversation(AGENT, CONV);
     const fresh = seedMessage({ id: 'fresh', role: 'user', content: 'and now this', atMs: at(4) });
     const titleBounded = priorOwnerContext(AGENT, CONV, fresh);
 
     db().prepare('UPDATE agents SET session_started_at = NULL WHERE id = ?').run(AGENT);
-    expect(recordedAnswerInConversation(AGENT, CONV)).toBe(answerBounded);
     expect(priorOwnerContext(AGENT, CONV, fresh)).toEqual(titleBounded);
     expect(titleBounded.length).toBeGreaterThan(0);
   });

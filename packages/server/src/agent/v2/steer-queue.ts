@@ -6,7 +6,7 @@ import { withAuthorHead } from './steer-author-head.js';
 export type SteerFloorId =
   | 'ungrounded-claim' | 'delivery-denial' | 'failed-save-claim' | 'uncommitted-promise'
   | 'false-delivery-claim' | 'handed-back-ask'
-  | 'forced-reply' | 'ghosted-ask' | 'ghosted-ask-answer' | 'silent-closeout' | 'delegation-exit'
+  | 'forced-reply' | 'silent-closeout' | 'delegation-exit'
   | 'reminder-silence'
   | 'start-ack' | 'start-ack-reminder' | 'owed-interrupt' | 'promise-floor'
   | 'a2a-handoff-floor' | 'a2a-missed-reply' | 'going-idle-in-progress'
@@ -32,7 +32,6 @@ export const STEER_PRECEDENCE: readonly SteerFloorSpec[] = [
   { id: 'false-delivery-claim',  priority: 14, why: 'reply says the artifact was delivered and the only tool that could send it ERRORED this turn' },
 
   { id: 'forced-reply',          priority: 20, why: 'the turn is ending with nothing said to the person waiting; the reply is required' },
-  { id: 'ghosted-ask-answer',    priority: 21, why: 'ghosted twice; hand the model its own recorded answer' },
   { id: 'silent-closeout',       priority: 22, why: 'task completed, the asker heard nothing' },
   { id: 'delegation-exit',       priority: 23, why: 'work handed off, the turn about to end silently' },
   { id: 'reminder-silence',      priority: 24, why: 'a reminder is due and the turn is ending without it being said' },
@@ -46,7 +45,6 @@ export const STEER_PRECEDENCE: readonly SteerFloorSpec[] = [
   { id: 'a2a-missed-reply',      priority: 30, why: 'a peer asked and got prose instead of a reply' },
   { id: 'going-idle-in-progress', priority: 31, why: 'silent stop with in_progress work dangling' },
   { id: 'handed-back-ask',       priority: 32, why: 'a person waits on a message a dead run handed back: what it already did and may have sent come before acting' },
-  { id: 'ghosted-ask',           priority: 33, why: 'a direct human ask ended in silence' },
 
   // Above empty-response: a call that burned its whole output budget must not be diagnosed as an empty one.
   { id: 'output-grind',          priority: 39, why: 'the model spent its whole output budget reasoning, with no tool call and no answer' },

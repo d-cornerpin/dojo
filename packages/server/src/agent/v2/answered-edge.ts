@@ -86,24 +86,6 @@ export function substantiveReplySince(agentId: string, sinceMs: number): boolean
 
 // Every read below that LISTS or QUOTES a settled ask first asks `answerStillStands`.
 
-/** The agent's OWN recorded answer, newest settled ask only, IN THE CURRENT SESSION; the engine QUOTES it.
- *  A reset or withdrawal returns null and never falls back to an OLDER answer (never on offer). */
-export function recordedAnswerInConversation(agentId: string, conversationId: string): string | null {
-  const session = withSessionBoundary(agentId, 'm1.created_at');
-  const r = getDb().prepare(
-    `SELECT m2.content AS answer, m1.seq AS ask_seq, m2.id AS ans_id
-       FROM messages m1 JOIN messages m2 ON m2.id = m1.answer_message_id
-      WHERE m1.agent_id = ? AND m1.role = 'user' AND m1.conversation_id = ?
-        AND m1.answer_message_id IS NOT NULL AND m2.role = 'assistant'${session.sql}
-      ORDER BY m1.created_at DESC LIMIT 1`,
-  ).get(agentId, conversationId, ...session.params) as
-    | { answer: string; ask_seq: number; ans_id: string }
-    | undefined;
-  if (!r) return null;
-  if (!answerStillStands(agentId, r.ask_seq, r.ans_id)) return null;
-  return r.answer;
-}
-
 // The prompt-assembly reads of this edge; the epoch-ms date type is handled ONCE, here.
 
 /** How many settled asks the engine names; the recall lane uses this same number. */

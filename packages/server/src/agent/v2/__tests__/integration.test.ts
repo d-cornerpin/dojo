@@ -2685,15 +2685,7 @@ describe('HL3: model-visible means logged (the runtime invariant, driven)', () =
 // STRIP-2 enumerated the conv-KEY-passed-as-conversation-ID class tree-wide (13 signatures,
 // 21 call sites, 51 SQL bind sites) and found exactly two live members. Both cross a
 // function boundary, so no bind-site grep can see them and no type can catch them — both
-// values are `string`. These two clauses are the alarm, and both were written RED.
-//
-//   (a) `loop.ts` handed `recordedAnswerInConversation` a conv KEY ('owner') where its SQL
-//       filters `m1.conversation_id = ?` — a UUID column. Measured on the live body: a key
-//       matches 0 of 6,975 stamped rows (0 of them non-UUID) where real ids match 954. The
-//       call therefore always returned null, `excerpt.length > 0` was always false, and the
-//       ghosted-work-ask ladder's SECOND rung — the one that hands the model its own
-//       recorded words to restate rather than the engine speaking as the agent (OR2) — has
-//       never once fired since the T10I rekey.
+// values are `string`. The member that remains is held below.
 //
 //   (b) `currentTurnConversationId` was written from the PRE-repair value: the pickup repair
 //       (`loop.ts`, "resolved at pickup") reassigns `chosenConversationId` for exactly the
@@ -2745,22 +2737,10 @@ describe('STRIP-3: the turn hands down conversation IDENTITY, never a conversati
     expect(seenAtAssembly.length).toBeGreaterThan(0);
     expect(seenAtAssembly[0]).toBe('conv-primary');
   });
+});
 
-  it('(a) the ghosted-ask ladder\'s second steer hands the model its own recorded answer', async () => {
-    // The recorded answer the second rung is supposed to quote: an answered ask in THIS
-    // conversation, written the way the answered edge records one (`answer_message_id`).
-    // Raw SQL on purpose — this pair is settled history, not a waiting ask, so it must not
-    // open a ticket.
-    mockDb.current!.prepare(
-      `INSERT INTO messages (id, agent_id, role, content, turn_number, conversation_id, created_at)
-       VALUES ('msg-prior-answer', 'primary', 'assistant', 'The launch is on the 14th; the pricing page is already live.', 1, 'conv-primary', (CAST(strftime('%s','now') AS INTEGER) * 1000) - 60000)`,
-    ).run();
-    mockDb.current!.prepare(
-      `INSERT INTO messages (id, agent_id, role, content, turn_number, conversation_id, channel, sender_id, answer_message_id, created_at)
-       VALUES ('msg-prior-ask', 'primary', 'user', 'when does the launch happen?', 1, 'conv-primary', 'dashboard', 'owner', 'msg-prior-answer', (CAST(strftime('%s','now') AS INTEGER) * 1000) - 61000)`,
-    ).run();
-
-    // The trigger: a human ask the decision model judges WORK, not a decline of the earlier reply.
+describe('a bare [no-reply] on a direct work ask is answered by the required reply, never a ladder', () => {
+  it('one required call carries the one steer, and no engine hint about [no-reply] is sent', async () => {
     installDecisionModel(mockDb.current!);
     scriptDecisions((name) => yes(name === 'declined' ? 0.1 : 0.9));
     expect(claimAsk(askIdForMessage('msg-user-1'), 'primary').kind).toBe('applied');
@@ -2770,26 +2750,16 @@ describe('STRIP-3: the turn hands down conversation IDENTITY, never a conversati
       turnNumber: 2, channel: 'dashboard', senderId: 'owner', conversationId: 'conv-primary',
       inboundMeta: JSON.stringify({ channel: 'dashboard', relation: 'owner' }),
     });
-
-    // The model ghosts every time: bare sentinel, no tool calls.
     callModelSpy.mockResolvedValue({
       content: '[no-reply]', toolCalls: [], inputTokens: 100, outputTokens: 5, stopReason: 'end_turn',
     });
 
     await runV2Turn('primary');
 
-    const messagesOfCall = (i: number): string =>
-      JSON.stringify((callModelSpy.mock.calls[i]?.[0] as { messages?: unknown })?.messages ?? []);
-
-    // POSITIVE CONTROL: the ladder was reached and its FIRST rung fired. Without this a
-    // green below could mean "the ladder never ran", which is the opposite finding.
-    expect(callModelSpy.mock.calls.length).toBeGreaterThanOrEqual(2);
-    expect(messagesOfCall(1)).toContain('[Engine hint: you ended with [no-reply]');
-
-    // THE CLAUSE: the second rung fires, and it carries the agent's OWN recorded words.
-    expect(callModelSpy.mock.calls.length).toBeGreaterThanOrEqual(3);
-    expect(messagesOfCall(2)).toContain('[Engine record: you again ended with [no-reply]');
-    expect(messagesOfCall(2)).toContain('The launch is on the 14th');
+    const sent = callModelSpy.mock.calls.map((c) => JSON.stringify((c[0] as { messages?: unknown }).messages ?? []));
+    expect(sent).toHaveLength(2);
+    expect(sent[1]).toContain('is waiting for your answer to their message. Write it now.');
+    expect(sent.join('\n')).not.toContain('you ended with [no-reply]');
     vi.unstubAllGlobals();
   });
 });
