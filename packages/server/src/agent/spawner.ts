@@ -23,7 +23,6 @@ import { memoryGrep } from '../memory/retrieval.js';
 import { insertMessageIfAbsent } from '../memory/message-store.js';
 import { canSpawnAgent } from '../services/resource-monitor.js';
 import { archiveAgentConversation } from '../vault/archive.js';
-import { getFilteredTools } from './tools/surface.js';
 import type { PermissionManifest, Agent } from '@dojo/shared';
 
 const logger = createLogger('spawner');
@@ -353,7 +352,8 @@ const NO_REPLY_HAND_IN = 'When your work left a record (a file, a command or a r
 
 /** The working rules a new helper's job carries in its ASSIGN: the caller's own first message, else the default.
  *  A helper without send_to_agent is told to finish with complete_task alone. */
-export function jobBrief({ agentId, systemPrompt, initialMessage }: { agentId: string; systemPrompt: string; initialMessage?: string }): string {
+export async function jobBrief({ agentId, systemPrompt, initialMessage }: { agentId: string; systemPrompt: string; initialMessage?: string }): Promise<string> {
+  const { getFilteredTools } = await import('./tools/surface.js');   // loaded on use: the tool surface is a large graph
   const replies = getFilteredTools(agentId).some((t) => t.name === 'send_to_agent');
   if (initialMessage) {
     // A custom first message is used as written, with a reminder of how to finish when it names none.
