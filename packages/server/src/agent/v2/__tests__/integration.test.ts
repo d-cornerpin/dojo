@@ -1172,6 +1172,20 @@ describe('runV2Turn integration', () => {
     expect(getBroadcastEventsByType('chat:error')).toHaveLength(0);
   });
 
+  it('a voice turn that owes a person and goes empty keeps the nudge: no must-answer call follows there', async () => {
+    mockDb.current!.prepare("UPDATE messages SET channel = 'voice' WHERE id = 'msg-user-1'").run();
+    callModelSpy.mockResolvedValue({ content: '', toolCalls: [], inputTokens: 100, outputTokens: 0, stopReason: 'end_turn' });
+
+    await runV2Turn('primary');
+
+    // The empty call, its silent retry, then the nudge; never the must-answer call.
+    expect(callModelSpy).toHaveBeenCalledTimes(3);
+    expect(callModelSpy.mock.calls.some((c) => c[0].forceReply === true)).toBe(false);
+    const nudged = (callModelSpy.mock.calls[2][0].messages as Array<{ content: unknown }>)
+      .some((m) => typeof m.content === 'string' && m.content.startsWith('[System: You returned an empty response.'));
+    expect(nudged).toBe(true);
+  });
+
   it('a required-reply pass that leaves before its call (a preempt) arms no second one', async () => {
     const empty = { content: '', toolCalls: [], inputTokens: 100, outputTokens: 0, stopReason: 'end_turn' };
     callModelSpy.mockImplementationOnce(async () => empty).mockImplementationOnce(async () => {

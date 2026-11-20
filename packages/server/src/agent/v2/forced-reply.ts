@@ -12,6 +12,10 @@ import { turnParkedTheJob } from './engine-exit.js';
 import { advance } from './state.js';
 import { userWords } from './turn-address.js';
 
+/** A live call (voice, phone) is never given the must-answer call; everywhere else it follows a silent end. */
+export const replyCanBeRequired = (latestUserSource: string | null, inboundChannel: string | null): boolean =>
+  latestUserSource !== 'voice' && inboundChannel !== 'phone';
+
 /** Should the turn, about to end, make the required call? When it should, the pass is armed (spent first, so a
  *  pass that leaves before any call never arms a second) and the loop re-enters past its gates. */
 export async function forcedReplyDue(
@@ -21,7 +25,7 @@ export async function forcedReplyDue(
   const state = turnCtx.state!;
   if (turnCtx.forcedReplySpent || state.engineCutExit !== null || turnParkedTheJob(p.agentId)) return false;
   if (state.lastAssistantTextForIM || turnCtx.deferredUserReplyWithTools) return false;
-  if (p.latestUserSource === 'voice' || state.inboundChannel === 'phone') return false;
+  if (!replyCanBeRequired(p.latestUserSource, state.inboundChannel)) return false;
   const owesItsDeliverable = turnCtx.root?.kind === 'occurrence'
     && DELIVERABLE_OWING_TASK_KINDS.includes(turnCtx.servedWork?.taskKind ?? '')
     && !turnDeliveredToPerson(p.agentId, p.turnNumber);

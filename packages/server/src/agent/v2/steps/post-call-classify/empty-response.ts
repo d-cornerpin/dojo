@@ -12,6 +12,7 @@ import { outputTruncationClassifier } from '../../classifiers/output.js';
 import { continueLoop, proceed, requestExit, type StepOutcome } from '../step-outcome.js';
 import type { PostCallClassifyContext } from './index.js';
 import { userWords } from '../../turn-address.js';
+import { replyCanBeRequired } from '../../forced-reply.js';
 
 const logger = createLogger('v2-loop');
 
@@ -120,8 +121,8 @@ export function runEmptyResponse(state: AgentTurnState, ctx: PostCallClassifyCon
       state = advance(state, { retriedEmptyResponse: true });
       return continueLoop(state);
     }
-    // A person still owed is answered by the required reply at the loop's exit, never by a nudge here.
-    if (owesAPerson) return requestExit(state, 'empty-response-owed');
+    // A person still owed is answered by the required reply at the loop's exit, where one follows.
+    if (owesAPerson && replyCanBeRequired(ctx.latestUserSource, ctx.inboundChannel)) return requestExit(state, 'empty-response-owed');
     // Then one explicit nudge, as a steer.
     if (!steerFired(state.steerQueue, 'empty-response')) {
       logger.warn('v2: model returned empty after silent retry, nudging', {
