@@ -80,6 +80,18 @@ export function sqlTimeMs(text: string): number {
 }
 /** The second the task was opened in: second-resolution rows written in that second count as after it. */
 export const openedFloor = (task: ProofTask): number => Math.floor(task.openedAt / 1000) * 1000;
+/** `datetime('now')` text for an instant, floored to its second: how the rows below stamp their time. */
+export const sqlFloor = (ms: number): string => new Date(Math.floor(ms / 1000) * 1000).toISOString().replace('T', ' ').slice(0, 19);
+
+/** SQL: the record under alias `a` was made, by the root the engine stamped on it, in a turn that served task
+ *  `@task`: one of its runs, its request or its project's, an engine event that named it, or its A2A thread. */
+const ROOT_SERVES_TASK = (a: string): string => `(
+     (${a}.root_kind = 'occurrence' AND EXISTS (SELECT 1 FROM work wr WHERE wr.id = ${a}.root_id AND wr.parent_id = @task))
+  OR (${a}.root_kind = 'ask' AND EXISTS (SELECT 1 FROM work wt LEFT JOIN work wp ON wp.id = wt.parent_id
+        WHERE wt.id = @task AND ${a}.root_id IN (wt.source_message_id, wp.source_message_id)))
+  OR (${a}.root_kind = 'engine' AND EXISTS (SELECT 1 FROM messages we WHERE we.id = ${a}.root_id AND we.task_id = @task))
+  OR (${a}.root_kind = 'a2a' AND EXISTS (SELECT 1 FROM work wt WHERE wt.id = @task AND wt.a2a_thread_id = ${a}.root_id)))`;
+const tied = (n: number | null): 'yes' | 'no' => (n ? 'yes' : 'no');
 const excerpt = (text: string | null | undefined): string => (text ?? '').replace(/\s+/g, ' ').trim().slice(0, 200);
 const claim = (ctx: ProofContext, text: string): boolean => isStatusClaimOnly(text, { id: ctx.task.id, title: ctx.task.title });
 
@@ -94,11 +106,12 @@ type Resolver = (ctx: ProofContext, ref: string, input: ProofItemInput) => Facts
 function delivery(ctx: ProofContext, ref: string): Facts | string {
   const d = getDb().prepare(
     `SELECT d.agent_id, d.tool, d.channel, d.recipient_id, d.recipient_display, d.conversation_id, d.outcome, d.created_at, d.detail,
-            d.turn_number, d.message_id, m.display_kind, m.origin_intent, COALESCE(m.content, r.sent_text) AS text
+            d.turn_number, d.message_id, m.display_kind, m.origin_intent, COALESCE(m.content, r.sent_text) AS text,
+            ${ROOT_SERVES_TASK('d')} AS tied
        FROM deliveries d LEFT JOIN messages m ON m.id = d.message_id LEFT JOIN tool_receipts r ON r.id = d.receipt_id
       WHERE d.id = ?`,
-  ).get(ref) as { agent_id: string; tool: string; channel: string; recipient_id: string | null; detail: string | null;
-    turn_number: number | null; message_id: string | null;
+  ).get(ref, { task: ctx.task.id }) as { agent_id: string; tool: string; channel: string; recipient_id: string | null; detail: string | null;
+    turn_number: number | null; message_id: string | null; tied: number;
     display_kind: string | null; origin_intent: string | null; recipient_display: string | null; conversation_id: string | null;
     outcome: string; created_at: string; text: string | null } | undefined;
   if (!d) return '';
@@ -115,7 +128,7 @@ function delivery(ctx: ProofContext, ref: string): Facts | string {
   if (claim(ctx, d.text)) return 'is only a status claim, which is never proof';
   if (startLineOfItsTurn(ctx, ref, d)) return 'is the start line of its turn, not the answer';
   return { channel: d.channel, recipient: d.recipient_display ?? d.recipient_id ?? 'the owner', at: d.created_at,
-    message: d.message_id ?? '', excerpt: excerpt(d.text) };
+    message: d.message_id ?? '', excerpt: excerpt(d.text), tied: tied(d.tied) };
 }
 
 const isEngineTool = (tool: string): boolean => ENGINE_SENT_TOOLS.has(tool) || tool.endsWith('-door');
@@ -152,20 +165,23 @@ function exitOf(result: string, detail: string | null): number | string {
 /** The worker's newest run of the command as it ran it: the shell script, or the exec argv joined by spaces. */
 function command(ctx: ProofContext, ref: string): Facts | string {
   const a = getDb().prepare(
-    `SELECT target, result, detail, created_at FROM audit_log WHERE action_type = 'exec' AND agent_id = ? AND target = ?
-      ORDER BY created_at DESC, rowid DESC LIMIT 1`,
-  ).get(ctx.workerId, ref) as { target: string | null; result: string; detail: string | null; created_at: string } | undefined;
+    `SELECT target, result, detail, created_at, ${ROOT_SERVES_TASK('a')} AS tied FROM audit_log a
+      WHERE action_type = 'exec' AND agent_id = ? AND target = ? ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+  ).get(ctx.workerId, ref, { task: ctx.task.id }) as
+    { target: string | null; result: string; detail: string | null; created_at: string; tied: number } | undefined;
   if (!a) return 'is not a command the worker ran';
   if (!(sqlTimeMs(a.created_at) >= openedFloor(ctx.task))) return 'was run before the task was opened';
   const exit = exitOf(a.result, a.detail);
   if (ctx.outcome === 'finished' && exit !== 0) return `did not succeed (exit ${exit}), so it cannot prove a finished task`;
-  return { command: a.target ?? '', exit, output: excerpt(a.detail), at: a.created_at };
+  return { command: a.target ?? '', exit, output: excerpt(a.detail), at: a.created_at, tied: tied(a.tied) };
 }
 
-interface ReceiptRow { agent_id: string; tool: string; verified: number; basis: string; recipient: string | null; detail: string | null; created_at: string }
-const receiptRow = (ref: string): ReceiptRow | undefined => getDb().prepare(
-  'SELECT agent_id, tool, verified, basis, recipient, detail, created_at FROM tool_receipts WHERE id = ?',
-).get(ref) as ReceiptRow | undefined;
+interface ReceiptRow {
+  agent_id: string; tool: string; verified: number; basis: string; recipient: string | null; detail: string | null; created_at: string; tied: number;
+}
+const receiptRow = (ref: string, task: string): ReceiptRow | undefined => getDb().prepare(
+  `SELECT agent_id, tool, verified, basis, recipient, detail, created_at, ${ROOT_SERVES_TASK('r')} AS tied FROM tool_receipts r WHERE id = ?`,
+).get(ref, { task }) as ReceiptRow | undefined;
 
 /** The error a receipt's detail JSON carries, or ''. */
 function receiptError(detail: string | null): string {
@@ -179,14 +195,14 @@ function receiptError(detail: string | null): string {
 const AGENT_SEND_TOOLS: ReadonlySet<string> = new Set(['send_to_agent', 'broadcast_to_group']);
 
 function receipt(ctx: ProofContext, ref: string): Facts | string {
-  const r = receiptRow(ref);
+  const r = receiptRow(ref, ctx.task.id);
   if (!r) return '';
   if (AGENT_SEND_TOOLS.has(r.tool)) return 'is a message to another agent, which proves the work only as a delivery to the asker';
   const own = ownRow(ctx, r.agent_id, sqlTimeMs(r.created_at));
   if (own) return own;
   if (ctx.outcome === 'finished' && r.verified !== 1) return 'was not confirmed by the provider, so it cannot prove a finished task';
   const error = receiptError(r.detail);
-  return { tool: r.tool, verified: r.verified, basis: r.basis, recipient: r.recipient ?? '', at: r.created_at, ...(error ? { error } : {}) };
+  return { tool: r.tool, verified: r.verified, basis: r.basis, recipient: r.recipient ?? '', at: r.created_at, tied: tied(r.tied), ...(error ? { error } : {}) };
 }
 
 function measure(ctx: ProofContext, ref: string): Facts | string {
@@ -216,7 +232,7 @@ function remainder(ctx: ProofContext, ref: string, input: ProofItemInput): Facts
 }
 
 function failure(ctx: ProofContext, ref: string): Facts | string {
-  const r = receiptRow(ref);
+  const r = receiptRow(ref, ctx.task.id);
   if (!r) return '';
   const error = receiptError(r.detail);
   if (!error) return 'carries no error';
@@ -243,13 +259,13 @@ function withdrawal(ctx: ProofContext, ref: string): Facts | string {
 
 function file(ctx: ProofContext, ref: string): Facts | string {
   const w = getDb().prepare(
-    `SELECT MAX(created_at) AS at FROM audit_log
+    `SELECT MAX(created_at) AS at, MAX(created_at >= @floor AND ${ROOT_SERVES_TASK('a')}) AS tied FROM audit_log a
       WHERE action_type = 'file_write' AND result = 'success' AND agent_id = ? AND target = ?`,
-  ).get(ctx.workerId, ref) as { at: string | null };
+  ).get(ctx.workerId, ref, { task: ctx.task.id, floor: sqlFloor(ctx.task.openedAt) }) as { at: string | null; tied: number | null };
   if (!w.at) return 'is a file the worker never wrote';
   if (!(sqlTimeMs(w.at) >= openedFloor(ctx.task))) return 'was written before the task was opened';
   const f = fileFacts(ctx.workerId, ref);
-  return f.ok ? { ...f.facts } : f.why;
+  return f.ok ? { ...f.facts, tied: tied(w.tied) } : f.why;
 }
 
 const RESOLVERS: Record<ProofKind, Resolver> = { file, delivery, command, receipt, measure, remainder, failure, withdrawal };

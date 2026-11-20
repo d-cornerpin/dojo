@@ -5,7 +5,7 @@
 // Neither judges whether the proof meets the goal: a decider does that after opening it.
 import { getDb } from '../../db/connection.js';
 import { measureReadsZero } from '../measure-close-gate.js';
-import { PROOF_LABELS, resolveItem, type HandInOutcome, type ProofContext, type ProofItemInput, type ProofKind, type ProofTask, type ResolvedItem } from './proof-kinds.js';
+import { PROOF_LABELS, resolveItem, sqlFloor, type HandInOutcome, type ProofContext, type ProofItemInput, type ProofKind, type ProofTask, type ResolvedItem } from './proof-kinds.js';
 import { askerOf } from './asker.js';
 
 export type { HandInOutcome, ProofItemInput, ProofKind, ResolvedItem } from './proof-kinds.js';
@@ -65,9 +65,6 @@ export function checkProof(
   return refusals.length > 0 ? { ok: false, refusals } : { ok: true, items: resolved };
 }
 
-/** `datetime('now')` text for an instant, floored to its second: how the rows below stamp their time. */
-const sqlFloor = (ms: number): string => new Date(Math.floor(ms / 1000) * 1000).toISOString().replace('T', ' ').slice(0, 19);
-
 type Found = 'delivery' | 'file' | 'receipt' | 'measure';
 type Finder = (workId: string, worker: string, floor: string) => ProofItemInput[];
 
@@ -91,12 +88,15 @@ const FINDERS: Record<Found, Finder> = {
 /** Channels that reach no person: a run's engine-found delivery must not be one of them. */
 const NO_PERSON_CHANNELS: ReadonlySet<string> = new Set(['a2a', 'none']);
 
-function found(workId: string, kinds: readonly Found[], byEngine = false): ResolvedItem[] {
+/** `tiedOnly`: only what the engine tied to the task by its own record, for an engine decision. */
+function found(workId: string, kinds: readonly Found[], byEngine = false, tiedOnly = false): ResolvedItem[] {
   const task = taskOf(workId);
   if (!task) return [];
   const ctx: ProofContext = { task, asker: askerOf(workId), workerId: task.worker, outcome: 'finished', byEngine };
+  const counts = (i: ResolvedItem): boolean =>
+    !(byEngine && NO_PERSON_CHANNELS.has(String(i.facts.channel))) && !(tiedOnly && i.facts.tied === 'no');
   return kinds.flatMap((k) => FINDERS[k](workId, task.worker, sqlFloor(task.openedAt)))
-    .flatMap((c) => { const r = resolveItem(ctx, c); return r.ok && !(byEngine && NO_PERSON_CHANNELS.has(String(r.item.facts.channel))) ? [r.item] : []; });
+    .flatMap((c) => { const r = resolveItem(ctx, c); return r.ok && counts(r.item) ? [r.item] : []; });
 }
 
 /** THE engine's finder: deliveries to the asker, files the worker wrote that were charged to this task's
@@ -105,11 +105,11 @@ export const proofFor = (workId: string): ResolvedItem[] => found(workId, ['deli
 
 /** The newest delivery to the asker on record for this task: what a close points at, or null. `byEngine`:
  *  the engine's own run close, where the delivery may go to whoever the schedule serves. */
-export const proofDelivery = (workId: string, byEngine = false): string | null => found(workId, ['delivery'], byEngine).pop()?.ref ?? null;
+export const proofDelivery = (workId: string, byEngine = false): string | null => found(workId, ['delivery'], byEngine, true).pop()?.ref ?? null;
 
 /** What the engine itself may count for this task without a decider: a file or the measure at 0,
  *  never a line of text, which may be an ack. */
-export const engineProof = (workId: string): ResolvedItem[] => found(workId, ['file', 'measure']);
+export const engineProof = (workId: string): ResolvedItem[] => found(workId, ['file', 'measure'], false, true);
 
 const fact = (f: ResolvedItem['facts'], k: string): string => (f[k] === undefined ? '' : String(f[k]));
 
@@ -130,7 +130,7 @@ function summarize(i: ResolvedItem): string {
 
 /** Each item as one line, "<label>: <what it shows>". A delivery always reads as the worker's own message. */
 export function proofLines(items: readonly ResolvedItem[]): string[] {
-  return items.map((i) => `${PROOF_LABELS[i.kind]}: ${summarize(i)}`);
+  return items.map((i) => `${PROOF_LABELS[i.kind]}: ${summarize(i)}${i.facts.tied === 'no' ? ' (the engine could not tie this to the task)' : ''}`);
 }
 
 

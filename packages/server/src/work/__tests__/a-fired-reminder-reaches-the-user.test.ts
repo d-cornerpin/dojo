@@ -141,9 +141,9 @@ const stateOf = (id: string): string =>
   (db().prepare('SELECT state FROM work WHERE id = ?').get(id) as { state: string }).state;
 
 /** A delivery INSIDE the run's window, pointing at a row of the given display kind. */
-function deliverInRun(id: string, displayKind: string, turnNumber: number): void {
+function deliverInRun(id: string, displayKind: string, turnNumber: number, run: string | null = null): void {
   const msg = seedMessage(`m-${id}`, displayKind);
-  seedDelivery(id, { message_id: msg, turn_number: turnNumber });
+  seedDelivery(id, { message_id: msg, turn_number: turnNumber, root_kind: run ? 'occurrence' : null, root_id: run });
 }
 
 beforeEach(() => {
@@ -260,7 +260,7 @@ describe('D6 — a run closes on the delivery whether or not anybody steered it'
   it('an UNSTEERED run with a real delivery is ready to close (the driven repro)', () => {
     const run = claim();
     seedTurn(4621);
-    deliverInRun('d-real', 'agent-text', 4621);
+    deliverInRun('d-real', 'agent-text', 4621, run);
     const ready = runsReadyToCloseOnDelivery();
     expect(ready.map((r) => r.occurrenceId)).toContain(run);
   });
@@ -294,7 +294,7 @@ describe('D6 — a run closes on the delivery whether or not anybody steered it'
     // a stranded row from some other work, months old, never ended
     seedTurn(1234, { ended_at: null, exit_reason: null, root_kind: 'ask', root_id: null });
     seedTurn(4621);
-    deliverInRun('d-real', 'agent-text', 4621);
+    deliverInRun('d-real', 'agent-text', 4621, run);
     expect(runsReadyToCloseOnDelivery().map((r) => r.occurrenceId)).toContain(run);
   });
 

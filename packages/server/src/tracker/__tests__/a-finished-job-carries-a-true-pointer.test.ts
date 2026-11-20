@@ -52,12 +52,13 @@ function seedMessage(id: string, content: string, turn: number | null): void {
 }
 
 function seedDelivery(
-  id: string, o: { turn: number | null; messageId?: string | null; tool?: string; offsetSeconds?: number },
+  id: string, o: { turn: number | null; messageId?: string | null; tool?: string; offsetSeconds?: number; serving?: string },
 ): void {
   mockDb.current!.prepare(
-    `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, conversation_id, message_id, outcome, created_at)
-     VALUES (?, ?, ?, ?, 'dashboard', ?, ?, 'delivered', datetime('now', ?))`,
-  ).run(id, AGENT, o.turn, o.tool ?? 'dashboard', CONV, o.messageId ?? null, `+${(o.offsetSeconds ?? 0) + 5} seconds`);
+    `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, conversation_id, message_id, outcome, created_at, root_kind, root_id)
+     VALUES (?, ?, ?, ?, 'dashboard', ?, ?, 'delivered', datetime('now', ?), ?, ?)`,
+  ).run(id, AGENT, o.turn, o.tool ?? 'dashboard', CONV, o.messageId ?? null, `+${(o.offsetSeconds ?? 0) + 5} seconds`,
+    o.serving ? 'ask' : null, o.serving ?? null);
 }
 
 /** A tracker task exactly as the tool path opens one. */
@@ -101,10 +102,10 @@ describe('the close receipt is a message to the asker made during the task', () 
     seedTurn(4552);
     const taskId = seedTask('task-s4-open', { sourceMessageId: 'msg-owner-s4' });
     seedMessage('msg-ack-s4', "On it, I've handed Squarespace to one helper and WordPress to another to dig into.", 4552);
-    seedDelivery('a133f5e2', { turn: 4552, messageId: 'msg-ack-s4' });
+    seedDelivery('a133f5e2', { turn: 4552, messageId: 'msg-ack-s4', serving: 'msg-owner-s4' });
     seedTurn(4555);
     seedMessage('msg-rundown-s4', 'Squarespace is $276/yr all-in; WordPress needs separate hosting.', 4555);
-    seedDelivery('8eb0439d', { turn: 4555, messageId: 'msg-rundown-s4', offsetSeconds: 10 });
+    seedDelivery('8eb0439d', { turn: 4555, messageId: 'msg-rundown-s4', offsetSeconds: 10, serving: 'msg-owner-s4' });
     mockDb.current!.prepare(`UPDATE work SET result_delivery_id = '8eb0439d' WHERE id = ?`).run(askId);
     expect(proofFor(taskId).map((i) => i.ref)).toEqual(['8eb0439d']);
     expect(proofDelivery(taskId)).toBe('8eb0439d');
@@ -112,18 +113,18 @@ describe('the close receipt is a message to the asker made during the task', () 
 
   it('G7 CONTROL: a close that really did deliver resolves its receipt', () => {
     seedTurn(4552);
-    const taskId = seedTask('task-same-turn');
+    const taskId = seedTask('task-same-turn', { sourceMessageId: OWNER_MSG });
     seedMessage('msg-answer', 'Here is the combined rundown: Squarespace $276/yr…', 4552);
-    seedDelivery('d-answer', { turn: 4552, messageId: 'msg-answer' });
+    seedDelivery('d-answer', { turn: 4552, messageId: 'msg-answer', serving: OWNER_MSG });
     expect(proofDelivery(taskId)).toBe('d-answer');
   });
 
   it('a delivery from a LATER turn resolves (the answer arriving after the close request)', () => {
     seedTurn(4552);
-    const taskId = seedTask('task-later');
+    const taskId = seedTask('task-later', { sourceMessageId: OWNER_MSG });
     seedTurn(4555);
     seedMessage('msg-rundown', 'the combined rundown', 4555);
-    seedDelivery('8eb0439c', { turn: 4555, messageId: 'msg-rundown' });
+    seedDelivery('8eb0439c', { turn: 4555, messageId: 'msg-rundown', serving: OWNER_MSG });
     expect(proofDelivery(taskId)).toBe('8eb0439c');
   });
 });
@@ -188,7 +189,7 @@ describe('the review can show the answer it points at', () => {
     seedDelivery('a133f5e1', { turn: 4552, messageId: 'msg-ack' });
     seedTurn(4555, { answerMessageId: 'msg-rundown' });
     seedMessage('msg-rundown', 'Squarespace is $276/yr all-in; WordPress needs separate hosting. My pick: Squarespace.', 4555);
-    seedDelivery('8eb0439c', { turn: 4555, messageId: 'msg-rundown', offsetSeconds: 10 });
+    seedDelivery('8eb0439c', { turn: 4555, messageId: 'msg-rundown', offsetSeconds: 10, serving: OWNER_MSG });
     // the ask settles on the rundown, exactly as `compile_resolved` records it
     mockDb.current!.prepare(`UPDATE work SET result_delivery_id = ? WHERE id = ?`).run('8eb0439c', askId);
 

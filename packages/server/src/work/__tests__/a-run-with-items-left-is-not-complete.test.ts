@@ -135,9 +135,9 @@ const stateOf = (id: string): string =>
 
 
 /** A delivery INSIDE the run's window, pointing at a row of the given display kind. */
-function deliverInRun(id: string, displayKind: string, turnNumber: number): void {
+function deliverInRun(id: string, displayKind: string, turnNumber: number, run: string): void {
   const msg = seedMessage(`m-${id}`, displayKind);
-  seedDelivery(id, { message_id: msg, turn_number: turnNumber });
+  seedDelivery(id, { message_id: msg, turn_number: turnNumber, root_kind: 'occurrence', root_id: run });
 }
 
 beforeEach(() => {
@@ -179,7 +179,7 @@ describe('a run that ends with items left is recorded incomplete, and the schedu
     measure(50);
     const run = claim();
     seedTurn(4621);
-    deliverInRun('d-real', 'agent-text', 4621);
+    deliverInRun('d-real', 'agent-text', 4621, run);
     countMeasure.mockResolvedValueOnce({ ok: true, count: 5 });
     const before = nextRunOf().next;
     expect(await closeRunsThatDelivered()).toBe(1);
@@ -195,7 +195,7 @@ describe('a run that ends with items left is recorded incomplete, and the schedu
     measure(50);
     const run = claim();
     seedTurn(4621);
-    deliverInRun('d-real', 'agent-text', 4621);
+    deliverInRun('d-real', 'agent-text', 4621, run);
     countMeasure.mockResolvedValueOnce({ ok: true, count: 0 });
     expect(await closeRunsThatDelivered()).toBe(1);
     expect(stateOf(run)).toBe('done');
@@ -206,7 +206,7 @@ describe('a run that ends with items left is recorded incomplete, and the schedu
     measure(5);
     const run = claim();
     seedTurn(4621);
-    deliverInRun('d-real', 'agent-text', 4621);
+    deliverInRun('d-real', 'agent-text', 4621, run);
     expect(await onTaskRunComplete(W, 'complete', 'the deliver ladder stood down')).toBe(true);
     expect(stateOf(run)).toBe('abandoned');
     expect(settledRunStatus(run)).toBe('incomplete');
@@ -269,9 +269,9 @@ describe('fix round 4: the owner\'s run history reads an incomplete run as "Inco
     seedSchedule(W, 'reminder');
     declareDeliverableOnSchedule(W);
     measure(5);
-    claim();
+    const run = claim();
     seedTurn(4621);
-    deliverInRun('d-real', 'agent-text', 4621);
+    deliverInRun('d-real', 'agent-text', 4621, run);
     expect(await onTaskRunComplete(W, 'complete', 'closed on that delivery')).toBe(true);
     const [row] = listOccurrenceRuns(W);
     expect(row.status).toBe('incomplete');
@@ -283,9 +283,9 @@ describe('fix round 4: the owner\'s run history reads an incomplete run as "Inco
     seedSchedule(W, 'reminder');
     declareDeliverableOnSchedule(W);
     measure(1);
-    claim();
+    const run = claim();
     seedTurn(4621);
-    deliverInRun('d-real', 'agent-text', 4621);
+    deliverInRun('d-real', 'agent-text', 4621, run);
     expect(await onTaskRunComplete(W, 'complete', 'closed on that delivery')).toBe(true);
     expect(listOccurrenceRuns(W)[0].statusLabel).toBe('Incomplete — 1 message left');
     expect(remainderOnTask()).toEqual([expect.stringContaining('A run ended with 1 message left')]);
@@ -329,7 +329,9 @@ describe('fix round 4 (minor): one row that cannot be re-read never stops the de
     db().prepare('UPDATE work SET measure_json = ?, measure_initial = 50, measure_remaining = 0, measure_at = ? WHERE id = ?').run(MEASURE, RUN_OPENED, W2);
     const run1 = claim(W); const run2 = claim(W2);
     seedTurn(4621);
-    deliverInRun('d-real', 'agent-text', 4621);
+    deliverInRun('d-real', 'agent-text', 4621, run1);
+    seedTurn(4622);
+    deliverInRun('d-real-2', 'agent-text', 4622, run2);
     countMeasure.mockReset();
     countMeasure.mockImplementation(async () => { throw new Error('counter blew up'); });
     warns.length = 0;

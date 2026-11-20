@@ -31,6 +31,8 @@ const AGENT = 'agent-primary';
 const TURN = 6559;
 const db = (): Database.Database => mockDb.current!;
 let clock = 0;
+/** The owner message the lines' turn serves: the root the engine stamps on each delivery. */
+let serving: string | null = null;
 
 function seedConversation(id: string, channel: string): void {
   db().prepare(`INSERT INTO conversations (id, agent_id, channel, counterparty_id) VALUES (?, ?, ?, 'owner')`).run(id, AGENT, channel);
@@ -42,6 +44,7 @@ function seedAskAndTask(messageId: string, conv: string): { askId: string; taskI
     `INSERT INTO messages (id, agent_id, role, content, lane, conversation_id, created_at)
      VALUES (?, ?, 'user', 'make the folder and tell me', 'owner', ?, ?)`,
   ).run(messageId, AGENT, conv, Date.now() - 60_000);
+  serving = messageId;
   openAsk({ agentId: AGENT, messageId, conversationId: conv, requesterId: 'owner', openedAt: Date.now() - 60_000, title: 'make the folder' });
   const taskId = openTrackerTask({
     title: 'make the folder', status: 'in_progress', assignedTo: AGENT, createdBy: AGENT,
@@ -57,9 +60,9 @@ function line(id: string, channel: string, conv: string): string {
      VALUES (?, ?, 'assistant', 'a line', 'owner', ?, ?, 'agent-text', ?)`,
   ).run(`m-${id}`, AGENT, conv, TURN, Date.now() + clock * 1000);
   db().prepare(
-    `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, conversation_id, message_id, outcome, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 'delivered', datetime('now', ?))`,
-  ).run(id, AGENT, TURN, channel, channel, conv, `m-${id}`, `+${clock} seconds`);
+    `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, conversation_id, message_id, outcome, created_at, root_kind, root_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'delivered', datetime('now', ?), ?, ?)`,
+  ).run(id, AGENT, TURN, channel, channel, conv, `m-${id}`, `+${clock} seconds`, serving ? 'ask' : null, serving);
   return id;
 }
 
@@ -71,6 +74,7 @@ const settle = (askId: string, deliveryId: string): void => {
 beforeEach(() => {
   mockDb.current?.close();
   clock = 0;
+  serving = null;
   const d = new Database(':memory:');
   d.pragma('foreign_keys = ON');
   mockDb.current = d;

@@ -48,10 +48,12 @@ let n = 0;
 
 const db = (): Database.Database => mockDb.current!;
 function newTask(createdBy = REQUESTER, title = 'Find how many rows the export holds'): string {
-  return openTrackerTask({
+  const id = openTrackerTask({
     projectId, title, status: 'in_progress', assignedTo: WORKER, createdBy,
     origin: { kind: 'agent', sourceMessageId: null, turn: null, convKey: null },
   });
+  db().prepare("UPDATE work SET a2a_thread_id = 'thread-1' WHERE id = ?").run(id);   // the task came by an ASSIGN on thread-1
+  return id;
 }
 /** One verified send_to_agent by the worker, as the transport records it: the receipt, the recipient's
  *  inbound copy, and the delivery row (which carries the receipt). Returns the call, delivery and message. */
@@ -69,8 +71,8 @@ function send(to: string, intent: string, payload: string): { call: string; deli
   ).run(`rcpt-${call}`, WORKER, to, WORK_TURN, call);
   const delivery = `dd${String(n).padStart(6, '0')}-bbbb-4bbb-8bbb-${String(n).padStart(12, '0')}`;
   db().prepare(
-    `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, recipient_id, message_id, receipt_id, detail, outcome, created_at)
-     VALUES (?, ?, ?, 'send_to_agent', 'a2a', ?, ?, ?, ?, 'delivered', datetime('now'))`,
+    `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, recipient_id, message_id, receipt_id, detail, outcome, created_at, root_kind, root_id)
+     VALUES (?, ?, ?, 'send_to_agent', 'a2a', ?, ?, ?, ?, 'delivered', datetime('now'), 'a2a', 'thread-1')`,
   ).run(delivery, WORKER, WORK_TURN, to, message, `rcpt-${call}`, `A2A ${intent}`);
   return { call, delivery, message };
 }
