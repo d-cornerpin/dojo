@@ -14,6 +14,7 @@ import { workerOfRecord, rehome } from '../row-authority.js';
 import { isTerminal, noteUnsettled, ownerHoldStands, type WorkState } from '../store.js';
 import { latestHandIn, workerOf, OWNER_ID, type HandInRecord } from './record.js';
 import { settleProject } from './project-state.js';
+import { FINAL_REPLY_SQL } from '@dojo/shared';
 
 const logger = createLogger('work-effects');
 /** The PM module, loaded once and shared, so a burst of hand-ins never races its own import. */
@@ -103,7 +104,7 @@ export async function finalWordsBack(p: {
   // Held back only by the helper's own final reply on the thread: a STATUS, a question or the Dojo's copy of a note is not one.
   const answered = thread && db.prepare(`SELECT 1 FROM messages m JOIN deliveries d ON d.message_id = m.id AND d.tool = 'send_to_agent'
     WHERE m.agent_id = ? AND m.source_agent_id = ? AND m.a2a_thread_id = ? AND m.created_at >= ?
-      AND m.a2a_intent IN ('ANSWER', 'DELIVERABLE', 'COMPLETE', 'FAIL')`).get(maker, p.workerId, thread, since);
+      AND m.a2a_intent IN (${FINAL_REPLY_SQL})`).get(maker, p.workerId, thread, since);
   if (thread && (answered || resultForEndedRequest(maker, thread))) return;
   await import('../../agent/a2a-transport.js')
     .then(({ deliverA2AMessage }) => deliverA2AMessage({

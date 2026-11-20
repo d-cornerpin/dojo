@@ -1,6 +1,6 @@
 // Who is owed what by an agent, and when the engine next wakes it. One timer for every agent and every due reply.
 
-import { A2A_THREAD_SHORT_LENGTH } from '@dojo/shared';
+import { A2A_THREAD_SHORT_LENGTH, FINAL_REPLY_SQL } from '@dojo/shared';
 import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
 import { broadcast } from '../../gateway/ws.js';
@@ -220,7 +220,7 @@ function clockAgents(): string[] {
       OR EXISTS (SELECT 1 FROM messages m WHERE m.agent_id = a.id AND m.role = 'user' AND m.swept_at IS NULL
                    AND m.created_at >= (unixepoch('now', '-24 hours') * 1000)
                    AND (m.a2a_intent IN ('QUESTION', 'ASSIGN', 'BLOCK')
-                        OR (m.served_by_turn IS NULL AND (m.lane = 'events' OR m.a2a_intent IN ('DELIVERABLE', 'ANSWER', 'COMPLETE', 'FAIL'))))))`)
+                        OR (m.served_by_turn IS NULL AND (m.lane = 'events' OR m.a2a_intent IN (${FINAL_REPLY_SQL}))))))`)
     .all() as Array<{ id: string }>)
     .map((r) => r.id).filter((id) => !activeRuns.has(id));
 }

@@ -9,6 +9,7 @@
 // on the wrong row or by the wrong agent moves nothing and counts nothing. A good hand-in is one unit:
 // the `handed_in` event carrying the resolved items, and the move to handed_in. A run of a live schedule
 // with a next run is handed in with scope `run`. Housekeeping rows (`housekeeping.ts`) settle on the engine's receipt.
+import { FINAL_REPLY_INTENTS } from '@dojo/shared';
 import { getDb } from '../../db/connection.js';
 import { redactHandedCredentials } from '../../credentials/secret-values.js';
 import { transition, appendWorkEvent, type WorkState } from '../store.js';
@@ -123,7 +124,7 @@ export function engineHandIn(
 /** A receiver's final reply on the thread of an assign task it holds (Open or Working) hands that task in:
  *  finished on the reply's own delivery, can't be done on a FAIL. A progress reply hands in nothing. */
 export function handInOnAssignReply(threadId: string, workerId: string, intent: string, deliveryId: string | null): void {
-  if (!['ANSWER', 'DELIVERABLE', 'COMPLETE', 'FAIL'].includes(intent)) return;
+  if (!FINAL_REPLY_INTENTS.has(intent)) return;
   const row = getDb().prepare(
     `SELECT w.id FROM work w WHERE ${taskScope('w')} AND w.a2a_thread_id = ? AND w.agent_id = ? AND ${workingExpr('w', true)} AND w.repeat_interval IS NULL LIMIT 1`,
   ).get(threadId, workerId) as { id: string } | undefined;

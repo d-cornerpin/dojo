@@ -1,7 +1,7 @@
 // Footer for a woken delegating agent when the engine owns delivery of a single-piece answer.
 // The woken turn cannot see the relay row, so the footer itself states what was or will be sent;
 // otherwise the agent tells the user the same news a second time. Null keeps the ordinary footer.
-import type { A2AIntent } from '@dojo/shared';
+import { FINAL_REPLY_INTENTS, type A2AIntent } from '@dojo/shared';
 import { getDb } from '../db/connection.js';
 import { joinState } from '../work/store.js';
 import { priorEngineJoinRelay } from '../work/ask-settlement.js';
@@ -11,7 +11,7 @@ import { renderInstant } from '../memory/message-stamp.js';
 export function joinWakeFooter(p: {
   agentId: string; parentId: string; replyConversationId: string | null; intent: A2AIntent; threadShort: string;
 }): string | null {
-  if (p.intent !== 'ANSWER' && p.intent !== 'DELIVERABLE' && p.intent !== 'COMPLETE' && p.intent !== 'FAIL') return null;
+  if (!FINAL_REPLY_INTENTS.has(p.intent)) return null;
   try {
     const join = joinState(p.parentId);
     if (!join?.complete || join.total !== 1) return null;
