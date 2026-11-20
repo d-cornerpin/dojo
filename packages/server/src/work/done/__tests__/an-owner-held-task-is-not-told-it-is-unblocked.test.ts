@@ -32,6 +32,7 @@ describe('an owner-held task is not told it is unblocked', () => {
   it('stays held and unmoved, and its worker is told nothing', async () => {
     expect((await trackerRouter.request(`/tasks/${TASK}`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ status: 'blocked' }) })).status).toBe(200);
     checkDependencies(DEP);
+    await vi.dynamicImportSettled();
     expect(told()).toBe(0);
     expect(stateOf()).toBe('open');
     expect(holdOf(TASK)?.kind).toBe('blocked');
@@ -39,7 +40,8 @@ describe('an owner-held task is not told it is unblocked', () => {
 
   it('CONTROL: a task nobody holds moves and its worker is told', async () => {
     checkDependencies(DEP);
-    await vi.waitFor(() => expect(told()).toBe(1));
+    await vi.dynamicImportSettled();
+    expect(told()).toBe(1);
     expect(stateOf()).toBe('claimed');
   });
 });
