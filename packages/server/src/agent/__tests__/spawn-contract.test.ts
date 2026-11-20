@@ -60,6 +60,7 @@ beforeEach(() => {
   const db = new Database(':memory:');
   // Full agents column set the executor prelude reads (fingerprint + resolvers).
   db.exec(`
+    CREATE TABLE work (id TEXT, agent_id TEXT, kind TEXT, a2a_thread_id TEXT);
     CREATE TABLE agents (
       id TEXT PRIMARY KEY,
       name TEXT,

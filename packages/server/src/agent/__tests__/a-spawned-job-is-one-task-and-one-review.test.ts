@@ -135,6 +135,12 @@ describe('a spawned job is one task and one review', () => {
     expect(tasksHeldBy(helper)[0].state).toBe('handed_in');
   });
 
+  it('an agent with no job thread and an allow list without send_to_agent does not gain it', async () => {
+    db().prepare("INSERT INTO agents (id, name, status, tools_policy) VALUES ('curator', 'Curator', 'idle', ?)")
+      .run(JSON.stringify({ allow: ['file_read', 'complete_task'], deny: [] }));
+    expect(getFilteredTools('curator').map((t) => t.name)).not.toContain('send_to_agent');
+  });
+
   it('an undeclared task_id on send_to_agent is never read', async () => {
     const r = await call('main', 'send_to_agent', {
       agent: 'peer', intent: 'ASSIGN', payload: 'Pull the numbers.', task_id: 'task-mine-0001',
