@@ -1,10 +1,8 @@
 // ════════════════════════════════════════════════════════════════════════════
 // MEDIA GENERATION: `image_create`, `tts_create` / `music_create` (one body, two tools),
 // `video_create`, `transcribe_audio`.
-// LAW: the turn-scoped iMessage recipient is captured at tool-CALL time. The delivery
-// IIFE outlives the turn and the turn's `finally` ends its `TurnContext`, so a
-// delivery-time re-read returns null and the image falls to the owner (or, under
-// concurrency, to a third party). The capture's POSITION is the guarantee.
+// LAW: who asked is captured at tool-CALL time (the job's request); the delivery outlives
+// the turn, so it never re-reads a live turn to find who gets the file.
 // LAW: no persisted message sits between an assistant `tool_use` and its matching
 // `tool_result`; transient progress is broadcast-only. These handlers write no ack row
 // on the synchronous path (`__tests__/media-posts-no-ack-row.test.ts` holds zero rows).
@@ -12,13 +10,10 @@
 // the deferred IIFE's later caption/attachment is the PAYLOAD, after the turn, not an ack.
 // ════════════════════════════════════════════════════════════════════════════
 
-import path from 'node:path';
-import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../../../db/connection.js';
 import { broadcast } from '../../../gateway/ws.js';
-import { deliveredResult, insertMessageIfAbsent } from '../../../memory/message-store.js';
 import { getModelCapabilities } from '../../../services/capabilities.js';
-import { settleAskOnAsyncResult, settleAskOnJobEnded } from '../../../work/ask-settlement.js';
+import { settleAskOnJobEnded } from '../../../work/ask-settlement.js';
 import { auditLog, toolsLogger as logger } from '../util.js';
 import * as effectFs from '../../effects/fs.js';
 import pathModule from 'node:path';
@@ -33,10 +28,8 @@ import { getEffectiveVideoGenModel } from '../../../services/video-gen-model.js'
 import { standInSentence } from '../../../services/capability-model.js';
 import { getModelGenerationParams, defaultVideoSpecFor, validateCanonicalParams, VIDEO_CANONICAL_PARAMS } from '../../../services/generation-params.js';
 import { getModelVoiceCatalog, defaultVoiceCatalogFor, isKnownVoice, formatVoiceCatalog } from '../../../services/voice-catalog.js';
-import { getPresence } from '../../../services/presence.js';
-import { getTurnScopedImRecipient, sendIMessageWithAttachment, getDefaultSender } from '../../../services/imessage-bridge.js';
-import { mayUseChannel } from '../../access/read.js';
-import { postAgentNotice } from '../../agent-notice.js';
+import { getTurnScopedImRecipient } from '../../../services/imessage-bridge.js';
+import { deliverMedia } from '../../../services/media-delivery.js';
 import { tellAgentAndWake, requesterReachSentence, isFailureWokenTurn, noteJobStartedIn } from '../../wake-with-notice.js';
 import { resolvePath, isSensitivePath } from '../../path-guards.js';
 import { isPrimaryAgent } from '../../../config/platform.js';
@@ -74,14 +67,6 @@ const handlers = {
       isError = true;
       return { content, isError };
     }
-
-    // Slugify the title into a safe filename stem: lowercase, hyphens collapsed, cap 50.
-    const slugify = (s: string): string =>
-      s.toLowerCase()
-        .replace(/[^a-z0-9]+/g, '-')
-        .replace(/^-+|-+$/g, '')
-        .slice(0, 50);
-    const titleSlug = rawTitle ? slugify(rawTitle) : '';
 
     const db = getDb();
 
@@ -126,7 +111,7 @@ const handlers = {
     const triggeredByIMessage = requesterIMessage !== null;
     const wokenByFailure = isFailureWokenTurn(agentId);   // captured at CALL time: a failure inside a failure-woken turn does not wake again
     const live = turnContext(agentId);  // captured at CALL time: the result is labelled with the request
-    const resultSubject = deliveredResult(live?.conversationId, live?.root?.kind === 'ask' ? live.root.id : null);
+    const request = { conversationId: live?.conversationId ?? null, requestMessageId: live?.root?.kind === 'ask' ? live.root.id : null };
 
     auditLog(agentId, 'image_create', null, 'success',
       `Request ${requestId} queued (aspect ${aspectRatio}${styleHint ? `, style ${styleHint}` : ''})`,
@@ -219,155 +204,10 @@ const handlers = {
           });
         } catch { /* best effort */ }
 
-        // ── Deliver the image ──
-        // Copy into the caller's uploads dir for a stable on-disk path; the synthetic
-        // assistant message written below carries the attachment. No model call.
-        const recipientDir = path.join(homeDir(), '.dojo', 'uploads', agentId);
-        if (!effectFs.existsSync(recipientDir)) effectFs.mkdirSync(recipientDir, { recursive: true });
-        // Prefer the agent's slug plus a short id chunk; with no title, fall back to
-        // the image_create_<reqId>_<uuid> shape.
-        const sourceExt = path.extname(result.filename) || '.png';
-        const shortId = requestId.replace(/^gen_/, '').slice(0, 8);
-        const stableFilename = titleSlug
-          ? `${titleSlug}-${shortId}${sourceExt}`
-          : `image_create_${requestId}_${result.filename}`;
-        const stablePath = path.join(recipientDir, stableFilename);
-        let deliveredPath = result.filePath;
-        try {
-          effectFs.copyFileSync(result.filePath, stablePath);
-          deliveredPath = stablePath;
-        } catch (copyErr) {
-          logger.warn('image_create: pre-copy to caller uploads dir failed, falling back to original path', {
-            requestId, src: result.filePath, dest: stablePath,
-            error: copyErr instanceof Error ? copyErr.message : String(copyErr),
-          });
-        }
-
-        try {
-          // NO engine caption and NO model call: a model turn at delivery time re-reads
-          // the original prompt and re-calls image_create, so one request could yield
-          // several images. The engine writes the one clean bubble itself.
-          const stat = effectFs.statSync(deliveredPath);
-          const filename = path.basename(deliveredPath);
-          const ext = path.extname(filename).toLowerCase();
-          const mimeType =
-            ext === '.png' ? 'image/png'
-            : ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg'
-            : ext === '.webp' ? 'image/webp'
-            : ext === '.gif' ? 'image/gif'
-            : 'application/octet-stream';
-          const attachment = {
-            fileId: uuidv4(),
-            filename,
-            mimeType,
-            size: stat.size,
-            path: deliveredPath,
-            category: 'image' as const,
-          };
-
-          // The engine writes NO caption in the agent's voice; the agent is told below.
-          const caption = '';
-
-          const deliveryMsgId = uuidv4();
-          const attachmentsJson = JSON.stringify([attachment]);
-          insertMessageIfAbsent({
-            id: deliveryMsgId, agentId, role: 'assistant', content: caption,
-            attachments: attachmentsJson, ...resultSubject,
-          });
-          broadcast({
-            type: 'chat:message', agentId,
-            message: {
-              id: deliveryMsgId, agentId, role: 'assistant' as const,
-              content: caption,
-              attachments: [attachment],
-              tokenCount: null, modelId: null, cost: null, latencyMs: null,
-              createdAt: new Date().toISOString(),
-            },
-          });
-          broadcast({
-            type: 'chat:chunk', agentId,
-            messageId: deliveryMsgId, content: '', done: true, modelId: null,
-          });
-
-          setImgSucceeded(imgJobId, { assetPath: deliveredPath });
-          settleAskOnAsyncResult({ agentId, askMessageId: resultSubject.rootId, resultMessageId: deliveryMsgId });   // the job is finished and its result reached the owner
-
-          try {
-            postAgentNotice({
-              toAgentId: agentId, fromName: 'Image delivery', intent: 'image_delivery_outcome', selfIntro: false,
-              brief: `the finished image was delivered (posted in the dashboard${triggeredByIMessage ? ' and being texted to the requester' : ''}) with no caption: the Dojo wrote no words around it. ` +
-                'If you want to say something about it, say it in your own words.',
-            });
-          } catch { /* awareness note is best-effort */ }
-          logger.info('image_create: image delivered via synthetic assistant message', {
-            requestId, requesterId: agentId, filePath: deliveredPath,
-            sizeBytes: result.sizeBytes, latencyMs: result.latencyMs,
-          });
-        } catch (deliveryErr) {
-          logger.error('image_create: image delivery threw, writing fallback message', {
-            requestId, requesterId: agentId,
-            error: deliveryErr instanceof Error ? deliveryErr.message : String(deliveryErr),
-          });
-          const fallbackId = uuidv4();
-          const fallbackContent = `Image was generated successfully but delivery threw an error: ${deliveryErr instanceof Error ? deliveryErr.message : String(deliveryErr)}. The image file is at ${deliveredPath}.`;
-          try {
-            insertMessageIfAbsent({ id: fallbackId, agentId, role: 'system', content: fallbackContent });
-            broadcast({
-              type: 'chat:message', agentId,
-              message: {
-                id: fallbackId, agentId, role: 'system' as const, content: fallbackContent,
-                tokenCount: null, modelId: null, cost: null, latencyMs: null,
-                createdAt: new Date().toISOString(),
-              },
-            });
-          } catch { /* best effort */ }
-        }
-
-        // Send via iMessage if user is away or request came from iMessage
-        try {
-          // Reaching a real phone is a channel question: ask `mayUseChannel`, the same
-          // reader ladder the `comms.ts` walls and the engine auto-route ask.
-          if (mayUseChannel(agentId, 'imessage')) {
-            let shouldSendViaIMessage = triggeredByIMessage;
-            if (!shouldSendViaIMessage) {
-              try {
-                shouldSendViaIMessage = getPresence() === 'away';
-              } catch { /* presence module unavailable */ }
-            }
-            if (shouldSendViaIMessage) {
-              // Route to the REQUESTER, never default to the owner; the owner only for a
-              // proactive or away send. Use the call-time capture, not a delivery re-read.
-              const recipient = requesterIMessage ?? getDefaultSender();
-              if (recipient) {
-                // Capture the ACTUAL delivery outcome and thread it back to the model:
-                // sendIMessageWithAttachment returns true only when the file went out.
-                const iMessageDelivered = await sendIMessageWithAttachment(recipient, result.filePath, '');
-                const deliveryOutcome = iMessageDelivered
-                  ? 'the finished image was texted to the requester over iMessage'
-                  : 'texting the image to the requester failed (the iMessage attachment channel is unavailable), it is available in the dashboard only';
-                logger.info('image_create: iMessage delivery outcome', {
-                  requestId, requesterId: agentId, delivered: iMessageDelivered,
-                });
-                // Correction ONLY on FAILURE: on success the ack already promised the text.
-                // postAgentNotice is the sanctioned model-visible awareness channel (out of the
-                // human chat); a failed send must never read as done.
-                if (!iMessageDelivered) {
-                  try {
-                    postAgentNotice({
-                      toAgentId: agentId,
-                      fromName: 'Image delivery',
-                      brief:
-                        `${deliveryOutcome}. If you reply to the requester, tell them the image is in the dashboard and could not be texted, ` +
-                        `do not tell them it was sent.`,
-                      intent: 'image_delivery_outcome',
-                      selfIntro: false,
-                    });
-                  } catch { /* awareness note is best-effort */ }
-                }
-              }
-            }
-          }
-        } catch { /* iMessage not available, fine */ }
+        setImgSucceeded(imgJobId, { assetPath: result.filePath });
+        await deliverMedia({ kind: 'image', agentId, jobId: imgJobId, title: rawTitle || null, filePath: result.filePath, mimeType: result.mimeType,
+          sizeBytes: result.sizeBytes, ...request });
+        logger.info('image_create: image delivered', { requestId, requesterId: agentId, sizeBytes: result.sizeBytes, latencyMs: result.latencyMs });
 
       } catch (err) {
         logger.error('image_create: unexpected error in background generation', {

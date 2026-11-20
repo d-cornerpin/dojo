@@ -3,8 +3,8 @@
 // call, yet are modelled as `generation_jobs` rows so the dashboard shows the same indicator and a model cannot
 // retry-storm: the tool fires the job, ends its turn, and this worker hands the finished file to `deliverMedia`.
 // Lifecycle: queued -> running -> succeeded | failed | cancelled. Audio and music run entirely here; image_create
-// keeps its own delivery and uses only the lifecycle helpers. A run-once job cannot resume, so job-orphans.ts
-// closes leftover rows at boot.
+// drives its own job with these lifecycle helpers and the same `deliverMedia`. A run-once job cannot resume, so
+// job-orphans.ts closes leftover rows at boot.
 
 import { turnContext } from '../agent/turn-context.js';
 import { v4 as uuidv4 } from 'uuid';
