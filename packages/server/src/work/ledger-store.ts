@@ -233,14 +233,17 @@ export function readingForClose(count: MeasureCount): MeasureCount {
   };
 }
 
+/** Who set a measure, and whether at the task's opening; a re-reading has no setter. */
+export interface MeasureSetter { setBy: string; atOpen?: true }
+
 /** A measure is SET on a task (open or edit: a new measure is a new scope) with its first reading. */
-export function setMeasure(workId: string, measure: Measure, raw: MeasureCount, at: number): void {
+export function setMeasure(workId: string, measure: Measure, raw: MeasureCount, at: number, by: MeasureSetter): void {
   const count = readingForClose(raw);
   const n = count.ok ? count.count : null;
   getDb().prepare(
     'UPDATE work SET measure_json = ?, measure_initial = ?, measure_remaining = ?, measure_at = ? WHERE id = ?',
   ).run(JSON.stringify(measure), n, n, at, workId);
-  appendMeasured(workId, count, n, at, raw.ok && raw.unreadable?.length ? { partial: raw.count, unreadable: raw.unreadable } : null);
+  appendMeasured(workId, count, n, at, raw.ok && raw.unreadable?.length ? { partial: raw.count, unreadable: raw.unreadable } : null, by);
 }
 
 /** A task's measure was re-read; `remaining` null on the row = it could not be read at `at`. With
@@ -260,11 +263,12 @@ export function recordMeasured(
 
 function appendMeasured(
   workId: string, count: MeasureCount, initial: number | null, at: number,
-  partial: { partial: number; unreadable: string[] } | null = null,
+  partial: { partial: number; unreadable: string[] } | null = null, by: MeasureSetter | null = null,
 ): void {
+  const setter = by ? { set_by: by.setBy, ...(by.atOpen ? { at_open: true } : {}) } : {};
   appendWorkEvent(workId, MEASURED_EVENT, 'engine', count.ok
-    ? { remaining: count.count, initial, at, ok: true }
-    : { remaining: null, initial, at, ok: false, error: count.error, ...(partial ?? {}) }, at);
+    ? { remaining: count.count, initial, at, ok: true, ...setter }
+    : { remaining: null, initial, at, ok: false, error: count.error, ...(partial ?? {}), ...setter }, at);
 }
 
 
