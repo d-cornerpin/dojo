@@ -26,7 +26,7 @@ type ToolResult = AgentTurnState['toolResults'][number];
 
 /** One ending reply after the turn's earlier tool results (and steers already fired); returns the step's outcome. */
 export function endTurn(
-  reply: string, toolResults: Array<Partial<ToolResult>> = [], steerQueue?: AgentTurnState['steerQueue'],
+  reply: string, toolResults: Array<Partial<ToolResult>> = [], steerQueue?: AgentTurnState['steerQueue'], turnCtx: Record<string, unknown> = {},
 ): Promise<PostCallClassifyOutcome> {
   const base = initState({
     agentId: FXID.n4, contextWindow: 128_000, isAutoRouted: false, configuredModelId: 'test-model', turnNumber: 7,
@@ -39,7 +39,7 @@ export function endTurn(
   });
   const ctx = {
     agentId: FXID.n4, turnNumber: 7, db: fakeDb, agent: { id: FXID.n4, name: FX.n4 },
-    turnCtx: { agentId: FXID.n4, kind: 'user', convKey: 'ck-1', conversationId: 'conv-1' },
+    turnCtx: { agentId: FXID.n4, kind: 'user', convKey: 'ck-1', conversationId: 'conv-1', ...turnCtx },
     counterparty: { kind: 'user', relation: 'owner', channel: 'dashboard' },
     counterpartyIsAgentSender: false, chosenConvKey: 'ck-1', hasUnansweredUser: true, triggerRow: null,
     isA2ATurn: false, isEngineTurn: false, isHumanContinuation: false, mostRecentIsA2A: false,
