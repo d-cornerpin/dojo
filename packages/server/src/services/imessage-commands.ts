@@ -217,12 +217,13 @@ async function killNamedAgent(name: string, tooOld: boolean): Promise<string | n
 }
 
 /** The owner's Stop on the main agent: the one call the dashboard button makes. `said` words the reply from the
- *  number of requests it ended. */
+ *  number of requests it ended; queued replies it kept from going are named after it. */
 async function stopPrimaryWork(said: (ended: number) => string): Promise<string> {
   try {
     const { stopByOwner } = await import('../agent/runtime.js');
-    const { ended, nothingRunning } = stopByOwner(getPrimaryAgentId());
-    return nothingRunning ? 'Nothing was running.' : said(ended);
+    const { ended, repliesNotSent: n, nothingRunning } = stopByOwner(getPrimaryAgentId());
+    if (nothingRunning) return 'Nothing was running.';
+    return n === 0 ? said(ended) : `${said(ended)} ${n === 1 ? 'A queued reply was' : `${n} queued replies were`} not sent.`;
   } catch (err) {
     logger.error('Failed to stop the main agent', { error: err instanceof Error ? err.message : String(err) });
     return 'Error stopping the agent.';

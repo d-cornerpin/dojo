@@ -38,6 +38,13 @@ describe('a texted stop does what the Stop button does', () => {
     expect(await handleIMCommand('stop', OWNER)).toBe('Dojo: Stopped.');
   });
 
+  it('names the queued replies the stop kept from going, one or many', async () => {
+    calls.stopByOwner.mockReturnValue({ ended: 1, repliesNotSent: 1 });
+    expect(await handleIMCommand('stop', OWNER)).toBe('Dojo: Stopped. 1 request ended. A queued reply was not sent.');
+    calls.stopByOwner.mockReturnValue({ ended: 1, repliesNotSent: 2 });
+    expect(await handleIMCommand('stop', OWNER)).toBe('Dojo: Stopped. 1 request ended. 2 queued replies were not sent.');
+  });
+
   it('a guest\'s "stop" is ordinary chat: not a command, nothing stopped', async () => {
     expect(await handleIMCommand('stop', GUEST)).toBeNull();
     expect(calls.stopByOwner).not.toHaveBeenCalled();
