@@ -51,6 +51,8 @@ import { joinWakeFooter } from './a2a-join-footer.js';
 import { currentTurnNumber } from './v2/turn-record.js';
 import { selfWakeStandDown } from '../work/work-reaper.js';
 import { recordFloorGhost } from './v2/floor-ghost.js';
+import { finalWordsBack } from '../work/done/effects.js';
+import { latestHandIn } from '../work/done/record.js';
 import { REPLY_NEEDED_INTENTS, type A2AIntent, type A2AEnvelope, type A2ADropReason, type ChannelKind, type InboundMeta } from '@dojo/shared';
 import { resolveRecipientDisplay } from '../contacts/resolve-recipient.js';
 import { compileAskerFromMeta } from '../work/compile-asker.js';
@@ -1494,10 +1496,25 @@ function landStrandedReplies(join: JoinState): JoinState | null {
   return state ?? joinState(join.id);
 }
 
+/** A helper that handed its piece's job in and never replied on the piece's thread is heard now, from its hand-in note. */
+async function handInsNeverHeard(join: JoinState): Promise<void> {
+  await Promise.all(joinPieces(join.id).filter((p) => !isTerminal(p.state) && p.assigneeAgent).map(async (piece) => {
+    const task = getDb().prepare(
+      `SELECT t.id FROM work t WHERE t.kind = 'task' AND t.agent_id = ? AND t.a2a_thread_id = ?
+          AND t.state IN ('handed_in', 'done')`,
+    ).get(piece.assigneeAgent, piece.threadId) as { id: string } | undefined;
+    const h = task ? latestHandIn(task.id) : null;
+    if (!task || !h) return;
+    const outcome = h.outcome === 'finished' ? 'COMPLETE' : 'FAIL';
+    await finalWordsBack({ workerId: piece.assigneeAgent ?? '', taskId: task.id, text: h.note, outcome, orNewThread: false });
+  }));
+}
+
 async function resolveOpenJoin(
   join: JoinState, opts: { failIfUnanswered: boolean; askedNameHint?: string | null },
 ): Promise<'relayed' | 'failed-closed' | 'left-open' | 'already-settled' | 'extended'> {
-  const state = landStrandedReplies(join);
+  await handInsNeverHeard(join);
+  const state = landStrandedReplies(joinState(join.id) ?? join);
   if (!state) return 'already-settled';
   if (state.complete) {
     await resolveCompletedJoin(state, opts.askedNameHint ?? undefined);

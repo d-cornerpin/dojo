@@ -21,7 +21,10 @@ import { isHousekeeping, settleHousekeeping } from './housekeeping.js';
 import { WORKING_STATES, workingExpr } from './hold.js';
 
 export type HandInBy = { kind: 'worker'; agentId: string } | { kind: 'engine'; onBehalfOf: string; because: string };
-export interface HandInInput { workId: string; by: HandInBy; outcome: HandInOutcome; items: ProofItemInput[]; note: string; scope?: HandInScope }
+/** `wordsFollow`: the caller sends the worker's last words itself, after the hand-in is applied. */
+export interface HandInInput {
+  workId: string; by: HandInBy; outcome: HandInOutcome; items: ProofItemInput[]; note: string; scope?: HandInScope; wordsFollow?: true;
+}
 export type HandInResult = { kind: 'handed_in'; eventId: number; text: string } | { kind: 'refused'; text: string };
 
 const HANDS_IN_FROM: readonly WorkState[] = ['open', ...WORKING_STATES];
@@ -89,7 +92,7 @@ export function handIn(input: HandInInput): HandInResult {
     });
   });
   if (moved.kind !== 'applied') return refused(row, [moved.reason === 'owner-hold' ? moved.detail : `The work could not move to handed in: ${moved.detail}.`]);
-  onHandedIn(row.id, eventId);
+  onHandedIn(row.id, eventId, input.wordsFollow);
   const n = proof.items.length;
   const withTasks = row.kind === 'project' && row.open_tasks > 0 ? ` Its ${row.open_tasks} open task${row.open_tasks === 1 ? ' closes' : 's close'} with it.` : '';
   return {
@@ -112,7 +115,8 @@ export function engineHandIn(
     && checkProof(workId, worker, 'finished', items, true).ok;
   if (finished) return handIn({ workId, by, outcome: 'finished', items, note: because, scope: opts.scope });
   if (opts.outcome === 'finished') return { kind: 'refused', text: `Refused: the engine found no proof on record for ${workId}.` };
-  const record: ProofItemInput = { kind: 'remainder', ref: 'engine record', facts: { reason: because } };
+  const reason = opts.outcome === 'cant_be_done' ? because : `no proof on record, so it is handed in as can't be done: ${because}`;
+  const record: ProofItemInput = { kind: 'remainder', ref: 'engine record', facts: { reason } };
   return handIn({ workId, by, outcome: 'cant_be_done', items: [...(opts.outcome === 'cant_be_done' ? items : []), record], note: because, scope: opts.scope });
 }
 

@@ -14,7 +14,6 @@ import { caseVariantClash, caseVariantClashMessage } from './tool-helpers.js';
 import { inheritedCreatorKind } from './created-by-kind.js';
 import { validateAlwaysLoadedTools } from './always-loaded-tools.js';
 import { isPrimaryAgent, getPrimaryAgentId } from '../config/platform.js';
-import { sendAgentMessage } from './agent-bus.js';
 import { postAgentNotice } from './agent-notice.js';
 import { writeAgentStatus } from './agent-status.js';
 import { taskScope, STATE_TO_STATUS_SQL } from '../work/tracker-view.js';
@@ -506,14 +505,15 @@ export function terminateAgent(agentId: string, reason?: string): void {
     closeSession(agentId).catch(() => {});
   }).catch(() => {});
 
-  // Cascade: terminate only apprentice children (sensei and ronin survive)
-  const children = db.prepare(`
-    SELECT id FROM agents WHERE parent_agent = ? AND status != 'terminated' AND classification = 'apprentice'
-  `).all(agentId) as Array<{ id: string }>;
+  endApprentices(agentId);
+}
 
-  for (const child of children) {
-    terminateAgent(child.id, `Parent ${agentId} terminated`);
-  }
+/** An ending agent ends its apprentice helpers; sensei and ronin survive. */
+function endApprentices(agentId: string): void {
+  const children = getDb().prepare(
+    "SELECT id FROM agents WHERE parent_agent = ? AND status != 'terminated' AND classification = 'apprentice'",
+  ).all(agentId) as Array<{ id: string }>;
+  for (const child of children) terminateAgent(child.id, `Parent ${agentId} terminated`);
 }
 
 
@@ -531,7 +531,6 @@ export async function completeAgent(
   agentId: string,
   status: 'complete' | 'fallen' | 'blocked',
   summary: string,
-  results?: string,
 ): Promise<void> {
   const db = getDb();
 
@@ -595,8 +594,9 @@ export async function completeAgent(
     writeAgentStatus(agentId, 'idle');
     logger.info('Persistent agent completed task, remaining idle', { agentId, name: agent.name });
   } else {
-    // Non-persistent: terminate immediately
+    // Non-persistent: terminate immediately, with its own helpers
     writeAgentStatus(agentId, 'terminated');
+    endApprentices(agentId);
 
     // Close browser session if open (same fire-and-forget as terminateAgent)
     import('./browser.js').then(({ closeSession }) => {
@@ -610,46 +610,6 @@ export async function completeAgent(
     timeoutTimers.delete(agentId);
   }
 
-  if (agent.parent_agent) {
-    const completionText = [
-      `Agent "${agent.name}" completed with status: ${status}`,
-      '',
-      `Summary: ${summary}`,
-      results ? `\nResults:\n${results}` : '',
-      '',
-      `Stats: ${messageStats.count} messages, ${messageStats.total_tokens} tokens, $${costStats.total_cost.toFixed(4)} cost, ${durationSeconds}s runtime, ${toolStats.count} tool calls`,
-    ].filter(Boolean).join('\n');
-
-    sendAgentMessage(agentId, agent.parent_agent, 'result', completionText, {
-      status,
-      summary,
-      results,
-      stats: {
-        tokensUsed: messageStats.total_tokens,
-        cost: costStats.total_cost,
-        durationSeconds,
-        toolCallsCount: toolStats.count,
-      },
-    });
-
-    // The parent learns of the completion as a BRIEF, self-attributed note in its awareness lane,
-    // never the full result in its conversation: an engine-tagged, platform-noise row compaction
-    // cannot fold into its context, so the parent never reads another agent's work out of its own
-    // history. The FULL result stays on the agent bus (above) for the parent to pull deliberately.
-    const firstSentence = (summary ?? '').split(/(?<=[.!?])\s/)[0] ?? '';
-    const brief = firstSentence.length > 180 ? `${firstSentence.slice(0, 177)}...` : firstSentence;
-    // The Dreamer is a per-batch agent: a notice per completion would drip N notices per nightly
-    // cycle, so it posts ONE consolidated notice at cycle end; every other agent gets its note.
-    const { isDreamerAgent: isDreamer } = await import('../config/platform.js');
-    if (!isDreamer(agentId)) {   // identity by agent id, never by display name
-      postAgentNotice({
-        toAgentId: agent.parent_agent,
-        fromName: agent.name ?? 'sub-agent',
-        brief: brief || `Finished my work (${status}).`,
-      });
-    }
-  }
-
   // The explicit agent.task_id link (set at spawn) is the identity. Without it, an assigned task
   // resolves ONLY when unambiguous (exactly one candidate): several must not guess the wrong task.
   const resolvedTaskId = resolveAgentTaskId(agentId, agent.task_id);   // `agent/agent-task.ts`
@@ -659,19 +619,6 @@ export async function completeAgent(
     if (status === 'blocked') {
       const held = setHold(resolvedTaskId, 'blocked', summary.split('\n')[0] || `apprentice "${agent.name}" is blocked`, agentId);
       if (!held.ok) logger.warn('completeAgent: block refused', { agentId, taskId: resolvedTaskId, why: held.why }, agentId);
-    }
-
-    // Fire onTaskComplete so the parent also gets a structured note carrying the original ask; the
-    // parent notification above still fires, this one only adds what it does not carry.
-    try {
-      const { onTaskComplete } = await import('./v2/hooks/task-complete.js');
-      await onTaskComplete(resolvedTaskId, agentId);
-    } catch (err) {
-      logger.warn('onTaskComplete hook threw, non-fatal, parent will only see the legacy notification', {
-        agentId,
-        taskId: resolvedTaskId,
-        error: err instanceof Error ? err.message : String(err),
-      });
     }
   }
 

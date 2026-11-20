@@ -66,7 +66,8 @@ describe('no engine door sets done', () => {
     const r = await call(WORKER, 'complete_task', { status: 'complete', summary: 'The report is written and sent.' });
     expect(r.isError, r.content).toBe(false);
     handedInByEngine(TASK, WORKER);
-    expect(doneDb().prepare("SELECT 1 FROM messages WHERE agent_id = ? AND source_agent_id = ? AND a2a_intent = 'result'").get(MAIN, WORKER), 'the parent has the result before any decision').toBeTruthy();
+    const sent = doneDb().prepare("SELECT content FROM messages WHERE agent_id = ? AND source_agent_id = ? AND a2a_intent = 'COMPLETE'").get(MAIN, WORKER) as { content: string } | undefined;
+    expect(sent?.content, 'the parent has the result before any decision').toContain('The report is written and sent.');
   });
 
   it('a helper that gives up has its other working task handed in by the engine as can\'t be done', async () => {

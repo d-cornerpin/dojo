@@ -26,6 +26,8 @@ import { engineHandIn, handInOnAssignReply } from '../../../work/done/hand-in.js
 import { noteUnsettled } from '../../../work/store.js';
 import { spawnAgent, terminateAgent, completeAgent, applySpawnTimeoutDecision } from '../../spawner.js';
 import { completeTaskHandIn } from './measure-door.js';
+import { finalWordsBack } from '../../../work/done/effects.js';
+import { resolveAgentTaskId } from '../../agent-task.js';
 import { validateAlwaysLoadedTools } from '../../always-loaded-tools.js';
 import { toolDefinitionsByName } from '../definitions.js';
 import { createGroup, assignAgentToGroup } from '../../groups.js';
@@ -817,13 +819,14 @@ export const agentsHandlers: ToolHandlerMap = {
       const no = await completeTaskHandIn(agentId, completeMapped as 'complete' | 'fallen', completeSummary ?? '');
       if (no) return { content: no, isError: true };
     }
+    // Hand-in first, last words second: a refused hand-in above has sent nothing.
+    await finalWordsBack({
+      workerId: agentId, taskId: resolveAgentTaskId(agentId),
+      text: [completeSummary, args.results as string | undefined].filter(Boolean).join('\n\n'),
+      outcome: completeMapped === 'complete' ? 'COMPLETE' : 'FAIL', orNewThread: true,
+    });
     try {
-      await completeAgent(
-        agentId,
-        completeMapped as 'complete' | 'fallen' | 'blocked',
-        completeSummary!,
-        args.results as string | undefined,
-      );
+      await completeAgent(agentId, completeMapped as 'complete' | 'fallen' | 'blocked', completeSummary!);
       content = `Task completion reported: ${completeMapped}. Agent will be terminated.`;
     } catch (err) {
       content = friendlyDbError(err, 'complete_task');

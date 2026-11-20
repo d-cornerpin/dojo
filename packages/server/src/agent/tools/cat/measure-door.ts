@@ -74,7 +74,7 @@ export async function editWithMeasure(
 
 // complete_task, before the agent is ended: the task is handed in on the proof on record (its
 // measure re-read first); "complete" is refused while any other owned step is open. A refusal means the
-// agent is not ended; work already handed in is not re-handed.
+// agent is not ended; work already handed in is not re-handed. complete_task sends the last words itself.
 export async function completeTaskHandIn(agentId: string, status: 'complete' | 'fallen', summary: string): Promise<string | null> {
   const taskId = resolveAgentTaskId(agentId);
   const others = status === 'complete' ? ownedOpenTasks(agentId).filter((t) => t.id !== taskId) : [];
@@ -89,7 +89,7 @@ export async function completeTaskHandIn(agentId: string, status: 'complete' | '
     workId: taskId, by: { kind: 'worker', agentId }, outcome: status === 'complete' ? 'finished' : 'cant_be_done',
     items: status === 'complete' ? proofFor(taskId).map(({ kind, ref }) => ({ kind, ref }))
       : [{ kind: 'remainder', ref: 'what was not done', facts: { reason: summary } }],
-    note: summary,
+    note: summary, wordsFollow: true,
   });
   return r.kind === 'handed_in' ? null
     : `${r.text}\nYou are not ended. Hand the task in yourself with work_update(action="hand_in", task_id="${taskId}", outcome, proof, note), then call complete_task again.`;

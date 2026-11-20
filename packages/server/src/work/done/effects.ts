@@ -1,15 +1,15 @@
 // What happens at the two moments of board work, each a short ordered list of calls.
-//   At the hand-in (the work is delivered): a run's schedule advances, the asker who never got the work
-//   on its thread is relayed it, prompts queued for the work retire, and the decider is woken.
+//   At the hand-in (the work is delivered): a run's schedule advances, the agent that gave the job hears
+//   the helper's last words, prompts queued for the work retire, and the decider is woken.
 //   At the decision (the work is accepted, or not): dependents unblock, the project is derived from its
 //   tasks, a finished schedule stops, and a send-back reaches the worker of record.
 import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
-import { retireEngineEventsForTask } from '../../agent/v2/counterparty.js';
+import { retireEngineEventsForTask, resultForEndedRequest } from '../../agent/v2/counterparty.js';
 import { claimTrackerNoticeForTask, repliedOnThread } from '../../memory/message-store.js';
 import { taskScope, STATE_TO_STATUS_SQL, heldByOwnerSql, stateToStatus } from '../tracker-view.js';
 import { setTrackerStatus } from '../tracker-store.js';
-import { getPMAgentId, getPrimaryAgentId } from '../../config/platform.js';
+import { getPMAgentId, getPrimaryAgentId, isDreamerAgent } from '../../config/platform.js';
 import { workerOfRecord, rehome } from '../row-authority.js';
 import { isTerminal, noteUnsettled, ownerHoldStands, type WorkState } from '../store.js';
 import { latestHandIn, workerOf, OWNER_ID } from './record.js';
@@ -20,7 +20,7 @@ const logger = createLogger('work-effects');
 let pmAgent: Promise<typeof import('../../tracker/pm-agent.js')> | null = null;
 
 /** The hand-in-time effects, in order. */
-export function onHandedIn(workId: string, handInEventId: number): void {
+export function onHandedIn(workId: string, handInEventId: number, wordsFollow?: true): void {
   const h = latestHandIn(workId, handInEventId);
   if (!h) return;
   if (h.scope === 'run') {
@@ -28,7 +28,8 @@ export function onHandedIn(workId: string, handInEventId: number): void {
       .then(({ onTaskRunComplete }) => onTaskRunComplete(workId, h.outcome === 'finished' ? 'complete' : 'failed', h.note))
       .catch((err: unknown) => logger.warn('run hand-in: the schedule did not advance', { workId, error: String(err) }));
   }
-  relayAssignHandbackIfMissing(workId, h.note);
+  const outcome = h.outcome === 'finished' ? 'COMPLETE' : 'FAIL';
+  if (!wordsFollow) void finalWordsBack({ workerId: workerOf(workId), taskId: workId, text: h.note, outcome, orNewThread: false });
   retireQueuedPrompts(workerOf(workId), workId);
   void (pmAgent ??= import('../../tracker/pm-agent.js')).then(({ armDebouncedReview }) => armDebouncedReview(workId, 'hand-in'))
     .catch((err: unknown) => logger.warn('hand-in: the decider could not be woken', { workId, error: String(err) }));
@@ -73,25 +74,30 @@ function sendBackHint(workId: string, title: string | null, deciderId: string, r
     { toAgentId: to, fromAgentId: deciderId === OWNER_ID ? null : deciderId, content: hint, taskId: workId }));
 }
 
-/** The asker of an assigned task hears the work on its thread when the worker never said anything there. */
-function relayAssignHandbackIfMissing(workId: string, note: string): void {
-  const row = getDb().prepare('SELECT requester_id, agent_id, a2a_thread_id, opened_at, title FROM work WHERE id = ?').get(workId) as
-    { requester_id: string | null; agent_id: string; a2a_thread_id: string | null; opened_at: number; title: string | null } | undefined;
-  if (!row?.a2a_thread_id || !row.requester_id || row.requester_id === row.agent_id) return;
-  const thread = row.a2a_thread_id, asker = row.requester_id;
-  const heard = (): boolean => repliedOnThread(row.agent_id, asker, thread, row.opened_at);
-  if (heard()) return;
-  // A grace period first: the worker often sends the work back in the same batch as its hand-in.
-  setTimeout(() => {
-    if (heard()) return;
-    void import('../../agent/a2a-transport.js').then(async ({ deliverA2AMessage }) => {
-      const sent = await deliverA2AMessage({
-        intent: 'COMPLETE', threadId: thread, requiresResponse: false, toAgent: asker, fromAgent: row.agent_id,
-        payload: `${note}\n\n[Engine relay: the assignee handed in "${row.title ?? workId}" (${workId.slice(0, 8)}) without replying on this thread; the text above is its hand-in note.]`,
-      });
-      if (!sent.delivered) logger.warn('hand-in relay to the asker was not delivered', { workId, reason: sent.reason });
-    }).catch((err: unknown) => logger.warn('hand-in relay to the asker failed', { workId, error: String(err) }));
-  }, 20_000).unref?.();
+/** A helper's last words reach the agent that gave it the job, once and at once: on the job's thread when it has
+ *  one and the helper said nothing there since the job opened; else, from `complete_task`, to its maker on a new
+ *  thread. Nothing goes for a request that was called off, or from the Dreamer's nightly batches. */
+export async function finalWordsBack(p: {
+  workerId: string; taskId: string | null; text: string; outcome: 'COMPLETE' | 'FAIL'; orNewThread: boolean;
+}): Promise<void> {
+  const db = getDb();
+  const task = p.taskId ? db.prepare('SELECT a2a_thread_id AS thread, opened_at FROM work WHERE id = ?').get(p.taskId) as
+    { thread: string | null; opened_at: number } | undefined : undefined;
+  const thread = task?.thread ?? null;
+  const giver = thread ? db.prepare(
+    `SELECT source_agent_id AS id FROM messages WHERE agent_id = ? AND a2a_thread_id = ? AND a2a_intent = 'ASSIGN'
+       AND source_agent_id IS NOT NULL ORDER BY seq ASC LIMIT 1`,
+  ).get(p.workerId, thread) as { id: string } | undefined : undefined;
+  const maker = giver?.id ?? (db.prepare('SELECT parent_agent FROM agents WHERE id = ?').get(p.workerId) as
+    { parent_agent: string | null } | undefined)?.parent_agent;
+  if (!maker || maker === p.workerId || !p.text.trim() || isDreamerAgent(p.workerId) || (!thread && !p.orNewThread)) return;
+  if (thread && (repliedOnThread(p.workerId, maker, thread, task?.opened_at ?? 0) || resultForEndedRequest(maker, thread))) return;
+  await import('../../agent/a2a-transport.js')
+    .then(({ deliverA2AMessage }) => deliverA2AMessage({
+      intent: p.outcome, threadId: thread ?? '', requiresResponse: true, toAgent: maker, fromAgent: p.workerId, payload: p.text,
+    }))
+    .then((sent) => { if (!sent.delivered) logger.warn('last words were not delivered', { workerId: p.workerId, reason: sent.reason }); })
+    .catch((err: unknown) => logger.warn('last words failed', { workerId: p.workerId, error: String(err) }));
 }
 
 // ── Dependents unblock when the work they wait on is done ──
