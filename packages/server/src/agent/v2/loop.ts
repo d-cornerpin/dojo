@@ -104,8 +104,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
 
 
   try {
-    // The passes run until the turn would end; a turn about to end silent with someone waiting gets its required
-    // reply (forced-reply.ts), at most once.
+    // The passes run until the turn would end; a silent end with someone owed gets its required reply once.
     for (;;) {
       // Steps rewrite `phase` mid-body, so a mid-body 'done' never survives to this check; the monotone
       // close-out latch and spin-brake grace are read here instead, ending the turn after the iteration ran.

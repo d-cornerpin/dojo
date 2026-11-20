@@ -1059,9 +1059,6 @@ export function settleAsksAtTurnFinalize(p: FinalizeSettlementInput): FinalizeSe
            WHERE d.agent_id = ? AND d.turn_number = ? AND d.outcome = 'delivered')`,
   ).all(p.agentId, p.agentId, p.turnNumber) as Array<{ id: string }>;
 
-  const turnEnd: TurnEnd = {
-    retryAt: p.retryAt, paidBeforeLimit: p.paidBeforeLimit, parkedTask: p.parkedTask, jobTurn: p.jobTurn, forcedEmpty: p.forcedEmpty,
-  };
   const seen = new Set<string>();
   const tally = (v: AskSettlementVerdict): void => {
     if (v === 'closed') result.closed++;
@@ -1071,18 +1068,12 @@ export function settleAsksAtTurnFinalize(p: FinalizeSettlementInput): FinalizeSe
   for (const r of [...claimed, ...closedByThisTurn]) {
     if (seen.has(r.id)) continue;
     seen.add(r.id);
-    tally(settleAsk(r.id, {
-      agentId: p.agentId, turnNumber: p.turnNumber, at: 'finalize',
-      askedNothing: r.id === p.askedNothing, ...turnEnd,
-    }).verdict);
+    tally(settleAsk(r.id, { ...p, at: 'finalize', askedNothing: r.id === p.askedNothing }).verdict);
   }
   for (const a of p.assembled ?? []) {
     if (seen.has(a.workId)) continue;
     seen.add(a.workId);
-    tally(settleAsk(a.workId, {
-      agentId: p.agentId, turnNumber: p.turnNumber, at: 'finalize', rowid: a.rowid,
-      askedNothing: a.workId === p.askedNothing, ...turnEnd,
-    }).verdict);
+    tally(settleAsk(a.workId, { ...p, at: 'finalize', rowid: a.rowid, askedNothing: a.workId === p.askedNothing }).verdict);
   }
   if (result.closed > 0 || result.held > 0 || result.reopened > 0) {
     logger.info('turn finalize: owner asks adjudicated', {

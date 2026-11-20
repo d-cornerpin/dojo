@@ -1,6 +1,3 @@
-// The required reply: a turn about to end with nothing said to the person waiting on it gets one more model call
-// in which the answer is required (`forceReply` in agent/model.ts), with a steer so the model writes it itself.
-
 import { broadcast } from '../../gateway/ws.js';
 import { owedAtTurnEnd } from '../../work/ask-settlement.js';
 import { DELIVERABLE_OWING_TASK_KINDS } from '../../work/deliverable-declaration.js';
@@ -16,8 +13,8 @@ import { userWords } from './turn-address.js';
 export const replyCanBeRequired = (latestUserSource: string | null, inboundChannel: string | null): boolean =>
   latestUserSource !== 'voice' && inboundChannel !== 'phone';
 
-/** Should the turn, about to end, make the required call? When it should, the pass is armed (spent first, so a
- *  pass that leaves before any call never arms a second) and the loop re-enters past its gates. */
+/** The required reply: a turn ending silent with someone owed makes one more call requiring the answer, steered so
+ *  the model writes it. Armed spent first, so a pass that leaves early never arms a second; it re-enters past the gates. */
 export async function forcedReplyDue(
   turnCtx: TurnContext,
   p: { agentId: string; turnNumber: number; latestUserSource: string | null },
