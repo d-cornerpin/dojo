@@ -64,7 +64,7 @@ const messages = (): Array<{ role: string; content: string; origin_intent: strin
     .all(AGENT) as Array<{ role: string; content: string; origin_intent: string | null }>;
 
 const ghost = (over: Partial<Parameters<typeof recordFloorGhost>[0]> = {}) => recordFloorGhost({
-  agentId: AGENT, turnNumber: TURN, floor: 'a2a-handoff-floor', workId: WORK,
+  agentId: AGENT, turnNumber: TURN, floor: 'request-stood-down', workId: WORK,
   attempts: MAX_FLOOR_STEER_ATTEMPTS,
   ownerLine: 'your agent handed part of this to another agent and then went quiet without telling you.',
   ...over,
@@ -90,7 +90,7 @@ describe('the ROW — a ghost is countable, against a denominator', () => {
     expect(rows[0].kind).toBe('floor_ghosted');
     expect(rows[0].actor).toBe('engine');
     const payload = JSON.parse(rows[0].payload!);
-    expect(payload.floor).toBe('a2a-handoff-floor');
+    expect(payload.floor).toBe('request-stood-down');
     expect(payload.steer_attempts).toBe(MAX_FLOOR_STEER_ATTEMPTS);
     expect(payload.turn_number).toBe(TURN);
   });
@@ -139,7 +139,7 @@ describe('the PLATFORM’S OWN VOICE — never the agent’s', () => {
 
   it('THE OR2 CLAUSE: not one assistant row is written, on any path', () => {
     ghost();
-    ghost({ floor: 'reminder-silence', workId: null });
+    ghost({ floor: 'run-undelivered', workId: null });
     expect(messages().filter((m) => m.role === 'assistant')).toEqual([]);
   });
 
@@ -241,7 +241,7 @@ describe('THE ANNOUNCEMENT — the platform’s own voice reaches the socket, no
   it('NEGATIVE CONTROL: no ORPHAN BROADCAST — every announced id resolves to a real row', () => {
     workRow(WORK);
     ghost();
-    ghost({ floor: 'reminder-silence', workId: null });
+    ghost({ floor: 'run-undelivered', workId: null });
     for (const id of announced()) {
       const row = mockDb.current!.prepare('SELECT id FROM messages WHERE id = ?').get(id);
       expect(row, `announced id ${id} has no row (live-only; vanishes on refresh)`).toBeDefined();
@@ -286,7 +286,7 @@ describe('the HEALTH SURFACE — a platform fault shows up as one', () => {
 
   it('NEGATIVE CONTROL: a broadcast that throws never costs the durable halves', () => {
     const rec = recordFloorGhost({
-      agentId: AGENT, turnNumber: TURN, floor: 'a2a-handoff-floor', workId: WORK,
+      agentId: AGENT, turnNumber: TURN, floor: 'request-stood-down', workId: WORK,
       attempts: 2, ownerLine: 'your agent went quiet.',
     }, { broadcast: () => { throw new Error('ws is down'); } });
     expect(rec.eventId).not.toBeNull();

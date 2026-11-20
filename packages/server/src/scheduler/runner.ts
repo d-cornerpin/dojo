@@ -334,9 +334,8 @@ export async function onTaskRunComplete(taskId: string, status: string, summary:
   }
 
   // An undelivered run is surfaced to the owner in the platform's own voice, never the agent's: `recordFloorGhost`
-  // writes the durable row, owner-alert system note and health frame, the same three parts the in-turn
-  // reminder-silence ghost writes. ONE alert per run: if the in-turn floor already ghosted this incident, this
-  // arm stays quiet.
+  // writes the durable row, owner-alert system note and health frame. ONE alert per run: a run already ghosted
+  // stays quiet.
   if (settled.runStatusRecorded === RUN_STATUS_UNDELIVERED) {
     try {
       const alreadyGhosted = db.prepare(

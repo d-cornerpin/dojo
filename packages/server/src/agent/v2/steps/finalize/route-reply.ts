@@ -86,8 +86,8 @@ export async function routeTerminalReply(
         settledContextWakeTurn,
         counterpartyKind: counterparty.kind,
         isEngineTurn,
-        // A steered closeout reply is the completion ack in the agent's own voice; same standing.
-        steeredForSilentCloseout: steerFired(state.steerQueue, 'silent-closeout'),
+        // A required reply is the agent's own answer to the person waiting; same standing.
+        forcedReply: steerFired(state.steerQueue, 'forced-reply'),
       });
       const settledContextHold = routeRoot.held;
       // One line per settled-wake user-facing outbound, with the outcome and the root that permitted it.

@@ -35,7 +35,7 @@ function legacySettledContextHold(i: OutboundRootInput): boolean {
     && i.inboundChannel === null
     && i.counterpartyKind !== 'agent'
     && !i.isEngineTurn
-    && !i.steeredForSilentCloseout;
+    && !i.forcedReply;
 }
 
 /** All 32 combinations of the five inputs the old conjunction read (its sixth, the
@@ -48,7 +48,7 @@ function everyCombination(): OutboundRootInput[] {
       settledContextWakeTurn: !!(m & 2),
       counterpartyKind: (m & 4) ? 'agent' : 'user',
       isEngineTurn: !!(m & 8),
-      steeredForSilentCloseout: !!(m & 16),
+      forcedReply: !!(m & 16),
     });
   }
   return out;
@@ -60,7 +60,7 @@ const PHANTOM: OutboundRootInput = {
   settledContextWakeTurn: true,
   counterpartyKind: 'user',
   isEngineTurn: false,
-  steeredForSilentCloseout: false,
+  forcedReply: false,
 };
 
 describe('the dissolution is EXACT: 32 combinations, not a reading of the diff', () => {
@@ -77,10 +77,10 @@ describe('the dissolution is EXACT: 32 combinations, not a reading of the diff',
   });
 
   it('PLANTED FAULT: a rule that lost one of its roots disagrees with the oracle, loudly', () => {
-    // Drop `steered_closeout` from the affirmative set and the two rules part company —
+    // Drop `forced_reply` from the affirmative set and the two rules part company —
     // which is what the clause above would catch if a future edit deleted a carve-out.
     const lossy = (i: OutboundRootInput): boolean =>
-      outboundRoot({ ...i, steeredForSilentCloseout: false }).held;
+      outboundRoot({ ...i, forcedReply: false }).held;
     const disagreements = everyCombination().filter((i) => lossy(i) !== legacySettledContextHold(i));
     expect(disagreements.length).toBeGreaterThan(0);
   });
@@ -94,7 +94,7 @@ describe('the carve-outs are ROOT KINDS now, and each one is reachable by name',
     ['waiting_human', { settledContextWakeTurn: false }],
     ['peer_turn', { counterpartyKind: 'agent' }],
     ['engine_occurrence', { isEngineTurn: true }],
-    ['steered_closeout', { steeredForSilentCloseout: true }],
+    ['forced_reply', { forcedReply: true }],
   ];
 
   for (const [kind, over] of CASES) {

@@ -46,7 +46,6 @@ vi.mock('../../../db/connection.js', async () => {
 import { runMigrations } from '../../../db/migrations.js';
 import {
   answerReceiptForAsk,
-  closedWithoutDelivery,
   pauseDriveWorkWaitingOnOwner,
   stillClaimedWork,
   terminalDeliveryForTurn,
@@ -190,54 +189,6 @@ describe('1a — "did THIS turn already put the result in front of the person" i
     seedTurn(7);
     seedDelivery('d1', { turn_number: 7, channel: 'a2a', conversation_id: null });
     expect(turnDeliveredToPerson(AGENT, 7, null)).toBe(false);
-  });
-});
-
-// ══════════════════════════════════════════════════════════════════════════════
-describe('1b — "did work close without a delivery" is a JOIN, not a status scan', () => {
-  it('work that closed with nothing delivered for it is returned', () => {
-    seedInbound('m-1');
-    const askId = openAsk({
-      agentId: AGENT, messageId: 'm-1', conversationId: CONV, requesterId: 'owner',
-      openedAt: Date.now(), title: 'roof quote',
-    });
-    transition(askId, { to: 'abandoned', by: 'agent', actorId: AGENT, reason: 'gave up' });
-    const rows = closedWithoutDelivery(AGENT, Date.now() - 60_000);
-    expect(rows.map((r) => r.workId)).toContain(askId);
-  });
-
-  it('NEGATIVE: work that closed AGAINST a delivery is not owed a closeout', () => {
-    seedInbound('m-1');
-    seedTurn(3);
-    const askId = openAsk({
-      agentId: AGENT, messageId: 'm-1', conversationId: CONV, requesterId: 'owner',
-      openedAt: Date.now(), title: 'roof quote',
-    });
-    transition(askId, { to: 'claimed', by: 'agent', actorId: AGENT, claimedByTurn: 3, reason: 'pickup' });
-    seedDelivery('d1', { turn_number: 3 });
-    transition(askId, {
-      to: 'done', by: 'agent', actorId: AGENT, resultDeliveryId: 'd1', reason: 'delivered',
-    });
-    expect(closedWithoutDelivery(AGENT, Date.now() - 60_000).map((r) => r.workId)).not.toContain(askId);
-  });
-
-  it('NEGATIVE: still-open work has not closed and is not in the set', () => {
-    seedInbound('m-1');
-    const askId = openAsk({
-      agentId: AGENT, messageId: 'm-1', conversationId: CONV, requesterId: 'owner',
-      openedAt: Date.now(), title: 'roof quote',
-    });
-    expect(closedWithoutDelivery(AGENT, Date.now() - 60_000).map((r) => r.workId)).not.toContain(askId);
-  });
-
-  it('the window is honoured: work closed before it is history, not this turn\'s miss', () => {
-    seedInbound('m-1');
-    const askId = openAsk({
-      agentId: AGENT, messageId: 'm-1', conversationId: CONV, requesterId: 'owner',
-      openedAt: Date.now(), title: 'roof quote',
-    });
-    transition(askId, { to: 'abandoned', by: 'agent', actorId: AGENT, reason: 'gave up' });
-    expect(closedWithoutDelivery(AGENT, Date.now() + 60_000)).toEqual([]);
   });
 });
 
