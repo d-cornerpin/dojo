@@ -59,6 +59,7 @@ import {
 import { liveWork, hasLiveWork } from '../../../agent/live-work.js';
 import { serveLater } from '../../../agent/v2/serve-later.js';
 import { setHold, clearHold } from '../../../work/done/hold.js';
+import { transition } from '../../../work/store.js';
 import { resetSession } from '../../../agent/reset-session.js';
 import { createGenerationJob, setCancelled } from '../../../services/generation-jobs.js';
 import type { AgentDetail } from '@dojo/shared';
@@ -607,7 +608,7 @@ describe('§10 a job parked between stretches is work the Stop button offers to 
   it('every write of the due or the hold tells the composer: park, claim, the owner\'s hold and lift, New Session', async () => {
     expect(await park()).toBe(true);
     serveLater(job, null, 'claimed by its job turn');
-    expect(await told(), 'the job turn claimed it').toBe(false);
+    expect(await told(), 'a claim clears the due').toBe(false);
     expect(await park()).toBe(true);
     expect(setHold(job.id, 'paused', 'paused by the owner on the dashboard', 'owner').ok).toBe(true);
     expect(await told(), 'the owner held it').toBe(false);
@@ -615,6 +616,10 @@ describe('§10 a job parked between stretches is work the Stop button offers to 
     expect(await told(), 'his lift parks it again').toBe(true);
     expect((await resetSession(AGENT, { callerAgentId: null, ownerRequested: true })).ok).toBe(true);
     expect(await told(), 'New Session ends it').toBe(false);
+    expect(await park()).toBe(true);
+    const ended = transition(job.id, { to: 'abandoned', by: 'owner', actorId: 'owner', reason: 'ended on the board', claim: 'decided' });
+    expect(ended.kind).toBe('applied');
+    expect(await told(), 'a parked job whose task ended is no longer work to stop').toBe(false);
   });
 
   it('an idle agent with a parked job is served a stoppable payload, and the press is accepted', async () => {

@@ -20,7 +20,7 @@ import { recordServingTurnByRowid } from '../memory/message-store.js';
 import { START_ACK_ORIGIN_INTENT } from '../memory/origin-intents.js';
 import { afterCommit } from '../db/unit.js';
 import { broadcast } from '../gateway/ws.js';
-import { serveLater } from '../agent/v2/serve-later.js';
+import { announceAgentLiveWork, serveLater } from '../agent/v2/serve-later.js';
 import { recordFloorGhost } from '../agent/v2/floor-ghost.js';
 import {
   appendWorkEvent, askIdForMessage, claimAsk, claimingTurnOf, failJoinClosed, firstServedAt, isTerminal, stampClaimingTurn,
@@ -930,6 +930,7 @@ export function settleAskOnJobEnded(agentId: string, jobId: string): AskSettleme
 }
 
 export function settleAskOnTaskEnded(agentId: string, askMessageId: string | null | undefined): void {
+  announceAgentLiveWork(agentId);   // an ended task is no longer a parked job Stop would end
   reaskAsync(agentId, askMessageId, null);
 }
 onTaskEnded(settleAskOnTaskEnded);
